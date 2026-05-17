@@ -24,18 +24,31 @@ from typing import TYPE_CHECKING, Any, Literal, overload
 
 from aelix_agent_core.harness.hooks import (
     HOOK_RESULT_TYPES,
+    AbortHandler,
+    AfterProviderResponseHandler,
     AgentEndHandler,
     AgentStartHandler,
     BeforeAgentStartHandler,
+    BeforeProviderPayloadHandler,
+    BeforeProviderRequestHandler,
     ContextHandler,
     HookCleanup,
+    HookErrorMode,
     HookEventName,
     HookHandler,
     MessageEndHandler,
     MessageStartHandler,
     MessageUpdateHandler,
+    ModelSelectHandler,
+    QueueUpdateHandler,
+    ResourcesUpdateHandler,
+    SavePointHandler,
     SessionBeforeCompactHandler,
+    SessionBeforeTreeHandler,
+    SessionCompactHandler,
+    SessionTreeHandler,
     SettledHandler,
+    ThinkingLevelSelectHandler,
     ToolCallHandler,
     ToolExecutionEndHandler,
     ToolExecutionStartHandler,
@@ -162,13 +175,21 @@ class ExtensionFlag:
 
 @dataclass
 class Extension:
-    """The mutable record the loader populates while a factory runs."""
+    """The mutable record the loader populates while a factory runs.
+
+    ``handler_error_modes`` (ADR-0019 v3) carries the per-handler error
+    policy keyed by ``(event_name, id(handler))``; the harness threads these
+    into :class:`HookBus` registration when wiring the extension.
+    """
 
     name: str
     handlers: dict[HookEventName, list[HookHandler]] = field(default_factory=dict)
     tools: dict[str, AgentTool] = field(default_factory=dict)
     flags: dict[str, ExtensionFlag] = field(default_factory=dict)
     cleanups: list[HookCleanup] = field(default_factory=list)
+    handler_error_modes: dict[tuple[HookEventName, int], HookErrorMode] = field(
+        default_factory=dict
+    )
 
 
 ExtensionFactory = Callable[["ExtensionAPI"], Any]
@@ -265,10 +286,13 @@ class ExtensionAPI:
     """Handle passed to extension factories.
 
     Mutates a bound :class:`Extension` for registrations; delegates actions
-    to the shared :class:`_ExtensionRuntime`. The 16 :meth:`on` overloads
-    mirror :class:`~aelix_agent_core.harness.hooks.HookBus.on` so pyright narrows the
-    handler signature per ``HookEventName`` literal (see D.1.2 + the spike
-    in ``scripts/pyright_spike.py``).
+    to the shared :class:`_ExtensionRuntime`. The 28 :meth:`on` overloads
+    (Sprint 3a) mirror :class:`~aelix_agent_core.harness.hooks.HookBus.on`
+    so pyright narrows the handler signature per ``HookEventName`` literal
+    (see D.1.2 + the spike in ``scripts/pyright_spike.py``).
+
+    ADR-0019 v3: each overload exposes ``error_mode: HookErrorMode`` with
+    the default ``"throw"`` matching Pi shipped behavior.
     """
 
     def __init__(
@@ -279,7 +303,7 @@ class ExtensionAPI:
         self._extension = extension
         self._runtime = runtime
 
-    # --- Subscription ---
+    # --- Subscription (28 overloads — Sprint 3a) ---
 
     @overload
     def on(
@@ -288,6 +312,7 @@ class ExtensionAPI:
         handler: ContextHandler,
         *,
         cleanup: HookCleanup | None = None,
+        error_mode: HookErrorMode = "throw",
     ) -> Callable[[], None]: ...
     @overload
     def on(
@@ -296,6 +321,7 @@ class ExtensionAPI:
         handler: BeforeAgentStartHandler,
         *,
         cleanup: HookCleanup | None = None,
+        error_mode: HookErrorMode = "throw",
     ) -> Callable[[], None]: ...
     @overload
     def on(
@@ -304,6 +330,7 @@ class ExtensionAPI:
         handler: ToolCallHandler,
         *,
         cleanup: HookCleanup | None = None,
+        error_mode: HookErrorMode = "throw",
     ) -> Callable[[], None]: ...
     @overload
     def on(
@@ -312,6 +339,7 @@ class ExtensionAPI:
         handler: ToolResultHandler,
         *,
         cleanup: HookCleanup | None = None,
+        error_mode: HookErrorMode = "throw",
     ) -> Callable[[], None]: ...
     @overload
     def on(
@@ -320,6 +348,7 @@ class ExtensionAPI:
         handler: MessageEndHandler,
         *,
         cleanup: HookCleanup | None = None,
+        error_mode: HookErrorMode = "throw",
     ) -> Callable[[], None]: ...
     @overload
     def on(
@@ -328,6 +357,7 @@ class ExtensionAPI:
         handler: AgentStartHandler,
         *,
         cleanup: HookCleanup | None = None,
+        error_mode: HookErrorMode = "throw",
     ) -> Callable[[], None]: ...
     @overload
     def on(
@@ -336,6 +366,7 @@ class ExtensionAPI:
         handler: AgentEndHandler,
         *,
         cleanup: HookCleanup | None = None,
+        error_mode: HookErrorMode = "throw",
     ) -> Callable[[], None]: ...
     @overload
     def on(
@@ -344,6 +375,7 @@ class ExtensionAPI:
         handler: TurnStartHandler,
         *,
         cleanup: HookCleanup | None = None,
+        error_mode: HookErrorMode = "throw",
     ) -> Callable[[], None]: ...
     @overload
     def on(
@@ -352,6 +384,7 @@ class ExtensionAPI:
         handler: TurnEndHandler,
         *,
         cleanup: HookCleanup | None = None,
+        error_mode: HookErrorMode = "throw",
     ) -> Callable[[], None]: ...
     @overload
     def on(
@@ -360,6 +393,7 @@ class ExtensionAPI:
         handler: MessageStartHandler,
         *,
         cleanup: HookCleanup | None = None,
+        error_mode: HookErrorMode = "throw",
     ) -> Callable[[], None]: ...
     @overload
     def on(
@@ -368,6 +402,7 @@ class ExtensionAPI:
         handler: MessageUpdateHandler,
         *,
         cleanup: HookCleanup | None = None,
+        error_mode: HookErrorMode = "throw",
     ) -> Callable[[], None]: ...
     @overload
     def on(
@@ -376,6 +411,7 @@ class ExtensionAPI:
         handler: ToolExecutionStartHandler,
         *,
         cleanup: HookCleanup | None = None,
+        error_mode: HookErrorMode = "throw",
     ) -> Callable[[], None]: ...
     @overload
     def on(
@@ -384,6 +420,7 @@ class ExtensionAPI:
         handler: ToolExecutionUpdateHandler,
         *,
         cleanup: HookCleanup | None = None,
+        error_mode: HookErrorMode = "throw",
     ) -> Callable[[], None]: ...
     @overload
     def on(
@@ -392,6 +429,7 @@ class ExtensionAPI:
         handler: ToolExecutionEndHandler,
         *,
         cleanup: HookCleanup | None = None,
+        error_mode: HookErrorMode = "throw",
     ) -> Callable[[], None]: ...
     @overload
     def on(
@@ -400,6 +438,7 @@ class ExtensionAPI:
         handler: SessionBeforeCompactHandler,
         *,
         cleanup: HookCleanup | None = None,
+        error_mode: HookErrorMode = "throw",
     ) -> Callable[[], None]: ...
     @overload
     def on(
@@ -408,14 +447,125 @@ class ExtensionAPI:
         handler: SettledHandler,
         *,
         cleanup: HookCleanup | None = None,
+        error_mode: HookErrorMode = "throw",
+    ) -> Callable[[], None]: ...
+    # --- Sprint 3a additions (12 new overloads) ---
+    @overload
+    def on(
+        self,
+        event: Literal["queue_update"],
+        handler: QueueUpdateHandler,
+        *,
+        cleanup: HookCleanup | None = None,
+        error_mode: HookErrorMode = "throw",
+    ) -> Callable[[], None]: ...
+    @overload
+    def on(
+        self,
+        event: Literal["save_point"],
+        handler: SavePointHandler,
+        *,
+        cleanup: HookCleanup | None = None,
+        error_mode: HookErrorMode = "throw",
+    ) -> Callable[[], None]: ...
+    @overload
+    def on(
+        self,
+        event: Literal["abort"],
+        handler: AbortHandler,
+        *,
+        cleanup: HookCleanup | None = None,
+        error_mode: HookErrorMode = "throw",
+    ) -> Callable[[], None]: ...
+    @overload
+    def on(
+        self,
+        event: Literal["before_provider_request"],
+        handler: BeforeProviderRequestHandler,
+        *,
+        cleanup: HookCleanup | None = None,
+        error_mode: HookErrorMode = "throw",
+    ) -> Callable[[], None]: ...
+    @overload
+    def on(
+        self,
+        event: Literal["before_provider_payload"],
+        handler: BeforeProviderPayloadHandler,
+        *,
+        cleanup: HookCleanup | None = None,
+        error_mode: HookErrorMode = "throw",
+    ) -> Callable[[], None]: ...
+    @overload
+    def on(
+        self,
+        event: Literal["after_provider_response"],
+        handler: AfterProviderResponseHandler,
+        *,
+        cleanup: HookCleanup | None = None,
+        error_mode: HookErrorMode = "throw",
+    ) -> Callable[[], None]: ...
+    @overload
+    def on(
+        self,
+        event: Literal["session_compact"],
+        handler: SessionCompactHandler,
+        *,
+        cleanup: HookCleanup | None = None,
+        error_mode: HookErrorMode = "throw",
+    ) -> Callable[[], None]: ...
+    @overload
+    def on(
+        self,
+        event: Literal["session_before_tree"],
+        handler: SessionBeforeTreeHandler,
+        *,
+        cleanup: HookCleanup | None = None,
+        error_mode: HookErrorMode = "throw",
+    ) -> Callable[[], None]: ...
+    @overload
+    def on(
+        self,
+        event: Literal["session_tree"],
+        handler: SessionTreeHandler,
+        *,
+        cleanup: HookCleanup | None = None,
+        error_mode: HookErrorMode = "throw",
+    ) -> Callable[[], None]: ...
+    @overload
+    def on(
+        self,
+        event: Literal["model_select"],
+        handler: ModelSelectHandler,
+        *,
+        cleanup: HookCleanup | None = None,
+        error_mode: HookErrorMode = "throw",
+    ) -> Callable[[], None]: ...
+    @overload
+    def on(
+        self,
+        event: Literal["thinking_level_select"],
+        handler: ThinkingLevelSelectHandler,
+        *,
+        cleanup: HookCleanup | None = None,
+        error_mode: HookErrorMode = "throw",
+    ) -> Callable[[], None]: ...
+    @overload
+    def on(
+        self,
+        event: Literal["resources_update"],
+        handler: ResourcesUpdateHandler,
+        *,
+        cleanup: HookCleanup | None = None,
+        error_mode: HookErrorMode = "throw",
     ) -> Callable[[], None]: ...
 
-    def on(
+    def on(  # pyright: ignore[reportInconsistentOverload]
         self,
         event: HookEventName,
         handler: HookHandler,
         *,
         cleanup: HookCleanup | None = None,
+        error_mode: HookErrorMode = "throw",
     ) -> Callable[[], None]:
         """Subscribe ``handler`` to ``event`` on this extension.
 
@@ -425,12 +575,26 @@ class ExtensionAPI:
         from the extension's handler list — if the harness has already
         registered the handler into its bus, that registration also needs
         to be torn down (the harness does this in :meth:`dispose`).
+
+        ADR-0019 v3: ``error_mode`` defaults to ``"throw"`` matching Pi
+        shipped behavior. ``"continue"`` is an Aelix additive opt-in.
+
+        NOTE: 28 ``@overload`` declarations above provide static narrowing
+        per event name (handler param typed as ``XxxHandler`` with
+        ``XxxHookEvent`` payload). The runtime impl uses the generic
+        ``HookHandler`` signature (``HookEvent`` union) which pyright cannot
+        reconcile with the narrowed overloads — pyright lacks the
+        contravariance proof. The narrowing is verified by
+        ``scripts/pyright_spike.py`` which exercises each overload against
+        a concrete handler and asserts pyright sees the narrowed payload
+        type. Suppression is scoped to ``reportInconsistentOverload`` only.
         """
 
         if event not in HOOK_RESULT_TYPES:
             raise KeyError(f"Unknown hook event: {event!r}")
         bucket = self._extension.handlers.setdefault(event, [])
         bucket.append(handler)
+        self._extension.handler_error_modes[(event, id(handler))] = error_mode
         if cleanup is not None:
             self._extension.cleanups.append(cleanup)
 
@@ -439,6 +603,7 @@ class ExtensionAPI:
                 bucket.remove(handler)
             except ValueError:
                 return
+            self._extension.handler_error_modes.pop((event, id(handler)), None)
 
         return unsubscribe
 
