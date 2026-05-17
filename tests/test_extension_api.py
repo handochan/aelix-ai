@@ -161,10 +161,27 @@ def test_action_stubs_succeed_after_harness_bind() -> None:
     api, _, rt = _make_api()
     active_tools = ["tool_a", "tool_b"]
 
+    from aelix_coding_agent.extensions.api import _make_throwing_stub
+
     actions = ExtensionRuntimeActions(
         get_active_tools=lambda: list(active_tools),
         set_active_tools=lambda names: active_tools.__setitem__(slice(None), names),
         get_system_prompt=lambda: "bound system prompt",
+        # Sprint 5a additions: provide throwing stubs for the 12 new actions
+        # so the existing test continues to exercise only the Sprint 3a
+        # surface it was written for.
+        send_message=_make_throwing_stub("send_message"),
+        send_user_message=_make_throwing_stub("send_user_message"),
+        append_entry=_make_throwing_stub("append_entry"),
+        set_session_name=_make_throwing_stub("set_session_name"),
+        get_session_name=_make_throwing_stub("get_session_name"),
+        set_label=_make_throwing_stub("set_label"),
+        get_all_tools=_make_throwing_stub("get_all_tools"),
+        get_commands=_make_throwing_stub("get_commands"),
+        set_model=_make_throwing_stub("set_model"),
+        get_thinking_level=_make_throwing_stub("get_thinking_level"),
+        set_thinking_level=_make_throwing_stub("set_thinking_level"),
+        exec=_make_throwing_stub("exec"),
     )
     rt.bind_core(actions)
 

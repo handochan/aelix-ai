@@ -131,7 +131,7 @@ class AgentHarnessError(Exception):
 
     def __init__(
         self,
-        code: Literal["busy", "invalid_state", "invalid_argument", "hook", "unknown"],
+        code: Literal["busy", "invalid_state", "invalid_argument", "hook", "unknown", "compaction"],
         message: str,
     ) -> None:
         super().__init__(message)
@@ -401,7 +401,7 @@ class AgentHarness:
     def __init__(self, options: AgentHarnessOptions) -> None:
         # Local imports break the harness↔extensions runtime cycle (D.1.9):
         # ``extensions/api.py`` already imports types from ``harness/hooks``.
-        from aelix_coding_agent.extensions.api import ExtensionRuntimeActions, _ExtensionRuntime
+        from aelix_coding_agent.extensions.api import _ExtensionRuntime
 
         self._options = options
         self._runtime = options.runtime or _ExtensionRuntime()
@@ -461,11 +461,39 @@ class AgentHarness:
             self._state.stream_options = dict(options.stream_options)
 
         # Action table installed for ExtensionContext + ExtensionAPI.
+        # Sprint 5a (Phase 3.1, P-22 / P-28): the 15-method action surface
+        # mixes real bindings (set/get_session_name, set_label, set_model,
+        # set/get_thinking_level, get_all_tools, exec) with throwing stubs
+        # for 5b/Phase 4 actions (send_message, send_user_message,
+        # append_entry, get_commands). Real bindings delegate to the
+        # ``self._action_*`` helpers defined below.
+        from aelix_coding_agent.extensions.api import (
+            ExtensionRuntimeActions as _RuntimeActions,
+        )
+        from aelix_coding_agent.extensions.api import (
+            _make_throwing_stub as _stub,
+        )
+
         self._runtime.bind_core(
-            ExtensionRuntimeActions(
+            _RuntimeActions(
+                # Sprint 3a originals.
                 get_active_tools=self._action_get_active_tools,
                 set_active_tools=self._action_set_active_tools,
                 get_system_prompt=self._action_get_system_prompt,
+                # Sprint 5a (Phase 3.1) — real bindings.
+                set_session_name=self._action_set_session_name,
+                get_session_name=self._action_get_session_name,
+                set_label=self._action_set_label,
+                set_model=self._action_set_model,
+                get_thinking_level=self._action_get_thinking_level,
+                set_thinking_level=self._action_set_thinking_level,
+                get_all_tools=self._action_get_all_tools,
+                exec=_stub("exec"),  # ExtensionAPI falls back to subprocess port.
+                # Sprint 5b deferred — throwing stubs (ADR-0042).
+                send_message=_stub("send_message"),
+                send_user_message=_stub("send_user_message"),
+                append_entry=_stub("append_entry"),
+                get_commands=_stub("get_commands"),
             )
         )
 
@@ -1253,9 +1281,70 @@ class AgentHarness:
     # === Internal: callback bridges ===
 
     def _make_context(self) -> ExtensionContext:
-        """Build a fresh :class:`ExtensionContext` for the current hook emit."""
+        """Build a fresh :class:`ExtensionContext` for the current hook emit.
 
-        from aelix_coding_agent.extensions.api import ExtensionContext as _ExtensionContext
+        Sprint 5a (Phase 3.1, P-23) wires the 8 new non-UI fields:
+        ``has_ui`` (constant), ``session_manager``, ``model_registry``,
+        ``signal``, ``has_pending_messages``, ``shutdown``,
+        ``get_context_usage``, ``compact``.
+        """
+
+        from aelix_coding_agent.extensions.api import (
+            ExtensionContext as _ExtensionContext,
+        )
+
+        # Adapter binding ``ReadonlySessionManager`` to the harness session.
+        session_manager: Any | None
+        if self._session is None:
+            session_manager = None
+        else:
+            session = self._session
+
+            class _SessionManagerView:
+                def get_session(self) -> Any | None:
+                    return session
+
+            session_manager = _SessionManagerView()
+
+        def _has_pending() -> bool:
+            return bool(
+                self._steering_queue._messages
+                or self._follow_up_queue._messages
+                or self._next_turn_queue
+            )
+
+        def _compact_action(
+            *,
+            custom_instructions: str | None = None,
+            on_complete: Callable[[Any], Any] | None = None,
+            on_error: Callable[[Exception], Any] | None = None,
+        ) -> None:
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                return  # No loop — Sprint 5a fire-and-forget is a noop.
+
+            async def _runner() -> None:
+                try:
+                    result = await self.compact(custom_instructions)
+                    if on_complete is not None:
+                        on_complete(result)
+                except Exception as exc:  # noqa: BLE001
+                    if on_error is not None:
+                        on_error(exc)
+
+            loop.create_task(_runner())
+
+        def _get_context_usage() -> Any | None:
+            # Sprint 5a: until Phase 4 provider work threads cost details
+            # through MessageEndHookEvent, return ``None`` (matches Pi
+            # behaviour right after compaction).
+            return None
+
+        def _shutdown_default() -> None:
+            # Sprint 5a (pre-CLI loop) shutdown signals abort + invalidates
+            # the runtime. ADR-0042 supplies the richer "exit process" wiring.
+            self._mark_abort()
 
         return _ExtensionContext(
             self._runtime,
@@ -1265,6 +1354,12 @@ class AgentHarness:
             abort=lambda: self._mark_abort(),
             get_active_tools=self._action_get_active_tools,
             get_system_prompt=self._action_get_system_prompt,
+            session_manager=session_manager,
+            signal=None,  # Phase 4 provider work threads the real signal.
+            has_pending_messages=_has_pending,
+            shutdown=_shutdown_default,
+            get_context_usage=_get_context_usage,
+            compact=_compact_action,
         )
 
     def _mark_abort(self) -> None:
@@ -1298,6 +1393,103 @@ class AgentHarness:
 
     def _action_get_system_prompt(self) -> str:
         return self._current_system_prompt()
+
+    # === Sprint 5a (Phase 3.1) — action bindings (P-22) ===
+
+    def _action_set_session_name(self, name: str) -> None:
+        """Pi parity: ``ExtensionAPI.setSessionName`` (``types.ts:1200``).
+
+        Delegates to :meth:`Session.append_session_name` when a session is
+        attached. Pre-session harnesses raise
+        :class:`AgentHarnessError("invalid_state")`.
+        """
+
+        if self._session is None:
+            raise AgentHarnessError(
+                "invalid_state",
+                "set_session_name() requires options.session to be attached",
+            )
+        # Sprint 4a session append is async — schedule via create_task so the
+        # synchronous extension API call returns immediately.
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(self._session.append_session_name(name))
+        except RuntimeError:
+            # Fallback for sync callers outside an event loop (test seam).
+            asyncio.run(self._session.append_session_name(name))
+
+    def _action_get_session_name(self) -> str | None:
+        """Pi parity: ``ExtensionAPI.getSessionName`` (``types.ts:1203``).
+
+        Returns ``None`` when no session attached.
+        """
+
+        if self._session is None:
+            return None
+        try:
+            # Probe for a running loop — when inside one, we cannot block-await
+            # so expose only the future's result if already settled (Sprint 5b
+            # can wire a sync cache mirroring Pi's TS-side cache).
+            asyncio.get_running_loop()
+            future = asyncio.ensure_future(self._session.get_session_name())
+            return future.result() if future.done() else None
+        except RuntimeError:
+            return asyncio.run(self._session.get_session_name())
+
+    def _action_set_label(self, entry_id: str, label: str | None) -> None:
+        """Pi parity: ``ExtensionAPI.setLabel`` (``types.ts:1206``)."""
+
+        if self._session is None:
+            raise AgentHarnessError(
+                "invalid_state",
+                "set_label() requires options.session to be attached",
+            )
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(self._session.append_label(entry_id, label))
+        except RuntimeError:
+            asyncio.run(self._session.append_label(entry_id, label))
+
+    async def _action_set_model(self, model: Model) -> bool:
+        """Pi parity: ``ExtensionAPI.setModel`` (``types.ts:1228``).
+
+        Sprint 5a delegates to :meth:`AgentHarness.set_model`. Returns
+        ``True`` on success (Pi returns ``false`` when no API key is
+        available; that branch lands with Phase 4 provider work — Sprint 5a
+        always returns ``True``).
+        """
+
+        await self.set_model(model)
+        return True
+
+    def _action_get_thinking_level(self) -> str:
+        """Pi parity: ``ExtensionAPI.getThinkingLevel`` (``types.ts:1231``)."""
+
+        level = self._state.thinking_level
+        return level if level is not None else "off"
+
+    def _action_set_thinking_level(self, level: str) -> None:
+        """Pi parity: ``ExtensionAPI.setThinkingLevel`` (``types.ts:1234``)."""
+
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(self.set_thinking_level(level))
+        except RuntimeError:
+            asyncio.run(self.set_thinking_level(level))
+
+    def _action_get_all_tools(self) -> list[Any]:
+        """Pi parity: ``ExtensionAPI.getAllTools`` (``types.ts:1215``).
+
+        Snapshots the harness ``_state.tools`` as a list of
+        :class:`~aelix_coding_agent.extensions.api.ToolInfo` views.
+        """
+
+        from aelix_coding_agent.extensions.api import ToolInfo
+
+        return [
+            ToolInfo(name=tool.name, description=getattr(tool, "description", None))
+            for tool in self._state.tools
+        ]
 
     async def _before_tool_call_bridge(
         self, ctx: BeforeToolCallContext

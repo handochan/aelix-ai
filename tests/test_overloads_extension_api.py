@@ -1,4 +1,8 @@
-"""Sprint 3a — :class:`ExtensionAPI.on` 28-overload + error_mode kwarg surface.
+"""Sprint 3a / 5a — :class:`ExtensionAPI.on` 31-overload + error_mode kwarg surface.
+
+Sprint 5a (Phase 3.1, ADR-0017 §"Phase 3.1 event additions" / ADR-0041)
+extends the 28-overload surface from Sprint 3a with 3 new
+``coding-agent``-owned events (input / user_bash / resources_discover).
 
 This file is a runtime smoke test only; pyright narrowing is enforced by
 ``scripts/pyright_spike.py`` and the standalone pyright run. Each call below
@@ -22,11 +26,13 @@ from aelix_agent_core.harness.hooks import (
     BeforeProviderRequestHookEvent,
     ContextHookEvent,
     HookEventName,
+    InputHookEvent,
     MessageEndHookEvent,
     MessageStartHookEvent,
     MessageUpdateHookEvent,
     ModelSelectHookEvent,
     QueueUpdateHookEvent,
+    ResourcesDiscoverHookEvent,
     ResourcesUpdateHookEvent,
     SavePointHookEvent,
     SessionBeforeCompactHookEvent,
@@ -42,6 +48,7 @@ from aelix_agent_core.harness.hooks import (
     ToolResultHookEvent,
     TurnEndHookEvent,
     TurnStartHookEvent,
+    UserBashHookEvent,
 )
 from aelix_coding_agent.extensions.api import (
     Extension,
@@ -56,8 +63,13 @@ def _make_api() -> ExtensionAPI:
     return ExtensionAPI(ext, runtime)
 
 
-def test_extension_api_accepts_all_28_event_names() -> None:
-    """Smoke test — every name in HookEventName is accepted by ExtensionAPI.on."""
+def test_extension_api_accepts_all_31_event_names() -> None:
+    """Smoke test — every name in HookEventName is accepted by ExtensionAPI.on.
+
+    31 = Sprint 3a 28 + Sprint 5a Phase 3.1 (input / user_bash /
+    resources_discover).
+    """
+
     api = _make_api()
 
     def noop(event: Any, ctx: Any) -> None:
@@ -65,10 +77,10 @@ def test_extension_api_accepts_all_28_event_names() -> None:
 
     for name in get_args(HookEventName):
         api.on(name, noop)  # type: ignore[arg-type]
-    # 28 names registered.
+    # 31 names registered.
     total = sum(len(handlers) for handlers in api.extension.handlers.values())
-    assert total == 28
-    assert len(HOOK_RESULT_TYPES) == 28
+    assert total == 31
+    assert len(HOOK_RESULT_TYPES) == 31
 
 
 def test_extension_api_rejects_unknown_event_name() -> None:
@@ -143,3 +155,7 @@ def test_overload_spot_check_payload_constructors() -> None:
     ModelSelectHookEvent()
     ThinkingLevelSelectHookEvent()
     ResourcesUpdateHookEvent()
+    # 3 new Sprint 5a additions.
+    InputHookEvent()
+    UserBashHookEvent()
+    ResourcesDiscoverHookEvent()
