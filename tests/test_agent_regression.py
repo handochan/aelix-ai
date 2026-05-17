@@ -6,11 +6,11 @@ These tests protect against silent breakage of Phase 1.1 contracts by:
 
 1. Pinning the public parameter names of Agent.__init__ and AgentOptions.
 2. Asserting Agent instances do not expose a `hooks` attribute even after
-   aelix.harness is imported (import-side-effect safety).
+   aelix_agent_core.harness is imported (import-side-effect safety).
 3. Re-running a Phase 1.1 before_tool_call blocking scenario inline to
    prove the callback path was not quietly rewired by Phase 1.2.
-4. Confirming the aelix.agent.types import path is unchanged.
-5. Confirming aelix.agent.__all__ is a superset of the Phase 1.1 surface.
+4. Confirming the aelix_agent_core.types import path is unchanged.
+5. Confirming aelix_agent_core.__all__ is a superset of the Phase 1.1 surface.
 6. Confirming the __main__._run demo executes cleanly.
 """
 
@@ -20,9 +20,9 @@ import inspect
 from collections.abc import AsyncIterator
 from typing import Any
 
-import aelix.agent as _agent_module
-import aelix.harness  # noqa: F401 — import to trigger any harness side-effects before assertions
-from aelix.agent import (
+import aelix_agent_core as _agent_module
+import aelix_agent_core.harness  # noqa: F401 — import to trigger any harness side-effects before assertions
+from aelix_agent_core import (
     AgentContext,
     AgentLoopConfig,
     AgentOptions,
@@ -31,15 +31,15 @@ from aelix.agent import (
     agent_loop,
     default_convert_to_llm,
 )
-from aelix.agent.agent import Agent
-from aelix.ai.messages import (
+from aelix_agent_core.agent import Agent
+from aelix_ai.messages import (
     AssistantMessage,
     TextContent,
     ToolCallContent,
     ToolResultMessage,
     UserMessage,
 )
-from aelix.ai.streaming import (
+from aelix_ai.streaming import (
     AssistantEndEvent,
     AssistantMessageEvent,
     AssistantStartEvent,
@@ -47,7 +47,7 @@ from aelix.ai.streaming import (
     Model,
     SimpleStreamOptions,
 )
-from aelix.ai.tools import ToolExecutionContext, ToolResult
+from aelix_ai.tools import ToolExecutionContext, ToolResult
 
 # ===========================================================================
 # Phase 1.1 parameter name snapshots
@@ -185,8 +185,8 @@ def test_agent_options_signature_unchanged() -> None:
 def test_agent_has_no_hooks_attribute() -> None:
     """Agent() instance does not have a 'hooks' attribute even after harness import.
 
-    aelix.harness is already imported at the top of this module to prove that
-    importing the harness package does not silently leak a hooks attribute
+    aelix_agent_core.harness is already imported at the top of this module to prove
+    that importing the harness package does not silently leak a hooks attribute
     onto the Phase 1.1 Agent class.
     """
 
@@ -265,11 +265,11 @@ async def test_agent_loop_callback_path_intact() -> None:
 
 
 def test_agent_state_module_path_unchanged() -> None:
-    """aelix.agent.types still exports AgentState, AgentLoopConfig, BeforeToolCallContext."""
+    """aelix_agent_core.types still exports AgentState, AgentLoopConfig, BeforeToolCallContext."""
 
-    from aelix.agent.types import AgentLoopConfig as _ALC  # noqa: PLC0415
-    from aelix.agent.types import AgentState as _AS  # noqa: PLC0415
-    from aelix.agent.types import BeforeToolCallContext as _BTC  # noqa: PLC0415
+    from aelix_agent_core.types import AgentLoopConfig as _ALC  # noqa: PLC0415
+    from aelix_agent_core.types import AgentState as _AS  # noqa: PLC0415
+    from aelix_agent_core.types import BeforeToolCallContext as _BTC  # noqa: PLC0415
 
     # These are the real classes — just confirm the import path is intact.
     assert _AS.__name__ == "AgentState"
@@ -283,7 +283,7 @@ def test_agent_state_module_path_unchanged() -> None:
 
 
 def test_agent_module_public_surface_unchanged() -> None:
-    """aelix.agent.__all__ is a superset of (or equal to) the Phase 1.1 surface.
+    """aelix_agent_core.__all__ is a superset of (or equal to) the Phase 1.1 surface.
 
     Phase 1.2 may ADD names to __all__ (additive extensions are fine), but
     must not REMOVE any Phase 1.1 name.
@@ -292,7 +292,7 @@ def test_agent_module_public_surface_unchanged() -> None:
     actual_all = frozenset(getattr(_agent_module, "__all__", []))
     missing = _PHASE_1_1_ALL - actual_all
     assert not missing, (
-        f"aelix.agent.__all__ is missing Phase 1.1 names: {sorted(missing)}"
+        f"aelix_agent_core.__all__ is missing Phase 1.1 names: {sorted(missing)}"
     )
 
 
@@ -308,3 +308,51 @@ async def test_existing_demo_runs_clean() -> None:
 
     # _run() uses a mock stream internally; no LLM or network required.
     await _run()
+
+
+# ===========================================================================
+# F-12: static umbrella surface (no __getattr__ proxy)
+# ===========================================================================
+
+
+def test_umbrella_has_no_getattr_proxy() -> None:
+    """aelix umbrella must use static re-exports — no lazy __getattr__."""
+
+    import aelix  # noqa: PLC0415
+
+    # The umbrella is now a plain re-export package. Phase 1.2's lazy
+    # ``__getattr__`` (which deferred AgentHarness/PolicyExtension imports)
+    # has been replaced by direct ``from aelix_*`` imports at module top.
+    assert "__getattr__" not in aelix.__dict__, (
+        "aelix.__init__.py must not define __getattr__; static re-exports only."
+    )
+
+
+def test_umbrella_static_attributes_resolve_to_workspace_packages() -> None:
+    """Umbrella attributes point to the new aelix_* workspace packages."""
+
+    import aelix  # noqa: PLC0415
+
+    assert aelix.AgentHarness.__module__ == "aelix_agent_core.harness.core"
+    assert aelix.AgentHarnessOptions.__module__ == "aelix_agent_core.harness.core"
+    assert aelix.PolicyExtension.__module__ == "aelix_coding_agent.builtin.policy"
+    assert aelix.GuardrailExtension.__module__ == "aelix_coding_agent.builtin.guardrail"
+    assert aelix.Agent.__module__ == "aelix_agent_core.agent"
+
+
+# ===========================================================================
+# Risk-1 regression: agent-core must not require coding-agent at runtime
+# ===========================================================================
+
+
+def test_agent_core_does_not_require_coding_agent() -> None:
+    """Importing aelix_agent_core must not pull aelix_coding_agent in."""
+
+    import sys  # noqa: PLC0415
+
+    sys.modules.pop("aelix_coding_agent", None)
+    from aelix_agent_core.harness import HookBus, HookEvent  # noqa: PLC0415,F401
+
+    assert "aelix_coding_agent" not in sys.modules, (
+        "aelix_agent_core.harness imports must not load aelix_coding_agent."
+    )
