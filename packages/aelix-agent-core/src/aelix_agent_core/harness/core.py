@@ -131,6 +131,18 @@ class AgentHarnessOptions:
     runtime: _ExtensionRuntime | None = None
     cwd: str = "."
 
+    # === Phase 2.1 placeholders (F-6, ADR-0017) — no behavior in Phase 1.4 ===
+    # Each field exists so Phase 2.1 can wire behavior without breaking
+    # constructors written against the Phase 1.4 signature. Pi line citations
+    # are relative to SHA 734e08edf82ff315bc3d96472a6ebfa69a1d8016.
+    session: Any | None = None  # Phase 2.2 placeholder (ADR-0022 — see spec). Pi: types.ts:563
+    env: dict[str, str] | None = None  # Phase 2.1 placeholder (ADR-0017 — see spec). Pi: types.ts:562
+    resources: list[Any] | None = None  # Phase 2.1 placeholder (ADR-0017 — see spec). Pi: types.ts:565
+    thinking_level: str | None = None  # Phase 2.1 placeholder (ADR-0017 — see spec). Pi: types.ts:~576
+    active_tool_names: list[str] | None = None  # Phase 2.1 placeholder (ADR-0017 — see spec). Pi: types.ts:~577
+    get_api_key_and_headers: Callable[..., Any] | None = None  # Phase 2.1 placeholder (ADR-0017 — see spec). Pi: types.ts:~571
+    stream_options: dict[str, Any] | None = None  # Phase 2.1 placeholder (ADR-0017, ADR-0037 — see spec). Pi: types.ts:~574
+
 
 @dataclass
 class _TurnState:
@@ -631,7 +643,15 @@ class AgentHarness:
 
 
 def _to_hook_event(event: AgentEvent) -> HookEvent | None:
-    """Project a low-level :class:`AgentEvent` onto its observational hook event."""
+    """Project a low-level :class:`AgentEvent` onto its observational hook event.
+
+    This is the single, canonical translation point between the loop's
+    stream-level :class:`AgentEvent` union and the harness's lifecycle
+    :class:`HookEvent` union (ADR-0036). Loop-only events with no hook
+    counterpart return ``None``; hook-only events (e.g. ``tool_call``,
+    ``tool_result``, ``before_agent_start``) are emitted directly by the
+    harness, not via this projection.
+    """
 
     t = event.type
     if t == "agent_start":
