@@ -34,6 +34,7 @@ from aelix_ai.streaming import Model, StreamFn
 from aelix_agent_core.agent import AgentListener
 from aelix_agent_core.default_convert import default_convert_to_llm
 from aelix_agent_core.harness.hooks import (
+    AbortHookEvent,
     AgentEndHookEvent,
     AgentStartHookEvent,
     BeforeAgentStartHookEvent,
@@ -465,15 +466,40 @@ class AgentHarness:
         Race-safety: read of ``self._current_turn_task`` → local copy →
         ``cancel()`` on a done-or-already-cancelled Task is a no-op in
         asyncio. Single-threaded event loop guarantees no torn reads.
+
+        Sprint 3d (P-10 closure): emit a dedicated ``AbortHookEvent`` carrying
+        the snapshot of messages that were cleared from the steer and
+        follow_up queues. Pi parity: ``agent-harness.ts`` ``abort()`` emits an
+        ``abort`` own-event with ``clearedSteer`` / ``clearedFollowUp`` arrays
+        captured BEFORE the queue ``clear()`` calls. ``queue_update`` is also
+        emitted (post-clear) so observers can see both the explicit
+        ``abort`` lifecycle signal AND the resulting empty-queue state.
         """
 
         self._abort_requested = True
+        # Capture pre-clear snapshots for AbortHookEvent (P-10 closure).
+        cleared_steer = list(self._steering_queue._messages)
+        cleared_follow_up = list(self._follow_up_queue._messages)
         self._steering_queue.clear()
         self._follow_up_queue.clear()
         # Sprint 3c §C.2 — cancel in-flight turn task if any.
         turn_task = self._current_turn_task
         if turn_task is not None and not turn_task.done():
             turn_task.cancel()
+        # Sprint 3d (P-10) — emit dedicated abort lifecycle event with the
+        # cleared-queue snapshots. Closes the last Phase 2.1 emit-site gap.
+        try:
+            await self._hooks.emit(
+                AbortHookEvent(
+                    cleared_steer=cleared_steer,
+                    cleared_follow_up=cleared_follow_up,
+                )
+            )
+        except Exception as exc:
+            raise AgentHarnessError(
+                "hook",
+                f"abort hook handler raised: {exc}",
+            ) from exc
         # Sprint 3b — abort clears queues; emit ``queue_update`` so observers
         # see the empty state. Pi parity (``agent-harness.ts`` abort path).
         await self._emit_queue_update()
