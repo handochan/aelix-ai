@@ -76,6 +76,11 @@ class AgentState:
     active_tool_names: list[str] | None = None
     messages: list[AgentMessage] = field(default_factory=list)
     thinking_level: str = "off"
+    # Sprint 3b additions — Pi parity (types.ts AgentHarnessOptions resources /
+    # stream_options). Mutated by `set_resources` (emits ResourcesUpdate) and
+    # `set_stream_options` (no emit), respectively.
+    resources: dict[str, Any] = field(default_factory=dict)
+    stream_options: dict[str, Any] = field(default_factory=dict)
 
 
 # === Hook contexts and results ===

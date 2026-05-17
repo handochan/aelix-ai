@@ -28,7 +28,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, assert_never
 
-from aelix_ai.messages import AssistantMessage, TextContent, UserMessage
+from aelix_ai.messages import AssistantMessage, ImageContent, TextContent, UserMessage
 from aelix_ai.streaming import Model, StreamFn
 
 from aelix_agent_core.agent import AgentListener
@@ -45,7 +45,12 @@ from aelix_agent_core.harness.hooks import (
     MessageEndHookEvent,
     MessageStartHookEvent,
     MessageUpdateHookEvent,
+    ModelSelectHookEvent,
+    QueueUpdateHookEvent,
+    ResourcesUpdateHookEvent,
+    SavePointHookEvent,
     SettledHookEvent,
+    ThinkingLevelSelectHookEvent,
     ToolCallHookEvent,
     ToolCallResult,
     ToolExecutionEndHookEvent,
@@ -131,17 +136,54 @@ class AgentHarnessOptions:
     runtime: _ExtensionRuntime | None = None
     cwd: str = "."
 
-    # === Phase 2.1 placeholders (F-6, ADR-0017) — no behavior in Phase 1.4 ===
-    # Each field exists so Phase 2.1 can wire behavior without breaking
-    # constructors written against the Phase 1.4 signature. Pi line citations
-    # are relative to SHA 734e08edf82ff315bc3d96472a6ebfa69a1d8016.
-    session: Any | None = None  # Phase 2.2 placeholder (ADR-0022 — see spec). Pi: types.ts:563
-    env: dict[str, str] | None = None  # Phase 2.1 placeholder (ADR-0017 — see spec). Pi: types.ts:562
-    resources: list[Any] | None = None  # Phase 2.1 placeholder (ADR-0017 — see spec). Pi: types.ts:565
-    thinking_level: str | None = None  # Phase 2.1 placeholder (ADR-0017 — see spec). Pi: types.ts:~576
-    active_tool_names: list[str] | None = None  # Phase 2.1 placeholder (ADR-0017 — see spec). Pi: types.ts:~577
-    get_api_key_and_headers: Callable[..., Any] | None = None  # Phase 2.1 placeholder (ADR-0017 — see spec). Pi: types.ts:~571
-    stream_options: dict[str, Any] | None = None  # Phase 2.1 placeholder (ADR-0017, ADR-0037 — see spec). Pi: types.ts:~574
+    # === F-6 placeholders (Pi parity with AgentHarnessOptions) ===
+    # Pi line citations are relative to SHA 734e08edf82ff315bc3d96472a6ebfa69a1d8016.
+    # Sprint 3b wires 4 of the 7 placeholders into AgentState; the remaining 3
+    # stay inert until owning ADRs land (Phase 2.2 / Phase 4).
+    session: Any | None = None  # Phase 4 / Phase 2.2 deferred — ADR-0022. Pi: types.ts:563
+    env: dict[str, str] | None = None  # Phase 4 / Phase 2.2 deferred — ExecutionEnv ADR TBD. Pi: types.ts:562
+    # Sprint 3b wired: resources is now dict[str, Any] (Pi type fix — see spec §D)
+    # and flows into AgentState.resources at __init__ time.
+    resources: dict[str, Any] | None = None  # Sprint 3b wired — flows into AgentState.resources. Pi: types.ts:565
+    thinking_level: str | None = None  # Sprint 3b wired — flows into AgentState.thinking_level. Pi: types.ts:~576
+    active_tool_names: list[str] | None = None  # Sprint 3b wired — flows via F-9 validator path. Pi: types.ts:~577
+    get_api_key_and_headers: Callable[..., Any] | None = None  # Phase 4 / Phase 2.2 deferred — ADR-0038 provider. Pi: types.ts:~571
+    stream_options: dict[str, Any] | None = None  # Sprint 3b wired — flows into AgentState.stream_options. Pi: types.ts:~574
+
+
+# === Sprint 3b — pending session writes (Pi parity, agent-harness.ts:414-432) ===
+#
+# Pi defers state mutations that happen DURING a turn (set_model, set_thinking_level,
+# append_message) onto a per-harness ``pendingSessionWrites`` queue. The queue is
+# drained when the turn ends. Sprint 3b implements the 3 variants Pi creates from
+# setter/append paths at SHA 734e08e. Other 6 Pi variants (custom/custom_message/
+# label/session_info/leaf) are Phase 2.2 (ADR-0022).
+
+
+@dataclass(frozen=True)
+class PendingMessageWrite:
+    message: AgentMessage
+    type: Literal["message"] = "message"
+
+
+@dataclass(frozen=True)
+class PendingModelChangeWrite:
+    provider: str
+    model_id: str
+    type: Literal["model_change"] = "model_change"
+
+
+@dataclass(frozen=True)
+class PendingThinkingLevelChangeWrite:
+    thinking_level: str
+    type: Literal["thinking_level_change"] = "thinking_level_change"
+
+
+PendingSessionWrite = (
+    PendingMessageWrite
+    | PendingModelChangeWrite
+    | PendingThinkingLevelChangeWrite
+)
 
 
 @dataclass
@@ -226,6 +268,17 @@ class AgentHarness:
             messages=list(options.initial_messages),
         )
 
+        # Sprint 3b — F-6 placeholder wire-up (§D). Pi parity: AgentHarness
+        # constructor seeds these from options into state. ``active_tool_names``
+        # routes through the F-9 validator path so unknown names raise at
+        # construction time rather than reaching the loop.
+        if options.thinking_level is not None:
+            self._state.thinking_level = options.thinking_level
+        if options.resources is not None:
+            self._state.resources = dict(options.resources)
+        if options.stream_options is not None:
+            self._state.stream_options = dict(options.stream_options)
+
         # Action table installed for ExtensionContext + ExtensionAPI.
         self._runtime.bind_core(
             ExtensionRuntimeActions(
@@ -234,6 +287,12 @@ class AgentHarness:
                 get_system_prompt=self._action_get_system_prompt,
             )
         )
+
+        # Wire active_tool_names AFTER bind_core so the F-9 validator has the
+        # populated tool list to check names against. Pi parity:
+        # agent-harness.ts initialises active set during construction.
+        if options.active_tool_names is not None:
+            self._action_set_active_tools(list(options.active_tool_names))
 
         # Hook bus + handler wiring.
         # ADR-0019 v3: per-handler ``error_mode`` is carried on
@@ -259,6 +318,10 @@ class AgentHarness:
 
         self._steering_queue = _MessageQueue(options.steering_mode)
         self._follow_up_queue = _MessageQueue(options.follow_up_mode)
+        # Sprint 3b — next_turn queue + pending_session_writes (Pi parity,
+        # agent-harness.ts:172 + 466-472).
+        self._next_turn_queue: list[AgentMessage] = []
+        self._pending_session_writes: list[PendingSessionWrite] = []
         self._idle_event = asyncio.Event()
         self._idle_event.set()
 
@@ -315,12 +378,24 @@ class AgentHarness:
         self._idle_event.clear()
         try:
             user_msg = UserMessage(content=[TextContent(text=text)])
+            # Sprint 3b — drain the next_turn queue (Pi parity, executeTurn
+            # L466-472): messages queued via ``next_turn()`` while idle (or
+            # during the previous turn) are prepended to this turn's prompt.
+            drained_next = self._next_turn_queue
+            self._next_turn_queue = []
+            # F-3b-3 (W5 should-fix): Pi emits ``queue_update`` when the
+            # next_turn queue is drained at start of the next turn (Pi
+            # ``executeTurn`` L487). Emit before ``before_agent_start`` so
+            # observers see the empty queue snapshot consistent with Pi.
+            if drained_next:
+                await self._emit_queue_update()
             # Fire the before_agent_start hook so extensions can inject messages
             # or rewrite the system prompt before the first turn.
             injected = await self._emit_before_agent_start(text)
             prompts: list[AgentMessage] = []
             if injected and injected.messages:
                 prompts.extend(injected.messages)
+            prompts.extend(drained_next)
             prompts.append(user_msg)
             system_prompt = (
                 injected.system_prompt
@@ -341,11 +416,15 @@ class AgentHarness:
         self._steering_queue.enqueue(
             UserMessage(content=[TextContent(text=text)])
         )
+        # Sprint 3b — enqueue paths emit ``queue_update`` (P-4: setters do
+        # NOT, only enqueue paths do). Pi: ``agent-harness.ts`` steer path.
+        await self._emit_queue_update()
 
     async def follow_up(self, text: str) -> None:
         self._follow_up_queue.enqueue(
             UserMessage(content=[TextContent(text=text)])
         )
+        await self._emit_queue_update()
 
     async def abort(self) -> None:
         """Signal a cooperative abort. Hook handlers should check the signal."""
@@ -353,6 +432,256 @@ class AgentHarness:
         self._abort_requested = True
         self._steering_queue.clear()
         self._follow_up_queue.clear()
+        # Sprint 3b — abort clears queues; emit ``queue_update`` so observers
+        # see the empty state. Pi parity (``agent-harness.ts`` abort path).
+        await self._emit_queue_update()
+
+    async def _emit_queue_update(self) -> None:
+        """Helper: emit ``QueueUpdateHookEvent`` with current queue snapshots."""
+
+        try:
+            await self._hooks.emit(
+                QueueUpdateHookEvent(
+                    steer=list(self._steering_queue._messages),
+                    follow_up=list(self._follow_up_queue._messages),
+                    next_turn=list(self._next_turn_queue),
+                )
+            )
+        except Exception as exc:
+            raise AgentHarnessError(
+                "hook",
+                f"queue_update hook handler raised: {exc}",
+            ) from exc
+
+    # === Sprint 3b — 8 setters (Pi parity, agent-harness.ts:704-776) ===
+
+    async def set_model(self, model: Model) -> None:
+        """Replace the active model. Pi: ``agent-harness.ts:704-718``.
+
+        Emits :class:`ModelSelectHookEvent`. When called during a turn the
+        change is also queued onto ``_pending_session_writes`` so the eventual
+        Session ADR-0022 path can persist it (Phase 2.2). State mutation is
+        immediate either way.
+        """
+
+        previous = self._state.model
+        self._state.model = model
+        if self._phase == "turn":
+            self._pending_session_writes.append(
+                PendingModelChangeWrite(
+                    provider=getattr(model, "api", ""),
+                    model_id=getattr(model, "id", ""),
+                )
+            )
+        try:
+            await self._hooks.emit(
+                ModelSelectHookEvent(
+                    model=model, previous_model=previous, source="set"
+                )
+            )
+        except Exception as exc:
+            raise AgentHarnessError(
+                "hook",
+                f"model_select hook handler raised: {exc}",
+            ) from exc
+
+    async def set_thinking_level(self, level: str) -> None:
+        """Replace the thinking level. Pi: ``agent-harness.ts:720-733``."""
+
+        previous = self._state.thinking_level
+        self._state.thinking_level = level
+        if self._phase == "turn":
+            self._pending_session_writes.append(
+                PendingThinkingLevelChangeWrite(thinking_level=level)
+            )
+        try:
+            await self._hooks.emit(
+                ThinkingLevelSelectHookEvent(level=level, previous_level=previous)
+            )
+        except Exception as exc:
+            raise AgentHarnessError(
+                "hook",
+                f"thinking_level_select hook handler raised: {exc}",
+            ) from exc
+
+    async def set_active_tools(self, tool_names: list[str]) -> None:
+        """Public async wrapper over the F-9 sync action.
+
+        Pi: ``agent-harness.ts:735-741``. Pi ``setActiveTools`` does NOT emit
+        any event and Aelix mirrors that exactly (P-4 spec verdict). The sync
+        ``_action_set_active_tools`` is preserved for
+        :class:`ExtensionRuntimeActions` — async migration is Phase 2.2+.
+        """
+
+        self._action_set_active_tools(tool_names)
+
+    async def set_steering_mode(self, mode: QueueMode) -> None:
+        """Update the steering queue mode. Pi: ``agent-harness.ts:743-745``.
+
+        No event emitted — Pi parity (setters do NOT emit ``queue_update``;
+        only enqueue paths do — P-4 verdict).
+        """
+
+        self._steering_queue.mode = mode
+
+    async def set_follow_up_mode(self, mode: QueueMode) -> None:
+        """Update the follow-up queue mode. Pi: ``agent-harness.ts:747-749``."""
+
+        self._follow_up_queue.mode = mode
+
+    async def set_resources(self, resources: dict[str, Any]) -> None:
+        """Replace the resources dict. Pi: ``agent-harness.ts:751-760``.
+
+        Emits :class:`ResourcesUpdateHookEvent` with cloned snapshots of the
+        previous and current dicts so handlers can mutate without affecting
+        live state.
+
+        Sprint 3b uses ``dict(...)`` shallow clone. Phase 2.2 may deepen.
+        """
+
+        previous = dict(self._state.resources)
+        new_state = dict(resources)
+        self._state.resources = new_state
+        try:
+            await self._hooks.emit(
+                ResourcesUpdateHookEvent(
+                    resources=dict(new_state),
+                    previous_resources=previous,
+                )
+            )
+        except Exception as exc:
+            raise AgentHarnessError(
+                "hook",
+                f"resources_update hook handler raised: {exc}",
+            ) from exc
+
+    async def set_stream_options(self, stream_options: dict[str, Any]) -> None:
+        """Replace the stream-options dict. Pi: ``agent-harness.ts:762-764``.
+
+        No event emitted — Pi parity. Shallow clone in Sprint 3b.
+        """
+
+        # TODO(Phase-4): deep-clone headers/metadata to mirror Pi
+        # ``cloneStreamOptions`` (agent-harness.ts:96-127 region).
+        self._state.stream_options = dict(stream_options)
+
+    async def set_tools(
+        self,
+        tools: list[AgentTool],
+        active_tool_names: list[str] | None = None,
+    ) -> None:
+        """Atomic replace of the tool list. Pi: ``agent-harness.ts:766-776``.
+
+        Validates the proposed active set against the NEW tool list BEFORE
+        mutating state — on validation failure, the call raises and state is
+        left untouched (no partial mutation). Pi ``validateToolNames``
+        (``agent-harness.ts:407-410``) is strict: any name in the active
+        filter that is not present in the new tool list raises immediately,
+        regardless of whether the caller provided the active set explicitly
+        or relied on the prior state. F-3b-2 (W5 must-document) flips Aelix
+        from the prior silent-widening behaviour to this Pi-parity raise.
+
+        To intentionally widen the active filter when replacing tools, the
+        caller must pass ``active_tool_names=[]`` (or a fresh explicit list).
+
+        No event emitted — Pi parity.
+        """
+
+        new_names = {t.name for t in tools}
+        if active_tool_names is not None:
+            # Explicit active list — validate against new tool names.
+            unknown = [n for n in active_tool_names if n not in new_names]
+            if unknown:
+                raise AgentHarnessError(
+                    "invalid_argument",
+                    f"set_tools: unknown tool name(s) in active set: {unknown!r}",
+                )
+            new_active: list[str] | None = list(active_tool_names)
+        elif self._state.active_tool_names is None:
+            # No prior filter and no override — nothing to validate.
+            new_active = None
+        else:
+            # F-3b-2: Pi ``validateToolNames`` raises when the prior active
+            # filter contains names that are no longer present in the new
+            # tool list. Aelix mirrors this exactly — silent widening is not
+            # Pi-equivalent and was a Sprint 3b W5 must-document divergence.
+            stale = [n for n in self._state.active_tool_names if n not in new_names]
+            if stale:
+                raise AgentHarnessError(
+                    "invalid_argument",
+                    f"set_tools: current active_tool_names contains names "
+                    f"not in new tools: {stale!r}. Pass active_tool_names=[] "
+                    f"(or a fresh list) to intentionally widen the filter.",
+                )
+            new_active = list(self._state.active_tool_names)
+        # Atomic mutation after all validation succeeded.
+        self._state.tools = list(tools)
+        self._state.active_tool_names = new_active
+
+    # === Sprint 3b — next_turn / append_message (Pi: agent-harness.ts:572-582) ===
+
+    async def next_turn(
+        self,
+        text: str | None = None,
+        *,
+        images: list[ImageContent] | None = None,
+    ) -> None:
+        """Enqueue a user message for the NEXT ``prompt()`` invocation.
+
+        Pi: ``agent-harness.ts:572-575``. Always legal regardless of phase —
+        the queue is drained at the start of the next ``prompt()`` call.
+        Emits :class:`QueueUpdateHookEvent` with snapshots of all three queues.
+        """
+
+        content: list[Any] = []
+        if text is not None:
+            content.append(TextContent(text=text))
+        if images:
+            content.extend(images)
+        message = UserMessage(content=content)
+        self._next_turn_queue.append(message)
+        # W4 MINOR: DRY — reuse the shared queue_update emit helper so the
+        # snapshot logic and hook-error wrapping live in exactly one place.
+        await self._emit_queue_update()
+
+    async def append_message(self, message: AgentMessage) -> None:
+        """Append a message to the conversation. Pi: ``agent-harness.ts:575-582``.
+
+        Idle: appended directly to ``state.messages``.
+        Turn: queued onto ``_pending_session_writes`` (drained at turn_end).
+
+        No event emitted — Pi parity.
+        """
+
+        if self._phase == "idle":
+            self._state.messages.append(message)
+        else:
+            self._pending_session_writes.append(PendingMessageWrite(message=message))
+
+    async def flush_pending_session_writes(self) -> None:
+        """Drain ``_pending_session_writes`` FIFO. Pi: ``agent-harness.ts:414-432``.
+
+        Sprint 3b: only :class:`PendingMessageWrite` materially affects state —
+        the message is appended to ``state.messages``. ``model_change`` and
+        ``thinking_level_change`` entries are dropped because the underlying
+        ``state.model`` / ``state.thinking_level`` have already been mutated
+        by the setter; Phase 2.2 (Session ADR-0022) will replace this drop
+        with the real Session.appendXxx persistence path.
+        """
+
+        if not self._pending_session_writes:
+            return
+        pending = self._pending_session_writes
+        self._pending_session_writes = []
+        for entry in pending:
+            if isinstance(entry, PendingMessageWrite):
+                self._state.messages.append(entry.message)
+            else:
+                # W4 MINOR: log non-message variants we drop so Phase 2.2
+                # Session ADR-0022 work can spot anything unexpected. State
+                # is already mutated by the setter; Session persistence is
+                # where these will finally land.
+                _log.debug("dropping %r (Phase 2.2 Session)", entry)
 
     async def wait_for_idle(self) -> None:
         await self._idle_event.wait()
@@ -610,6 +939,22 @@ class AgentHarness:
                     _log.debug(
                         "lifecycle hook handler raised: %r", exc, exc_info=True
                     )
+                # Sprint 3b — after a turn_end projection, flush pending
+                # session writes (Pi: ``agent-harness.ts:417``) and emit
+                # ``save_point`` with the had-pending flag.
+                if event.type == "turn_end":
+                    had_pending = bool(self._pending_session_writes)
+                    await self.flush_pending_session_writes()
+                    try:
+                        await self._hooks.emit(
+                            SavePointHookEvent(had_pending_mutations=had_pending)
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        _log.debug(
+                            "save_point hook handler raised: %r",
+                            exc,
+                            exc_info=True,
+                        )
 
             try:
                 new_messages = await agent_loop(
@@ -640,12 +985,25 @@ class AgentHarness:
                 raise
             self._state.messages.extend(new_messages)
             # Settled event lets observers know we're back to idle.
+            # Sprint 3b populates ``next_turn_count`` from the queue size at
+            # turn settlement (Pi parity, types.ts:491-494).
             try:
-                await self._hooks.emit(SettledHookEvent())
+                await self._hooks.emit(
+                    SettledHookEvent(next_turn_count=len(self._next_turn_queue))
+                )
             except Exception as exc:  # noqa: BLE001
                 _log.debug("settled hook handler raised: %r", exc, exc_info=True)
             return new_messages
         finally:
+            # Safety net: guarantee a flush even if the loop crashed before
+            # turn_end fired. Idempotent if turn_end already drained the queue.
+            try:
+                await self.flush_pending_session_writes()
+            except Exception:  # noqa: BLE001
+                _log.debug(
+                    "flush_pending_session_writes raised in finally",
+                    exc_info=True,
+                )
             self._phase = "idle"
             self._turn_state = None
             self._idle_event.set()
@@ -720,4 +1078,8 @@ __all__ = [
     "AgentHarnessOptions",
     "AgentHarnessPhase",
     "HarnessListener",
+    "PendingMessageWrite",
+    "PendingModelChangeWrite",
+    "PendingSessionWrite",
+    "PendingThinkingLevelChangeWrite",
 ]

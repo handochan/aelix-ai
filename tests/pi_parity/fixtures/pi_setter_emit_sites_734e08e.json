@@ -1,0 +1,14 @@
+{
+  "pi_sha": "734e08edf82ff315bc3d96472a6ebfa69a1d8016",
+  "source_file": "packages/agent/src/harness/agent-harness.ts",
+  "setters": {
+    "setModel": {"lines": "691-702", "emits": ["model_select"]},
+    "setThinkingLevel": {"lines": "703-712", "emits": ["thinking_level_select"]},
+    "setActiveTools": {"lines": "712-718", "emits": []},
+    "setSteeringMode": {"lines": "721-723", "emits": []},
+    "setFollowUpMode": {"lines": "728-730", "emits": []},
+    "setResources": {"lines": "736-742", "emits": ["resources_update"]},
+    "setStreamOptions": {"lines": "746-748", "emits": []},
+    "setTools": {"lines": "749-756", "emits": []}
+  }
+}
