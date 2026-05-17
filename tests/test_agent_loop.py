@@ -1,4 +1,4 @@
-"""Tests for the low-level agent loop (``aelix.agent.loop``).
+"""Tests for the low-level agent loop (``aelix_agent_core.loop``).
 
 The loop is driven by a mock ``stream_fn`` that yields ``AssistantStartEvent``
 followed by ``AssistantEndEvent`` for each call, with a final
@@ -12,7 +12,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from typing import Any
 
-from aelix.agent import (
+from aelix_agent_core import (
     AgentContext,
     AgentLoopConfig,
     AgentTool,
@@ -20,14 +20,14 @@ from aelix.agent import (
     agent_loop,
     default_convert_to_llm,
 )
-from aelix.ai.messages import (
+from aelix_ai.messages import (
     AssistantMessage,
     TextContent,
     ToolCallContent,
     ToolResultMessage,
     UserMessage,
 )
-from aelix.ai.streaming import (
+from aelix_ai.streaming import (
     AssistantEndEvent,
     AssistantMessageEvent,
     AssistantStartEvent,
@@ -35,7 +35,7 @@ from aelix.ai.streaming import (
     Model,
     SimpleStreamOptions,
 )
-from aelix.ai.tools import ToolExecutionContext, ToolResult
+from aelix_ai.tools import ToolExecutionContext, ToolResult
 
 
 def _make_mock_stream(

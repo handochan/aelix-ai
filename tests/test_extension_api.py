@@ -9,10 +9,10 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-
-from aelix.agent.types import AgentTool
-from aelix.ai.tools import ToolExecutionContext, ToolResult
-from aelix.extensions.api import (
+from aelix_agent_core.harness.hooks import ToolCallResult
+from aelix_agent_core.types import AgentTool
+from aelix_ai.tools import ToolExecutionContext, ToolResult
+from aelix_coding_agent.extensions.api import (
     Extension,
     ExtensionAPI,
     ExtensionContext,
@@ -20,7 +20,6 @@ from aelix.extensions.api import (
     ExtensionRuntimeActions,
     _ExtensionRuntime,
 )
-from aelix.harness.hooks import ToolCallResult
 
 # === Shared helpers ===
 
@@ -307,13 +306,14 @@ async def test_aelix_on_after_harness_init_is_noop() -> None:
     """Handlers registered via aelix.on() after harness construction are NOT wired in."""
     from collections.abc import AsyncIterator
 
-    from aelix.agent.types import AgentTool
-    from aelix.ai.messages import (
+    from aelix_agent_core.harness.core import AgentHarness, AgentHarnessOptions
+    from aelix_agent_core.types import AgentTool
+    from aelix_ai.messages import (
         AssistantMessage,
         TextContent,
         ToolCallContent,
     )
-    from aelix.ai.streaming import (
+    from aelix_ai.streaming import (
         AssistantEndEvent,
         AssistantMessageEvent,
         AssistantStartEvent,
@@ -321,8 +321,7 @@ async def test_aelix_on_after_harness_init_is_noop() -> None:
         Model,
         SimpleStreamOptions,
     )
-    from aelix.ai.tools import ToolResult
-    from aelix.harness.core import AgentHarness, AgentHarnessOptions
+    from aelix_ai.tools import ToolResult
 
     captured_api: list[ExtensionAPI] = []
 

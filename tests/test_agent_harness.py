@@ -11,19 +11,23 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 import pytest
-
-from aelix.agent.types import (
+from aelix_agent_core.harness.core import AgentHarness, AgentHarnessError, AgentHarnessOptions
+from aelix_agent_core.harness.hooks import (
+    ToolCallHookEvent,
+    ToolResultPatch,
+)
+from aelix_agent_core.types import (
     AfterToolCallResult,
     AgentEvent,
     AgentTool,
 )
-from aelix.ai.messages import (
+from aelix_ai.messages import (
     AssistantMessage,
     TextContent,
     ToolCallContent,
     ToolResultMessage,
 )
-from aelix.ai.streaming import (
+from aelix_ai.streaming import (
     AssistantEndEvent,
     AssistantMessageEvent,
     AssistantStartEvent,
@@ -31,13 +35,8 @@ from aelix.ai.streaming import (
     Model,
     SimpleStreamOptions,
 )
-from aelix.ai.tools import ToolExecutionContext, ToolResult
-from aelix.extensions.api import Extension, _ExtensionRuntime
-from aelix.harness.core import AgentHarness, AgentHarnessError, AgentHarnessOptions
-from aelix.harness.hooks import (
-    ToolCallHookEvent,
-    ToolResultPatch,
-)
+from aelix_ai.tools import ToolExecutionContext, ToolResult
+from aelix_coding_agent.extensions.api import Extension, _ExtensionRuntime
 
 # ============================================================
 # Shared stream helpers

@@ -9,8 +9,8 @@ from __future__ import annotations
 import textwrap
 from pathlib import Path
 
-from aelix.extensions.api import Extension, ExtensionAPI, _ExtensionRuntime
-from aelix.extensions.loader import (
+from aelix_coding_agent.extensions.api import Extension, ExtensionAPI, _ExtensionRuntime
+from aelix_coding_agent.extensions.loader import (
     load_extension_from_factory,
     load_extensions,
 )
@@ -48,17 +48,17 @@ async def test_load_module_path_without_setup_reports_error_and_class_factory_wo
     # PolicyExtension instances are factories — the module exports PolicyExtension class,
     # not a bare `setup` function. Per D.1.8, if setup is absent but an attribute
     # matching ExtensionFactory exists, it's treated correctly.
-    # The loader looks for 'setup'; aelix.builtin.policy does NOT have a bare setup().
-    # What it does have is PolicyExtension which is a callable factory class.
+    # The loader looks for 'setup'; aelix_coding_agent.builtin.policy does NOT have a
+    # bare setup(). What it does have is PolicyExtension which is a callable factory class.
     # So we test loading it as a module path raises AttributeError (no bare setup),
     # which the loader collects as an error — this verifies the module loading path works.
-    result = await load_extensions(["aelix.builtin.policy"])
-    # aelix.builtin.policy has no top-level 'setup' function; error is expected.
+    result = await load_extensions(["aelix_coding_agent.builtin.policy"])
+    # aelix_coding_agent.builtin.policy has no top-level 'setup' function; error is expected.
     assert len(result.errors) == 1
-    assert "aelix.builtin.policy" in result.errors[0].path
+    assert "aelix_coding_agent.builtin.policy" in result.errors[0].path
 
     # Now verify that importing the class and calling it as a factory works correctly.
-    from aelix.builtin.policy import PolicyExtension
+    from aelix_coding_agent.builtin.policy import PolicyExtension
 
     result2 = await load_extensions([PolicyExtension()])
     assert len(result2.extensions) == 1
@@ -154,7 +154,7 @@ async def test_factory_raising_collected_as_error_not_thrown() -> None:
 
 async def test_factory_missing_setup_reported_as_error() -> None:
     """Module with no top-level callable 'setup' is reported as error."""
-    result = await load_extensions(["aelix.builtin.policy"])
+    result = await load_extensions(["aelix_coding_agent.builtin.policy"])
     assert len(result.errors) == 1
     assert "setup" in result.errors[0].error.lower() or "no" in result.errors[0].error.lower()
 

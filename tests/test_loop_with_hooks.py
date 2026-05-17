@@ -18,17 +18,24 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from typing import Any
 
-from aelix.agent.default_convert import default_convert_to_llm
-from aelix.agent.loop import agent_loop
-from aelix.agent.types import AgentContext, AgentLoopConfig, AgentTool, BeforeToolCallResult
-from aelix.ai.messages import (
+from aelix_agent_core.default_convert import default_convert_to_llm
+from aelix_agent_core.harness.core import AgentHarness, AgentHarnessOptions
+from aelix_agent_core.harness.hooks import (
+    BeforeAgentStartResult,
+    ContextResult,
+    ToolCallResult,
+    ToolResultPatch,
+)
+from aelix_agent_core.loop import agent_loop
+from aelix_agent_core.types import AgentContext, AgentLoopConfig, AgentTool, BeforeToolCallResult
+from aelix_ai.messages import (
     AssistantMessage,
     TextContent,
     ToolCallContent,
     ToolResultMessage,
     UserMessage,
 )
-from aelix.ai.streaming import (
+from aelix_ai.streaming import (
     AssistantEndEvent,
     AssistantMessageEvent,
     AssistantStartEvent,
@@ -36,18 +43,11 @@ from aelix.ai.streaming import (
     Model,
     SimpleStreamOptions,
 )
-from aelix.ai.tools import ToolExecutionContext, ToolResult
-from aelix.builtin.guardrail import GuardrailExtension
-from aelix.builtin.policy import PolicyExtension
-from aelix.extensions.api import ExtensionAPI, ExtensionContext
-from aelix.extensions.loader import load_extensions
-from aelix.harness.core import AgentHarness, AgentHarnessOptions
-from aelix.harness.hooks import (
-    BeforeAgentStartResult,
-    ContextResult,
-    ToolCallResult,
-    ToolResultPatch,
-)
+from aelix_ai.tools import ToolExecutionContext, ToolResult
+from aelix_coding_agent.builtin.guardrail import GuardrailExtension
+from aelix_coding_agent.builtin.policy import PolicyExtension
+from aelix_coding_agent.extensions.api import ExtensionAPI, ExtensionContext
+from aelix_coding_agent.extensions.loader import load_extensions
 
 # ===========================================================================
 # Mock stream helpers (mirrors test_agent_loop.py pattern exactly)

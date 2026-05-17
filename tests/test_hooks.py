@@ -10,15 +10,8 @@ from collections.abc import Callable
 from typing import Any, get_args
 
 import pytest
-
-from aelix.agent.types import AfterToolCallResult
-from aelix.ai.messages import TextContent
-from aelix.extensions.api import (
-    ExtensionContext,
-    _ExtensionRuntime,
-)
-from aelix.harness.core import AgentHarnessError
-from aelix.harness.hooks import (
+from aelix_agent_core.harness.core import AgentHarnessError
+from aelix_agent_core.harness.hooks import (
     HOOK_RESULT_TYPES,
     BeforeAgentStartHookEvent,
     BeforeAgentStartResult,
@@ -33,6 +26,12 @@ from aelix.harness.hooks import (
     ToolCallHookEvent,
     ToolCallResult,
     ToolResultHookEvent,
+)
+from aelix_agent_core.types import AfterToolCallResult
+from aelix_ai.messages import TextContent
+from aelix_coding_agent.extensions.api import (
+    ExtensionContext,
+    _ExtensionRuntime,
 )
 
 # === Shared helpers ===

@@ -5,13 +5,13 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from typing import Any
 
-from aelix.agent import Agent, AgentEvent, AgentOptions, AgentState
-from aelix.ai.messages import (
+from aelix_agent_core import Agent, AgentEvent, AgentOptions, AgentState
+from aelix_ai.messages import (
     AssistantMessage,
     TextContent,
     UserMessage,
 )
-from aelix.ai.streaming import (
+from aelix_ai.streaming import (
     AssistantEndEvent,
     AssistantMessageEvent,
     AssistantStartEvent,
