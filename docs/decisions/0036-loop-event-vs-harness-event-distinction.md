@@ -1,6 +1,22 @@
 # 0036. Loop `AgentEvent` vs Harness `HookEvent` Distinction (F-7)
 
-Status: Accepted (Sprint 2.5 shipped — model affirmed; expansion Phase 2.1)
+Status: Accepted (Sprint 2.5 shipped + Sprint 3a expansion code-land)
+
+## Phase 2.1.1 Update (Sprint 3a shipped, 2026-05-17)
+
+Sprint 3a code-lands the type-level distinction:
+
+- `AgentEventName` Literal (10 loop names) is added to
+  `harness/hooks.py` as the loop projection alias.
+- `AgentHarnessEventName` Literal (18 own-event names) is added to
+  `harness/hooks.py` as the Pi-citation-friendly alias for Pi's
+  `AgentHarnessOwnEvent` union.
+- `HookEventName` (28 names) remains the public union and is constructed
+  as the disjoint union of the two aliases (verified by
+  `tests/pi_parity/test_hook_event_name_literal_pi_parity.py`).
+- `_to_hook_event` is refactored to `match event.type:` + `assert_never`
+  per ADR-0030. The return type changes from `HookEvent | None` to
+  `HookEvent` (every loop event has a 1:1 hook projection).
 
 ## Context
 

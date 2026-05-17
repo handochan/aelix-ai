@@ -1,6 +1,6 @@
 # 0030. Hook Event Exhaustiveness via assert_never
 
-Status: Draft (Phase 2.1 implementation)
+Status: Accepted (Phase 2.1.1 / Sprint 3a shipped)
 
 Relates to: ADR-0017 (Full Hook Event Catalogue v2)
 
