@@ -6,10 +6,11 @@ to talk to extensions. The design follows pi-agent-core's split between
 ``@dataclass(frozen=True)`` payload and a matching result type, registered in
 :data:`HOOK_RESULT_TYPES` for runtime introspection.
 
-Typing model — per D.1.2 (Sprint 1 · Phase 1.2 spec):
+Typing model — per D.1.2 (Sprint 1 · Phase 1.2 spec) extended at Sprint 3a:
 
-- :data:`HookEventName` is a closed ``Literal`` union of every Phase 1.2 event.
-- :class:`HookBus.on` carries 16 ``@overload`` declarations mirroring
+- :data:`HookEventName` is a closed ``Literal`` union of every Pi-verified
+  event at the pinned SHA (10 loop projections + 18 own-events = 28 names).
+- :class:`HookBus.on` carries 28 ``@overload`` declarations mirroring
   ``scripts/pyright_spike.py``. The runtime body accepts ``HookHandler``,
   defined as ``Callable[[HookEvent, ExtensionContext], Any | Awaitable[Any]]``.
 - All event classes are frozen. Where a payload field (e.g. ``args``) needs
@@ -20,12 +21,28 @@ Typing model — per D.1.2 (Sprint 1 · Phase 1.2 spec):
 
 Reducer rules (D.1.6 / B6) are implemented as private ``_reducer_*`` helpers
 and invoked from :meth:`HookBus.emit` by event-type dispatch.
+
+Sprint 3a additions (ADR-0017 v2, ADR-0019 v3, ADR-0030, ADR-0036):
+
+- 13 new ``@dataclass(frozen=True)`` event classes covering Pi
+  ``AgentHarnessOwnEvent`` (queue/setter/provider/session families) verified
+  at SHA ``734e08e``.
+- 3 new result types (``BeforeProviderRequestResult``,
+  ``BeforeProviderPayloadResult``, ``SessionBeforeTreeResult``).
+- ``SettledHookEvent`` gains a ``next_turn_count: int = 0`` field
+  (populated in Sprint 3b once the ``next_turn`` queue exists).
+- ``HookBus.on``/``ExtensionAPI.on`` accept per-handler
+  ``error_mode: Literal["continue", "throw"] = "throw"`` (ADR-0019 v3 —
+  default ``"throw"`` matches Pi shipped behavior; ``"continue"`` is an
+  Aelix additive opt-in).
+- New :data:`AgentHarnessEventName` alias (ADR-0036) for Pi citation clarity.
 """
 
 from __future__ import annotations
 
 import contextlib
 import inspect
+import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, overload
@@ -35,6 +52,7 @@ from aelix_ai.messages import (
     ImageContent,
     TextContent,
 )
+from aelix_ai.streaming import Model
 from aelix_ai.tools import ToolResult
 
 from aelix_agent_core.types import (
@@ -49,25 +67,83 @@ if TYPE_CHECKING:
     from aelix_coding_agent.extensions.api import ExtensionContext
 
 
-# === Event name registry ===
+_log = logging.getLogger(__name__)
 
-HookEventName = Literal[
-    "context",
-    "before_agent_start",
-    "tool_call",
-    "tool_result",
-    "message_end",
+
+# === Event name registry (ADR-0017 v2 / ADR-0036) ===
+
+# Loop AgentEvent re-projections (10) — emitted by the bare agent_loop and
+# projected onto HookEvents via :func:`_to_hook_event` in harness/core.py.
+AgentEventName = Literal[
     "agent_start",
-    "agent_end",
     "turn_start",
-    "turn_end",
     "message_start",
     "message_update",
+    "message_end",
     "tool_execution_start",
     "tool_execution_update",
     "tool_execution_end",
-    "session_before_compact",
+    "turn_end",
+    "agent_end",
+]
+
+# Harness own-events (18) — Pi ``AgentHarnessOwnEvent`` at types.ts:595-612
+# SHA ``734e08e``. These are emitted by AgentHarness directly (not via the
+# loop projection).
+AgentHarnessEventName = Literal[
+    "queue_update",
+    "save_point",
+    "abort",
     "settled",
+    "before_agent_start",
+    "context",
+    "before_provider_request",
+    "before_provider_payload",
+    "after_provider_response",
+    "tool_call",
+    "tool_result",
+    "session_before_compact",
+    "session_compact",
+    "session_before_tree",
+    "session_tree",
+    "model_select",
+    "thinking_level_select",
+    "resources_update",
+]
+
+# Union of both (28 names total). ADR-0036 keeps the two names disjoint so
+# "is this a loop event or a harness own-event?" stays explicit and answerable.
+HookEventName = Literal[
+    # === Loop AgentEvent re-projections (10) ===  ← ADR-0036 projection
+    "agent_start",
+    "turn_start",
+    "message_start",
+    "message_update",
+    "message_end",
+    "tool_execution_start",
+    "tool_execution_update",
+    "tool_execution_end",
+    "turn_end",
+    "agent_end",
+    # === Harness own-events (18) ===  ← Pi types.ts:595-612 (SHA 734e08e)
+    "queue_update",
+    "save_point",
+    "abort",
+    "settled",
+    "before_agent_start",
+    "context",
+    "before_provider_request",
+    "before_provider_payload",
+    "after_provider_response",
+    "tool_call",
+    "tool_result",
+    "session_before_compact",
+    "session_compact",
+    "session_before_tree",
+    "session_tree",
+    "model_select",
+    "thinking_level_select",
+    "resources_update",
 ]
 
 
@@ -104,6 +180,18 @@ HookCleanup = Callable[[], Any]
 
 
 HookObserver = Callable[[HookEvent, "ExtensionContext"], Any]
+
+
+HookErrorMode = Literal["continue", "throw"]
+"""Per-handler error policy (ADR-0019 v3).
+
+- ``"throw"`` (default): re-raise handler exceptions out of the reducer.
+  Matches Pi ``agent-harness.ts:200-220`` shipped behavior — the harness
+  wraps the exception in ``AgentHarnessError("hook")`` upstream and aborts.
+- ``"continue"`` (Aelix additive opt-in): log + swallow the exception and
+  continue the reducer chain. Aelix-only feature preserving the Pi
+  ``docs/hooks.md`` "Poking holes" future-design intent.
+"""
 
 
 @dataclass(frozen=True)
@@ -165,6 +253,62 @@ class ToolCallResult:
 
 # Alias per D.1.6 — single source of truth for the tool-result patch shape.
 ToolResultPatch = AfterToolCallResult
+
+
+@dataclass(frozen=True)
+class BeforeProviderRequestResult:
+    """Pi parity: ``types.ts`` ``BeforeProviderRequestResult``.
+
+    ``stream_options`` patch is applied via reducer in Sprint 3a (registered);
+    emit site lives in Phase 4 provider adapter (ADR-0038).
+    """
+
+    stream_options: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class BeforeProviderPayloadResult:
+    """Pi parity: ``types.ts`` ``BeforeProviderPayloadResult``. ``payload`` chained.
+
+    **``payload=None`` semantics (W4 clarification):**
+    The "no patch — skip this hook entirely" signal is for a handler to
+    return a **bare** ``None`` (NOT a result wrapper). The reducer only
+    chains when the handler returns a :class:`BeforeProviderPayloadResult`
+    instance, so a bare ``None`` is treated as "no opinion" and the chain
+    falls through with the prior ``current`` payload unchanged.
+
+    Returning a wrapper with the field omitted —
+    ``BeforeProviderPayloadResult()`` — is equivalent to
+    ``BeforeProviderPayloadResult(payload=None)`` and is currently treated
+    as an **explicit overwrite to ``None``** by the reducer (``current``
+    becomes ``None`` and the chain is marked modified). This mirrors Pi
+    ``BeforeProviderPayloadResult`` (`types.ts` ``BeforeProviderPayloadResult``)
+    where the field value carries the explicit replacement payload — Pi
+    TS-undefined and Aelix ``None`` play the same "explicit empty" role.
+
+    To intentionally clear / replace the payload **without** setting
+    ``None``, pass an empty value for the provider payload shape (e.g.
+    ``BeforeProviderPayloadResult(payload={})`` for a dict-shaped payload,
+    ``BeforeProviderPayloadResult(payload="")`` for a string-shaped one).
+    """
+
+    payload: Any = None
+
+
+@dataclass(frozen=True)
+class SessionBeforeTreeResult:
+    """Pi parity: ``types.ts`` ``SessionBeforeTreeResult``.
+
+    ``cancel=True`` short-circuits the chain (no later handler runs).
+    The remaining optional fields are merged via the same generic
+    ``session_before`` reducer as ``SessionBeforeCompactResult``.
+    """
+
+    cancel: bool = False
+    summary: dict[str, Any] | None = None  # {summary: str, details?: Any}
+    custom_instructions: str | None = None
+    replace_instructions: bool | None = None
+    label: str | None = None
 
 
 # === Event payloads ===
@@ -236,7 +380,7 @@ class MessageEndHookEvent(HookEvent):
     """Emitted at the end of every message (user, assistant, tool result).
 
     Observational only in Phase 1.2 — replacement reducer is deferred to
-    ADR-0013 (per D.1.13 M-2).
+    ADR-0018 (Sprint 3b). Sprint 3a leaves this unchanged per spec §H.
     """
 
     message: AgentMessage | None = None
@@ -323,10 +467,179 @@ class SessionBeforeCompactHookEvent(HookEvent):
     type: Literal["session_before_compact"] = "session_before_compact"
 
 
+# --- Sprint 3a additions (Pi ``AgentHarnessOwnEvent`` parity at SHA 734e08e) ---
+
+
+@dataclass(frozen=True)
+class QueueUpdateHookEvent(HookEvent):
+    """Emitted whenever steer/follow_up/next_turn queues change.
+
+    Pi parity: ``types.ts:474-478`` (SHA 734e08e). Emitted by setters and
+    enqueue paths in Sprint 3b. Sprint 3a registers the type only.
+    """
+
+    steer: list[AgentMessage] = field(default_factory=list)
+    follow_up: list[AgentMessage] = field(default_factory=list)
+    next_turn: list[AgentMessage] = field(default_factory=list)
+    type: Literal["queue_update"] = "queue_update"
+
+
+@dataclass(frozen=True)
+class SavePointHookEvent(HookEvent):
+    """Emitted before returning to idle after a turn if mutations were pending.
+
+    Pi parity: ``types.ts:480-483`` (SHA 734e08e), emitted at
+    ``agent-harness.ts:417``. Sprint 3a: type only; emit Sprint 3b.
+    """
+
+    had_pending_mutations: bool = False
+    type: Literal["save_point"] = "save_point"
+
+
+@dataclass(frozen=True)
+class AbortHookEvent(HookEvent):
+    """Emitted when ``abort()`` clears queued steer/follow_up messages.
+
+    Pi parity: ``types.ts:485-489`` (SHA 734e08e). Sprint 3a: type only.
+    """
+
+    cleared_steer: list[AgentMessage] = field(default_factory=list)
+    cleared_follow_up: list[AgentMessage] = field(default_factory=list)
+    type: Literal["abort"] = "abort"
+
+
+@dataclass(frozen=True)
+class BeforeProviderRequestHookEvent(HookEvent):
+    """Emitted before the provider HTTP request is built.
+
+    Pi parity: ``types.ts:510-515`` + ``agent-harness.ts:232-250`` (SHA 734e08e).
+    Sprint 3a registers type + result + reducer; **no emit site lands in 3a**.
+    Phase 4 provider adapter (ADR-0038) is the emit owner.
+    """
+
+    model: Model | None = None
+    session_id: str = ""
+    stream_options: dict[str, Any] = field(default_factory=dict)
+    type: Literal["before_provider_request"] = "before_provider_request"
+
+
+@dataclass(frozen=True)
+class BeforeProviderPayloadHookEvent(HookEvent):
+    """Emitted with the provider-specific payload immediately before send.
+
+    Pi parity: ``types.ts:517-521`` + ``agent-harness.ts:265-280`` (SHA 734e08e).
+    Sprint 3a: type + result + reducer only. Emit site Phase 4.
+    """
+
+    model: Model | None = None
+    payload: Any = None
+    type: Literal["before_provider_payload"] = "before_provider_payload"
+
+
+@dataclass(frozen=True)
+class AfterProviderResponseHookEvent(HookEvent):
+    """Emitted after the provider HTTP response headers are received.
+
+    Pi parity: ``types.ts:523-527`` + ``agent-harness.ts:275`` (SHA 734e08e).
+    Observational. Sprint 3a: type only. Emit Phase 4.
+    """
+
+    status: int = 0
+    headers: dict[str, str] = field(default_factory=dict)
+    type: Literal["after_provider_response"] = "after_provider_response"
+
+
+@dataclass(frozen=True)
+class SessionCompactHookEvent(HookEvent):
+    """Emitted after a compaction entry has been appended to the session.
+
+    Pi parity: ``types.ts:554-558`` + ``agent-harness.ts:582`` (SHA 734e08e).
+    Sprint 3a: type only. Emit Phase 2.2 (ADR-0023 ``compact()``).
+    """
+
+    compaction_entry: Any = None  # Phase 2.2 (ADR-0022) — Session entry type
+    from_hook: bool = False
+    type: Literal["session_compact"] = "session_compact"
+
+
+@dataclass(frozen=True)
+class SessionBeforeTreeHookEvent(HookEvent):
+    """Emitted before ``navigateTree()`` materializes a branch move.
+
+    Pi parity: ``types.ts:560-564`` + ``agent-harness.ts:598`` (SHA 734e08e).
+    Sprint 3a: type + result + reducer. Emit Phase 2.2 (ADR-0023).
+    """
+
+    preparation: Any = None  # Phase 2.2 — BranchSummaryPreparation
+    type: Literal["session_before_tree"] = "session_before_tree"
+
+
+@dataclass(frozen=True)
+class SessionTreeHookEvent(HookEvent):
+    """Emitted after ``navigateTree()`` completes a move.
+
+    Pi parity: ``types.ts:566-572`` + ``agent-harness.ts:626`` (SHA 734e08e).
+    Sprint 3a: type only. Emit Phase 2.2.
+    """
+
+    new_leaf_id: str = ""
+    old_leaf_id: str = ""
+    summary_entry: Any | None = None
+    from_hook: bool = False
+    type: Literal["session_tree"] = "session_tree"
+
+
+@dataclass(frozen=True)
+class ModelSelectHookEvent(HookEvent):
+    """Emitted by ``set_model()`` (and ``restore`` path).
+
+    Pi parity: ``types.ts:574-579`` + ``agent-harness.ts:648`` (SHA 734e08e).
+    Sprint 3a: type only. Emit in Sprint 3b ``set_model()`` implementation.
+    """
+
+    model: Model | None = None
+    previous_model: Model | None = None
+    source: Literal["set", "restore"] = "set"
+    type: Literal["model_select"] = "model_select"
+
+
+@dataclass(frozen=True)
+class ThinkingLevelSelectHookEvent(HookEvent):
+    """Emitted by ``set_thinking_level()``.
+
+    Pi parity: ``types.ts:581-585`` + ``agent-harness.ts:660`` (SHA 734e08e).
+    Sprint 3a: type only. Emit Sprint 3b.
+    """
+
+    level: str = "off"
+    previous_level: str = "off"
+    type: Literal["thinking_level_select"] = "thinking_level_select"
+
+
+@dataclass(frozen=True)
+class ResourcesUpdateHookEvent(HookEvent):
+    """Emitted by ``set_resources()``.
+
+    Pi parity: ``types.ts:587-593`` + ``agent-harness.ts:689`` (SHA 734e08e).
+    ``resources`` and ``previous_resources`` are AgentHarnessResources shapes;
+    Phase 1.4 placeholder uses ``dict[str, Any]``. Sprint 3a: type only.
+    """
+
+    resources: dict[str, Any] = field(default_factory=dict)
+    previous_resources: dict[str, Any] = field(default_factory=dict)
+    type: Literal["resources_update"] = "resources_update"
+
+
 @dataclass(frozen=True)
 class SettledHookEvent(HookEvent):
-    """Observational event emitted when the harness returns to idle."""
+    """Observational event emitted when the harness returns to idle.
 
+    Pi parity: ``types.ts:491-494`` (SHA 734e08e). The ``next_turn_count``
+    field is added in Sprint 3a (event-type extension); the populating value
+    remains ``0`` until Sprint 3b implements the ``next_turn`` queue.
+    """
+
+    next_turn_count: int = 0  # NEW in 3a — Pi parity; populated in 3b
     type: Literal["settled"] = "settled"
 
 
@@ -334,6 +647,7 @@ class SettledHookEvent(HookEvent):
 
 
 HOOK_RESULT_TYPES: dict[HookEventName, type | None] = {
+    # === existing 16 entries ===
     "context": ContextResult,
     "before_agent_start": BeforeAgentStartResult,
     "tool_call": ToolCallResult,
@@ -350,6 +664,19 @@ HOOK_RESULT_TYPES: dict[HookEventName, type | None] = {
     "tool_execution_end": None,
     "session_before_compact": SessionBeforeCompactResult,
     "settled": None,
+    # === Sprint 3a additions (12 — settled already mapped) ===
+    "queue_update": None,
+    "save_point": None,
+    "abort": None,
+    "before_provider_request": BeforeProviderRequestResult,
+    "before_provider_payload": BeforeProviderPayloadResult,
+    "after_provider_response": None,
+    "session_compact": None,
+    "session_before_tree": SessionBeforeTreeResult,
+    "session_tree": None,
+    "model_select": None,
+    "thinking_level_select": None,
+    "resources_update": None,
 }
 
 
@@ -362,8 +689,37 @@ async def _maybe_await(value: Any) -> Any:
     return value
 
 
+# Per-handler error_mode plumbing (ADR-0019 v3). Reducers receive a list of
+# ``(handler, error_mode)`` pairs and route every handler invocation through
+# :func:`_safe_invoke`, which honors the per-handler policy.
+HandlerEntry = tuple[HookHandler, HookErrorMode]
+
+
+async def _safe_invoke(
+    handler: HookHandler,
+    event: HookEvent,
+    ctx: ExtensionContext,
+    error_mode: HookErrorMode,
+) -> Any:
+    """Invoke ``handler`` under its ``error_mode`` policy.
+
+    - ``"throw"`` (default, Pi parity): re-raise the exception so the reducer
+      bubbles it up to :meth:`HookBus.emit` and the harness wraps it as
+      ``AgentHarnessError("hook", ...)``.
+    - ``"continue"`` (Aelix additive opt-in, ADR-0019 v3): log + swallow.
+    """
+
+    try:
+        return await _maybe_await(handler(event, ctx))
+    except Exception as exc:
+        if error_mode == "throw":
+            raise
+        _log.debug("hook handler raised (continuing): %r", exc, exc_info=True)
+        return None
+
+
 async def _reducer_context(
-    handlers: list[HookHandler],
+    handlers: list[HandlerEntry],
     event: ContextHookEvent,
     ctx: ExtensionContext,
 ) -> ContextResult | None:
@@ -382,9 +738,9 @@ async def _reducer_context(
 
     current_messages = list(event.messages)
     modified = False
-    for handler in handlers:
+    for handler, mode in handlers:
         patched = ContextHookEvent(messages=current_messages)
-        raw = await _maybe_await(handler(patched, ctx))
+        raw = await _safe_invoke(handler, patched, ctx, mode)
         if isinstance(raw, ContextResult) and raw.messages is not None:
             current_messages = list(raw.messages)
             modified = True
@@ -394,7 +750,7 @@ async def _reducer_context(
 
 
 async def _reducer_before_agent_start(
-    handlers: list[HookHandler],
+    handlers: list[HandlerEntry],
     event: BeforeAgentStartHookEvent,
     ctx: ExtensionContext,
 ) -> BeforeAgentStartResult | None:
@@ -403,13 +759,13 @@ async def _reducer_before_agent_start(
     collected: list[AgentMessage] = []
     current_prompt = event.system_prompt
     modified_prompt = False
-    for handler in handlers:
+    for handler, mode in handlers:
         chained = BeforeAgentStartHookEvent(
             prompt=event.prompt,
             system_prompt=current_prompt,
             images=event.images,
         )
-        raw = await _maybe_await(handler(chained, ctx))
+        raw = await _safe_invoke(handler, chained, ctx, mode)
         if isinstance(raw, BeforeAgentStartResult):
             if raw.messages:
                 collected.extend(raw.messages)
@@ -425,7 +781,7 @@ async def _reducer_before_agent_start(
 
 
 async def _reducer_tool_call(
-    handlers: list[HookHandler],
+    handlers: list[HandlerEntry],
     event: ToolCallHookEvent,
     ctx: ExtensionContext,
 ) -> ToolCallResult | None:
@@ -438,8 +794,8 @@ async def _reducer_tool_call(
     """
 
     last_observational: ToolCallResult | None = None
-    for handler in handlers:
-        raw = await _maybe_await(handler(event, ctx))
+    for handler, mode in handlers:
+        raw = await _safe_invoke(handler, event, ctx, mode)
         if isinstance(raw, ToolCallResult):
             if raw.block:
                 return raw
@@ -448,7 +804,7 @@ async def _reducer_tool_call(
 
 
 async def _reducer_tool_result(
-    handlers: list[HookHandler],
+    handlers: list[HandlerEntry],
     event: ToolResultHookEvent,
     ctx: ExtensionContext,
 ) -> ToolResultPatch | None:
@@ -456,8 +812,8 @@ async def _reducer_tool_result(
 
     accumulated: ToolResultPatch | None = None
     current_event = event
-    for handler in handlers:
-        raw = await _maybe_await(handler(current_event, ctx))
+    for handler, mode in handlers:
+        raw = await _safe_invoke(handler, current_event, ctx, mode)
         if not isinstance(raw, ToolResultPatch):
             continue
         if accumulated is None:
@@ -499,24 +855,111 @@ async def _reducer_tool_result(
 
 
 async def _reducer_session_before(
-    handlers: list[HookHandler],
+    handlers: list[HandlerEntry],
     event: HookEvent,
     ctx: ExtensionContext,
-) -> SessionBeforeCompactResult | None:
-    """Sequential, ``cancel=True`` short-circuits, else last truthy wins."""
+) -> SessionBeforeCompactResult | SessionBeforeTreeResult | None:
+    """Sequential, ``cancel=True`` short-circuits, else last truthy wins.
 
-    last: SessionBeforeCompactResult | None = None
-    for handler in handlers:
-        raw = await _maybe_await(handler(event, ctx))
-        if isinstance(raw, SessionBeforeCompactResult):
+    Shared across ``session_before_compact`` and ``session_before_tree``;
+    both result types expose a ``cancel`` field with the same semantics.
+    """
+
+    last: SessionBeforeCompactResult | SessionBeforeTreeResult | None = None
+    for handler, mode in handlers:
+        raw = await _safe_invoke(handler, event, ctx, mode)
+        if isinstance(raw, SessionBeforeCompactResult | SessionBeforeTreeResult):
             if raw.cancel:
                 return raw
             last = raw
     return last
 
 
+async def _reducer_before_provider_request(
+    handlers: list[HandlerEntry],
+    event: BeforeProviderRequestHookEvent,
+    ctx: ExtensionContext,
+) -> BeforeProviderRequestResult | None:
+    """Sequential patch chain. Each handler sees previous-chained stream_options.
+
+    Pi parity: ``agent-harness.ts:232-250`` (SHA 734e08e) — handlers iterate,
+    each receiving ``cloneStreamOptions(current)``; ``applyStreamOptionsPatch``
+    updates ``current`` if a handler returns ``result.streamOptions``.
+
+    KNOWN PI-PARITY DIVERGENCE (W5 caveat #1, tracked in ADR-0017 §"Known
+    shallow-merge divergence"):
+    This Phase 2.1.1 reducer uses a naive ``dict.update`` **shallow** merge.
+    Pi ``applyStreamOptionsPatch`` (``agent-harness.ts:96-127``) performs
+    nuanced **deep merge** with delete-on-undefined for nested ``headers``
+    and ``metadata`` keys (a TS-undefined nested value deletes the key
+    rather than overwriting with undefined). Phase 2.1.1 leaves shallow
+    merge in place because there is no emit site for
+    ``before_provider_request`` in Sprint 3a — the reducer is registered
+    but never invoked (Phase 4 provider adapter owns the emit site per
+    ADR-0038).
+    """
+
+    # TODO(Phase-4): replace with Pi ``applyStreamOptionsPatch``
+    # deep-merge port (``agent-harness.ts:96-127``) OR deep-merge at the
+    # emit site in the provider adapter. Tracked in ADR-0017 §"Known
+    # shallow-merge divergence" and Sprint 3b binding spec.
+    current = dict(event.stream_options)  # shallow clone
+    modified = False
+    for handler, mode in handlers:
+        chained = BeforeProviderRequestHookEvent(
+            model=event.model,
+            session_id=event.session_id,
+            stream_options=dict(current),
+        )
+        raw = await _safe_invoke(handler, chained, ctx, mode)
+        if isinstance(raw, BeforeProviderRequestResult) and raw.stream_options is not None:
+            current.update(raw.stream_options)
+            modified = True
+    return BeforeProviderRequestResult(stream_options=current) if modified else None
+
+
+async def _reducer_before_provider_payload(
+    handlers: list[HandlerEntry],
+    event: BeforeProviderPayloadHookEvent,
+    ctx: ExtensionContext,
+) -> BeforeProviderPayloadResult | None:
+    """Sequential payload chain — each handler sees previous handler's payload.
+
+    Pi parity: ``agent-harness.ts:265-280`` (SHA 734e08e).
+
+    **``payload=None`` semantics (W4 / mirrors
+    :class:`BeforeProviderPayloadResult` docstring):**
+    A handler that wants to **skip** the payload mutation hook entirely
+    should return ``None`` (the bare value, NOT a result wrapper). The
+    reducer only chains when the handler returns a
+    :class:`BeforeProviderPayloadResult` instance — a bare ``None`` is
+    treated as "no opinion" and the chain falls through unchanged.
+
+    Returning ``BeforeProviderPayloadResult(payload=None)`` is currently
+    treated as **"explicit clear to None"** — ``current`` becomes ``None``
+    and the chain is marked modified. This mirrors Pi
+    ``BeforeProviderPayloadResult`` where the dataclass field is the
+    explicit replacement value, distinct from "the handler returned no
+    result wrapper at all". The
+    :class:`BeforeProviderPayloadResult` docstring is the canonical
+    description of the "absent vs explicit empty / None" distinction —
+    handlers wanting to clear without setting `None` should pass an
+    explicit empty value for the provider payload shape (e.g. ``{}``).
+    """
+
+    current = event.payload
+    modified = False
+    for handler, mode in handlers:
+        chained = BeforeProviderPayloadHookEvent(model=event.model, payload=current)
+        raw = await _safe_invoke(handler, chained, ctx, mode)
+        if isinstance(raw, BeforeProviderPayloadResult):
+            current = raw.payload
+            modified = True
+    return BeforeProviderPayloadResult(payload=current) if modified else None
+
+
 async def _reducer_observational(
-    handlers: list[HookHandler],
+    handlers: list[HandlerEntry],
     event: HookEvent,
     ctx: ExtensionContext,
 ) -> None:
@@ -525,12 +968,13 @@ async def _reducer_observational(
     Handlers run serially in registration order. Return values are ignored.
     """
 
-    for handler in handlers:
-        await _maybe_await(handler(event, ctx))
+    for handler, mode in handlers:
+        await _safe_invoke(handler, event, ctx, mode)
     return None
 
 
 _REDUCERS: dict[HookEventName, Callable[..., Awaitable[Any]]] = {
+    # === existing entries ===
     "context": _reducer_context,
     "before_agent_start": _reducer_before_agent_start,
     "tool_call": _reducer_tool_call,
@@ -547,6 +991,19 @@ _REDUCERS: dict[HookEventName, Callable[..., Awaitable[Any]]] = {
     "tool_execution_update": _reducer_observational,
     "tool_execution_end": _reducer_observational,
     "settled": _reducer_observational,
+    # === Sprint 3a additions ===
+    "queue_update": _reducer_observational,
+    "save_point": _reducer_observational,
+    "abort": _reducer_observational,
+    "before_provider_request": _reducer_before_provider_request,
+    "before_provider_payload": _reducer_before_provider_payload,
+    "after_provider_response": _reducer_observational,
+    "session_compact": _reducer_observational,
+    "session_before_tree": _reducer_session_before,
+    "session_tree": _reducer_observational,
+    "model_select": _reducer_observational,
+    "thinking_level_select": _reducer_observational,
+    "resources_update": _reducer_observational,
 }
 
 
@@ -617,6 +1074,55 @@ SettledHandler = Callable[
     [SettledHookEvent, "ExtensionContext"],
     None | Awaitable[None],
 ]
+# Sprint 3a additions ---------------------------------------------------------
+QueueUpdateHandler = Callable[
+    [QueueUpdateHookEvent, "ExtensionContext"],
+    None | Awaitable[None],
+]
+SavePointHandler = Callable[
+    [SavePointHookEvent, "ExtensionContext"],
+    None | Awaitable[None],
+]
+AbortHandler = Callable[
+    [AbortHookEvent, "ExtensionContext"],
+    None | Awaitable[None],
+]
+BeforeProviderRequestHandler = Callable[
+    [BeforeProviderRequestHookEvent, "ExtensionContext"],
+    BeforeProviderRequestResult | None | Awaitable[BeforeProviderRequestResult | None],
+]
+BeforeProviderPayloadHandler = Callable[
+    [BeforeProviderPayloadHookEvent, "ExtensionContext"],
+    BeforeProviderPayloadResult | None | Awaitable[BeforeProviderPayloadResult | None],
+]
+AfterProviderResponseHandler = Callable[
+    [AfterProviderResponseHookEvent, "ExtensionContext"],
+    None | Awaitable[None],
+]
+SessionCompactHandler = Callable[
+    [SessionCompactHookEvent, "ExtensionContext"],
+    None | Awaitable[None],
+]
+SessionBeforeTreeHandler = Callable[
+    [SessionBeforeTreeHookEvent, "ExtensionContext"],
+    SessionBeforeTreeResult | None | Awaitable[SessionBeforeTreeResult | None],
+]
+SessionTreeHandler = Callable[
+    [SessionTreeHookEvent, "ExtensionContext"],
+    None | Awaitable[None],
+]
+ModelSelectHandler = Callable[
+    [ModelSelectHookEvent, "ExtensionContext"],
+    None | Awaitable[None],
+]
+ThinkingLevelSelectHandler = Callable[
+    [ThinkingLevelSelectHookEvent, "ExtensionContext"],
+    None | Awaitable[None],
+]
+ResourcesUpdateHandler = Callable[
+    [ResourcesUpdateHookEvent, "ExtensionContext"],
+    None | Awaitable[None],
+]
 
 
 # === The bus ===
@@ -628,6 +1134,9 @@ class HookBus:
     Construction takes a ``ctx_factory`` returning the current
     :class:`ExtensionContext` (built fresh per emit so stale-detection works
     when the harness is disposed mid-flight).
+
+    Sprint 3a (ADR-0019 v3): each registration also stores a per-handler
+    ``error_mode`` (default ``"throw"`` — matches Pi shipped behavior).
     """
 
     def __init__(
@@ -639,8 +1148,15 @@ class HookBus:
         self._observers: list[HookObserver] = []
         self._cleanups: list[HookCleanup] = []
         self._sources: dict[tuple[HookEventName, int], str | None] = {}
+        # ADR-0019 v3 — per-(event_type, id(handler)) error policy. Default
+        # entry for any handler missing from this map is ``"throw"`` so any
+        # historical callsite that omitted the kwarg keeps Pi-parity behavior.
+        self._error_modes: dict[tuple[HookEventName, int], HookErrorMode] = {}
 
-    # --- Subscription overloads (D.1.2) ---
+    # --- Subscription overloads (D.1.2 + ADR-0019 v3) ---
+
+    # NOTE: 28 overloads below mirror :data:`HookEventName`. Every overload
+    # exposes the new ``error_mode`` kwarg (default ``"throw"`` = Pi parity).
 
     @overload
     def on(
@@ -650,6 +1166,7 @@ class HookBus:
         *,
         source: str | None = None,
         cleanup: HookCleanup | None = None,
+        error_mode: HookErrorMode = "throw",
     ) -> Callable[[], None]: ...
     @overload
     def on(
@@ -659,6 +1176,7 @@ class HookBus:
         *,
         source: str | None = None,
         cleanup: HookCleanup | None = None,
+        error_mode: HookErrorMode = "throw",
     ) -> Callable[[], None]: ...
     @overload
     def on(
@@ -668,6 +1186,7 @@ class HookBus:
         *,
         source: str | None = None,
         cleanup: HookCleanup | None = None,
+        error_mode: HookErrorMode = "throw",
     ) -> Callable[[], None]: ...
     @overload
     def on(
@@ -677,6 +1196,7 @@ class HookBus:
         *,
         source: str | None = None,
         cleanup: HookCleanup | None = None,
+        error_mode: HookErrorMode = "throw",
     ) -> Callable[[], None]: ...
     @overload
     def on(
@@ -686,6 +1206,7 @@ class HookBus:
         *,
         source: str | None = None,
         cleanup: HookCleanup | None = None,
+        error_mode: HookErrorMode = "throw",
     ) -> Callable[[], None]: ...
     @overload
     def on(
@@ -695,6 +1216,7 @@ class HookBus:
         *,
         source: str | None = None,
         cleanup: HookCleanup | None = None,
+        error_mode: HookErrorMode = "throw",
     ) -> Callable[[], None]: ...
     @overload
     def on(
@@ -704,6 +1226,7 @@ class HookBus:
         *,
         source: str | None = None,
         cleanup: HookCleanup | None = None,
+        error_mode: HookErrorMode = "throw",
     ) -> Callable[[], None]: ...
     @overload
     def on(
@@ -713,6 +1236,7 @@ class HookBus:
         *,
         source: str | None = None,
         cleanup: HookCleanup | None = None,
+        error_mode: HookErrorMode = "throw",
     ) -> Callable[[], None]: ...
     @overload
     def on(
@@ -722,6 +1246,7 @@ class HookBus:
         *,
         source: str | None = None,
         cleanup: HookCleanup | None = None,
+        error_mode: HookErrorMode = "throw",
     ) -> Callable[[], None]: ...
     @overload
     def on(
@@ -731,6 +1256,7 @@ class HookBus:
         *,
         source: str | None = None,
         cleanup: HookCleanup | None = None,
+        error_mode: HookErrorMode = "throw",
     ) -> Callable[[], None]: ...
     @overload
     def on(
@@ -740,6 +1266,7 @@ class HookBus:
         *,
         source: str | None = None,
         cleanup: HookCleanup | None = None,
+        error_mode: HookErrorMode = "throw",
     ) -> Callable[[], None]: ...
     @overload
     def on(
@@ -749,6 +1276,7 @@ class HookBus:
         *,
         source: str | None = None,
         cleanup: HookCleanup | None = None,
+        error_mode: HookErrorMode = "throw",
     ) -> Callable[[], None]: ...
     @overload
     def on(
@@ -758,6 +1286,7 @@ class HookBus:
         *,
         source: str | None = None,
         cleanup: HookCleanup | None = None,
+        error_mode: HookErrorMode = "throw",
     ) -> Callable[[], None]: ...
     @overload
     def on(
@@ -767,6 +1296,7 @@ class HookBus:
         *,
         source: str | None = None,
         cleanup: HookCleanup | None = None,
+        error_mode: HookErrorMode = "throw",
     ) -> Callable[[], None]: ...
     @overload
     def on(
@@ -776,6 +1306,7 @@ class HookBus:
         *,
         source: str | None = None,
         cleanup: HookCleanup | None = None,
+        error_mode: HookErrorMode = "throw",
     ) -> Callable[[], None]: ...
     @overload
     def on(
@@ -785,27 +1316,166 @@ class HookBus:
         *,
         source: str | None = None,
         cleanup: HookCleanup | None = None,
+        error_mode: HookErrorMode = "throw",
+    ) -> Callable[[], None]: ...
+    # --- Sprint 3a additions ---
+    @overload
+    def on(
+        self,
+        event_type: Literal["queue_update"],
+        handler: QueueUpdateHandler,
+        *,
+        source: str | None = None,
+        cleanup: HookCleanup | None = None,
+        error_mode: HookErrorMode = "throw",
+    ) -> Callable[[], None]: ...
+    @overload
+    def on(
+        self,
+        event_type: Literal["save_point"],
+        handler: SavePointHandler,
+        *,
+        source: str | None = None,
+        cleanup: HookCleanup | None = None,
+        error_mode: HookErrorMode = "throw",
+    ) -> Callable[[], None]: ...
+    @overload
+    def on(
+        self,
+        event_type: Literal["abort"],
+        handler: AbortHandler,
+        *,
+        source: str | None = None,
+        cleanup: HookCleanup | None = None,
+        error_mode: HookErrorMode = "throw",
+    ) -> Callable[[], None]: ...
+    @overload
+    def on(
+        self,
+        event_type: Literal["before_provider_request"],
+        handler: BeforeProviderRequestHandler,
+        *,
+        source: str | None = None,
+        cleanup: HookCleanup | None = None,
+        error_mode: HookErrorMode = "throw",
+    ) -> Callable[[], None]: ...
+    @overload
+    def on(
+        self,
+        event_type: Literal["before_provider_payload"],
+        handler: BeforeProviderPayloadHandler,
+        *,
+        source: str | None = None,
+        cleanup: HookCleanup | None = None,
+        error_mode: HookErrorMode = "throw",
+    ) -> Callable[[], None]: ...
+    @overload
+    def on(
+        self,
+        event_type: Literal["after_provider_response"],
+        handler: AfterProviderResponseHandler,
+        *,
+        source: str | None = None,
+        cleanup: HookCleanup | None = None,
+        error_mode: HookErrorMode = "throw",
+    ) -> Callable[[], None]: ...
+    @overload
+    def on(
+        self,
+        event_type: Literal["session_compact"],
+        handler: SessionCompactHandler,
+        *,
+        source: str | None = None,
+        cleanup: HookCleanup | None = None,
+        error_mode: HookErrorMode = "throw",
+    ) -> Callable[[], None]: ...
+    @overload
+    def on(
+        self,
+        event_type: Literal["session_before_tree"],
+        handler: SessionBeforeTreeHandler,
+        *,
+        source: str | None = None,
+        cleanup: HookCleanup | None = None,
+        error_mode: HookErrorMode = "throw",
+    ) -> Callable[[], None]: ...
+    @overload
+    def on(
+        self,
+        event_type: Literal["session_tree"],
+        handler: SessionTreeHandler,
+        *,
+        source: str | None = None,
+        cleanup: HookCleanup | None = None,
+        error_mode: HookErrorMode = "throw",
+    ) -> Callable[[], None]: ...
+    @overload
+    def on(
+        self,
+        event_type: Literal["model_select"],
+        handler: ModelSelectHandler,
+        *,
+        source: str | None = None,
+        cleanup: HookCleanup | None = None,
+        error_mode: HookErrorMode = "throw",
+    ) -> Callable[[], None]: ...
+    @overload
+    def on(
+        self,
+        event_type: Literal["thinking_level_select"],
+        handler: ThinkingLevelSelectHandler,
+        *,
+        source: str | None = None,
+        cleanup: HookCleanup | None = None,
+        error_mode: HookErrorMode = "throw",
+    ) -> Callable[[], None]: ...
+    @overload
+    def on(
+        self,
+        event_type: Literal["resources_update"],
+        handler: ResourcesUpdateHandler,
+        *,
+        source: str | None = None,
+        cleanup: HookCleanup | None = None,
+        error_mode: HookErrorMode = "throw",
     ) -> Callable[[], None]: ...
 
-    def on(
+    def on(  # pyright: ignore[reportInconsistentOverload]
         self,
         event_type: HookEventName,
         handler: HookHandler,
         *,
         source: str | None = None,
         cleanup: HookCleanup | None = None,
+        error_mode: HookErrorMode = "throw",
     ) -> Callable[[], None]:
         """Register a handler. Returns an unsubscribe callable.
 
         Raises ``KeyError`` for unknown event types — strict by design per
         spec B5 (typo defence beats Pi's permissive empty-set fallback).
+
+        ``error_mode`` (ADR-0019 v3) defaults to ``"throw"`` matching Pi
+        shipped behavior. ``"continue"`` is an Aelix additive opt-in: handler
+        exceptions are logged + swallowed and the reducer continues.
+
+        NOTE: 28 ``@overload`` declarations above provide static narrowing
+        per event name (handler param typed as ``XxxHandler`` with
+        ``XxxHookEvent`` payload). The runtime impl uses the generic
+        ``HookHandler`` signature (``HookEvent`` union) which pyright cannot
+        reconcile with the narrowed overloads — pyright lacks the
+        contravariance proof. The narrowing is verified by
+        ``scripts/pyright_spike.py`` which exercises each overload against
+        a concrete handler and asserts pyright sees the narrowed payload
+        type. Suppression is scoped to ``reportInconsistentOverload`` only.
         """
 
         if event_type not in HOOK_RESULT_TYPES:
             raise KeyError(f"Unknown hook event: {event_type!r}")
         bucket = self._handlers.setdefault(event_type, [])
         bucket.append(handler)
-        self._sources[(event_type, id(handler))] = source
+        key = (event_type, id(handler))
+        self._sources[key] = source
+        self._error_modes[key] = error_mode
         if cleanup is not None:
             self._cleanups.append(cleanup)
 
@@ -814,7 +1484,8 @@ class HookBus:
                 bucket.remove(handler)
             except ValueError:
                 return
-            self._sources.pop((event_type, id(handler)), None)
+            self._sources.pop(key, None)
+            self._error_modes.pop(key, None)
 
         return unsubscribe
 
@@ -856,7 +1527,8 @@ class HookBus:
 
         Per D.1.13 M-3, this returns ``None`` immediately when no handlers
         and no observers are registered. Reducer/handler exceptions are
-        re-raised so the harness can wrap them in :class:`AgentHarnessError`.
+        re-raised so the harness can wrap them in :class:`AgentHarnessError`
+        when the per-handler ``error_mode="throw"`` (default).
         """
 
         event_type = getattr(event, "type", None)
@@ -871,9 +1543,22 @@ class HookBus:
         reducer = _REDUCERS[event_type]
         result: Any = None
         if handlers:
-            result = await reducer(handlers, event, ctx)
+            # Pair each handler with its registered error_mode. Missing entries
+            # (shouldn't happen under normal use) fall back to ``"throw"``
+            # which preserves the pre-3a / Pi-parity behavior.
+            entries: list[HandlerEntry] = [
+                (h, self._error_modes.get((event_type, id(h)), "throw"))
+                for h in handlers
+            ]
+            result = await reducer(entries, event, ctx)
         for observer in observers:
-            await _maybe_await(observer(event, ctx))  # return value is intentionally not collected
+            # Observer return values are intentionally not collected; observer
+            # errors swallow (listener-style) to keep telemetry from breaking
+            # the chain (Pi parity with subscribe()).
+            try:
+                await _maybe_await(observer(event, ctx))
+            except Exception as exc:
+                _log.debug("hook observer raised: %r", exc, exc_info=True)
         return result
 
     async def dispose(self) -> None:
@@ -895,36 +1580,84 @@ class HookBus:
         self._handlers.clear()
         self._observers.clear()
         self._sources.clear()
+        self._error_modes.clear()
 
 
 __all__ = [
+    "HOOK_RESULT_TYPES",
+    "AbortHandler",
+    "AbortHookEvent",
+    "AfterProviderResponseHandler",
+    "AfterProviderResponseHookEvent",
+    "AgentEndHandler",
     "AgentEndHookEvent",
+    "AgentEventName",
+    "AgentHarnessEventName",
+    "AgentStartHandler",
     "AgentStartHookEvent",
+    "BeforeAgentStartHandler",
     "BeforeAgentStartHookEvent",
     "BeforeAgentStartResult",
+    "BeforeProviderPayloadHandler",
+    "BeforeProviderPayloadHookEvent",
+    "BeforeProviderPayloadResult",
+    "BeforeProviderRequestHandler",
+    "BeforeProviderRequestHookEvent",
+    "BeforeProviderRequestResult",
+    "ContextHandler",
     "ContextHookEvent",
     "ContextResult",
-    "HOOK_RESULT_TYPES",
+    "HandlerEntry",
     "HookBus",
     "HookCleanup",
+    "HookErrorMode",
     "HookEvent",
     "HookEventName",
     "HookHandler",
     "HookObserver",  # exported: observers are part of the documented public API
     "HookRegistration",
+    "MessageEndHandler",
     "MessageEndHookEvent",
+    "MessageStartHandler",
     "MessageStartHookEvent",
+    "MessageUpdateHandler",
     "MessageUpdateHookEvent",
+    "ModelSelectHandler",
+    "ModelSelectHookEvent",
+    "QueueUpdateHandler",
+    "QueueUpdateHookEvent",
+    "ResourcesUpdateHandler",
+    "ResourcesUpdateHookEvent",
+    "SavePointHandler",
+    "SavePointHookEvent",
+    "SessionBeforeCompactHandler",
     "SessionBeforeCompactHookEvent",
     "SessionBeforeCompactResult",
+    "SessionBeforeTreeHandler",
+    "SessionBeforeTreeHookEvent",
+    "SessionBeforeTreeResult",
+    "SessionCompactHandler",
+    "SessionCompactHookEvent",
+    "SessionTreeHandler",
+    "SessionTreeHookEvent",
+    "SettledHandler",
     "SettledHookEvent",
+    "ThinkingLevelSelectHandler",
+    "ThinkingLevelSelectHookEvent",
+    "ToolCallHandler",
     "ToolCallHookEvent",
     "ToolCallResult",
+    "ToolExecutionEndHandler",
     "ToolExecutionEndHookEvent",
+    "ToolExecutionStartHandler",
     "ToolExecutionStartHookEvent",
+    "ToolExecutionUpdateHandler",
     "ToolExecutionUpdateHookEvent",
+    "ToolResultHandler",
     "ToolResultHookEvent",
     "ToolResultPatch",
+    "TurnEndHandler",
     "TurnEndHookEvent",
+    "TurnStartHandler",
     "TurnStartHookEvent",
 ]
