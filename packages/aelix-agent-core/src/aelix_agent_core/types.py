@@ -250,7 +250,10 @@ class AgentLoopConfig:
     should_stop_after_turn: (
         Callable[[ShouldStopAfterTurnContext], Awaitable[bool] | bool] | None
     ) = None
-    tool_execution: ToolExecutionMode = "sequential"
+    # Sprint 3c (Phase 2.1.3): Pi parity default flipped from "sequential" to
+    # "parallel". Pi `types.ts:226-232` documents JSDoc default = "parallel".
+    # Callers that need the legacy sequential behaviour must pass it explicitly.
+    tool_execution: ToolExecutionMode = "parallel"
     headers: dict[str, str] = field(default_factory=dict)
     metadata: dict[str, str] = field(default_factory=dict)
 
