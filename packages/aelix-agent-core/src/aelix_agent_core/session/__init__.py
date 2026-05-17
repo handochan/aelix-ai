@@ -5,6 +5,20 @@ manages on-disk JSONL session files (version 3) compatible with Pi
 ``packages/agent/src/harness/session/`` at SHA ``734e08e``.
 """
 
+from aelix_agent_core.session.branch_summarization import (
+    BranchSummarizerOverride,
+    BranchSummaryPreparation,
+    SummaryEntry,
+    collect_entries_for_branch_summary,
+    generate_branch_summary,
+)
+from aelix_agent_core.session.compaction import (
+    CompactionPreparation,
+    CompactResult,
+    SummarizerOverride,
+    compact,
+    prepare_compaction,
+)
 from aelix_agent_core.session.context import (
     BRANCH_SUMMARY_PREFIX,
     BRANCH_SUMMARY_SUFFIX,
@@ -37,6 +51,7 @@ from aelix_agent_core.session.fs import (
     LocalFileSystem,
 )
 from aelix_agent_core.session.jsonl_repo import (
+    ForkOptions,
     JsonlSessionCreateOptions,
     JsonlSessionListOptions,
     JsonlSessionRepo,
@@ -46,6 +61,10 @@ from aelix_agent_core.session.jsonl_storage import (
     load_jsonl_session_metadata,
 )
 from aelix_agent_core.session.memory_storage import MemorySessionStorage
+from aelix_agent_core.session.repo_utils import (
+    ForkPosition,
+    get_entries_to_fork,
+)
 from aelix_agent_core.session.session import Session, SessionContext
 from aelix_agent_core.session.storage import (
     JsonlSessionMetadata,
@@ -58,15 +77,21 @@ from aelix_agent_core.session.storage import (
 __all__ = [
     "BRANCH_SUMMARY_PREFIX",
     "BRANCH_SUMMARY_SUFFIX",
+    "BranchSummarizerOverride",
     "BranchSummaryEntry",
+    "BranchSummaryPreparation",
     "COMPACTION_SUMMARY_PREFIX",
     "COMPACTION_SUMMARY_SUFFIX",
+    "CompactResult",
     "CompactionEntry",
+    "CompactionPreparation",
     "CustomEntry",
     "CustomMessageEntry",
     "FileInfo",
     "FileKind",
     "FileSystem",
+    "ForkOptions",
+    "ForkPosition",
     "JsonlSessionCreateOptions",
     "JsonlSessionListOptions",
     "JsonlSessionMetadata",
@@ -86,12 +111,19 @@ __all__ = [
     "SessionMetadata",
     "SessionStorage",
     "SessionTreeEntry",
+    "SummarizerOverride",
+    "SummaryEntry",
     "ThinkingLevelChangeEntry",
     "build_session_context",
+    "collect_entries_for_branch_summary",
+    "compact",
     "create_branch_summary_message",
     "create_compaction_summary_message",
     "create_custom_message",
     "entry_from_json",
     "entry_to_json",
+    "generate_branch_summary",
+    "get_entries_to_fork",
     "load_jsonl_session_metadata",
+    "prepare_compaction",
 ]
