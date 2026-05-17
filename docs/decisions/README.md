@@ -28,11 +28,11 @@
 | 0011 | [Hook Event Catalogue v1](0011-hook-event-catalogue-v1.md)                                                                                             | Accepted (Phase 1.2 임시 결정)      | Phase 1.2가 ship하는 16개 hook event를 binding contract으로 등록. Phase 2.1에 ADR-0017로 대체.                                                      |
 | 0012 | Extension Discovery Model                                                                                                                              | Deferred                            | Phase 3에서 결정. ADR-0028로 부분 해소 예정. (`~/.aelix/extensions`, `entry_points` 우선순위 결정됨.)                                              |
 | 0013 | [message_end Reducer Policy — Observational in Phase 1.2](0013-message-end-observational-in-1-2.md)                                                    | Accepted (Phase 1.2 임시 결정)      | Phase 1.2의 `message_end`는 observational only. Phase 2.1에 ADR-0018로 대체.                                                                        |
-| 0014 | [Hook Error Policy — Mutation hooks throw; Lifecycle observational hooks swallow+log](0014-hook-error-policy.md)                                       | Accepted (Phase 1.2 임시 결정)      | Mutation hook 예외 → `AgentHarnessError` raise; lifecycle observational 예외 → swallow. Phase 2.1에 ADR-0019로 대체.                                |
+| 0014 | [Hook Error Policy — Mutation hooks throw; Lifecycle observational hooks swallow+log](0014-hook-error-policy.md)                                       | Superseded by ADR-0019              | (Phase 1.2 임시 결정) — Sprint 3a에서 ADR-0019 v3로 대체됨.                                                                                          |
 | 0015 | [Monorepo Layout — uv Workspaces](0015-monorepo-layout-uv-workspaces.md)                                                                               | Accepted (Phase 1.3 shipped)        | Phase 1.3 경계에서 uv workspaces 마이그레이션. Pi `packages/*` 구조와 1:1 매핑.                                                                    |
-| 0017 | [Full Hook Event Catalogue v2](0017-full-hook-event-catalogue-v2.md)                                                                                   | Draft (Phase 2.1 finalization)      | Pi `AgentHarnessEvent` 전체 ~30개 event 등록. ADR-0011 대체.                                                                                        |
+| 0017 | [Full Hook Event Catalogue v2](0017-full-hook-event-catalogue-v2.md)                                                                                   | Accepted (Sprint 3a / Phase 2.1.1 shipped) | Pi-verified 28 hook events (10 loop + 18 harness own). 7 wishlist events dropped per W1 Finding P-1. ADR-0011 대체.                                |
 | 0018 | [message_end Replacement Reducer (Pi parity)](0018-message-end-replacement-reducer.md)                                                                  | Draft (Phase 2.1)                   | `message_end`에 role-preserving replacement reducer 구현. ADR-0013 대체.                                                                            |
-| 0019 | [Hook Error Policy v2 — Pi `"continue"` Default](0019-hook-error-policy-v2-pi-continue-default.md)                                                     | Draft (Phase 2.1)                   | 모든 hook `"continue"` default + per-handler `error_mode="throw"` opt-in. ADR-0014 대체.                                                           |
+| 0019 | [Hook Error Policy v2 — Pi `"throw"` Default + Aelix `"continue"` Opt-in](0019-hook-error-policy-v2-pi-continue-default.md) | Accepted (Sprint 3a / Phase 2.1.1 shipped — v3 reframe) | Pi-parity `"throw"` default (matches Pi `normalizeHookError`) + Aelix additive `error_mode="continue"` opt-in. v3 reframe per W1 Finding P-2. ADR-0014 대체. |
 | 0020 | [RPC Mode for Multi-Language Clients](0020-rpc-mode-multi-language-clients.md)                                                                          | Draft (Phase 4)                     | `aelix mode rpc` — stdin/stdout JSON 프로토콜. Pi `--mode rpc` 그대로 port. ADR-0009 부분 대체.                                                     |
 | 0021 | [Parallel-Mode Tool Execution + Per-Tool Override](0021-parallel-tool-execution.md)                                                                     | Draft (Phase 2.1)                   | default parallel 실행 + per-tool `execution_mode="sequential"` override.                                                                           |
 | 0022 | [Session Manager + JSONL Persistence](0022-session-manager-jsonl-persistence.md)                                                                        | Draft (Phase 2.2)                   | `Session` interface + `JsonlSessionRepo`. `~/.aelix/sessions/{id}.jsonl` append-only.                                                              |
@@ -43,13 +43,13 @@
 | 0027 | [asyncio.TaskGroup for Parallel Tool Execution](0027-asyncio-taskgroup-parallel-tools.md)                                                               | Draft (Phase 2.1 implementation)    | `asyncio.TaskGroup` 사용. structured concurrency + sibling auto-cancel. ADR-0021 구현 binding.                                                     |
 | 0028 | [Extension Auto-Discovery via importlib.metadata.entry_points](0028-extension-auto-discovery-entry-points.md)                                           | Draft (Phase 3 implementation)      | `entry_points(group="aelix.extensions")` 주 방식. fallback: `~/.aelix/extensions/`. ADR-0012 partial supersede.                                   |
 | 0029 | [Pi-Parity Acceptance Test Harness](0029-pi-parity-acceptance-test-harness.md)                                                                          | Draft (Phase 2.1+ ongoing)          | `tests/pi_parity/` 별도 lane. vendored Pi fixture + message-level equivalence assert. "믿는다" → "증명한다".                                       |
-| 0030 | [Hook Event Exhaustiveness via assert_never](0030-hook-event-exhaustiveness-assert-never.md)                                                             | Draft (Phase 2.1 implementation)    | `match`+`assert_never` 패턴. 새 event 미처리 시 pyright build fail. ADR-0017 land 시 적용.                                                        |
+| 0030 | [Hook Event Exhaustiveness via assert_never](0030-hook-event-exhaustiveness-assert-never.md)                                                             | Accepted (Sprint 3a / Phase 2.1.1 shipped) | `match`+`assert_never` 패턴 코드-land. `_to_hook_event`에 적용. 새 event 미처리 시 pyright build fail.                                            |
 | 0031 | [Build Backend Choice — Hatchling](0031-build-backend-hatchling.md)                                                                                     | Accepted (Sprint 2 shipped)         | 모든 packages/* hatchling 사용. declarative `src/` layout 지원. uv workspace first-class.                                                          |
 | 0032 | [Sprint Workflow — Review + Pi Parity + Suggestions](0032-sprint-workflow-review-parity-suggestions.md)                                                 | Accepted (Sprint 2 onwards)         | W4 code-review + W5 Pi parity audit mandatory gate. bypass는 새 ADR 필요.                                                                          |
 | 0033 | ExtensionContext UI surface                                                                                                                             | Deferred (Phase 5)                  | `ExtensionUIContext` 전체 표면. Phase 5 TUI/Web UI 구현 시 결정. (구 spec의 "ADR-0015" 항목 → 번호 충돌로 재배정.)                                 |
 | 0034 | [Pi Reference Version Pin](0034-pi-reference-version-pin.md)                                                                                            | Accepted (Sprint 2.5 shipped)       | Pi reference를 commit SHA로 sprint별 pinning. 현재 pin: `734e08edf82ff315bc3d96472a6ebfa69a1d8016`.                                                |
 | 0035 | [Error Code Taxonomy](0035-error-code-taxonomy.md)                                                                                                       | Draft (Phase 1.4 shipped — Aelix subset; full taxonomy Phase 2.1+) | Pi 10-code 표준 문서화. Aelix 5 codes 유지 + 5 placeholder는 owning ADR land 시 widen.                                                              |
-| 0036 | [Loop AgentEvent vs Harness HookEvent Distinction (F-7)](0036-loop-event-vs-harness-event-distinction.md)                                              | Accepted (Sprint 2.5 shipped — model affirmed; expansion Phase 2.1) | Loop `AgentEvent` (10) ≠ Harness `HookEvent` (16→~28). 두 union 별도 유지. ADR-0017 cross-reference 필수.                                          |
+| 0036 | [Loop AgentEvent vs Harness HookEvent Distinction (F-7)](0036-loop-event-vs-harness-event-distinction.md)                                              | Accepted (Sprint 3a — code-land: AgentEventName + AgentHarnessEventName aliases) | Loop `AgentEventName` (10) ≠ Harness `AgentHarnessEventName` (18). 두 union 별도 유지 + 통합 `HookEventName` union.                                |
 | 0037 | [Streaming Event Union (Pi Parity)](0037-streaming-event-union-pi-parity.md)                                                                            | Draft (Phase 1.4 shell; adapter coverage Phase 4)                  | Pi 12-event union을 Phase 4 adapter PR에서 land. Phase 1.4는 design 문서만.                                                                          |
 | 0038 | [stream_simple Dispatch Shell — Phase 1 Boundary](0038-stream-simple-dispatch-shell-phase-1-boundary.md)                                                | Accepted (Sprint 2.5 / Phase 1.4 shipped — body lands Phase 4)     | Phase 1 exit는 dispatch shell + registry + typed error에서 완료. Adapter는 Phase 4.                                                                |
 
@@ -195,27 +195,33 @@ Sprint 2.5 ADRs 상태 (Phase 1.4 hygiene).
 | ----- | -------------------------------------------------------------------- | --------------------------------------------------------------------- |
 | 0034  | Pi Reference Version Pin                                             | Accepted (Sprint 2.5 shipped)                                         |
 | 0035  | Error Code Taxonomy                                                  | Draft (Phase 1.4 shipped — Aelix subset; full taxonomy Phase 2.1+)    |
-| 0036  | Loop AgentEvent vs Harness HookEvent Distinction (F-7)               | Accepted (Sprint 2.5 shipped — model affirmed; expansion Phase 2.1)   |
+| 0036  | Loop AgentEvent vs Harness HookEvent Distinction (F-7)               | Accepted (Sprint 3a — code-land: AgentEventName + AgentHarnessEventName aliases) |
 | 0037  | Streaming Event Union (Pi Parity)                                    | Draft (Phase 1.4 shell; adapter coverage Phase 4)                     |
 | 0038  | stream_simple Dispatch Shell — Phase 1 Boundary                      | Accepted (Sprint 2.5 / Phase 1.4 shipped — body lands Phase 4)        |
+
+Sprint 3a ADRs 상태 (Phase 2.1.1 hook bus expansion).
+
+| ADR   | 제목                                                                 | Status                                                                |
+| ----- | -------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| 0017  | Full Hook Event Catalogue v2 (28 events)                             | Accepted (Sprint 3a / Phase 2.1.1 shipped — Pi-verified)              |
+| 0019  | Hook Error Policy v2 — Pi `"throw"` Default + Aelix `"continue"` Opt-in | Accepted (Sprint 3a / Phase 2.1.1 shipped — v3 reframe)            |
+| 0030  | Hook Event Exhaustiveness via assert_never                            | Accepted (Sprint 3a / Phase 2.1.1 shipped)                            |
+| 0036  | Loop AgentEvent vs Harness HookEvent Distinction (F-7) — code-land    | Accepted (Sprint 3a — AgentEventName + AgentHarnessEventName aliases) |
 
 Draft ADR 및 target Phase 요약 (전체).
 
 | ADR   | 제목                                       | Target Phase |
 | ----- | ------------------------------------------ | ------------ |
-| 0017  | Full Hook Event Catalogue v2               | Phase 2.1    |
-| 0018  | message_end Replacement Reducer            | Phase 2.1    |
-| 0019  | Hook Error Policy v2 — Pi continue default | Phase 2.1    |
+| 0018  | message_end Replacement Reducer            | Phase 2.1.2 (Sprint 3b) |
 | 0020  | RPC Mode for Multi-Language Clients        | Phase 4      |
-| 0021  | Parallel-Mode Tool Execution               | Phase 2.1    |
+| 0021  | Parallel-Mode Tool Execution               | Phase 2.1.3 (Sprint 3c) |
 | 0022  | Session Manager + JSONL Persistence        | Phase 2.2    |
 | 0023  | Compaction + Branch Summary                | Phase 2.2    |
-| 0027  | asyncio.TaskGroup (ADR-0021 impl)          | Phase 2.1    |
+| 0027  | asyncio.TaskGroup (ADR-0021 impl)          | Phase 2.1.3 (Sprint 3c) |
 | 0028  | Extension Auto-Discovery entry_points      | Phase 3      |
-| 0035  | Error Code Taxonomy (full widening)        | Phase 2.1+   |
-| 0037  | Streaming Event Union — adapter coverage   | Phase 4      |
-| 0029  | Pi-Parity Acceptance Test Harness          | Phase 2.1+   |
-| 0030  | Hook Event Exhaustiveness assert_never     | Phase 2.1    |
+| 0029  | Pi-Parity Acceptance Test Harness          | Phase 2.1+ (foundation shipped Sprint 3a) |
 | 0033  | ExtensionContext UI surface                | Phase 5      |
+| 0035  | Error Code Taxonomy (Literal widening)     | Per owning ADR (0017 done; 0022 / 0023 / Phase 4) |
+| 0037  | Streaming Event Union — adapter coverage   | Phase 4      |
 
 Open question이 ADR로 정리되면 이 표를 함께 갱신합니다.
