@@ -1,19 +1,35 @@
 # Aelix
 
+Aelix는 Python 기반의 에이전트 런타임으로, 확장 가능한 에이전트 플랫폼을 구축·조합·운용하기 위한 도구입니다.
+
 Aelix is a Python-based agent runtime for building, composing, and operating
 extensions as an extensible agent platform.
 
-The project is intentionally organized around a small runtime kernel:
+The project is organised as a [uv workspace](https://docs.astral.sh/uv/concepts/workspaces/)
+containing three packages, orchestrated by `Agent` and `AgentHarness` (see ADR-0015):
 
-- `AgentRuntime` owns execution, lifecycle, and extension routing.
-- `Extension` defines the extension contract.
-- `ExtensionRegistry` keeps installed extensions discoverable.
-- `MarketplaceIndex` reads extension pack metadata without executing code.
-- Built-in `policy` and `guardrail` extensions enforce permission and safety decisions via lifecycle hooks (see ADR-0004).
+- `aelix-ai` — provider-agnostic message types, streaming primitives, and tool definitions. No agent loop, no hook bus.
+- `aelix-agent-core` — the low-level agent loop, stateful `Agent` class, `AgentHarness`, and the `HookBus`. Core runtime with no extension dependencies.
+- `aelix-coding-agent` — `ExtensionAPI` surface, extension loader, built-in `PolicyExtension`/`GuardrailExtension`, and example tools.
 
-This keeps the core runtime lightweight while leaving room for a marketplace,
-customer-site deployments, offline packs, policy enforcement, and specialized
-agent systems.
+This keeps the core runtime lightweight while leaving room for policy
+enforcement, customer-site deployments, offline packs, and specialised agent
+systems.
+
+## Workspace layout
+
+```text
+aelix-ai/
+├── pyproject.toml                    # workspace anchor + aelix script
+├── src/aelix/                        # umbrella re-export package
+├── packages/
+│   ├── aelix-ai/                     # AI primitives (messages, tools, streaming)
+│   ├── aelix-agent-core/             # agent loop + harness + hook bus
+│   └── aelix-coding-agent/           # extensions + built-ins + examples
+└── tests/                            # shared test suite
+```
+
+See ADR-0015 for the full package boundary rationale.
 
 ## Quick Start
 
@@ -21,53 +37,51 @@ Aelix uses [uv](https://docs.astral.sh/uv/) for environment and dependency
 management.
 
 ```bash
-uv sync                  # create .venv and install dependencies (dev included)
+uv sync                  # create .venv and install all workspace packages (dev included)
 uv run pytest            # run the test suite
-uv run aelix             # run the built-in demo extension
+uv run aelix             # run the built-in echo demo
 ```
 
 For live LLM tests (Phase 2+), copy `.env.example` to `.env` and fill in your
-provider credentials. Phase 1.1 runs with a mock stream function and does not
+provider credentials. Phase 1 runs with a mock stream function and does not
 require any API keys.
 
 ## Architecture
 
 ```text
-Aelix Runtime
-  Kernel
-    AgentRuntime
-    ExecutionContext
-    Lifecycle hooks
-  Extensions
-    Extension protocol
-    ExtensionRegistry
-    ExtensionResult
-  Built-in Extensions
-    policy
-    guardrail
-  Marketplace
-    Multi-source index (npm, git, internal)
-    Source-specific metadata
-  SDK
-    Helpers for pack authors
+aelix-agent-core
+  Agent                   — stateful wrapper around the low-level loop
+  AgentHarness            — hook-aware orchestrator; wires extensions into the loop
+  HookBus                 — typed hook event / result bus (before_agent_start, tool_call, …)
+  agent_loop              — low-level async turn runner
+
+aelix-coding-agent
+  ExtensionAPI            — façade an extension factory receives (setup(aelix) → None)
+  Extension loader        — resolves factories, module paths, file paths
+  PolicyExtension         — allowlist/denylist enforcement via tool_call hook
+  GuardrailExtension      — content safety via tool_call hook
+  examples/echo           — minimal demo tool
+
+aelix-ai
+  Messages / streaming    — AgentMessage, AssistantMessage, UserMessage, StreamFn, …
+  Tool types              — Tool, AgentTool, ToolResult
 ```
 
 Design notes and evolving requirements are maintained in [`docs/`](docs/README.md).
 
 ## Extension Packs
 
-Extension packs are distributed via marketplace indexes (npm registry, git
-repositories, or internal custom indexes). Each index source is responsible for
-exposing normalized pack metadata that can be inspected, audited, signed, and
-approved before any extension code runs (see ADR-0005).
-
-Pack metadata always carries the same shape (id, name, version, description,
-entrypoint, permissions); the wire format depends on the source.
+Extension factories are callables that receive an `ExtensionAPI` handle and
+register tools, hook handlers, and flags. The loader resolves inline factories,
+dotted module paths, and file paths, collecting errors per-extension without
+aborting the batch (see ADR-0004 and ADR-0007).
 
 ## Design Principles
 
 - Small kernel, broad extension surface.
-- Multi-source marketplace with normalized metadata (npm, git, internal).
+- `aelix-agent-core` declares no dependency on `aelix-coding-agent`; the
+  harness uses a lazy local import to break the runtime cycle.
 - Policy and guardrails enforced by built-in extensions, not by core.
-- Explicit execution context for auditability.
+- Explicit hook bus for auditability — every tool call and context mutation
+  is an observable event.
 - Standard-library baseline before framework commitments.
