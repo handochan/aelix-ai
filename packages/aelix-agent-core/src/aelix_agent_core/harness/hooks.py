@@ -66,6 +66,19 @@ if TYPE_CHECKING:
     # aelix_coding_agent.extensions.api which itself depends on this module's types.
     from aelix_coding_agent.extensions.api import ExtensionContext
 
+    # Sprint 4b (Phase 2.2.2) — extended session_* event payloads (P-17/P-18/
+    # P-19/P-20). Forward-declared via TYPE_CHECKING because session subsystem
+    # is owned by ``aelix_agent_core.session`` (no runtime import cycle today).
+    from aelix_agent_core.session.branch_summarization import (
+        BranchSummaryPreparation,
+        SummaryEntry,
+    )
+    from aelix_agent_core.session.compaction import (
+        CompactionPreparation,
+        CompactResult,
+    )
+    from aelix_agent_core.session.entries import SessionTreeEntry
+
 
 _log = logging.getLogger(__name__)
 
@@ -449,21 +462,42 @@ class ToolExecutionEndHookEvent(HookEvent):
     type: Literal["tool_execution_end"] = "tool_execution_end"
 
 
-# --- Session events (Phase 1.2 reducer-only stub — no emit site yet) ---
+# --- Session events (Sprint 4b Phase 2.2.2 — payload extensions per P-17/P-20) ---
 
 
 @dataclass(frozen=True)
 class SessionBeforeCompactResult:
-    """Generic ``session_before_*`` result. ``cancel=True`` short-circuits."""
+    """Pi ``SessionBeforeCompactResult`` (``types.ts:339-342``, P-20).
+
+    Sprint 4b extended the Sprint 3a 2-field stub ``{cancel, reason}`` to the
+    Pi-parity ``{cancel?, compaction?}`` shape. The ``compaction`` field lets a
+    hook substitute the LLM call entirely (Pi ``agent-harness.ts:705-708`` —
+    when ``hookResult?.compaction`` is set, the harness skips ``compact(...)``
+    and uses the hook-provided result with ``from_hook=True``).
+
+    ``reason`` is retained as an Aelix-additive convenience for diagnostic
+    messages on cancelled paths; Pi uses bare ``cancel?: boolean``.
+    """
 
     cancel: bool = False
     reason: str | None = None
+    compaction: CompactResult | None = None
 
 
 @dataclass(frozen=True)
 class SessionBeforeCompactHookEvent(HookEvent):
-    """Stub for the ``session_before_*`` family (Phase 1.3+)."""
+    """Pi ``SessionBeforeCompactHookEvent`` (P-17, Sprint 4b extension).
 
+    Pi ``agent-harness.ts:706-711`` payload: ``{preparation, branchEntries,
+    customInstructions, signal}``. Sprint 3a registered the empty stub; this
+    Sprint 4b extension lands the full Pi payload to match the emit site
+    introduced in :meth:`AgentHarness.compact`.
+    """
+
+    preparation: CompactionPreparation | None = None
+    branch_entries: list[SessionTreeEntry] = field(default_factory=list)
+    custom_instructions: str | None = None
+    signal: Any | None = None
     type: Literal["session_before_compact"] = "session_before_compact"
 
 
@@ -564,27 +598,31 @@ class SessionCompactHookEvent(HookEvent):
 
 @dataclass(frozen=True)
 class SessionBeforeTreeHookEvent(HookEvent):
-    """Emitted before ``navigateTree()`` materializes a branch move.
+    """Pi ``SessionBeforeTreeHookEvent`` (P-18, Sprint 4b extension).
 
-    Pi parity: ``types.ts:560-564`` + ``agent-harness.ts:598`` (SHA 734e08e).
-    Sprint 3a: type + result + reducer. Emit Phase 2.2 (ADR-0023).
+    Pi ``agent-harness.ts:765`` payload: ``{preparation, signal}``. Sprint 3a
+    shipped only ``preparation``; this Sprint 4b extension adds ``signal`` to
+    match Pi and the new emit site in :meth:`AgentHarness.navigate_tree`.
     """
 
-    preparation: Any = None  # Phase 2.2 — BranchSummaryPreparation
+    preparation: BranchSummaryPreparation | None = None
+    signal: Any | None = None
     type: Literal["session_before_tree"] = "session_before_tree"
 
 
 @dataclass(frozen=True)
 class SessionTreeHookEvent(HookEvent):
-    """Emitted after ``navigateTree()`` completes a move.
+    """Pi ``SessionTreeHookEvent`` (P-19, Sprint 4b extension).
 
-    Pi parity: ``types.ts:566-572`` + ``agent-harness.ts:626`` (SHA 734e08e).
-    Sprint 3a: type only. Emit Phase 2.2.
+    Pi ``types.ts:303-309`` types ``newLeafId: string | null``. Sprint 4b
+    narrows the Aelix default from ``str = ""`` to ``str | None = None`` to
+    match Pi exactly. ``old_leaf_id`` is likewise narrowed; ``summary_entry``
+    gets a proper :class:`SummaryEntry` annotation.
     """
 
-    new_leaf_id: str = ""
-    old_leaf_id: str = ""
-    summary_entry: Any | None = None
+    new_leaf_id: str | None = None
+    old_leaf_id: str | None = None
+    summary_entry: SummaryEntry | None = None
     from_hook: bool = False
     type: Literal["session_tree"] = "session_tree"
 

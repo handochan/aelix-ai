@@ -50,6 +50,12 @@ from aelix_agent_core.harness.hooks import (
     QueueUpdateHookEvent,
     ResourcesUpdateHookEvent,
     SavePointHookEvent,
+    SessionBeforeCompactHookEvent,
+    SessionBeforeCompactResult,
+    SessionBeforeTreeHookEvent,
+    SessionBeforeTreeResult,
+    SessionCompactHookEvent,
+    SessionTreeHookEvent,
     SettledHookEvent,
     ThinkingLevelSelectHookEvent,
     ToolCallHookEvent,
@@ -95,11 +101,28 @@ if TYPE_CHECKING:
     )
 
     from aelix_agent_core.session import Session
+    from aelix_agent_core.session.compaction import CompactResult
 
 
 _log = logging.getLogger(__name__)
 
-AgentHarnessPhase = Literal["idle", "turn"]
+AgentHarnessPhase = Literal["idle", "turn", "compaction", "branch_summary"]
+"""Sprint 4b (Phase 2.2.2 — ADR-0023): Phase Literal expanded.
+
+Pi ``types.ts:262`` defines 5 values; Pi's ``"retry"`` is declared-but-unused
+at SHA ``734e08e``, so Aelix omits it (P-15 — Aelix-additive omission tracked
+in ADR-0023 §"Aelix-additive divergences"). The four shipped values mirror
+Pi's transitions exactly:
+
+- ``"idle"`` — no work in flight; prompt / steer / follow_up / compact /
+  navigate_tree all legal.
+- ``"turn"`` — :meth:`AgentHarness.prompt` is running.
+- ``"compaction"`` — :meth:`AgentHarness.compact` is running.
+- ``"branch_summary"`` — :meth:`AgentHarness.navigate_tree` is running.
+
+All four method paths guard with ``raise AgentHarnessError("busy", ...)`` when
+the phase is anything other than ``"idle"``.
+"""
 HarnessListener = AgentListener  # type alias — same shape as AgentListener
 
 
@@ -163,6 +186,15 @@ class AgentHarnessOptions:
     # ``execution_mode == "sequential"`` downgrades the whole batch to
     # sequential at the loop dispatcher (agent-loop.ts:380-387).
     tool_execution: ToolExecutionMode = "parallel"
+
+    # === Sprint 4b (Phase 2.2.2) — Aelix-additive test-only seams ===
+    # Per P-14 (W1 finding), Aelix does NOT add Pi-divergent summarizer
+    # callbacks to the public surface. These two underscore-prefixed fields
+    # are explicit test-only seams documented in ADR-0023 §"Aelix-additive
+    # divergences" — production callers MUST leave them as ``None`` and rely
+    # on ``get_api_key_and_headers`` per Pi parity.
+    _summarizer_override: Any | None = None
+    _branch_summarizer_override: Any | None = None
 
 
 # === Sprint 4a — pending session writes (Pi parity, agent-harness.ts:414-432 + 459-481) ===
@@ -277,6 +309,34 @@ PendingSessionWrite = (
 )
 
 
+@dataclass(frozen=True)
+class NavigateTreeOptions:
+    """Pi ``NavigateTreeOptions`` (``types.ts:269-273``, Sprint 4b §C).
+
+    Mirrors Pi exactly. All four fields are optional; the caller's call site
+    typically provides ``summarize=True`` + ``custom_instructions=...``.
+    """
+
+    summarize: bool = False
+    custom_instructions: str | None = None
+    replace_instructions: bool = False
+    label: str | None = None
+
+
+@dataclass(frozen=True)
+class NavigateTreeResult:
+    """Pi ``NavigateTreeResult`` (``types.ts:269-273``, Sprint 4b §C).
+
+    ``cancelled=True`` is returned when either the ``session_before_tree``
+    hook handler short-circuited via ``SessionBeforeTreeResult(cancel=True)``
+    OR ``target_id is None`` and there is nothing to navigate to.
+    """
+
+    cancelled: bool
+    editor_text: str | None = None
+    summary_entry: Any | None = None
+
+
 @dataclass
 class _TurnState:
     """Per-turn snapshot of state values resolved before ``_run`` (F-10).
@@ -285,10 +345,19 @@ class _TurnState:
     state mutations made by ``before_agent_start`` (e.g. chained system prompt)
     do not leak into subsequent turns. Outside of a turn, callers fall back to
     the long-lived ``self._state``.
+
+    Sprint 4b (ADR-0025 §"Pending extensions") extends the snapshot with
+    ``messages`` + ``session_id`` per ADR-0022 §"Sprint 4a → 4b transition
+    plan". When :class:`Session` is attached the harness derives
+    ``messages`` from ``session.build_context().messages`` at turn start;
+    otherwise it copies ``state.messages`` (in-memory primary, backward
+    compat per ADR-0022 §"Aelix-additive divergences" item 3).
     """
 
     system_prompt: str
     model: Model
+    messages: list[AgentMessage] = field(default_factory=list)
+    session_id: str | None = None
 
 
 class _MessageQueue:
@@ -479,10 +548,15 @@ class AgentHarness:
     # === Driving the loop ===
 
     async def prompt(self, text: str) -> list[AgentMessage]:
+        # Sprint 4b §A: guard covers all non-idle phases (turn / compaction /
+        # branch_summary). steer()/follow_up() remain enqueue-only per Pi
+        # parity (Pi ``agent-harness.ts`` steer paths enqueue regardless of
+        # phase). See ADR-0023 phase-machine table.
         if self._phase != "idle":
             raise AgentHarnessError(
                 "busy",
-                "AgentHarness is busy; use steer()/follow_up() while in a turn.",
+                f"AgentHarness is busy (phase={self._phase!r}); use "
+                "steer()/follow_up() while in a turn.",
             )
         # Flip phase synchronously BEFORE the first await so concurrent callers
         # see the guard immediately (C-2 re-entrancy fix).
@@ -587,6 +661,280 @@ class AgentHarness:
         # Sprint 3b — abort clears queues; emit ``queue_update`` so observers
         # see the empty state. Pi parity (``agent-harness.ts`` abort path).
         await self._emit_queue_update()
+
+    # === Sprint 4b §B/§C — compact() + navigate_tree() ===
+
+    async def compact(self, custom_instructions: str | None = None) -> CompactResult:
+        """Pi ``compact()`` (``agent-harness.ts:689-745``, Sprint 4b §B).
+
+        Phase flow:
+
+        1. Guard: raise :class:`AgentHarnessError("busy")` if not idle.
+        2. Flip ``self._phase`` to ``"compaction"``; clear ``_idle_event``.
+        3. Build :class:`CompactionPreparation` from current branch entries.
+        4. Emit :class:`SessionBeforeCompactHookEvent` carrying
+           ``{preparation, branch_entries, custom_instructions, signal}``
+           (P-17 payload extension).
+        5. If the reducer returned ``SessionBeforeCompactResult(cancel=True)``
+           → raise ``AgentHarnessError("invalid_state", "Compaction cancelled")``.
+        6. If the reducer substituted ``compaction=CompactResult(...)`` → use
+           it directly (skip LLM call, ``from_hook=True``).
+        7. Else call :func:`compaction.compact` with ``self._state.model`` +
+           ``options.get_api_key_and_headers`` (or ``_summarizer_override``
+           for tests).
+        8. Persist via :meth:`Session.append_compaction` and emit
+           :class:`SessionCompactHookEvent`.
+        9. ``finally``: restore ``self._phase = "idle"`` + set idle event.
+        """
+
+        from aelix_agent_core.session.compaction import (
+            compact as compaction_compact,
+        )
+        from aelix_agent_core.session.compaction import (
+            prepare_compaction,
+        )
+
+        if self._phase != "idle":
+            raise AgentHarnessError(
+                "busy",
+                f"compact() requires idle harness (phase={self._phase!r})",
+            )
+        if self._session is None:
+            raise AgentHarnessError(
+                "invalid_state",
+                "compact() requires options.session to be attached",
+            )
+        self._phase = "compaction"
+        self._idle_event.clear()
+        try:
+            branch_entries = await self._session.get_branch()
+            preparation = prepare_compaction(branch_entries, custom_instructions)
+            if preparation is None:
+                raise AgentHarnessError(
+                    "invalid_state", "Nothing to compact"
+                )
+            try:
+                hook_result = await self._hooks.emit(
+                    SessionBeforeCompactHookEvent(
+                        preparation=preparation,
+                        branch_entries=list(branch_entries),
+                        custom_instructions=custom_instructions,
+                        signal=None,
+                    )
+                )
+            except Exception as exc:
+                raise AgentHarnessError(
+                    "hook",
+                    f"session_before_compact hook handler raised: {exc}",
+                ) from exc
+            if isinstance(hook_result, SessionBeforeCompactResult) and hook_result.cancel:
+                raise AgentHarnessError(
+                    "compaction",
+                    hook_result.reason or "Compaction cancelled",
+                )
+            provided: CompactResult | None = None
+            if isinstance(hook_result, SessionBeforeCompactResult):
+                provided = hook_result.compaction
+            if provided is not None:
+                result = provided
+                from_hook = True
+            else:
+                result = await compaction_compact(
+                    self._state.model,
+                    self._options.get_api_key_and_headers,
+                    preparation,
+                    custom_instructions,
+                    _summarizer_override=self._options._summarizer_override,
+                )
+                from_hook = False
+            entry_id = await self._session.append_compaction(
+                summary=result.summary,
+                first_kept_entry_id=result.first_kept_entry_id,
+                tokens_before=result.tokens_before,
+                details=result.details,
+                from_hook=from_hook,
+            )
+            entry = await self._session.get_entry(entry_id)
+            if entry is not None and entry.type == "compaction":
+                try:
+                    await self._hooks.emit(
+                        SessionCompactHookEvent(
+                            compaction_entry=entry,
+                            from_hook=from_hook,
+                        )
+                    )
+                except Exception as exc:
+                    raise AgentHarnessError(
+                        "hook",
+                        f"session_compact hook handler raised: {exc}",
+                    ) from exc
+            return result
+        finally:
+            self._phase = "idle"
+            self._idle_event.set()
+
+    async def navigate_tree(
+        self,
+        target_id: str | None,
+        options: NavigateTreeOptions | None = None,
+    ) -> NavigateTreeResult:
+        """Pi ``navigateTree()`` (``agent-harness.ts:747-867``, Sprint 4b §C).
+
+        Phase flow:
+
+        1. Guard busy → raise :class:`AgentHarnessError("busy")` if not idle.
+        2. Flip ``self._phase`` to ``"branch_summary"``; clear idle event.
+        3. ``target_id is None`` → noop, return ``cancelled=False``.
+        4. Resolve target entry. ``user_message`` / ``custom_message`` →
+           editor branch: extract text + parent_id (Pi ``:760-780``).
+        5. Build :class:`BranchSummaryPreparation`; emit
+           :class:`SessionBeforeTreeHookEvent` (P-18 payload with ``signal``).
+        6. If reducer returned ``cancel=True`` → return ``cancelled=True``.
+        7. If ``options.summarize`` AND no hook-provided summary AND entries
+           are non-empty → call :func:`generate_branch_summary`.
+        8. :meth:`Session.move_to` with the summary dict.
+        9. Emit :class:`SessionTreeHookEvent` (P-19 ``new_leaf_id: str | None``).
+        10. ``finally``: restore ``self._phase = "idle"``.
+        """
+
+        from aelix_agent_core.session.branch_summarization import (
+            BranchSummaryPreparation,
+            collect_entries_for_branch_summary,
+            generate_branch_summary,
+        )
+
+        if self._phase != "idle":
+            raise AgentHarnessError(
+                "busy",
+                f"navigate_tree() requires idle harness (phase={self._phase!r})",
+            )
+        if self._session is None:
+            raise AgentHarnessError(
+                "invalid_state",
+                "navigate_tree() requires options.session to be attached",
+            )
+        if target_id is None:
+            return NavigateTreeResult(cancelled=False)
+        self._phase = "branch_summary"
+        self._idle_event.clear()
+        try:
+            old_leaf_id = await self._session.get_leaf_id()
+            if old_leaf_id == target_id:
+                return NavigateTreeResult(cancelled=False)
+            target_entry = await self._session.get_entry(target_id)
+            if target_entry is None:
+                raise AgentHarnessError(
+                    "invalid_argument", f"Entry {target_id} not found"
+                )
+            entries, common_ancestor_id = await collect_entries_for_branch_summary(
+                self._session, old_leaf_id, target_id
+            )
+            opts = options or NavigateTreeOptions()
+            preparation = BranchSummaryPreparation(
+                target_id=target_id,
+                old_leaf_id=old_leaf_id,
+                common_ancestor_id=common_ancestor_id,
+                entries_to_summarize=list(entries),
+                user_wants_summary=opts.summarize,
+                custom_instructions=opts.custom_instructions,
+                replace_instructions=opts.replace_instructions,
+                label=opts.label,
+            )
+            try:
+                hook_result = await self._hooks.emit(
+                    SessionBeforeTreeHookEvent(
+                        preparation=preparation,
+                        signal=None,
+                    )
+                )
+            except Exception as exc:
+                raise AgentHarnessError(
+                    "hook",
+                    f"session_before_tree hook handler raised: {exc}",
+                ) from exc
+            if isinstance(hook_result, SessionBeforeTreeResult) and hook_result.cancel:
+                return NavigateTreeResult(cancelled=True)
+            summary_dict_override: dict[str, Any] | None = None
+            summary_text: str | None = None
+            summary_details: Any | None = None
+            from_hook_summary = False
+            if (
+                isinstance(hook_result, SessionBeforeTreeResult)
+                and hook_result.summary is not None
+            ):
+                summary_dict_override = hook_result.summary
+                summary_text = summary_dict_override.get("summary")
+                summary_details = summary_dict_override.get("details")
+                from_hook_summary = True
+            if (
+                summary_text is None
+                and opts.summarize
+                and len(entries) > 0
+            ):
+                summary_text = await generate_branch_summary(
+                    self._state.model,
+                    self._options.get_api_key_and_headers,
+                    entries,
+                    opts.custom_instructions,
+                    _summarizer_override=(
+                        self._options._branch_summarizer_override
+                    ),
+                )
+            # Editor-branch extraction (Pi `:760-780`): user_message /
+            # custom_message → resolve new_leaf_id to parent_id + extract text.
+            editor_text: str | None = None
+            new_leaf_id: str | None
+            if (
+                target_entry.type == "message"
+                and target_entry.message.role == "user"  # type: ignore[union-attr]
+            ):
+                new_leaf_id = target_entry.parent_id
+                editor_text = _extract_text_content(
+                    target_entry.message.content  # type: ignore[union-attr]
+                )
+            elif target_entry.type == "custom_message":
+                new_leaf_id = target_entry.parent_id
+                editor_text = _extract_text_content(target_entry.content)  # type: ignore[union-attr]
+            else:
+                new_leaf_id = target_id
+            summary_payload: dict[str, Any] | None = None
+            if summary_text:
+                summary_payload = {
+                    "summary": summary_text,
+                    "details": summary_details,
+                    "from_hook": from_hook_summary,
+                }
+            summary_id = await self._session.move_to(
+                new_leaf_id, summary=summary_payload
+            )
+            summary_entry: Any | None = None
+            if summary_id is not None:
+                stored = await self._session.get_entry(summary_id)
+                if stored is not None and stored.type == "branch_summary":
+                    summary_entry = stored
+            new_leaf_after = await self._session.get_leaf_id()
+            try:
+                await self._hooks.emit(
+                    SessionTreeHookEvent(
+                        new_leaf_id=new_leaf_after,
+                        old_leaf_id=old_leaf_id,
+                        summary_entry=summary_entry,
+                        from_hook=from_hook_summary,
+                    )
+                )
+            except Exception as exc:
+                raise AgentHarnessError(
+                    "hook",
+                    f"session_tree hook handler raised: {exc}",
+                ) from exc
+            return NavigateTreeResult(
+                cancelled=False,
+                editor_text=editor_text,
+                summary_entry=summary_entry,
+            )
+        finally:
+            self._phase = "idle"
+            self._idle_event.set()
 
     async def _emit_queue_update(self) -> None:
         """Helper: emit ``QueueUpdateHookEvent`` with current queue snapshots."""
@@ -1088,12 +1436,28 @@ class AgentHarness:
         self._phase = "turn"
         self._abort_requested = False
         self._idle_event.clear()
+        # Sprint 4b §F — state.messages source flip: when a Session is
+        # attached, derive the turn's messages list from
+        # ``session.build_context().messages`` (Pi parity:
+        # ``agent-harness.ts:419, 427`` rebuilds per turn). When None, keep
+        # the in-memory primary (Sprint 3b backward compat per ADR-0022
+        # §"Aelix-additive divergences" item 3).
+        if self._session is not None:
+            session_ctx = await self._session.build_context()
+            turn_messages: list[AgentMessage] = list(session_ctx.messages)
+            turn_session_id = self._state.session_id
+        else:
+            turn_messages = list(self._state.messages)
+            turn_session_id = self._state.session_id
         # F-10: install per-turn snapshot so ``_current_system_prompt`` returns
         # the chained value resolved by ``before_agent_start`` for the duration
-        # of this turn only.
+        # of this turn only. Sprint 4b extends with messages + session_id per
+        # ADR-0025 §"Pending extensions".
         self._turn_state = _TurnState(
             system_prompt=system_prompt,
             model=self._state.model,
+            messages=turn_messages,
+            session_id=turn_session_id,
         )
         try:
             config = AgentLoopConfig(
@@ -1117,9 +1481,14 @@ class AgentHarness:
             else:
                 active_set = set(active)
                 active_tools = [t for t in self._state.tools if t.name in active_set]
+            # Sprint 4b §F — when Session attached, ``turn_messages`` is
+            # already derived from ``session.build_context().messages`` above.
+            # Otherwise it's a fresh copy of ``state.messages`` (backward
+            # compat). Either way we pass the snapshot, not ``state.messages``
+            # directly, so per-turn mutations don't leak.
             context = AgentContext(
                 system_prompt=system_prompt,
-                messages=list(self._state.messages),
+                messages=list(turn_messages),
                 tools=active_tools,
             )
 
@@ -1316,12 +1685,33 @@ def _to_hook_event(event: AgentEvent) -> HookEvent:
             assert_never(unreachable)
 
 
+def _extract_text_content(content: Any) -> str:
+    """Pi parity (``agent-harness.ts:760-780``): extract text from message content.
+
+    Pi: ``typeof content === "string" ? content : content.filter(c => c.type
+    === "text").map(c => c.text).join("")``.
+    """
+
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            text = getattr(block, "text", None)
+            if isinstance(text, str):
+                parts.append(text)
+        return "".join(parts)
+    return ""
+
+
 __all__ = [
     "AgentHarness",
     "AgentHarnessError",
     "AgentHarnessOptions",
     "AgentHarnessPhase",
     "HarnessListener",
+    "NavigateTreeOptions",
+    "NavigateTreeResult",
     "PendingCustomMessageWrite",
     "PendingCustomWrite",
     "PendingLabelWrite",
