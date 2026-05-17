@@ -26,7 +26,7 @@ import inspect
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, assert_never
 
 from aelix_ai.messages import AssistantMessage, TextContent, UserMessage
 from aelix_ai.streaming import Model, StreamFn
@@ -236,11 +236,24 @@ class AgentHarness:
         )
 
         # Hook bus + handler wiring.
+        # ADR-0019 v3: per-handler ``error_mode`` is carried on
+        # ``Extension.handler_error_modes`` (keyed by ``(event, id(handler))``)
+        # and threaded into ``HookBus.on(...)`` here. Default is ``"throw"``
+        # which preserves Pi shipped behavior for any extension that didn't
+        # opt into ``"continue"``.
         self._hooks = HookBus(ctx_factory=self._make_context)
         for extension in self._extensions:
             for event_name, handler_list in extension.handlers.items():
                 for handler in handler_list:
-                    self._hooks.on(event_name, handler, source=extension.name)
+                    mode = extension.handler_error_modes.get(
+                        (event_name, id(handler)), "throw"
+                    )
+                    self._hooks.on(
+                        event_name,
+                        handler,
+                        source=extension.name,
+                        error_mode=mode,
+                    )
             for cleanup in extension.cleanups:
                 self._hooks.add_cleanup(cleanup)
 
@@ -584,14 +597,19 @@ class AgentHarness:
                     except Exception:  # noqa: BLE001 — listener errors must not break
                         _log.debug("listener raised", exc_info=True)
                 # Then fan-out to the hook bus as observational lifecycle events.
+                # ADR-0030: ``_to_hook_event`` returns ``HookEvent`` (not
+                # ``HookEvent | None``) — every AgentEvent has a 1:1 projection.
                 hook_payload = _to_hook_event(event)
-                if hook_payload is not None:
-                    try:
-                        await self._hooks.emit(hook_payload)
-                    except Exception as exc:  # noqa: BLE001
-                        _log.debug(
-                            "lifecycle hook handler raised: %r", exc, exc_info=True
-                        )
+                try:
+                    await self._hooks.emit(hook_payload)
+                except Exception as exc:  # noqa: BLE001
+                    # Listener-style projection: lifecycle hook errors are
+                    # swallowed so a faulty observer cannot break the loop.
+                    # Matches Pi ``subscribe()`` behavior
+                    # (``agent-harness.ts:649-660``).
+                    _log.debug(
+                        "lifecycle hook handler raised: %r", exc, exc_info=True
+                    )
 
             try:
                 new_messages = await agent_loop(
@@ -642,52 +660,58 @@ class AgentHarness:
 # === AgentEvent → HookEvent mapping ===
 
 
-def _to_hook_event(event: AgentEvent) -> HookEvent | None:
+def _to_hook_event(event: AgentEvent) -> HookEvent:
     """Project a low-level :class:`AgentEvent` onto its observational hook event.
 
     This is the single, canonical translation point between the loop's
     stream-level :class:`AgentEvent` union and the harness's lifecycle
-    :class:`HookEvent` union (ADR-0036). Loop-only events with no hook
-    counterpart return ``None``; hook-only events (e.g. ``tool_call``,
-    ``tool_result``, ``before_agent_start``) are emitted directly by the
-    harness, not via this projection.
+    :class:`HookEvent` union (ADR-0036). After Sprint 3a, projects 10 loop
+    names into the 28-name HookEvent union; the 18 own-events are emitted
+    directly by the harness, not via projection.
+
+    ADR-0030: this function uses ``match event.type:`` + ``assert_never`` so
+    pyright fails the build if a new :data:`AgentEvent` variant is added
+    without a corresponding case here. The return type is :class:`HookEvent`
+    (not ``HookEvent | None``) — every :data:`AgentEvent` has a 1:1 hook
+    projection.
     """
 
-    t = event.type
-    if t == "agent_start":
-        return AgentStartHookEvent()
-    if t == "agent_end":
-        return AgentEndHookEvent(messages=list(event.messages))
-    if t == "turn_start":
-        return TurnStartHookEvent()
-    if t == "turn_end":
-        return TurnEndHookEvent(message=event.message)
-    if t == "message_start":
-        return MessageStartHookEvent(message=event.message)
-    if t == "message_update":
-        return MessageUpdateHookEvent(message=event.message)
-    if t == "message_end":
-        return MessageEndHookEvent(message=event.message)
-    if t == "tool_execution_start":
-        return ToolExecutionStartHookEvent(
-            tool_call_id=event.tool_call_id,
-            tool_name=event.tool_name,
-            args=event.args,
-        )
-    if t == "tool_execution_update":
-        return ToolExecutionUpdateHookEvent(
-            tool_call_id=event.tool_call_id,
-            partial_result=event.partial_result,
-            tool_name=event.tool_name,
-            args=event.args,
-        )
-    if t == "tool_execution_end":
-        return ToolExecutionEndHookEvent(
-            tool_call_id=event.tool_call_id,
-            tool_name=event.tool_name,
-            is_error=event.is_error,
-        )
-    return None
+    match event.type:
+        case "agent_start":
+            return AgentStartHookEvent()
+        case "agent_end":
+            return AgentEndHookEvent(messages=list(event.messages))
+        case "turn_start":
+            return TurnStartHookEvent()
+        case "turn_end":
+            return TurnEndHookEvent(message=event.message)
+        case "message_start":
+            return MessageStartHookEvent(message=event.message)
+        case "message_update":
+            return MessageUpdateHookEvent(message=event.message)
+        case "message_end":
+            return MessageEndHookEvent(message=event.message)
+        case "tool_execution_start":
+            return ToolExecutionStartHookEvent(
+                tool_call_id=event.tool_call_id,
+                tool_name=event.tool_name,
+                args=event.args,
+            )
+        case "tool_execution_update":
+            return ToolExecutionUpdateHookEvent(
+                tool_call_id=event.tool_call_id,
+                partial_result=event.partial_result,
+                tool_name=event.tool_name,
+                args=event.args,
+            )
+        case "tool_execution_end":
+            return ToolExecutionEndHookEvent(
+                tool_call_id=event.tool_call_id,
+                tool_name=event.tool_name,
+                is_error=event.is_error,
+            )
+        case _ as unreachable:
+            assert_never(unreachable)
 
 
 __all__ = [
