@@ -228,6 +228,18 @@ class ExtensionContext:
 
     @property
     def model(self) -> Model | None:
+        """Current model bound to this harness, or ``None`` if cleared.
+
+        Pi parity note (F-8): Pi declares this field as ``Model<TApi> | undefined``
+        with a generic API parameter (Pi ``ExtensionContext.model``). Aelix
+        erases the generic and uses ``Model | None`` because the API
+        distinguisher in Aelix is the runtime string ``model.api`` (see
+        ``aelix_ai.streaming.Model``), not a static type parameter. Callers
+        that need narrowing should ``match model.api:`` rather than rely on a
+        static API type. Phase 2.x may revisit with PEP 695 generics; until
+        then this is a documented gap, not a divergence.
+        """
+
         return object.__getattribute__(self, "_model")
 
     def is_idle(self) -> bool:
