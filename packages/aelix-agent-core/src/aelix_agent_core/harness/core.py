@@ -94,6 +94,8 @@ if TYPE_CHECKING:
         _ExtensionRuntime,
     )
 
+    from aelix_agent_core.session import Session
+
 
 _log = logging.getLogger(__name__)
 
@@ -142,7 +144,11 @@ class AgentHarnessOptions:
     # Pi line citations are relative to SHA 734e08edf82ff315bc3d96472a6ebfa69a1d8016.
     # Sprint 3b wires 4 of the 7 placeholders into AgentState; the remaining 3
     # stay inert until owning ADRs land (Phase 2.2 / Phase 4).
-    session: Any | None = None  # Phase 4 / Phase 2.2 deferred — ADR-0022. Pi: types.ts:563
+    # Sprint 4a (ADR-0022): narrowed from ``Any | None`` to ``Session | None``.
+    # Pi parity: ``AgentHarnessOptions.session`` (``types.ts:790``). When ``None``
+    # the harness operates in the Aelix-additive backward-compat fallback path
+    # (no append-on-message_end; flush dispatcher drops with debug log).
+    session: Session | None = None  # Pi: types.ts:790
     env: dict[str, str] | None = None  # Phase 4 / Phase 2.2 deferred — ExecutionEnv ADR TBD. Pi: types.ts:562
     # Sprint 3b wired: resources is now dict[str, Any] (Pi type fix — see spec §D)
     # and flows into AgentState.resources at __init__ time.
@@ -159,23 +165,42 @@ class AgentHarnessOptions:
     tool_execution: ToolExecutionMode = "parallel"
 
 
-# === Sprint 3b — pending session writes (Pi parity, agent-harness.ts:414-432) ===
+# === Sprint 4a — pending session writes (Pi parity, agent-harness.ts:414-432 + 459-481) ===
 #
 # Pi defers state mutations that happen DURING a turn (set_model, set_thinking_level,
 # append_message) onto a per-harness ``pendingSessionWrites`` queue. The queue is
-# drained when the turn ends. Sprint 3b implements the 3 variants Pi creates from
-# setter/append paths at SHA 734e08e. Other 6 Pi variants (custom/custom_message/
-# label/session_info/leaf) are Phase 2.2 (ADR-0022).
+# drained when the turn ends.
+#
+# **P-11 LOAD-BEARING REVERSAL (Sprint 4a):** Sprint 3b W4 MAJOR-1 introduced a
+# ``PendingActiveToolsChangeWrite`` variant claiming Pi pushes an active-set
+# change onto ``pendingSessionWrites``. **Verified at SHA 734e08e**: Pi
+# ``setActiveTools`` (``agent-harness.ts:875-882``) does NOT push to the
+# queue — it only validates and assigns. Pi ``flushPendingSessionWrites``
+# (``agent-harness.ts:459-481``) has NO ``active_tools_change`` case. The
+# variant has been **deleted** + the push site in ``set_active_tools`` has
+# been removed. The active-set is a per-process runtime concept in Pi —
+# restoration is via ``options.activeToolNames`` on harness construction,
+# not session replay. See ADR-0022 §"Removed claims".
+#
+# **P-12:** Pi pending union is 8 dispatcher arms but only 3 push sites
+# exist (message / model_change / thinking_level_change). Sprint 4a ships
+# 8 dispatcher arms for defensive completeness; only 3 push sites exist
+# (matching Pi exactly). The 5 unreachable arms are tested via synthetic
+# injection in ``test_session_pending_writes_integration.py``.
 
 
 @dataclass(frozen=True)
 class PendingMessageWrite:
+    """Pi push site: ``agent-harness.ts:674`` (``appendMessage`` during turn)."""
+
     message: AgentMessage
     type: Literal["message"] = "message"
 
 
 @dataclass(frozen=True)
 class PendingModelChangeWrite:
+    """Pi push site: ``agent-harness.ts:851`` (``setModel`` during turn)."""
+
     provider: str
     model_id: str
     type: Literal["model_change"] = "model_change"
@@ -183,30 +208,72 @@ class PendingModelChangeWrite:
 
 @dataclass(frozen=True)
 class PendingThinkingLevelChangeWrite:
+    """Pi push site: ``agent-harness.ts:866`` (``setThinkingLevel`` during turn)."""
+
     thinking_level: str
     type: Literal["thinking_level_change"] = "thinking_level_change"
 
 
 @dataclass(frozen=True)
-class PendingActiveToolsChangeWrite:
-    """Pi parity (W4 MAJOR-1): Pi ``setActiveTools`` (agent-harness.ts:735-741)
-    pushes an active-set change onto ``pendingSessionWrites`` during a turn.
+class PendingCustomWrite:
+    """Defensive flush arm — Pi has no push site for ``custom`` at this SHA.
 
-    Aelix Sprint 3b W6 ships the matching variant so Phase 2.2 Session
-    ADR-0022 can persist active-set transitions without revisiting the
-    setter. State is already mutated by ``set_active_tools`` (and by the
-    sync ``_action_set_active_tools`` action) before this write is queued.
+    The variant exists so the 8-arm dispatcher in
+    ``flush_pending_session_writes`` matches Pi
+    ``agent-harness.ts:459-481`` exactly. Future Pi versions or
+    Aelix-additive callers may inject one via the queue directly.
     """
 
-    active_tool_names: list[str] | None
-    type: Literal["active_tools_change"] = "active_tools_change"
+    custom_type: str
+    data: Any | None = None
+    type: Literal["custom"] = "custom"
+
+
+@dataclass(frozen=True)
+class PendingCustomMessageWrite:
+    """Defensive flush arm — Pi has no push site for ``custom_message``."""
+
+    custom_type: str
+    content: Any = None
+    display: bool = True
+    details: Any | None = None
+    type: Literal["custom_message"] = "custom_message"
+
+
+@dataclass(frozen=True)
+class PendingLabelWrite:
+    """Defensive flush arm — Pi has no push site for ``label``."""
+
+    target_id: str
+    label: str | None = None
+    type: Literal["label"] = "label"
+
+
+@dataclass(frozen=True)
+class PendingSessionInfoWrite:
+    """Defensive flush arm — Pi has no push site for ``session_info``."""
+
+    name: str | None = None
+    type: Literal["session_info"] = "session_info"
+
+
+@dataclass(frozen=True)
+class PendingLeafWrite:
+    """Defensive flush arm — Pi has no push site for ``leaf``."""
+
+    target_id: str | None = None
+    type: Literal["leaf"] = "leaf"
 
 
 PendingSessionWrite = (
     PendingMessageWrite
     | PendingModelChangeWrite
     | PendingThinkingLevelChangeWrite
-    | PendingActiveToolsChangeWrite
+    | PendingCustomWrite
+    | PendingCustomMessageWrite
+    | PendingLabelWrite
+    | PendingSessionInfoWrite
+    | PendingLeafWrite
 )
 
 
@@ -269,6 +336,11 @@ class AgentHarness:
 
         self._options = options
         self._runtime = options.runtime or _ExtensionRuntime()
+        # Sprint 4a — Session is owned by the caller; we just hold a
+        # reference and route writes/append_message through it. ``None``
+        # keeps the Aelix backward-compat path (no session = drop
+        # non-message variants with a debug log).
+        self._session = options.session
         self._extensions: list[Extension] = list(options.extensions)
         self._listeners: list[HarnessListener] = []
         self._phase: AgentHarnessPhase = "idle"
@@ -295,6 +367,18 @@ class AgentHarness:
             tools=list(merged.values()),
             messages=list(options.initial_messages),
         )
+        # Sprint 4a — populate ``state.session_id`` from the attached
+        # Session's metadata when present (Pi parity:
+        # ``before_provider_request`` uses this). The metadata is stored
+        # eagerly by every ``SessionStorage`` impl (Memory / Jsonl), so the
+        # internal ``_metadata`` attribute is safe to peek synchronously.
+        # ``get_metadata()`` itself is async per Pi Protocol — we do not
+        # call it here because ``__init__`` cannot ``await``.
+        if self._session is not None:
+            storage = self._session.get_storage()
+            metadata = getattr(storage, "_metadata", None)
+            if metadata is not None:
+                self._state.session_id = metadata.id
 
         # Sprint 3b — F-6 placeholder wire-up (§D). Pi parity: AgentHarness
         # constructor seeds these from options into state. ``active_tool_names``
@@ -575,23 +659,20 @@ class AgentHarness:
     async def set_active_tools(self, tool_names: list[str]) -> None:
         """Public async wrapper over the F-9 sync action.
 
-        Pi: ``agent-harness.ts:735-741``. Pi ``setActiveTools`` does NOT emit
-        any event and Aelix mirrors that exactly (P-4 spec verdict). The sync
-        ``_action_set_active_tools`` is preserved for
-        :class:`ExtensionRuntimeActions` — async migration is Phase 2.2+.
+        Pi: ``agent-harness.ts:875-882``. Pi ``setActiveTools`` validates
+        + assigns only — no event emission, no pending push. Aelix mirrors
+        that exactly (P-4 spec verdict + P-11 reversal in Sprint 4a).
 
-        W4 MAJOR-1 (Pi parity): Pi pushes an active-set change onto
-        ``pendingSessionWrites`` when called during a turn so Phase 2.2
-        Session ADR-0022 can persist the transition. Aelix mirrors that
-        here — the sync action mutates state first; the pending write is
-        queued only after validation succeeds and only when in turn phase.
+        **P-11 reversal (Sprint 4a, ADR-0022):** the prior Sprint 3b W4
+        MAJOR-1 push site has been **removed**. Verified at SHA 734e08e Pi
+        ``setActiveTools`` does NOT push to ``pendingSessionWrites`` and
+        ``flushPendingSessionWrites`` has NO ``active_tools_change`` case.
+        The active-set is a per-process runtime concept in Pi — restoration
+        is via ``options.activeToolNames`` on harness construction, not
+        session replay.
         """
 
         self._action_set_active_tools(tool_names)
-        if self._phase == "turn":
-            self._pending_session_writes.append(
-                PendingActiveToolsChangeWrite(active_tool_names=list(tool_names))
-            )
 
     async def set_steering_mode(self, mode: QueueMode) -> None:
         """Update the steering queue mode. Pi: ``agent-harness.ts:743-745``.
@@ -737,14 +818,14 @@ class AgentHarness:
             self._pending_session_writes.append(PendingMessageWrite(message=message))
 
     async def flush_pending_session_writes(self) -> None:
-        """Drain ``_pending_session_writes`` FIFO. Pi: ``agent-harness.ts:414-432``.
+        """Drain ``_pending_session_writes`` FIFO. Pi: ``agent-harness.ts:459-481``.
 
-        Sprint 3b: only :class:`PendingMessageWrite` materially affects state —
-        the message is appended to ``state.messages``. ``model_change`` and
-        ``thinking_level_change`` entries are dropped because the underlying
-        ``state.model`` / ``state.thinking_level`` have already been mutated
-        by the setter; Phase 2.2 (Session ADR-0022) will replace this drop
-        with the real Session.appendXxx persistence path.
+        Sprint 4a 8-arm match dispatcher (P-12). When a :class:`Session` is
+        attached, routes each variant to the corresponding ``session.append_*``
+        call. When ``session is None`` (Aelix backward-compat fallback per
+        ADR-0022), :class:`PendingMessageWrite` is mirrored into
+        ``state.messages`` (transitional behavior so existing tests keep
+        passing) and the other 7 variants are dropped with a debug log.
         """
 
         if not self._pending_session_writes:
@@ -752,14 +833,60 @@ class AgentHarness:
         pending = self._pending_session_writes
         self._pending_session_writes = []
         for entry in pending:
-            if isinstance(entry, PendingMessageWrite):
-                self._state.messages.append(entry.message)
+            if self._session is not None:
+                # Pi parity branch — every variant routes to a session
+                # append_* call. Match exhaustiveness is enforced by
+                # ``assert_never`` so adding a future variant without a
+                # dispatcher arm fails the type check.
+                match entry:
+                    case PendingMessageWrite():
+                        await self._session.append_message(entry.message)
+                    case PendingModelChangeWrite():
+                        await self._session.append_model_change(
+                            entry.provider, entry.model_id
+                        )
+                    case PendingThinkingLevelChangeWrite():
+                        await self._session.append_thinking_level_change(
+                            entry.thinking_level
+                        )
+                    case PendingCustomWrite():
+                        await self._session.append_custom_entry(
+                            entry.custom_type, entry.data
+                        )
+                    case PendingCustomMessageWrite():
+                        await self._session.append_custom_message_entry(
+                            entry.custom_type,
+                            entry.content,
+                            entry.display,
+                            entry.details,
+                        )
+                    case PendingLabelWrite():
+                        await self._session.append_label(
+                            entry.target_id, entry.label
+                        )
+                    case PendingSessionInfoWrite():
+                        await self._session.append_session_name(
+                            entry.name or ""
+                        )
+                    case PendingLeafWrite():
+                        # Pi: ``this.session.getStorage().setLeafId(...)``.
+                        await self._session.get_storage().set_leaf_id(
+                            entry.target_id
+                        )
+                    case _ as unreachable:
+                        assert_never(unreachable)
             else:
-                # W4 MINOR: log non-message variants we drop so Phase 2.2
-                # Session ADR-0022 work can spot anything unexpected. State
-                # is already mutated by the setter; Session persistence is
-                # where these will finally land.
-                _log.debug("dropping %r (Phase 2.2 Session)", entry)
+                # Aelix-additive backward-compat path (no session attached).
+                # ``message`` lands in ``state.messages`` to preserve the
+                # Sprint 3b behavior used by existing tests; the other 7
+                # variants are dropped with a debug log.
+                if isinstance(entry, PendingMessageWrite):
+                    self._state.messages.append(entry.message)
+                else:
+                    _log.debug(
+                        "dropping %r (no session attached — Sprint 4a fallback)",
+                        entry,
+                    )
 
     async def wait_for_idle(self) -> None:
         await self._idle_event.wait()
@@ -997,6 +1124,24 @@ class AgentHarness:
             )
 
             async def emit(event: AgentEvent) -> None:
+                # Sprint 4a — Pi ``handleAgentEvent`` (``agent-harness.ts:483-510``)
+                # primary write path: every ``message_end`` event is
+                # persisted via ``session.appendMessage`` BEFORE the
+                # observational re-emit. When no session is attached we
+                # skip the call (Aelix backward-compat path per ADR-0022).
+                if event.type == "message_end" and self._session is not None:
+                    try:
+                        await self._session.append_message(event.message)
+                    except Exception as exc:  # noqa: BLE001
+                        # Session failure during message_end is logged but
+                        # does not break the lifecycle emit chain — the
+                        # observational hook fan-out still runs so
+                        # extensions see the event.
+                        _log.debug(
+                            "session.append_message raised on message_end: %r",
+                            exc,
+                            exc_info=True,
+                        )
                 # Dispatch to local listeners first.
                 for listener in list(self._listeners):
                     try:
@@ -1177,9 +1322,13 @@ __all__ = [
     "AgentHarnessOptions",
     "AgentHarnessPhase",
     "HarnessListener",
-    "PendingActiveToolsChangeWrite",
+    "PendingCustomMessageWrite",
+    "PendingCustomWrite",
+    "PendingLabelWrite",
+    "PendingLeafWrite",
     "PendingMessageWrite",
     "PendingModelChangeWrite",
+    "PendingSessionInfoWrite",
     "PendingSessionWrite",
     "PendingThinkingLevelChangeWrite",
 ]

@@ -10,6 +10,20 @@ Layering (mirrors pi-agent-core):
 from aelix_agent_core.agent import Agent, AgentOptions
 from aelix_agent_core.default_convert import default_convert_to_llm
 from aelix_agent_core.loop import AgentEventSink, agent_loop, agent_loop_continue
+from aelix_agent_core.session import (
+    JsonlSessionCreateOptions,
+    JsonlSessionMetadata,
+    JsonlSessionRepo,
+    JsonlSessionStorage,
+    MemorySessionStorage,
+    Session,
+    SessionContext,
+    SessionError,
+    SessionMetadata,
+    SessionStorage,
+    SessionTreeEntry,
+    build_session_context,
+)
 from aelix_agent_core.types import (
     AfterToolCallContext,
     AfterToolCallResult,
@@ -54,10 +68,21 @@ __all__ = [
     "AgentTool",
     "BeforeToolCallContext",
     "BeforeToolCallResult",
+    "JsonlSessionCreateOptions",
+    "JsonlSessionMetadata",
+    "JsonlSessionRepo",
+    "JsonlSessionStorage",
+    "MemorySessionStorage",
     "MessageEndEvent",
     "MessageStartEvent",
     "MessageUpdateEvent",
     "QueueMode",
+    "Session",
+    "SessionContext",
+    "SessionError",
+    "SessionMetadata",
+    "SessionStorage",
+    "SessionTreeEntry",
     "ShouldStopAfterTurnContext",
     "ToolExecutionEndEvent",
     "ToolExecutionMode",
@@ -67,5 +92,6 @@ __all__ = [
     "TurnStartEvent",
     "agent_loop",
     "agent_loop_continue",
+    "build_session_context",
     "default_convert_to_llm",
 ]

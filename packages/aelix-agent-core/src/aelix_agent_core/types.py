@@ -81,6 +81,12 @@ class AgentState:
     # `set_stream_options` (no emit), respectively.
     resources: dict[str, Any] = field(default_factory=dict)
     stream_options: dict[str, Any] = field(default_factory=dict)
+    # Sprint 4a — Pi parity (state.session_id mirrors Pi
+    # ``agent-harness.ts`` ``this.session.getMetadata().id`` snapshot).
+    # Populated by ``AgentHarness.__init__`` when an external Session is
+    # attached. ``None`` when no session is wired (Aelix-additive
+    # backward-compat fallback per ADR-0022).
+    session_id: str | None = None
 
 
 # === Hook contexts and results ===
