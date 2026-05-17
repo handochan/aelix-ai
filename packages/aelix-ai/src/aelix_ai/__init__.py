@@ -40,6 +40,7 @@ from aelix_ai.tools import (
     ToolContent,
     ToolExecute,
     ToolExecutionContext,
+    ToolPartialCallback,
     ToolResult,
     validate_tool_arguments,
 )
@@ -66,6 +67,7 @@ __all__ = [
     "ToolContent",
     "ToolExecute",
     "ToolExecutionContext",
+    "ToolPartialCallback",
     "ToolResult",
     "ToolResultMessage",
     "UserMessage",

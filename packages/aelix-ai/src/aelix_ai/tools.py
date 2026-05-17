@@ -18,6 +18,21 @@ from aelix_ai.messages import ImageContent, TextContent
 ToolContent = list[TextContent | ImageContent]
 
 
+# Sprint 3d (P-9): partial-result callback type. Pi parity ——
+# ``AgentToolUpdateCallback`` in ``packages/agent/src/types.ts:357-358`` is a
+# sync ``(partialResult) => void``; Aelix tolerates both sync and async return
+# types so handlers and tool authors can fan out without an awkward
+# ``inspect.iscoroutine`` dance. The runtime (`_execute_and_finalize`) drains
+# every scheduled emission before returning, mirroring Pi's
+# ``await Promise.all(updateEvents)`` at ``agent-loop.ts:630``.
+#
+# Note: Pi ``AgentToolUpdateCallback`` is strictly sync (``void``); Aelix
+# accepts ``Awaitable[None]`` for type-compat only — the runtime does NOT
+# await user-returned awaitables (matches Pi semantics). Only the
+# runtime-scheduled internal emission task is drained.
+ToolPartialCallback = Callable[["ToolResult"], Awaitable[None] | None]
+
+
 @dataclass(frozen=True)
 class ToolExecutionContext:
     """Minimal context passed to a tool's ``execute`` callable.
@@ -25,10 +40,22 @@ class ToolExecutionContext:
     Phase 1.1 keeps this lightweight. Harness layers will extend it with
     session manager, UI handles, audit metadata, and cancellation in later
     phases.
+
+    Sprint 3d (P-9) adds the optional ``on_partial`` callback. Pi parity:
+    ``AgentToolUpdateCallback`` (``types.ts:357-358``) — fire-and-forget; the
+    runtime guarantees every partial-emit fan-out is drained before the tool's
+    final result is returned to the loop (mirrors Pi
+    ``await Promise.all(updateEvents)`` at ``agent-loop.ts:630``).
+
+    ``on_partial`` is ``None`` when no harness is registered (bare-loop
+    callers); tools MUST tolerate the ``None`` value before invoking it.
     """
 
     tool_call_id: str = ""
     signal: Any | None = None  # AbortSignal placeholder for Phase 2
+    # Sprint 3d (P-9). See ``ToolPartialCallback`` for the Pi-equivalent
+    # contract.
+    on_partial: ToolPartialCallback | None = None
 
 
 @dataclass(frozen=True)
@@ -86,6 +113,7 @@ __all__ = [
     "ToolContent",
     "ToolExecute",
     "ToolExecutionContext",
+    "ToolPartialCallback",
     "ToolResult",
     "validate_tool_arguments",
 ]
