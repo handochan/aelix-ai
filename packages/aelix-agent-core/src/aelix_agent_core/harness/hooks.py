@@ -45,7 +45,7 @@ import inspect
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Literal, overload
+from typing import TYPE_CHECKING, Any, Literal, Protocol, overload
 
 from aelix_ai.messages import (
     AssistantMessage,
@@ -100,9 +100,18 @@ AgentEventName = Literal[
     "agent_end",
 ]
 
-# Harness own-events (18) — Pi ``AgentHarnessOwnEvent`` at types.ts:595-612
-# SHA ``734e08e``. These are emitted by AgentHarness directly (not via the
-# loop projection).
+# Harness own-events (21 — Sprint 5a Phase 3.1 added 3) — Pi
+# ``AgentHarnessOwnEvent`` at types.ts:595-612 + Pi
+# ``coding-agent`` event types (input/user_bash/resources_discover) at SHA
+# ``734e08e``. These are emitted by AgentHarness or by the
+# ``aelix-coding-agent`` CLI loop directly (not via the loop projection).
+#
+# Sprint 5a (Phase 3.1, ADR-0017 §"Phase 3.1 event additions") REGISTERS
+# 3 new events whose EMIT sites are deferred to Sprint 5b (ADR-0042 CLI
+# loop). Pi truth (W1 P-24/P-25/P-26): the events DO exist in Pi at SHA
+# 734e08e — they live in the ``coding-agent`` package, NOT
+# ``agent-core``. Sprint 3a P-1 misclassified them as "wishlist-only";
+# the spec §D corrects that.
 AgentHarnessEventName = Literal[
     "queue_update",
     "save_point",
@@ -122,10 +131,15 @@ AgentHarnessEventName = Literal[
     "model_select",
     "thinking_level_select",
     "resources_update",
+    # Sprint 5a additions (Phase 3.1) — Pi ``coding-agent`` at SHA 734e08e
+    "input",
+    "user_bash",
+    "resources_discover",
 ]
 
-# Union of both (28 names total). ADR-0036 keeps the two names disjoint so
-# "is this a loop event or a harness own-event?" stays explicit and answerable.
+# Union of both (31 names total — Sprint 5a Phase 3.1 added 3 own events).
+# ADR-0036 keeps the two names disjoint so "is this a loop event or a
+# harness own-event?" stays explicit and answerable.
 HookEventName = Literal[
     # === Loop AgentEvent re-projections (10) ===  ← ADR-0036 projection
     "agent_start",
@@ -138,7 +152,7 @@ HookEventName = Literal[
     "tool_execution_end",
     "turn_end",
     "agent_end",
-    # === Harness own-events (18) ===  ← Pi types.ts:595-612 (SHA 734e08e)
+    # === Harness own-events (21) ===  ← Pi types.ts:595-612 + coding-agent (SHA 734e08e)
     "queue_update",
     "save_point",
     "abort",
@@ -157,6 +171,10 @@ HookEventName = Literal[
     "model_select",
     "thinking_level_select",
     "resources_update",
+    # Sprint 5a additions (Phase 3.1) — Pi ``coding-agent`` at SHA 734e08e
+    "input",
+    "user_bash",
+    "resources_discover",
 ]
 
 
@@ -681,6 +699,138 @@ class SettledHookEvent(HookEvent):
     type: Literal["settled"] = "settled"
 
 
+# === Sprint 5a (Phase 3.1) — 3 new events registered (P-24/P-25/P-26) ===
+#
+# Emit sites are deferred to Sprint 5b (ADR-0042 CLI loop). These dataclasses
+# + their result types + reducers + @overloads land in Sprint 5a so the
+# type surface is stable for extension authors and the
+# ``DEFERRED_ALLOWLIST`` invariant is honoured (ADR-0041 closure pin).
+#
+# Pi sources (SHA ``734e08e``):
+# - ``InputEvent``               → ``coding-agent/.../extensions/types.ts:619-625``
+# - ``UserBashEvent``            → ``coding-agent/.../extensions/types.ts:602-609``
+# - ``ResourcesDiscoverEvent``   → ``coding-agent/.../extensions/types.ts:512-517``
+
+
+@dataclass(frozen=True)
+class InputContinue:
+    """Reducer result — "no opinion, fall through to next handler"."""
+
+    action: Literal["continue"] = "continue"
+
+
+@dataclass(frozen=True)
+class InputTransform:
+    """Reducer result — replace the input text/images for subsequent handlers + the CLI loop."""
+
+    text: str = ""
+    images: list[ImageContent] | None = None
+    action: Literal["transform"] = "transform"
+
+
+@dataclass(frozen=True)
+class InputHandled:
+    """Reducer result — short-circuit: extension handled the input, do not run CLI loop."""
+
+    action: Literal["handled"] = "handled"
+
+
+InputResult = InputContinue | InputTransform | InputHandled
+"""Pi ``InputEventResult`` (``types.ts:762-765``). The reducer treats a bare
+``None`` return as "no opinion" (equivalent to :class:`InputContinue`).
+"""
+
+
+class BashOperations(Protocol):
+    """Minimal stub Protocol for Pi ``BashOperations``.
+
+    Sprint 5a registers the type surface only — the full BashOperations
+    Protocol (with ``execute``, ``executeInteractive``, etc.) lands in
+    Sprint 5b alongside the built-in ``bash`` coding tool (ADR-0042 /
+    ADR-0043). The Protocol carries no required methods at 5a; future
+    sprints widen it as the CLI loop demands.
+    """
+
+
+class BashResult(Protocol):
+    """Minimal stub Protocol for Pi ``BashResult``.
+
+    See :class:`BashOperations` for the deferred-binding rationale.
+    """
+
+
+@dataclass(frozen=True)
+class UserBashResult:
+    """Pi ``UserBashEventResult`` (``types.ts:986-994``).
+
+    ``operations`` lets an extension swap the bash dispatcher;
+    ``result`` lets the extension fully replace execution (Pi
+    ``isOperationsMissing && result?`` short-circuit).
+    """
+
+    operations: BashOperations | None = None
+    result: BashResult | None = None
+
+
+@dataclass(frozen=True)
+class ResourcesDiscoverResult:
+    """Pi ``ResourcesDiscoverResult`` (``types.ts:502-509``).
+
+    Each list is collected + de-duplicated across handlers by
+    :func:`_reducer_resources_discover` (Pi
+    ``agent-session.ts:2059-2068``).
+    """
+
+    skill_paths: list[str] | None = None
+    prompt_paths: list[str] | None = None
+    theme_paths: list[str] | None = None
+
+
+@dataclass(frozen=True)
+class InputHookEvent(HookEvent):
+    """Pi ``InputEvent`` (``types.ts:619-625``).
+
+    Emitted by the CLI input loop after user text/images are received but
+    before they reach :meth:`AgentHarness.prompt`. Sprint 5a registers
+    only; emit lands in Sprint 5b (ADR-0042).
+    """
+
+    text: str = ""
+    images: list[ImageContent] | None = None
+    source: Literal["interactive", "rpc", "extension"] = "interactive"
+    type: Literal["input"] = "input"
+
+
+@dataclass(frozen=True)
+class UserBashHookEvent(HookEvent):
+    """Pi ``UserBashEvent`` (``types.ts:602-609``).
+
+    Emitted when a user bash command is dispatched via the ``!`` (in-context)
+    or ``!!`` (excluded) prefix in the CLI loop. Sprint 5a registers only;
+    emit lands in Sprint 5b (ADR-0042 CLI loop).
+    """
+
+    command: str = ""
+    exclude_from_context: bool = False
+    cwd: str = ""
+    type: Literal["user_bash"] = "user_bash"
+
+
+@dataclass(frozen=True)
+class ResourcesDiscoverHookEvent(HookEvent):
+    """Pi ``ResourcesDiscoverEvent`` (``types.ts:512-517``).
+
+    Fired after ``session_start`` to let extensions contribute additional
+    skill / prompt / theme paths. Sprint 5a registers only; emit lands in
+    Sprint 5b (ADR-0042 CLI loop) when the resource discovery surface is
+    online.
+    """
+
+    cwd: str = ""
+    reason: Literal["startup", "reload"] = "startup"
+    type: Literal["resources_discover"] = "resources_discover"
+
+
 # === Runtime registry ===
 
 
@@ -715,6 +865,10 @@ HOOK_RESULT_TYPES: dict[HookEventName, type | None] = {
     "model_select": None,
     "thinking_level_select": None,
     "resources_update": None,
+    # === Sprint 5a (Phase 3.1) additions — 3 registered events ===
+    "input": InputContinue,  # union representative — reducer accepts all 3 InputResult arms
+    "user_bash": UserBashResult,
+    "resources_discover": ResourcesDiscoverResult,
 }
 
 
@@ -1011,6 +1165,114 @@ async def _reducer_observational(
     return None
 
 
+# === Sprint 5a (Phase 3.1) — input / user_bash / resources_discover reducers ===
+
+
+async def _reducer_input(
+    handlers: list[HandlerEntry],
+    event: InputHookEvent,
+    ctx: ExtensionContext,
+) -> InputResult | None:
+    """Pi parity reducer for ``input`` (``agent-session.ts:987-1015`` region).
+
+    - First handler returning :class:`InputHandled` short-circuits the chain
+      (the CLI loop will NOT process the input).
+    - :class:`InputTransform` chains: each transform sees the previously
+      transformed text/images.
+    - :class:`InputContinue` (or bare ``None``) is passthrough.
+    """
+
+    current = event
+    last_result: InputResult | None = None
+    for handler, mode in handlers:
+        raw = await _safe_invoke(handler, current, ctx, mode)
+        if isinstance(raw, InputHandled):
+            return raw
+        if isinstance(raw, InputTransform):
+            last_result = raw
+            current = InputHookEvent(
+                text=raw.text,
+                images=raw.images,
+                source=event.source,
+            )
+            continue
+        if isinstance(raw, InputContinue):
+            last_result = raw
+            continue
+        # bare None → no opinion; equivalent to InputContinue.
+    return last_result
+
+
+async def _reducer_user_bash(
+    handlers: list[HandlerEntry],
+    event: UserBashHookEvent,
+    ctx: ExtensionContext,
+) -> UserBashResult | None:
+    """Pi parity reducer for ``user_bash`` (``agent-session.ts:1403`` region).
+
+    Returns the LAST :class:`UserBashResult` produced by a handler — Pi's
+    CLI loop picks ``result?`` (full replacement) when set, otherwise uses
+    ``operations`` (custom dispatcher). Earlier handlers are observational.
+    """
+
+    last: UserBashResult | None = None
+    for handler, mode in handlers:
+        raw = await _safe_invoke(handler, event, ctx, mode)
+        if isinstance(raw, UserBashResult):
+            last = raw
+    return last
+
+
+async def _reducer_resources_discover(
+    handlers: list[HandlerEntry],
+    event: ResourcesDiscoverHookEvent,
+    ctx: ExtensionContext,
+) -> ResourcesDiscoverResult | None:
+    """Pi parity reducer for ``resources_discover``
+    (``agent-session.ts:2059-2068``).
+
+    Each handler may contribute paths to any of three buckets
+    (skill / prompt / theme). The reducer concatenates them in handler
+    order, then de-duplicates within each bucket preserving first occurrence.
+    """
+
+    skills: list[str] = []
+    prompts: list[str] = []
+    themes: list[str] = []
+    seen = False
+    for handler, mode in handlers:
+        raw = await _safe_invoke(handler, event, ctx, mode)
+        if not isinstance(raw, ResourcesDiscoverResult):
+            continue
+        seen = True
+        if raw.skill_paths:
+            skills.extend(raw.skill_paths)
+        if raw.prompt_paths:
+            prompts.extend(raw.prompt_paths)
+        if raw.theme_paths:
+            themes.extend(raw.theme_paths)
+    if not seen:
+        return None
+
+    def _dedup(items: list[str]) -> list[str] | None:
+        if not items:
+            return None
+        seen_set: set[str] = set()
+        out: list[str] = []
+        for item in items:
+            if item in seen_set:
+                continue
+            seen_set.add(item)
+            out.append(item)
+        return out
+
+    return ResourcesDiscoverResult(
+        skill_paths=_dedup(skills),
+        prompt_paths=_dedup(prompts),
+        theme_paths=_dedup(themes),
+    )
+
+
 _REDUCERS: dict[HookEventName, Callable[..., Awaitable[Any]]] = {
     # === existing entries ===
     "context": _reducer_context,
@@ -1042,6 +1304,10 @@ _REDUCERS: dict[HookEventName, Callable[..., Awaitable[Any]]] = {
     "model_select": _reducer_observational,
     "thinking_level_select": _reducer_observational,
     "resources_update": _reducer_observational,
+    # === Sprint 5a (Phase 3.1) additions ===
+    "input": _reducer_input,
+    "user_bash": _reducer_user_bash,
+    "resources_discover": _reducer_resources_discover,
 }
 
 
@@ -1160,6 +1426,19 @@ ThinkingLevelSelectHandler = Callable[
 ResourcesUpdateHandler = Callable[
     [ResourcesUpdateHookEvent, "ExtensionContext"],
     None | Awaitable[None],
+]
+# Sprint 5a (Phase 3.1) additions --------------------------------------------
+InputHandler = Callable[
+    [InputHookEvent, "ExtensionContext"],
+    InputResult | None | Awaitable[InputResult | None],
+]
+UserBashHandler = Callable[
+    [UserBashHookEvent, "ExtensionContext"],
+    UserBashResult | None | Awaitable[UserBashResult | None],
+]
+ResourcesDiscoverHandler = Callable[
+    [ResourcesDiscoverHookEvent, "ExtensionContext"],
+    ResourcesDiscoverResult | None | Awaitable[ResourcesDiscoverResult | None],
 ]
 
 
@@ -1477,6 +1756,37 @@ class HookBus:
         cleanup: HookCleanup | None = None,
         error_mode: HookErrorMode = "throw",
     ) -> Callable[[], None]: ...
+    # --- Sprint 5a (Phase 3.1) additions ---
+    @overload
+    def on(
+        self,
+        event_type: Literal["input"],
+        handler: InputHandler,
+        *,
+        source: str | None = None,
+        cleanup: HookCleanup | None = None,
+        error_mode: HookErrorMode = "throw",
+    ) -> Callable[[], None]: ...
+    @overload
+    def on(
+        self,
+        event_type: Literal["user_bash"],
+        handler: UserBashHandler,
+        *,
+        source: str | None = None,
+        cleanup: HookCleanup | None = None,
+        error_mode: HookErrorMode = "throw",
+    ) -> Callable[[], None]: ...
+    @overload
+    def on(
+        self,
+        event_type: Literal["resources_discover"],
+        handler: ResourcesDiscoverHandler,
+        *,
+        source: str | None = None,
+        cleanup: HookCleanup | None = None,
+        error_mode: HookErrorMode = "throw",
+    ) -> Callable[[], None]: ...
 
     def on(  # pyright: ignore[reportInconsistentOverload]
         self,
@@ -1633,6 +1943,8 @@ __all__ = [
     "AgentHarnessEventName",
     "AgentStartHandler",
     "AgentStartHookEvent",
+    "BashOperations",
+    "BashResult",
     "BeforeAgentStartHandler",
     "BeforeAgentStartHookEvent",
     "BeforeAgentStartResult",
@@ -1654,6 +1966,12 @@ __all__ = [
     "HookHandler",
     "HookObserver",  # exported: observers are part of the documented public API
     "HookRegistration",
+    "InputContinue",
+    "InputHandled",
+    "InputHandler",
+    "InputHookEvent",
+    "InputResult",
+    "InputTransform",
     "MessageEndHandler",
     "MessageEndHookEvent",
     "MessageStartHandler",
@@ -1664,6 +1982,9 @@ __all__ = [
     "ModelSelectHookEvent",
     "QueueUpdateHandler",
     "QueueUpdateHookEvent",
+    "ResourcesDiscoverHandler",
+    "ResourcesDiscoverHookEvent",
+    "ResourcesDiscoverResult",
     "ResourcesUpdateHandler",
     "ResourcesUpdateHookEvent",
     "SavePointHandler",
@@ -1698,4 +2019,7 @@ __all__ = [
     "TurnEndHookEvent",
     "TurnStartHandler",
     "TurnStartHookEvent",
+    "UserBashHandler",
+    "UserBashHookEvent",
+    "UserBashResult",
 ]

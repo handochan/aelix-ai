@@ -32,5 +32,16 @@
     "model_select",
     "thinking_level_select",
     "resources_update"
-  ]
+  ],
+  "coding_agent_event_names": [
+    "input",
+    "user_bash",
+    "resources_discover"
+  ],
+  "coding_agent_event_source_file": "packages/coding-agent/src/core/extensions/types.ts",
+  "coding_agent_event_pi_lines": {
+    "input": "619-625",
+    "user_bash": "602-609",
+    "resources_discover": "512-517"
+  }
 }

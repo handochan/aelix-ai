@@ -55,8 +55,10 @@ def _make_bus() -> HookBus:
 # === Registry sanity ===
 
 
-async def test_hook_result_types_registry_has_28_entries() -> None:
-    assert len(HOOK_RESULT_TYPES) == 28
+async def test_hook_result_types_registry_has_31_entries() -> None:
+    """31 = Sprint 3a 28 + Sprint 5a Phase 3.1 (input/user_bash/resources_discover)."""
+
+    assert len(HOOK_RESULT_TYPES) == 31
 
 
 async def test_all_new_sprint_3a_event_names_registered() -> None:
