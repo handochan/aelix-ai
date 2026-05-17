@@ -90,14 +90,19 @@ async def test_set_model_roundtrip_and_previous_snapshot() -> None:
 async def test_set_model_during_turn_pushes_pending_write() -> None:
     # During-turn behaviour: emit a model_select handler that calls
     # set_model() from inside ``before_agent_start`` so we are in "turn" phase.
+    # W4 MAJOR-2 (test isolation): snapshot pending writes via a
+    # ``before_agent_start`` listener BEFORE turn_end flushes them; no
+    # class-level monkey-patch leakage across tests.
     h = AgentHarness(AgentHarnessOptions(stream_fn=_stream()))
     other = Model(api="openai", id="gpt-99")
 
     captured_phase: list[str] = []
+    snapshot_during_turn: list[Any] = []
 
     async def in_turn(event: Any, _ctx: Any) -> Any:
         captured_phase.append(h.phase)
         await h.set_model(other)
+        snapshot_during_turn.extend(h._pending_session_writes)
         return None
 
     h.hooks.on("before_agent_start", in_turn)  # type: ignore[arg-type]
@@ -106,7 +111,7 @@ async def test_set_model_during_turn_pushes_pending_write() -> None:
 
     assert captured_phase == ["turn"]
     # One pending write recorded during the turn.
-    types = [type(p) for p in h._pending_session_writes_drained_for_test()]
+    types = [type(p) for p in snapshot_during_turn]
     assert PendingModelChangeWrite in types
     assert h.state.model is other
 
@@ -141,16 +146,20 @@ async def test_set_thinking_level_mutation_and_emit() -> None:
 
 
 async def test_set_thinking_level_during_turn_pending() -> None:
+    # W4 MAJOR-2 (test isolation): see the model variant above — same
+    # in-turn snapshot pattern, no monkey-patch.
     h = AgentHarness(AgentHarnessOptions(stream_fn=_stream()))
+    snapshot_during_turn: list[Any] = []
 
     async def in_turn(event: Any, _ctx: Any) -> Any:
         await h.set_thinking_level("medium")
+        snapshot_during_turn.extend(h._pending_session_writes)
         return None
 
     h.hooks.on("before_agent_start", in_turn)  # type: ignore[arg-type]
     await h.prompt("hi")
 
-    types = [type(p) for p in h._pending_session_writes_drained_for_test()]
+    types = [type(p) for p in snapshot_during_turn]
     assert PendingThinkingLevelChangeWrite in types
     assert h.state.thinking_level == "medium"
 
@@ -424,41 +433,7 @@ async def test_set_tools_explicit_widening_via_empty_list() -> None:
     assert h.state.active_tool_names == ["p"]
 
 
-# === Test helper: drain pending writes for test assertions =============
-
-
-def _install_test_helper() -> None:
-    """Add a test-only helper to AgentHarness to peek at writes drained during
-    a turn (turn_end already flushed _pending_session_writes by then).
-
-    Implementation: monkeypatch on the class once at import time; safe because
-    tests run single-process and the helper is internal.
-    """
-
-    if hasattr(AgentHarness, "_pending_session_writes_drained_for_test"):
-        return
-
-    # We need to capture the pending writes BEFORE turn_end flushes them.
-    # Approach: install a `save_point` handler at construction time that
-    # remembers what was about to be flushed. Simpler: snapshot inside the
-    # setter calls by wrapping flush_pending_session_writes.
-    original_flush = AgentHarness.flush_pending_session_writes
-
-    async def patched_flush(self: AgentHarness) -> None:
-        snapshot = list(self._pending_session_writes)
-        await original_flush(self)
-        existing = getattr(self, "_test_drained", [])
-        existing.extend(snapshot)
-        # Use object.__setattr__ in case dataclasses ever land — AgentHarness
-        # is currently a regular class so plain assignment is fine.
-        self._test_drained = existing  # type: ignore[attr-defined]
-
-    AgentHarness.flush_pending_session_writes = patched_flush  # type: ignore[method-assign]
-
-    def drained(self: AgentHarness) -> list[Any]:
-        return list(getattr(self, "_test_drained", []))
-
-    AgentHarness._pending_session_writes_drained_for_test = drained  # type: ignore[attr-defined]
-
-
-_install_test_helper()
+# W4 MAJOR-2: the prior class-level monkey-patch helper
+# (``_install_test_helper``) was removed in favor of in-turn snapshot via
+# ``before_agent_start`` listeners — see the during-turn tests above. No
+# global mutation of ``AgentHarness`` leaks across test modules anymore.
