@@ -1,0 +1,36 @@
+{
+  "pi_sha": "734e08edf82ff315bc3d96472a6ebfa69a1d8016",
+  "source_file": "packages/agent/src/harness/types.ts",
+  "agent_event_names": [
+    "agent_start",
+    "turn_start",
+    "message_start",
+    "message_update",
+    "message_end",
+    "tool_execution_start",
+    "tool_execution_update",
+    "tool_execution_end",
+    "turn_end",
+    "agent_end"
+  ],
+  "harness_own_event_names": [
+    "queue_update",
+    "save_point",
+    "abort",
+    "settled",
+    "before_agent_start",
+    "context",
+    "before_provider_request",
+    "before_provider_payload",
+    "after_provider_response",
+    "tool_call",
+    "tool_result",
+    "session_before_compact",
+    "session_compact",
+    "session_before_tree",
+    "session_tree",
+    "model_select",
+    "thinking_level_select",
+    "resources_update"
+  ]
+}
