@@ -34,13 +34,13 @@
 | 0018 | [message_end Replacement Reducer (Pi parity)](0018-message-end-replacement-reducer.md)                                                                  | Deprecated (Sprint 3b — superseded by P-3 verdict)                   | **Deprecated** — Pi has no message_end reducer at SHA 734e08e. Sprint 3b §0 verdict: keep `message_end` observational, no replacement reducer.       |
 | 0019 | [Hook Error Policy v2 — Pi `"throw"` Default + Aelix `"continue"` Opt-in](0019-hook-error-policy-v2-pi-continue-default.md) | Accepted (Sprint 3a / Phase 2.1.1 shipped — v3 reframe) | Pi-parity `"throw"` default (matches Pi `normalizeHookError`) + Aelix additive `error_mode="continue"` opt-in. v3 reframe per W1 Finding P-2. ADR-0014 대체. |
 | 0020 | [RPC Mode for Multi-Language Clients](0020-rpc-mode-multi-language-clients.md)                                                                          | Draft (Phase 4)                     | `aelix mode rpc` — stdin/stdout JSON 프로토콜. Pi `--mode rpc` 그대로 port. ADR-0009 부분 대체.                                                     |
-| 0021 | [Parallel-Mode Tool Execution + Per-Tool Override](0021-parallel-tool-execution.md)                                                                     | Draft (Phase 2.1)                   | default parallel 실행 + per-tool `execution_mode="sequential"` override.                                                                           |
+| 0021 | [Parallel-Mode Tool Execution + Per-Tool Override](0021-parallel-tool-execution.md)                                                                     | Accepted (Sprint 3c / Phase 2.1.3 shipped) | default parallel 실행 (`asyncio.gather` per P-7 reversal) + per-tool `execution_mode="sequential"` override.                                       |
 | 0022 | [Session Manager + JSONL Persistence](0022-session-manager-jsonl-persistence.md)                                                                        | Draft (Phase 2.2)                   | `Session` interface + `JsonlSessionRepo`. `~/.aelix/sessions/{id}.jsonl` append-only.                                                              |
 | 0023 | [Compaction + Branch Summary](0023-compaction-branch-summary.md)                                                                                        | Draft (Phase 2.2)                   | `compact()` + `navigateTree()` + Phase machine `idle\|turn\|compaction\|branch_summary`. ADR-0016 대체.                                             |
 | 0024 | [Queue Default `"one-at-a-time"` (Pi parity)](0024-queue-default-one-at-a-time.md)                                                                      | Accepted (Phase 1.2 follow-up fix)  | `steering_mode` / `follow_up_mode` default를 `"all"` → `"one-at-a-time"`으로 즉시 flip.                                                            |
 | 0025 | [F-10 Minimal Turn-State Snapshot Rationale](0025-f10-minimal-turn-state-snapshot.md)                                                                   | Accepted (Phase 1.3 shipped)        | `_TurnState` 2-field minimal snapshot은 의도적. 나머지 7 fields는 owning ADR (0017/0022) land 시 확장.                                             |
 | 0026 | [Workspace-Root Pytest Layout](0026-workspace-root-pytest-layout.md)                                                                                    | Accepted (Sprint 2 shipped)         | workspace-root 공유 `tests/` 유지. cross-package fixture 중복 방지. Pi additive divergence.                                                        |
-| 0027 | [asyncio.TaskGroup for Parallel Tool Execution](0027-asyncio-taskgroup-parallel-tools.md)                                                               | Draft (Phase 2.1 implementation)    | `asyncio.TaskGroup` 사용. structured concurrency + sibling auto-cancel. ADR-0021 구현 binding.                                                     |
+| 0027 | [asyncio.TaskGroup for Parallel Tool Execution](0027-asyncio-taskgroup-parallel-tools.md)                                                               | Accepted (Sprint 3c / Phase 2.1.3 shipped — DECISION REVERSED to asyncio.gather) | P-7 reversal: `asyncio.gather(*coros, return_exceptions=False)` — Pi never cancels siblings on tool error, TaskGroup auto-cancel would be Pi divergence. ADR-0021 구현 binding. |
 | 0028 | [Extension Auto-Discovery via importlib.metadata.entry_points](0028-extension-auto-discovery-entry-points.md)                                           | Draft (Phase 3 implementation)      | `entry_points(group="aelix.extensions")` 주 방식. fallback: `~/.aelix/extensions/`. ADR-0012 partial supersede.                                   |
 | 0029 | [Pi-Parity Acceptance Test Harness](0029-pi-parity-acceptance-test-harness.md)                                                                          | Draft (Phase 2.1+ ongoing)          | `tests/pi_parity/` 별도 lane. vendored Pi fixture + message-level equivalence assert. "믿는다" → "증명한다".                                       |
 | 0030 | [Hook Event Exhaustiveness via assert_never](0030-hook-event-exhaustiveness-assert-never.md)                                                             | Accepted (Sprint 3a / Phase 2.1.1 shipped) | `match`+`assert_never` 패턴 코드-land. `_to_hook_event`에 적용. 새 event 미처리 시 pyright build fail.                                            |
@@ -99,7 +99,7 @@
 0017 (Full Hook Event Catalogue v2)
   ├─ 0018 depends — message_end result type 변경은 v2 catalogue와 함께
   ├─ 0023 adds emit sites — session_before_compact 등 emit site 추가
-  ├─ 0027 depends — TaskGroup은 ADR-0021 impl; ADR-0017 tool setters와 연동
+  ├─ 0027 depends — asyncio.gather는 ADR-0021 impl (P-7 reversal, Sprint 3c); ADR-0017 tool setters와 연동
   └─ 0030 depends — assert_never는 ADR-0017 28-event 확장 시 적용
 
 0021 (Parallel tool execution)
@@ -182,7 +182,7 @@ Sprint 2 ADRs 상태.
 | 0015  | Monorepo Layout — uv Workspaces                             | Accepted (Phase 1.3 shipped)  |
 | 0025  | F-10 Minimal Turn-State Snapshot Rationale                  | Accepted (Phase 1.3 shipped)  |
 | 0026  | Workspace-Root Pytest Layout                                | Accepted (Sprint 2 shipped)   |
-| 0027  | asyncio.TaskGroup for Parallel Tool Execution               | Draft (Phase 2.1)             |
+| 0027  | asyncio.TaskGroup for Parallel Tool Execution               | Accepted (Sprint 3c / Phase 2.1.3 shipped — DECISION REVERSED to asyncio.gather) |
 | 0028  | Extension Auto-Discovery via entry_points                   | Draft (Phase 3)               |
 | 0029  | Pi-Parity Acceptance Test Harness                           | Draft (Phase 2.1+)            |
 | 0030  | Hook Event Exhaustiveness via assert_never                  | Draft (Phase 2.1)             |
@@ -217,15 +217,21 @@ Sprint 3b ADRs 상태 (Phase 2.1.2 — setters + nextTurn/appendMessage + pendin
 | 0018  | message_end Replacement Reducer                                      | Draft (Phase 2.1)                      | **Deprecated** — Pi has no message_end reducer at SHA 734e08e (Sprint 3b §0 verdict)                       |
 | 0036  | Loop AgentEvent vs Harness HookEvent Distinction (F-7)               | Accepted (Sprint 3a)                   | Accepted (unchanged)                                                                                       |
 
+Sprint 3c ADRs 상태 (Phase 2.1.3 parallel tool execution).
+
+| ADR   | 제목                                                      | Status                                                                  |
+| ----- | --------------------------------------------------------- | ----------------------------------------------------------------------- |
+| 0017  | Full Hook Event Catalogue v2 (Sprint 3c subsection added) | Accepted (Sprint 3c — Tool execution dispatch subsection added)         |
+| 0021  | Parallel-Mode Tool Execution + Per-Tool Override          | Accepted (Sprint 3c / Phase 2.1.3 shipped)                              |
+| 0027  | asyncio.gather for Parallel Tool Execution (P-7 reversal) | Accepted (Sprint 3c / Phase 2.1.3 shipped — DECISION REVERSED)          |
+
 Draft ADR 및 target Phase 요약 (전체).
 
 | ADR   | 제목                                       | Target Phase |
 | ----- | ------------------------------------------ | ------------ |
 | 0020  | RPC Mode for Multi-Language Clients        | Phase 4      |
-| 0021  | Parallel-Mode Tool Execution               | Phase 2.1.3 (Sprint 3c) |
 | 0022  | Session Manager + JSONL Persistence        | Phase 2.2    |
 | 0023  | Compaction + Branch Summary                | Phase 2.2    |
-| 0027  | asyncio.TaskGroup (ADR-0021 impl)          | Phase 2.1.3 (Sprint 3c) |
 | 0028  | Extension Auto-Discovery entry_points      | Phase 3      |
 | 0029  | Pi-Parity Acceptance Test Harness          | Phase 2.1+ (foundation shipped Sprint 3a) |
 | 0033  | ExtensionContext UI surface                | Phase 5      |

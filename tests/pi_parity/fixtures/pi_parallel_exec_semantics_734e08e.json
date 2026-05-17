@@ -1,0 +1,81 @@
+{
+  "_meta": {
+    "pi_sha": "734e08edf82ff315bc3d96472a6ebfa69a1d8016",
+    "pi_files": {
+      "agent-loop.ts": {
+        "dispatcher": "380-387",
+        "parallel_body": "446-505",
+        "tool_execution_start_emit": "456-462",
+        "prepare_tool_call_emit": "569-578",
+        "execute_prepared_tool_call_per_tool_try_catch": "609-637",
+        "finalize_executed_tool_call_per_tool_try_catch": "651-680",
+        "tool_result_message_source_order": "495-499",
+        "terminate_aggregation": "533-535"
+      },
+      "types.ts": {
+        "tool_execution_mode_default_parallel": "226-232",
+        "per_tool_execution_mode_override": "380-383",
+        "tool_execution_mode_literal": "11-15"
+      }
+    },
+    "scenarios": [
+      "happy_3_tool_parallel",
+      "mixed_mode_seq_downgrade",
+      "per_tool_error",
+      "abort"
+    ]
+  },
+  "happy_3_tool_parallel": {
+    "_description": "3 parallel tools, all succeed. Source order = completion order in this script because all tools take same latency.",
+    "tool_calls": [
+      {"tool_call_id": "t0", "tool_name": "tool_a"},
+      {"tool_call_id": "t1", "tool_name": "tool_b"},
+      {"tool_call_id": "t2", "tool_name": "tool_c"}
+    ],
+    "expected_event_classes_in_order": [
+      "tool_execution_start[t0]",
+      "tool_execution_start[t1]",
+      "tool_execution_start[t2]",
+      "tool_execution_end[*]",
+      "tool_execution_end[*]",
+      "tool_execution_end[*]"
+    ],
+    "expected_tool_result_message_source_order": ["t0", "t1", "t2"]
+  },
+  "mixed_mode_seq_downgrade": {
+    "_description": "1 tool with executionMode=sequential + 2 parallel tools → batch sequential. Pi agent-loop.ts:380-387.",
+    "tool_calls": [
+      {"tool_call_id": "t0", "tool_name": "seq_a", "tool_execution_mode": "sequential"},
+      {"tool_call_id": "t1", "tool_name": "par_b"},
+      {"tool_call_id": "t2", "tool_name": "par_c"}
+    ],
+    "expected_dispatch": "sequential",
+    "expected_event_classes_in_order": [
+      "tool_execution_start[t0]",
+      "tool_execution_end[t0]",
+      "tool_execution_start[t1]",
+      "tool_execution_end[t1]",
+      "tool_execution_start[t2]",
+      "tool_execution_end[t2]"
+    ]
+  },
+  "per_tool_error": {
+    "_description": "1 raising tool + 2 normal tools in parallel. Per-tool try/catch (agent-loop.ts:609-637) converts the exception to isError; siblings still complete. Promise.all reject path is unreachable.",
+    "tool_calls": [
+      {"tool_call_id": "t0", "tool_name": "ok_a"},
+      {"tool_call_id": "t1", "tool_name": "raises_b"},
+      {"tool_call_id": "t2", "tool_name": "ok_c"}
+    ],
+    "expected_results": [
+      {"tool_call_id": "t0", "is_error": false},
+      {"tool_call_id": "t1", "is_error": true},
+      {"tool_call_id": "t2", "is_error": false}
+    ],
+    "expected_siblings_cancelled_on_error": false
+  },
+  "abort": {
+    "_description": "Pi threads AbortSignal cooperatively. Pi does NOT call controller.abort() on sibling failure. Aelix adds task.cancel() on abort() as additive superset.",
+    "pi_cooperative_abort_only": true,
+    "aelix_additive_task_cancel": true
+  }
+}
