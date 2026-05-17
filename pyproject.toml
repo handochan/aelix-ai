@@ -1,19 +1,34 @@
 [build-system]
-requires = ["setuptools>=68"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
 [project]
 name = "aelix"
 version = "0.1.0"
-description = "A flexible Python agent runtime and extension platform."
+description = "Aelix umbrella — convenience re-exports + demo entry."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "Apache-2.0" }
 authors = [{ name = "Aelix Contributors" }]
-dependencies = []
+dependencies = [
+  "aelix-ai",
+  "aelix-agent-core",
+  "aelix-coding-agent",
+]
 
 [project.scripts]
 aelix = "aelix.__main__:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/aelix"]
+
+[tool.uv.workspace]
+members = ["packages/*"]
+
+[tool.uv.sources]
+aelix-ai = { workspace = true }
+aelix-agent-core = { workspace = true }
+aelix-coding-agent = { workspace = true }
 
 [dependency-groups]
 dev = [
@@ -28,29 +43,19 @@ line-length = 100
 target-version = "py311"
 
 [tool.ruff.lint]
-select = [
-  "E",   # pycodestyle errors
-  "W",   # pycodestyle warnings
-  "F",   # pyflakes
-  "I",   # isort
-  "UP",  # pyupgrade
-  "B",   # flake8-bugbear
-  "SIM", # flake8-simplify
-]
-ignore = [
-  "E501",  # long lines are tolerated where docstrings or URLs make them unavoidable
-]
+select = ["E", "W", "F", "I", "UP", "B", "SIM"]
+ignore = ["E501"]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/*" = ["B011"]  # tests may use bare asserts intentionally
+"tests/*" = ["B011"]
 
 [tool.ruff.format]
 quote-style = "double"
 
-[tool.setuptools.packages.find]
-where = ["src"]
-
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]
 asyncio_mode = "auto"
+
+[tool.pyright]
+include = ["src", "packages/*/src", "scripts"]
+pythonVersion = "3.11"

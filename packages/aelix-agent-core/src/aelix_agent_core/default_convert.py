@@ -8,13 +8,14 @@ matching pi-agent-core's ``defaultConvertToLlm`` semantics.
 
 from __future__ import annotations
 
-from aelix.agent.types import AgentMessage
-from aelix.ai.messages import (
+from aelix_ai.messages import (
     AssistantMessage,
     Message,
     ToolResultMessage,
     UserMessage,
 )
+
+from aelix_agent_core.types import AgentMessage
 
 
 def default_convert_to_llm(messages: list[AgentMessage]) -> list[Message]:

@@ -9,7 +9,7 @@ plays a two-turn script:
    and stops with ``stop_reason="end_turn"``.
 
 No LLM provider or API key is required. Phase 2 will swap the mock for real
-providers under :mod:`aelix.ai.providers`.
+providers under :mod:`aelix_ai.providers`.
 """
 
 from __future__ import annotations
@@ -18,9 +18,9 @@ import asyncio
 from collections.abc import AsyncIterator
 from typing import Any
 
-from aelix.agent import Agent, AgentEvent, AgentOptions, AgentState
-from aelix.ai.messages import AssistantMessage, TextContent, ToolCallContent
-from aelix.ai.streaming import (
+from aelix_agent_core import Agent, AgentEvent, AgentOptions, AgentState
+from aelix_ai.messages import AssistantMessage, TextContent, ToolCallContent
+from aelix_ai.streaming import (
     AssistantEndEvent,
     AssistantMessageEvent,
     AssistantStartEvent,
@@ -28,7 +28,7 @@ from aelix.ai.streaming import (
     Model,
     SimpleStreamOptions,
 )
-from aelix.examples.echo import echo_tool
+from aelix_coding_agent.examples.echo.echo import echo_tool
 
 
 def _make_mock_stream_fn() -> Any:

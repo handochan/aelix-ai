@@ -30,22 +30,23 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, overload
 
-from aelix.agent.types import (
-    AfterToolCallResult,
-    AgentContext,
-    AgentMessage,
-)
-from aelix.ai.messages import (
+from aelix_ai.messages import (
     AssistantMessage,
     ImageContent,
     TextContent,
 )
-from aelix.ai.tools import ToolResult
+from aelix_ai.tools import ToolResult
+
+from aelix_agent_core.types import (
+    AfterToolCallResult,
+    AgentContext,
+    AgentMessage,
+)
 
 if TYPE_CHECKING:
     # Avoid a runtime import cycle (D.1.9). ExtensionContext lives in
-    # aelix.extensions.api which itself depends on this module's types.
-    from aelix.extensions.api import ExtensionContext
+    # aelix_coding_agent.extensions.api which itself depends on this module's types.
+    from aelix_coding_agent.extensions.api import ExtensionContext
 
 
 # === Event name registry ===
@@ -880,7 +881,7 @@ class HookBus:
 
         After ``dispose()``, handlers and observers are cleared but the bus
         remains usable — new registrations are accepted. To prevent re-use,
-        the owning :class:`~aelix.harness.core.AgentHarness` should not be
+        the owning :class:`~aelix_agent_core.harness.core.AgentHarness` should not be
         reused after disposal.
         """
 

@@ -2,10 +2,10 @@
 
 Mirrors the pi-ai package shape so the agent loop stays provider-agnostic and
 tests can supply a mock ``stream_fn`` (Phase 1.1) before real provider adapters
-land in Phase 2 under ``aelix.ai.providers``.
+land in Phase 2 under ``aelix_ai.providers``.
 """
 
-from aelix.ai.messages import (
+from aelix_ai.messages import (
     AssistantMessage,
     ContentBlock,
     ImageContent,
@@ -15,7 +15,7 @@ from aelix.ai.messages import (
     ToolResultMessage,
     UserMessage,
 )
-from aelix.ai.streaming import (
+from aelix_ai.streaming import (
     AssistantEndEvent,
     AssistantMessageEvent,
     AssistantStartEvent,
@@ -28,7 +28,7 @@ from aelix.ai.streaming import (
     ToolCallDeltaEvent,
     stream_simple,
 )
-from aelix.ai.tools import (
+from aelix_ai.tools import (
     Tool,
     ToolContent,
     ToolExecute,

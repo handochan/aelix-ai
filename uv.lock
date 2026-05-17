@@ -2,10 +2,23 @@ version = 1
 revision = 3
 requires-python = ">=3.11"
 
+[manifest]
+members = [
+    "aelix",
+    "aelix-agent-core",
+    "aelix-ai",
+    "aelix-coding-agent",
+]
+
 [[package]]
 name = "aelix"
 version = "0.1.0"
 source = { editable = "." }
+dependencies = [
+    { name = "aelix-agent-core" },
+    { name = "aelix-ai" },
+    { name = "aelix-coding-agent" },
+]
 
 [package.dev-dependencies]
 dev = [
@@ -16,6 +29,11 @@ dev = [
 ]
 
 [package.metadata]
+requires-dist = [
+    { name = "aelix-agent-core", editable = "packages/aelix-agent-core" },
+    { name = "aelix-ai", editable = "packages/aelix-ai" },
+    { name = "aelix-coding-agent", editable = "packages/aelix-coding-agent" },
+]
 
 [package.metadata.requires-dev]
 dev = [
@@ -23,6 +41,37 @@ dev = [
     { name = "pytest", specifier = ">=8" },
     { name = "pytest-asyncio", specifier = ">=0.23" },
     { name = "ruff", specifier = ">=0.6" },
+]
+
+[[package]]
+name = "aelix-agent-core"
+version = "0.1.0"
+source = { editable = "packages/aelix-agent-core" }
+dependencies = [
+    { name = "aelix-ai" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "aelix-ai", editable = "packages/aelix-ai" }]
+
+[[package]]
+name = "aelix-ai"
+version = "0.1.0"
+source = { editable = "packages/aelix-ai" }
+
+[[package]]
+name = "aelix-coding-agent"
+version = "0.1.0"
+source = { editable = "packages/aelix-coding-agent" }
+dependencies = [
+    { name = "aelix-agent-core" },
+    { name = "aelix-ai" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "aelix-agent-core", editable = "packages/aelix-agent-core" },
+    { name = "aelix-ai", editable = "packages/aelix-ai" },
 ]
 
 [[package]]

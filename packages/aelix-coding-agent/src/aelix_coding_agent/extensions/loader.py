@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from aelix.extensions.api import (
+from aelix_coding_agent.extensions.api import (
     Extension,
     ExtensionAPI,
     ExtensionFactory,
@@ -47,7 +47,7 @@ class ExtensionLoadError:
 class LoadExtensionsResult:
     """Aggregate result returned by :func:`load_extensions`.
 
-    The shared ``runtime`` is what :class:`~aelix.harness.core.AgentHarness`
+    The shared ``runtime`` is what :class:`~aelix_agent_core.harness.core.AgentHarness`
     later binds via :meth:`_ExtensionRuntime.bind_core`.
 
     ``runtime`` defaults to a fresh :class:`_ExtensionRuntime` if not provided;

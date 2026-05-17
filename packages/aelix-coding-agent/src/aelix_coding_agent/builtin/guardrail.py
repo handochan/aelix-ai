@@ -21,8 +21,9 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from aelix.extensions.api import ExtensionAPI, ExtensionContext
-from aelix.harness.hooks import ToolCallHookEvent, ToolCallResult
+from aelix_agent_core.harness.hooks import ToolCallHookEvent, ToolCallResult
+
+from aelix_coding_agent.extensions.api import ExtensionAPI, ExtensionContext
 
 
 @dataclass(frozen=True)

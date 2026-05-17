@@ -1,0 +1,16 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "aelix-ai"
+version = "0.1.0"
+description = "Aelix AI primitives — messages, tools, streaming types. Pi-ai parity."
+readme = "../../README.md"
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Aelix Contributors" }]
+dependencies = []
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/aelix_ai"]

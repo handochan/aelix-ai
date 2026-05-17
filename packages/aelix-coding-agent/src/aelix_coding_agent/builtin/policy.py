@@ -15,15 +15,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from aelix.extensions.api import ExtensionAPI, ExtensionContext
-from aelix.harness.hooks import ToolCallHookEvent, ToolCallResult
+from aelix_agent_core.harness.hooks import ToolCallHookEvent, ToolCallResult
+
+from aelix_coding_agent.extensions.api import ExtensionAPI, ExtensionContext
 
 
 @dataclass
 class PolicyExtension:
     """Allowlist/denylist policy registered as a built-in extension.
 
-    Instances are valid :class:`~aelix.extensions.api.ExtensionFactory`
+    Instances are valid :class:`~aelix_coding_agent.extensions.api.ExtensionFactory`
     callables — ``__call__(self, aelix)`` registers the ``tool_call``
     handler. Pass instances directly to ``load_extensions([PolicyExtension()])``
     per D.1.8.

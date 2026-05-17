@@ -1,16 +1,16 @@
 """Aelix agent runtime — pi-agent-core ported to Python.
 
 Layering (mirrors pi-agent-core):
-- :mod:`aelix.agent.types` declares the runtime data model and event union.
-- :mod:`aelix.agent.loop` runs the low-level agent loop.
-- :mod:`aelix.agent.agent` wraps the loop in a stateful :class:`Agent` class.
-- :mod:`aelix.agent.default_convert` provides the default ``convert_to_llm``.
+- :mod:`aelix_agent_core.types` declares the runtime data model and event union.
+- :mod:`aelix_agent_core.loop` runs the low-level agent loop.
+- :mod:`aelix_agent_core.agent` wraps the loop in a stateful :class:`Agent` class.
+- :mod:`aelix_agent_core.default_convert` provides the default ``convert_to_llm``.
 """
 
-from aelix.agent.agent import Agent, AgentOptions
-from aelix.agent.default_convert import default_convert_to_llm
-from aelix.agent.loop import AgentEventSink, agent_loop, agent_loop_continue
-from aelix.agent.types import (
+from aelix_agent_core.agent import Agent, AgentOptions
+from aelix_agent_core.default_convert import default_convert_to_llm
+from aelix_agent_core.loop import AgentEventSink, agent_loop, agent_loop_continue
+from aelix_agent_core.types import (
     AfterToolCallContext,
     AfterToolCallResult,
     AgentContext,

@@ -2,7 +2,7 @@
 
 This is a Phase 1.1 stub: ``stream_simple`` raises ``NotImplementedError``.
 Agent loop callers (tests and examples) pass a mock ``stream_fn`` explicitly.
-Real provider adapters arrive in Phase 2 under ``aelix.ai.providers``.
+Real provider adapters arrive in Phase 2 under ``aelix_ai.providers``.
 """
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-from aelix.ai.messages import AssistantMessage, Message
+from aelix_ai.messages import AssistantMessage, Message
 
 
 @dataclass(frozen=True)
@@ -42,14 +42,14 @@ class Model:
 class Context:
     """LLM-level context — what the provider call actually sees.
 
-    Distinct from ``AgentContext`` (in ``aelix.agent.types``) which carries
+    Distinct from ``AgentContext`` (in ``aelix_agent_core.types``) which carries
     ``AgentMessage`` history before ``convert_to_llm`` filters it.
     """
 
     system_prompt: str = ""
     messages: list[Message] = field(default_factory=list)
     # Tool objects, kept as ``Any`` here to avoid an import cycle with
-    # ``aelix.ai.tools``. Callers pass ``list[Tool]``.
+    # ``aelix_ai.tools``. Callers pass ``list[Tool]``.
     tools: list[Any] = field(default_factory=list)
 
 
@@ -115,7 +115,7 @@ async def stream_simple(
     """Phase 1.1 stub.
 
     Real provider adapters (Anthropic, OpenAI, OpenRouter, ...) arrive in
-    Phase 2 under ``aelix.ai.providers``. For now, callers in tests and
+    Phase 2 under ``aelix_ai.providers``. For now, callers in tests and
     examples pass an explicit mock ``stream_fn`` into the agent loop.
     """
 

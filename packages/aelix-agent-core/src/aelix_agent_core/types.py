@@ -1,7 +1,7 @@
 """Runtime data model for the Aelix agent loop.
 
 Mirrors the pi-agent-core ``types.ts`` declarations. ``AgentMessage`` is the
-same as :data:`aelix.ai.messages.Message` in Phase 1.1; later phases can widen
+same as :data:`aelix_ai.messages.Message` in Phase 1.1; later phases can widen
 this union with custom message types (UI notifications, system entries, etc.)
 that are filtered out by ``convert_to_llm`` before each LLM call.
 """
@@ -12,7 +12,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-from aelix.ai.messages import (
+from aelix_ai.messages import (
     AssistantMessage,
     ImageContent,
     Message,
@@ -20,11 +20,18 @@ from aelix.ai.messages import (
     ToolCallContent,
     ToolResultMessage,
 )
-from aelix.ai.streaming import AssistantMessageEvent, Model
-from aelix.ai.tools import Tool, ToolResult
+from aelix_ai.streaming import AssistantMessageEvent, Model
+from aelix_ai.tools import Tool, ToolResult
 
 # Custom message types extend this union in later phases.
 AgentMessage = Message
+
+
+# F-11: single source of truth for the convert_to_llm callable shape.
+ConvertToLlmFn = Callable[
+    [list[AgentMessage]],
+    Awaitable[list[Message]] | list[Message],
+]
 
 
 ToolExecutionMode = Literal["parallel", "sequential"]
@@ -64,6 +71,9 @@ class AgentState:
     system_prompt: str = ""
     model: Model = field(default_factory=Model)
     tools: list[AgentTool] = field(default_factory=list)
+    # F-9: per-call active filter. None = all tools active. Filter never drops
+    # entries from ``tools``; ``set_active_tools`` is non-destructive.
+    active_tool_names: list[str] | None = None
     messages: list[AgentMessage] = field(default_factory=list)
     thinking_level: str = "off"
 
@@ -215,7 +225,7 @@ class AgentLoopConfig:
     """
 
     model: Model
-    convert_to_llm: Callable[[list[AgentMessage]], Awaitable[list[Message]] | list[Message]]
+    convert_to_llm: ConvertToLlmFn
     transform_context: (
         Callable[[list[AgentMessage], Any], Awaitable[list[AgentMessage]]] | None
     ) = None
@@ -254,6 +264,7 @@ __all__ = [
     "AgentTool",
     "BeforeToolCallContext",
     "BeforeToolCallResult",
+    "ConvertToLlmFn",
     "MessageEndEvent",
     "MessageStartEvent",
     "MessageUpdateEvent",

@@ -1,0 +1,19 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "aelix-agent-core"
+version = "0.1.0"
+description = "Aelix agent loop + harness + hook bus. Pi-agent-core parity."
+readme = "../../README.md"
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Aelix Contributors" }]
+dependencies = ["aelix-ai"]
+
+[tool.uv.sources]
+aelix-ai = { workspace = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/aelix_agent_core"]

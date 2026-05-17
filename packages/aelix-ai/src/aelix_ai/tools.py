@@ -12,7 +12,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
-from aelix.ai.messages import ImageContent, TextContent
+from aelix_ai.messages import ImageContent, TextContent
 
 # Tool result content reuses the same text/image content blocks as messages.
 ToolContent = list[TextContent | ImageContent]

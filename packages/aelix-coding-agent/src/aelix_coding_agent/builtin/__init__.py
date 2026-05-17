@@ -5,12 +5,12 @@ extensions: they ride the same hook bus + loader path as third-party
 extensions. They are imported here for convenience.
 """
 
-from aelix.builtin.guardrail import (
+from aelix_coding_agent.builtin.guardrail import (
     DEFAULT_GUARDRAIL_RULES,
     GuardrailExtension,
     GuardrailRule,
 )
-from aelix.builtin.policy import PolicyExtension
+from aelix_coding_agent.builtin.policy import PolicyExtension
 
 __all__ = [
     "DEFAULT_GUARDRAIL_RULES",

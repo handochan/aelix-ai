@@ -10,7 +10,7 @@ Public surface:
   points returning a single shared :class:`_ExtensionRuntime`.
 """
 
-from aelix.extensions.api import (
+from aelix_coding_agent.extensions.api import (
     Extension,
     ExtensionAPI,
     ExtensionContext,
@@ -20,7 +20,7 @@ from aelix.extensions.api import (
     ExtensionRuntimeActions,
     _ExtensionRuntime,
 )
-from aelix.extensions.loader import (
+from aelix_coding_agent.extensions.loader import (
     ExtensionLoadError,
     LoadExtensionsResult,
     load_extension_from_factory,

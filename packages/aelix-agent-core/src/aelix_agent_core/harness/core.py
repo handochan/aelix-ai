@@ -2,18 +2,18 @@
 
 Architecture (Phase 1.2):
 
-- :class:`AgentHarness` owns a :class:`~aelix.harness.hooks.HookBus`, a
-  shared :class:`~aelix.extensions.api._ExtensionRuntime`, and an
+- :class:`AgentHarness` owns a :class:`~aelix_agent_core.harness.hooks.HookBus`, a
+  shared :class:`~aelix_coding_agent.extensions.api._ExtensionRuntime`, and an
   :class:`AgentState`. It calls :func:`agent_loop` with its own callback
   bridges that translate ``before_tool_call`` / ``after_tool_call`` /
   ``transform_context`` into hook emits.
-- The Phase 1.1 :class:`~aelix.agent.agent.Agent` stays as-is. Direct callers
+- The Phase 1.1 :class:`~aelix_agent_core.agent.Agent` stays as-is. Direct callers
   of :func:`agent_loop` still get the original callback path without any
   hook overhead.
 
 The callback↔hook bridge respects D.1.5: the dict reference passed in
 ``BeforeToolCallContext.args`` is the same dict that flows into the
-:class:`~aelix.harness.hooks.ToolCallHookEvent`. Mutations made by a hook
+:class:`~aelix_agent_core.harness.hooks.ToolCallHookEvent`. Mutations made by a hook
 handler are therefore visible to ``tool.execute`` and to the
 ``after_tool_call`` callback chain.
 """
@@ -28,29 +28,12 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal
 
-from aelix.agent.agent import AgentListener
-from aelix.agent.default_convert import default_convert_to_llm
-from aelix.agent.loop import agent_loop
-from aelix.agent.types import (
-    AfterToolCallContext,
-    AfterToolCallResult,
-    AgentContext,
-    AgentEndEvent,
-    AgentEvent,
-    AgentLoopConfig,
-    AgentMessage,
-    AgentState,
-    AgentTool,
-    BeforeToolCallContext,
-    BeforeToolCallResult,
-    MessageEndEvent,
-    MessageStartEvent,
-    QueueMode,
-    TurnEndEvent,
-)
-from aelix.ai.messages import AssistantMessage, Message, TextContent, UserMessage
-from aelix.ai.streaming import Model, StreamFn
-from aelix.harness.hooks import (
+from aelix_ai.messages import AssistantMessage, TextContent, UserMessage
+from aelix_ai.streaming import Model, StreamFn
+
+from aelix_agent_core.agent import AgentListener
+from aelix_agent_core.default_convert import default_convert_to_llm
+from aelix_agent_core.harness.hooks import (
     AgentEndHookEvent,
     AgentStartHookEvent,
     BeforeAgentStartHookEvent,
@@ -73,13 +56,32 @@ from aelix.harness.hooks import (
     TurnEndHookEvent,
     TurnStartHookEvent,
 )
+from aelix_agent_core.loop import agent_loop
+from aelix_agent_core.types import (
+    AfterToolCallContext,
+    AfterToolCallResult,
+    AgentContext,
+    AgentEndEvent,
+    AgentEvent,
+    AgentLoopConfig,
+    AgentMessage,
+    AgentState,
+    AgentTool,
+    BeforeToolCallContext,
+    BeforeToolCallResult,
+    ConvertToLlmFn,
+    MessageEndEvent,
+    MessageStartEvent,
+    QueueMode,
+    TurnEndEvent,
+)
 
 if TYPE_CHECKING:
     # Imported at type-check time only to break the harness↔extensions
     # runtime import cycle (D.1.9). The concrete classes are resolved via
     # local imports inside :class:`AgentHarness.__init__` and
     # :meth:`AgentHarness._make_context`.
-    from aelix.extensions.api import (
+    from aelix_coding_agent.extensions.api import (
         Extension,
         ExtensionContext,
         _ExtensionRuntime,
@@ -119,7 +121,7 @@ class AgentHarnessOptions:
     tools: list[AgentTool] = field(default_factory=list)
     system_prompt: str = ""
     initial_messages: list[AgentMessage] = field(default_factory=list)
-    convert_to_llm: Callable[[list[AgentMessage]], Awaitable[list[Message]] | list[Message]] | None = None
+    convert_to_llm: ConvertToLlmFn | None = None
     transform_context: Callable[[list[AgentMessage], Any], list[AgentMessage] | Awaitable[list[AgentMessage]]] | None = None
     get_api_key: Callable[[str], Awaitable[str | None] | str | None] | None = None
     steering_mode: QueueMode = "one-at-a-time"
@@ -130,8 +132,22 @@ class AgentHarnessOptions:
     cwd: str = "."
 
 
+@dataclass
+class _TurnState:
+    """Per-turn snapshot of state values resolved before ``_run`` (F-10).
+
+    The harness rebuilds this on every :meth:`AgentHarness.prompt` call so that
+    state mutations made by ``before_agent_start`` (e.g. chained system prompt)
+    do not leak into subsequent turns. Outside of a turn, callers fall back to
+    the long-lived ``self._state``.
+    """
+
+    system_prompt: str
+    model: Model
+
+
 class _MessageQueue:
-    """Mirror of :class:`aelix.agent.agent._MessageQueue` (kept independent)."""
+    """Mirror of :class:`aelix_agent_core.agent._MessageQueue` (kept independent)."""
 
     def __init__(self, mode: QueueMode) -> None:
         self.mode: QueueMode = mode
@@ -161,12 +177,17 @@ class AgentHarness:
     ``compaction`` / ``branch_summary`` / ``retry`` are deferred. ``steer()``
     and ``follow_up()`` are always legal and simply enqueue when idle —
     the next ``prompt()`` drains the queues (Pi parity, D.1.10).
+
+    Requires ``aelix-coding-agent`` to be installed at the moment of
+    construction; ``aelix-agent-core`` does not declare it as runtime
+    dependency to preserve a clean ``import aelix_agent_core`` for clients
+    that only consume the loop or hook bus.
     """
 
     def __init__(self, options: AgentHarnessOptions) -> None:
         # Local imports break the harness↔extensions runtime cycle (D.1.9):
         # ``extensions/api.py`` already imports types from ``harness/hooks``.
-        from aelix.extensions.api import ExtensionRuntimeActions, _ExtensionRuntime
+        from aelix_coding_agent.extensions.api import ExtensionRuntimeActions, _ExtensionRuntime
 
         self._options = options
         self._runtime = options.runtime or _ExtensionRuntime()
@@ -174,6 +195,8 @@ class AgentHarness:
         self._listeners: list[HarnessListener] = []
         self._phase: AgentHarnessPhase = "idle"
         self._abort_requested = False
+        # F-10: per-turn snapshot rebuilt at every prompt(). None when idle.
+        self._turn_state: _TurnState | None = None
 
         # Build a merged tool list with application-supplied tools winning
         # over extension-registered ones with the same name (D.1.13 M-9).
@@ -325,7 +348,7 @@ class AgentHarness:
     def _make_context(self) -> ExtensionContext:
         """Build a fresh :class:`ExtensionContext` for the current hook emit."""
 
-        from aelix.extensions.api import ExtensionContext as _ExtensionContext
+        from aelix_coding_agent.extensions.api import ExtensionContext as _ExtensionContext
 
         return _ExtensionContext(
             self._runtime,
@@ -340,15 +363,34 @@ class AgentHarness:
     def _mark_abort(self) -> None:
         self._abort_requested = True
 
+    def _current_system_prompt(self) -> str:
+        """F-10: prefer per-turn snapshot, else fall back to long-lived state."""
+
+        if self._turn_state is not None:
+            return self._turn_state.system_prompt
+        return self._state.system_prompt
+
     def _action_get_active_tools(self) -> list[str]:
-        return [tool.name for tool in self._state.tools]
+        # F-9: ``active_tool_names is None`` means "every registered tool is
+        # active"; otherwise return registered tools filtered by the set.
+        if self._state.active_tool_names is None:
+            return [tool.name for tool in self._state.tools]
+        active = set(self._state.active_tool_names)
+        return [tool.name for tool in self._state.tools if tool.name in active]
 
     def _action_set_active_tools(self, names: list[str]) -> None:
-        keep = set(names)
-        self._state.tools = [t for t in self._state.tools if t.name in keep]
+        # F-9: non-destructive — record the active filter, don't drop tools.
+        known = {t.name for t in self._state.tools}
+        unknown = [n for n in names if n not in known]
+        if unknown:
+            raise AgentHarnessError(
+                "invalid_argument",
+                f"set_active_tools: unknown tool name(s): {unknown!r}",
+            )
+        self._state.active_tool_names = list(names)
 
     def _action_get_system_prompt(self) -> str:
-        return self._state.system_prompt
+        return self._current_system_prompt()
 
     async def _before_tool_call_bridge(
         self, ctx: BeforeToolCallContext
@@ -487,6 +529,13 @@ class AgentHarness:
         self._phase = "turn"
         self._abort_requested = False
         self._idle_event.clear()
+        # F-10: install per-turn snapshot so ``_current_system_prompt`` returns
+        # the chained value resolved by ``before_agent_start`` for the duration
+        # of this turn only.
+        self._turn_state = _TurnState(
+            system_prompt=system_prompt,
+            model=self._state.model,
+        )
         try:
             config = AgentLoopConfig(
                 model=self._state.model,
@@ -500,10 +549,17 @@ class AgentHarness:
                 before_tool_call=self._before_tool_call_bridge,
                 after_tool_call=self._after_tool_call_bridge,
             )
+            # F-9: apply the active-tool filter without mutating ``_state.tools``.
+            active = self._state.active_tool_names
+            if active is None:
+                active_tools = list(self._state.tools)
+            else:
+                active_set = set(active)
+                active_tools = [t for t in self._state.tools if t.name in active_set]
             context = AgentContext(
                 system_prompt=system_prompt,
                 messages=list(self._state.messages),
-                tools=list(self._state.tools),
+                tools=active_tools,
             )
 
             async def emit(event: AgentEvent) -> None:
@@ -561,6 +617,7 @@ class AgentHarness:
             return new_messages
         finally:
             self._phase = "idle"
+            self._turn_state = None
             self._idle_event.set()
 
     async def _drain_steering(self) -> list[AgentMessage]:

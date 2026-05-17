@@ -8,7 +8,7 @@ This module mirrors pi-agent-core's ``extension-runner`` split:
   as its single argument (``def setup(aelix: ExtensionAPI) -> None``). It
   mutates the bound :class:`Extension` and delegates "actions" to a
   :class:`_ExtensionRuntime` whose method table starts as throwing stubs and
-  is replaced when :class:`~aelix.harness.core.AgentHarness` calls
+  is replaced when :class:`~aelix_agent_core.harness.core.AgentHarness` calls
   :meth:`_ExtensionRuntime.bind_core`.
 - :class:`ExtensionContext` is the small read-only view a handler receives
   alongside its event. Per D.1.4 it is a concrete class with a
@@ -22,9 +22,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, overload
 
-from aelix.agent.types import AgentTool
-from aelix.ai.streaming import Model
-from aelix.harness.hooks import (
+from aelix_agent_core.harness.hooks import (
     HOOK_RESULT_TYPES,
     AgentEndHandler,
     AgentStartHandler,
@@ -46,6 +44,8 @@ from aelix.harness.hooks import (
     TurnEndHandler,
     TurnStartHandler,
 )
+from aelix_agent_core.types import AgentTool
+from aelix_ai.streaming import Model
 
 if TYPE_CHECKING:
     pass
@@ -254,7 +254,7 @@ class ExtensionAPI:
 
     Mutates a bound :class:`Extension` for registrations; delegates actions
     to the shared :class:`_ExtensionRuntime`. The 16 :meth:`on` overloads
-    mirror :class:`~aelix.harness.hooks.HookBus.on` so pyright narrows the
+    mirror :class:`~aelix_agent_core.harness.hooks.HookBus.on` so pyright narrows the
     handler signature per ``HookEventName`` literal (see D.1.2 + the spike
     in ``scripts/pyright_spike.py``).
     """

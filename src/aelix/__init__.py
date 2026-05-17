@@ -1,8 +1,21 @@
-"""Aelix agent runtime."""
+"""Aelix umbrella — convenience re-exports across workspace packages.
 
-from aelix.agent import Agent, AgentOptions, AgentState
-from aelix.agent.types import AgentTool
-from aelix.ai import (
+For tighter dependency footprints, import directly from the per-package
+modules (``aelix_ai``, ``aelix_agent_core``, ``aelix_coding_agent``) instead
+of from this umbrella.
+"""
+
+from aelix_agent_core import (
+    Agent,
+    AgentOptions,
+    AgentState,
+    AgentTool,
+)
+from aelix_agent_core.harness import (
+    AgentHarness,
+    AgentHarnessOptions,
+)
+from aelix_ai import (
     AssistantMessage,
     Message,
     Model,
@@ -12,6 +25,10 @@ from aelix.ai import (
     ToolResult,
     ToolResultMessage,
     UserMessage,
+)
+from aelix_coding_agent.builtin import (
+    GuardrailExtension,
+    PolicyExtension,
 )
 
 __all__ = [
@@ -33,15 +50,3 @@ __all__ = [
     "ToolResultMessage",
     "UserMessage",
 ]
-
-
-def __getattr__(name: str) -> object:
-    if name in ("AgentHarness", "AgentHarnessOptions"):
-        from aelix.harness import AgentHarness, AgentHarnessOptions
-
-        return {"AgentHarness": AgentHarness, "AgentHarnessOptions": AgentHarnessOptions}[name]
-    if name in ("PolicyExtension", "GuardrailExtension"):
-        from aelix.builtin import GuardrailExtension, PolicyExtension
-
-        return {"PolicyExtension": PolicyExtension, "GuardrailExtension": GuardrailExtension}[name]
-    raise AttributeError(f"module 'aelix' has no attribute {name!r}")

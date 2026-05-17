@@ -8,7 +8,7 @@ The two public entry points are:
 
 Both take an ``emit`` async callback that receives every :class:`AgentEvent`,
 matching pi-agent-core's ``AgentEventSink`` signature. A high-level
-:class:`~aelix.agent.agent.Agent` wraps this loop with state + subscribers.
+:class:`~aelix_agent_core.agent.Agent` wraps this loop with state + subscribers.
 
 Tool execution is sequential in Phase 1.1. The ``parallel`` mode and per-tool
 overrides arrive in a later phase.
@@ -22,7 +22,16 @@ from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from typing import Any
 
-from aelix.agent.types import (
+from aelix_ai.messages import (
+    AssistantMessage,
+    TextContent,
+    ToolCallContent,
+    ToolResultMessage,
+)
+from aelix_ai.streaming import Context, SimpleStreamOptions, StreamFn
+from aelix_ai.tools import ToolExecutionContext, ToolResult, validate_tool_arguments
+
+from aelix_agent_core.types import (
     AfterToolCallContext,
     AfterToolCallResult,
     AgentContext,
@@ -43,14 +52,6 @@ from aelix.agent.types import (
     TurnEndEvent,
     TurnStartEvent,
 )
-from aelix.ai.messages import (
-    AssistantMessage,
-    TextContent,
-    ToolCallContent,
-    ToolResultMessage,
-)
-from aelix.ai.streaming import Context, SimpleStreamOptions, StreamFn
-from aelix.ai.tools import ToolExecutionContext, ToolResult, validate_tool_arguments
 
 AgentEventSink = Callable[[AgentEvent], Awaitable[None]]
 
@@ -438,8 +439,8 @@ async def _maybe_await(value: Any) -> Any:
 
 
 def _resolve_stream_simple() -> StreamFn:
-    # Imported lazily to keep ``aelix.ai.streaming`` free of agent imports.
-    from aelix.ai.streaming import stream_simple
+    # Imported lazily to keep ``aelix_ai.streaming`` free of agent imports.
+    from aelix_ai.streaming import stream_simple
 
     return stream_simple
 

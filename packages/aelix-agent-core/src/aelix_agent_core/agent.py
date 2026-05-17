@@ -12,20 +12,22 @@ import inspect
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any  # noqa: F401 — used by Callable[..., Any] in other fields
 
-from aelix.agent.default_convert import default_convert_to_llm
-from aelix.agent.loop import agent_loop
-from aelix.agent.types import (
+from aelix_ai.messages import TextContent, UserMessage
+from aelix_ai.streaming import StreamFn
+
+from aelix_agent_core.default_convert import default_convert_to_llm
+from aelix_agent_core.loop import agent_loop
+from aelix_agent_core.types import (
     AgentContext,
     AgentEvent,
     AgentLoopConfig,
     AgentMessage,
     AgentState,
+    ConvertToLlmFn,
     QueueMode,
 )
-from aelix.ai.messages import TextContent, UserMessage
-from aelix.ai.streaming import StreamFn
 
 _log = logging.getLogger(__name__)
 
@@ -35,7 +37,7 @@ AgentListener = Callable[[AgentEvent], Awaitable[None] | None]
 @dataclass
 class AgentOptions:
     initial_state: AgentState | None = None
-    convert_to_llm: Callable[..., Any] | None = None
+    convert_to_llm: ConvertToLlmFn | None = None
     transform_context: Callable[..., Any] | None = None
     stream_fn: StreamFn | None = None
     get_api_key: Callable[[str], Any] | None = None

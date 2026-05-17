@@ -3,20 +3,20 @@
 Public surface:
 
 - :class:`AgentHarness` — the hook-aware orchestrator. Wraps the Phase 1.1
-  :func:`aelix.agent.loop.agent_loop` with extension-driven hooks.
+  :func:`aelix_agent_core.loop.agent_loop` with extension-driven hooks.
 - :class:`AgentHarnessOptions` — constructor options.
 - :class:`AgentHarnessError` — errors raised by the harness itself.
 - :class:`HookBus` and the event/result dataclasses — the typed hook surface.
 """
 
-from aelix.harness.core import (
+from aelix_agent_core.harness.core import (
     AgentHarness,
     AgentHarnessError,
     AgentHarnessOptions,
     AgentHarnessPhase,
     HarnessListener,
 )
-from aelix.harness.hooks import (
+from aelix_agent_core.harness.hooks import (
     HOOK_RESULT_TYPES,
     AgentEndHookEvent,
     AgentStartHookEvent,
