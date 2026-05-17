@@ -257,6 +257,17 @@ immediate and prepared branches to the Pi-verified
 
 The ordering matrix in ADR-0021 §E is amended in lockstep (rows 3 and 6).
 
+### Session emit sites + payload extensions landed Sprint 4b (Phase 2.2.2)
+
+Sprint 4b activated the 4 session_* emit sites registered as stubs in Sprint 3a, and extended their payloads to full Pi parity:
+
+- **`session_before_compact`** (P-17): payload extended to `{preparation, branch_entries, custom_instructions, signal}` per Pi `agent-harness.ts:706-711`. Reducer returns `SessionBeforeCompactResult({cancel, compaction})` — `compaction` field lets hook substitute the LLM call entirely (P-20 per Pi `types.ts:339-342`).
+- **`session_compact`** (unchanged): emitted observationally after compaction with `{compaction_entry, from_hook}`.
+- **`session_before_tree`** (P-18): added `signal` field per Pi `agent-harness.ts:765`.
+- **`session_tree`** (P-19): `new_leaf_id` narrowed from `str=""` to `str | None` per Pi `types.ts:303-309`.
+
+Emit sites: `AgentHarness.compact()` (`harness/core.py`) and `AgentHarness.navigate_tree()` (`harness/core.py`).
+
 ### Session message_end wiring landed Sprint 4a (Phase 2.2.1)
 
 - `MessageEndHookEvent` is now emitted AFTER `session.append_message(event.message)` is awaited.

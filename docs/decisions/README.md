@@ -36,7 +36,7 @@
 | 0020 | [RPC Mode for Multi-Language Clients](0020-rpc-mode-multi-language-clients.md)                                                                          | Draft (Phase 4)                     | `aelix mode rpc` — stdin/stdout JSON 프로토콜. Pi `--mode rpc` 그대로 port. ADR-0009 부분 대체.                                                     |
 | 0021 | [Parallel-Mode Tool Execution + Per-Tool Override](0021-parallel-tool-execution.md)                                                                     | Accepted (Sprint 3c / Phase 2.1.3 shipped) | default parallel 실행 (`asyncio.gather` per P-7 reversal) + per-tool `execution_mode="sequential"` override.                                       |
 | 0022 | [Session Manager + JSONL Persistence](0022-session-manager-jsonl-persistence.md)                                                                        | Accepted (Sprint 4a / Phase 2.2.1 shipped)                   | `Session` concrete class (17+1 methods) + `SessionStorage` Protocol + `JsonlSessionRepo`. 8-variant `PendingSessionWrite`. `message_end` wired. P-11 reversal (`PendingActiveToolsChangeWrite` deleted). |
-| 0023 | [Compaction + Branch Summary](0023-compaction-branch-summary.md)                                                                                        | Draft (Phase 2.2)                   | `compact()` + `navigateTree()` + Phase machine `idle\|turn\|compaction\|branch_summary`. ADR-0016 대체.                                             |
+| 0023 | [Compaction + Branch Summary](0023-compaction-branch-summary.md)                                                                                        | Accepted (Sprint 4b / Phase 2.2.2 shipped)                   | `compact()` + `navigate_tree()` + Phase machine `idle\|turn\|compaction\|branch_summary` + 4 session_* emit sites. ADR-0016 대체. P-14/P-15/P-16 verified.                                             |
 | 0024 | [Queue Default `"one-at-a-time"` (Pi parity)](0024-queue-default-one-at-a-time.md)                                                                      | Accepted (Phase 1.2 follow-up fix)  | `steering_mode` / `follow_up_mode` default를 `"all"` → `"one-at-a-time"`으로 즉시 flip.                                                            |
 | 0025 | [F-10 Minimal Turn-State Snapshot Rationale](0025-f10-minimal-turn-state-snapshot.md)                                                                   | Accepted (Phase 1.3 shipped)        | `_TurnState` 2-field minimal snapshot은 의도적. 나머지 7 fields는 owning ADR (0017/0022) land 시 확장.                                             |
 | 0026 | [Workspace-Root Pytest Layout](0026-workspace-root-pytest-layout.md)                                                                                    | Accepted (Sprint 2 shipped)         | workspace-root 공유 `tests/` 유지. cross-package fixture 중복 방지. Pi additive divergence.                                                        |
@@ -53,6 +53,7 @@
 | 0037 | [Streaming Event Union (Pi Parity)](0037-streaming-event-union-pi-parity.md)                                                                            | Draft (Phase 1.4 shell; adapter coverage Phase 4)                  | Pi 12-event union을 Phase 4 adapter PR에서 land. Phase 1.4는 design 문서만.                                                                          |
 | 0038 | [stream_simple Dispatch Shell — Phase 1 Boundary](0038-stream-simple-dispatch-shell-phase-1-boundary.md)                                                | Accepted (Sprint 2.5 / Phase 1.4 shipped — body lands Phase 4)     | Phase 1 exit는 dispatch shell + registry + typed error에서 완료. Adapter는 Phase 4.                                                                |
 | 0039 | [Phase 2.1 Strict Superset Closure](0039-phase-2-1-strict-superset-closure.md)                                                                          | Accepted (Sprint 3d / Phase 2.1.4 shipped)                          | Phase 2.1 strict superset closure — P-1..P-9 roster + E.5 closure pin + deferred allowlist (forward-compat clause).                                  |
+| 0040 | [Phase 2.2 Strict Superset Closure](0040-phase-2-2-strict-superset-closure.md)                                                                          | Accepted (Sprint 4b shipped)                                        | Phase 2.2 strict Pi-parity superset closure (P-11~P-20 roster + closure pin).                                                                        |
 
 > **번호 공백 (0016)**: ADR-0016 "Phase machine expansion"은 ADR-0023(Compaction + Branch Summary)으로 supersede됩니다. 번호를 재사용하지 않고 gap으로 보존합니다.
 
@@ -249,15 +250,25 @@ Sprint 4a ADRs 상태 (Phase 2.2.1 Session Manager + JsonlSessionRepo).
 | ----- | ----------------------------------------------------------------- | --------------------------------------------------------------------- |
 | 0017  | Session message_end wiring subsection added                       | Accepted (Sprint 4a — append-then-emit Pi parity)                     |
 | 0022  | Session Manager + JSONL Persistence                               | Accepted (Sprint 4a / Phase 2.2.1 shipped — major revision per P-11/P-12/P-13) |
-| 0025  | F-10 Minimal Turn-State Snapshot — Sprint 4b extension note added | Accepted (Sprint 4b owner for _TurnState.messages)                    |
+| 0025  | F-10 Minimal Turn-State Snapshot — Sprint 4b extension note added | Accepted (Sprint 4b — _TurnState.messages + session_id shipped)       |
 | 0039  | Phase 2.1 Strict Superset Closure — P-11 lockdown added           | Accepted (no Phase 2.1 regression)                                    |
+
+Sprint 4b ADRs 상태 (Phase 2.2.2 compact + navigate + Phase machine + 4 session emits).
+
+| ADR   | 제목                                                              | Status                                                                |
+| ----- | ----------------------------------------------------------------- | --------------------------------------------------------------------- |
+| 0017  | Session emit sites + payload extensions subsection added          | Accepted (Sprint 4b — P-17/P-18/P-19/P-20 payload extensions)         |
+| 0022  | Sprint 4a → 4b transition plan marker → Completed                 | Accepted (4b deferred items all shipped)                              |
+| 0023  | Compaction + Branch Summary                                       | Accepted (Sprint 4b / Phase 2.2.2 shipped — P-14/P-15/P-16 verified)  |
+| 0025  | F-10 Minimal Turn-State — messages/session_id extension shipped   | Accepted (Sprint 4b — _TurnState fields populated)                    |
+| 0039  | Phase 2.1 closure — DEFERRED_ALLOWLIST trimmed                    | Accepted (4 session_* removed; ADR-0040 supersedes Phase 2.2 tracking)|
+| 0040  | Phase 2.2 Strict Superset Closure                                 | Accepted (Sprint 4b / Phase 2.2.2 shipped — closure)                  |
 
 Draft ADR 및 target Phase 요약 (전체).
 
 | ADR   | 제목                                       | Target Phase |
 | ----- | ------------------------------------------ | ------------ |
 | 0020  | RPC Mode for Multi-Language Clients        | Phase 4      |
-| 0023  | Compaction + Branch Summary                | Phase 2.2    |
 | 0028  | Extension Auto-Discovery entry_points      | Phase 3      |
 | 0029  | Pi-Parity Acceptance Test Harness          | Phase 2.1+ (foundation shipped Sprint 3a) |
 | 0033  | ExtensionContext UI surface                | Phase 5      |

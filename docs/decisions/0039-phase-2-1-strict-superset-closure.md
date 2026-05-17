@@ -127,11 +127,13 @@ Conversely, when a deferred entry's emit site lands, the same PR MUST drop
 the entry from `DEFERRED_ALLOWLIST`. The
 `test_deferred_allowlist_entries_remain_unemitted` test enforces this.
 
-Sprint 4a / Phase 2.2.1 shipped `Session` class + `JsonlSessionRepo`; the 4
-`session_*` emit sites (`session_before_compact`, `session_compact`,
-`session_before_tree`, `session_tree`) remain deferred to Sprint 4b per ADR-0023.
-The deferred allowlist above is unchanged — these 4 entries remain valid until
-Sprint 4b lands their emit sites.
+Sprint 4b (Phase 2.2.2) closed the 4 session_* emit sites tracked here as deferred. ADR-0040 documents Phase 2.2 closure with full P-11~P-20 roster.
+
+The 4 `session_*` entries (`session_before_compact`, `session_compact`,
+`session_before_tree`, `session_tree`) have been removed from `DEFERRED_ALLOWLIST`
+in `tests/pi_parity/test_phase_2_1_strict_superset.py` — their emit sites landed
+in `AgentHarness.compact()` and `AgentHarness.navigate_tree()` (`harness/core.py`).
+The remaining `DEFERRED_ALLOWLIST` contains only the 3 Phase 4 entries below.
 
 ## Consequences
 
