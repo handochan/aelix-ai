@@ -5,6 +5,12 @@ tests can supply a mock ``stream_fn`` (Phase 1.1) before real provider adapters
 land in Phase 2 under ``aelix_ai.providers``.
 """
 
+from aelix_ai.api_registry import (
+    clear_providers,
+    get_registered_providers,
+    register_provider,
+    unregister_provider,
+)
 from aelix_ai.messages import (
     AssistantMessage,
     ContentBlock,
@@ -24,6 +30,7 @@ from aelix_ai.streaming import (
     Model,
     SimpleStreamOptions,
     StreamFn,
+    StreamSimpleError,
     TextDeltaEvent,
     ToolCallDeltaEvent,
     stream_simple,
@@ -50,6 +57,7 @@ __all__ = [
     "Model",
     "SimpleStreamOptions",
     "StreamFn",
+    "StreamSimpleError",
     "TextContent",
     "TextDeltaEvent",
     "Tool",
@@ -61,6 +69,10 @@ __all__ = [
     "ToolResult",
     "ToolResultMessage",
     "UserMessage",
+    "clear_providers",
+    "get_registered_providers",
+    "register_provider",
     "stream_simple",
+    "unregister_provider",
     "validate_tool_arguments",
 ]
