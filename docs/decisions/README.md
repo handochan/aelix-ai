@@ -41,7 +41,7 @@
 | 0025 | [F-10 Minimal Turn-State Snapshot Rationale](0025-f10-minimal-turn-state-snapshot.md)                                                                   | Accepted (Phase 1.3 shipped)        | `_TurnState` 2-field minimal snapshot은 의도적. 나머지 7 fields는 owning ADR (0017/0022) land 시 확장.                                             |
 | 0026 | [Workspace-Root Pytest Layout](0026-workspace-root-pytest-layout.md)                                                                                    | Accepted (Sprint 2 shipped)         | workspace-root 공유 `tests/` 유지. cross-package fixture 중복 방지. Pi additive divergence.                                                        |
 | 0027 | [asyncio.TaskGroup for Parallel Tool Execution](0027-asyncio-taskgroup-parallel-tools.md)                                                               | Accepted (Sprint 3c / Phase 2.1.3 shipped — DECISION REVERSED to asyncio.gather) | P-7 reversal: `asyncio.gather(*coros, return_exceptions=False)` — Pi never cancels siblings on tool error, TaskGroup auto-cancel would be Pi divergence. ADR-0021 구현 binding. |
-| 0028 | [Extension Auto-Discovery via importlib.metadata.entry_points](0028-extension-auto-discovery-entry-points.md)                                           | Draft (Phase 3 implementation)      | `entry_points(group="aelix.extensions")` 주 방식. fallback: `~/.aelix/extensions/`. ADR-0012 partial supersede.                                   |
+| 0028 | [Extension Auto-Discovery — Directory Scan (Pi Parity) + entry_points (Aelix-Additive)](0028-extension-auto-discovery-entry-points.md) | **Accepted (Sprint 5a / Phase 3.1.1 shipped — P-21 reversal)** | **Directory scan PRIMARY (Pi parity), entry_points ADDITIVE.** Sprint 2 Draft 명세를 P-21 검증으로 반전. ADR-0012 partial supersede. |
 | 0029 | [Pi-Parity Acceptance Test Harness](0029-pi-parity-acceptance-test-harness.md)                                                                          | Draft (Phase 2.1+ ongoing)          | `tests/pi_parity/` 별도 lane. vendored Pi fixture + message-level equivalence assert. "믿는다" → "증명한다".                                       |
 | 0030 | [Hook Event Exhaustiveness via assert_never](0030-hook-event-exhaustiveness-assert-never.md)                                                             | Accepted (Sprint 3a / Phase 2.1.1 shipped) | `match`+`assert_never` 패턴 코드-land. `_to_hook_event`에 적용. 새 event 미처리 시 pyright build fail.                                            |
 | 0031 | [Build Backend Choice — Hatchling](0031-build-backend-hatchling.md)                                                                                     | Accepted (Sprint 2 shipped)         | 모든 packages/* hatchling 사용. declarative `src/` layout 지원. uv workspace first-class.                                                          |
@@ -54,6 +54,7 @@
 | 0038 | [stream_simple Dispatch Shell — Phase 1 Boundary](0038-stream-simple-dispatch-shell-phase-1-boundary.md)                                                | Accepted (Sprint 2.5 / Phase 1.4 shipped — body lands Phase 4)     | Phase 1 exit는 dispatch shell + registry + typed error에서 완료. Adapter는 Phase 4.                                                                |
 | 0039 | [Phase 2.1 Strict Superset Closure](0039-phase-2-1-strict-superset-closure.md)                                                                          | Accepted (Sprint 3d / Phase 2.1.4 shipped)                          | Phase 2.1 strict superset closure — P-1..P-9 roster + E.5 closure pin + deferred allowlist (forward-compat clause).                                  |
 | 0040 | [Phase 2.2 Strict Superset Closure](0040-phase-2-2-strict-superset-closure.md)                                                                          | Accepted (Sprint 4b shipped)                                        | Phase 2.2 strict Pi-parity superset closure (P-11~P-20 roster + closure pin).                                                                        |
+| 0041 | [Phase 3.1 Extension API Full Surface Closure](0041-phase-3-1-extension-api-full-surface-closure.md)                                                    | Accepted (Sprint 5a / Phase 3.1.1 shipped)                          | Extension auto-discovery (Pi-primary), ExtensionAPI 48-method surface, ExtensionContext 14 fields, 3 new events registered (input/user_bash/resources_discover). P-21~P-28 roster + 4-week time-bound deferral. |
 
 > **번호 공백 (0016)**: ADR-0016 "Phase machine expansion"은 ADR-0023(Compaction + Branch Summary)으로 supersede됩니다. 번호를 재사용하지 않고 gap으로 보존합니다.
 
@@ -264,14 +265,24 @@ Sprint 4b ADRs 상태 (Phase 2.2.2 compact + navigate + Phase machine + 4 sessio
 | 0039  | Phase 2.1 closure — DEFERRED_ALLOWLIST trimmed                    | Accepted (4 session_* removed; ADR-0040 supersedes Phase 2.2 tracking)|
 | 0040  | Phase 2.2 Strict Superset Closure                                 | Accepted (Sprint 4b / Phase 2.2.2 shipped — closure)                  |
 
+Sprint 5a ADRs 상태 (Phase 3.1.1 Extension auto-discovery + ExtensionAPI full surface + 3 event registration).
+
+| ADR   | 제목                                                                              | Status                                                                              |
+| ----- | --------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| 0017  | Phase 3.1 event additions subsection added (input/user_bash/resources_discover)   | Accepted (Sprint 5a — 28 → 31 events; P-24/P-25/P-26 closure)                       |
+| 0019  | error_mode overload extends to 3 new Sprint 5a events                             | Accepted (Sprint 5a — no v3 change, surface extension)                              |
+| 0028  | Extension Auto-Discovery — P-21 REVERSAL (directory-scan PRIMARY)                 | **Accepted (Sprint 5a / Phase 3.1.1 — Draft → Accepted with corrected framing)**    |
+| 0033  | ExtensionContext UI surface — `ui` field exposed as deferred-raise (Phase 5)      | Deferred (Phase 5) — Sprint 5a placeholder attribute landed                         |
+| 0039  | Phase 2.1 closure — DEFERRED_ALLOWLIST extended with 3 Sprint 5a events           | Accepted (3 entries added with ADR-0042 owner)                                      |
+| 0041  | **Phase 3.1 Extension API Full Surface Closure**                                  | **Accepted (Sprint 5a / Phase 3.1.1 shipped — P-21~P-28 roster + closure pin)**     |
+
 Draft ADR 및 target Phase 요약 (전체).
 
 | ADR   | 제목                                       | Target Phase |
 | ----- | ------------------------------------------ | ------------ |
 | 0020  | RPC Mode for Multi-Language Clients        | Phase 4      |
-| 0028  | Extension Auto-Discovery entry_points      | Phase 3      |
 | 0029  | Pi-Parity Acceptance Test Harness          | Phase 2.1+ (foundation shipped Sprint 3a) |
-| 0033  | ExtensionContext UI surface                | Phase 5      |
+| 0033  | ExtensionContext UI surface                | Phase 5 (Sprint 5a exposes attribute as deferred-raise) |
 | 0035  | Error Code Taxonomy (Literal widening)     | Per owning ADR (0017 done; 0022 / 0023 / Phase 4) |
 | 0037  | Streaming Event Union — adapter coverage   | Phase 4      |
 

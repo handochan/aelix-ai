@@ -1,6 +1,6 @@
 # 0017. Full Hook Event Catalogue v2
 
-Status: Accepted (Phase 2.1.1 / Sprint 3a shipped — 18 own events Pi-verified at SHA 734e08e; Sprint 3d amendment: `tool_execution_update` + tool-result message emit sites landed — Phase 2.1.4)
+Status: Accepted (Phase 2.1.1 / Sprint 3a shipped — 18 own events Pi-verified at SHA 734e08e; Sprint 3d amendment: `tool_execution_update` + tool-result message emit sites landed — Phase 2.1.4; **Sprint 5a / Phase 3.1.1 amendment: 3 new own events registered — `input` / `user_bash` / `resources_discover` (P-24/P-25/P-26)**)
 Supersedes: ADR-0011
 
 ## Context
@@ -288,3 +288,57 @@ that matrix as the binding source of truth for `tool_call`,
 The catalogue itself remains unchanged — the same 28-event surface applies
 under both sequential and parallel dispatch. Only the *order* in which
 events fire differs (see ADR-0021 §E matrix).
+
+## Phase 3.1 event additions (Sprint 5a)
+
+> **Sprint 3a P-1 correction (Sprint 5a W1 verification at SHA `734e08e`):**
+> The Sprint 3a P-1 verdict treated `input`, `user_bash`, and
+> `resources_discover` as "Pi `docs/hooks.md` wishlist only". **Verified
+> at SHA `734e08e`**: all 3 events DO exist in Pi at `packages/coding-agent/
+> src/core/extensions/types.ts` (lines 619-625 / 602-609 / 512-517) and
+> have emit sites in `agent-session.ts` (987 / 1403 / 2055). They live in
+> the Pi `coding-agent` package — NOT `agent-core` — which is why the
+> Sprint 3a P-1 audit (scoped to `agent-core`) missed them. Sprint 5a
+> Phase 3.1 closes the gap by registering them in the Aelix
+> `HookEventName` Literal (28 → 31) without yet emitting (emit sites are
+> owned by ADR-0042 Sprint 5b CLI loop).
+
+### Pi-Verified Event Count (SHA `734e08e`, Sprint 5a closure)
+
+| Group | Count | Source |
+| --- | --- | --- |
+| Loop `AgentEvent` (projections) | 10 | `packages/agent/src/types.ts:275-295` |
+| Harness `AgentHarnessOwnEvent` | 18 | `packages/agent/src/harness/types.ts:595-612` |
+| `coding-agent` extension events (Sprint 5a) | 3 | `packages/coding-agent/.../extensions/types.ts:512-625` |
+| **Total `HookEventName` Literal** | **31** | union of the above (disjoint sets) |
+
+### New events landed Sprint 5a
+
+| Pi event | Pi source | Aelix event class | Reducer | Result type |
+| --- | --- | --- | --- | --- |
+| `input` | `types.ts:619-625` | `InputHookEvent` | `_reducer_input` (handled-short-circuit / transform-chain / continue-passthrough) | `InputResult = InputContinue \| InputTransform \| InputHandled` |
+| `user_bash` | `types.ts:602-609` | `UserBashHookEvent` | `_reducer_user_bash` (last-result-wins) | `UserBashResult({operations?, result?})` |
+| `resources_discover` | `types.ts:512-517` | `ResourcesDiscoverHookEvent` | `_reducer_resources_discover` (collect + dedup) | `ResourcesDiscoverResult({skill_paths?, prompt_paths?, theme_paths?})` |
+
+### Register-without-emit policy (Sprint 5a → Sprint 5b)
+
+All 3 events land in the
+`DEFERRED_ALLOWLIST` of `tests/pi_parity/test_phase_2_1_strict_superset.py`
+with `ADR-0042 (Sprint 5b CLI loop)` as the owning sprint. Pi emit sites
+all live in `coding-agent` `agent-session.ts` which Aelix Sprint 5b
+ports. This mirrors the Sprint 3a `session_*` register-without-emit
+pattern (later closed in Sprint 4b).
+
+### ADR-0019 v3 extension
+
+The `error_mode: HookErrorMode = "throw"` opt-in introduced in Sprint 3a
+applies to all 3 new events (each gets a new `@overload` on `HookBus.on`
+and `ExtensionAPI.on`).
+
+### Strict-superset closure pin
+
+`tests/pi_parity/test_phase_3_1_strict_superset.py` mechanises the
+Sprint 5a closure invariant — it asserts the 3 names are registered AND
+appear in `DEFERRED_ALLOWLIST` with the correct owner. ADR-0041
+(Phase 3.1 Extension API Full Surface Closure) is the parent closure
+ADR; this catalogue carries the event-catalogue-specific changes only.
