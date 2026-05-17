@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+build/
+dist/
+.coverage
+.pytest_cache/
+
+# Virtual environments
+.venv/
+venv/
+
+# Local environment
+.env
+.env.local
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+
+# OMC runtime state (ephemeral; not project history)
+.omc/state/
+.omc/sessions/
+
+# Claude Code local settings
+.claude/settings.local.json
