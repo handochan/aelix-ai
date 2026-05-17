@@ -16,6 +16,7 @@ from aelix_agent_core.harness.core import (
     AgentHarness,
     AgentHarnessError,
     AgentHarnessOptions,
+    PendingActiveToolsChangeWrite,
     PendingModelChangeWrite,
     PendingThinkingLevelChangeWrite,
 )
@@ -208,6 +209,37 @@ async def test_set_active_tools_invalid_no_mutation() -> None:
         await h.set_active_tools(["nope"])
     assert exc.value.code == "invalid_argument"
     assert h.state.active_tool_names is None
+
+
+async def test_set_active_tools_during_turn_enqueues_pending_write() -> None:
+    """W4 MAJOR-1 (Pi parity): Pi ``setActiveTools`` pushes onto
+    ``pendingSessionWrites`` when called during a turn.
+
+    Captures the pending queue via a ``save_point`` listener that snapshots
+    the writes BEFORE ``flush_pending_session_writes`` runs at turn_end
+    (W4 MAJOR-2 — no monkey-patch). The harness still emits no event for
+    ``set_active_tools`` itself (P-4 verdict); persistence is observed via
+    the pending write Phase 2.2 Session ADR-0022 will drain.
+    """
+
+    h = AgentHarness(
+        AgentHarnessOptions(tools=_tools("a", "b", "c"), stream_fn=_stream())
+    )
+    snapshot_during_turn: list[Any] = []
+
+    async def in_turn(event: Any, _ctx: Any) -> Any:
+        await h.set_active_tools(["b"])
+        # Snapshot inside the turn — before turn_end flush.
+        snapshot_during_turn.extend(h._pending_session_writes)
+        return None
+
+    h.hooks.on("before_agent_start", in_turn)  # type: ignore[arg-type]
+    await h.prompt("hi")
+
+    types = [type(p) for p in snapshot_during_turn]
+    assert PendingActiveToolsChangeWrite in types
+    # Verify state mutation also occurred (Pi parity — sync action runs first).
+    assert h.state.active_tool_names == ["b"]
 
 
 # === A.4 set_steering_mode — 2 tests ===================================

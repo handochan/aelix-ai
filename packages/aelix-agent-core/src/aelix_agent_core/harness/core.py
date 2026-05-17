@@ -179,10 +179,26 @@ class PendingThinkingLevelChangeWrite:
     type: Literal["thinking_level_change"] = "thinking_level_change"
 
 
+@dataclass(frozen=True)
+class PendingActiveToolsChangeWrite:
+    """Pi parity (W4 MAJOR-1): Pi ``setActiveTools`` (agent-harness.ts:735-741)
+    pushes an active-set change onto ``pendingSessionWrites`` during a turn.
+
+    Aelix Sprint 3b W6 ships the matching variant so Phase 2.2 Session
+    ADR-0022 can persist active-set transitions without revisiting the
+    setter. State is already mutated by ``set_active_tools`` (and by the
+    sync ``_action_set_active_tools`` action) before this write is queued.
+    """
+
+    active_tool_names: list[str] | None
+    type: Literal["active_tools_change"] = "active_tools_change"
+
+
 PendingSessionWrite = (
     PendingMessageWrite
     | PendingModelChangeWrite
     | PendingThinkingLevelChangeWrite
+    | PendingActiveToolsChangeWrite
 )
 
 
@@ -511,9 +527,19 @@ class AgentHarness:
         any event and Aelix mirrors that exactly (P-4 spec verdict). The sync
         ``_action_set_active_tools`` is preserved for
         :class:`ExtensionRuntimeActions` — async migration is Phase 2.2+.
+
+        W4 MAJOR-1 (Pi parity): Pi pushes an active-set change onto
+        ``pendingSessionWrites`` when called during a turn so Phase 2.2
+        Session ADR-0022 can persist the transition. Aelix mirrors that
+        here — the sync action mutates state first; the pending write is
+        queued only after validation succeeds and only when in turn phase.
         """
 
         self._action_set_active_tools(tool_names)
+        if self._phase == "turn":
+            self._pending_session_writes.append(
+                PendingActiveToolsChangeWrite(active_tool_names=list(tool_names))
+            )
 
     async def set_steering_mode(self, mode: QueueMode) -> None:
         """Update the steering queue mode. Pi: ``agent-harness.ts:743-745``.
@@ -1078,6 +1104,7 @@ __all__ = [
     "AgentHarnessOptions",
     "AgentHarnessPhase",
     "HarnessListener",
+    "PendingActiveToolsChangeWrite",
     "PendingMessageWrite",
     "PendingModelChangeWrite",
     "PendingSessionWrite",
