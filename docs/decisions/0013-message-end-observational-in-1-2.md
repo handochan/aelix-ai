@@ -1,7 +1,7 @@
 # 0013. message_end Reducer Policy — Observational in Phase 1.2
 
 Status: Accepted (Phase 1.2 임시 결정)
-Superseded by: ADR-0018 (message_end replacement reducer, Phase 2.1)
+Superseded by: Sprint 3b P-3 verdict (ADR-0018 deprecated); message_end remains observational; Pi has no replacement reducer at SHA 734e08e.
 
 ## Context
 

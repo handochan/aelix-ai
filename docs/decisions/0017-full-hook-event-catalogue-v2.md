@@ -171,3 +171,32 @@ the tracking marker.
 - Sprint 3a explicitly does NOT touch `message_end` reducer (ADR-0018 / Sprint 3b
   scope). Sprint 3a leaves `message_end` reducer = `_reducer_observational`,
   result type = `None`.
+
+## Setter emit sites landed Sprint 3b
+
+> **P-4 correction (Sprint 3b finding, verified at SHA `734e08e`):** Sprint 3a
+> incorrectly noted that `queue_update` is emitted by "setters and enqueue
+> paths". Pi truth — **only enqueue paths emit `queue_update`** (`steer`,
+> `followUp`, `nextTurn`, `drainQueuedMessages`, `abort`). **No setter emits
+> `queue_update`.** This subsection records the corrected setter emit table
+> shipped in Sprint 3b binding spec §A; the JSON drift fixture lives at
+> `tests/pi_parity/fixtures/pi_setter_emit_sites_734e08e.json` and is
+> exercised by `tests/pi_parity/test_setter_emit_sites_match_pi.py`.
+
+### Pi-verified setter emit table (Sprint 3b)
+
+| Pi method | Aelix method | Pi `agent-harness.ts` | Emits |
+| --- | --- | --- | --- |
+| `setModel` | `set_model` | 704-718 | `model_select` |
+| `setThinkingLevel` | `set_thinking_level` | 720-733 | `thinking_level_select` |
+| `setActiveTools` | `set_active_tools` | 735-741 | **none** |
+| `setSteeringMode` | `set_steering_mode` | 743-745 | **none** |
+| `setFollowUpMode` | `set_follow_up_mode` | 747-749 | **none** |
+| `setResources` | `set_resources` | 751-760 | `resources_update` |
+| `setStreamOptions` | `set_stream_options` | 762-764 | **none** |
+| `setTools` | `set_tools` | 766-776 | **none** |
+
+3 setters emit (model/thinking/resources); 5 do not (active_tools / steering /
+follow_up / stream_options / tools). The `queue_update` event continues to be
+emitted by `steer()`, `follow_up()`, `next_turn()`, and `abort()` only —
+verified by the drift fixture above.

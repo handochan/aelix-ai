@@ -1,7 +1,7 @@
 # 0018. message_end Replacement Reducer (Pi parity)
 
-Status: Draft (Phase 2.1)
-Supersedes: ADR-0013
+Status: Deprecated — superseded by Sprint 3b P-3 verdict; Pi has no message_end reducer at SHA 734e08e
+Supersedes: ADR-0013 (now amended — message_end remains observational)
 
 ## Context
 
@@ -56,3 +56,25 @@ def _reducer_message_end(results, original_event):
   - `test_message_end_replacement_preserves_role` — handler가 반환한 메시지가 루프에 반영됨
   - `test_message_end_role_mismatch_skips` — role 불일치 시 원본 메시지 유지
 - ADR-0013의 `test_message_end_observational` 테스트는 Phase 2.1에서 제거 또는 갱신합니다.
+
+## Why this was rejected in Sprint 3b
+
+Sprint 3b §0 verified at Pi SHA `734e08edf82ff315bc3d96472a6ebfa69a1d8016` that
+Pi has **no `MessageEndResult` type, no `message_end` entry in
+`AgentHarnessEventResultMap`, and no `messages_end` reducer in
+`agent-harness.ts`**. The only "replace this message" mechanism in Pi at this
+SHA is the `context` hook (`agent-harness.ts:377-380`), which rewrites the
+**input** message list before each turn — not the assistant message that just
+finished streaming. Pi `agent-harness.ts:434-438` shows `message_end` flowing
+through `emitAny()`, a fire-and-forget broadcast that ignores handler return
+values entirely.
+
+Because of the 1차 원칙 (Pi parity) and the lack of any consumer asking for a
+replacement reducer in the Aelix codebase (greps for `MessageEndResult`,
+`_reducer_message_end`, and message-replacement intent return nothing), this
+ADR is **Deprecated** rather than executed. Status-quo (observational only,
+result type `None`, `_reducer_observational`) is the correct Pi-parity shape
+and Sprint 3b ships zero behaviour change for `message_end`. The two pin tests
+in `tests/test_message_end_remains_observational.py` lock this in so any
+future attempt to introduce a `MessageEndResult` will fail loudly without a
+new ADR + Pi upstream signal.

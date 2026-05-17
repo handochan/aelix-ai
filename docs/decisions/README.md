@@ -27,11 +27,11 @@
 | 0010 | [Trust Model Stays Source-Specific; No Unified Schema in 1st Cut](0010-trust-model-stays-source-specific.md)                                           | Accepted                            | 1차에는 통합 trust verdict schema를 정의하지 않는다. ADR-0005의 source-책임 모델 유지.                                                              |
 | 0011 | [Hook Event Catalogue v1](0011-hook-event-catalogue-v1.md)                                                                                             | Accepted (Phase 1.2 임시 결정)      | Phase 1.2가 ship하는 16개 hook event를 binding contract으로 등록. Phase 2.1에 ADR-0017로 대체.                                                      |
 | 0012 | Extension Discovery Model                                                                                                                              | Deferred                            | Phase 3에서 결정. ADR-0028로 부분 해소 예정. (`~/.aelix/extensions`, `entry_points` 우선순위 결정됨.)                                              |
-| 0013 | [message_end Reducer Policy — Observational in Phase 1.2](0013-message-end-observational-in-1-2.md)                                                    | Accepted (Phase 1.2 임시 결정)      | Phase 1.2의 `message_end`는 observational only. Phase 2.1에 ADR-0018로 대체.                                                                        |
+| 0013 | [message_end Reducer Policy — Observational in Phase 1.2](0013-message-end-observational-in-1-2.md)                                                    | Accepted (Phase 1.2 임시 결정 — Sprint 3b 재확정: message_end는 영구 observational)      | Phase 1.2의 `message_end`는 observational only. Sprint 3b P-3 verdict로 영구 확정(ADR-0018 Deprecated, Pi has no replacement reducer @ SHA 734e08e). |
 | 0014 | [Hook Error Policy — Mutation hooks throw; Lifecycle observational hooks swallow+log](0014-hook-error-policy.md)                                       | Superseded by ADR-0019              | (Phase 1.2 임시 결정) — Sprint 3a에서 ADR-0019 v3로 대체됨.                                                                                          |
 | 0015 | [Monorepo Layout — uv Workspaces](0015-monorepo-layout-uv-workspaces.md)                                                                               | Accepted (Phase 1.3 shipped)        | Phase 1.3 경계에서 uv workspaces 마이그레이션. Pi `packages/*` 구조와 1:1 매핑.                                                                    |
 | 0017 | [Full Hook Event Catalogue v2](0017-full-hook-event-catalogue-v2.md)                                                                                   | Accepted (Sprint 3a / Phase 2.1.1 shipped) | Pi-verified 28 hook events (10 loop + 18 harness own). 7 wishlist events dropped per W1 Finding P-1. ADR-0011 대체.                                |
-| 0018 | [message_end Replacement Reducer (Pi parity)](0018-message-end-replacement-reducer.md)                                                                  | Draft (Phase 2.1)                   | `message_end`에 role-preserving replacement reducer 구현. ADR-0013 대체.                                                                            |
+| 0018 | [message_end Replacement Reducer (Pi parity)](0018-message-end-replacement-reducer.md)                                                                  | Deprecated (Sprint 3b — superseded by P-3 verdict)                   | **Deprecated** — Pi has no message_end reducer at SHA 734e08e. Sprint 3b §0 verdict: keep `message_end` observational, no replacement reducer.       |
 | 0019 | [Hook Error Policy v2 — Pi `"throw"` Default + Aelix `"continue"` Opt-in](0019-hook-error-policy-v2-pi-continue-default.md) | Accepted (Sprint 3a / Phase 2.1.1 shipped — v3 reframe) | Pi-parity `"throw"` default (matches Pi `normalizeHookError`) + Aelix additive `error_mode="continue"` opt-in. v3 reframe per W1 Finding P-2. ADR-0014 대체. |
 | 0020 | [RPC Mode for Multi-Language Clients](0020-rpc-mode-multi-language-clients.md)                                                                          | Draft (Phase 4)                     | `aelix mode rpc` — stdin/stdout JSON 프로토콜. Pi `--mode rpc` 그대로 port. ADR-0009 부분 대체.                                                     |
 | 0021 | [Parallel-Mode Tool Execution + Per-Tool Override](0021-parallel-tool-execution.md)                                                                     | Draft (Phase 2.1)                   | default parallel 실행 + per-tool `execution_mode="sequential"` override.                                                                           |
@@ -208,11 +208,19 @@ Sprint 3a ADRs 상태 (Phase 2.1.1 hook bus expansion).
 | 0030  | Hook Event Exhaustiveness via assert_never                            | Accepted (Sprint 3a / Phase 2.1.1 shipped)                            |
 | 0036  | Loop AgentEvent vs Harness HookEvent Distinction (F-7) — code-land    | Accepted (Sprint 3a — AgentEventName + AgentHarnessEventName aliases) |
 
+Sprint 3b ADRs 상태 (Phase 2.1.2 — setters + nextTurn/appendMessage + pendingSessionWrites).
+
+| ADR   | 제목                                                                 | Sprint 3a Status                       | Sprint 3b Status                                                                                          |
+| ----- | -------------------------------------------------------------------- | -------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| 0013  | message_end Reducer Policy — Observational in Phase 1.2              | Accepted (Phase 1.2 임시 결정)         | Accepted (Phase 1.2 임시 결정 — Sprint 3b 재확정: message_end는 영구 observational)                          |
+| 0017  | Full Hook Event Catalogue v2                                         | Accepted (Sprint 3a)                   | Accepted (+ §"Setter emit sites landed Sprint 3b" — P-4 correction: setters don't emit `queue_update`)     |
+| 0018  | message_end Replacement Reducer                                      | Draft (Phase 2.1)                      | **Deprecated** — Pi has no message_end reducer at SHA 734e08e (Sprint 3b §0 verdict)                       |
+| 0036  | Loop AgentEvent vs Harness HookEvent Distinction (F-7)               | Accepted (Sprint 3a)                   | Accepted (unchanged)                                                                                       |
+
 Draft ADR 및 target Phase 요약 (전체).
 
 | ADR   | 제목                                       | Target Phase |
 | ----- | ------------------------------------------ | ------------ |
-| 0018  | message_end Replacement Reducer            | Phase 2.1.2 (Sprint 3b) |
 | 0020  | RPC Mode for Multi-Language Clients        | Phase 4      |
 | 0021  | Parallel-Mode Tool Execution               | Phase 2.1.3 (Sprint 3c) |
 | 0022  | Session Manager + JSONL Persistence        | Phase 2.2    |
