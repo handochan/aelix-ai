@@ -16,7 +16,6 @@ from aelix_agent_core.harness.core import (
     AgentHarness,
     AgentHarnessError,
     AgentHarnessOptions,
-    PendingActiveToolsChangeWrite,
     PendingModelChangeWrite,
     PendingThinkingLevelChangeWrite,
 )
@@ -220,15 +219,17 @@ async def test_set_active_tools_invalid_no_mutation() -> None:
     assert h.state.active_tool_names is None
 
 
-async def test_set_active_tools_during_turn_enqueues_pending_write() -> None:
-    """W4 MAJOR-1 (Pi parity): Pi ``setActiveTools`` pushes onto
-    ``pendingSessionWrites`` when called during a turn.
+async def test_set_active_tools_during_turn_does_NOT_push_p11_reversal() -> None:
+    """P-11 reversal (Sprint 4a, ADR-0022): Pi ``setActiveTools``
+    (``agent-harness.ts:875-882``) does NOT push to ``pendingSessionWrites``.
 
-    Captures the pending queue via a ``save_point`` listener that snapshots
-    the writes BEFORE ``flush_pending_session_writes`` runs at turn_end
-    (W4 MAJOR-2 — no monkey-patch). The harness still emits no event for
-    ``set_active_tools`` itself (P-4 verdict); persistence is observed via
-    the pending write Phase 2.2 Session ADR-0022 will drain.
+    Pi ``flushPendingSessionWrites`` (``agent-harness.ts:459-481``) has no
+    ``active_tools_change`` case. The prior Sprint 3b W4 MAJOR-1
+    ``PendingActiveToolsChangeWrite`` variant was a fabricated claim and
+    has been deleted. State mutation still happens immediately via the
+    sync action (validation + assign); the active-set is a per-process
+    runtime concept restored via ``options.activeToolNames`` on harness
+    construction, not session replay.
     """
 
     h = AgentHarness(
@@ -245,9 +246,11 @@ async def test_set_active_tools_during_turn_enqueues_pending_write() -> None:
     h.hooks.on("before_agent_start", in_turn)  # type: ignore[arg-type]
     await h.prompt("hi")
 
-    types = [type(p) for p in snapshot_during_turn]
-    assert PendingActiveToolsChangeWrite in types
-    # Verify state mutation also occurred (Pi parity — sync action runs first).
+    # P-11 LOCKDOWN: no variant matching the deleted active_tools_change
+    # type may appear in the captured queue.
+    type_names = [type(p).__name__ for p in snapshot_during_turn]
+    assert "PendingActiveToolsChangeWrite" not in type_names
+    # State mutation still occurred (Pi parity — sync action runs first).
     assert h.state.active_tool_names == ["b"]
 
 

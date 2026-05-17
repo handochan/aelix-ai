@@ -217,3 +217,58 @@ def test_deferred_allowlist_entries_remain_unemitted() -> None:
         "Deferred events now have emit sites; drop them from "
         f"DEFERRED_ALLOWLIST: {leaked}"
     )
+
+
+def test_p11_lockdown_no_active_tools_change_references() -> None:
+    """Sprint 4a P-11 LOCKDOWN: the fabricated
+    ``PendingActiveToolsChangeWrite`` variant + ``active_tools_change``
+    Literal type discriminator must NOT appear in **executable** runtime
+    code.
+
+    Pi ``setActiveTools`` (``agent-harness.ts:875-882``) does NOT push to
+    ``pendingSessionWrites`` and Pi ``flushPendingSessionWrites``
+    (``agent-harness.ts:459-481``) has NO ``active_tools_change`` case.
+    The variant was introduced by Sprint 3b W4 MAJOR-1 based on a
+    fabricated Pi claim and has been removed in Sprint 4a (ADR-0022
+    §"Removed claims"). This regression guard parses each runtime file
+    with ``ast`` so explanatory comments / docstrings documenting the
+    reversal do NOT trip the lockdown — only executable class names and
+    string literals do.
+    """
+
+    import ast
+
+    forbidden_class = "PendingActiveToolsChangeWrite"
+    forbidden_literal = "active_tools_change"
+
+    for source_file in _RUNTIME_ROOT.rglob("*.py"):
+        text = source_file.read_text(encoding="utf-8")
+        tree = ast.parse(text, filename=str(source_file))
+        for node in ast.walk(tree):
+            # No `class PendingActiveToolsChangeWrite:` definitions.
+            if isinstance(node, ast.ClassDef):
+                assert node.name != forbidden_class, (
+                    f"P-11 LOCKDOWN: class {forbidden_class!r} defined in "
+                    f"{source_file} — removed in Sprint 4a (ADR-0022)."
+                )
+            # No `PendingActiveToolsChangeWrite` identifier references in
+            # imports / annotations / call sites.
+            if isinstance(node, ast.Name):
+                assert node.id != forbidden_class, (
+                    f"P-11 LOCKDOWN: name {forbidden_class!r} referenced "
+                    f"in {source_file} — removed in Sprint 4a (ADR-0022)."
+                )
+            if isinstance(node, ast.alias):
+                assert node.name != forbidden_class, (
+                    f"P-11 LOCKDOWN: import alias {forbidden_class!r} in "
+                    f"{source_file} — removed in Sprint 4a (ADR-0022)."
+                )
+            # No `"active_tools_change"` string literal in executable
+            # code. This catches `Literal["active_tools_change"]` /
+            # `type: Literal[...] = "active_tools_change"` constructs.
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                assert node.value != forbidden_literal, (
+                    f"P-11 LOCKDOWN: string literal {forbidden_literal!r} "
+                    f"found in {source_file} — removed in Sprint 4a "
+                    "(ADR-0022)."
+                )

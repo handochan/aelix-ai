@@ -1,0 +1,7 @@
+{"type":"session","version":3,"id":"pi-fixture-734e08e","timestamp":"2026-05-17T00:00:00.000Z","cwd":"/repo"}
+{"type":"message","id":"aaaaaaaa","parentId":null,"timestamp":"2026-05-17T00:00:01.000Z","message":{"role":"user","content":[{"type":"text","text":"hello pi"}],"timestamp":1779019201000}}
+{"type":"thinking_level_change","id":"bbbbbbbb","parentId":"aaaaaaaa","timestamp":"2026-05-17T00:00:02.000Z","thinkingLevel":"high"}
+{"type":"model_change","id":"cccccccc","parentId":"bbbbbbbb","timestamp":"2026-05-17T00:00:03.000Z","provider":"anthropic","modelId":"claude-opus-4-7"}
+{"type":"message","id":"dddddddd","parentId":"cccccccc","timestamp":"2026-05-17T00:00:04.000Z","message":{"role":"assistant","content":[{"type":"text","text":"hello user"}],"stop_reason":"end_turn","timestamp":1779019204000}}
+{"type":"label","id":"eeeeeeee","parentId":"dddddddd","timestamp":"2026-05-17T00:00:05.000Z","targetId":"dddddddd","label":"checkpoint"}
+{"type":"session_info","id":"ffffffff","parentId":"eeeeeeee","timestamp":"2026-05-17T00:00:06.000Z","name":"Pi cross-runtime fixture"}
