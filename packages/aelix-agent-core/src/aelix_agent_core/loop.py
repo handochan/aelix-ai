@@ -440,9 +440,17 @@ async def _maybe_await(value: Any) -> Any:
 
 def _resolve_stream_simple() -> StreamFn:
     # Imported lazily to keep ``aelix_ai.streaming`` free of agent imports.
+    # F-1.4: ``stream_simple`` is now ``async def`` (eager-raise, Pi parity);
+    # the loop's ``async for ev in fn(...)`` shape needs an async-generator
+    # adapter that awaits the coroutine then yields from its iterator.
     from aelix_ai.streaming import stream_simple
 
-    return stream_simple
+    async def _adapter(model, ctx, options):  # type: ignore[no-untyped-def]
+        iterator = await stream_simple(model, ctx, options)
+        async for event in iterator:
+            yield event
+
+    return _adapter
 
 
 __all__ = [

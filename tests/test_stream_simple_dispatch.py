@@ -168,3 +168,36 @@ async def test_clear_providers_empties_registry() -> None:
     register_provider("b", fake)
     clear_providers()
     assert get_registered_providers() == {}
+
+
+async def test_loop_resolves_stream_simple_when_stream_fn_omitted() -> None:
+    """W6 regression: loop's ``_resolve_stream_simple`` adapter must yield
+    events from the eager-raise ``stream_simple`` coroutine.
+
+    Without the adapter, ``async for ev in stream_simple(...)`` raises
+    ``TypeError`` because ``stream_simple`` is now ``async def`` (returns
+    a coroutine, not an async iterator). The adapter in ``loop.py`` bridges
+    that shape so callers that omit ``stream_fn`` still work.
+    """
+
+    from aelix_agent_core.loop import _resolve_stream_simple
+
+    msg = AssistantMessage(content=[])
+    yielded = [AssistantStartEvent(partial=msg), AssistantEndEvent(message=msg)]
+
+    async def fake_stream(
+        model: Model,
+        context: Context,
+        options: SimpleStreamOptions,
+    ) -> AsyncIterator[AssistantMessageEvent]:
+        for ev in yielded:
+            yield ev
+
+    register_provider("fake-api", fake_stream)
+
+    adapter = _resolve_stream_simple()
+    collected: list[AssistantMessageEvent] = []
+    async for ev in adapter(Model(api="fake-api"), Context(), SimpleStreamOptions()):
+        collected.append(ev)
+
+    assert collected == yielded
