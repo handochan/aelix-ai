@@ -63,6 +63,17 @@ DEFERRED_ALLOWLIST: dict[str, str] = {
     # here. They now emit from ``AgentHarness.compact()`` /
     # ``AgentHarness.navigate_tree()`` in ``harness/core.py`` and have been
     # removed from this allowlist per the forward-compat clause.
+    #
+    # Sprint 5a (Phase 3.1) closure — see ADR-0041: 3 newly REGISTERED
+    # ``coding-agent``-owned events (P-24/P-25/P-26). Emit sites all live
+    # in the Sprint 5b CLI loop (Pi ``agent-session.ts`` 987/1403/2055
+    # regions) which is owned by ADR-0042. Closure pin
+    # ``test_phase_3_1_strict_superset.py`` re-validates this entry every
+    # run; if Sprint 5b ships within 4 weeks per ADR-0041, the entries
+    # MUST drop from this allowlist in the same PR.
+    "input": "ADR-0042 (Sprint 5b CLI loop)",
+    "user_bash": "ADR-0042 (Sprint 5b CLI loop)",
+    "resources_discover": "ADR-0042 (Sprint 5b CLI loop)",
 }
 
 
