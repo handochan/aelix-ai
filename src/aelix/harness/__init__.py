@@ -1,0 +1,86 @@
+"""AgentHarness — hook-aware orchestrator layer (Phase 1.2).
+
+Public surface:
+
+- :class:`AgentHarness` — the hook-aware orchestrator. Wraps the Phase 1.1
+  :func:`aelix.agent.loop.agent_loop` with extension-driven hooks.
+- :class:`AgentHarnessOptions` — constructor options.
+- :class:`AgentHarnessError` — errors raised by the harness itself.
+- :class:`HookBus` and the event/result dataclasses — the typed hook surface.
+"""
+
+from aelix.harness.core import (
+    AgentHarness,
+    AgentHarnessError,
+    AgentHarnessOptions,
+    AgentHarnessPhase,
+    HarnessListener,
+)
+from aelix.harness.hooks import (
+    HOOK_RESULT_TYPES,
+    AgentEndHookEvent,
+    AgentStartHookEvent,
+    BeforeAgentStartHookEvent,
+    BeforeAgentStartResult,
+    ContextHookEvent,
+    ContextResult,
+    HookBus,
+    HookCleanup,
+    HookEvent,
+    HookEventName,
+    HookHandler,
+    HookObserver,
+    HookRegistration,
+    MessageEndHookEvent,
+    MessageStartHookEvent,
+    MessageUpdateHookEvent,
+    SessionBeforeCompactHookEvent,
+    SessionBeforeCompactResult,
+    SettledHookEvent,
+    ToolCallHookEvent,
+    ToolCallResult,
+    ToolExecutionEndHookEvent,
+    ToolExecutionStartHookEvent,
+    ToolExecutionUpdateHookEvent,
+    ToolResultHookEvent,
+    ToolResultPatch,
+    TurnEndHookEvent,
+    TurnStartHookEvent,
+)
+
+__all__ = [
+    "AgentEndHookEvent",
+    "AgentHarness",
+    "AgentHarnessError",
+    "AgentHarnessOptions",
+    "AgentHarnessPhase",
+    "AgentStartHookEvent",
+    "BeforeAgentStartHookEvent",
+    "BeforeAgentStartResult",
+    "ContextHookEvent",
+    "ContextResult",
+    "HOOK_RESULT_TYPES",
+    "HarnessListener",
+    "HookBus",
+    "HookCleanup",
+    "HookEvent",
+    "HookEventName",
+    "HookHandler",
+    "HookObserver",
+    "HookRegistration",
+    "MessageEndHookEvent",
+    "MessageStartHookEvent",
+    "MessageUpdateHookEvent",
+    "SessionBeforeCompactHookEvent",
+    "SessionBeforeCompactResult",
+    "SettledHookEvent",
+    "ToolCallHookEvent",
+    "ToolCallResult",
+    "ToolExecutionEndHookEvent",
+    "ToolExecutionStartHookEvent",
+    "ToolExecutionUpdateHookEvent",
+    "ToolResultHookEvent",
+    "ToolResultPatch",
+    "TurnEndHookEvent",
+    "TurnStartHookEvent",
+]
