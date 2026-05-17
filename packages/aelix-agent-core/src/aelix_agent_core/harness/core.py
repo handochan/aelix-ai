@@ -78,6 +78,7 @@ from aelix_agent_core.types import (
     MessageEndEvent,
     MessageStartEvent,
     QueueMode,
+    ToolExecutionMode,
     TurnEndEvent,
 )
 
@@ -149,6 +150,12 @@ class AgentHarnessOptions:
     active_tool_names: list[str] | None = None  # Sprint 3b wired — flows via F-9 validator path. Pi: types.ts:~577
     get_api_key_and_headers: Callable[..., Any] | None = None  # Phase 4 / Phase 2.2 deferred — ADR-0038 provider. Pi: types.ts:~571
     stream_options: dict[str, Any] | None = None  # Sprint 3b wired — flows into AgentState.stream_options. Pi: types.ts:~574
+
+    # === Sprint 3c (Phase 2.1.3) — parallel tool execution ===
+    # Pi parity (types.ts:226-232): default "parallel". A single tool with
+    # ``execution_mode == "sequential"`` downgrades the whole batch to
+    # sequential at the loop dispatcher (agent-loop.ts:380-387).
+    tool_execution: ToolExecutionMode = "parallel"
 
 
 # === Sprint 3b — pending session writes (Pi parity, agent-harness.ts:414-432) ===
@@ -267,6 +274,10 @@ class AgentHarness:
         self._abort_requested = False
         # F-10: per-turn snapshot rebuilt at every prompt(). None when idle.
         self._turn_state: _TurnState | None = None
+        # Sprint 3c §C.2 — track the in-flight turn task so abort() can call
+        # ``task.cancel()`` on it. Aelix additive over Pi (Pi does NOT cancel
+        # ``Promise.all`` on tool error). None when idle.
+        self._current_turn_task: asyncio.Task[Any] | None = None
 
         # Build a merged tool list with application-supplied tools winning
         # over extension-registered ones with the same name (D.1.13 M-9).
@@ -443,11 +454,26 @@ class AgentHarness:
         await self._emit_queue_update()
 
     async def abort(self) -> None:
-        """Signal a cooperative abort. Hook handlers should check the signal."""
+        """Signal a cooperative abort. Hook handlers should check the signal.
+
+        Sprint 3c §C.2 (Aelix additive over Pi): when a turn task is
+        in-flight, call ``task.cancel()`` on it so any tool that ignores the
+        cooperative signal still gets unwound. Pi does NOT cancel
+        ``Promise.all`` on tool error; this is a strict superset (Pi-observing
+        tools would have cancelled anyway via the signal).
+
+        Race-safety: read of ``self._current_turn_task`` → local copy →
+        ``cancel()`` on a done-or-already-cancelled Task is a no-op in
+        asyncio. Single-threaded event loop guarantees no torn reads.
+        """
 
         self._abort_requested = True
         self._steering_queue.clear()
         self._follow_up_queue.clear()
+        # Sprint 3c §C.2 — cancel in-flight turn task if any.
+        turn_task = self._current_turn_task
+        if turn_task is not None and not turn_task.done():
+            turn_task.cancel()
         # Sprint 3b — abort clears queues; emit ``queue_update`` so observers
         # see the empty state. Pi parity (``agent-harness.ts`` abort path).
         await self._emit_queue_update()
@@ -928,6 +954,8 @@ class AgentHarness:
                 get_follow_up_messages=self._drain_follow_up,
                 before_tool_call=self._before_tool_call_bridge,
                 after_tool_call=self._after_tool_call_bridge,
+                # Sprint 3c §A.5 — Pi parity, default "parallel".
+                tool_execution=self._options.tool_execution,
             )
             # F-9: apply the active-tool filter without mutating ``_state.tools``.
             active = self._state.active_tool_names
@@ -983,13 +1011,32 @@ class AgentHarness:
                         )
 
             try:
-                new_messages = await agent_loop(
-                    prompts,
-                    context,
-                    config,
-                    emit=emit,
-                    stream_fn=self._options.stream_fn,
+                # Sprint 3c §C.2 — wrap the loop in a task so abort() can
+                # cancel it. We await the task (not the coroutine directly)
+                # and surface CancelledError as the expected abort path.
+                turn_task = asyncio.create_task(
+                    agent_loop(
+                        prompts,
+                        context,
+                        config,
+                        emit=emit,
+                        stream_fn=self._options.stream_fn,
+                    )
                 )
+                self._current_turn_task = turn_task
+                try:
+                    new_messages = await turn_task
+                except asyncio.CancelledError:
+                    # Sprint 3c §C.2 — abort() called ``task.cancel()`` during
+                    # an in-flight turn. Treat this as a normal abort path:
+                    # we already cleared queues + flipped _abort_requested in
+                    # abort(); just return without raising so callers (and the
+                    # finally block above) restore idle state.
+                    if self._abort_requested:
+                        return []
+                    raise
+                finally:
+                    self._current_turn_task = None
             except AgentHarnessError as exc:
                 # Pi parity: synthesize failure assistant message + emit closure events.
                 failure = AssistantMessage(

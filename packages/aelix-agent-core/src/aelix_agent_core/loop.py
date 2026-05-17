@@ -10,16 +10,23 @@ Both take an ``emit`` async callback that receives every :class:`AgentEvent`,
 matching pi-agent-core's ``AgentEventSink`` signature. A high-level
 :class:`~aelix_agent_core.agent.Agent` wraps this loop with state + subscribers.
 
-Tool execution is sequential in Phase 1.1. The ``parallel`` mode and per-tool
-overrides arrive in a later phase.
+Sprint 3c (Phase 2.1.3): Tool execution dispatches to either the sequential
+or the parallel path. Pi parity default is ``"parallel"`` (Pi
+``agent-loop.ts:380-387`` + ``types.ts:226-232``); any tool with
+``execution_mode == "sequential"`` downgrades the whole batch to sequential.
+The parallel path uses ``asyncio.gather(*coros, return_exceptions=False)``
+(NOT ``TaskGroup``) per P-7 reversal: Pi catches every tool error per-tool so
+``Promise.all`` reject path is unreachable; TaskGroup's mandatory
+sibling-cancel would be Pi-divergence.
 """
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import time
 from collections.abc import Awaitable, Callable
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import Any
 
 from aelix_ai.messages import (
@@ -278,7 +285,7 @@ async def _stream_assistant_response(
     return final
 
 
-# === Sequential tool execution ===
+# === Tool execution: router + sequential + parallel ===
 
 
 class _ExecutedBatch:
@@ -289,53 +296,87 @@ class _ExecutedBatch:
         self.terminate = terminate
 
 
-async def _execute_tool_calls(
+@dataclass
+class _Prepared:
+    """Result of :func:`_prepare_tool_call` when the tool is ready to execute.
+
+    ``args`` is the validated args dict; D.1.5 contract requires the SAME
+    reference to flow into both the (already-emitted) ``before_tool_call``
+    bridge and ``tool.execute``.
+    """
+
+    tool_call: ToolCallContent
+    tool: Any  # AgentTool — typed as Any to avoid a circular import
+    args: dict[str, Any]
+
+
+@dataclass
+class _Immediate:
+    """An already-finalized tool call: unknown tool / no execute / hook-blocked.
+
+    The sequential path emits ``tool_execution_end`` synchronously when an
+    immediate is produced; the parallel path emits it during the prep loop
+    (Phase 1) so source ordering is preserved per §E.
+    """
+
+    tool_call: ToolCallContent
+    tool_name: str
+    result: ToolResult
+
+
+@dataclass
+class _Finalized:
+    """A finalized tool call ready for source-order message emit (parallel path)."""
+
+    tool_call: ToolCallContent
+    tool_name: str
+    result: ToolResult
+
+
+async def _prepare_tool_call(
     context: AgentContext,
     assistant_message: AssistantMessage,
     config: AgentLoopConfig,
-    signal: Any,
-    emit: AgentEventSink,
-) -> _ExecutedBatch:
-    tool_calls = [
-        c for c in assistant_message.content if isinstance(c, ToolCallContent)
-    ]
-    tool_map = {t.name: t for t in context.tools}
+    tc: ToolCallContent,
+    tool_map: dict[str, Any],
+) -> _Prepared | _Immediate:
+    """Shared prep step: unknown / validate args / before_tool_call / no-execute.
 
-    result_messages: list[ToolResultMessage] = []
-    all_terminate = bool(tool_calls)
+    Returns :class:`_Immediate` for any branch that yields a fully-formed
+    :class:`ToolResult` without invoking ``tool.execute``; returns
+    :class:`_Prepared` otherwise. The args dict on a :class:`_Prepared` is the
+    canonical reference per F.2 / D.1.5.
 
-    for tc in tool_calls:
-        tool = tool_map.get(tc.tool_name)
-        await emit(
-            ToolExecutionStartEvent(
-                tool_call_id=tc.tool_call_id,
-                tool_name=tc.tool_name,
-                args=dict(tc.input),
-            )
-        )
+    NOTE: this helper does NOT emit any events — emit ordering is the
+    responsibility of the caller (sequential vs parallel paths differ).
+    """
 
-        if tool is None:
-            result = ToolResult(
+    tool = tool_map.get(tc.tool_name)
+    if tool is None:
+        return _Immediate(
+            tool_call=tc,
+            tool_name=tc.tool_name,
+            result=ToolResult(
                 content=[TextContent(text=f"Unknown tool: {tc.tool_name}")],
                 is_error=True,
-            )
-            result_messages.append(_to_tool_result_message(tc.tool_call_id, result))
-            await emit(ToolExecutionEndEvent(tool_call_id=tc.tool_call_id, result=result, tool_name=tc.tool_name, is_error=result.is_error))
-            all_terminate = False
-            continue
+            ),
+        )
 
-        args = await validate_tool_arguments(tool, dict(tc.input))
+    args = await validate_tool_arguments(tool, dict(tc.input))
 
-        if config.before_tool_call is not None:
-            before_ctx = BeforeToolCallContext(
-                assistant_message=assistant_message,
+    if config.before_tool_call is not None:
+        before_ctx = BeforeToolCallContext(
+            assistant_message=assistant_message,
+            tool_call=tc,
+            args=args,
+            context=context,
+        )
+        decision = await _maybe_await(config.before_tool_call(before_ctx))
+        if isinstance(decision, BeforeToolCallResult) and decision.block:
+            return _Immediate(
                 tool_call=tc,
-                args=args,
-                context=context,
-            )
-            decision = await _maybe_await(config.before_tool_call(before_ctx))
-            if isinstance(decision, BeforeToolCallResult) and decision.block:
-                blocked = ToolResult(
+                tool_name=tc.tool_name,
+                result=ToolResult(
                     content=[
                         TextContent(
                             text=decision.reason
@@ -343,59 +384,284 @@ async def _execute_tool_calls(
                         )
                     ],
                     is_error=True,
-                )
-                result_messages.append(
-                    _to_tool_result_message(tc.tool_call_id, blocked)
-                )
-                await emit(
-                    ToolExecutionEndEvent(tool_call_id=tc.tool_call_id, result=blocked, tool_name=tc.tool_name, is_error=blocked.is_error)
-                )
-                all_terminate = False
-                continue
+                ),
+            )
 
-        if tool.execute is None:
-            result = ToolResult(
+    if tool.execute is None:
+        return _Immediate(
+            tool_call=tc,
+            tool_name=tc.tool_name,
+            result=ToolResult(
                 content=[
-                    TextContent(
-                        text=f"Tool '{tool.name}' has no execute callable."
-                    )
+                    TextContent(text=f"Tool '{tool.name}' has no execute callable.")
                 ],
                 is_error=True,
+            ),
+        )
+
+    return _Prepared(tool_call=tc, tool=tool, args=args)
+
+
+async def _execute_and_finalize(
+    context: AgentContext,
+    assistant_message: AssistantMessage,
+    config: AgentLoopConfig,
+    signal: Any,
+    prepared: _Prepared,
+) -> ToolResult:
+    """Run ``tool.execute`` + ``after_tool_call`` override. Never raises.
+
+    Per Pi parity (``agent-loop.ts:609-637, 651-680``), exceptions from
+    ``tool.execute`` are caught and converted to ``isError`` results;
+    ``after_tool_call`` hook exceptions are caught here as well so the parallel
+    path's ``asyncio.gather`` never sees a tool-induced exception. Only
+    ``AgentHarnessError("hook")`` raised by the harness bridge for the
+    ``tool_result`` hook is allowed to escape (it MUST propagate so the
+    harness can synthesize a failure assistant message).
+    """
+
+    exec_ctx = ToolExecutionContext(
+        tool_call_id=prepared.tool_call.tool_call_id, signal=signal
+    )
+    try:
+        result = await prepared.tool.execute(prepared.args, exec_ctx)
+    except Exception as exc:  # noqa: BLE001 — tool author errors must not break the loop
+        result = ToolResult(
+            content=[
+                TextContent(text=f"Tool '{prepared.tool.name}' raised: {exc}")
+            ],
+            is_error=True,
+        )
+
+    if config.after_tool_call is not None:
+        after_ctx = AfterToolCallContext(
+            assistant_message=assistant_message,
+            tool_call=prepared.tool_call,
+            args=prepared.args,
+            result=result,
+            is_error=result.is_error,
+            context=context,
+        )
+        override = await _maybe_await(config.after_tool_call(after_ctx))
+        if isinstance(override, AfterToolCallResult):
+            result = _apply_after_override(result, override)
+
+    return result
+
+
+async def _execute_tool_calls(
+    context: AgentContext,
+    assistant_message: AssistantMessage,
+    config: AgentLoopConfig,
+    signal: Any,
+    emit: AgentEventSink,
+) -> _ExecutedBatch:
+    """Router: dispatch to sequential or parallel path per §A.1 / §B.
+
+    Pi parity (``agent-loop.ts:380-387``): a single tool with
+    ``execution_mode == "sequential"`` downgrades the entire batch to
+    sequential, regardless of the global ``config.tool_execution`` setting.
+    """
+
+    tool_calls = [
+        c for c in assistant_message.content if isinstance(c, ToolCallContent)
+    ]
+    tool_map = {t.name: t for t in context.tools}
+    has_sequential = any(
+        (
+            tool_map.get(tc.tool_name) is not None
+            and getattr(tool_map[tc.tool_name], "execution_mode", None) == "sequential"
+        )
+        for tc in tool_calls
+    )
+    if config.tool_execution == "sequential" or has_sequential:
+        return await _execute_tool_calls_sequential(
+            context, assistant_message, config, signal, emit, tool_calls, tool_map
+        )
+    return await _execute_tool_calls_parallel(
+        context, assistant_message, config, signal, emit, tool_calls, tool_map
+    )
+
+
+async def _execute_tool_calls_sequential(
+    context: AgentContext,
+    assistant_message: AssistantMessage,
+    config: AgentLoopConfig,
+    signal: Any,
+    emit: AgentEventSink,
+    tool_calls: list[ToolCallContent],
+    tool_map: dict[str, Any],
+) -> _ExecutedBatch:
+    """Sequential body — Phase 1.1 behaviour preserved verbatim.
+
+    Each tool: emit ``tool_execution_start`` → prep → (immediate branch emits
+    ``tool_execution_end`` and appends message; prepared branch executes +
+    finalize + emit ``tool_execution_end`` + append message).
+    """
+
+    result_messages: list[ToolResultMessage] = []
+    all_terminate = bool(tool_calls)
+
+    for tc in tool_calls:
+        await emit(
+            ToolExecutionStartEvent(
+                tool_call_id=tc.tool_call_id,
+                tool_name=tc.tool_name,
+                args=dict(tc.input),
             )
-            result_messages.append(_to_tool_result_message(tc.tool_call_id, result))
-            await emit(ToolExecutionEndEvent(tool_call_id=tc.tool_call_id, result=result, tool_name=tc.tool_name, is_error=result.is_error))
+        )
+        prepared = await _prepare_tool_call(
+            context, assistant_message, config, tc, tool_map
+        )
+
+        if isinstance(prepared, _Immediate):
+            result_messages.append(
+                _to_tool_result_message(tc.tool_call_id, prepared.result)
+            )
+            await emit(
+                ToolExecutionEndEvent(
+                    tool_call_id=tc.tool_call_id,
+                    result=prepared.result,
+                    tool_name=prepared.tool_name,
+                    is_error=prepared.result.is_error,
+                )
+            )
             all_terminate = False
             continue
 
-        exec_ctx = ToolExecutionContext(tool_call_id=tc.tool_call_id, signal=signal)
-        try:
-            result = await tool.execute(args, exec_ctx)
-        except Exception as exc:  # noqa: BLE001 — tool author errors must not break the loop
-            result = ToolResult(
-                content=[
-                    TextContent(text=f"Tool '{tool.name}' raised: {exc}")
-                ],
-                is_error=True,
-            )
-
-        if config.after_tool_call is not None:
-            after_ctx = AfterToolCallContext(
-                assistant_message=assistant_message,
-                tool_call=tc,
-                args=args,
-                result=result,
-                is_error=result.is_error,
-                context=context,
-            )
-            override = await _maybe_await(config.after_tool_call(after_ctx))
-            if isinstance(override, AfterToolCallResult):
-                result = _apply_after_override(result, override)
+        result = await _execute_and_finalize(
+            context, assistant_message, config, signal, prepared
+        )
 
         if not result.terminate:
             all_terminate = False
 
         result_messages.append(_to_tool_result_message(tc.tool_call_id, result))
-        await emit(ToolExecutionEndEvent(tool_call_id=tc.tool_call_id, result=result, tool_name=tc.tool_name, is_error=result.is_error))
+        await emit(
+            ToolExecutionEndEvent(
+                tool_call_id=tc.tool_call_id,
+                result=result,
+                tool_name=tc.tool_name,
+                is_error=result.is_error,
+            )
+        )
+
+    return _ExecutedBatch(result_messages, all_terminate)
+
+
+async def _execute_tool_calls_parallel(
+    context: AgentContext,
+    assistant_message: AssistantMessage,
+    config: AgentLoopConfig,
+    signal: Any,
+    emit: AgentEventSink,
+    tool_calls: list[ToolCallContent],
+    tool_map: dict[str, Any],
+) -> _ExecutedBatch:
+    """Parallel body — Pi parity with ``agent-loop.ts:446-505``.
+
+    Preconditions: caller MUST have already routed via ``_execute_tool_calls``
+    (the router) which guarantees ``config.tool_execution != "sequential"``
+    AND no tool has ``execution_mode == "sequential"``. Calling this directly
+    outside the router bypasses Pi-parity sequential downgrade and is
+    incorrect for production code (G.14 ``test_p6_dispatcher_routing.py``
+    calls it directly only to verify routing behavior in isolation).
+
+    Three phases per spec §A.2 / §E:
+
+    1. **Phase 1 — sequential prep** (source order): emit
+       ``tool_execution_start`` per tool, run ``_prepare_tool_call``. Immediate
+       results emit ``tool_execution_end`` here (so source ordering of end
+       events is preserved for immediates per §E.1).
+    2. **Phase 2 — parallel exec** via ``asyncio.gather(*coros,
+       return_exceptions=False)``. P-7 reversal: NOT ``TaskGroup`` — Pi never
+       cancels siblings on tool error. Each ``_run`` closure executes prepared
+       tool + finalize + emits ``tool_execution_end`` in **completion order**.
+    3. **Phase 3 — source-order message emit**: ``gather`` preserves source
+       order; iterate ``ordered_results`` and append tool-result messages.
+    """
+
+    # Phase 1 — sequential preparation (Pi agent-loop.ts:456-489).
+    # Each entry is either an immediate _Finalized (no execute path) or a
+    # prepared call awaiting Phase-2 execution.
+    pending: list[_Finalized | _Prepared] = []
+    for tc in tool_calls:
+        await emit(
+            ToolExecutionStartEvent(
+                tool_call_id=tc.tool_call_id,
+                tool_name=tc.tool_name,
+                args=dict(tc.input),
+            )
+        )
+        prepared = await _prepare_tool_call(
+            context, assistant_message, config, tc, tool_map
+        )
+        if isinstance(prepared, _Immediate):
+            # §E.1: immediates emit tool_execution_end in the prep loop so
+            # their end events stay in source order alongside their start
+            # events. Pi parity: synchronous resolution path during prep.
+            await emit(
+                ToolExecutionEndEvent(
+                    tool_call_id=tc.tool_call_id,
+                    result=prepared.result,
+                    tool_name=prepared.tool_name,
+                    is_error=prepared.result.is_error,
+                )
+            )
+            pending.append(
+                _Finalized(
+                    tool_call=tc,
+                    tool_name=prepared.tool_name,
+                    result=prepared.result,
+                )
+            )
+        else:
+            pending.append(prepared)
+
+    # Phase 2 — parallel execution (Pi agent-loop.ts:491-493, P-7 reversal).
+    async def _run(prep: _Prepared) -> _Finalized:
+        result = await _execute_and_finalize(
+            context, assistant_message, config, signal, prep
+        )
+        # tool_execution_end fires in COMPLETION order (§E row 4).
+        await emit(
+            ToolExecutionEndEvent(
+                tool_call_id=prep.tool_call.tool_call_id,
+                result=result,
+                tool_name=prep.tool.name,
+                is_error=result.is_error,
+            )
+        )
+        return _Finalized(
+            tool_call=prep.tool_call,
+            tool_name=prep.tool.name,
+            result=result,
+        )
+
+    async def _identity(entry: _Finalized) -> _Finalized:
+        return entry
+
+    coros: list[Awaitable[_Finalized]] = [
+        _run(entry) if isinstance(entry, _Prepared) else _identity(entry)
+        for entry in pending
+    ]
+    # return_exceptions=False is correct: _run never raises for tool work
+    # (per-tool catches in _execute_and_finalize); only AgentHarnessError
+    # raised by the harness's tool_result bridge can escape and that MUST
+    # propagate to the harness for failure-message synthesis.
+    ordered_results: list[_Finalized] = await asyncio.gather(
+        *coros, return_exceptions=False
+    )
+
+    # Phase 3 — source-order message emit (Pi agent-loop.ts:495-499).
+    result_messages: list[ToolResultMessage] = []
+    all_terminate = bool(ordered_results)
+    for finalized in ordered_results:
+        result_messages.append(
+            _to_tool_result_message(finalized.tool_call.tool_call_id, finalized.result)
+        )
+        if not finalized.result.terminate:
+            all_terminate = False
 
     return _ExecutedBatch(result_messages, all_terminate)
 
