@@ -1,6 +1,6 @@
 # 0017. Full Hook Event Catalogue v2
 
-Status: Accepted (Phase 2.1.1 / Sprint 3a shipped — 18 own events Pi-verified at SHA 734e08e)
+Status: Accepted (Phase 2.1.1 / Sprint 3a shipped — 18 own events Pi-verified at SHA 734e08e; Sprint 3d amendment: `tool_execution_update` + tool-result message emit sites landed — Phase 2.1.4)
 Supersedes: ADR-0011
 
 ## Context
@@ -200,6 +200,62 @@ the tracking marker.
 follow_up / stream_options / tools). The `queue_update` event continues to be
 emitted by `steer()`, `follow_up()`, `next_turn()`, and `abort()` only —
 verified by the drift fixture above.
+
+## Tool execution update + tool-result message events landed Sprint 3d (Phase 2.1.4)
+
+Sprint 3d closes two pre-existing Pi-parity carry-over gaps identified by
+Sprint 3c's W5 audit. After this sprint, Phase 2.1 is a strict Pi-parity
+superset (Q5 acceptance — see ADR-0039 for the closure invariant).
+
+### `tool_execution_update` emit site landed
+
+Pi parity: `executePreparedToolCall` (`agent-loop.ts:604-639`) — `Tool.execute`
+accepts a 4th `onUpdate` callback (`types.ts:357-358`), each invocation
+constructs a `tool_execution_update` event and pushes the emit promise onto a
+per-call `updateEvents` list, then `await Promise.all(updateEvents)` runs in
+BOTH the happy path and the catch block before the final tool result is
+returned to the loop.
+
+Aelix retains its existing collapsed signature (`Tool.execute(args, ctx)`)
+and extends `ToolExecutionContext` with the new `on_partial` field rather
+than introducing a 3rd argument. The runtime built in `_execute_and_finalize`
+mirrors Pi's drain semantics with
+`asyncio.gather(*update_events, return_exceptions=False)` in both the
+exception path and the normal return path. See `aelix_ai.tools` for the
+`ToolPartialCallback` type alias and the documented `None` tolerance.
+
+#### Aelix-additive — partial-emit exception containment
+
+Pi lets hook-handler exceptions raised while emitting `tool_execution_update`
+escape `executePreparedToolCall` entirely. Aelix catches them in the existing
+`_execute_and_finalize` `try/except` and converts them to an `isError` tool
+result. This is a **stricter-than-Pi safety net** consistent with the
+`error_mode` per-handler policy from ADR-0019 v3; it is documented here as
+an intentional additive containment rather than a hidden divergence so the
+Pi-parity drift detector treats it as known additive behaviour.
+
+### Tool-result message events landed (`emitToolResultMessage` port)
+
+Pi parity: `emitToolResultMessage` (`agent-loop.ts:715-718`) emits BOTH
+`message_start` and `message_end` for every tool-result message. Pi calls
+this helper from the sequential branch (`:436`) and the parallel branch
+(`:498`); `runLoop` does NOT emit message events for tool-result messages.
+
+Aelix Sprint 3d adds `_emit_tool_result_message` as the single source of
+truth and calls it from `_execute_tool_calls_sequential` (both immediate
+and prepared branches) and from `_execute_tool_calls_parallel` Phase 3.
+`_run_loop` is intentionally unchanged — adding the helper there would
+double-emit.
+
+#### Sequential ordering refactor
+
+Pre-Sprint 3d the sequential path appended the tool-result message BEFORE
+emitting `tool_execution_end`, and never emitted `message_start` /
+`message_end` for tool-result messages. Sprint 3d reorders both the
+immediate and prepared branches to the Pi-verified
+`end → emit_helper → append` sequence (Pi `agent-loop.ts:434-438`).
+
+The ordering matrix in ADR-0021 §E is amended in lockstep (rows 3 and 6).
 
 ## Tool execution dispatch landed Sprint 3c (Phase 2.1.3)
 

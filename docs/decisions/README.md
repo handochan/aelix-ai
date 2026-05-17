@@ -52,6 +52,7 @@
 | 0036 | [Loop AgentEvent vs Harness HookEvent Distinction (F-7)](0036-loop-event-vs-harness-event-distinction.md)                                              | Accepted (Sprint 3a — code-land: AgentEventName + AgentHarnessEventName aliases) | Loop `AgentEventName` (10) ≠ Harness `AgentHarnessEventName` (18). 두 union 별도 유지 + 통합 `HookEventName` union.                                |
 | 0037 | [Streaming Event Union (Pi Parity)](0037-streaming-event-union-pi-parity.md)                                                                            | Draft (Phase 1.4 shell; adapter coverage Phase 4)                  | Pi 12-event union을 Phase 4 adapter PR에서 land. Phase 1.4는 design 문서만.                                                                          |
 | 0038 | [stream_simple Dispatch Shell — Phase 1 Boundary](0038-stream-simple-dispatch-shell-phase-1-boundary.md)                                                | Accepted (Sprint 2.5 / Phase 1.4 shipped — body lands Phase 4)     | Phase 1 exit는 dispatch shell + registry + typed error에서 완료. Adapter는 Phase 4.                                                                |
+| 0039 | [Phase 2.1 Strict Superset Closure](0039-phase-2-1-strict-superset-closure.md)                                                                          | Accepted (Sprint 3d / Phase 2.1.4 shipped)                          | Phase 2.1 strict superset closure — P-1..P-9 roster + E.5 closure pin + deferred allowlist (forward-compat clause).                                  |
 
 > **번호 공백 (0016)**: ADR-0016 "Phase machine expansion"은 ADR-0023(Compaction + Branch Summary)으로 supersede됩니다. 번호를 재사용하지 않고 gap으로 보존합니다.
 
@@ -150,6 +151,15 @@
   ├─ 0020 paired — Phase 4 provider work / RPC mode와 함께 land
   ├─ 0025 sibling — 동일 minimal-shell + owning-ADR cadence
   └─ 0037 paired — Phase 4 adapters가 expanded event union emit
+
+0039 (Phase 2.1 strict superset closure)
+  ├─ 0017 closes — `tool_execution_update` + tool-result `message_start/end` emit sites landed (Sprint 3d / P-9)
+  ├─ 0021 closes — §E matrix rows 3 + 6 implemented in same sprint
+  ├─ 0029 mechanizes — E.5 closure pin (`tests/pi_parity/test_phase_2_1_strict_superset.py`) is the durable regression guard
+  ├─ 0034 anchors — fixture pinned to SHA `734e08e`
+  ├─ 0022 forward — `session_*` events deferred to Phase 2.2 emit owner
+  ├─ 0023 forward — `session_before_compact` / `session_compact` / `session_before_tree` / `session_tree` deferred owner
+  └─ 0038 forward — `before_provider_request` / `before_provider_payload` / `after_provider_response` deferred to Phase 4 provider adapter
 ```
 
 ## Open Questions (pending ADRs)
@@ -224,6 +234,14 @@ Sprint 3c ADRs 상태 (Phase 2.1.3 parallel tool execution).
 | 0017  | Full Hook Event Catalogue v2 (Sprint 3c subsection added) | Accepted (Sprint 3c — Tool execution dispatch subsection added)         |
 | 0021  | Parallel-Mode Tool Execution + Per-Tool Override          | Accepted (Sprint 3c / Phase 2.1.3 shipped)                              |
 | 0027  | asyncio.gather for Parallel Tool Execution (P-7 reversal) | Accepted (Sprint 3c / Phase 2.1.3 shipped — DECISION REVERSED)          |
+
+Sprint 3d ADRs 상태 (Phase 2.1.4 — Phase 2.1 strict-superset closure / P-9).
+
+| ADR   | 제목                                                                  | Status                                                                  |
+| ----- | --------------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| 0017  | Full Hook Event Catalogue v2 (Sprint 3d subsection added)             | Accepted (Sprint 3d — `tool_execution_update` + tool-result message emit sites landed) |
+| 0021  | Parallel-Mode Tool Execution (§E matrix rows 3 + 6 implemented)       | Accepted (Sprint 3d / Phase 2.1.4 — partial-emit drain + `_emit_tool_result_message`) |
+| 0039  | Phase 2.1 Strict Superset Closure                                     | Accepted (Sprint 3d / Phase 2.1.4 shipped — P-1..P-9 roster + E.5 closure pin) |
 
 Draft ADR 및 target Phase 요약 (전체).
 

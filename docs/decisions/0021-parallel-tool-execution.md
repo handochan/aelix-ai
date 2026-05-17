@@ -1,6 +1,6 @@
 # 0021. Parallel-Mode Tool Execution + Per-Tool Override
 
-Status: Accepted (Sprint 3c, Phase 2.1.3)
+Status: Accepted (Sprint 3c, Phase 2.1.3 — Sprint 3d §E matrix rows 3 + 6 implemented in Phase 2.1.4)
 
 ## Context
 
@@ -63,16 +63,44 @@ and Q4 (sequential downgrade). Only the cited line ranges were stale.
 |---|---|---|
 | `tool_call` hook | Source order, BEFORE `gather` | `agent-loop.ts:456-462` → `:569-578` |
 | `tool_execution_start` | Source order, BEFORE `gather` | `agent-loop.ts:457-462` |
-| `tool_execution_update` | **Interleaved** | `agent-loop.ts:617-625` |
+| `tool_execution_update` | **Interleaved + drained per-tool inside `_execute_and_finalize`** | `agent-loop.ts:617-625` (Sprint 3d landed) |
 | `tool_execution_end` | **Completion order** | `agent-loop.ts:486` |
 | `tool_result` hook | **Completion order** | `agent-loop.ts:650-674` |
-| `message_start`/`message_end` (tool-result msg) | **Source order** | `agent-loop.ts:495-499` |
+| `message_start`/`message_end` (tool-result msg) | **Source order** | `agent-loop.ts:495-499` (Sprint 3d landed via `_emit_tool_result_message`) |
 | `turn_end` | After all above | `agent-loop.ts:217` |
 
 Implementation invariant: `tool_execution_start` MUST fire in the prep loop
 (Phase 1), NOT inside the per-tool closure. Immediates emit
 `tool_execution_end` in the prep loop too so the end events of unknown /
 hook-blocked tools stay paired in source order with their start events.
+
+### Sprint 3d amendment — rows 3 and 6 implemented
+
+Pre-Sprint 3d the matrix above was documented but two rows were not
+backed by emit sites in code:
+
+- **Row 3 (`tool_execution_update`)** — Pi's `executePreparedToolCall`
+  (`agent-loop.ts:604-639`) collects every emit-callback invocation into a
+  per-call `updateEvents` array and awaits `Promise.all(updateEvents)` in
+  BOTH the happy and error paths before the tool result returns to the
+  loop. Sprint 3d ports this drain semantic to
+  `_execute_and_finalize` via `asyncio.gather(*update_events,
+  return_exceptions=False)` and exposes the partial-emit callback through
+  `ToolExecutionContext.on_partial` (see ADR-0017 Sprint 3d amendment for
+  the type alias + Aelix-additive partial-emit exception containment).
+- **Row 6 (`message_start` / `message_end` for tool-result messages)** —
+  Pi's `emitToolResultMessage` (`agent-loop.ts:715-718`) emits both events
+  per message. Sprint 3d adds the `_emit_tool_result_message` helper and
+  calls it from the sequential immediate branch, the sequential prepared
+  branch, and the parallel Phase 3 source-order loop. The sequential
+  ordering was also fixed in lockstep (immediate + prepared branches now
+  follow `end → emit_helper → append`, mirroring Pi
+  `agent-loop.ts:434-438`).
+
+Per-tool `updateEvents` arrays are scoped to a single `_execute_and_finalize`
+call, mirroring Pi's two independent `Promise.all(updateEvents)` invocations.
+Partials emitted by tool A and tool B may interleave freely under parallel
+dispatch — neither call awaits the other.
 
 ## Consequences
 

@@ -149,3 +149,19 @@ point the choices are:
 - ADR-0014는 `Superseded by ADR-0019 v3`로 변경되지만 default 행동은 동일합니다
   ("mutation throws" — Pi parity). 차이는 새로 추가된 `"continue"` opt-in입니다.
 - Aelix 1차 원칙(Pi parity 회복) + 2차 원칙(디버깅 강점) 모두 충족합니다.
+
+## Sprint 3d cross-link — partial-emit containment in `_execute_and_finalize`
+
+Sprint 3d (ADR-0017 amendment) adds an Aelix-additive containment in
+`_execute_and_finalize` where hook-handler exceptions raised during
+`tool_execution_update` partial-emit are caught by the outer try/except and
+converted to an `isError` tool result. This is consistent with the
+per-handler `error_mode` opt-in policy documented above: by default the
+handler raise propagates to `_execute_and_finalize` where containment
+applies (the failing tool surfaces an `isError` result instead of tearing
+down the in-flight batch); handlers wanting Pi-strict bare-throw can
+register with `error_mode="throw"` (the default) and accept the
+`isError` conversion as the local termination contract for that tool. No
+change to the `HookBus`-level dispatch policy — containment is purely a
+loop-side defensive boundary around the partial-emit fan-out so a
+misbehaving observer cannot cancel sibling tools mid-batch.
