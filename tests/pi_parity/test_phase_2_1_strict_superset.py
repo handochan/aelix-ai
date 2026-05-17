@@ -51,17 +51,18 @@ DEFERRED_ALLOWLIST: dict[str, str] = {
     "before_provider_request": "ADR-0038 (Phase 4 provider adapter)",
     "before_provider_payload": "ADR-0038 (Phase 4 provider adapter)",
     "after_provider_response": "ADR-0038 (Phase 4 provider adapter)",
-    # Session lifecycle — Phase 2.2 Session Manager emits.
-    "session_before_compact": "ADR-0022 / ADR-0023 (Phase 2.2 Session Manager + Compaction)",
-    "session_compact": "ADR-0022 / ADR-0023 (Phase 2.2 Session Manager + Compaction)",
-    "session_before_tree": "ADR-0022 / ADR-0023 (Phase 2.2 Session Manager + Compaction)",
-    "session_tree": "ADR-0022 / ADR-0023 (Phase 2.2 Session Manager + Compaction)",
     # NOTE: P-10 (``abort`` emit site) closed in Sprint 3d W6 — see ADR-0039
     # P-10 row. ``AbortHookEvent`` is now emitted from
     # ``AgentHarness.abort()`` in ``harness/core.py`` with pre-clear
     # ``cleared_steer`` / ``cleared_follow_up`` snapshots. Phase 2.1 is now
-    # 100% strict Pi-parity superset; only Phase 2.2 / Phase 4 owned
-    # emit sites remain deferred.
+    # 100% strict Pi-parity superset.
+    #
+    # Sprint 4b (Phase 2.2.2) closure — see ADR-0040: the 4 ``session_*``
+    # events (``session_before_compact``, ``session_compact``,
+    # ``session_before_tree``, ``session_tree``) were previously deferred
+    # here. They now emit from ``AgentHarness.compact()`` /
+    # ``AgentHarness.navigate_tree()`` in ``harness/core.py`` and have been
+    # removed from this allowlist per the forward-compat clause.
 }
 
 
@@ -103,6 +104,13 @@ _HARNESS_OWN_EMIT_SUBSTRINGS: dict[str, tuple[str, ...]] = {
     # Abort lifecycle (Sprint 3d P-10 closure) — emit site is
     # ``AgentHarness.abort()`` in ``harness/core.py``.
     "abort": ("AbortHookEvent",),
+    # Sprint 4b (Phase 2.2.2) closure — see ADR-0040. The 4 ``session_*``
+    # events now have emit sites in ``AgentHarness.compact()`` /
+    # ``AgentHarness.navigate_tree()`` in ``harness/core.py``.
+    "session_before_compact": ("SessionBeforeCompactHookEvent",),
+    "session_compact": ("SessionCompactHookEvent",),
+    "session_before_tree": ("SessionBeforeTreeHookEvent",),
+    "session_tree": ("SessionTreeHookEvent",),
 }
 
 
