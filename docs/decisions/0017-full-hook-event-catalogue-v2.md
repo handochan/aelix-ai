@@ -200,3 +200,17 @@ the tracking marker.
 follow_up / stream_options / tools). The `queue_update` event continues to be
 emitted by `steer()`, `follow_up()`, `next_turn()`, and `abort()` only —
 verified by the drift fixture above.
+
+## Tool execution dispatch landed Sprint 3c (Phase 2.1.3)
+
+ADR-0021 / ADR-0027 land the parallel tool execution dispatcher (Sprint 3c).
+The per-event ordering invariants under parallel dispatch are spelled out
+verbatim in ADR-0021 §E (the 7-row matrix). This catalogue cross-references
+that matrix as the binding source of truth for `tool_call`,
+`tool_execution_start`, `tool_execution_update`, `tool_execution_end`,
+`tool_result`, `message_start`/`message_end` (tool-result msg) and
+`turn_end` ordering when the dispatcher selects the parallel path.
+
+The catalogue itself remains unchanged — the same 28-event surface applies
+under both sequential and parallel dispatch. Only the *order* in which
+events fire differs (see ADR-0021 §E matrix).

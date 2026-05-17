@@ -1,67 +1,104 @@
-# 0027. asyncio.TaskGroup for Parallel Tool Execution
+# 0027. asyncio.gather for Parallel Tool Execution
 
-Status: Draft (Phase 2.1 implementation)
+Status: Accepted (Sprint 3c, Phase 2.1.3) — DECISION REVERSED from TaskGroup to asyncio.gather per Sprint 3c P-7 finding
 
 Relates to: ADR-0021 (Parallel-Mode Tool Execution)
 
 ## Context
 
-ADR-0021은 parallel tool execution을 Phase 2.1에 schedule했습니다.
-Pi는 `Promise.all`로 parallel tool call을 실행합니다:
+ADR-0021 schedules parallel tool execution for Sprint 3c (Phase 2.1.3).
+Pi uses `Promise.all` to execute parallel tool calls.
 
 ```typescript
-// Pi agent-harness.ts (simplified)
-const results = await Promise.all(
-  toolCalls.map(tc => executeTool(tc, abortSignal))
+// Pi agent-loop.ts:491-493
+const orderedFinalizedCalls = await Promise.all(
+    finalizedCalls.map((entry) => (typeof entry === "function" ? entry() : Promise.resolve(entry))),
 );
 ```
 
-Pi의 `AbortSignal`은 외부에서 cancel signal을 주입하는 방식입니다.
+Pi's `AbortSignal` is threaded cooperatively from the caller.
 
-Python 3.11+는 `asyncio.TaskGroup`을 제공합니다. 이는 structured concurrency를
-언어 레벨에서 지원합니다.
+Python 3.11+ provides `asyncio.TaskGroup`. The original Draft of this ADR
+proposed `TaskGroup` for structured concurrency.
 
-### 고려한 대안
+### Original alternatives considered
 
-1. **`asyncio.gather()`**: `Promise.all`과 가장 직접적인 대응. 그러나 한 task
-   실패 시 sibling cancellation이 자동으로 일어나지 않습니다.
-   `return_exceptions=True` 시 모든 exception을 수집하지만 sibling은 계속 실행합니다.
-2. **`asyncio.TaskGroup`** (채택): structured concurrency. 한 task 실패 시
-   sibling auto-cancel. `ExceptionGroup`으로 모든 failure를 aggregate합니다.
+1. **`asyncio.gather()`**: Closest direct analog to `Promise.all`.
+2. **`asyncio.TaskGroup`** (originally proposed): structured concurrency
+   with auto-cancel of siblings on first task failure.
+
+## §P-7 — Sprint 3c REVERSAL (load-bearing)
+
+Sprint 3c architect verification at SHA `734e08e` revealed the original
+TaskGroup decision was **Pi-divergent, not Pi-parity**.
+
+**Pi evidence**:
+
+- `agent-loop.ts:609-637` (`executePreparedToolCall`) and `:651-680`
+  (`finalizeExecutedToolCall`) wrap every tool call in `try/catch`. Tool
+  exceptions are converted into `isError` tool results before they can reach
+  the `Promise.all` boundary.
+- `agent-harness.ts:200-220` shows the hook bus catches handler exceptions
+  inside the prepare/finalize path; only specific hook-bus errors are
+  rethrown to the harness for failure-message synthesis.
+- **Net Pi behaviour**: the `Promise.all` reject path is unreachable from
+  tool work. Pi NEVER cancels siblings on a tool error.
+
+**Verdict**: TaskGroup's mandatory sibling-cancel on first failure would be
+**Pi-divergence**, not Pi-parity. Reverse to
+`asyncio.gather(*coros, return_exceptions=False)`.
 
 ## Decision
 
-Phase 2.1 parallel tool implementation에서 `asyncio.TaskGroup`을 사용합니다:
+Sprint 3c parallel tool implementation uses `asyncio.gather` (NOT TaskGroup):
 
 ```python
-async def _execute_parallel(
-    self, tool_calls: list[ToolCall]
-) -> list[ToolResult]:
-    results: list[ToolResult] = []
-    async with asyncio.TaskGroup() as tg:
-        tasks = [tg.create_task(self._execute_tool(tc)) for tc in tool_calls]
-    return [t.result() for t in tasks]
+# Aelix loop.py _execute_tool_calls_parallel
+async def _run(prep: _Prepared) -> _Finalized:
+    result = await _execute_and_finalize(...)  # per-tool try/catch within
+    await emit(ToolExecutionEndEvent(...))     # completion order
+    return _Finalized(...)
+
+coros = [_run(entry) if isinstance(entry, _Prepared) else _identity(entry)
+         for entry in pending]
+ordered_results = await asyncio.gather(*coros, return_exceptions=False)
 ```
 
-선택 이유:
+**Rationale**:
 
-1. **Structured concurrency**: 한 tool 실패 시 sibling이 자동으로 cancel됩니다.
-   Pi의 `Promise.all` early-exit 동작과 동일한 observable behavior입니다.
-2. **Aggregated `ExceptionGroup`**: 모든 parallel failure를 한 번에 수집합니다.
-   Pi가 `Promise.allSettled` 없이 `Promise.all`을 쓰는 것과 first-error
-   early-exit 언어로 일치합니다.
-3. **`abort()` 통합**: Aelix `abort()` hook이 `TaskGroup`을 직접 cancel합니다.
-   Pi의 `AbortSignal` threading보다 깔끔하고 Python 관용적입니다.
+1. **Pi parity (1st principle)**: Pi never cancels siblings on tool error
+   (`agent-loop.ts:609-637, 651-680`). `asyncio.gather(..., return_exceptions=False)`
+   matches because `_run` never raises for tool work — per-tool catches in
+   `_execute_and_finalize` swallow tool errors into isError results.
+2. **Abort threading**: `AgentHarness.abort()` already sets the abort flag
+   and clears queues; cooperative `signal` mirrors Pi's `AbortSignal`. Sprint
+   3c §C.2 adds Aelix-additive `task.cancel()` on abort for tools that ignore
+   the cooperative signal.
+3. **`ExceptionGroup` not needed**: Pi has no aggregated-exception type.
+   Only `AgentHarnessError("hook")` raised by the harness's tool_result
+   bridge can escape `_run` — and that MUST propagate so the harness can
+   synthesize a failure assistant message.
+4. **TaskGroup rejected**: mandatory cancel-siblings on first failure is
+   Pi-divergence.
 
 ## Consequences
 
-- Pi의 `Promise.all` behavior와 observable difference가 최소화됩니다. 두 구현
-  모두 first-error early-exit 언어입니다.
-- Python 3.11+ requirement가 강화됩니다. Sprint 2 pyproject.toml에
-  `requires-python = ">=3.11"`이 이미 선언되어 있어 추가 비용이 없습니다.
-- `ExceptionGroup`을 처리하는 caller는 `except* ToolExecutionError:` syntax를
-  사용합니다 (Python 3.11+ PEP 654).
-- ADR-0021 implementation 시 binding됩니다. ADR-0021이 `asyncio.gather()`를
-  언급하는 경우 이 ADR로 override합니다.
-- Aelix-only improvement: Pi-side에 상응하는 structured concurrency 보장이
-  없습니다 (additive divergence).
+- Pi `Promise.all` observable behaviour is matched exactly: per-tool error
+  isolation, source-order results, no sibling-cancellation.
+- Python 3.11+ requirement remains (Sprint 2 monorepo already commits to
+  `>=3.11`), but is no longer strictly necessary for the parallel
+  dispatcher — `asyncio.gather` is available in 3.8+. The 3.11+ floor is
+  still appropriate because other Aelix features (PEP 654 `except*` in tests,
+  `assert_never`, etc.) use 3.11 syntax.
+- The original Draft's `except* ToolExecutionError:` consequence is
+  **removed**. `ExceptionGroup` no longer applies — tool errors do not
+  aggregate; they live in their respective tool-result messages as
+  `is_error=True`.
+- `tests/pi_parity/test_p7_no_sibling_cancel_on_error.py` regression-guards
+  the P-7 verdict: a raising tool MUST NOT cancel its siblings.
+- ADR-0021 implementation binding remains — this ADR is the Sprint 3c
+  implementation choice for the parallel branch.
+- Aelix Sprint 3c additive over Pi: `AgentHarness.abort()` calls
+  `task.cancel()` on the in-flight turn task (§C.2). This is a strict
+  superset of Pi (Pi-observing tools would have cancelled anyway via the
+  signal); guards against tools that ignore signal.
