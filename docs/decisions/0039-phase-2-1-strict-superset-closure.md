@@ -51,6 +51,7 @@ invariant and the durable regression guard.
 | P-8  | Sprint 3c           | `_run_loop` already only appends tool-result messages (no emits) | Confirmed no double-emit risk; helper-owned emit pattern preserved. |
 | P-9  | Sprint 3d           | `tool_execution_update` emit site missing + tool-result `message_start/end` missing | Landed `_on_partial` closure + drain semantics in `_execute_and_finalize`; landed `_emit_tool_result_message` helper called from sequential immediate, sequential prepared, and parallel Phase 3 (ADR-0017 + ADR-0021 amendments). |
 | P-10 | Sprint 3d (W5 → W6) | `AbortHookEvent` registered in Sprint 3a but never emitted — `AgentHarness.abort()` only emitted `queue_update` | **Closed in Sprint 3d W6.** Landed dedicated emit site in `AgentHarness.abort()` (`harness/core.py`): captures pre-clear snapshots of `_steering_queue` / `_follow_up_queue`, emits `AbortHookEvent(cleared_steer=..., cleared_follow_up=...)` BEFORE `queue_update`. Regression suite: `tests/test_abort_event_emit.py` (3 tests covering populated queues, empty queues, and abort→queue_update ordering). Closure pin `tests/pi_parity/test_phase_2_1_strict_superset.py` moves `abort` from `DEFERRED_ALLOWLIST` into `_HARNESS_OWN_EMIT_SUBSTRINGS`. |
+| P-11 | Sprint 4a W1 | Sprint 3b W4 MAJOR-1 added `PendingActiveToolsChangeWrite` based on fabricated Pi claim. **Pi `setActiveTools` (`agent-harness.ts:875-882`) does NOT push pending writes** — verified at SHA `734e08e`. Variant + push site deleted in Sprint 4a; regression test in `test_session_pending_writes_integration.py` prevents reintroduction. ADR-0022 §"Removed claims" documents reversal. |
 
 ## Decision
 
@@ -65,6 +66,11 @@ With Sprint 3d shipped, the following hold:
   OR an explicit entry in `DEFERRED_ALLOWLIST` with its owning ADR.
 - `tests/pi_parity/test_phase_2_1_strict_superset.py` (E.5 closure pin)
   enforces both halves of the invariant as a regression guard.
+
+The P-11 lockdown test (`test_session_pending_writes_integration.py`) is included
+in the closure pin guard — it prevents `PendingActiveToolsChangeWrite` from being
+silently reintroduced and ensures the 8-variant `PendingSessionWrite` union matches
+the Pi-verified surface.
 
 ### Durable regression guard (E.5 closure pin)
 
@@ -120,6 +126,12 @@ violation — the closure pin will fail.
 Conversely, when a deferred entry's emit site lands, the same PR MUST drop
 the entry from `DEFERRED_ALLOWLIST`. The
 `test_deferred_allowlist_entries_remain_unemitted` test enforces this.
+
+Sprint 4a / Phase 2.2.1 shipped `Session` class + `JsonlSessionRepo`; the 4
+`session_*` emit sites (`session_before_compact`, `session_compact`,
+`session_before_tree`, `session_tree`) remain deferred to Sprint 4b per ADR-0023.
+The deferred allowlist above is unchanged — these 4 entries remain valid until
+Sprint 4b lands their emit sites.
 
 ## Consequences
 

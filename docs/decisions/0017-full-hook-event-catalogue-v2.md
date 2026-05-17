@@ -257,6 +257,13 @@ immediate and prepared branches to the Pi-verified
 
 The ordering matrix in ADR-0021 §E is amended in lockstep (rows 3 and 6).
 
+### Session message_end wiring landed Sprint 4a (Phase 2.2.1)
+
+- `MessageEndHookEvent` is now emitted AFTER `session.append_message(event.message)` is awaited.
+- Mirrors Pi `agent-harness.ts:484-486` ordering: session persistence first, then hook fan-out.
+- When `AgentHarnessOptions.session` is `None` (Phase 1/2 backward compat), the session call is skipped and only the hook emit runs (Sprint 3b behavior).
+- See ADR-0022 §"Sprint 4a → 4b transition plan" for the `state.messages` source-of-truth migration plan.
+
 ## Tool execution dispatch landed Sprint 3c (Phase 2.1.3)
 
 ADR-0021 / ADR-0027 land the parallel tool execution dispatcher (Sprint 3c).
