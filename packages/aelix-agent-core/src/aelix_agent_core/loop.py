@@ -56,6 +56,7 @@ from aelix_agent_core.types import (
     ShouldStopAfterTurnContext,
     ToolExecutionEndEvent,
     ToolExecutionStartEvent,
+    ToolExecutionUpdateEvent,
     TurnEndEvent,
     TurnStartEvent,
 )
@@ -408,6 +409,7 @@ async def _execute_and_finalize(
     config: AgentLoopConfig,
     signal: Any,
     prepared: _Prepared,
+    emit: AgentEventSink,
 ) -> ToolResult:
     """Run ``tool.execute`` + ``after_tool_call`` override. Never raises.
 
@@ -418,20 +420,63 @@ async def _execute_and_finalize(
     ``AgentHarnessError("hook")`` raised by the harness bridge for the
     ``tool_result`` hook is allowed to escape (it MUST propagate so the
     harness can synthesize a failure assistant message).
+
+    Sprint 3d (P-9): build the ``on_partial`` callback that emits
+    :class:`ToolExecutionUpdateEvent` per partial result. Pi parity:
+    ``executePreparedToolCall`` (``agent-loop.ts:604-639``) — every emit task
+    is drained via ``asyncio.gather`` BOTH on the happy path and on the
+    tool-raised exception path, mirroring Pi's
+    ``await Promise.all(updateEvents)`` at ``:630``.
+
+    Aelix-additive (intentional): hook-handler exceptions raised inside the
+    partial-emit fan-out are caught by the outer ``try/except`` and converted
+    to an ``isError`` tool result. Pi lets such exceptions escape
+    ``executePreparedToolCall`` entirely. This stricter containment is
+    consistent with ADR-0019 v3 ``error_mode`` policy and documented in
+    ADR-0017's Sprint 3d amendment.
     """
 
+    update_events: list[asyncio.Task[None]] = []
+    loop_ref = asyncio.get_running_loop()
+
+    def _on_partial(partial: ToolResult) -> None:
+        # Eagerly schedule the emit (Pi parity: ``Promise.resolve(emit(...))``).
+        # Lazy coroutines would queue all partials at the gather point — that
+        # would change ordering relative to Pi.
+        coro = emit(
+            ToolExecutionUpdateEvent(
+                tool_call_id=prepared.tool_call.tool_call_id,
+                partial_result=partial,
+                tool_name=prepared.tool.name,
+                args=prepared.args,
+            )
+        )
+        update_events.append(loop_ref.create_task(coro))
+
     exec_ctx = ToolExecutionContext(
-        tool_call_id=prepared.tool_call.tool_call_id, signal=signal
+        tool_call_id=prepared.tool_call.tool_call_id,
+        signal=signal,
+        on_partial=_on_partial,
     )
     try:
         result = await prepared.tool.execute(prepared.args, exec_ctx)
     except Exception as exc:  # noqa: BLE001 — tool author errors must not break the loop
+        # Drain in the error path so partial-emit hook handlers complete
+        # before the synthesized isError result reaches the loop. Pi parity
+        # ``agent-loop.ts:630`` runs the same ``Promise.all(updateEvents)``
+        # under the surrounding catch block.
+        if update_events:
+            await asyncio.gather(*update_events, return_exceptions=False)
         result = ToolResult(
             content=[
                 TextContent(text=f"Tool '{prepared.tool.name}' raised: {exc}")
             ],
             is_error=True,
         )
+    else:
+        # Drain in the happy path. Pi parity ``agent-loop.ts:630``.
+        if update_events:
+            await asyncio.gather(*update_events, return_exceptions=False)
 
     if config.after_tool_call is not None:
         after_ctx = AfterToolCallContext(
@@ -515,9 +560,13 @@ async def _execute_tool_calls_sequential(
         )
 
         if isinstance(prepared, _Immediate):
-            result_messages.append(
-                _to_tool_result_message(tc.tool_call_id, prepared.result)
-            )
+            # Sprint 3d (P-9, Pi parity ``agent-loop.ts:434-438``):
+            # ``emitToolExecutionEnd`` → ``createToolResultMessage`` →
+            # ``emitToolResultMessage`` → push. Both immediate and prepared
+            # branches must follow this 3-step order; the previous Aelix
+            # ordering appended the message BEFORE the end event and never
+            # emitted ``message_start`` / ``message_end`` at all.
+            msg = _to_tool_result_message(tc.tool_call_id, prepared.result)
             await emit(
                 ToolExecutionEndEvent(
                     tool_call_id=tc.tool_call_id,
@@ -526,17 +575,23 @@ async def _execute_tool_calls_sequential(
                     is_error=prepared.result.is_error,
                 )
             )
+            await _emit_tool_result_message(msg, emit)
+            result_messages.append(msg)
             all_terminate = False
             continue
 
         result = await _execute_and_finalize(
-            context, assistant_message, config, signal, prepared
+            context, assistant_message, config, signal, prepared, emit
         )
 
         if not result.terminate:
             all_terminate = False
 
-        result_messages.append(_to_tool_result_message(tc.tool_call_id, result))
+        # Sprint 3d (P-9, Pi parity ``agent-loop.ts:434-438``): same
+        # 3-step order as the immediate branch — end event fires first,
+        # then the tool-result message ``message_start`` / ``message_end``
+        # pair via the shared helper, then we append to the batch list.
+        msg = _to_tool_result_message(tc.tool_call_id, result)
         await emit(
             ToolExecutionEndEvent(
                 tool_call_id=tc.tool_call_id,
@@ -545,6 +600,8 @@ async def _execute_tool_calls_sequential(
                 is_error=result.is_error,
             )
         )
+        await _emit_tool_result_message(msg, emit)
+        result_messages.append(msg)
 
     return _ExecutedBatch(result_messages, all_terminate)
 
@@ -621,7 +678,7 @@ async def _execute_tool_calls_parallel(
     # Phase 2 — parallel execution (Pi agent-loop.ts:491-493, P-7 reversal).
     async def _run(prep: _Prepared) -> _Finalized:
         result = await _execute_and_finalize(
-            context, assistant_message, config, signal, prep
+            context, assistant_message, config, signal, prep, emit
         )
         # tool_execution_end fires in COMPLETION order (§E row 4).
         await emit(
@@ -654,12 +711,18 @@ async def _execute_tool_calls_parallel(
     )
 
     # Phase 3 — source-order message emit (Pi agent-loop.ts:495-499).
+    # Sprint 3d (P-9): emit the ``message_start`` / ``message_end`` pair for
+    # each tool-result message via the shared helper, in source order. Pi
+    # parity ``emitToolResultMessage`` (``agent-loop.ts:715-718``); single
+    # source of truth shared with the sequential path.
     result_messages: list[ToolResultMessage] = []
     all_terminate = bool(ordered_results)
     for finalized in ordered_results:
-        result_messages.append(
-            _to_tool_result_message(finalized.tool_call.tool_call_id, finalized.result)
+        msg = _to_tool_result_message(
+            finalized.tool_call.tool_call_id, finalized.result
         )
+        await _emit_tool_result_message(msg, emit)
+        result_messages.append(msg)
         if not finalized.result.terminate:
             all_terminate = False
 
@@ -676,6 +739,23 @@ def _to_tool_result_message(tool_call_id: str, result: ToolResult) -> ToolResult
         is_error=result.is_error,
         timestamp=time.time(),
     )
+
+
+async def _emit_tool_result_message(
+    msg: ToolResultMessage, emit: AgentEventSink
+) -> None:
+    """Emit ``message_start`` + ``message_end`` for a tool-result message.
+
+    Pi parity: ``emitToolResultMessage`` (``agent-loop.ts:715-718``). Both
+    events emitted — single source of truth. The sequential path
+    (``_execute_tool_calls_sequential``) and the parallel-path Phase 3
+    source-order loop both call this helper; ``_run_loop`` does NOT emit
+    message events for tool-result messages so this helper is the only
+    site, mirroring Pi where ``runLoop`` defers to ``emitToolResultMessage``.
+    """
+
+    await emit(MessageStartEvent(message=msg))
+    await emit(MessageEndEvent(message=msg))
 
 
 def _apply_after_override(
