@@ -47,6 +47,11 @@
 | 0031 | [Build Backend Choice — Hatchling](0031-build-backend-hatchling.md)                                                                                     | Accepted (Sprint 2 shipped)         | 모든 packages/* hatchling 사용. declarative `src/` layout 지원. uv workspace first-class.                                                          |
 | 0032 | [Sprint Workflow — Review + Pi Parity + Suggestions](0032-sprint-workflow-review-parity-suggestions.md)                                                 | Accepted (Sprint 2 onwards)         | W4 code-review + W5 Pi parity audit mandatory gate. bypass는 새 ADR 필요.                                                                          |
 | 0033 | ExtensionContext UI surface                                                                                                                             | Deferred (Phase 5)                  | `ExtensionUIContext` 전체 표면. Phase 5 TUI/Web UI 구현 시 결정. (구 spec의 "ADR-0015" 항목 → 번호 충돌로 재배정.)                                 |
+| 0034 | [Pi Reference Version Pin](0034-pi-reference-version-pin.md)                                                                                            | Accepted (Sprint 2.5 shipped)       | Pi reference를 commit SHA로 sprint별 pinning. 현재 pin: `734e08edf82ff315bc3d96472a6ebfa69a1d8016`.                                                |
+| 0035 | [Error Code Taxonomy](0035-error-code-taxonomy.md)                                                                                                       | Draft (Phase 1.4 shipped — Aelix subset; full taxonomy Phase 2.1+) | Pi 10-code 표준 문서화. Aelix 5 codes 유지 + 5 placeholder는 owning ADR land 시 widen.                                                              |
+| 0036 | [Loop AgentEvent vs Harness HookEvent Distinction (F-7)](0036-loop-event-vs-harness-event-distinction.md)                                              | Accepted (Sprint 2.5 shipped — model affirmed; expansion Phase 2.1) | Loop `AgentEvent` (10) ≠ Harness `HookEvent` (16→~28). 두 union 별도 유지. ADR-0017 cross-reference 필수.                                          |
+| 0037 | [Streaming Event Union (Pi Parity)](0037-streaming-event-union-pi-parity.md)                                                                            | Draft (Phase 1.4 shell; adapter coverage Phase 4)                  | Pi 12-event union을 Phase 4 adapter PR에서 land. Phase 1.4는 design 문서만.                                                                          |
+| 0038 | [stream_simple Dispatch Shell — Phase 1 Boundary](0038-stream-simple-dispatch-shell-phase-1-boundary.md)                                                | Accepted (Sprint 2.5 / Phase 1.4 shipped — body lands Phase 4)     | Phase 1 exit는 dispatch shell + registry + typed error에서 완료. Adapter는 Phase 4.                                                                |
 
 > **번호 공백 (0016)**: ADR-0016 "Phase machine expansion"은 ADR-0023(Compaction + Branch Summary)으로 supersede됩니다. 번호를 재사용하지 않고 gap으로 보존합니다.
 
@@ -117,6 +122,34 @@
 
 0032 (Sprint workflow — mandatory gates)
   └─ 0029 mechanizes W5 — parity test harness가 성숙하면 W5 scope 축소 가능
+
+0034 (Pi reference version pin)
+  ├─ 0003 refines — pi agent primary reference에 SHA pin 추가
+  └─ 0029 supports — Pi parity test harness가 pin SHA에 anchored
+
+0035 (Error code taxonomy)
+  ├─ 0017 owns "aborted" wiring (Phase 2.1)
+  ├─ 0022 owns "session" wiring (Phase 2.2)
+  ├─ 0023 owns "compaction" / "branch_summary" wiring (Phase 2.2)
+  ├─ 0025 follows — minimal-shell pattern (문서 먼저, code on demand)
+  └─ 0030 depends — assert_never가 10-code 전체에 적용
+
+0036 (Loop AgentEvent vs Harness HookEvent — F-7)
+  ├─ 0011 amends — 16 hook events는 HookEvent union 소속임을 명시
+  ├─ 0017 cross-references — Phase 2.1 28-event 확장은 HookEvent에만 적용
+  ├─ 0029 splits parity tests — loop vs harness 별도 lane
+  └─ 0030 doubles scope — 두 union 각각 exhaustiveness 적용
+
+0037 (Streaming event union — Pi parity)
+  ├─ 0025 follows — minimal-shell pattern (documentation 먼저)
+  ├─ 0030 depends — Phase 4 expanded union에 assert_never 적용
+  └─ 0038 paired — Phase 4 adapters가 12-event union emit
+
+0038 (stream_simple dispatch shell — Phase 1 boundary)
+  ├─ 0017 enables — Phase 2.x `before_provider_request` 가 dispatch 사용 가능
+  ├─ 0020 paired — Phase 4 provider work / RPC mode와 함께 land
+  ├─ 0025 sibling — 동일 minimal-shell + owning-ADR cadence
+  └─ 0037 paired — Phase 4 adapters가 expanded event union emit
 ```
 
 ## Open Questions (pending ADRs)
@@ -156,6 +189,16 @@ Sprint 2 ADRs 상태.
 | 0031  | Build Backend Choice — Hatchling                            | Accepted (Sprint 2 shipped)   |
 | 0032  | Sprint Workflow — Review + Pi Parity + Suggestions          | Accepted (Sprint 2 onwards)   |
 
+Sprint 2.5 ADRs 상태 (Phase 1.4 hygiene).
+
+| ADR   | 제목                                                                 | Status                                                                |
+| ----- | -------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| 0034  | Pi Reference Version Pin                                             | Accepted (Sprint 2.5 shipped)                                         |
+| 0035  | Error Code Taxonomy                                                  | Draft (Phase 1.4 shipped — Aelix subset; full taxonomy Phase 2.1+)    |
+| 0036  | Loop AgentEvent vs Harness HookEvent Distinction (F-7)               | Accepted (Sprint 2.5 shipped — model affirmed; expansion Phase 2.1)   |
+| 0037  | Streaming Event Union (Pi Parity)                                    | Draft (Phase 1.4 shell; adapter coverage Phase 4)                     |
+| 0038  | stream_simple Dispatch Shell — Phase 1 Boundary                      | Accepted (Sprint 2.5 / Phase 1.4 shipped — body lands Phase 4)        |
+
 Draft ADR 및 target Phase 요약 (전체).
 
 | ADR   | 제목                                       | Target Phase |
@@ -169,6 +212,8 @@ Draft ADR 및 target Phase 요약 (전체).
 | 0023  | Compaction + Branch Summary                | Phase 2.2    |
 | 0027  | asyncio.TaskGroup (ADR-0021 impl)          | Phase 2.1    |
 | 0028  | Extension Auto-Discovery entry_points      | Phase 3      |
+| 0035  | Error Code Taxonomy (full widening)        | Phase 2.1+   |
+| 0037  | Streaming Event Union — adapter coverage   | Phase 4      |
 | 0029  | Pi-Parity Acceptance Test Harness          | Phase 2.1+   |
 | 0030  | Hook Event Exhaustiveness assert_never     | Phase 2.1    |
 | 0033  | ExtensionContext UI surface                | Phase 5      |
