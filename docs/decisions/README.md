@@ -26,10 +26,10 @@
 | 0009 | [Python-First SDK; Multi-Language Clients via Future RPC ADR](0009-python-first-sdk.md)                                                                | Accepted (Phase 1.2 SDK choice)     | 1차 SDK는 Python만. 다언어 외부 클라이언트는 Phase 4 ADR-0020 RPC mode로 결정.                                                                     |
 | 0010 | [Trust Model Stays Source-Specific; No Unified Schema in 1st Cut](0010-trust-model-stays-source-specific.md)                                           | Accepted                            | 1차에는 통합 trust verdict schema를 정의하지 않는다. ADR-0005의 source-책임 모델 유지.                                                              |
 | 0011 | [Hook Event Catalogue v1](0011-hook-event-catalogue-v1.md)                                                                                             | Accepted (Phase 1.2 임시 결정)      | Phase 1.2가 ship하는 16개 hook event를 binding contract으로 등록. Phase 2.1에 ADR-0017로 대체.                                                      |
-| 0012 | Extension Discovery Model                                                                                                                              | Deferred                            | Phase 3에서 결정. (`~/.aelix/extensions`, `pyproject.toml`, `entry_points` 우선순위 미결정.)                                                        |
+| 0012 | Extension Discovery Model                                                                                                                              | Deferred                            | Phase 3에서 결정. ADR-0028로 부분 해소 예정. (`~/.aelix/extensions`, `entry_points` 우선순위 결정됨.)                                              |
 | 0013 | [message_end Reducer Policy — Observational in Phase 1.2](0013-message-end-observational-in-1-2.md)                                                    | Accepted (Phase 1.2 임시 결정)      | Phase 1.2의 `message_end`는 observational only. Phase 2.1에 ADR-0018로 대체.                                                                        |
 | 0014 | [Hook Error Policy — Mutation hooks throw; Lifecycle observational hooks swallow+log](0014-hook-error-policy.md)                                       | Accepted (Phase 1.2 임시 결정)      | Mutation hook 예외 → `AgentHarnessError` raise; lifecycle observational 예외 → swallow. Phase 2.1에 ADR-0019로 대체.                                |
-| 0015 | [Monorepo Layout — uv Workspaces](0015-monorepo-layout-uv-workspaces.md)                                                                               | Draft (Phase 1.3 finalization)      | Phase 1.3 경계에서 uv workspaces 마이그레이션. Pi `packages/*` 구조와 1:1 매핑.                                                                    |
+| 0015 | [Monorepo Layout — uv Workspaces](0015-monorepo-layout-uv-workspaces.md)                                                                               | Accepted (Phase 1.3 shipped)        | Phase 1.3 경계에서 uv workspaces 마이그레이션. Pi `packages/*` 구조와 1:1 매핑.                                                                    |
 | 0017 | [Full Hook Event Catalogue v2](0017-full-hook-event-catalogue-v2.md)                                                                                   | Draft (Phase 2.1 finalization)      | Pi `AgentHarnessEvent` 전체 ~30개 event 등록. ADR-0011 대체.                                                                                        |
 | 0018 | [message_end Replacement Reducer (Pi parity)](0018-message-end-replacement-reducer.md)                                                                  | Draft (Phase 2.1)                   | `message_end`에 role-preserving replacement reducer 구현. ADR-0013 대체.                                                                            |
 | 0019 | [Hook Error Policy v2 — Pi `"continue"` Default](0019-hook-error-policy-v2-pi-continue-default.md)                                                     | Draft (Phase 2.1)                   | 모든 hook `"continue"` default + per-handler `error_mode="throw"` opt-in. ADR-0014 대체.                                                           |
@@ -38,7 +38,15 @@
 | 0022 | [Session Manager + JSONL Persistence](0022-session-manager-jsonl-persistence.md)                                                                        | Draft (Phase 2.2)                   | `Session` interface + `JsonlSessionRepo`. `~/.aelix/sessions/{id}.jsonl` append-only.                                                              |
 | 0023 | [Compaction + Branch Summary](0023-compaction-branch-summary.md)                                                                                        | Draft (Phase 2.2)                   | `compact()` + `navigateTree()` + Phase machine `idle\|turn\|compaction\|branch_summary`. ADR-0016 대체.                                             |
 | 0024 | [Queue Default `"one-at-a-time"` (Pi parity)](0024-queue-default-one-at-a-time.md)                                                                      | Accepted (Phase 1.2 follow-up fix)  | `steering_mode` / `follow_up_mode` default를 `"all"` → `"one-at-a-time"`으로 즉시 flip.                                                            |
-| 0025 | ExtensionContext UI surface                                                                                                                             | Deferred (Phase 5)                  | `ExtensionUIContext` 전체 표면. Phase 5 TUI/Web UI 구현 시 결정. (구 spec의 "ADR-0015" 항목 → 번호 충돌로 0025로 재배정.)                           |
+| 0025 | [F-10 Minimal Turn-State Snapshot Rationale](0025-f10-minimal-turn-state-snapshot.md)                                                                   | Accepted (Phase 1.3 shipped)        | `_TurnState` 2-field minimal snapshot은 의도적. 나머지 7 fields는 owning ADR (0017/0022) land 시 확장.                                             |
+| 0026 | [Workspace-Root Pytest Layout](0026-workspace-root-pytest-layout.md)                                                                                    | Accepted (Sprint 2 shipped)         | workspace-root 공유 `tests/` 유지. cross-package fixture 중복 방지. Pi additive divergence.                                                        |
+| 0027 | [asyncio.TaskGroup for Parallel Tool Execution](0027-asyncio-taskgroup-parallel-tools.md)                                                               | Draft (Phase 2.1 implementation)    | `asyncio.TaskGroup` 사용. structured concurrency + sibling auto-cancel. ADR-0021 구현 binding.                                                     |
+| 0028 | [Extension Auto-Discovery via importlib.metadata.entry_points](0028-extension-auto-discovery-entry-points.md)                                           | Draft (Phase 3 implementation)      | `entry_points(group="aelix.extensions")` 주 방식. fallback: `~/.aelix/extensions/`. ADR-0012 partial supersede.                                   |
+| 0029 | [Pi-Parity Acceptance Test Harness](0029-pi-parity-acceptance-test-harness.md)                                                                          | Draft (Phase 2.1+ ongoing)          | `tests/pi_parity/` 별도 lane. vendored Pi fixture + message-level equivalence assert. "믿는다" → "증명한다".                                       |
+| 0030 | [Hook Event Exhaustiveness via assert_never](0030-hook-event-exhaustiveness-assert-never.md)                                                             | Draft (Phase 2.1 implementation)    | `match`+`assert_never` 패턴. 새 event 미처리 시 pyright build fail. ADR-0017 land 시 적용.                                                        |
+| 0031 | [Build Backend Choice — Hatchling](0031-build-backend-hatchling.md)                                                                                     | Accepted (Sprint 2 shipped)         | 모든 packages/* hatchling 사용. declarative `src/` layout 지원. uv workspace first-class.                                                          |
+| 0032 | [Sprint Workflow — Review + Pi Parity + Suggestions](0032-sprint-workflow-review-parity-suggestions.md)                                                 | Accepted (Sprint 2 onwards)         | W4 code-review + W5 Pi parity audit mandatory gate. bypass는 새 ADR 필요.                                                                          |
+| 0033 | ExtensionContext UI surface                                                                                                                             | Deferred (Phase 5)                  | `ExtensionUIContext` 전체 표면. Phase 5 TUI/Web UI 구현 시 결정. (구 spec의 "ADR-0015" 항목 → 번호 충돌로 재배정.)                                 |
 
 > **번호 공백 (0016)**: ADR-0016 "Phase machine expansion"은 ADR-0023(Compaction + Branch Summary)으로 supersede됩니다. 번호를 재사용하지 않고 gap으로 보존합니다.
 
@@ -54,6 +62,7 @@
 0003 (pi agent reference + Pi Parity Binding Rule)
   ├─ 0004 implements ADR-0003의 "built-in extension" 약속
   ├─ 0005 reflects pi agent의 multi-source(npm/git) marketplace 흐름
+  ├─ 0029 mechanizes — Pi parity test harness로 수동 audit 보강
   └─ 모든 ADR의 상위 원칙: ADR 없는 divergence는 버그
 
 0006 (Standalone platform)
@@ -73,23 +82,41 @@
 0014 (Hook error policy — Phase 1.2 임시 결정)
   └─ 0019 supersedes — Pi "continue" default + per-handler opt-in (Phase 2.1)
 
-0015 (Monorepo layout — uv workspaces)
+0015 (Accepted — Monorepo layout — uv workspaces)
   ├─ 0020 depends — aelix-rpc는 packages/aelix-rpc/ 패키지
   ├─ 0022 depends — session/ 모듈은 packages/aelix-agent-core/ 위치
-  └─ 0023 depends — compaction.py는 packages/aelix-agent-core/ 위치
+  ├─ 0023 depends — compaction.py는 packages/aelix-agent-core/ 위치
+  └─ 0031 implements — hatchling은 uv workspace per-package backend
 
 0016 (deferred Phase machine)
   └─ 0023 supersedes — Compaction + Branch Summary (Phase 2.2)
 
 0017 (Full Hook Event Catalogue v2)
   ├─ 0018 depends — message_end result type 변경은 v2 catalogue와 함께
-  └─ 0023 adds emit sites — session_before_compact 등 emit site 추가
+  ├─ 0023 adds emit sites — session_before_compact 등 emit site 추가
+  ├─ 0027 depends — TaskGroup은 ADR-0021 impl; ADR-0017 tool setters와 연동
+  └─ 0030 depends — assert_never는 ADR-0017 28-event 확장 시 적용
+
+0021 (Parallel tool execution)
+  └─ 0027 specifies — asyncio.TaskGroup을 Phase 2.1 구현 방식으로 결정
 
 0022 (Session Manager)
-  └─ 0023 depends — compaction/branch_summary는 Session interface에 의존
+  ├─ 0023 depends — compaction/branch_summary는 Session interface에 의존
+  └─ 0025 extends — sessionId/messages는 ADR-0022 land 시 _TurnState 추가
 
 0024 (Queue default one-at-a-time)
   └─ 즉시 적용 fix — 재평가 보고서 F-1 해소
+
+0025 (F-10 minimal _TurnState)
+  ├─ 0017 ← extends (tools/activeTools/streamOptions/resources/thinkingLevel)
+  └─ 0022 ← extends (messages/sessionId)
+
+0029 (Pi parity acceptance test harness)
+  ├─ 0026 depends — workspace-root tests/가 tests/pi_parity/ 홈
+  └─ 0032 supports — W5 Pi parity audit의 기계화
+
+0032 (Sprint workflow — mandatory gates)
+  └─ 0029 mechanizes W5 — parity test harness가 성숙하면 W5 scope 축소 가능
 ```
 
 ## Open Questions (pending ADRs)
@@ -109,17 +136,30 @@ Phase 1.2 sprint spec Section F의 후속 ADR 상태.
 | Proposed ADR | 상태                                                                                                                              |
 | ------------ | --------------------------------------------------------------------------------------------------------------------------------- |
 | ADR-0011 Hook event catalogue v1        | 결정됨 (ADR-0011) → **Phase 1.2 임시 결정으로 강등**. Phase 2.1에 ADR-0017로 대체 예정.              |
-| ADR-0012 Extension discovery model      | 보류 — Phase 3에서 결정. ADR-0012 deferred.                                                          |
+| ADR-0012 Extension discovery model      | 보류 → Phase 3에서 ADR-0028로 부분 해소. entry_points primary + directory fallback 결정.             |
 | ADR-0013 message_end reducer policy     | 결정됨 (ADR-0013) → **Phase 1.2 임시 결정으로 강등**. Phase 2.1에 ADR-0018로 대체 예정.              |
 | ADR-0014 Hook error policy              | 결정됨 (ADR-0014) → **Phase 1.2 임시 결정으로 강등**. Phase 2.1에 ADR-0019로 대체 예정.              |
-| ADR-0015 ExtensionContext UI surface    | **번호 재배정** — ADR-0015는 Monorepo Layout (uv workspaces)로 사용. UI surface는 ADR-0025 (Phase 5). |
+| ADR-0015 ExtensionContext UI surface    | **번호 재배정** — ADR-0015는 Monorepo Layout (uv workspaces)로 사용 **(Accepted)**. UI surface는 ADR-0033 (Phase 5). |
 | ADR-0016 Phase machine expansion        | **ADR-0023로 supersede** — Compaction + Branch Summary (Phase 2.2).                                   |
 
-Draft ADR 및 target Phase 요약.
+Sprint 2 ADRs 상태.
+
+| ADR   | 제목                                                        | Status                        |
+| ----- | ----------------------------------------------------------- | ----------------------------- |
+| 0015  | Monorepo Layout — uv Workspaces                             | Accepted (Phase 1.3 shipped)  |
+| 0025  | F-10 Minimal Turn-State Snapshot Rationale                  | Accepted (Phase 1.3 shipped)  |
+| 0026  | Workspace-Root Pytest Layout                                | Accepted (Sprint 2 shipped)   |
+| 0027  | asyncio.TaskGroup for Parallel Tool Execution               | Draft (Phase 2.1)             |
+| 0028  | Extension Auto-Discovery via entry_points                   | Draft (Phase 3)               |
+| 0029  | Pi-Parity Acceptance Test Harness                           | Draft (Phase 2.1+)            |
+| 0030  | Hook Event Exhaustiveness via assert_never                  | Draft (Phase 2.1)             |
+| 0031  | Build Backend Choice — Hatchling                            | Accepted (Sprint 2 shipped)   |
+| 0032  | Sprint Workflow — Review + Pi Parity + Suggestions          | Accepted (Sprint 2 onwards)   |
+
+Draft ADR 및 target Phase 요약 (전체).
 
 | ADR   | 제목                                       | Target Phase |
 | ----- | ------------------------------------------ | ------------ |
-| 0015  | Monorepo Layout — uv Workspaces            | Phase 1.3    |
 | 0017  | Full Hook Event Catalogue v2               | Phase 2.1    |
 | 0018  | message_end Replacement Reducer            | Phase 2.1    |
 | 0019  | Hook Error Policy v2 — Pi continue default | Phase 2.1    |
@@ -127,7 +167,10 @@ Draft ADR 및 target Phase 요약.
 | 0021  | Parallel-Mode Tool Execution               | Phase 2.1    |
 | 0022  | Session Manager + JSONL Persistence        | Phase 2.2    |
 | 0023  | Compaction + Branch Summary                | Phase 2.2    |
-| 0024  | Queue Default "one-at-a-time"              | Phase 1.2 (즉시) |
-| 0025  | ExtensionContext UI surface                | Phase 5      |
+| 0027  | asyncio.TaskGroup (ADR-0021 impl)          | Phase 2.1    |
+| 0028  | Extension Auto-Discovery entry_points      | Phase 3      |
+| 0029  | Pi-Parity Acceptance Test Harness          | Phase 2.1+   |
+| 0030  | Hook Event Exhaustiveness assert_never     | Phase 2.1    |
+| 0033  | ExtensionContext UI surface                | Phase 5      |
 
 Open question이 ADR로 정리되면 이 표를 함께 갱신합니다.

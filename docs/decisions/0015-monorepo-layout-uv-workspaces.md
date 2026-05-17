@@ -1,6 +1,6 @@
 # 0015. Monorepo Layout — uv Workspaces
 
-Status: Draft (Phase 1.3 finalization)
+Status: Accepted (Phase 1.3 shipped)
 
 ## Context
 
@@ -60,7 +60,21 @@ aelix-ai/                              # workspace root (현재 repo)
 - 패키지 간 허용 의존성: `aelix-agent-core` → `aelix-ai`; `aelix-coding-agent` →
   `aelix-agent-core`; 역방향 의존 금지.
 
+**Examples placement (Sprint 2 implementation note):** `examples/echo/` lives at
+`packages/aelix-coding-agent/src/aelix_coding_agent/examples/echo/` (inside the
+importable package tree) so the umbrella demo's
+`from aelix_coding_agent.examples.echo.echo import echo_tool` resolves through the
+wheel install. The spec's original §A tree placed examples at
+`packages/aelix-coding-agent/examples/echo/` (outside `src/`), which would require
+packaging examples as data files rather than modules. The implemented location is the
+better engineering choice and is now binding.
+
 ---
 
 ADR-0025 (ExtensionContext UI surface, Phase 5)는 이전 스펙에서 "ADR-0015"로
 forward되었던 항목입니다. 번호 충돌로 인해 ADR-0025로 재배정합니다.
+
+---
+
+*Provenance: Sprint 2 Phase 1.3 spec (`.omc/specs/sprint-2-phase-1-3-spec.md`).
+Commit reference to be added by git-master on merge.*
