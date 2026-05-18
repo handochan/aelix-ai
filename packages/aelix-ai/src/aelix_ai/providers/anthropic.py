@@ -216,7 +216,9 @@ async def stream_anthropic(
         # Map the three success reasons onto the Pi ``done`` enum value
         # (``stop`` / ``length`` / ``toolUse``). Other reasons fall
         # through as ``stop`` so the loop terminates cleanly.
-        if output.stop_reason == "tool_use":
+        # Sprint 6b W6 (P-57): ``map_stop_reason`` now returns Pi's
+        # ``"toolUse"`` spelling verbatim across every adapter.
+        if output.stop_reason == "toolUse":
             done_reason: Any = "toolUse"
         elif output.stop_reason == "length":
             done_reason = "length"

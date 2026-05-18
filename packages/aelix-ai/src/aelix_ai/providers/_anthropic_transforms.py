@@ -29,16 +29,15 @@ from aelix_ai.messages import (
 )
 from aelix_ai.streaming import Model
 
-# Anthropic ``stop_reason`` → Aelix-shaped strings. Aelix preserves Pi's
-# ``"tool_use"`` (lowercase, underscore) for the agent loop's existing
-# stop-reason comparisons; the Pi ``StopReason`` enum value is
-# ``"toolUse"`` but the Aelix loop reads only ``message.stop_reason``
-# (lowercase) so we keep the legacy spelling.
+# Anthropic ``stop_reason`` → Aelix-shaped strings. Sprint 6b W6 (P-57):
+# Aelix now uses Pi's ``"toolUse"`` spelling verbatim across every adapter.
+# The agent loop only compares against ``"error" | "aborted"`` so the
+# spelling change is invisible to terminal-detection.
 _ANTHROPIC_STOP_REASON_MAP: dict[str | None, str] = {
     "end_turn": "end_turn",
     "stop_sequence": "stop",
     "max_tokens": "length",
-    "tool_use": "tool_use",
+    "tool_use": "toolUse",
     "pause_turn": "stop",
     "refusal": "error",
 }
