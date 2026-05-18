@@ -1,0 +1,117 @@
+{
+  "_doc": "Pi-pinned snapshot of OAuth surface at SHA 734e08e. Used by tests/pi_parity/test_phase_4_3_strict_superset.py.",
+  "pi_sha": "734e08edf82ff315bc3d96472a6ebfa69a1d8016",
+  "pi_paths": {
+    "oauth_types": "packages/ai/src/utils/oauth/types.ts",
+    "oauth_pkce": "packages/ai/src/utils/oauth/pkce.ts",
+    "oauth_page": "packages/ai/src/utils/oauth/oauth-page.ts",
+    "oauth_anthropic": "packages/ai/src/utils/oauth/anthropic.ts",
+    "oauth_github_copilot": "packages/ai/src/utils/oauth/github-copilot.ts",
+    "oauth_openai_codex": "packages/ai/src/utils/oauth/openai-codex.ts",
+    "oauth_index": "packages/ai/src/utils/oauth/index.ts",
+    "auth_storage": "packages/coding-agent/src/core/auth-storage.ts",
+    "auth_path_resolver": "packages/coding-agent/src/cli/config.ts (getAuthPath)"
+  },
+  "pi_file_loc": {
+    "types.ts": 60,
+    "pkce.ts": 36,
+    "oauth-page.ts": 100,
+    "anthropic.ts": 400,
+    "github-copilot.ts": 410,
+    "openai-codex.ts": 460,
+    "index.ts": 150,
+    "auth-storage.ts": 470
+  },
+  "oauth_credentials_shape": {
+    "refresh": "string",
+    "access": "string",
+    "expires": "number (unix ms with 5-min safety margin)",
+    "_extensible": "[key: string]: unknown"
+  },
+  "oauth_provider_interface": {
+    "id": "OAuthProviderId (string)",
+    "name": "string",
+    "usesCallbackServer": "boolean (optional)",
+    "login": "(callbacks: OAuthLoginCallbacks) => Promise<OAuthCredentials>",
+    "refreshToken": "(credentials) => Promise<OAuthCredentials>",
+    "getApiKey": "(credentials) => string",
+    "modifyModels": "(models, credentials) => Model[] (optional)"
+  },
+  "oauth_login_callbacks": {
+    "onAuth": "(info: {url, instructions?}) => void",
+    "onPrompt": "(prompt: {message, placeholder?, allowEmpty?}) => Promise<string>",
+    "onProgress": "(message: string) => void (optional)",
+    "onManualCodeInput": "() => Promise<string> (optional)",
+    "onSelect": "(prompt: {message, options}) => Promise<string | undefined> (optional)",
+    "signal": "AbortSignal (optional)"
+  },
+  "anthropic_oauth_constants": {
+    "AUTHORIZE_URL": "https://claude.ai/oauth/authorize",
+    "TOKEN_URL": "https://platform.claude.com/v1/oauth/token",
+    "CALLBACK_HOST": "127.0.0.1 (PI_OAUTH_CALLBACK_HOST override)",
+    "CALLBACK_PORT": 53692,
+    "CALLBACK_PATH": "/callback",
+    "REDIRECT_URI": "http://localhost:53692/callback",
+    "SCOPES": "org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload",
+    "CLIENT_ID_base64": "OWQxYzI1MGEtZTYxYi00NGQ5LTg4ZWQtNTk0NGQxOTYyZjVl (base64-decoded at module load)",
+    "TOKEN_TIMEOUT_MS": 30000,
+    "EXPIRES_SAFETY_MARGIN_MS": 300000
+  },
+  "anthropic_oauth_token_response_shape": {
+    "access_token": "string",
+    "refresh_token": "string",
+    "expires_in": "number (seconds)",
+    "scope": "string (refresh only, optional)"
+  },
+  "pkce_generation": {
+    "verifier_bytes": 32,
+    "verifier_encoding": "base64url (RFC 7636)",
+    "challenge_method": "S256",
+    "challenge_algorithm": "SHA-256",
+    "_python_equivalent": "secrets.token_urlsafe(32) + hashlib.sha256 + base64url"
+  },
+  "registry_api": [
+    "getOAuthProvider(id) -> OAuthProviderInterface | undefined",
+    "registerOAuthProvider(provider) -> void",
+    "unregisterOAuthProvider(id) -> void (restores built-in if applicable)",
+    "resetOAuthProviders() -> void",
+    "getOAuthProviders() -> OAuthProviderInterface[]"
+  ],
+  "high_level_api": {
+    "getOAuthApiKey": {
+      "signature": "(providerId, credentials: Record<id, OAuthCredentials>) -> Promise<{newCredentials, apiKey} | null>",
+      "behavior": "lookup creds by providerId; if Date.now() >= creds.expires, call provider.refreshToken(); return {newCredentials, apiKey=provider.getApiKey(creds)} or null if no creds"
+    },
+    "refreshOAuthToken": {
+      "signature": "(providerId, credentials) -> Promise<OAuthCredentials>",
+      "deprecated": true
+    }
+  },
+  "auth_storage_contract": {
+    "path": "<agent-dir>/auth.json (e.g. ~/.pi/agent/auth.json; Aelix uses ~/.config/aelix/agent/auth.json)",
+    "parent_dir_mode": "0o700",
+    "file_mode": "0o600",
+    "schema": "Record<provider-id, {type: 'api_key', key: string} | ({type: 'oauth'} & OAuthCredentials)>",
+    "encryption": "NONE — filesystem permissions only",
+    "locking": "proper-lockfile (Pi) — Aelix uses asyncio.Lock in-process + advisory POSIX flock cross-process",
+    "load": "reload() reads + JSON.parse with storage.withLock()",
+    "save": "persistProviderChange() writes + 0o600 chmod with storage.withLock()",
+    "delete": "remove(provider-id) drops entry + persistProviderChange()"
+  },
+  "callback_server_contract": {
+    "framework": "node:http createServer (Pi) — Aelix uses asyncio + http.server.HTTPServer or aiohttp",
+    "binding": "127.0.0.1:53692",
+    "routes": {
+      "GET /callback?code=&state=": "validate state == verifier; respond 200 oauth_success_html; resolve waitForCode promise",
+      "GET /callback?error=...": "respond 400 oauth_error_html",
+      "GET /<other>": "respond 404 oauth_error_html"
+    },
+    "shutdown": "server.close() in finally block of loginAnthropic",
+    "race_handling": "manual code input via onManualCodeInput cancels server.cancelWait if user pastes URL"
+  },
+  "deferred_in_sprint_6c": [
+    "github-copilot OAuth (~410 LOC) — Sprint 6e",
+    "openai-codex OAuth (~460 LOC) — Sprint 6e",
+    "RPC mode (rpc-mode.ts + rpc-client.ts + rpc-types.ts + jsonl.ts ~1,300 LOC) — Sprint 6d"
+  ]
+}

@@ -155,3 +155,65 @@ async def test_callback_returning_only_headers_succeeds() -> None:
     )
     # Should not raise — auth dict carries headers.
     await h.prompt("hi")
+
+
+# === W4 M3 — SDK 401 → AgentHarnessError("auth") ===
+
+
+async def test_sdk_401_translates_to_harness_auth_error() -> None:
+    """W4 M3: a 401 raised by the SDK INSIDE the real Sprint 6c
+    Anthropic adapter (not a stub provider raising ``_AuthError``
+    manually) must end up as ``AgentHarnessError("auth", ...)``.
+
+    This exercises the actual Sprint 6c trigger (``except Exception``
+    + ``status_code in (401, 403)``) end-to-end, not the eager-raise
+    fallback the original W6 Fix 1 test covers.
+    """
+
+    from unittest.mock import patch as _patch
+
+    from aelix_ai.providers.anthropic import stream_anthropic
+
+    class _Stub401:
+        class _Messages:
+            def stream(self, **_k: object) -> object:
+                class _Mgr:
+                    async def __aenter__(self_inner) -> object:
+                        err = RuntimeError("Unauthorized")
+                        err.status_code = 401  # type: ignore[attr-defined]
+                        raise err
+
+                    async def __aexit__(self_inner, *_a: object) -> None:
+                        return None
+
+                return _Mgr()
+
+        messages = _Messages()
+
+    async def adapter_with_stubbed_sdk(
+        model: Model,
+        context: object,
+        options: SimpleStreamOptions,
+    ):
+        with _patch(
+            "aelix_ai.providers.anthropic.create_async_client",
+            return_value=_Stub401(),
+        ):
+            async for ev in stream_anthropic(model, context, options):
+                yield ev
+
+    register_provider("anthropic-messages", adapter_with_stubbed_sdk)
+
+    async def auth_cb(_m: Model) -> dict[str, str]:
+        return {"apiKey": "sk-something"}
+
+    harness = AgentHarness(
+        AgentHarnessOptions(
+            model=Model(api="anthropic-messages", id="claude-3"),
+            get_api_key_and_headers=auth_cb,
+        )
+    )
+
+    with pytest.raises(AgentHarnessError) as ei:
+        await harness.prompt("hello")
+    assert ei.value.code == "auth"
