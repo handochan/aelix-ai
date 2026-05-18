@@ -16,6 +16,11 @@ dependencies = [
     # @anthropic-ai/sdk). Wrapped via ``providers/_anthropic_client.py``
     # for future ``httpx`` swap.
     "anthropic>=0.40,<1.0",
+    # Sprint 6b (Phase 4.2, ADR-0047) — official OpenAI Python SDK for
+    # byte-level Pi parity with providers/openai-completions.ts (uses
+    # the official ``openai`` npm package). Wrapped via
+    # ``providers/_openai_client.py`` for future ``httpx`` swap.
+    "openai>=1.50,<2.0",
 ]
 
 [tool.hatch.build.targets.wheel]
