@@ -60,6 +60,10 @@
 | 0044 | [Phase 3 Strict Superset Closure](0044-phase-3-strict-superset-closure.md)                                                                              | Accepted (Sprint 5b / Phase 3.2 shipped)                            | Phase 3 closure — P-21~P-36 roster + closure pin (`tests/pi_parity/test_phase_3_2_strict_superset.py`) + deferred allowlist Phase-4-only. |
 | 0045 | [Provider Adapter Interface](0045-provider-adapter-interface.md)                                                                                        | Accepted (Sprint 6a / Phase 4.1 shipped)                            | `Provider` Protocol + `register_provider_object` / `unregister_providers_by_source` (Pi parity) + `SimpleStreamOptions` extensions + `ProviderResponse`. Anthropic adapter ships under `aelix_ai.providers.anthropic`. |
 | 0046 | [Phase 4 Strict Superset Closure](0046-phase-4-strict-superset-closure.md)                                                                              | Accepted (Sprint 6a / Phase 4.1 shipped)                            | Phase 4 closure — P-37~P-43 roster + closure pin (`tests/pi_parity/test_phase_4_strict_superset.py`) + DEFERRED_ALLOWLIST = `{}` (empty). |
+| 0047 | [OpenAI Completions Adapter (+ Compat Detection)](0047-openai-completions-adapter.md)                                                                   | Accepted (Sprint 6b / Phase 4.2 shipped)                            | OpenAI Completions adapter (2nd of 9 KnownApi adapters); OpenRouter served via same adapter; 17-field compat dataclass; sync-factory `stream_simple` + eager auth. |
+| 0048 | [Pi Shared Utilities Ported](0048-pi-shared-utilities.md)                                                                                                | Accepted (Sprint 6b / Phase 4.2 shipped)                            | `_transform_messages` + `_sanitize_unicode` + `_streaming_json` + `_env_api_keys` shared cross-provider infra; Anthropic retrofit deferred to Sprint 6d (P-50-followup). |
+| 0049 | [Message Dataclass — Provenance + Thinking + Image Split + Tool Name](0049-message-dataclass-provenance-and-thinking.md)                                | Accepted (Sprint 6b / Phase 4.2 / W6 shipped)                       | Additive `ThinkingContent`, `AssistantMessage.api/provider/model`, `ImageContent.mime_type/data`, `ToolResultMessage.tool_name`. Anthropic-side population deferred to Sprint 6d. |
+| 0050 | [Phase 4.2 Strict Superset Closure](0050-phase-4-2-strict-superset-closure.md)                                                                          | Accepted (Sprint 6b / Phase 4.2 / W6 shipped)                       | Phase 4.2 closure — P-47~P-82 + C-1 + M-1..M-6 roster + closure pin (`tests/pi_parity/test_phase_4_2_strict_superset.py`) + `PHASE_4_2_DEFERRED_APIS` (7) + `COMPAT_DEFERRED_ALLOWLIST` (4+2). |
 
 ### Sprint 5b sub-table (Phase 3.2 closure)
 
@@ -79,6 +83,31 @@
 | 4 wired stubs (`send_message` / `send_user_message` / `append_entry` / `get_commands`) | shipped | 0042 |
 | `tests/pi_parity/test_phase_3_2_strict_superset.py` closure pin | shipped | 0044 |
 | DEFERRED_ALLOWLIST Phase-4-only (3 provider entries) | shipped | 0044 |
+
+### Sprint 6b sub-table (Phase 4.2 closure)
+
+| Item | Status | Owner ADR |
+|---|---|---|
+| `_env_api_keys.py` (30-row provider→envvar table) | shipped | 0047 / 0048 |
+| `_sanitize_unicode.py` (`sanitize_surrogates`) | shipped | 0048 |
+| `_streaming_json.py` (`parse_streaming_json` lenient) | shipped | 0048 |
+| `_openai_client.py` (`openai>=1.50,<2.0` SDK wrapper) | shipped | 0047 |
+| `_openai_compat.py` (17-field dataclass + `detect_compat` + `get_compat` with camelCase alias accept) | shipped | 0047 |
+| `_transform_messages.py` (shared cross-provider infra) | shipped | 0048 |
+| `openai_completions.py` (main adapter, 2 of 9 KnownApi) | shipped | 0047 |
+| `aelix_ai.models.clamp_thinking_level` (Sprint 6d full map deferred) | shipped | 0047 / 0050 |
+| `ThinkingContent` dataclass + provenance trio + `ImageContent.mime_type/data` + `ToolResultMessage.tool_name` | shipped | 0049 |
+| `_map_stop_reason` returns Pi `"toolUse"` (P-57) | shipped | 0050 |
+| `_open_stream` uses `with_raw_response.create(**params)` (C-1) | shipped | 0050 |
+| `_normalize_tool_call_id` 40-char clamp for every provider (M-6) | shipped | 0050 |
+| `stream_simple_openai_completions` sync factory + eager auth raise (P-62) | shipped | 0050 |
+| `convert_tools` drops Anthropic `input_schema` leak (P-63) | shipped | 0050 |
+| Qwen / qwen-chat-template → `COMPAT_DEFERRED_ALLOWLIST` (M-2) | shipped | 0050 |
+| W0 fixture `minimax` / `minimax-cn` rows (P-79) | shipped | 0050 |
+| `tests/pi_parity/test_phase_4_2_strict_superset.py` closure pin + parametrized behavior assertions (P-76) | shipped | 0050 |
+| `tests/providers/test_w6_regressions.py` regression suite | shipped | 0050 |
+| ADR-0034 amendment (2 of 9 KnownApi cardinality note) | shipped | 0034 |
+| ADR-0045 amendment §F.2 (Anthropic retrofit deferred) | shipped | 0045 |
 
 ### Sprint 6a sub-table (Phase 4.1 closure)
 

@@ -129,3 +129,19 @@ every Aelix-shipped adapter.
 
 Sprint 6a / Phase 4.1 (shipped). OpenAI / OpenRouter adapters land
 Sprint 6b. OAuth flow + `aelix-rpc` land Sprint 6c.
+
+### §F.2 — Sprint 6b amendment (2026-05-18)
+
+Sprint 6b shipped the OpenAI Completions adapter (ADR-0047) under the
+same `Provider` Protocol + `source_id="aelix-ai.builtin"` registration
+pattern. The Anthropic adapter shipped here in Sprint 6a was **NOT**
+retrofit onto `_transform_messages.py` in the Sprint 6b PR — that
+shared-infra retrofit is tracked as P-50-followup under ADR-0048 /
+ADR-0050 §Carry-forward and lands in Sprint 6d (cross-adapter hygiene).
+
+Sprint 6b also extended the message dataclasses (ADR-0049) with
+additive provenance / thinking / image / tool-name fields. The
+Anthropic adapter continues to mint `AssistantMessage` with
+`api=None / provider=None / model=None` until Sprint 6d wires the
+population — the dataclass defaults keep the Sprint 6a shape working
+without modification.

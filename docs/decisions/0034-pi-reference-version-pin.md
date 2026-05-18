@@ -47,6 +47,25 @@ Update policy:
 |--------|---------|------|--------|
 | 2.5 (Phase 1.4) | `734e08edf82ff315bc3d96472a6ebfa69a1d8016` | 2026-05-17 | initial pin; spec citations anchored |
 
+### Sprint 6b amendment (Pi `KnownApi` cardinality, 2026-05-18)
+
+Pi at this pin exposes **9 `KnownApi` values** (`types.ts:7-16`):
+`anthropic-messages`, `openai-completions`, `openai-responses`,
+`azure-openai-responses`, `openai-codex-responses`,
+`mistral-conversations`, `google-generative-ai`, `google-vertex`,
+`bedrock-converse-stream`.
+
+| Sprint | Adapter | Status | Owner ADR |
+|---|---|---|---|
+| 6a | `anthropic-messages` | shipped | ADR-0045 |
+| 6b | `openai-completions` | shipped (W6 closure 2026-05-18) | ADR-0047 |
+| deferred | the 7 above | tracked in `PHASE_4_2_DEFERRED_APIS` | ADR-0050 §J |
+
+Sprint 6b is **2 of 9** adapters live. The 7 deferred apis remain in
+`PHASE_4_2_DEFERRED_APIS` per ADR-0050 §J forward-compat clause: any
+future PR that lands an adapter MUST drop it from the allowlist in the
+same PR (enforced by the closure pin).
+
 ## Consequences
 
 - Parity audits become reproducible — the W5 audit lane can `git checkout`
