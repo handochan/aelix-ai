@@ -66,6 +66,27 @@ Sprint 6b is **2 of 9** adapters live. The 7 deferred apis remain in
 future PR that lands an adapter MUST drop it from the allowlist in the
 same PR (enforced by the closure pin).
 
+### Sprint 6c amendment (OAuth surface partition, 2026-05-18)
+
+Sprint 6c adds the OAuth surface (Anthropic only).
+
+| Component | Status | Owner ADR |
+|---|---|---|
+| OAuth client framework (types + PKCE + page + callback server + registry + high-level) | shipped | ADR-0051 |
+| Anthropic OAuth flow (`oauth/anthropic.py`) | shipped | ADR-0052 |
+| `AuthStorage` JSON layer (atomic write + 0o600 + flock) | shipped | ADR-0053 |
+| GitHub Copilot OAuth | deferred to Sprint 6e | ADR-0053 |
+| OpenAI Codex OAuth | deferred to Sprint 6e | ADR-0053 |
+| `AuthStorage` layered cascade (runtime-override + env + fallback resolver) | deferred to Sprint 6e | ADR-0053 |
+| RPC mode (`rpc-mode.ts` + `rpc-client.ts` + `rpc-types.ts` + `jsonl.ts`) | deferred to Sprint 6d | ADR-0054 |
+
+Sprint 6c is **1 of 3** OAuth providers live (Anthropic). The 2
+deferred providers remain in `_OAUTH_DEFERRED_PROVIDERS` per ADR-0055
+forward-compat clause; the closure pin
+(`tests/pi_parity/test_phase_4_3_strict_superset.py::test_pi_oauth_provider_total_equals_3`)
+asserts `live ∪ deferred == {anthropic, github-copilot, openai-codex}`
+exactly.
+
 ## Consequences
 
 - Parity audits become reproducible — the W5 audit lane can `git checkout`

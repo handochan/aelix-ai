@@ -27,6 +27,31 @@ cooperative abort from generic error. This is the single intentional
 divergence from Pi's 9-code taxonomy and is documented as additive (no
 parity violation; consumers `except AgentHarnessError` continue to work).
 
+## Sprint 6c amendment (2026-05-18, P-91 / ADR-0052)
+
+Sprint 6a's `"auth"` wiring eagerly raised `_AuthError` whenever the
+Anthropic adapter detected an OAuth token (`sk-ant-oat…` prefix) —
+ADR-0035 documented this as a Sprint 6a placeholder pending real OAuth
+support.
+
+Sprint 6c removes the eager-rejection branch (per ADR-0052):
+
+- OAuth tokens (`sk-ant-oat…`) are passed through to the SDK.
+- The Sprint 6a adapter routes OAuth tokens via the
+  `Authorization: Bearer <token>` header (ADR-0052 §"Bearer header
+  injection" / P-94) rather than the SDK's default `x-api-key`
+  placement.
+- `_AuthError` now fires only when the SDK itself returns an
+  `APIStatusError` with `status_code in (401, 403)`. The harness
+  `_make_stream_fn` translation (ADR-0046 W6 Fix 1) remains the
+  binding contract: any `_AuthError` raised by the adapter surfaces
+  as `AgentHarnessError("auth", …)` upstream.
+
+The `"auth"` code's trigger condition shifted from "bare OAuth-token
+detection" to "SDK 401/403 response", which is the contract this
+ADR's original §Context anticipated. Regression-pinned by
+`tests/test_agent_harness_auth_error.py::test_sdk_401_translates_to_harness_auth_error`.
+
 Phase 1.4 ships the **taxonomy map** documented here; it does **not** widen
 `AgentHarnessError.code`'s `Literal` union (still the original 5 codes at
 `packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:102`). The

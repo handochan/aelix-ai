@@ -64,6 +64,11 @@
 | 0048 | [Pi Shared Utilities Ported](0048-pi-shared-utilities.md)                                                                                                | Accepted (Sprint 6b / Phase 4.2 shipped)                            | `_transform_messages` + `_sanitize_unicode` + `_streaming_json` + `_env_api_keys` shared cross-provider infra; Anthropic retrofit deferred to Sprint 6d (P-50-followup). |
 | 0049 | [Message Dataclass — Provenance + Thinking + Image Split + Tool Name](0049-message-dataclass-provenance-and-thinking.md)                                | Accepted (Sprint 6b / Phase 4.2 / W6 shipped)                       | Additive `ThinkingContent`, `AssistantMessage.api/provider/model`, `ImageContent.mime_type/data`, `ToolResultMessage.tool_name`. Anthropic-side population deferred to Sprint 6d. |
 | 0050 | [Phase 4.2 Strict Superset Closure](0050-phase-4-2-strict-superset-closure.md)                                                                          | Accepted (Sprint 6b / Phase 4.2 / W6 shipped)                       | Phase 4.2 closure — P-47~P-82 + C-1 + M-1..M-6 roster + closure pin (`tests/pi_parity/test_phase_4_2_strict_superset.py`) + `PHASE_4_2_DEFERRED_APIS` (7) + `COMPAT_DEFERRED_ALLOWLIST` (4+2). |
+| 0051 | [OAuth Client Framework](0051-oauth-client-framework.md)                                                                                                | Accepted (Sprint 6c / Phase 4.3 / W6 shipped)                       | OAuth `Protocol` + types + PKCE + callback server + registry + high-level `get_oauth_api_key_from_credentials`. Separate registry from API providers (ADR-0045). |
+| 0052 | [Anthropic OAuth Flow](0052-anthropic-oauth-flow.md)                                                                                                    | Accepted (Sprint 6c / Phase 4.3 / W6 shipped)                       | Anthropic OAuth flow port (PKCE + local callback + token exchange/refresh + constants) + Bearer header injection (P-94) + late-manual-input fallback (P-93) + CALLBACK_HOST wiring (P-98). |
+| 0053 | [AuthStorage and Secrets](0053-auth-storage-and-secrets.md)                                                                                              | Accepted (Sprint 6c / Phase 4.3 / W6 shipped — Anthropic only)      | `AuthStorage` JSON layer (atomic tmp+fsync+rename write + 0o700/0o600 perms + asyncio.Lock + fcntl.flock POSIX cross-process). Copilot/Codex + layered cascade deferred to Sprint 6e. |
+| 0054 | [RPC Mode Deferred to Sprint 6d](0054-rpc-mode-deferred-to-sprint-6d.md)                                                                                 | Accepted (Sprint 6c / Phase 4.3 / W6 — formal carry-forward)        | Formal carry-forward record for `rpc-mode` / `rpc-client` / `rpc-types` / `jsonl` (~1,310 Pi LOC). `_PHASE_4_DEFERRED_FEATURES["rpc-mode"]` owns. |
+| 0055 | [Phase 4.3 Strict Superset Closure](0055-phase-4-3-strict-superset-closure.md)                                                                          | Accepted (Sprint 6c / Phase 4.3 / W6 shipped)                       | Phase 4.3 closure — P-83~P-104 + W4 M1..M6 + W4 m1..m9 roster + closure pin (`tests/pi_parity/test_phase_4_3_strict_superset.py`) + `_OAUTH_DEFERRED_PROVIDERS` (2) + `_PHASE_4_DEFERRED_FEATURES` (2). |
 
 ### Sprint 5b sub-table (Phase 3.2 closure)
 
@@ -83,6 +88,40 @@
 | 4 wired stubs (`send_message` / `send_user_message` / `append_entry` / `get_commands`) | shipped | 0042 |
 | `tests/pi_parity/test_phase_3_2_strict_superset.py` closure pin | shipped | 0044 |
 | DEFERRED_ALLOWLIST Phase-4-only (3 provider entries) | shipped | 0044 |
+
+### Sprint 6c sub-table (Phase 4.3 closure)
+
+| Item | Status | Owner ADR |
+|---|---|---|
+| `aelix_ai.oauth.types` (`OAuthCredentials` + `OAuthPrompt`/`AuthInfo`/`SelectOption`/`SelectPrompt`/`LoginCallbacks` + `OAuthProvider` Protocol) | shipped | 0051 |
+| `aelix_ai.oauth._pkce` (`generate_pkce` + base64url helper, RFC 7636) | shipped | 0051 |
+| `aelix_ai.oauth._oauth_page` (`oauth_success_html` / `oauth_error_html`) | shipped | 0051 |
+| `aelix_ai.oauth._callback_server` (`HTTPServer` daemon thread + asyncio bridge) | shipped | 0051 |
+| `aelix_ai.oauth._registry` (`get/register/unregister/reset_oauth_provider`) | shipped | 0051 |
+| `aelix_ai.oauth._high_level` (`get_oauth_api_key_from_credentials`) | shipped | 0051 |
+| `aelix_ai.oauth.anthropic` (login + refresh + `_AnthropicOAuthProvider` + constants) | shipped | 0052 |
+| `providers/anthropic.py` Bearer header injection on `is_oauth_token` (P-94) | shipped | 0052 |
+| `login_anthropic` late-manual-input fallback (Pi `anthropic.ts:294-307`, P-93) | shipped | 0052 |
+| `CALLBACK_HOST` / `CALLBACK_PORT` / `CALLBACK_PATH` wired into `start_callback_server` (P-98) | shipped | 0052 |
+| Scope (+ unknown response fields) preserved in `OAuthCredentials.extra` (W4 m7) | shipped | 0052 |
+| `aelix_ai.oauth.auth_storage.AuthStorage` (load/save/get/set/remove/get_oauth_api_key) | shipped | 0053 |
+| Atomic write (tmp + fsync + `os.replace`) (W4 M1) | shipped | 0053 |
+| `0o700` parent dir + `0o600` file mode (Pi parity) | shipped | 0053 |
+| `asyncio.Lock` in-process + `fcntl.flock` cross-process POSIX | shipped | 0053 |
+| `fcntl` failure handler broadened to `except BaseException` (W4 M5) | shipped | 0053 |
+| `default_auth_path` honors `XDG_CONFIG_HOME` (W4 m9) | shipped | 0053 |
+| `OAuthCredentials.from_json` raises clear `ValueError` (W4 m1) | shipped | 0051 |
+| `start_callback_server` friendly `RuntimeError` on port-in-use (W4 m8) | shipped | 0051 |
+| `asyncio.get_event_loop()` → `asyncio.get_running_loop()` (W4 m3 / W5 P-99) | shipped | 0051 |
+| `BaseHTTPRequestHandler.log_message` override matches base signature (W4 m4) | shipped | 0051 |
+| ADR-0035 amendment — `"auth"` fires only on SDK 401/403 (not eager OAuth detection) | shipped | 0035 |
+| ADR-0034 amendment — Sprint 6c OAuth partition (1 of 3 OAuth providers live) | shipped | 0034 |
+| RPC mode formal carry-forward (`_PHASE_4_DEFERRED_FEATURES["rpc-mode"]`) | shipped | 0054 |
+| AuthStorage layered-cascade carry-forward (`_PHASE_4_DEFERRED_FEATURES["auth-storage-layered-resolution"]`) | shipped | 0053 / 0055 |
+| Sprint 6a regression `test_sdk_401_translates_to_harness_auth_error` (W4 M3) | shipped | 0055 |
+| Sprint 6c W6 regression suite (P-94 bearer header + P-103 OAuth refresh failure E2E) | shipped | 0055 |
+| Closure pin strengthening (P-100 live ∪ deferred == 3 sum + P-95 cascade carry) | shipped | 0055 |
+| `tests/pi_parity/test_phase_4_3_strict_superset.py` closure pin (1 of 3 OAuth providers live + 2 deferred) | shipped | 0055 |
 
 ### Sprint 6b sub-table (Phase 4.2 closure)
 
