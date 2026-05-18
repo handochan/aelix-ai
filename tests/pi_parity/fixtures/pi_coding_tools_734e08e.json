@@ -1,0 +1,8 @@
+{
+  "_source": "packages/coding-agent/src/core/tools/",
+  "_sha": "734e08edf82ff315bc3d96472a6ebfa69a1d8016",
+  "tool_names": ["bash", "read", "edit", "write", "grep", "find", "ls"],
+  "factories": ["createCodingTools", "createReadOnlyTools", "createAllTools"],
+  "coding_tools": ["read", "bash", "edit", "write"],
+  "read_only_tools": ["read", "grep", "find", "ls"]
+}

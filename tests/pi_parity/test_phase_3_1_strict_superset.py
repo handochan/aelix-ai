@@ -56,15 +56,14 @@ def test_three_new_events_have_result_types_registered() -> None:
         )
 
 
-def test_three_new_events_in_phase_2_1_deferred_allowlist() -> None:
-    """ADR-0041 forward-compat: events register-without-emit until 5b CLI loop.
+def test_three_new_events_no_longer_in_deferred_allowlist() -> None:
+    """Sprint 5b (ADR-0044) closure: emit sites landed; allowlist purged.
 
-    Mirrors Sprint 3a session_* deferred pattern. The 3 new entries MUST
-    cite ADR-0042 (Sprint 5b CLI loop) as the owning emit-site sprint.
+    Pi parity forward-compat clause (ADR-0039) — once an event gains an
+    emit site, it MUST be dropped from ``DEFERRED_ALLOWLIST`` in the same
+    PR. Sprint 5b §B lands all 3 emit sites.
     """
 
-    # Sibling module load (avoid top-level "tests" package import which the
-    # workspace pytest config does not expose).
     import importlib.util as _importlib_util
     from pathlib import Path as _Path
 
@@ -78,12 +77,9 @@ def test_three_new_events_in_phase_2_1_deferred_allowlist() -> None:
     DEFERRED_ALLOWLIST = mod.DEFERRED_ALLOWLIST
 
     for name in _PHASE_3_1_NEW_EVENTS:
-        assert name in DEFERRED_ALLOWLIST, (
-            f"{name!r} missing from DEFERRED_ALLOWLIST"
-        )
-        owner = DEFERRED_ALLOWLIST[name]
-        assert "ADR-0042" in owner, (
-            f"{name!r} deferred entry does not cite ADR-0042: {owner!r}"
+        assert name not in DEFERRED_ALLOWLIST, (
+            f"{name!r} still in DEFERRED_ALLOWLIST after Sprint 5b emit-site "
+            "landing; drop the entry per ADR-0044 forward-compat clause."
         )
 
 

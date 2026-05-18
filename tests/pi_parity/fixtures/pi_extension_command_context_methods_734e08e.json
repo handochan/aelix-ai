@@ -1,0 +1,12 @@
+{
+  "_source": "packages/coding-agent/src/core/extensions/types.ts:333-364",
+  "_sha": "734e08edf82ff315bc3d96472a6ebfa69a1d8016",
+  "methods": [
+    "waitForIdle",
+    "newSession",
+    "fork",
+    "navigateTree",
+    "switchSession",
+    "reload"
+  ]
+}

@@ -1,0 +1,34 @@
+{
+  "_source": "packages/coding-agent/src/core/extensions/types.ts:771-940",
+  "_sha": "734e08edf82ff315bc3d96472a6ebfa69a1d8016",
+  "tool_call_event_variants": [
+    "BashToolCallEvent",
+    "ReadToolCallEvent",
+    "EditToolCallEvent",
+    "WriteToolCallEvent",
+    "GrepToolCallEvent",
+    "FindToolCallEvent",
+    "LsToolCallEvent",
+    "CustomToolCallEvent"
+  ],
+  "tool_result_event_variants": [
+    "BashToolResultEvent",
+    "ReadToolResultEvent",
+    "EditToolResultEvent",
+    "WriteToolResultEvent",
+    "GrepToolResultEvent",
+    "FindToolResultEvent",
+    "LsToolResultEvent",
+    "CustomToolResultEvent"
+  ],
+  "narrow_helpers": [
+    "isBashToolResult",
+    "isReadToolResult",
+    "isEditToolResult",
+    "isWriteToolResult",
+    "isGrepToolResult",
+    "isFindToolResult",
+    "isLsToolResult",
+    "isToolCallEventType"
+  ]
+}

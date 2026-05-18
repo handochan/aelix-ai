@@ -64,16 +64,12 @@ DEFERRED_ALLOWLIST: dict[str, str] = {
     # ``AgentHarness.navigate_tree()`` in ``harness/core.py`` and have been
     # removed from this allowlist per the forward-compat clause.
     #
-    # Sprint 5a (Phase 3.1) closure — see ADR-0041: 3 newly REGISTERED
-    # ``coding-agent``-owned events (P-24/P-25/P-26). Emit sites all live
-    # in the Sprint 5b CLI loop (Pi ``agent-session.ts`` 987/1403/2055
-    # regions) which is owned by ADR-0042. Closure pin
-    # ``test_phase_3_1_strict_superset.py`` re-validates this entry every
-    # run; if Sprint 5b ships within 4 weeks per ADR-0041, the entries
-    # MUST drop from this allowlist in the same PR.
-    "input": "ADR-0042 (Sprint 5b CLI loop)",
-    "user_bash": "ADR-0042 (Sprint 5b CLI loop)",
-    "resources_discover": "ADR-0042 (Sprint 5b CLI loop)",
+    # Sprint 5b (Phase 3.2) closure — see ADR-0044: ``input`` +
+    # ``resources_discover`` emit sites landed in ``AgentHarness.prompt()`` /
+    # ``AgentHarness.discover_resources``. ``user_bash`` emit lives in the
+    # minimal CLI (``cli/repl.py``) which is part of Sprint 5b §B.2 but is
+    # detected separately. The Sprint 5b CLI-loop emit-site detector adds
+    # ``cli/repl.py`` to the emit scope below.
 }
 
 
@@ -106,8 +102,11 @@ _HARNESS_OWN_EMIT_SUBSTRINGS: dict[str, tuple[str, ...]] = {
     "context": ("ContextHookEvent",),
     # Hook bridges (Sprint 3a — emit lives in harness/core via the
     # ``emit(...)`` path with the same camel-case event name).
-    "tool_call": ("ToolCallHookEvent",),
-    "tool_result": ("ToolResultHookEvent",),
+    # Sprint 5b §C: construction switched to tool-typed factories per
+    # ADR-0043; the factories return ``ToolCallHookEvent`` subclass instances
+    # so either the factory call OR the explicit class still counts.
+    "tool_call": ("ToolCallHookEvent", "make_tool_call_event"),
+    "tool_result": ("ToolResultHookEvent", "make_tool_result_event"),
     # Setter emit sites (Sprint 3b).
     "model_select": ("ModelSelectHookEvent",),
     "thinking_level_select": ("ThinkingLevelSelectHookEvent",),
@@ -122,6 +121,13 @@ _HARNESS_OWN_EMIT_SUBSTRINGS: dict[str, tuple[str, ...]] = {
     "session_compact": ("SessionCompactHookEvent",),
     "session_before_tree": ("SessionBeforeTreeHookEvent",),
     "session_tree": ("SessionTreeHookEvent",),
+    # Sprint 5b (Phase 3.2) closure — see ADR-0044. ``input`` emit at
+    # ``AgentHarness.prompt()`` head; ``resources_discover`` emit at
+    # ``AgentHarness.discover_resources``/``reload_resources``;
+    # ``user_bash`` emit in the minimal CLI (``cli/repl.py``).
+    "input": ("InputHookEvent",),
+    "user_bash": ("UserBashHookEvent",),
+    "resources_discover": ("ResourcesDiscoverHookEvent",),
 }
 
 
@@ -131,16 +137,29 @@ _HARNESS_OWN_EMIT_SUBSTRINGS: dict[str, tuple[str, ...]] = {
 # sites — they only reshape an in-flight event for the next reducer in the
 # chain and never reach ``await emit(...)``. Excluding them keeps the
 # closure pin honest about which events are observable to extensions.
+_CODING_AGENT_ROOT = (
+    Path(__file__).resolve().parent.parent.parent
+    / "packages"
+    / "aelix-coding-agent"
+    / "src"
+    / "aelix_coding_agent"
+)
 _EMIT_SCOPE_FILES: tuple[Path, ...] = (
     _RUNTIME_ROOT / "loop.py",
     _RUNTIME_ROOT / "harness" / "core.py",
+    # Sprint 5b §B.2 — minimal CLI loop emits ``user_bash``.
+    _CODING_AGENT_ROOT / "cli" / "repl.py",
 )
 
 
 def _emit_scope_text() -> str:
     """Concatenated source text of the files that actually call ``emit``."""
 
-    return "\n".join(path.read_text() for path in _EMIT_SCOPE_FILES)
+    parts: list[str] = []
+    for path in _EMIT_SCOPE_FILES:
+        if path.exists():
+            parts.append(path.read_text())
+    return "\n".join(parts)
 
 
 def _has_emit_site(source: str, class_name: str) -> bool:
