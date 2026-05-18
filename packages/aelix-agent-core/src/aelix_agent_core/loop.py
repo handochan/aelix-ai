@@ -254,13 +254,32 @@ async def _stream_assistant_response(
     partial_index: int | None = None
     final: AssistantMessage | None = None
 
+    # Sprint 6a (Phase 4.1, ADR-0037): 12-variant union consumer.
+    # Terminal success: ``"done"`` (Pi) OR legacy ``"end"`` (deprecated alias).
+    # Terminal failure: ``"error"`` (Pi `AssistantErrorEvent`) — the
+    # adapter has already set ``output.stop_reason in {"aborted","error"}``
+    # plus ``error_message`` on the message before emitting.
+    #
+    # P-39d SILENT DRIFT FIX: ``"toolcall_delta"`` (no underscore between
+    # ``tool`` and ``call``) is the Pi canonical spelling.
+    _UPDATE_EVENTS = frozenset({
+        "text_start",
+        "text_delta",
+        "text_end",
+        "thinking_start",
+        "thinking_delta",
+        "thinking_end",
+        "toolcall_start",
+        "toolcall_delta",
+        "toolcall_end",
+    })
     async for event in fn(config.model, llm_context, options):
         if event.type == "start":
             partial = event.partial
             context.messages.append(partial)
             partial_index = len(context.messages) - 1
             await emit(MessageStartEvent(message=partial))
-        elif event.type in ("text_delta", "tool_call_delta"):
+        elif event.type in _UPDATE_EVENTS:
             if partial is None:
                 continue
             await emit(
@@ -268,8 +287,20 @@ async def _stream_assistant_response(
                     message=partial, assistant_message_event=event
                 )
             )
-        elif event.type == "end":
+        elif event.type in ("end", "done"):
             final = event.message
+            if final.timestamp is None:
+                final = replace(final, timestamp=time.time())
+            if partial_index is not None:
+                context.messages[partial_index] = final
+            elif partial is None:
+                context.messages.append(final)
+            await emit(MessageEndEvent(message=final))
+        elif event.type == "error":
+            # Sprint 6a (ADR-0037): Pi ``AssistantErrorEvent`` carries the
+            # in-flight assistant message in ``error`` with ``stop_reason``
+            # already set to ``"aborted"`` or ``"error"`` by the adapter.
+            final = event.error
             if final.timestamp is None:
                 final = replace(final, timestamp=time.time())
             if partial_index is not None:
@@ -280,8 +311,9 @@ async def _stream_assistant_response(
 
     if final is None:
         raise RuntimeError(
-            "stream_fn ended without an 'end' event. "
-            "Every stream must terminate with AssistantEndEvent."
+            "stream_fn ended without a terminal event. "
+            "Every stream must terminate with AssistantDoneEvent, "
+            "AssistantErrorEvent, or the legacy AssistantEndEvent."
         )
     return final
 
