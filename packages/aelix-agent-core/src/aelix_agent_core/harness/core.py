@@ -24,21 +24,36 @@ import asyncio
 import contextlib
 import inspect
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, assert_never
 
 from aelix_ai.messages import AssistantMessage, ImageContent, TextContent, UserMessage
-from aelix_ai.streaming import Model, StreamFn
+from aelix_ai.streaming import (
+    AssistantMessageEvent,
+    Model,
+    ProviderResponse,
+    SimpleStreamOptions,
+    StreamFn,
+    stream_simple,
+)
+from aelix_ai.streaming import (
+    Context as LlmContext,
+)
 
 from aelix_agent_core.agent import AgentListener
 from aelix_agent_core.default_convert import default_convert_to_llm
 from aelix_agent_core.harness.hooks import (
     AbortHookEvent,
+    AfterProviderResponseHookEvent,
     AgentEndHookEvent,
     AgentStartHookEvent,
     BeforeAgentStartHookEvent,
     BeforeAgentStartResult,
+    BeforeProviderPayloadHookEvent,
+    BeforeProviderPayloadResult,
+    BeforeProviderRequestHookEvent,
+    BeforeProviderRequestResult,
     ContextHookEvent,
     ContextResult,
     HookBus,
@@ -132,11 +147,36 @@ HarnessListener = AgentListener  # type alias — same shape as AgentListener
 
 
 class AgentHarnessError(Exception):
-    """Errors surfaced by the harness itself (busy/state/argument/hook)."""
+    """Errors surfaced by the harness itself.
+
+    Sprint 6a (Phase 4.1, ADR-0035 Accepted) — 10-code taxonomy:
+
+    - **Pi-parity (9)** — ``busy``, ``invalid_state``, ``invalid_argument``,
+      ``session``, ``hook``, ``auth``, ``compaction``, ``branch_summary``,
+      ``unknown``.
+    - **Aelix-additive (1)** — ``aborted`` (Pi has no ``aborted`` harness
+      code at SHA 734e08e; Aelix raises this from ``abort()``).
+
+    See ADR-0035 §"Code taxonomy" and ADR-0046 §"AgentHarnessError"
+    for the full audit. The ``"auth"`` code lands Sprint 6a and is
+    raised by ``_make_stream_fn`` when ``get_api_key_and_headers``
+    fails OR the adapter rejects an OAuth token (P-42b).
+    """
 
     def __init__(
         self,
-        code: Literal["busy", "invalid_state", "invalid_argument", "hook", "unknown", "compaction"],
+        code: Literal[
+            "busy",
+            "invalid_state",
+            "invalid_argument",
+            "session",
+            "hook",
+            "auth",
+            "compaction",
+            "branch_summary",
+            "unknown",
+            "aborted",
+        ],
         message: str,
     ) -> None:
         super().__init__(message)
@@ -357,12 +397,17 @@ class _TurnState:
     ``messages`` from ``session.build_context().messages`` at turn start;
     otherwise it copies ``state.messages`` (in-memory primary, backward
     compat per ADR-0022 §"Aelix-additive divergences" item 3).
+
+    Sprint 6a (ADR-0045) — ``stream_options`` snapshot lands here so the
+    ``_make_stream_fn`` closure can clone it per provider call without
+    racing the live ``state.stream_options`` setter.
     """
 
     system_prompt: str
     model: Model
     messages: list[AgentMessage] = field(default_factory=list)
     session_id: str | None = None
+    stream_options: dict[str, Any] = field(default_factory=dict)
 
 
 class _MessageQueue:
@@ -1856,6 +1901,208 @@ class AgentHarness:
             ) from exc
         return result if isinstance(result, BeforeAgentStartResult) else None
 
+    # === Sprint 6a (Phase 4.1) — provider chain emit helpers + StreamFn factory ===
+
+    async def _emit_before_provider_request(
+        self,
+        model: Model,
+        session_id: str | None,
+        stream_options: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Emit ``before_provider_request`` and return the (possibly patched) options.
+
+        Pi parity: ``agent-harness.ts:232-250``. Handlers may return a
+        :class:`BeforeProviderRequestResult` with a ``stream_options``
+        patch — the reducer deep-merges via
+        :func:`_apply_stream_options_patch` and we return the final
+        chained dict. When no handler patches, returns ``stream_options``
+        unchanged.
+        """
+
+        try:
+            result = await self._hooks.emit(
+                BeforeProviderRequestHookEvent(
+                    model=model,
+                    session_id=session_id or "",
+                    stream_options=dict(stream_options),
+                )
+            )
+        except Exception as exc:
+            raise AgentHarnessError(
+                "hook",
+                f"before_provider_request hook handler raised: {exc}",
+            ) from exc
+        if (
+            isinstance(result, BeforeProviderRequestResult)
+            and result.stream_options is not None
+        ):
+            return dict(result.stream_options)
+        return dict(stream_options)
+
+    async def _emit_before_provider_payload(
+        self, model: Model, payload: Any
+    ) -> Any:
+        """Emit ``before_provider_payload`` and return the (possibly patched) payload.
+
+        Pi parity: ``agent-harness.ts:265-280``. The reducer chains
+        :class:`BeforeProviderPayloadResult`s; if no handler patches,
+        ``payload`` is returned verbatim.
+        """
+
+        try:
+            result = await self._hooks.emit(
+                BeforeProviderPayloadHookEvent(model=model, payload=payload)
+            )
+        except Exception as exc:
+            raise AgentHarnessError(
+                "hook",
+                f"before_provider_payload hook handler raised: {exc}",
+            ) from exc
+        if isinstance(result, BeforeProviderPayloadResult):
+            return result.payload
+        return payload
+
+    async def _emit_after_provider_response(
+        self, model: Model, status: int, headers: dict[str, str]
+    ) -> None:
+        """Emit ``after_provider_response`` (observational — no result).
+
+        Pi parity: ``agent-harness.ts:275`` ``onResponse`` callback.
+        Exceptions raised by handlers propagate as
+        ``AgentHarnessError("hook", …)`` so authors don't get silent
+        misconfigurations.
+        """
+
+        try:
+            await self._hooks.emit(
+                AfterProviderResponseHookEvent(
+                    status=status, headers=dict(headers)
+                )
+            )
+        except Exception as exc:
+            raise AgentHarnessError(
+                "hook",
+                f"after_provider_response hook handler raised: {exc}",
+            ) from exc
+
+    def _make_stream_fn(
+        self, get_turn_state: Callable[[], _TurnState]
+    ) -> StreamFn:
+        """Build the production-path :class:`StreamFn` (Sprint 6a, ADR-0045).
+
+        Pi parity: ``agent-harness.ts:358-389`` ``createStreamFn``.
+
+        The returned closure:
+
+        1. Resolves auth via :attr:`AgentHarnessOptions.get_api_key_and_headers`
+           (Pi ``getApiKeyAndHeaders``). Failure / missing apiKey AND
+           missing headers raises :class:`AgentHarnessError("auth", …)`.
+        2. Builds an initial :class:`SimpleStreamOptions` snapshot from
+           the per-turn ``stream_options`` merged with auth headers.
+        3. Emits ``before_provider_request`` and applies the chained
+           patch.
+        4. Wires ``on_payload`` → emits ``before_provider_payload`` and
+           returns the (possibly patched) payload.
+        5. Wires ``on_response`` → emits
+           ``after_provider_response`` (observational).
+        6. Delegates to :func:`aelix_ai.streaming.stream_simple` with the
+           assembled options.
+        """
+
+        async def stream_fn(
+            model: Model,
+            context: LlmContext,
+            options: SimpleStreamOptions,
+        ) -> AsyncIterator[AssistantMessageEvent]:
+            turn_state = get_turn_state()
+            session_id = turn_state.session_id
+
+            # 1) Resolve auth.
+            auth_dict: dict[str, Any] | None = None
+            get_auth = self._options.get_api_key_and_headers
+            if get_auth is not None:
+                try:
+                    raw_auth = get_auth(model)
+                    if inspect.isawaitable(raw_auth):
+                        raw_auth = await raw_auth
+                    auth_dict = raw_auth if isinstance(raw_auth, dict) else None
+                except Exception as exc:  # noqa: BLE001
+                    raise AgentHarnessError(
+                        "auth",
+                        f"get_api_key_and_headers failed: {exc}",
+                    ) from exc
+                # Pi parity (types.ts:808-811): the callback may return
+                # ``undefined`` (here: ``None``) which is "no opinion".
+                # Reject only when explicitly returned dict carries
+                # neither apiKey nor headers.
+                if auth_dict is not None and not (
+                    auth_dict.get("apiKey") or auth_dict.get("headers")
+                ):
+                    raise AgentHarnessError(
+                        "auth",
+                        "get_api_key_and_headers returned neither apiKey nor headers",
+                    )
+
+            api_key = (auth_dict or {}).get("apiKey")
+            auth_headers = (auth_dict or {}).get("headers") or {}
+
+            # 2) Snapshot — Pi parity ``snapshotOptions``: turn state +
+            # auth headers (auth wins on key collision).
+            merged_headers: dict[str, str] = dict(
+                turn_state.stream_options.get("headers") or {}
+            )
+            merged_headers.update(auth_headers)
+            snapshot_dict: dict[str, Any] = dict(turn_state.stream_options)
+            snapshot_dict["headers"] = merged_headers
+
+            # 3) before_provider_request — chained patch.
+            chained = await self._emit_before_provider_request(
+                model, session_id, snapshot_dict
+            )
+
+            # 4 + 5) on_payload + on_response callbacks.
+            async def _on_payload(payload: Any, _model: Model) -> Any:
+                return await self._emit_before_provider_payload(model, payload)
+
+            async def _on_response(
+                response: ProviderResponse, _model: Model
+            ) -> None:
+                await self._emit_after_provider_response(
+                    model, response.status, response.headers
+                )
+
+            # 6) Final SimpleStreamOptions for the provider call.
+            opts = SimpleStreamOptions(
+                api_key=api_key,
+                headers=dict(chained.get("headers") or {}),
+                metadata=dict(chained.get("metadata") or {}),
+                signal=options.signal,
+                cache_retention=chained.get("cacheRetention"),
+                transport=chained.get("transport"),
+                timeout_ms=chained.get("timeoutMs"),
+                max_retries=chained.get("maxRetries"),
+                max_retry_delay_ms=chained.get("maxRetryDelayMs"),
+                reasoning=options.reasoning,
+                session_id=session_id,
+                on_payload=_on_payload,
+                on_response=_on_response,
+                client=options.client,
+            )
+
+            # W6 Fix 1: translate adapter-layer _AuthError to harness contract
+            # (W4 MAJOR-2 / spec §D.2 promise — without this, OAuth-token
+            # rejection from providers/anthropic.py bubbles up untranslated).
+            from aelix_ai.providers.anthropic import _AuthError  # noqa: PLC0415
+
+            try:
+                iterator = await stream_simple(model, context, opts)
+                async for event in iterator:
+                    yield event
+            except _AuthError as exc:
+                raise AgentHarnessError("auth", str(exc)) from exc
+
+        return stream_fn
+
     # === Run loop ===
 
     async def _run(
@@ -1889,6 +2136,10 @@ class AgentHarness:
             model=self._state.model,
             messages=turn_messages,
             session_id=turn_session_id,
+            # Sprint 6a (ADR-0045) — clone the live ``state.stream_options``
+            # into the per-turn snapshot so ``_make_stream_fn`` chains
+            # patches against an immutable baseline.
+            stream_options=dict(self._state.stream_options or {}),
         )
         try:
             config = AgentLoopConfig(
@@ -1982,6 +2233,22 @@ class AgentHarness:
                         )
 
             try:
+                # Sprint 6a (Phase 4.1, ADR-0045 §D.1): if an explicit
+                # ``stream_fn`` was injected (Sprint 1–5 test mock path)
+                # use it verbatim; otherwise build the production-path
+                # ``_make_stream_fn`` closure that emits the 3 provider
+                # hook events and delegates to ``stream_simple``.
+                if self._options.stream_fn is not None:
+                    effective_stream_fn: StreamFn | None = self._options.stream_fn
+                else:
+                    effective_stream_fn = self._make_stream_fn(
+                        lambda: self._turn_state  # type: ignore[return-value]
+                        if self._turn_state is not None
+                        else _TurnState(
+                            system_prompt=self._state.system_prompt,
+                            model=self._state.model,
+                        )
+                    )
                 # Sprint 3c §C.2 — wrap the loop in a task so abort() can
                 # cancel it. We await the task (not the coroutine directly)
                 # and surface CancelledError as the expected abort path.
@@ -1991,7 +2258,7 @@ class AgentHarness:
                         context,
                         config,
                         emit=emit,
-                        stream_fn=self._options.stream_fn,
+                        stream_fn=effective_stream_fn,
                     )
                 )
                 self._current_turn_task = turn_task
