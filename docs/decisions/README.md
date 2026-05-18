@@ -55,6 +55,28 @@
 | 0039 | [Phase 2.1 Strict Superset Closure](0039-phase-2-1-strict-superset-closure.md)                                                                          | Accepted (Sprint 3d / Phase 2.1.4 shipped)                          | Phase 2.1 strict superset closure — P-1..P-9 roster + E.5 closure pin + deferred allowlist (forward-compat clause).                                  |
 | 0040 | [Phase 2.2 Strict Superset Closure](0040-phase-2-2-strict-superset-closure.md)                                                                          | Accepted (Sprint 4b shipped)                                        | Phase 2.2 strict Pi-parity superset closure (P-11~P-20 roster + closure pin).                                                                        |
 | 0041 | [Phase 3.1 Extension API Full Surface Closure](0041-phase-3-1-extension-api-full-surface-closure.md)                                                    | Accepted (Sprint 5a / Phase 3.1.1 shipped)                          | Extension auto-discovery (Pi-primary), ExtensionAPI 48-method surface, ExtensionContext 14 fields, 3 new events registered (input/user_bash/resources_discover). P-21~P-28 roster + 4-week time-bound deferral. |
+| 0042 | [Built-in Coding Tools + 3 Event Emit Sites + Minimal CLI Loop](0042-built-in-coding-tools.md)                                                          | Accepted (Sprint 5b / Phase 3.2 shipped)                            | 7 Pi-parity built-in coding tools (bash/read/edit/write/grep/find/ls) + 3 event emit sites active + minimal CLI loop + ExtensionCommandContext 4-of-6 lands. P-32~P-36. |
+| 0043 | [Tool-Typed ToolCallEvent Variants](0043-tool-typed-tool-call-event-variants.md)                                                                        | Accepted (Sprint 5b / Phase 3.2 shipped)                            | 8 typed `ToolCallEvent` + 8 symmetric `ToolResultEvent` subclasses on existing base classes, `make_tool_call_event` factory, `is_tool_call_event_type` narrow helper. P-31. |
+| 0044 | [Phase 3 Strict Superset Closure](0044-phase-3-strict-superset-closure.md)                                                                              | Accepted (Sprint 5b / Phase 3.2 shipped)                            | Phase 3 closure — P-21~P-36 roster + closure pin (`tests/pi_parity/test_phase_3_2_strict_superset.py`) + deferred allowlist Phase-4-only. |
+
+### Sprint 5b sub-table (Phase 3.2 closure)
+
+| Item | Status | Owner ADR |
+|---|---|---|
+| 7 built-in coding tools | shipped | 0042 |
+| `create_coding_tools` / `create_read_only_tools` / `create_all_tools` factories | shipped | 0042 |
+| `input` emit site (`AgentHarness.prompt()` head) | shipped | 0042 |
+| `user_bash` emit site (minimal CLI `!/!!` parser) | shipped | 0042 |
+| `resources_discover` emit site (`bootstrap` / `reload_resources`) | shipped | 0042 |
+| 8 tool-typed `ToolCallHookEvent` variants | shipped | 0043 |
+| 8 symmetric `ToolResultHookEvent` variants | shipped | 0043 |
+| `make_tool_call_event` / `make_tool_result_event` factories | shipped | 0043 |
+| `is_tool_call_event_type` / `is_tool_result_event_type` narrow helpers | shipped | 0043 |
+| `ExtensionCommandContext` (4 bound + 2 raise) | shipped | 0042 |
+| Sprint 5a ergonomics — cached session name + `_pending_tasks` GC + `_ensure_loop` | shipped | 0042 |
+| 4 wired stubs (`send_message` / `send_user_message` / `append_entry` / `get_commands`) | shipped | 0042 |
+| `tests/pi_parity/test_phase_3_2_strict_superset.py` closure pin | shipped | 0044 |
+| DEFERRED_ALLOWLIST Phase-4-only (3 provider entries) | shipped | 0044 |
 
 > **번호 공백 (0016)**: ADR-0016 "Phase machine expansion"은 ADR-0023(Compaction + Branch Summary)으로 supersede됩니다. 번호를 재사용하지 않고 gap으로 보존합니다.
 
