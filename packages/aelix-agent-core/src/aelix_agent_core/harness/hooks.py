@@ -1263,6 +1263,78 @@ async def _reducer_session_before(
     return last
 
 
+def _apply_stream_options_patch(
+    base: dict[str, Any], patch: dict[str, Any] | None
+) -> dict[str, Any]:
+    """Sprint 6a (P-41) — Pi ``applyStreamOptionsPatch`` deep-merge port.
+
+    Pi parity: ``agent-harness.ts:89-129`` (SHA 734e08e). Deep merges
+    ``patch`` into a clone of ``base`` with delete-on-``None`` semantics
+    for nested ``headers`` and ``metadata`` keys (Pi: TS-undefined deletes
+    the key rather than overwriting with undefined).
+
+    Scalar keys (``transport`` / ``timeoutMs`` / ``maxRetries`` /
+    ``maxRetryDelayMs`` / ``cacheRetention``): present-in-patch wins,
+    including explicit ``None`` (Pi ``Object.hasOwn(patch, key)``).
+
+    ``headers`` / ``metadata``: deep merge with key-level delete-on-None.
+    Result is collapsed to ``None`` when the merged dict ends up empty.
+
+    Returns the merged dict. Pi (``agent-harness.ts:103``) returns the
+    cloned base when ``patch`` is falsy / undefined; we preserve that
+    semantic by returning the base shallow-clone.
+    """
+
+    if patch is None:
+        return dict(base)
+
+    result: dict[str, Any] = dict(base)
+
+    for key in (
+        "transport",
+        "timeoutMs",
+        "maxRetries",
+        "maxRetryDelayMs",
+        "cacheRetention",
+    ):
+        if key in patch:
+            result[key] = patch[key]
+
+    if "headers" in patch:
+        patch_headers = patch["headers"]
+        if patch_headers is None:
+            result.pop("headers", None)
+        else:
+            headers = dict(result.get("headers") or {})
+            for k, v in patch_headers.items():
+                if v is None:
+                    headers.pop(k, None)
+                else:
+                    headers[k] = v
+            if headers:
+                result["headers"] = headers
+            else:
+                result.pop("headers", None)
+
+    if "metadata" in patch:
+        patch_metadata = patch["metadata"]
+        if patch_metadata is None:
+            result.pop("metadata", None)
+        else:
+            metadata = dict(result.get("metadata") or {})
+            for k, v in patch_metadata.items():
+                if v is None:
+                    metadata.pop(k, None)
+                else:
+                    metadata[k] = v
+            if metadata:
+                result["metadata"] = metadata
+            else:
+                result.pop("metadata", None)
+
+    return result
+
+
 async def _reducer_before_provider_request(
     handlers: list[HandlerEntry],
     event: BeforeProviderRequestHookEvent,
@@ -1274,24 +1346,14 @@ async def _reducer_before_provider_request(
     each receiving ``cloneStreamOptions(current)``; ``applyStreamOptionsPatch``
     updates ``current`` if a handler returns ``result.streamOptions``.
 
-    KNOWN PI-PARITY DIVERGENCE (W5 caveat #1, tracked in ADR-0017 §"Known
-    shallow-merge divergence"):
-    This Phase 2.1.1 reducer uses a naive ``dict.update`` **shallow** merge.
-    Pi ``applyStreamOptionsPatch`` (``agent-harness.ts:96-127``) performs
-    nuanced **deep merge** with delete-on-undefined for nested ``headers``
-    and ``metadata`` keys (a TS-undefined nested value deletes the key
-    rather than overwriting with undefined). Phase 2.1.1 leaves shallow
-    merge in place because there is no emit site for
-    ``before_provider_request`` in Sprint 3a — the reducer is registered
-    but never invoked (Phase 4 provider adapter owns the emit site per
-    ADR-0038).
+    Sprint 6a (P-41 fix): the previous shallow ``dict.update`` merge has
+    been replaced with :func:`_apply_stream_options_patch`, a verbatim
+    port of Pi ``applyStreamOptionsPatch`` (``agent-harness.ts:89-129``)
+    with delete-on-``None`` semantics for nested ``headers`` /
+    ``metadata`` keys.
     """
 
-    # TODO(Phase-4): replace with Pi ``applyStreamOptionsPatch``
-    # deep-merge port (``agent-harness.ts:96-127``) OR deep-merge at the
-    # emit site in the provider adapter. Tracked in ADR-0017 §"Known
-    # shallow-merge divergence" and Sprint 3b binding spec.
-    current = dict(event.stream_options)  # shallow clone
+    current: dict[str, Any] = dict(event.stream_options)
     modified = False
     for handler, mode in handlers:
         chained = BeforeProviderRequestHookEvent(
@@ -1300,8 +1362,11 @@ async def _reducer_before_provider_request(
             stream_options=dict(current),
         )
         raw = await _safe_invoke(handler, chained, ctx, mode)
-        if isinstance(raw, BeforeProviderRequestResult) and raw.stream_options is not None:
-            current.update(raw.stream_options)
+        if (
+            isinstance(raw, BeforeProviderRequestResult)
+            and raw.stream_options is not None
+        ):
+            current = _apply_stream_options_patch(current, raw.stream_options)
             modified = True
     return BeforeProviderRequestResult(stream_options=current) if modified else None
 
