@@ -66,16 +66,19 @@ def _content_blocks_to_anthropic(
             out.append({"type": "text", "text": block.text})
         elif isinstance(block, ImageContent):
             # Anthropic expects {type:image, source:{type, media_type, data}}.
-            # The Aelix ImageContent.source is a data URL or base64 payload;
-            # we ship the simple base64 form here for Sprint 6a — full URL
-            # handling lands when the multimodal harness ships.
+            # Sprint 6b (P-61): prefer the new ``mime_type`` + ``data``
+            # split fields; fall back to the legacy ``source`` data-URL /
+            # base64 string when ``data`` is empty so pre-6b callers keep
+            # working.
+            mime = block.mime_type or "image/png"
+            data = block.data if block.data else block.source
             out.append(
                 {
                     "type": "image",
                     "source": {
                         "type": "base64",
-                        "media_type": "image/png",
-                        "data": block.source,
+                        "media_type": mime,
+                        "data": data,
                     },
                 }
             )
