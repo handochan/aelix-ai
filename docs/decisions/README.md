@@ -58,6 +58,8 @@
 | 0042 | [Built-in Coding Tools + 3 Event Emit Sites + Minimal CLI Loop](0042-built-in-coding-tools.md)                                                          | Accepted (Sprint 5b / Phase 3.2 shipped)                            | 7 Pi-parity built-in coding tools (bash/read/edit/write/grep/find/ls) + 3 event emit sites active + minimal CLI loop + ExtensionCommandContext 4-of-6 lands. P-32~P-36. |
 | 0043 | [Tool-Typed ToolCallEvent Variants](0043-tool-typed-tool-call-event-variants.md)                                                                        | Accepted (Sprint 5b / Phase 3.2 shipped)                            | 8 typed `ToolCallEvent` + 8 symmetric `ToolResultEvent` subclasses on existing base classes, `make_tool_call_event` factory, `is_tool_call_event_type` narrow helper. P-31. |
 | 0044 | [Phase 3 Strict Superset Closure](0044-phase-3-strict-superset-closure.md)                                                                              | Accepted (Sprint 5b / Phase 3.2 shipped)                            | Phase 3 closure — P-21~P-36 roster + closure pin (`tests/pi_parity/test_phase_3_2_strict_superset.py`) + deferred allowlist Phase-4-only. |
+| 0045 | [Provider Adapter Interface](0045-provider-adapter-interface.md)                                                                                        | Accepted (Sprint 6a / Phase 4.1 shipped)                            | `Provider` Protocol + `register_provider_object` / `unregister_providers_by_source` (Pi parity) + `SimpleStreamOptions` extensions + `ProviderResponse`. Anthropic adapter ships under `aelix_ai.providers.anthropic`. |
+| 0046 | [Phase 4 Strict Superset Closure](0046-phase-4-strict-superset-closure.md)                                                                              | Accepted (Sprint 6a / Phase 4.1 shipped)                            | Phase 4 closure — P-37~P-43 roster + closure pin (`tests/pi_parity/test_phase_4_strict_superset.py`) + DEFERRED_ALLOWLIST = `{}` (empty). |
 
 ### Sprint 5b sub-table (Phase 3.2 closure)
 
@@ -77,6 +79,23 @@
 | 4 wired stubs (`send_message` / `send_user_message` / `append_entry` / `get_commands`) | shipped | 0042 |
 | `tests/pi_parity/test_phase_3_2_strict_superset.py` closure pin | shipped | 0044 |
 | DEFERRED_ALLOWLIST Phase-4-only (3 provider entries) | shipped | 0044 |
+
+### Sprint 6a sub-table (Phase 4.1 closure)
+
+| Item | Status | Owner ADR |
+|---|---|---|
+| 12 `AssistantMessageEvent` variants (8 new + rename + alias + 2 backfills + P-39d spelling fix) | shipped | 0037 |
+| `Provider` Protocol + `register_provider_object` + `unregister_providers_by_source` | shipped | 0045 |
+| `SimpleStreamOptions` extensions (cache_retention / transport / timeout_ms / max_retries / max_retry_delay_ms / on_payload / on_response / reasoning / session_id / client) | shipped | 0045 |
+| `ProviderResponse` dataclass | shipped | 0045 |
+| Anthropic adapter (`aelix_ai.providers.anthropic` + `register_all()` under `aelix-ai.builtin` source_id) | shipped | 0045 |
+| `_apply_stream_options_patch` deep-merge port (P-41 fix) | shipped | 0046 |
+| `_make_stream_fn` closure + 3 emit-site method bridges (`before_provider_request` / `before_provider_payload` / `after_provider_response`) | shipped | 0046 |
+| `AgentHarnessError` widened to 10 codes (`"auth"` Sprint 6a + `"session"`/`"branch_summary"`/`"aborted"` Literal cleanup) | shipped | 0035 |
+| ADR-0034 repo slug correction (`badlogic/pi-mono` → `earendil-works/pi`) | shipped | 0034 |
+| ADR-0037 / 0038 / 0035 Draft → Accepted | shipped | 0037 / 0038 / 0035 |
+| `tests/pi_parity/test_phase_4_strict_superset.py` closure pin | shipped | 0046 |
+| DEFERRED_ALLOWLIST closed to `{}` (Phase 2.1 → Phase 4.1 strict superset complete) | shipped | 0046 |
 
 > **번호 공백 (0016)**: ADR-0016 "Phase machine expansion"은 ADR-0023(Compaction + Branch Summary)으로 supersede됩니다. 번호를 재사용하지 않고 gap으로 보존합니다.
 

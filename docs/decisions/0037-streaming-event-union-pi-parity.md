@@ -1,6 +1,34 @@
 # 0037. Streaming Event Union (Pi Parity)
 
-Status: Draft (event union documented; 9 new dataclasses + end→done rename land with Phase 4 adapter work)
+Status: Accepted (Sprint 6a / Phase 4.1 shipped — 12-variant union live)
+
+## Sprint 6a amendment (2026-05-17, P-39 + P-39d)
+
+12-variant union shipped:
+
+- **8 new dataclasses**: `TextStartEvent`, `TextEndEvent`,
+  `ThinkingStartEvent`, `ThinkingDeltaEvent`, `ThinkingEndEvent`,
+  `ToolCallStartEvent`, `ToolCallEndEvent`, `AssistantErrorEvent`.
+- **Rename**: `AssistantEndEvent` → `AssistantDoneEvent` (Pi `done`).
+  Legacy `AssistantEndEvent` retained as **deprecated subclass** of
+  `AssistantDoneEvent` so existing test mocks keep working without
+  modification.
+- **Spelling fix (P-39d SILENT DRIFT)**: `ToolCallDeltaEvent.type`
+  Literal `"tool_call_delta"` → `"toolcall_delta"` (no underscore
+  between `tool` and `call`, matches Pi exactly). Legacy `input_delta`
+  attribute preserved as deprecated property aliasing the Pi-shaped
+  `delta` field.
+- **Field backfills**: `TextDeltaEvent` and `ToolCallDeltaEvent` gain
+  `content_index: int = 0` + `partial: AssistantMessage = …` with safe
+  defaults so legacy callers (1-arg `TextDeltaEvent(delta="hi")`) keep
+  working.
+
+The loop consumer (`loop.py:_stream_assistant_response`) was updated to
+accept the new variants as `MessageUpdateEvent` projections, and to
+accept both `"end"` (legacy alias) and `"done"` (Pi canonical) as
+terminal-success markers. `"error"` is now a terminal-failure marker —
+the adapter populates `message.stop_reason in {"aborted","error"}`
+before emitting `AssistantErrorEvent`.
 
 ## Context
 

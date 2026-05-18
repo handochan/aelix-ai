@@ -1,6 +1,31 @@
 # 0035. Error Code Taxonomy
 
-Status: Draft (taxonomy doc only — Literal widening lands with owning ADR per code)
+Status: Accepted (Sprint 6a / Phase 4.1 shipped — 10 codes, Pi-parity + 1 Aelix-additive)
+
+## Sprint 6a amendment (2026-05-17, P-42)
+
+`AgentHarnessError.code` `Literal` union widened to **10 codes** in
+Sprint 6a (Phase 4.1). The 9 Pi-parity codes + 1 Aelix-additive
+`"aborted"`:
+
+| Code | Origin | Wired |
+|---|---|---|
+| `"busy"` | Pi parity | Phase 1.2 |
+| `"invalid_state"` | Pi parity | Phase 1.2 |
+| `"invalid_argument"` | Pi parity | Phase 1.2 |
+| `"session"` | Pi parity | Phase 2.2 (ADR-0022) |
+| `"hook"` | Pi parity | Phase 1.2 |
+| `"auth"` | Pi parity | **Sprint 6a** (ADR-0045 `_make_stream_fn`) |
+| `"compaction"` | Pi parity | Phase 2.2 (ADR-0023) |
+| `"branch_summary"` | Pi parity | Phase 2.2 (ADR-0023) |
+| `"unknown"` | Pi parity | Phase 1.2 |
+| `"aborted"` | **Aelix-additive** | Phase 3 (raised from `abort()`) |
+
+**Aelix-additive divergence**: Pi has no `"aborted"` harness code at SHA
+`734e08e`; Aelix raises it from `abort()` so consumers can distinguish
+cooperative abort from generic error. This is the single intentional
+divergence from Pi's 9-code taxonomy and is documented as additive (no
+parity violation; consumers `except AgentHarnessError` continue to work).
 
 Phase 1.4 ships the **taxonomy map** documented here; it does **not** widen
 `AgentHarnessError.code`'s `Literal` union (still the original 5 codes at

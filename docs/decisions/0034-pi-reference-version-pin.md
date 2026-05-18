@@ -17,9 +17,20 @@ line moved 20 lines down, breaking the audit chain.
 
 Pin Pi to a specific commit SHA per sprint.
 
-**Current pin: `badlogic/pi-mono@734e08edf82ff315bc3d96472a6ebfa69a1d8016`**
+**Current pin: `earendil-works/pi@734e08edf82ff315bc3d96472a6ebfa69a1d8016`**
 (`main` HEAD as of 2026-05-17, commit message "chore: approve contributor
 mattiacerutti").
+
+**Sprint 6a amendment (P-37, 2026-05-17):** ADR-0034 originally cited the
+repo slug as `badlogic/pi-mono`. Verified at SHA `734e08e…` against the
+canonical upstream — the correct slug is `earendil-works/pi`. The SHA is
+unchanged; the repo slug fix is a documentation-only correction so future
+Pi-parity citations resolve cleanly via `gh repo view earendil-works/pi`
+or `git clone https://github.com/earendil-works/pi`. The legacy
+`badlogic/pi-mono` mirror remains accessible at the same SHA via
+`https://raw.githubusercontent.com/badlogic/pi-mono/734e08e…/…` and is
+the URL pattern most existing ADRs still cite — both are valid resolves
+at this pin.
 
 Update policy:
 

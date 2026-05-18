@@ -1,6 +1,28 @@
 # 0038. `stream_simple` Dispatch Shell — Phase 1 Boundary
 
-Status: Accepted (Sprint 2.5 / Phase 1.4 shipped — body lands Phase 4)
+Status: Accepted (Sprint 2.5 / Phase 1.4 shipped — body shipped Sprint 6a / Phase 4.1)
+
+## Sprint 6a amendment (2026-05-17)
+
+The deferred Phase 4 adapter body shipped in Sprint 6a:
+
+- `aelix_ai.providers.anthropic` adapter lives at
+  `packages/aelix-ai/src/aelix_ai/providers/anthropic.py`. Pi parity:
+  `providers/anthropic.ts:428-687` (SHA `734e08e`).
+- `aelix_ai.providers._base.Provider` Protocol + Aelix-additive
+  `register_provider_object(provider, source_id=None)` (ADR-0045).
+- `unregister_providers_by_source(source_id)` lands (Pi parity
+  `unregisterApiProviders(sourceId)` — previously noted as Phase 4 deferred
+  in the Consequences section).
+- `SimpleStreamOptions` expanded to carry `cache_retention`, `transport`,
+  `timeout_ms`, `max_retries`, `max_retry_delay_ms`, `reasoning`,
+  `session_id`, `on_payload`, `on_response`, `client`.
+- `ProviderResponse` dataclass added (Pi `ProviderResponse` at
+  `types.ts`).
+
+OpenAI / OpenRouter adapters remain Phase 4 — landing in Sprint 6b.
+OAuth flow + `aelix-rpc` remain Phase 4 — landing in Sprint 6c
+(ADR-0020).
 
 ## Context
 
