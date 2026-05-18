@@ -38,13 +38,75 @@ def test_is_oauth_token_handles_none() -> None:
     assert not is_oauth_token("")
 
 
-async def test_oauth_token_raises_before_streaming() -> None:
-    """OAuth detection fires synchronously before any SDK call."""
+async def test_oauth_token_passes_through_to_sdk() -> None:
+    """Sprint 6c (P-91): OAuth tokens are no longer eager-rejected.
 
-    opts = SimpleStreamOptions(api_key="sk-ant-oat-abc")
+    The Anthropic SDK accepts ``sk-ant-oat…`` tokens directly (routes
+    via ``Authorization: Bearer``). Use a stub client so no real HTTP
+    call happens — the adapter must NOT raise ``_AuthError`` eagerly.
+    """
+
+    class _StubMessages:
+        def stream(self, **_kwargs: Any) -> Any:
+            class _Mgr:
+                async def __aenter__(self_inner) -> Any:
+                    class _Stream:
+                        response = None
+
+                        def __aiter__(self_inner2) -> Any:
+                            return self_inner2
+
+                        async def __anext__(self_inner2) -> Any:
+                            raise StopAsyncIteration
+
+                        async def get_final_message(self_inner2) -> Any:
+                            class _M:
+                                stop_reason = "end_turn"
+
+                            return _M()
+
+                    return _Stream()
+
+                async def __aexit__(self_inner, *_a: Any) -> None:
+                    return None
+
+            return _Mgr()
+
+    class _StubClient:
+        messages = _StubMessages()
+
+    opts = SimpleStreamOptions(api_key="sk-ant-oat-abc", client=_StubClient())
+    events: list[Any] = []
+    async for ev in stream_anthropic(_model(), Context(), opts):
+        events.append(ev)
+    # Stream completes cleanly with no _AuthError (the eager-raise is gone).
+    assert events
+
+
+async def test_sdk_401_raises_auth_error_for_harness_translation() -> None:
+    """Sprint 6c (§I): SDK 401 surfaces as ``_AuthError`` so the harness
+    translates to ``AgentHarnessError("auth", …)``.
+    """
+
+    class _FakeMessages:
+        def stream(self, **_kwargs: Any) -> Any:
+            class _Mgr:
+                async def __aenter__(self_inner) -> Any:
+                    err = RuntimeError("Unauthorized")
+                    err.status_code = 401  # type: ignore[attr-defined]
+                    raise err
+
+                async def __aexit__(self_inner, *_a: Any) -> None:
+                    return None
+
+            return _Mgr()
+
+    class _FakeClient:
+        messages = _FakeMessages()
+
+    opts = SimpleStreamOptions(api_key="sk-anything", client=_FakeClient())
     with pytest.raises(_AuthError):
-        it = stream_anthropic(_model(), Context(), opts)
-        async for _ in it:
+        async for _ in stream_anthropic(_model(), Context(), opts):
             pass
 
 

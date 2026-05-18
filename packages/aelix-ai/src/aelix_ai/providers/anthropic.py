@@ -1,12 +1,29 @@
-"""Anthropic provider adapter — Sprint 6a (ADR-0045 §B).
+"""Anthropic provider adapter — Sprint 6a (ADR-0045 §B), amended Sprint 6c.
 
 Pi parity: ``providers/anthropic.ts:428-687`` (SHA 734e08e). Ports the
 Pi adapter body using the official ``anthropic`` Python SDK
 (``>=0.40,<1.0``).
 
-OAuth tokens (``sk-ant-oat…``) are rejected with
-``AgentHarnessError("auth")`` in Sprint 6a — the full claude.ai OAuth
-login + refresh flow lands Sprint 6c (ADR-0020).
+Sprint 6c amendment (P-91, ADR-0052):
+
+- OAuth tokens (``sk-ant-oat…``) are NO LONGER eager-rejected.
+- :class:`_AuthError` is retained as the vehicle for SDK 401/403
+  translation — the harness ``_make_stream_fn`` still catches
+  :class:`_AuthError` and converts to ``AgentHarnessError("auth", …)``.
+  The trigger condition shifted from "bare token detection" to
+  "SDK ``APIStatusError`` with status 401 or 403".
+
+Sprint 6c W6 amendment (P-94, ADR-0052 §"Bearer header injection"):
+
+- The official Anthropic Python SDK (``>=0.40,<1.0``) does NOT
+  auto-detect OAuth tokens — it puts whatever was passed as ``api_key``
+  into the ``x-api-key`` header. Anthropic's OAuth endpoint rejects
+  bearer tokens delivered via ``x-api-key`` with 401. To make OAuth
+  actually work in production, this adapter, when ``is_oauth_token``
+  is true, builds the SDK client with empty ``api_key`` plus a
+  manually injected ``Authorization: Bearer <token>`` default header
+  (and the ``anthropic-beta: oauth-2025-04-20`` header that Pi's
+  ``providers/anthropic.ts`` also injects in the OAuth branch).
 """
 
 from __future__ import annotations
@@ -131,24 +148,45 @@ async def stream_anthropic(
     # Track Anthropic ``index`` → Aelix ``content_index``. For Sprint 6a
     # we use Anthropic's index verbatim since it's already 0-based and
     # monotonically increasing per stream.
-    # OAuth gate — surface BEFORE creating any SDK client or emitting
-    # any event so the harness's ``AgentHarnessError("auth", …)``
-    # propagation path stays clean.
-    if is_oauth_token(opts.api_key):
-        raise _AuthError(
-            "OAuth tokens (sk-ant-oat…) are not supported in Sprint 6a — "
-            "claude.ai OAuth login lands Sprint 6c (ADR-0020)."
+    # Sprint 6c W6 amendment (P-94): OAuth tokens MUST be sent via
+    # ``Authorization: Bearer <token>`` — the SDK does NOT auto-detect
+    # them and putting the bearer token in ``x-api-key`` produces 401.
+    # We build OAuth-flavored client params here so the request reaches
+    # Anthropic with the correct auth header. ``anthropic-beta`` mirrors
+    # Pi (``providers/anthropic.ts``) OAuth branch.
+    oauth_mode = is_oauth_token(opts.api_key)
+    if oauth_mode:
+        import logging as _logging
+
+        _logging.getLogger(__name__).debug(
+            "Anthropic adapter received OAuth token (sk-ant-oat…); "
+            "routing via Authorization: Bearer header (P-94).",
         )
 
     try:
         # 1) Build / use SDK client.
-        client = opts.client or create_async_client(
-            api_key=opts.api_key,
-            base_url=model.base_url or None,
-            default_headers=opts.headers or None,
-            timeout_ms=opts.timeout_ms,
-            max_retries=opts.max_retries,
-        )
+        if opts.client is not None:
+            client = opts.client
+        elif oauth_mode:
+            oauth_headers: dict[str, str] = dict(opts.headers or {})
+            oauth_headers["Authorization"] = f"Bearer {opts.api_key}"
+            oauth_headers.setdefault("anthropic-beta", "oauth-2025-04-20")
+            client = create_async_client(
+                # Blank api_key — auth lives in the Authorization header.
+                api_key="",
+                base_url=model.base_url or None,
+                default_headers=oauth_headers,
+                timeout_ms=opts.timeout_ms,
+                max_retries=opts.max_retries,
+            )
+        else:
+            client = create_async_client(
+                api_key=opts.api_key,
+                base_url=model.base_url or None,
+                default_headers=opts.headers or None,
+                timeout_ms=opts.timeout_ms,
+                max_retries=opts.max_retries,
+            )
 
         # 2) Map context → SDK params.
         params = build_params(
@@ -227,10 +265,19 @@ async def stream_anthropic(
         yield AssistantDoneEvent(reason=done_reason, message=output)
 
     except _AuthError:
-        # OAuth detection — re-raise so the harness wrapper converts to
-        # AgentHarnessError("auth", …).
+        # SDK 401/403 translation (Sprint 6c amendment) — re-raise so the
+        # harness wrapper converts to AgentHarnessError("auth", …).
         raise
     except Exception as exc:  # noqa: BLE001
+        # Sprint 6c: detect SDK 401/403 and surface as _AuthError so the
+        # harness translates to AgentHarnessError("auth", …). Catches
+        # both bare api_key 401s and OAuth tokens that failed to refresh
+        # upstream (auth.json bad, network error, etc.).
+        status = getattr(exc, "status_code", None) or getattr(
+            getattr(exc, "response", None), "status_code", None
+        )
+        if status in (401, 403):
+            raise _AuthError(str(exc) or f"Anthropic SDK returned {status}") from exc
         aborted = bool(
             opts.signal is not None and getattr(opts.signal, "aborted", False)
         )

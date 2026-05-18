@@ -21,6 +21,11 @@ dependencies = [
     # the official ``openai`` npm package). Wrapped via
     # ``providers/_openai_client.py`` for future ``httpx`` swap.
     "openai>=1.50,<2.0",
+    # Sprint 6c (Phase 4.3, ADR-0052) — direct httpx use for OAuth
+    # token exchange + refresh (Pi anthropic.ts uses ``fetch`` for
+    # the token endpoint, not the SDK). httpx is already a transitive
+    # dep of openai+anthropic SDKs; pinning here makes it explicit.
+    "httpx>=0.27,<1.0",
 ]
 
 [tool.hatch.build.targets.wheel]
