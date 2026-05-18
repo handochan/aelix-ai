@@ -20,6 +20,9 @@ from aelix_coding_agent.extensions.api import (
     ExtensionRuntimeActions,
     _ExtensionRuntime,
 )
+from aelix_coding_agent.extensions.command_context import (
+    ExtensionCommandContext,
+)
 from aelix_coding_agent.extensions.loader import (
     ExtensionLoadError,
     LoadExtensionsResult,
@@ -30,6 +33,7 @@ from aelix_coding_agent.extensions.loader import (
 __all__ = [
     "Extension",
     "ExtensionAPI",
+    "ExtensionCommandContext",
     "ExtensionContext",
     "ExtensionError",
     "ExtensionFactory",

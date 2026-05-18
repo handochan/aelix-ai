@@ -831,6 +831,202 @@ class ResourcesDiscoverHookEvent(HookEvent):
     type: Literal["resources_discover"] = "resources_discover"
 
 
+# === Sprint 5b (Phase 3.2) — tool-typed ToolCallEvent variants (P-31, ADR-0043) ===
+#
+# Pi parity (``coding-agent/src/core/extensions/types.ts:771-830``): Pi ships a
+# discriminated union of tool-typed ``ToolCallEvent`` variants — 7 known +
+# 1 ``CustomToolCallEvent`` fallback. Aelix mirrors via dataclass subclasses
+# on :class:`ToolCallHookEvent`; base class stays constructible so existing
+# tests keep passing. Symmetric :class:`ToolResultHookEvent` variants mirror
+# Pi ``types.ts:833-876``.
+
+
+BUILTIN_TOOL_NAMES: frozenset[str] = frozenset(
+    {"bash", "read", "edit", "write", "grep", "find", "ls"}
+)
+"""Pi parity ``allToolNames`` (``coding-agent/src/core/tools/index.ts``)."""
+
+
+@dataclass(frozen=True)
+class BashToolCallHookEvent(ToolCallHookEvent):
+    """Pi parity ``BashToolCallEvent``."""
+
+    tool_name: str = "bash"
+
+
+@dataclass(frozen=True)
+class ReadToolCallHookEvent(ToolCallHookEvent):
+    """Pi parity ``ReadToolCallEvent``."""
+
+    tool_name: str = "read"
+
+
+@dataclass(frozen=True)
+class EditToolCallHookEvent(ToolCallHookEvent):
+    """Pi parity ``EditToolCallEvent``."""
+
+    tool_name: str = "edit"
+
+
+@dataclass(frozen=True)
+class WriteToolCallHookEvent(ToolCallHookEvent):
+    """Pi parity ``WriteToolCallEvent``."""
+
+    tool_name: str = "write"
+
+
+@dataclass(frozen=True)
+class GrepToolCallHookEvent(ToolCallHookEvent):
+    """Pi parity ``GrepToolCallEvent``."""
+
+    tool_name: str = "grep"
+
+
+@dataclass(frozen=True)
+class FindToolCallHookEvent(ToolCallHookEvent):
+    """Pi parity ``FindToolCallEvent``."""
+
+    tool_name: str = "find"
+
+
+@dataclass(frozen=True)
+class LsToolCallHookEvent(ToolCallHookEvent):
+    """Pi parity ``LsToolCallEvent``."""
+
+    tool_name: str = "ls"
+
+
+@dataclass(frozen=True)
+class CustomToolCallHookEvent(ToolCallHookEvent):
+    """Pi parity ``CustomToolCallEvent`` — for any tool whose name does not
+    match the 7 built-ins.
+    """
+
+
+_TOOL_CALL_EVENT_CLS_BY_NAME: dict[str, type[ToolCallHookEvent]] = {
+    "bash": BashToolCallHookEvent,
+    "read": ReadToolCallHookEvent,
+    "edit": EditToolCallHookEvent,
+    "write": WriteToolCallHookEvent,
+    "grep": GrepToolCallHookEvent,
+    "find": FindToolCallHookEvent,
+    "ls": LsToolCallHookEvent,
+}
+
+
+def make_tool_call_event(
+    *,
+    tool_call_id: str,
+    tool_name: str,
+    args: dict[str, Any],
+    assistant_message: AssistantMessage | None = None,
+    context: AgentContext | None = None,
+) -> ToolCallHookEvent:
+    """Factory dispatching to the typed variant matching ``tool_name``.
+
+    Pi parity: ``_make_tool_call_event`` factory (ADR-0043 §C.2). Unknown
+    tool names route to :class:`CustomToolCallHookEvent`.
+    """
+
+    cls = _TOOL_CALL_EVENT_CLS_BY_NAME.get(tool_name, CustomToolCallHookEvent)
+    return cls(
+        tool_call_id=tool_call_id,
+        tool_name=tool_name,
+        args=args,
+        assistant_message=assistant_message,
+        context=context,
+    )
+
+
+@dataclass(frozen=True)
+class BashToolResultHookEvent(ToolResultHookEvent):
+    tool_name: str = "bash"
+
+
+@dataclass(frozen=True)
+class ReadToolResultHookEvent(ToolResultHookEvent):
+    tool_name: str = "read"
+
+
+@dataclass(frozen=True)
+class EditToolResultHookEvent(ToolResultHookEvent):
+    tool_name: str = "edit"
+
+
+@dataclass(frozen=True)
+class WriteToolResultHookEvent(ToolResultHookEvent):
+    tool_name: str = "write"
+
+
+@dataclass(frozen=True)
+class GrepToolResultHookEvent(ToolResultHookEvent):
+    tool_name: str = "grep"
+
+
+@dataclass(frozen=True)
+class FindToolResultHookEvent(ToolResultHookEvent):
+    tool_name: str = "find"
+
+
+@dataclass(frozen=True)
+class LsToolResultHookEvent(ToolResultHookEvent):
+    tool_name: str = "ls"
+
+
+@dataclass(frozen=True)
+class CustomToolResultHookEvent(ToolResultHookEvent):
+    """Pi parity ``CustomToolResultEvent`` fallback."""
+
+
+_TOOL_RESULT_EVENT_CLS_BY_NAME: dict[str, type[ToolResultHookEvent]] = {
+    "bash": BashToolResultHookEvent,
+    "read": ReadToolResultHookEvent,
+    "edit": EditToolResultHookEvent,
+    "write": WriteToolResultHookEvent,
+    "grep": GrepToolResultHookEvent,
+    "find": FindToolResultHookEvent,
+    "ls": LsToolResultHookEvent,
+}
+
+
+def make_tool_result_event(
+    *,
+    tool_call_id: str,
+    tool_name: str,
+    args: dict[str, Any],
+    content: list[Any],
+    details: Any | None = None,
+    is_error: bool = False,
+    terminate: bool = False,
+) -> ToolResultHookEvent:
+    """Symmetric factory for :class:`ToolResultHookEvent` (Pi ADR-0043 §C.2)."""
+
+    cls = _TOOL_RESULT_EVENT_CLS_BY_NAME.get(tool_name, CustomToolResultHookEvent)
+    return cls(
+        tool_call_id=tool_call_id,
+        tool_name=tool_name,
+        args=args,
+        content=content,
+        details=details,
+        is_error=is_error,
+        terminate=terminate,
+    )
+
+
+def is_tool_call_event_type(tool_name: str, event: ToolCallHookEvent) -> bool:
+    """Pi parity ``isToolCallEventType`` (``types.ts:934-940``)."""
+
+    return event.tool_name == tool_name
+
+
+def is_tool_result_event_type(
+    tool_name: str, event: ToolResultHookEvent
+) -> bool:
+    """Pi parity ``isToolResultEventType``."""
+
+    return event.tool_name == tool_name
+
+
 # === Runtime registry ===
 
 
@@ -1932,6 +2128,7 @@ class HookBus:
 
 
 __all__ = [
+    "BUILTIN_TOOL_NAMES",
     "HOOK_RESULT_TYPES",
     "AbortHandler",
     "AbortHookEvent",
@@ -1945,6 +2142,8 @@ __all__ = [
     "AgentStartHookEvent",
     "BashOperations",
     "BashResult",
+    "BashToolCallHookEvent",
+    "BashToolResultHookEvent",
     "BeforeAgentStartHandler",
     "BeforeAgentStartHookEvent",
     "BeforeAgentStartResult",
@@ -1957,6 +2156,14 @@ __all__ = [
     "ContextHandler",
     "ContextHookEvent",
     "ContextResult",
+    "CustomToolCallHookEvent",
+    "CustomToolResultHookEvent",
+    "EditToolCallHookEvent",
+    "EditToolResultHookEvent",
+    "FindToolCallHookEvent",
+    "FindToolResultHookEvent",
+    "GrepToolCallHookEvent",
+    "GrepToolResultHookEvent",
     "HandlerEntry",
     "HookBus",
     "HookCleanup",
@@ -1972,6 +2179,8 @@ __all__ = [
     "InputHookEvent",
     "InputResult",
     "InputTransform",
+    "LsToolCallHookEvent",
+    "LsToolResultHookEvent",
     "MessageEndHandler",
     "MessageEndHookEvent",
     "MessageStartHandler",
@@ -1982,6 +2191,8 @@ __all__ = [
     "ModelSelectHookEvent",
     "QueueUpdateHandler",
     "QueueUpdateHookEvent",
+    "ReadToolCallHookEvent",
+    "ReadToolResultHookEvent",
     "ResourcesDiscoverHandler",
     "ResourcesDiscoverHookEvent",
     "ResourcesDiscoverResult",
@@ -2022,4 +2233,10 @@ __all__ = [
     "UserBashHandler",
     "UserBashHookEvent",
     "UserBashResult",
+    "WriteToolCallHookEvent",
+    "WriteToolResultHookEvent",
+    "is_tool_call_event_type",
+    "is_tool_result_event_type",
+    "make_tool_call_event",
+    "make_tool_result_event",
 ]

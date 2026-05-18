@@ -43,11 +43,16 @@ from aelix_agent_core.harness.hooks import (
     ContextResult,
     HookBus,
     HookEvent,
+    InputHandled,
+    InputHookEvent,
+    InputTransform,
     MessageEndHookEvent,
     MessageStartHookEvent,
     MessageUpdateHookEvent,
     ModelSelectHookEvent,
     QueueUpdateHookEvent,
+    ResourcesDiscoverHookEvent,
+    ResourcesDiscoverResult,
     ResourcesUpdateHookEvent,
     SavePointHookEvent,
     SessionBeforeCompactHookEvent,
@@ -58,15 +63,15 @@ from aelix_agent_core.harness.hooks import (
     SessionTreeHookEvent,
     SettledHookEvent,
     ThinkingLevelSelectHookEvent,
-    ToolCallHookEvent,
     ToolCallResult,
     ToolExecutionEndHookEvent,
     ToolExecutionStartHookEvent,
     ToolExecutionUpdateHookEvent,
-    ToolResultHookEvent,
     ToolResultPatch,
     TurnEndHookEvent,
     TurnStartHookEvent,
+    make_tool_call_event,
+    make_tool_result_event,
 )
 from aelix_agent_core.loop import agent_loop
 from aelix_agent_core.types import (
@@ -489,11 +494,11 @@ class AgentHarness:
                 set_thinking_level=self._action_set_thinking_level,
                 get_all_tools=self._action_get_all_tools,
                 exec=_stub("exec"),  # ExtensionAPI falls back to subprocess port.
-                # Sprint 5b deferred — throwing stubs (ADR-0042).
-                send_message=_stub("send_message"),
-                send_user_message=_stub("send_user_message"),
-                append_entry=_stub("append_entry"),
-                get_commands=_stub("get_commands"),
+                # Sprint 5b §F — wired bindings (ADR-0042).
+                send_message=self._action_send_message,
+                send_user_message=self._action_send_user_message,
+                append_entry=self._action_append_entry,
+                get_commands=self._action_get_commands,
             )
         )
 
@@ -533,6 +538,16 @@ class AgentHarness:
         self._pending_session_writes: list[PendingSessionWrite] = []
         self._idle_event = asyncio.Event()
         self._idle_event.set()
+        # Sprint 5b §E ergonomics — Pi parity ``cachedSessionName`` (sync read
+        # surface) + GC-pinning set for fire-and-forget tasks fanned from
+        # synchronous extension actions.
+        self._cached_session_name: str | None = None
+        self._pending_tasks: set[asyncio.Task[Any]] = set()
+        # Sprint 5b §F shutdown binding placeholder — CLI loop installs a
+        # richer signal-aware shutdown via ``install_shutdown_action``.
+        self._shutdown_action: Callable[[], None] | None = None
+        # Sprint 5b §B.3 — bootstrap-fired ``resources_discover`` emit can
+        # populate this lazily. AgentState.resources already exists.
 
     # === Public properties ===
 
@@ -575,7 +590,13 @@ class AgentHarness:
 
     # === Driving the loop ===
 
-    async def prompt(self, text: str) -> list[AgentMessage]:
+    async def prompt(
+        self,
+        text: str,
+        *,
+        images: list[ImageContent] | None = None,
+        source: Literal["interactive", "rpc", "extension"] = "interactive",
+    ) -> list[AgentMessage]:
         # Sprint 4b §A: guard covers all non-idle phases (turn / compaction /
         # branch_summary). steer()/follow_up() remain enqueue-only per Pi
         # parity (Pi ``agent-harness.ts`` steer paths enqueue regardless of
@@ -591,6 +612,30 @@ class AgentHarness:
         self._phase = "turn"
         self._idle_event.clear()
         try:
+            # Sprint 5b §B.1 — ``input`` emit (P-24/P-34). Pi parity
+            # (``agent-session.ts:984-1001``): runs BEFORE existing
+            # before_agent_start emit so a ``handled`` short-circuit also
+            # skips the rest of prompt. Gated by has_handlers so harnesses
+            # with no input subscribers stay zero-cost.
+            if self._hooks.has_handlers("input"):
+                try:
+                    input_result = await self._hooks.emit(
+                        InputHookEvent(text=text, images=images, source=source)
+                    )
+                except Exception as exc:
+                    raise AgentHarnessError(
+                        "hook",
+                        f"input hook handler raised: {exc}",
+                    ) from exc
+                if isinstance(input_result, InputHandled):
+                    # Pi: handled exits prompt() entirely — harness returns idle.
+                    self._phase = "idle"
+                    self._idle_event.set()
+                    return []
+                if isinstance(input_result, InputTransform):
+                    text = input_result.text
+                    if input_result.images is not None:
+                        images = input_result.images
             user_msg = UserMessage(content=[TextContent(text=text)])
             # Sprint 3b — drain the next_turn queue (Pi parity, executeTurn
             # L466-472): messages queued via ``next_turn()`` while idle (or
@@ -1274,9 +1319,114 @@ class AgentHarness:
             await self.abort()
             with contextlib.suppress(Exception):
                 await self.wait_for_idle()
+        # Sprint 5b §E.2 — drain GC-pinned fire-and-forget tasks before
+        # invalidating the runtime so background appends settle cleanly.
+        for task in list(self._pending_tasks):
+            with contextlib.suppress(Exception):
+                await task
+        self._pending_tasks.clear()
         await self._hooks.dispose()
         # Invalidate AFTER cleanups so cleanup callables can still inspect ctx.
         self._runtime.invalidate("AgentHarness has been disposed")
+
+    # === Sprint 5b §B.3 — resources_discover (Pi parity ``extendResourcesFromExtensions``) ===
+
+    async def bootstrap(self) -> None:
+        """Sprint 5b §B.3 — one-shot startup hook for resource discovery.
+
+        Pi parity: ``AgentSession.start()`` calls
+        ``extendResourcesFromExtensions("startup")``. Aelix exposes this
+        explicitly because ``AgentHarness.__init__`` cannot ``await``. Call
+        once after construction; safe to call multiple times (gated by
+        ``has_handlers``).
+        """
+
+        await self.discover_resources()
+        # Sprint 5b §E.1 — populate the sync session-name cache after the
+        # initial discovery + ready state.
+        if self._session is not None:
+            try:
+                self._cached_session_name = await self._session.get_session_name()
+            except Exception:  # noqa: BLE001
+                self._cached_session_name = None
+
+    async def discover_resources(self) -> None:
+        """Pi parity ``extendResourcesFromExtensions("startup")``."""
+
+        await self._emit_resources_discover("startup")
+
+    async def reload_resources(self) -> None:
+        """Pi parity ``extendResourcesFromExtensions("reload")``.
+
+        Invoked by :class:`ExtensionCommandContext.reload` (§D) and by the
+        minimal CLI ``/reload`` command. Idempotent.
+        """
+
+        await self._emit_resources_discover("reload")
+
+    async def _emit_resources_discover(
+        self, reason: Literal["startup", "reload"]
+    ) -> None:
+        if not self._hooks.has_handlers("resources_discover"):
+            return
+        try:
+            result = await self._hooks.emit(
+                ResourcesDiscoverHookEvent(cwd=self._options.cwd, reason=reason)
+            )
+        except Exception as exc:
+            raise AgentHarnessError(
+                "hook",
+                f"resources_discover hook handler raised: {exc}",
+            ) from exc
+        if not isinstance(result, ResourcesDiscoverResult):
+            return
+        if self._state.resources is None:
+            self._state.resources = {}
+        for bucket_name, items in (
+            ("skill_paths", result.skill_paths),
+            ("prompt_paths", result.prompt_paths),
+            ("theme_paths", result.theme_paths),
+        ):
+            if not items:
+                continue
+            existing = list(self._state.resources.get(bucket_name) or [])
+            for p in items:
+                if p not in existing:
+                    existing.append(p)
+            self._state.resources[bucket_name] = existing
+
+    # === Sprint 5b §E.3 — sync event-loop guard helper ===
+
+    def _ensure_loop(self) -> asyncio.AbstractEventLoop:
+        """Pi parity: synchronous extension actions REQUIRE an active loop.
+
+        ``asyncio.run`` is rejected because it constructs a fresh loop —
+        masking lifecycle bugs in CI and conflicting with the calling
+        event loop. Callers must enter from inside an ``await`` context.
+        """
+
+        try:
+            return asyncio.get_running_loop()
+        except RuntimeError as exc:
+            raise AgentHarnessError(
+                "invalid_state",
+                "Extension action requires an active asyncio event loop; "
+                "call from within `asyncio.run(main())` or "
+                "`await harness.<method>(...)`.",
+            ) from exc
+
+    def _pin_task(self, task: asyncio.Task[Any]) -> None:
+        """§E.2 — GC-pin a fire-and-forget task."""
+
+        self._pending_tasks.add(task)
+        task.add_done_callback(self._pending_tasks.discard)
+
+    # === Sprint 5b §F — CLI shutdown installer ===
+
+    def install_shutdown_action(self, action: Callable[[], None]) -> None:
+        """Sprint 5b §F.4 — CLI loop installs a real shutdown binding."""
+
+        self._shutdown_action = action
 
     # === Internal: callback bridges ===
 
@@ -1342,8 +1492,11 @@ class AgentHarness:
             return None
 
         def _shutdown_default() -> None:
-            # Sprint 5a (pre-CLI loop) shutdown signals abort + invalidates
-            # the runtime. ADR-0042 supplies the richer "exit process" wiring.
+            # Sprint 5b §F.4: prefer the CLI-installed shutdown action if any,
+            # otherwise fall back to the abort signal (Sprint 5a default).
+            if self._shutdown_action is not None:
+                self._shutdown_action()
+                return
             self._mark_abort()
 
         return _ExtensionContext(
@@ -1397,11 +1550,12 @@ class AgentHarness:
     # === Sprint 5a (Phase 3.1) — action bindings (P-22) ===
 
     def _action_set_session_name(self, name: str) -> None:
-        """Pi parity: ``ExtensionAPI.setSessionName`` (``types.ts:1200``).
+        """Pi parity ``ExtensionAPI.setSessionName`` + Sprint 5b §E.1/E.2.
 
-        Delegates to :meth:`Session.append_session_name` when a session is
-        attached. Pre-session harnesses raise
-        :class:`AgentHarnessError("invalid_state")`.
+        Updates the sync cache immediately (Pi parity ``cachedSessionName``)
+        so a subsequent :meth:`get_session_name` sees the new value before
+        the async append settles. The append is fired-and-forget but
+        GC-pinned via :attr:`_pending_tasks`.
         """
 
         if self._session is None:
@@ -1409,46 +1563,34 @@ class AgentHarness:
                 "invalid_state",
                 "set_session_name() requires options.session to be attached",
             )
-        # Sprint 4a session append is async — schedule via create_task so the
-        # synchronous extension API call returns immediately.
-        try:
-            loop = asyncio.get_running_loop()
-            loop.create_task(self._session.append_session_name(name))
-        except RuntimeError:
-            # Fallback for sync callers outside an event loop (test seam).
-            asyncio.run(self._session.append_session_name(name))
+        loop = self._ensure_loop()
+        self._cached_session_name = name
+        task = loop.create_task(self._session.append_session_name(name))
+        self._pin_task(task)
 
     def _action_get_session_name(self) -> str | None:
-        """Pi parity: ``ExtensionAPI.getSessionName`` (``types.ts:1203``).
+        """Sprint 5b §E.1 — return cached session name synchronously.
 
-        Returns ``None`` when no session attached.
+        Pi parity ``cachedSessionName`` — the harness mirrors the latest
+        ``setSessionName`` write into a sync cache so this read is
+        non-blocking and always reflects the most recent intent.
         """
 
         if self._session is None:
             return None
-        try:
-            # Probe for a running loop — when inside one, we cannot block-await
-            # so expose only the future's result if already settled (Sprint 5b
-            # can wire a sync cache mirroring Pi's TS-side cache).
-            asyncio.get_running_loop()
-            future = asyncio.ensure_future(self._session.get_session_name())
-            return future.result() if future.done() else None
-        except RuntimeError:
-            return asyncio.run(self._session.get_session_name())
+        return self._cached_session_name
 
     def _action_set_label(self, entry_id: str, label: str | None) -> None:
-        """Pi parity: ``ExtensionAPI.setLabel`` (``types.ts:1206``)."""
+        """Pi parity ``ExtensionAPI.setLabel`` + Sprint 5b §E.2 GC pin."""
 
         if self._session is None:
             raise AgentHarnessError(
                 "invalid_state",
                 "set_label() requires options.session to be attached",
             )
-        try:
-            loop = asyncio.get_running_loop()
-            loop.create_task(self._session.append_label(entry_id, label))
-        except RuntimeError:
-            asyncio.run(self._session.append_label(entry_id, label))
+        loop = self._ensure_loop()
+        task = loop.create_task(self._session.append_label(entry_id, label))
+        self._pin_task(task)
 
     async def _action_set_model(self, model: Model) -> bool:
         """Pi parity: ``ExtensionAPI.setModel`` (``types.ts:1228``).
@@ -1469,13 +1611,106 @@ class AgentHarness:
         return level if level is not None else "off"
 
     def _action_set_thinking_level(self, level: str) -> None:
-        """Pi parity: ``ExtensionAPI.setThinkingLevel`` (``types.ts:1234``)."""
+        """Pi parity ``ExtensionAPI.setThinkingLevel`` + §E.2 GC pin."""
 
-        try:
-            loop = asyncio.get_running_loop()
-            loop.create_task(self.set_thinking_level(level))
-        except RuntimeError:
-            asyncio.run(self.set_thinking_level(level))
+        loop = self._ensure_loop()
+        task = loop.create_task(self.set_thinking_level(level))
+        self._pin_task(task)
+
+    # === Sprint 5b §F — wired bindings for 4 throwing stubs ===
+
+    def _action_append_entry(self, custom_type: str, data: Any = None) -> None:
+        """Pi parity ``ExtensionAPI.appendEntry`` (``types.ts:1195``).
+
+        Sprint 5b §F.1: direct delegate to :meth:`Session.append_custom_entry`.
+        """
+
+        if self._session is None:
+            raise AgentHarnessError(
+                "invalid_state",
+                "append_entry() requires options.session to be attached",
+            )
+        loop = self._ensure_loop()
+        task = loop.create_task(
+            self._session.append_custom_entry(custom_type, data)
+        )
+        self._pin_task(task)
+
+    def _action_send_message(
+        self,
+        message: Any,
+        *,
+        trigger_turn: bool = False,
+        deliver_as: str | None = None,
+    ) -> None:
+        """Pi parity ``ExtensionAPI.sendMessage`` (``types.ts:1178-1182``).
+
+        Sprint 5b §F.2: route by ``deliver_as``:
+
+        - ``"steer"`` → :meth:`steer` (text only)
+        - ``"follow_up"`` → :meth:`follow_up` (text only)
+        - ``"next_turn"`` or omitted → enqueue onto ``next_turn_queue``
+        - ``trigger_turn=True`` + idle → call :meth:`prompt`
+        """
+
+        loop = self._ensure_loop()
+        text = _extract_message_text(message)
+        if deliver_as == "steer":
+            task = loop.create_task(self.steer(text))
+            self._pin_task(task)
+            return
+        if deliver_as == "follow_up":
+            task = loop.create_task(self.follow_up(text))
+            self._pin_task(task)
+            return
+        # next_turn / default path.
+        # W4 MINOR-9 elevated fix: Pi parity — ``sendMessage`` is
+        # either-enqueue-or-trigger, never both. If we trigger a turn,
+        # ``prompt(text)`` is the carrier; otherwise we enqueue onto
+        # ``next_turn_queue`` and emit a queue-update so listeners can
+        # repaint. Without this split we double-deliver every triggered
+        # message (once via the queue, once via prompt).
+        if trigger_turn and self._phase == "idle":
+            task = loop.create_task(self.prompt(text))
+            self._pin_task(task)
+            return
+        msg = _coerce_agent_message(message)
+        self._next_turn_queue.append(msg)
+
+    def _action_send_user_message(
+        self,
+        content: Any,
+        *,
+        deliver_as: str | None = None,
+    ) -> None:
+        """Pi parity ``ExtensionAPI.sendUserMessage`` (``types.ts:1190-1192``).
+
+        Sprint 5b §F.2: text-extracted form of ``send_message``.
+        """
+
+        text = _extract_message_text(content)
+        user_msg = UserMessage(content=[TextContent(text=text)])
+        self._action_send_message(user_msg, deliver_as=deliver_as)
+
+    def _action_get_commands(self) -> list[Any]:
+        """Pi parity ``ExtensionAPI.getCommands`` (``types.ts:1221``).
+
+        Sprint 5b §F.3: enumerate every command across loaded extensions.
+        """
+
+        from aelix_coding_agent.extensions.api import SlashCommandInfo
+
+        out: list[Any] = []
+        for ext in self._extensions:
+            for cmd_name, cmd in ext.commands.items():
+                out.append(
+                    SlashCommandInfo(
+                        name=cmd_name,
+                        description=cmd.description,
+                        source=cmd.source,
+                    )
+                )
+        return out
 
     def _action_get_all_tools(self) -> list[Any]:
         """Pi parity: ``ExtensionAPI.getAllTools`` (``types.ts:1215``).
@@ -1501,7 +1736,10 @@ class AgentHarness:
         mutation reach ``tool.execute`` and the after-callback.
         """
 
-        hook_event = ToolCallHookEvent(
+        # Sprint 5b (ADR-0043 §C.2): dispatch to the tool-typed variant so
+        # ``match event:`` narrowing works in handler bodies. Base
+        # ``ToolCallHookEvent`` instances are still type-compatible (subclasses).
+        hook_event = make_tool_call_event(
             tool_call_id=ctx.tool_call.tool_call_id,
             tool_name=ctx.tool_call.tool_name,
             args=ctx.args,  # SAME REFERENCE — see D.1.5
@@ -1528,7 +1766,8 @@ class AgentHarness:
         application-supplied ``after_tool_call`` override runs on top.
         """
 
-        hook_event = ToolResultHookEvent(
+        # Sprint 5b (ADR-0043 §C.2): symmetric typed dispatch for tool_result.
+        hook_event = make_tool_result_event(
             tool_call_id=ctx.tool_call.tool_call_id,
             tool_name=ctx.tool_call.tool_name,
             args=ctx.args,
@@ -1875,6 +2114,35 @@ def _to_hook_event(event: AgentEvent) -> HookEvent:
             )
         case _ as unreachable:
             assert_never(unreachable)
+
+
+def _extract_message_text(message: Any) -> str:
+    """Sprint 5b §F.2 helper: best-effort text extraction.
+
+    Handles: bare str / UserMessage / AssistantMessage / list of content
+    blocks / fallback ``str(...)``. Used by ``send_message`` /
+    ``send_user_message`` to populate ``prompt()`` / ``steer()`` / etc.
+    """
+
+    if isinstance(message, str):
+        return message
+    content = getattr(message, "content", None)
+    if content is not None:
+        return _extract_text_content(content)
+    if isinstance(message, list):
+        return _extract_text_content(message)
+    return str(message)
+
+
+def _coerce_agent_message(message: Any) -> AgentMessage:
+    """Best-effort coercion of arbitrary input to :class:`AgentMessage`."""
+
+    if isinstance(message, str):
+        return UserMessage(content=[TextContent(text=message)])
+    role = getattr(message, "role", None)
+    if role is not None:
+        return message  # already an AgentMessage variant
+    return UserMessage(content=[TextContent(text=_extract_message_text(message))])
 
 
 def _extract_text_content(content: Any) -> str:
