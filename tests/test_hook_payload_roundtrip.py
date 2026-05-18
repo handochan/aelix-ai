@@ -203,16 +203,24 @@ async def test_resources_update_roundtrip() -> None:
 
 
 async def test_before_provider_request_reducer_chains_stream_options() -> None:
-    """Sequential patch chain — Pi ``agent-harness.ts:232-250`` parity."""
+    """Sequential patch chain — Pi ``agent-harness.ts:232-250`` parity.
+
+    Sprint 6a (P-41): deep-merge with Pi-recognized keys
+    (``transport`` / ``timeoutMs`` / ``maxRetries`` / ``maxRetryDelayMs``
+    / ``cacheRetention`` / ``headers`` / ``metadata``). Unknown keys are
+    dropped per Pi ``applyStreamOptionsPatch``
+    (``agent-harness.ts:96-127``).
+    """
+
     bus = _make_bus()
 
     def h1(event: BeforeProviderRequestHookEvent, ctx: Any) -> BeforeProviderRequestResult:
-        return BeforeProviderRequestResult(stream_options={"a": 1})
+        return BeforeProviderRequestResult(stream_options={"transport": "sse"})
 
     def h2(event: BeforeProviderRequestHookEvent, ctx: Any) -> BeforeProviderRequestResult:
         # H2 sees the chained patch from H1.
-        assert event.stream_options == {"a": 1}
-        return BeforeProviderRequestResult(stream_options={"b": 2})
+        assert event.stream_options == {"transport": "sse"}
+        return BeforeProviderRequestResult(stream_options={"timeoutMs": 30000})
 
     bus.on("before_provider_request", h1)
     bus.on("before_provider_request", h2)
@@ -223,7 +231,7 @@ async def test_before_provider_request_reducer_chains_stream_options() -> None:
         )
     )
     assert isinstance(result, BeforeProviderRequestResult)
-    assert result.stream_options == {"a": 1, "b": 2}
+    assert result.stream_options == {"transport": "sse", "timeoutMs": 30000}
 
 
 async def test_before_provider_payload_reducer_chains_payload() -> None:

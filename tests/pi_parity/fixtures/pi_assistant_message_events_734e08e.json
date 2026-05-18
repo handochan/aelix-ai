@@ -1,0 +1,57 @@
+{
+  "pi_sha": "734e08edf82ff315bc3d96472a6ebfa69a1d8016",
+  "source_file": "packages/ai/src/types.ts",
+  "source_lines": "347-359",
+  "variants": [
+    {
+      "type": "start",
+      "fields": ["partial"]
+    },
+    {
+      "type": "text_start",
+      "fields": ["contentIndex", "partial"]
+    },
+    {
+      "type": "text_delta",
+      "fields": ["contentIndex", "delta", "partial"]
+    },
+    {
+      "type": "text_end",
+      "fields": ["contentIndex", "content", "partial"]
+    },
+    {
+      "type": "thinking_start",
+      "fields": ["contentIndex", "partial"]
+    },
+    {
+      "type": "thinking_delta",
+      "fields": ["contentIndex", "delta", "partial"]
+    },
+    {
+      "type": "thinking_end",
+      "fields": ["contentIndex", "content", "partial"]
+    },
+    {
+      "type": "toolcall_start",
+      "fields": ["contentIndex", "partial"]
+    },
+    {
+      "type": "toolcall_delta",
+      "fields": ["contentIndex", "delta", "partial"]
+    },
+    {
+      "type": "toolcall_end",
+      "fields": ["contentIndex", "toolCall", "partial"]
+    },
+    {
+      "type": "done",
+      "fields": ["reason", "message"],
+      "reason_enum": ["stop", "length", "toolUse"]
+    },
+    {
+      "type": "error",
+      "fields": ["reason", "error"],
+      "reason_enum": ["aborted", "error"]
+    }
+  ]
+}

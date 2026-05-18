@@ -177,7 +177,19 @@ def test_ecc_full_pi_surface_6_methods() -> None:
 
 
 def test_phase_3_2_closure_summary() -> None:
-    """Single asserting fact: Phase 3 deferred allowlist is now Phase-4-only."""
+    """Phase 3 closure assertion — superseded by Phase 4 closure (ADR-0046).
+
+    Originally this test pinned the allowlist to the 3 Phase-4 provider
+    entries (the only Pi-verified events not yet emitting in Aelix at the
+    Sprint 5b boundary). Sprint 6a (Phase 4.1) lands ``_make_stream_fn``
+    which emits all 3 provider events, so the allowlist is now **empty**
+    per ADR-0046.
+
+    Forward-compat clause (ADR-0039): once Phase 4 closes, the Phase 3
+    closure invariant degenerates to a subset assertion — the 3 provider
+    entries MUST be gone, and the remaining allowlist (if any) carries
+    only Phase-5+ deferrals.
+    """
 
     import importlib.util as _importlib_util
 
@@ -188,9 +200,13 @@ def test_phase_3_2_closure_summary() -> None:
     assert spec is not None and spec.loader is not None
     mod = _importlib_util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    # Post-Phase-3 allowlist should ONLY carry the Phase 4 provider triple.
-    assert set(mod.DEFERRED_ALLOWLIST.keys()) == {
+    keys = set(mod.DEFERRED_ALLOWLIST.keys())
+    for provider_event in (
         "before_provider_request",
         "before_provider_payload",
         "after_provider_response",
-    }
+    ):
+        assert provider_event not in keys, (
+            f"Sprint 6a (ADR-0046) closure violation: {provider_event!r} "
+            "still in DEFERRED_ALLOWLIST"
+        )

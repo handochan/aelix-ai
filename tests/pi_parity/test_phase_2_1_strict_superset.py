@@ -47,22 +47,23 @@ _FIXTURE = (
 # straight line of accountability — adding a name here without an ADR ref is
 # a contract violation.
 DEFERRED_ALLOWLIST: dict[str, str] = {
-    # Provider chain — Phase 4 provider adapter emits.
-    "before_provider_request": "ADR-0038 (Phase 4 provider adapter)",
-    "before_provider_payload": "ADR-0038 (Phase 4 provider adapter)",
-    "after_provider_response": "ADR-0038 (Phase 4 provider adapter)",
+    # Sprint 6a (Phase 4.1) closure — see ADR-0046. The 3 provider events
+    # (``before_provider_request``, ``before_provider_payload``,
+    # ``after_provider_response``) previously deferred here now emit from
+    # ``AgentHarness._make_stream_fn`` in ``harness/core.py``. Phase 4 closure
+    # drops the allowlist to **empty** — every Pi-verified event in the full
+    # Phase 2.1 → Phase 4.1 scope has at least one emit site in Aelix.
+    #
     # NOTE: P-10 (``abort`` emit site) closed in Sprint 3d W6 — see ADR-0039
     # P-10 row. ``AbortHookEvent`` is now emitted from
     # ``AgentHarness.abort()`` in ``harness/core.py`` with pre-clear
-    # ``cleared_steer`` / ``cleared_follow_up`` snapshots. Phase 2.1 is now
-    # 100% strict Pi-parity superset.
+    # ``cleared_steer`` / ``cleared_follow_up`` snapshots.
     #
     # Sprint 4b (Phase 2.2.2) closure — see ADR-0040: the 4 ``session_*``
     # events (``session_before_compact``, ``session_compact``,
     # ``session_before_tree``, ``session_tree``) were previously deferred
     # here. They now emit from ``AgentHarness.compact()`` /
-    # ``AgentHarness.navigate_tree()`` in ``harness/core.py`` and have been
-    # removed from this allowlist per the forward-compat clause.
+    # ``AgentHarness.navigate_tree()`` in ``harness/core.py``.
     #
     # Sprint 5b (Phase 3.2) closure — see ADR-0044: ``input`` +
     # ``resources_discover`` emit sites landed in ``AgentHarness.prompt()`` /
@@ -128,6 +129,14 @@ _HARNESS_OWN_EMIT_SUBSTRINGS: dict[str, tuple[str, ...]] = {
     "input": ("InputHookEvent",),
     "user_bash": ("UserBashHookEvent",),
     "resources_discover": ("ResourcesDiscoverHookEvent",),
+    # Sprint 6a (Phase 4.1) closure — see ADR-0046. All 3 provider
+    # events now emit from ``AgentHarness._make_stream_fn`` in
+    # ``harness/core.py``: ``before_provider_request`` before the SDK
+    # call, ``before_provider_payload`` via the ``on_payload`` callback,
+    # ``after_provider_response`` via the ``on_response`` callback.
+    "before_provider_request": ("BeforeProviderRequestHookEvent",),
+    "before_provider_payload": ("BeforeProviderPayloadHookEvent",),
+    "after_provider_response": ("AfterProviderResponseHookEvent",),
 }
 
 

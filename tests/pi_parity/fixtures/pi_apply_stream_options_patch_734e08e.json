@@ -1,0 +1,81 @@
+{
+  "pi_sha": "734e08edf82ff315bc3d96472a6ebfa69a1d8016",
+  "source_file": "packages/agent/src/harness/agent-harness.ts",
+  "source_lines": "89-129",
+  "function": "applyStreamOptionsPatch",
+  "semantics": "deep-merge with delete-on-undefined for headers/metadata; empty result collapses to undefined",
+  "cases": [
+    {
+      "name": "scalar_overwrite_transport",
+      "base": {"transport": "sse"},
+      "patch": {"transport": "auto"},
+      "expected": {"transport": "auto"}
+    },
+    {
+      "name": "scalar_clear_with_null",
+      "base": {"transport": "sse"},
+      "patch": {"transport": null},
+      "expected": {"transport": null}
+    },
+    {
+      "name": "scalar_add_timeout",
+      "base": {},
+      "patch": {"timeoutMs": 30000},
+      "expected": {"timeoutMs": 30000}
+    },
+    {
+      "name": "scalar_add_max_retries_and_delay",
+      "base": {},
+      "patch": {"maxRetries": 3, "maxRetryDelayMs": 100},
+      "expected": {"maxRetries": 3, "maxRetryDelayMs": 100}
+    },
+    {
+      "name": "headers_merge_adds_key",
+      "base": {"headers": {"a": "1"}},
+      "patch": {"headers": {"b": "2"}},
+      "expected": {"headers": {"a": "1", "b": "2"}}
+    },
+    {
+      "name": "headers_merge_overwrites_key",
+      "base": {"headers": {"a": "1"}},
+      "patch": {"headers": {"a": "2"}},
+      "expected": {"headers": {"a": "2"}}
+    },
+    {
+      "name": "headers_delete_with_null_value",
+      "base": {"headers": {"a": "1", "b": "2"}},
+      "patch": {"headers": {"a": null}},
+      "expected": {"headers": {"b": "2"}}
+    },
+    {
+      "name": "headers_clear_with_null",
+      "base": {"headers": {"a": "1"}},
+      "patch": {"headers": null},
+      "expected": {}
+    },
+    {
+      "name": "headers_emptied_collapses_to_none",
+      "base": {"headers": {"a": "1"}},
+      "patch": {"headers": {"a": null}},
+      "expected": {}
+    },
+    {
+      "name": "metadata_delete_with_null",
+      "base": {"metadata": {"k": "v"}},
+      "patch": {"metadata": {"k": null}},
+      "expected": {}
+    },
+    {
+      "name": "cache_retention_overwrite",
+      "base": {"cacheRetention": "short"},
+      "patch": {"cacheRetention": "long"},
+      "expected": {"cacheRetention": "long"}
+    },
+    {
+      "name": "no_patch_returns_base_or_none",
+      "base": {},
+      "patch": null,
+      "expected": {}
+    }
+  ]
+}

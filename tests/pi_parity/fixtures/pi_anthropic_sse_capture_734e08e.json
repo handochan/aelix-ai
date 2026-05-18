@@ -1,0 +1,38 @@
+{
+  "pi_sha": "734e08edf82ff315bc3d96472a6ebfa69a1d8016",
+  "source_file": "packages/ai/src/providers/anthropic.ts",
+  "source_lines": "506-660",
+  "description": "Skeleton SSE event-name capture; full payloads documented in Pi handler dispatch (case-by-case). Used to assert Aelix adapter case coverage matches Pi.",
+  "anthropic_event_types": [
+    "message_start",
+    "content_block_start",
+    "content_block_delta",
+    "content_block_stop",
+    "message_delta",
+    "message_stop",
+    "ping"
+  ],
+  "delta_types": [
+    "text_delta",
+    "thinking_delta",
+    "input_json_delta"
+  ],
+  "content_block_types": [
+    "text",
+    "thinking",
+    "tool_use"
+  ],
+  "expected_aelix_projections": {
+    "content_block_start.text": "TextStartEvent",
+    "content_block_start.thinking": "ThinkingStartEvent",
+    "content_block_start.tool_use": "ToolCallStartEvent",
+    "content_block_delta.text_delta": "TextDeltaEvent",
+    "content_block_delta.thinking_delta": "ThinkingDeltaEvent",
+    "content_block_delta.input_json_delta": "ToolCallDeltaEvent",
+    "content_block_stop.text": "TextEndEvent",
+    "content_block_stop.thinking": "ThinkingEndEvent",
+    "content_block_stop.tool_use": "ToolCallEndEvent",
+    "stream_close.success": "AssistantDoneEvent",
+    "stream_close.error_or_abort": "AssistantErrorEvent"
+  }
+}
