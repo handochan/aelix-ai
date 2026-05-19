@@ -37,36 +37,33 @@ def _load_fixture() -> dict:
     return json.loads((_FIXTURES / "pi_oauth_734e08e.json").read_text())
 
 
-# === §A — OAuth provider registry (Sprint 6c: 1 of 3 live) ===
+# === §A — OAuth provider registry (Sprint 6e: 3 of 3 live) ===
 
 
-def test_one_of_three_oauth_providers_live() -> None:
-    """Sprint 6c: Anthropic only. Sprint 6e adds Copilot + Codex."""
+def test_all_three_oauth_providers_live() -> None:
+    """Sprint 6e closure: full Pi 3-provider built-in set live (Anthropic
+    + Copilot + Codex). Sprint 6c left this at 1/3; Sprint 6e closes
+    the catalog per spec §F.
+    """
 
     providers = get_oauth_providers()
-    ids = [p.id for p in providers]
-    assert "anthropic" in ids
-    assert len(providers) == 1
+    ids = {p.id for p in providers}
+    assert ids == {"anthropic", "github-copilot", "openai-codex"}
+    assert len(providers) == 3
 
 
-def test_deferred_providers_allowlist_size() -> None:
-    """2 of 3 Pi OAuth providers deferred to Sprint 6e."""
+def test_deferred_providers_allowlist_drained() -> None:
+    """Sprint 6e: ``_OAUTH_DEFERRED_PROVIDERS`` is now EMPTY (spec §F).
 
-    assert len(_OAUTH_DEFERRED_PROVIDERS) == 2
-    assert {"github-copilot", "openai-codex"} <= set(_OAUTH_DEFERRED_PROVIDERS)
+    Pi parity invariant: live ∪ deferred MUST equal the full Pi
+    3-provider set. After Sprint 6e, live = 3 and deferred = 0.
+    """
 
-
-def test_deferred_providers_owns_each_id() -> None:
-    """Every deferred provider has an owning ADR reference."""
-
-    for provider_id, owner in _OAUTH_DEFERRED_PROVIDERS.items():
-        assert "ADR-" in owner, (
-            f"{provider_id} deferred allowlist entry missing owning ADR"
-        )
+    assert _OAUTH_DEFERRED_PROVIDERS == {}
 
 
 def test_rpc_mode_in_phase_4_deferred_features() -> None:
-    """Spec §J: RPC mode deferred to Sprint 6d."""
+    """Spec §J: RPC mode landed in Sprint 6d (closed)."""
 
     assert "rpc-mode" in _PHASE_4_DEFERRED_FEATURES
     assert "ADR-" in _PHASE_4_DEFERRED_FEATURES["rpc-mode"]
@@ -214,8 +211,9 @@ def test_default_auth_path_under_aelix_root() -> None:
 
 
 def test_pi_oauth_provider_total_equals_3() -> None:
-    """W5 P-100: live ∪ deferred MUST equal {anthropic, github-copilot,
-    openai-codex} exactly — no overlap, no missing entries.
+    """W5 P-100 (Sprint 6e closure): live ∪ deferred MUST equal
+    {anthropic, github-copilot, openai-codex} exactly. After Sprint 6e,
+    live = 3 and deferred = 0 (catalog drained).
     """
 
     live = {p.id for p in get_oauth_providers()}
@@ -224,15 +222,29 @@ def test_pi_oauth_provider_total_equals_3() -> None:
     assert live | deferred == expected
     assert len(live | deferred) == 3
     assert not (live & deferred), "a provider cannot be both live and deferred"
+    # Sprint 6e closure strengthening: every provider exposes the
+    # ``modify_models`` Protocol attribute (Copilot has a callable;
+    # Anthropic + Codex have None) per Pi P-132 wire-up.
+    for provider in get_oauth_providers():
+        # Either ``modify_models`` exists as a bound method (Copilot) or
+        # the attribute is absent / None (Anthropic + Codex). Both
+        # satisfy the optional-callback Protocol clause.
+        attr = getattr(provider, "modify_models", None)
+        assert attr is None or callable(attr)
 
 
-def test_auth_storage_layered_resolution_in_deferred_features() -> None:
-    """W5 P-95: the Pi AuthStorage cascade (runtime-override + env +
-    fallback resolver per ``auth-storage.ts:455-516``) is owned by
-    ADR-0053 and ships in Sprint 6e.
+def test_auth_storage_layered_resolution_landed_in_sprint_6e() -> None:
+    """Sprint 6e closure (P-133): the Pi AuthStorage cascade is now
+    SHIPPED (``AuthStorage.get_api_key_cascade`` + 11 other methods).
+    The deferred-feature row stays for historical traceability but is
+    annotated CLOSED.
     """
 
     assert "auth-storage-layered-resolution" in _PHASE_4_DEFERRED_FEATURES
     owner = _PHASE_4_DEFERRED_FEATURES["auth-storage-layered-resolution"]
     assert "ADR-0053" in owner
-    assert "Sprint 6e" in owner
+    assert "CLOSED" in owner
+    # The cascade method is now on AuthStorage.
+    from aelix_ai.oauth.auth_storage import AuthStorage
+
+    assert hasattr(AuthStorage, "get_api_key_cascade")

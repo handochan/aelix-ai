@@ -26,6 +26,10 @@ from urllib.parse import urlencode, urlparse
 import httpx
 
 from aelix_ai.oauth._callback_server import start_callback_server
+
+# Sprint 6e W6 (P-157): single-owner ``maybe_await`` helper. The local
+# ``_maybe_await`` name remains importable for back-compat.
+from aelix_ai.oauth._helpers import maybe_await as _maybe_await
 from aelix_ai.oauth._pkce import generate_pkce
 from aelix_ai.oauth.types import (
     OAuthAuthInfo,
@@ -166,14 +170,6 @@ def _get_account_id(access_token: str) -> str | None:
     if not isinstance(account_id, str) or not account_id:
         return None
     return account_id
-
-
-async def _maybe_await(value: Any) -> Any:
-    """Await ``value`` only when it's a coroutine/awaitable."""
-
-    if inspect.isawaitable(value):
-        return await value
-    return value
 
 
 def _format_error_details(error: BaseException) -> str:

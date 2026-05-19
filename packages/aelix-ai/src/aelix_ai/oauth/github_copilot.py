@@ -365,7 +365,8 @@ async def login_github_copilot(callbacks: OAuthLoginCallbacks) -> OAuthCredentia
     ModelRegistry yet to enumerate Copilot-routed models.
     """
 
-    from aelix_ai.oauth.anthropic import _maybe_await as _maybe_await_helper
+    # Sprint 6e W6 (P-157): use the shared single-owner helper.
+    from aelix_ai.oauth._helpers import maybe_await as _maybe_await_helper
 
     input_str = await _maybe_await_helper(
         callbacks.on_prompt(

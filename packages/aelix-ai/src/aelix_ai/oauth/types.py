@@ -13,7 +13,25 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Literal, Protocol, runtime_checkable
+
+# Pi parity: ``coding-agent/src/core/auth-storage.ts:38`` — the 6-value
+# source enum that ``getAuthStatus`` returns. Sprint 6e wires the first
+# four (stored/runtime/environment/fallback); ``models_json_*`` are
+# tracked but unused until models.json plumbing lands in Sprint 7+.
+AuthSource = Literal[
+    "stored",
+    "runtime",
+    "environment",
+    "fallback",
+    "models_json_key",
+    "models_json_command",
+]
+
+# Pi parity: ``auth-storage.ts:194`` ``fallbackResolver?: (provider) =>
+# string | undefined``. Sprint 6e wires this for AuthStorage's last-resort
+# cascade layer (Sprint 7+ uses it for models.json custom-provider keys).
+FallbackResolver = Callable[[str], "str | None"]
 
 
 @dataclass
@@ -67,6 +85,23 @@ class OAuthCredentials:
             expires=int(obj["expires"]),
             extra={k: v for k, v in obj.items() if k not in known},
         )
+
+
+@dataclass(frozen=True)
+class AuthStatus:
+    """Pi parity: ``coding-agent/src/core/auth-storage.ts:36-40`` ``AuthStatus``.
+
+    Reports whether a provider has credentials available without
+    exposing the credential value itself or triggering OAuth refresh.
+    ``configured`` is True only for the ``stored`` source (Pi parity:
+    ``getAuthStatus`` only returns ``configured: true`` for stored
+    credentials; runtime/env/fallback sources are reported but flagged
+    as not-yet-persisted).
+    """
+
+    configured: bool
+    source: AuthSource | None = None
+    label: str | None = None
 
 
 @dataclass
@@ -155,6 +190,9 @@ class OAuthProvider(Protocol):
 
 
 __all__ = [
+    "AuthSource",
+    "AuthStatus",
+    "FallbackResolver",
     "OAuthAuthInfo",
     "OAuthCredentials",
     "OAuthLoginCallbacks",

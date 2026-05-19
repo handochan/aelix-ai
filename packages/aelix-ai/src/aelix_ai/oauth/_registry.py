@@ -17,12 +17,16 @@ from __future__ import annotations
 from typing import Final
 
 from aelix_ai.oauth.anthropic import ANTHROPIC_OAUTH_PROVIDER
+from aelix_ai.oauth.github_copilot import GITHUB_COPILOT_OAUTH_PROVIDER
+from aelix_ai.oauth.openai_codex import OPENAI_CODEX_OAUTH_PROVIDER
 from aelix_ai.oauth.types import OAuthProvider
 
-# Sprint 6c: Anthropic only. Sprint 6e adds Copilot + Codex (deferred
-# per spec §J / ADR-0053).
+# Sprint 6c: Anthropic only. Sprint 6e: + Copilot + Codex — full Pi
+# 3-provider built-in set now live (spec §F / §J).
 _BUILT_IN_OAUTH_PROVIDERS: Final[list[OAuthProvider]] = [
     ANTHROPIC_OAUTH_PROVIDER,
+    GITHUB_COPILOT_OAUTH_PROVIDER,
+    OPENAI_CODEX_OAUTH_PROVIDER,
 ]
 
 _oauth_registry: dict[str, OAuthProvider] = {
@@ -70,24 +74,21 @@ def get_oauth_providers() -> list[OAuthProvider]:
     return list(_oauth_registry.values())
 
 
-# Sprint 6c forward-compat (spec §J binding clause): any future PR that
-# lands a Copilot/Codex provider MUST drop it from this set in the same
-# PR (enforced by ``tests/pi_parity/test_phase_4_3_strict_superset.py``).
-_OAUTH_DEFERRED_PROVIDERS: Final[dict[str, str]] = {
-    "github-copilot": "ADR-0053 — Sprint 6e",
-    "openai-codex": "ADR-0053 — Sprint 6e",
-}
+# Sprint 6e (spec §F): the deferred-provider allowlist is now DRAINED.
+# The full Pi 3-provider built-in set is live (Anthropic + Copilot +
+# Codex). Any future OAuth provider (e.g., custom enterprise IDP) MUST
+# register via :func:`register_oauth_provider` rather than landing here.
+_OAUTH_DEFERRED_PROVIDERS: Final[dict[str, str]] = {}
 
 # Sprint 6c forward-compat: Phase 4 features deferred beyond OAuth.
 _PHASE_4_DEFERRED_FEATURES: Final[dict[str, str]] = {
-    "rpc-mode": "ADR-0054 — Sprint 6d",
-    # Sprint 6c W6 (W5 P-95): Pi's auth-storage cascade
-    # (runtime-override → env → fallback resolver per
-    # ``coding-agent/src/core/auth-storage.ts:455-516``) is owned by
-    # ADR-0053 and ships in Sprint 6e alongside Copilot/Codex.
+    "rpc-mode": "ADR-0054 — Sprint 6d (closed)",
+    # Sprint 6e shipped the layered cascade per Pi
+    # ``auth-storage.ts:455-516``. Owner ADR-0053 (amended in Sprint 6e
+    # closure) — kept here for historical traceability of the 6c W5
+    # P-95 deferral.
     "auth-storage-layered-resolution": (
-        "ADR-0053 — Sprint 6e (runtime-override + env + fallback "
-        "resolver per Pi auth-storage.ts:455-516)"
+        "ADR-0053 — Sprint 6e (CLOSED — see AuthStorage.get_api_key_cascade)"
     ),
 }
 

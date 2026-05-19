@@ -25,6 +25,10 @@ from urllib.parse import urlencode, urlparse
 import httpx
 
 from aelix_ai.oauth._callback_server import start_callback_server
+
+# Sprint 6e W6 (P-157): single-owner ``maybe_await`` helper. The local
+# ``_maybe_await`` name remains importable for back-compat.
+from aelix_ai.oauth._helpers import maybe_await as _maybe_await
 from aelix_ai.oauth._pkce import generate_pkce
 from aelix_ai.oauth.types import (
     OAuthAuthInfo,
@@ -57,14 +61,6 @@ _TOKEN_TIMEOUT_SECONDS: float = 30.0
 # ``expires``. ``Date.now() >= creds.expires`` triggers refresh BEFORE
 # the token actually expires server-side.
 _EXPIRES_SAFETY_MARGIN_MS: int = 5 * 60 * 1000
-
-
-async def _maybe_await(value: Any) -> Any:
-    """Await ``value`` only when it's a coroutine/awaitable."""
-
-    if inspect.isawaitable(value):
-        return await value
-    return value
 
 
 def _parse_authorization_input(input_str: str) -> dict[str, str | None]:

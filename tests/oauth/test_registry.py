@@ -28,19 +28,19 @@ def _reset_registry() -> None:
 
 
 def test_anthropic_is_built_in() -> None:
-    """Sprint 6c: Anthropic only. Sprint 6e adds Copilot + Codex."""
+    """Sprint 6e: Anthropic + Copilot + Codex all built-in."""
 
     p = get_oauth_provider("anthropic")
     assert p is ANTHROPIC_OAUTH_PROVIDER
 
 
 def test_get_oauth_providers_returns_all() -> None:
-    """Sprint 6c: exactly 1 built-in (Anthropic)."""
+    """Sprint 6e: 3 built-in providers (Anthropic + Copilot + Codex)."""
 
     providers = get_oauth_providers()
-    ids = [p.id for p in providers]
-    assert "anthropic" in ids
-    assert len(providers) == 1
+    ids = {p.id for p in providers}
+    assert ids == {"anthropic", "github-copilot", "openai-codex"}
+    assert len(providers) == 3
 
 
 def test_get_oauth_provider_unknown_returns_none() -> None:
@@ -70,7 +70,8 @@ def test_register_custom_provider() -> None:
     assert isinstance(custom, OAuthProvider)
     register_oauth_provider(custom)
     assert get_oauth_provider("custom") is custom
-    assert len(get_oauth_providers()) == 2
+    # Sprint 6e: 3 built-ins + 1 custom = 4.
+    assert len(get_oauth_providers()) == 4
 
 
 def test_unregister_custom_removes_completely() -> None:
@@ -143,23 +144,21 @@ def test_reset_oauth_providers_restores_state() -> None:
             return credentials.access
 
     register_oauth_provider(_Custom())
-    assert len(get_oauth_providers()) == 2
+    # Sprint 6e: 3 built-ins + 1 custom = 4.
+    assert len(get_oauth_providers()) == 4
     reset_oauth_providers()
-    assert len(get_oauth_providers()) == 1
+    assert len(get_oauth_providers()) == 3
     assert get_oauth_provider("custom") is None
 
 
-def test_deferred_providers_set_populated() -> None:
-    """Spec §J forward-compat: Copilot + Codex deferred to Sprint 6e."""
+def test_deferred_providers_drained() -> None:
+    """Sprint 6e closure: ``_OAUTH_DEFERRED_PROVIDERS`` is now empty."""
 
-    assert "github-copilot" in _OAUTH_DEFERRED_PROVIDERS
-    assert "openai-codex" in _OAUTH_DEFERRED_PROVIDERS
-    for owner in _OAUTH_DEFERRED_PROVIDERS.values():
-        assert "ADR-" in owner
+    assert _OAUTH_DEFERRED_PROVIDERS == {}
 
 
 def test_phase_4_deferred_features_set_populated() -> None:
-    """Spec §J forward-compat: RPC mode deferred to Sprint 6d."""
+    """Spec §J forward-compat: RPC mode landed in Sprint 6d (closed)."""
 
     assert "rpc-mode" in _PHASE_4_DEFERRED_FEATURES
     assert "ADR-" in _PHASE_4_DEFERRED_FEATURES["rpc-mode"]
