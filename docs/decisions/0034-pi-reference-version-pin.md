@@ -111,6 +111,40 @@ forward-compat clause; the closure pin
 `SUPPORTED_COMMANDS ∪ DEFERRED_COMMANDS == RPC_COMMAND_TYPES` and
 `len(RPC_COMMAND_TYPES) == 29`.
 
+### Sprint 6e amendment (OAuth catalog complete + AuthStorage cascade, 2026-05-19)
+
+Sprint 6e closes the OAuth catalog (Anthropic + Copilot + Codex —
+3 of 3 Pi providers live), ships the 12-method `AuthStorage`
+layered cascade, wires the `modify_models` Protocol callback
+(Copilot first consumer), and adds the `aelix auth login/logout/
+status/list` CLI subcommand.
+
+| Component | Status | Owner ADR |
+|---|---|---|
+| GitHub Copilot OAuth (device-code grant + `proxy-ep` base URL + `modify_models` callback) | shipped | ADR-0059 |
+| OpenAI Codex OAuth (PKCE callback port 1455 + JWT account_id extraction + `originator=pi`) | shipped | ADR-0060 |
+| `AuthStorage` layered cascade (12 methods: `set_runtime_api_key` / `remove_runtime_api_key` / `set_fallback_resolver` / `has_auth` / `get_auth_status` / `list` / `has` / `get_all` / `drain_errors` / `login` / `logout` / `get_api_key_cascade`) | shipped | ADR-0061 |
+| `resolveConfigValue` helper port (`!cmd` + env-ref expansion) | shipped | ADR-0061 |
+| `AuthStatus` (frozen) + `AuthSource` Literal (6 values) + `FallbackResolver` type alias | shipped | ADR-0061 |
+| `OAuthProvider.modify_models` Protocol callback wired (Sprint 6c P-102 forward-compat closed) | shipped | ADR-0059 |
+| `aelix auth login/logout/status/list` CLI subcommand (preserves `--mode rpc` back-compat) | shipped | ADR-0062 |
+| Shared `_helpers.maybe_await` (drained duplicate definitions across providers, P-157) | shipped | ADR-0059 / 0060 |
+| ADR-0053 layered-resolution carry-forward marked **RESOLVED** | shipped | ADR-0053 / 0061 |
+| `enableGitHubCopilotModel()` automation (per-model `/models/{id}/policy` POST) | deferred to Sprint 6f | ADR-0063 |
+| Codex `chatgpt_account_id` header propagation (paired with OpenAI Responses adapter) | deferred to Sprint 6f | ADR-0063 |
+| `--api-key <provider>:<key>` CLI flag (surfaces `set_runtime_api_key`) | deferred to Sprint 6f | ADR-0063 |
+| `models_json_key` / `models_json_command` AuthSource consumers | deferred to Sprint 6f | ADR-0063 |
+
+Sprint 6e is **3 of 3** Pi OAuth providers live. The
+`_OAUTH_DEFERRED_PROVIDERS` allowlist is **drained to `{}`** per
+ADR-0063 forward-compat clause; the closure pin
+(`tests/pi_parity/test_phase_4_5_strict_superset.py`) asserts
+`live ∪ deferred == {anthropic, github-copilot, openai-codex}` and
+`len(live) == 3`. Pi key names (`accountId` / `enterpriseUrl`) are
+preserved verbatim in the persisted `auth.json` shape so a Pi-
+written file opens cleanly in Aelix. The Pi `resolveConfigValue`
+helper is ported as `aelix_ai.oauth._resolve_config`.
+
 ## Consequences
 
 - Parity audits become reproducible — the W5 audit lane can `git checkout`

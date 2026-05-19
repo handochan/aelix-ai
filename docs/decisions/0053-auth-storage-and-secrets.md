@@ -1,7 +1,7 @@
 # 0053. AuthStorage and Secrets
 
 Status: Accepted (Sprint 6c / Phase 4.3 / W6 shipped — Anthropic only;
-Copilot + Codex + layered cascade deferred to Sprint 6e)
+Sprint 6e closure: Copilot + Codex + layered cascade RESOLVED)
 
 ## Context
 
@@ -90,32 +90,45 @@ returns the access token via `provider.get_api_key(creds)`.
 
 ## Carry-forward — Sprint 6e
 
-### Copilot + Codex OAuth (W5 P-83 / scope partition)
+### Copilot + Codex OAuth (W5 P-83 / scope partition) — **RESOLVED Sprint 6e**
 
-`_OAUTH_DEFERRED_PROVIDERS` contains `{"github-copilot", "openai-codex"}`.
-Sprint 6e adds both providers (~870 LOC Pi-side); the closure pin
-(`test_pi_oauth_provider_total_equals_3`) enforces drop-from-allowlist
-on the same PR.
+Sprint 6c left `_OAUTH_DEFERRED_PROVIDERS` populated with
+`{"github-copilot", "openai-codex"}`. **Sprint 6e ships both
+providers** (~1,020 LOC Aelix-side) and drains the allowlist to
+`{}`. See ADR-0059 (Copilot device-code) + ADR-0060 (Codex PKCE) +
+ADR-0063 (closure pin) for the full landing record.
 
-### Layered AuthStorage cascade (W5 P-95)
+### Layered AuthStorage cascade (W5 P-95) — **RESOLVED Sprint 6e**
 
 Pi `core/auth-storage.ts:455-516` exposes a layered resolver:
 
 ```
-runtime override (test-only setRuntimeApiKey)
+runtime override (set_runtime_api_key)
   ↓
-env var fallback (per-provider envvar table)
+stored api_key (Sprint 6c persistence)
   ↓
-auth.json (this Sprint 6c surface)
+OAuth (auto-refresh on expiry — reload-and-retry on failure)
   ↓
-fallback resolver callback (CLI prompt for missing creds)
+env var (per-provider envvar table — Sprint 6b _env_api_keys)
+  ↓
+fallback resolver callback (optional last-resort)
 ```
 
-Sprint 6c ships only the `auth.json` layer; the full cascade
-(login/logout/setRuntimeApiKey/has_auth/get_auth_status/set_fallback_resolver/drain_errors)
-is owned by `_PHASE_4_DEFERRED_FEATURES["auth-storage-layered-resolution"]`
-and ships in Sprint 6e alongside Copilot/Codex (when more layers
-have real callers).
+Sprint 6c shipped only the `auth.json` layer; **Sprint 6e ships the
+full 12-method cascade** (`set_runtime_api_key` /
+`remove_runtime_api_key` / `set_fallback_resolver` / `has_auth` /
+`get_auth_status` / `list` / `has` / `get_all` / `drain_errors` /
+`login` / `logout` / `get_api_key_cascade`) plus the supporting
+types (`AuthStatus`, `AuthSource` 6-value Literal,
+`FallbackResolver` callback) and the Pi `resolveConfigValue` helper
+port (`!cmd` + env-ref expansion). See ADR-0061 for the full
+landing record + the OAuth refresh-failure short-circuit (P-142)
+that prevents env/fallback leakage.
+
+The `_PHASE_4_DEFERRED_FEATURES["auth-storage-layered-resolution"]`
+entry is retained for historical traceability but its owner string
+now reads `"ADR-0053 — Sprint 6e (CLOSED — see
+AuthStorage.get_api_key_cascade)"`.
 
 ### Encryption at rest
 
@@ -163,5 +176,6 @@ Callers may leak refreshed tokens if they ignore the returned
 
 ## Phase
 
-Sprint 6c / Phase 4.3 (shipped — Anthropic + atomic write + XDG path;
-Copilot/Codex + layered cascade deferred to Sprint 6e).
+Sprint 6c / Phase 4.3 (shipped — Anthropic + atomic write + XDG path).
+**Sprint 6e closure (2026-05-19):** Copilot/Codex + 12-method layered
+cascade shipped — see ADR-0059 / 0060 / 0061 / 0063.

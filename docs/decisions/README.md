@@ -72,6 +72,11 @@
 | 0056 | [RPC JSONL Protocol](0056-rpc-jsonl-protocol.md)                                                                                                        | Accepted (Sprint 6d / Phase 4.4 / W6 shipped)                       | LF-only framing + UTF-8 incremental decode + CR strip + tail-on-end. Pi `jsonl.ts` (58 LOC) parity. `ensure_ascii=False` preserves U+2028/U+2029 inside string payloads. |
 | 0057 | [RPC Types and Envelope](0057-rpc-types-and-envelope.md)                                                                                                | Accepted (Sprint 6d / Phase 4.4 / W6 shipped)                       | 29 RpcCommand variants + uniform 24 success + 1 error envelope + 12-field RpcSessionState + 9-method RpcExtensionUIRequest + 3-shape RpcExtensionUIResponse (TYPES only). |
 | 0058 | [Phase 4.4 Strict Superset Closure](0058-phase-4-4-strict-superset-closure.md)                                                                          | Accepted (Sprint 6d / Phase 4.4 / W6 shipped)                       | Phase 4.4 closure — P-105~P-129 + W4 M1..M5 + W4 m1..m10 roster + closure pin (`tests/pi_parity/test_phase_4_4_strict_superset.py`) + `DEFERRED_COMMANDS` (20) covering 29 - 9 = 20 deferred Pi RpcCommand variants. |
+| 0059 | [GitHub Copilot OAuth (Device-Code Flow)](0059-copilot-oauth-device-flow.md)                                                                          | Accepted (Sprint 6e / Phase 4.5 / W6 shipped)                       | Pi parity port of Copilot device-code grant + enterprise domain (`enterpriseUrl` camelCase) + `proxy-ep` → `Model.base_url` injection via `modify_models` Protocol callback (Sprint 6c P-102 closed). |
+| 0060 | [OpenAI Codex OAuth (PKCE Callback Flow)](0060-codex-oauth-pkce-flow.md)                                                                                | Accepted (Sprint 6e / Phase 4.5 / W6 shipped)                       | Pi parity port of Codex PKCE callback at port 1455 path `/auth/callback` + JWT `accountId` extraction at claim `https://api.openai.com/auth` + `originator=pi` + RFC 7519 §3 base64url decode (Pi `atob` bug correction). |
+| 0061 | [AuthStorage Layered Cascade](0061-auth-storage-layered-cascade.md)                                                                                      | Accepted (Sprint 6e / Phase 4.5 / W6 shipped)                       | Pi parity port of 12 `AuthStorage` cascade methods (`set_runtime_api_key` / `set_fallback_resolver` / `has_auth` / `get_auth_status` / `list` / `has` / `get_all` / `drain_errors` / `login` / `logout` / `get_api_key_cascade` / `remove_runtime_api_key`) + `AuthStatus` (frozen) + `AuthSource` 6-value Literal + `FallbackResolver` + `resolveConfigValue` helper. P-141 / P-142. |
+| 0062 | [`aelix auth` CLI Subcommand](0062-aelix-auth-cli-subcommand.md)                                                                                          | Accepted (Sprint 6e / Phase 4.5 / W6 shipped)                       | `aelix auth login/logout/status/list` subparser preserving Sprint 6d `--mode {interactive,rpc}` back-compat. P-152 unknown-provider exit 2 + n1 RuntimeError exit 1. |
+| 0063 | [Phase 4.5 Strict Superset Closure](0063-phase-4-5-strict-superset-closure.md)                                                                          | Accepted (Sprint 6e / Phase 4.5 / W6 shipped)                       | Phase 4.5 closure — P-130~P-162 + W4 M1 + W4 m1..n3 roster + closure pin (`tests/pi_parity/test_phase_4_5_strict_superset.py`) + `_OAUTH_DEFERRED_PROVIDERS` drained to `{}` (3/3 Pi providers live) + 12 cascade methods present. |
 
 ### Sprint 5b sub-table (Phase 3.2 closure)
 
@@ -91,6 +96,36 @@
 | 4 wired stubs (`send_message` / `send_user_message` / `append_entry` / `get_commands`) | shipped | 0042 |
 | `tests/pi_parity/test_phase_3_2_strict_superset.py` closure pin | shipped | 0044 |
 | DEFERRED_ALLOWLIST Phase-4-only (3 provider entries) | shipped | 0044 |
+
+### Sprint 6e sub-table (Phase 4.5 closure)
+
+| Item | Status | Owner ADR |
+|---|---|---|
+| `aelix_ai.oauth.github_copilot` (Copilot device-code grant + `_start_device_flow` + `_poll_for_github_access_token` + `refresh_github_copilot_token` + `_modify_copilot_models`) | shipped | 0059 |
+| Copilot `enterpriseUrl` (camelCase, raw user input) preserved in `OAuthCredentials.extra` (P-147) | shipped | 0059 |
+| Copilot `proxy-ep` → `Model.base_url` injection via `modify_models` Protocol callback (Sprint 6c P-102 closed) | shipped | 0059 |
+| Copilot poll order `fetch → check → sleep` (Pi `github-copilot.ts:188-226`, W4 M1) + `math.ceil` wait interval (P-144) | shipped | 0059 |
+| Copilot `is_dataclass(model)` raises `TypeError` on non-dataclass routed model (P-145 / P-146) | shipped | 0059 |
+| `aelix_ai.oauth.openai_codex` (Codex PKCE-callback at port 1455 path `/auth/callback` + `_decode_jwt_payload` + `_get_account_id` + `login_openai_codex` + `refresh_openai_codex_token`) | shipped | 0060 |
+| Codex persisted `accountId` (Pi camelCase, P-138) + `originator=pi` (P-140) + `id_token` extras preservation (D.2-authorized) | shipped | 0060 |
+| RFC 7519 §3 base64url JWT decode (Pi `atob` bug correction, D.2-authorized) | shipped | 0060 |
+| Codex `PI_OAUTH_CODEX_CALLBACK_HOST` → shared `PI_OAUTH_CALLBACK_HOST` → `127.0.0.1` env fallback (P-149) | shipped | 0060 |
+| `aelix_ai.oauth.auth_storage` 12 cascade methods + reload-and-retry on OAuth refresh failure (P-142) + DEBUG logging (W4 m5) | shipped | 0061 |
+| `aelix_ai.oauth._resolve_config.resolve_config_value` (`!cmd` + `${ENV}` expansion, P-141) | shipped | 0061 |
+| `AuthStatus` (frozen) + `AuthSource` 6-value Literal + `FallbackResolver` type alias | shipped | 0061 |
+| `aelix_ai.oauth._helpers.maybe_await` (single-owner, drains Anthropic/Copilot/Codex duplicates, P-157) | shipped | 0059 / 0060 |
+| `aelix_ai.oauth._registry._OAUTH_DEFERRED_PROVIDERS` drained to `{}` (3/3 Pi built-in providers live; n3) | shipped | 0063 |
+| `aelix_ai.oauth._registry._PHASE_4_DEFERRED_FEATURES["auth-storage-layered-resolution"]` marked CLOSED | shipped | 0053 / 0061 |
+| `src/aelix/__main__.py` `auth login/logout/status/list` subparser (preserves `--mode rpc` back-compat) | shipped | 0062 |
+| `aelix auth status <unknown>` → exit 2 + stderr diagnostic (P-152) | shipped | 0062 |
+| `aelix auth login` RuntimeError → exit 1 + stderr diagnostic (n1) | shipped | 0062 |
+| `tests/pi_parity/test_phase_4_5_strict_superset.py` closure pin (3 live + 0 deferred + 12 cascade methods + `AuthSource` enum + Copilot/Codex constants) | shipped | 0063 |
+| `tests/pi_parity/test_phase_4_3_strict_superset.py` strengthening (Sprint 6c closure pin updated: live ∪ deferred = 3 + per-provider `modify_models` attribute) | shipped | 0063 |
+| `tests/pi_parity/fixtures/pi_oauth_copilot_codex_734e08e.json` Pi-parity fixture | shipped | 0063 |
+| `tests/oauth/test_github_copilot.py` + `test_openai_codex.py` + `test_auth_storage_cascade.py` + `test_resolve_config.py` + `test_copilot_modify_models_integration.py` + `test_types_authstatus.py` | shipped | 0059 / 0060 / 0061 |
+| `tests/cli/test_auth_subcommand.py` (subprocess-based CLI regression suite) | shipped | 0062 |
+| ADR-0034 amendment — Sprint 6e OAuth catalog complete (3 of 3 Pi providers live) | shipped | 0034 |
+| ADR-0053 amendment — Copilot/Codex + cascade carry-forwards marked RESOLVED | shipped | 0053 |
 
 ### Sprint 6d sub-table (Phase 4.4 closure)
 
