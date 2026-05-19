@@ -1,0 +1,110 @@
+{
+  "_doc": "Pi-pinned snapshot of GitHub Copilot + OpenAI Codex OAuth + AuthStorage cascade surface at SHA 734e08e.",
+  "pi_sha": "734e08edf82ff315bc3d96472a6ebfa69a1d8016",
+  "pi_paths": {
+    "oauth_github_copilot": "packages/ai/src/utils/oauth/github-copilot.ts",
+    "oauth_openai_codex": "packages/ai/src/utils/oauth/openai-codex.ts",
+    "auth_storage": "packages/coding-agent/src/core/auth-storage.ts"
+  },
+  "pi_file_loc": {
+    "github-copilot.ts": 410,
+    "openai-codex.ts": 460,
+    "auth-storage.ts": 470
+  },
+  "copilot_oauth": {
+    "flow_type": "device-code (NOT PKCE-callback)",
+    "client_id_base64": "SXYxLmI1MDdhMDhjODdlY2ZlOTg=",
+    "copilot_headers": {
+      "User-Agent": "GitHubCopilotChat/0.35.0",
+      "Editor-Version": "vscode/1.107.0",
+      "Editor-Plugin-Version": "copilot-chat/0.35.0",
+      "Copilot-Integration-Id": "vscode-chat"
+    },
+    "poll_intervals": {
+      "INITIAL_MULTIPLIER": 1.2,
+      "SLOW_DOWN_MULTIPLIER": 1.4
+    },
+    "url_paths": {
+      "device_code": "/login/device/code",
+      "access_token": "/login/oauth/access_token",
+      "copilot_token": "/copilot_internal/v2/token",
+      "model_policy": "/models/{id}/policy"
+    },
+    "enterprise_domain": {
+      "default_host": "github.com",
+      "normalize_via": "normalizeDomain(input) - parses URL, returns hostname or null",
+      "token_proxy_endpoint_marker": "proxy-ep=<host>;... (parsed by getBaseUrlFromToken)"
+    },
+    "polling_codes_handled": ["authorization_pending", "slow_down", "timeout"],
+    "modify_models_callback": "ENABLED - Copilot needs base URL injection per token's proxy-ep field",
+    "exported_symbols": [
+      "loginGitHubCopilot",
+      "refreshGitHubCopilotToken",
+      "githubCopilotOAuthProvider",
+      "getGitHubCopilotBaseUrl",
+      "normalizeDomain"
+    ]
+  },
+  "codex_oauth": {
+    "flow_type": "PKCE-callback (similar to Anthropic but different port/path)",
+    "client_id": "app_EMoamEEZ73f0CkXaXp7hrann",
+    "authorize_url": "https://auth.openai.com/oauth/authorize",
+    "token_url": "https://auth.openai.com/oauth/token",
+    "redirect_uri": "http://localhost:1455/auth/callback",
+    "callback_port": 1455,
+    "callback_path": "/auth/callback",
+    "scope": "openid profile email offline_access",
+    "jwt_claim_path": "https://api.openai.com/auth",
+    "jwt_account_id_field": "chatgpt_account_id",
+    "persisted_account_id_field": "accountId",
+    "originator_default": "pi",
+    "custom_auth_params": {
+      "id_token_add_organizations": "true",
+      "codex_cli_simplified_flow": "true",
+      "originator": "pi"
+    },
+    "account_id_required": "Pi getAccountId returns string|null, caller raises 'Failed to extract accountId from token'",
+    "exported_symbols": [
+      "loginOpenAICodex",
+      "refreshOpenAICodexToken",
+      "openaiCodexOAuthProvider"
+    ]
+  },
+  "auth_storage_cascade_methods": {
+    "setRuntimeApiKey": "(provider, apiKey) -> void — in-memory runtimeOverrides Map (no persist)",
+    "removeRuntimeApiKey": "(provider) -> void",
+    "setFallbackResolver": "((provider) => string | undefined) -> void",
+    "hasAuth": "(provider) -> bool — runtime → stored → env → fallback",
+    "getAuthStatus": "(provider) -> AuthStatus {configured, source?, label?}",
+    "list": "() -> str[] — Object.keys(data)",
+    "has": "(provider) -> bool — provider in data",
+    "getAll": "() -> AuthStorageData — shallow copy of data",
+    "drainErrors": "() -> Error[] — drains + clears accumulated errors",
+    "login": "(providerId, callbacks) -> Promise<void> — calls provider.login + persists via setOauth",
+    "logout": "(provider) -> void — alias for remove",
+    "getApiKey_layered": "(providerId, {includeFallback?}) -> Promise<string | undefined> — runtime → stored api_key → OAuth (auto-refresh) → env → fallback"
+  },
+  "auth_status_source_enum": [
+    "stored",
+    "runtime",
+    "environment",
+    "fallback",
+    "models_json_key",
+    "models_json_command"
+  ],
+  "auth_credential_discriminator": {
+    "api_key": "{type: 'api_key', key: string}",
+    "oauth": "{type: 'oauth'} & OAuthCredentials"
+  },
+  "oauth_provider_modify_models": {
+    "_doc": "Pi parity P-102 carry-forward from Sprint 6c. Sprint 6e wires the callback for Copilot which uses token-embedded proxy-ep to set baseURL on every Copilot-routed model.",
+    "signature": "(models: Model<Api>[], credentials: OAuthCredentials) => Model<Api>[]",
+    "optional": true,
+    "first_consumer": "githubCopilotOAuthProvider"
+  },
+  "deferred_in_sprint_6e": [
+    "AuthStorage models_json_key / models_json_command sources (models.json plumbing — Sprint 6f or later)",
+    "Copilot enableGitHubCopilotModel POST /models/{id}/policy automatic invocation (deferred to model registry sprint)",
+    "Codex JWT account_id propagation into request headers (deferred to OpenAI adapter Codex API support sprint)"
+  ]
+}
