@@ -2,10 +2,6 @@
 
 Maps to Pi's ``modes/index.ts`` exports (``runRpcMode``, ``RpcClient``,
 ``RpcCommand``, ``RpcResponse``, ``RpcSessionState``).
-
-Sprint 6d C2 (rpc_mode) ships the server-side surface; the
-:class:`RpcClient` re-export lands together with the client module in
-the next commit.
 """
 
 from __future__ import annotations
@@ -14,6 +10,11 @@ from aelix_coding_agent.rpc._jsonl import (
     JsonlLineReader,
     attach_jsonl_line_reader,
     serialize_json_line,
+)
+from aelix_coding_agent.rpc.rpc_client import (
+    RpcClient,
+    RpcClientError,
+    RpcClientOptions,
 )
 from aelix_coding_agent.rpc.rpc_mode import (
     DEFERRED_COMMANDS,
@@ -83,6 +84,9 @@ __all__ = [
     "JsonlLineReader",
     "RPC_COMMAND_TYPES",
     "RPC_EXTENSION_UI_REQUEST_METHODS",
+    "RpcClient",
+    "RpcClientError",
+    "RpcClientOptions",
     "RpcCommand",
     "RpcCommandAbort",
     "RpcCommandAbortBash",
