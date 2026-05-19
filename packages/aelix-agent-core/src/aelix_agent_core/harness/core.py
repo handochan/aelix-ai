@@ -620,6 +620,64 @@ class AgentHarness:
     def messages(self) -> list[AgentMessage]:
         return self._state.messages
 
+    # === Sprint 6d RPC public surface (P-118) ===
+    # The RPC mode dispatcher needs to read pending-queue counts and the
+    # session storage path without reaching into `_`-prefixed attributes.
+    # These properties expose only the data the RPC layer asks for; the
+    # underlying queue / session objects remain encapsulated.
+
+    @property
+    def pending_message_count(self) -> int:
+        """Total queued steer + follow_up messages (Pi parity: ``rpc-mode.ts:288-302``).
+
+        Sum of both queue lengths so the RPC `get_state` payload reflects
+        every message awaiting the next turn.
+        """
+
+        return len(self._steering_queue._messages) + len(
+            self._follow_up_queue._messages
+        )
+
+    @property
+    def session_file(self) -> str | None:
+        """Path to the attached session's storage file, or None.
+
+        Probes ``_file_path`` first (`JsonlSessionStorage` Sprint 4a) then
+        falls back to ``_path`` for forward-compat with future storage
+        backends. Returns None when no session is attached or the storage
+        does not expose a file path (e.g. ``MemorySessionStorage``).
+        """
+
+        if self._session is None:
+            return None
+        storage = self._session.get_storage()
+        raw_path = getattr(storage, "_file_path", None) or getattr(
+            storage, "_path", None
+        )
+        return str(raw_path) if raw_path is not None else None
+
+    @property
+    def session_name(self) -> str | None:
+        """Currently cached session label (Pi parity ``cachedSessionName``)."""
+
+        return self._cached_session_name
+
+    @property
+    def steering_mode(self) -> Literal["all", "one-at-a-time"]:
+        """Steering queue mode (Pi parity ``rpc-types.ts:90-103``)."""
+
+        return (
+            "all" if self._steering_queue.mode == "all" else "one-at-a-time"
+        )
+
+    @property
+    def follow_up_mode(self) -> Literal["all", "one-at-a-time"]:
+        """Follow-up queue mode (Pi parity ``rpc-types.ts:90-103``)."""
+
+        return (
+            "all" if self._follow_up_queue.mode == "all" else "one-at-a-time"
+        )
+
     # === Subscription ===
 
     def subscribe(self, listener: HarnessListener) -> Callable[[], None]:
