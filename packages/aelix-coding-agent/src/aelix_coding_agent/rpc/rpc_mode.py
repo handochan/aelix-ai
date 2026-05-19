@@ -20,6 +20,11 @@ Sprint 6d ships **9 supported handlers** wired to the existing
 The Pi RpcCommand variant count is **29** (W4 M2 / P-121 — the original
 spec text said "28" but the fixture's ``rpc_command_types`` list is the
 authoritative wire surface).
+
+Sprint 6f W2 (ADR-0065 / P-168 / P-169) drops 3 entries from
+:data:`DEFERRED_COMMANDS` and adds them to :data:`SUPPORTED_COMMANDS`:
+``set_model`` / ``cycle_model`` / ``get_available_models``. The
+counts move to **12 supported / 17 deferred / 29 total**.
 """
 
 from __future__ import annotations
@@ -57,6 +62,12 @@ from aelix_coding_agent.rpc.rpc_types import (
 if TYPE_CHECKING:
     from aelix_agent_core.harness.core import AgentHarness
 
+    from aelix_coding_agent.model_registry import ModelRegistry
+
+# Sprint 6f W2 (ADR-0065): import :class:`Model` for the
+# ``_model_to_dict`` serializer. Lazy/runtime import to keep the
+# import graph cycle-free.
+from aelix_ai.streaming import Model
 
 # === Deferred command allowlist (P-107 + ADR-0058) ============================
 #
@@ -67,30 +78,29 @@ if TYPE_CHECKING:
 # 9 supported + 20 deferred = 29 total (= Pi RpcCommand variant count).
 
 DEFERRED_COMMANDS: dict[str, str] = {
-    "steer": "ADR-0058 — Sprint 6f harness command paths",
-    "follow_up": "ADR-0058 — Sprint 6f harness command paths",
-    "set_model": "ADR-0058 — Sprint 6e ModelRegistry",
-    "cycle_model": "ADR-0058 — Sprint 6e ModelRegistry",
-    "get_available_models": "ADR-0058 — Sprint 6e ModelRegistry",
-    "cycle_thinking_level": "ADR-0058 — Sprint 6f",
-    "set_steering_mode": "ADR-0058 — Sprint 6f",
-    "set_follow_up_mode": "ADR-0058 — Sprint 6f",
-    "set_auto_compaction": "ADR-0058 — Sprint 6f",
-    "set_auto_retry": "ADR-0058 — Sprint 6f",
-    "abort_retry": "ADR-0058 — Sprint 6f",
-    "abort_bash": "ADR-0058 — Sprint 6f bash cancellation token",
-    "get_session_stats": "ADR-0058 — Sprint 6f session inspection",
-    "export_html": "ADR-0058 — Sprint 6f session inspection",
-    "switch_session": "ADR-0058 — Sprint 6f session tree navigation",
-    "fork": "ADR-0058 — Sprint 6f session tree navigation",
-    "clone": "ADR-0058 — Sprint 6f session tree navigation",
-    "get_fork_messages": "ADR-0058 — Sprint 6f session tree navigation",
-    "get_last_assistant_text": "ADR-0058 — Sprint 6f session tree navigation",
-    "get_commands": "ADR-0058 — Sprint 6e extension/skill/template aggregation",
+    "steer": "ADR-0058 — Sprint 6g harness command paths",
+    "follow_up": "ADR-0058 — Sprint 6g harness command paths",
+    "cycle_thinking_level": "ADR-0058 — Sprint 6g",
+    "set_steering_mode": "ADR-0058 — Sprint 6g",
+    "set_follow_up_mode": "ADR-0058 — Sprint 6g",
+    "set_auto_compaction": "ADR-0058 — Sprint 6g",
+    "set_auto_retry": "ADR-0058 — Sprint 6g",
+    "abort_retry": "ADR-0058 — Sprint 6g",
+    "abort_bash": "ADR-0058 — Sprint 6g bash cancellation token",
+    "get_session_stats": "ADR-0058 — Sprint 6g session inspection",
+    "export_html": "ADR-0058 — Sprint 6g session inspection",
+    "switch_session": "ADR-0058 — Sprint 6g session tree navigation",
+    "fork": "ADR-0058 — Sprint 6g session tree navigation",
+    "clone": "ADR-0058 — Sprint 6g session tree navigation",
+    "get_fork_messages": "ADR-0058 — Sprint 6g session tree navigation",
+    "get_last_assistant_text": "ADR-0058 — Sprint 6g session tree navigation",
+    "get_commands": "ADR-0058 — Sprint 6g extension/skill/template aggregation",
 }
 
 
-# Supported command discriminator → handler name mapping. The closure pin
+# Supported command discriminator → handler name mapping. Sprint 6f W2
+# (ADR-0065) wires set_model / cycle_model / get_available_models →
+# count moves from 9 to 12. The closure pin
 # (``tests/pi_parity/test_phase_4_4_strict_superset.py``) asserts the
 # union of ``SUPPORTED_COMMANDS`` and ``DEFERRED_COMMANDS`` equals the
 # 29-element Pi ``RpcCommand`` discriminator set (W4 M2 / P-121).
@@ -105,6 +115,10 @@ SUPPORTED_COMMANDS: frozenset[str] = frozenset(
         "bash",
         "set_thinking_level",
         "set_session_name",
+        # Sprint 6f W2 (ADR-0065 / P-168 / P-169).
+        "set_model",
+        "cycle_model",
+        "get_available_models",
     }
 )
 
@@ -253,12 +267,19 @@ async def _handle_get_state(
 
     state = harness.state
 
+    # Sprint 6f W6 (P-187, ADR-0066): ``harness.current_model`` is now
+    # a thin reader for ``state.model``. ``set_model`` / ``cycle_model``
+    # writes ``_state.model`` directly per Pi ``agent-session.ts:1423``
+    # so this read sees the latest model without the Sprint 6f W2
+    # override-indirection branch.
+    active_model = harness.current_model
     model_dict: dict[str, Any] | None = None
-    if state.model is not None:
-        # Pi emits the Model record verbatim; ``dataclasses.asdict`` gives
-        # the Pi-shape camelCase-free dict (Aelix Model uses snake_case
-        # internally — see ADR-0035).
-        model_dict = _dataclass_to_dict(state.model)
+    if active_model is not None:
+        # Pi parity: emit the Model record verbatim in camelCase
+        # (Sprint 6f W2 — was ``_dataclass_to_dict`` snake-case; the
+        # ``set_model`` / ``cycle_model`` response shape is camelCase
+        # per Pi ``Model<Api>`` wire shape, so ``get_state`` aligns).
+        model_dict = _model_to_dict(active_model)
 
     # P-116: ``is_streaming`` covers every non-idle phase (turn + tool
     # execution + compaction) so RPC clients see the harness as busy
@@ -403,6 +424,181 @@ async def _handle_set_session_name(
     return RpcSuccessResponse(id=cmd.id, command="set_session_name")
 
 
+# === Sprint 6f W2 model handlers (P-168 / P-169 / ADR-0065) ==================
+#
+# Three handlers wire to the new ModelRegistry runtime. Each takes
+# ``(harness, registry, cmd)`` — the dispatcher closure threads
+# ``registry`` lazily (default: ``ModelRegistry.in_memory`` over
+# whichever AuthStorage the harness has, or a fresh one).
+
+
+def _model_to_dict(model: Model) -> dict[str, Any]:
+    """Pi parity: serialize :class:`Model` to the Pi camelCase wire shape.
+
+    Pi ``Model<Api>`` (``ai/src/types.ts``) is consumed by the RPC
+    client as camelCase JSON: ``id``, ``name``, ``provider``, ``api``,
+    ``cost``, ``thinkingLevelMap``, ``maxTokens``, ``contextWindow``,
+    ``reasoning``, ``baseUrl``, ``headers``, ``input``.
+    """
+
+    return {
+        "id": model.id,
+        "name": model.name,
+        "provider": model.provider,
+        "api": model.api,
+        "cost": {
+            "input": model.cost.input,
+            "output": model.cost.output,
+            "cacheRead": model.cost.cache_read,
+            "cacheWrite": model.cost.cache_write,
+        },
+        "thinkingLevelMap": model.thinking_level_map,
+        "maxTokens": model.max_tokens,
+        "contextWindow": model.context_window,
+        "reasoning": model.reasoning,
+        "baseUrl": model.base_url,
+        "input": list(model.input),
+    }
+
+
+async def _handle_set_model(
+    harness: AgentHarness,
+    registry: Any,  # ``ModelRegistry`` — typed via TYPE_CHECKING import
+    cmd: Any,  # ``RpcCommandSetModel``
+) -> RpcResponse:
+    """Pi parity: ``rpc-mode.ts:454-459`` ``handle_set_model``.
+
+    Sprint 6f W6 (P-172): searches :meth:`ModelRegistry.get_available`
+    (auth-filtered) instead of :meth:`find` (full catalog). Pi searches
+    the available list so requests for a configured-but-unauthenticated
+    provider return ``Model not found`` rather than silently selecting a
+    model the harness can't actually call. Returns the Pi-shape
+    ``Model<Api>`` dict on success, or a ``Model not found:
+    {provider}/{model_id}`` error.
+    """
+
+    if registry is None:
+        return RpcErrorResponse(
+            id=cmd.id,
+            command="set_model",
+            error="set_model requires a ModelRegistry — none configured",
+        )
+    # P-172: Pi ``rpc-mode.ts:454-459`` searches ``getAvailable()`` (the
+    # auth-filtered list). The Sprint 6f W2 ``find()`` path iterated
+    # the FULL catalog and would happily select an unauthenticated
+    # provider's model; Sprint 6f W6 narrows to the configured-auth
+    # subset to match Pi byte-for-byte.
+    available = registry.get_available()
+    model = next(
+        (m for m in available if m.provider == cmd.provider and m.id == cmd.model_id),
+        None,
+    )
+    if model is None:
+        return RpcErrorResponse(
+            id=cmd.id,
+            command="set_model",
+            error=f"Model not found: {cmd.provider}/{cmd.model_id}",
+        )
+    harness.set_current_model(model)
+    return RpcSuccessResponse(
+        id=cmd.id, command="set_model", data=_model_to_dict(model)
+    )
+
+
+async def _handle_cycle_model(
+    harness: AgentHarness,
+    registry: Any,  # ``ModelRegistry``
+    cmd: Any,  # ``RpcCommandCycleModel``
+) -> RpcResponse:
+    """Pi parity: ``rpc-mode.ts::handle_cycle_model`` (Sprint 6f W2).
+
+    Rotates to the next model in :meth:`ModelRegistry.get_available`
+    (insertion order). Updates :meth:`AgentHarness.set_current_model`
+    and emits the new model + clamped thinking level + ``isScoped``.
+
+    Sprint 6f₁ always returns ``isScoped: False`` — workspace-scoped
+    selection is Sprint 6g per spec §J.
+
+    Returns ``data: None`` if no models are available (Pi parity).
+    """
+
+    from aelix_ai.models import clamp_thinking_level, models_are_equal
+
+    if registry is None:
+        return RpcErrorResponse(
+            id=cmd.id,
+            command="cycle_model",
+            error="cycle_model requires a ModelRegistry — none configured",
+        )
+    available = registry.get_available()
+    # P-170: Pi ``agent-session.ts:1476`` returns ``undefined`` (Aelix
+    # ``data: None``) when ``availableModels.length <= 1`` — rotation
+    # against a single-model list is a no-op. The Sprint 6f W2 ``not
+    # available`` guard only covered the empty case; Sprint 6f W6
+    # widens to ``<= 1`` to match Pi byte-for-byte.
+    if len(available) <= 1:
+        return RpcSuccessResponse(id=cmd.id, command="cycle_model", data=None)
+    current = harness.current_model
+    next_index = 0
+    if current is not None:
+        for i, m in enumerate(available):
+            if models_are_equal(m, current):
+                next_index = (i + 1) % len(available)
+                break
+    next_model = available[next_index]
+    harness.set_current_model(next_model)
+    # P-182: Pi ``agent-session.ts:1490`` clamps via the harness's
+    # current thinking level; on a fresh harness ``state.thinking_level``
+    # may be :data:`None`, but the Pi caller always carries a level
+    # string. Coerce to ``"off"`` so :func:`clamp_thinking_level`
+    # produces a real Pi-shape level rather than propagating ``None``.
+    current_level = harness.state.thinking_level or "off"
+    thinking_level = clamp_thinking_level(next_model, current_level)
+    # P-171: Pi ``agent-session.ts:1490`` calls
+    # ``this.setThinkingLevel(thinkingLevel)`` BEFORE returning so the
+    # next turn uses the clamped value. Sprint 6f W2 only computed
+    # the clamped level for the response payload and never persisted
+    # it. The clamp can be :data:`None` (Sprint 6b back-compat) so
+    # only persist when the clamp produced a concrete level.
+    if thinking_level is not None:
+        await harness.set_thinking_level(thinking_level)
+    return RpcSuccessResponse(
+        id=cmd.id,
+        command="cycle_model",
+        data={
+            "model": _model_to_dict(next_model),
+            "thinkingLevel": thinking_level,
+            "isScoped": False,
+        },
+    )
+
+
+async def _handle_get_available_models(
+    harness: AgentHarness,
+    registry: Any,  # ``ModelRegistry``
+    cmd: Any,  # ``RpcCommandGetAvailableModels``
+) -> RpcResponse:
+    """Pi parity: ``rpc-mode.ts::handle_get_available_models``
+    (Sprint 6f W2).
+
+    Returns ``{models: [...]}`` filtered through
+    :meth:`ModelRegistry.get_available` (configured-auth check).
+    """
+
+    if registry is None:
+        return RpcErrorResponse(
+            id=cmd.id,
+            command="get_available_models",
+            error="get_available_models requires a ModelRegistry — none configured",
+        )
+    available = registry.get_available()
+    return RpcSuccessResponse(
+        id=cmd.id,
+        command="get_available_models",
+        data={"models": [_model_to_dict(m) for m in available]},
+    )
+
+
 # === Deferred handler factory =================================================
 
 
@@ -426,7 +622,11 @@ def _make_deferred_handler(
 
 
 # Per-discriminator dispatch table. Constructed once at import time.
-_SUPPORTED_HANDLERS: dict[
+# Sprint 6f W2 (ADR-0065): set_model / cycle_model / get_available_models
+# are 3-arg handlers (``harness, registry, cmd``); the others stay 2-arg
+# (``harness, cmd``). The :func:`build_dispatch_table` factory closes
+# over a ``model_registry`` arg so the 3-arg handlers always receive it.
+_SUPPORTED_HANDLERS_HARNESS_ONLY: dict[
     str, Callable[[Any, Any], Awaitable[RpcResponse]]
 ] = {
     "prompt": _handle_prompt,
@@ -440,23 +640,67 @@ _SUPPORTED_HANDLERS: dict[
     "set_session_name": _handle_set_session_name,
 }
 
+_SUPPORTED_HANDLERS_HARNESS_REGISTRY: dict[
+    str,
+    Callable[[Any, Any, Any], Awaitable[RpcResponse]],
+] = {
+    "set_model": _handle_set_model,
+    "cycle_model": _handle_cycle_model,
+    "get_available_models": _handle_get_available_models,
+}
 
-def build_dispatch_table() -> dict[
+# Sprint 6f W2 (ADR-0065): legacy alias preserved for Sprint 6d tests
+# that import :data:`_SUPPORTED_HANDLERS` — the alias points at the
+# 2-arg subset so the existing assertions keep matching.
+_SUPPORTED_HANDLERS: dict[
+    str, Callable[[Any, Any], Awaitable[RpcResponse]]
+] = _SUPPORTED_HANDLERS_HARNESS_ONLY
+
+
+def build_dispatch_table(
+    model_registry: ModelRegistry | None = None,
+) -> dict[
     str, Callable[[Any, Any], Awaitable[RpcResponse]]
 ]:
-    """Build the full 29-command dispatch table (9 supported + 20 deferred).
+    """Build the full 29-command dispatch table.
 
-    Returned fresh on every call so tests can introspect without leaking
-    state. The supported handlers are real callables; the deferred ones
-    are :func:`_make_deferred_handler` closures.
+    Sprint 6f W2 (ADR-0065): 12 supported + 17 deferred = 29 total.
+    Returned fresh on every call so tests can introspect without
+    leaking state. The supported handlers are real callables; the
+    deferred ones are :func:`_make_deferred_handler` closures.
+
+    The ``model_registry`` argument is threaded into the 3 new
+    Sprint 6f handlers (``set_model`` / ``cycle_model`` /
+    ``get_available_models``). When :data:`None`, the 3 model
+    handlers return a :class:`RpcErrorResponse` reporting the missing
+    registry (Pi parity: ``rpc-mode.ts`` requires a ModelRegistry to
+    be bound to the runtime host).
     """
 
     table: dict[str, Callable[[Any, Any], Awaitable[RpcResponse]]] = dict(
-        _SUPPORTED_HANDLERS
+        _SUPPORTED_HANDLERS_HARNESS_ONLY
     )
+    # Adapt the 3-arg handlers to the dispatch table's 2-arg shape by
+    # closing over ``model_registry``.
+    for cmd_type, three_arg in _SUPPORTED_HANDLERS_HARNESS_REGISTRY.items():
+        table[cmd_type] = _bind_registry(three_arg, model_registry)
     for cmd_type, adr in DEFERRED_COMMANDS.items():
         table[cmd_type] = _make_deferred_handler(cmd_type, adr)
     return table
+
+
+def _bind_registry(
+    handler: Callable[[Any, Any, Any], Awaitable[RpcResponse]],
+    registry: ModelRegistry | None,
+) -> Callable[[Any, Any], Awaitable[RpcResponse]]:
+    """Adapt a 3-arg ``(harness, registry, cmd)`` handler to the dispatch
+    table's 2-arg ``(harness, cmd)`` shape by closing over the registry.
+    """
+
+    async def _adapted(harness: Any, cmd: Any) -> RpcResponse:
+        return await handler(harness, registry, cmd)
+
+    return _adapted
 
 
 # === Entry point ==============================================================
@@ -505,6 +749,7 @@ async def _handle_command(
 async def run_rpc_mode(
     harness: AgentHarness,
     *,
+    model_registry: ModelRegistry | None = None,
     stdin: asyncio.StreamReader | None = None,
     stdout_write: Callable[[bytes], None] | None = None,
     install_signal_handlers: bool = True,
@@ -519,6 +764,11 @@ async def run_rpc_mode(
     Args:
         harness: Active :class:`AgentHarness` whose surface backs the 9
             supported commands.
+        model_registry: Optional :class:`ModelRegistry` backing the 3
+            Sprint 6f model commands (``set_model`` / ``cycle_model`` /
+            ``get_available_models``). When :data:`None` the 3 handlers
+            return a "no registry configured" error (Pi parity:
+            ModelRegistry is bound to the runtime host).
         stdin: Optional :class:`asyncio.StreamReader`. When ``None`` the
             entry connects to ``sys.stdin.buffer`` via
             :func:`asyncio.connect_read_pipe`.
@@ -570,7 +820,7 @@ async def run_rpc_mode(
         await loop.connect_read_pipe(lambda: protocol, sys.stdin)
         stdin = reader
 
-    dispatch = build_dispatch_table()
+    dispatch = build_dispatch_table(model_registry)
     shutdown_event = asyncio.Event()
 
     # === Event pipe ===========================================================

@@ -588,6 +588,13 @@ class AgentHarness:
         # synchronous extension actions.
         self._cached_session_name: str | None = None
         self._pending_tasks: set[asyncio.Task[Any]] = set()
+        # Sprint 6f W6 (ADR-0066 / P-187): :meth:`set_current_model` writes
+        # ``self._state.model`` directly per Pi
+        # ``agent-session.ts:1423`` (``this.agent.state.model = model``).
+        # The Sprint 6f W2 ``_current_model_override`` indirection has
+        # been removed — provider calls that read ``_state.model``
+        # (Anthropic / OpenAI lines 955, 1087, 1644, 2230, 2240, 2343)
+        # see the latest model immediately.
         # Sprint 5b §F shutdown binding placeholder — CLI loop installs a
         # richer signal-aware shutdown via ``install_shutdown_action``.
         self._shutdown_action: Callable[[], None] | None = None
@@ -677,6 +684,42 @@ class AgentHarness:
         return (
             "all" if self._follow_up_queue.mode == "all" else "one-at-a-time"
         )
+
+    # === Sprint 6f W6 — runtime-mutable model (P-187, ADR-0066) ===
+
+    @property
+    def current_model(self) -> Model | None:
+        """Pi parity: ``agent-session.ts::currentModel``.
+
+        Thin reader over ``self._state.model``. Sprint 6f W6 (P-187)
+        dropped the ``_current_model_override`` indirection — Pi
+        ``agent-session.ts:1423`` writes ``this.agent.state.model = model``
+        directly so provider calls (Anthropic / OpenAI lines 955, 1087,
+        1644, 2230, 2240, 2343) that read ``_state.model`` see the
+        latest model immediately. The RPC ``get_state`` / ``set_model``
+        / ``cycle_model`` handlers read through this property.
+        """
+
+        return self._state.model
+
+    def set_current_model(self, model: Model) -> None:
+        """Pi parity: ``agent-session.ts:1423`` writes ``state.model``
+        directly.
+
+        Used by the RPC ``set_model`` and ``cycle_model`` handlers. Does
+        NOT emit the :class:`ModelSelectHookEvent` (that's the
+        :meth:`set_model` async path). The Pi RPC handlers also bypass
+        the hook because the runtime-host owns its own observation
+        path. Callers that want the hook should use :meth:`set_model`.
+
+        Sprint 6f W6 W4 m4 / P-187: rejects :data:`None` because the Pi
+        signature is non-nullable; writes :attr:`_state.model` directly
+        so stale-model reads via ``_state.model`` cannot happen.
+        """
+
+        if model is None:
+            raise ValueError("set_current_model requires a non-None Model")
+        self._state.model = model
 
     # === Subscription ===
 
