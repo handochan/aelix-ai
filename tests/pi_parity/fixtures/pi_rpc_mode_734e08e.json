@@ -1,0 +1,106 @@
+{
+  "_doc": "Pi-pinned snapshot of RPC mode surface at SHA 734e08e. Used by tests/pi_parity/test_phase_4_4_strict_superset.py.",
+  "pi_sha": "734e08edf82ff315bc3d96472a6ebfa69a1d8016",
+  "pi_paths": {
+    "jsonl": "packages/coding-agent/src/modes/rpc/jsonl.ts",
+    "rpc_types": "packages/coding-agent/src/modes/rpc/rpc-types.ts",
+    "rpc_mode": "packages/coding-agent/src/modes/rpc/rpc-mode.ts",
+    "rpc_client": "packages/coding-agent/src/modes/rpc/rpc-client.ts",
+    "modes_index": "packages/coding-agent/src/modes/index.ts"
+  },
+  "pi_file_loc": {
+    "jsonl.ts": 58,
+    "rpc-types.ts": 262,
+    "rpc-mode.ts": 492,
+    "rpc-client.ts": 343
+  },
+  "jsonl_protocol": {
+    "framing": "LF (\\n) only — U+2028/U+2029 NOT used as separators (they're valid inside JSON strings)",
+    "encoding": "UTF-8 via StringDecoder",
+    "cr_stripped": "trailing \\r removed before emit (CRLF tolerant)",
+    "incomplete_tail_on_end": "if buffer non-empty at end-of-stream, emit as final line",
+    "delimiter_in_serializer": "JSON.stringify(value) + '\\n'",
+    "_python_equivalent": "io.TextIOWrapper(encoding='utf-8') + split on \\n + rstrip('\\r')"
+  },
+  "rpc_command_types": [
+    "prompt", "steer", "follow_up", "abort", "new_session",
+    "get_state",
+    "set_model", "cycle_model", "get_available_models",
+    "set_thinking_level", "cycle_thinking_level",
+    "set_steering_mode", "set_follow_up_mode",
+    "compact", "set_auto_compaction",
+    "set_auto_retry", "abort_retry",
+    "bash", "abort_bash",
+    "get_session_stats", "export_html", "switch_session", "fork", "clone",
+    "get_fork_messages", "get_last_assistant_text", "set_session_name",
+    "get_messages",
+    "get_commands"
+  ],
+  "rpc_command_count": 29,
+  "rpc_response_envelope": {
+    "success_shape": "{id?, type: 'response', command: <command>, success: true, data?: <command-specific>}",
+    "error_shape": "{id?, type: 'response', command: <command>, success: false, error: <string>}"
+  },
+  "rpc_session_state_shape": {
+    "model": "Model | None",
+    "thinking_level": "ThinkingLevel",
+    "is_streaming": "bool",
+    "is_compacting": "bool",
+    "steering_mode": "'all' | 'one-at-a-time'",
+    "follow_up_mode": "'all' | 'one-at-a-time'",
+    "session_file": "str | None",
+    "session_id": "str",
+    "session_name": "str | None",
+    "auto_compaction_enabled": "bool",
+    "message_count": "int",
+    "pending_message_count": "int"
+  },
+  "rpc_extension_ui_request_methods": [
+    "select", "confirm", "input", "editor", "notify", "setStatus", "setWidget", "setTitle", "set_editor_text"
+  ],
+  "rpc_slash_command_sources": ["extension", "prompt", "skill"],
+  "rpc_mode_entry": {
+    "signature": "async function runRpcMode(runtimeHost: AgentSessionRuntime)",
+    "stdout_takeover": "takeOverStdout() to hijack stdout for JSONL",
+    "stdin_reader": "attachJsonlLineReader(process.stdin, onLine)",
+    "shutdown_signals": ["SIGTERM", "SIGHUP (non-Windows)"],
+    "shutdown_sequence": "shuttingDown flag → unsubscribe session → dispose runtime → pause stdin → exit(code)"
+  },
+  "rpc_client_entry": {
+    "spawn": "spawn('node', [cliPath, ...args], {stdio: ['pipe', 'pipe', 'pipe']})",
+    "startup_grace_ms": 100,
+    "send_timeout_ms": 30000,
+    "wait_for_idle_default_ms": 60000,
+    "shutdown_signals": ["SIGTERM → 1s timeout → SIGKILL"],
+    "id_generation": "Numeric counter or UUID per send",
+    "pending_request_map": "Map<id, {resolve, reject}>"
+  },
+  "aelix_currently_supports": {
+    "_doc": "Commands the existing aelix-agent-core AgentHarness can satisfy in Sprint 6d. Other commands return error response (success: false) per Pi shape.",
+    "prompt": "harness.prompt(message)",
+    "abort": "harness.abort()",
+    "new_session": "construct new AgentHarness or session",
+    "get_state": "harness inspection (model, message_count, etc.)",
+    "get_messages": "harness session messages",
+    "compact": "compaction emit (already wired)",
+    "bash": "via builtin bash tool (Sprint 5b)",
+    "set_thinking_level": "ThinkingLevel attribute writeable (Sprint 3b)",
+    "set_session_name": "session label write (Sprint 4)"
+  },
+  "deferred_to_future_sprints": {
+    "_doc": "Pi commands that require additional Aelix infrastructure NOT yet built. Sprint 6d ships error-response stubs; future sprints wire them as the underlying surface lands.",
+    "steer / follow_up": "Pi has separate steer+follow_up command paths; Aelix harness has single prompt + queue. Deferred to Sprint 6f (harness command paths).",
+    "set_model / cycle_model / get_available_models": "Aelix has no central ModelRegistry — Sprint 6e adds it alongside model discovery API.",
+    "cycle_thinking_level": "Cycling logic UI-side; Sprint 6f.",
+    "set_steering_mode / set_follow_up_mode": "Queue mode flags; Sprint 6f.",
+    "set_auto_compaction / set_auto_retry / abort_retry": "Auto-retry harness loop additions; Sprint 6f.",
+    "abort_bash": "Bash tool cancellation token (Sprint 6f hardening of Sprint 5b tool).",
+    "get_session_stats / export_html": "Session inspection surface (Sprint 6f).",
+    "switch_session / fork / clone / get_fork_messages / get_last_assistant_text": "Full session tree navigation API (Sprint 6f).",
+    "get_commands": "Extension/skill/template aggregation (Sprint 6e + extension surface).",
+    "extension_ui_request / extension_ui_response": "Bidirectional UI bridge — Sprint 6f (TUI/Web UI work)."
+  },
+  "rpc_event_emission_contract": {
+    "_doc": "Pi emits AgentSessionEvent objects via session.subscribe → output(event) without transformation. Aelix Phase 4 session events from harness.subscribe() will flow the same way."
+  }
+}
