@@ -153,7 +153,22 @@ originating `ToolCallContent.tool_name` on orphan-result synthesis.
 - ADR-0050 — Phase 4.2 strict superset closure (carry-forward to
   Sprint 6d for Anthropic adapter wiring).
 
+## Sprint 6f amendment (5 new Model fields, 2026-05-19)
+
+Sprint 6f extends the Model dataclass family (in `aelix_ai.streaming`,
+not `messages.py`) with **5 additional Pi-parity fields**: `cost`
+(ModelCost — per-million rate; ADR-0064), `thinking_level_map`
+(`dict[str, str | int | None] | None`), `max_tokens` (int),
+`context_window` (int), and `headers` (`dict[str, str] | None` —
+P-178 RPC wire). All additions are additive — defaults preserve the
+Sprint 6a/6b/6d/6e shape so existing adapters keep building Model
+instances unchanged. See ADR-0064 for the field-shape rationale and
+the `Cost = ModelCost` back-compat alias.
+
 ## Phase
 
 Sprint 6b / Phase 4.2 / W6 (shipped — Anthropic-side population
 deferred to Sprint 6d per ADR-0050 §Carry-forward).
+
+Sprint 6f / Phase 4.6 / W6 amendment (shipped — 5 new Model fields,
+see ADR-0064 / 0065 / 0066).

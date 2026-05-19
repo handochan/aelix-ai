@@ -145,6 +145,43 @@ preserved verbatim in the persisted `auth.json` shape so a Pi-
 written file opens cleanly in Aelix. The Pi `resolveConfigValue`
 helper is ported as `aelix_ai.oauth._resolve_config`.
 
+### Sprint 6f amendment (ModelRegistry runtime + Model field shape, 2026-05-19)
+
+Sprint 6f shipped the ModelRegistry runtime (14 methods + 2 factory
+constructors) per ADR-0065, the Pi `Model` field shape expansion
+(`cost` / `thinking_level_map` / `max_tokens` / `context_window` /
+`headers` — 5 new fields) per ADR-0064, the 7 Pi-parity helpers in
+`aelix_ai.models`, a 13-model seed catalog (Anthropic + OpenAI +
+GitHub Copilot), and the 3 RPC model commands (`set_model` /
+`cycle_model` / `get_available_models`) from ADR-0058's deferred set.
+
+| Component | Status | Owner ADR |
+|---|---|---|
+| `ModelCost` (per-million rate, frozen) + `UsageCost` (resolved, mutable) + `Usage` + `Cost = ModelCost` back-compat alias | shipped | ADR-0064 |
+| `Model.thinking_level_map` + `Model.max_tokens` + `Model.context_window` + `Model.headers` (P-178 wire) | shipped | ADR-0064 |
+| `aelix_ai.models` 7 Pi-parity helpers + `EXTENDED_THINKING_LEVELS` (6-value Pi parity) | shipped | ADR-0066 |
+| `ModelRegistry` 14-method runtime + `create` / `in_memory` factories + `ResolvedRequestAuth` (P-180 bool) + `ProviderConfigInput` | shipped | ADR-0065 |
+| `set_current_model` writes `_state.model` directly (P-187 — no override layer); `current_model` is a thin reader | shipped | ADR-0065 |
+| `set_model` / `cycle_model` / `get_available_models` RPC commands (moved from `DEFERRED_COMMANDS` → live) | shipped | ADR-0058 / 0066 |
+| `models_generated.py` 13-model seed catalog (≥3 providers) | shipped | ADR-0064 |
+| Full `models.generated.ts` catalog port (428 KB → `models_generated.json`) | deferred to Sprint 6g | ADR-0066 |
+| `model-resolver.ts` port (~530 LOC, partial-id matching + provider auto-detect) | deferred to Sprint 6g | ADR-0066 |
+| `applyProviderConfig` for `register_provider.config.models` + `models.json` schema validation | deferred to Sprint 6g | ADR-0066 |
+| `enableGitHubCopilotModel()` post-login POST automation | deferred to Sprint 6g | ADR-0066 |
+| `get_commands` RPC command (extension/skill/template aggregation) | deferred to Sprint 6g | ADR-0066 |
+| 16 remaining RPC commands (ADR-0058 minus the 3 shipped here) | deferred to Sprint 6g | ADR-0066 |
+| Pi `Model.compat` / `knowledgeCutoff` / `releaseDate` fields | deferred to Sprint 6g | ADR-0064 |
+| `image-models.ts` / `image-models.generated.ts` Pi parallel registry | deferred to Sprint 6g | ADR-0066 |
+
+Sprint 6f shipped ModelRegistry runtime (14 methods) + 3 model RPC
+commands. `set_current_model` writes `_state.model` directly (P-187).
+Headers field added to Model (P-178). Full catalog port +
+`model-resolver.ts` + `get_commands` + 16 remaining RPC commands
+deferred to Sprint 6g per ADR-0066 forward-compat clause. The closure
+pin (`tests/pi_parity/test_phase_4_6_strict_superset.py`) asserts
+`DEFERRED_COMMANDS` shrinks 20 → 17 and `SUPPORTED_COMMANDS` rises
+9 → 12, with `SUPPORTED ∪ DEFERRED == RPC_COMMAND_TYPES` preserved.
+
 ## Consequences
 
 - Parity audits become reproducible — the W5 audit lane can `git checkout`

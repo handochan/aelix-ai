@@ -77,6 +77,9 @@
 | 0061 | [AuthStorage Layered Cascade](0061-auth-storage-layered-cascade.md)                                                                                      | Accepted (Sprint 6e / Phase 4.5 / W6 shipped)                       | Pi parity port of 12 `AuthStorage` cascade methods (`set_runtime_api_key` / `set_fallback_resolver` / `has_auth` / `get_auth_status` / `list` / `has` / `get_all` / `drain_errors` / `login` / `logout` / `get_api_key_cascade` / `remove_runtime_api_key`) + `AuthStatus` (frozen) + `AuthSource` 6-value Literal + `FallbackResolver` + `resolveConfigValue` helper. P-141 / P-142. |
 | 0062 | [`aelix auth` CLI Subcommand](0062-aelix-auth-cli-subcommand.md)                                                                                          | Accepted (Sprint 6e / Phase 4.5 / W6 shipped)                       | `aelix auth login/logout/status/list` subparser preserving Sprint 6d `--mode {interactive,rpc}` back-compat. P-152 unknown-provider exit 2 + n1 RuntimeError exit 1. |
 | 0063 | [Phase 4.5 Strict Superset Closure](0063-phase-4-5-strict-superset-closure.md)                                                                          | Accepted (Sprint 6e / Phase 4.5 / W6 shipped)                       | Phase 4.5 closure — P-130~P-162 + W4 M1 + W4 m1..n3 roster + closure pin (`tests/pi_parity/test_phase_4_5_strict_superset.py`) + `_OAUTH_DEFERRED_PROVIDERS` drained to `{}` (3/3 Pi providers live) + 12 cascade methods present. |
+| 0064 | [Model Cost + Thinking + Headers Fields](0064-model-cost-and-thinking-fields.md)                                                                        | Accepted (Sprint 6f / Phase 4.6 / W6 shipped)                       | `ModelCost` (frozen per-million rate) + `UsageCost` (mutable resolved) + `Usage` + `Cost = ModelCost` back-compat alias + Pi `Model.thinking_level_map` / `max_tokens` / `context_window` / `headers` (P-178). |
+| 0065 | [ModelRegistry Runtime](0065-model-registry-runtime.md)                                                                                                  | Accepted (Sprint 6f / Phase 4.6 / W6 shipped)                       | Pi parity port of 14-method `ModelRegistry` + 2 factory constructors (`create` / `in_memory`) + `ResolvedRequestAuth` discriminated union (P-180 bool) + `ProviderConfigInput` + P-175/P-176/P-184 wire fixes + P-187 `set_current_model` writes `_state.model` directly. |
+| 0066 | [Phase 4.6 Strict Superset Closure](0066-phase-4-6-strict-superset-closure.md)                                                                          | Accepted (Sprint 6f / Phase 4.6 / W6 shipped)                       | Phase 4.6 closure — P-163~P-187 roster + closure pin (`tests/pi_parity/test_phase_4_6_strict_superset.py`) + ModelRegistry 14 methods present + 7 Pi helpers exposed + 13-model seed catalog + `DEFERRED_COMMANDS` 20 → 17 (set_model/cycle_model/get_available_models live). |
 
 ### Sprint 5b sub-table (Phase 3.2 closure)
 
@@ -96,6 +99,36 @@
 | 4 wired stubs (`send_message` / `send_user_message` / `append_entry` / `get_commands`) | shipped | 0042 |
 | `tests/pi_parity/test_phase_3_2_strict_superset.py` closure pin | shipped | 0044 |
 | DEFERRED_ALLOWLIST Phase-4-only (3 provider entries) | shipped | 0044 |
+
+### Sprint 6f sub-table (Phase 4.6 closure)
+
+| Item | Status | Owner ADR |
+|---|---|---|
+| `aelix_ai.streaming.ModelCost` (frozen per-million rate) + `Cost = ModelCost` back-compat alias for Sprint 6a/6b callers (P-169) | shipped | 0064 |
+| `aelix_ai.streaming.UsageCost` (mutable resolved cost, mirrors Pi `Usage.cost` in-place mutation) + `Usage` dataclass (P-168) | shipped | 0064 |
+| Pi `Model.thinking_level_map: dict[str, str \| int \| None] \| None` (P-165) | shipped | 0064 |
+| Pi `Model.max_tokens` + `Model.context_window` (plain int, P-166) | shipped | 0064 |
+| Pi `Model.headers: dict[str, str] \| None` + `_model_to_dict` RPC wire (P-167 / P-178 MAJOR) | shipped | 0064 |
+| `aelix_ai.models` 7 Pi-parity helpers (`get_all_models` / `get_models_for_provider` / `get_model_by_id` / `find_model_with_provider` / `get_default_model` / `coerce_thinking_level` + `EXTENDED_THINKING_LEVELS` 6-value Pi parity) | shipped | 0064 / 0066 |
+| `aelix_ai.models_generated` 13-model seed catalog (Anthropic + OpenAI + GitHub Copilot — ≥10 models / ≥3 providers, P-174) | shipped | 0064 |
+| `aelix_coding_agent.model_registry.ModelRegistry` (14 methods + `create` / `in_memory` factories) | shipped | 0065 |
+| `ResolvedRequestAuth` discriminated union (`ok: bool` discriminator + `api_key` + `auth_header: bool` P-180 Pi-strict bool, NOT str + `error`) | shipped | 0065 |
+| `ProviderConfigInput` dataclass (Sprint 6f₁ minimum shape; full `models.json` schema deferred to Sprint 6g) | shipped | 0065 |
+| `_load_error` cleared at top of every `_load_models`; multi-provider failures newline-joined (P-175) | shipped | 0065 |
+| `is_using_oauth` trusts AuthStorage discriminator exclusively (drops legacy `get_oauth_provider` extra guard, P-176) | shipped | 0065 |
+| `asyncio.get_event_loop()` → `asyncio.get_running_loop()` migration (P-184, Python 3.12 deprecation) | shipped | 0065 |
+| Harness `current_model` property + `set_current_model` writes `_state.model` directly (P-187 — no override layer) | shipped | 0065 |
+| Harness `has_configured_auth` enforcement before `set_model` swap (P-172 BLOCKING) | shipped | 0065 |
+| `cycle_model` wrap-around no-op when `len(models) <= 1` (P-170 BLOCKING) + `thinking_level` persistence + `coerce_thinking_level` clamp (P-171 BLOCKING / P-182) | shipped | 0065 |
+| `aelix_coding_agent.rpc.rpc_mode` `set_model` / `cycle_model` / `get_available_models` handlers (moved from `DEFERRED_COMMANDS` → `SUPPORTED_COMMANDS`) | shipped | 0058 / 0066 |
+| `tests/pi_parity/test_phase_4_6_strict_superset.py` closure pin (7 helpers + 14 ModelRegistry methods + 17 deferred / 12 supported + seed catalog + `Model.headers` + `current_model` reads `_state.model`) | shipped | 0066 |
+| `tests/pi_parity/test_phase_4_4_strict_superset.py` strengthening (Sprint 6d closure pin updated: SUPPORTED 9 → 12, DEFERRED 20 → 17, P-181) | shipped | 0066 |
+| `tests/pi_parity/fixtures/pi_model_registry_734e08e.json` Pi-parity fixture | shipped | 0066 |
+| `tests/model_registry/test_model_registry.py` + `test_oauth_modify_models_integration.py` | shipped | 0065 |
+| `tests/test_models.py` + `tests/test_models_generated.py` + `tests/test_harness_current_model.py` | shipped | 0064 / 0065 |
+| `tests/rpc/test_rpc_mode_set_model.py` + `test_rpc_mode_cycle_model.py` + `test_rpc_mode_get_available_models.py` + `test_w6_regressions_6f.py` (W6 P-170/P-171/P-172/P-182/P-187/P-181/P-179 regression pins) | shipped | 0058 / 0065 / 0066 |
+| ADR-0034 amendment — Sprint 6f ModelRegistry runtime + Pi `Model` field shape (5 new fields) | shipped | 0034 |
+| ADR-0049 amendment — Sprint 6f 5 new Model field shapes (cost / thinking_level_map / max_tokens / context_window / headers) | shipped | 0049 |
 
 ### Sprint 6e sub-table (Phase 4.5 closure)
 
