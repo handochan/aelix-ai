@@ -35,7 +35,11 @@ def test_parse_missing_type_raises_value_error() -> None:
 
 
 def test_dispatch_table_covers_all_29_commands() -> None:
-    """9 supported + 20 deferred should cover Pi's full RpcCommand set."""
+    """Pi parity: supported + deferred should cover Pi's full RpcCommand set.
+
+    Sprint 6d: 9 supported + 20 deferred = 29. Sprint 6f W2 (ADR-0065)
+    moves to 12 supported + 17 deferred = 29.
+    """
 
     table = build_dispatch_table()
     assert set(table.keys()) == RPC_COMMAND_TYPES

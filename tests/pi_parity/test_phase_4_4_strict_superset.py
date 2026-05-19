@@ -62,7 +62,10 @@ def test_rpc_command_count_matches_pi_fixture() -> None:
 
 
 def test_supported_plus_deferred_covers_pi() -> None:
-    """9 supported + 20 deferred = 29 total Pi RpcCommand variants.
+    """Pi parity: supported + deferred = 29 total Pi RpcCommand variants.
+
+    Sprint 6f W2 (ADR-0065): counts are 12 supported + 17 deferred = 29.
+    Sprint 6d originally shipped 9 supported + 20 deferred.
 
     The spec preamble cites "28" as a counting error; the fixture's
     ``rpc_command_types`` list is the authoritative count and we honor it.
@@ -70,15 +73,23 @@ def test_supported_plus_deferred_covers_pi() -> None:
 
     assert SUPPORTED_COMMANDS.isdisjoint(set(DEFERRED_COMMANDS.keys()))
     assert SUPPORTED_COMMANDS | set(DEFERRED_COMMANDS.keys()) == RPC_COMMAND_TYPES
-    # W4 M2 / P-121 — explicit count assertion so a future PR that adds
-    # a command without updating both sets trips immediately.
+    # W4 M2 / P-121 + Sprint 6f W2 — explicit count assertion so a
+    # future PR that adds a command without updating both sets trips
+    # immediately. Sprint 6f W2 (ADR-0065) wires set_model /
+    # cycle_model / get_available_models, dropping deferred from 20 → 17
+    # and bumping supported from 9 → 12.
     assert len(RPC_COMMAND_TYPES) == 29
-    assert len(SUPPORTED_COMMANDS) == 9
-    assert len(DEFERRED_COMMANDS) == 20
+    assert len(SUPPORTED_COMMANDS) == 12
+    assert len(DEFERRED_COMMANDS) == 17
 
 
 def test_supported_commands_match_p107_table() -> None:
-    """Pi parity (P-107): 9 commands the existing Aelix harness can satisfy."""
+    """Pi parity (P-107 + Sprint 6f W2 P-168/P-169): commands the existing
+    Aelix harness can satisfy.
+
+    Sprint 6f W2 (ADR-0065) adds set_model / cycle_model /
+    get_available_models on top of the Sprint 6d 9-command set.
+    """
 
     expected = {
         "prompt",
@@ -90,6 +101,10 @@ def test_supported_commands_match_p107_table() -> None:
         "bash",
         "set_thinking_level",
         "set_session_name",
+        # Sprint 6f W2 (ADR-0065).
+        "set_model",
+        "cycle_model",
+        "get_available_models",
     }
     assert expected == SUPPORTED_COMMANDS
 

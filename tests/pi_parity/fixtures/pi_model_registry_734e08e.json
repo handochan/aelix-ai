@@ -1,0 +1,142 @@
+{
+  "_doc": "Pi-pinned snapshot of ModelRegistry + models surface at SHA 734e08e.",
+  "pi_sha": "734e08edf82ff315bc3d96472a6ebfa69a1d8016",
+  "pi_paths": {
+    "ai_models_ts": "packages/ai/src/models.ts",
+    "ai_models_generated_ts": "packages/ai/src/models.generated.ts",
+    "ai_types_ts": "packages/ai/src/types.ts (Model + Usage + ModelThinkingLevel)",
+    "image_models_ts": "packages/ai/src/image-models.ts",
+    "image_models_generated_ts": "packages/ai/src/image-models.generated.ts",
+    "core_model_registry_ts": "packages/coding-agent/src/core/model-registry.ts",
+    "core_model_resolver_ts": "packages/coding-agent/src/core/model-resolver.ts"
+  },
+  "pi_file_loc": {
+    "models.ts": 92,
+    "models.generated.ts": 10500,
+    "model-registry.ts": 820,
+    "model-resolver.ts": 530,
+    "image-models.ts": 50,
+    "image-models.generated.ts": 290
+  },
+  "ai_models_helpers": [
+    "getModel(provider, modelId)",
+    "getProviders()",
+    "getModels(provider)",
+    "calculateCost(model, usage)",
+    "getSupportedThinkingLevels(model)",
+    "clampThinkingLevel(model, level)",
+    "modelsAreEqual(a, b)"
+  ],
+  "extended_thinking_levels": ["off", "minimal", "low", "medium", "high", "xhigh"],
+  "model_thinking_level_map_semantics": {
+    "_doc": "If model.thinkingLevelMap[level] === null, that level is NOT supported. If level === 'xhigh' and mapped === undefined, NOT supported. Otherwise supported.",
+    "clampThinkingLevel": "Find requested level in EXTENDED_THINKING_LEVELS; if directly supported, return. Otherwise scan forward then backward for first supported level. Fallback to 'off'."
+  },
+  "calculate_cost_formula": {
+    "_doc": "Pi divides cost.input/output/cacheRead/cacheWrite by 1,000,000 then multiplies by usage tokens. Total is sum of 4 layers.",
+    "formula": "cost.X = (model.cost.X / 1000000) * usage.X for X in [input, output, cacheRead, cacheWrite]; cost.total = sum"
+  },
+  "model_registry_class": {
+    "constructor": "(authStorage: AuthStorage, modelsJsonPath?: string)",
+    "factory_methods": [
+      "static create(authStorage, modelsJsonPath?) -> ModelRegistry",
+      "static inMemory(authStorage) -> ModelRegistry"
+    ],
+    "public_methods_model_access": [
+      "getAll() -> Model[]",
+      "getAvailable() -> Model[]  // filters to models with configured auth",
+      "find(provider, modelId) -> Model | undefined"
+    ],
+    "public_methods_auth": [
+      "hasConfiguredAuth(model) -> bool",
+      "getApiKeyAndHeaders(model) -> Promise<ResolvedRequestAuth>",
+      "getApiKeyForProvider(provider) -> Promise<string | undefined>",
+      "getProviderAuthStatus(provider) -> AuthStatus",
+      "isUsingOAuth(model) -> bool"
+    ],
+    "public_methods_lifecycle": [
+      "refresh() -> void  // reload from disk + rebuild dynamic OAuth/API registrations",
+      "getError() -> string | undefined"
+    ],
+    "public_methods_dynamic": [
+      "registerProvider(name, ProviderConfigInput) -> void",
+      "unregisterProvider(name) -> void"
+    ],
+    "public_methods_display": [
+      "getProviderDisplayName(provider) -> string"
+    ]
+  },
+  "resolved_request_auth_shape": {
+    "ok_true": "{ok: true, apiKey?: string, headers?: dict}",
+    "ok_false": "{ok: false, error: string}"
+  },
+  "provider_config_input_shape": {
+    "_doc": "Schema for models.json provider override + OAuth registration",
+    "fields": {
+      "apiKey": "string (optional, literal or env-var ref via resolveConfigValue)",
+      "headers": "dict (optional)",
+      "authHeader": "string (optional, e.g. 'Authorization')",
+      "oauth": "OAuthProvider (optional, dynamic provider registration)",
+      "models": "dict<modelId, ModelDefinition> (optional, per-provider catalog)"
+    }
+  },
+  "loading_pipeline": [
+    "loadModels() — orchestrates",
+    "loadCustomModels(path) — parses models.json with TypeBox validation; strips comments/trailing commas",
+    "loadBuiltInModels(overrides) — calls getProviders() + getModels(provider) from ai/models.ts",
+    "mergeCustomModels() — custom wins on (provider, id) conflicts",
+    "OAuth modifyModels — per OAuth provider, transforms final model list"
+  ],
+  "rpc_command_wiring": {
+    "set_model": "find(provider, modelId) -> update harness current_model; emit response",
+    "cycle_model": "rotate to next in getAvailable(); emit response with new model + thinkingLevel + isScoped",
+    "get_available_models": "return getAvailable() filtered list",
+    "get_commands": "Sprint 6f₂ — extension/skill/template aggregation (DEFERRED from 6f₁ — needs extension surface)"
+  },
+  "deferred_in_sprint_6f": {
+    "_doc": "Sprint 6f₁ ships ModelRegistry RUNTIME with seed catalog. Full catalog + models.json + model-resolver in Sprint 6f₂.",
+    "items": [
+      "Full models.generated.ts catalog (428KB → models_generated.json data transfer)",
+      "models.json schema validation (TypeBox port → Aelix uses dataclass + pydantic or hand-rolled validation)",
+      "image-models.ts / image-models.generated.ts (image generation models)",
+      "model-resolver.ts (~530 LOC — partial-id matching + provider auto-detect)",
+      "get_commands RPC command (extension/skill/template aggregation)",
+      "16 remaining RPC commands (steer/follow_up/cycle_thinking_level/queue modes/session tree/extension UI/etc.)"
+    ]
+  },
+  "rpc_response_shapes": {
+    "set_model": {"data": "Model<any>"},
+    "cycle_model": {"data": "{model: Model<any>, thinkingLevel: ThinkingLevel, isScoped: bool} | null"},
+    "get_available_models": {"data": "{models: Model<any>[]}"}
+  },
+  "aelix_current_state": {
+    "model_dataclass_location": "packages/aelix-ai/src/aelix_ai/streaming.py",
+    "model_fields_existing": ["id", "name", "provider", "api", "reasoning", "base_url", "headers", "input"],
+    "model_fields_missing_for_pi_parity": [
+      "cost (input/output/cacheRead/cacheWrite per million tokens)",
+      "thinking_level_map (dict[level, value | None])",
+      "compat (provider-specific compat overrides — already in OpenAICompletionsCompat per Sprint 6b)",
+      "max_tokens",
+      "context_window",
+      "knowledge_cutoff",
+      "release_date"
+    ]
+  },
+  "aelix_seed_catalog_plan": {
+    "_doc": "Sprint 6f₁ seeds a minimal catalog. Sprint 6f₂ ports full models.generated.json.",
+    "anthropic": [
+      "claude-sonnet-4-5",
+      "claude-opus-4-7",
+      "claude-haiku-4-5"
+    ],
+    "openai": [
+      "gpt-4o",
+      "gpt-4o-mini",
+      "o1-preview"
+    ],
+    "openrouter": [
+      "anthropic/claude-sonnet-4-5",
+      "openai/gpt-4o"
+    ]
+  }
+}
