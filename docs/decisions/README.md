@@ -33,7 +33,7 @@
 | 0017 | [Full Hook Event Catalogue v2](0017-full-hook-event-catalogue-v2.md)                                                                                   | Accepted (Sprint 3a / Phase 2.1.1 shipped) | Pi-verified 28 hook events (10 loop + 18 harness own). 7 wishlist events dropped per W1 Finding P-1. ADR-0011 대체.                                |
 | 0018 | [message_end Replacement Reducer (Pi parity)](0018-message-end-replacement-reducer.md)                                                                  | Deprecated (Sprint 3b — superseded by P-3 verdict)                   | **Deprecated** — Pi has no message_end reducer at SHA 734e08e. Sprint 3b §0 verdict: keep `message_end` observational, no replacement reducer.       |
 | 0019 | [Hook Error Policy v2 — Pi `"throw"` Default + Aelix `"continue"` Opt-in](0019-hook-error-policy-v2-pi-continue-default.md) | Accepted (Sprint 3a / Phase 2.1.1 shipped — v3 reframe) | Pi-parity `"throw"` default (matches Pi `normalizeHookError`) + Aelix additive `error_mode="continue"` opt-in. v3 reframe per W1 Finding P-2. ADR-0014 대체. |
-| 0020 | [RPC Mode for Multi-Language Clients](0020-rpc-mode-multi-language-clients.md)                                                                          | Draft (Phase 4)                     | `aelix mode rpc` — stdin/stdout JSON 프로토콜. Pi `--mode rpc` 그대로 port. ADR-0009 부분 대체.                                                     |
+| 0020 | [RPC Mode for Multi-Language Clients](0020-rpc-mode-multi-language-clients.md)                                                                          | Accepted (Sprint 6d / Phase 4.4 / W6 shipped) | `aelix --mode rpc` JSONL stdin/stdout protocol. Sprint 6d shipped 9 supported + 20 deferred (ADR-0058). Sub-sprints 6e/6f close the remaining surface.                                                     |
 | 0021 | [Parallel-Mode Tool Execution + Per-Tool Override](0021-parallel-tool-execution.md)                                                                     | Accepted (Sprint 3c / Phase 2.1.3 shipped) | default parallel 실행 (`asyncio.gather` per P-7 reversal) + per-tool `execution_mode="sequential"` override.                                       |
 | 0022 | [Session Manager + JSONL Persistence](0022-session-manager-jsonl-persistence.md)                                                                        | Accepted (Sprint 4a / Phase 2.2.1 shipped)                   | `Session` concrete class (17+1 methods) + `SessionStorage` Protocol + `JsonlSessionRepo`. 8-variant `PendingSessionWrite`. `message_end` wired. P-11 reversal (`PendingActiveToolsChangeWrite` deleted). |
 | 0023 | [Compaction + Branch Summary](0023-compaction-branch-summary.md)                                                                                        | Accepted (Sprint 4b / Phase 2.2.2 shipped)                   | `compact()` + `navigate_tree()` + Phase machine `idle\|turn\|compaction\|branch_summary` + 4 session_* emit sites. ADR-0016 대체. P-14/P-15/P-16 verified.                                             |
@@ -69,6 +69,9 @@
 | 0053 | [AuthStorage and Secrets](0053-auth-storage-and-secrets.md)                                                                                              | Accepted (Sprint 6c / Phase 4.3 / W6 shipped — Anthropic only)      | `AuthStorage` JSON layer (atomic tmp+fsync+rename write + 0o700/0o600 perms + asyncio.Lock + fcntl.flock POSIX cross-process). Copilot/Codex + layered cascade deferred to Sprint 6e. |
 | 0054 | [RPC Mode Deferred to Sprint 6d](0054-rpc-mode-deferred-to-sprint-6d.md)                                                                                 | Accepted (Sprint 6c / Phase 4.3 / W6 — formal carry-forward)        | Formal carry-forward record for `rpc-mode` / `rpc-client` / `rpc-types` / `jsonl` (~1,310 Pi LOC). `_PHASE_4_DEFERRED_FEATURES["rpc-mode"]` owns. |
 | 0055 | [Phase 4.3 Strict Superset Closure](0055-phase-4-3-strict-superset-closure.md)                                                                          | Accepted (Sprint 6c / Phase 4.3 / W6 shipped)                       | Phase 4.3 closure — P-83~P-104 + W4 M1..M6 + W4 m1..m9 roster + closure pin (`tests/pi_parity/test_phase_4_3_strict_superset.py`) + `_OAUTH_DEFERRED_PROVIDERS` (2) + `_PHASE_4_DEFERRED_FEATURES` (2). |
+| 0056 | [RPC JSONL Protocol](0056-rpc-jsonl-protocol.md)                                                                                                        | Accepted (Sprint 6d / Phase 4.4 / W6 shipped)                       | LF-only framing + UTF-8 incremental decode + CR strip + tail-on-end. Pi `jsonl.ts` (58 LOC) parity. `ensure_ascii=False` preserves U+2028/U+2029 inside string payloads. |
+| 0057 | [RPC Types and Envelope](0057-rpc-types-and-envelope.md)                                                                                                | Accepted (Sprint 6d / Phase 4.4 / W6 shipped)                       | 29 RpcCommand variants + uniform 24 success + 1 error envelope + 12-field RpcSessionState + 9-method RpcExtensionUIRequest + 3-shape RpcExtensionUIResponse (TYPES only). |
+| 0058 | [Phase 4.4 Strict Superset Closure](0058-phase-4-4-strict-superset-closure.md)                                                                          | Accepted (Sprint 6d / Phase 4.4 / W6 shipped)                       | Phase 4.4 closure — P-105~P-129 + W4 M1..M5 + W4 m1..m10 roster + closure pin (`tests/pi_parity/test_phase_4_4_strict_superset.py`) + `DEFERRED_COMMANDS` (20) covering 29 - 9 = 20 deferred Pi RpcCommand variants. |
 
 ### Sprint 5b sub-table (Phase 3.2 closure)
 
@@ -88,6 +91,33 @@
 | 4 wired stubs (`send_message` / `send_user_message` / `append_entry` / `get_commands`) | shipped | 0042 |
 | `tests/pi_parity/test_phase_3_2_strict_superset.py` closure pin | shipped | 0044 |
 | DEFERRED_ALLOWLIST Phase-4-only (3 provider entries) | shipped | 0044 |
+
+### Sprint 6d sub-table (Phase 4.4 closure)
+
+| Item | Status | Owner ADR |
+|---|---|---|
+| `aelix_coding_agent.rpc._jsonl` (LF-only framing + `JsonlLineReader` + `serialize_json_line` + `attach_jsonl_line_reader`) | shipped | 0056 |
+| `aelix_coding_agent.rpc.rpc_types` (29 RpcCommand variants + `RpcSuccessResponse` + `RpcErrorResponse` + `RpcSessionState` 12-field + 9-method UI request + 3-shape UI response) | shipped | 0057 |
+| `aelix_coding_agent.rpc.rpc_mode` (9 supported handlers + 20 deferred error stubs + event pipe + SIGTERM/SIGHUP handlers + stdout takeover) | shipped | 0058 |
+| `aelix_coding_agent.rpc.rpc_client` (subprocess wrapper + 29-method command surface + `wait_for_idle`/`collect_events`/`prompt_and_wait`) | shipped | 0058 |
+| CLI `--mode {interactive,rpc}` flag (`src/aelix/__main__.py`) | shipped | 0058 |
+| `AgentHarness` public properties (`pending_message_count` / `session_file` / `session_name` / `steering_mode` / `follow_up_mode`) (P-118) | shipped | 0058 |
+| Pi `BashResult` 4/5-key wire shape on `_handle_bash` (P-115 BLOCKING) | shipped | 0058 |
+| `_handle_get_state` reads only public harness surface; AST-walk closure pin (P-118) | shipped | 0058 |
+| `_handle_new_session` rejects `parent_session` with Sprint-6f deferral envelope (P-117) | shipped | 0058 |
+| `_handle_prompt` logs synchronous failures to stderr (P-119 / W4 m2) | shipped | 0058 |
+| Parse-path errors always emit `command="parse"` (P-120) | shipped | 0058 |
+| `is_streaming` covers every non-idle phase (P-116) | shipped | 0058 |
+| `RpcClient.stop()` rejects pending requests with `RpcClientError("rpc", "RPC server stopped")` (W4 M3) | shipped | 0058 |
+| `RpcClient` stderr capture capped at 10 MB FIFO (W4 M4) | shipped | 0058 |
+| `RpcClient` stale-response logging (W4 m8) | shipped | 0058 |
+| `RpcClient` stop wait timeout (5s after SIGKILL, W4 m9) | shipped | 0058 |
+| Count drift 28 → 29 / 19 → 20 across docstrings + fixture (W4 M2 / P-121) | shipped | 0058 |
+| `command_to_json` wire_key bind (W4 m6 pyright remap) | shipped | 0058 |
+| `tests/pi_parity/test_phase_4_4_strict_superset.py` closure pin (P-127 U+2028 round-trip + P-128 per-variant field-set + W4 M5 session_file regression) | shipped | 0058 |
+| `tests/rpc/test_w6_regressions.py` W6 regression suite (14 tests pinning BLOCKING + MAJOR finds) | shipped | 0058 |
+| ADR-0020 Draft → Accepted (Sprint 6d closure) | shipped | 0020 |
+| ADR-0034 amendment — Sprint 6d RPC mode partition (9 of 29 RpcCommand variants live) | shipped | 0034 |
 
 ### Sprint 6c sub-table (Phase 4.3 closure)
 
@@ -389,7 +419,6 @@ Draft ADR 및 target Phase 요약 (전체).
 
 | ADR   | 제목                                       | Target Phase |
 | ----- | ------------------------------------------ | ------------ |
-| 0020  | RPC Mode for Multi-Language Clients        | Phase 4      |
 | 0029  | Pi-Parity Acceptance Test Harness          | Phase 2.1+ (foundation shipped Sprint 3a) |
 | 0033  | ExtensionContext UI surface                | Phase 5 (Sprint 5a exposes attribute as deferred-raise) |
 | 0035  | Error Code Taxonomy (Literal widening)     | Per owning ADR (0017 done; 0022 / 0023 / Phase 4) |

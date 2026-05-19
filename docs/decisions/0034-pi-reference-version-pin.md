@@ -87,6 +87,30 @@ forward-compat clause; the closure pin
 asserts `live ∪ deferred == {anthropic, github-copilot, openai-codex}`
 exactly.
 
+### Sprint 6d amendment (RPC mode JSONL protocol, 2026-05-19)
+
+Sprint 6d adds the RPC mode surface (JSONL protocol + 29-variant Pi
+RpcCommand union + dispatcher + subprocess client + CLI `--mode rpc`
+flag). The Pi `rpc-mode.ts` / `rpc-client.ts` / `rpc-types.ts` /
+`jsonl.ts` files at this pin total ~1,155 LOC.
+
+| Component | Status | Owner ADR |
+|---|---|---|
+| `aelix_coding_agent.rpc._jsonl` (LF framing + StringDecoder + CR strip + tail emit) | shipped | ADR-0056 |
+| `aelix_coding_agent.rpc.rpc_types` (29-variant RpcCommand + envelope + SessionState + 9-method UI request + 3-shape UI response) | shipped | ADR-0057 |
+| `aelix_coding_agent.rpc.rpc_mode` (9 supported handlers + 20 deferred error stubs + event pipe + signal handlers) | shipped | ADR-0058 |
+| `aelix_coding_agent.rpc.rpc_client` (subprocess wrapper + 29-method command surface + `wait_for_idle`/`collect_events`/`prompt_and_wait`) | shipped | ADR-0058 |
+| CLI `--mode {interactive,rpc}` flag | shipped | ADR-0058 |
+| `AgentHarness` public properties (`pending_message_count` / `session_file` / `session_name` / `steering_mode` / `follow_up_mode`) | shipped | ADR-0058 |
+| Sub-sprints 6e (ModelRegistry / extension+skill aggregation) + 6f (steer/follow_up / session-tree / bash cancel / UI bridge) | deferred | ADR-0058 |
+
+Sprint 6d is **9 of 29** RpcCommand variants live. The 20 deferred
+commands remain in `rpc_mode.DEFERRED_COMMANDS` per ADR-0058
+forward-compat clause; the closure pin
+(`tests/pi_parity/test_phase_4_4_strict_superset.py`) asserts
+`SUPPORTED_COMMANDS ∪ DEFERRED_COMMANDS == RPC_COMMAND_TYPES` and
+`len(RPC_COMMAND_TYPES) == 29`.
+
 ## Consequences
 
 - Parity audits become reproducible — the W5 audit lane can `git checkout`

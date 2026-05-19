@@ -1,7 +1,23 @@
 # 0020. RPC Mode for Multi-Language Clients
 
-Status: Draft (Phase 4)
+Status: Accepted (Sprint 6d / Phase 4.4 / W6 shipped)
 Supersedes (partial): ADR-0009 ("future RPC ADR" indefinite deferral)
+
+## Sprint 6d closure (2026-05-19)
+
+Sprint 6d shipped the JSONL protocol + RpcCommand/Response/SessionState
+types + rpc_mode dispatcher + RpcClient subprocess wrapper + CLI
+`--mode rpc` flag. **9 commands** wired directly to the existing
+`AgentHarness` surface; **20 commands** ship as Pi-shape
+`RpcErrorResponse` stubs per the `DEFERRED_COMMANDS` allowlist
+(ADR-0058). Sub-sprints 6e (ModelRegistry + extension/skill aggregation)
+and 6f (steer/follow_up paths + session tree navigation + bash
+cancellation + extension UI bridge) close the remaining 20-command
+surface.
+
+The Pi parity invariant (live + deferred == 29) is mechanically enforced
+by `tests/pi_parity/test_phase_4_4_strict_superset.py` (ADR-0058 closure
+pin).
 
 ## Context
 
