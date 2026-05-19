@@ -458,6 +458,10 @@ def _model_to_dict(model: Model) -> dict[str, Any]:
         "reasoning": model.reasoning,
         "baseUrl": model.base_url,
         "input": list(model.input),
+        # Sprint 6f W6 (P-178): include ``headers`` when present. Pi
+        # ``Model.headers?`` is optional; omit the key entirely (matches
+        # ``JSON.stringify`` undefined-skip) when value is None.
+        **({"headers": dict(model.headers)} if model.headers else {}),
     }
 
 

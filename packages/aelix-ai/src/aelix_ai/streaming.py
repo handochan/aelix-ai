@@ -22,11 +22,59 @@ from aelix_ai.messages import AssistantMessage, Message, ToolCallContent
 
 
 @dataclass(frozen=True)
-class Cost:
+class ModelCost:
+    """Pi parity: ``ai/src/types.ts::Model.cost`` (Sprint 6f — ADR-0064).
+
+    Costs are per **million tokens** (matches Pi's ``cost.X / 1_000_000``
+    formula in :func:`aelix_ai.models.calculate_cost`). Sprint 6f renamed
+    the class from ``Cost`` to ``ModelCost`` to match Pi's nominal type
+    ``Model.cost`` (Pi ``models.ts:39-46``); the original ``Cost`` alias
+    is preserved below for back-compat with Sprint 6a/6b code.
+    """
+
     input: float = 0.0
     output: float = 0.0
     cache_read: float = 0.0
     cache_write: float = 0.0
+
+
+# Sprint 6f back-compat alias — Sprint 6a/6b callers imported ``Cost``.
+Cost = ModelCost
+
+
+@dataclass
+class UsageCost:
+    """Pi parity: ``ai/src/types.ts::Usage.cost`` — per-call resolved cost.
+
+    Sprint 6f adds this distinct from :class:`ModelCost`: :class:`ModelCost`
+    holds the **per-million** rate stored on :class:`Model`, while
+    :class:`UsageCost` holds the **resolved** cost computed by
+    :func:`aelix_ai.models.calculate_cost`. Fields are MUTABLE so the
+    calculate_cost helper can mutate in-place matching Pi behavior
+    (Pi assigns to ``usage.cost.X`` directly).
+    """
+
+    input: float = 0.0
+    output: float = 0.0
+    cache_read: float = 0.0
+    cache_write: float = 0.0
+    total: float = 0.0
+
+
+@dataclass
+class Usage:
+    """Pi parity: ``ai/src/types.ts::Usage`` (Sprint 6f minimal port).
+
+    Carries per-call token counts + the resolved :class:`UsageCost`. Sprint
+    6f adds the minimal shape required by :func:`aelix_ai.models.calculate_cost`;
+    Sprint 6g+ adapters can extend this with provider-specific fields.
+    """
+
+    input: int = 0
+    output: int = 0
+    cache_read: int = 0
+    cache_write: int = 0
+    cost: UsageCost = field(default_factory=UsageCost)
 
 
 @dataclass(frozen=True)
@@ -36,6 +84,10 @@ class Model:
     Note: ``api`` is a runtime string, not a static generic parameter (see
     F-8 in ``ExtensionContext.model`` docstring). Use ``match model.api:`` for
     narrowing.
+
+    Sprint 6f (ADR-0064): added :attr:`thinking_level_map`. The existing
+    ``cost`` / ``context_window`` / ``max_tokens`` fields already existed in
+    Sprint 6b; Sprint 6f formalizes them against Pi ``Model`` shape.
     """
 
     id: str = "unknown"
@@ -45,9 +97,23 @@ class Model:
     base_url: str = ""
     reasoning: bool = False
     input: list[str] = field(default_factory=list)  # e.g. ["text", "image"]
-    cost: Cost = field(default_factory=Cost)
+    cost: ModelCost = field(default_factory=ModelCost)
     context_window: int = 0
     max_tokens: int = 0
+    # Sprint 6f (ADR-0064): per-level thinking budget map. Pi
+    # ``Model.thinkingLevelMap?: { [level: string]: string | number | null }``.
+    # ``None`` value at a level means "NOT supported"; absent key means
+    # "no mapping" (falls back to forward/backward clamp scan in
+    # :func:`aelix_ai.models.clamp_thinking_level`). ADDITIVE default
+    # :data:`None` preserves Sprint 6a/6b/6c/6d/6e behavior.
+    thinking_level_map: dict[str, str | int | None] | None = None
+    # Sprint 6f W6 (P-178): per-model HTTP header overrides. Pi
+    # ``Model.headers?: Record<string, string>`` (types.ts:549). Used by
+    # provider adapters to inject API-specific headers (e.g., Copilot
+    # ``Editor-Version``). ADDITIVE default :data:`None` preserves
+    # Sprint 6a/6b/6c/6d/6e behavior. Wire-serialized by
+    # :func:`aelix_coding_agent.rpc.rpc_mode._model_to_dict` when non-None.
+    headers: dict[str, str] | None = None
 
 
 @dataclass(frozen=True)
@@ -375,7 +441,10 @@ __all__ = [
     "Context",
     "Cost",
     "Model",
+    "ModelCost",
     "ProviderResponse",
+    "Usage",
+    "UsageCost",
     "SimpleStreamOptions",
     "StreamFn",
     "StreamSimpleError",
