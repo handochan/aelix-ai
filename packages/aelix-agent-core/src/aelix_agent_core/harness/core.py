@@ -433,6 +433,29 @@ class _MessageQueue:
     def clear(self) -> None:
         self._messages = []
 
+    def set_mode(self, mode: QueueMode) -> None:
+        """Pi parity: queue mode mutator. No emit (setter-no-emit P-4).
+
+        Sprint 6h₂ (P-253): mode changes must propagate to the existing
+        queue instance so the dispatcher drains with the new mode. The
+        :meth:`AgentHarness.set_steering_mode` /
+        :meth:`AgentHarness.set_follow_up_mode` setters call this helper
+        in addition to writing :attr:`AgentState.steering_mode` /
+        :attr:`AgentState.follow_up_mode`.
+
+        Sprint 6h₂ W6 (P-265 BLOCKING): defensive runtime check — Pi's
+        TS type narrows ``mode`` at compile time; Aelix mirrors via
+        :exc:`ValueError` so a buggy direct caller (bypassing the
+        harness setters) still trips fast rather than corrupting the
+        queue dispatcher.
+        """
+
+        if mode not in ("all", "one-at-a-time"):
+            raise ValueError(
+                f"queue mode must be 'all' or 'one-at-a-time', got {mode!r}"
+            )
+        self.mode = mode
+
 
 class AgentHarness:
     """Hook-aware orchestrator built on top of :func:`agent_loop`.
@@ -577,6 +600,12 @@ class AgentHarness:
 
         self._steering_queue = _MessageQueue(options.steering_mode)
         self._follow_up_queue = _MessageQueue(options.follow_up_mode)
+        # Sprint 6h₂ (P-248): keep ``state.steering_mode`` /
+        # ``state.follow_up_mode`` aligned with the constructed queue modes
+        # so the public properties and the new sync setters share the
+        # same source of truth from start.
+        self._state.steering_mode = options.steering_mode
+        self._state.follow_up_mode = options.follow_up_mode
         # Sprint 3b — next_turn queue + pending_session_writes (Pi parity,
         # agent-harness.ts:172 + 466-472).
         self._next_turn_queue: list[AgentMessage] = []
@@ -700,6 +729,31 @@ class AgentHarness:
         return (
             "all" if self._follow_up_queue.mode == "all" else "one-at-a-time"
         )
+
+    @property
+    def auto_compaction_enabled(self) -> bool:
+        """Pi parity: ``session.autoCompactionEnabled``.
+
+        Sprint 6h₂ (P-252): real-source accessor used by the RPC
+        ``_handle_get_state`` handler — replaces the Sprint 6d hardcoded
+        ``True``. Toggled via :meth:`set_auto_compaction_enabled`.
+        """
+
+        return self._state.auto_compaction_enabled
+
+    @property
+    def auto_retry_enabled(self) -> bool:
+        """Pi parity: ``session.autoRetryEnabled``
+        (``agent-session.ts:2536-2538``).
+
+        Sprint 6h₂ W6 (P-264 BLOCKING): real-source accessor symmetric
+        with :attr:`auto_compaction_enabled`. The RPC
+        :class:`RpcSessionState` wire surface gains
+        ``autoRetryEnabled`` this sprint so clients can observe the
+        toggle set via :meth:`set_auto_retry_enabled`.
+        """
+
+        return self._state.auto_retry_enabled
 
     # === Sprint 6h₁ (ADR-0069) — extension/template/skill aggregation ===
     # Pi parity: ``session.extensionRunner`` / ``session.promptTemplates`` /
@@ -894,19 +948,57 @@ class AgentHarness:
                 self._idle_event.set()
             raise
 
-    async def steer(self, text: str) -> None:
+    async def steer(
+        self,
+        text: str,
+        *,
+        images: list[ImageContent] | None = None,
+    ) -> None:
+        """Pi parity: ``session.steer(message, images)``
+        (``rpc-mode.ts:483-486`` + ``agent-session.ts:1181-1192``).
+
+        Sprint 6h₂ (P-246): accept optional ``images`` parameter. When
+        supplied, the enqueued :class:`UserMessage` content carries both
+        the :class:`TextContent` and the supplied :class:`ImageContent`
+        blocks. Existing callers passing only ``text`` continue to work.
+
+        Sprint 6h₂ W6 (P-263 MAJOR): ``images`` is keyword-only — Pi's
+        TS signature pairs the argument by position behind the message
+        string, but the Aelix surface is freshly introduced this sprint
+        and has no positional callers to migrate. Forcing the keyword
+        avoids silent typo bugs (e.g. ``steer(images_list)`` mistakenly
+        coerced into ``text``).
+        """
+
         # D.1.10: enqueue regardless of phase — Pi parity.
-        self._steering_queue.enqueue(
-            UserMessage(content=[TextContent(text=text)])
-        )
+        content: list[Any] = [TextContent(text=text)]
+        if images:
+            content.extend(images)
+        self._steering_queue.enqueue(UserMessage(content=content))
         # Sprint 3b — enqueue paths emit ``queue_update`` (P-4: setters do
         # NOT, only enqueue paths do). Pi: ``agent-harness.ts`` steer path.
         await self._emit_queue_update()
 
-    async def follow_up(self, text: str) -> None:
-        self._follow_up_queue.enqueue(
-            UserMessage(content=[TextContent(text=text)])
-        )
+    async def follow_up(
+        self,
+        text: str,
+        *,
+        images: list[ImageContent] | None = None,
+    ) -> None:
+        """Pi parity: ``session.followUp(message, images)``
+        (``rpc-mode.ts:488-491`` + ``agent-session.ts:1206-1215``).
+
+        Sprint 6h₂ (P-246): accept optional ``images`` parameter — mirrors
+        :meth:`steer` for the follow-up queue.
+
+        Sprint 6h₂ W6 (P-263 MAJOR): ``images`` is keyword-only — see
+        :meth:`steer` for the rationale.
+        """
+
+        content: list[Any] = [TextContent(text=text)]
+        if images:
+            content.extend(images)
+        self._follow_up_queue.enqueue(UserMessage(content=content))
         await self._emit_queue_update()
 
     async def abort(self) -> None:
@@ -1319,19 +1411,138 @@ class AgentHarness:
 
         self._action_set_active_tools(tool_names)
 
-    async def set_steering_mode(self, mode: QueueMode) -> None:
-        """Update the steering queue mode. Pi: ``agent-harness.ts:743-745``.
+    def set_steering_mode(self, mode: str) -> None:
+        """Pi parity: ``session.setSteeringMode``
+        (``rpc-mode.ts:498-501`` + ``agent-session.ts:1587-1592``).
 
-        No event emitted — Pi parity (setters do NOT emit ``queue_update``;
-        only enqueue paths do — P-4 verdict).
+        Sprint 6h₂ (P-248 / P-253): sync setter — runtime-validates the
+        ``mode`` argument (Pi narrows at compile time; Aelix mirrors via
+        :exc:`ValueError`). Updates :attr:`AgentState.steering_mode` AND
+        the existing :class:`_MessageQueue` instance's mode via
+        :meth:`_MessageQueue.set_mode` so subsequent drains observe the
+        new mode immediately.
+
+        No event emitted — Pi parity (P-4 setter-no-emit rule).
+
+        Sprint 6h₂ W6 (W4 LOW-3): post-validation, the local ``mode`` is
+        narrowed via :func:`typing.cast` to :class:`QueueMode` so the
+        downstream assignments stay type-checker-clean without
+        ``type: ignore`` comments.
         """
 
-        self._steering_queue.mode = mode
+        from typing import cast
 
-    async def set_follow_up_mode(self, mode: QueueMode) -> None:
-        """Update the follow-up queue mode. Pi: ``agent-harness.ts:747-749``."""
+        if mode not in ("all", "one-at-a-time"):
+            raise ValueError(
+                f"steering_mode must be 'all' or 'one-at-a-time', got {mode!r}"
+            )
+        narrowed = cast(QueueMode, mode)
+        self._state.steering_mode = narrowed
+        self._steering_queue.set_mode(narrowed)
 
-        self._follow_up_queue.mode = mode
+    def set_follow_up_mode(self, mode: str) -> None:
+        """Pi parity: ``session.setFollowUpMode``
+        (``rpc-mode.ts:503-506`` + ``agent-session.ts:1594-1599``).
+
+        Sprint 6h₂ (P-248 / P-253): sync setter — see
+        :meth:`set_steering_mode` for the rationale.
+        """
+
+        from typing import cast
+
+        if mode not in ("all", "one-at-a-time"):
+            raise ValueError(
+                f"follow_up_mode must be 'all' or 'one-at-a-time', got {mode!r}"
+            )
+        narrowed = cast(QueueMode, mode)
+        self._state.follow_up_mode = narrowed
+        self._follow_up_queue.set_mode(narrowed)
+
+    async def cycle_thinking_level(self) -> str | None:
+        """Pi parity: ``session.cycleThinkingLevel``
+        (``rpc-mode.ts:486-490`` + ``agent-session.ts:1537-1548``).
+
+        Sprint 6h₂ (P-247): rotates through
+        :func:`aelix_ai.models.get_supported_thinking_levels` for the
+        :attr:`current_model`. Returns the new level (persisted via
+        :meth:`set_thinking_level`) or :data:`None` when the model does
+        not support reasoning.
+
+        Sprint 6h₂ W6 (P-254 BLOCKING): Pi
+        ``agent-session.ts:1539`` short-circuits on ``!supportsThinking()``
+        (``!!this.model?.reasoning``). The prior Aelix gate
+        ``len(levels) <= 1`` happened to match for non-reasoning models
+        (which collapse to ``["off"]``) but FAILED for a reasoning model
+        with a degenerate ``thinking_level_map`` whose single non-null
+        entry collapses ``levels`` to length 1 — Pi rotates (idx wraps
+        ``(0+1)%1 = 0``) and returns the single level, while Aelix
+        silently returned :data:`None`. Replace the length guard with
+        Pi's ``reasoning`` guard so the rotation semantics align byte-
+        for-byte.
+
+        ``async def`` because :meth:`set_thinking_level` is async — the
+        RPC handler awaits this method.
+        """
+
+        from aelix_ai.models import get_supported_thinking_levels
+
+        model = self.current_model
+        # Pi parity (P-254): ``agent-session.ts:1539`` ``supportsThinking()``
+        # short-circuit (``!!this.model?.reasoning``). No model → no
+        # reasoning support → nothing to cycle.
+        if model is None or not getattr(model, "reasoning", False):
+            return None
+        levels = get_supported_thinking_levels(model)
+        if not levels:
+            return None
+        current = self._state.thinking_level or "off"
+        idx = levels.index(current) if current in levels else 0
+        next_level = levels[(idx + 1) % len(levels)]
+        await self.set_thinking_level(next_level)
+        return next_level
+
+    def set_auto_compaction_enabled(self, enabled: bool) -> None:
+        """Pi parity: ``session.setAutoCompactionEnabled``
+        (``rpc-mode.ts:516-519`` + ``agent-session.ts:2026-2034``).
+
+        Sprint 6h₂ (P-249): state-only setter — the auto-compaction
+        trigger itself lands in a later sprint. P-4 setter-no-emit.
+        """
+
+        self._state.auto_compaction_enabled = bool(enabled)
+
+    def set_auto_retry_enabled(self, enabled: bool) -> None:
+        """Pi parity: ``session.setAutoRetryEnabled``
+        (``rpc-mode.ts:525-528`` + ``agent-session.ts:2540-2545``).
+
+        Sprint 6h₂ (P-249): state-only setter — the retry loop itself
+        lands in Sprint 6h₃+. P-4 setter-no-emit.
+        """
+
+        self._state.auto_retry_enabled = bool(enabled)
+
+    def abort_retry(self) -> None:
+        """Pi parity: ``session.abortRetry``
+        (``rpc-mode.ts:530-533`` + ``agent-session.ts:2511-2516``).
+
+        Sprint 6h₂ (P-250): the Aelix retry loop is not yet ported; this
+        setter persists the cancel intent (``_state.retry_aborted=True``)
+        for the future Sprint 6h₃+ retry-loop port. P-4 setter-no-emit.
+        """
+
+        self._state.retry_aborted = True
+
+    def abort_bash(self) -> None:
+        """Pi parity: ``session.abortBash``
+        (``rpc-mode.ts:544-547`` + ``agent-session.ts:2622-2625``).
+
+        Sprint 6h₂ (P-250): the Sprint 5b bash tool does not yet honor a
+        cancellation token; this setter persists the cancel intent
+        (``_state.bash_aborted=True``) so a future bash hardening sprint
+        can poll the flag. P-4 setter-no-emit.
+        """
+
+        self._state.bash_aborted = True
 
     async def set_resources(self, resources: dict[str, Any]) -> None:
         """Replace the resources dict. Pi: ``agent-harness.ts:751-760``.

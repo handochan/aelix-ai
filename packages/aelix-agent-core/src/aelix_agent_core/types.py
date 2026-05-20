@@ -87,6 +87,20 @@ class AgentState:
     # attached. ``None`` when no session is wired (Aelix-additive
     # backward-compat fallback per ADR-0022).
     session_id: str | None = None
+    # Sprint 6h₂ (P-248): mode setters persist into AgentState in
+    # addition to mutating the queue instances. The QueueMode literal
+    # values match Pi ``rpc-types.ts:90-103``.
+    steering_mode: str = "one-at-a-time"
+    follow_up_mode: str = "one-at-a-time"
+    # Sprint 6h₂ (P-249): auto-mode flags. Pi default is ``True`` per
+    # fixture ``pi_rpc_mode_734e08e.json:rpc_session_state_shape``.
+    auto_compaction_enabled: bool = True
+    auto_retry_enabled: bool = True
+    # Sprint 6h₂ (P-250): best-effort cancellation flags. ``abort_retry``
+    # and ``abort_bash`` set these so a future retry-loop port and the
+    # Sprint 5b bash tool can poll the intent.
+    retry_aborted: bool = False
+    bash_aborted: bool = False
 
 
 # === Hook contexts and results ===

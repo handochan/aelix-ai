@@ -103,9 +103,11 @@ async def _call_setter(h: AgentHarness, aelix_name: str) -> None:
     elif aelix_name == "set_active_tools":
         await h.set_active_tools(["a"])
     elif aelix_name == "set_steering_mode":
-        await h.set_steering_mode("all")
+        # Sprint 6h₂ (P-248): sync setter.
+        h.set_steering_mode("all")
     elif aelix_name == "set_follow_up_mode":
-        await h.set_follow_up_mode("all")
+        # Sprint 6h₂ (P-248): sync setter.
+        h.set_follow_up_mode("all")
     elif aelix_name == "set_resources":
         await h.set_resources({"k": 1})
     elif aelix_name == "set_stream_options":

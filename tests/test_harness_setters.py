@@ -258,12 +258,16 @@ async def test_set_active_tools_during_turn_does_NOT_push_p11_reversal() -> None
 
 
 async def test_set_steering_mode_flips_mode() -> None:
+    """Sprint 6h₂ (P-248): sync setter — Pi parity ``rpc-mode.ts:585-588``."""
+
     h = AgentHarness(
         AgentHarnessOptions(steering_mode="one-at-a-time", stream_fn=_stream())
     )
     assert h._steering_queue.mode == "one-at-a-time"
-    await h.set_steering_mode("all")
+    h.set_steering_mode("all")
     assert h._steering_queue.mode == "all"
+    # P-248: state field also updated.
+    assert h.state.steering_mode == "all"
 
 
 async def test_set_steering_mode_no_event_pi_parity() -> None:
@@ -271,7 +275,7 @@ async def test_set_steering_mode_no_event_pi_parity() -> None:
     seen: list[Any] = []
     for name in ("queue_update", "save_point", "settled"):
         h.hooks.on(name, lambda e, _c, _s=seen: _s.append(e))  # type: ignore[arg-type, call-overload]
-    await h.set_steering_mode("all")
+    h.set_steering_mode("all")
     assert seen == []
 
 
@@ -279,12 +283,16 @@ async def test_set_steering_mode_no_event_pi_parity() -> None:
 
 
 async def test_set_follow_up_mode_flips_mode() -> None:
+    """Sprint 6h₂ (P-248): sync setter — Pi parity ``rpc-mode.ts:590-593``."""
+
     h = AgentHarness(
         AgentHarnessOptions(follow_up_mode="one-at-a-time", stream_fn=_stream())
     )
     assert h._follow_up_queue.mode == "one-at-a-time"
-    await h.set_follow_up_mode("all")
+    h.set_follow_up_mode("all")
     assert h._follow_up_queue.mode == "all"
+    # P-248: state field also updated.
+    assert h.state.follow_up_mode == "all"
 
 
 async def test_set_follow_up_mode_no_event_pi_parity() -> None:
@@ -292,7 +300,7 @@ async def test_set_follow_up_mode_no_event_pi_parity() -> None:
     seen: list[Any] = []
     for name in ("queue_update", "save_point", "settled"):
         h.hooks.on(name, lambda e, _c, _s=seen: _s.append(e))  # type: ignore[arg-type, call-overload]
-    await h.set_follow_up_mode("all")
+    h.set_follow_up_mode("all")
     assert seen == []
 
 
