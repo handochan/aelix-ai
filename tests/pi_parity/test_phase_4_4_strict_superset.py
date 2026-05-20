@@ -66,6 +66,7 @@ def test_supported_plus_deferred_covers_pi() -> None:
 
     Sprint 6f W2 (ADR-0065): counts moved to 12 supported + 17 deferred.
     Sprint 6h₁ (ADR-0069) bumps to 13 supported + 16 deferred = 29.
+    Sprint 6h₂ (ADR-0071) wires 9 more: 22 supported + 7 deferred = 29.
     Sprint 6d originally shipped 9 supported + 20 deferred.
 
     The spec preamble cites "28" as a counting error; the fixture's
@@ -74,23 +75,26 @@ def test_supported_plus_deferred_covers_pi() -> None:
 
     assert SUPPORTED_COMMANDS.isdisjoint(set(DEFERRED_COMMANDS.keys()))
     assert SUPPORTED_COMMANDS | set(DEFERRED_COMMANDS.keys()) == RPC_COMMAND_TYPES
-    # W4 M2 / P-121 + Sprint 6f W2 + Sprint 6h₁ — explicit count
-    # assertion so a future PR that adds a command without updating
-    # both sets trips immediately. Sprint 6h₁ (ADR-0069 / P-219) wires
-    # ``get_commands``, dropping deferred from 17 → 16 and bumping
-    # supported from 12 → 13.
+    # W4 M2 / P-121 + Sprint 6f W2 + Sprint 6h₁ + Sprint 6h₂ — explicit
+    # count assertion so a future PR that adds a command without
+    # updating both sets trips immediately. Sprint 6h₂ (ADR-0071 /
+    # P-245~P-253) wires 9 new commands, dropping deferred from 16 → 7
+    # and bumping supported from 13 → 22.
     assert len(RPC_COMMAND_TYPES) == 29
-    assert len(SUPPORTED_COMMANDS) == 13
-    assert len(DEFERRED_COMMANDS) == 16
+    assert len(SUPPORTED_COMMANDS) == 22
+    assert len(DEFERRED_COMMANDS) == 7
 
 
 def test_supported_commands_match_p107_table() -> None:
-    """Pi parity (P-107 + Sprint 6f W2 P-168/P-169 + Sprint 6h₁ P-219):
-    commands the existing Aelix harness can satisfy.
+    """Pi parity (P-107 + Sprint 6f W2 P-168/P-169 + Sprint 6h₁ P-219 +
+    Sprint 6h₂ P-245~P-253): commands the existing Aelix harness can
+    satisfy.
 
     Sprint 6f W2 (ADR-0065) adds set_model / cycle_model /
     get_available_models on top of the Sprint 6d 9-command set.
-    Sprint 6h₁ (ADR-0069) adds get_commands.
+    Sprint 6h₁ (ADR-0069) adds get_commands. Sprint 6h₂ (ADR-0071)
+    adds 9 more (steer / follow_up / cycle_thinking_level / mode
+    setters / auto-mode flags / abort_retry / abort_bash).
     """
 
     expected = {
@@ -109,17 +113,33 @@ def test_supported_commands_match_p107_table() -> None:
         "get_available_models",
         # Sprint 6h₁ (ADR-0069 / P-219).
         "get_commands",
+        # Sprint 6h₂ (ADR-0071 / P-245~P-253) — 9 new wired commands.
+        "steer",
+        "follow_up",
+        "cycle_thinking_level",
+        "set_steering_mode",
+        "set_follow_up_mode",
+        "set_auto_compaction",
+        "set_auto_retry",
+        "abort_retry",
+        "abort_bash",
     }
     assert expected == SUPPORTED_COMMANDS
 
 
 def test_deferred_commands_cover_remaining_pi_set() -> None:
-    """Every Pi variant not in SUPPORTED is in DEFERRED with an ADR owner."""
+    """Every Pi variant not in SUPPORTED is in DEFERRED with an ADR owner.
+
+    Sprint 6h₂ (ADR-0072) restated the 7 carry-forward ADR owners from
+    ADR-0058 → ADR-0072 (session-tree + session-inspection commands).
+    Accept either prefix so closure-pin runs across the transition stay
+    deterministic.
+    """
 
     remaining = RPC_COMMAND_TYPES - SUPPORTED_COMMANDS
     assert set(DEFERRED_COMMANDS.keys()) == remaining
     for owner in DEFERRED_COMMANDS.values():
-        assert "ADR-0058" in owner
+        assert "ADR-0058" in owner or "ADR-0072" in owner
 
 
 # === §B — Dispatch table closure ==============================================
@@ -189,11 +209,14 @@ def test_jsonl_reader_emits_tail_on_end() -> None:
     assert received == ["partial"]
 
 
-# === §D — RpcSessionState 12-field shape (Pi rpc-types.ts:90-103) =============
+# === §D — RpcSessionState 13-field shape (Pi rpc-types.ts:90-103) =============
+# Sprint 6h₂ (P-264) extended the wire shape 12 → 13 by adding
+# ``auto_retry_enabled``, symmetric with ``auto_compaction_enabled``.
 
 
-def test_rpc_session_state_has_pi_12_fields() -> None:
-    """Pi shape: 12 named fields, camelCase on the wire."""
+def test_rpc_session_state_has_pi_13_fields() -> None:
+    """Pi shape: 13 named fields, camelCase on the wire (Sprint 6h₂
+    P-264 added ``auto_retry_enabled``)."""
 
     fixture = _load_fixture()
     pi_fields = set(fixture["rpc_session_state_shape"].keys())

@@ -52,9 +52,11 @@
     "session_id": "str",
     "session_name": "str | None",
     "auto_compaction_enabled": "bool",
+    "auto_retry_enabled": "bool",
     "message_count": "int",
     "pending_message_count": "int"
   },
+  "rpc_session_state_shape_doc": "Sprint 6h₂ (P-264) extended the wire surface 12 → 13 fields by adding auto_retry_enabled, symmetric with auto_compaction_enabled. Pi's session.autoRetryEnabled lives at agent-session.ts:2536-2538 at SHA 734e08e.",
   "rpc_extension_ui_request_methods": [
     "select", "confirm", "input", "editor", "notify", "setStatus", "setWidget", "setTitle", "set_editor_text"
   ],

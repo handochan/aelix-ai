@@ -84,15 +84,23 @@ def test_get_commands_is_supported() -> None:
 
 
 def test_supported_count_is_thirteen() -> None:
-    """Sprint 6h₁: 12 → 13 supported."""
+    """Sprint 6h₁: 12 → 13 supported.
 
-    assert len(SUPPORTED_COMMANDS) == 13
+    Sprint 6h₂ (ADR-0071 / P-245~P-253) wires 9 more → 13 → 22 supported.
+    Closure pin retains the original name; the assertion follows the
+    live count so future drift trips mechanically.
+    """
+
+    assert len(SUPPORTED_COMMANDS) == 22
 
 
 def test_deferred_count_is_sixteen() -> None:
-    """Sprint 6h₁: 17 → 16 deferred."""
+    """Sprint 6h₁: 17 → 16 deferred.
 
-    assert len(DEFERRED_COMMANDS) == 16
+    Sprint 6h₂ (ADR-0071 / P-245~P-253) drops 9 more → 16 → 7 deferred.
+    """
+
+    assert len(DEFERRED_COMMANDS) == 7
 
 
 def test_supported_plus_deferred_still_covers_pi() -> None:

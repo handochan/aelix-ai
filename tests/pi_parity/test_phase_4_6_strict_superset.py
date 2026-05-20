@@ -147,22 +147,28 @@ def test_three_model_commands_now_supported() -> None:
     assert "get_available_models" in SUPPORTED_COMMANDS
 
 
-def test_deferred_count_dropped_to_16_by_sprint_6h() -> None:
-    """Sprint 6f W2 (ADR-0065): 20 → 17 deferred.
+def test_deferred_count_by_sprint_6h_2() -> None:
+    """W4 NIT (Sprint 6h₂ W6): drop counts from the test name — the
+    name carries the lineage, the body carries the current invariant.
 
+    Sprint 6f W2 (ADR-0065): 20 → 17 deferred.
     Sprint 6h₁ (ADR-0069 / P-219) drops ``get_commands`` → 17 → 16.
+    Sprint 6h₂ (ADR-0071 / P-245~P-253) drops 9 more → 16 → 7.
     """
 
-    assert len(DEFERRED_COMMANDS) == 16
+    assert len(DEFERRED_COMMANDS) == 7
 
 
-def test_supported_count_grew_to_13_by_sprint_6h() -> None:
-    """Sprint 6f W2 (ADR-0065): 9 → 12 supported.
+def test_supported_count_by_sprint_6h_2() -> None:
+    """W4 NIT (Sprint 6h₂ W6): drop counts from the test name — the
+    name carries the lineage, the body carries the current invariant.
 
+    Sprint 6f W2 (ADR-0065): 9 → 12 supported.
     Sprint 6h₁ (ADR-0069 / P-219) adds ``get_commands`` → 12 → 13.
+    Sprint 6h₂ (ADR-0071 / P-245~P-253) adds 9 more → 13 → 22.
     """
 
-    assert len(SUPPORTED_COMMANDS) == 13
+    assert len(SUPPORTED_COMMANDS) == 22
     assert "get_commands" in SUPPORTED_COMMANDS
 
 
