@@ -104,7 +104,10 @@ async def test_handle_new_session_returns_cancelled_false() -> None:
     await harness.dispose()
 
 
-async def test_handle_get_state_returns_12_field_pi_shape() -> None:
+async def test_handle_get_state_returns_13_field_pi_shape() -> None:
+    """Sprint 6h₂ (P-264): wire shape grows 12 → 13 with
+    ``autoRetryEnabled``."""
+
     harness = _make_harness()
     cmd = RpcCommandGetState(id="r4")
     response = await _handle_get_state(harness, cmd)
@@ -123,6 +126,7 @@ async def test_handle_get_state_returns_12_field_pi_shape() -> None:
         "sessionId",
         "sessionName",
         "autoCompactionEnabled",
+        "autoRetryEnabled",
         "messageCount",
         "pendingMessageCount",
     }

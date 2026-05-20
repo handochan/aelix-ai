@@ -201,7 +201,8 @@ def test_rpc_session_state_to_from_json_round_trip() -> None:
 
 
 def test_rpc_session_state_default_to_json_shape_matches_pi() -> None:
-    """A default RpcSessionState produces the 12-field Pi camelCase shape."""
+    """A default RpcSessionState produces the 13-field Pi camelCase
+    shape — Sprint 6h₂ (P-264) added ``autoRetryEnabled``."""
 
     wire = RpcSessionState().to_json()
     expected_keys = {
@@ -215,6 +216,7 @@ def test_rpc_session_state_default_to_json_shape_matches_pi() -> None:
         "sessionId",
         "sessionName",
         "autoCompactionEnabled",
+        "autoRetryEnabled",
         "messageCount",
         "pendingMessageCount",
     }

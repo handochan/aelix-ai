@@ -550,8 +550,12 @@ def parse_rpc_response(payload: dict[str, Any]) -> RpcResponse:
 class RpcSessionState:
     """Pi parity: ``rpc-types.ts:90-103``.
 
-    12 fields total. Pi field names are camelCase on the wire; Aelix uses
-    snake_case in Python and remaps on serialize via :meth:`to_json`.
+    Sprint 6h₂ W6 (P-264 BLOCKING): adds ``auto_retry_enabled`` to the
+    wire surface symmetric with ``auto_compaction_enabled`` so the
+    Pi ``RpcSessionState`` shape stays a strict superset of the harness
+    auto-mode state. Pi field names are camelCase on the wire; Aelix
+    uses snake_case in Python and remaps on serialize via
+    :meth:`to_json`.
     """
 
     session_id: str = ""
@@ -563,6 +567,10 @@ class RpcSessionState:
     message_count: int = 0
     pending_message_count: int = 0
     auto_compaction_enabled: bool = True
+    # Sprint 6h₂ (P-264): Pi default mirrors ``session.autoRetryEnabled``
+    # (``agent-session.ts:2536-2538``) — toggled via the new RPC
+    # ``set_auto_retry`` handler.
+    auto_retry_enabled: bool = True
     model: dict[str, Any] | None = None
     session_file: str | None = None
     session_name: str | None = None
@@ -581,6 +589,7 @@ class RpcSessionState:
             "sessionId": self.session_id,
             "sessionName": self.session_name,
             "autoCompactionEnabled": self.auto_compaction_enabled,
+            "autoRetryEnabled": self.auto_retry_enabled,
             "messageCount": self.message_count,
             "pendingMessageCount": self.pending_message_count,
         }
@@ -600,6 +609,7 @@ class RpcSessionState:
             session_id=payload.get("sessionId", ""),
             session_name=payload.get("sessionName"),
             auto_compaction_enabled=bool(payload.get("autoCompactionEnabled", True)),
+            auto_retry_enabled=bool(payload.get("autoRetryEnabled", True)),
             message_count=int(payload.get("messageCount", 0)),
             pending_message_count=int(payload.get("pendingMessageCount", 0)),
         )

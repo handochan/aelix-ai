@@ -26,7 +26,12 @@ class _StubCommand:
 
 
 async def test_every_deferred_command_returns_error_response() -> None:
-    """Each of the 20 deferred commands maps to an :class:`RpcErrorResponse`."""
+    """Each remaining deferred command maps to an :class:`RpcErrorResponse`.
+
+    Sprint 6h₂ (ADR-0071 / ADR-0072) shrinks the deferred set to the 7
+    session-tree + session-inspection commands; the owner string moved
+    from ADR-0058 to ADR-0072.
+    """
 
     for cmd_type, owner_adr in DEFERRED_COMMANDS.items():
         handler = _make_deferred_handler(cmd_type, owner_adr)
@@ -37,7 +42,7 @@ async def test_every_deferred_command_returns_error_response() -> None:
         assert response.id == f"req-{cmd_type}"
         # ADR string surfaces in the error so consumers can map to the
         # owning sprint without re-reading the spec.
-        assert "ADR-0058" in response.error
+        assert ("ADR-0058" in response.error) or ("ADR-0072" in response.error)
         assert cmd_type in response.error
 
 
@@ -71,10 +76,15 @@ def test_deferred_command_count_matches_spec() -> None:
 
 
 def test_deferred_dict_owner_adr_format() -> None:
-    """All deferred entries cite ADR-0058 (Sprint 6d closure ADR)."""
+    """All deferred entries cite a closure ADR.
+
+    Sprint 6d closure was ADR-0058; Sprint 6h₂ (ADR-0072) re-homed the
+    remaining 7 carry-forward commands. Accept either prefix so the pin
+    remains green across the transition.
+    """
 
     for owner in DEFERRED_COMMANDS.values():
-        assert "ADR-0058" in owner
+        assert ("ADR-0058" in owner) or ("ADR-0072" in owner)
 
 
 def test_full_dispatch_table_deferred_route() -> None:

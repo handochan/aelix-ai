@@ -30,6 +30,20 @@ Sprint 6h₁ (ADR-0069 / P-219) drops 1 entry from
 :data:`DEFERRED_COMMANDS` and adds it to :data:`SUPPORTED_COMMANDS`:
 ``get_commands``. The counts move to **13 supported / 16 deferred /
 29 total**.
+
+Sprint 6h₂ (ADR-0071 / P-245~P-253) wires **9** additional commands:
+``steer`` / ``follow_up`` / ``cycle_thinking_level`` /
+``set_steering_mode`` / ``set_follow_up_mode`` /
+``set_auto_compaction`` / ``set_auto_retry`` / ``abort_retry`` /
+``abort_bash``. The counts move to **22 supported / 7 deferred /
+29 total**. The remaining 7 commands (5 session-tree + 2 session-
+inspection) are owned by ADR-0072 and defer to Sprint 6h₃.
+
+Pi line citations at SHA 734e08e per Sprint 6h₂ W5/W6 audit (P-258):
+the 9 case sites in ``rpc-mode.ts`` live at lines 483-547 (NOT
+528-635 as earlier drafts suggested) and delegate to ``AgentSession``
+methods in ``coding-agent/src/core/agent-session.ts`` — each handler
+docstring below cites BOTH the case site and the session method.
 """
 
 from __future__ import annotations
@@ -42,6 +56,8 @@ import signal
 import sys
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
+
+from aelix_ai.messages import ImageContent
 
 from aelix_coding_agent.rpc._jsonl import (
     JsonlLineReader,
@@ -84,25 +100,16 @@ from aelix_ai.streaming import Model
 # 9 supported + 20 deferred = 29 total (= Pi RpcCommand variant count).
 
 DEFERRED_COMMANDS: dict[str, str] = {
-    "steer": "ADR-0058 — Sprint 6g harness command paths",
-    "follow_up": "ADR-0058 — Sprint 6g harness command paths",
-    "cycle_thinking_level": "ADR-0058 — Sprint 6g",
-    "set_steering_mode": "ADR-0058 — Sprint 6g",
-    "set_follow_up_mode": "ADR-0058 — Sprint 6g",
-    "set_auto_compaction": "ADR-0058 — Sprint 6g",
-    "set_auto_retry": "ADR-0058 — Sprint 6g",
-    "abort_retry": "ADR-0058 — Sprint 6g",
-    "abort_bash": "ADR-0058 — Sprint 6g bash cancellation token",
-    "get_session_stats": "ADR-0058 — Sprint 6g session inspection",
-    "export_html": "ADR-0058 — Sprint 6g session inspection",
-    "switch_session": "ADR-0058 — Sprint 6g session tree navigation",
-    "fork": "ADR-0058 — Sprint 6g session tree navigation",
-    "clone": "ADR-0058 — Sprint 6g session tree navigation",
-    "get_fork_messages": "ADR-0058 — Sprint 6g session tree navigation",
-    "get_last_assistant_text": "ADR-0058 — Sprint 6g session tree navigation",
-    # Sprint 6h₁ (ADR-0069, P-219) wired ``get_commands`` to the harness's
-    # ``extension_runner`` / ``prompt_templates`` / ``skills`` surface;
-    # the entry is no longer deferred.
+    # Sprint 6h₂ (ADR-0071 / P-245~P-253) wired 9 commands to the
+    # harness — the entries below shrink to the 7 session-tree +
+    # session-inspection commands deferred to Sprint 6h₃ per ADR-0072.
+    "get_session_stats": "ADR-0072 — Sprint 6h₃ session inspection",
+    "export_html": "ADR-0072 — Sprint 6h₃ session inspection",
+    "switch_session": "ADR-0072 — Sprint 6h₃ session tree navigation",
+    "fork": "ADR-0072 — Sprint 6h₃ session tree navigation",
+    "clone": "ADR-0072 — Sprint 6h₃ session tree navigation",
+    "get_fork_messages": "ADR-0072 — Sprint 6h₃ session tree navigation",
+    "get_last_assistant_text": "ADR-0072 — Sprint 6h₃ session tree navigation",
 }
 
 
@@ -112,6 +119,9 @@ DEFERRED_COMMANDS: dict[str, str] = {
 # (``tests/pi_parity/test_phase_4_4_strict_superset.py``) asserts the
 # union of ``SUPPORTED_COMMANDS`` and ``DEFERRED_COMMANDS`` equals the
 # 29-element Pi ``RpcCommand`` discriminator set (W4 M2 / P-121).
+# Sprint 6h₂ (ADR-0071) adds 9: steer / follow_up / cycle_thinking_level
+# / set_steering_mode / set_follow_up_mode / set_auto_compaction /
+# set_auto_retry / abort_retry / abort_bash → 13 → 22 supported.
 SUPPORTED_COMMANDS: frozenset[str] = frozenset(
     {
         "prompt",
@@ -129,6 +139,16 @@ SUPPORTED_COMMANDS: frozenset[str] = frozenset(
         "get_available_models",
         # Sprint 6h₁ (ADR-0069 / P-219).
         "get_commands",
+        # Sprint 6h₂ (ADR-0071 / P-245~P-253) — 9 new wired commands.
+        "steer",
+        "follow_up",
+        "cycle_thinking_level",
+        "set_steering_mode",
+        "set_follow_up_mode",
+        "set_auto_compaction",
+        "set_auto_retry",
+        "abort_retry",
+        "abort_bash",
     }
 )
 
@@ -305,11 +325,16 @@ async def _handle_get_state(
         follow_up_mode=harness.follow_up_mode,
         message_count=len(state.messages),
         pending_message_count=harness.pending_message_count,
-        # W4 m1 — Pi parity carry-forward: hardcoded ``True`` until
-        # Sprint 6f wires AutoCompaction state through the harness. See
-        # ``DEFERRED_COMMANDS["set_auto_compaction"]`` for the owning
-        # ADR-0058 entry.
-        auto_compaction_enabled=True,
+        # Sprint 6h₂ (P-252): real source instead of hardcoded True.
+        # The Sprint 6d W4 m1 placeholder is retired — the harness now
+        # exposes ``auto_compaction_enabled`` as a public property
+        # backed by ``AgentState.auto_compaction_enabled`` (toggled via
+        # :meth:`AgentHarness.set_auto_compaction_enabled`).
+        auto_compaction_enabled=harness.auto_compaction_enabled,
+        # Sprint 6h₂ W6 (P-264 BLOCKING): symmetric ``auto_retry_enabled``
+        # surface — RPC clients can now observe the toggle set via the
+        # ``set_auto_retry`` command.
+        auto_retry_enabled=harness.auto_retry_enabled,
         model=model_dict,
         session_file=harness.session_file,
         session_name=harness.session_name,
@@ -786,6 +811,198 @@ async def _handle_get_commands(
     )
 
 
+# === Sprint 6h₂ (ADR-0071, P-245~P-253) — 9 new handlers =====================
+#
+# Pi parity ``rpc-mode.ts:528-635``. Each handler is a thin wrapper
+# around the corresponding harness method. The set_steering_mode /
+# set_follow_up_mode handlers catch :exc:`ValueError` (Pi uses TS narrow
+# types; Aelix runtime-checks) and surface an :class:`RpcErrorResponse`.
+
+
+def _decode_images(
+    payload: list[dict[str, Any]] | None,
+) -> list[ImageContent] | None:
+    """Pi parity: decode the RPC ``images`` wire shape into
+    :class:`ImageContent` instances.
+
+    Sprint 6h₂ (P-251): the RPC layer carries ``images`` as plain
+    ``dict`` records — each entry mirrors the Pi
+    ``ImageContent.{mimeType, data}`` wire shape. Returns :data:`None`
+    when the payload is missing or empty so the harness can fall
+    through to its text-only enqueue path.
+
+    Sprint 6h₂ W6 (P-262 BLOCKING): strict validation — Pi sends
+    ``ImageContent.mimeType`` in camelCase only (Pi TS type narrows at
+    compile time). Missing ``mimeType`` / ``data`` fields raise
+    :exc:`ValueError`; the outer dispatcher surfaces the failure as a
+    Pi-shape :class:`RpcErrorResponse` instead of silently coercing
+    empty strings into the harness queue. W4 LOW-1 also closes here.
+    """
+
+    if not payload:
+        return None
+    decoded: list[ImageContent] = []
+    for i, entry in enumerate(payload):
+        if not isinstance(entry, dict):
+            raise ValueError(
+                f"ImageContent[{i}] must be a dict, got {type(entry).__name__}"
+            )
+        if "mimeType" not in entry or "data" not in entry:
+            raise ValueError(
+                f"ImageContent[{i}] missing required 'mimeType' or 'data' field"
+            )
+        decoded.append(
+            ImageContent(
+                mime_type=str(entry["mimeType"]),
+                data=str(entry["data"]),
+            )
+        )
+    return decoded
+
+
+async def _handle_steer(
+    harness: AgentHarness,
+    cmd: Any,  # ``RpcCommandSteer``
+) -> RpcResponse:
+    """Pi parity: ``rpc-mode.ts:483-486`` ``steer`` handler
+    (delegates to ``agent-session.ts:1181-1192`` ``session.steer``).
+
+    Sprint 6h₂ W6 (P-262 BLOCKING): :func:`_decode_images` strict-
+    validates the wire payload — a malformed ``ImageContent`` entry
+    raises :exc:`ValueError`, which the outer dispatcher surfaces as a
+    Pi-shape ``RpcErrorResponse``.
+    """
+
+    images = _decode_images(cmd.images)
+    await harness.steer(cmd.message, images=images)
+    return RpcSuccessResponse(id=cmd.id, command="steer")
+
+
+async def _handle_follow_up(
+    harness: AgentHarness,
+    cmd: Any,  # ``RpcCommandFollowUp``
+) -> RpcResponse:
+    """Pi parity: ``rpc-mode.ts:488-491`` ``follow_up`` handler
+    (delegates to ``agent-session.ts:1206-1215`` ``session.followUp``)."""
+
+    images = _decode_images(cmd.images)
+    await harness.follow_up(cmd.message, images=images)
+    return RpcSuccessResponse(id=cmd.id, command="follow_up")
+
+
+async def _handle_cycle_thinking_level(
+    harness: AgentHarness,
+    cmd: Any,  # ``RpcCommandCycleThinkingLevel``
+) -> RpcResponse:
+    """Pi parity: ``rpc-mode.ts:486-490`` ``cycle_thinking_level``
+    handler (delegates to ``agent-session.ts:1537-1548``
+    ``session.cycleThinkingLevel``).
+
+    Returns ``data: None`` when the harness has nothing to cycle
+    (``cycle_thinking_level`` returns :data:`None`); otherwise wraps
+    the level in ``{level: <ThinkingLevel>}`` per Pi's response shape.
+    """
+
+    level = await harness.cycle_thinking_level()
+    if level is None:
+        return RpcSuccessResponse(
+            id=cmd.id, command="cycle_thinking_level", data=None
+        )
+    return RpcSuccessResponse(
+        id=cmd.id,
+        command="cycle_thinking_level",
+        data={"level": level},
+    )
+
+
+async def _handle_set_steering_mode(
+    harness: AgentHarness,
+    cmd: Any,  # ``RpcCommandSetSteeringMode``
+) -> RpcResponse:
+    """Pi parity: ``rpc-mode.ts:498-501`` ``set_steering_mode`` handler
+    (delegates to ``agent-session.ts:1587-1592``
+    ``session.setSteeringMode``).
+
+    Sprint 6h₂ W6 (P-261): the runtime validation lives on the harness
+    setter — Pi narrows the ``mode`` argument at compile time, Aelix
+    mirrors via :exc:`ValueError` and the handler surfaces a Pi-shape
+    error envelope. Documented Aelix-additive defense.
+    """
+
+    try:
+        harness.set_steering_mode(cmd.mode)
+    except ValueError as exc:
+        return RpcErrorResponse(
+            id=cmd.id, command="set_steering_mode", error=str(exc)
+        )
+    return RpcSuccessResponse(id=cmd.id, command="set_steering_mode")
+
+
+async def _handle_set_follow_up_mode(
+    harness: AgentHarness,
+    cmd: Any,  # ``RpcCommandSetFollowUpMode``
+) -> RpcResponse:
+    """Pi parity: ``rpc-mode.ts:503-506`` ``set_follow_up_mode`` handler
+    (delegates to ``agent-session.ts:1594-1599``
+    ``session.setFollowUpMode``)."""
+
+    try:
+        harness.set_follow_up_mode(cmd.mode)
+    except ValueError as exc:
+        return RpcErrorResponse(
+            id=cmd.id, command="set_follow_up_mode", error=str(exc)
+        )
+    return RpcSuccessResponse(id=cmd.id, command="set_follow_up_mode")
+
+
+async def _handle_set_auto_compaction(
+    harness: AgentHarness,
+    cmd: Any,  # ``RpcCommandSetAutoCompaction``
+) -> RpcResponse:
+    """Pi parity: ``rpc-mode.ts:516-519`` ``set_auto_compaction``
+    handler (delegates to ``agent-session.ts:2026-2034``
+    ``session.setAutoCompactionEnabled``)."""
+
+    harness.set_auto_compaction_enabled(cmd.enabled)
+    return RpcSuccessResponse(id=cmd.id, command="set_auto_compaction")
+
+
+async def _handle_set_auto_retry(
+    harness: AgentHarness,
+    cmd: Any,  # ``RpcCommandSetAutoRetry``
+) -> RpcResponse:
+    """Pi parity: ``rpc-mode.ts:525-528`` ``set_auto_retry`` handler
+    (delegates to ``agent-session.ts:2540-2545``
+    ``session.setAutoRetryEnabled``)."""
+
+    harness.set_auto_retry_enabled(cmd.enabled)
+    return RpcSuccessResponse(id=cmd.id, command="set_auto_retry")
+
+
+async def _handle_abort_retry(
+    harness: AgentHarness,
+    cmd: Any,  # ``RpcCommandAbortRetry``
+) -> RpcResponse:
+    """Pi parity: ``rpc-mode.ts:530-533`` ``abort_retry`` handler
+    (delegates to ``agent-session.ts:2511-2516``
+    ``session.abortRetry``)."""
+
+    harness.abort_retry()
+    return RpcSuccessResponse(id=cmd.id, command="abort_retry")
+
+
+async def _handle_abort_bash(
+    harness: AgentHarness,
+    cmd: Any,  # ``RpcCommandAbortBash``
+) -> RpcResponse:
+    """Pi parity: ``rpc-mode.ts:544-547`` ``abort_bash`` handler
+    (delegates to ``agent-session.ts:2622-2625``
+    ``session.abortBash``)."""
+
+    harness.abort_bash()
+    return RpcSuccessResponse(id=cmd.id, command="abort_bash")
+
+
 # === Deferred handler factory =================================================
 
 
@@ -802,7 +1019,7 @@ def _make_deferred_handler(
         return RpcErrorResponse(
             id=getattr(cmd, "id", None),
             command=cmd_type,
-            error=f"{cmd_type} not implemented in Sprint 6d ({owner_adr})",
+            error=f"{cmd_type} not implemented ({owner_adr})",
         )
 
     return _handler
@@ -829,6 +1046,17 @@ _SUPPORTED_HANDLERS_HARNESS_ONLY: dict[
     # ``harness.extension_runner`` / ``harness.prompt_templates`` /
     # ``harness.skills`` directly.
     "get_commands": _handle_get_commands,
+    # Sprint 6h₂ (ADR-0071, P-245~P-253) — 9 new handlers; each a thin
+    # wrapper around the corresponding harness method.
+    "steer": _handle_steer,
+    "follow_up": _handle_follow_up,
+    "cycle_thinking_level": _handle_cycle_thinking_level,
+    "set_steering_mode": _handle_set_steering_mode,
+    "set_follow_up_mode": _handle_set_follow_up_mode,
+    "set_auto_compaction": _handle_set_auto_compaction,
+    "set_auto_retry": _handle_set_auto_retry,
+    "abort_retry": _handle_abort_retry,
+    "abort_bash": _handle_abort_bash,
 }
 
 _SUPPORTED_HANDLERS_HARNESS_REGISTRY: dict[
@@ -855,7 +1083,7 @@ def build_dispatch_table(
 ]:
     """Build the full 29-command dispatch table.
 
-    Sprint 6f W2 (ADR-0065): 12 supported + 17 deferred = 29 total.
+    Sprint 6h₂ (ADR-0071): 22 supported + 7 deferred = 29 total.
     Returned fresh on every call so tests can introspect without
     leaking state. The supported handlers are real callables; the
     deferred ones are :func:`_make_deferred_handler` closures.
