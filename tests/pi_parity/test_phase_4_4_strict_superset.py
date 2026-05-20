@@ -69,6 +69,8 @@ def test_supported_plus_deferred_covers_pi() -> None:
     Sprint 6h₂ (ADR-0071) wires 9 more: 22 supported + 7 deferred = 29.
     Sprint 6h₃ (ADR-0073) wires 2 session-inspection commands:
     24 supported + 5 deferred = 29.
+    Sprint 6h₄a (ADR-0075 / ADR-0076) wires 2 session-navigation
+    commands: 26 supported + 3 deferred = 29.
     Sprint 6d originally shipped 9 supported + 20 deferred.
 
     The spec preamble cites "28" as a counting error; the fixture's
@@ -77,14 +79,14 @@ def test_supported_plus_deferred_covers_pi() -> None:
 
     assert SUPPORTED_COMMANDS.isdisjoint(set(DEFERRED_COMMANDS.keys()))
     assert SUPPORTED_COMMANDS | set(DEFERRED_COMMANDS.keys()) == RPC_COMMAND_TYPES
-    # W4 M2 / P-121 + Sprint 6f W2 + Sprint 6h₁ + Sprint 6h₂ + 6h₃ —
-    # explicit count assertion so a future PR that adds a command
-    # without updating both sets trips immediately. Sprint 6h₃
-    # (ADR-0073 / P-268~P-274) wires 2 new commands, dropping
-    # deferred from 7 → 5 and bumping supported from 22 → 24.
+    # W4 M2 / P-121 + Sprint 6f W2 + Sprint 6h₁ + Sprint 6h₂ + 6h₃ + 6h₄a
+    # — explicit count assertion so a future PR that adds a command
+    # without updating both sets trips immediately. Sprint 6h₄a
+    # (ADR-0075 / P-293~P-298) wires 2 new commands, dropping
+    # deferred from 5 → 3 and bumping supported from 24 → 26.
     assert len(RPC_COMMAND_TYPES) == 29
-    assert len(SUPPORTED_COMMANDS) == 24
-    assert len(DEFERRED_COMMANDS) == 5
+    assert len(SUPPORTED_COMMANDS) == 26
+    assert len(DEFERRED_COMMANDS) == 3
 
 
 def test_supported_commands_match_p107_table() -> None:
@@ -128,6 +130,9 @@ def test_supported_commands_match_p107_table() -> None:
         # Sprint 6h₃ (ADR-0073 / P-268~P-274) — 2 session-inspection commands.
         "get_session_stats",
         "export_html",
+        # Sprint 6h₄a (ADR-0075 / P-293~P-298) — 2 session-navigation commands.
+        "get_fork_messages",
+        "get_last_assistant_text",
     }
     assert expected == SUPPORTED_COMMANDS
 
@@ -138,8 +143,10 @@ def test_deferred_commands_cover_remaining_pi_set() -> None:
     Sprint 6h₂ (ADR-0072) restated the 7 carry-forward ADR owners from
     ADR-0058 → ADR-0072.
     Sprint 6h₃ (ADR-0074) restates the remaining 5 session-tree owners
-    ADR-0072 → ADR-0074. Accept any of the three prefixes so closure-
-    pin runs across the transition stay deterministic.
+    ADR-0072 → ADR-0074.
+    Sprint 6h₄a (ADR-0076) restates the remaining 3 session-tree
+    owners ADR-0074 → ADR-0076. Accept any of the four prefixes so
+    closure-pin runs across the transitions stay deterministic.
     """
 
     remaining = RPC_COMMAND_TYPES - SUPPORTED_COMMANDS
@@ -149,6 +156,7 @@ def test_deferred_commands_cover_remaining_pi_set() -> None:
             "ADR-0058" in owner
             or "ADR-0072" in owner
             or "ADR-0074" in owner
+            or "ADR-0076" in owner
         )
 
 

@@ -86,15 +86,23 @@ def _stream() -> Any:
 
 
 def test_supported_count_is_24_after_sprint_6h3() -> None:
-    """Sprint 6h₂ left 22 supported; Sprint 6h₃ adds 2 → 24."""
+    """Sprint 6h₂ left 22 supported; Sprint 6h₃ adds 2 → 24.
 
-    assert len(SUPPORTED_COMMANDS) == 24
+    Sprint 6h₄a (ADR-0075 / P-293~P-298) wires 2 more → 26 supported.
+    Closure pin retains the original name; the body asserts the live
+    count.
+    """
+
+    assert len(SUPPORTED_COMMANDS) == 26
 
 
 def test_deferred_count_is_5_after_sprint_6h3() -> None:
-    """Sprint 6h₂ left 7 deferred; Sprint 6h₃ drops 2 → 5."""
+    """Sprint 6h₂ left 7 deferred; Sprint 6h₃ drops 2 → 5.
 
-    assert len(DEFERRED_COMMANDS) == 5
+    Sprint 6h₄a (ADR-0075 / P-293~P-298) drops 2 more → 3 deferred.
+    """
+
+    assert len(DEFERRED_COMMANDS) == 3
 
 
 def test_supported_plus_deferred_is_29() -> None:
@@ -135,24 +143,28 @@ def test_dispatcher_table_routes_both_new() -> None:
 
 
 def test_remaining_five_deferred_are_session_tree() -> None:
-    """Sprint 6h₃ leaves 5 session-tree commands for Sprint 6h₄."""
+    """Sprint 6h₃ leaves 5 session-tree commands for Sprint 6h₄.
 
-    expected = {
-        "switch_session",
-        "fork",
-        "clone",
-        "get_fork_messages",
-        "get_last_assistant_text",
-    }
+    Sprint 6h₄a (ADR-0075) wires the 2 read-only navigation commands
+    (``get_fork_messages`` + ``get_last_assistant_text``); the
+    remaining 3 commands (``switch_session`` / ``fork`` / ``clone``)
+    defer to Sprint 6h₄b per ADR-0076.
+    """
+
+    expected = {"switch_session", "fork", "clone"}
     assert set(DEFERRED_COMMANDS) == expected
 
 
 def test_remaining_five_deferred_own_adr_0074() -> None:
-    """Pi parity: each deferred owner cites ADR-0074."""
+    """Pi parity: each deferred owner cites ADR-0074 (Sprint 6h₃) or
+    ADR-0076 (Sprint 6h₄a restated owners for the remaining 3
+    session-tree commands).
+    """
 
     for cmd, owner in DEFERRED_COMMANDS.items():
-        assert "ADR-0074" in owner, (
-            f"{cmd!r} owner string {owner!r} does not cite ADR-0074"
+        assert "ADR-0074" in owner or "ADR-0076" in owner, (
+            f"{cmd!r} owner string {owner!r} does not cite "
+            f"ADR-0074 / ADR-0076"
         )
 
 

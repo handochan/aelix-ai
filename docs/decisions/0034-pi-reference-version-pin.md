@@ -358,6 +358,61 @@ Sprint 6h₃ moves 2 commands from deferred → supported.
 `SUPPORTED ∪ DEFERRED == RPC_COMMAND_TYPES` preserved at 29 and
 pins the W5-audited Pi line numbers at SHA `734e08e`.
 
+### Sprint 6h₄a amendment (session navigation read-only — get_fork_messages + get_last_assistant_text, 2026-05-20)
+
+Sprint 6h₄a wired 2 read-only session-navigation RPC commands
+(`get_fork_messages` + `get_last_assistant_text`). DEFERRED 5→3,
+SUPPORTED 24→26. Remaining 3 session-tree commands (`switch_session`
+/ `fork` / `clone`) defer to Sprint 6h₄b per ADR-0076 — they require
+porting Pi `AgentSessionRuntime` + `SessionManager.getLeafId()` +
+`rebindSession()` seam (P-126 Sprint 6f multi-sprint carry-forward).
+
+Sprint 6h₄a ports the next 2 Pi `RpcCommand` discriminators from
+`rpc-mode.ts:591-599` (W0-verified line range at SHA `734e08e`;
+ADR-0074 estimated `:563-566` / `:568-571` — drift captured per
+P-293 and corrected via ADR-0074 line-citation amendment in this
+sprint). The 2 commands: `get_fork_messages` (Pi
+`rpc-mode.ts:591-594` → `agent-session.ts:2867-2900`
+`getUserMessagesForForking`) and `get_last_assistant_text` (Pi
+`rpc-mode.ts:596-599` → `agent-session.ts:3063-3070`
+`getLastAssistantText`). W4 code-review + W5 Pi parity audit
+returned a **CLEAN verdict** — zero BLOCKING / MAJOR / MINOR;
+only INFO observations (P-299/P-300/P-301) mapping to documented
+Aelix-additive divergences (P-294/P-295/P-296) already captured
+in the binding spec §0.
+
+| Component | Status | Owner ADR |
+|---|---|---|
+| 6h₄a | Phase 4.11 | get_fork_messages + get_last_assistant_text wire | SUPPORTED 24→26, DEFERRED 5→3 | ADR-0075, ADR-0076 |
+| `aelix_agent_core.harness._fork_point.ForkPointInfo` (NEW — `@dataclass(frozen=True)` for Pi inline anonymous `{entryId, text}` shape, P-295) | shipped | ADR-0075 |
+| `AgentHarness.get_user_messages_for_forking()` (Pi parity `agent-session.ts:2867-2900`; async per P-294 — Aelix `Session.get_entries()` is async) | shipped | ADR-0075 |
+| `AgentHarness.get_last_assistant_text()` (Pi parity `agent-session.ts:3063-3070`; reverse-walk + aborted-empty filter `stop_reason == "aborted" AND len(content) == 0`, P-297) | shipped | ADR-0075 |
+| `AgentHarness._extract_user_message_text` (Pi parity `agent-session.ts:2887-2898`; list-only walk with defensive string branch per P-296 — unreachable under Aelix type system) | shipped | ADR-0075 |
+| 2 RPC handlers (`_handle_get_fork_messages` / `_handle_get_last_assistant_text`) + camelCase wire serializer (Pi-shape `{entryId, text}`) + dispatch entries | shipped | ADR-0075 |
+| `_handle_get_last_assistant_text` Pi key-omission parity — `data = {"text": text} if text is not None else {}` (P-298 SYNTHESIS — matches Pi `JSON.stringify({text: undefined}) → {}` and existing `_session_stats_to_dict` undefined-skip pattern) | shipped | ADR-0075 |
+| `tests/pi_parity/test_phase_4_11_strict_superset.py` closure pin (26 supported / 3 deferred + ForkPointInfo shape + Pi-camelCase wire + async harness method + aborted-empty filter + Pi key-omission parity + W0-verified line numbers `:591-594` / `:596-599`) | shipped | ADR-0076 |
+| `tests/pi_parity/test_phase_4_4_strict_superset.py` strengthening (Sprint 6d closure pin: SUPPORTED 24 → 26, DEFERRED 5 → 3) | shipped | ADR-0076 |
+| `tests/pi_parity/test_phase_4_6/4_8/4_9/4_10_strict_superset.py` count cascade updates (SUPPORTED 24 → 26, DEFERRED 5 → 3) | shipped | ADR-0076 |
+| `tests/pi_parity/fixtures/pi_session_navigation_734e08e.json` W0 fixture (verified Pi handler bodies at `:591-594` / `:596-599`) | shipped | ADR-0075 |
+| ADR-0074 line-citation correction note appended (P-293 — `:563-566` / `:568-571` → `:591-594` / `:596-599`) | shipped | ADR-0074 |
+| Pi `AgentSessionRuntime` port (runtimeHost.switchSession / fork / fork({position: "at"})) | deferred to Sprint 6h₄b | ADR-0076 |
+| `SessionManager.getLeafId()` for `clone` command | deferred to Sprint 6h₄b | ADR-0076 |
+| `rebindSession()` seam (P-126 Sprint 6f multi-sprint carry-forward) | deferred to Sprint 6h₄b | ADR-0076 |
+| 3 session-tree commands (switch_session / fork / clone) | deferred to Sprint 6h₄b | ADR-0076 |
+| `_get_context_usage_safe` real implementation (P-282 carry-forward from ADR-0074) | deferred to Sprint 6h₄b+ | ADR-0076 |
+| Live `session_id` read via session manager (P-291 carry-forward from ADR-0074) | deferred to Sprint 6h₄b+ | ADR-0076 |
+| Pi-source-grep verification tooling (P-286 carry-forward from ADR-0074) | deferred to Sprint 6h₄b+ | ADR-0076 |
+| Pi HTML visual fidelity + session-tree entry source (P-280 carry-forward from ADR-0074) | deferred to Sprint 6h₅ | ADR-0076 |
+
+Sprint 6h₄a moves 2 commands from deferred → supported.
+`DEFERRED_COMMANDS` shrinks 5 → 3; `SUPPORTED_COMMANDS` rises 24 →
+26. The closure pin
+(`tests/pi_parity/test_phase_4_11_strict_superset.py`) asserts
+`SUPPORTED ∪ DEFERRED == RPC_COMMAND_TYPES` preserved at 29 and
+pins the W0-verified Pi line numbers at SHA `734e08e`. This is
+the first sprint since 6a where W4+W5 returned a 0-finding
+CLEAN verdict.
+
 ## Consequences
 
 - Parity audits become reproducible — the W5 audit lane can `git checkout`

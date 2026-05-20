@@ -33,6 +33,9 @@ async def test_every_deferred_command_returns_error_response() -> None:
     from ADR-0058 to ADR-0072. Sprint 6h₃ (ADR-0073 / ADR-0074) wires
     the 2 session-inspection commands and re-homes the remaining 5
     session-tree owners to ADR-0074.
+    Sprint 6h₄a (ADR-0075 / ADR-0076) wires the 2 read-only
+    session-navigation commands and re-homes the remaining 3
+    session-tree owners to ADR-0076.
     """
 
     for cmd_type, owner_adr in DEFERRED_COMMANDS.items():
@@ -48,6 +51,7 @@ async def test_every_deferred_command_returns_error_response() -> None:
             "ADR-0058" in response.error
             or "ADR-0072" in response.error
             or "ADR-0074" in response.error
+            or "ADR-0076" in response.error
         )
         assert cmd_type in response.error
 
@@ -86,8 +90,9 @@ def test_deferred_dict_owner_adr_format() -> None:
 
     Sprint 6d closure was ADR-0058; Sprint 6h₂ (ADR-0072) re-homed the
     remaining 7 carry-forward commands. Sprint 6h₃ (ADR-0074) re-homed
-    the remaining 5 session-tree commands. Accept any of the three so
-    the pin remains green across the transition.
+    the remaining 5 session-tree commands. Sprint 6h₄a (ADR-0076)
+    re-homed the remaining 3 session-tree commands. Accept any of the
+    four prefixes so the pin remains green across the transitions.
     """
 
     for owner in DEFERRED_COMMANDS.values():
@@ -95,6 +100,7 @@ def test_deferred_dict_owner_adr_format() -> None:
             "ADR-0058" in owner
             or "ADR-0072" in owner
             or "ADR-0074" in owner
+            or "ADR-0076" in owner
         )
 
 

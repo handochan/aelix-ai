@@ -73,20 +73,22 @@ def test_supported_count_is_22_after_sprint_6h2() -> None:
     """Sprint 6h₁ left 13 supported; Sprint 6h₂ adds 9 → 22.
 
     Sprint 6h₃ (ADR-0073 / P-268~P-274) wires 2 more → 24 supported.
+    Sprint 6h₄a (ADR-0075 / P-293~P-298) wires 2 more → 26 supported.
     Closure pin retains the original name; the body asserts the
     live count.
     """
 
-    assert len(SUPPORTED_COMMANDS) == 24
+    assert len(SUPPORTED_COMMANDS) == 26
 
 
 def test_deferred_count_is_7_after_sprint_6h2() -> None:
     """Sprint 6h₁ left 16 deferred; Sprint 6h₂ drops 9 → 7.
 
     Sprint 6h₃ (ADR-0073 / P-268~P-274) drops 2 more → 5 deferred.
+    Sprint 6h₄a (ADR-0075 / P-293~P-298) drops 2 more → 3 deferred.
     """
 
-    assert len(DEFERRED_COMMANDS) == 5
+    assert len(DEFERRED_COMMANDS) == 3
 
 
 def test_supported_plus_deferred_is_29() -> None:
@@ -143,28 +145,34 @@ def test_remaining_seven_deferred_are_session_tree_or_inspection() -> None:
     Sprint 6h₃ (ADR-0073) wires the 2 session-inspection commands so the
     remaining set narrows to the 5 session-tree commands deferred to
     Sprint 6h₄ per ADR-0074.
+    Sprint 6h₄a (ADR-0075) wires the 2 read-only navigation commands
+    (``get_fork_messages`` + ``get_last_assistant_text``); the
+    remaining set narrows to the 3 session-tree commands deferred to
+    Sprint 6h₄b per ADR-0076.
     """
 
-    expected = {
-        "switch_session",
-        "fork",
-        "clone",
-        "get_fork_messages",
-        "get_last_assistant_text",
-    }
+    expected = {"switch_session", "fork", "clone"}
     assert set(DEFERRED_COMMANDS) == expected
 
 
 def test_remaining_seven_deferred_own_adr_0072() -> None:
     """Sprint 6h₂ closure pin restated owners to ADR-0072. Sprint 6h₃
     (ADR-0073) wires the 2 session-inspection commands; the remaining
-    5 session-tree commands are restated to ADR-0074. Accept either
-    prefix so the closure pin survives the transition.
+    5 session-tree commands are restated to ADR-0074.
+    Sprint 6h₄a (ADR-0075) wires the 2 read-only navigation commands;
+    the remaining 3 session-tree commands are restated to ADR-0076.
+    Accept any of the three prefixes so the closure pin survives the
+    cascading transitions.
     """
 
     for cmd, owner in DEFERRED_COMMANDS.items():
-        assert "ADR-0072" in owner or "ADR-0074" in owner, (
-            f"{cmd!r} owner string {owner!r} does not cite ADR-0072 / ADR-0074"
+        assert (
+            "ADR-0072" in owner
+            or "ADR-0074" in owner
+            or "ADR-0076" in owner
+        ), (
+            f"{cmd!r} owner string {owner!r} does not cite "
+            f"ADR-0072 / ADR-0074 / ADR-0076"
         )
 
 

@@ -124,3 +124,19 @@ stub error message citing `ADR-0074`:
 ## Phase
 
 Sprint 6h₃ / Phase 4.10 / W6 (shipped).
+
+## Line-citation correction (Sprint 6h₄a W0 verification)
+
+ADR-0074 cited `rpc-mode.ts:563-566` (`get_fork_messages`) and
+`:568-571` (`get_last_assistant_text`). Sprint 6h₄a W0 fetched the
+Pi source at SHA `734e08e` and verified actual lines:
+
+- `get_fork_messages` → `rpc-mode.ts:591-594`
+- `get_last_assistant_text` → `rpc-mode.ts:596-599`
+
+Sprint 6h₄a closure pin
+(`tests/pi_parity/test_phase_4_11_strict_superset.py`) locks the
+verified values. P-293 captures the drift. No behavioural
+consequence — the ADR's algorithmic content (defer to Sprint 6h₄
+since runtime port required) remains valid; only line numbers
+are corrected.

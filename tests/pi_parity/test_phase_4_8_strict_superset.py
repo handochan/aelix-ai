@@ -88,11 +88,12 @@ def test_supported_count_is_thirteen() -> None:
 
     Sprint 6h₂ (ADR-0071 / P-245~P-253) wires 9 more → 13 → 22 supported.
     Sprint 6h₃ (ADR-0073 / P-268~P-274) wires 2 more → 22 → 24 supported.
+    Sprint 6h₄a (ADR-0075 / P-293~P-298) wires 2 more → 24 → 26 supported.
     Closure pin retains the original name; the assertion follows the
     live count so future drift trips mechanically.
     """
 
-    assert len(SUPPORTED_COMMANDS) == 24
+    assert len(SUPPORTED_COMMANDS) == 26
 
 
 def test_deferred_count_is_sixteen() -> None:
@@ -100,9 +101,10 @@ def test_deferred_count_is_sixteen() -> None:
 
     Sprint 6h₂ (ADR-0071 / P-245~P-253) drops 9 more → 16 → 7 deferred.
     Sprint 6h₃ (ADR-0073 / P-268~P-274) drops 2 more → 7 → 5 deferred.
+    Sprint 6h₄a (ADR-0075 / P-293~P-298) drops 2 more → 5 → 3 deferred.
     """
 
-    assert len(DEFERRED_COMMANDS) == 5
+    assert len(DEFERRED_COMMANDS) == 3
 
 
 def test_supported_plus_deferred_still_covers_pi() -> None:
