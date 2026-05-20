@@ -182,6 +182,53 @@ pin (`tests/pi_parity/test_phase_4_6_strict_superset.py`) asserts
 `DEFERRED_COMMANDS` shrinks 20 → 17 and `SUPPORTED_COMMANDS` rises
 9 → 12, with `SUPPORTED ∪ DEFERRED == RPC_COMMAND_TYPES` preserved.
 
+### Sprint 6g₁ amendment (model-resolver port + full Pi catalog + KnownProvider + Model.compat, 2026-05-20)
+
+Sprint 6g₁ ports `coding-agent/src/core/model-resolver.ts` (637 LOC,
+7 public functions + 3 private helpers + `defaultModelPerProvider`
+32-row map) and transfers the full **16,386-line
+`models.generated.ts` catalog** (32 providers, **942 models**) into
+Aelix as `models_generated.json` loaded at module import. Adds
+`KnownProvider` Literal in Pi semantic order (P-208) +
+`Model.compat: dict[str, Any] | None` passthrough (P-200/P-210 —
+`_openai_compat.get_compat` merge confirmed wired) + ports
+`isValidThinkingLevel` + `DEFAULT_THINKING_LEVEL = "medium"` (P-205
+— the W1 spec draft incorrectly said `"off"`; the actual Pi value
+at the pinned SHA is `"medium"`).
+
+| Component | Status | Owner ADR |
+|---|---|---|
+| `aelix_ai.streaming.KnownProvider` Literal (32 strings, Pi semantic order — P-208) | shipped | ADR-0067 |
+| `aelix_ai.streaming.Model.compat: dict[str, Any] \| None` passthrough field (P-200) | shipped | ADR-0067 / ADR-0064 |
+| `aelix_ai.models_generated.json` (32 providers / 942 models / fail-fast load — P-209) | shipped | ADR-0067 |
+| `aelix_ai.models_generated.py` JSON loader (replaces Sprint 6f₁ seed) | shipped | ADR-0067 |
+| `aelix_coding_agent.core.defaults` (`DEFAULT_THINKING_LEVEL = "medium"` + `is_valid_thinking_level`) | shipped | ADR-0067 |
+| `aelix_coding_agent.core.model_resolver` (7 functions + 3 helpers ported verbatim) | shipped | ADR-0067 |
+| `RestoreModelResult` frozen dataclass (P-206 — mirrors other 4 return shapes) | shipped | ADR-0067 |
+| `_glob_match_pi_minimatch` per-segment helper (P-207 — `/`-boundary semantics) | shipped | ADR-0067 |
+| `_openai_compat.get_compat` catalog `Model.compat` merge (P-210 — confirmed wired) | shipped | ADR-0067 |
+| `tests/pi_parity/test_phase_4_7_strict_superset.py` closure pin (32 tests) | shipped | ADR-0068 |
+| Typed `Model.compat` discriminated union (`OpenAICompletionsCompat \| OpenAICodexResponsesCompat \| …`) | deferred to Sprint 6g₂ | ADR-0068 |
+| `get_commands` RPC command + prompt-templates + skills surface | deferred to Sprint 6g₂ | ADR-0068 |
+| 16 remaining RPC commands (queue / session tree / extension UI bridge / auto modes / retry / etc.) | deferred to Sprint 6g₂ | ADR-0068 |
+| `image-models.ts` + `image-models.generated.ts` parallel image-model registry | deferred to Sprint 6g₃ | ADR-0068 |
+| `chalk`-colored CLI output | deferred to Sprint 6h / Phase 5 TUI | ADR-0067 |
+| Workspace-scoped model selection (`isScoped: true` path) | deferred to Sprint 6g₂ | ADR-0068 |
+| `applyProviderConfig` for `register_provider.config.models` + `models.json` schema | deferred to Sprint 6g₂ | ADR-0068 |
+| `enableGitHubCopilotModel` POST automation | deferred to Sprint 6g₂ | ADR-0068 |
+| `Model.knowledgeCutoff` / `Model.releaseDate` (Pi-untyped runtime additions) | deferred — Pi types catch up | ADR-0068 |
+
+Sprint 6g₁ closes the model resolver + full catalog + `KnownProvider`
++ `Model.compat` passthrough layer. The closure pin
+(`tests/pi_parity/test_phase_4_7_strict_superset.py`) asserts
+`KnownProvider` Literal byte-equivalent Pi semantic order (P-208),
+`DEFAULT_THINKING_LEVEL == "medium"` (P-205), `Model.compat` field
+present + default `None` (P-200), `RestoreModelResult` frozen
+dataclass with `{model, fallback_message}` shape (P-206), and the
+`_glob_match_pi_minimatch` `/`-boundary semantics (P-207). The
+Sprint 6f₁ seed `>= 10 models` invariant still passes against the
+full 942-model catalog.
+
 ## Consequences
 
 - Parity audits become reproducible — the W5 audit lane can `git checkout`

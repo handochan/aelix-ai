@@ -170,6 +170,38 @@ The Phase 4.6 §0 7-helper port lives in `models.py`:
 - `image-models.ts` / `image-models.generated.ts` (Pi parallel registry
   for image-generation models).
 
+### Sprint 6g₁ amendment (`Model.compat` passthrough — 6 fields total, 2026-05-20)
+
+Sprint 6g₁ (ADR-0067) lands the 6th additive Pi-parity Model field:
+
+```python
+@dataclass(frozen=True)
+class Model:
+    ...
+    # Sprint 6g₁ (ADR-0067 P-200): per-API compat overrides. Pi
+    # ``Model.compat?: OpenAICompletionsCompat | …`` discriminated
+    # union; Sprint 6g₁ ships as ``dict[str, Any] | None``
+    # passthrough. Sprint 6g₂ migrates to a typed union.
+    compat: dict[str, Any] | None = None
+```
+
+Total additive Pi-parity Model field count is now **6**:
+`cost` / `thinking_level_map` / `max_tokens` / `context_window` /
+`headers` / `compat`. All defaults preserve Sprint 6a–6f behavior.
+
+The Sprint 6g₁ full Pi catalog (`models_generated.json` — 32
+providers / 942 models) populates `compat` for zai (5 models) and
+vercel-ai-gateway entries. The Sprint 6b `_openai_compat.get_compat`
+helper (Pi `getCompat`) already merges `getattr(model, "compat",
+None)` onto the URL/provider-detected baseline — so the override
+path fires for the first time on real entries in Sprint 6g₁ (W6
+P-210 wiring confirmation). Regression coverage:
+`tests/providers/test_openai_compat_with_catalog.py`.
+
+`Model.knowledgeCutoff` and `Model.releaseDate` remain deferred until
+Pi adds them to the typed surface (Pi currently emits them as
+untyped runtime additions on a subset of entries).
+
 ## Alternatives considered
 
 - **Single `Cost` frozen dataclass for both rate and resolved cost**:

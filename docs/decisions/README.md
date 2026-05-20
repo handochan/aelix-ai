@@ -80,6 +80,8 @@
 | 0064 | [Model Cost + Thinking + Headers Fields](0064-model-cost-and-thinking-fields.md)                                                                        | Accepted (Sprint 6f / Phase 4.6 / W6 shipped)                       | `ModelCost` (frozen per-million rate) + `UsageCost` (mutable resolved) + `Usage` + `Cost = ModelCost` back-compat alias + Pi `Model.thinking_level_map` / `max_tokens` / `context_window` / `headers` (P-178). |
 | 0065 | [ModelRegistry Runtime](0065-model-registry-runtime.md)                                                                                                  | Accepted (Sprint 6f / Phase 4.6 / W6 shipped)                       | Pi parity port of 14-method `ModelRegistry` + 2 factory constructors (`create` / `in_memory`) + `ResolvedRequestAuth` discriminated union (P-180 bool) + `ProviderConfigInput` + P-175/P-176/P-184 wire fixes + P-187 `set_current_model` writes `_state.model` directly. |
 | 0066 | [Phase 4.6 Strict Superset Closure](0066-phase-4-6-strict-superset-closure.md)                                                                          | Accepted (Sprint 6f / Phase 4.6 / W6 shipped)                       | Phase 4.6 closure — P-163~P-187 roster + closure pin (`tests/pi_parity/test_phase_4_6_strict_superset.py`) + ModelRegistry 14 methods present + 7 Pi helpers exposed + 13-model seed catalog + `DEFERRED_COMMANDS` 20 → 17 (set_model/cycle_model/get_available_models live). |
+| 0067 | [Model Resolver Port + Full Pi Catalog Data Transfer](0067-model-resolver-and-catalog.md)                                                              | Accepted (Sprint 6g₁ / Phase 4.7 / W6 shipped)                      | Pi parity port of `model-resolver.ts` (637 LOC, 7 functions + 3 helpers) + `defaultModelPerProvider` (32 rows) + full 942-model JSON catalog data transfer + `KnownProvider` Pi semantic order (P-208) + `Model.compat` passthrough (`_openai_compat.get_compat` merge confirmed wired, P-210) + `_glob_match_pi_minimatch` (P-207) + `RestoreModelResult` typed dataclass (P-206). |
+| 0068 | [Phase 4.7 Strict Superset Closure](0068-phase-4-7-strict-superset-closure.md)                                                                          | Accepted (Sprint 6g₁ / Phase 4.7 / W6 shipped)                      | Phase 4.7 closure — P-197~P-215 roster (W0 P-197..P-204 + W4/W5 P-205..P-215) + closure pin (`tests/pi_parity/test_phase_4_7_strict_superset.py`, 32 tests) + `KnownProvider` Pi semantic order + `DEFAULT_THINKING_LEVEL == "medium"` (P-205) + `Model.compat` field + `RestoreModelResult` shape + glob `/`-boundary. Sprint 6g₂/6g₃/6h carry-forward enumerated. |
 
 ### Sprint 5b sub-table (Phase 3.2 closure)
 
@@ -99,6 +101,39 @@
 | 4 wired stubs (`send_message` / `send_user_message` / `append_entry` / `get_commands`) | shipped | 0042 |
 | `tests/pi_parity/test_phase_3_2_strict_superset.py` closure pin | shipped | 0044 |
 | DEFERRED_ALLOWLIST Phase-4-only (3 provider entries) | shipped | 0044 |
+
+### Sprint 6g sub-table (Phase 4.7 closure)
+
+| Item | Status | Owner ADR |
+|---|---|---|
+| `aelix_ai.streaming.KnownProvider` Literal (32 strings, Pi semantic order verbatim from `types.ts:23-55` — P-208 MAJOR fix) | shipped | 0067 |
+| `aelix_ai.streaming.Model.compat: dict[str, Any] \| None` passthrough field (P-200) | shipped | 0067 / 0064 |
+| `aelix_ai.models_generated.json` full Pi catalog (32 providers / 942 models) | shipped | 0067 |
+| `aelix_ai.models_generated._load_catalog` fail-fast on Pi-required fields (P-209 MAJOR fix) | shipped | 0067 |
+| `aelix_coding_agent.core.defaults.DEFAULT_THINKING_LEVEL = "medium"` (P-205 BLOCKING fix — was incorrectly `"off"` in Sprint 6g₁ ship) | shipped | 0067 |
+| `aelix_coding_agent.core.defaults.is_valid_thinking_level` (Pi `cli/args.ts::isValidThinkingLevel`) | shipped | 0067 |
+| `aelix_coding_agent.core.model_resolver` (7 functions + 3 helpers ported from Pi `model-resolver.ts:1-637` — actual 637 LOC, NOT 439 per P-215) | shipped | 0067 |
+| `DEFAULT_MODEL_PER_PROVIDER` (32-row map from Pi `:14-47`) | shipped | 0067 |
+| `RestoreModelResult` frozen dataclass mirrors Pi `restoreModelFromSession` return shape (P-206 MAJOR fix) | shipped | 0067 |
+| `_glob_match_pi_minimatch` per-segment helper for Pi `minimatch` `/`-boundary semantics (P-207 MAJOR fix) | shipped | 0067 |
+| `_openai_compat.get_compat` catalog `Model.compat` merge wiring confirmed (P-210 MAJOR — spec §J text was stale at ship) | shipped | 0067 |
+| `tests/pi_parity/test_phase_4_7_strict_superset.py` closure pin (32 tests — KnownProvider order + DEFAULT_THINKING_LEVEL + Model.compat + RestoreModelResult + glob /-boundary + catalog 32 providers + canonical models) | shipped | 0068 |
+| `tests/coding_agent/core/test_defaults.py` + `test_model_resolver.py` (49 tests — 7 functions + 3 helpers + integration with real ModelRegistry) | shipped | 0067 |
+| `tests/providers/test_openai_compat_with_catalog.py` (3 P-210 regressions — zai/glm-5v-turbo + zai/glm-4.5-air partial dict + baseline-vs-merged comparison) | shipped | 0067 |
+| `tests/test_models_generated.py::test_load_catalog_raises_keyerror_on_missing_required_field` (P-209 regression) | shipped | 0067 |
+| `tests/pi_parity/fixtures/pi_model_resolver_734e08e.json` (W0 fixture — line refs corrected per P-215; `default_thinking_level` corrected to `"medium"` per P-205) | shipped | 0067 / 0068 |
+| ADR-0034 amendment — Sprint 6g₁ model-resolver port + full catalog + KnownProvider + Model.compat | shipped | 0034 |
+| ADR-0064 amendment — Sprint 6g₁ adds `compat` field (6 additive Model fields total) | shipped | 0064 |
+| Typed `Model.compat` discriminated union (`OpenAICompletionsCompat \| OpenAICodexResponsesCompat \| …`) | deferred to Sprint 6g₂ | 0068 |
+| `get_commands` RPC command + prompt-templates + skills surface | deferred to Sprint 6g₂ | 0068 |
+| 16 remaining RPC commands (queue / session tree / extension UI bridge / auto modes / retry / etc.) | deferred to Sprint 6g₂ | 0068 |
+| `image-models.ts` + `image-models.generated.ts` parallel image-model registry | deferred to Sprint 6g₃ | 0068 |
+| `chalk`-colored CLI output | deferred to Sprint 6h / Phase 5 TUI | 0067 |
+| Workspace-scoped model selection (`isScoped: true` path) | deferred to Sprint 6g₂ | 0068 |
+| `applyProviderConfig` for `register_provider.config.models` + `models.json` schema | deferred to Sprint 6g₂ | 0068 |
+| `enableGitHubCopilotModel` POST automation | deferred to Sprint 6g₂ | 0068 |
+| `Model.knowledgeCutoff` / `Model.releaseDate` (Pi-untyped runtime additions) | deferred — Pi types catch up | 0068 |
+| W4 NIT-2..NIT-5 (cosmetic) | deferred to Sprint 6h | 0068 |
 
 ### Sprint 6f sub-table (Phase 4.6 closure)
 
