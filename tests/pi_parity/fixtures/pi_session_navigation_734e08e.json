@@ -1,0 +1,76 @@
+{
+  "_doc": "Pi-pinned snapshot of 2 read-only session navigation RPC commands (get_fork_messages + get_last_assistant_text). Sprint 6h₄a Phase 4.11. Used by tests/pi_parity/test_phase_4_11_strict_superset.py.",
+  "pi_sha": "734e08edf82ff315bc3d96472a6ebfa69a1d8016",
+  "pi_paths": {
+    "rpc_mode": "packages/coding-agent/src/modes/rpc/rpc-mode.ts",
+    "agent_session": "packages/coding-agent/src/core/agent-session.ts"
+  },
+  "_p_293_note": "ADR-0074 carry-forward roster estimated lines 563-566 / 568-571 for the two handlers; Sprint 6h₄a W0 fetched the Pi source at SHA 734e08e and verified the actual case sites at 591-594 / 596-599. Forward-fix recorded in ADR-0075; ADR-0074 amend acknowledges the drift.",
+  "pi_handlers": {
+    "get_fork_messages": {
+      "lines": "591-594",
+      "agent_session_lines": "2870-2885",
+      "body": "const messages = session.getUserMessagesForForking(); return success(id, 'get_fork_messages', { messages });",
+      "harness_method": "session.getUserMessagesForForking() -> Array<{entryId: string, text: string}>",
+      "response_data_shape": "{messages: Array<{entryId, text}>}"
+    },
+    "get_last_assistant_text": {
+      "lines": "596-599",
+      "agent_session_lines": "3059-3081",
+      "body": "const text = session.getLastAssistantText(); return success(id, 'get_last_assistant_text', { text });",
+      "harness_method": "session.getLastAssistantText() -> string | undefined",
+      "response_data_shape": "{text: string | null}"
+    }
+  },
+  "pi_helpers": {
+    "_extractUserMessageText": {
+      "lines": "2887-2896",
+      "_doc": "Private helper called by getUserMessagesForForking. Walks UserMessage.content; filters c.type==='text'; joins .text; returns ''."
+    }
+  },
+  "pi_get_user_messages_for_forking_algorithm": [
+    "1. entries = sessionManager.getEntries() — Aelix maps to await self._session.get_entries() (async)",
+    "2. result = []",
+    "3. for entry in entries:",
+    "4.   if entry.type !== 'message': continue",
+    "5.   if entry.message.role !== 'user': continue",
+    "6.   text = _extractUserMessageText(entry.message.content)",
+    "7.   if text (non-empty): result.append({entryId: entry.id, text})",
+    "8. return result"
+  ],
+  "pi_get_last_assistant_text_algorithm": [
+    "1. lastAssistant = messages.slice().reverse().find(m => m.role === 'assistant' && !(m.stopReason === 'aborted' && m.content.length === 0))",
+    "2. if !lastAssistant: return undefined",
+    "3. text = ''; for each content block in lastAssistant.content: if content.type === 'text': text += content.text",
+    "4. return text.trim() || undefined"
+  ],
+  "fork_point_shape": {
+    "_doc": "Pi inline anonymous type — Aelix introduces ForkPointInfo frozen dataclass for clarity",
+    "fields": {
+      "entryId": "string — session-tree entry UUID (Pi `entry.id`)",
+      "text": "string — concatenated TextContent from user message (Pi `_extractUserMessageText` output)"
+    }
+  },
+  "aelix_current_state": {
+    "session_get_entries": "EXISTS — async (Pi sync sessionManager.getEntries → Aelix async Session.get_entries)",
+    "message_entry_class": "EXISTS at session/entries.py:30-37 — .id / .message / .type='message' matches Pi shape exactly",
+    "agent_state_messages": "EXISTS — canonical at harness/core.py:673",
+    "rpc_command_types": "EXIST as DEFERRED stubs at rpc_types.py:269-281",
+    "harness_methods": "MISSING — Sprint 6h₄a adds 2 new harness methods + 1 helper",
+    "fork_point_info_dataclass": "MISSING — Sprint 6h₄a adds at harness/_fork_point.py"
+  },
+  "command_count_arithmetic": {
+    "before_sprint_6h_4_a": "24 supported / 5 deferred / 29 total",
+    "after_sprint_6h_4_a": "26 supported / 3 deferred / 29 total",
+    "supported_added": ["get_fork_messages", "get_last_assistant_text"],
+    "still_deferred": ["switch_session", "fork", "clone"]
+  },
+  "deferred_to_sprint_6h_4_b": [
+    "switch_session — needs AgentSessionRuntime.switchSession port",
+    "fork — needs AgentSessionRuntime.fork port",
+    "clone — needs SessionManager.getLeafId + AgentSessionRuntime.fork({position:'at'})",
+    "AgentSessionRuntime full port (Pi `coding-agent/src/runtimes/agent-session-runtime.ts`)",
+    "rebindSession seam — P-126 Sprint 6f carry-forward (multi-sprint accumulation)",
+    "Pi HTML export visual fidelity carry-forward from Sprint 6h₃"
+  ]
+}
