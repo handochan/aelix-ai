@@ -238,10 +238,18 @@ def get_compat(model: Model) -> OpenAICompletionsCompat:
     """Merge an explicit ``model.compat`` (if any) onto the detected baseline.
 
     Pi parity: ``getCompat`` (``openai-completions.ts:1127-1153``).
-    Aelix's :class:`Model` does not carry a ``compat`` field today; the
-    helper still accepts an opportunistic ``model.compat`` attribute so
-    a test fixture or future port can override detection without
-    reworking this seam.
+
+    Sprint 6g₂ W6 P-210 wiring confirmation: the Sprint 6b adapter
+    already merges ``getattr(model, "compat", None)``, but the Sprint
+    6f₁ seed catalog never populated the field — so the override path
+    was unreachable in production. Sprint 6g₁ ships the FULL Pi
+    catalog (``models_generated.json``) including catalog-supplied
+    compat dicts on zai / vercel-ai-gateway models, which means this
+    merge path now fires for the first time on real entries. The
+    earlier W1 spec §J text claiming "Sprint 6b OpenAI adapter does
+    NOT read model.compat yet" was stale at Sprint 6g₁ ship and is
+    corrected in ADR-0067 + ADR-0064. Regression coverage:
+    ``tests/providers/test_openai_compat_with_catalog.py``.
     """
 
     detected = detect_compat(model)
