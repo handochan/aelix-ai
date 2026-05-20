@@ -36,8 +36,16 @@ Sprint 6h₂ (ADR-0071 / P-245~P-253) wires **9** additional commands:
 ``set_steering_mode`` / ``set_follow_up_mode`` /
 ``set_auto_compaction`` / ``set_auto_retry`` / ``abort_retry`` /
 ``abort_bash``. The counts move to **22 supported / 7 deferred /
-29 total**. The remaining 7 commands (5 session-tree + 2 session-
-inspection) are owned by ADR-0072 and defer to Sprint 6h₃.
+29 total**.
+
+Sprint 6h₃ (ADR-0073 / P-268~P-274) wires **2** more commands:
+``get_session_stats`` (Pi ``rpc-mode.ts:553-556`` →
+``agent-session.ts:2901-2945``) and ``export_html`` (Pi
+``rpc-mode.ts:558-561`` → ``coding-agent/src/core/export-html/``).
+The counts move to **24 supported / 5 deferred / 29 total**. The
+remaining 5 session-tree commands (``switch_session`` / ``fork`` /
+``clone`` / ``get_fork_messages`` / ``get_last_assistant_text``)
+are owned by ADR-0074 and defer to Sprint 6h₄.
 
 Pi line citations at SHA 734e08e per Sprint 6h₂ W5/W6 audit (P-258):
 the 9 case sites in ``rpc-mode.ts`` live at lines 483-547 (NOT
@@ -100,16 +108,16 @@ from aelix_ai.streaming import Model
 # 9 supported + 20 deferred = 29 total (= Pi RpcCommand variant count).
 
 DEFERRED_COMMANDS: dict[str, str] = {
-    # Sprint 6h₂ (ADR-0071 / P-245~P-253) wired 9 commands to the
-    # harness — the entries below shrink to the 7 session-tree +
-    # session-inspection commands deferred to Sprint 6h₃ per ADR-0072.
-    "get_session_stats": "ADR-0072 — Sprint 6h₃ session inspection",
-    "export_html": "ADR-0072 — Sprint 6h₃ session inspection",
-    "switch_session": "ADR-0072 — Sprint 6h₃ session tree navigation",
-    "fork": "ADR-0072 — Sprint 6h₃ session tree navigation",
-    "clone": "ADR-0072 — Sprint 6h₃ session tree navigation",
-    "get_fork_messages": "ADR-0072 — Sprint 6h₃ session tree navigation",
-    "get_last_assistant_text": "ADR-0072 — Sprint 6h₃ session tree navigation",
+    # Sprint 6h₃ (ADR-0073 / P-268~P-274) wired 2 session-inspection
+    # commands (get_session_stats + export_html) — the entries below
+    # shrink to the 5 session-tree commands deferred to Sprint 6h₄
+    # per ADR-0074 (porting Pi ``AgentSessionRuntime`` +
+    # ``SessionManager.getLeafId`` + ``rebindSession`` seam).
+    "switch_session": "ADR-0074 — Sprint 6h₄ session tree navigation",
+    "fork": "ADR-0074 — Sprint 6h₄ session tree navigation",
+    "clone": "ADR-0074 — Sprint 6h₄ session tree navigation",
+    "get_fork_messages": "ADR-0074 — Sprint 6h₄ session tree navigation",
+    "get_last_assistant_text": "ADR-0074 — Sprint 6h₄ session tree navigation",
 }
 
 
@@ -149,6 +157,10 @@ SUPPORTED_COMMANDS: frozenset[str] = frozenset(
         "set_auto_retry",
         "abort_retry",
         "abort_bash",
+        # Sprint 6h₃ (ADR-0073 / P-268~P-274) — 2 session-inspection
+        # commands. Pi parity: ``rpc-mode.ts:475-478`` + ``:480-483``.
+        "get_session_stats",
+        "export_html",
     }
 )
 
@@ -1003,6 +1015,122 @@ async def _handle_abort_bash(
     return RpcSuccessResponse(id=cmd.id, command="abort_bash")
 
 
+# === Sprint 6h₃ (ADR-0073, P-268~P-274) — 2 session-inspection handlers =====
+#
+# Pi parity:
+#   - ``rpc-mode.ts:553-556`` → ``session.getSessionStats()`` →
+#     :class:`SessionStats` (``agent-session.ts:212-223``).
+#   - ``rpc-mode.ts:558-561`` → ``session.exportToHtml(outputPath)`` →
+#     ``{path: string}``.
+#
+# Both handlers wrap the harness methods added this sprint and serialize
+# the response in Pi camelCase. The :func:`_session_stats_to_dict` helper
+# OMITs ``sessionFile`` / ``contextUsage`` when :data:`None` so the
+# JSON-on-the-wire matches Pi's ``JSON.stringify`` undefined-skip.
+
+
+def _session_stats_to_dict(stats: Any) -> dict[str, Any]:
+    """Pi parity: serialize :class:`SessionStats` to the Pi camelCase
+    wire shape (``agent-session.ts:212-223``).
+
+    Required keys: ``sessionId`` / ``userMessages`` / ``assistantMessages``
+    / ``toolCalls`` / ``toolResults`` / ``totalMessages`` / ``tokens`` /
+    ``cost``. Optional keys: ``sessionFile`` (omitted when :data:`None`)
+    and ``contextUsage`` (omitted when :data:`None`).
+
+    Token sub-dict is camelCase per Pi (``cacheRead`` / ``cacheWrite``).
+    ``contextUsage`` is the Pi-shape ``{tokens, contextWindow, percent}``
+    (``extensions/types.ts`` ``ContextUsage``). Sprint 6h₃ W6 (P-275)
+    aligns the wire emit with the Aelix :class:`ContextUsage` dataclass
+    at ``extensions/api.py:122-135`` whose snake_case fields
+    (``tokens`` / ``context_window`` / ``percent``) map directly into
+    the Pi camelCase wire keys.
+    """
+
+    out: dict[str, Any] = {
+        "sessionId": stats.session_id,
+        "userMessages": stats.user_messages,
+        "assistantMessages": stats.assistant_messages,
+        "toolCalls": stats.tool_calls,
+        "toolResults": stats.tool_results,
+        "totalMessages": stats.total_messages,
+        "tokens": {
+            "input": stats.tokens.input,
+            "output": stats.tokens.output,
+            "cacheRead": stats.tokens.cache_read,
+            "cacheWrite": stats.tokens.cache_write,
+            "total": stats.tokens.total,
+        },
+        "cost": stats.cost,
+    }
+    if stats.session_file is not None:
+        out["sessionFile"] = stats.session_file
+    if stats.context_usage is not None:
+        cu = stats.context_usage
+        # Pi parity: extensions/types.ts ContextUsage = { tokens,
+        # contextWindow, percent }. Aelix ContextUsage at
+        # extensions/api.py:122-135 already matches Pi field names
+        # (tokens / context_window / percent → snake_case ↔ camelCase
+        # mapping).
+        out["contextUsage"] = {
+            "tokens": getattr(cu, "tokens", None),
+            "contextWindow": int(getattr(cu, "context_window", 0) or 0),
+            "percent": getattr(cu, "percent", None),
+        }
+    return out
+
+
+async def _handle_get_session_stats(
+    harness: AgentHarness,
+    cmd: Any,  # ``RpcCommandGetSessionStats``
+) -> RpcResponse:
+    """Pi parity: ``rpc-mode.ts:553-556`` ``get_session_stats`` handler.
+
+    Pi body: ``const stats = session.getSessionStats(); return
+    success(id, "get_session_stats", stats);`` — the response ``data``
+    carries the full :class:`SessionStats` object verbatim (no
+    wrapper). Aelix mirrors via :func:`_session_stats_to_dict` so the
+    wire shape stays Pi-camelCase.
+
+    Delegates to :meth:`AgentHarness.get_session_stats` which
+    aggregates from the in-memory message list (Pi parity:
+    ``agent-session.ts:2901-2945``).
+    """
+
+    stats = harness.get_session_stats()
+    return RpcSuccessResponse(
+        id=cmd.id,
+        command="get_session_stats",
+        data=_session_stats_to_dict(stats),
+    )
+
+
+async def _handle_export_html(
+    harness: AgentHarness,
+    cmd: Any,  # ``RpcCommandExportHtml``
+) -> RpcResponse:
+    """Pi parity: ``rpc-mode.ts:558-561`` ``export_html`` handler.
+
+    Pi body: ``const path = await session.exportToHtml(command.outputPath);
+    return success(id, "export_html", { path });`` — the response
+    ``data`` is the singleton ``{path: string}`` shape. Aelix mirrors
+    via :meth:`AgentHarness.export_to_html` which delegates to the
+    minimal HTML emitter at
+    :func:`aelix_coding_agent._export_html.export_html`.
+
+    Sprint 6h₃ ships a minimal renderer (Pi wire contract only); Pi
+    visual fidelity (CSS framework, syntax highlighting, image
+    rendering) defers to Sprint 6h₅+ per ADR-0074.
+    """
+
+    path = harness.export_to_html(cmd.output_path)
+    return RpcSuccessResponse(
+        id=cmd.id,
+        command="export_html",
+        data={"path": path},
+    )
+
+
 # === Deferred handler factory =================================================
 
 
@@ -1057,6 +1185,9 @@ _SUPPORTED_HANDLERS_HARNESS_ONLY: dict[
     "set_auto_retry": _handle_set_auto_retry,
     "abort_retry": _handle_abort_retry,
     "abort_bash": _handle_abort_bash,
+    # Sprint 6h₃ (ADR-0073, P-268~P-274) — 2 session-inspection handlers.
+    "get_session_stats": _handle_get_session_stats,
+    "export_html": _handle_export_html,
 }
 
 _SUPPORTED_HANDLERS_HARNESS_REGISTRY: dict[
@@ -1084,6 +1215,8 @@ def build_dispatch_table(
     """Build the full 29-command dispatch table.
 
     Sprint 6h₂ (ADR-0071): 22 supported + 7 deferred = 29 total.
+    Sprint 6h₃ (ADR-0073): 24 supported + 5 deferred = 29 total —
+    wires ``get_session_stats`` + ``export_html``.
     Returned fresh on every call so tests can introspect without
     leaking state. The supported handlers are real callables; the
     deferred ones are :func:`_make_deferred_handler` closures.
