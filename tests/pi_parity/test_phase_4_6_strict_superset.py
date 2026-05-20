@@ -372,12 +372,18 @@ def test_cost_alias_preserved_for_sprint_6a_6b_callers() -> None:
 
 
 def test_seed_catalog_anthropic_first() -> None:
-    """Pi parity: provider insertion order = canonical cycle_model order.
-    Anthropic first ensures the spec's example rotation is reproducible.
+    """Pi parity: provider insertion order matches Pi ``models.generated.ts``.
+
+    Sprint 6g₁ (ADR-0067 P-203) replaces the Sprint 6f₁ 13-seed catalog
+    with the full 32-provider Pi catalog. Pi ``models.generated.ts`` key
+    order is alphabetical (``amazon-bedrock`` first); Anthropic is still
+    present so the cycle_model rotation enumerates it eventually. The
+    original assertion was a seed-only invariant.
     """
 
     providers = list(SEED_CATALOG.keys())
-    assert providers[0] == "anthropic"
+    assert providers[0] == "amazon-bedrock"
+    assert "anthropic" in providers
 
 
 def test_seed_catalog_openrouter_uses_openai_completions_api() -> None:

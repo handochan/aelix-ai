@@ -54,11 +54,19 @@ def test_get_providers_returns_seed_provider_set() -> None:
 
 
 def test_get_providers_preserves_insertion_order() -> None:
-    """Pi parity: Map iteration order = insertion order (cycle_model relies on this)."""
+    """Pi parity: Map iteration order = insertion order (cycle_model relies on this).
+
+    Sprint 6g₁ (ADR-0067 P-203) ships the full 32-provider Pi catalog;
+    providers are inserted in Pi ``models.generated.ts`` key order
+    (alphabetical), so the first key is ``amazon-bedrock``. Anthropic
+    remains present, but order is now Pi-driven.
+    """
 
     providers = get_providers()
-    # Anthropic first per seed catalog ``MODELS`` dict ordering.
-    assert providers[0] == "anthropic"
+    # Pi parity: ``models.generated.ts`` starts with ``amazon-bedrock``.
+    assert providers[0] == "amazon-bedrock"
+    # Anthropic still present (Sprint 6f₁ invariant).
+    assert "anthropic" in providers
 
 
 def test_get_models_returns_list_for_known_provider() -> None:

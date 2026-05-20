@@ -77,6 +77,54 @@ class Usage:
     cost: UsageCost = field(default_factory=UsageCost)
 
 
+# Sprint 6g₁ (ADR-0067 P-199): Pi parity 32-provider KnownProvider Literal
+# union from Pi ``ai/src/types.ts``. Used by ``defaultModelPerProvider``
+# typing and Sprint 6f₁ ``Model.provider: str`` (the Literal narrows
+# without breaking existing string-typed callers).
+#
+# Sprint 6g₂ W6 P-208 MAJOR fix: reordered verbatim from Pi
+# ``packages/ai/src/types.ts:23-55`` at SHA 734e08e. The earlier Sprint
+# 6g₁ port shipped the 32 strings in alphabetical order; Pi groups them
+# semantically (first-party → OpenAI family → community providers →
+# self-hosted → Xiaomi family). Closure pin
+# ``test_known_provider_literal_order_matches_pi_types_ts`` locks the
+# order against future drift.
+KnownProvider = Literal[
+    "amazon-bedrock",
+    "anthropic",
+    "google",
+    "google-vertex",
+    "openai",
+    "azure-openai-responses",
+    "openai-codex",
+    "deepseek",
+    "github-copilot",
+    "xai",
+    "groq",
+    "cerebras",
+    "openrouter",
+    "vercel-ai-gateway",
+    "zai",
+    "mistral",
+    "minimax",
+    "minimax-cn",
+    "moonshotai",
+    "moonshotai-cn",
+    "huggingface",
+    "fireworks",
+    "together",
+    "opencode",
+    "opencode-go",
+    "kimi-coding",
+    "cloudflare-workers-ai",
+    "cloudflare-ai-gateway",
+    "xiaomi",
+    "xiaomi-token-plan-cn",
+    "xiaomi-token-plan-ams",
+    "xiaomi-token-plan-sgp",
+]
+
+
 @dataclass(frozen=True)
 class Model:
     """Pi-style provider-agnostic model description.
@@ -114,6 +162,14 @@ class Model:
     # Sprint 6a/6b/6c/6d/6e behavior. Wire-serialized by
     # :func:`aelix_coding_agent.rpc.rpc_mode._model_to_dict` when non-None.
     headers: dict[str, str] | None = None
+    # Pi parity: types.ts Model.compat per-API discriminated union; Sprint 6g₁ passthrough as dict[str, Any] (Sprint 6g₂ types it)
+    # Sprint 6g₁ (ADR-0067 P-200): per-API compat overrides. Pi
+    # ``Model.compat?: OpenAICompletionsCompat | …`` discriminated union;
+    # Sprint 6g₁ ships as ``dict[str, Any] | None`` passthrough. Sprint
+    # 6g₂ migrates to a typed union when the OpenAICodexResponsesCompat
+    # etc. dataclasses land. ADDITIVE default :data:`None` preserves
+    # Sprint 6a/6b/6c/6d/6e/6f behavior.
+    compat: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -440,6 +496,7 @@ __all__ = [
     "AssistantStartEvent",
     "Context",
     "Cost",
+    "KnownProvider",
     "Model",
     "ModelCost",
     "ProviderResponse",

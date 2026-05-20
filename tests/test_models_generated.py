@@ -11,7 +11,10 @@ satisfies the binding-spec invariants:
 
 from __future__ import annotations
 
-from aelix_ai.models_generated import MODELS
+import json
+
+import pytest
+from aelix_ai.models_generated import MODELS, _load_catalog
 from aelix_ai.streaming import Model, ModelCost
 
 
@@ -39,19 +42,75 @@ def test_every_entry_is_a_model_dataclass() -> None:
 
 
 def test_every_model_has_populated_cost() -> None:
-    """Sprint 6f₁ seed: every entry has a real :class:`ModelCost`."""
+    """Sprint 6g₁ (P-197): every entry has a :class:`ModelCost` instance.
+
+    Pi parity: Pi ``models.generated.ts`` uses ``-1000000.0`` as a
+    sentinel for "no fixed cost" (e.g. ``openrouter/auto``). The
+    sentinel is preserved verbatim by the JSON loader. The original
+    Sprint 6f₁ ``>= 0.0`` invariant was a seed-only assumption that
+    does not hold against the full Pi catalog.
+    """
 
     for per_provider in MODELS.values():
         for model in per_provider.values():
             assert isinstance(model.cost, ModelCost)
-            # Sprint 6f₁ ships realistic costs; default 0 indicates a
-            # forgotten entry — the assertion catches that drift.
-            assert model.cost.input >= 0.0
-            assert model.cost.output >= 0.0
 
 
-def test_seed_catalog_provider_order_is_anthropic_openai_openrouter() -> None:
-    """Pi parity: insertion order matters for cycle_model rotation."""
+def test_catalog_provider_order_matches_pi_models_generated() -> None:
+    """Pi parity: provider insertion order matches Pi ``models.generated.ts``.
+
+    Sprint 6g₁ (P-203) ships the full 32-provider catalog. Provider
+    insertion order follows Pi ``models.generated.ts`` key order (sorted
+    alphabetically in the Pi source), preserved by the JSON loader.
+    """
 
     providers = list(MODELS.keys())
-    assert providers == ["anthropic", "openai", "openrouter"]
+    # Pi catalog starts with ``amazon-bedrock`` (alphabetical first).
+    assert providers[0] == "amazon-bedrock"
+    # Anthropic / OpenAI / OpenRouter all present (Sprint 6f₁ invariant).
+    assert {"anthropic", "openai", "openrouter"} <= set(providers)
+    # 32-provider catalog (Pi parity, ADR-0067 P-197).
+    assert len(providers) == 32
+
+
+def test_load_catalog_raises_keyerror_on_missing_required_field(
+    tmp_path, monkeypatch
+) -> None:
+    """Sprint 6g₂ W6 P-209 regression — :func:`_load_catalog` fail-fast.
+
+    Pi-required fields (``id``, ``name``, ``api``, ``provider``,
+    ``baseUrl``, ``reasoning``, ``input``, ``contextWindow``,
+    ``maxTokens``) MUST raise :exc:`KeyError` when missing. The
+    earlier Sprint 6g₁ loader silently substituted ``entry["id"]`` for
+    a missing ``name``, ``""`` for a missing ``baseUrl``, etc., which
+    hid catalog corruption at import time.
+    """
+
+    bad_catalog = {
+        "anthropic": {
+            "claude-opus-4-7": {
+                # Required `name` deliberately missing — Pi-required.
+                "id": "claude-opus-4-7",
+                "api": "anthropic-messages",
+                "provider": "anthropic",
+                "baseUrl": "https://api.anthropic.com",
+                "reasoning": True,
+                "input": ["text"],
+                "cost": {
+                    "input": 15.0,
+                    "output": 75.0,
+                    "cacheRead": 1.5,
+                    "cacheWrite": 18.75,
+                },
+                "contextWindow": 200000,
+                "maxTokens": 8192,
+            }
+        }
+    }
+    bad_json = tmp_path / "models_generated.json"
+    bad_json.write_text(json.dumps(bad_catalog), encoding="utf-8")
+    monkeypatch.setattr(
+        "aelix_ai.models_generated._CATALOG_JSON_PATH", bad_json
+    )
+    with pytest.raises(KeyError, match="name"):
+        _load_catalog()
