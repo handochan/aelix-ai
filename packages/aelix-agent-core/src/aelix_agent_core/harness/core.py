@@ -26,6 +26,7 @@ import inspect
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, assert_never
 
 from aelix_ai.messages import AssistantMessage, ImageContent, TextContent, UserMessage
@@ -1543,6 +1544,119 @@ class AgentHarness:
         """
 
         self._state.bash_aborted = True
+
+    # === Sprint 6h₃ (ADR-0073) — session inspection methods =================
+    # Pi parity: ``session.getSessionStats()``
+    # (``agent-session.ts:2901-2945``) and
+    # ``session.exportToHtml(outputPath?)``
+    # (``coding-agent/src/core/export-html/``). Both methods read in-memory
+    # state — they do not mutate the session.
+
+    def get_session_stats(self) -> Any:
+        """Pi parity: ``session.getSessionStats()``
+        (``agent-session.ts:2901-2945``).
+
+        Sprint 6h₃ (ADR-0073, P-269/P-271) aggregates per-role message
+        counts, token totals, cost, and ``context_usage`` from the
+        in-memory harness session. Returns a
+        :class:`aelix_agent_core.harness._session_stats.SessionStats`
+        frozen dataclass.
+
+        Reads ``self._state.messages`` directly — Pi parity: Pi's
+        ``session.messages`` corresponds to Aelix's in-memory
+        ``AgentState.messages`` (canonical accessor via the
+        ``messages`` property at line 673). ``Session`` is a storage
+        wrapper with no ``.messages`` attr; the prior ``hasattr``
+        branch was dead code (W6 W4 HIGH, P-292).
+
+        ``context_usage`` is :data:`None` when the model registry is
+        not yet wired (Pi parity — Pi's ``getContextUsage`` also
+        returns undefined when the model is unknown).
+        """
+
+        # Local import keeps the harness import graph free of
+        # ``_session_stats`` at module load time (defensive — the
+        # module is tiny but the import-cycle policy stays consistent
+        # with the rest of the harness).
+        from aelix_agent_core.harness._session_stats import (
+            aggregate_session_stats,
+        )
+
+        # Pi parity: Pi's `session.messages` corresponds to Aelix's
+        # in-memory `AgentState.messages` (canonical accessor via the
+        # `messages` property at line 673). `Session` is a storage
+        # wrapper, no `.messages` attr.
+        messages: list[Any] = list(self._state.messages)
+        session_file = self.session_file  # Sprint 6f P-118 public property
+        session_id = self._state.session_id or ""
+        context_usage = self._get_context_usage_safe()
+        return aggregate_session_stats(
+            session_id=session_id,
+            messages=messages,
+            session_file=session_file,
+            context_usage=context_usage,
+        )
+
+    def export_to_html(self, output_path: str | None = None) -> str:
+        """Pi parity: ``session.exportToHtml(outputPath?)``
+        (``rpc-mode.ts:558-561``).
+
+        Sprint 6h₃ (ADR-0073, P-270/P-279/P-281) ships a minimal HTML
+        emitter (:func:`aelix_coding_agent._export_html.export_html`).
+        Returns the resolved output path as a string. Pi visual
+        fidelity deferred to Sprint 6h₅+ per ADR-0074.
+
+        Pi parity: ``export-html.ts:242-248`` — Pi raises early on
+        in-memory or empty sessions. The harness owns the
+        precondition checks; the renderer is a pure writer.
+
+        When ``output_path`` is :data:`None`, the default is the
+        Pi-shape ``aelix-session-<basename>.html`` cwd-relative path
+        (``export-html.ts:273-277``).
+        """
+
+        # Pi parity: export-html.ts:242-248 — Pi raises early on
+        # in-memory or empty sessions.
+        if self._session is None or self.session_file is None:
+            raise RuntimeError("Cannot export in-memory session to HTML")
+        if not Path(self.session_file).exists():
+            raise RuntimeError(
+                "Nothing to export yet - start a conversation first"
+            )
+
+        # Local import keeps ``aelix_agent_core`` independent of
+        # ``aelix_coding_agent`` at module load time (the harness
+        # already does this for ``_ExtensionRuntime``).
+        from aelix_coding_agent._export_html import export_html
+
+        # Pi parity: Pi's `session.messages` corresponds to Aelix's
+        # in-memory `AgentState.messages` (canonical accessor via the
+        # `messages` property at line 673). `Session` is a storage
+        # wrapper, no `.messages` attr.
+        messages: list[Any] = list(self._state.messages)
+        title = self._cached_session_name or "Aelix Session"
+        session_basename = Path(self.session_file).stem  # strips .jsonl
+        return export_html(
+            messages,
+            output_path,
+            title=title,
+            session_basename=session_basename,
+        )
+
+    def _get_context_usage_safe(self) -> Any | None:
+        """Pi parity: ``session.getContextUsage()`` defensive shim.
+
+        Sprint 6h₃ (P-273): Pi's ``getContextUsage`` returns
+        :data:`undefined` when the current model is unknown or the
+        message history is empty. Aelix mirrors with :data:`None` —
+        the model-registry wiring + per-turn token tracking land in
+        Sprint 6h₄+; until then this returns :data:`None`
+        unconditionally so the RPC wire shape omits the
+        ``contextUsage`` field (matching Pi's
+        ``JSON.stringify`` undefined-skip).
+        """
+
+        return None
 
     async def set_resources(self, resources: dict[str, Any]) -> None:
         """Replace the resources dict. Pi: ``agent-harness.ts:751-760``.
