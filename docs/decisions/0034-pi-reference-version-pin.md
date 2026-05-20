@@ -312,6 +312,52 @@ shrinks 16 → 7; `SUPPORTED_COMMANDS` rises 13 → 22. The closure pin
 `SUPPORTED ∪ DEFERRED == RPC_COMMAND_TYPES` preserved at 29 and
 pins the W5-audited Pi line numbers at SHA `734e08e`.
 
+### Sprint 6h₃ amendment (session inspection — get_session_stats + export_html, 2026-05-20)
+
+Sprint 6h₃ ports the next 2 Pi `RpcCommand` discriminators from
+`rpc-mode.ts:553-561` (W5-audited line range at SHA `734e08e`;
+prior W1 draft said 475-483 — corrected per P-277/P-278/P-286). The
+2 commands: `get_session_stats` (Pi `rpc-mode.ts:553-556` →
+`agent-session.ts:2901-2945`) and `export_html` (Pi
+`rpc-mode.ts:558-561` → `coding-agent/src/core/export-html/`). W4
+code-review + W5 Pi parity audit produced **2 BLOCKING + 2 MAJOR +
+1 W4 HIGH + 2 W4 MEDIUM** must-fix items; Sprint 6h₃ W6 applied
+every BLOCKING + MAJOR + W4 fix.
+
+| Component | Status | Owner ADR |
+|---|---|---|
+| 6h₃ | Phase 4.10 | get_session_stats + export_html wire | SUPPORTED 22→24, DEFERRED 7→5 | ADR-0073, ADR-0074 |
+| `SessionStats` + `SessionStatsTokens` dataclasses + aggregator (`harness/_session_stats.py`) | shipped | ADR-0073 |
+| Minimal HTML emitter (`_export_html.py`, Pi-shape default path + Pi error parity) | shipped | ADR-0073 |
+| `harness.get_session_stats()` + `harness.export_to_html()` methods | shipped | ADR-0073 |
+| 2 RPC handlers (`_handle_get_session_stats` / `_handle_export_html`) + Pi-shape `_session_stats_to_dict` (W6 P-275 BLOCKING — Pi-shape `contextUsage {tokens, contextWindow, percent}`) | shipped | ADR-0073 |
+| Aggregator `totalMessages = len(messages)` (W6 P-276 BLOCKING — matches Pi `state.messages.length`) | shipped | ADR-0073 |
+| Pi error parity on `export_to_html` (W6 P-279 MAJOR — `export-html.ts:242-248`) | shipped | ADR-0073 |
+| Pi-shape default `outputPath = aelix-session-<basename>.html` cwd-relative (W6 P-281 MAJOR — `export-html.ts:273-277`) | shipped | ADR-0073 |
+| Aggregator dict-shape `usage` fallback via `_read` helper (W6 P-283) | shipped | ADR-0073 |
+| Drop dead `hasattr(session, "messages")` branch (W6 W4 HIGH P-292) | shipped | ADR-0073 |
+| Drop `getattr(cmd, "output_path", None)` in `_handle_export_html` (W4 M1) | shipped | ADR-0073 |
+| Drop `path.parent` truthiness tautology in `_export_html` (W4 M2) | shipped | ADR-0073 |
+| Line citation corrections — `rpc-mode.ts:553-561` + `agent-session.ts:2901-2945` (W6 P-277/P-278/P-286) | shipped | ADR-0073 |
+| `tests/pi_parity/test_phase_4_10_strict_superset.py` closure pin | shipped | ADR-0074 |
+| `tests/pi_parity/test_phase_4_4_strict_superset.py` strengthening (Sprint 6d closure pin: SUPPORTED 22 → 24, DEFERRED 7 → 5) | shipped | ADR-0074 |
+| `tests/pi_parity/test_phase_4_6/4_8/4_9_strict_superset.py` count updates | shipped | ADR-0074 |
+| Pi `AgentSessionRuntime` port (runtimeHost.switchSession / fork) | deferred to Sprint 6h₄ | ADR-0074 |
+| `SessionManager.getLeafId` for `clone` command | deferred to Sprint 6h₄ | ADR-0074 |
+| `rebindSession` seam (P-126 Sprint 6f carry-forward) | deferred to Sprint 6h₄ | ADR-0074 |
+| 5 session-tree commands (switch_session / fork / clone / get_fork_messages / get_last_assistant_text) | deferred to Sprint 6h₄ | ADR-0074 |
+| `_get_context_usage_safe` real implementation (P-282 — model registry + per-turn tracking) | deferred to Sprint 6h₄ | ADR-0074 |
+| Pi HTML visual fidelity + session-tree entry source (P-280) | deferred to Sprint 6h₅ | ADR-0074 |
+| Live `session_id` read via session manager (P-291) | deferred to Sprint 6h₄ | ADR-0074 |
+| Pi-source-grep verification tooling (P-286) | deferred to Sprint 6h₄ | ADR-0074 |
+
+Sprint 6h₃ moves 2 commands from deferred → supported.
+`DEFERRED_COMMANDS` shrinks 7 → 5; `SUPPORTED_COMMANDS` rises 22 →
+24. The closure pin
+(`tests/pi_parity/test_phase_4_10_strict_superset.py`) asserts
+`SUPPORTED ∪ DEFERRED == RPC_COMMAND_TYPES` preserved at 29 and
+pins the W5-audited Pi line numbers at SHA `734e08e`.
+
 ## Consequences
 
 - Parity audits become reproducible — the W5 audit lane can `git checkout`

@@ -103,9 +103,9 @@ async def test_get_state_round_trip() -> None:
 async def test_deferred_command_produces_error_envelope() -> None:
     """A still-deferred command emits a Pi-shape error envelope on stdout.
 
-    Sprint 6h₂ (ADR-0071) wired ``steer`` — switch to ``fork`` which
-    remains deferred per ADR-0072 (5 session-tree commands still
-    awaiting Sprint 6h₃).
+    Sprint 6h₂ (ADR-0071) wired ``steer``; Sprint 6h₃ (ADR-0073) wired
+    ``get_session_stats`` / ``export_html``. ``fork`` remains deferred
+    per ADR-0074 (5 session-tree commands still awaiting Sprint 6h₄).
     """
 
     output = await _run_with_lines(
@@ -113,7 +113,7 @@ async def test_deferred_command_produces_error_envelope() -> None:
     )
     response = next(rec for rec in output if rec.get("command") == "fork")
     assert response["success"] is False
-    assert "ADR-0072" in response["error"]
+    assert "ADR-0074" in response["error"]
 
 
 async def test_unknown_command_produces_parse_error() -> None:

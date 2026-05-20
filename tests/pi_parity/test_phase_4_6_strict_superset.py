@@ -154,9 +154,10 @@ def test_deferred_count_by_sprint_6h_2() -> None:
     Sprint 6f W2 (ADR-0065): 20 → 17 deferred.
     Sprint 6h₁ (ADR-0069 / P-219) drops ``get_commands`` → 17 → 16.
     Sprint 6h₂ (ADR-0071 / P-245~P-253) drops 9 more → 16 → 7.
+    Sprint 6h₃ (ADR-0073 / P-268~P-274) drops 2 more → 7 → 5.
     """
 
-    assert len(DEFERRED_COMMANDS) == 7
+    assert len(DEFERRED_COMMANDS) == 5
 
 
 def test_supported_count_by_sprint_6h_2() -> None:
@@ -166,9 +167,10 @@ def test_supported_count_by_sprint_6h_2() -> None:
     Sprint 6f W2 (ADR-0065): 9 → 12 supported.
     Sprint 6h₁ (ADR-0069 / P-219) adds ``get_commands`` → 12 → 13.
     Sprint 6h₂ (ADR-0071 / P-245~P-253) adds 9 more → 13 → 22.
+    Sprint 6h₃ (ADR-0073 / P-268~P-274) adds 2 more → 22 → 24.
     """
 
-    assert len(SUPPORTED_COMMANDS) == 22
+    assert len(SUPPORTED_COMMANDS) == 24
     assert "get_commands" in SUPPORTED_COMMANDS
 
 

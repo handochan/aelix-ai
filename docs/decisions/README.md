@@ -86,6 +86,37 @@
 | 0070 | [Phase 4.8 Strict Superset Closure](0070-phase-4-8-strict-superset-closure.md)                                                                          | Accepted (Sprint 6h₁ / Phase 4.8 / W6 shipped)                      | Phase 4.8 closure — P-216~P-244 roster (W0 P-216..P-223 + W4/W5 P-224..P-244) + closure pin (`tests/pi_parity/test_phase_4_8_strict_superset.py`) + 13 supported / 16 deferred RPC split + 22+ W6 regression tests. Sprint 6h₂ / 6h₃ carry-forward enumerated. |
 | 0071 | [9 RPC Commands + Harness Setters](0071-9-rpc-commands-and-harness-setters.md)                                                                          | Accepted (Sprint 6h₂ / Phase 4.9 / W6 shipped)                      | Pi parity port of 9 RPC handlers + 5 harness setters + 4 AgentState fields + 1 `_MessageQueue.set_mode` helper + 2 public properties + cycle algorithm with `supportsThinking()` guard (P-254 BLOCKING) + strict `_decode_images` (P-262 BLOCKING) + keyword-only `images` (P-263 MAJOR) + `auto_retry_enabled` wire surface (P-264 BLOCKING) + `_MessageQueue.set_mode` validation (P-265 BLOCKING) + line citation corrections (P-258 BLOCKING). |
 | 0072 | [Phase 4.9 Strict Superset Closure](0072-phase-4-9-strict-superset-closure.md)                                                                          | Accepted (Sprint 6h₂ / Phase 4.9 / W6 shipped)                      | Phase 4.9 closure — P-245~P-267 roster (W0 P-245..P-253 + W4/W5 P-254..P-267) + closure pin (`tests/pi_parity/test_phase_4_9_strict_superset.py`, 28 tests) + 22 supported / 7 deferred RPC split + 11 W6 regression pins. Sprint 6h₃ carry-forward enumerated (5 session-tree + 2 session-inspection commands + Pi `SettingsManager` port + retry loop + queue_update wire shape + steer expanders). |
+| 0073 | [Session Stats + HTML Export Wire Port](0073-session-stats-and-html-export.md)                                                                          | Accepted (Sprint 6h₃ / Phase 4.10 / W6 shipped)                     | Pi parity port of `SessionStats` (`agent-session.ts:212-223`) + `getSessionStats` aggregator (`agent-session.ts:2901-2945`) + minimal HTML emitter (`coding-agent/src/core/export-html/`) + 2 RPC handlers (`get_session_stats` / `export_html`). Pi-shape `contextUsage {tokens, contextWindow, percent}` (P-275 BLOCKING) + `totalMessages = len(messages)` (P-276 BLOCKING) + Pi error parity on `export_to_html` (P-279 MAJOR) + Pi-shape default `outputPath = aelix-session-<basename>.html` (P-281 MAJOR) + aggregator dict-shape fallback via `_read` (P-283) + W4 HIGH `hasattr` dead branch drop (P-292) + line citation corrections (P-277/P-278/P-286). |
+| 0074 | [Phase 4.10 Strict Superset Closure](0074-phase-4-10-strict-superset-closure.md)                                                                        | Accepted (Sprint 6h₃ / Phase 4.10 / W6 shipped)                     | Phase 4.10 closure — P-268~P-292 roster (W0 P-268..P-274 + W4/W5 P-275..P-292) + closure pin (`tests/pi_parity/test_phase_4_10_strict_superset.py`) + 24 supported / 5 deferred RPC split. Sprint 6h₄ carry-forward enumerated (5 session-tree commands + `AgentSessionRuntime` port + `SessionManager.getLeafId` + `rebindSession` seam + `_get_context_usage_safe` real impl + live `session_id` read + Pi-source-grep verification + Pi HTML visual fidelity to Sprint 6h₅). |
+
+### Sprint 6h₃ sub-table (Phase 4.10 closure)
+
+| Item | Status | Owner ADR |
+|---|---|---|
+| `aelix_agent_core.harness._session_stats` (NEW — `SessionStats` 10-field dataclass + `SessionStatsTokens` 5-field sub-shape + `aggregate_session_stats` pure-function aggregator + `_read` dict-fallback helper) | shipped | 0073 |
+| `aelix_coding_agent._export_html` (NEW — minimal HTML5 emitter with per-role sections + Pi-shape default `aelix-session-<basename>.html` cwd-relative path) | shipped | 0073 |
+| `AgentHarness.get_session_stats()` + `AgentHarness.export_to_html()` methods (Pi parity + harness-side precondition raises for in-memory / missing session) | shipped | 0073 |
+| 2 RPC handlers (`_handle_get_session_stats` / `_handle_export_html`) + Pi-shape `_session_stats_to_dict` (W6 P-275 BLOCKING — Pi-shape `contextUsage {tokens, contextWindow, percent}`) | shipped | 0073 |
+| Aggregator `totalMessages = len(messages)` (W6 P-276 BLOCKING — matches Pi `agent-session.ts:2935` `state.messages.length`) | shipped | 0073 |
+| Pi error parity on `export_to_html` (W6 P-279 MAJOR — `export-html.ts:242-248` raises on in-memory / empty session) | shipped | 0073 |
+| Pi-shape default `outputPath = aelix-session-<basename>.html` cwd-relative (W6 P-281 MAJOR — `export-html.ts:273-277`) | shipped | 0073 |
+| Aggregator dict-shape `usage` fallback via `_read` helper (W6 P-283) | shipped | 0073 |
+| Drop dead `hasattr(session, "messages")` branch (W6 W4 HIGH P-292 — pyright regression fix) | shipped | 0073 |
+| Drop `getattr(cmd, "output_path", None)` in `_handle_export_html` (W6 W4 MEDIUM-1) | shipped | 0073 |
+| Drop `path.parent` truthiness tautology in `_export_html` (W6 W4 MEDIUM-2) | shipped | 0073 |
+| Line citation corrections (W6 P-277/P-278/P-286 — `rpc-mode.ts:553-561` + `agent-session.ts:2901-2945` in 7+ files: rpc_mode.py docstrings + _session_stats.py module docstring + harness/core.py method docstrings + closure pin + Pi fixture + spec) | shipped | 0073 |
+| `tests/pi_parity/test_phase_4_10_strict_superset.py` closure pin | shipped | 0074 |
+| `tests/pi_parity/test_phase_4_4_strict_superset.py` strengthening (Sprint 6d closure pin: SUPPORTED 22 → 24, DEFERRED 7 → 5) | shipped | 0074 |
+| `tests/pi_parity/test_phase_4_6_strict_superset.py` / `4_8` / `4_9` count updates (SUPPORTED 22 → 24, DEFERRED 7 → 5) | shipped | 0074 |
+| ADR-0034 amendment — Sprint 6h₃ Phase 4.10 partition (2 of 29 + 24 of 29 cumulative) | shipped | 0034 |
+| Pi `AgentSessionRuntime` port (runtimeHost.switchSession / fork) | deferred to Sprint 6h₄ | 0074 |
+| `SessionManager.getLeafId` for `clone` command | deferred to Sprint 6h₄ | 0074 |
+| `rebindSession` seam (P-126 Sprint 6f carry-forward) | deferred to Sprint 6h₄ | 0074 |
+| 5 session-tree commands (switch_session / fork / clone / get_fork_messages / get_last_assistant_text) | deferred to Sprint 6h₄ | 0074 |
+| `_get_context_usage_safe` real implementation (P-282 — model registry + per-turn tracking) | deferred to Sprint 6h₄ | 0074 |
+| Live `session_id` read via session manager (P-291) | deferred to Sprint 6h₄ | 0074 |
+| Pi-source-grep verification tooling (P-286) | deferred to Sprint 6h₄ | 0074 |
+| Pi HTML visual fidelity + session-tree entry source (P-280) | deferred to Sprint 6h₅ | 0074 |
 
 ### Sprint 6h₂ sub-table (Phase 4.9 closure)
 

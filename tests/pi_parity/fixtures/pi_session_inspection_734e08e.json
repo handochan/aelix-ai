@@ -1,0 +1,69 @@
+{
+  "_doc": "Pi-pinned snapshot of session inspection RPC commands (get_session_stats + export_html). Sprint 6h₃ Phase 4.10. Used by tests/pi_parity/test_phase_4_10_strict_superset.py.",
+  "pi_sha": "734e08edf82ff315bc3d96472a6ebfa69a1d8016",
+  "pi_paths": {
+    "rpc_mode": "packages/coding-agent/src/modes/rpc/rpc-mode.ts",
+    "agent_session": "packages/coding-agent/src/core/agent-session.ts",
+    "export_html_dir": "packages/coding-agent/src/core/export-html/"
+  },
+  "pi_handlers": {
+    "get_session_stats": {
+      "lines": "553-556",
+      "agent_session_lines": "2901-2945",
+      "body": "const stats = session.getSessionStats(); return success(id, 'get_session_stats', stats);",
+      "harness_method": "session.getSessionStats() -> SessionStats",
+      "response_data_shape": "SessionStats (full object — no wrapper)"
+    },
+    "export_html": {
+      "lines": "558-561",
+      "agent_session_lines": "(in core/export-html/ helper)",
+      "body": "const path = await session.exportToHtml(command.outputPath); return success(id, 'export_html', { path });",
+      "harness_method": "session.exportToHtml(outputPath?: string) -> Promise<string>",
+      "response_data_shape": "{ path: string }"
+    }
+  },
+  "session_stats_shape": {
+    "_pi_lines": "212-223",
+    "_pi_path": "packages/coding-agent/src/core/agent-session.ts:212-223",
+    "fields": {
+      "sessionFile": "string | undefined — path to the session JSONL file (undefined for in-memory)",
+      "sessionId": "string",
+      "userMessages": "number — count of user-role messages",
+      "assistantMessages": "number — count of assistant-role messages",
+      "toolCalls": "number — total tool-call blocks across all assistant messages",
+      "toolResults": "number — count of tool-result messages",
+      "totalMessages": "number — userMessages + assistantMessages + toolResults",
+      "tokens": "{ input: number, output: number, cacheRead: number, cacheWrite: number, total: number }",
+      "cost": "number — accumulated USD",
+      "contextUsage": "ContextUsage | undefined — current token usage vs model's context window"
+    }
+  },
+  "context_usage_shape": {
+    "_doc": "Pi parity: types.ts ContextUsage (already exists in Aelix Sprint 6 extensions/api.py:ContextUsage)",
+    "fields": ["usedTokens", "limitTokens", "remainingTokens"]
+  },
+  "export_html_default_path": {
+    "_doc": "When outputPath is omitted, Pi exports to a default location",
+    "default_pattern": "Pi's default is implementation-specific (likely temp file or session-dir-relative); Aelix port can default to a tmpfile-style path"
+  },
+  "aelix_current_state": {
+    "session_messages": "Sprint 4 Session V3 ships message lists + token tracking via SessionV3Header + per-message metadata",
+    "harness_session_access": "harness._session exposes session state",
+    "context_usage_dataclass": "ContextUsage dataclass exists at extensions/api.py:481 (Sprint 6 extension surface)",
+    "export_html_implementation": "MISSING — Sprint 6h₃ adds a minimal HTML emitter (basic structure; Pi visual fidelity deferred)",
+    "session_stats_method": "MISSING — Sprint 6h₃ adds harness.get_session_stats() aggregator"
+  },
+  "command_count_arithmetic": {
+    "before_sprint_6h_3": "22 supported / 7 deferred / 29 total",
+    "after_sprint_6h_3": "24 supported / 5 deferred / 29 total",
+    "supported_added": ["get_session_stats", "export_html"],
+    "still_deferred": ["switch_session", "fork", "clone", "get_fork_messages", "get_last_assistant_text"]
+  },
+  "deferred_to_sprint_6h_4": [
+    "5 session tree commands (switch_session, fork, clone, get_fork_messages, get_last_assistant_text)",
+    "AgentSessionRuntime port (runtimeHost.switchSession / fork)",
+    "SessionManager.getLeafId for clone command",
+    "rebindSession seam (P-126 Sprint 6f carry-forward)",
+    "Full Pi HTML export visual fidelity (CSS, syntax highlighting — Sprint 6h₃ ships minimal renderer)"
+  ]
+}

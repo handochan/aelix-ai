@@ -70,15 +70,23 @@ def _stream() -> Any:
 
 
 def test_supported_count_is_22_after_sprint_6h2() -> None:
-    """Sprint 6h₁ left 13 supported; Sprint 6h₂ adds 9 → 22."""
+    """Sprint 6h₁ left 13 supported; Sprint 6h₂ adds 9 → 22.
 
-    assert len(SUPPORTED_COMMANDS) == 22
+    Sprint 6h₃ (ADR-0073 / P-268~P-274) wires 2 more → 24 supported.
+    Closure pin retains the original name; the body asserts the
+    live count.
+    """
+
+    assert len(SUPPORTED_COMMANDS) == 24
 
 
 def test_deferred_count_is_7_after_sprint_6h2() -> None:
-    """Sprint 6h₁ left 16 deferred; Sprint 6h₂ drops 9 → 7."""
+    """Sprint 6h₁ left 16 deferred; Sprint 6h₂ drops 9 → 7.
 
-    assert len(DEFERRED_COMMANDS) == 7
+    Sprint 6h₃ (ADR-0073 / P-268~P-274) drops 2 more → 5 deferred.
+    """
+
+    assert len(DEFERRED_COMMANDS) == 5
 
 
 def test_supported_plus_deferred_is_29() -> None:
@@ -131,9 +139,13 @@ def test_dispatcher_table_routes_all_nine() -> None:
 
 
 def test_remaining_seven_deferred_are_session_tree_or_inspection() -> None:
+    """Sprint 6h₂ left 7 deferred (2 session-inspection + 5 session-tree).
+    Sprint 6h₃ (ADR-0073) wires the 2 session-inspection commands so the
+    remaining set narrows to the 5 session-tree commands deferred to
+    Sprint 6h₄ per ADR-0074.
+    """
+
     expected = {
-        "get_session_stats",
-        "export_html",
         "switch_session",
         "fork",
         "clone",
@@ -144,9 +156,15 @@ def test_remaining_seven_deferred_are_session_tree_or_inspection() -> None:
 
 
 def test_remaining_seven_deferred_own_adr_0072() -> None:
+    """Sprint 6h₂ closure pin restated owners to ADR-0072. Sprint 6h₃
+    (ADR-0073) wires the 2 session-inspection commands; the remaining
+    5 session-tree commands are restated to ADR-0074. Accept either
+    prefix so the closure pin survives the transition.
+    """
+
     for cmd, owner in DEFERRED_COMMANDS.items():
-        assert "ADR-0072" in owner, (
-            f"{cmd!r} owner string {owner!r} does not cite ADR-0072"
+        assert "ADR-0072" in owner or "ADR-0074" in owner, (
+            f"{cmd!r} owner string {owner!r} does not cite ADR-0072 / ADR-0074"
         )
 
 
