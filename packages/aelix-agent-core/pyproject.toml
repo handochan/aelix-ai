@@ -10,7 +10,13 @@ readme = "../../README.md"
 requires-python = ">=3.11"
 license = { text = "Apache-2.0" }
 authors = [{ name = "Aelix Contributors" }]
-dependencies = ["aelix-ai"]
+dependencies = [
+  "aelix-ai",
+  # Sprint 6h₁ (ADR-0069, P-216/P-217): prompt-templates frontmatter
+  # parsing + skills .gitignore-style ignore matching.
+  "PyYAML>=6.0",
+  "pathspec>=0.12",
+]
 
 [tool.uv.sources]
 aelix-ai = { workspace = true }

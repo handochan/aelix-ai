@@ -1,0 +1,130 @@
+{
+  "_doc": "Pi-pinned snapshot of get_commands RPC + prompt-templates + skills surface at SHA 734e08e.",
+  "pi_sha": "734e08edf82ff315bc3d96472a6ebfa69a1d8016",
+  "pi_paths": {
+    "prompt_templates": "packages/agent/src/harness/prompt-templates.ts",
+    "skills": "packages/agent/src/harness/skills.ts",
+    "rpc_get_commands": "packages/coding-agent/src/modes/rpc/rpc-mode.ts:557-590",
+    "rpc_slash_command": "packages/coding-agent/src/modes/rpc/rpc-types.ts:75-84"
+  },
+  "pi_file_loc": {
+    "prompt-templates.ts": 380,
+    "skills.ts": 540,
+    "rpc-mode.ts get_commands handler": 34
+  },
+  "prompt_templates_surface": {
+    "exports": [
+      "loadPromptTemplates(env, paths) -> {templates, diagnostics}",
+      "loadSourcedPromptTemplates(env, inputs, mapTemplate?) -> {templates, diagnostics}",
+      "parseCommandArgs(input) -> string[]",
+      "substituteArgs(content, args) -> string",
+      "formatPromptTemplateInvocation(template, args, prefix?) -> string",
+      "PromptTemplateDiagnosticCode (Literal union)",
+      "PromptTemplateDiagnostic (interface)"
+    ],
+    "data_shape": {
+      "PromptTemplate": "{name: string, description: string, content: string}",
+      "name_derivation": "filename without .md extension",
+      "description_derivation": "frontmatter.description OR first body line (truncated to 60 chars)",
+      "content_derivation": "markdown body after frontmatter"
+    },
+    "discovery": {
+      "input_types": ["directory paths (load direct .md children, NON-recursive)", "explicit .md file paths"],
+      "missing_paths": "skip silently with diagnostic",
+      "non_markdown_files": "skip",
+      "symlinks": "resolved via env.canonical_path()"
+    },
+    "frontmatter_parsing": "YAML between --- delimiters at file start; uses npm `yaml` package",
+    "caching": "none (load on every call)",
+    "external_deps": ["yaml package", "ExecutionEnv abstraction"],
+    "arg_substitution_placeholders": ["$1", "$@", "$ARGUMENTS", "${@:N}", "${@:N:L}"]
+  },
+  "skills_surface": {
+    "exports": [
+      "formatSkillInvocation(skill, additionalInstructions?) -> string",
+      "loadSkills(env, dirs) -> {skills, diagnostics}",
+      "loadSourcedSkills(env, inputs, mapSkill?) -> {entries, diagnostics}",
+      "SkillDiagnosticCode (Literal union)",
+      "SkillDiagnostic (interface)"
+    ],
+    "data_shape": {
+      "Skill": {
+        "name": "string (must match parent directory name)",
+        "description": "string (frontmatter, required non-empty)",
+        "content": "string (markdown body)",
+        "filePath": "string",
+        "disableModelInvocation": "bool (frontmatter disable-model-invocation)"
+      }
+    },
+    "discovery": {
+      "file_formats": [
+        "SKILL.md files at ANY directory depth (returns IMMEDIATELY upon finding one in a dir)",
+        "Root .md files in top-level directory only"
+      ],
+      "directory_traversal": "RECURSIVE for SKILL.md (stops at first hit per dir)",
+      "ignore_files_honored": [".gitignore", ".ignore", ".fdignore"],
+      "ignore_pattern_prefixing": "relative paths from ignore file location"
+    },
+    "frontmatter_parsing": "YAML at file start; required fields: name (matches parent dir), description; optional: disable-model-invocation",
+    "validation": [
+      "name MUST match parent directory name",
+      "name length constraints",
+      "name character restrictions (lowercase a-z, 0-9, hyphens only)",
+      "description MUST be non-empty"
+    ],
+    "external_deps": ["yaml package", "ignore package (npm gitignore-style matching)"]
+  },
+  "rpc_slash_command_shape": {
+    "name": "string",
+    "description": "string (optional)",
+    "source": "Literal['extension', 'prompt', 'skill']",
+    "sourceInfo": "SourceInfo (path, type, owning identifier)"
+  },
+  "get_commands_handler_aggregation": {
+    "extension_commands": {
+      "source": "session.extensionRunner.getRegisteredCommands()",
+      "fields": "{invocationName, description, sourceInfo}",
+      "wire_shape": "{name: command.invocationName, description, source: 'extension', sourceInfo}"
+    },
+    "prompt_templates": {
+      "source": "session.promptTemplates",
+      "wire_shape": "{name: template.name, description: template.description, source: 'prompt', sourceInfo}"
+    },
+    "skills": {
+      "source": "session.resourceLoader.getSkills().skills",
+      "wire_shape": "{name: 'skill:' + skill.name, description: skill.description, source: 'skill', sourceInfo}"
+    },
+    "name_prefix_convention": "Skills are prefixed with 'skill:' in the wire shape"
+  },
+  "aelix_current_state": {
+    "extension_runner_exists": "Extension dataclass + ExtensionAPI shipped Sprint 5a (P-22~P-27)",
+    "extension_source_info_exists": "ExtensionSourceInfo dataclass at extensions/api.py:481 (Pi SourceInfo minimal port)",
+    "rpc_slash_command_exists": "RpcSlashCommand dataclass at rpc/rpc_types.py (Sprint 6d)",
+    "rpc_client_get_commands_exists": "RpcClient.get_commands() at rpc/rpc_client.py:363 (Sprint 6d)",
+    "prompt_templates": "NOT YET PORTED",
+    "skills": "NOT YET PORTED",
+    "get_registered_commands_on_extension": "NOT YET SURFACED — Sprint 6h₁ adds it as Extension API"
+  },
+  "python_port_strategy": {
+    "yaml": "PyYAML dep (already common; pin `pyyaml>=6.0`)",
+    "ignore": "pathspec library (mature pure-Python gitignore matcher; pin `pathspec>=0.12`)",
+    "fs_abstraction": "Use Path + open() directly; no ExecutionEnv abstraction needed (Pi's ExecutionEnv is for browser/Node interop)",
+    "diagnostic_codes": "Literal Python unions; same string values as Pi"
+  },
+  "python_deliverables": {
+    "prompt_templates_py": "~250 prod LOC",
+    "skills_py": "~300 prod LOC",
+    "harness_aggregation": "~50 prod LOC (Extension.commands + harness.prompt_templates + harness.skills attribute wire)",
+    "rpc_mode_get_commands_handler": "~60 prod LOC",
+    "tests": "~600 LOC across 4 test files",
+    "closure_pin": "~80 LOC"
+  },
+  "deferred_in_sprint_6h_1": [
+    "16 remaining RPC commands (steer/follow_up/cycle_thinking_level/queue modes/auto modes/abort_bash/session inspection/session tree/extension UI) — Sprint 6h₂",
+    "image-models.ts + image-models.generated.ts — Sprint 6h₃",
+    "Typed Model.compat discriminated union — Sprint 6h₃",
+    "Workspace-scoped model selection — Sprint 6h₂",
+    "Pi `ExecutionEnv` browser-side abstraction (Aelix uses direct stdlib io)",
+    "applyProviderConfig for register_provider.config.models — Sprint 6h₂"
+  ]
+}
