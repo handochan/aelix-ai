@@ -47,6 +47,28 @@ remaining 5 session-tree commands (``switch_session`` / ``fork`` /
 ``clone`` / ``get_fork_messages`` / ``get_last_assistant_text``)
 are owned by ADR-0074 and defer to Sprint 6h₄.
 
+Sprint 6h₄a (ADR-0075 / ADR-0076 / P-293~P-298) wires **2** more
+read-only session-navigation commands: ``get_fork_messages`` (Pi
+``rpc-mode.ts:591-594`` → ``agent-session.ts:2870-2885``) and
+``get_last_assistant_text`` (Pi ``rpc-mode.ts:596-599`` →
+``agent-session.ts:3059-3081``). The counts move to **26 supported /
+3 deferred / 29 total**. The remaining 3 session-tree commands
+(``switch_session`` / ``fork`` / ``clone``) defer to Sprint 6h₄b
+per ADR-0076 (porting Pi ``AgentSessionRuntime`` +
+``SessionManager.getLeafId`` + ``rebindSession`` seam).
+
+P-293 line drift: ADR-0074's carry-forward roster estimated
+``rpc-mode.ts:563-566`` / ``:568-571`` for the two new handlers; W0
+verification at SHA 734e08e puts the actual case sites at
+``591-594`` / ``596-599``. ADR-0075 records the supersession.
+
+P-298 SYNTHESIS: ``_handle_get_last_assistant_text`` mirrors Pi's
+``JSON.stringify({text: undefined})`` → ``{}`` key-omission. When
+:meth:`AgentHarness.get_last_assistant_text` returns :data:`None`
+the handler emits ``data == {}`` — consistent with the existing
+:func:`_session_stats_to_dict` undefined-skip pattern asserted by
+Sprint 6h₃ closure pin.
+
 Pi line citations at SHA 734e08e per Sprint 6h₂ W5/W6 audit (P-258):
 the 9 case sites in ``rpc-mode.ts`` live at lines 483-547 (NOT
 528-635 as earlier drafts suggested) and delegate to ``AgentSession``
@@ -108,16 +130,15 @@ from aelix_ai.streaming import Model
 # 9 supported + 20 deferred = 29 total (= Pi RpcCommand variant count).
 
 DEFERRED_COMMANDS: dict[str, str] = {
-    # Sprint 6h₃ (ADR-0073 / P-268~P-274) wired 2 session-inspection
-    # commands (get_session_stats + export_html) — the entries below
-    # shrink to the 5 session-tree commands deferred to Sprint 6h₄
-    # per ADR-0074 (porting Pi ``AgentSessionRuntime`` +
+    # Sprint 6h₄a (ADR-0075 / ADR-0076 / P-293~P-298) wired 2 read-only
+    # session-navigation commands (get_fork_messages +
+    # get_last_assistant_text) — the entries below shrink to the 3
+    # session-tree commands deferred to Sprint 6h₄b per ADR-0076
+    # (porting Pi ``AgentSessionRuntime`` +
     # ``SessionManager.getLeafId`` + ``rebindSession`` seam).
-    "switch_session": "ADR-0074 — Sprint 6h₄ session tree navigation",
-    "fork": "ADR-0074 — Sprint 6h₄ session tree navigation",
-    "clone": "ADR-0074 — Sprint 6h₄ session tree navigation",
-    "get_fork_messages": "ADR-0074 — Sprint 6h₄ session tree navigation",
-    "get_last_assistant_text": "ADR-0074 — Sprint 6h₄ session tree navigation",
+    "switch_session": "ADR-0076 — Sprint 6h₄b session tree runtime",
+    "fork": "ADR-0076 — Sprint 6h₄b session tree runtime",
+    "clone": "ADR-0076 — Sprint 6h₄b session tree runtime",
 }
 
 
@@ -161,6 +182,12 @@ SUPPORTED_COMMANDS: frozenset[str] = frozenset(
         # commands. Pi parity: ``rpc-mode.ts:475-478`` + ``:480-483``.
         "get_session_stats",
         "export_html",
+        # Sprint 6h₄a (ADR-0075 / P-293~P-298) — 2 read-only session-
+        # navigation commands. Pi parity: ``rpc-mode.ts:591-594`` +
+        # ``:596-599`` (W0 verified at SHA 734e08e — supersedes the
+        # ADR-0074 ``563-566`` / ``568-571`` estimates).
+        "get_fork_messages",
+        "get_last_assistant_text",
     }
 )
 
@@ -1131,6 +1158,86 @@ async def _handle_export_html(
     )
 
 
+# === Sprint 6h₄a (ADR-0075, P-293~P-298) — 2 session-navigation handlers ====
+#
+# Pi parity:
+#   - ``rpc-mode.ts:591-594`` → ``session.getUserMessagesForForking()`` →
+#     :class:`Array<{entryId, text}>` (``agent-session.ts:2870-2885``).
+#   - ``rpc-mode.ts:596-599`` → ``session.getLastAssistantText()`` →
+#     ``string | undefined`` (``agent-session.ts:3059-3081``).
+#
+# P-293: ADR-0074 carry-forward roster estimated lines ``563-566`` /
+# ``568-571``; W0 verification at SHA 734e08e puts the actual case sites
+# at ``591-594`` / ``596-599``. ADR-0075 records the supersession.
+#
+# P-298 SYNTHESIS (binding): :func:`_handle_get_last_assistant_text` mirrors
+# Pi's ``JSON.stringify({text: undefined})`` → ``{}`` key-omission. When
+# :meth:`AgentHarness.get_last_assistant_text` returns :data:`None` the
+# handler emits ``data == {}`` — consistent with the existing
+# :func:`_session_stats_to_dict` undefined-skip pattern asserted by the
+# Sprint 6h₃ closure pin.
+
+
+def _fork_points_to_dict(points: list[Any]) -> list[dict[str, str]]:
+    """Pi parity: serialize ``list[ForkPointInfo]`` to the Pi camelCase
+    wire shape ``Array<{entryId, text}>`` (``agent-session.ts:2870``).
+
+    Sprint 6h₄a (ADR-0075, P-295). Aelix introduces
+    :class:`ForkPointInfo` to name Pi's inline anonymous return type;
+    the wire shape stays Pi-byte-for-byte camelCase.
+    """
+
+    return [{"entryId": p.entry_id, "text": p.text} for p in points]
+
+
+async def _handle_get_fork_messages(
+    harness: AgentHarness,
+    cmd: Any,  # ``RpcCommandGetForkMessages``
+) -> RpcResponse:
+    """Pi parity: ``rpc-mode.ts:591-594`` ``get_fork_messages`` handler
+    (delegates to ``agent-session.ts:2870-2885``
+    ``session.getUserMessagesForForking``).
+
+    Pi body: ``const messages = session.getUserMessagesForForking();
+    return success(id, "get_fork_messages", { messages });`` — the
+    response ``data`` wraps the camelCase array in ``{messages: [...]}``.
+    """
+
+    points = await harness.get_user_messages_for_forking()
+    return RpcSuccessResponse(
+        id=cmd.id,
+        command="get_fork_messages",
+        data={"messages": _fork_points_to_dict(points)},
+    )
+
+
+async def _handle_get_last_assistant_text(
+    harness: AgentHarness,
+    cmd: Any,  # ``RpcCommandGetLastAssistantText``
+) -> RpcResponse:
+    """Pi parity: ``rpc-mode.ts:596-599`` ``get_last_assistant_text``
+    handler (delegates to ``agent-session.ts:3059-3081``
+    ``session.getLastAssistantText``).
+
+    Pi body: ``const text = session.getLastAssistantText(); return
+    success(id, "get_last_assistant_text", { text });`` — Pi's
+    ``JSON.stringify`` drops ``text`` from the payload when the
+    session method returns :data:`undefined`. P-298 SYNTHESIS: Aelix
+    mirrors with ``data = {"text": text} if text is not None else {}``
+    so the wire bytes match Pi's key-omission behaviour. This
+    consistency with the existing :func:`_session_stats_to_dict`
+    undefined-skip pattern is asserted by the Sprint 6h₄a closure pin.
+    """
+
+    text = harness.get_last_assistant_text()
+    data: dict[str, Any] = {"text": text} if text is not None else {}
+    return RpcSuccessResponse(
+        id=cmd.id,
+        command="get_last_assistant_text",
+        data=data,
+    )
+
+
 # === Deferred handler factory =================================================
 
 
@@ -1188,6 +1295,9 @@ _SUPPORTED_HANDLERS_HARNESS_ONLY: dict[
     # Sprint 6h₃ (ADR-0073, P-268~P-274) — 2 session-inspection handlers.
     "get_session_stats": _handle_get_session_stats,
     "export_html": _handle_export_html,
+    # Sprint 6h₄a (ADR-0075, P-293~P-298) — 2 session-navigation handlers.
+    "get_fork_messages": _handle_get_fork_messages,
+    "get_last_assistant_text": _handle_get_last_assistant_text,
 }
 
 _SUPPORTED_HANDLERS_HARNESS_REGISTRY: dict[
@@ -1217,6 +1327,8 @@ def build_dispatch_table(
     Sprint 6h₂ (ADR-0071): 22 supported + 7 deferred = 29 total.
     Sprint 6h₃ (ADR-0073): 24 supported + 5 deferred = 29 total —
     wires ``get_session_stats`` + ``export_html``.
+    Sprint 6h₄a (ADR-0075 / ADR-0076): 26 supported + 3 deferred = 29
+    total — wires ``get_fork_messages`` + ``get_last_assistant_text``.
     Returned fresh on every call so tests can introspect without
     leaking state. The supported handlers are real callables; the
     deferred ones are :func:`_make_deferred_handler` closures.
