@@ -1658,6 +1658,103 @@ class AgentHarness:
 
         return None
 
+    # === Sprint 6h₄a (ADR-0075) — session navigation read-only methods =======
+    # Pi parity: ``session.getUserMessagesForForking()``
+    # (``agent-session.ts:2870-2885``) +
+    # ``session.getLastAssistantText()`` (``agent-session.ts:3059-3081``) +
+    # ``_extractUserMessageText`` (``agent-session.ts:2887-2896``). All three
+    # methods read state only — they do not mutate the session.
+
+    async def get_user_messages_for_forking(self) -> list[Any]:
+        """Pi parity: ``session.getUserMessagesForForking()``
+        (``agent-session.ts:2870-2885``).
+
+        Sprint 6h₄a (ADR-0075, P-294) — Aelix ``Session.get_entries()`` is
+        async so this method must be async. Pi behavior verbatim: walk
+        entries, keep only user :class:`MessageEntry` whose extracted text
+        is non-empty, return :class:`ForkPointInfo` records preserving
+        the source entry order.
+
+        Returns ``list[ForkPointInfo]``; the public annotation is
+        ``list[Any]`` to keep the harness import-graph free of the
+        ``_fork_point`` module at type-check time (consistent with the
+        ``get_session_stats`` Pi-parity pattern from Sprint 6h₃).
+        """
+
+        from aelix_agent_core.harness._fork_point import ForkPointInfo
+        from aelix_agent_core.session.entries import MessageEntry
+
+        if self._session is None:
+            return []
+        entries = await self._session.get_entries()
+        result: list[ForkPointInfo] = []
+        for entry in entries:
+            if not isinstance(entry, MessageEntry):
+                continue
+            msg = entry.message
+            if getattr(msg, "role", None) != "user":
+                continue
+            text = self._extract_user_message_text(getattr(msg, "content", []))
+            if text:
+                result.append(ForkPointInfo(entry_id=entry.id, text=text))
+        return result
+
+    def get_last_assistant_text(self) -> str | None:
+        """Pi parity: ``session.getLastAssistantText()``
+        (``agent-session.ts:3059-3081``).
+
+        Sprint 6h₄a (ADR-0075, P-297/P-298). Reverse-walk
+        ``self._state.messages`` (Pi: ``this.messages.slice().reverse()``)
+        skipping assistant messages whose ``stop_reason == "aborted"`` AND
+        empty ``content``, concatenate the :class:`TextContent` blocks,
+        and return the trimmed text — or :data:`None` when the trimmed
+        text is empty.
+
+        P-298 SYNTHESIS: returning :data:`None` (not ``""``) lets the RPC
+        handler emit the Pi key-omission wire shape (``data == {}``).
+        """
+
+        from aelix_ai.messages import AssistantMessage, TextContent
+
+        last_assistant: AssistantMessage | None = None
+        for msg in reversed(self._state.messages):
+            if not isinstance(msg, AssistantMessage):
+                continue
+            if msg.stop_reason == "aborted" and len(msg.content) == 0:
+                continue
+            last_assistant = msg
+            break
+        if last_assistant is None:
+            return None
+        text = "".join(
+            block.text
+            for block in last_assistant.content
+            if isinstance(block, TextContent)
+        )
+        trimmed = text.strip()
+        return trimmed if trimmed else None
+
+    def _extract_user_message_text(self, content: Any) -> str:
+        """Pi parity: ``_extractUserMessageText``
+        (``agent-session.ts:2887-2896``).
+
+        Sprint 6h₄a (ADR-0075, P-296). Pi accepts string-or-array. Aelix
+        ``UserMessage.content`` is always ``list[TextContent |
+        ImageContent]`` so the list path is the production case; the
+        string branch stays as defensive parity in case future Pi shapes
+        flow through.
+        """
+
+        from aelix_ai.messages import TextContent
+
+        if isinstance(content, str):
+            return content
+        if not isinstance(content, list):
+            return ""
+        return "".join(
+            block.text for block in content if isinstance(block, TextContent)
+        )
+
     async def set_resources(self, resources: dict[str, Any]) -> None:
         """Replace the resources dict. Pi: ``agent-harness.ts:751-760``.
 
