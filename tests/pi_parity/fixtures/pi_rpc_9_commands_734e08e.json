@@ -1,0 +1,99 @@
+{
+  "_doc": "Pi-pinned snapshot of 9 RPC commands wired in Sprint 6h₂ (Phase 4.9). Used by tests/pi_parity/test_phase_4_9_strict_superset.py.",
+  "pi_sha": "734e08edf82ff315bc3d96472a6ebfa69a1d8016",
+  "pi_path": "packages/coding-agent/src/modes/rpc/rpc-mode.ts",
+  "_w6_p_258_note": "Sprint 6h₂ W6 (P-258 BLOCKING): W1 spec drafted line ranges 528-635 from a stale grep; W5 audit at SHA 734e08e confirmed the 9 case sites in rpc-mode.ts live at 483-547 and delegate to AgentSession methods in coding-agent/src/core/agent-session.ts. Each entry below cites BOTH the case site (rpc-mode.ts line range) and the session method (agent-session.ts line range).",
+  "pi_handlers": {
+    "steer": {
+      "lines": "483-486",
+      "agent_session_lines": "1181-1192",
+      "body": "await session.steer(command.message, command.images); return success(id, 'steer');",
+      "harness_method": "session.steer(message, images)"
+    },
+    "follow_up": {
+      "lines": "488-491",
+      "agent_session_lines": "1206-1215",
+      "body": "await session.followUp(command.message, command.images); return success(id, 'follow_up');",
+      "harness_method": "session.followUp(message, images)"
+    },
+    "cycle_thinking_level": {
+      "lines": "486-490",
+      "agent_session_lines": "1537-1548",
+      "body": "const level = session.cycleThinkingLevel(); if (!level) return success(id, 'cycle_thinking_level', null); return success(id, 'cycle_thinking_level', { level });",
+      "harness_method": "session.cycleThinkingLevel() -> ThinkingLevel | null",
+      "response_data_shape": "{level: ThinkingLevel} | null"
+    },
+    "set_steering_mode": {
+      "lines": "498-501",
+      "agent_session_lines": "1587-1592",
+      "body": "session.setSteeringMode(command.mode); return success(id, 'set_steering_mode');",
+      "harness_method": "session.setSteeringMode(mode: 'all' | 'one-at-a-time')"
+    },
+    "set_follow_up_mode": {
+      "lines": "503-506",
+      "agent_session_lines": "1594-1599",
+      "body": "session.setFollowUpMode(command.mode); return success(id, 'set_follow_up_mode');",
+      "harness_method": "session.setFollowUpMode(mode: 'all' | 'one-at-a-time')"
+    },
+    "set_auto_compaction": {
+      "lines": "516-519",
+      "agent_session_lines": "2026-2034",
+      "body": "session.setAutoCompactionEnabled(command.enabled); return success(id, 'set_auto_compaction');",
+      "harness_method": "session.setAutoCompactionEnabled(enabled: boolean)"
+    },
+    "set_auto_retry": {
+      "lines": "525-528",
+      "agent_session_lines": "2540-2545",
+      "body": "session.setAutoRetryEnabled(command.enabled); return success(id, 'set_auto_retry');",
+      "harness_method": "session.setAutoRetryEnabled(enabled: boolean)"
+    },
+    "abort_retry": {
+      "lines": "530-533",
+      "agent_session_lines": "2511-2516",
+      "body": "session.abortRetry(); return success(id, 'abort_retry');",
+      "harness_method": "session.abortRetry()"
+    },
+    "abort_bash": {
+      "lines": "544-547",
+      "agent_session_lines": "2622-2625",
+      "body": "session.abortBash(); return success(id, 'abort_bash');",
+      "harness_method": "session.abortBash()"
+    }
+  },
+  "aelix_state_surface_gaps": {
+    "harness_steer_signature": "exists at core.py:897 as `steer(text)` — Sprint 6h₂ adds `images: list[ImageContent] | None = None`",
+    "harness_follow_up_signature": "exists at core.py:906 as `follow_up(text)` — Sprint 6h₂ adds `images`",
+    "harness_set_thinking_level": "exists at core.py:1285 — Sprint 6h₂ uses for cycle_thinking_level",
+    "harness_steering_mode_property": "exists at core.py:689 (read-only) — Sprint 6h₂ adds `set_steering_mode(mode)` setter",
+    "harness_follow_up_mode_property": "exists at core.py:697 (read-only) — Sprint 6h₂ adds `set_follow_up_mode(mode)` setter",
+    "auto_compaction_state_field": "MISSING — Sprint 6h₂ adds `_state.auto_compaction_enabled: bool = True` (Pi default per fixture pi_rpc_mode_734e08e.json:rpc_session_state_shape.auto_compaction_enabled)",
+    "auto_retry_state_field": "MISSING — Sprint 6h₂ adds `_state.auto_retry_enabled: bool = True`",
+    "abort_retry_machinery": "MISSING — Sprint 6h₂ adds `_retry_aborted: bool` flag + `harness.abort_retry()`; Pi's retry loop is in `agent-harness.ts` event loop; Aelix harness has no retry loop yet, so abort_retry is a no-op-but-state-aware setter (sets flag for future Sprint 6h₃/4 retry-loop port)",
+    "abort_bash_cancellation_token": "MISSING — Sprint 6h₂ adds a process-cancel hook on the inflight bash operation (Sprint 5b bash tool needs token threading)"
+  },
+  "cycle_thinking_level_algorithm": {
+    "_doc": "Pi `session.cycleThinkingLevel()` rotates through the model's supported levels. Returns null when model lacks reasoning support (only 'off' supported).",
+    "pi_algorithm": [
+      "1. levels = get_supported_thinking_levels(current_model)",
+      "2. if len(levels) <= 1: return null (nothing to cycle)",
+      "3. current = harness.state.thinking_level",
+      "4. idx = levels.index(current) if current in levels else 0",
+      "5. next = levels[(idx + 1) % len(levels)]",
+      "6. harness.set_thinking_level(next) — persist + emit",
+      "7. return next"
+    ]
+  },
+  "deferred_to_sprint_6h_3": [
+    "5 session tree commands (switch_session / fork / clone / get_fork_messages / get_last_assistant_text)",
+    "2 session inspection commands (get_session_stats / export_html)",
+    "image-models surface",
+    "typed Model.compat discriminated union",
+    "Pi `agent-harness.ts` retry loop port (currently `abort_retry` is a state-flag setter only)",
+    "Pi `bash-executor` cancellation token threading (currently `abort_bash` is best-effort + state-flag)"
+  ],
+  "command_count_arithmetic": {
+    "before_sprint_6h_2": "13 supported / 16 deferred / 29 total",
+    "after_sprint_6h_2": "22 supported / 7 deferred / 29 total",
+    "supported_added": ["steer", "follow_up", "cycle_thinking_level", "set_steering_mode", "set_follow_up_mode", "set_auto_compaction", "set_auto_retry", "abort_retry", "abort_bash"]
+  }
+}
