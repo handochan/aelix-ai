@@ -147,16 +147,23 @@ def test_three_model_commands_now_supported() -> None:
     assert "get_available_models" in SUPPORTED_COMMANDS
 
 
-def test_deferred_count_dropped_to_17() -> None:
-    """Sprint 6f W2 (ADR-0065): 20 → 17 deferred."""
+def test_deferred_count_dropped_to_16_by_sprint_6h() -> None:
+    """Sprint 6f W2 (ADR-0065): 20 → 17 deferred.
 
-    assert len(DEFERRED_COMMANDS) == 17
+    Sprint 6h₁ (ADR-0069 / P-219) drops ``get_commands`` → 17 → 16.
+    """
+
+    assert len(DEFERRED_COMMANDS) == 16
 
 
-def test_supported_count_grew_to_12() -> None:
-    """Sprint 6f W2 (ADR-0065): 9 → 12 supported."""
+def test_supported_count_grew_to_13_by_sprint_6h() -> None:
+    """Sprint 6f W2 (ADR-0065): 9 → 12 supported.
 
-    assert len(SUPPORTED_COMMANDS) == 12
+    Sprint 6h₁ (ADR-0069 / P-219) adds ``get_commands`` → 12 → 13.
+    """
+
+    assert len(SUPPORTED_COMMANDS) == 13
+    assert "get_commands" in SUPPORTED_COMMANDS
 
 
 # === §E — calculate_cost mutates in-place + per-million divisor ===============

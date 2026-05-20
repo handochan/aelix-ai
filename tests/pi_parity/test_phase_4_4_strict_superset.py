@@ -64,7 +64,8 @@ def test_rpc_command_count_matches_pi_fixture() -> None:
 def test_supported_plus_deferred_covers_pi() -> None:
     """Pi parity: supported + deferred = 29 total Pi RpcCommand variants.
 
-    Sprint 6f W2 (ADR-0065): counts are 12 supported + 17 deferred = 29.
+    Sprint 6f W2 (ADR-0065): counts moved to 12 supported + 17 deferred.
+    Sprint 6h₁ (ADR-0069) bumps to 13 supported + 16 deferred = 29.
     Sprint 6d originally shipped 9 supported + 20 deferred.
 
     The spec preamble cites "28" as a counting error; the fixture's
@@ -73,22 +74,23 @@ def test_supported_plus_deferred_covers_pi() -> None:
 
     assert SUPPORTED_COMMANDS.isdisjoint(set(DEFERRED_COMMANDS.keys()))
     assert SUPPORTED_COMMANDS | set(DEFERRED_COMMANDS.keys()) == RPC_COMMAND_TYPES
-    # W4 M2 / P-121 + Sprint 6f W2 — explicit count assertion so a
-    # future PR that adds a command without updating both sets trips
-    # immediately. Sprint 6f W2 (ADR-0065) wires set_model /
-    # cycle_model / get_available_models, dropping deferred from 20 → 17
-    # and bumping supported from 9 → 12.
+    # W4 M2 / P-121 + Sprint 6f W2 + Sprint 6h₁ — explicit count
+    # assertion so a future PR that adds a command without updating
+    # both sets trips immediately. Sprint 6h₁ (ADR-0069 / P-219) wires
+    # ``get_commands``, dropping deferred from 17 → 16 and bumping
+    # supported from 12 → 13.
     assert len(RPC_COMMAND_TYPES) == 29
-    assert len(SUPPORTED_COMMANDS) == 12
-    assert len(DEFERRED_COMMANDS) == 17
+    assert len(SUPPORTED_COMMANDS) == 13
+    assert len(DEFERRED_COMMANDS) == 16
 
 
 def test_supported_commands_match_p107_table() -> None:
-    """Pi parity (P-107 + Sprint 6f W2 P-168/P-169): commands the existing
-    Aelix harness can satisfy.
+    """Pi parity (P-107 + Sprint 6f W2 P-168/P-169 + Sprint 6h₁ P-219):
+    commands the existing Aelix harness can satisfy.
 
     Sprint 6f W2 (ADR-0065) adds set_model / cycle_model /
     get_available_models on top of the Sprint 6d 9-command set.
+    Sprint 6h₁ (ADR-0069) adds get_commands.
     """
 
     expected = {
@@ -105,6 +107,8 @@ def test_supported_commands_match_p107_table() -> None:
         "set_model",
         "cycle_model",
         "get_available_models",
+        # Sprint 6h₁ (ADR-0069 / P-219).
+        "get_commands",
     }
     assert expected == SUPPORTED_COMMANDS
 
