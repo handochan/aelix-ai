@@ -84,6 +84,37 @@
 | 0068 | [Phase 4.7 Strict Superset Closure](0068-phase-4-7-strict-superset-closure.md)                                                                          | Accepted (Sprint 6g₁ / Phase 4.7 / W6 shipped)                      | Phase 4.7 closure — P-197~P-215 roster (W0 P-197..P-204 + W4/W5 P-205..P-215) + closure pin (`tests/pi_parity/test_phase_4_7_strict_superset.py`, 32 tests) + `KnownProvider` Pi semantic order + `DEFAULT_THINKING_LEVEL == "medium"` (P-205) + `Model.compat` field + `RestoreModelResult` shape + glob `/`-boundary. Sprint 6g₂/6g₃/6h carry-forward enumerated. |
 | 0069 | [Prompt-Templates + Skills + `get_commands` RPC](0069-prompt-templates-and-skills.md)                                                                  | Accepted (Sprint 6h₁ / Phase 4.8 / W6 shipped)                      | Pi parity port of `harness/prompt-templates.ts` (~380 LOC) + `harness/skills.ts` (~540 LOC) + `_handle_get_commands` (Pi `rpc-mode.ts:622-653` aggregates 3 sources) + `ResolvedCommand` Pi `{name}:{N}` disambiguation (P-224 BLOCKING) + Pi-shape `{path, source, scope, origin}` `sourceInfo` wire (P-225 BLOCKING) + `ResolvedCommand` forwards source_info (P-229 BLOCKING) + `PromptTemplate` empty defaults (P-226 MAJOR) + shared `_frontmatter` parser (W4 m4) + YAML error surface (P-233) + case-insensitive `.md` strip (P-234). |
 | 0070 | [Phase 4.8 Strict Superset Closure](0070-phase-4-8-strict-superset-closure.md)                                                                          | Accepted (Sprint 6h₁ / Phase 4.8 / W6 shipped)                      | Phase 4.8 closure — P-216~P-244 roster (W0 P-216..P-223 + W4/W5 P-224..P-244) + closure pin (`tests/pi_parity/test_phase_4_8_strict_superset.py`) + 13 supported / 16 deferred RPC split + 22+ W6 regression tests. Sprint 6h₂ / 6h₃ carry-forward enumerated. |
+| 0071 | [9 RPC Commands + Harness Setters](0071-9-rpc-commands-and-harness-setters.md)                                                                          | Accepted (Sprint 6h₂ / Phase 4.9 / W6 shipped)                      | Pi parity port of 9 RPC handlers + 5 harness setters + 4 AgentState fields + 1 `_MessageQueue.set_mode` helper + 2 public properties + cycle algorithm with `supportsThinking()` guard (P-254 BLOCKING) + strict `_decode_images` (P-262 BLOCKING) + keyword-only `images` (P-263 MAJOR) + `auto_retry_enabled` wire surface (P-264 BLOCKING) + `_MessageQueue.set_mode` validation (P-265 BLOCKING) + line citation corrections (P-258 BLOCKING). |
+| 0072 | [Phase 4.9 Strict Superset Closure](0072-phase-4-9-strict-superset-closure.md)                                                                          | Accepted (Sprint 6h₂ / Phase 4.9 / W6 shipped)                      | Phase 4.9 closure — P-245~P-267 roster (W0 P-245..P-253 + W4/W5 P-254..P-267) + closure pin (`tests/pi_parity/test_phase_4_9_strict_superset.py`, 28 tests) + 22 supported / 7 deferred RPC split + 11 W6 regression pins. Sprint 6h₃ carry-forward enumerated (5 session-tree + 2 session-inspection commands + Pi `SettingsManager` port + retry loop + queue_update wire shape + steer expanders). |
+
+### Sprint 6h₂ sub-table (Phase 4.9 closure)
+
+| Item | Status | Owner ADR |
+|---|---|---|
+| 9 RPC handlers (steer / follow_up / cycle_thinking_level / set_steering_mode / set_follow_up_mode / set_auto_compaction / set_auto_retry / abort_retry / abort_bash) | shipped | 0071 |
+| Harness setters (5 new + 4 new AgentState fields: `auto_compaction_enabled` / `auto_retry_enabled` / `retry_aborted` / `bash_aborted`) | shipped | 0071 |
+| `AgentHarness.auto_compaction_enabled` + `AgentHarness.auto_retry_enabled` public properties | shipped | 0071 |
+| `_MessageQueue.set_mode(mode)` helper (W6 P-265 BLOCKING — defensive runtime validation) | shipped | 0071 |
+| `cycle_thinking_level` `supportsThinking()` guard (W6 P-254 BLOCKING — `!!this.model?.reasoning` short-circuit) | shipped | 0071 |
+| `images` keyword-only marker on `AgentHarness.steer` / `AgentHarness.follow_up` (W6 P-263 MAJOR) | shipped | 0071 |
+| Strict `_decode_images` (camelCase only + required-field validation, W6 P-262 BLOCKING — drops snake_case acceptance and silent-empty-string coercion) | shipped | 0071 |
+| `RpcSessionState.auto_retry_enabled` field (12 → 13) + `_handle_get_state` real source (W6 P-264 BLOCKING) | shipped | 0071 |
+| `typing.cast(QueueMode, mode)` in `set_steering_mode` / `set_follow_up_mode` (W4 LOW-3) | shipped | 0071 |
+| `build_dispatch_table` docstring + deferred handler error string updates (W4 NIT) | shipped | 0071 |
+| Line citation corrections — 14 docstrings + W0 fixture cite W5-audited `rpc-mode.ts:483-547` + `agent-session.ts` method sites (W6 P-258 BLOCKING) | shipped | 0071 |
+| `tests/pi_parity/test_phase_4_9_strict_superset.py` closure pin (28 tests including 11 W6 regression pins) | shipped | 0072 |
+| `tests/pi_parity/test_phase_4_4_strict_superset.py` strengthening (12 → 13 `RpcSessionState` field count + Pi fixture extension) | shipped | 0072 |
+| `tests/pi_parity/test_phase_4_6_strict_superset.py` W4 NIT renames (count-free names) | shipped | 0072 |
+| `tests/pi_parity/fixtures/pi_rpc_9_commands_734e08e.json` W6 P-258 line-number corrections (528-635 → 483-547) | shipped | 0072 |
+| ADR-0034 amendment — Sprint 6h₂ Phase 4.9 partition (9 of 29 + 22 of 29 cumulative) | shipped | 0034 |
+| Pi `SettingsManager` (`coding-agent/src/core/settings-manager.ts`) disk persistence (P-255 / P-256) | deferred to Sprint 6h₃ | 0072 |
+| Pi `agent-harness.ts` retry loop with `AbortController` (P-257) | deferred to Sprint 6h₃ | 0072 |
+| `queue_update` event payload Pi-shape `string[]` vs Aelix `list[UserMessage]` (P-259) | deferred to Sprint 6h₃ | 0072 |
+| `steer` / `follow_up` Pi-side `_throwIfExtensionCommand` + `_expandSkillCommand` + `expandPromptTemplate` expanders (P-260) | deferred to Sprint 6h₃ | 0072 |
+| `cycle_thinking_level` sync vs async asymmetry (P-266 — documented Pi divergence; Aelix `set_thinking_level` is async) | tracked | 0072 |
+| Spec citation tweak — `SettingsManager` upstream source (P-267) | deferred to Sprint 6h₃ | 0072 |
+| 5 session-tree commands (switch_session / fork / clone / get_fork_messages / get_last_assistant_text) | deferred to Sprint 6h₃ | 0072 |
+| 2 session-inspection commands (get_session_stats / export_html) | deferred to Sprint 6h₃ | 0072 |
 
 ### Sprint 6h sub-table (Phase 4.8 closure)
 

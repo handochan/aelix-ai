@@ -270,6 +270,48 @@ Sprint 6h₁ moves `get_commands` from deferred → supported.
 (`tests/pi_parity/test_phase_4_8_strict_superset.py`) asserts
 `SUPPORTED ∪ DEFERRED == RPC_COMMAND_TYPES` preserved at 29.
 
+### Sprint 6h₂ amendment (9 RPC commands + harness setters, 2026-05-20)
+
+Sprint 6h₂ ports the next 9 Pi `RpcCommand` discriminators from
+`rpc-mode.ts:483-547` (W5-audited line range at SHA `734e08e`;
+prior W1 draft said 528-635 — corrected per P-258 BLOCKING). The 9
+commands: `steer` / `follow_up` (queue paths with `images`),
+`cycle_thinking_level`, `set_steering_mode` / `set_follow_up_mode`
+(queue mode setters), `set_auto_compaction` / `set_auto_retry`
+(auto-mode flags), `abort_retry` / `abort_bash` (best-effort
+cancellation flags). W4 code-review + W5 Pi parity audit produced
+**6 BLOCKING + 4 MAJOR + 3 MINOR** must-fix items; Sprint 6h₂ W6
+applied the tractable fixes in 5 atomic commits.
+
+| Component | Status | Owner ADR |
+|---|---|---|
+| 9 RPC handlers (steer / follow_up / cycle_thinking_level / set_steering_mode / set_follow_up_mode / set_auto_compaction / set_auto_retry / abort_retry / abort_bash) | shipped | ADR-0071 |
+| Harness setters (5 new + 2 new public properties + 4 new AgentState fields + 1 new `_MessageQueue.set_mode` helper) | shipped | ADR-0071 |
+| `cycle_thinking_level` `supportsThinking()` guard (W6 P-254 BLOCKING) | shipped | ADR-0071 |
+| `images` keyword-only marker on `steer` / `follow_up` (W6 P-263 MAJOR) | shipped | ADR-0071 |
+| Strict `_decode_images` (camelCase only + required-field validation, W6 P-262 BLOCKING) | shipped | ADR-0071 |
+| `_MessageQueue.set_mode` defensive runtime validation (W6 P-265 BLOCKING) | shipped | ADR-0071 |
+| `auto_retry_enabled` public property + `RpcSessionState.auto_retry_enabled` wire field (W6 P-264 BLOCKING) | shipped | ADR-0071 |
+| Line citation corrections — `rpc-mode.ts:483-547` + `agent-session.ts` method sites (W6 P-258 BLOCKING) | shipped | ADR-0071 |
+| W4 LOW-1/LOW-3 + 3 NIT closures (typing.cast + docstring counts + deferred handler error string + closure-pin test renames) | shipped | ADR-0071 |
+| `tests/pi_parity/test_phase_4_9_strict_superset.py` closure pin (28 tests including 11 W6 regressions) | shipped | ADR-0072 |
+| `tests/pi_parity/test_phase_4_4_strict_superset.py` strengthening (12 → 13 RpcSessionState field count + fixture extension) | shipped | ADR-0072 |
+| `tests/pi_parity/test_phase_4_6_strict_superset.py` W4 NIT renames | shipped | ADR-0072 |
+| `tests/pi_parity/fixtures/pi_rpc_9_commands_734e08e.json` W6 P-258 line-number corrections | shipped | ADR-0072 |
+| Pi `SettingsManager` disk persistence (P-255 / P-256) | deferred to Sprint 6h₃ | ADR-0072 |
+| Pi `agent-harness.ts` retry loop with `AbortController` (P-257) | deferred to Sprint 6h₃ | ADR-0072 |
+| `queue_update` event payload Pi-shape `string[]` vs Aelix `list[UserMessage]` (P-259) | deferred to Sprint 6h₃ | ADR-0072 |
+| `_throwIfExtensionCommand` + `_expandSkillCommand` + `expandPromptTemplate` expanders (P-260) | deferred to Sprint 6h₃ | ADR-0072 |
+| `cycle_thinking_level` sync vs async asymmetry (P-266 — documented divergence) | tracked | ADR-0072 |
+| 5 session-tree commands (switch_session / fork / clone / get_fork_messages / get_last_assistant_text) | deferred to Sprint 6h₃ | ADR-0072 |
+| 2 session-inspection commands (get_session_stats / export_html) | deferred to Sprint 6h₃ | ADR-0072 |
+
+Sprint 6h₂ moves 9 commands from deferred → supported. `DEFERRED_COMMANDS`
+shrinks 16 → 7; `SUPPORTED_COMMANDS` rises 13 → 22. The closure pin
+(`tests/pi_parity/test_phase_4_9_strict_superset.py`) asserts
+`SUPPORTED ∪ DEFERRED == RPC_COMMAND_TYPES` preserved at 29 and
+pins the W5-audited Pi line numbers at SHA `734e08e`.
+
 ## Consequences
 
 - Parity audits become reproducible — the W5 audit lane can `git checkout`
