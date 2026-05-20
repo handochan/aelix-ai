@@ -588,6 +588,22 @@ class AgentHarness:
         # synchronous extension actions.
         self._cached_session_name: str | None = None
         self._pending_tasks: set[asyncio.Task[Any]] = set()
+        # Sprint 6h₁ (ADR-0069, P-219/P-220): Pi parity
+        # ``session.promptTemplates`` / ``session.resourceLoader.getSkills()`` —
+        # harness-side surface for the ``get_commands`` RPC handler. Each
+        # attribute defaults to empty; callers populate via the setters
+        # or by passing pre-loaded results from
+        # :func:`aelix_agent_core.harness.prompt_templates.load_prompt_templates`
+        # and :func:`aelix_agent_core.harness.skills.load_skills`.
+        from aelix_agent_core.harness._extension_runner import ExtensionRunner
+        from aelix_agent_core.harness.prompt_templates import PromptTemplate
+        from aelix_agent_core.harness.skills import Skill
+
+        self._extension_runner: ExtensionRunner = ExtensionRunner(
+            extensions=self._extensions
+        )
+        self._prompt_templates: list[PromptTemplate] = []
+        self._skills: list[Skill] = []
         # Sprint 6f W6 (ADR-0066 / P-187): :meth:`set_current_model` writes
         # ``self._state.model`` directly per Pi
         # ``agent-session.ts:1423`` (``this.agent.state.model = model``).
@@ -684,6 +700,68 @@ class AgentHarness:
         return (
             "all" if self._follow_up_queue.mode == "all" else "one-at-a-time"
         )
+
+    # === Sprint 6h₁ (ADR-0069) — extension/template/skill aggregation ===
+    # Pi parity: ``session.extensionRunner`` / ``session.promptTemplates`` /
+    # ``session.resourceLoader.getSkills()`` — read surface consumed by the
+    # ``get_commands`` RPC handler. The harness owns the lifetime of the
+    # registries; callers populate them via the setters or by passing
+    # pre-loaded results from
+    # ``aelix_agent_core.harness.prompt_templates.load_prompt_templates`` /
+    # ``aelix_agent_core.harness.skills.load_skills``.
+
+    @property
+    def extension_runner(self) -> Any:
+        """Pi parity: ``session.extensionRunner``.
+
+        Returns the :class:`ExtensionRunner` view over the harness's
+        loaded extensions. The runner exposes
+        ``get_registered_commands()`` (Pi ``getRegisteredCommands``)
+        aggregated across every extension.
+        """
+
+        return self._extension_runner
+
+    @property
+    def prompt_templates(self) -> list[Any]:
+        """Pi parity: ``session.promptTemplates``.
+
+        Returns the harness's prompt-template registry. Defaults to
+        an empty list; populate via :meth:`set_prompt_templates`.
+        """
+
+        return self._prompt_templates
+
+    @property
+    def skills(self) -> list[Any]:
+        """Pi parity: ``session.resourceLoader.getSkills().skills``.
+
+        Returns the harness's skill registry. Defaults to an empty
+        list; populate via :meth:`set_skills`.
+        """
+
+        return self._skills
+
+    def set_prompt_templates(self, templates: list[Any]) -> None:
+        """Replace the harness's prompt-template registry.
+
+        Pi parity: ``session.promptTemplates = templates`` — Sprint 6h₁
+        ships the setter for the RPC handler; the actual loader call
+        is the caller's responsibility (matches Pi where the session
+        bootstrap path populates the attribute).
+        """
+
+        self._prompt_templates = list(templates)
+
+    def set_skills(self, skills: list[Any]) -> None:
+        """Replace the harness's skill registry.
+
+        Pi parity: equivalent of ``resourceLoader.setSkills(...)`` —
+        Sprint 6h₁ ships the setter. The loader call is the caller's
+        responsibility.
+        """
+
+        self._skills = list(skills)
 
     # === Sprint 6f W6 — runtime-mutable model (P-187, ADR-0066) ===
 

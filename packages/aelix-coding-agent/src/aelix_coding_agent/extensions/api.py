@@ -479,17 +479,43 @@ MessageRenderer = Callable[..., Any]
 
 @dataclass(frozen=True)
 class ExtensionSourceInfo:
-    """Pi ``SourceInfo`` minimal port (Sprint 5a P-27).
+    """Pi ``SourceInfo`` port (``source-info.ts:1-12``).
 
     Carries the discovered origin of an extension so a Sprint 5b CLI loop
     can surface "where did this command come from?" in autocomplete /
-    error messages. Aelix uses ``source`` strings (``"project"`` /
-    ``"global"`` / ``"explicit"`` / ``"entry_points"`` / ``"inline"``)
-    rather than Pi's TS-specific class hierarchy.
+    error messages.
+
+    Sprint 5a (P-27) shipped the bare minimum — ``source`` (an Aelix
+    flavor: ``"project"`` / ``"global"`` / ``"explicit"`` /
+    ``"entry_points"`` / ``"inline"``) plus an optional ``base_dir``.
+
+    Sprint 6h₁ (ADR-0069, P-221) added the optional ``identifier``
+    field to match Pi ``SourceInfo.identifier`` so the ``get_commands``
+    RPC handler can disambiguate commands that share a name.
+
+    Sprint 6h₁ W6 (ADR-0069, P-225 BLOCKING) extends the dataclass with
+    the three remaining Pi ``SourceInfo`` fields so the wire shape
+    emitted by ``_handle_get_commands`` matches Pi byte-for-byte:
+
+    - ``path`` (Pi ``SourceInfo.path``) — filesystem path to the source.
+    - ``scope`` (Pi ``"user" | "project" | "temporary"``) — defaults to
+      ``"user"`` so existing extension callers that did not supply a
+      scope still emit a Pi-shape wire payload.
+    - ``origin`` (Pi ``"package" | "top-level"``) — defaults to
+      ``"top-level"`` for the same back-compat reason.
+
+    The Sprint 5a ``source`` Literal is an Aelix-additive distinguisher
+    (entry-points vs. inline vs. project, etc.) that the wire layer
+    falls back to when no explicit ``path``/``identifier`` is set.
     """
 
     source: Literal["project", "global", "explicit", "entry_points", "inline"]
     base_dir: str | None = None
+    identifier: str | None = None
+    # Sprint 6h₁ W6 (P-225) — Pi SourceInfo wire-shape fields.
+    path: str | None = None
+    scope: Literal["user", "project", "temporary"] = "user"
+    origin: Literal["package", "top-level"] = "top-level"
 
 
 @dataclass
