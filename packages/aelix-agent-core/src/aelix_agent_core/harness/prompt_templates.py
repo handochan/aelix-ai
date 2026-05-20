@@ -48,13 +48,15 @@ class PromptTemplate:
     Shape:
       - ``name`` ← filename without ``.md`` extension
       - ``description`` ← frontmatter ``description`` OR first body line
-        truncated to 60 chars (with ``...`` ellipsis when truncated)
+        truncated to 60 chars (with ``...`` ellipsis when truncated).
+        Sprint 6h₁ W6 (P-226 MAJOR): defaults to ``""`` so callers that
+        omit the field match Pi's "optional with empty default" behaviour.
       - ``content`` ← markdown body after frontmatter
     """
 
     name: str
-    description: str
-    content: str
+    description: str = ""
+    content: str = ""
 
 
 @dataclass(frozen=True)

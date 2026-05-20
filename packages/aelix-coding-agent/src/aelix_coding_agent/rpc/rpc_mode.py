@@ -25,6 +25,11 @@ Sprint 6f W2 (ADR-0065 / P-168 / P-169) drops 3 entries from
 :data:`DEFERRED_COMMANDS` and adds them to :data:`SUPPORTED_COMMANDS`:
 ``set_model`` / ``cycle_model`` / ``get_available_models``. The
 counts move to **12 supported / 17 deferred / 29 total**.
+
+Sprint 6h₁ (ADR-0069 / P-219) drops 1 entry from
+:data:`DEFERRED_COMMANDS` and adds it to :data:`SUPPORTED_COMMANDS`:
+``get_commands``. The counts move to **13 supported / 16 deferred /
+29 total**.
 """
 
 from __future__ import annotations
@@ -55,6 +60,7 @@ from aelix_coding_agent.rpc.rpc_types import (
     RpcErrorResponse,
     RpcResponse,
     RpcSessionState,
+    RpcSlashCommand,
     RpcSuccessResponse,
     parse_rpc_command,
 )
@@ -94,7 +100,9 @@ DEFERRED_COMMANDS: dict[str, str] = {
     "clone": "ADR-0058 — Sprint 6g session tree navigation",
     "get_fork_messages": "ADR-0058 — Sprint 6g session tree navigation",
     "get_last_assistant_text": "ADR-0058 — Sprint 6g session tree navigation",
-    "get_commands": "ADR-0058 — Sprint 6g extension/skill/template aggregation",
+    # Sprint 6h₁ (ADR-0069, P-219) wired ``get_commands`` to the harness's
+    # ``extension_runner`` / ``prompt_templates`` / ``skills`` surface;
+    # the entry is no longer deferred.
 }
 
 
@@ -119,6 +127,8 @@ SUPPORTED_COMMANDS: frozenset[str] = frozenset(
         "set_model",
         "cycle_model",
         "get_available_models",
+        # Sprint 6h₁ (ADR-0069 / P-219).
+        "get_commands",
     }
 )
 
@@ -603,6 +613,179 @@ async def _handle_get_available_models(
     )
 
 
+# === Sprint 6h₁ (ADR-0069, P-219) — get_commands handler =====================
+#
+# Sprint 6h₁ W6 (P-225 BLOCKING): the wire-shape ``sourceInfo`` matches
+# Pi ``source-info.ts:1-12`` exactly — ``{path, source, scope, origin}``
+# plus optional ``baseDir``. The three synthesisers below emit that
+# shape from each source's own metadata.
+
+
+def _source_info_payload(
+    *,
+    path: str | None,
+    source: str | None,
+    scope: str | None,
+    origin: str | None,
+    base_dir: str | None,
+) -> dict[str, Any]:
+    """Pi parity: build the wire-shape ``sourceInfo`` dict.
+
+    Defaults match Pi's "sensible fallback" — ``scope="user"`` and
+    ``origin="top-level"`` when callers omit them. Emits ``baseDir``
+    only when supplied so the JSON wire matches Pi's
+    ``JSON.stringify`` undefined-skip behaviour.
+    """
+
+    payload: dict[str, Any] = {
+        "path": path or "",
+        "source": source or "",
+        "scope": scope or "user",
+        "origin": origin or "top-level",
+    }
+    if base_dir:
+        payload["baseDir"] = base_dir
+    return payload
+
+
+def _registered_command_source_info(resolved: Any) -> dict[str, Any]:
+    """Pi parity (P-225): wire-shape ``sourceInfo`` for an extension
+    command, derived from the owning extension's
+    :class:`ExtensionSourceInfo` (attached by
+    :meth:`ExtensionRunner.get_registered_commands` per P-229).
+    """
+
+    info = resolved.source_info
+    if info is None:
+        return _source_info_payload(
+            path=None,
+            source="unknown",
+            scope=None,
+            origin=None,
+            base_dir=None,
+        )
+    # Pi byte-for-byte: prefer the explicit ``path`` field, then
+    # ``base_dir``; ``source`` is the Pi enum ("user" / "project" /
+    # "package" / "global"), falling back to ``identifier`` and finally
+    # the Aelix ``source`` distinguisher.
+    return _source_info_payload(
+        path=getattr(info, "path", None) or getattr(info, "base_dir", None),
+        source=getattr(info, "identifier", None) or info.source,
+        scope=getattr(info, "scope", None),
+        origin=getattr(info, "origin", None),
+        base_dir=getattr(info, "base_dir", None),
+    )
+
+
+def _prompt_template_source_info(template: Any) -> dict[str, Any]:
+    """Pi parity (P-225): wire-shape ``sourceInfo`` for a prompt template.
+
+    Pi attaches a :class:`SourceInfo` whose ``path`` is the template's
+    loaded file path. Sprint 6h₁ doesn't yet thread the file path back
+    onto :class:`PromptTemplate` (the Pi loader populates it at
+    ``loadTemplateFromFile`` time); when the field is missing we still
+    emit the Pi default shape so the wire is well-formed.
+    """
+
+    path = getattr(template, "file_path", None) or getattr(template, "path", None)
+    return _source_info_payload(
+        path=path,
+        source=getattr(template, "source", None),
+        scope=getattr(template, "scope", None),
+        origin=getattr(template, "origin", None),
+        base_dir=None,
+    )
+
+
+def _skill_source_info(skill: Any) -> dict[str, Any]:
+    """Pi parity (P-225): wire-shape ``sourceInfo`` for a skill.
+
+    Pi sets ``path`` to the SKILL.md path and ``source`` to the
+    discovered source name. Aelix's :class:`Skill` carries ``file_path``
+    directly; we surface it as both ``path`` and the wire ``source``
+    fallback so RPC clients can locate the skill on disk even without
+    application-side sourcing.
+    """
+
+    file_path = getattr(skill, "file_path", None)
+    return _source_info_payload(
+        path=file_path,
+        source=getattr(skill, "source", None) or file_path,
+        scope=getattr(skill, "scope", None),
+        origin=getattr(skill, "origin", None),
+        base_dir=None,
+    )
+
+
+async def _handle_get_commands(
+    harness: AgentHarness,
+    cmd: Any,  # ``RpcCommandGetCommands``
+) -> RpcResponse:
+    """Pi parity: ``rpc-mode.ts:622-653`` ``get_commands`` handler.
+
+    Aggregates 3 sources, in Pi insertion order:
+
+    1. **Extension commands** — ``harness.extension_runner.get_registered_commands()``
+       returns :class:`ResolvedCommand`. Wire ``name`` ←
+       :attr:`ResolvedCommand.invocation_name` (Pi
+       ``command.invocationName`` — disambiguated per P-224).
+       ``source="extension"``.
+    2. **Prompt templates** — ``harness.prompt_templates``. Wire
+       ``name`` ← ``template.name``. ``source="prompt"``.
+    3. **Skills** — ``harness.skills``. Wire ``name`` ←
+       ``f"skill:{skill.name}"`` (Pi prefix convention).
+       ``source="skill"``.
+
+    Each entry's wire ``sourceInfo`` follows Pi ``source-info.ts:1-12``
+    shape ``{path, source, scope, origin, baseDir?}`` per W6 P-225.
+    """
+
+    commands: list[RpcSlashCommand] = []
+
+    # Source 1: extension commands. Pi parity: ``rpc-mode.ts:625-632``.
+    # Sprint 6h₁ W6 (P-224): :attr:`ResolvedCommand.invocation_name`
+    # carries the Pi-disambiguated wire name.
+    for resolved in harness.extension_runner.get_registered_commands():
+        commands.append(
+            RpcSlashCommand(
+                name=resolved.invocation_name,
+                description=resolved.command.description,
+                source="extension",
+                source_info=_registered_command_source_info(resolved),
+            )
+        )
+
+    # Source 2: prompt templates. Pi parity: ``rpc-mode.ts:634-641``.
+    for template in harness.prompt_templates:
+        commands.append(
+            RpcSlashCommand(
+                name=template.name,
+                description=template.description,
+                source="prompt",
+                source_info=_prompt_template_source_info(template),
+            )
+        )
+
+    # Source 3: skills (prefixed with ``"skill:"``). Pi parity:
+    # ``rpc-mode.ts:643-650``.
+    for skill in harness.skills:
+        commands.append(
+            RpcSlashCommand(
+                name=f"skill:{skill.name}",
+                description=skill.description,
+                source="skill",
+                source_info=_skill_source_info(skill),
+            )
+        )
+
+    # Pi parity: ``return success(id, "get_commands", { commands })``.
+    return RpcSuccessResponse(
+        id=cmd.id,
+        command="get_commands",
+        data={"commands": [c.to_json() for c in commands]},
+    )
+
+
 # === Deferred handler factory =================================================
 
 
@@ -642,6 +825,10 @@ _SUPPORTED_HANDLERS_HARNESS_ONLY: dict[
     "bash": _handle_bash,
     "set_thinking_level": _handle_set_thinking_level,
     "set_session_name": _handle_set_session_name,
+    # Sprint 6h₁ (ADR-0069, P-219): 2-arg handler — reads
+    # ``harness.extension_runner`` / ``harness.prompt_templates`` /
+    # ``harness.skills`` directly.
+    "get_commands": _handle_get_commands,
 }
 
 _SUPPORTED_HANDLERS_HARNESS_REGISTRY: dict[
