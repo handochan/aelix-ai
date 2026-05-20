@@ -1,0 +1,112 @@
+{
+  "_doc": "Pi-pinned snapshot of model-resolver + models.generated catalog surface at SHA 734e08e.",
+  "pi_sha": "734e08edf82ff315bc3d96472a6ebfa69a1d8016",
+  "pi_paths": {
+    "model_resolver": "packages/coding-agent/src/core/model-resolver.ts",
+    "models_generated": "packages/ai/src/models.generated.ts",
+    "defaults": "packages/coding-agent/src/core/defaults.ts"
+  },
+  "pi_file_loc": {
+    "model-resolver.ts": 637,
+    "models.generated.ts": 16386,
+    "defaults.ts": 5,
+    "_w6_p215_note": "Sprint 6g₂ W6 P-215 corrected ``model-resolver.ts`` from the stale 439 estimate to the actual 637 LOC at SHA 734e08e (verified via ``curl ... | wc -l``)."
+  },
+  "models_generated_shape": {
+    "export_form": "export const MODELS = {<provider>: {<model_id>: <Model>, ...}, ...} as const",
+    "top_level_provider_count": 32,
+    "total_lines": 16386,
+    "provider_keys": [
+      "amazon-bedrock", "anthropic", "azure-openai-responses", "cerebras",
+      "cloudflare-ai-gateway", "cloudflare-workers-ai", "deepseek", "fireworks",
+      "github-copilot", "google", "google-vertex", "groq", "huggingface",
+      "kimi-coding", "minimax", "minimax-cn", "mistral", "moonshotai",
+      "moonshotai-cn", "openai", "openai-codex", "opencode", "opencode-go",
+      "openrouter", "together", "vercel-ai-gateway", "xai", "xiaomi",
+      "xiaomi-token-plan-ams", "xiaomi-token-plan-cn", "xiaomi-token-plan-sgp", "zai"
+    ],
+    "model_fields_per_entry": [
+      "id", "name", "api", "provider", "baseUrl", "reasoning", "input",
+      "cost (input, output, cacheRead, cacheWrite)",
+      "contextWindow", "maxTokens",
+      "compat (optional, per-API union)",
+      "thinkingLevelMap (optional)"
+    ],
+    "compat_examples": {
+      "zai_glm-5v-turbo": {"supportsDeveloperRole": false, "thinkingFormat": "zai", "zaiToolStream": true}
+    }
+  },
+  "model_resolver_exports": [
+    {"name": "defaultModelPerProvider", "type": "Record<KnownProvider, string>", "rows": 32, "pi_line": 14},
+    {"name": "findExactModelReferenceMatch", "args": "modelReference: string, availableModels: Model[]", "returns": "Model | undefined", "pi_line": 73},
+    {"name": "parseModelPattern", "args": "pattern: string, availableModels: Model[], options?: {allowInvalidThinkingLevelFallback?}", "returns": "ParsedModelResult", "pi_line": 189},
+    {"name": "resolveModelScope", "args": "patterns: string[], modelRegistry: ModelRegistry", "returns": "Promise<ScopedModel[]>", "pi_line": 255, "async": true},
+    {"name": "resolveCliModel", "args": "options: {cliProvider?, cliModel?, modelRegistry}", "returns": "ResolveCliModelResult", "pi_line": 337},
+    {"name": "findInitialModel", "args": "options: {cliProvider?, cliModel?, scopedModels, isContinuing, defaultProvider?, defaultModelId?, defaultThinkingLevel?, modelRegistry}", "returns": "Promise<InitialModelResult>", "pi_line": 483, "async": true},
+    {"name": "restoreModelFromSession", "args": "savedProvider, savedModelId, currentModel, shouldPrintMessages, modelRegistry", "returns": "Promise<{model, fallbackMessage}>", "pi_line": 568, "async": true}
+  ],
+  "model_resolver_helpers": [
+    {"name": "isAlias", "behavior": "Returns true if id ends with '-latest' OR does NOT match /-\\d{8}$/ (dated YYYYMMDD)"},
+    {"name": "tryMatchModel", "behavior": "Exact match first, then partial id/name match, then alias-prefer / latest-dated sort"},
+    {"name": "buildFallbackModel", "behavior": "Spreads existing model + overrides id/name when partial provider match"}
+  ],
+  "scoped_model_shape": {
+    "model": "Model",
+    "thinkingLevel": "ThinkingLevel | undefined (only if explicit ':level' in pattern)"
+  },
+  "parsed_model_result_shape": {
+    "model": "Model | undefined",
+    "thinkingLevel": "ThinkingLevel | undefined",
+    "warning": "string | undefined"
+  },
+  "resolution_algorithm": {
+    "exact_match": "case-insensitive on canonical 'provider/id' OR bare id (ambiguous → undefined)",
+    "partial_match": "case-insensitive substring on id OR name",
+    "alias_vs_dated_sort": {
+      "alias_regex": "/-\\d{8}$/ does NOT match → alias",
+      "alias_preference": "alphabetical descending; first wins",
+      "dated_preference": "alphabetical descending; first wins"
+    },
+    "colon_suffix": "split on LAST ':'; if suffix is valid thinking level use it + recurse on prefix; else (strict=false → recurse on prefix + warn; strict=true → return undefined)",
+    "glob_chars": ["*", "?", "["],
+    "glob_lib": "minimatch (Pi) / fnmatch (Python equivalent)"
+  },
+  "find_initial_model_priority": [
+    "1. CLI args (cliProvider + cliModel) via resolveCliModel",
+    "2. First model from scopedModels (skip if isContinuing)",
+    "3. Saved default (defaultProvider + defaultModelId)",
+    "4. First available model matching defaultModelPerProvider for any known provider",
+    "5. First available model from getAvailable()"
+  ],
+  "default_thinking_level": "medium (per defaults.ts DEFAULT_THINKING_LEVEL — W6 P-205 BLOCKING fix; the Sprint 6g₁ W0 fixture said \"off\" per the draft spec, but the actual Pi value at 734e08e is \"medium\")",
+  "valid_thinking_levels": ["off", "minimal", "low", "medium", "high", "xhigh"],
+  "external_deps_python_port": {
+    "chalk": "Stdout warnings via print to stderr (no color in Sprint 6g₁ — defer chalk-equivalent to Sprint 6g₂)",
+    "minimatch": "fnmatch.fnmatchcase from stdlib (case-sensitive); use `.casefold()` for case-insensitive",
+    "ThinkingLevel": "Sprint 6f models.EXTENDED_THINKING_LEVELS Literal",
+    "KnownProvider": "Sprint 6g₁ NEW module-level Literal union (32 provider strings)",
+    "Model": "aelix_ai.streaming.Model (already exists, Sprint 6f)",
+    "ModelRegistry": "aelix_coding_agent.model_registry.ModelRegistry (Sprint 6f)"
+  },
+  "compat_field_handling": {
+    "_doc": "Sprint 6g₁ stores compat as dict[str, Any] | None on Model. Sprint 6b adapter uses detect_compat() not model.compat. Sprint 6g₂ may type it as OpenAICompletionsCompat union.",
+    "field_addition": "Model.compat: dict[str, Any] | None = None",
+    "json_serialization": "Round-trip via dict — Pi-shape preserved verbatim"
+  },
+  "catalog_port_strategy": {
+    "_doc": "16,386 lines of TS object literals → Python dict literal is impractical. Convert to JSON data file loaded at module import.",
+    "approach": "Generate models_generated.json from Pi models.generated.ts via one-time script; load via json.load() at aelix_ai.models_generated module load",
+    "loader": "aelix_ai.models_generated module loads models_generated.json once at import; reconstructs Model dataclass instances",
+    "test_count": "~10x more models than Sprint 6f seed (13 → 200+)"
+  },
+  "deferred_in_sprint_6g_1": [
+    "get_commands RPC command (needs prompt-templates + skills surfaces — Sprint 6g₂)",
+    "16 remaining RPC commands (steer/follow_up/cycle_thinking_level/queue modes/auto modes/abort_bash/session inspection/session tree/extension UI) — Sprint 6g₂",
+    "image-models.ts + image-models.generated.ts — Sprint 6g₃",
+    "OpenAICompletionsCompat union type system on Model.compat — Sprint 6g₂",
+    "chalk-colored CLI output — Sprint 6h or Phase 5 (TUI)",
+    "Workspace-scoped model selection (cycle_model isScoped: true) — Sprint 6g₂",
+    "applyProviderConfig for register_provider.config.models — Sprint 6g₂",
+    "enableGitHubCopilotModel POST automation — Sprint 6g₂"
+  ]
+}
