@@ -82,6 +82,44 @@
 | 0066 | [Phase 4.6 Strict Superset Closure](0066-phase-4-6-strict-superset-closure.md)                                                                          | Accepted (Sprint 6f / Phase 4.6 / W6 shipped)                       | Phase 4.6 closure — P-163~P-187 roster + closure pin (`tests/pi_parity/test_phase_4_6_strict_superset.py`) + ModelRegistry 14 methods present + 7 Pi helpers exposed + 13-model seed catalog + `DEFERRED_COMMANDS` 20 → 17 (set_model/cycle_model/get_available_models live). |
 | 0067 | [Model Resolver Port + Full Pi Catalog Data Transfer](0067-model-resolver-and-catalog.md)                                                              | Accepted (Sprint 6g₁ / Phase 4.7 / W6 shipped)                      | Pi parity port of `model-resolver.ts` (637 LOC, 7 functions + 3 helpers) + `defaultModelPerProvider` (32 rows) + full 942-model JSON catalog data transfer + `KnownProvider` Pi semantic order (P-208) + `Model.compat` passthrough (`_openai_compat.get_compat` merge confirmed wired, P-210) + `_glob_match_pi_minimatch` (P-207) + `RestoreModelResult` typed dataclass (P-206). |
 | 0068 | [Phase 4.7 Strict Superset Closure](0068-phase-4-7-strict-superset-closure.md)                                                                          | Accepted (Sprint 6g₁ / Phase 4.7 / W6 shipped)                      | Phase 4.7 closure — P-197~P-215 roster (W0 P-197..P-204 + W4/W5 P-205..P-215) + closure pin (`tests/pi_parity/test_phase_4_7_strict_superset.py`, 32 tests) + `KnownProvider` Pi semantic order + `DEFAULT_THINKING_LEVEL == "medium"` (P-205) + `Model.compat` field + `RestoreModelResult` shape + glob `/`-boundary. Sprint 6g₂/6g₃/6h carry-forward enumerated. |
+| 0069 | [Prompt-Templates + Skills + `get_commands` RPC](0069-prompt-templates-and-skills.md)                                                                  | Accepted (Sprint 6h₁ / Phase 4.8 / W6 shipped)                      | Pi parity port of `harness/prompt-templates.ts` (~380 LOC) + `harness/skills.ts` (~540 LOC) + `_handle_get_commands` (Pi `rpc-mode.ts:622-653` aggregates 3 sources) + `ResolvedCommand` Pi `{name}:{N}` disambiguation (P-224 BLOCKING) + Pi-shape `{path, source, scope, origin}` `sourceInfo` wire (P-225 BLOCKING) + `ResolvedCommand` forwards source_info (P-229 BLOCKING) + `PromptTemplate` empty defaults (P-226 MAJOR) + shared `_frontmatter` parser (W4 m4) + YAML error surface (P-233) + case-insensitive `.md` strip (P-234). |
+| 0070 | [Phase 4.8 Strict Superset Closure](0070-phase-4-8-strict-superset-closure.md)                                                                          | Accepted (Sprint 6h₁ / Phase 4.8 / W6 shipped)                      | Phase 4.8 closure — P-216~P-244 roster (W0 P-216..P-223 + W4/W5 P-224..P-244) + closure pin (`tests/pi_parity/test_phase_4_8_strict_superset.py`) + 13 supported / 16 deferred RPC split + 22+ W6 regression tests. Sprint 6h₂ / 6h₃ carry-forward enumerated. |
+
+### Sprint 6h sub-table (Phase 4.8 closure)
+
+| Item | Status | Owner ADR |
+|---|---|---|
+| `aelix_agent_core.harness.prompt_templates` (Pi port of `prompt-templates.ts` — 5 functions + 4 types, P-216) | shipped | 0069 |
+| `aelix_agent_core.harness.skills` (Pi port of `skills.ts` — 2 functions + 4 types + `.gitignore`/`.ignore`/`.fdignore` honouring via pathspec, P-217) | shipped | 0069 |
+| `aelix_agent_core.harness._frontmatter` (shared YAML frontmatter parser — W4 m4) | shipped | 0069 |
+| `aelix_agent_core.harness._extension_runner.ExtensionRunner` + `ResolvedCommand` (Pi `runner.ts:512-551` with `{name}:{N}` disambiguation — W6 P-224 BLOCKING) | shipped | 0069 |
+| `aelix_agent_core.harness.core.AgentHarness` wires `extension_runner` / `prompt_templates` / `skills` properties + 2 setters | shipped | 0069 |
+| `aelix_coding_agent.extensions.api.ExtensionSourceInfo` Pi `{path, scope, origin}` field extension (W6 P-225 BLOCKING) | shipped | 0069 |
+| `aelix_coding_agent.rpc.rpc_mode._handle_get_commands` (Pi `rpc-mode.ts:622-653` — 3-source aggregation + Pi-shape `sourceInfo` wire per W6 P-225 + `invocation_name` per W6 P-224) | shipped | 0069 |
+| `PromptTemplate.description` / `content` default `""` (W6 P-226 MAJOR) | shipped | 0069 |
+| YAML parse failures surface error text in `parse_failed` diagnostic (W6 P-233 MINOR) | shipped | 0069 |
+| Case-insensitive `.md` extension strip via `name.lower().endswith(".md")` (W6 P-234 MINOR) | shipped | 0069 |
+| `pi_get_commands_734e08e.json` fixture name-regex text correction (W6 P-227 MINOR) | shipped | 0069 / 0070 |
+| `disable-model-invocation` tautological test → real sentinel (integer `1` is truthy but not `is True`) (W6 W4 m2) | shipped | 0069 |
+| `PyYAML>=6.0` + `pathspec>=0.12` added to `aelix-agent-core` pyproject (P-222) | shipped | 0069 |
+| `tests/pi_parity/test_phase_4_8_strict_superset.py` closure pin (22+ tests covering W2 surface + W6 must-fix regressions) | shipped | 0070 |
+| `tests/pi_parity/test_phase_4_4_strict_superset.py` strengthening (Sprint 6d closure pin updated: SUPPORTED 12 → 13, DEFERRED 17 → 16) | shipped | 0070 |
+| `tests/pi_parity/test_phase_4_6_strict_superset.py` strengthening (Sprint 6f closure pin updated: SUPPORTED 12 → 13, DEFERRED 17 → 16) | shipped | 0070 |
+| `tests/harness/test_extension_runner.py` (Pi disambiguation regression — 3-way collision + explicit-disambiguation collision + source_info forward + None fallback) | shipped | 0069 |
+| `tests/harness/test_harness_session_aggregation.py` (harness-side aggregation hooks + defensive copy invariant) | shipped | 0069 |
+| `tests/rpc/test_rpc_mode_get_commands.py` (Pi-shape sourceInfo wire regression + 3-source aggregation in Pi insertion order + `"skill:"` prefix) | shipped | 0069 |
+| `tests/harness/test_frontmatter.py` + `test_prompt_templates.py` + `test_skills.py` (unit coverage for all 5 ports + 2 new types) | shipped | 0069 |
+| ADR-0034 amendment — Sprint 6h₁ prompt-templates + skills + `get_commands` row | shipped | 0034 |
+| 16 remaining RPC commands (steer / follow_up / cycle_thinking_level / queue / auto / abort_bash / session inspection / session tree / extension UI bridge) | deferred to Sprint 6h₂ | 0070 |
+| Workspace-scoped model selection (`cycle_model.isScoped: true` path) | deferred to Sprint 6h₂ | 0070 |
+| `applyProviderConfig` for `register_provider.config.models` | deferred to Sprint 6h₂ | 0070 |
+| `enableGitHubCopilotModel` POST automation | deferred to Sprint 6h₂ | 0070 |
+| `loadSourcedPromptTemplates` / `loadSourcedSkills` source-tagged variants | deferred to Sprint 6h₂ | 0070 |
+| `image-models.ts` + `image-models.generated.ts` parallel image-model registry | deferred to Sprint 6h₃ | 0070 |
+| Typed `Model.compat` discriminated union | deferred to Sprint 6h₃ | 0070 |
+| pathspec `gitwildmatch` → `gitignore` flavour cutover when pathspec 0.13 lands | tracked | 0070 |
+| W4 m3 (unbounded recursion under filesystem loops — Pi has the same behaviour; Aelix matches) | closed | 0070 |
+| W4 NIT-2..NIT-5 (cosmetic) | closed | 0070 |
 
 ### Sprint 5b sub-table (Phase 3.2 closure)
 

@@ -229,6 +229,47 @@ dataclass with `{model, fallback_message}` shape (P-206), and the
 Sprint 6f₁ seed `>= 10 models` invariant still passes against the
 full 942-model catalog.
 
+### Sprint 6h₁ amendment (prompt-templates + skills + `get_commands` RPC, 2026-05-20)
+
+Sprint 6h₁ ports Pi `harness/prompt-templates.ts` (~380 LOC) +
+`harness/skills.ts` (~540 LOC) + wires the `get_commands` RPC
+handler (`rpc-mode.ts:622-653`). W4 code review + W5 Pi parity audit
+produced **3 BLOCKING + 1 MAJOR + 3 MINOR + 2 W4 fixes**; Sprint 6h₁
+W6 applied the must-fix triage in 5 atomic commits.
+
+| Component | Status | Owner ADR |
+|---|---|---|
+| `aelix_agent_core.harness.prompt_templates` (Pi port: 5 functions + 4 types — `loadPromptTemplates` + `parseCommandArgs` + `substituteArgs` + `formatPromptTemplateInvocation` + `PromptTemplate` + 2 diagnostic types + `LoadPromptTemplatesResult`) | shipped | ADR-0069 |
+| `aelix_agent_core.harness.skills` (Pi port: 2 public functions + 4 types — `loadSkills` + `formatSkillInvocation` + `Skill` + 2 diagnostic types + `LoadSkillsResult` + `.gitignore`/`.ignore`/`.fdignore` honouring via pathspec) | shipped | ADR-0069 |
+| `aelix_agent_core.harness._frontmatter` (shared YAML parser between prompt_templates + skills — W4 m4) | shipped | ADR-0069 |
+| `aelix_agent_core.harness._extension_runner.ExtensionRunner` + `ResolvedCommand` (Pi `runner.ts:512-551` `resolveRegisteredCommands` with `{name}:{N}` disambiguation per W6 P-224 BLOCKING) | shipped | ADR-0069 |
+| `aelix_agent_core.harness.core.AgentHarness` wires `extension_runner` / `prompt_templates` / `skills` properties + 2 setters | shipped | ADR-0069 |
+| `aelix_coding_agent.extensions.api.ExtensionSourceInfo` adds Pi `path` / `scope` / `origin` fields with sensible defaults (W6 P-225 BLOCKING) | shipped | ADR-0069 |
+| `aelix_coding_agent.rpc.rpc_mode._handle_get_commands` (Pi `rpc-mode.ts:622-653` aggregates 3 sources; Pi `{path, source, scope, origin, baseDir?}` wire `sourceInfo` per W6 P-225 BLOCKING; reads `ResolvedCommand.invocation_name` per W6 P-224 BLOCKING) | shipped | ADR-0069 |
+| `PromptTemplate.description` / `content` default `""` (W6 P-226 MAJOR) | shipped | ADR-0069 |
+| YAML parse failures surface `yaml.YAMLError` text in `parse_failed` diagnostic (W6 P-233 MINOR) | shipped | ADR-0069 |
+| Case-insensitive `.md` extension strip (W6 P-234 MINOR) | shipped | ADR-0069 |
+| Pi `pi_get_commands_734e08e.json` fixture name-regex text correction (W6 P-227 MINOR) | shipped | ADR-0069 / 0070 |
+| Tautological `disable-model-invocation` test → real sentinel (integer `1` is truthy but not `is True`) (W6 W4 m2) | shipped | ADR-0069 |
+| `PyYAML>=6.0` + `pathspec>=0.12` added to `aelix-agent-core` pyproject (P-222) | shipped | ADR-0069 |
+| `tests/pi_parity/test_phase_4_8_strict_superset.py` closure pin (22+ tests — 3-source aggregation + Pi name regex + Pi disambiguation + Pi-shape sourceInfo wire + PromptTemplate empty default + shared _frontmatter helper + YAML error surface + fixture P-227 correction) | shipped | ADR-0070 |
+| `tests/pi_parity/test_phase_4_4_strict_superset.py` strengthening (Sprint 6d closure pin updated: SUPPORTED 12 → 13, DEFERRED 17 → 16) | shipped | ADR-0070 |
+| `tests/pi_parity/test_phase_4_6_strict_superset.py` strengthening (Sprint 6f closure pin updated: SUPPORTED 12 → 13, DEFERRED 17 → 16) | shipped | ADR-0070 |
+| 16 remaining RPC commands (steer / follow_up / cycle_thinking_level / queue / auto / abort_bash / session inspection / session tree / extension UI bridge) | deferred to Sprint 6h₂ | ADR-0070 |
+| Workspace-scoped model selection (`isScoped: true` path) | deferred to Sprint 6h₂ | ADR-0070 |
+| `applyProviderConfig` for `register_provider.config.models` | deferred to Sprint 6h₂ | ADR-0070 |
+| `enableGitHubCopilotModel` POST automation | deferred to Sprint 6h₂ | ADR-0070 |
+| `loadSourcedPromptTemplates` / `loadSourcedSkills` source-tagged variants | deferred to Sprint 6h₂ | ADR-0070 |
+| `image-models.ts` + `image-models.generated.ts` parallel image-model registry | deferred to Sprint 6h₃ | ADR-0070 |
+| Typed `Model.compat` discriminated union | deferred to Sprint 6h₃ | ADR-0070 |
+| pathspec `gitwildmatch` → `gitignore` flavour cutover when pathspec 0.13 lands | tracked | ADR-0070 |
+
+Sprint 6h₁ moves `get_commands` from deferred → supported.
+`DEFERRED_COMMANDS` shrinks 17 → 16; `SUPPORTED_COMMANDS` rises
+12 → 13. The closure pin
+(`tests/pi_parity/test_phase_4_8_strict_superset.py`) asserts
+`SUPPORTED ∪ DEFERRED == RPC_COMMAND_TYPES` preserved at 29.
+
 ## Consequences
 
 - Parity audits become reproducible — the W5 audit lane can `git checkout`
