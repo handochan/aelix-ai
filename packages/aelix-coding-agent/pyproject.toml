@@ -13,6 +13,8 @@ authors = [{ name = "Aelix Contributors" }]
 dependencies = [
   "aelix-ai",
   "aelix-agent-core",
+  "pygments>=2.18",
+  "markdown-it-py>=3.0",
 ]
 
 [tool.uv.sources]
