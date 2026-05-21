@@ -82,17 +82,31 @@ discriminator at SHA `734e08e`. They surface via in-process APIs or
 TUI commands, not the JSONL wire. Sprint 6h₅+ picks them up
 incrementally without re-touching the RPC roster.
 
+> **Sprint 6h₅a addendum (2026-05-22):** P-307 / P-308 carry-forward
+> CLOSED by Sprint 6h₅a per ADR-0081. The `session_shutdown` emit
+> + real `_emit_before_switch` / `_emit_before_fork` bodies +
+> `_teardown_current` ordering correction + `dispose` P-355 ordering
+> correction + `previousSessionFile` / `sessionStartEvent` tracking
+> + `assertSessionCwdExists` partial wiring (the `switch_session`
+> site) all land in Sprint 6h₅a. Remaining gaps split across Sprint
+> 6h₅b (P-314 / P-315 / `forkFrom` / `setup` / `import_from_jsonl`
+> body / bootstrap `session_start` / P-351 ExtensionRunner.invalidate)
+> and Sprint 6h₅c (HTML visual fidelity + `_get_context_usage_safe` +
+> live `session_id` read + factory bootstrap `assertSessionCwdExists`
+> + `importFromJsonl` `assertSessionCwdExists`) per ADR-0082.
+
 - **P-307** — `session_shutdown` extension event emit from
   `AgentHarness.dispose()` (Pi `agent-session-runtime.ts:366-373`
   emits through `_session` before disposal; Aelix
   `AgentHarness.dispose()` at `harness/core.py:1961-1976` does not).
-  Surface: extension event hook payload.
+  Surface: extension event hook payload. **CLOSED by Sprint 6h₅a
+  per ADR-0081 (P-341).**
 - **P-308** — Real `session_before_switch` /
   `session_before_fork` extension cancel hooks (currently
   `_emit_before_switch` / `_emit_before_fork` return no-op `False`).
   Pi `agent-session-runtime.ts:115-130` / `:132-147` emits hook
   events that may return `cancelled=True`. Surface: extension event
-  hook payload.
+  hook payload. **CLOSED by Sprint 6h₅a per ADR-0081 (P-338 / P-339).**
 - **P-314** — `with_session: Callable[[ReplacedSessionContext],
   Awaitable[None]] | None = None` 2-stage callback for
   `finishSessionReplacement`. Surface: in-process API on

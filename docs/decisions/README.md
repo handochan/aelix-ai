@@ -94,6 +94,74 @@
 | 0078 | [Phase 4.12 Strict Superset Closure + Sprint 6h₄c Wiring Carry-Forward](0078-phase-4-12-strict-superset-closure.md)                                       | Accepted (Sprint 6h₄b / Phase 4.12 / W6 shipped)                    | Phase 4.12 closure — P-302~P-310 + P-318 roster + closure pin (`tests/pi_parity/test_phase_4_12_strict_superset.py`) + 26 supported / 3 deferred RPC split UNCHANGED (foundation sprint). DEFERRED owner rebrand ADR-0076 → ADR-0078 applied per spec §D.5; cascade pin allowlists in 4.4 / 4.9 / 4.10 / 4.11 extended with ADR-0078 prefix. NEW back-compat regression suite `tests/rpc/test_rpc_mode_runtime_shim.py` (7 P-309 / P-311 tests). Sprint 6h₄c carry-forward enumerated (3 session-tree handler wires + 4 stub fills + P-307 / P-308 / P-313 / P-314 / P-315 lift). |
 | 0079 | [Session-tree handlers wired (`switch_session` / `fork` / `clone`) + runtime body fills](0079-session-tree-handlers-wired.md)                            | Accepted (Sprint 6h₄c / Phase 4.13 / W6 shipped — **PHASE 4 RPC CLOSURE**) | Pi parity wiring of 3 session-tree RPC handlers + 3 of 4 runtime replace body fills via `JsonlSessionRepo.open` / `create` / `fork`. `AgentSessionRuntime.__init__` extended with required keyword-only `repo` + `fs` (P-324 BINDING) + 3 stubbed bodies filled (P-325) — `import_from_jsonl` stays stubbed per ADR-0080. NEW `_SUPPORTED_HANDLERS_RUNTIME_HOST` arity class + `_bind_runtime_host` adapter (P-326) + `selectedText → text` wire rename with key-omission (P-327) + `clone` leaf_id pre-capture (P-328) + P-329 deliberate convergence (Aelix handlers MUST NOT call rebind manually) + Sprint 6d `_handle_new_session` stub REPLACED — ADR-0058 `parent_session` carry-forward CLOSES (P-330) + `_apply_for_test` test seam REMOVED with 6h₄b tests migrated to real public API (P-331) + 4 W4 MINOR cleanups applied. |
 | 0080 | [Phase 4.13 Strict Superset Closure + Phase 4 RPC Roster CLOSED](0080-phase-4-13-strict-superset-closure.md)                                              | Accepted (Sprint 6h₄c / Phase 4.13 / W6 shipped — **PHASE 4 RPC ROSTER CLOSED**) | Phase 4.13 closure — P-323~P-331 roster + closure pin (`tests/pi_parity/test_phase_4_13_strict_superset.py`) + **29 supported / 0 deferred / 29 total** = full Pi parity for `RpcCommand` discriminator union at SHA `734e08e`. `SUPPORTED_COMMANDS == RPC_COMMAND_TYPES` full set equality + `DEFERRED_COMMANDS == {}` literal empty + 5 strict invariants beyond count parity (4-entry `RUNTIME_HOST` arity, fork text-omission, clone text-drop, leaf_id pre-capture ordering, exactly-once rebind, `_apply_for_test` removed). **LAST Phase 4 RPC sprint** — Sprint 6h₅+ carry-forward roster covers runtime / extension polish (P-307 / P-308 / P-314 / P-315 + cwd validation + cross-cwd import + `sessionStartEvent` + TUI `/import` body). P-313 `HarnessFactory` 4-field refresh CONFIRMED DROPPED (harness-rebuild encapsulates services + diagnostics + model_fallback_message via factory closure). |
+| 0081 | [Extension event Pi parity (4 events + session_cwd + W5 P-355 dispose ordering)](0081-extension-event-pi-parity.md)                                       | Accepted (Sprint 6h₅a / Phase 4.14 / W6 shipped)                    | Pi parity wiring of 4 extension session lifecycle events (`session_start` / `session_before_switch` / `session_before_fork` / `session_shutdown`) end-to-end on top of the 6h₄c `AgentSessionRuntime` foundation. P-332~P-343 roster + `_emit_session_shutdown_event` helper + real `_emit_before_switch` / `_emit_before_fork` bodies (P-308 carry-forward CLOSES) + `_teardown_current` ordering correction (P-340 — Pi `:149-157` **EMIT → INVALIDATE → DISPOSE**; the 6h₄b reversed order was a Pi misread) + `dispose` adds `session_shutdown` emit (P-307 carry-forward CLOSES) + `previous_session_file` snapshot timing + `_finish_session_replacement` `session_start` emit + `session/session_cwd.py` Pi port (async-adapted) + 4 new `@dataclass` event payloads + 2 cancel-aware result types + 35-overload `HookBus.on` / `ExtensionAPI.on` + `_reducer_session_before` widening. W4/W5 BLOCKING fixes: P-344 line citation corrections (510-557 ambiguous → 513-519/522-526/529-533/552-557 verified at SHA `734e08e`) + P-345 `SessionBeforeForkResult.skip_conversation_restore` Pi parity field + P-346 `format_missing_session_cwd_error` Pi-verbatim format + P-347 `format_missing_session_cwd_prompt` port + **P-355 `dispose` ordering correction (**EMIT → INVALIDATE → DISPOSE** matches `_teardown_current`; the W2 §J "intentional asymmetry" claim was a Pi misread)**. W4 MEDIUM: `switch_session` lifts `repo.open` + `assert_session_cwd_exists` BEFORE `_emit_before_switch` (Pi `:184-189` ordering). W4 MINOR-3: `_emit_before_*` required args (no defaults). |
+| 0082 | [Phase 4.14 Strict Superset Closure + 6h₅b/6h₅c Carry-Forward](0082-phase-4-14-extension-events-closure.md)                                              | Accepted (Sprint 6h₅a / Phase 4.14 / W6 shipped)                    | Phase 4.14 closure — P-332~P-355 roster + closure pin (`tests/pi_parity/test_phase_4_14_extension_events.py`) + **29 supported / 0 deferred / 29 total** UNCHANGED (extension polish doesn't change RPC roster) + 35-name `HookEventName` cascade + 35-overload count + shared `_reducer_session_before` across 4 cancellable events + Pi line citation drift detector + cancel-aggregation first-cancel-wins + exception isolation under `error_mode="continue"` + reducer return-type union widened + dispose ordering pin (P-355 — `dispose` and `_teardown_current` share **EMIT → INVALIDATE → DISPOSE**) + switch_session assert-before-emit ordering pin (W4 MEDIUM — Pi `:184-189`) + `SessionBeforeForkResult` field-shape pin (P-345 — `{cancel, skip_conversation_restore}`) + Pi-verbatim error/prompt format pins (P-346 / P-347). **6h₅b carry-forward**: `with_session` / `setup` callbacks + `forkFrom` cross-cwd + `import_from_jsonl` body + bootstrap `session_start` + P-351 ExtensionRunner.invalidate. **6h₅c carry-forward**: HTML visual fidelity + `_get_context_usage_safe` + live `session_id` + `ImageContent` + factory bootstrap `assertSessionCwdExists` + `importFromJsonl` `assertSessionCwdExists`. **Phase 4 RPC STAYS CLOSED**. |
+
+### Sprint 6h₅a sub-table (Phase 4.14 closure — extension event Pi parity wired; **RPC roster STAYS CLOSED**)
+
+Counts UNCHANGED at **29 supported / 0 deferred / 29 total**. Extension
+polish doesn't change the dispatch table. The closure pin
+(`tests/pi_parity/test_phase_4_14_extension_events.py`) asserts the
+35-name `HookEventName` cascade + 35-overload count + shared
+`_reducer_session_before` across 4 cancellable arms + Pi line
+citation drift detector + cancel-aggregation first-cancel-wins +
+exception isolation + reducer type widening + W0 fixture pin. The
+P-355 dispose ordering correction (W2 §J "intentional asymmetry"
+refuted; Pi has uniform **EMIT → INVALIDATE → DISPOSE**) and the W4
+MEDIUM switch_session assert-before-emit ordering correction land
+this sprint.
+
+| Item | Status | Owner ADR |
+|---|---|---|
+| `HookEventName` Literal widened 31 → **35** names (`session_start` / `session_before_switch` / `session_before_fork` / `session_shutdown`) | shipped | 0081 |
+| `AgentHarnessEventName` Literal widened 18 → **22** names (same 4 extension session lifecycle events folded into harness own bucket per ADR-0036 pattern) | shipped | 0081 |
+| 4 new `@dataclass(frozen=True)` event payloads (`SessionStartHookEvent` / `SessionBeforeSwitchHookEvent` / `SessionBeforeForkHookEvent` / `SessionShutdownHookEvent`) | shipped | 0081 |
+| 2 new result types (`SessionBeforeSwitchResult` / `SessionBeforeForkResult` — Pi `extensions/types.ts:1015-1022` with `cancel?` + `skipConversationRestore?` per P-345) | shipped | 0081 |
+| 4 new `@overload` declarations on `HookBus.on` / `ExtensionAPI.on` (31 → **35** overloads) | shipped | 0081 |
+| `_REDUCERS` registry shares `_reducer_session_before` across 4 cancellable arms (compact / tree / switch / fork — reducer return type widened to 4-arm union per P-335) | shipped | 0081 |
+| `_emit_session_shutdown_event` module-private helper (Pi `runner.ts:177-189`) | shipped | 0081 |
+| `AgentSessionRuntime._emit_before_switch` real body — Pi `:115-130` (replaces 6h₄b stub; W4 MINOR-3 required args) | shipped | 0081 |
+| `AgentSessionRuntime._emit_before_fork` real body — Pi `:132-147` (replaces 6h₄b stub; W4 MINOR-3 required args) | shipped | 0081 |
+| `AgentSessionRuntime._teardown_current` ORDERING CORRECTION (P-340) — Pi `:149-157` **EMIT → INVALIDATE → DISPOSE** (6h₄b shipped reversed order with NO shutdown emit) | shipped | 0081 |
+| `AgentSessionRuntime.dispose` adds `session_shutdown(quit)` emit (P-341 — Pi `:366-373`) | shipped | 0081 |
+| `AgentSessionRuntime.dispose` ORDERING CORRECTION (P-355 W5 BLOCKING FIX) — **EMIT → INVALIDATE → DISPOSE** (matches `_teardown_current`; the W2 §J "intentional asymmetry" rationale was a Pi misread of `:366-373`) | shipped | 0081 |
+| `AgentSessionRuntime.switch_session` ORDERING CORRECTION (W4 MEDIUM) — lifts `repo.open` + `assert_session_cwd_exists` BEFORE `_emit_before_switch` to match Pi `:184-189` | shipped | 0081 |
+| `previous_session_file` snapshot BEFORE teardown at all 3 replace sites + threaded into `_finish_session_replacement` (P-342) | shipped | 0081 |
+| `AgentSessionRuntime._finish_session_replacement` emits `session_start` on NEW harness's runner AFTER `rebind_session` (P-343); bootstrap `session_start` defers to Sprint 6h₅b | shipped | 0081 |
+| `session/session_cwd.py` (NEW — Pi port of `session-cwd.ts:1-59`; async-adapted) | shipped | 0081 |
+| `format_missing_session_cwd_error` Pi-verbatim format (P-346 BLOCKING FIX) — Pi `:30-37` | shipped | 0081 |
+| `format_missing_session_cwd_prompt` Pi port (P-347 BLOCKING FIX) — Pi `:40-42` | shipped | 0081 |
+| `SessionCwdIssue` field shape change (P-346) — `session_file: str \| None` (optional) + `fallback_cwd: str` (required non-optional) matching Pi | shipped | 0081 |
+| `assert_session_cwd_exists` wired into `switch_session` AFTER `repo.open` (P-337); factory bootstrap + `importFromJsonl` call sites defer to Sprint 6h₅c | shipped | 0081 |
+| Pi line citation corrections (P-344 W5 BLOCKING FIX) — verified at SHA `734e08e`: `:513-519` / `:522-526` / `:529-533` / `:552-557` | shipped | 0081 |
+| `tests/pi_parity/test_phase_4_14_extension_events.py` closure pin (14 invariants) | shipped | 0082 |
+| `tests/pi_parity/fixtures/pi_extension_events_734e08e.json` (NEW W0 fixture) | shipped | 0081 |
+| `tests/pi_parity/fixtures/pi_agent_harness_event_names_734e08e.json` (AMEND — 4 new events + 4 P-344 line citations) | shipped | 0081 |
+| `tests/runtime/test_agent_session_runtime_extension_events.py` (NEW — 9 wiring tests including P-355 dispose ordering pin) | shipped | 0081 |
+| `tests/runtime/test_agent_session_runtime_session_cwd.py` (NEW — 3 wiring tests including assert-after-open ordering pin) | shipped | 0081 |
+| `tests/session/test_session_cwd_helper.py` (NEW — 10 unit tests covering P-337 + P-346 + P-347 + field shape change) | shipped | 0081 |
+| `tests/session/test_session_file_property.py` (NEW — P-349 cross-reference pin) | shipped | 0081 |
+| `tests/extensions/test_extension_runner_emit_delegate.py` (NEW — P-333 ExtensionRunner bridge tests) | shipped | 0081 |
+| `tests/pi_parity/test_hook_event_name_literal_pi_parity.py` (AMEND — 35-name cascade pin) | shipped | 0081 |
+| `tests/pi_parity/test_phase_3_1_strict_superset.py` (AMEND — cascade count update for 35-name fixture) | shipped | 0081 |
+| `tests/test_hook_payload_roundtrip.py` (AMEND — 4 new events added to roundtrip coverage) | shipped | 0081 |
+| `tests/test_overloads_extension_api.py` (AMEND — 35-overload count assertion) | shipped | 0081 |
+| ADR-0034 amendment — Sprint 6h₅a Phase 4.14 row (extension event wiring; RPC roster UNCHANGED) | shipped | 0034 |
+| ADR-0080 amendment — Sprint 6h₅a P-307 / P-308 carry-forward CLOSE note | shipped | 0080 |
+| `with_session` 2-stage callback (P-314 from ADR-0080) | deferred to Sprint 6h₅b | 0082 |
+| `setup` callback in `new_session` (P-314 sibling) | deferred to Sprint 6h₅b | 0082 |
+| `set_rebind_session` / `set_before_session_invalidate` optional-cb signature widening (P-315 from ADR-0080) | deferred to Sprint 6h₅b | 0082 |
+| `forkFrom` cross-cwd import (no RPC wire today; P-314 carry-forward) | deferred to Sprint 6h₅b | 0082 |
+| `import_from_jsonl` real runtime body (no RPC wire today; P-310 carry-forward) | deferred to Sprint 6h₅b | 0082 |
+| `session_start` bootstrap emit (`reason="startup"` / `"reload"`; factory pattern change required) | deferred to Sprint 6h₅b | 0082 |
+| P-351 `ExtensionRunner.invalidate` semantics (Pi `runner.ts` `invalidated` flag) | deferred to Sprint 6h₅b | 0082 |
+| Pi HTML visual fidelity (CSS / syntax highlighting / responsive layout — ADR-0074 carry-forward) | deferred to Sprint 6h₅c | 0082 |
+| `ImageContent` rendering in HTML export (ADR-0074 carry-forward) | deferred to Sprint 6h₅c | 0082 |
+| `_get_context_usage_safe` real implementation (P-282 from ADR-0074) | deferred to Sprint 6h₅c | 0082 |
+| Live `session_id` read via session manager (P-291 from ADR-0074) | deferred to Sprint 6h₅c | 0082 |
+| Pi-source-grep verification tooling (P-286 from ADR-0074) | deferred to Sprint 6h₅c | 0082 |
+| Factory bootstrap `assertSessionCwdExists` call site (Pi `:391`) | deferred to Sprint 6h₅c | 0082 |
+| `importFromJsonl` `assertSessionCwdExists` call site (Pi `:352`) | deferred to Sprint 6h₅c | 0082 |
 
 ### Sprint 6h₄c sub-table (Phase 4.13 closure — **PHASE 4 RPC ROSTER CLOSED**)
 
