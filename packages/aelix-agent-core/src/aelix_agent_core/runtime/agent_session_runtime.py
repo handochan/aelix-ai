@@ -28,13 +28,54 @@ rebind manually — the runtime's ``_finish_session_replacement``
 auto-invokes the registered callback as single source of truth (Pi
 belt-and-braces handler-side rebind at ``rpc-mode.ts:565-567``/
 ``:573-575``/``:585-587`` is NOT mirrored).
+
+Sprint 6h₅a (ADR-0081, P-307/P-308/P-337 closure) — extension event Pi
+parity. The 4 new Pi events (``session_start`` / ``session_before_switch``
+/ ``session_before_fork`` / ``session_shutdown``) are wired end-to-end:
+
+  - ``_emit_before_switch`` / ``_emit_before_fork`` (P-338/P-339) — real
+    bodies replace the Sprint 6h₄b no-arg stubs; signatures mirror Pi
+    ``agent-session-runtime.ts:115-130`` / ``:132-147``. W4 MINOR-3:
+    parameters are required (no defaults) so every callsite supplies
+    the Pi-shape (reason / entry_id) explicitly.
+  - ``_teardown_current`` (P-340) — ORDERING CORRECTION to Pi order
+    ``emit_shutdown → before_session_invalidate → dispose`` (Sprint
+    6h₄b shipped the reversed order). Extension runner reference is
+    captured BEFORE dispose to avoid the bus-teardown race.
+  - ``dispose`` (P-341) — adds missing ``session_shutdown`` emit with
+    ``reason="quit"``. W5 P-355 BLOCKING FIX: order corrected to
+    EMIT → INVALIDATE → DISPOSE (matches ``_teardown_current``; the
+    W2 "intentional asymmetry" §J rationale was based on a spec misread
+    of Pi ``:366-373`` — Pi has no asymmetry).
+  - ``switch_session`` assert-before-emit ordering (W4 MEDIUM):
+    ``repo.open`` + ``assert_session_cwd_exists`` run BEFORE
+    ``_emit_before_switch`` (Pi ``:186`` line-189 ordering — Pi
+    asserts cwd before letting extensions cancel the swap so the
+    error surfaces even when an extension would have cancelled).
+  - ``previous_session_file`` snapshot (P-342) — captured BEFORE
+    ``_teardown_current`` at all 3 replace sites and threaded into
+    ``_finish_session_replacement`` for the ``session_start`` payload.
+  - ``session_start`` emit (P-343) — fired from
+    ``_finish_session_replacement`` AFTER ``rebind_session`` on the
+    NEW harness's runner (the OLD bus is disposed by step 1).
+  - ``assert_session_cwd_exists`` (P-337) — wired in ``switch_session``
+    AFTER ``repo.open`` so the assertion checks the NEW session's cwd.
+    Pi factory site (``:391``) + ``importFromJsonl`` site (``:352``)
+    are deferred to Sprint 6h₅c.
+
+Pi event line citations (W5 P-344 corrections — verified at SHA
+``734e08e``): ``SessionStartEvent`` ``extensions/types.ts:513-519``,
+``SessionBeforeSwitchEvent`` ``:522-526``, ``SessionBeforeForkEvent``
+``:529-533``, ``SessionShutdownEvent`` ``:552-557``.
+``SessionBeforeForkResult`` (P-345) ``:1015-1022``
+(``cancel?, skipConversationRestore?``).
 """
 
 from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from aelix_agent_core.runtime._types import (
     AgentSessionRuntimeDiagnostic,
@@ -54,6 +95,40 @@ if TYPE_CHECKING:
     from aelix_agent_core.session.session import Session
 
 _log = logging.getLogger(__name__)
+
+
+async def _emit_session_shutdown_event(
+    extension_runner: Any,
+    reason: Literal["quit", "reload", "new", "resume", "fork"],
+    target_session_file: str | None = None,
+) -> bool:
+    """Pi parity: ``emitSessionShutdownEvent`` (``runner.ts:177-189``).
+
+    Sprint 6h₅a (Phase 4.14, ADR-0081, P-334). Module-private helper
+    mirroring Pi's top-level export. Gates on
+    ``has_handlers("session_shutdown")`` to avoid constructing the event
+    payload when no extension cares. The ``extension_runner`` parameter
+    is typed as :class:`Any` to avoid importing
+    :class:`~aelix_agent_core.harness._extension_runner.ExtensionRunner`
+    (circular import via ``harness.core``); callers pass the harness's
+    ``extension_runner`` attribute.
+
+    Returns ``True`` when the event was emitted, ``False`` when skipped
+    (no handlers registered).
+    """
+
+    from aelix_agent_core.harness.hooks import SessionShutdownHookEvent
+
+    if not extension_runner.has_handlers("session_shutdown"):
+        return False
+    await extension_runner.emit(
+        SessionShutdownHookEvent(
+            type="session_shutdown",
+            reason=reason,
+            target_session_file=target_session_file,
+        )
+    )
+    return True
 
 
 def _extract_user_message_text(content: Any) -> str:
@@ -206,26 +281,100 @@ class AgentSessionRuntime:
 
     # === Private replace seam (Pi `:115-173`) ===================================
 
-    async def _emit_before_switch(self) -> bool:
-        """Pi parity: ``emitBeforeSwitch`` (``:115-130``). P-308 stub:
-        Aelix has no ``session_before_switch`` hook event yet; returns
-        ``False`` (never cancel). Real surface lands per ADR-0078.
-        """
-        return False
+    async def _emit_before_switch(
+        self,
+        reason: Literal["new", "resume"],
+        target_session_file: str | None,
+    ) -> bool:
+        """Pi parity: ``emitBeforeSwitch`` (``agent-session-runtime.ts:115-130``).
 
-    async def _emit_before_fork(self) -> bool:
-        """Pi parity: ``emitBeforeFork`` (``:132-147``). P-308 stub: see
-        :meth:`_emit_before_switch`. Returns ``False``.
+        Sprint 6h₅a (Phase 4.14, ADR-0081, P-338) — real body replaces
+        the Sprint 6h₄b P-308 stub. Gates on
+        ``has_handlers("session_before_switch")`` so the payload is not
+        constructed when no extension cares. Returns ``True`` when ANY
+        handler returned :class:`SessionBeforeSwitchResult(cancel=True)`
+        (Pi first-cancel-wins via the shared
+        :func:`_reducer_session_before`).
         """
-        return False
 
-    async def _teardown_current(self) -> None:
-        """Pi parity: ``teardownCurrent`` (``:149-157``).
+        from aelix_agent_core.harness.hooks import (
+            SessionBeforeSwitchHookEvent,
+            SessionBeforeSwitchResult,
+        )
 
-        Calls ``beforeSessionInvalidate?.()`` THEN disposes the current
-        harness (Pi disposes ``_session``; Aelix disposes the harness
-        wrapper — P-302). LIFO ordering preserved per Pi.
+        runner = self._harness.extension_runner
+        if not runner.has_handlers("session_before_switch"):
+            return False
+        result = await runner.emit(
+            SessionBeforeSwitchHookEvent(
+                type="session_before_switch",
+                reason=reason,
+                target_session_file=target_session_file,
+            )
+        )
+        return isinstance(result, SessionBeforeSwitchResult) and result.cancel is True
+
+    async def _emit_before_fork(
+        self,
+        entry_id: str,
+        position: Literal["before", "at"],
+    ) -> bool:
+        """Pi parity: ``emitBeforeFork`` (``agent-session-runtime.ts:132-147``).
+
+        Sprint 6h₅a (Phase 4.14, ADR-0081, P-339) — real body replaces
+        the Sprint 6h₄b P-308 stub. Same first-cancel-wins semantics as
+        :meth:`_emit_before_switch`.
         """
+
+        from aelix_agent_core.harness.hooks import (
+            SessionBeforeForkHookEvent,
+            SessionBeforeForkResult,
+        )
+
+        runner = self._harness.extension_runner
+        if not runner.has_handlers("session_before_fork"):
+            return False
+        result = await runner.emit(
+            SessionBeforeForkHookEvent(
+                type="session_before_fork",
+                entry_id=entry_id,
+                position=position,
+            )
+        )
+        return isinstance(result, SessionBeforeForkResult) and result.cancel is True
+
+    async def _teardown_current(
+        self,
+        reason: Literal["quit", "reload", "new", "resume", "fork"] = "quit",
+        target_session_file: str | None = None,
+    ) -> None:
+        """Pi parity: ``teardownCurrent`` (``agent-session-runtime.ts:149-157``).
+
+        Sprint 6h₅a (Phase 4.14, ADR-0081, P-340) — ORDERING CORRECTION
+        to match Pi. The Sprint 6h₄b implementation reversed Pi's order
+        (invalidate-then-dispose with NO shutdown emit). Pi order is:
+
+          1. emit ``session_shutdown`` (extensions still see live harness
+             state — last messages, current ``session_file``, etc).
+          2. ``before_session_invalidate?.()`` (signals invalidation).
+          3. ``await harness.dispose()`` (tears down HookBus +
+             everything).
+
+        **Race avoidance:** the ``extension_runner`` reference is
+        captured at the TOP of the method BEFORE
+        ``harness.dispose()`` is awaited (dispose tears down the
+        HookBus → bridge becomes a no-op after).
+        """
+
+        # CRITICAL — capture runner BEFORE invalidate/dispose tears it
+        # down. ``harness.dispose()`` clears the HookBus, after which
+        # the runner bridge callables become no-ops.
+        runner = self._harness.extension_runner
+        try:
+            await _emit_session_shutdown_event(runner, reason, target_session_file)
+        except Exception:
+            _log.exception("AgentSessionRuntime.session_shutdown emit raised")
+
         if self._before_session_invalidate is not None:
             try:
                 self._before_session_invalidate()
@@ -250,19 +399,53 @@ class AgentSessionRuntime:
         self._harness = new_harness
 
     async def _finish_session_replacement(
-        self, new_session: Session
+        self,
+        new_session: Session,
+        *,
+        reason: Literal["new", "resume", "fork"] = "resume",
+        previous_session_file: str | None = None,
+        target_session_file: str | None = None,
     ) -> None:
-        """Pi parity: ``finishSessionReplacement`` (``:166-173``).
+        """Pi parity: ``finishSessionReplacement`` (``agent-session-runtime.ts:166-173``).
 
         Order:
-          1. ``_teardown_current`` (dispose OLD harness),
-          2. ``_apply`` (construct NEW harness from factory),
+          1. ``_teardown_current(reason, target_session_file)`` (Sprint
+             6h₅a: emits ``session_shutdown`` FIRST per Pi, then
+             ``before_session_invalidate``, then disposes OLD harness).
+          2. ``_apply`` (construct NEW harness from factory).
           3. ``rebind_session?.(new_harness)`` (P-305 fire-and-await).
+          4. Sprint 6h₅a (Phase 4.14, ADR-0081, P-343) — emit
+             ``session_start`` on the NEW harness's ``extension_runner``
+             (the OLD bus is disposed by step 1). The first
+             ``session_start`` at bootstrap (``reason="startup"`` /
+             ``"reload"``) is deferred to Sprint 6h₅b (factory pattern
+             change required).
         """
-        await self._teardown_current()
+
+        from aelix_agent_core.harness.hooks import SessionStartHookEvent
+
+        await self._teardown_current(reason, target_session_file)
         await self._apply(new_session)
         if self._rebind_session is not None:
             await self._rebind_session(self._harness)
+
+        # P-343 — emit session_start on the NEW harness's runner. The OLD
+        # runner is disposed by step 1; reading ``_harness`` here picks up
+        # the freshly constructed one.
+        new_runner = self._harness.extension_runner
+        if new_runner.has_handlers("session_start"):
+            try:
+                await new_runner.emit(
+                    SessionStartHookEvent(
+                        type="session_start",
+                        reason=reason,
+                        previous_session_file=previous_session_file,
+                    )
+                )
+            except Exception:
+                _log.exception(
+                    "AgentSessionRuntime.session_start emit raised"
+                )
 
     # === Public replace APIs (Pi `:175-364`) — Sprint 6h₄c real bodies ========
 
@@ -274,28 +457,55 @@ class AgentSessionRuntime:
     ) -> RuntimeReplaceResult:
         """Pi parity: ``switchSession`` (``agent-session-runtime.ts:175-198``).
 
-        Sprint 6h₄c (ADR-0079, P-325) — real body. Pi 4-step waveform:
-          1. ``emit_before_switch()`` → bail if cancelled (P-308 stub
-             returns ``False`` in 6h₄c — real cancel hooks deferred to
-             ADR-0080).
-          2. Resolve target session via ``repo.open(load_jsonl_session_metadata(...))``.
-          3. ``_finish_session_replacement(new_session)`` (LIFO: dispose
-             OLD harness → ``_apply`` constructs NEW harness via factory
-             → registered ``rebind_session`` callback fires).
-          4. Return ``RuntimeReplaceResult(cancelled=False)``.
+        Sprint 6h₅a W4 MEDIUM correction (W5 audit) — Pi order at
+        ``:184-189`` is:
 
-        Pi-divergence acknowledged: Pi's ``assertSessionCwdExists``
-        (``:186``) is omitted — Aelix surfaces the equivalent error
-        implicitly through :class:`SessionError("not_found")` /
-        :class:`SessionError("storage")` when ``repo.open`` fails to find
-        the file (``jsonl_repo.py:170-178``). Deferred per ADR-0080.
+          1. ``previousSessionFile = this.session.sessionFile`` (line 184).
+          2. ``newSession = await SessionManager.open(path)`` (line 185).
+          3. ``await assertSessionCwdExists(newSession, fallbackCwd, ...)``
+             (line 186 — Pi asserts BEFORE letting any extension cancel).
+          4. ``if (await emitBeforeSwitch(...)) { return {cancelled: true}; }``
+             (line 189).
+          5. ``await finishSessionReplacement(newSession, "resume", ...)``.
+
+        W2 reversed this — emitted the cancel hook FIRST then loaded /
+        asserted. Pi parity requires the cwd assertion to surface even
+        when an extension would have cancelled the swap, so the error
+        is observable to the caller rather than swallowed by the
+        cancel short-circuit. Sprint 6h₅a W6 lifts the load + assert
+        BEFORE the cancel hook to match Pi.
         """
 
-        if await self._emit_before_switch():
-            return RuntimeReplaceResult(cancelled=True)
+        from aelix_agent_core.session.session_cwd import assert_session_cwd_exists
+
+        # P-342 — snapshot BEFORE teardown (Pi line 184).
+        previous_session_file = (
+            self.session.session_file if self.session is not None else None
+        )
+
+        # Pi parity: load metadata + open + assert cwd FIRST (Pi lines 185-186).
         metadata = await load_jsonl_session_metadata(self._fs, path)
         new_session = await self._repo.open(metadata)
-        await self._finish_session_replacement(new_session)
+
+        # P-337 — Pi ``session-cwd.ts:1-59``. Run AFTER ``repo.open`` so
+        # ``new_session.session_file`` is populated; pass
+        # ``fallback_cwd=self.cwd`` for actionable diagnostic context.
+        await assert_session_cwd_exists(
+            new_session, fallback_cwd=self.cwd, fs=self._fs
+        )
+
+        # Pi parity: emit cancel hook SECOND (Pi line 189).
+        if await self._emit_before_switch(
+            reason="resume", target_session_file=path
+        ):
+            return RuntimeReplaceResult(cancelled=True)
+
+        await self._finish_session_replacement(
+            new_session,
+            reason="resume",
+            previous_session_file=previous_session_file,
+            target_session_file=path,
+        )
         return RuntimeReplaceResult(cancelled=False)
 
     async def new_session(
@@ -325,19 +535,32 @@ class AgentSessionRuntime:
         defer per ADR-0080 (P-314).
         """
 
-        if await self._emit_before_switch():
+        if await self._emit_before_switch(
+            reason="new", target_session_file=None
+        ):
             return RuntimeReplaceResult(cancelled=True)
         cwd = self.cwd
         if cwd is None:
             raise RuntimeError(
                 "new_session requires the current harness session to have a cwd"
             )
+
+        # P-342 — snapshot BEFORE teardown.
+        previous_session_file = (
+            self.session.session_file if self.session is not None else None
+        )
+
         new_session = await self._repo.create(
             JsonlSessionCreateOptions(
                 cwd=cwd, parent_session_path=parent_session
             )
         )
-        await self._finish_session_replacement(new_session)
+        await self._finish_session_replacement(
+            new_session,
+            reason="new",
+            previous_session_file=previous_session_file,
+            target_session_file=None,
+        )
         return RuntimeReplaceResult(cancelled=False)
 
     async def fork(
@@ -376,7 +599,9 @@ class AgentSessionRuntime:
              selected_text=selected_text)``.
         """
 
-        if await self._emit_before_fork():
+        if await self._emit_before_fork(
+            entry_id=entry_id, position=position
+        ):
             return RuntimeReplaceResult(cancelled=True)
 
         if self.session is None:
@@ -401,6 +626,10 @@ class AgentSessionRuntime:
                 selected_entry.message.content  # type: ignore[union-attr]
             )
 
+        # P-342 — snapshot BEFORE teardown / get_metadata so the value
+        # comes from the OLD session.
+        previous_session_file = self.session.session_file
+
         metadata = await self.session.get_metadata()
         new_session = await self._repo.fork(
             source=metadata,
@@ -411,7 +640,12 @@ class AgentSessionRuntime:
                 parent_session_path=metadata.path,
             ),
         )
-        await self._finish_session_replacement(new_session)
+        await self._finish_session_replacement(
+            new_session,
+            reason="fork",
+            previous_session_file=previous_session_file,
+            target_session_file=None,  # Pi fork has no targetSessionFile
+        )
         return RuntimeReplaceResult(
             cancelled=False, selected_text=selected_text
         )
@@ -440,11 +674,44 @@ class AgentSessionRuntime:
     async def dispose(self) -> None:
         """Pi parity: ``dispose`` (``agent-session-runtime.ts:366-373``).
 
-        Pi: ``beforeSessionInvalidate?.() → emit("session_shutdown") →
-        await _session.dispose()``. Aelix 6h₄b: ``beforeSessionInvalidate?.()
-        → await harness.dispose()``. The ``session_shutdown`` emit gap is
-        recorded in ADR-0078 carry-forward (P-307).
+        Sprint 6h₅a (Phase 4.14, ADR-0081, P-341) — adds the missing
+        ``session_shutdown`` emit with ``reason="quit"``. Sprint 6h₅a W5
+        P-355 BLOCKING FIX — order corrected to **EMIT → INVALIDATE →
+        DISPOSE**, matching Pi ``agent-session-runtime.ts:366-373``
+        verbatim:
+
+        .. code-block:: typescript
+
+           async dispose(): Promise<void> {
+               await emitSessionShutdownEvent(this.session.extensionRunner, {
+                   type: "session_shutdown", reason: "quit",
+               });
+               this.beforeSessionInvalidate?.();
+               this.session.dispose();
+           }
+
+        W2 originally implemented INVALIDATE → EMIT → DISPOSE based on
+        a spec §J misread of Pi ``:366-373``; the supposed "intentional
+        asymmetry" did not exist in Pi. ``dispose`` and
+        :meth:`_teardown_current` now use the **same** order (EMIT FIRST
+        so extensions can read live harness state before invalidate).
+
+        **Race avoidance:** the ``extension_runner`` reference is
+        captured at the TOP of the method BEFORE ``harness.dispose()``
+        is awaited (dispose tears down the HookBus → bridge becomes a
+        no-op after).
         """
+
+        # Capture runner BEFORE invalidate/dispose — see P-340 race note.
+        runner = self._harness.extension_runner
+
+        # EMIT FIRST (Pi line 367-370).
+        try:
+            await _emit_session_shutdown_event(runner, "quit", None)
+        except Exception:
+            _log.exception("AgentSessionRuntime.session_shutdown emit raised")
+
+        # INVALIDATE SECOND (Pi line 371).
         if self._before_session_invalidate is not None:
             try:
                 self._before_session_invalidate()
@@ -452,6 +719,8 @@ class AgentSessionRuntime:
                 _log.exception(
                     "AgentSessionRuntime.before_session_invalidate raised"
                 )
+
+        # DISPOSE THIRD (Pi line 372).
         await self._harness.dispose()
 
 
