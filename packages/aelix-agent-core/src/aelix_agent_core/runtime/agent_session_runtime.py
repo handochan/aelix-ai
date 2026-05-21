@@ -79,6 +79,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Literal
 
+from aelix_agent_core.harness.hooks import SessionStartHookEvent
 from aelix_agent_core.runtime._types import (
     PI_STALENESS_MESSAGE,
     AgentSessionRuntimeDiagnostic,
@@ -94,6 +95,7 @@ from aelix_agent_core.session.jsonl_repo import (
 )
 from aelix_agent_core.session.jsonl_storage import load_jsonl_session_metadata
 from aelix_agent_core.session.repo_utils import ForkOptions, ForkPosition
+from aelix_agent_core.session.session_cwd import assert_session_cwd_exists
 
 if TYPE_CHECKING:
     from aelix_agent_core.harness.core import AgentHarness
@@ -921,11 +923,14 @@ async def create_agent_session_runtime(
     P-343 emit policy).
     """
 
-    from aelix_agent_core.harness.hooks import SessionStartHookEvent
-    from aelix_agent_core.session.session_cwd import assert_session_cwd_exists
-
     # P-370 — Pi line :391. Skip when no session is bound (factory may
     # be invoked against an in-memory harness in tests).
+    #
+    # Sprint 6h₅d §C (P-375): imports for ``SessionStartHookEvent`` +
+    # ``assert_session_cwd_exists`` are hoisted to module top-level so
+    # tests can monkeypatch via ``monkeypatch.setattr`` on a single
+    # binding site (``runtime.agent_session_runtime``) without relying on
+    # the prior function-local re-resolution of ``session.session_cwd``.
     if harness._session is not None:
         await assert_session_cwd_exists(
             harness._session, fallback_cwd=None, fs=fs
