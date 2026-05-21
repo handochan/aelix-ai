@@ -158,13 +158,18 @@ def test_remaining_five_deferred_are_session_tree() -> None:
 def test_remaining_five_deferred_own_adr_0074() -> None:
     """Pi parity: each deferred owner cites ADR-0074 (Sprint 6h₃) or
     ADR-0076 (Sprint 6h₄a restated owners for the remaining 3
-    session-tree commands).
+    session-tree commands) or ADR-0078 (Sprint 6h₄b rebrand per spec
+    §D.5 — foundation lands without wiring).
     """
 
     for cmd, owner in DEFERRED_COMMANDS.items():
-        assert "ADR-0074" in owner or "ADR-0076" in owner, (
+        assert (
+            "ADR-0074" in owner
+            or "ADR-0076" in owner
+            or "ADR-0078" in owner
+        ), (
             f"{cmd!r} owner string {owner!r} does not cite "
-            f"ADR-0074 / ADR-0076"
+            f"ADR-0074 / ADR-0076 / ADR-0078"
         )
 
 

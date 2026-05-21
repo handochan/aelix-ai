@@ -145,8 +145,11 @@ def test_deferred_commands_cover_remaining_pi_set() -> None:
     Sprint 6h₃ (ADR-0074) restates the remaining 5 session-tree owners
     ADR-0072 → ADR-0074.
     Sprint 6h₄a (ADR-0076) restates the remaining 3 session-tree
-    owners ADR-0074 → ADR-0076. Accept any of the four prefixes so
-    closure-pin runs across the transitions stay deterministic.
+    owners ADR-0074 → ADR-0076.
+    Sprint 6h₄b (ADR-0078) rebrands the same 3 session-tree owners
+    ADR-0076 → ADR-0078 per spec §D.5 (foundation lands; 6h₄c wires
+    the handlers). Accept any of the five prefixes so closure-pin
+    runs across the transitions stay deterministic.
     """
 
     remaining = RPC_COMMAND_TYPES - SUPPORTED_COMMANDS
@@ -157,6 +160,7 @@ def test_deferred_commands_cover_remaining_pi_set() -> None:
             or "ADR-0072" in owner
             or "ADR-0074" in owner
             or "ADR-0076" in owner
+            or "ADR-0078" in owner
         )
 
 

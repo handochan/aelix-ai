@@ -161,8 +161,10 @@ def test_remaining_seven_deferred_own_adr_0072() -> None:
     5 session-tree commands are restated to ADR-0074.
     Sprint 6h₄a (ADR-0075) wires the 2 read-only navigation commands;
     the remaining 3 session-tree commands are restated to ADR-0076.
-    Accept any of the three prefixes so the closure pin survives the
-    cascading transitions.
+    Sprint 6h₄b (ADR-0078) rebrands the same 3 session-tree owners
+    ADR-0076 → ADR-0078 per spec §D.5 (foundation lands; 6h₄c wires
+    the handlers). Accept any of the four prefixes so the closure
+    pin survives the cascading transitions.
     """
 
     for cmd, owner in DEFERRED_COMMANDS.items():
@@ -170,9 +172,10 @@ def test_remaining_seven_deferred_own_adr_0072() -> None:
             "ADR-0072" in owner
             or "ADR-0074" in owner
             or "ADR-0076" in owner
+            or "ADR-0078" in owner
         ), (
             f"{cmd!r} owner string {owner!r} does not cite "
-            f"ADR-0072 / ADR-0074 / ADR-0076"
+            f"ADR-0072 / ADR-0074 / ADR-0076 / ADR-0078"
         )
 
 

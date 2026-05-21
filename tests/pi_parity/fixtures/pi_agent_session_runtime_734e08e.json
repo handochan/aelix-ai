@@ -1,0 +1,47 @@
+{
+  "_doc": "Pi-pinned snapshot of AgentSessionRuntime + rebindSession seam. Sprint 6h₄b Phase 4.12 FOUNDATION (no RPC commands wired). Used by tests/pi_parity/test_phase_4_12_strict_superset.py.",
+  "pi_sha": "734e08edf82ff315bc3d96472a6ebfa69a1d8016",
+  "sprint": "6h_4_b",
+  "phase": "4.12",
+  "pi_paths": {
+    "agent_session_runtime": "packages/coding-agent/src/core/agent-session-runtime.ts",
+    "rpc_mode": "packages/coding-agent/src/modes/rpc/rpc-mode.ts"
+  },
+  "agent_session_runtime": {
+    "class_lines": "67-374",
+    "constructor_lines": "67-77",
+    "set_rebind_session_lines": "99-101",
+    "set_before_session_invalidate_lines": "111-113",
+    "switch_session_lines": "175-198",
+    "new_session_lines": "200-232",
+    "fork_lines": "234-320",
+    "dispose_lines": "366-373",
+    "private_helpers": {
+      "emit_before_switch": "115-130",
+      "emit_before_fork": "132-147",
+      "teardown_current": "149-157",
+      "apply": "159-164",
+      "finish_session_replacement": "166-173"
+    }
+  },
+  "rebind_session_closure": {
+    "rpc_mode_lines": "310-349",
+    "registration_lines": "306-308",
+    "call_sites_in_rpc_mode": [367, 422, 566, 574, 586]
+  },
+  "command_count_arithmetic": {
+    "before_sprint_6h_4_b": "26 supported / 3 deferred / 29 total",
+    "after_sprint_6h_4_b": "26 supported / 3 deferred / 29 total — UNCHANGED (foundation sprint, no RPC commands wired)",
+    "still_deferred": ["switch_session", "fork", "clone"]
+  },
+  "architecture_decision": "harness-rebuild",
+  "architecture_rationale": "Pi AgentSession is a stateless wrapper; Aelix AgentHarness captures _state.session_id at __init__ (harness/core.py:524) and binds runtime actions during construction. Session swap would leave captured fields stale; harness rebuild preserves invariants (P-302/P-306).",
+  "_p_302_note": "Aelix adopts harness-rebuild over Pi's session-swap because AgentHarness.__init__ captures _state.session_id at line 524 from session.get_storage()._metadata. Replacing only _session would leave session_id stale. The HarnessFactory pattern preserves the invariant by reconstructing the harness for each new Session.",
+  "_p_307_note": "Pi dispose() emits session_shutdown before disposing _session. Aelix AgentHarness.dispose() does NOT emit this event today (core.py:1961-1976). Gap recorded in ADR-0078 carry-forward; closure pin asserts current behavior so the gap is visible.",
+  "_p_308_note": "Pi emitBeforeSwitch / emitBeforeFork dispatch to extensions for cancellation. Aelix has no session_before_switch / session_before_fork hook events today. Sprint 6h₄b stubs return False (never cancel); real surface lands per ADR-0078.",
+  "deferred_to_sprint_6h_4_c": [
+    "switch_session / fork / clone RPC handler wiring (uses AgentSessionRuntime from 6h₄b)",
+    "session_before_switch / session_before_fork extension cancel events (Pi runtime calls; 6h₄b stubs return cancelled=False)",
+    "SessionManager.getLeafId Aelix port (currently await session.get_leaf_id() exists; clone handler needs it)"
+  ]
+}
