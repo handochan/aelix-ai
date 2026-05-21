@@ -13,7 +13,10 @@ from aelix_agent_core.runtime._types import (
     RuntimeReplaceResult,
     SessionImportFileNotFoundError,
 )
-from aelix_agent_core.runtime.agent_session_runtime import AgentSessionRuntime
+from aelix_agent_core.runtime.agent_session_runtime import (
+    AgentSessionRuntime,
+    create_agent_session_runtime,
+)
 
 __all__ = [
     "PI_STALENESS_MESSAGE",
@@ -23,4 +26,5 @@ __all__ = [
     "ReplacedSessionContext",
     "RuntimeReplaceResult",
     "SessionImportFileNotFoundError",
+    "create_agent_session_runtime",
 ]

@@ -880,4 +880,83 @@ class AgentSessionRuntime:
         await self._harness.dispose()
 
 
-__all__ = ["AgentSessionRuntime"]
+async def create_agent_session_runtime(
+    harness: AgentHarness,
+    create_harness: HarnessFactory,
+    *,
+    repo: JsonlSessionRepo,
+    fs: FileSystem,
+    diagnostics: list[AgentSessionRuntimeDiagnostic] | None = None,
+    model_fallback_message: str | None = None,
+    session_start_event: Any | None = None,
+) -> AgentSessionRuntime:
+    """Pi parity: ``createAgentSessionRuntime`` (``agent-session-runtime.ts:382-400``).
+
+    Sprint 6h₅c (ADR-0085, P-370 + P-371). Module-level async factory that
+    Pi calls at the runtime construction site. Two Pi invariants are
+    materialised here:
+
+      - **P-370 — Pi line ``:391``** — when the harness already has a
+        :class:`Session` bound, :func:`assert_session_cwd_exists` runs
+        BEFORE the runtime is constructed. The assertion raises
+        :class:`MissingSessionCwdError` if the stored cwd is missing
+        from disk, which is the Pi "factory bootstrap" call site
+        (deferred from Sprint 6h₅a per ADR-0081 §carry-forward).
+      - **P-371 — Pi lines ``:326`` + ``:2050``** — Pi emits
+        :class:`SessionStartHookEvent(reason="startup")` once on
+        bootstrap. Aelix mirrors via the ``session_start_event``
+        kwarg: when :data:`None` (the Pi ``??`` default), the factory
+        constructs the default startup payload. Callers needing a
+        different reason (e.g. ``"reload"``, deferred to Sprint 6h₅d
+        for the ``reload()`` path) can pre-build the event and pass
+        it explicitly. The emit is gated on
+        :meth:`ExtensionRunner.has_handlers` (Pi ``runner.ts:178-180``
+        short-circuit) so the payload is never constructed when no
+        extension cares.
+
+    Failure semantics: a raising ``session_start`` handler is logged
+    but does NOT propagate — bootstrap MUST complete even when an
+    extension misbehaves (mirrors the
+    :meth:`AgentSessionRuntime._finish_session_replacement`
+    P-343 emit policy).
+    """
+
+    from aelix_agent_core.harness.hooks import SessionStartHookEvent
+    from aelix_agent_core.session.session_cwd import assert_session_cwd_exists
+
+    # P-370 — Pi line :391. Skip when no session is bound (factory may
+    # be invoked against an in-memory harness in tests).
+    if harness._session is not None:
+        await assert_session_cwd_exists(
+            harness._session, fallback_cwd=None, fs=fs
+        )
+
+    runtime = AgentSessionRuntime(
+        harness,
+        create_harness,
+        repo=repo,
+        fs=fs,
+        diagnostics=diagnostics,
+        model_fallback_message=model_fallback_message,
+    )
+
+    # P-371 — Pi :326 + :2050. The Pi `??` default lives in the
+    # ``session_start_event=None`` sentinel.
+    event = session_start_event or SessionStartHookEvent(
+        type="session_start",
+        reason="startup",
+        previous_session_file=None,
+    )
+    runner = harness.extension_runner
+    if runner.has_handlers("session_start"):
+        try:
+            await runner.emit(event)
+        except Exception:
+            _log.exception(
+                "create_agent_session_runtime.session_start emit raised"
+            )
+
+    return runtime
+
+
+__all__ = ["AgentSessionRuntime", "create_agent_session_runtime"]
