@@ -1,0 +1,44 @@
+{
+  "pi_sha": "734e08edf82ff315bc3d96472a6ebfa69a1d8016",
+  "source_file": "packages/agent/src/harness/extensions/types.ts",
+  "sprint": "6h₅a",
+  "phase": "4.14",
+  "adr": "ADR-0081",
+  "events": [
+    "session_start",
+    "session_before_switch",
+    "session_before_fork",
+    "session_shutdown"
+  ],
+  "event_line_citations": {
+    "session_start": "513-519",
+    "session_before_switch": "522-526",
+    "session_before_fork": "529-533",
+    "session_shutdown": "552-557"
+  },
+  "result_types": {
+    "session_before_switch": "SessionBeforeSwitchResult",
+    "session_before_fork": "SessionBeforeForkResult",
+    "session_start": null,
+    "session_shutdown": null
+  },
+  "shared_reducer": "_reducer_session_before",
+  "shared_reducer_pi_citation": "runner.ts:680-712",
+  "emit_helper_pi_citation": "runner.ts:177-189",
+  "agent_session_runtime_pi_citations": {
+    "_emit_before_switch": "115-130",
+    "_emit_before_fork": "132-147",
+    "_teardown_current": "149-157",
+    "_apply": "159-164",
+    "_finish_session_replacement": "166-173",
+    "switch_session": "175-198",
+    "new_session": "200-232",
+    "fork": "234-320",
+    "dispose": "366-373"
+  },
+  "session_cwd_pi_citation": "session-cwd.ts:1-59",
+  "overload_count_before": 31,
+  "overload_count_after": 35,
+  "hook_event_name_count_before": 31,
+  "hook_event_name_count_after": 35
+}

@@ -202,19 +202,35 @@ def test_set_before_session_invalidate_stores_callable() -> None:
 
 
 async def test_emit_before_switch_stub_returns_false() -> None:
-    """P-308 stub: Aelix has no ``session_before_switch`` hook yet."""
+    """Sprint 6h₅a (P-338) — real body. With no handlers registered,
+    ``_emit_before_switch`` returns ``False`` (gated on
+    ``has_handlers("session_before_switch")``). W4 MINOR-3: signature now
+    requires ``reason`` + ``target_session_file`` (no defaults).
+    """
 
     h = _new_harness()
     runtime = AgentSessionRuntime(h, _noop_factory, **_runtime_kwargs())
-    assert await runtime._emit_before_switch() is False
+    assert (
+        await runtime._emit_before_switch(
+            reason="resume", target_session_file=None
+        )
+        is False
+    )
 
 
 async def test_emit_before_fork_stub_returns_false() -> None:
-    """P-308 stub: Aelix has no ``session_before_fork`` hook yet."""
+    """Sprint 6h₅a (P-339) — real body. With no handlers registered,
+    ``_emit_before_fork`` returns ``False`` (gated on
+    ``has_handlers("session_before_fork")``). W4 MINOR-3: signature now
+    requires ``entry_id`` + ``position`` (no defaults).
+    """
 
     h = _new_harness()
     runtime = AgentSessionRuntime(h, _noop_factory, **_runtime_kwargs())
-    assert await runtime._emit_before_fork() is False
+    assert (
+        await runtime._emit_before_fork(entry_id="x", position="before")
+        is False
+    )
 
 
 async def test_import_from_jsonl_raises_not_implemented() -> None:

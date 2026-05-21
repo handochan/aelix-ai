@@ -43,5 +43,19 @@
     "input": "619-625",
     "user_bash": "602-609",
     "resources_discover": "512-517"
-  }
+  },
+  "extension_session_lifecycle_event_names": [
+    "session_start",
+    "session_before_switch",
+    "session_before_fork",
+    "session_shutdown"
+  ],
+  "extension_session_lifecycle_source_file": "packages/agent/src/harness/extensions/types.ts",
+  "extension_session_lifecycle_pi_lines": {
+    "session_start": "513-519",
+    "session_before_switch": "522-526",
+    "session_before_fork": "529-533",
+    "session_shutdown": "552-557"
+  },
+  "extension_session_lifecycle_added_by": "Sprint 6h₅a (Phase 4.14, ADR-0081)"
 }

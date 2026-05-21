@@ -148,10 +148,16 @@ def test_extension_context_surface_covers_pi_14_fields() -> None:
     assert not missing, f"Pi ExtensionContext field gaps: {missing}"
 
 
-def test_hook_event_name_has_31_entries() -> None:
-    """Sprint 5a closure: 31 = Sprint 3a 28 + Sprint 5a 3."""
+def test_hook_event_name_has_at_least_31_entries() -> None:
+    """Sprint 5a closure pin (strict superset): 31 = Sprint 3a 28 + Sprint 5a 3.
 
-    assert len(get_args(HookEventName)) == 31
+    Sprint 6h₅a (Phase 4.14, ADR-0081, P-332) — extension session
+    lifecycle events lifted the count to 35; the Phase 3.1 closure
+    invariant is the MINIMUM (Aelix is strict superset of Pi). Future
+    sprints MUST NOT remove any of the original 31 entries.
+    """
+
+    assert len(get_args(HookEventName)) >= 31
 
 
 def test_adr_0041_deadline_not_passed() -> None:
