@@ -74,13 +74,18 @@ Pi event line citations (W5 P-344 corrections — verified at SHA
 from __future__ import annotations
 
 import logging
+import os
 from collections.abc import Awaitable, Callable
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Literal
 
 from aelix_agent_core.runtime._types import (
+    PI_STALENESS_MESSAGE,
     AgentSessionRuntimeDiagnostic,
     HarnessFactory,
+    ReplacedSessionContext,
     RuntimeReplaceResult,
+    SessionImportFileNotFoundError,
 )
 from aelix_agent_core.session.fs import FileSystem
 from aelix_agent_core.session.jsonl_repo import (
@@ -375,6 +380,16 @@ class AgentSessionRuntime:
         except Exception:
             _log.exception("AgentSessionRuntime.session_shutdown emit raised")
 
+        # Sprint 6h₅b (Phase 4.15, ADR-0083, P-363) — invalidate the OLD
+        # runner between EMIT and ``before_session_invalidate``. Pi parity
+        # (``runner.ts:466-473``): handlers that fire AFTER this point
+        # see ``ctx.assert_active()`` raise :class:`ExtensionError("stale")`
+        # carrying the Pi verbatim message from :data:`PI_STALENESS_MESSAGE`.
+        try:
+            runner.invalidate(PI_STALENESS_MESSAGE)
+        except Exception:
+            _log.exception("AgentSessionRuntime.runner.invalidate raised")
+
         if self._before_session_invalidate is not None:
             try:
                 self._before_session_invalidate()
@@ -405,6 +420,8 @@ class AgentSessionRuntime:
         reason: Literal["new", "resume", "fork"] = "resume",
         previous_session_file: str | None = None,
         target_session_file: str | None = None,
+        setup: Callable[[Any], Awaitable[None]] | None = None,
+        with_session: Callable[[ReplacedSessionContext], Awaitable[None]] | None = None,
     ) -> None:
         """Pi parity: ``finishSessionReplacement`` (``agent-session-runtime.ts:166-173``).
 
@@ -413,19 +430,45 @@ class AgentSessionRuntime:
              6h₅a: emits ``session_shutdown`` FIRST per Pi, then
              ``before_session_invalidate``, then disposes OLD harness).
           2. ``_apply`` (construct NEW harness from factory).
-          3. ``rebind_session?.(new_harness)`` (P-305 fire-and-await).
-          4. Sprint 6h₅a (Phase 4.14, ADR-0081, P-343) — emit
+          3. Sprint 6h₅b (Phase 4.15, ADR-0083, P-359) — ``setup`` callback
+             AFTER ``_apply`` BEFORE rebind. Pi parity ``:226-229``: the
+             optional setup runs against the NEW harness's
+             :class:`ReadonlySessionManager` while the harness is still
+             un-rebound (so the caller can mutate state / inject messages
+             before the wire layer captures the new reference). After
+             setup, ``harness._state.messages`` is rebuilt from
+             ``new_session.build_context().messages`` so any
+             ``session.append_*`` calls made inside ``setup`` reflect in
+             the active turn context.
+          4. ``rebind_session?.(new_harness)`` (P-305 fire-and-await).
+          5. Sprint 6h₅a (Phase 4.14, ADR-0081, P-343) — emit
              ``session_start`` on the NEW harness's ``extension_runner``
-             (the OLD bus is disposed by step 1). The first
-             ``session_start`` at bootstrap (``reason="startup"`` /
-             ``"reload"``) is deferred to Sprint 6h₅b (factory pattern
-             change required).
+             (the OLD bus is disposed by step 1).
+          6. Sprint 6h₅b (Phase 4.15, ADR-0083, P-358) — ``with_session``
+             callback AFTER rebind + ``session_start`` emit. Pi parity
+             ``:172-173``: receives the :class:`ReplacedSessionContext`
+             handle built from :meth:`AgentHarness.create_replaced_session_context`
+             on the NEW (post-replace) harness so the caller can run
+             post-replacement work without tripping the OLD harness's
+             stale guard.
         """
 
         from aelix_agent_core.harness.hooks import SessionStartHookEvent
 
         await self._teardown_current(reason, target_session_file)
         await self._apply(new_session)
+
+        # P-359 — setup AFTER apply, BEFORE rebind.
+        if setup is not None:
+            new_ctx = self._harness._make_context()
+            session_manager = new_ctx.session_manager  # type: ignore[attr-defined]
+            await setup(session_manager)
+            # Rebuild messages from the NEW session's build_context so any
+            # ``session.append_*`` performed inside ``setup`` is reflected
+            # in the active turn context. Pi parity ``:226-229``.
+            session_ctx = await new_session.build_context()
+            self._harness._state.messages = list(session_ctx.messages)
+
         if self._rebind_session is not None:
             await self._rebind_session(self._harness)
 
@@ -447,6 +490,17 @@ class AgentSessionRuntime:
                     "AgentSessionRuntime.session_start emit raised"
                 )
 
+        # P-358 — with_session AFTER rebind + session_start emit. Pi parity
+        # ``:172-173``. Receives a fresh ReplacedSessionContext handle on
+        # the NEW harness so the caller bypasses the OLD harness's stale
+        # guard. Sprint 6h₅b W6 (P-364 W5 MAJOR) threads ``self`` so the
+        # 6 ExtensionCommandContext methods (Pi ``:371`` extension) wire
+        # through to this runtime's command surface (``new_session`` /
+        # ``fork`` / ``switch_session``).
+        if with_session is not None:
+            ctx = self._harness.create_replaced_session_context(runtime=self)
+            await with_session(ctx)
+
     # === Public replace APIs (Pi `:175-364`) — Sprint 6h₄c real bodies ========
 
     async def switch_session(
@@ -454,6 +508,7 @@ class AgentSessionRuntime:
         path: str,
         *,
         options: dict | None = None,
+        with_session: Callable[[ReplacedSessionContext], Awaitable[None]] | None = None,
     ) -> RuntimeReplaceResult:
         """Pi parity: ``switchSession`` (``agent-session-runtime.ts:175-198``).
 
@@ -505,6 +560,7 @@ class AgentSessionRuntime:
             reason="resume",
             previous_session_file=previous_session_file,
             target_session_file=path,
+            with_session=with_session,
         )
         return RuntimeReplaceResult(cancelled=False)
 
@@ -512,6 +568,8 @@ class AgentSessionRuntime:
         self,
         *,
         parent_session: str | None = None,
+        setup: Callable[[Any], Awaitable[None]] | None = None,
+        with_session: Callable[[ReplacedSessionContext], Awaitable[None]] | None = None,
     ) -> RuntimeReplaceResult:
         """Pi parity: ``newSession`` (``agent-session-runtime.ts:200-232``).
 
@@ -526,13 +584,18 @@ class AgentSessionRuntime:
           3. ``_finish_session_replacement(new_session)``.
           4. Return ``RuntimeReplaceResult(cancelled=False)``.
 
-        Aelix omits Pi's optional ``setup`` 2-stage callback (Pi
-        ``:226-229``) — carry-forward per ADR-0080 P-314.
+        Sprint 6h₅b (Phase 4.15, ADR-0083, P-358/P-359) — Pi's optional
+        ``setup`` (``:226-229``) and ``with_session`` (``:172-173``)
+        2-stage callbacks land here. ``setup`` runs AFTER ``_apply``
+        BEFORE rebind so the caller can mutate the NEW session before
+        the wire layer captures the new harness; ``with_session`` runs
+        AFTER rebind + ``session_start`` emit and receives the
+        :class:`ReplacedSessionContext` handle from
+        :meth:`AgentHarness.create_replaced_session_context`.
 
         Aelix-additive simplification: Pi takes an options dict
-        (``{parentSession?, setup?, withSession?}``). Aelix exposes ONLY
-        ``parent_session`` as a keyword for 6h₄c. ``setup`` + ``withSession``
-        defer per ADR-0080 (P-314).
+        (``{parentSession?, setup?, withSession?}``); Aelix exposes the
+        three as keyword-only parameters for tighter pyright narrowing.
         """
 
         if await self._emit_before_switch(
@@ -560,6 +623,8 @@ class AgentSessionRuntime:
             reason="new",
             previous_session_file=previous_session_file,
             target_session_file=None,
+            setup=setup,
+            with_session=with_session,
         )
         return RuntimeReplaceResult(cancelled=False)
 
@@ -568,6 +633,7 @@ class AgentSessionRuntime:
         entry_id: str,
         *,
         position: ForkPosition = "before",
+        with_session: Callable[[ReplacedSessionContext], Awaitable[None]] | None = None,
     ) -> RuntimeReplaceResult:
         """Pi parity: ``fork`` (``agent-session-runtime.ts:234-320``).
 
@@ -645,6 +711,7 @@ class AgentSessionRuntime:
             reason="fork",
             previous_session_file=previous_session_file,
             target_session_file=None,  # Pi fork has no targetSessionFile
+            with_session=with_session,
         )
         return RuntimeReplaceResult(
             cancelled=False, selected_text=selected_text
@@ -656,18 +723,97 @@ class AgentSessionRuntime:
         *,
         cwd: str | None = None,
     ) -> RuntimeReplaceResult:
-        """Pi parity: ``importFromJsonl`` (``:329-364``).
+        """Pi parity: ``importFromJsonl`` (``agent-session-runtime.ts:329-364``).
 
-        Sprint 6h₄c — STAYS STUBBED. No RPC command in the Pi
-        ``RpcCommand`` union (``rpc_types.py:309-340``) maps to this
-        method as of SHA ``734e08e``; defer real body until a wire
-        surface lands per ADR-0080. The Pi call site is the TUI
-        ``/import`` command which doesn't go through RPC.
+        Sprint 6h₅b (Phase 4.15, ADR-0083, P-360) — real body replaces
+        the Sprint 6h₄c stub. Pi waveform:
+
+          1. Resolve the caller-supplied ``path`` to an absolute path.
+          2. Raise :class:`SessionImportFileNotFoundError` if the file
+             does not exist.
+          3. Compute the destination path under the canonical sessions
+             root for the effective cwd (``cwd`` override or the current
+             session's cwd).
+          4. Emit ``session_before_switch`` (``reason="resume"``); bail
+             with ``cancelled=True`` if an extension cancels.
+          5. Snapshot the previous session_file.
+          6. Copy the source JSONL to the destination when the two paths
+             differ (same-path → skip the copy).
+          7. Load metadata from the destination; apply ``cwd`` override
+             via :func:`dataclasses.replace` so the metadata's
+             ``cwd`` field reflects the caller's intent.
+          8. Open the new :class:`Session` and assert its cwd exists on
+             disk (Pi ``:352``).
+          9. Hand off to :meth:`_finish_session_replacement` with
+             ``reason="resume"``. **Pi confirms — no ``with_session``
+             plumbing here** (Pi signature for ``importFromJsonl`` is
+             ``(path, cwd?)``, no callbacks).
         """
-        raise NotImplementedError(
-            "AgentSessionRuntime.import_from_jsonl — no RPC wire surface "
-            "(ADR-0080 carry-forward; deferred to Sprint 6h₅+)"
+
+        from aelix_agent_core.session.session_cwd import assert_session_cwd_exists
+
+        # Step 1 — resolve path.
+        resolved_path = await self._fs.absolute_path(path)
+        # Step 2 — existence probe.
+        if not await self._fs.exists(resolved_path):
+            raise SessionImportFileNotFoundError(resolved_path)
+
+        # Step 3 — destination under sessions root.
+        current_cwd = cwd or self.cwd
+        if current_cwd is None:
+            raise RuntimeError(
+                "import_from_jsonl requires a cwd (either explicit or via "
+                "the current harness session)"
+            )
+        session_dir = await self._repo._get_session_dir(current_cwd)
+        await self._fs.create_dir(session_dir, recursive=True)
+        destination_path = await self._fs.join_path(
+            [session_dir, os.path.basename(resolved_path)]
         )
+
+        # Step 4 — cancel hook.
+        if await self._emit_before_switch(
+            reason="resume", target_session_file=destination_path
+        ):
+            return RuntimeReplaceResult(cancelled=True)
+
+        # Step 5 — snapshot previous file.
+        previous_session_file = (
+            self.session.session_file if self.session is not None else None
+        )
+
+        # Step 6 — copy when paths differ.
+        if resolved_path != destination_path:
+            await self._fs.copy_file(resolved_path, destination_path)
+
+        # Step 7 — load metadata + cwd override.
+        metadata = await load_jsonl_session_metadata(self._fs, destination_path)
+        if cwd is not None:
+            metadata = replace(metadata, cwd=cwd)
+
+        # Step 8 — open + assert cwd exists. Pi parity:
+        # ``SessionManager.open(path, dir, cwdOverride)`` threads the
+        # override into the loaded session's ``cwd`` field. Aelix routes
+        # the override via the repo-seam ``cwd_override`` keyword (Sprint
+        # 6h₅b W6 P-367 W5 MINOR fix) instead of mutating
+        # ``storage._metadata`` from outside the repo — the writeback
+        # now lives on the single owner (:meth:`JsonlSessionRepo.open`)
+        # so the private-attribute touch stays encapsulated.
+        new_session = await self._repo.open(
+            metadata, cwd_override=cwd if cwd is not None else None
+        )
+        await assert_session_cwd_exists(
+            new_session, fallback_cwd=current_cwd, fs=self._fs
+        )
+
+        # Step 9 — finish replacement (Pi: no with_session for import).
+        await self._finish_session_replacement(
+            new_session,
+            reason="resume",
+            previous_session_file=previous_session_file,
+            target_session_file=destination_path,
+        )
+        return RuntimeReplaceResult(cancelled=False)
 
     # === Dispose (Pi `:366-373`) ===============================================
 
@@ -710,6 +856,16 @@ class AgentSessionRuntime:
             await _emit_session_shutdown_event(runner, "quit", None)
         except Exception:
             _log.exception("AgentSessionRuntime.session_shutdown emit raised")
+
+        # Sprint 6h₅b (Phase 4.15, ADR-0083, P-363) — invalidate the runner
+        # between EMIT and ``before_session_invalidate`` (same insertion
+        # point as :meth:`_teardown_current`). Pi parity ``runner.ts:466-473``
+        # — handlers running AFTER this point see
+        # :class:`ExtensionError("stale")` with the Pi verbatim message.
+        try:
+            runner.invalidate(PI_STALENESS_MESSAGE)
+        except Exception:
+            _log.exception("AgentSessionRuntime.runner.invalidate raised")
 
         # INVALIDATE SECOND (Pi line 371).
         if self._before_session_invalidate is not None:
