@@ -54,6 +54,7 @@ class FileSystem(Protocol):
     async def remove(
         self, path: str, *, recursive: bool = False, force: bool = False
     ) -> None: ...
+    async def copy_file(self, source: str, destination: str) -> None: ...
 
 
 class LocalFileSystem:
@@ -158,6 +159,20 @@ class LocalFileSystem:
                 p.rmdir()
         else:
             p.unlink()
+
+    async def copy_file(self, source: str, destination: str) -> None:
+        """Sprint 6h₅b (ADR-0083, P-360) — Pi parity ``copyFile``.
+
+        Used by :meth:`AgentSessionRuntime.import_from_jsonl` to clone a
+        caller-supplied JSONL into the canonical sessions root when the
+        source path differs from the destination. ``shutil.copy2`` is
+        used to preserve mtime semantics so the imported file's metadata
+        round-trips cleanly.
+        """
+
+        dst = Path(destination)
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination)
 
 
 __all__ = ["FileInfo", "FileKind", "FileSystem", "LocalFileSystem"]

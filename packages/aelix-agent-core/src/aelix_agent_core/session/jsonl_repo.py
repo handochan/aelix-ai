@@ -20,6 +20,7 @@ from datetime import UTC, datetime
 from aelix_agent_core.session.fs import FileSystem, LocalFileSystem
 from aelix_agent_core.session.jsonl_storage import (
     JsonlSessionStorage,
+    _load_jsonl_storage,
     load_jsonl_session_metadata,
 )
 from aelix_agent_core.session.repo_utils import ForkOptions, get_entries_to_fork
@@ -161,8 +162,29 @@ class JsonlSessionRepo:
         )
         return Session(storage)
 
-    async def open(self, metadata: JsonlSessionMetadata) -> Session:
-        """Pi `open` (``jsonl-repo.ts:92-100``)."""
+    async def open(
+        self,
+        metadata: JsonlSessionMetadata,
+        *,
+        cwd_override: str | None = None,
+    ) -> Session:
+        """Pi `open` (``jsonl-repo.ts:92-100``).
+
+        Sprint 6h₅b W6 (P-367 W5 MINOR fix) — adds optional
+        ``cwd_override`` keyword argument so callers like
+        :meth:`AgentSessionRuntime.import_from_jsonl` can apply a cwd
+        rewrite cleanly at the repo seam instead of mutating
+        ``storage._metadata`` directly. Pi parity:
+        ``SessionManager.open(path, dir, cwdOverride)`` (Pi threads the
+        override into the loaded session's ``cwd`` field).
+
+        When supplied, the override is written back onto the storage's
+        metadata via :func:`dataclasses.replace` AFTER the storage opens,
+        so a subsequent ``Session.get_metadata()`` sees the overridden
+        cwd. The on-disk file is NOT rewritten — the override is
+        in-memory only, mirroring Pi where ``cwdOverride`` is a
+        session-lifetime field separate from the persisted header.
+        """
 
         try:
             present = await self._fs.exists(metadata.path)
@@ -177,6 +199,17 @@ class JsonlSessionRepo:
                 "not_found", f"Session not found: {metadata.path}"
             )
         storage = await JsonlSessionStorage.open(self._fs, metadata.path)
+        if cwd_override is not None:
+            # Sprint 6h₅b W6 (P-367 W5 MINOR fix) — clean repo seam for
+            # the Pi ``cwdOverride`` parameter. The previous Sprint 6h₅b
+            # W2 implementation mutated ``storage._metadata`` from
+            # outside the repo; centralising the writeback here keeps
+            # the private-attribute touch on a single owner.
+            from dataclasses import replace as _dc_replace
+
+            storage._metadata = _dc_replace(
+                storage._metadata, cwd=cwd_override
+            )
         return Session(storage)
 
     async def list(
@@ -278,6 +311,82 @@ class JsonlSessionRepo:
             parent_session_path=options.parent_session_path or source.path,
         )
         for entry in forked_entries:
+            await storage.append_entry(entry)
+        return Session(storage)
+
+    async def fork_from(
+        self,
+        source: JsonlSessionMetadata,
+        target_cwd: str,
+        *,
+        session_dir: str | None = None,
+    ) -> Session:
+        """Pi parity: ``SessionManager.forkFrom`` (``session-manager.ts:1353-1394``).
+
+        Sprint 6h₅b (Phase 4.15, ADR-0083, P-361). Cross-cwd import:
+        loads ALL source entries (no leaf truncation, unlike
+        :meth:`fork`), creates a NEW JSONL file under ``target_cwd``,
+        rewrites the cwd header, and stamps ``parent_session_path`` to
+        the source path so lineage round-trips.
+
+        Sprint 6h₅b ships the surface only — there is no internal
+        consumer in this sprint. The CLI ``/branch-from`` command lands
+        in Phase 5 and will be the first caller. The method is exposed
+        now so the wire surface stays Pi-shaped without a follow-up
+        breaking-change sprint.
+
+        Sprint 6h₅b W6 (P-368 W5 MINOR fix) — adds optional
+        ``session_dir`` keyword argument mirroring Pi's 3rd parameter
+        (``forkFrom(source, targetCwd, sessionDir?)``). When supplied,
+        the override replaces the default ``_get_session_dir(target_cwd)``
+        resolution; useful for callers that already own a resolved
+        directory (e.g. tests pinning a tmp_path, or future TUI work
+        that pre-computes per-workspace dirs).
+        """
+
+        session_id = _create_session_id()
+        created_at = _create_timestamp()
+        target_session_dir = (
+            session_dir
+            if session_dir is not None
+            else await self._get_session_dir(target_cwd)
+        )
+        try:
+            await self._fs.create_dir(target_session_dir, recursive=True)
+        except OSError as exc:
+            raise SessionError(
+                "storage",
+                f"Failed to create session directory {target_session_dir}: {exc}",
+                cause=exc,
+            ) from exc
+        if session_dir is not None:
+            # Caller-supplied directory: build the file path inside it
+            # directly (skip the per-cwd ``_get_session_dir`` resolve).
+            encoded_ts = re.sub(r"[:.]", "-", created_at)
+            try:
+                target_path = await self._fs.join_path(
+                    [target_session_dir, f"{encoded_ts}_{session_id}.jsonl"]
+                )
+            except OSError as exc:
+                raise SessionError(
+                    "storage",
+                    f"Failed to resolve session file path for {session_id}: {exc}",
+                    cause=exc,
+                ) from exc
+        else:
+            target_path = await self._create_session_file_path(
+                target_cwd, session_id, created_at
+            )
+        # Load ALL source entries (no leaf truncation — Pi parity vs `fork`).
+        _, all_entries, _ = await _load_jsonl_storage(self._fs, source.path)
+        storage = await JsonlSessionStorage.create(
+            self._fs,
+            target_path,
+            cwd=target_cwd,
+            session_id=session_id,
+            parent_session_path=source.path,
+        )
+        for entry in all_entries:
             await storage.append_entry(entry)
         return Session(storage)
 
