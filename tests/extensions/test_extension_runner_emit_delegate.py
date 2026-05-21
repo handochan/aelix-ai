@@ -68,11 +68,14 @@ async def test_emit_and_has_handlers_are_noop_when_unwired() -> None:
     assert await runner.emit(SessionShutdownHookEvent(reason="quit")) is None
 
 
-async def test_dataclass_remains_frozen_after_extension() -> None:
-    """The ADR-0081 P-333 surface extension preserves ``frozen=True``."""
-
-    import dataclasses
+async def test_dataclass_is_mutable_per_sprint_6h5b_p362() -> None:
+    """Sprint 6h₅b (ADR-0083, P-362) dropped ``frozen=True`` so the
+    runtime invalidate bridge can be rebound by tests. The single source
+    of truth for staleness remains the ``_ExtensionRuntime`` per spec
+    §J synthesis — the runner has no flag of its own to protect.
+    """
 
     runner = ExtensionRunner()
-    with __import__("pytest").raises(dataclasses.FrozenInstanceError):
-        runner.extensions = [object()]  # type: ignore[misc]
+    # Mutation must succeed now (no FrozenInstanceError).
+    runner.extensions = [object()]  # type: ignore[misc]
+    assert len(runner.extensions) == 1

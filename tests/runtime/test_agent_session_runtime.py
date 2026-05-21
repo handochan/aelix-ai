@@ -233,16 +233,9 @@ async def test_emit_before_fork_stub_returns_false() -> None:
     )
 
 
-async def test_import_from_jsonl_raises_not_implemented() -> None:
-    """Sprint 6h₄c (ADR-0080): ``import_from_jsonl`` STAYS STUBBED —
-    no RPC command in the Pi ``RpcCommand`` union maps to it as of SHA
-    ``734e08e``. Deferred to Sprint 6h₅+ per ADR-0080.
-    """
-
-    h = _new_harness()
-    runtime = AgentSessionRuntime(h, _noop_factory, **_runtime_kwargs())
-    with pytest.raises(NotImplementedError, match=r"import_from_jsonl"):
-        await runtime.import_from_jsonl("/p")
+# Sprint 6h₅b (ADR-0083, P-360): ``import_from_jsonl`` has a real body now.
+# The Sprint 6h₄c stub-coverage test moved to
+# :mod:`tests.runtime.test_import_from_jsonl_real`.
 
 
 # === §D — Apply_for_test seam REMOVED (P-331) ================================

@@ -305,3 +305,45 @@ dispatch table. Phase 4 RPC remains CLOSED.
 
 Sprint 6h₅a / Phase 4.14 / W6 (shipped — **extension event Pi
 parity CLOSED**; Phase 4 RPC roster STAYS CLOSED).
+
+## Sprint 6h₅b update (carry-forward CLOSE — 2026-05-22)
+
+Sprint 6h₅b (Phase 4.15) ships the runtime callback Pi parity surface
+that closes the §"Sprint 6h₅b carry-forward" subset of this ADR's
+roster. ADR-0084 records the closure pin invariants and enumerates
+the remaining Sprint 6h₅c carry-forward. The 5 items + the
+W2-already-shipped P-315 are now CLOSED:
+
+- ✅ `with_session` 2-stage callback (P-358 per ADR-0083).
+- ✅ `setup` callback in `new_session` (P-359 per ADR-0083).
+- ✅ `forkFrom` cross-cwd import (P-361 per ADR-0083 +
+  W6 P-368 W5 MINOR fix for optional `session_dir` param).
+- ✅ `import_from_jsonl` real runtime body (P-360 per ADR-0083 +
+  W6 P-366 W5 MAJOR fix for Pi-verbatim
+  :class:`SessionImportFileNotFoundError` + W6 P-367 W5 MINOR fix
+  for `cwd_override` repo seam).
+- ✅ P-351 `ExtensionRunner.invalidate` semantics (P-362 + P-363
+  per ADR-0083 — SYNTHESIS: runtime is single source of truth;
+  runner is Pi-named entry point that delegates;
+  :data:`PI_STALENESS_MESSAGE` shared default).
+- ✅ P-315 `set_rebind_session` / `set_before_session_invalidate`
+  optional-cb signature widening — the W2 Sprint 6h₄b
+  implementation already ships these as Optional per ADR-0077;
+  ADR-0082 erroneously listed it as open. Sprint 6h₅b W6 verifies
+  the existing wiring matches Pi and marks the item explicitly
+  CLOSED.
+
+The W4/W5 audit lane returned **3 MAJOR + 2 MINOR (no BLOCKING)**
+must-fix items (P-364 ~ P-368); every must-fix landed in Sprint 6h₅b
+W6 closure. See ADR-0083 §"W5 audit triage (P-364 ~ P-368 — W6
+closure)" + ADR-0084 §"W4 / W5 audit triage closure" for the per-item
+forward-fix detail.
+
+**Phase 4 RPC roster STAYS CLOSED** at 29 / 0 / 29 — Sprint 6h₅b
+runtime / extension polish does not change the dispatch table.
+
+The remaining §"Sprint 6h₅c carry-forward" items (bootstrap
+`session_start` + factory bootstrap `assertSessionCwdExists` + Pi
+HTML visual fidelity + `_get_context_usage_safe` + live `session_id`
++ `ImageContent` + Pi-source-grep tooling) carry forward to Sprint
+6h₅c unchanged — ADR-0084 §"Sprint 6h₅c carry-forward" enumerates.

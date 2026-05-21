@@ -609,6 +609,68 @@ short-circuit, the exception isolation under `error_mode="continue"`,
 and the W0 fixture pin. **RPC roster STAYS CLOSED** —
 extension polish does not change the dispatch table.
 
+### Sprint 6h₅b amendment (runtime callback Pi parity — RPC roster UNCHANGED, 2026-05-22)
+
+Sprint 6h₅b (Phase 4.15) wires the runtime callback Pi parity surface
+on top of the 6h₅a extension event lifecycle wiring. Closes the
+ADR-0082 §"Sprint 6h₅b carry-forward" subset — `with_session` /
+`setup` 2-stage callbacks on the 3 replace APIs +
+`import_from_jsonl` real body + :meth:`JsonlSessionRepo.fork_from`
+cross-cwd import surface + :meth:`ExtensionRunner.invalidate` runtime
+bridge with :data:`PI_STALENESS_MESSAGE` single source of truth.
+W4/W5 audit returned **3 MAJOR + 2 MINOR (no BLOCKING)** — every
+must-fix applied (P-364 ~ P-368). **RPC roster STAYS CLOSED** at
+SUPPORTED **29** / DEFERRED **0** / total **29** — runtime / extension
+polish does not change the dispatch table.
+
+| Component | Status | Owner ADR |
+|---|---|---|
+| 6h₅b | Phase 4.15 | runtime callback Pi parity (with_session / setup / import_from_jsonl / fork_from / ExtensionRunner.invalidate) | SUPPORTED 29 → **29**, DEFERRED 0 → **0** | ADR-0083, ADR-0084 |
+| `ReplacedSessionContext` Protocol in `runtime/_types.py` (P-356 BINDING — Protocol over `SimpleNamespace` factory output; structural conformance via :data:`typing.runtime_checkable`) | shipped | 0083 |
+| `AgentHarness.create_replaced_session_context` factory (P-357 BINDING — returns :class:`types.SimpleNamespace` Pi `Object.defineProperties` clone idiom; W6 P-364 fix adds optional `runtime` kwarg wiring 6 `ExtensionCommandContext` methods) | shipped | 0083 |
+| `with_session: Callable[[ReplacedSessionContext], Awaitable[None]] \| None = None` plumbed onto `switch_session` / `new_session` / `fork` / `_finish_session_replacement` (P-358 BINDING) | shipped | 0083 |
+| `setup: Callable[[ReadonlySessionManager], Awaitable[None]] \| None = None` in `new_session`; runs AFTER `_apply` BEFORE rebind; rebuilds `harness._state.messages` from `new_session.build_context()` (P-359 BINDING — Pi `:226-229`) | shipped | 0083 |
+| `AgentSessionRuntime.import_from_jsonl` real body — Pi `:329-364` port; replaces Sprint 6h₄c `NotImplementedError` stub; raises :class:`SessionImportFileNotFoundError` for missing path; cancel short-circuit; copy when different; cwd override via :func:`dataclasses.replace`; `assert_session_cwd_exists` after `repo.open`; NO `with_session` plumbing (Pi confirms) (P-360 BINDING) | shipped | 0083 |
+| :class:`SessionImportFileNotFoundError` aligned to Pi `:39-47` verbatim — message `File not found: {file_path}` + `file_path` attribute (W6 P-366 W5 MAJOR fix) | shipped | 0083 |
+| :data:`PI_STALENESS_MESSAGE` constant in `runtime/_types.py` (Pi verbatim from `runner.ts:467`) — single source of truth shared by :meth:`ExtensionRunner.invalidate` and :meth:`_ExtensionRuntime.invalidate` (P-362 BINDING) | shipped | 0083 |
+| :meth:`JsonlSessionRepo.fork_from` cross-cwd import (P-361 BINDING — Pi `session-manager.ts:1353-1394`; loads ALL source entries no leaf truncation; W6 P-368 W5 MINOR fix adds optional `session_dir` keyword arg mirroring Pi 3rd parameter) | shipped | 0083 |
+| :meth:`JsonlSessionRepo.open` `cwd_override` keyword arg (W6 P-367 W5 MINOR fix — replaces `storage._metadata` mutation from outside repo; centralizes Pi `SessionManager.open(path, dir, cwdOverride)` parity on a single owner) | shipped | 0083 |
+| :meth:`ExtensionRunner.invalidate` + `_invalidate_runtime` runtime bridge (P-362 BINDING — SYNTHESIS per spec §J; runner is Pi-named entry point that delegates; runtime is single source of truth; default arg falls back to :data:`PI_STALENESS_MESSAGE`) | shipped | 0083 |
+| :meth:`ExtensionRunner.assert_active` delegates to runtime via bridge (W6 P-365 W5 MAJOR fix — raises plain :class:`RuntimeError` to avoid `aelix_agent_core → aelix_coding_agent` reverse import; :class:`ExtensionError` continues to fire via :meth:`ExtensionContext.__getattribute__`) | shipped | 0083 |
+| `ExtensionRunner` dataclass drops `frozen=True` to allow bridge field rebind by tests (per spec §J SYNTHESIS the runner holds NO `_stale_message` field) (P-362 BINDING) | shipped | 0083 |
+| :meth:`_ExtensionRuntime.invalidate` default arg aligned to :data:`PI_STALENESS_MESSAGE` (P-362 BINDING — bypass-runner callers see SAME message as routed callers) | shipped | 0083 |
+| `runner.invalidate(PI_STALENESS_MESSAGE)` call inserted in `_teardown_current` + `dispose` between EMIT and `before_session_invalidate` (P-363 BINDING — Pi `runner.ts:466-473`) | shipped | 0083 |
+| :class:`ReplacedSessionContext` Protocol widened 13 → 19 members — adds 6 `ExtensionCommandContext` methods (`wait_for_idle` / `new_session` / `fork` / `navigate_tree` / `switch_session` / `reload`) per Pi `extensions/types.ts:371` `extends ExtensionCommandContext` (W6 P-364 W5 MAJOR fix) | shipped | 0083 |
+| `AgentHarness.create_replaced_session_context(runtime=...)` factory wires 6 ExtensionCommandContext methods — harness-side (`wait_for_idle` / `navigate_tree`) + runtime-side (`new_session` / `fork` / `switch_session`) + Aelix-additive stub (`reload`) (W6 P-364 W5 MAJOR fix) | shipped | 0083 |
+| :class:`FileSystem.copy_file` Protocol method + :class:`LocalFileSystem` impl backed by :func:`shutil.copy2` (P-360 supporting infra) | shipped | 0083 |
+| `tests/runtime/test_replaced_session_context.py` (NEW — 8 tests: factory `SimpleNamespace` + Protocol conformance + baseline fields + send_message routing + send_user_message routing + 6 ExtensionCommandContext method exposure + unbound-runtime raise + reload stub) | shipped | 0083 / 0084 |
+| `tests/runtime/test_with_session_callback.py` (NEW — 6 tests: 3 replace APIs accept with_session + bound-to-NEW-harness + raises propagate + runs after rebind) | shipped | 0083 / 0084 |
+| `tests/runtime/test_setup_callback_new_session.py` (NEW — 4 tests: invoked with NEW session_manager + runs before rebind + appends visible in rebuilt messages + optional path) | shipped | 0083 / 0084 |
+| `tests/runtime/test_import_from_jsonl_real.py` (NEW — 6 tests: missing path raises + Pi-verbatim message + same-dir skips copy + cwd override + cancel short-circuits + different-dir copies) | shipped | 0083 / 0084 |
+| `tests/session/test_jsonl_fork_from.py` (NEW — 7 tests: ALL entries no truncation + target cwd matches + parent_session_path + new id/path + round-trip + optional session_dir + default preserved) | shipped | 0083 / 0084 |
+| `tests/harness/test_extension_runner_invalidate.py` (NEW — 9 tests: bridge propagation + default PI_STALENESS_MESSAGE + idempotent + no-bridge no-op + harness wires bridge + runtime default aligned + teardown invokes + dispose invokes + assert_active SYNTHESIS no-op) | shipped | 0083 / 0084 |
+| `tests/extensions/test_extension_runner_emit_delegate.py` (AMEND — frozen=True drop verified per P-362) | shipped | 0083 |
+| `tests/runtime/test_agent_session_runtime.py` (AMEND — `import_from_jsonl` stub coverage migrated to `test_import_from_jsonl_real.py`) | shipped | 0083 |
+| ADR-0034 amendment — Sprint 6h₅b Phase 4.15 row (runtime callback Pi parity; RPC roster UNCHANGED) | shipped | 0034 |
+| ADR-0082 amendment — Sprint 6h₅b carry-forward CLOSE note (5 items CLOSED per ADR-0083) | shipped | 0082 |
+| `session_start` bootstrap emit (`reason="startup"` / `"reload"`; factory pattern change required) | deferred to Sprint 6h₅c | 0084 |
+| Factory bootstrap `assertSessionCwdExists` call site (Pi `:391`) | deferred to Sprint 6h₅c | 0084 |
+| Pi HTML visual fidelity (CSS / syntax highlighting / responsive layout — ADR-0074 carry-forward) | deferred to Sprint 6h₅c | 0084 |
+| `ImageContent` rendering in HTML export (ADR-0074 carry-forward) | deferred to Sprint 6h₅c | 0084 |
+| `_get_context_usage_safe` real implementation (P-282 from ADR-0074) | deferred to Sprint 6h₅c | 0084 |
+| Live `session_id` read via session manager (P-291 from ADR-0074) | deferred to Sprint 6h₅c | 0084 |
+| Pi-source-grep verification tooling (P-286 from ADR-0074) | deferred to Sprint 6h₅c | 0084 |
+
+Sprint 6h₅b closes the runtime callback Pi parity carry-forward
+roster from ADR-0082 (`with_session` / `setup` / `import_from_jsonl`
+body / `forkFrom` cross-cwd + P-351 `ExtensionRunner.invalidate`).
+The closure pin lane sits on the 6 new unit-test files this sprint;
+no new `tests/pi_parity/` closure pin file lands (no new
+`HookEventName` literal, no new RPC commands). **RPC roster STAYS
+CLOSED** — runtime / extension polish does not change the dispatch
+table. Sprint 6h₅c carries forward the bootstrap emit + HTML visual
+fidelity + `_get_context_usage_safe` + `ImageContent` items.
+
 ## Consequences
 
 - Parity audits become reproducible — the W5 audit lane can `git checkout`
