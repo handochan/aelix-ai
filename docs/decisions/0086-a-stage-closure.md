@@ -104,19 +104,33 @@ future planning:
 ### Sprint 6h₅d carry-forward (from ADR-0085)
 
 Visual-polish + grep-tooling items deliberately scoped out of Sprint
-6h₅c per ADR-0085:
+6h₅c per ADR-0085. **Amended Sprint 6h₅d (ADR-0087):** the 3 non-UI
+cleanup rows closed in Sprint 6h₅d are struck through; the `reload()`
+emit branch is re-deferred to Phase 5 with full 5-primitive ledger
+per ADR-0087 §"Deferred items"; UI items stay deferred to Phase 5 /
+B 단계 per user consultation gate.
 
 - ANSI → HTML pipeline (Pi `ansi-to-html.ts`).
 - Tool-renderer per-tool templates (bash / read / write / edit / ls).
 - Client-side JS port (sidebar / tree navigation).
 - Pi color-derivation math (luminance-based theme).
-- `reload()` bootstrap emit branch (`reason="reload"` per Pi
-  `:2401`).
+- ~~`reload()` bootstrap emit branch (`reason="reload"` per Pi `:2401`).~~
+  **Re-deferred to Phase 5 per ADR-0087 §"Deferred items"** — Pi
+  `reload()` requires 5 missing primitives (`settingsManager.reload`,
+  `resetApiProviders`, `_resourceLoader.reload`, `flagValues`
+  round-trip, `_buildRuntime`); porting the emit alone would fire over
+  a session that did NOT actually reload (violates binding principle).
 - Pixel-perfect HTML closure pin tests.
-- P-375 monkeypatch fragility in
-  `tests/test_factory_assert_session_cwd.py`.
-- MINOR-1 f-string assembly polish in `_export_html/format.py`.
-- MINOR-3 `harness._session` private-attribute reads.
+- ~~P-375 monkeypatch fragility in
+  `tests/test_factory_assert_session_cwd.py`.~~ **CLOSED Sprint 6h₅d
+  §C — ADR-0087.**
+- ~~MINOR-1 f-string assembly polish in `_export_html/format.py`.~~
+  **CLOSED Sprint 6h₅d §D — ADR-0087.** File correction:
+  the f-string was in `_export_html/template.py`, not
+  `_export_html/format.py` (W0 P-383).
+- ~~MINOR-3 `harness._session` private-attribute reads.~~ **CLOSED
+  Sprint 6h₅d §E — ADR-0087** (`AgentHarness.session` public property
+  + 6 callsite migrations).
 - Live `session_id` read via session manager (P-291).
 - Pi-source-grep verification tooling (P-286).
 
