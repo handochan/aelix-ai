@@ -542,13 +542,17 @@ async def _handle_set_session_name(
             command="set_session_name",
             error="Session name cannot be empty",
         )
-    if harness._session is None:
+    # Sprint 6h₅d §E (P-384 / MINOR-3): read through
+    # :attr:`AgentHarness.session` and narrow once locally so the
+    # subsequent ``append_session_name`` call needs no second probe.
+    session = harness.session
+    if session is None:
         return RpcErrorResponse(
             id=cmd.id,
             command="set_session_name",
             error="set_session_name() requires options.session to be attached",
         )
-    await harness._session.append_session_name(name)
+    await session.append_session_name(name)
     harness._cached_session_name = name
     return RpcSuccessResponse(id=cmd.id, command="set_session_name")
 

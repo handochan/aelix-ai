@@ -727,6 +727,26 @@ class AgentHarness:
         return self._cached_session_name
 
     @property
+    def session(self) -> Session | None:
+        """Pi parity for ``runtimeHost.session`` (Pi
+        ``agent-session-runtime.ts:83-85``).
+
+        Sprint 6h₅d §E (P-384 / MINOR-3 carry-forward from ADR-0086):
+        replaces 6 ``harness._session`` private reaches across the
+        :class:`AgentSessionRuntime` getters, the factory bootstrap, the
+        ``set_session_name`` RPC handler, and the REPL ``user_bash``
+        path. Re-reads :attr:`_session` per call so rebind-driven
+        replacements propagate to runtime-captured harness references.
+
+        Internal :class:`AgentHarness` code keeps reading
+        :attr:`_session` directly (a class accessing its own private
+        attribute is canonical Python). The property exists for external
+        consumers in the ``runtime`` / ``rpc`` / ``cli`` layers.
+        """
+
+        return self._session
+
+    @property
     def steering_mode(self) -> Literal["all", "one-at-a-time"]:
         """Steering queue mode (Pi parity ``rpc-types.ts:90-103``)."""
 

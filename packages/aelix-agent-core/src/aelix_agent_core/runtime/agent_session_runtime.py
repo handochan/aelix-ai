@@ -238,16 +238,22 @@ class AgentSessionRuntime:
     @property
     def session(self) -> Session | None:
         """Pi parity for ``runtimeHost.session`` (``:83-85``). Read-through
-        to ``self._harness._session`` (P-304).
+        to :attr:`AgentHarness.session` (P-304).
+
+        Sprint 6h₅d §E (P-384 / MINOR-3): migrated from the prior
+        private-attribute reach on the harness's internal session slot to
+        :attr:`AgentHarness.session`. The property body is unchanged —
+        the public accessor returns the same underlying value — but the
+        indirection keeps the runtime layer free of private reaches.
         """
-        return self._harness._session
+        return self._harness.session
 
     @property
     def cwd(self) -> str | None:
         """Pi parity (``:87-89``). Reads through harness session metadata."""
         # Aelix `Session.get_metadata()` is async; expose the cached cwd
         # captured in the harness state if present, else None.
-        session = self._harness._session
+        session = self._harness.session
         if session is None:
             return None
         storage = session.get_storage()
@@ -931,9 +937,13 @@ async def create_agent_session_runtime(
     # tests can monkeypatch via ``monkeypatch.setattr`` on a single
     # binding site (``runtime.agent_session_runtime``) without relying on
     # the prior function-local re-resolution of ``session.session_cwd``.
-    if harness._session is not None:
+    #
+    # Sprint 6h₅d §E (P-384 / MINOR-3): read through
+    # :attr:`AgentHarness.session` instead of the private attribute.
+    harness_session = harness.session
+    if harness_session is not None:
         await assert_session_cwd_exists(
-            harness._session, fallback_cwd=None, fs=fs
+            harness_session, fallback_cwd=None, fs=fs
         )
 
     runtime = AgentSessionRuntime(

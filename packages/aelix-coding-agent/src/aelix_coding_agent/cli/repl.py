@@ -61,9 +61,12 @@ async def handle_user_bash(
         chunks: list[bytes] = []
         await ops.exec(command, cwd, on_data=chunks.append, signal=None)
         output = b"".join(chunks).decode("utf-8", errors="replace")
-    if not exclude_from_context and harness._session is not None:
+    # Sprint 6h₅d §E (P-384 / MINOR-3): read through
+    # :attr:`AgentHarness.session` and narrow once locally.
+    session = harness.session
+    if not exclude_from_context and session is not None:
         with contextlib.suppress(Exception):
-            await harness._session.append_custom_entry(
+            await session.append_custom_entry(
                 custom_type="bash_execution",
                 data={"command": command, "output": output},
             )
