@@ -1,0 +1,57 @@
+{
+  "pi_sha": "734e08edf82ff315bc3d96472a6ebfa69a1d8016",
+  "sprint": "6h_4_c",
+  "phase": "4.13",
+  "closure": true,
+  "closure_supported": 29,
+  "closure_deferred": 0,
+  "closure_total": 29,
+  "pi_handler_lines": {
+    "switch_session": "563-569",
+    "fork": "571-577",
+    "clone": "579-589",
+    "new_session": "277-282"
+  },
+  "pi_runtime_method_lines": {
+    "switch_session": "175-198",
+    "new_session": "200-232",
+    "fork": "234-320",
+    "import_from_jsonl": "329-364"
+  },
+  "wire_shapes": {
+    "switch_session": {"cancelled": "bool"},
+    "fork_with_text": {"text": "str", "cancelled": "bool"},
+    "fork_text_omitted": {"cancelled": "bool"},
+    "clone": {"cancelled": "bool"},
+    "new_session": {"cancelled": "bool"}
+  },
+  "command_count_arithmetic": {
+    "before_sprint_6h_4_c": "26 supported / 3 deferred / 29 total",
+    "after_sprint_6h_4_c": "29 supported / 0 deferred / 29 total",
+    "supported_added": ["switch_session", "fork", "clone"],
+    "supported_arity_changed": ["new_session"],
+    "deferred_removed": ["switch_session", "fork", "clone"]
+  },
+  "aelix_drops_in_memory_fork": true,
+  "aelix_persisted_only_via_jsonl_repo": true,
+  "handler_side_rebind": "deliberate-convergence-runtime-owns",
+  "p_323_line_drift_note": "ADR-0076 estimated :566/:574/:586 (3-line stub citations). W0 verified at SHA 734e08e: actual case sites are :563-569/:571-577/:579-589 — supersedes ADR-0078 carry-forward roster lines 67-78.",
+  "p_325_synthesis_note": "Pi fork has 3 branches (top + persisted + in-memory). Aelix is persisted-only — the in-memory branch (Pi :303-319) is dropped. Both Pi persisted sub-branches (root fork vs mid-tree at :268-282/:284-300) reduce in Aelix to a single call: repo.fork(source_metadata, ForkOptions(cwd, entry_id=target_leaf_id, position='at', parent_session_path=metadata.path)).",
+  "p_329_synthesis_note": "Pi rpc-mode.ts handlers call `await rebindSession()` after success (:565-567/:573-575/:585-587). Pi runtime.finishSessionReplacement ALSO awaits rebind — Pi rebinds 2x per replace. Aelix runtime.finishSessionReplacement (agent_session_runtime.py:196-209) auto-invokes the registered callback. Aelix handlers MUST NOT call rebind manually — closure pin asserts _rebind_session is awaited 1x per replace.",
+  "p_330_synthesis_note": "Sprint 6d _handle_new_session at rpc_mode.py:309-347 rejected parent_session via RpcErrorResponse('parent_session lineage tracking deferred to Sprint 6f (ADR-0058)'). Sprint 6h₄c replaces with runtime_host.new_session(parent_session=...) — ADR-0058 carry-forward closes.",
+  "p_331_apply_for_test_removed": true,
+  "deferred_to_sprint_6h_5": [
+    "import_from_jsonl real body (no RPC wire surface today)",
+    "commandContextActions in rebind_session closure",
+    "P-307 session_shutdown extension event emit",
+    "P-308 real session_before_switch / session_before_fork hook events",
+    "P-314 with_session 2-stage callback",
+    "P-315 optional-cb signatures",
+    "assertSessionCwdExists Pi parity",
+    "previousSessionFile / sessionStartEvent tracking",
+    "Pi forkFrom cross-cwd import"
+  ],
+  "explicitly_dropped_from_carry_forward": {
+    "P-313": "HarnessFactory 4-field refresh — NOT NEEDED (harness rebuild encapsulates services/diagnostics/model_fallback_message inside the new harness construction via factory closure carrying the application's template options)"
+  }
+}
