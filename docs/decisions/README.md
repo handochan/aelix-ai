@@ -11,6 +11,27 @@
 - `Deprecated`: 폐기되었지만 역사적 맥락 때문에 보존
 - `Superseded`: 다른 ADR로 대체됨 (`Superseded by:` 명시)
 
+## A 단계 closure milestone (Sprint 6h₅c / Phase 4.16 / 2026-05-22)
+
+**A 단계 (Phase 4 strict Pi-parity superset) CLOSED end-to-end.** Every
+binding carry-forward item enumerated across the 6a → 6h₅c sprint chain
+has a paired delivering sprint + owner ADR (see **ADR-0086 §"A 단계
+closure ledger"** for the 14-row delivery mapping). The Phase 4 RPC
+discriminator union is fully wired at SUPPORTED **29** / DEFERRED **0**
+/ total **29**; the 4 extension session lifecycle events emit Pi-parity
+end-to-end; the 3 runtime callback surfaces (`with_session` / `setup` /
+`forkFrom`) ship; the HTML emitter renders with full visual fidelity +
+inline image data URIs; and :meth:`AgentHarness._get_context_usage_safe`
+returns Pi-shape results both at the harness level and through the
+extension-context sync bridge.
+
+**B 단계 (next phase) candidate scope** — Phase 5 CLI / runner-mode
++ image-models parallel registry + typed `Model.compat` discriminated
+union + `enableGitHubCopilotModel` POST automation +
+`Model.knowledgeCutoff` / `releaseDate` Pi-untyped fields. ADR-0087+
+formally opens B 단계 when the next sprint chain begins. Pi pin
+advances permitted starting B 단계 per ADR-0034 update policy.
+
 ## Index
 
 | #    | Title                                                                                                                                                  | Status                              | 한 줄 결정                                                                                                                                          |
@@ -98,6 +119,58 @@
 | 0082 | [Phase 4.14 Strict Superset Closure + 6h₅b/6h₅c Carry-Forward](0082-phase-4-14-extension-events-closure.md)                                              | Accepted (Sprint 6h₅a / Phase 4.14 / W6 shipped)                    | Phase 4.14 closure — P-332~P-355 roster + closure pin (`tests/pi_parity/test_phase_4_14_extension_events.py`) + **29 supported / 0 deferred / 29 total** UNCHANGED (extension polish doesn't change RPC roster) + 35-name `HookEventName` cascade + 35-overload count + shared `_reducer_session_before` across 4 cancellable events + Pi line citation drift detector + cancel-aggregation first-cancel-wins + exception isolation under `error_mode="continue"` + reducer return-type union widened + dispose ordering pin (P-355 — `dispose` and `_teardown_current` share **EMIT → INVALIDATE → DISPOSE**) + switch_session assert-before-emit ordering pin (W4 MEDIUM — Pi `:184-189`) + `SessionBeforeForkResult` field-shape pin (P-345 — `{cancel, skip_conversation_restore}`) + Pi-verbatim error/prompt format pins (P-346 / P-347). **6h₅b carry-forward** (CLOSED per ADR-0083 / 0084): `with_session` / `setup` callbacks + `forkFrom` cross-cwd + `import_from_jsonl` body + P-351 ExtensionRunner.invalidate. **6h₅c carry-forward**: HTML visual fidelity + `_get_context_usage_safe` + live `session_id` + `ImageContent` + bootstrap `session_start` + factory bootstrap `assertSessionCwdExists`. **Phase 4 RPC STAYS CLOSED**. |
 | 0083 | [Runtime callback Pi parity (`with_session` / `setup` / `import_from_jsonl` / `fork_from` / `ExtensionRunner.invalidate` + W5 P-364~P-368 fixes)](0083-runtime-callback-pi-parity.md) | Accepted (Sprint 6h₅b / Phase 4.15 / W6 shipped)                    | Pi parity wiring of runtime callback surface on top of the 6h₅a extension event lifecycle wiring. P-356~P-363 roster + `ReplacedSessionContext` Protocol (P-356 — Protocol over `SimpleNamespace`, runtime_checkable) + `create_replaced_session_context` factory (P-357) + `with_session` 2-stage callback plumbed onto 3 replace APIs + `_finish_session_replacement` (P-358) + `setup` callback in `new_session` AFTER apply BEFORE rebind + message rebuild (P-359) + `import_from_jsonl` real body replacing 6h₄c stub (P-360 — Pi `:329-364`) + `JsonlSessionRepo.fork_from` cross-cwd import (P-361 — Pi `session-manager.ts:1353-1394`) + `ExtensionRunner.invalidate` + `_invalidate_runtime` runtime bridge (P-362 SYNTHESIS per spec §J — runner is Pi-named entry point delegating; runtime is single source of truth) + `runner.invalidate` calls in teardown/dispose between EMIT and `before_session_invalidate` (P-363) + `PI_STALENESS_MESSAGE` Pi verbatim constant shared across both packages. W4/W5 audit triage: P-364 `ReplacedSessionContext` Protocol extended with 6 `ExtensionCommandContext` methods (Pi `:371` extends) + factory `runtime` kwarg threading the 3 runtime commands + P-365 `assert_active` reads through bridge raising `RuntimeError` (avoids reverse import) + P-366 `SessionImportFileNotFoundError` Pi-verbatim `File not found: {file_path}` + `file_path` attr (Pi `:39-47`) + P-367 `JsonlSessionRepo.open(cwd_override=)` repo seam replaces `storage._metadata` mutation + P-368 `fork_from(session_dir=)` optional Pi 3rd parameter. |
 | 0084 | [Phase 4.15 Strict Superset Closure + 6h₅c Carry-Forward](0084-sprint-6h5b-closure.md)                                                                    | Accepted (Sprint 6h₅b / Phase 4.15 / W6 shipped)                    | Phase 4.15 closure — P-356~P-368 roster + 6 new unit test files lock the runtime callback Pi parity invariants (Protocol conformance + `with_session` ordering + `setup` ordering + `import_from_jsonl` cancel/copy/cwd-override paths + `fork_from` ALL-entries no-truncation + `ExtensionRunner.invalidate` bridge propagation + `assert_active` SYNTHESIS no-op + Pi-verbatim error format + `file_path` attr) + **29 supported / 0 deferred / 29 total** UNCHANGED (runtime / extension polish doesn't change RPC roster) + `ReplacedSessionContext` Protocol widened 13 → 19 members (P-364 W6 — adds 6 `ExtensionCommandContext` methods per Pi `:371`). ADR-0082 §"Sprint 6h₅b carry-forward" CLOSED (5 binding + 1 W2-already-shipped item). **6h₅c carry-forward**: HTML visual fidelity + `ImageContent` rendering + `_get_context_usage_safe` real impl + live `session_id` + Pi-source-grep tooling + bootstrap `session_start` (factory pattern change required) + factory bootstrap `assertSessionCwdExists`. **Phase 4 RPC STAYS CLOSED**. |
+| 0085 | [Phase 4.16 Visual Fidelity + Context Usage + Bootstrap session_start + Factory cwd + ImageContent](0085-phase-4-16-visual-fidelity-and-closure.md)         | Accepted (Sprint 6h₅c / Phase 4.16 / W6 shipped)                    | Pi parity port closing the 5 binding carry-forward items from ADR-0084 §"Sprint 6h₅c carry-forward" — P-369~P-373 + W4/W5 audit triage (P-374 MAJOR + W4 MEDIUM + P-377 MINOR + W4 NIT). 4 Pi-parity helpers in `session/compaction.py` (`calculate_context_tokens` / `estimate_tokens` / `estimate_context_tokens` / `get_latest_compaction_entry`) + :class:`ThinkingContent` branch in `estimate_tokens` (W4 MEDIUM) + :meth:`AgentHarness._get_context_usage_safe` real async impl over Pi `compaction.ts:135-279` + `agent-session.ts:2946-2990` (P-369) + `_ExtensionContext.get_context_usage` real sync bridge via heuristic estimate path (P-374 W5 MAJOR fix replaces Sprint 5a `return None` stub) + module-level :func:`create_agent_session_runtime` async factory with bootstrap `session_start(reason="startup")` emit + factory-bootstrap `assert_session_cwd_exists` site (P-370 + P-371 — Pi `:391` + `:326` + `:2050`) + `_export_html/` directory restructure with Pygments + markdown-it-py + curated dark theme (P-372 — replaces Sprint 6h₃ single-file minimal renderer) + :class:`ImageContent` inline base64 `<img>` rendering (P-373) + strict Pi `tool-image` class literal (P-377 W5 MINOR fix — drop W2 combined `message-image tool-image`). 4 new test files (`tests/harness/test_context_usage.py` + `tests/test_factory_assert_session_cwd.py` + `tests/test_bootstrap_session_start.py` + `tests/test_export_html_visual_fidelity.py`). RPC roster STAYS CLOSED at 29 / 0 / 29. |
+| 0086 | [A 단계 Closure — Phase 4 RPC + Extension Events + Runtime Callbacks + Visual Fidelity COMPLETE](0086-a-stage-closure.md)                                  | Accepted (Sprint 6h₅c / Phase 4.16 / W6 shipped — **A 단계 CLOSED**) | A 단계 closure milestone — 14-row delivery ledger pairs every binding carry-forward item from ADR-0080 + ADR-0082 + ADR-0084 with a delivering sprint + owner ADR across the 6a → 6h₅c sprint chain. Phase 4 RPC roster CLOSED at 29 / 0 / 29 (ADR-0080 / Sprint 6h₄c) + 35-name `HookEventName` cascade preserved (Sprint 6h₅a widening; subsequent sprints unchanged) + 35-overload `HookBus.on` / `ExtensionAPI.on` count preserved + `ReplacedSessionContext` Protocol at 19 members (Sprint 6h₅b P-364) + `PI_STALENESS_MESSAGE` Pi-verbatim single source of truth + uniform **EMIT → INVALIDATE → DISPOSE** ordering in `_teardown_current` AND `dispose` (Sprint 6h₅a P-355 W5 BLOCKING correction). B 단계 (next phase) candidate scope enumerated (Phase 5 CLI + image-models parallel registry + typed `Model.compat` discriminated union + `enableGitHubCopilotModel` POST automation + `Model.knowledgeCutoff`/`releaseDate` Pi-untyped fields). Sprint 6h₅d carry-forward scoped to visual polish + grep tooling + minor cleanups (no RPC dispatch impact). Pi pin advances permitted starting B 단계 per ADR-0034 update policy. **Phase 4 RPC STAYS CLOSED**. |
+
+### Sprint 6h₅c sub-table (Phase 4.16 closure — visual fidelity + context_usage + bootstrap session_start + factory cwd + ImageContent — **A 단계 CLOSED**; **RPC roster STAYS CLOSED**)
+
+Counts UNCHANGED at **29 supported / 0 deferred / 29 total**. Runtime
+/ visual polish doesn't change the dispatch table. ADR-0084
+§"Sprint 6h₅c carry-forward" CLOSES per ADR-0085 (5 binding items).
+W4/W5 audit returned **0 CRITICAL / 0 HIGH / 1 MAJOR + 1 MEDIUM + 3
+MINOR + 1 NIT** — every load-bearing must-fix landed in W6 closure
+(P-374 W5 MAJOR + W4 MEDIUM + P-377 W5 MINOR + W4 NIT). The closure
+pin lane sits on the 4 new unit-test files this sprint (no new
+`tests/pi_parity/` closure pin file lands — no new `HookEventName`
+literal, no new RPC commands). **A 단계 (Phase 4 strict Pi-parity
+superset) CLOSED end-to-end** — ADR-0086 records the full 14-row
+delivery ledger across the 6a → 6h₅c sprint chain.
+
+| Item | Status | Owner ADR |
+|---|---|---|
+| `session/compaction.py` 4 Pi-parity helpers — `calculate_context_tokens` / `estimate_tokens` / `estimate_context_tokens` / `get_latest_compaction_entry` (P-369 BINDING — Pi `compaction.ts:135-279`) | shipped | 0085 |
+| `estimate_tokens` :class:`ThinkingContent` branch BEFORE catch-all (W4 MEDIUM fix — Pi treats every content block uniformly; W2 catch-all `hasattr(block, "text")` missed `block.thinking`; thinking blocks silently contributed zero tokens to estimates) | shipped | 0085 |
+| `AgentHarness._get_context_usage_safe` real async impl (P-369 BINDING — Pi `agent-session.ts:2946-2990` `getContextUsage`); 4-branch logic (no-model → None / no-session → heuristic / compaction-no-usage → sentinel / default → full triple); method becomes `async` because `Session.get_branch` is async in Aelix (Pi's `getBranch()` is sync); 3 callers updated with `await` | shipped | 0085 |
+| `_ExtensionContext.get_context_usage` real sync bridge (W6 P-374 W5 MAJOR fix — W2 left Sprint 5a `return None` stub even after P-369 landed; bridge uses heuristic estimate path inline because Pi's `getContextUsage` returns sync; full async algorithm reachable via async harness method — Aelix-additive divergence #3 per ADR-0085) | shipped | 0085 |
+| `runtime/agent_session_runtime.py` module-level :func:`create_agent_session_runtime` async factory (P-370 BINDING — Pi `agent-session-runtime.ts:382-400`) | shipped | 0085 |
+| Factory bootstrap `assert_session_cwd_exists` site (P-370 BINDING — Pi `:391`; runs against `harness._session` BEFORE :class:`AgentSessionRuntime` construction; skipped silently when `harness._session is None` for in-memory tests) | shipped | 0085 |
+| Factory bootstrap `session_start(reason="startup")` emit (P-371 BINDING — Pi `:326` + `:2050`; optional `session_start_event=None` kwarg mirrors Pi `??` default; gated on `ExtensionRunner.has_handlers`; raises caught + logged matching :meth:`_finish_session_replacement` P-343 emit policy; `reload` branch defers to Sprint 6h₅d) | shipped | 0085 |
+| `runtime/__init__.py` re-exports :func:`create_agent_session_runtime` | shipped | 0085 |
+| `_export_html/` directory restructure (P-372 BINDING — Pi `coding-agent/src/core/export-html/`); 3-module package: `__init__.py` (re-exports `export_html`) + `template.py` (`_THEME_CSS` curated ~240 LOC dark theme + Pygments token classes via `HtmlFormatter.get_style_defs(".pyg")` + `_HTML_TEMPLATE` HTML5 skeleton) + `format.py` (renderer pipeline: markdown-it-py commonmark + table + breaks; Pygments fenced code hook; role-section dispatch; content-block renderer) | shipped | 0085 |
+| `_export_html.py` single-file Sprint 6h₃ minimal renderer DELETED (replaced by 3-module package) | shipped | 0085 |
+| `pygments>=2.18` + `markdown-it-py>=3.0` added to `packages/aelix-coding-agent/pyproject.toml` (P-372 supporting infra) | shipped | 0085 |
+| :class:`ImageContent` HTML rendering (P-373 BINDING) — inline base64 `<img>` tag with `data:{mime};base64,{data}` URI mirroring Pi `template.js:909`; non-tool-result variant `class="message-image"`; CSS `.message-image { max-width: 100%; max-height: 400px; }` + `.tool-image { max-height: 500px; }` | shipped | 0085 |
+| Strict Pi `tool-image` class literal (W6 P-377 W5 MINOR fix — Pi `template.js:909` uses `class="tool-image"` ONLY for tool-result images; W2 emitted combined `class="message-image tool-image"`; W6 emits literal `"tool-image"` byte-for-byte) | shipped | 0085 |
+| W4 NIT — dead code drop in `tests/harness/test_context_usage.py` (`chars_tool = msg_tool.content[0]; _ = chars_tool` removed) | shipped | 0085 |
+| `tests/harness/test_context_usage.py` (NEW — 9 tests: ThinkingContent branch + `_ExtensionContext.get_context_usage` real-bridge tests + Pi-shape helper assertions) | shipped | 0085 |
+| `tests/harness/test_harness_get_session_stats.py` (AMEND — async `_get_context_usage_safe` migration) | shipped | 0085 |
+| `tests/test_factory_assert_session_cwd.py` (NEW — 3 tests: cwd-assertion fires BEFORE construction + skips when no session + uses harness session for cwd) | shipped | 0085 |
+| `tests/test_bootstrap_session_start.py` (NEW — 5 tests: factory emits with `reason="startup"` + custom event override + skip-when-no-handlers + replacement uses `reason="new"`/`"resume"` regression + bootstrap runs after construction) | shipped | 0085 |
+| `tests/test_export_html_visual_fidelity.py` (NEW — 7 tests: base64 img tag + Pi-strict tool-image class + XSS-safe escape + markdown paragraph + Pygments token classes + unknown-lang fallback + theme CSS includes Pygments styles) | shipped | 0085 |
+| **A 단계 closure ledger** (ADR-0086 — 14-row delivery mapping across 6a → 6h₅c) | shipped | 0086 |
+| ADR-0034 amendment — Sprint 6h₅c Phase 4.16 row (visual fidelity + context_usage + bootstrap + cwd + ImageContent; RPC roster UNCHANGED; **A 단계 closure milestone**) | shipped | 0034 |
+| ADR-0084 amendment — Sprint 6h₅c carry-forward CLOSE note (5 items CLOSED per ADR-0085 / ADR-0086) | shipped | 0084 |
+| ANSI → HTML pipeline (Pi `ansi-to-html.ts`) | deferred to Sprint 6h₅d | 0085 |
+| Tool-renderer per-tool templates (bash / read / write / edit / ls) | deferred to Sprint 6h₅d | 0085 |
+| Client-side JS port (sidebar / tree navigation) | deferred to Sprint 6h₅d | 0085 |
+| Pi color-derivation math (luminance-based theme) | deferred to Sprint 6h₅d | 0085 |
+| `reload()` bootstrap emit branch (Pi `:2401` — `reason="reload"`) | deferred to Sprint 6h₅d | 0085 |
+| Pixel-perfect HTML closure pin tests | deferred to Sprint 6h₅d | 0085 |
+| P-375 monkeypatch fragility in `tests/test_factory_assert_session_cwd.py` (replace runtime attribute monkeypatch with proper test seam) | deferred to Sprint 6h₅d | 0085 |
+| MINOR-1 f-string assembly polish in `_export_html/format.py` | deferred to Sprint 6h₅d | 0085 |
+| MINOR-3 `harness._session` private-attribute reads (introduce read-through property or factory accessor) | deferred to Sprint 6h₅d | 0085 |
+| Live `session_id` read via session manager (P-291 from ADR-0074) | deferred to Sprint 6h₅d | 0085 |
+| Pi-source-grep verification tooling (P-286 from ADR-0074) | deferred to Sprint 6h₅d | 0085 |
 
 ### Sprint 6h₅a sub-table (Phase 4.14 closure — extension event Pi parity wired; **RPC roster STAYS CLOSED**)
 

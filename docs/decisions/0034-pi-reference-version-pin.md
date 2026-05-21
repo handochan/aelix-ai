@@ -671,6 +671,72 @@ CLOSED** — runtime / extension polish does not change the dispatch
 table. Sprint 6h₅c carries forward the bootstrap emit + HTML visual
 fidelity + `_get_context_usage_safe` + `ImageContent` items.
 
+### Sprint 6h₅c amendment (visual fidelity + context_usage + bootstrap session_start + factory cwd + ImageContent — A 단계 closure, 2026-05-22)
+
+Sprint 6h₅c (Phase 4.16) closes the 5 binding carry-forward items
+from ADR-0084 §"Sprint 6h₅c carry-forward" end-to-end:
+:meth:`AgentHarness._get_context_usage_safe` real async impl over Pi
+`compaction.ts:135-279` + `agent-session.ts:2946-2990`, module-level
+:func:`create_agent_session_runtime` factory with bootstrap
+`session_start(reason="startup")` emit + factory-bootstrap
+:func:`assert_session_cwd_exists` site (Pi `:391`), `_export_html/`
+directory restructure with Pygments + markdown-it-py syntax
+highlighting + curated dark theme, and :class:`ImageContent` inline
+base64 `<img>` rendering per Pi `template.js:909`. W4/W5 audit
+returned **1 MAJOR + 1 MEDIUM + 3 MINOR + 1 NIT** — every load-bearing
+must-fix landed in W6 closure (P-374 + W4 MEDIUM + P-377 + W4 NIT).
+**RPC roster STAYS CLOSED** at SUPPORTED **29** / DEFERRED **0** /
+total **29** — runtime / visual polish does not change the dispatch
+table. **A 단계 (Phase 4 strict Pi-parity superset) CLOSED** — see
+ADR-0086 for the full delivery ledger.
+
+| Component | Status | Owner ADR |
+|---|---|---|
+| 6h₅c | Phase 4.16 | visual fidelity + context_usage real + bootstrap session_start + factory cwd + ImageContent | SUPPORTED 29 → **29**, DEFERRED 0 → **0** | ADR-0085, ADR-0086 |
+| `session/compaction.py` 4 Pi-parity helpers — `calculate_context_tokens` / `estimate_tokens` / `estimate_context_tokens` / `get_latest_compaction_entry` (P-369 BINDING — Pi `compaction.ts:135-279`) | shipped | 0085 |
+| `estimate_tokens` :class:`ThinkingContent` branch BEFORE catch-all (W4 MEDIUM fix — Pi treats every content block uniformly; W2 catch-all `hasattr(block, "text")` missed `block.thinking`) | shipped | 0085 |
+| `AgentHarness._get_context_usage_safe` real async impl — full Pi `getContextUsage` algorithm (Pi `agent-session.ts:2946-2990`); 4-branch logic (no-model → None / no-session → heuristic / compaction-no-usage → sentinel / default → full triple); 3 callers updated with `await` (P-369 BINDING) | shipped | 0085 |
+| `_ExtensionContext.get_context_usage` real sync bridge via heuristic estimate path (W6 P-374 W5 MAJOR fix — W2 left Sprint 5a `return None` stub; bridge stays sync because Pi `getContextUsage` returns sync; full async algorithm reachable via async harness method — Aelix-additive divergence #3 per ADR-0085) | shipped | 0085 |
+| `runtime/agent_session_runtime.py` module-level :func:`create_agent_session_runtime` async factory (P-370 BINDING — Pi `agent-session-runtime.ts:382-400`) | shipped | 0085 |
+| Factory bootstrap `assert_session_cwd_exists` site (P-370 BINDING — Pi `:391`; runs against `harness._session` BEFORE :class:`AgentSessionRuntime` construction; skipped silently when `harness._session is None` for in-memory tests) | shipped | 0085 |
+| Factory bootstrap `session_start(reason="startup")` emit (P-371 BINDING — Pi `:326` + `:2050`; optional `session_start_event=None` kwarg mirrors Pi `??` default; gated on `ExtensionRunner.has_handlers`; raises caught + logged matching :meth:`_finish_session_replacement` P-343 emit policy) | shipped | 0085 |
+| `runtime/__init__.py` re-exports :func:`create_agent_session_runtime` | shipped | 0085 |
+| `_export_html/` directory restructure — `__init__.py` (re-exports :func:`export_html`) + `template.py` (`_THEME_CSS` constant ~240 LOC curated dark theme + Pygments token classes via `HtmlFormatter.get_style_defs(".pyg")` + `_HTML_TEMPLATE` HTML5 skeleton) + `format.py` (renderer pipeline: markdown-it-py commonmark + table + breaks; Pygments fenced code highlight; role-section dispatch; content-block renderer) (P-372 BINDING — Pi `coding-agent/src/core/export-html/`) | shipped | 0085 |
+| `_export_html.py` single-file Sprint 6h₃ minimal renderer DELETED (replaced by 3-module package) | shipped | 0085 |
+| `pygments>=2.18` + `markdown-it-py>=3.0` added to `packages/aelix-coding-agent/pyproject.toml` (P-372 supporting infra) | shipped | 0085 |
+| :class:`ImageContent` HTML rendering — inline base64 `<img>` tag with `data:{mime};base64,{data}` URI mirroring Pi `template.js:909`; non-tool-result variant `class="message-image"`; tool-result variant `class="tool-image"` ONLY (Pi strict literal per P-377) (P-373 BINDING) | shipped | 0085 |
+| Strict Pi `tool-image` class literal (W6 P-377 W5 MINOR fix — Pi `template.js:909` uses `class="tool-image"` ONLY for tool-result images; W2 emitted combined `class="message-image tool-image"`; W6 emits literal `"tool-image"` byte-for-byte) | shipped | 0085 |
+| W4 NIT — dead code drop in `tests/harness/test_context_usage.py` (`chars_tool = msg_tool.content[0]; _ = chars_tool` removed) | shipped | 0085 |
+| `tests/harness/test_context_usage.py` (NEW — 9 tests: ThinkingContent branch + `_ExtensionContext.get_context_usage` real-bridge tests + Pi-shape helper assertions) | shipped | 0085 |
+| `tests/harness/test_harness_get_session_stats.py` (AMEND — async `_get_context_usage_safe` migration) | shipped | 0085 |
+| `tests/test_factory_assert_session_cwd.py` (NEW — 3 tests: cwd-assertion fires BEFORE construction + skips when no session + uses harness session for cwd) | shipped | 0085 |
+| `tests/test_bootstrap_session_start.py` (NEW — 5 tests: factory emits with `reason="startup"` + custom event override + skip-when-no-handlers + replacement uses `reason="new"`/`"resume"` regression + bootstrap runs after construction) | shipped | 0085 |
+| `tests/test_export_html_visual_fidelity.py` (NEW — 7 tests: base64 img tag + Pi-strict tool-image class + XSS-safe escape + markdown paragraph + Pygments token classes + unknown-lang fallback + theme CSS includes Pygments styles) | shipped | 0085 |
+| ADR-0034 amendment — Sprint 6h₅c Phase 4.16 row (visual fidelity + context_usage + bootstrap + cwd + ImageContent; RPC roster UNCHANGED; **A 단계 closure milestone**) | shipped | 0034 |
+| ADR-0084 amendment — Sprint 6h₅c carry-forward CLOSE note (5 items CLOSED per ADR-0085 / ADR-0086) | shipped | 0084 |
+| ANSI → HTML pipeline (Pi `ansi-to-html.ts`) | deferred to Sprint 6h₅d | 0085 |
+| Tool-renderer per-tool templates (bash / read / write / edit / ls) | deferred to Sprint 6h₅d | 0085 |
+| Client-side JS port (sidebar / tree navigation) | deferred to Sprint 6h₅d | 0085 |
+| Pi color-derivation math (luminance-based theme) | deferred to Sprint 6h₅d | 0085 |
+| `reload()` bootstrap emit branch (Pi `:2401` — `reason="reload"`) | deferred to Sprint 6h₅d | 0085 |
+| Pixel-perfect HTML closure pin tests | deferred to Sprint 6h₅d | 0085 |
+| P-375 monkeypatch fragility in `tests/test_factory_assert_session_cwd.py` | deferred to Sprint 6h₅d | 0085 |
+| MINOR-1 f-string assembly polish in `_export_html/format.py` | deferred to Sprint 6h₅d | 0085 |
+| MINOR-3 `harness._session` private-attribute reads (read-through property or factory accessor) | deferred to Sprint 6h₅d | 0085 |
+| Live `session_id` read via session manager (P-291 from ADR-0074) | deferred to Sprint 6h₅d | 0085 |
+| Pi-source-grep verification tooling (P-286 from ADR-0074) | deferred to Sprint 6h₅d | 0085 |
+
+Sprint 6h₅c closes ALL 5 binding carry-forward items from ADR-0084
+§"Sprint 6h₅c carry-forward" + applies every load-bearing W4/W5
+audit triage item. The closure pin lane sits on the 4 new unit-test
+files this sprint (no new `tests/pi_parity/` closure pin file lands —
+no new `HookEventName` literal, no new RPC commands). **RPC roster
+STAYS CLOSED** — runtime / visual polish does not change the
+dispatch table. **A 단계 (Phase 4 strict Pi-parity superset) CLOSED**
+— ADR-0086 records the full 14-row delivery ledger across the
+6a → 6h₅c sprint chain. Sprint 6h₅d carries forward visual polish
++ grep tooling + minor cleanups (no RPC dispatch impact).
+
 ## Consequences
 
 - Parity audits become reproducible — the W5 audit lane can `git checkout`

@@ -107,6 +107,15 @@ the closure:
 
 ### Sprint 6h₅c carry-forward (Pi parity items still open)
 
+> **Sprint 6h₅c update (2026-05-22)** — ALL 5 binding items below are
+> **CLOSED** per ADR-0085 (Sprint 6h₅c Phase 4.16 sibling) + ADR-0086
+> (A 단계 closure). The 2 lower-priority items (live `session_id` +
+> Pi-source-grep tooling) remain as carry-forward to Sprint 6h₅d.
+> **A 단계 (Phase 4 strict Pi-parity superset) CLOSED** end-to-end —
+> see ADR-0086 §"A 단계 closure ledger" for the full 14-row delivery
+> mapping across the 6a → 6h₅c sprint chain. Phase 4 RPC roster STAYS
+> CLOSED at 29 / 0 / 29.
+
 The remaining Sprint 6h₅+ carry-forward roster from ADR-0082 splits
 into Sprint 6h₅c (the next sprint). **None of these items touch the
 RPC dispatch table** — they surface via HTML emitter polish, context
@@ -114,30 +123,52 @@ usage tracking, factory bootstrap integration, or TUI commands.
 
 **Sprint 6h₅c — bootstrap + HTML / context polish:**
 
-- **`session_start` bootstrap emit** (Pi `reason="startup"` /
-  `"reload"`). Pi emits `session_start` at factory bootstrap; Aelix's
-  factory pattern (P-302) constructs the harness before the HookBus
-  bridge is wired. Factory pattern change required to emit at
-  bootstrap.
-- **Factory bootstrap `assertSessionCwdExists` call site** (Pi
-  `:391`). Aelix factory pattern is different; pair with the
-  bootstrap session_start work.
-- **`importFromJsonl` `assertSessionCwdExists` call site** (Pi
-  `:352`). Sprint 6h₅b's `import_from_jsonl` body DOES wire
-  :func:`assert_session_cwd_exists` (matches Pi `:352`); confirm
-  with the closure pin once Sprint 6h₅c lands the bootstrap
-  variant.
-- **Pi HTML visual fidelity** (CSS framework, syntax highlighting,
-  responsive layout) — carry-forward from ADR-0074.
-- **`ImageContent` rendering in HTML export** — carry-forward from
-  ADR-0074.
-- **`_get_context_usage_safe` real implementation** (P-282 — model
+- ✅ **`session_start` bootstrap emit** (Pi `reason="startup"` /
+  `"reload"`). **CLOSED per ADR-0085 P-371** —
+  :func:`create_agent_session_runtime` module-level async factory
+  emits `SessionStartHookEvent(reason="startup")` at bootstrap
+  matching Pi `:326` + `:2050`. The `reload` branch (Pi `:2401`)
+  defers to Sprint 6h₅d when Aelix grows a `reload()` primitive.
+- ✅ **Factory bootstrap `assertSessionCwdExists` call site** (Pi
+  `:391`). **CLOSED per ADR-0085 P-370** — :func:`create_agent_session_runtime`
+  factory runs :func:`assert_session_cwd_exists` against
+  `harness._session` BEFORE :class:`AgentSessionRuntime`
+  construction, matching Pi line `:391`. Skipped silently when
+  `harness._session is None` (in-memory factory invocation, e.g.
+  tests).
+- ✅ **`importFromJsonl` `assertSessionCwdExists` call site** (Pi
+  `:352`). **CONFIRMED CLOSED** — Sprint 6h₅b's `import_from_jsonl`
+  body wired :func:`assert_session_cwd_exists` after `repo.open`
+  matching Pi `:352`; Sprint 6h₅c bootstrap-site wiring (Pi `:391`)
+  + the factory closure pin tests confirm both sites match Pi.
+- ✅ **Pi HTML visual fidelity** (CSS framework, syntax highlighting,
+  responsive layout) — carry-forward from ADR-0074. **CLOSED per
+  ADR-0085 P-372** — `_export_html/` directory restructure ships
+  3-module package (`__init__.py` + `template.py` + `format.py`)
+  with markdown-it-py (commonmark + table + breaks) + Pygments
+  fenced-code highlighting + curated dark theme constant. Tool-
+  renderer + ANSI pipeline + color-derivation math defer to Sprint
+  6h₅d.
+- ✅ **`ImageContent` rendering in HTML export** — carry-forward
+  from ADR-0074. **CLOSED per ADR-0085 P-373 + P-377** — inline
+  base64 `<img>` tag with `data:{mime};base64,{data}` URI mirroring
+  Pi `template.js:909`; tool-result variant uses strict
+  `class="tool-image"` literal per Pi (P-377 W5 MINOR fix).
+- ✅ **`_get_context_usage_safe` real implementation** (P-282 — model
   registry + per-turn token tracking + last-assistant message
-  tokens) — carry-forward from ADR-0074.
+  tokens) — carry-forward from ADR-0074. **CLOSED per ADR-0085
+  P-369 + P-374** — harness-level method runs full Pi `getContextUsage`
+  algorithm (compaction sentinel + post-compaction usage walk +
+  heuristic fallback) over async :meth:`Session.get_branch`; the
+  extension-context bridge surfaces a real sync :class:`ContextUsage`
+  triple via the heuristic estimate path (W6 P-374 W5 MAJOR fix
+  replaces W2 stub).
 - **Live `session_id` read via session manager** (P-291) —
-  carry-forward from ADR-0074.
+  carry-forward from ADR-0074 + ADR-0084 → **DEFERRED to Sprint 6h₅d
+  per ADR-0085**.
 - **Pi-source-grep verification tooling** (P-286) — carry-forward
-  from ADR-0074.
+  from ADR-0074 + ADR-0084 → **DEFERRED to Sprint 6h₅d per
+  ADR-0085**.
 
 ### Items CONFIRMED dropped (per Sprint 6h₅b)
 
