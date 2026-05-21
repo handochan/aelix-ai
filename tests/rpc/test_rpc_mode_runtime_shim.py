@@ -7,7 +7,7 @@ Pi parity: ``packages/coding-agent/src/modes/rpc/rpc-mode.ts:310-349``
 
 These 7 tests lock the back-compat shim added by ADR-0077 P-309:
   1. ``run_rpc_mode(harness)`` without ``runtime_host`` does NOT raise
-     :class:`AttributeError` (the 26 pre-existing wired handlers keep
+     :class:`AttributeError` (the 29 pre-existing wired handlers keep
      working).
   2. ``_make_passthrough_runtime(harness, None).harness is harness``.
   3. The no-op factory installed by :func:`_make_passthrough_runtime`
@@ -19,9 +19,10 @@ These 7 tests lock the back-compat shim added by ADR-0077 P-309:
      ``runtime_host.harness``.
   6. Wired handlers (e.g. ``get_session_stats``) remain callable via
      dispatch when no ``runtime_host`` is supplied.
-  7. Each of the 3 DEFERRED handlers (``switch_session`` / ``fork`` /
-     ``clone``) returns a response whose error message contains
-     ``"ADR-0078"`` (locks the W6 owner rebrand per spec §D.5).
+  7. Sprint 6h₄c (ADR-0079, P-324): the DEFERRED dict is empty (3
+     session-tree commands moved to SUPPORTED). The cascade pin in
+     :mod:`tests.pi_parity.test_phase_4_13_strict_superset` records
+     the closure.
 """
 
 from __future__ import annotations
@@ -33,7 +34,12 @@ from typing import Any
 import pytest
 from aelix_agent_core.harness.core import AgentHarness, AgentHarnessOptions
 from aelix_agent_core.runtime import AgentSessionRuntime
-from aelix_agent_core.session import MemorySessionStorage, Session
+from aelix_agent_core.session import (
+    JsonlSessionRepo,
+    LocalFileSystem,
+    MemorySessionStorage,
+    Session,
+)
 from aelix_ai.messages import AssistantMessage, TextContent
 from aelix_ai.streaming import (
     AssistantEndEvent,
@@ -49,6 +55,16 @@ from aelix_coding_agent.rpc.rpc_mode import (
     build_dispatch_table,
     run_rpc_mode,
 )
+
+
+def _runtime_kwargs() -> dict[str, Any]:
+    """Sprint 6h₄c (ADR-0079, P-324): repo + fs required by
+    :class:`AgentSessionRuntime`. Defaults are sufficient for shim
+    tests that do not exercise the replace path.
+    """
+
+    fs = LocalFileSystem()
+    return {"repo": JsonlSessionRepo(fs=fs), "fs": fs}
 
 
 def _stream() -> Any:
@@ -172,7 +188,9 @@ async def test_dispatch_sees_runtime_host_harness_when_passed() -> None:
     """
 
     runtime_harness = _new_harness()
-    runtime = AgentSessionRuntime(runtime_harness, _make_raising_factory())
+    runtime = AgentSessionRuntime(
+        runtime_harness, _make_raising_factory(), **_runtime_kwargs()
+    )
     # Loose ``harness`` argument is a DIFFERENT object than
     # ``runtime.harness`` — the dispatch loop must NOT use it for
     # subscribe / dispose.
@@ -227,27 +245,18 @@ async def test_wired_handlers_still_callable_with_passthrough() -> None:
     assert response.command == "get_session_stats"
 
 
-# === §7 — 3 deferred handlers return ADR-0078 error =========================
+# === §7 — Sprint 6h₄c closure: DEFERRED dict is empty =======================
 
 
-async def test_three_deferred_handlers_return_adr_0078_error_string() -> None:
-    """Sprint 6h₄b W6 — rebrand lock per spec §D.5. Each of the 3
-    DEFERRED handlers (``switch_session`` / ``fork`` / ``clone``)
-    returns an :class:`RpcErrorResponse` whose error message contains
-    ``"ADR-0078"``.
+def test_deferred_commands_dict_is_empty_after_sprint_6h4c() -> None:
+    """Sprint 6h₄c (ADR-0079, P-324): the 3 session-tree DEFERRED
+    commands (``switch_session`` / ``fork`` / ``clone``) MOVED to
+    SUPPORTED on top of the 6h₄b :class:`AgentSessionRuntime`
+    foundation. :data:`DEFERRED_COMMANDS` is now an empty dict and the
+    cascade pin in :mod:`tests.pi_parity.test_phase_4_13_strict_superset`
+    records the closure (29 supported / 0 deferred / 29 total).
     """
 
-    dispatch = build_dispatch_table()
+    assert DEFERRED_COMMANDS == {}
     for cmd_type in ("switch_session", "fork", "clone"):
-        assert cmd_type in DEFERRED_COMMANDS
-        handler = dispatch[cmd_type]
-
-        class _Stub:
-            id = f"req-{cmd_type}"
-
-        response = await handler(None, _Stub())
-        assert response.success is False
-        assert "ADR-0078" in response.error, (
-            f"{cmd_type!r} response error {response.error!r} does not "
-            "contain 'ADR-0078' — rebrand regression"
-        )
+        assert cmd_type not in DEFERRED_COMMANDS

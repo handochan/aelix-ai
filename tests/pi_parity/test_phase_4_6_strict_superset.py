@@ -156,9 +156,11 @@ def test_deferred_count_by_sprint_6h_2() -> None:
     Sprint 6h₂ (ADR-0071 / P-245~P-253) drops 9 more → 16 → 7.
     Sprint 6h₃ (ADR-0073 / P-268~P-274) drops 2 more → 7 → 5.
     Sprint 6h₄a (ADR-0075 / P-293~P-298) drops 2 more → 5 → 3.
+    Sprint 6h₄c (ADR-0079 / P-323~P-331) drops the final 3 → 3 → 0.
+    PHASE 4 CLOSURE.
     """
 
-    assert len(DEFERRED_COMMANDS) == 3
+    assert len(DEFERRED_COMMANDS) == 0
 
 
 def test_supported_count_by_sprint_6h_2() -> None:
@@ -170,9 +172,11 @@ def test_supported_count_by_sprint_6h_2() -> None:
     Sprint 6h₂ (ADR-0071 / P-245~P-253) adds 9 more → 13 → 22.
     Sprint 6h₃ (ADR-0073 / P-268~P-274) adds 2 more → 22 → 24.
     Sprint 6h₄a (ADR-0075 / P-293~P-298) adds 2 more → 24 → 26.
+    Sprint 6h₄c (ADR-0079 / P-323~P-331) adds the final 3 → 26 → 29.
+    PHASE 4 CLOSURE.
     """
 
-    assert len(SUPPORTED_COMMANDS) == 26
+    assert len(SUPPORTED_COMMANDS) == 29
     assert "get_commands" in SUPPORTED_COMMANDS
 
 

@@ -78,15 +78,23 @@ def _stream() -> Any:
 
 
 def test_supported_count_is_26_after_sprint_6h4a() -> None:
-    """Sprint 6h₃ left 24 supported; Sprint 6h₄a adds 2 → 26."""
+    """Sprint 6h₃ left 24 supported; Sprint 6h₄a adds 2 → 26.
 
-    assert len(SUPPORTED_COMMANDS) == 26
+    Sprint 6h₄c (ADR-0079 / P-323~P-331) wires the final 3 → 29.
+    PHASE 4 CLOSURE.
+    """
+
+    assert len(SUPPORTED_COMMANDS) == 29
 
 
 def test_deferred_count_is_3_after_sprint_6h4a() -> None:
-    """Sprint 6h₃ left 5 deferred; Sprint 6h₄a drops 2 → 3."""
+    """Sprint 6h₃ left 5 deferred; Sprint 6h₄a drops 2 → 3.
 
-    assert len(DEFERRED_COMMANDS) == 3
+    Sprint 6h₄c (ADR-0079 / P-323~P-331) drops the final 3 → 0.
+    PHASE 4 CLOSURE.
+    """
+
+    assert len(DEFERRED_COMMANDS) == 0
 
 
 def test_supported_plus_deferred_is_29() -> None:
@@ -127,10 +135,14 @@ def test_dispatcher_table_routes_both_new() -> None:
 
 
 def test_remaining_three_deferred_are_session_tree() -> None:
-    """Sprint 6h₄a leaves 3 session-tree commands for Sprint 6h₄b."""
+    """Sprint 6h₄a leaves 3 session-tree commands for Sprint 6h₄b.
 
-    expected = {"switch_session", "fork", "clone"}
-    assert set(DEFERRED_COMMANDS) == expected
+    Sprint 6h₄c (ADR-0079 / P-323~P-331) wires the 3 session-tree
+    commands on top of the 6h₄b runtime foundation. The DEFERRED set
+    is now EMPTY (PHASE 4 CLOSURE).
+    """
+
+    assert set(DEFERRED_COMMANDS) == set()
 
 
 def test_remaining_three_deferred_own_adr_0076() -> None:

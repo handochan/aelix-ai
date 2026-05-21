@@ -79,14 +79,16 @@ def test_supported_plus_deferred_covers_pi() -> None:
 
     assert SUPPORTED_COMMANDS.isdisjoint(set(DEFERRED_COMMANDS.keys()))
     assert SUPPORTED_COMMANDS | set(DEFERRED_COMMANDS.keys()) == RPC_COMMAND_TYPES
-    # W4 M2 / P-121 + Sprint 6f W2 + Sprint 6h₁ + Sprint 6h₂ + 6h₃ + 6h₄a
-    # — explicit count assertion so a future PR that adds a command
-    # without updating both sets trips immediately. Sprint 6h₄a
-    # (ADR-0075 / P-293~P-298) wires 2 new commands, dropping
-    # deferred from 5 → 3 and bumping supported from 24 → 26.
+    # W4 M2 / P-121 + Sprint 6f W2 + Sprint 6h₁ + Sprint 6h₂ + 6h₃ +
+    # 6h₄a + 6h₄c — explicit count assertion so a future PR that adds
+    # a command without updating both sets trips immediately.
+    # Sprint 6h₄c (ADR-0079 / P-323~P-331) PHASE 4 CLOSURE: wires the 3
+    # last DEFERRED session-tree commands (switch_session / fork /
+    # clone) on top of the 6h₄b runtime foundation. Counts move to
+    # 29 supported / 0 deferred / 29 total.
     assert len(RPC_COMMAND_TYPES) == 29
-    assert len(SUPPORTED_COMMANDS) == 26
-    assert len(DEFERRED_COMMANDS) == 3
+    assert len(SUPPORTED_COMMANDS) == 29
+    assert len(DEFERRED_COMMANDS) == 0
 
 
 def test_supported_commands_match_p107_table() -> None:
@@ -133,6 +135,11 @@ def test_supported_commands_match_p107_table() -> None:
         # Sprint 6h₄a (ADR-0075 / P-293~P-298) — 2 session-navigation commands.
         "get_fork_messages",
         "get_last_assistant_text",
+        # Sprint 6h₄c (ADR-0079 / P-323~P-331) — 3 session-tree commands
+        # (PHASE 4 CLOSURE).
+        "switch_session",
+        "fork",
+        "clone",
     }
     assert expected == SUPPORTED_COMMANDS
 

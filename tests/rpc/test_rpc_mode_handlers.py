@@ -94,14 +94,44 @@ async def test_handle_abort_returns_success_envelope() -> None:
     await harness.dispose()
 
 
-async def test_handle_new_session_returns_cancelled_false() -> None:
-    harness = _make_harness()
+async def test_handle_new_session_returns_cancelled_false(tmp_path) -> None:
+    """Sprint 6h₄c (ADR-0079, P-330): ``_handle_new_session`` MOVED from
+    HARNESS_ONLY → RUNTIME_HOST arity. The handler now takes
+    ``(runtime_host, cmd)`` and routes through
+    :meth:`AgentSessionRuntime.new_session`.
+    """
+
+    from aelix_agent_core.runtime import AgentSessionRuntime
+    from aelix_agent_core.session import (
+        JsonlSessionCreateOptions,
+        JsonlSessionRepo,
+        LocalFileSystem,
+    )
+
+    def _make_h(session=None):
+        return AgentHarness(
+            AgentHarnessOptions(
+                model=Model(id="mock", provider="mock"),
+                stream_fn=_quiet_stream_fn(),
+                session=session,
+            )
+        )
+
+    fs = LocalFileSystem()
+    repo = JsonlSessionRepo(fs=fs, sessions_root=str(tmp_path))
+    source = await repo.create(JsonlSessionCreateOptions(cwd=str(tmp_path)))
+    harness = _make_h(session=source)
+
+    async def _factory(new_sess):
+        return _make_h(session=new_sess)
+
+    runtime = AgentSessionRuntime(harness, _factory, repo=repo, fs=fs)
     cmd = RpcCommandNewSession(id="r3")
-    response = await _handle_new_session(harness, cmd)
+    response = await _handle_new_session(runtime, cmd)
     assert isinstance(response, RpcSuccessResponse)
     assert response.command == "new_session"
     assert response.data == {"cancelled": False}
-    await harness.dispose()
+    await runtime.dispose()
 
 
 async def test_handle_get_state_returns_13_field_pi_shape() -> None:

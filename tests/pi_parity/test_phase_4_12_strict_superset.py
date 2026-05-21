@@ -53,15 +53,24 @@ def _load_fixture() -> dict:
 
 
 def test_supported_count_unchanged_at_26() -> None:
-    """Sprint 6h₄b is FOUNDATION ONLY — supported stays at 26."""
+    """Sprint 6h₄b is FOUNDATION ONLY — supported stays at 26.
 
-    assert len(SUPPORTED_COMMANDS) == 26
+    Sprint 6h₄c (ADR-0079 / P-323~P-331) wires the final 3 on top of
+    this foundation → 29. PHASE 4 CLOSURE. Closure pin retains the
+    original name; the body asserts the live count.
+    """
+
+    assert len(SUPPORTED_COMMANDS) == 29
 
 
 def test_deferred_count_unchanged_at_3() -> None:
-    """Sprint 6h₄b is FOUNDATION ONLY — deferred stays at 3."""
+    """Sprint 6h₄b is FOUNDATION ONLY — deferred stays at 3.
 
-    assert len(DEFERRED_COMMANDS) == 3
+    Sprint 6h₄c (ADR-0079 / P-323~P-331) wires the 3 session-tree
+    commands → 0 deferred. PHASE 4 CLOSURE.
+    """
+
+    assert len(DEFERRED_COMMANDS) == 0
 
 
 def test_supported_plus_deferred_is_29() -> None:
@@ -76,9 +85,15 @@ def test_supported_plus_deferred_is_29() -> None:
 
 
 def test_deferred_set_is_three_session_tree_commands() -> None:
-    """The 3 deferred commands are ``switch_session`` / ``fork`` / ``clone``."""
+    """The 3 deferred commands are ``switch_session`` / ``fork`` /
+    ``clone``.
 
-    assert set(DEFERRED_COMMANDS) == {"switch_session", "fork", "clone"}
+    Sprint 6h₄c (ADR-0079 / P-323~P-331) wires those 3 on top of the
+    6h₄b runtime foundation. The DEFERRED set is now EMPTY (PHASE 4
+    CLOSURE).
+    """
+
+    assert set(DEFERRED_COMMANDS) == set()
 
 
 def test_deferred_owner_strings_cite_session_tree_adr() -> None:
@@ -98,19 +113,70 @@ def test_deferred_owner_strings_cite_session_tree_adr() -> None:
 
 
 def test_three_deferred_still_route_to_deferred_handler() -> None:
-    """Sprint 6h₄c will move these 3 to runtime methods — until then,
-    each MUST resolve to a stub produced by ``_make_deferred_handler``.
+    """Sprint 6h₄c (ADR-0079) wires these 3 commands on top of the
+    6h₄b runtime foundation. Each MUST now resolve to the
+    :func:`_bind_runtime_host` adapter (NOT a
+    :func:`_make_deferred_handler` stub).
     """
 
-    table = build_dispatch_table()
+    # Construct a real runtime so the dispatch table threads the
+    # runtime-host adapter for the 3 wired session-tree commands.
+    from collections.abc import AsyncIterator
+    from typing import Any
+
+    from aelix_agent_core.harness.core import (
+        AgentHarness,
+        AgentHarnessOptions,
+    )
+    from aelix_agent_core.runtime import AgentSessionRuntime
+    from aelix_agent_core.session import JsonlSessionRepo, LocalFileSystem
+    from aelix_ai.messages import AssistantMessage, TextContent
+    from aelix_ai.streaming import (
+        AssistantEndEvent,
+        AssistantMessageEvent,
+        AssistantStartEvent,
+        Context,
+        Model,
+        SimpleStreamOptions,
+    )
+
+    async def _stream_fn(
+        model: Model,
+        context: Context,
+        options: SimpleStreamOptions,
+    ) -> AsyncIterator[AssistantMessageEvent]:
+        yield AssistantStartEvent(partial=AssistantMessage(content=[]))
+        yield AssistantEndEvent(
+            message=AssistantMessage(
+                content=[TextContent(text="ok")], stop_reason="end_turn"
+            )
+        )
+
+    harness = AgentHarness(
+        AgentHarnessOptions(
+            model=Model(id="mock", provider="mock"),
+            stream_fn=_stream_fn,
+        )
+    )
+
+    async def _factory(_s: Any) -> AgentHarness:
+        return harness
+
+    fs = LocalFileSystem()
+    runtime = AgentSessionRuntime(
+        harness, _factory, repo=JsonlSessionRepo(fs=fs), fs=fs
+    )
+    table = build_dispatch_table(runtime_host=runtime)
     for cmd in ("switch_session", "fork", "clone"):
         handler = table.get(cmd)
         assert handler is not None, f"No dispatch entry for {cmd!r}"
         name = getattr(handler, "__qualname__", repr(handler))
-        # Stub closure produced by ``_make_deferred_handler`` carries
-        # the originating function name in its qualname.
-        assert "_make_deferred_handler" in name or "deferred" in name.lower(), (
-            f"{cmd!r} dispatcher {name!r} is NOT a deferred-handler stub"
+        # The runtime-host adapter is named ``_bind_runtime_host._adapted``.
+        assert "deferred" not in name.lower(), (
+            f"{cmd!r} dispatcher {name!r} is still a deferred-handler stub"
+        )
+        assert "_bind_runtime_host" in name or "_adapted" in name, (
+            f"{cmd!r} dispatcher {name!r} is not the runtime-host adapter"
         )
 
 

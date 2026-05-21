@@ -7,15 +7,22 @@ Covers the FOUNDATION-ONLY scope (ADR-0077 / P-302~P-310):
     ``diagnostics`` / ``model_fallback_message``).
   - ``set_rebind_session`` / ``set_before_session_invalidate`` callable
     storage + invocation count balance per replace.
-  - ``_apply_for_test`` exercising the full
-    ``_teardown_current → _apply → _rebind_session`` waveform.
-  - Stub returns from ``switch_session`` / ``new_session`` / ``fork`` /
-    ``import_from_jsonl`` (``NotImplementedError`` referencing Sprint
-    6h₄c / ADR-0078 — P-310).
+  - Stub returns from ``_emit_before_switch`` / ``_emit_before_fork``
+    (return False — P-308).
   - ``dispose()`` calls ``before_session_invalidate`` before disposing
     the harness exactly once (P-307).
   - ``RuntimeReplaceResult`` / :class:`AgentSessionRuntimeDiagnostic`
     frozen-dataclass field locks.
+
+Sprint 6h₄c (ADR-0079, P-331): the Sprint 6h₄b ``_apply_for_test`` test
+seam is REMOVED. Replace-path assertions that previously drove the
+private seam through ``_apply_for_test`` now drive the public
+``switch_session`` via a tmp-path :class:`JsonlSessionRepo`. The
+``test_*_raises_not_implemented`` tests for the public replace APIs are
+also retired because Sprint 6h₄c fills the bodies — replacement
+coverage lives in :mod:`tests.runtime.test_agent_session_runtime_replace_apis`.
+``import_from_jsonl`` STAYS STUBBED — its ``NotImplementedError`` test
+remains here.
 """
 
 from __future__ import annotations
@@ -23,7 +30,6 @@ from __future__ import annotations
 import dataclasses
 from collections.abc import AsyncIterator
 from typing import Any
-from unittest.mock import AsyncMock
 
 import pytest
 from aelix_agent_core.harness.core import AgentHarness, AgentHarnessOptions
@@ -32,7 +38,12 @@ from aelix_agent_core.runtime import (
     AgentSessionRuntimeDiagnostic,
     RuntimeReplaceResult,
 )
-from aelix_agent_core.session import MemorySessionStorage, Session
+from aelix_agent_core.session import (
+    JsonlSessionRepo,
+    LocalFileSystem,
+    MemorySessionStorage,
+    Session,
+)
 from aelix_ai.messages import AssistantMessage, TextContent
 from aelix_ai.streaming import (
     AssistantEndEvent,
@@ -78,13 +89,26 @@ async def _noop_factory(_new_session: Session) -> AgentHarness:
     return _new_harness()
 
 
+def _runtime_kwargs() -> dict[str, Any]:
+    """Sprint 6h₄c (ADR-0079, P-324): the required ``repo`` + ``fs``
+    keyword args supplied by every test in this module. Tests in this
+    file do NOT drive the replace path through real JSONL — they only
+    exercise the constructor / seam / dispose surface. A bare
+    :class:`JsonlSessionRepo` over :class:`LocalFileSystem` is enough
+    to satisfy the new constructor contract.
+    """
+
+    fs = LocalFileSystem()
+    return {"repo": JsonlSessionRepo(fs=fs), "fs": fs}
+
+
 # === §A — Constructor + getters ==============================================
 
 
 def test_runtime_constructor_stores_harness_identity() -> None:
     h = _new_harness()
     try:
-        runtime = AgentSessionRuntime(h, _noop_factory)
+        runtime = AgentSessionRuntime(h, _noop_factory, **_runtime_kwargs())
         # ``harness`` getter (Pi parity P-304) returns the LIVE harness.
         assert runtime.harness is h
     finally:
@@ -96,19 +120,19 @@ def test_runtime_session_is_read_through_to_harness_session() -> None:
 
     session = _new_session()
     h = _new_harness(session=session)
-    runtime = AgentSessionRuntime(h, _noop_factory)
+    runtime = AgentSessionRuntime(h, _noop_factory, **_runtime_kwargs())
     assert runtime.session is session
 
 
 def test_runtime_session_is_none_when_harness_has_no_session() -> None:
     h = _new_harness()  # no session attached
-    runtime = AgentSessionRuntime(h, _noop_factory)
+    runtime = AgentSessionRuntime(h, _noop_factory, **_runtime_kwargs())
     assert runtime.session is None
 
 
 def test_runtime_cwd_returns_none_when_session_is_none() -> None:
     h = _new_harness()
-    runtime = AgentSessionRuntime(h, _noop_factory)
+    runtime = AgentSessionRuntime(h, _noop_factory, **_runtime_kwargs())
     assert runtime.cwd is None
 
 
@@ -120,7 +144,7 @@ def test_runtime_diagnostics_returns_copy_not_internal_list() -> None:
     initial = [AgentSessionRuntimeDiagnostic(code="x", message="hi")]
     h = _new_harness()
     runtime = AgentSessionRuntime(
-        h, _noop_factory, diagnostics=initial
+        h, _noop_factory, diagnostics=initial, **_runtime_kwargs()
     )
     snapshot = runtime.diagnostics
     snapshot.append(
@@ -134,14 +158,15 @@ def test_runtime_diagnostics_returns_copy_not_internal_list() -> None:
 def test_runtime_model_fallback_message_mirrors_init_value() -> None:
     h = _new_harness()
     runtime = AgentSessionRuntime(
-        h, _noop_factory, model_fallback_message="fallback-x"
+        h, _noop_factory, model_fallback_message="fallback-x",
+        **_runtime_kwargs(),
     )
     assert runtime.model_fallback_message == "fallback-x"
 
 
 def test_runtime_model_fallback_message_defaults_to_none() -> None:
     h = _new_harness()
-    runtime = AgentSessionRuntime(h, _noop_factory)
+    runtime = AgentSessionRuntime(h, _noop_factory, **_runtime_kwargs())
     assert runtime.model_fallback_message is None
 
 
@@ -150,21 +175,21 @@ def test_runtime_model_fallback_message_defaults_to_none() -> None:
 
 async def test_set_rebind_session_stores_callable() -> None:
     h = _new_harness()
-    runtime = AgentSessionRuntime(h, _noop_factory)
+    runtime = AgentSessionRuntime(h, _noop_factory, **_runtime_kwargs())
 
     async def _cb(_new_h: AgentHarness) -> None:
         return None
 
     runtime.set_rebind_session(_cb)
-    # Internal seam asserted through replace path below; here we just
-    # confirm storage round-trip via private attribute peek (Aelix-additive
-    # — Pi has no introspection but the seam pin needs it).
+    # Internal seam asserted through replace path elsewhere; here we
+    # just confirm storage round-trip via private attribute peek
+    # (Aelix-additive — Pi has no introspection but the seam pin needs it).
     assert runtime._rebind_session is _cb
 
 
 def test_set_before_session_invalidate_stores_callable() -> None:
     h = _new_harness()
-    runtime = AgentSessionRuntime(h, _noop_factory)
+    runtime = AgentSessionRuntime(h, _noop_factory, **_runtime_kwargs())
 
     def _cb() -> None:
         return None
@@ -173,14 +198,14 @@ def test_set_before_session_invalidate_stores_callable() -> None:
     assert runtime._before_session_invalidate is _cb
 
 
-# === §C — Stub returns (P-308 + P-310) =======================================
+# === §C — Stub returns (P-308 + carry-forward ADR-0080) ======================
 
 
 async def test_emit_before_switch_stub_returns_false() -> None:
     """P-308 stub: Aelix has no ``session_before_switch`` hook yet."""
 
     h = _new_harness()
-    runtime = AgentSessionRuntime(h, _noop_factory)
+    runtime = AgentSessionRuntime(h, _noop_factory, **_runtime_kwargs())
     assert await runtime._emit_before_switch() is False
 
 
@@ -188,217 +213,44 @@ async def test_emit_before_fork_stub_returns_false() -> None:
     """P-308 stub: Aelix has no ``session_before_fork`` hook yet."""
 
     h = _new_harness()
-    runtime = AgentSessionRuntime(h, _noop_factory)
+    runtime = AgentSessionRuntime(h, _noop_factory, **_runtime_kwargs())
     assert await runtime._emit_before_fork() is False
 
 
-async def test_switch_session_raises_not_implemented() -> None:
-    h = _new_harness()
-    runtime = AgentSessionRuntime(h, _noop_factory)
-    with pytest.raises(NotImplementedError, match=r"Sprint 6h₄c"):
-        await runtime.switch_session("/some/path")
-
-
-async def test_new_session_raises_not_implemented() -> None:
-    h = _new_harness()
-    runtime = AgentSessionRuntime(h, _noop_factory)
-    with pytest.raises(NotImplementedError, match=r"Sprint 6h₄c"):
-        await runtime.new_session()
-
-
-async def test_fork_raises_not_implemented() -> None:
-    h = _new_harness()
-    runtime = AgentSessionRuntime(h, _noop_factory)
-    with pytest.raises(NotImplementedError, match=r"Sprint 6h₄c"):
-        await runtime.fork("entry-1")
-
-
 async def test_import_from_jsonl_raises_not_implemented() -> None:
+    """Sprint 6h₄c (ADR-0080): ``import_from_jsonl`` STAYS STUBBED —
+    no RPC command in the Pi ``RpcCommand`` union maps to it as of SHA
+    ``734e08e``. Deferred to Sprint 6h₅+ per ADR-0080.
+    """
+
     h = _new_harness()
-    runtime = AgentSessionRuntime(h, _noop_factory)
-    with pytest.raises(NotImplementedError, match=r"Sprint 6h₄c"):
+    runtime = AgentSessionRuntime(h, _noop_factory, **_runtime_kwargs())
+    with pytest.raises(NotImplementedError, match=r"import_from_jsonl"):
         await runtime.import_from_jsonl("/p")
 
 
-# === §D — Replace seam exercised via ``_apply_for_test`` =====================
+# === §D — Apply_for_test seam REMOVED (P-331) ================================
 
 
-async def test_apply_for_test_invokes_factory_with_new_session() -> None:
-    """The factory is called with the supplied ``new_session`` exactly once."""
-
-    h_old = _new_harness()
-    received: list[Session] = []
-    h_new = _new_harness()
-
-    async def _factory(new_session: Session) -> AgentHarness:
-        received.append(new_session)
-        return h_new
-
-    runtime = AgentSessionRuntime(h_old, _factory)
-    new_sess = _new_session()
-    await runtime._apply_for_test(new_sess)
-
-    assert len(received) == 1
-    assert received[0] is new_sess
-    assert runtime.harness is h_new
-
-
-async def test_apply_for_test_disposes_old_harness_once() -> None:
-    """OLD harness ``dispose()`` is called exactly ONCE during replace."""
-
-    h_old = _new_harness()
-    h_old.dispose = AsyncMock()  # type: ignore[method-assign]
-    h_new = _new_harness()
-
-    async def _factory(_s: Session) -> AgentHarness:
-        return h_new
-
-    runtime = AgentSessionRuntime(h_old, _factory)
-    await runtime._apply_for_test(_new_session())
-
-    h_old.dispose.assert_awaited_once()
-
-
-async def test_apply_for_test_invokes_before_session_invalidate_before_dispose() -> None:
-    """Pi parity ordering (``:149-157``): ``beforeSessionInvalidate?.()``
-    runs BEFORE the harness ``dispose()`` during ``_teardown_current``.
+def test_apply_for_test_removed_per_p331() -> None:
+    """Sprint 6h₄c (ADR-0079, P-331): the ``_apply_for_test`` seam from
+    Sprint 6h₄b is REMOVED. Replace-path coverage now drives the real
+    public API (``switch_session``) via the JSONL repo — see
+    :mod:`tests.runtime.test_agent_session_runtime_replace_apis`.
     """
 
-    call_order: list[str] = []
-
-    h_old = _new_harness()
-    original_dispose = h_old.dispose
-
-    async def _dispose_spy() -> None:
-        call_order.append("dispose")
-        await original_dispose()
-
-    h_old.dispose = _dispose_spy  # type: ignore[method-assign]
-
-    h_new = _new_harness()
-
-    async def _factory(_s: Session) -> AgentHarness:
-        return h_new
-
-    runtime = AgentSessionRuntime(h_old, _factory)
-
-    def _before() -> None:
-        call_order.append("before")
-
-    runtime.set_before_session_invalidate(_before)
-    await runtime._apply_for_test(_new_session())
-
-    assert call_order == ["before", "dispose"]
-
-
-async def test_apply_for_test_invokes_rebind_session_callback_exactly_once() -> None:
-    """The ``set_rebind_session`` cb fires EXACTLY ONCE per successful
-    replace (P-305 / P-308 closure pin).
-    """
-
-    h_old = _new_harness()
-    h_new = _new_harness()
-
-    async def _factory(_s: Session) -> AgentHarness:
-        return h_new
-
-    runtime = AgentSessionRuntime(h_old, _factory)
-    cb = AsyncMock()
-    runtime.set_rebind_session(cb)
-    await runtime._apply_for_test(_new_session())
-
-    cb.assert_awaited_once_with(h_new)
-
-
-async def test_apply_for_test_runs_without_rebind_session_registered() -> None:
-    """``set_rebind_session`` is optional — replace MUST NOT crash when
-    no callback is registered (Pi optional-chaining parity ``?.()``).
-    """
-
-    h_old = _new_harness()
-    h_new = _new_harness()
-
-    async def _factory(_s: Session) -> AgentHarness:
-        return h_new
-
-    runtime = AgentSessionRuntime(h_old, _factory)
-    # No set_rebind_session() call.
-    await runtime._apply_for_test(_new_session())
-    assert runtime.harness is h_new
-
-
-async def test_apply_for_test_runs_without_before_invalidate_registered() -> None:
-    """``set_before_session_invalidate`` is optional — replace MUST NOT
-    crash when no callback is registered.
-    """
-
-    h_old = _new_harness()
-    h_new = _new_harness()
-
-    async def _factory(_s: Session) -> AgentHarness:
-        return h_new
-
-    runtime = AgentSessionRuntime(h_old, _factory)
-    await runtime._apply_for_test(_new_session())
-    assert runtime.harness is h_new
-
-
-async def test_state_session_id_on_new_harness_reflects_new_session_metadata() -> None:
-    """P-306 BINDING: harness-rebuild preserves the ``_state.session_id``
-    invariant. The factory produces a NEW :class:`AgentHarness` bound to
-    the NEW :class:`Session`; the eager metadata read at
-    ``harness/core.py:521-524`` resolves to the NEW session's ID, so
-    ``runtime.harness.state.session_id`` matches the NEW session's
-    storage metadata after the replace.
-    """
-
-    h_old = _new_harness(session=_new_session())
-    new_sess = _new_session()
-
-    async def _factory(s: Session) -> AgentHarness:
-        return _new_harness(session=s)
-
-    runtime = AgentSessionRuntime(h_old, _factory)
-    await runtime._apply_for_test(new_sess)
-
-    new_meta = await new_sess.get_metadata()
-    assert runtime.harness._state.session_id == new_meta.id
-
-
-async def test_two_consecutive_replaces_dispose_each_old_harness() -> None:
-    """Two replaces → 2 disposes + 2 rebind calls."""
-
-    h_1 = _new_harness()
-    h_1.dispose = AsyncMock()  # type: ignore[method-assign]
-    h_2 = _new_harness()
-    h_2.dispose = AsyncMock()  # type: ignore[method-assign]
-    h_3 = _new_harness()
-
-    queue = [h_2, h_3]
-
-    async def _factory(_s: Session) -> AgentHarness:
-        return queue.pop(0)
-
-    runtime = AgentSessionRuntime(h_1, _factory)
-    cb = AsyncMock()
-    runtime.set_rebind_session(cb)
-
-    await runtime._apply_for_test(_new_session())
-    await runtime._apply_for_test(_new_session())
-
-    h_1.dispose.assert_awaited_once()
-    h_2.dispose.assert_awaited_once()
-    assert cb.await_count == 2
-    assert runtime.harness is h_3
+    assert not hasattr(AgentSessionRuntime, "_apply_for_test")
 
 
 # === §E — Dispose (P-307) ====================================================
 
 
 async def test_dispose_calls_harness_dispose_exactly_once() -> None:
+    from unittest.mock import AsyncMock
+
     h = _new_harness()
     h.dispose = AsyncMock()  # type: ignore[method-assign]
-    runtime = AgentSessionRuntime(h, _noop_factory)
+    runtime = AgentSessionRuntime(h, _noop_factory, **_runtime_kwargs())
     await runtime.dispose()
     h.dispose.assert_awaited_once()
 
@@ -413,7 +265,7 @@ async def test_dispose_invokes_before_session_invalidate_before_harness_dispose(
         await original_dispose()
 
     h.dispose = _dispose_spy  # type: ignore[method-assign]
-    runtime = AgentSessionRuntime(h, _noop_factory)
+    runtime = AgentSessionRuntime(h, _noop_factory, **_runtime_kwargs())
 
     def _before() -> None:
         call_order.append("before")

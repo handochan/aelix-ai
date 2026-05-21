@@ -8,20 +8,27 @@ subscription after a harness replace. Tests:
   - OLD subscription is torn down and a NEW subscription is opened
     against the NEW harness's ``subscribe()`` — listener-count balance
     is preserved.
-  - Synthetic events emitted by the NEW harness reach the RPC output
-    writer after rebind (regression for the "captured stale-harness"
-    bug-class P-303 prevents).
+
+Sprint 6h₄c (ADR-0079, P-331): the ``_apply_for_test`` seam used by
+the 6h₄b tests is REMOVED. Replace coverage now drives the public
+``switch_session`` API over a tmp-path :class:`JsonlSessionRepo`.
 """
 
 from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import Any
 
 from aelix_agent_core.harness.core import AgentHarness, AgentHarnessOptions
 from aelix_agent_core.runtime import AgentSessionRuntime
-from aelix_agent_core.session import MemorySessionStorage, Session
+from aelix_agent_core.session import (
+    JsonlSessionCreateOptions,
+    JsonlSessionRepo,
+    LocalFileSystem,
+    Session,
+)
 from aelix_ai.messages import AssistantMessage, TextContent
 from aelix_ai.streaming import (
     AssistantEndEvent,
@@ -53,11 +60,12 @@ def _stream() -> Any:
     return fn
 
 
-def _new_harness() -> AgentHarness:
+def _new_harness(session: Session | None = None) -> AgentHarness:
     return AgentHarness(
         AgentHarnessOptions(
             model=Model(id="mock", provider="mock"),
             stream_fn=_stream(),
+            session=session,
         )
     )
 
@@ -83,18 +91,30 @@ async def test_run_rpc_mode_with_runtime_host_does_not_crash() -> None:
     )
 
 
-async def test_rebind_session_closure_reattaches_subscription() -> None:
+async def test_rebind_session_closure_reattaches_subscription(
+    tmp_path: Path,
+) -> None:
     """The closure swaps the captured harness AND re-subscribes against
     the NEW harness's ``subscribe()`` — listener count stays balanced.
+
+    Sprint 6h₄c (ADR-0079, P-331): migrated from ``_apply_for_test`` to
+    drive the public ``switch_session`` API over a real
+    :class:`JsonlSessionRepo`.
     """
 
-    h_old = _new_harness()
-    h_new = _new_harness()
+    fs = LocalFileSystem()
+    repo = JsonlSessionRepo(fs=fs, sessions_root=str(tmp_path))
+    source = await repo.create(JsonlSessionCreateOptions(cwd=str(tmp_path)))
+    target = await repo.create(JsonlSessionCreateOptions(cwd=str(tmp_path)))
+    target_metadata = await target.get_metadata()
+
+    h_old = _new_harness(session=source)
+    h_new = _new_harness(session=target)
 
     async def _factory(_s: Session) -> AgentHarness:
         return h_new
 
-    runtime = AgentSessionRuntime(h_old, _factory)
+    runtime = AgentSessionRuntime(h_old, _factory, repo=repo, fs=fs)
 
     # Drive run_rpc_mode in the background to install the rebind closure.
     stdin = asyncio.StreamReader()
@@ -117,9 +137,8 @@ async def test_rebind_session_closure_reattaches_subscription() -> None:
     pre_old_count = len(h_old._listeners)
     assert pre_old_count >= 1
 
-    # Trigger the rebind seam via the test-only entry point.
-    new_session = Session(MemorySessionStorage())
-    await runtime._apply_for_test(new_session)
+    # Trigger the rebind seam via the real public API.
+    await runtime.switch_session(target_metadata.path)
 
     # POST-replace: the OLD harness was disposed (its listener list is
     # observable but no longer the live target). The NEW harness MUST
@@ -140,13 +159,24 @@ async def test_rebind_session_closure_reattaches_subscription() -> None:
     assert final_new_count == post_new_count - 1
 
 
-async def test_unsubscribe_subscribe_count_balanced_per_replace() -> None:
+async def test_unsubscribe_subscribe_count_balanced_per_replace(
+    tmp_path: Path,
+) -> None:
     """Subscribe/unsubscribe count balance assertion (closure pin
     requirement — P-303 §E.2).
+
+    Sprint 6h₄c (ADR-0079, P-331): migrated from ``_apply_for_test`` to
+    drive the public ``switch_session`` API.
     """
 
-    h_old = _new_harness()
-    h_new = _new_harness()
+    fs = LocalFileSystem()
+    repo = JsonlSessionRepo(fs=fs, sessions_root=str(tmp_path))
+    source = await repo.create(JsonlSessionCreateOptions(cwd=str(tmp_path)))
+    target = await repo.create(JsonlSessionCreateOptions(cwd=str(tmp_path)))
+    target_metadata = await target.get_metadata()
+
+    h_old = _new_harness(session=source)
+    h_new = _new_harness(session=target)
 
     sub_count = 0
     unsub_count = 0
@@ -169,7 +199,7 @@ async def test_unsubscribe_subscribe_count_balanced_per_replace() -> None:
     async def _factory(_s: Session) -> AgentHarness:
         return h_new
 
-    runtime = AgentSessionRuntime(h_old, _factory)
+    runtime = AgentSessionRuntime(h_old, _factory, repo=repo, fs=fs)
     stdin = asyncio.StreamReader()
     captured: list[bytes] = []
 
@@ -184,7 +214,7 @@ async def test_unsubscribe_subscribe_count_balanced_per_replace() -> None:
 
     task = asyncio.create_task(_drive())
     await asyncio.sleep(0.01)
-    await runtime._apply_for_test(Session(MemorySessionStorage()))
+    await runtime.switch_session(target_metadata.path)
     # The closure subscribed to the NEW harness once.
     assert sub_count == 1
     stdin.feed_eof()

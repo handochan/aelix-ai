@@ -89,20 +89,23 @@ def test_supported_count_is_24_after_sprint_6h3() -> None:
     """Sprint 6h₂ left 22 supported; Sprint 6h₃ adds 2 → 24.
 
     Sprint 6h₄a (ADR-0075 / P-293~P-298) wires 2 more → 26 supported.
-    Closure pin retains the original name; the body asserts the live
-    count.
+    Sprint 6h₄c (ADR-0079 / P-323~P-331) wires the final 3 → 29.
+    PHASE 4 CLOSURE. Closure pin retains the original name; the body
+    asserts the live count.
     """
 
-    assert len(SUPPORTED_COMMANDS) == 26
+    assert len(SUPPORTED_COMMANDS) == 29
 
 
 def test_deferred_count_is_5_after_sprint_6h3() -> None:
     """Sprint 6h₂ left 7 deferred; Sprint 6h₃ drops 2 → 5.
 
     Sprint 6h₄a (ADR-0075 / P-293~P-298) drops 2 more → 3 deferred.
+    Sprint 6h₄c (ADR-0079 / P-323~P-331) drops the final 3 → 0.
+    PHASE 4 CLOSURE.
     """
 
-    assert len(DEFERRED_COMMANDS) == 3
+    assert len(DEFERRED_COMMANDS) == 0
 
 
 def test_supported_plus_deferred_is_29() -> None:
@@ -149,10 +152,12 @@ def test_remaining_five_deferred_are_session_tree() -> None:
     (``get_fork_messages`` + ``get_last_assistant_text``); the
     remaining 3 commands (``switch_session`` / ``fork`` / ``clone``)
     defer to Sprint 6h₄b per ADR-0076.
+    Sprint 6h₄c (ADR-0079 / P-323~P-331) wires the 3 session-tree
+    commands on top of the 6h₄b runtime foundation. The DEFERRED set
+    is now EMPTY (PHASE 4 CLOSURE).
     """
 
-    expected = {"switch_session", "fork", "clone"}
-    assert set(DEFERRED_COMMANDS) == expected
+    assert set(DEFERRED_COMMANDS) == set()
 
 
 def test_remaining_five_deferred_own_adr_0074() -> None:

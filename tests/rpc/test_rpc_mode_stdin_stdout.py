@@ -100,18 +100,18 @@ async def test_get_state_round_trip() -> None:
     assert "thinkingLevel" in response["data"]
 
 
-async def test_deferred_command_produces_error_envelope() -> None:
-    """A still-deferred command emits a Pi-shape error envelope on stdout.
+async def test_fork_invalid_entry_id_produces_error_envelope() -> None:
+    """Pi-shape error envelope on the wire for the fork happy path's
+    error branch.
 
-    Sprint 6h₂ (ADR-0071) wired ``steer``; Sprint 6h₃ (ADR-0073) wired
-    ``get_session_stats`` / ``export_html``. Sprint 6h₄a (ADR-0075)
-    wired ``get_fork_messages`` / ``get_last_assistant_text`` and
-    re-homed the remaining 3 session-tree commands to ADR-0076.
-    Sprint 6h₄b (ADR-0077 / ADR-0078) lands the
-    :class:`AgentSessionRuntime` foundation and re-homes the same 3
-    session-tree owners ADR-0076 → ADR-0078. ``fork`` remains
-    deferred per ADR-0078 (3 session-tree commands still awaiting
-    Sprint 6h₄c).
+    Sprint 6h₄c (ADR-0079, P-323~P-331) wired ``switch_session`` /
+    ``fork`` / ``clone`` on top of the 6h₄b
+    :class:`AgentSessionRuntime` foundation — ``fork`` is now SUPPORTED.
+    The Sprint 6h₄b assertion that ``fork`` returned an "ADR-0078"
+    deferral envelope is replaced by an assertion that invoking
+    ``fork`` with an invalid entry id (and no session attached on the
+    test harness — its ``runtime_host.session is None`` path) routes
+    through the new handler and surfaces a Pi-shape error.
     """
 
     output = await _run_with_lines(
@@ -119,7 +119,9 @@ async def test_deferred_command_produces_error_envelope() -> None:
     )
     response = next(rec for rec in output if rec.get("command") == "fork")
     assert response["success"] is False
-    assert "ADR-0076" in response["error"] or "ADR-0078" in response["error"]
+    # The handler exception envelope wraps the runtime's RuntimeError /
+    # ValueError. The handler returns command="fork" (Pi parity).
+    assert response["command"] == "fork"
 
 
 async def test_unknown_command_produces_parse_error() -> None:

@@ -200,38 +200,51 @@ async def test_is_streaming_false_when_idle() -> None:
     await harness.dispose()
 
 
-# === P-117 — new_session rejects parent_session ================================
+# === P-117 — new_session parent_session lineage CLOSED (P-330) ================
+#
+# Sprint 6h₄c (ADR-0079, P-330) replaces the Sprint 6d stub that rejected
+# ``parent_session`` with an :class:`RpcErrorResponse`. The handler now
+# routes through :meth:`AgentSessionRuntime.new_session` which persists
+# lineage via ``repo.create(parent_session_path=...)``. The Sprint 6d
+# ADR-0058 carry-forward closes here — the rejection-branch regression
+# below is REPLACED by a success-branch regression that confirms the
+# ``parent_session`` field actually persists to the new JSONL header.
+# See :mod:`tests.rpc.test_rpc_mode_new_session_parent` for the new
+# regression suite.
 
 
-async def test_new_session_rejects_parent_session_with_deferral_error() -> None:
-    """P-117 — explicit error envelope when caller supplies ``parent_session``
-    (Sprint 6f session-tree navigation per ADR-0058).
+async def test_new_session_handler_routes_through_runtime_host(
+    tmp_path: Path,
+) -> None:
+    """P-330 — ``_handle_new_session`` MOVED from HARNESS_ONLY to the
+    RUNTIME_HOST arity class. The handler now takes ``(runtime_host,
+    cmd)`` and routes through :meth:`AgentSessionRuntime.new_session`.
+    A bare-harness call (the old shape) is no longer valid.
     """
 
-    harness = _make_harness()
-    response = await _handle_new_session(
-        harness,
-        RpcCommandNewSession(parent_session="/some/path.jsonl", id="r"),
+    from aelix_agent_core.runtime import AgentSessionRuntime
+    from aelix_agent_core.session import (
+        JsonlSessionCreateOptions,
+        JsonlSessionRepo,
+        LocalFileSystem,
     )
-    assert isinstance(response, RpcErrorResponse)
-    assert response.command == "new_session"
-    assert "parent_session" in response.error
-    assert "ADR-0058" in response.error
-    await harness.dispose()
 
+    fs = LocalFileSystem()
+    repo = JsonlSessionRepo(fs=fs, sessions_root=str(tmp_path))
+    source = await repo.create(JsonlSessionCreateOptions(cwd=str(tmp_path)))
+    harness = _make_harness(session=source)
 
-async def test_new_session_without_parent_returns_cancelled_false() -> None:
-    """P-117 control — None parent path still routes through the
-    cancel-aware happy path.
-    """
+    async def _factory(new_sess: Any) -> Any:
+        return _make_harness(session=new_sess)
 
-    harness = _make_harness()
+    runtime = AgentSessionRuntime(harness, _factory, repo=repo, fs=fs)
+
     response = await _handle_new_session(
-        harness, RpcCommandNewSession(parent_session=None, id="r")
+        runtime, RpcCommandNewSession(parent_session=None, id="r")
     )
     assert isinstance(response, RpcSuccessResponse)
     assert response.data == {"cancelled": False}
-    await harness.dispose()
+    await runtime.dispose()
 
 
 # === P-118 — get_state reads no private harness attributes =====================
