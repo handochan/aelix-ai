@@ -413,6 +413,52 @@ pins the W0-verified Pi line numbers at SHA `734e08e`. This is
 the first sprint since 6a where W4+W5 returned a 0-finding
 CLEAN verdict.
 
+### Sprint 6h₄b amendment (`AgentSessionRuntime` foundation + `rebindSession` seam, 2026-05-21)
+
+Sprint 6h₄b ported Pi `AgentSessionRuntime`
+(`packages/coding-agent/src/core/agent-session-runtime.ts:67-374`) +
+the `rebindSession` closure seam (`rpc-mode.ts:310-349`) as the
+**FOUNDATION-ONLY** layer per ADR-0077. **NO new RPC commands wired
+in this sprint.** SUPPORTED stays at 26; DEFERRED stays at 3 (owner
+rebrand to ADR-0078 per spec §D.5); total stays at 29. The 3
+session-tree commands (`switch_session` / `fork` / `clone`) wire in
+Sprint 6h₄c per ADR-0078 on top of this foundation.
+
+| Component | Status | Owner ADR |
+|---|---|---|
+| 6h₄b | Phase 4.12 | `AgentSessionRuntime` Pi port + `rebindSession` seam — FOUNDATION ONLY | SUPPORTED 26 (unchanged), DEFERRED 3 (unchanged) | ADR-0077, ADR-0078 |
+| `aelix_agent_core.runtime` package (NEW) | shipped | ADR-0077 |
+| `aelix_agent_core.runtime._types` (NEW — `HarnessFactory` + `RuntimeReplaceResult` frozen + `AgentSessionRuntimeDiagnostic` frozen) | shipped | ADR-0077 |
+| `aelix_agent_core.runtime.agent_session_runtime.AgentSessionRuntime` (NEW — 7 public methods + 5 read-only getters + private replace seam `_apply` / `_teardown_current` / `_finish_session_replacement`) | shipped | ADR-0077 |
+| Harness-rebuild pattern (P-302 BINDING — `HarnessFactory: Callable[[Session], Awaitable[AgentHarness]]` preserves `_state.session_id` + action bindings + merged tools + cached session-name invariants) | shipped | ADR-0077 |
+| `rebind_session` closure in `rpc_mode.py` (P-303 — Pi `rpc-mode.ts:310-349` subset: re-subscribe only; `bindExtensions` / `commandContextActions` waveform deferred to 6h₄c) | shipped | ADR-0077 |
+| `run_rpc_mode` signature shim accepts optional `runtime_host: AgentSessionRuntime \| None = None` + `harness_factory: HarnessFactory \| None = None` (P-309 — backward-compat for 26 already-wired handlers) | shipped | ADR-0077 |
+| `_make_passthrough_runtime(harness, harness_factory)` helper with `_noop_factory` that RAISES `RuntimeError` (W4 LOW-3 — fail loudly on accidental replace) | shipped | ADR-0077 |
+| 4 stubbed public replace APIs (`switch_session` / `new_session` / `fork` / `import_from_jsonl`) raise `NotImplementedError("Sprint 6h₄c — ADR-0078")` (P-310) | shipped | ADR-0077 |
+| `_emit_before_switch` / `_emit_before_fork` async no-op stubs return `False` (P-308 — Aelix has no `session_before_switch` / `session_before_fork` hook events today) | shipped | ADR-0077 |
+| DEFERRED owner rebrand 0076 → 0078 in `DEFERRED_COMMANDS` (W4 MEDIUM-1 + W5 P-312 + W5 P-319 per spec §D.5) | shipped | ADR-0078 |
+| Cascade pin allowlist updates (`test_phase_4_4`/`4_9`/`4_10`/`4_11_strict_superset.py` extended with ADR-0078 prefix) | shipped | ADR-0078 |
+| `tests/pi_parity/test_phase_4_12_strict_superset.py` closure pin (26 / 3 / 29 unchanged + DEFERRED owners cite ADR-0078 only + 15 Pi member line-range pins + runtime class shape pins + frozen dataclass field locks + `run_rpc_mode` signature pin + Pi fixture immutability) | shipped | ADR-0078 |
+| `tests/pi_parity/fixtures/pi_agent_session_runtime_734e08e.json` (W0 fixture — 15 Pi member line-ranges + architecture decision = `"harness-rebuild"`) | shipped | ADR-0077 |
+| `tests/runtime/test_agent_session_runtime.py` (29+ unit tests — constructor + 5 getters + 2 seam setters + 4 stub returns + `_apply_for_test` replace seam exercise + P-306 `_state.session_id` invariant + dispose order + frozen dataclass locks) | shipped | ADR-0077 |
+| `tests/rpc/test_rpc_mode_rebind.py` (rebind closure integration — subscription rebalance + listener-count balance per replace + smoke test for `runtime_host` kwarg) | shipped | ADR-0077 |
+| `tests/rpc/test_rpc_mode_runtime_shim.py` (NEW — 7 P-309 / P-311 back-compat regression tests: bare-harness call works + passthrough identity + raising no-op factory + dispatch reads `capture.harness` + `runtime_host` harness wins + wired handlers still callable + 3 deferred return ADR-0078 in error string) | shipped | ADR-0078 |
+| `tests/rpc/test_rpc_mode_deferred.py` + `test_rpc_mode_stdin_stdout.py` extended ADR allowlists for ADR-0078 rebrand | shipped | ADR-0078 |
+| ADR-0076 amendment — Sprint 6h₄b foundation update note (DEFERRED ownership rebrands from ADR-0076 → ADR-0078) | shipped | ADR-0076 |
+| 3 session-tree commands (switch_session / fork / clone) — wire on 6h₄b runtime foundation | deferred to Sprint 6h₄c | ADR-0078 |
+| Real `_emit_before_switch` / `_emit_before_fork` extension cancel hooks (P-308 fill-in) | deferred to Sprint 6h₄c | ADR-0078 |
+| P-307 `session_shutdown` extension event emit from `AgentHarness.dispose()` | deferred to Sprint 6h₄c | ADR-0078 |
+| P-313 widen `HarnessFactory` for full Pi field refresh (`_services` / `_diagnostics` / `_modelFallbackMessage`) | deferred to Sprint 6h₄c | ADR-0078 |
+| P-314 `with_session: Callable[[ReplacedSessionContext], Awaitable[None]] \| None = None` 2-stage callback | deferred to Sprint 6h₄c | ADR-0078 |
+| P-315 `set_rebind_session` / `set_before_session_invalidate` optional-cb signature widening | deferred to Sprint 6h₄c | ADR-0078 |
+
+Sprint 6h₄b is a FOUNDATION sprint — `SUPPORTED ∪ DEFERRED ==
+RPC_COMMAND_TYPES` preserved at 29 with the **same 26 / 3 split**.
+The new closure pin (`tests/pi_parity/test_phase_4_12_strict_superset.py`)
+asserts the foundation invariants (runtime class shape + Pi line
+citations + harness-rebuild architecture decision + DEFERRED
+ADR-0078 ownership) without moving any of the count needles.
+
 ## Consequences
 
 - Parity audits become reproducible — the W5 audit lane can `git checkout`

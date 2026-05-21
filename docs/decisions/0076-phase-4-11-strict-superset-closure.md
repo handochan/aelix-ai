@@ -149,7 +149,31 @@ stub error message citing `ADR-0076`:
   line-citation correction note this sprint).
 - ADR-0072 — Sprint 6h₂ Phase 4.9 closure (precursor pattern).
 - ADR-0070 — Sprint 6h₁ Phase 4.8 closure (precursor pattern).
+- ADR-0077 — `AgentSessionRuntime` Pi port + `rebindSession` seam
+  (Sprint 6h₄b FOUNDATION-ONLY).
+- ADR-0078 — Sprint 6h₄b Phase 4.12 closure pin + Sprint 6h₄c
+  wiring carry-forward (NEW owner of the 3 deferred session-tree
+  commands rebranded from ADR-0076 per spec §D.5).
+
+## Sprint 6h₄b foundation update
+
+Sprint 6h₄b ported Pi `AgentSessionRuntime`
+(`packages/coding-agent/src/core/agent-session-runtime.ts:67-374`)
++ the `rebindSession` seam (`rpc-mode.ts:310-349`) as the
+FOUNDATION-ONLY layer per ADR-0077. **NO RPC commands wired in
+6h₄b.** DEFERRED ownership of `switch_session` / `fork` / `clone`
+rebranded from ADR-0076 → ADR-0078 (Sprint 6h₄c) per spec §D.5 —
+the cascade pin allowlists in
+`tests/pi_parity/test_phase_4_4`/`4_9`/`4_10`/`4_11_strict_superset.py`
+were extended with the ADR-0078 prefix in the same W6 commit so the
+rebrand stays observably green. Runtime infrastructure
+(`AgentSessionRuntime` + 4 stubbed replace APIs + `_apply` /
+`_teardown_current` / `_finish_session_replacement` private seam +
+passthrough shim) is now ready for 6h₄c handler wiring on top.
+ADR-0076 closure pin assertions remain valid — counts unchanged at
+26 / 3 / 29.
 
 ## Phase
 
-Sprint 6h₄a / Phase 4.11 / W6 (shipped).
+Sprint 6h₄a / Phase 4.11 / W6 (shipped). Foundation update added
+Sprint 6h₄b / Phase 4.12 / W6 (2026-05-21).
