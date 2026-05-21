@@ -9,8 +9,10 @@ to talk to extensions. The design follows pi-agent-core's split between
 Typing model — per D.1.2 (Sprint 1 · Phase 1.2 spec) extended at Sprint 3a:
 
 - :data:`HookEventName` is a closed ``Literal`` union of every Pi-verified
-  event at the pinned SHA (10 loop projections + 18 own-events = 28 names).
-- :class:`HookBus.on` carries 28 ``@overload`` declarations mirroring
+  event at the pinned SHA (10 loop projections + 25 own-events = 35 names —
+  Sprint 6h₅a (Phase 4.14, ADR-0081) added 4 extension session lifecycle
+  events on top of the Sprint 5a 31-name baseline).
+- :class:`HookBus.on` carries 35 ``@overload`` declarations mirroring
   ``scripts/pyright_spike.py``. The runtime body accepts ``HookHandler``,
   defined as ``Callable[[HookEvent, ExtensionContext], Any | Awaitable[Any]]``.
 - All event classes are frozen. Where a payload field (e.g. ``args``) needs
@@ -135,6 +137,12 @@ AgentHarnessEventName = Literal[
     "input",
     "user_bash",
     "resources_discover",
+    # Sprint 6h₅a additions (Phase 4.14, ADR-0081) — Pi extension session
+    # lifecycle events at SHA ``734e08e`` (``extensions/types.ts:513-557``).
+    "session_start",
+    "session_before_switch",
+    "session_before_fork",
+    "session_shutdown",
 ]
 
 # Union of both (31 names total — Sprint 5a Phase 3.1 added 3 own events).
@@ -175,6 +183,12 @@ HookEventName = Literal[
     "input",
     "user_bash",
     "resources_discover",
+    # Sprint 6h₅a additions (Phase 4.14, ADR-0081) — Pi extension session
+    # lifecycle events at SHA ``734e08e`` (``extensions/types.ts:513-557``).
+    "session_start",
+    "session_before_switch",
+    "session_before_fork",
+    "session_shutdown",
 ]
 
 
@@ -645,6 +659,121 @@ class SessionTreeHookEvent(HookEvent):
     type: Literal["session_tree"] = "session_tree"
 
 
+# === Sprint 6h₅a (Phase 4.14, ADR-0081) — extension session lifecycle events ===
+# Pi parity (SHA 734e08e) — W5 P-344 line citation corrections:
+#   - SessionStartEvent          → extensions/types.ts:513-519
+#   - SessionBeforeSwitchEvent   → extensions/types.ts:522-526
+#   - SessionBeforeForkEvent     → extensions/types.ts:529-533
+#   - SessionShutdownEvent       → extensions/types.ts:552-557
+#   - SessionBeforeSwitchResult  → extensions/types.ts (cancel?: boolean)
+#   - SessionBeforeForkResult    → extensions/types.ts:1015-1022
+#     (cancel?, skipConversationRestore?)
+
+
+@dataclass(frozen=True)
+class SessionBeforeSwitchResult:
+    """Pi parity: ``SessionBeforeSwitchResult`` (``extensions/types.ts``).
+
+    Sprint 6h₅a (Phase 4.14, ADR-0081, P-332). ``cancel=True``
+    short-circuits the reducer (first-cancel-wins via the shared
+    :func:`_reducer_session_before`) and the active replace API
+    (``switch_session`` / ``new_session``) returns
+    :class:`RuntimeReplaceResult(cancelled=True)`.
+    """
+
+    cancel: bool = False
+
+
+@dataclass(frozen=True)
+class SessionBeforeForkResult:
+    """Pi parity: ``SessionBeforeForkResult`` (``extensions/types.ts:1015-1022``).
+
+    Sprint 6h₅a (Phase 4.14, ADR-0081, P-332 / P-345). Same
+    cancel-aggregation semantics as :class:`SessionBeforeSwitchResult`
+    (shared reducer).
+
+    P-345 (W5 BLOCKING FIX): adds ``skip_conversation_restore``
+    Pi-parity field. Pi ``extensions/types.ts:1015-1022``:
+
+    .. code-block:: typescript
+
+       interface SessionBeforeForkResult {
+           cancel?: boolean;
+           skipConversationRestore?: boolean;
+       }
+
+    The field is ``None`` by default (Pi: omitted/undefined). Aelix does
+    not currently consume it (fork-restore semantics deferred to
+    Sprint 6h₅b), but the dataclass shape must match Pi so extensions
+    written against Pi typings can compile against Aelix.
+    """
+
+    cancel: bool = False
+    skip_conversation_restore: bool | None = None
+
+
+@dataclass(frozen=True)
+class SessionStartHookEvent(HookEvent):
+    """Pi ``SessionStartEvent`` (``extensions/types.ts:513-519``).
+
+    Sprint 6h₅a (Phase 4.14, ADR-0081, P-332). Emitted after each
+    successful session replacement (``switch_session`` / ``new_session`` /
+    ``fork``) from the NEW harness's ``HookBus`` (the OLD bus has been
+    disposed by ``_teardown_current``). The ``reason="startup"`` /
+    ``"reload"`` first-emit at harness bootstrap is deferred to Sprint
+    6h₅b (P-343 carry-forward).
+    """
+
+    reason: Literal["startup", "reload", "new", "resume", "fork"] = "startup"
+    previous_session_file: str | None = None
+    type: Literal["session_start"] = "session_start"
+
+
+@dataclass(frozen=True)
+class SessionBeforeSwitchHookEvent(HookEvent):
+    """Pi ``SessionBeforeSwitchEvent`` (``extensions/types.ts:522-526``).
+
+    Sprint 6h₅a (Phase 4.14, ADR-0081, P-332). Emitted before
+    ``switch_session`` (``reason="resume"``) or ``new_session``
+    (``reason="new"``) tears down the current harness — extensions may
+    return :class:`SessionBeforeSwitchResult(cancel=True)` to abort the
+    replace.
+    """
+
+    reason: Literal["new", "resume"] = "resume"
+    target_session_file: str | None = None
+    type: Literal["session_before_switch"] = "session_before_switch"
+
+
+@dataclass(frozen=True)
+class SessionBeforeForkHookEvent(HookEvent):
+    """Pi ``SessionBeforeForkEvent`` (``extensions/types.ts:529-533``).
+
+    Sprint 6h₅a (Phase 4.14, ADR-0081, P-332). Emitted before ``fork``
+    tears down the current harness — extensions may return
+    :class:`SessionBeforeForkResult(cancel=True)` to abort the fork.
+    """
+
+    entry_id: str = ""
+    position: Literal["before", "at"] = "before"
+    type: Literal["session_before_fork"] = "session_before_fork"
+
+
+@dataclass(frozen=True)
+class SessionShutdownHookEvent(HookEvent):
+    """Pi ``SessionShutdownEvent`` (``extensions/types.ts:552-557``).
+
+    Sprint 6h₅a (Phase 4.14, ADR-0081, P-332). Emitted at the top of
+    ``_teardown_current`` (``reason="new"|"resume"|"fork"``) and at the
+    top of ``dispose`` (``reason="quit"``). The ``"reload"`` reason is
+    declared for Pi-parity but no Aelix emit site uses it in 6h₅a.
+    """
+
+    reason: Literal["quit", "reload", "new", "resume", "fork"] = "quit"
+    target_session_file: str | None = None
+    type: Literal["session_shutdown"] = "session_shutdown"
+
+
 @dataclass(frozen=True)
 class ModelSelectHookEvent(HookEvent):
     """Emitted by ``set_model()`` (and ``restore`` path).
@@ -1065,6 +1194,11 @@ HOOK_RESULT_TYPES: dict[HookEventName, type | None] = {
     "input": InputContinue,  # union representative — reducer accepts all 3 InputResult arms
     "user_bash": UserBashResult,
     "resources_discover": ResourcesDiscoverResult,
+    # === Sprint 6h₅a (Phase 4.14, ADR-0081) additions — 4 extension events ===
+    "session_start": None,                                # observational
+    "session_before_switch": SessionBeforeSwitchResult,
+    "session_before_fork": SessionBeforeForkResult,
+    "session_shutdown": None,                             # observational
 }
 
 
@@ -1246,17 +1380,42 @@ async def _reducer_session_before(
     handlers: list[HandlerEntry],
     event: HookEvent,
     ctx: ExtensionContext,
-) -> SessionBeforeCompactResult | SessionBeforeTreeResult | None:
+) -> (
+    SessionBeforeCompactResult
+    | SessionBeforeTreeResult
+    | SessionBeforeSwitchResult
+    | SessionBeforeForkResult
+    | None
+):
     """Sequential, ``cancel=True`` short-circuits, else last truthy wins.
 
-    Shared across ``session_before_compact`` and ``session_before_tree``;
-    both result types expose a ``cancel`` field with the same semantics.
+    Shared across ``session_before_compact``, ``session_before_tree``,
+    ``session_before_switch``, and ``session_before_fork``; all four
+    result types expose a ``cancel`` field with the same first-cancel-wins
+    semantics (Pi parity: ``runner.ts:680-712``).
+
+    Sprint 6h₅a (Phase 4.14, ADR-0081, P-332) — widened to accept the 2
+    new result types ``SessionBeforeSwitchResult`` /
+    ``SessionBeforeForkResult`` for the new ``session_before_switch`` /
+    ``session_before_fork`` events.
     """
 
-    last: SessionBeforeCompactResult | SessionBeforeTreeResult | None = None
+    last: (
+        SessionBeforeCompactResult
+        | SessionBeforeTreeResult
+        | SessionBeforeSwitchResult
+        | SessionBeforeForkResult
+        | None
+    ) = None
     for handler, mode in handlers:
         raw = await _safe_invoke(handler, event, ctx, mode)
-        if isinstance(raw, SessionBeforeCompactResult | SessionBeforeTreeResult):
+        if isinstance(
+            raw,
+            SessionBeforeCompactResult
+            | SessionBeforeTreeResult
+            | SessionBeforeSwitchResult
+            | SessionBeforeForkResult,
+        ):
             if raw.cancel:
                 return raw
             last = raw
@@ -1569,6 +1728,11 @@ _REDUCERS: dict[HookEventName, Callable[..., Awaitable[Any]]] = {
     "input": _reducer_input,
     "user_bash": _reducer_user_bash,
     "resources_discover": _reducer_resources_discover,
+    # === Sprint 6h₅a (Phase 4.14, ADR-0081) additions ===
+    "session_start": _reducer_observational,
+    "session_before_switch": _reducer_session_before,
+    "session_before_fork": _reducer_session_before,
+    "session_shutdown": _reducer_observational,
 }
 
 
@@ -1701,6 +1865,23 @@ ResourcesDiscoverHandler = Callable[
     [ResourcesDiscoverHookEvent, "ExtensionContext"],
     ResourcesDiscoverResult | None | Awaitable[ResourcesDiscoverResult | None],
 ]
+# Sprint 6h₅a (Phase 4.14, ADR-0081) additions ---------------------------------
+SessionStartHandler = Callable[
+    [SessionStartHookEvent, "ExtensionContext"],
+    None | Awaitable[None],
+]
+SessionBeforeSwitchHandler = Callable[
+    [SessionBeforeSwitchHookEvent, "ExtensionContext"],
+    SessionBeforeSwitchResult | None | Awaitable[SessionBeforeSwitchResult | None],
+]
+SessionBeforeForkHandler = Callable[
+    [SessionBeforeForkHookEvent, "ExtensionContext"],
+    SessionBeforeForkResult | None | Awaitable[SessionBeforeForkResult | None],
+]
+SessionShutdownHandler = Callable[
+    [SessionShutdownHookEvent, "ExtensionContext"],
+    None | Awaitable[None],
+]
 
 
 # === The bus ===
@@ -1733,8 +1914,10 @@ class HookBus:
 
     # --- Subscription overloads (D.1.2 + ADR-0019 v3) ---
 
-    # NOTE: 28 overloads below mirror :data:`HookEventName`. Every overload
-    # exposes the new ``error_mode`` kwarg (default ``"throw"`` = Pi parity).
+    # NOTE: 35 overloads below mirror :data:`HookEventName` (Sprint 6h₅a
+    # Phase 4.14 added 4 extension session lifecycle events on top of the
+    # Sprint 5a 31-overload baseline). Every overload exposes the
+    # ``error_mode`` kwarg (default ``"throw"`` = Pi parity).
 
     @overload
     def on(
@@ -2048,6 +2231,47 @@ class HookBus:
         cleanup: HookCleanup | None = None,
         error_mode: HookErrorMode = "throw",
     ) -> Callable[[], None]: ...
+    # --- Sprint 6h₅a (Phase 4.14, ADR-0081) additions ---
+    @overload
+    def on(
+        self,
+        event_type: Literal["session_start"],
+        handler: SessionStartHandler,
+        *,
+        source: str | None = None,
+        cleanup: HookCleanup | None = None,
+        error_mode: HookErrorMode = "throw",
+    ) -> Callable[[], None]: ...
+    @overload
+    def on(
+        self,
+        event_type: Literal["session_before_switch"],
+        handler: SessionBeforeSwitchHandler,
+        *,
+        source: str | None = None,
+        cleanup: HookCleanup | None = None,
+        error_mode: HookErrorMode = "throw",
+    ) -> Callable[[], None]: ...
+    @overload
+    def on(
+        self,
+        event_type: Literal["session_before_fork"],
+        handler: SessionBeforeForkHandler,
+        *,
+        source: str | None = None,
+        cleanup: HookCleanup | None = None,
+        error_mode: HookErrorMode = "throw",
+    ) -> Callable[[], None]: ...
+    @overload
+    def on(
+        self,
+        event_type: Literal["session_shutdown"],
+        handler: SessionShutdownHandler,
+        *,
+        source: str | None = None,
+        cleanup: HookCleanup | None = None,
+        error_mode: HookErrorMode = "throw",
+    ) -> Callable[[], None]: ...
 
     def on(  # pyright: ignore[reportInconsistentOverload]
         self,
@@ -2067,12 +2291,13 @@ class HookBus:
         shipped behavior. ``"continue"`` is an Aelix additive opt-in: handler
         exceptions are logged + swallowed and the reducer continues.
 
-        NOTE: 28 ``@overload`` declarations above provide static narrowing
+        NOTE: 35 ``@overload`` declarations above provide static narrowing
         per event name (handler param typed as ``XxxHandler`` with
-        ``XxxHookEvent`` payload). The runtime impl uses the generic
-        ``HookHandler`` signature (``HookEvent`` union) which pyright cannot
-        reconcile with the narrowed overloads — pyright lacks the
-        contravariance proof. The narrowing is verified by
+        ``XxxHookEvent`` payload — Sprint 6h₅a Phase 4.14 added 4 on top
+        of the Sprint 5a 31-overload baseline). The runtime impl uses the
+        generic ``HookHandler`` signature (``HookEvent`` union) which
+        pyright cannot reconcile with the narrowed overloads — pyright
+        lacks the contravariance proof. The narrowing is verified by
         ``scripts/pyright_spike.py`` which exercises each overload against
         a concrete handler and asserts pyright sees the narrowed payload
         type. Suppression is scoped to ``reportInconsistentOverload`` only.
@@ -2268,11 +2493,21 @@ __all__ = [
     "SessionBeforeCompactHandler",
     "SessionBeforeCompactHookEvent",
     "SessionBeforeCompactResult",
+    "SessionBeforeForkHandler",
+    "SessionBeforeForkHookEvent",
+    "SessionBeforeForkResult",
+    "SessionBeforeSwitchHandler",
+    "SessionBeforeSwitchHookEvent",
+    "SessionBeforeSwitchResult",
     "SessionBeforeTreeHandler",
     "SessionBeforeTreeHookEvent",
     "SessionBeforeTreeResult",
     "SessionCompactHandler",
     "SessionCompactHookEvent",
+    "SessionShutdownHandler",
+    "SessionShutdownHookEvent",
+    "SessionStartHandler",
+    "SessionStartHookEvent",
     "SessionTreeHandler",
     "SessionTreeHookEvent",
     "SettledHandler",
