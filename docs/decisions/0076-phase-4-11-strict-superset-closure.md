@@ -173,7 +173,39 @@ passthrough shim) is now ready for 6h₄c handler wiring on top.
 ADR-0076 closure pin assertions remain valid — counts unchanged at
 26 / 3 / 29.
 
+## Sprint 6h₄c PHASE 4 RPC CLOSURE
+
+Sprint 6h₄c wired the 3 remaining session-tree commands
+(`switch_session` / `fork` / `clone`) on top of the 6h₄b runtime
+foundation. **PHASE 4 RPC roster CLOSED** at 29 SUPPORTED / 0
+DEFERRED / 29 total = full Pi parity for `RpcCommand`. The
+ADR-0076 carry-forward roster for the 3 deferred session-tree
+commands fully drains; Sprint 6h₅+ carry-forward (runtime /
+extension polish — P-307 / P-308 / P-314 / P-315 +
+`assertSessionCwdExists` + `previousSessionFile` /
+`sessionStartEvent` + Pi `forkFrom` + Pi `setup` callback +
+`import_from_jsonl` real body) is enumerated in ADR-0080.
+
+## Line-citation correction (Sprint 6h₄c W0 verification — P-323)
+
+ADR-0076 carry-forward roster cited `rpc-mode.ts:528-557` for the
+3 session-tree handlers. Sprint 6h₄c W0 verified at SHA `734e08e`
+puts the actual sites at `:563-589` — ~35 lines off (mirror of
+Sprint 6h₄a P-293 drift discovery against the original ADR-0074
+estimates). Sprint 6h₄c closure pin
+`tests/pi_parity/test_phase_4_13_strict_superset.py` locks the
+verified line ranges:
+
+- `switch_session` — `rpc-mode.ts:563-569` (Pi handler body 7 lines)
+- `fork` — `rpc-mode.ts:571-577` (Pi handler body 7 lines)
+- `clone` — `rpc-mode.ts:579-589` (Pi handler body 11 lines)
+
+No behavioral consequence — ADR-0076 algorithmic content remains
+valid; line citations corrected forward via ADR-0079 W0 fixture
++ ADR-0080 closure pin.
+
 ## Phase
 
 Sprint 6h₄a / Phase 4.11 / W6 (shipped). Foundation update added
-Sprint 6h₄b / Phase 4.12 / W6 (2026-05-21).
+Sprint 6h₄b / Phase 4.12 / W6 (2026-05-21). Phase 4 RPC roster
+CLOSED Sprint 6h₄c / Phase 4.13 / W6 (2026-05-21).

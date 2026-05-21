@@ -151,6 +151,46 @@ ADR-0078")`. 6h₄c wires the matching RPC handlers + implements the
 - ADR-0029 — Pi parity acceptance test harness (closure-pin lane).
 - ADR-0032 — Sprint workflow + W4/W5 audit mandatory gate.
 
+## Sprint 6h₄c PHASE 4 RPC CLOSURE
+
+Sprint 6h₄c filled 3 of the 4 runtime body stubs from ADR-0077 /
+ADR-0078 foundation (`switch_session` / `new_session` / `fork` —
+`import_from_jsonl` stays stubbed per ADR-0080 carry-forward) and
+wired the 3 session-tree RPC handlers. The 6h₄b foundation
+runtime + rebind seam now drives real session-tree mutations.
+
+| Sprint 6h₄c outcome | Owner ADR |
+|---|---|
+| `AgentSessionRuntime` constructor extended with required keyword-only `repo` + `fs` (P-324) | 0079 |
+| 3 of 4 stubbed replace API bodies filled via `JsonlSessionRepo.open` / `create` / `fork` (P-325) | 0079 |
+| `import_from_jsonl` STAYS STUBBED — no Pi `RpcCommand` discriminator maps to it at SHA `734e08e` | 0080 |
+| `_apply_for_test` REMOVED — 6h₄b tests migrated to real `switch_session` (P-331) | 0079 |
+| `_handle_switch_session` / `_handle_fork` / `_handle_clone` real handlers wired (P-326 / P-327 / P-328) | 0079 |
+| `_handle_new_session` Sprint 6d stub REPLACED — `parent_session` lineage persists (P-330 / closes ADR-0058) | 0079 |
+| New `_SUPPORTED_HANDLERS_RUNTIME_HOST` arity class + `_bind_runtime_host` adapter (P-326) | 0079 |
+| P-329 deliberate convergence — Aelix handlers MUST NOT call rebind manually | 0079 |
+| Counts move 26 / 3 / 29 → **29 / 0 / 29** = PHASE 4 RPC ROSTER CLOSED | 0080 |
+| W4 MINOR-1 / MINOR-2 / MINOR-3 / MINOR-4 cleanups applied | 0079 |
+| ADR-0078 carry-forward `P-307` / `P-308` / `P-314` / `P-315` defer to Sprint 6h₅+ (runtime / extension polish, NOT RPC dispatch) | 0080 |
+| **DROPPED:** ADR-0078 carry-forward `P-313 HarnessFactory 4-field refresh` — harness-rebuild encapsulates services + diagnostics + model_fallback_message via factory closure (redundant for Aelix) | 0080 |
+
+## Line-citation correction (P-323 mirror)
+
+ADR-0078 carry-forward roster cited Pi handler lines `:566` /
+`:574` / `:586` (3-line stub citations inherited from ADR-0076's
+`:528-557` estimate range). Sprint 6h₄c W0 verified at SHA
+`734e08e` puts the actual case sites at:
+
+- `switch_session` — `rpc-mode.ts:563-569` (Pi handler body 7 lines)
+- `fork` — `rpc-mode.ts:571-577` (Pi handler body 7 lines)
+- `clone` — `rpc-mode.ts:579-589` (Pi handler body 11 lines)
+
+Closure pin `tests/pi_parity/test_phase_4_13_strict_superset.py`
+locks verified lines. No behavioral consequence — ADR-0078
+algorithmic content remains valid; line citations corrected
+forward via ADR-0079 W0 fixture.
+
 ## Phase
 
-Sprint 6h₄b / Phase 4.12 / W6 (shipped).
+Sprint 6h₄b / Phase 4.12 / W6 (shipped). Sprint 6h₄c PHASE 4 RPC
+CLOSURE / Phase 4.13 / W6 (2026-05-21).

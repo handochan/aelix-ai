@@ -459,6 +459,74 @@ asserts the foundation invariants (runtime class shape + Pi line
 citations + harness-rebuild architecture decision + DEFERRED
 ADR-0078 ownership) without moving any of the count needles.
 
+### Sprint 6h₄c amendment (session-tree handlers wired — PHASE 4 RPC CLOSURE, 2026-05-21)
+
+Sprint 6h₄c wired 3 session-tree RPC commands (`switch_session` /
+`fork` / `clone`) on top of the 6h₄b `AgentSessionRuntime`
+foundation, filled 3 of the 4 stubbed replace API bodies
+(`switch_session` / `new_session` / `fork` — `import_from_jsonl`
+stays stubbed per ADR-0080 carry-forward), and replaced the Sprint
+6d `_handle_new_session` stub (which rejected `parent_session`)
+with a runtime-host route that persists lineage through
+`repo.create(parent_session_path=...)`. **PHASE 4 RPC ROSTER
+CLOSED** at SUPPORTED **29** / DEFERRED **0** / total **29** =
+full Pi parity for the `RpcCommand` discriminator union.
+
+| Component | Status | Owner ADR |
+|---|---|---|
+| 6h₄c | Phase 4.13 | session-tree handlers wired + runtime body fills | SUPPORTED 26 → **29**, DEFERRED 3 → **0** | ADR-0079, ADR-0080 |
+| `AgentSessionRuntime.__init__` constructor extended with required keyword-only `repo: JsonlSessionRepo` + `fs: FileSystem` (P-324 BINDING) | shipped | 0079 |
+| `AgentSessionRuntime.switch_session` real body — `repo.open(load_jsonl_session_metadata(fs, path))` → `_finish_session_replacement` (P-325) | shipped | 0079 |
+| `AgentSessionRuntime.new_session` real body — `repo.create(JsonlSessionCreateOptions(cwd, parent_session_path))` → `_finish_session_replacement` (P-325 / P-330 — replaces Sprint 6d stub at `rpc_mode.py:309-347` that rejected `parent_session`) | shipped | 0079 |
+| `AgentSessionRuntime.fork` real body — `repo.fork(source, ForkOptions(cwd, entry_id=target_leaf_id, position="at", parent_session_path))` — Aelix persisted-only (drops Pi in-memory branch `:303-319`) (P-325) | shipped | 0079 |
+| `AgentSessionRuntime.import_from_jsonl` STAYS STUBBED — no Pi `RpcCommand` discriminator maps to it at SHA `734e08e` (Pi TUI `/import` doesn't go through RPC; carry-forward per ADR-0080) | shipped | 0079 |
+| `_extract_user_message_text` module-private helper (Pi `agent-session-runtime.ts:49-58`) | shipped | 0079 |
+| `_apply_for_test` test seam REMOVED — 6h₄b unit tests migrated to drive `switch_session` via real public API (P-331) | shipped | 0079 |
+| NEW `_SUPPORTED_HANDLERS_RUNTIME_HOST` arity class — 4 handlers `(new_session, switch_session, fork, clone)` taking `(runtime_host, cmd)` instead of `(harness, cmd)` (P-326) | shipped | 0079 |
+| `_bind_runtime_host(handler, runtime_host)` adapter closure (P-326) | shipped | 0079 |
+| `_make_missing_runtime_handler(cmd_type)` Pi-shape error stub for `build_dispatch_table(runtime_host=None)` test path (P-326-DRIFT ratified) | shipped | 0079 |
+| `build_dispatch_table(model_registry, *, runtime_host)` — `runtime_host` Optional with missing-runtime stub fallback (P-326-DRIFT ratified) | shipped | 0079 |
+| `_make_passthrough_runtime(harness, harness_factory, *, repo=None, fs=None)` — Pi-defaults via `LocalFileSystem` + `JsonlSessionRepo(fs=...)` when caller omits (P-324-DRIFT ratified) | shipped | 0079 |
+| `run_rpc_mode(..., repo=None, fs=None)` signature extension — when `runtime_host` explicit, caller MUST NOT supply `repo` / `fs` (the runtime owns them); when `runtime_host=None`, passthrough threads defaults (P-324) | shipped | 0079 |
+| `_handle_switch_session` real handler (Pi `rpc-mode.ts:563-569`) — wire shape `{cancelled}` (Pi line 568) | shipped | 0079 |
+| `_handle_fork` real handler (Pi `rpc-mode.ts:571-577`) — wire shape `{cancelled, text?}` with `text` key OMITTED when `selected_text is None` (P-327 / P-298 pattern — `selectedText → text` rename) | shipped | 0079 |
+| `_handle_clone` real handler (Pi `rpc-mode.ts:579-589`) — leaf_id captured BEFORE OLD harness dispose (P-328 ordering); wire shape `{cancelled}` only (Pi line 588 drops `selectedText`) | shipped | 0079 |
+| `_handle_new_session` REPLACED — Sprint 6d stub deleted; routes through `runtime_host.new_session(parent_session=cmd.parent_session)`; ADR-0058 carry-forward CLOSES (P-330) | shipped | 0079 |
+| P-329 deliberate convergence — Aelix handlers MUST NOT call rebind manually (Pi belt-and-braces `await rebindSession()` at `rpc-mode.ts:566`/`:574`/`:586` NOT mirrored — runtime's `_finish_session_replacement` is single source of truth) | shipped | 0079 |
+| W4 MINOR-1 — Double-catch collapse in `_handle_fork` + `_handle_clone` (keep `ValueError` arm Pi-documented at `:247`; drop blanket `except Exception`) | shipped | 0079 |
+| W4 MINOR-2 — Blanket `except Exception` dropped from `_handle_switch_session` (outer `_handle_command` wraps) | shipped | 0079 |
+| W4 MINOR-3 — `test_handle_fork_wire_shape_omits_text_when_none` rewritten to drive handler via mocked runtime returning `RuntimeReplaceResult(selected_text=None)` | shipped | 0079 |
+| W4 MINOR-4 — `_handle_new_session` blanket `except RuntimeError` dropped (avoid masking noop-factory leaks) | shipped | 0079 |
+| `tests/pi_parity/test_phase_4_13_strict_superset.py` closure pin (29 / 0 / 29 + handler invariants + `_apply_for_test` removed + wire shapes + rebind exactly-once + leaf_id pre-capture ordering + line citations) | shipped | 0080 |
+| `tests/pi_parity/fixtures/pi_runtime_wire_734e08e.json` W0 fixture | shipped | 0079 |
+| `tests/runtime/test_agent_session_runtime_replace_apis.py` (NEW — real switch_session / new_session / fork over tmp-path `JsonlSessionRepo`) | shipped | 0079 |
+| `tests/runtime/test_switch_session.py` / `test_fork.py` / `test_new_session_real.py` (NEW — runtime-layer unit tests for each replace API) | shipped | 0079 |
+| `tests/rpc/test_rpc_mode_switch_fork_clone.py` (NEW — 3 handler integration tests + arity / dispatch wiring + rebind invocation count + leaf_id pre-capture ordering + W4 MINOR-3 rewrite) | shipped | 0079 |
+| `tests/rpc/test_rpc_mode_new_session_parent.py` (NEW — Sprint 6d stub removal regression; asserts `parent_session_path` actually persists) | shipped | 0079 |
+| Cascade pin allowlist updates (4.4 / 4.6 / 4.8 / 4.9 / 4.10 / 4.11 / 4.12 count cascades to 29 supported / 0 deferred) | shipped | 0080 |
+| 6h₄b test migrations — `tests/runtime/test_agent_session_runtime.py` + `tests/rpc/test_rpc_mode_*.py` drop `_apply_for_test` usage and migrate to real `switch_session` (P-331) | shipped | 0079 |
+| ADR-0076 / ADR-0078 amendments — Sprint 6h₄c PHASE 4 RPC CLOSURE note + P-323 line-citation correction (`:528-557` / `:566`/`:574`/`:586` → verified `:563-569` / `:571-577` / `:579-589`) | shipped | 0076 / 0078 |
+| P-307 `session_shutdown` extension event emit | deferred to Sprint 6h₅+ | 0080 |
+| P-308 real `session_before_switch` / `session_before_fork` extension cancel hooks | deferred to Sprint 6h₅+ | 0080 |
+| P-313 `HarnessFactory` 4-field refresh | **DROPPED** (harness-rebuild encapsulates services + diagnostics + model_fallback_message via factory closure; redundant for Aelix) | 0080 |
+| P-314 `with_session` 2-stage callback | deferred to Sprint 6h₅+ | 0080 |
+| P-315 optional-cb signatures | deferred to Sprint 6h₅+ | 0080 |
+| `assertSessionCwdExists` Pi parity (cwd-on-disk validation) | deferred to Sprint 6h₅+ | 0080 |
+| `previousSessionFile` / `sessionStartEvent` tracking | deferred to Sprint 6h₅+ | 0080 |
+| Pi `forkFrom` cross-cwd import | deferred to Sprint 6h₅+ | 0080 |
+| Pi `setup` callback in `new_session` | deferred to Sprint 6h₅+ | 0080 |
+| `import_from_jsonl` real runtime body (no RPC wire today) | deferred to Sprint 6h₅+ | 0080 |
+
+Sprint 6h₄c moves 3 commands from deferred → supported AND
+replaces the Sprint 6d `_handle_new_session` stub. `DEFERRED_COMMANDS`
+shrinks 3 → **0**; `SUPPORTED_COMMANDS` rises 26 → **29**. The
+closure pin (`tests/pi_parity/test_phase_4_13_strict_superset.py`)
+asserts `SUPPORTED_COMMANDS == RPC_COMMAND_TYPES` (full set
+equality, NOT just superset union) and `DEFERRED_COMMANDS == {}`
+literal empty. **This is the LAST Phase 4 RPC sprint** —
+remaining Pi parity gaps are runtime / extension polish per the
+Sprint 6h₅+ roster in ADR-0080.
+
 ## Consequences
 
 - Parity audits become reproducible — the W5 audit lane can `git checkout`
