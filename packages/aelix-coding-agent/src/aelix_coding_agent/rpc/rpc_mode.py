@@ -80,6 +80,38 @@ optional ``runtime_host: AgentSessionRuntime | None = None``
 parameter; existing callers continue to work unchanged (P-309 compat
 shim).
 
+Sprint 6h₄c (ADR-0079 / ADR-0080 / P-323~P-331) — PHASE 4 CLOSURE.
+Wires the 3 last DEFERRED session-tree commands (``switch_session`` /
+``fork`` / ``clone``) on top of the Sprint 6h₄b
+:class:`AgentSessionRuntime` foundation. Counts move to **29 supported /
+0 deferred / 29 total** — full Pi parity for the ``RpcCommand``
+discriminator union.
+
+New :data:`_SUPPORTED_HANDLERS_RUNTIME_HOST` arity class (P-326) carries
+4 handlers operating on :class:`AgentSessionRuntime` instead of
+:class:`AgentHarness`: ``new_session`` (MOVED from HARNESS_ONLY per
+P-330 — replaces the Sprint 6d stub that rejected ``parent_session``) +
+``switch_session`` + ``fork`` + ``clone``.
+
+:func:`run_rpc_mode` signature extends with optional ``repo`` / ``fs``
+keyword parameters (P-324) — supplied by the caller for explicit
+``runtime_host`` setup, or defaulted to :class:`LocalFileSystem` +
+:class:`JsonlSessionRepo` when constructing the passthrough.
+
+Aelix handlers DO NOT call rebind manually (P-329 deliberate
+convergence): Pi belt-and-braces handler-side ``await rebindSession()``
+at ``rpc-mode.ts:566`` / ``:574`` / ``:586`` is NOT mirrored — the
+runtime's ``_finish_session_replacement`` auto-invokes the registered
+callback as single source of truth (verified by closure-pin assertion
+that ``_rebind_session`` is awaited exactly 1× per replace).
+
+Pi line citations at SHA 734e08e per Sprint 6h₄c W0 (P-323):
+- ``rpc-mode.ts:563-569`` (``switch_session`` handler — 7 lines)
+- ``rpc-mode.ts:571-577`` (``fork`` handler — 7 lines)
+- ``rpc-mode.ts:579-589`` (``clone`` handler — 11 lines)
+- ``rpc-mode.ts:277-282`` (``new_session`` handler — Sprint 6d stub
+  replaced via runtime_host route per P-330)
+
 Pi line citations at SHA 734e08e per Sprint 6h₂ W5/W6 audit (P-258):
 the 9 case sites in ``rpc-mode.ts`` live at lines 483-547 (NOT
 528-635 as earlier drafts suggested) and delegate to ``AgentSession``
@@ -135,6 +167,12 @@ if TYPE_CHECKING:
 from aelix_agent_core.runtime import AgentSessionRuntime
 from aelix_agent_core.runtime._types import HarnessFactory
 
+# Sprint 6h₄c (ADR-0079, P-324): import the FileSystem + JsonlSessionRepo
+# surface for the new ``repo`` / ``fs`` keyword parameters threaded into
+# :func:`_make_passthrough_runtime` and :func:`run_rpc_mode`.
+from aelix_agent_core.session.fs import FileSystem, LocalFileSystem
+from aelix_agent_core.session.jsonl_repo import JsonlSessionRepo
+
 # Sprint 6f W2 (ADR-0065): import :class:`Model` for the
 # ``_model_to_dict`` serializer. Lazy/runtime import to keep the
 # import graph cycle-free.
@@ -148,24 +186,12 @@ from aelix_ai.streaming import Model
 # ``{success: false, error: "..."}`` envelope. The closure pin asserts
 # 9 supported + 20 deferred = 29 total (= Pi RpcCommand variant count).
 
-DEFERRED_COMMANDS: dict[str, str] = {
-    # Sprint 6h₄a (ADR-0075 / ADR-0076 / P-293~P-298) wired 2 read-only
-    # session-navigation commands (get_fork_messages +
-    # get_last_assistant_text) — the entries below shrink to the 3
-    # session-tree commands deferred to Sprint 6h₄b per ADR-0076
-    # (porting Pi ``AgentSessionRuntime`` +
-    # ``SessionManager.getLeafId`` + ``rebindSession`` seam).
-    # Sprint 6h₄b (ADR-0077 / P-302~P-310) ports
-    # :class:`AgentSessionRuntime` + the ``rebindSession`` seam
-    # (FOUNDATION-ONLY) — no new RPC commands wired; counts stay at
-    # 26 supported / 3 deferred / 29 total. Owner rebrand to ADR-0078
-    # applied per spec §D.5; foundation lands without wiring. The 3
-    # below MOVE to supported in Sprint 6h₄c when ADR-0078 wires the
-    # runtime-host bridge on top of this foundation.
-    "switch_session": "ADR-0078 — Sprint 6h₄c wires runtime-host bridge",
-    "fork":           "ADR-0078 — Sprint 6h₄c wires runtime-host bridge",
-    "clone":          "ADR-0078 — Sprint 6h₄c wires runtime-host bridge",
-}
+# Sprint 6h₄c (ADR-0079 / ADR-0080 / P-323~P-331) wires the 3 last
+# DEFERRED session-tree commands (``switch_session`` / ``fork`` /
+# ``clone``) on top of the 6h₄b :class:`AgentSessionRuntime`
+# foundation. The counts move to **29 supported / 0 deferred / 29
+# total** — full Pi parity for the RPC roster (Phase 4 closure).
+DEFERRED_COMMANDS: dict[str, str] = {}
 
 
 # Supported command discriminator → handler name mapping. Sprint 6f W2
@@ -214,6 +240,14 @@ SUPPORTED_COMMANDS: frozenset[str] = frozenset(
         # ADR-0074 ``563-566`` / ``568-571`` estimates).
         "get_fork_messages",
         "get_last_assistant_text",
+        # Sprint 6h₄c (ADR-0079 / P-323~P-331) — 3 session-tree
+        # commands wired on top of the 6h₄b runtime foundation. Pi
+        # parity: ``rpc-mode.ts:563-569`` / ``:571-577`` / ``:579-589``
+        # (W0 verified at SHA 734e08e — supersedes the ADR-0078
+        # carry-forward roster estimates ``:566`` / ``:574`` / ``:586``).
+        "switch_session",
+        "fork",
+        "clone",
     }
 )
 
@@ -307,43 +341,38 @@ async def _handle_abort(
 
 
 async def _handle_new_session(
-    harness: AgentHarness,
+    runtime_host: AgentSessionRuntime,
     cmd: RpcCommandNewSession,
 ) -> RpcResponse:
     """Pi parity: ``rpc-mode.ts:277-282`` (new_session handler).
 
-    Aelix harness has no ``runtimeHost.newSession`` equivalent yet — the
-    fork/clone Sprint 6f deliverable owns that. Sprint 6d ships the
-    minimal cancel-aware shape: harness.abort() clears in-flight queues
-    and the response reports ``cancelled: false`` because no extension
-    veto path exists yet.
+    Sprint 6h₄c (ADR-0079, P-330): replaces the Sprint 6d stub (which
+    rejected ``parent_session`` with an :class:`RpcErrorResponse` —
+    old body at ``rpc_mode.py:309-347``) by routing through
+    :meth:`AgentSessionRuntime.new_session` with
+    ``parent_session=cmd.parent_session``. The Sprint 6d ``ADR-0058 —
+    parent_session deferred`` carry-forward CLOSES here.
 
-    P-117: ``parent_session`` lineage tracking requires session-tree
-    navigation (fork/switch/clone) which is deferred to Sprint 6f per
-    ADR-0058. Reject the request explicitly rather than silently dropping
-    the field, so callers see a parity-shaped error envelope.
+    P-329 deliberate convergence — this handler MUST NOT call
+    ``rebind_session`` manually. The runtime's
+    ``_finish_session_replacement`` auto-invokes the registered callback
+    as single source of truth; Pi's belt-and-braces handler-side rebind
+    is NOT mirrored.
     """
 
-    if cmd.parent_session is not None:
-        return RpcErrorResponse(
-            id=cmd.id,
-            command="new_session",
-            error=(
-                "parent_session lineage tracking deferred to Sprint 6f "
-                "(ADR-0058)"
-            ),
-        )
-    if not harness.is_idle:
-        await harness.abort()
-        with contextlib.suppress(Exception):
-            await harness.wait_for_idle()
-    # Pi shape: ``{cancelled: bool}``. Aelix never cancels in this
-    # Sprint 6d path; the deferred Sprint 6f work adds the runtimeHost
-    # veto callback.
+    # W4 MINOR-4 (Sprint 6h₄c W6): drop the blanket ``except RuntimeError``
+    # catch. The outer :func:`_handle_command` wraps any exception into a
+    # Pi-shape error envelope, so the inner catch is redundant; removing it
+    # also avoids masking unrelated RuntimeError leaks (e.g. noop-factory
+    # ``Passthrough runtime cannot replace harness``) which should fail
+    # loud rather than wire back as a successful "new_session" envelope.
+    result = await runtime_host.new_session(
+        parent_session=cmd.parent_session
+    )
     return RpcSuccessResponse(
         id=cmd.id,
         command="new_session",
-        data={"cancelled": False},
+        data={"cancelled": result.cancelled},
     )
 
 
@@ -1264,6 +1293,173 @@ async def _handle_get_last_assistant_text(
     )
 
 
+# === Sprint 6h₄c (ADR-0079, P-323~P-331) — 3 session-tree handlers ===========
+#
+# Pi parity:
+#   - ``rpc-mode.ts:563-569`` → ``runtimeHost.switchSession(path)``
+#     (``agent-session-runtime.ts:175-198``).
+#   - ``rpc-mode.ts:571-577`` → ``runtimeHost.fork(entry_id)``
+#     (``agent-session-runtime.ts:234-320``).
+#   - ``rpc-mode.ts:579-589`` → ``runtimeHost.fork(leaf_id, position="at")``
+#     (Pi clone is a fork-at-leaf).
+#
+# P-323 line drift: ADR-0076 estimated ``rpc-mode.ts:528-557``; ADR-0078's
+# carry-forward roster estimated ``:566`` / ``:574`` / ``:586`` (3-line
+# stub citations). W0 verification at SHA ``734e08e`` puts the actual case
+# sites at ``:563-569`` / ``:571-577`` / ``:579-589``. ADR-0079 records the
+# supersession.
+#
+# P-326: each handler takes ``(runtime_host, cmd)`` instead of
+# ``(harness, cmd)`` — a NEW arity class
+# :data:`_SUPPORTED_HANDLERS_RUNTIME_HOST` carries them; :func:`_bind_runtime_host`
+# adapts the 2-arg shape so the dispatch table stays uniform.
+#
+# P-329 deliberate convergence: Aelix handlers DO NOT call rebind manually.
+# The runtime's ``_finish_session_replacement`` auto-invokes the registered
+# callback; Pi belt-and-braces handler-side ``await rebindSession()`` at
+# ``rpc-mode.ts:566`` / ``:574`` / ``:586`` is NOT mirrored.
+
+
+async def _handle_switch_session(
+    runtime_host: AgentSessionRuntime,
+    cmd: Any,  # ``RpcCommandSwitchSession``
+) -> RpcResponse:
+    """Pi parity: ``rpc-mode.ts:563-569`` (switch_session handler).
+
+    Delegates to :meth:`AgentSessionRuntime.switch_session` which routes
+    through ``repo.open(load_jsonl_session_metadata(fs, path))`` →
+    ``_finish_session_replacement(new_session)`` (Pi
+    ``agent-session-runtime.ts:175-198``). Returns the Pi wire shape
+    ``{cancelled}`` (Pi line 568).
+
+    P-329 deliberate convergence — this handler MUST NOT call
+    ``rebind_session`` manually. The runtime's
+    ``_finish_session_replacement`` auto-invokes the registered callback
+    as single source of truth; Pi's belt-and-braces handler-side rebind
+    at ``rpc-mode.ts:566`` is NOT mirrored.
+    """
+
+    # W4 MINOR-2 (Sprint 6h₄c W6): drop the inner blanket
+    # ``except Exception`` catch — the outer :func:`_handle_command`
+    # already wraps every exception into a Pi-shape error envelope
+    # (``rpc_mode.py`` ``_handle_command`` ``except Exception`` arm).
+    # The handler stays pure — :class:`SessionError` from ``repo.open``
+    # propagates and reaches the wire as the same envelope.
+    result = await runtime_host.switch_session(cmd.session_path)
+    return RpcSuccessResponse(
+        id=cmd.id,
+        command="switch_session",
+        data={"cancelled": result.cancelled},
+    )
+
+
+async def _handle_fork(
+    runtime_host: AgentSessionRuntime,
+    cmd: Any,  # ``RpcCommandFork``
+) -> RpcResponse:
+    """Pi parity: ``rpc-mode.ts:571-577`` (fork handler).
+
+    Delegates to :meth:`AgentSessionRuntime.fork` which routes through
+    ``repo.fork(...)`` over the harness's current session (Pi
+    ``agent-session-runtime.ts:234-320``). Returns the Pi wire shape
+    ``{text?, cancelled}`` (Pi line 576).
+
+    P-327 wire shape — ``selectedText`` → ``text`` rename: Pi
+    ``rpc-mode.ts:576`` returns ``success(id, "fork", {text:
+    result.selectedText, cancelled: result.cancelled})``; the Pi wire
+    key is ``text`` (NOT ``selectedText``). Aelix mirrors with
+    key-omission per Sprint 6h₄a P-298: when ``result.selected_text``
+    is :data:`None` the ``text`` key is omitted entirely (matches Pi
+    ``JSON.stringify({text: undefined})`` → ``{cancelled: false}``).
+    Pattern is identical to :func:`_handle_get_last_assistant_text`.
+
+    P-329 deliberate convergence — this handler MUST NOT call
+    ``rebind_session`` manually (see :func:`_handle_switch_session`).
+    """
+
+    # W4 MINOR-1 (Sprint 6h₄c W6): keep the ``except ValueError`` arm
+    # (Pi-documented error path: "Invalid entry ID for forking" at Pi
+    # ``agent-session-runtime.ts:247``); drop the redundant
+    # ``except Exception`` since the outer :func:`_handle_command` already
+    # wraps non-ValueError exceptions into a Pi-shape envelope.
+    try:
+        result = await runtime_host.fork(cmd.entry_id)
+    except ValueError as exc:
+        return RpcErrorResponse(
+            id=cmd.id, command="fork", error=str(exc)
+        )
+    data: dict[str, Any] = {"cancelled": result.cancelled}
+    if result.selected_text is not None:
+        data["text"] = result.selected_text
+    return RpcSuccessResponse(
+        id=cmd.id, command="fork", data=data
+    )
+
+
+async def _handle_clone(
+    runtime_host: AgentSessionRuntime,
+    cmd: Any,  # ``RpcCommandClone``
+) -> RpcResponse:
+    """Pi parity: ``rpc-mode.ts:579-589`` (clone handler).
+
+    Pi 3-step waveform:
+      1. Capture ``leaf_id`` BEFORE entering the fork waveform (P-328 —
+         OLD session is disposed during fork; leaf must be captured
+         against the LIVE session). The capture order matches Pi line
+         580 verbatim.
+      2. Error envelope ``"Cannot clone session: no current entry
+         selected"`` when ``leaf_id`` is :data:`None` (Pi parity
+         ``:582``).
+      3. Delegate to :meth:`AgentSessionRuntime.fork` with
+         ``position="at"`` — Pi line 584. The ``position="at"``
+         differentiates clone from fork: clone forks AT the current leaf
+         (no user-message walk), fork walks BACK to the parent.
+      4. Wire shape: ``{cancelled}`` — Pi DROPS ``selectedText`` for
+         clone (Pi line 588 returns only ``{cancelled: result.cancelled}``).
+
+    Aelix-divergence acknowledged: Pi ``Session.get_leaf_id()`` is sync;
+    Aelix ``Session.get_leaf_id()`` is ``async def``. The ``await`` is
+    necessary; pre-capture ordering is preserved because the ``await``
+    resolves BEFORE the ``runtime_host.fork(...)`` call enters its
+    replace waveform.
+
+    P-329 deliberate convergence — this handler MUST NOT call
+    ``rebind_session`` manually (see :func:`_handle_switch_session`).
+    """
+
+    session = runtime_host.session
+    if session is None:
+        return RpcErrorResponse(
+            id=cmd.id,
+            command="clone",
+            error="Cannot clone session: no current entry selected",
+        )
+    leaf_id = await session.get_leaf_id()
+    if leaf_id is None:
+        return RpcErrorResponse(
+            id=cmd.id,
+            command="clone",
+            error="Cannot clone session: no current entry selected",
+        )
+    # W4 MINOR-1 (Sprint 6h₄c W6): keep ``except ValueError`` (Pi-documented
+    # error path); drop redundant ``except Exception`` per ADR-0079 — the
+    # outer :func:`_handle_command` wraps any other exception into a
+    # Pi-shape envelope.
+    try:
+        result = await runtime_host.fork(leaf_id, position="at")
+    except ValueError as exc:
+        return RpcErrorResponse(
+            id=cmd.id, command="clone", error=str(exc)
+        )
+    # Pi line 588: clone DROPS selected_text from the wire (only
+    # ``{cancelled}`` reaches the client).
+    return RpcSuccessResponse(
+        id=cmd.id,
+        command="clone",
+        data={"cancelled": result.cancelled},
+    )
+
+
 # === Deferred handler factory =================================================
 
 
@@ -1296,7 +1492,12 @@ _SUPPORTED_HANDLERS_HARNESS_ONLY: dict[
 ] = {
     "prompt": _handle_prompt,
     "abort": _handle_abort,
-    "new_session": _handle_new_session,
+    # Sprint 6h₄c (ADR-0079, P-330): ``new_session`` MOVED from
+    # HARNESS_ONLY to :data:`_SUPPORTED_HANDLERS_RUNTIME_HOST` — the
+    # handler now routes through :meth:`AgentSessionRuntime.new_session`
+    # which persists ``parent_session`` lineage via
+    # ``repo.create(parent_session_path=...)``. The Sprint 6d ADR-0058
+    # carry-forward closes.
     "get_state": _handle_get_state,
     "get_messages": _handle_get_messages,
     "compact": _handle_compact,
@@ -1335,6 +1536,22 @@ _SUPPORTED_HANDLERS_HARNESS_REGISTRY: dict[
     "get_available_models": _handle_get_available_models,
 }
 
+# Sprint 6h₄c (ADR-0079, P-326): NEW arity class for handlers that take
+# ``(runtime_host, cmd)`` instead of ``(harness, cmd)``. The 3 session-
+# tree handlers (``switch_session`` / ``fork`` / ``clone``) operate on
+# :class:`AgentSessionRuntime` directly; the 4th entry
+# (``new_session``) MOVED here from HARNESS_ONLY per P-330 because it
+# now routes through :meth:`AgentSessionRuntime.new_session` for
+# ``parent_session`` lineage persistence.
+_SUPPORTED_HANDLERS_RUNTIME_HOST: dict[
+    str, Callable[[AgentSessionRuntime, Any], Awaitable[RpcResponse]]
+] = {
+    "new_session": _handle_new_session,
+    "switch_session": _handle_switch_session,
+    "fork": _handle_fork,
+    "clone": _handle_clone,
+}
+
 # Sprint 6f W2 (ADR-0065): legacy alias preserved for Sprint 6d tests
 # that import :data:`_SUPPORTED_HANDLERS` — the alias points at the
 # 2-arg subset so the existing assertions keep matching.
@@ -1345,6 +1562,8 @@ _SUPPORTED_HANDLERS: dict[
 
 def build_dispatch_table(
     model_registry: ModelRegistry | None = None,
+    *,
+    runtime_host: AgentSessionRuntime | None = None,
 ) -> dict[
     str, Callable[[Any, Any], Awaitable[RpcResponse]]
 ]:
@@ -1355,6 +1574,13 @@ def build_dispatch_table(
     wires ``get_session_stats`` + ``export_html``.
     Sprint 6h₄a (ADR-0075 / ADR-0076): 26 supported + 3 deferred = 29
     total — wires ``get_fork_messages`` + ``get_last_assistant_text``.
+    Sprint 6h₄c (ADR-0079 / ADR-0080): **29 supported + 0 deferred =
+    29 total — PHASE 4 CLOSURE.** Wires ``switch_session`` / ``fork`` /
+    ``clone`` via the new :data:`_SUPPORTED_HANDLERS_RUNTIME_HOST`
+    arity class. The ``runtime_host`` argument carries the
+    :class:`AgentSessionRuntime` closed over by
+    :func:`_bind_runtime_host` for each of the 4 runtime-host handlers
+    (``new_session`` MOVED from HARNESS_ONLY per P-330).
     Returned fresh on every call so tests can introspect without
     leaking state. The supported handlers are real callables; the
     deferred ones are :func:`_make_deferred_handler` closures.
@@ -1365,6 +1591,13 @@ def build_dispatch_table(
     handlers return a :class:`RpcErrorResponse` reporting the missing
     registry (Pi parity: ``rpc-mode.ts`` requires a ModelRegistry to
     be bound to the runtime host).
+
+    The ``runtime_host`` argument is **optional** for back-compat with
+    Sprint 6d / 6h₄a test paths that only exercise the HARNESS_ONLY +
+    HARNESS_REGISTRY subsets. When :data:`None`, the 4 runtime-host
+    handlers are routed through a stub that returns an
+    :class:`RpcErrorResponse` reporting the missing runtime — production
+    callers (`:func:`run_rpc_mode`) always supply one.
     """
 
     table: dict[str, Callable[[Any, Any], Awaitable[RpcResponse]]] = dict(
@@ -1374,6 +1607,18 @@ def build_dispatch_table(
     # closing over ``model_registry``.
     for cmd_type, three_arg in _SUPPORTED_HANDLERS_HARNESS_REGISTRY.items():
         table[cmd_type] = _bind_registry(three_arg, model_registry)
+    # Sprint 6h₄c (P-326): adapt the runtime-host handlers to the
+    # dispatch table's 2-arg shape by closing over ``runtime_host``. When
+    # ``runtime_host`` is :data:`None`, install a "missing runtime"
+    # stub so test callers that don't construct a runtime see a Pi-
+    # shape error envelope rather than crash on attribute access.
+    for cmd_type, runtime_handler in _SUPPORTED_HANDLERS_RUNTIME_HOST.items():
+        if runtime_host is None:
+            table[cmd_type] = _make_missing_runtime_handler(cmd_type)
+        else:
+            table[cmd_type] = _bind_runtime_host(
+                runtime_handler, runtime_host
+            )
     for cmd_type, adr in DEFERRED_COMMANDS.items():
         table[cmd_type] = _make_deferred_handler(cmd_type, adr)
     return table
@@ -1393,17 +1638,59 @@ def _bind_registry(
     return _adapted
 
 
+def _bind_runtime_host(
+    handler: Callable[[AgentSessionRuntime, Any], Awaitable[RpcResponse]],
+    runtime_host: AgentSessionRuntime,
+) -> Callable[[Any, Any], Awaitable[RpcResponse]]:
+    """Sprint 6h₄c (ADR-0079, P-326): adapt a 2-arg
+    ``(runtime_host, cmd)`` handler to the dispatch table's 2-arg
+    ``(harness, cmd)`` shape by closing over ``runtime_host``. The
+    ``harness`` positional is ignored (Pi parity — these handlers
+    operate on the runtime, not the harness directly).
+    """
+
+    async def _adapted(_harness: Any, cmd: Any) -> RpcResponse:
+        return await handler(runtime_host, cmd)
+
+    return _adapted
+
+
+def _make_missing_runtime_handler(
+    cmd_type: str,
+) -> Callable[[Any, Any], Awaitable[RpcResponse]]:
+    """Sprint 6h₄c (ADR-0079, P-326): produce a Pi-shape error stub for
+    runtime-host handlers when :func:`build_dispatch_table` is called
+    without an explicit ``runtime_host``. Tests that only exercise the
+    HARNESS_ONLY / HARNESS_REGISTRY subsets keep working unchanged.
+    """
+
+    async def _handler(_harness: Any, cmd: Any) -> RpcResponse:
+        return RpcErrorResponse(
+            id=getattr(cmd, "id", None),
+            command=cmd_type,
+            error=(
+                f"{cmd_type} requires an AgentSessionRuntime — none "
+                "configured (pass ``runtime_host=`` to build_dispatch_table)"
+            ),
+        )
+
+    return _handler
+
+
 # === Sprint 6h₄b (ADR-0077, P-309) — passthrough runtime shim ================
 
 
 def _make_passthrough_runtime(
     harness: AgentHarness,
     harness_factory: HarnessFactory | None,
+    *,
+    repo: JsonlSessionRepo | None = None,
+    fs: FileSystem | None = None,
 ) -> AgentSessionRuntime:
     """Construct a no-replace :class:`AgentSessionRuntime` wrapping the
     passed harness. Used by :func:`run_rpc_mode` when caller passes no
-    explicit ``runtime_host`` so the 26 already-wired handlers keep
-    working without API breakage (P-309).
+    explicit ``runtime_host`` so the 29 wired handlers keep working
+    without API breakage (P-309 / Sprint 6h₄c P-324).
 
     When ``harness_factory is None`` a closure that RAISES on invocation
     is installed (W4 LOW-3) — calling any of the 4 still-stubbed replace
@@ -1412,6 +1699,12 @@ def _make_passthrough_runtime(
     raise (vs. returning the original harness) makes accidental misuse
     in tests / 6h₄c integration paths fail loudly instead of silently
     re-binding to the same stale harness.
+
+    Sprint 6h₄c (ADR-0079, P-324): accepts optional ``repo`` + ``fs``
+    keyword parameters which are threaded into
+    :class:`AgentSessionRuntime`. Defaults: :class:`LocalFileSystem` +
+    :class:`JsonlSessionRepo(fs=LocalFileSystem())` mirror Pi's default
+    cwd-rooted session root.
 
     Pi parity citations:
       - Constructor mirrors Pi ``agent-session-runtime.ts:67-74``.
@@ -1426,7 +1719,13 @@ def _make_passthrough_runtime(
                 "must pass an explicit harness_factory to run_rpc_mode"
             )
         harness_factory = _noop_factory
-    return AgentSessionRuntime(harness, harness_factory)
+    effective_fs = fs if fs is not None else LocalFileSystem()
+    effective_repo = (
+        repo if repo is not None else JsonlSessionRepo(fs=effective_fs)
+    )
+    return AgentSessionRuntime(
+        harness, harness_factory, repo=effective_repo, fs=effective_fs
+    )
 
 
 # === Entry point ==============================================================
@@ -1478,6 +1777,8 @@ async def run_rpc_mode(
     model_registry: ModelRegistry | None = None,
     runtime_host: AgentSessionRuntime | None = None,
     harness_factory: HarnessFactory | None = None,
+    repo: JsonlSessionRepo | None = None,
+    fs: FileSystem | None = None,
     stdin: asyncio.StreamReader | None = None,
     stdout_write: Callable[[bytes], None] | None = None,
     install_signal_handlers: bool = True,
@@ -1567,18 +1868,37 @@ async def run_rpc_mode(
         await loop.connect_read_pipe(lambda: protocol, sys.stdin)
         stdin = reader
 
-    dispatch = build_dispatch_table(model_registry)
     shutdown_event = asyncio.Event()
 
     # === Sprint 6h₄b (ADR-0077, P-309): runtime host construction =============
     # When the caller passes no explicit ``runtime_host``, construct a
-    # passthrough that wraps the supplied ``harness`` so all 26 wired
+    # passthrough that wraps the supplied ``harness`` so all 29 wired
     # handlers keep working without API breakage. When the caller DOES
     # pass a ``runtime_host``, ignore the loose ``harness`` for the
     # event-pipe seam — the LIVE harness is ``runtime_host.harness``
     # (refreshed by the rebind closure below per Pi `rpc-mode.ts:310-349`).
+    #
+    # Sprint 6h₄c (ADR-0079, P-324): when ``runtime_host`` is explicit,
+    # caller MUST NOT supply ``repo`` / ``fs`` (they're owned by the
+    # runtime). When ``runtime_host`` is None, the passthrough threads
+    # ``repo`` / ``fs`` (defaulting to LocalFileSystem +
+    # JsonlSessionRepo) into the constructed AgentSessionRuntime.
     if runtime_host is None:
-        runtime_host = _make_passthrough_runtime(harness, harness_factory)
+        runtime_host = _make_passthrough_runtime(
+            harness, harness_factory, repo=repo, fs=fs
+        )
+    elif repo is not None or fs is not None:
+        raise RuntimeError(
+            "repo and fs must not be supplied when runtime_host is "
+            "explicit — the runtime owns them"
+        )
+
+    # Sprint 6h₄c (ADR-0079, P-326): the dispatch table now requires
+    # ``runtime_host`` for the 4 runtime-host handlers (new_session +
+    # switch_session + fork + clone).
+    dispatch = build_dispatch_table(
+        model_registry, runtime_host=runtime_host
+    )
 
     # === Event pipe ===========================================================
     # Pi parity: session.subscribe((event) => output(event)). The Aelix
