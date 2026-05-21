@@ -70,8 +70,12 @@ from aelix_agent_core.harness.hooks import (
     ResourcesUpdateHandler,
     SavePointHandler,
     SessionBeforeCompactHandler,
+    SessionBeforeForkHandler,
+    SessionBeforeSwitchHandler,
     SessionBeforeTreeHandler,
     SessionCompactHandler,
+    SessionShutdownHandler,
+    SessionStartHandler,
     SessionTreeHandler,
     SettledHandler,
     ThinkingLevelSelectHandler,
@@ -780,10 +784,12 @@ class ExtensionAPI:
     """Handle passed to extension factories.
 
     Mutates a bound :class:`Extension` for registrations; delegates actions
-    to the shared :class:`_ExtensionRuntime`. The 28 :meth:`on` overloads
-    (Sprint 3a) mirror :class:`~aelix_agent_core.harness.hooks.HookBus.on`
-    so pyright narrows the handler signature per ``HookEventName`` literal
-    (see D.1.2 + the spike in ``scripts/pyright_spike.py``).
+    to the shared :class:`_ExtensionRuntime`. The 35 :meth:`on` overloads
+    (Sprint 6h₅a Phase 4.14 ADR-0081 added 4 extension session lifecycle
+    events on top of the Sprint 5a 31-overload baseline) mirror
+    :class:`~aelix_agent_core.harness.hooks.HookBus.on` so pyright narrows
+    the handler signature per ``HookEventName`` literal (see D.1.2 + the
+    spike in ``scripts/pyright_spike.py``).
 
     ADR-0019 v3: each overload exposes ``error_mode: HookErrorMode`` with
     the default ``"throw"`` matching Pi shipped behavior.
@@ -797,7 +803,8 @@ class ExtensionAPI:
         self._extension = extension
         self._runtime = runtime
 
-    # --- Subscription (28 overloads — Sprint 3a) ---
+    # --- Subscription (35 overloads — Sprint 3a 16 + Sprint 5a 12 + Sprint 6h₅a 4 = 35;
+    #     Sprint 6h₅a Phase 4.14 ADR-0081 added the 4 extension session lifecycle events) ---
 
     @overload
     def on(
@@ -1080,6 +1087,43 @@ class ExtensionAPI:
         cleanup: HookCleanup | None = None,
         error_mode: HookErrorMode = "throw",
     ) -> Callable[[], None]: ...
+    # --- Sprint 6h₅a (Phase 4.14, ADR-0081) additions ---
+    @overload
+    def on(
+        self,
+        event: Literal["session_start"],
+        handler: SessionStartHandler,
+        *,
+        cleanup: HookCleanup | None = None,
+        error_mode: HookErrorMode = "throw",
+    ) -> Callable[[], None]: ...
+    @overload
+    def on(
+        self,
+        event: Literal["session_before_switch"],
+        handler: SessionBeforeSwitchHandler,
+        *,
+        cleanup: HookCleanup | None = None,
+        error_mode: HookErrorMode = "throw",
+    ) -> Callable[[], None]: ...
+    @overload
+    def on(
+        self,
+        event: Literal["session_before_fork"],
+        handler: SessionBeforeForkHandler,
+        *,
+        cleanup: HookCleanup | None = None,
+        error_mode: HookErrorMode = "throw",
+    ) -> Callable[[], None]: ...
+    @overload
+    def on(
+        self,
+        event: Literal["session_shutdown"],
+        handler: SessionShutdownHandler,
+        *,
+        cleanup: HookCleanup | None = None,
+        error_mode: HookErrorMode = "throw",
+    ) -> Callable[[], None]: ...
 
     def on(  # pyright: ignore[reportInconsistentOverload]
         self,
@@ -1101,15 +1145,16 @@ class ExtensionAPI:
         ADR-0019 v3: ``error_mode`` defaults to ``"throw"`` matching Pi
         shipped behavior. ``"continue"`` is an Aelix additive opt-in.
 
-        NOTE: 28 ``@overload`` declarations above provide static narrowing
+        NOTE: 35 ``@overload`` declarations above provide static narrowing
         per event name (handler param typed as ``XxxHandler`` with
-        ``XxxHookEvent`` payload). The runtime impl uses the generic
-        ``HookHandler`` signature (``HookEvent`` union) which pyright cannot
-        reconcile with the narrowed overloads — pyright lacks the
-        contravariance proof. The narrowing is verified by
-        ``scripts/pyright_spike.py`` which exercises each overload against
-        a concrete handler and asserts pyright sees the narrowed payload
-        type. Suppression is scoped to ``reportInconsistentOverload`` only.
+        ``XxxHookEvent`` payload — Sprint 6h₅a Phase 4.14 ADR-0081 added
+        4 on top of the Sprint 5a 31-overload baseline). The runtime impl
+        uses the generic ``HookHandler`` signature (``HookEvent`` union)
+        which pyright cannot reconcile with the narrowed overloads —
+        pyright lacks the contravariance proof. The narrowing is verified
+        by ``scripts/pyright_spike.py`` which exercises each overload
+        against a concrete handler and asserts pyright sees the narrowed
+        payload type. Suppression is scoped to ``reportInconsistentOverload`` only.
         """
 
         if event not in HOOK_RESULT_TYPES:

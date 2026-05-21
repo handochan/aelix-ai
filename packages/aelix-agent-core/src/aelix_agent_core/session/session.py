@@ -100,6 +100,31 @@ class Session:
 
         return self._storage
 
+    @property
+    def session_file(self) -> str | None:
+        """Pi parity: ``AgentSession.sessionFile`` (sync getter).
+
+        Sprint 6h₅a (Phase 4.14, ADR-0081, P-336). Reads cached
+        ``_metadata.path`` from the underlying storage. Returns ``None``
+        when:
+
+          - metadata has not been hydrated yet, OR
+          - the metadata subclass does not carry a ``path`` attribute
+            (non-JSONL storage backends), OR
+          - ``path`` is the empty string (treated as unset).
+
+        Mirrors the cached-metadata access pattern used by
+        :attr:`AgentSessionRuntime.cwd`
+        (``runtime/agent_session_runtime.py:171-173``).
+        """
+
+        storage = self._storage
+        metadata = getattr(storage, "_metadata", None)
+        if metadata is None:
+            return None
+        path = getattr(metadata, "path", None)
+        return path or None
+
     async def get_leaf_id(self) -> str | None:
         return await self._storage.get_leaf_id()
 

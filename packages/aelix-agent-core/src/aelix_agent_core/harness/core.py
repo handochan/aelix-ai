@@ -629,8 +629,15 @@ class AgentHarness:
         from aelix_agent_core.harness.prompt_templates import PromptTemplate
         from aelix_agent_core.harness.skills import Skill
 
+        # Sprint 6h₅a (Phase 4.14, ADR-0081, P-333) — wire the HookBus
+        # bridge callables so ``ExtensionRunner.emit`` / ``has_handlers``
+        # delegate to the harness's tested reducer/observer pipeline (Pi
+        # parity ``runner.ts:680-712`` aggregation via the shared
+        # :func:`_reducer_session_before` and observational reducers).
         self._extension_runner: ExtensionRunner = ExtensionRunner(
-            extensions=self._extensions
+            extensions=self._extensions,
+            _emit=self._hooks.emit,
+            _has_handlers=self._hooks.has_handlers,
         )
         self._prompt_templates: list[PromptTemplate] = []
         self._skills: list[Skill] = []

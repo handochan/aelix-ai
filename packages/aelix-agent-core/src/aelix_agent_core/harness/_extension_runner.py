@@ -17,12 +17,23 @@ forward the owning extension's :class:`ExtensionSourceInfo` onto every
 resolved command. Pi attaches ``sourceInfo`` at resolution time rather
 than at registration time (the registry's :class:`RegisteredCommand`
 intentionally does NOT carry it — the owning extension is the authority).
+
+Sprint 6h₅a (Phase 4.14, ADR-0081, P-333) extends the runner with
+Pi-parity ``emit()`` / ``has_handlers()`` methods that delegate to the
+harness :class:`HookBus` via two callable bridge fields wired at
+construction (``harness/core.py:632-634``). Pi top-level
+``emitSessionShutdownEvent`` (``runner.ts:177-189``) and the cancel
+aggregator (``runner.ts:680-712``) flow through these methods so existing
+:class:`HookBus` infrastructure (sequential await + first-cancel-wins +
+per-handler ``error_mode`` isolation) is the single source of truth for
+extension dispatch.
 """
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     # Avoid the harness↔coding-agent runtime import cycle (D.1.9).
@@ -31,6 +42,8 @@ if TYPE_CHECKING:
         ExtensionSourceInfo,
         RegisteredCommand,
     )
+
+    from aelix_agent_core.harness.hooks import HookEvent, HookEventName
 
 
 @dataclass(frozen=True)
@@ -61,12 +74,54 @@ class ExtensionRunner:
     """Pi parity: ``ExtensionRunner`` aggregation surface.
 
     Wraps the list of loaded :class:`Extension` instances and exposes
-    the single read method the ``get_commands`` RPC handler needs.
-    Defaults to an empty extension list so callers that have no
-    extensions still get a valid runner instance.
+    the read methods Pi's RPC + extension dispatch surface needs.
+    Defaults to an empty extension list (and unwired bridge callables)
+    so callers that have no extensions still get a valid runner instance.
+
+    Sprint 6h₅a (Phase 4.14, ADR-0081, P-333) — extends the Sprint 6h₁
+    commands-only aggregation surface with Pi-parity ``emit()`` /
+    ``has_handlers()``. Both methods delegate to the harness
+    :class:`HookBus` via two callable bridge fields wired at construction
+    time by :class:`AgentHarness` (``harness/core.py:632-634``). The
+    dataclass remains ``frozen=True`` — the callables are read-only
+    after construction. Pi cancel-aggregation semantics
+    (``runner.ts:680-712``) are inherited from
+    :func:`HookBus._reducer_session_before` (first-cancel-wins
+    short-circuit + sequential await + per-handler ``error_mode``
+    isolation). When the bridges are unwired (default), ``emit`` returns
+    ``None`` and ``has_handlers`` returns ``False`` — safe no-op for
+    tests / harnesses that haven't wired the bus.
     """
 
     extensions: list[Extension] = field(default_factory=list)
+    # Sprint 6h₅a (Phase 4.14, ADR-0081, P-333) — HookBus bridges.
+    _emit: Callable[[HookEvent], Awaitable[Any]] | None = None
+    _has_handlers: Callable[[HookEventName], bool] | None = None
+
+    async def emit(self, event: HookEvent) -> Any:
+        """Pi parity: ``ExtensionRunner.emit`` (``runner.ts:680-712``).
+
+        Sprint 6h₅a (ADR-0081, P-333). Delegates to :meth:`HookBus.emit`
+        when a bridge callable was injected at construction; returns
+        ``None`` (no-op) when unwired. The bridge resolves to the
+        harness's tested reducer/observer pipeline (sequential await +
+        first-cancel-wins + per-handler ``error_mode`` isolation).
+        """
+
+        if self._emit is None:
+            return None
+        return await self._emit(event)
+
+    def has_handlers(self, event_name: HookEventName) -> bool:
+        """Pi parity: ``ExtensionRunner.hasHandlers``.
+
+        Sprint 6h₅a (ADR-0081, P-333). Delegates to
+        :meth:`HookBus.has_handlers`; returns ``False`` when unwired.
+        """
+
+        if self._has_handlers is None:
+            return False
+        return self._has_handlers(event_name)
 
     def get_registered_commands(self) -> list[ResolvedCommand]:
         """Pi parity: ``ExtensionRunner.getRegisteredCommands()`` (Pi
