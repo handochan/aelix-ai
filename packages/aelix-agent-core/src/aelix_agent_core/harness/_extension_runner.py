@@ -69,7 +69,7 @@ class ResolvedCommand:
     source_info: ExtensionSourceInfo | None
 
 
-@dataclass(frozen=True)
+@dataclass
 class ExtensionRunner:
     """Pi parity: ``ExtensionRunner`` aggregation surface.
 
@@ -82,21 +82,69 @@ class ExtensionRunner:
     commands-only aggregation surface with Pi-parity ``emit()`` /
     ``has_handlers()``. Both methods delegate to the harness
     :class:`HookBus` via two callable bridge fields wired at construction
-    time by :class:`AgentHarness` (``harness/core.py:632-634``). The
-    dataclass remains ``frozen=True`` — the callables are read-only
-    after construction. Pi cancel-aggregation semantics
-    (``runner.ts:680-712``) are inherited from
-    :func:`HookBus._reducer_session_before` (first-cancel-wins
+    time by :class:`AgentHarness` (``harness/core.py:632-634``). Pi
+    cancel-aggregation semantics (``runner.ts:680-712``) are inherited
+    from :func:`HookBus._reducer_session_before` (first-cancel-wins
     short-circuit + sequential await + per-handler ``error_mode``
     isolation). When the bridges are unwired (default), ``emit`` returns
     ``None`` and ``has_handlers`` returns ``False`` — safe no-op for
     tests / harnesses that haven't wired the bus.
+
+    Sprint 6h₅b (Phase 4.15, ADR-0083, P-362) — adds Pi-parity
+    :meth:`invalidate` / :meth:`assert_active` plus an
+    ``_invalidate_runtime`` callable bridge wired from
+    :class:`AgentHarness.__init__` to :meth:`_ExtensionRuntime.invalidate`.
+    The dataclass drops ``frozen=True`` to allow the bridge field to be
+    rebound by tests, but per spec §J SYNTHESIS the runner holds NO
+    staleness flag of its own — the runtime is the single source of
+    truth. :meth:`invalidate` delegates through the bridge; the OPTIONAL
+    ``message`` falls back to :data:`PI_STALENESS_MESSAGE` (Pi verbatim
+    string from ``runner.ts:467``) so callers that bypass the
+    runtime-supplied default still see the Pi message.
     """
 
     extensions: list[Extension] = field(default_factory=list)
     # Sprint 6h₅a (Phase 4.14, ADR-0081, P-333) — HookBus bridges.
     _emit: Callable[[HookEvent], Awaitable[Any]] | None = None
     _has_handlers: Callable[[HookEventName], bool] | None = None
+    # Sprint 6h₅b (Phase 4.15, ADR-0083, P-362) — runtime invalidate bridge.
+    _invalidate_runtime: Callable[[str], None] | None = None
+
+    def invalidate(self, message: str | None = None) -> None:
+        """Pi parity: ``ExtensionRunner.invalidate`` (``runner.ts:466-473``).
+
+        Sprint 6h₅b (Phase 4.15, ADR-0083, P-362 — SYNTHESIS per spec §J).
+        Idempotent — delegates to the bound :meth:`_ExtensionRuntime.invalidate`
+        via the ``_invalidate_runtime`` callable bridge. Per the spec §J
+        synthesis decision, the runner holds NO ``_stale_message`` field
+        of its own — the runtime is the single source of truth.
+
+        ``message=None`` resolves to :data:`PI_STALENESS_MESSAGE` (Pi
+        verbatim from ``runner.ts:467``) before propagating, so a caller
+        that omits the message sees the Pi default even when the bridge
+        binding is missing in tests.
+        """
+
+        from aelix_agent_core.runtime._types import PI_STALENESS_MESSAGE
+
+        resolved = message if message is not None else PI_STALENESS_MESSAGE
+        if self._invalidate_runtime is not None:
+            self._invalidate_runtime(resolved)
+
+    def assert_active(self) -> None:
+        """Pi parity: ``ExtensionRunner.assertActive``.
+
+        Sprint 6h₅b (Phase 4.15, ADR-0083, P-362 — SYNTHESIS per §J).
+        The runtime owns the single source of truth for staleness, so
+        the runner has no flag of its own to inspect. When no bridge is
+        wired this is a safe no-op (matches Pi behavior pre-bridge).
+        Callers needing the assertion typically reach through
+        :meth:`_ExtensionRuntime.assert_active` directly via
+        :class:`ExtensionContext.__getattribute__`.
+        """
+
+        # Runtime owns single source of truth — synthesis per spec §J.
+        return
 
     async def emit(self, event: HookEvent) -> Any:
         """Pi parity: ``ExtensionRunner.emit`` (``runner.ts:680-712``).

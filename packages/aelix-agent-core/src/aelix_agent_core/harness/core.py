@@ -638,6 +638,10 @@ class AgentHarness:
             extensions=self._extensions,
             _emit=self._hooks.emit,
             _has_handlers=self._hooks.has_handlers,
+            # Sprint 6h₅b (Phase 4.15, ADR-0083, P-362) — wire bridge so
+            # ``ExtensionRunner.invalidate`` delegates to the runtime's
+            # single-source-of-truth stale flag.
+            _invalidate_runtime=self._runtime.invalidate,
         )
         self._prompt_templates: list[PromptTemplate] = []
         self._skills: list[Skill] = []
@@ -2166,6 +2170,154 @@ class AgentHarness:
             shutdown=_shutdown_default,
             get_context_usage=_get_context_usage,
             compact=_compact_action,
+        )
+
+    def create_replaced_session_context(
+        self, *, runtime: Any | None = None
+    ) -> Any:
+        """Pi parity: ``createReplacedSessionContext`` (Pi
+        ``agent-session.ts:3087-3095``).
+
+        Sprint 6h₅b (Phase 4.15, ADR-0083, P-357). Returns a fresh
+        Protocol-conforming context handle for the ``with_session``
+        callback that fires after a session-replacement operation
+        (:meth:`AgentSessionRuntime.switch_session` /
+        :meth:`~AgentSessionRuntime.new_session` /
+        :meth:`~AgentSessionRuntime.fork`).
+
+        Pi uses ``Object.defineProperties`` to clone an
+        :class:`ExtensionContext` while overlaying ``sendMessage`` /
+        ``sendUserMessage`` to bypass the staleness guard. Aelix mirrors
+        with :class:`types.SimpleNamespace` (P-356/P-357 rationale —
+        :class:`ExtensionContext.__getattribute__` would trip on a
+        cloned subclass; ``SimpleNamespace`` structurally conforms to
+        :class:`ReplacedSessionContext` Protocol without subclassing).
+
+        The overlay's ``send_message`` / ``send_user_message`` route
+        through :meth:`_action_send_message` /
+        :meth:`_action_send_user_message` on the CURRENT (post-replace)
+        harness — that is the whole point of the Pi handle. Other
+        attributes (``cwd`` / ``model`` / ``session_manager`` / etc.)
+        mirror :meth:`_make_context` so existing handler ergonomics
+        carry over verbatim.
+
+        Sprint 6h₅b W6 (P-364 W5 MAJOR fix) — the ``runtime`` kwarg wires
+        the 6 ``ExtensionCommandContext`` command methods (Pi
+        ``extensions/types.ts:333-364`` + ``:371``
+        ``ReplacedSessionContext extends ExtensionCommandContext``):
+
+        - ``wait_for_idle`` / ``navigate_tree`` / ``reload`` live on the
+          :class:`AgentHarness` (this object — ``reload`` is an
+          Aelix-additive stub raising :class:`NotImplementedError`).
+        - ``new_session`` / ``fork`` / ``switch_session`` live on the
+          :class:`AgentSessionRuntime`; the runtime is threaded in via
+          ``runtime`` so post-replace work routes through the SAME
+          runtime that just replaced this harness.
+
+        When ``runtime`` is ``None`` (the test-only / unattached path),
+        the 6 commands become no-op stubs that raise
+        :class:`RuntimeError("not bound to a runtime")` — this preserves
+        :data:`runtime_checkable` Protocol conformance without silently
+        succeeding on a half-wired ctx.
+        """
+
+        import types as _types
+
+        base = self._make_context()
+
+        # Pi parity: the ``ReplacedSessionContext`` handle deliberately
+        # bypasses the OLD harness's stale guard by handing the caller
+        # a fresh object literal. We overlay the action methods directly
+        # so they always route through THIS harness's action helpers.
+        async def _send_message(
+            message: Any,
+            options: Any | None = None,
+        ) -> None:
+            # Pi ``sendMessage(message, options)`` signature — ``options``
+            # carries ``triggerTurn`` / ``deliverAs`` in TS. The Aelix
+            # action helper accepts those as keyword-only parameters.
+            trigger_turn = False
+            deliver_as: Any = None
+            if options is not None:
+                trigger_turn = bool(options.get("trigger_turn") or options.get("triggerTurn"))
+                deliver_as = options.get("deliver_as") or options.get("deliverAs")
+            self._action_send_message(
+                message, trigger_turn=trigger_turn, deliver_as=deliver_as
+            )
+
+        async def _send_user_message(
+            content: Any,
+            options: Any | None = None,
+        ) -> None:
+            deliver_as: Any = None
+            if options is not None:
+                deliver_as = options.get("deliver_as") or options.get("deliverAs")
+            self._action_send_user_message(content, deliver_as=deliver_as)
+
+        # Sprint 6h₅b W6 (P-364 W5 MAJOR) — 6 ExtensionCommandContext
+        # methods. Pi ``extensions/types.ts:333-364``. ``wait_for_idle`` /
+        # ``navigate_tree`` live on the harness; ``new_session`` / ``fork`` /
+        # ``switch_session`` live on the runtime (threaded via ``runtime``
+        # kwarg from ``_finish_session_replacement``); ``reload`` is an
+        # Aelix-additive stub (no in-place reload primitive today — Pi's
+        # is a TUI helper).
+        async def _wait_for_idle() -> None:
+            await self.wait_for_idle()
+
+        async def _navigate_tree(target_id: Any, options: Any | None = None) -> Any:
+            return await self.navigate_tree(target_id, options)
+
+        async def _reload() -> None:
+            # Aelix-additive divergence from Pi: no in-place reload
+            # primitive today. ``reload`` is exposed for Protocol
+            # conformance + future TUI integration; raises so callers
+            # don't silently succeed.
+            raise NotImplementedError(
+                "ReplacedSessionContext.reload is not implemented "
+                "(Aelix-additive Pi parity stub — Sprint 6h₅+ TUI work)"
+            )
+
+        if runtime is not None:
+            new_session_cb = runtime.new_session
+            fork_cb = runtime.fork
+            switch_session_cb = runtime.switch_session
+        else:
+            async def _unbound(*_args: Any, **_kwargs: Any) -> Any:
+                raise RuntimeError(
+                    "ReplacedSessionContext command not bound to a runtime"
+                )
+
+            new_session_cb = _unbound
+            fork_cb = _unbound
+            switch_session_cb = _unbound
+
+        return _types.SimpleNamespace(
+            cwd=base.cwd,
+            model=base.model,
+            session_manager=(
+                base.session_manager  # type: ignore[attr-defined]
+                if self._session is not None
+                else None
+            ),
+            signal=base.signal,
+            has_ui=base.has_ui,
+            is_idle=base.is_idle,
+            abort=base.abort,
+            get_active_tools=base.get_active_tools,
+            get_system_prompt=base.get_system_prompt,
+            has_pending_messages=base.has_pending_messages,
+            shutdown=base.shutdown,
+            get_context_usage=base.get_context_usage,
+            compact=base.compact,
+            send_message=_send_message,
+            send_user_message=_send_user_message,
+            # P-364 W6 — 6 ExtensionCommandContext methods.
+            wait_for_idle=_wait_for_idle,
+            new_session=new_session_cb,
+            fork=fork_cb,
+            navigate_tree=_navigate_tree,
+            switch_session=switch_session_cb,
+            reload=_reload,
         )
 
     def _mark_abort(self) -> None:

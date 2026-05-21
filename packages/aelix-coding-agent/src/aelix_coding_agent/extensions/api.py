@@ -432,8 +432,22 @@ class _ExtensionRuntime:
                 registry.unregister_provider(name)
         self.pending_provider_unregistrations.clear()
 
-    def invalidate(self, message: str = "extension runtime has been disposed") -> None:
-        self._stale_message = message
+    def invalidate(self, message: str | None = None) -> None:
+        """Pi parity: ``_ExtensionRuntime.invalidate`` default-msg align.
+
+        Sprint 6h₅b (Phase 4.15, ADR-0083, P-362). Default argument now
+        aligns with :data:`PI_STALENESS_MESSAGE` (Pi verbatim string from
+        ``runner.ts:467``) so a caller bypassing
+        :meth:`ExtensionRunner.invalidate` sees the SAME staleness
+        message as callers routing through the runner. ``None`` is the
+        sentinel meaning "use the Pi default"; explicit strings (e.g.
+        ``"AgentHarness has been disposed"`` from
+        :meth:`AgentHarness.dispose`) continue to override.
+        """
+
+        from aelix_agent_core.runtime._types import PI_STALENESS_MESSAGE
+
+        self._stale_message = message if message is not None else PI_STALENESS_MESSAGE
 
     def assert_active(self) -> None:
         if self._stale_message is not None:
