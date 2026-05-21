@@ -1179,7 +1179,7 @@ async def _handle_get_session_stats(
     ``agent-session.ts:2901-2945``).
     """
 
-    stats = harness.get_session_stats()
+    stats = await harness.get_session_stats()
     return RpcSuccessResponse(
         id=cmd.id,
         command="get_session_stats",

@@ -1563,7 +1563,7 @@ class AgentHarness:
     # (``coding-agent/src/core/export-html/``). Both methods read in-memory
     # state — they do not mutate the session.
 
-    def get_session_stats(self) -> Any:
+    async def get_session_stats(self) -> Any:
         """Pi parity: ``session.getSessionStats()``
         (``agent-session.ts:2901-2945``).
 
@@ -1600,7 +1600,7 @@ class AgentHarness:
         messages: list[Any] = list(self._state.messages)
         session_file = self.session_file  # Sprint 6f P-118 public property
         session_id = self._state.session_id or ""
-        context_usage = self._get_context_usage_safe()
+        context_usage = await self._get_context_usage_safe()
         return aggregate_session_stats(
             session_id=session_id,
             messages=messages,
@@ -1654,20 +1654,90 @@ class AgentHarness:
             session_basename=session_basename,
         )
 
-    def _get_context_usage_safe(self) -> Any | None:
-        """Pi parity: ``session.getContextUsage()`` defensive shim.
+    async def _get_context_usage_safe(self) -> Any | None:
+        """Pi parity: ``getContextUsage`` (``agent-session.ts:2946-2990``).
 
-        Sprint 6h₃ (P-273): Pi's ``getContextUsage`` returns
-        :data:`undefined` when the current model is unknown or the
-        message history is empty. Aelix mirrors with :data:`None` —
-        the model-registry wiring + per-turn token tracking land in
-        Sprint 6h₄+; until then this returns :data:`None`
-        unconditionally so the RPC wire shape omits the
-        ``contextUsage`` field (matching Pi's
-        ``JSON.stringify`` undefined-skip).
+        Sprint 6h₅c (ADR-0085, P-369) replaces the Sprint 6h₃ stub
+        (``return None``) with the real Pi algorithm. The method is
+        ``async`` because Aelix :meth:`Session.get_branch` is async (Pi
+        ``getBranch()`` is sync); all callers MUST ``await``.
+
+        Algorithm (Pi parity):
+
+          1. Return :data:`None` when no model is bound (or its
+             ``context_window`` is zero/missing — Pi probes for a
+             positive window before computing).
+          2. When the harness has no persisted session, fall back to
+             :func:`estimate_context_tokens` over the in-memory message
+             list and return the heuristic estimate.
+          3. Otherwise, walk the session branch for the latest
+             ``compaction`` entry. If a compaction exists but no
+             assistant message AFTER it carries a positive
+             :attr:`AssistantMessage.usage` token count, Pi returns a
+             :class:`ContextUsage(tokens=None, percent=None)` shape —
+             a "compaction occurred but no post-compaction usage yet"
+             sentinel.
+          4. Otherwise compute the heuristic estimate over the
+             in-memory messages and return the full
+             :class:`ContextUsage` triple.
         """
 
-        return None
+        from aelix_coding_agent.extensions.api import ContextUsage
+
+        from aelix_agent_core.session.compaction import (
+            calculate_context_tokens,
+            estimate_context_tokens,
+            get_latest_compaction_entry,
+        )
+
+        model = self._state.model
+        if model is None:
+            return None
+        context_window = getattr(model, "context_window", 0) or 0
+        if context_window <= 0:
+            return None
+
+        if self._session is None:
+            estimate = estimate_context_tokens(self._state.messages)
+            percent = (estimate.tokens / context_window) * 100
+            return ContextUsage(
+                tokens=estimate.tokens,
+                context_window=context_window,
+                percent=percent,
+            )
+
+        branch_entries = await self._session.get_branch()
+        latest_compaction = get_latest_compaction_entry(branch_entries)
+
+        if latest_compaction is not None:
+            compaction_idx = branch_entries.index(latest_compaction)
+            has_post_compaction_usage = False
+            for i in range(len(branch_entries) - 1, compaction_idx, -1):
+                entry = branch_entries[i]
+                if getattr(entry, "type", None) != "message":
+                    continue
+                msg = getattr(entry, "message", None)
+                if msg is None or getattr(msg, "role", None) != "assistant":
+                    continue
+                stop = getattr(msg, "stop_reason", None)
+                if stop in ("aborted", "error"):
+                    continue
+                ctx_tokens = calculate_context_tokens(getattr(msg, "usage", None))
+                if ctx_tokens > 0:
+                    has_post_compaction_usage = True
+                break
+            if not has_post_compaction_usage:
+                return ContextUsage(
+                    tokens=None, context_window=context_window, percent=None
+                )
+
+        estimate = estimate_context_tokens(self._state.messages)
+        percent = (estimate.tokens / context_window) * 100
+        return ContextUsage(
+            tokens=estimate.tokens,
+            context_window=context_window,
+            percent=percent,
+        )
 
     # === Sprint 6h₄a (ADR-0075) — session navigation read-only methods =======
     # Pi parity: ``session.getUserMessagesForForking()``
@@ -2143,10 +2213,44 @@ class AgentHarness:
             loop.create_task(_runner())
 
         def _get_context_usage() -> Any | None:
-            # Sprint 5a: until Phase 4 provider work threads cost details
-            # through MessageEndHookEvent, return ``None`` (matches Pi
-            # behaviour right after compaction).
-            return None
+            """Pi parity: ``ctx.getContextUsage()`` — sync bridge for
+            extensions.
+
+            Sprint 6h₅c (ADR-0085, P-374) replaces the Sprint 5a stub
+            ``return None`` with the heuristic estimate path. Pi's
+            ``getContextUsage`` (``agent-session.ts:2946-2990``) runs
+            synchronously because Pi ``Session.getBranch()`` is sync; the
+            full algorithm including the compaction sentinel can stay
+            inline. Aelix's :meth:`Session.get_branch` is async, which
+            forces the harness-level :meth:`_get_context_usage_safe`
+            method async. The extension-context bridge MUST stay sync
+            (Pi `ExtensionContext.getContextUsage` returns
+            ``ContextUsage | undefined`` synchronously), so this branch
+            uses the heuristic estimate path only — no async
+            ``get_branch`` walk, no compaction sentinel. Extensions
+            wanting full Pi parity reach for the async harness method
+            directly.
+            """
+
+            from aelix_coding_agent.extensions.api import ContextUsage
+
+            from aelix_agent_core.session.compaction import (
+                estimate_context_tokens,
+            )
+
+            model = self._state.model
+            if model is None:
+                return None
+            context_window = getattr(model, "context_window", 0) or 0
+            if context_window <= 0:
+                return None
+            estimate = estimate_context_tokens(self._state.messages)
+            percent = (estimate.tokens / context_window) * 100
+            return ContextUsage(
+                tokens=estimate.tokens,
+                context_window=context_window,
+                percent=percent,
+            )
 
         def _shutdown_default() -> None:
             # Sprint 5b §F.4: prefer the CLI-installed shutdown action if any,

@@ -182,10 +182,137 @@ async def compact(
     )
 
 
+# === Sprint 6h₅c (ADR-0085 P-369) — context-token helpers ===================
+
+
+def calculate_context_tokens(usage: dict[str, Any] | None) -> int:
+    """Pi parity: ``calculateContextTokens`` (``compaction.ts:135-137``).
+
+    Sprint 6h₅c (ADR-0085, P-369). Pi sums ``total_tokens`` directly when
+    present, otherwise falls back to ``input + output + cache_read +
+    cache_write``. Both camelCase and snake_case keys are read defensively
+    because the Aelix :class:`Usage` payload is ``dict[str, Any]`` and the
+    provider adapters have not yet converged on a single spelling.
+    """
+
+    if usage is None:
+        return 0
+    total = usage.get("total_tokens") or usage.get("totalTokens") or 0
+    if total:
+        return int(total)
+    return int(
+        (usage.get("input_tokens") or usage.get("input") or 0)
+        + (usage.get("output_tokens") or usage.get("output") or 0)
+        + (usage.get("cache_read") or usage.get("cacheRead") or 0)
+        + (usage.get("cache_write") or usage.get("cacheWrite") or 0)
+    )
+
+
+def estimate_tokens(message: Any) -> int:
+    """Pi parity: ``estimateTokens`` (``compaction.ts:232-279``).
+
+    Sprint 6h₅c (ADR-0085, P-369). Heuristic character-based estimate —
+    Pi line ``:264`` treats an ``ImageContent`` block as a flat 4800-char
+    contribution (~1200 tokens at the 4-chars-per-token Pi heuristic).
+    String content is counted by length; structured blocks are
+    serialized via ``json.dumps`` for :class:`ToolCallContent`.
+    """
+
+    from aelix_ai.messages import (
+        ImageContent,
+        TextContent,
+        ThinkingContent,
+        ToolCallContent,
+    )
+
+    chars = 0
+    content = getattr(message, "content", None)
+    if isinstance(content, str):
+        chars = len(content)
+    elif isinstance(content, list):
+        for block in content:
+            if isinstance(block, TextContent):
+                chars += len(block.text or "")
+            elif isinstance(block, ImageContent):
+                chars += 4800  # Pi line :264
+            elif isinstance(block, ToolCallContent):
+                import json as _json
+
+                chars += len(_json.dumps(block.input or {}))
+                chars += len(block.tool_name or "")
+            elif isinstance(block, ThinkingContent):
+                # Sprint 6h₅c W4 MEDIUM (ADR-0085) — explicit branch BEFORE
+                # the ``hasattr(block, "text")`` catch-all so the
+                # ``thinking`` attribute is counted (the catch-all reads
+                # ``block.text`` which :class:`ThinkingContent` lacks).
+                chars += len(block.thinking or "")
+            elif hasattr(block, "text"):
+                chars += len(getattr(block, "text", "") or "")
+    return chars // 4
+
+
+@dataclass(frozen=True)
+class _EstimateResult:
+    """Pi parity: :func:`estimate_context_tokens` return shape."""
+
+    tokens: int
+
+
+def estimate_context_tokens(messages: list[Any]) -> _EstimateResult:
+    """Pi parity: ``estimateContextTokens`` (``compaction.ts:186-214``).
+
+    Sprint 6h₅c (ADR-0085, P-369). Walk ``messages`` in reverse, find the
+    last assistant message whose :attr:`AssistantMessage.stop_reason` is
+    not ``"aborted"`` or ``"error"``, and sum that assistant turn's
+    :attr:`AssistantMessage.usage` tokens with the heuristic estimate for
+    any trailing messages. When no eligible assistant message is found,
+    the result is the heuristic estimate over every message.
+    """
+
+    from aelix_ai.messages import AssistantMessage
+
+    last_idx: int | None = None
+    last_usage: dict[str, Any] | None = None
+    for i in range(len(messages) - 1, -1, -1):
+        msg = messages[i]
+        if isinstance(msg, AssistantMessage):
+            stop = getattr(msg, "stop_reason", None)
+            if stop in ("aborted", "error"):
+                continue
+            last_idx = i
+            last_usage = getattr(msg, "usage", None)
+            break
+    if last_idx is None:
+        return _EstimateResult(tokens=sum(estimate_tokens(m) for m in messages))
+    usage_tokens = calculate_context_tokens(last_usage)
+    trailing = sum(estimate_tokens(m) for m in messages[last_idx + 1 :])
+    return _EstimateResult(tokens=usage_tokens + trailing)
+
+
+def get_latest_compaction_entry(branch_entries: list[Any]) -> Any | None:
+    """Pi parity: walk ``branch_entries`` in reverse for the most recent
+    entry whose ``type == "compaction"``.
+
+    Sprint 6h₅c (ADR-0085, P-369). Aelix uses snake_case
+    :class:`CompactionEntry` (``session/entries.py:64-80``) — Pi's
+    ``CompactionEntry`` matches by string discriminator so the
+    ``getattr(entry, "type", None) == "compaction"`` probe is correct.
+    """
+
+    for entry in reversed(branch_entries):
+        if getattr(entry, "type", None) == "compaction":
+            return entry
+    return None
+
+
 __all__ = [
     "CompactResult",
     "CompactionPreparation",
     "SummarizerOverride",
+    "calculate_context_tokens",
     "compact",
+    "estimate_context_tokens",
+    "estimate_tokens",
+    "get_latest_compaction_entry",
     "prepare_compaction",
 ]

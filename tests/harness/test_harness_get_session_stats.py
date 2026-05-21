@@ -61,7 +61,7 @@ async def test_get_session_stats_empty_harness_returns_zeros() -> None:
 
     harness = _make_harness()
     try:
-        stats = harness.get_session_stats()
+        stats = await harness.get_session_stats()
         assert isinstance(stats, SessionStats)
         assert stats.user_messages == 0
         assert stats.assistant_messages == 0
@@ -83,7 +83,7 @@ async def test_get_session_stats_counts_initial_messages() -> None:
     ]
     harness = _make_harness(initial_messages=msgs)
     try:
-        stats = harness.get_session_stats()
+        stats = await harness.get_session_stats()
         assert stats.user_messages == 1
         assert stats.assistant_messages == 1
         assert stats.tool_results == 1
@@ -97,7 +97,7 @@ async def test_get_session_stats_session_file_none_when_no_session() -> None:
 
     harness = _make_harness()
     try:
-        stats = harness.get_session_stats()
+        stats = await harness.get_session_stats()
         assert stats.session_file is None
     finally:
         await harness.dispose()
@@ -127,7 +127,7 @@ async def test_get_session_stats_session_file_reflects_jsonl_path(
         )
     )
     try:
-        stats = harness.get_session_stats()
+        stats = await harness.get_session_stats()
         assert stats.session_file == file_path
         # session_id flows from the session storage metadata.
         assert stats.session_id == "stats-pin"
@@ -136,14 +136,18 @@ async def test_get_session_stats_session_file_reflects_jsonl_path(
 
 
 async def test_get_session_stats_context_usage_is_none_when_model_unknown() -> None:
-    """Pi parity (P-273): ``contextUsage`` is :data:`None` when the
-    model registry is not wired (Sprint 6h₃ ``_get_context_usage_safe``
-    returns :data:`None` unconditionally).
+    """Pi parity (P-273): ``contextUsage`` is :data:`None` when the model
+    has ``context_window == 0``.
+
+    Sprint 6h₅c (ADR-0085, P-369) replaced the Sprint 6h₃ stub with the
+    real Pi algorithm; the ``mock`` Model used here defaults to
+    ``context_window=0`` so the helper returns :data:`None` per the Pi
+    short-circuit at ``agent-session.ts:2946-2990``.
     """
 
     harness = _make_harness()
     try:
-        stats = harness.get_session_stats()
+        stats = await harness.get_session_stats()
         assert stats.context_usage is None
     finally:
         await harness.dispose()
@@ -158,7 +162,7 @@ async def test_get_session_stats_returns_frozen_dataclass() -> None:
 
     harness = _make_harness()
     try:
-        stats = harness.get_session_stats()
+        stats = await harness.get_session_stats()
         with pytest.raises((AttributeError, Exception)):
             stats.cost = 99.0  # type: ignore[misc]
     finally:
