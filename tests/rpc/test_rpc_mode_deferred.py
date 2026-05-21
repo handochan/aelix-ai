@@ -35,7 +35,9 @@ async def test_every_deferred_command_returns_error_response() -> None:
     session-tree owners to ADR-0074.
     Sprint 6h₄a (ADR-0075 / ADR-0076) wires the 2 read-only
     session-navigation commands and re-homes the remaining 3
-    session-tree owners to ADR-0076.
+    session-tree owners to ADR-0076. Sprint 6h₄b (ADR-0077 / ADR-0078)
+    lands the :class:`AgentSessionRuntime` foundation and re-brands
+    the same 3 deferred owners to ADR-0078 (counts unchanged).
     """
 
     for cmd_type, owner_adr in DEFERRED_COMMANDS.items():
@@ -52,6 +54,7 @@ async def test_every_deferred_command_returns_error_response() -> None:
             or "ADR-0072" in response.error
             or "ADR-0074" in response.error
             or "ADR-0076" in response.error
+            or "ADR-0078" in response.error
         )
         assert cmd_type in response.error
 
@@ -91,8 +94,10 @@ def test_deferred_dict_owner_adr_format() -> None:
     Sprint 6d closure was ADR-0058; Sprint 6h₂ (ADR-0072) re-homed the
     remaining 7 carry-forward commands. Sprint 6h₃ (ADR-0074) re-homed
     the remaining 5 session-tree commands. Sprint 6h₄a (ADR-0076)
-    re-homed the remaining 3 session-tree commands. Accept any of the
-    four prefixes so the pin remains green across the transitions.
+    re-homed the remaining 3 session-tree commands. Sprint 6h₄b
+    (ADR-0078) re-homes the same 3 to ADR-0078 (foundation lands the
+    runtime layer; 6h₄c wires the handlers). Accept any of the five
+    prefixes so the pin remains green across the transitions.
     """
 
     for owner in DEFERRED_COMMANDS.values():
@@ -101,6 +106,7 @@ def test_deferred_dict_owner_adr_format() -> None:
             or "ADR-0072" in owner
             or "ADR-0074" in owner
             or "ADR-0076" in owner
+            or "ADR-0078" in owner
         )
 
 

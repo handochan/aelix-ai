@@ -107,8 +107,11 @@ async def test_deferred_command_produces_error_envelope() -> None:
     ``get_session_stats`` / ``export_html``. Sprint 6h₄a (ADR-0075)
     wired ``get_fork_messages`` / ``get_last_assistant_text`` and
     re-homed the remaining 3 session-tree commands to ADR-0076.
-    ``fork`` remains deferred per ADR-0076 (3 session-tree commands
-    still awaiting Sprint 6h₄b).
+    Sprint 6h₄b (ADR-0077 / ADR-0078) lands the
+    :class:`AgentSessionRuntime` foundation and re-homes the same 3
+    session-tree owners ADR-0076 → ADR-0078. ``fork`` remains
+    deferred per ADR-0078 (3 session-tree commands still awaiting
+    Sprint 6h₄c).
     """
 
     output = await _run_with_lines(
@@ -116,7 +119,7 @@ async def test_deferred_command_produces_error_envelope() -> None:
     )
     response = next(rec for rec in output if rec.get("command") == "fork")
     assert response["success"] is False
-    assert "ADR-0076" in response["error"]
+    assert "ADR-0076" in response["error"] or "ADR-0078" in response["error"]
 
 
 async def test_unknown_command_produces_parse_error() -> None:

@@ -69,6 +69,17 @@ the handler emits ``data == {}`` — consistent with the existing
 :func:`_session_stats_to_dict` undefined-skip pattern asserted by
 Sprint 6h₃ closure pin.
 
+Sprint 6h₄b (ADR-0077 / ADR-0078 / P-302~P-310) — FOUNDATION-ONLY port
+of Pi ``AgentSessionRuntime`` (``core/agent-session-runtime.ts:67-374``)
+and the ``rebindSession`` closure (``rpc-mode.ts:310-349``). No new RPC
+commands wired; counts stay at 26 supported / 3 deferred / 29 total.
+Owner rebrand to ADR-0078 applied per spec §D.5; foundation lands
+without wiring. The 3 deferred commands rebrand to ADR-0078 owner
+(Sprint 6h₄c). The :func:`run_rpc_mode` signature accepts a NEW
+optional ``runtime_host: AgentSessionRuntime | None = None``
+parameter; existing callers continue to work unchanged (P-309 compat
+shim).
+
 Pi line citations at SHA 734e08e per Sprint 6h₂ W5/W6 audit (P-258):
 the 9 case sites in ``rpc-mode.ts`` live at lines 483-547 (NOT
 528-635 as earlier drafts suggested) and delegate to ``AgentSession``
@@ -116,6 +127,14 @@ if TYPE_CHECKING:
 
     from aelix_coding_agent.model_registry import ModelRegistry
 
+# Sprint 6h₄b (ADR-0077, P-302~P-310): import the runtime layer for the
+# new ``runtime_host`` optional parameter on :func:`run_rpc_mode` +
+# the ``_make_passthrough_runtime`` helper used by the back-compat
+# shim. The imports stay at module level (not behind ``TYPE_CHECKING``)
+# because the helpers are CALLED at runtime by :func:`run_rpc_mode`.
+from aelix_agent_core.runtime import AgentSessionRuntime
+from aelix_agent_core.runtime._types import HarnessFactory
+
 # Sprint 6f W2 (ADR-0065): import :class:`Model` for the
 # ``_model_to_dict`` serializer. Lazy/runtime import to keep the
 # import graph cycle-free.
@@ -136,9 +155,16 @@ DEFERRED_COMMANDS: dict[str, str] = {
     # session-tree commands deferred to Sprint 6h₄b per ADR-0076
     # (porting Pi ``AgentSessionRuntime`` +
     # ``SessionManager.getLeafId`` + ``rebindSession`` seam).
-    "switch_session": "ADR-0076 — Sprint 6h₄b session tree runtime",
-    "fork": "ADR-0076 — Sprint 6h₄b session tree runtime",
-    "clone": "ADR-0076 — Sprint 6h₄b session tree runtime",
+    # Sprint 6h₄b (ADR-0077 / P-302~P-310) ports
+    # :class:`AgentSessionRuntime` + the ``rebindSession`` seam
+    # (FOUNDATION-ONLY) — no new RPC commands wired; counts stay at
+    # 26 supported / 3 deferred / 29 total. Owner rebrand to ADR-0078
+    # applied per spec §D.5; foundation lands without wiring. The 3
+    # below MOVE to supported in Sprint 6h₄c when ADR-0078 wires the
+    # runtime-host bridge on top of this foundation.
+    "switch_session": "ADR-0078 — Sprint 6h₄c wires runtime-host bridge",
+    "fork":           "ADR-0078 — Sprint 6h₄c wires runtime-host bridge",
+    "clone":          "ADR-0078 — Sprint 6h₄c wires runtime-host bridge",
 }
 
 
@@ -1367,6 +1393,42 @@ def _bind_registry(
     return _adapted
 
 
+# === Sprint 6h₄b (ADR-0077, P-309) — passthrough runtime shim ================
+
+
+def _make_passthrough_runtime(
+    harness: AgentHarness,
+    harness_factory: HarnessFactory | None,
+) -> AgentSessionRuntime:
+    """Construct a no-replace :class:`AgentSessionRuntime` wrapping the
+    passed harness. Used by :func:`run_rpc_mode` when caller passes no
+    explicit ``runtime_host`` so the 26 already-wired handlers keep
+    working without API breakage (P-309).
+
+    When ``harness_factory is None`` a closure that RAISES on invocation
+    is installed (W4 LOW-3) — calling any of the 4 still-stubbed replace
+    APIs from 6h₄b still raises :class:`NotImplementedError`, so the
+    raising factory is unreachable from production paths. The explicit
+    raise (vs. returning the original harness) makes accidental misuse
+    in tests / 6h₄c integration paths fail loudly instead of silently
+    re-binding to the same stale harness.
+
+    Pi parity citations:
+      - Constructor mirrors Pi ``agent-session-runtime.ts:67-74``.
+      - Replace path is the private seam (``:149-173``); no public
+        replace API is invoked from the passthrough.
+    """
+
+    if harness_factory is None:
+        async def _noop_factory(_new_session: Any) -> AgentHarness:
+            raise RuntimeError(
+                "Passthrough runtime cannot replace harness — caller "
+                "must pass an explicit harness_factory to run_rpc_mode"
+            )
+        harness_factory = _noop_factory
+    return AgentSessionRuntime(harness, harness_factory)
+
+
 # === Entry point ==============================================================
 
 
@@ -1414,6 +1476,8 @@ async def run_rpc_mode(
     harness: AgentHarness,
     *,
     model_registry: ModelRegistry | None = None,
+    runtime_host: AgentSessionRuntime | None = None,
+    harness_factory: HarnessFactory | None = None,
     stdin: asyncio.StreamReader | None = None,
     stdout_write: Callable[[bytes], None] | None = None,
     install_signal_handlers: bool = True,
@@ -1425,14 +1489,33 @@ async def run_rpc_mode(
     a JSONL line reader to stdin, subscribes to harness session events,
     and dispatches commands until EOF or a shutdown signal.
 
+    Sprint 6h₄b (ADR-0077, P-309): the signature accepts an optional
+    ``runtime_host`` (:class:`AgentSessionRuntime`). When :data:`None`,
+    a no-replace passthrough runtime is constructed via
+    :func:`_make_passthrough_runtime` so the 26 existing handlers keep
+    working without API breakage. The ``rebind_session`` closure
+    (mirror of Pi ``rpc-mode.ts:310-349``) is installed on the runtime
+    so a future replace operation refreshes the event-pipe subscription
+    against the NEW harness.
+
     Args:
-        harness: Active :class:`AgentHarness` whose surface backs the 9
-            supported commands.
+        harness: Active :class:`AgentHarness` whose surface backs the
+            wired RPC handlers. When ``runtime_host`` is supplied the
+            ``runtime_host.harness`` value is the LIVE handler target
+            (the captured reference is refreshed on rebind).
         model_registry: Optional :class:`ModelRegistry` backing the 3
             Sprint 6f model commands (``set_model`` / ``cycle_model`` /
             ``get_available_models``). When :data:`None` the 3 handlers
             return a "no registry configured" error (Pi parity:
             ModelRegistry is bound to the runtime host).
+        runtime_host: Optional :class:`AgentSessionRuntime` (Sprint
+            6h₄b ADR-0077). When :data:`None`, a passthrough runtime
+            wraps the passed ``harness`` (P-309 back-compat shim).
+        harness_factory: Optional :class:`HarnessFactory` used by the
+            passthrough runtime. When :data:`None` (and
+            ``runtime_host`` is also :data:`None`), a no-op factory
+            returns the same harness — the 4 still-stubbed replace
+            APIs from 6h₄b still raise :class:`NotImplementedError`.
         stdin: Optional :class:`asyncio.StreamReader`. When ``None`` the
             entry connects to ``sys.stdin.buffer`` via
             :func:`asyncio.connect_read_pipe`.
@@ -1487,6 +1570,16 @@ async def run_rpc_mode(
     dispatch = build_dispatch_table(model_registry)
     shutdown_event = asyncio.Event()
 
+    # === Sprint 6h₄b (ADR-0077, P-309): runtime host construction =============
+    # When the caller passes no explicit ``runtime_host``, construct a
+    # passthrough that wraps the supplied ``harness`` so all 26 wired
+    # handlers keep working without API breakage. When the caller DOES
+    # pass a ``runtime_host``, ignore the loose ``harness`` for the
+    # event-pipe seam — the LIVE harness is ``runtime_host.harness``
+    # (refreshed by the rebind closure below per Pi `rpc-mode.ts:310-349`).
+    if runtime_host is None:
+        runtime_host = _make_passthrough_runtime(harness, harness_factory)
+
     # === Event pipe ===========================================================
     # Pi parity: session.subscribe((event) => output(event)). The Aelix
     # harness exposes ``subscribe`` with the same signature.
@@ -1504,7 +1597,54 @@ async def run_rpc_mode(
             # Pi swallows listener errors; matches.
             pass
 
-    unsubscribe = harness.subscribe(_on_agent_event)
+    # === Sprint 6h₄b (ADR-0077, P-303) — ``rebind_session`` closure =========
+    # Pi parity: ``rpc-mode.ts:310-349``. Pi closes over outer ``let
+    # session`` + ``let unsubscribe`` variables; Python closures can read
+    # but not rebind enclosing names, so we attach them to a lightweight
+    # container (``_Capture``) that both the rebind closure and the
+    # dispatch loop read through.
+    #
+    # Sprint 6h₄b ships the FOUNDATION subset: reassign capture + tear
+    # down old subscription + re-subscribe to the new harness's
+    # ``subscribe()``. The Pi ``bindExtensions`` /
+    # ``commandContextActions`` waveform (Pi ``:315-345``) is NOT wired
+    # in 6h₄b — Aelix's ``_runtime.bind_core`` already ran during the
+    # NEW harness's ``__init__`` (P-302). Sprint 6h₄c wires the
+    # explicit action surface when the 3 DEFERRED RPC handlers move.
+
+    class _Capture:
+        """6h₄b — mutable cell for the ``rebind_session`` closure (P-303).
+
+        Pi closes over outer ``let session`` + ``let unsubscribe``
+        variables (``rpc-mode.ts:310-349``); Python closures can read
+        but not rebind enclosing names, so we attach them to a
+        lightweight container.
+        """
+
+        harness: AgentHarness
+        unsubscribe: Callable[[], None]
+
+    capture = _Capture()
+    capture.harness = runtime_host.harness
+    capture.unsubscribe = capture.harness.subscribe(_on_agent_event)
+
+    async def rebind_session(new_harness: AgentHarness) -> None:
+        """Pi parity: ``rebindSession`` closure (``rpc-mode.ts:310-349``).
+
+        Sprint 6h₄b — FOUNDATION subset (P-303). Reassigns the captured
+        harness, tears down the previous subscription, and re-subscribes
+        to the new harness's event stream. The ``bindExtensions`` /
+        ``commandContextActions`` waveform (Pi ``:315-345``) is NOT
+        wired in 6h₄b — Aelix's ``_runtime.bind_core`` already ran
+        during the NEW harness's ``__init__`` (P-302). Sprint 6h₄c
+        wires the explicit action surface.
+        """
+        capture.harness = new_harness
+        capture.unsubscribe()
+        capture.unsubscribe = capture.harness.subscribe(_on_agent_event)
+
+    # Pi parity: ``rpc-mode.ts:306-308`` registration site.
+    runtime_host.set_rebind_session(rebind_session)
 
     # === Signal handlers ======================================================
     # Pi parity: SIGTERM always; SIGHUP on non-Windows.
@@ -1558,7 +1698,14 @@ async def run_rpc_mode(
             return
 
         async def _dispatch() -> None:
-            response = await _handle_command(harness, payload, dispatch)
+            # Sprint 6h₄b (P-309): read the LIVE harness through the
+            # capture cell so dispatch always sees the most recent
+            # rebind result. When no replace has occurred,
+            # ``capture.harness`` is identical to the original ``harness``
+            # argument — zero behavior change for the 26 wired handlers.
+            response = await _handle_command(
+                capture.harness, payload, dispatch
+            )
             _output(response.to_json())
 
         task = asyncio.create_task(_dispatch())
@@ -1601,7 +1748,9 @@ async def run_rpc_mode(
         pump_task.cancel()
         with contextlib.suppress(BaseException):
             await pump_task
-        unsubscribe()
+        # Sprint 6h₄b (P-303): the LIVE unsubscribe handle lives on the
+        # capture cell — rebinds replace it each time.
+        capture.unsubscribe()
         # Restore signal handlers.
         if install_signal_handlers:
             for sig, previous in installed_handlers:
@@ -1612,9 +1761,12 @@ async def run_rpc_mode(
                         signal.signal(sig, previous)
                 except (NotImplementedError, RuntimeError, ValueError):
                     pass
-        # Pi parity: ``await runtimeHost.dispose()``.
+        # Pi parity: ``await runtimeHost.dispose()`` (Pi
+        # ``rpc-mode.ts`` end-of-run teardown). Sprint 6h₄b routes
+        # through :meth:`AgentSessionRuntime.dispose` which fires
+        # ``beforeSessionInvalidate`` then disposes the LIVE harness.
         with contextlib.suppress(Exception):
-            await harness.dispose()
+            await runtime_host.dispose()
         if own_stdin:
             # asyncio's pipe transport is closed when the reader hits EOF;
             # nothing to actively pause on the Python side.
@@ -1624,6 +1776,7 @@ async def run_rpc_mode(
 __all__ = [
     "DEFERRED_COMMANDS",
     "SUPPORTED_COMMANDS",
+    "_make_passthrough_runtime",
     "build_dispatch_table",
     "run_rpc_mode",
 ]
