@@ -33,10 +33,20 @@ import importlib
 import importlib.metadata
 import importlib.util
 import inspect
+import logging
 import tomllib
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+from aelix_agent_core.contracts import (
+    AELIX_API_LEVEL,
+    LICENSE_WHITELIST,
+    PluginManifest,
+    parse_manifest_toml,
+)
+from pydantic import ValidationError
 
 from aelix_coding_agent.extensions.api import (
     Extension,
@@ -44,6 +54,8 @@ from aelix_coding_agent.extensions.api import (
     ExtensionFactory,
     _ExtensionRuntime,
 )
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -71,7 +83,7 @@ class LoadExtensionsResult:
 
 
 async def load_extensions(
-    paths: list[str | Path | ExtensionFactory],
+    paths: Sequence[str | Path | ExtensionFactory | _ManifestEntry],
     *,
     cwd: Path | None = None,
 ) -> LoadExtensionsResult:
@@ -80,6 +92,13 @@ async def load_extensions(
     Each entry produces one :class:`Extension`. Failures are collected as
     :class:`ExtensionLoadError` so that one bad extension does not abort
     the rest of the wave.
+
+    Sprint 6h₉b: the ``paths`` sequence may also contain internal
+    ``_ManifestEntry`` carriers produced by
+    :func:`discover_and_load_extensions`. The carrier type is NOT
+    exported; external callers continue to pass the original
+    ``str | Path | ExtensionFactory`` union — :class:`Sequence` keeps
+    the parameter list covariant so a narrower list still type-checks.
     """
 
     runtime = _ExtensionRuntime()
@@ -157,31 +176,44 @@ async def discover_and_load_extensions(
     :attr:`LoadExtensionsResult.errors`.
     """
 
-    all_entries: list[str | Path | ExtensionFactory] = []
+    all_entries: list[str | Path | ExtensionFactory | _ManifestEntry] = []
     seen_paths: set[Path] = set()
     seen_ep: set[str] = set()
     errors: list[ExtensionLoadError] = []
 
-    def _push_path(p: Path) -> None:
+    def _push_entry(entry: Path | _ManifestEntry) -> None:
+        # Sprint 6h₉b §B: dedupe by ``pkg_dir.resolve()`` for manifest
+        # carriers (one manifest = one extension); legacy ``Path``
+        # entries keep their pre-existing resolve dedupe.
+        if isinstance(entry, _ManifestEntry):
+            try:
+                resolved = entry.pkg_dir.resolve()
+            except OSError:
+                resolved = entry.pkg_dir
+            if resolved in seen_paths:
+                return
+            seen_paths.add(resolved)
+            all_entries.append(entry)
+            return
         try:
-            resolved = p.resolve()
+            resolved = entry.resolve()
         except OSError:
-            resolved = p
+            resolved = entry
         if resolved in seen_paths:
             return
         seen_paths.add(resolved)
-        all_entries.append(p)
+        all_entries.append(entry)
 
     # 1. Project-local: cwd/.aelix/extensions/
     local_dir = (cwd / ".aelix" / "extensions").resolve(strict=False)
-    for discovered in _discover_in_dir(local_dir):
-        _push_path(discovered)
+    for discovered in _discover_in_dir(local_dir, errors=errors):
+        _push_entry(discovered)
 
     # 2. Global: ~/.aelix/extensions/  (or override via agent_dir)
     home_aelix = Path.home() / ".aelix" if agent_dir is None else agent_dir
     global_dir = (home_aelix / "extensions").resolve(strict=False)
-    for discovered in _discover_in_dir(global_dir):
-        _push_path(discovered)
+    for discovered in _discover_in_dir(global_dir, errors=errors):
+        _push_entry(discovered)
 
     # 3. Explicit configured paths.
     for entry in configured_paths:
@@ -194,17 +226,17 @@ async def discover_and_load_extensions(
         # through unchanged.
         try:
             p = Path(entry) if isinstance(entry, str) else entry
-            resolved = p if p.is_absolute() else (cwd / p)
-            if resolved.is_dir():
-                expanded = _discover_in_dir(resolved)
+            resolved_path = p if p.is_absolute() else (cwd / p)
+            if resolved_path.is_dir():
+                expanded = _discover_in_dir(resolved_path, errors=errors)
                 if expanded:
                     for discovered in expanded:
-                        _push_path(discovered)
+                        _push_entry(discovered)
                     continue
                 # Directory exists but has no extension-shaped entries; fall
                 # through to treat as a raw path (the inner loader will then
                 # report a more useful "no setup()" style error).
-            _push_path(resolved)
+            _push_entry(resolved_path)
         except Exception as exc:  # noqa: BLE001
             errors.append(
                 ExtensionLoadError(path=str(entry), error=str(exc))
@@ -225,22 +257,33 @@ async def discover_and_load_extensions(
     return result
 
 
-def _discover_in_dir(dir_path: Path) -> list[Path]:
+def _discover_in_dir(
+    dir_path: Path,
+    *,
+    errors: list[ExtensionLoadError] | None = None,
+) -> list[Path | _ManifestEntry]:
     """Pi-parity ``discoverExtensionsInDir`` (``loader.ts:481-518``).
 
     For each entry in ``dir_path`` (non-recursive beyond one level):
 
     - ``*.py`` file → add directly.
-    - Subdirectory: check ``pyproject.toml [tool.aelix] extensions=[...]``
-      (Aelix port of Pi's ``package.json "pi.extensions"``) → use declared
-      paths.  Else look for ``__init__.py`` (Aelix port of Pi's
-      ``index.ts/index.js``) → treat the package as a single extension via
-      its module path.  Else skip.
+    - Subdirectory: check ``aelix-plugin.toml`` (Sprint 6h₉b §B — NEW
+      preferred) → use ``_ManifestEntry`` carrier. Else check
+      ``pyproject.toml [tool.aelix] extensions=[...]`` (Aelix port of
+      Pi's ``package.json "pi.extensions"``) → use declared paths. Else
+      look for ``__init__.py`` (Aelix port of Pi's
+      ``index.ts/index.js``) → treat the package as a single extension
+      via its module path. Else skip.
+
+    Sprint 6h₉b: ``errors`` is an optional sink for
+    :class:`ExtensionManifestError` failures so the wave continues when
+    one plugin's manifest fails to parse (per-plugin try/except, Pi
+    parity ``loader.ts:437``).
     """
 
     if not dir_path.exists() or not dir_path.is_dir():
         return []
-    discovered: list[Path] = []
+    discovered: list[Path | _ManifestEntry] = []
     try:
         children = sorted(dir_path.iterdir(), key=lambda c: c.name)
     except OSError:
@@ -251,7 +294,16 @@ def _discover_in_dir(dir_path: Path) -> list[Path]:
                 discovered.append(child)
                 continue
             if child.is_dir():
-                declared = _resolve_extension_entries(child)
+                try:
+                    declared = _resolve_extension_entries(child)
+                except ExtensionManifestError as exc:
+                    # Per-plugin containment: one bad manifest never
+                    # aborts the wave (Pi parity ``loader.ts:437``).
+                    if errors is not None:
+                        errors.append(
+                            ExtensionLoadError(path=str(child), error=str(exc))
+                        )
+                    continue
                 if declared is not None:
                     discovered.extend(declared)
                 # else: skip — no manifest, no __init__.py.
@@ -260,18 +312,124 @@ def _discover_in_dir(dir_path: Path) -> list[Path]:
     return discovered
 
 
-def _resolve_extension_entries(pkg_dir: Path) -> list[Path] | None:
-    """Pi-parity ``resolveExtensionEntries`` (``loader.ts:454-479``).
+class ExtensionManifestError(Exception):
+    """Sprint 6h₉b — raised on manifest parse / validation failure.
 
-    Checks for:
-
-    1. ``pyproject.toml`` with ``[tool.aelix] extensions = [...]`` array
-       (Aelix mirror of Pi's ``package.json "pi.extensions"`` field).
-    2. ``__init__.py`` (Aelix mirror of Pi's ``index.ts/index.js``).
-
-    Returns ``None`` if neither is present (signal: skip this subdirectory).
+    Caught by the per-plugin try/except in ``discover_and_load_extensions``
+    (via ``load_extensions``) and surfaced as an :class:`ExtensionLoadError`
+    with a clear message. Pi-additive — Pi has no manifest concept.
     """
 
+
+@dataclass(frozen=True)
+class _ManifestEntry:
+    """Internal carrier for manifest-discovered extensions (Sprint 6h₉b §B).
+
+    A ``_ManifestEntry`` flows through ``load_extensions`` like a Path,
+    but carries the parsed manifest + the plugin directory so the inner
+    factory resolver can use ``[plugin.entry] python = "module:callable"``
+    instead of falling back to the directory's ``setup`` convention.
+
+    NOT exported.
+    """
+
+    manifest: PluginManifest
+    pkg_dir: Path
+
+
+def _load_manifest_from_dir(pkg_dir: Path) -> PluginManifest | None:
+    """Load ``aelix-plugin.toml`` from ``pkg_dir`` if present (Sprint 6h₉b §B).
+
+    Returns:
+        Parsed ``PluginManifest`` on success.
+        ``None`` if no ``aelix-plugin.toml`` exists in ``pkg_dir``.
+
+    Raises:
+        ExtensionManifestError: on parse / validation failure (TOML
+        syntax error, Pydantic validation error, API_LEVEL too low).
+
+    Pi-additive — Pi has no manifest concept.
+    """
+
+    manifest_path = pkg_dir / "aelix-plugin.toml"
+    if not manifest_path.exists():
+        return None
+
+    try:
+        text = manifest_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ExtensionManifestError(
+            f"Cannot read {manifest_path}: {exc}"
+        ) from exc
+
+    try:
+        manifest = parse_manifest_toml(text)
+    except (tomllib.TOMLDecodeError, ValidationError) as exc:
+        raise ExtensionManifestError(
+            f"Invalid manifest {manifest_path}: {exc}"
+        ) from exc
+
+    # API_LEVEL gate (ADR-0096 §"API_LEVEL policy").
+    if manifest.api.min_level > AELIX_API_LEVEL:
+        raise ExtensionManifestError(
+            f"Plugin {manifest.plugin.id!r} requires API_LEVEL "
+            f">= {manifest.api.min_level}, host has {AELIX_API_LEVEL}"
+        )
+    if manifest.api.level > AELIX_API_LEVEL:
+        # Forward-compat best-effort: log warning, accept anyway.
+        logger.warning(
+            "Plugin %r built for API_LEVEL %d, host has %d "
+            "(loading anyway; behavior at undefined surfaces is best-effort)",
+            manifest.plugin.id,
+            manifest.api.level,
+            AELIX_API_LEVEL,
+        )
+
+    # License whitelist (Phase 5b warn-only per ADR-0096 §"SPDX license whitelist v1").
+    if manifest.plugin.license not in LICENSE_WHITELIST:
+        logger.warning(
+            "Plugin %r declares license %r outside the Sprint 6h₉a v1 "
+            "whitelist; loading anyway (Phase 5b warn-only policy — "
+            "Phase 6 will gate strict via --strict-licenses)",
+            manifest.plugin.id,
+            manifest.plugin.license,
+        )
+
+    return manifest
+
+
+def _resolve_extension_entries(
+    pkg_dir: Path,
+) -> list[Path | _ManifestEntry] | None:
+    """Sprint 6h₉b augmented resolver — Pi-parity ``resolveExtensionEntries``.
+
+    Pi source: ``loader.ts:454-479``.
+
+    Priority order (first match wins):
+
+    1. ``aelix-plugin.toml`` — NEW preferred (Sprint 6h₉b §B). Parse via
+       Pydantic and return ``[_ManifestEntry(manifest, pkg_dir)]``.
+    2. ``pyproject.toml [tool.aelix] extensions = [...]`` — legacy
+       package-internal entry list (Aelix mirror of Pi's
+       ``package.json "pi.extensions"`` field; unchanged from Sprint 5a).
+    3. ``__init__.py`` — single-file fallback (Aelix mirror of Pi's
+       ``index.ts/index.js``; unchanged from Sprint 5a).
+
+    Returns ``None`` if no manifest / legacy form is present (signal:
+    skip this subdirectory).
+
+    Raises:
+        ExtensionManifestError: when ``aelix-plugin.toml`` exists but
+        fails to parse / validate. Bubbles up to the per-plugin
+        try/except in :func:`_discover_in_dir` / :func:`load_extensions`.
+    """
+
+    # Tier 1: aelix-plugin.toml (Sprint 6h₉b §B — NEW preferred).
+    manifest = _load_manifest_from_dir(pkg_dir)
+    if manifest is not None:
+        return [_ManifestEntry(manifest=manifest, pkg_dir=pkg_dir)]
+
+    # Tier 2: pyproject.toml [tool.aelix] extensions (Sprint 5a legacy).
     pyproject = pkg_dir / "pyproject.toml"
     if pyproject.exists():
         try:
@@ -282,7 +440,7 @@ def _resolve_extension_entries(pkg_dir: Path) -> list[Path] | None:
             data.get("tool", {}).get("aelix", {}).get("extensions")
         )
         if isinstance(declared, list) and declared:
-            entries: list[Path] = []
+            entries: list[Path | _ManifestEntry] = []
             for raw in declared:
                 if not isinstance(raw, str):
                     continue
@@ -291,6 +449,8 @@ def _resolve_extension_entries(pkg_dir: Path) -> list[Path] | None:
                     entries.append(resolved)
             if entries:
                 return entries
+
+    # Tier 3: __init__.py (Sprint 5a legacy).
     init_py = pkg_dir / "__init__.py"
     if init_py.exists():
         return [init_py]
@@ -362,11 +522,20 @@ def _discover_via_entry_points(
 
 
 async def _resolve_factory(
-    entry: str | Path | ExtensionFactory,
+    entry: str | Path | ExtensionFactory | _ManifestEntry,
     *,
     cwd: Path | None,
 ) -> tuple[ExtensionFactory, str]:
-    """Return ``(factory, display_name)`` for a single loader entry."""
+    """Return ``(factory, display_name)`` for a single loader entry.
+
+    Sprint 6h₉b: the ``entry`` union widens to include ``_ManifestEntry``
+    so :func:`discover_and_load_extensions` can route manifest-discovered
+    plugins through this resolver. The actual ``_ManifestEntry`` branch
+    lands in Sprint 6h₉b §C (next commit); at this commit a
+    ``_ManifestEntry`` falls into the final ``raise TypeError`` and
+    surfaces as an :class:`ExtensionLoadError` (contained by the
+    per-plugin try/except in :func:`load_extensions`).
+    """
 
     # Check callable first; the isinstance guard is defensive because Path objects
     # are not callable, but the order matters: str/Path checks must come after so
