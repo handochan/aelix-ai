@@ -198,6 +198,14 @@ class AgentHarnessOptions:
     extensions: list[Extension] = field(default_factory=list)
     tools: list[AgentTool] = field(default_factory=list)
     system_prompt: str = ""
+    # Sprint 6h₇a (Phase 5a-iii-α, ADR-0090, §D): minimal text-only port
+    # of Pi ``--append-system-prompt`` (Pi `args.ts:101` accumulates,
+    # Pi `agent-session.ts:_rebuildSystemPrompt` joins). Aelix joins
+    # ONCE in :class:`AgentHarness.__init__` (Aelix has no reload trigger
+    # for append-system-prompt in 6h₇a scope, so init-time placement is
+    # semantically equivalent for the supported lifecycle). NO ``@file``
+    # resolution / NO auto-discovery — those land with ResourceLoader.
+    append_system_prompt: list[str] = field(default_factory=list)
     initial_messages: list[AgentMessage] = field(default_factory=list)
     convert_to_llm: ConvertToLlmFn | None = None
     transform_context: Callable[[list[AgentMessage], Any], list[AgentMessage] | Awaitable[list[AgentMessage]]] | None = None
@@ -504,8 +512,22 @@ class AgentHarness:
         for tool in options.tools:
             merged[tool.name] = tool
 
+        # Sprint 6h₇a (Phase 5a-iii-α, ADR-0090, §D): assemble
+        # ``--append-system-prompt`` chunks onto the base system prompt
+        # ONCE at init time. Pi `agent-session.ts:_rebuildSystemPrompt`
+        # rebuilds on every reload; Aelix 6h₇a has no reload trigger in
+        # scope so init-time placement is semantically equivalent.
+        base_system_prompt = options.system_prompt
+        if options.append_system_prompt:
+            appended = "\n\n".join(options.append_system_prompt)
+            base_system_prompt = (
+                f"{base_system_prompt}\n\n{appended}"
+                if base_system_prompt
+                else appended
+            )
+
         self._state = AgentState(
-            system_prompt=options.system_prompt,
+            system_prompt=base_system_prompt,
             model=options.model,
             tools=list(merged.values()),
             messages=list(options.initial_messages),

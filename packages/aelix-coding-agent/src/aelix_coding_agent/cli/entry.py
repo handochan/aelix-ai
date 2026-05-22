@@ -135,6 +135,12 @@ def _build_harness_options(parsed: Args, session: Session) -> AgentHarnessOption
     )
     if parsed.system_prompt is not None:
         options.system_prompt = parsed.system_prompt
+    # Sprint 6h₇a (Phase 5a-iii-α, ADR-0090, §D): minimal text-only
+    # ``--append-system-prompt`` wire. ``parsed.append_system_prompt``
+    # is already a :class:`list[str]` accumulator (args.py:101). The
+    # harness joins on ``"\n\n"`` after the base system prompt at
+    # ``__init__`` time.
+    options.append_system_prompt = list(parsed.append_system_prompt)
     return options
 
 
