@@ -218,20 +218,33 @@ async def test_manifest_wins_over_pyproject_toml(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_module_colon_callable_form_resolves(tmp_path: Path) -> None:
-    """Test #5: ``python = "module:custom"`` → factory is ``custom``, not ``setup``."""
+    """Test #5: ``python = "module:custom"`` → factory is ``custom``, not ``setup``.
+
+    Sprint 6h₉b fold-in §A (W4 MINOR-1 / W5 m1): adds an explicit
+    ``RAN_CUSTOM`` side-effect so the test PROVES the colon-form
+    callable ran. Previously the test relied on a side-channel ("if
+    ``setup`` were resolved instead, AttributeError"); that side channel
+    would silently break if someone added a ``setup`` stub.
+    """
 
     module_name = "aelix_test_plugin_colon"
+    # Side-effect flag + a poison ``setup`` so wrong-callable resolution
+    # would explicitly fail. Together, these two prove the colon-form
+    # path resolved ``my_custom_setup``.
     custom_module = textwrap.dedent("""
+        RAN_CUSTOM = False
         def my_custom_setup(aelix):
-            # Confirms the loader resolved ``my_custom_setup`` (not ``setup``).
-            pass
+            global RAN_CUSTOM
+            RAN_CUSTOM = True
+        def setup(aelix):
+            raise AssertionError(
+                "Wrong callable resolved: ``setup`` should NOT have "
+                "been picked up — manifest declared ``my_custom_setup``."
+            )
     """)
-    # Build the manifest with a colon target that names ``my_custom_setup``.
-    # We format the template with ``module`` set to ``"{module_name}:my_custom_setup"``
-    # so the ``{module}:setup`` line becomes
-    # ``{module_name}:my_custom_setup:setup`` — that double-suffix is wrong;
-    # instead post-process the formatted manifest to strip the trailing
-    # ``:setup`` legacy suffix from the template.
+    # Replace ``setup`` in the rendered manifest with ``my_custom_setup``
+    # to exercise the colon-form: ``_VALID_MANIFEST`` hardcodes
+    # ``{module}:setup`` and we need ``{module}:my_custom_setup``.
     manifest_toml = _VALID_MANIFEST.format(module=module_name).replace(
         f"{module_name}:setup", f"{module_name}:my_custom_setup"
     )
@@ -246,9 +259,14 @@ async def test_module_colon_callable_form_resolves(tmp_path: Path) -> None:
         result = await discover_and_load_extensions([], cwd=tmp_path)
         assert result.errors == []
         assert len(result.extensions) == 1
-        # ``my_custom_setup`` was the callable that ran; if ``setup`` had
-        # been resolved instead, the loader would have raised AttributeError
-        # because ``setup`` is not defined in the module.
+        # Proof that ``my_custom_setup`` ran — not the poison ``setup``.
+        import importlib
+
+        mod = importlib.import_module(module_name)
+        assert mod.RAN_CUSTOM is True, (
+            "Manifest [plugin.entry] python = 'module:my_custom_setup' "
+            "did NOT resolve the custom callable; RAN_CUSTOM stayed False."
+        )
     finally:
         _cleanup_sys_path(tmp_path)
 
@@ -317,7 +335,17 @@ async def test_missing_entry_python_when_required_raises(tmp_path: Path) -> None
     result = await discover_and_load_extensions([], cwd=tmp_path)
     assert result.extensions == []
     assert len(result.errors) == 1
-    assert "entry.python" in result.errors[0].error.lower() or "entry" in result.errors[0].error
+    # Sprint 6h₉b fold-in §A (W4 MINOR-5): tightened — the second clause
+    # ``"entry" in result.errors[0].error`` previously matched any error
+    # message mentioning the word "entry" (always true for entry-related
+    # validation), making the assertion always pass. The Pydantic
+    # validator at ``manifest.py`` raises with ``[plugin.entry] python``
+    # explicitly in the message; assert against that precise string.
+    err_lower = result.errors[0].error.lower()
+    assert "entry.python" in err_lower or "[plugin.entry] python" in err_lower, (
+        f"Expected ``[plugin.entry] python`` reference in error, got: "
+        f"{result.errors[0].error!r}"
+    )
 
 
 @pytest.mark.asyncio
@@ -546,5 +574,83 @@ async def test_manifest_activation_capabilities_contributes_roundtrip(
         assert manifest.capabilities.fs_read_user is True
         assert len(manifest.contributes.commands) == 1
         assert manifest.contributes.commands[0].id == "rt-cmd"
+    finally:
+        _cleanup_sys_path(tmp_path)
+
+
+# === Sprint 6h₉b fold-in §A — W5 m2 boundary test ===
+
+
+@pytest.mark.asyncio
+async def test_api_level_equal_boundary_accepted(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Test #15 (Sprint 6h₉b fold-in §A): explicit ``==`` boundary on API_LEVEL.
+
+    Sprint 6h₉b fold-in §A (W5 m2): pins ``min_level == AELIX_API_LEVEL``
+    and ``level == AELIX_API_LEVEL`` to the accepted side. Without an
+    explicit boundary test, a future refactor that flips ``>`` to ``>=``
+    at ``loader.py`` would silently break the policy invariant — every
+    other test would still pass because they all use ``level=1,
+    min_level=1`` which is the boundary itself.
+
+    Policy (ADR-0096 §"API_LEVEL policy"):
+        - ``min_level > host`` → REJECT
+        - ``level > host`` → WARN + LOAD
+        - ``min_level == host`` → ACCEPT silently (this test)
+        - ``level == host`` → ACCEPT silently (this test)
+    """
+
+    import logging
+
+    from aelix_agent_core.contracts import AELIX_API_LEVEL
+
+    module_name = "aelix_test_plugin_eq_boundary"
+    boundary_manifest = textwrap.dedent(f"""
+        [plugin]
+        id = "boundary-plugin"
+        name = "Boundary Plugin"
+        version = "0.1.0"
+        description = "Boundary test"
+        authors = ["Test <test@example.com>"]
+        repository = "https://github.com/example/boundary"
+        license = "MIT"
+
+        [plugin.api]
+        level = {AELIX_API_LEVEL}
+        min_level = {AELIX_API_LEVEL}
+
+        [plugin.entry]
+        python = "{module_name}:setup"
+
+        [activation]
+        on_startup_finished = true
+    """).strip()
+    _write_plugin_dir(
+        tmp_path,
+        name="boundary",
+        manifest_toml=boundary_manifest,
+        module_name=module_name,
+        module_src=_SETUP_MODULE,
+    )
+    try:
+        with caplog.at_level(logging.WARNING):
+            result = await discover_and_load_extensions([], cwd=tmp_path)
+        assert result.errors == []
+        assert len(result.extensions) == 1
+        # No API_LEVEL forward-compat warning on the equal boundary.
+        api_warns = [
+            rec for rec in caplog.records
+            if "API_LEVEL" in rec.message or "api_level" in rec.message.lower()
+        ]
+        assert api_warns == [], (
+            f"Equal boundary must not log API_LEVEL warning; got {api_warns!r}"
+        )
+        # Manifest carried through with the boundary values.
+        manifest = result.extensions[0].manifest
+        assert manifest is not None
+        assert manifest.api.level == AELIX_API_LEVEL
+        assert manifest.api.min_level == AELIX_API_LEVEL
     finally:
         _cleanup_sys_path(tmp_path)

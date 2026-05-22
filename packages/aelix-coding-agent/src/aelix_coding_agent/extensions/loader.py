@@ -405,7 +405,9 @@ def _resolve_extension_entries(
 ) -> list[Path | _ManifestEntry] | None:
     """Sprint 6h₉b augmented resolver — Pi-parity ``resolveExtensionEntries``.
 
-    Pi source: ``loader.ts:454-479``.
+    Pi source: ``loader.ts:496-526`` (corrected from ``:454-479`` in
+    Sprint 6h₉b fold-in §B — W5 critic verified the function signature
+    is at line 496 at SHA ``734e08e``).
 
     Priority order (first match wins):
 
@@ -419,6 +421,15 @@ def _resolve_extension_entries(
 
     Returns ``None`` if no manifest / legacy form is present (signal:
     skip this subdirectory).
+
+    Failure semantics (Sprint 6h₉b fold-in §A — W4 MINOR-2):
+        If ``aelix-plugin.toml`` exists but fails to parse / validate,
+        :class:`ExtensionManifestError` is raised and the directory is
+        treated as **unloadable** — there is NO fall-through to Tier 2
+        (``pyproject.toml [tool.aelix]``) or Tier 3 (``__init__.py``).
+        A broken manifest is a hard fail; rename the file (or fix the
+        contents) to disable manifest-driven discovery for the
+        directory.
 
     Raises:
         ExtensionManifestError: when ``aelix-plugin.toml`` exists but
@@ -546,9 +557,9 @@ async def _resolve_factory(
             raise ValueError(
                 f"Manifest for plugin {entry.manifest.plugin.id!r} "
                 f"in {entry.pkg_dir} has no [plugin.entry] python; "
-                "cannot load (Sprint 6h₉b requires python entry when "
-                "any of capabilities.ui_tui_trusted / .ui_descriptor / "
-                ".mcp_serve is True — see Sprint 6h₉a fold-in §A)"
+                f"cannot load (Sprint 6h₉b requires python entry when "
+                f"any of capabilities.ui_tui_trusted / .ui_descriptor / "
+                f".mcp_serve is True — see Sprint 6h₉a fold-in §A)"
             )
         factory = _factory_from_module(py_entry)
         return factory, entry.manifest.plugin.id, entry.manifest
@@ -579,8 +590,18 @@ def _factory_from_module(module_path: str) -> ExtensionFactory:
     Legacy bare-module form ``"module.path"`` still resolves to top-level
     ``setup`` for backward compat.
 
+    Pre-filter note (Sprint 6h₉b fold-in §A — W4 MINOR-3): when called
+    from the manifest-driven path, ``module_path`` has already been
+    constrained by ``PluginEntry.python``'s Pydantic pattern
+    ``^[\\w.]+:\\w+$`` (see :mod:`aelix_agent_core.contracts.manifest`),
+    so the empty-module / empty-callable ``ValueError`` below is
+    unreachable from manifests — it remains as defense-in-depth for
+    direct test / programmatic callers that bypass the manifest layer.
+
     Raises:
-        ValueError: when colon-form has empty module or empty callable.
+        ValueError: when colon-form has empty module or empty callable
+        (only reachable from direct callers — manifest paths are
+        pre-filtered by Pydantic).
         AttributeError: when the specified callable does not exist on
         the imported module.
     """
