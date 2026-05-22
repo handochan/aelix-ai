@@ -1,0 +1,605 @@
+{
+  "$defs": {
+    "ActionDescriptor": {
+      "additionalProperties": false,
+      "description": "Wire-safe action reference (no function refs cross the wire).\n\nFrontend dispatches ``plugin_action`` events with this descriptor;\nhost routes to the plugin's registered action handler.",
+      "properties": {
+        "action": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Action",
+          "type": "string"
+        },
+        "confirm": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Confirm"
+        },
+        "payload": {
+          "additionalProperties": true,
+          "title": "Payload",
+          "type": "object"
+        },
+        "plugin_id": {
+          "pattern": "^[a-z][a-z0-9-]{0,63}$",
+          "title": "Plugin Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "plugin_id",
+        "action"
+      ],
+      "title": "ActionDescriptor",
+      "type": "object"
+    },
+    "BadgePrimitive": {
+      "additionalProperties": false,
+      "properties": {
+        "label": {
+          "title": "Label",
+          "type": "string"
+        },
+        "level": {
+          "default": "info",
+          "enum": [
+            "info",
+            "success",
+            "warning",
+            "error"
+          ],
+          "title": "Level",
+          "type": "string"
+        },
+        "value": {
+          "title": "Value",
+          "type": "string"
+        }
+      },
+      "required": [
+        "label",
+        "value"
+      ],
+      "title": "BadgePrimitive",
+      "type": "object"
+    },
+    "FormPrimitive": {
+      "$defs": {
+        "ActionDescriptor": {
+          "additionalProperties": false,
+          "description": "Wire-safe action reference (no function refs cross the wire).\n\nFrontend dispatches ``plugin_action`` events with this descriptor;\nhost routes to the plugin's registered action handler.",
+          "properties": {
+            "action": {
+              "maxLength": 128,
+              "minLength": 1,
+              "title": "Action",
+              "type": "string"
+            },
+            "confirm": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Confirm"
+            },
+            "payload": {
+              "additionalProperties": true,
+              "title": "Payload",
+              "type": "object"
+            },
+            "plugin_id": {
+              "pattern": "^[a-z][a-z0-9-]{0,63}$",
+              "title": "Plugin Id",
+              "type": "string"
+            }
+          },
+          "required": [
+            "plugin_id",
+            "action"
+          ],
+          "title": "ActionDescriptor",
+          "type": "object"
+        },
+        "FieldSpec": {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "title": "Id",
+              "type": "string"
+            },
+            "kind": {
+              "default": "text",
+              "enum": [
+                "text",
+                "number",
+                "boolean",
+                "select",
+                "textarea",
+                "code",
+                "datetime"
+              ],
+              "title": "Kind",
+              "type": "string"
+            },
+            "label": {
+              "title": "Label",
+              "type": "string"
+            },
+            "required": {
+              "default": false,
+              "title": "Required",
+              "type": "boolean"
+            },
+            "values": {
+              "anyOf": [
+                {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Values"
+            }
+          },
+          "required": [
+            "id",
+            "label"
+          ],
+          "title": "FieldSpec",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "cancel_action": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ActionDescriptor"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "fields": {
+          "items": {
+            "$ref": "#/$defs/FieldSpec"
+          },
+          "title": "Fields",
+          "type": "array"
+        },
+        "submit_action": {
+          "$ref": "#/$defs/ActionDescriptor"
+        }
+      },
+      "required": [
+        "fields",
+        "submit_action"
+      ],
+      "title": "FormPrimitive",
+      "type": "object"
+    },
+    "GatePrimitive": {
+      "$defs": {
+        "ActionDescriptor": {
+          "additionalProperties": false,
+          "description": "Wire-safe action reference (no function refs cross the wire).\n\nFrontend dispatches ``plugin_action`` events with this descriptor;\nhost routes to the plugin's registered action handler.",
+          "properties": {
+            "action": {
+              "maxLength": 128,
+              "minLength": 1,
+              "title": "Action",
+              "type": "string"
+            },
+            "confirm": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Confirm"
+            },
+            "payload": {
+              "additionalProperties": true,
+              "title": "Payload",
+              "type": "object"
+            },
+            "plugin_id": {
+              "pattern": "^[a-z][a-z0-9-]{0,63}$",
+              "title": "Plugin Id",
+              "type": "string"
+            }
+          },
+          "required": [
+            "plugin_id",
+            "action"
+          ],
+          "title": "ActionDescriptor",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "flag": {
+          "title": "Flag",
+          "type": "string"
+        },
+        "on_blocked_action": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ActionDescriptor"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "when": {
+          "additionalProperties": true,
+          "title": "When",
+          "type": "object"
+        }
+      },
+      "required": [
+        "flag"
+      ],
+      "title": "GatePrimitive",
+      "type": "object"
+    },
+    "GridPrimitive": {
+      "$defs": {
+        "ActionDescriptor": {
+          "additionalProperties": false,
+          "description": "Wire-safe action reference (no function refs cross the wire).\n\nFrontend dispatches ``plugin_action`` events with this descriptor;\nhost routes to the plugin's registered action handler.",
+          "properties": {
+            "action": {
+              "maxLength": 128,
+              "minLength": 1,
+              "title": "Action",
+              "type": "string"
+            },
+            "confirm": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Confirm"
+            },
+            "payload": {
+              "additionalProperties": true,
+              "title": "Payload",
+              "type": "object"
+            },
+            "plugin_id": {
+              "pattern": "^[a-z][a-z0-9-]{0,63}$",
+              "title": "Plugin Id",
+              "type": "string"
+            }
+          },
+          "required": [
+            "plugin_id",
+            "action"
+          ],
+          "title": "ActionDescriptor",
+          "type": "object"
+        },
+        "BadgePrimitive": {
+          "additionalProperties": false,
+          "properties": {
+            "label": {
+              "title": "Label",
+              "type": "string"
+            },
+            "level": {
+              "default": "info",
+              "enum": [
+                "info",
+                "success",
+                "warning",
+                "error"
+              ],
+              "title": "Level",
+              "type": "string"
+            },
+            "value": {
+              "title": "Value",
+              "type": "string"
+            }
+          },
+          "required": [
+            "label",
+            "value"
+          ],
+          "title": "BadgePrimitive",
+          "type": "object"
+        },
+        "GridItem": {
+          "additionalProperties": false,
+          "properties": {
+            "badge": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/BadgePrimitive"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null
+            },
+            "id": {
+              "title": "Id",
+              "type": "string"
+            },
+            "subtitle": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Subtitle"
+            },
+            "title": {
+              "title": "Title",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "title"
+          ],
+          "title": "GridItem",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "item_actions": {
+          "items": {
+            "$ref": "#/$defs/ActionDescriptor"
+          },
+          "title": "Item Actions",
+          "type": "array"
+        },
+        "items": {
+          "items": {
+            "$ref": "#/$defs/GridItem"
+          },
+          "title": "Items",
+          "type": "array"
+        }
+      },
+      "required": [
+        "items"
+      ],
+      "title": "GridPrimitive",
+      "type": "object"
+    },
+    "MetricPrimitive": {
+      "additionalProperties": false,
+      "properties": {
+        "delta": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Delta"
+        },
+        "label": {
+          "title": "Label",
+          "type": "string"
+        },
+        "level": {
+          "default": "info",
+          "enum": [
+            "info",
+            "success",
+            "warning",
+            "error"
+          ],
+          "title": "Level",
+          "type": "string"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "integer"
+            }
+          ],
+          "title": "Value"
+        }
+      },
+      "required": [
+        "label",
+        "value"
+      ],
+      "title": "MetricPrimitive",
+      "type": "object"
+    },
+    "TablePrimitive": {
+      "$defs": {
+        "ActionDescriptor": {
+          "additionalProperties": false,
+          "description": "Wire-safe action reference (no function refs cross the wire).\n\nFrontend dispatches ``plugin_action`` events with this descriptor;\nhost routes to the plugin's registered action handler.",
+          "properties": {
+            "action": {
+              "maxLength": 128,
+              "minLength": 1,
+              "title": "Action",
+              "type": "string"
+            },
+            "confirm": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Confirm"
+            },
+            "payload": {
+              "additionalProperties": true,
+              "title": "Payload",
+              "type": "object"
+            },
+            "plugin_id": {
+              "pattern": "^[a-z][a-z0-9-]{0,63}$",
+              "title": "Plugin Id",
+              "type": "string"
+            }
+          },
+          "required": [
+            "plugin_id",
+            "action"
+          ],
+          "title": "ActionDescriptor",
+          "type": "object"
+        },
+        "ColumnSpec": {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "title": "Id",
+              "type": "string"
+            },
+            "kind": {
+              "default": "text",
+              "enum": [
+                "text",
+                "number",
+                "boolean",
+                "datetime",
+                "badge",
+                "code"
+              ],
+              "title": "Kind",
+              "type": "string"
+            },
+            "label": {
+              "title": "Label",
+              "type": "string"
+            },
+            "sortable": {
+              "default": false,
+              "title": "Sortable",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "id",
+            "label"
+          ],
+          "title": "ColumnSpec",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "actions": {
+          "items": {
+            "$ref": "#/$defs/ActionDescriptor"
+          },
+          "title": "Actions",
+          "type": "array"
+        },
+        "columns": {
+          "items": {
+            "$ref": "#/$defs/ColumnSpec"
+          },
+          "title": "Columns",
+          "type": "array"
+        },
+        "rows": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Rows",
+          "type": "array"
+        }
+      },
+      "required": [
+        "columns",
+        "rows"
+      ],
+      "title": "TablePrimitive",
+      "type": "object"
+    },
+    "TextPrimitive": {
+      "additionalProperties": false,
+      "properties": {
+        "style": {
+          "default": "default",
+          "enum": [
+            "default",
+            "muted",
+            "accent",
+            "success",
+            "warning",
+            "error"
+          ],
+          "title": "Style",
+          "type": "string"
+        },
+        "text": {
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "title": "TextPrimitive",
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "ADR-0095 \u00a7UI primitives \u2014 schema for the 8 UI primitives that descriptor payloads compose.",
+  "title": "Aelix UI Primitives"
+}

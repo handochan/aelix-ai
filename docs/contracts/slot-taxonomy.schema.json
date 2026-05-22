@@ -1,0 +1,265 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "ADR-0095 \u00a78-slot taxonomy v1 \u2014 static metadata for descriptor kinds: multiplicity + payload tier. The actual descriptor schema is in descriptor-envelope.schema.json.",
+  "examples": [
+    {
+      "api_level": 1,
+      "slots": {
+        "agent-metric": {
+          "multiplicity": "many",
+          "payload_tier": "descriptor-only"
+        },
+        "breadcrumb": {
+          "multiplicity": "many",
+          "payload_tier": "descriptor-only"
+        },
+        "command-route": {
+          "multiplicity": "one",
+          "payload_tier": "descriptor-only"
+        },
+        "footer-segment": {
+          "multiplicity": "many",
+          "payload_tier": "descriptor-only"
+        },
+        "management-modal": {
+          "multiplicity": "one",
+          "payload_tier": "descriptor-only"
+        },
+        "status-item": {
+          "multiplicity": "many",
+          "payload_tier": "descriptor-only"
+        },
+        "toast": {
+          "multiplicity": "many",
+          "payload_tier": "descriptor-only"
+        },
+        "tool-renderer-desc": {
+          "multiplicity": "one",
+          "payload_tier": "descriptor-only"
+        }
+      }
+    }
+  ],
+  "properties": {
+    "api_level": {
+      "const": 1,
+      "type": "integer"
+    },
+    "slots": {
+      "additionalProperties": false,
+      "properties": {
+        "agent-metric": {
+          "additionalProperties": false,
+          "properties": {
+            "multiplicity": {
+              "enum": [
+                "one",
+                "one-active",
+                "many"
+              ],
+              "type": "string"
+            },
+            "payload_tier": {
+              "enum": [
+                "descriptor-only",
+                "react-or-descriptor",
+                "react-only"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "multiplicity",
+            "payload_tier"
+          ],
+          "type": "object"
+        },
+        "breadcrumb": {
+          "additionalProperties": false,
+          "properties": {
+            "multiplicity": {
+              "enum": [
+                "one",
+                "one-active",
+                "many"
+              ],
+              "type": "string"
+            },
+            "payload_tier": {
+              "enum": [
+                "descriptor-only",
+                "react-or-descriptor",
+                "react-only"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "multiplicity",
+            "payload_tier"
+          ],
+          "type": "object"
+        },
+        "command-route": {
+          "additionalProperties": false,
+          "properties": {
+            "multiplicity": {
+              "enum": [
+                "one",
+                "one-active",
+                "many"
+              ],
+              "type": "string"
+            },
+            "payload_tier": {
+              "enum": [
+                "descriptor-only",
+                "react-or-descriptor",
+                "react-only"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "multiplicity",
+            "payload_tier"
+          ],
+          "type": "object"
+        },
+        "footer-segment": {
+          "additionalProperties": false,
+          "properties": {
+            "multiplicity": {
+              "enum": [
+                "one",
+                "one-active",
+                "many"
+              ],
+              "type": "string"
+            },
+            "payload_tier": {
+              "enum": [
+                "descriptor-only",
+                "react-or-descriptor",
+                "react-only"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "multiplicity",
+            "payload_tier"
+          ],
+          "type": "object"
+        },
+        "management-modal": {
+          "additionalProperties": false,
+          "properties": {
+            "multiplicity": {
+              "enum": [
+                "one",
+                "one-active",
+                "many"
+              ],
+              "type": "string"
+            },
+            "payload_tier": {
+              "enum": [
+                "descriptor-only",
+                "react-or-descriptor",
+                "react-only"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "multiplicity",
+            "payload_tier"
+          ],
+          "type": "object"
+        },
+        "status-item": {
+          "additionalProperties": false,
+          "properties": {
+            "multiplicity": {
+              "enum": [
+                "one",
+                "one-active",
+                "many"
+              ],
+              "type": "string"
+            },
+            "payload_tier": {
+              "enum": [
+                "descriptor-only",
+                "react-or-descriptor",
+                "react-only"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "multiplicity",
+            "payload_tier"
+          ],
+          "type": "object"
+        },
+        "toast": {
+          "additionalProperties": false,
+          "properties": {
+            "multiplicity": {
+              "enum": [
+                "one",
+                "one-active",
+                "many"
+              ],
+              "type": "string"
+            },
+            "payload_tier": {
+              "enum": [
+                "descriptor-only",
+                "react-or-descriptor",
+                "react-only"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "multiplicity",
+            "payload_tier"
+          ],
+          "type": "object"
+        },
+        "tool-renderer-desc": {
+          "additionalProperties": false,
+          "properties": {
+            "multiplicity": {
+              "enum": [
+                "one",
+                "one-active",
+                "many"
+              ],
+              "type": "string"
+            },
+            "payload_tier": {
+              "enum": [
+                "descriptor-only",
+                "react-or-descriptor",
+                "react-only"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "multiplicity",
+            "payload_tier"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "object"
+    }
+  },
+  "title": "Aelix Slot Taxonomy v1",
+  "type": "object"
+}

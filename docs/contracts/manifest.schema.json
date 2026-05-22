@@ -1,0 +1,460 @@
+{
+  "$defs": {
+    "Activation": {
+      "additionalProperties": false,
+      "properties": {
+        "on_command": {
+          "items": {
+            "type": "string"
+          },
+          "title": "On Command",
+          "type": "array"
+        },
+        "on_session_start": {
+          "default": false,
+          "title": "On Session Start",
+          "type": "boolean"
+        },
+        "on_startup_finished": {
+          "default": false,
+          "title": "On Startup Finished",
+          "type": "boolean"
+        },
+        "on_tool_call": {
+          "items": {
+            "type": "string"
+          },
+          "title": "On Tool Call",
+          "type": "array"
+        }
+      },
+      "title": "Activation",
+      "type": "object"
+    },
+    "Capabilities": {
+      "additionalProperties": false,
+      "properties": {
+        "fs_read_user": {
+          "default": false,
+          "title": "Fs Read User",
+          "type": "boolean"
+        },
+        "fs_write": {
+          "default": false,
+          "title": "Fs Write",
+          "type": "boolean"
+        },
+        "mcp_invoke": {
+          "default": false,
+          "title": "Mcp Invoke",
+          "type": "boolean"
+        },
+        "mcp_serve": {
+          "default": false,
+          "title": "Mcp Serve",
+          "type": "boolean"
+        },
+        "net": {
+          "default": false,
+          "title": "Net",
+          "type": "boolean"
+        },
+        "shell_exec": {
+          "default": false,
+          "title": "Shell Exec",
+          "type": "boolean"
+        },
+        "ui_descriptor": {
+          "default": false,
+          "title": "Ui Descriptor",
+          "type": "boolean"
+        },
+        "ui_tui_trusted": {
+          "default": false,
+          "title": "Ui Tui Trusted",
+          "type": "boolean"
+        },
+        "ui_web_trusted": {
+          "default": false,
+          "title": "Ui Web Trusted",
+          "type": "boolean"
+        }
+      },
+      "title": "Capabilities",
+      "type": "object"
+    },
+    "CommandContrib": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "minLength": 1,
+          "title": "Description",
+          "type": "string"
+        },
+        "id": {
+          "pattern": "^[a-z][a-z0-9-]*$",
+          "title": "Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "description"
+      ],
+      "title": "CommandContrib",
+      "type": "object"
+    },
+    "Contributes": {
+      "additionalProperties": false,
+      "properties": {
+        "commands": {
+          "items": {
+            "$ref": "#/$defs/CommandContrib"
+          },
+          "title": "Commands",
+          "type": "array"
+        },
+        "descriptors": {
+          "items": {
+            "$ref": "#/$defs/DescriptorContrib"
+          },
+          "title": "Descriptors",
+          "type": "array"
+        },
+        "hooks": {
+          "items": {
+            "$ref": "#/$defs/HookContrib"
+          },
+          "title": "Hooks",
+          "type": "array"
+        },
+        "mcp_servers": {
+          "items": {
+            "$ref": "#/$defs/McpServerContrib"
+          },
+          "title": "Mcp Servers",
+          "type": "array"
+        },
+        "themes": {
+          "items": {
+            "$ref": "#/$defs/ThemeContrib"
+          },
+          "title": "Themes",
+          "type": "array"
+        },
+        "tools": {
+          "items": {
+            "$ref": "#/$defs/ToolContrib"
+          },
+          "title": "Tools",
+          "type": "array"
+        },
+        "tui_widgets": {
+          "items": {
+            "$ref": "#/$defs/TuiWidgetContrib"
+          },
+          "title": "Tui Widgets",
+          "type": "array"
+        }
+      },
+      "title": "Contributes",
+      "type": "object"
+    },
+    "DescriptorContrib": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "kind": {
+          "title": "Kind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "id"
+      ],
+      "title": "DescriptorContrib",
+      "type": "object"
+    },
+    "HookContrib": {
+      "additionalProperties": false,
+      "properties": {
+        "command": {
+          "minLength": 1,
+          "title": "Command",
+          "type": "string"
+        },
+        "event": {
+          "title": "Event",
+          "type": "string"
+        },
+        "timeout_ms": {
+          "default": 60000,
+          "maximum": 600000,
+          "minimum": 100,
+          "title": "Timeout Ms",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "event",
+        "command"
+      ],
+      "title": "HookContrib",
+      "type": "object"
+    },
+    "McpServerContrib": {
+      "additionalProperties": false,
+      "properties": {
+        "command": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Command"
+        },
+        "env": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Env",
+          "type": "object"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "transport": {
+          "enum": [
+            "stdio",
+            "http",
+            "sse"
+          ],
+          "title": "Transport",
+          "type": "string"
+        },
+        "url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Url"
+        }
+      },
+      "required": [
+        "name",
+        "transport"
+      ],
+      "title": "McpServerContrib",
+      "type": "object"
+    },
+    "PluginApi": {
+      "additionalProperties": false,
+      "properties": {
+        "level": {
+          "minimum": 1,
+          "title": "Level",
+          "type": "integer"
+        },
+        "min_level": {
+          "minimum": 1,
+          "title": "Min Level",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "level",
+        "min_level"
+      ],
+      "title": "PluginApi",
+      "type": "object"
+    },
+    "PluginEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "python": {
+          "anyOf": [
+            {
+              "pattern": "^[\\w.]+:\\w+$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Python"
+        }
+      },
+      "title": "PluginEntry",
+      "type": "object"
+    },
+    "PluginIdentity": {
+      "additionalProperties": false,
+      "properties": {
+        "authors": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Authors",
+          "type": "array"
+        },
+        "description": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Description",
+          "type": "string"
+        },
+        "homepage": {
+          "anyOf": [
+            {
+              "pattern": "^https?://.+",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Homepage"
+        },
+        "id": {
+          "pattern": "^[a-z][a-z0-9-]{0,63}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "license": {
+          "title": "License",
+          "type": "string"
+        },
+        "name": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "repository": {
+          "pattern": "^https?://.+",
+          "title": "Repository",
+          "type": "string"
+        },
+        "version": {
+          "pattern": "^\\d+\\.\\d+\\.\\d+(-[0-9A-Za-z-.]+)?(\\+[0-9A-Za-z-.]+)?$",
+          "title": "Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "version",
+        "description",
+        "authors",
+        "repository",
+        "license"
+      ],
+      "title": "PluginIdentity",
+      "type": "object"
+    },
+    "ThemeContrib": {
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "minLength": 1,
+          "title": "Path",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "title": "ThemeContrib",
+      "type": "object"
+    },
+    "ToolContrib": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "minLength": 1,
+          "title": "Description",
+          "type": "string"
+        },
+        "name": {
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "description"
+      ],
+      "title": "ToolContrib",
+      "type": "object"
+    },
+    "TuiWidgetContrib": {
+      "additionalProperties": false,
+      "properties": {
+        "factory": {
+          "pattern": "^[\\w.]+:\\w+$",
+          "title": "Factory",
+          "type": "string"
+        },
+        "slot": {
+          "minLength": 1,
+          "title": "Slot",
+          "type": "string"
+        }
+      },
+      "required": [
+        "slot",
+        "factory"
+      ],
+      "title": "TuiWidgetContrib",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Top-level ``aelix-plugin.toml`` schema (ADR-0096).",
+  "properties": {
+    "activation": {
+      "$ref": "#/$defs/Activation"
+    },
+    "api": {
+      "$ref": "#/$defs/PluginApi"
+    },
+    "capabilities": {
+      "$ref": "#/$defs/Capabilities"
+    },
+    "contributes": {
+      "$ref": "#/$defs/Contributes"
+    },
+    "entry": {
+      "$ref": "#/$defs/PluginEntry"
+    },
+    "plugin": {
+      "$ref": "#/$defs/PluginIdentity"
+    }
+  },
+  "required": [
+    "plugin",
+    "api",
+    "activation"
+  ],
+  "title": "PluginManifest",
+  "type": "object"
+}
