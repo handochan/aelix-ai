@@ -76,6 +76,8 @@ from aelix_agent_core.harness.hooks import (
     SessionBeforeTreeHookEvent,
     SessionBeforeTreeResult,
     SessionCompactHookEvent,
+    SessionShutdownHookEvent,
+    SessionStartHookEvent,
     SessionTreeHookEvent,
     SettledHookEvent,
     ThinkingLevelSelectHookEvent,
@@ -667,6 +669,10 @@ class AgentHarness:
             # ``ExtensionRunner.invalidate`` delegates to the runtime's
             # single-source-of-truth stale flag.
             _invalidate_runtime=self._runtime.invalidate,
+            # Sprint 6h₇c (Phase 5a-iii-γ, ADR-0093 §C, P-447) — wire
+            # bridge so ``ExtensionRunner.get_flag_values`` /
+            # ``set_flag_value`` delegate to the runtime's owning dict.
+            _runtime=self._runtime,
         )
         self._prompt_templates: list[PromptTemplate] = []
         self._skills: list[Skill] = []
@@ -2235,6 +2241,61 @@ class AgentHarness:
                 if p not in existing:
                     existing.append(p)
             self._state.resources[bucket_name] = existing
+
+    # === Sprint 6h₇c (Phase 5a-iii-γ, ADR-0093 §E, P-448) ===
+    # Pi parity wrappers around ``ExtensionRunner.emit`` for the two
+    # session lifecycle events the reload chain (``agent-session.ts:
+    # 2382-2413``) emits. Pi exposes ``emitSessionShutdownEvent`` as a
+    # module-level helper in ``runner.ts:177-189``; Aelix wraps inside
+    # :class:`AgentHarness` so :meth:`reload` can call directly without
+    # re-binding the runner reference.
+
+    async def _emit_session_shutdown(
+        self,
+        reason: Literal["quit", "reload", "new", "resume", "fork"],
+    ) -> bool:
+        """Pi parity: ``emitSessionShutdownEvent`` (``runner.ts:177-189``).
+
+        Sprint 6h₇c §E (P-448). Gates on
+        :meth:`ExtensionRunner.has_handlers` before emitting; returns
+        ``True`` when at least one handler fired, ``False`` when no
+        handler was registered (no-op short-circuit matches Pi).
+
+        W4 NIT-1 / W5 MINOR-1 fold-in: ``reason`` narrowed to the
+        ``SessionShutdownHookEvent.reason`` ``Literal`` union so typos
+        surface at call sites instead of being swallowed by a
+        ``# type: ignore[arg-type]``.
+        """
+
+        if not self._extension_runner.has_handlers("session_shutdown"):
+            return False
+        await self._extension_runner.emit(
+            SessionShutdownHookEvent(reason=reason)
+        )
+        return True
+
+    async def _emit_session_start(
+        self,
+        reason: Literal["startup", "reload", "new", "resume", "fork"],
+    ) -> bool:
+        """Pi parity: ``session_start`` emit site (``agent-session.ts:2407``).
+
+        Sprint 6h₇c §E (P-448). Symmetric pair to
+        :meth:`_emit_session_shutdown`. Gates on
+        :meth:`ExtensionRunner.has_handlers` before emitting; returns
+        ``True`` when at least one handler fired, ``False`` when no
+        handler was registered.
+
+        W4 NIT-1 / W5 MINOR-1 fold-in: ``reason`` narrowed to the
+        ``SessionStartHookEvent.reason`` ``Literal`` union.
+        """
+
+        if not self._extension_runner.has_handlers("session_start"):
+            return False
+        await self._extension_runner.emit(
+            SessionStartHookEvent(reason=reason)
+        )
+        return True
 
     # === Sprint 5b §E.3 — sync event-loop guard helper ===
 
