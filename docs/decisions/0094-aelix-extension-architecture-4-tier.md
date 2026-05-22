@@ -16,8 +16,9 @@ frameworks / editor-IDE extension models) plus a direct Pi `pi-tui`
 source survey concluded:
 
 - **Pi's extension model is in-process imperative** — extensions are
-  `(api: ExtensionAPI) => void` factory functions that consume a 25-method
-  `ExtensionUIContext` directly. Pi sits at the Neovim/Emacs end of the
+  `(api: ExtensionAPI) => void` factory functions that consume a 27-method
+  `ExtensionUIContext` surface (28 members including the `readonly theme`
+  property) directly. Pi sits at the Neovim/Emacs end of the
   isolation spectrum: trust-the-user, no manifest, no permission tokens.
 - **Aelix has two equal first-class audiences** (D1: TUI + Web 양쪽 1차
   시민) — a single-tier in-process model cannot serve the Web audience.
@@ -130,9 +131,10 @@ Phase 5b lock:
 
 Pi cited at SHA `734e08edf82ff315bc3d96472a6ebfa69a1d8016`:
 
-- `packages/coding-agent/src/extensions/types.ts:1-300` — `ExtensionUIContext` 25-method surface.
-- `packages/coding-agent/src/extensions/types.ts:300-700` — `ExtensionContext` (the broader plugin context that T1 receives).
-- `packages/coding-agent/src/extensions/types.ts:700+` — `ToolDefinition` + `ToolRenderContext` (tool registration + per-call render context).
+- `packages/coding-agent/src/core/extensions/types.ts:124-275` — `ExtensionUIContext` 27-method surface (28 members including `readonly theme: Theme`).
+- `packages/coding-agent/src/core/extensions/types.ts:298+` — `ExtensionContext` class (the broader plugin context that T1 receives; class body continues beyond a fixed end line).
+- `packages/coding-agent/src/core/extensions/types.ts:396` — `ToolRenderContext` (per-call render context).
+- `packages/coding-agent/src/core/extensions/types.ts:426` — `ToolDefinition` (tool registration shape).
 - `packages/coding-agent/docs/extensions.md` — extension lifecycle diagram and the `(api: ExtensionAPI) => void` factory pattern.
 - `packages/coding-agent/docs/extensions.md` §"Auto-discovery" — `~/.pi/agent/extensions/` and `.pi/extensions/` paths (the literal sources we translated to `~/.aelix/extensions/` and `.aelix/extensions/`).
 
@@ -154,8 +156,9 @@ Pi cited at SHA `734e08edf82ff315bc3d96472a6ebfa69a1d8016`:
 - T1 in-process trust model — identical to Pi.
 - T1 factory function shape — `def extension(api: AelixAPI) -> None`
   mirrors Pi's `default function (api: ExtensionAPI) => void`.
-- T1 `ctx.ui.*` 25-method surface — Aelix Phase 5c (Sprint 6h₁₀)
-  implementation will mirror Pi's `ExtensionUIContext` method-for-method.
+- T1 `ctx.ui.*` 27-method surface (28 members including `theme` readonly
+  property) — Aelix Phase 5c (Sprint 6h₁₀) implementation will mirror
+  Pi's `ExtensionUIContext` method-for-method.
 - T4 MCP + hooks — Pi supports both via its extension surface; Aelix
   elevates them to a formal tier matching the Claude Code / gemini-cli
   universal pattern.
@@ -193,13 +196,14 @@ Pi cited at SHA `734e08edf82ff315bc3d96472a6ebfa69a1d8016`:
 - ADR-0096 (Sprint 6h₉a) — Aelix Plugin Manifest v1 (`aelix-plugin.toml`).
 - ADR-0097 (Sprint 6h₉a) — Multi-Frontend Architecture (RPC Gateway + Separate Web Repo + Self-Hosting Server Model).
 - ADR-0098 (Sprint 6h₉a closure) — Sprint 6h₉a / Phase 5b-foundation Lock.
-- Pi `packages/coding-agent/src/extensions/types.ts` (SHA `734e08e`) — `ExtensionUIContext` / `ExtensionContext` / `ToolDefinition` reference.
+- Pi `packages/coding-agent/src/core/extensions/types.ts` (SHA `734e08e`) — `ExtensionUIContext` (27 methods, lines 124-275) / `ExtensionContext` (lines 298+) / `ToolDefinition` (line 426) / `ToolRenderContext` (line 396) reference.
 - Pi `packages/coding-agent/docs/extensions.md` (SHA `734e08e`) — lifecycle, auto-discovery.
-- Pi-dashboard `packages/shared/src/dashboard-plugin/slot-types.ts` — 22-slot reference (Aelix v1 takes 8-subset; ADR-0095).
-- Pi-dashboard `packages/shared/src/dashboard-plugin/slot-registry.ts` — loader precedent (cycle soft-fail).
+- Pi-dashboard `packages/shared/src/dashboard-plugin/slot-types.ts` — 21-slot reference (Aelix v1 takes 8-slot mix; 6 are Pi-dashboard subset, 2 are Aelix-additive — see ADR-0095).
+- Pi-dashboard `packages/dashboard-plugin-runtime/src/slot-registry.ts` — slot registry / loader precedent (cycle soft-fail).
+- Pi-dashboard `packages/dashboard-plugin-runtime/src/server/loader.ts` — server-side loader / `loaded: false` cycle soft-fail precedent (`loader.ts:331-336`).
 - Pi-dashboard `docs/architecture.md` — descriptor protocol and `ui:list-modules` probe pattern (ADR-0095 cites lines 180-290 + 221-227).
 - Pi-dashboard issue #32 — maintainer admission of retrofit cost.
-- Agent A research report — Pi-agent-dashboard 22-slot taxonomy and IntentNode wire format.
+- Agent A research report — Pi-agent-dashboard 21-slot taxonomy and IntentNode wire format.
 - Agent B research report — peer coding-agent extension models (Claude Code MCP+hooks, opencode declarative TUI, aider Markdown skills).
 - Agent C research report — TUI framework comparison (Textual / Rich / prompt-toolkit / Ink / Bubbletea / Ratatui).
 - Agent D research report — editor/IDE extension architecture (VS Code declarative, Neovim API_LEVEL, Zed SPDX whitelist, JetBrains).

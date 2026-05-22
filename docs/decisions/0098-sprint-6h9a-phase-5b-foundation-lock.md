@@ -44,7 +44,7 @@ the deliverables:
 - **D3** (별도 레포 `aelix-web`) → ADR-0097 §"Separate repo aelix-web"
 - **D4** (셀프호스팅 server daemon — Open WebUI 모델) → ADR-0097 §"Self-hosting server model"
 - **D5** (4-tier extension model) → ADR-0094
-- **D6** (Pi parity = `ctx.ui.*` 25-method surface + tool renderer co-location) → ADR-0094 §"Pi reference"
+- **D6** (Pi parity = `ctx.ui.*` 27-method surface — 28 members including the `readonly theme` property — + tool renderer co-location) → ADR-0094 §"Pi reference"
 - **D7** (Manifest `aelix-plugin.toml` + API_LEVEL + SPDX whitelist + activation events) → ADR-0096
 - **D8** (Descriptor protocol forward-design) → ADR-0095
 - **D9** (aelix-server skeleton — Phase 5b foundation, full implementation Sprint 6h₉f) → ADR-0097 §"aelix-server"
@@ -58,7 +58,7 @@ the deliverables:
 | 0094 | Tier 2 descriptor tier | None in core | Cross-surface JSON wire format | Phase 6 Web needs language-neutral wire; Pi-dashboard retrofitted and paid the cost |
 | 0094 | Tier 3 rich React tier | N/A (Pi is TUI-only in core) | Phase 6 Web rich components | D1 dual-primary audience |
 | 0094 | Tier 4 elevated to formal tier | MCP via extension, hooks via subprocess (implicit) | Formal universal extension surface | Universal pattern in coding-agent ecosystem (Claude Code, gemini-cli) |
-| 0095 | 8-slot taxonomy | Pi-dashboard has 22 | 8 (subset, descriptor-only Phase 5b) | TUI-first Phase 5b; Web slots deferred to Phase 6 expansion |
+| 0095 | 8-slot taxonomy | Pi-dashboard has 21 | 8 (6 Pi-dashboard subset + 2 Aelix-additive; all descriptor-only Phase 5b — see ADR-0095 §"Pi-dashboard divergences") | TUI-first Phase 5b; Web slots deferred to Phase 6 expansion |
 | 0095 | `ui:list-modules` sync probe | None in Pi (Pi-dashboard pattern) | Adopted as cross-surface contribution discovery | Decouples descriptor declaration from extension lifecycle event coupling |
 | 0096 | Manifest required | Auto-discovers `.ts` files | `aelix-plugin.toml` required | API_LEVEL versioning, capabilities declaration (Phase 6 enforcement), declarative contributes, marketplace metadata |
 | 0096 | API_LEVEL | None (semver only) | `AELIX_API_LEVEL` separate from semver | Neovim API_LEVEL pattern; plugin compat tracking |
@@ -80,22 +80,28 @@ the deliverables:
 - `packages/coding-agent/docs/extensions.md` — auto-discovery paths
   (`~/.pi/agent/extensions/`, `.pi/extensions/`), `ctx.ui.custom`
   reference (ADR-0094, ADR-0096).
-- `packages/coding-agent/src/extensions/types.ts:1-300` —
-  `ExtensionUIContext` 25-method surface (ADR-0094 §"Pi reference").
-- `packages/coding-agent/src/extensions/types.ts:300-700` —
-  `ExtensionContext` (ADR-0094).
-- `packages/coding-agent/src/extensions/types.ts:700+` —
-  `ToolDefinition` + `ToolRenderContext` (ADR-0094).
+- `packages/coding-agent/src/core/extensions/types.ts:124-275` —
+  `ExtensionUIContext` 27-method surface (28 members including
+  `readonly theme: Theme`); ADR-0094 §"Pi reference".
+- `packages/coding-agent/src/core/extensions/types.ts:298+` —
+  `ExtensionContext` class (ADR-0094).
+- `packages/coding-agent/src/core/extensions/types.ts:396` —
+  `ToolRenderContext` (per-call render context); ADR-0094.
+- `packages/coding-agent/src/core/extensions/types.ts:426` —
+  `ToolDefinition` (tool registration shape); ADR-0094.
 
 External (non-Pi) citations:
 
 - Pi-dashboard `packages/shared/src/dashboard-plugin/slot-types.ts`
-  (22-slot reference) — Pi-dashboard repo
+  (21-slot reference; Aelix v1 = 6 subset + 2 Aelix-additive — see
+  ADR-0095 §"Pi-dashboard divergences") — Pi-dashboard repo
   `BlackBeltTechnology/pi-agent-dashboard@develop`.
 - Pi-dashboard `docs/architecture.md:180-290` (`ui:list-modules` probe).
 - Pi-dashboard `docs/architecture.md:221-227` (descriptor schemas).
-- Pi-dashboard `packages/shared/src/dashboard-plugin/slot-registry.ts`
-  (loader cycle soft-fail precedent).
+- Pi-dashboard `packages/dashboard-plugin-runtime/src/slot-registry.ts`
+  (slot registry implementation reference).
+- Pi-dashboard `packages/dashboard-plugin-runtime/src/server/loader.ts`
+  (server-side loader cycle soft-fail precedent at lines ~325-345).
 - Pi-dashboard issue #32 — maintainer retrofit cost admission.
 
 ## Reference companions
@@ -119,9 +125,13 @@ External (non-Pi) citations:
 - `uv run pyright` — 8 baseline errors preserved (intentional fixtures
   in `scripts/pyright_spike.py`); no new errors introduced.
 - `uv run pytest` — 2381 baseline + 33 new contract tests = 2414
-  collected; 2413 passed + 1 skipped (1 pre-existing flake in
+  collected; 2413 passed + 1 skipped. The "1 skipped" is a pre-existing
+  `pytest.skip` marker unrelated to this sprint. Separately, a
+  pre-existing flake in
   `tests/rpc/test_rpc_client_shutdown.py::test_stop_escalates_to_sigkill_when_sigterm_ignored`
-  passes in isolation).
+  failed once during a mid-sprint parallel run but passed in isolation
+  and in the final full-suite verification — the flake is NOT the same
+  as the skipped test.
 - `python scripts/generate_contracts_schemas.py --check` — exit 0
   (no drift).
 - `python scripts/generate_contracts_schemas.py` (re-run after

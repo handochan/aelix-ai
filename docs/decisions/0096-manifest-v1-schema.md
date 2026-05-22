@@ -210,7 +210,7 @@ adjacent ecosystems:
 - ADR-0095 (Sprint 6h₉a) — UI Descriptor Protocol. Manifest's `[contributes.descriptors]` references the protocol's `kind` literals.
 - ADR-0097 (Sprint 6h₉a) — Multi-Frontend Architecture. Manifest's `capabilities.ui_web_trusted` is the Phase 6 web flag.
 - Pi `packages/coding-agent/docs/extensions.md` (SHA `734e08e`) — auto-discovery paths reference (Aelix translates the paths but uses a manifest instead of `.ts` auto-discovery).
-- Pi `packages/coding-agent/src/extensions/types.ts` (SHA `734e08e`) — no manifest precedent in Pi; the manifest is wholly Aelix-additive.
+- Pi `packages/coding-agent/src/core/extensions/types.ts` (SHA `734e08e`) — no manifest precedent in Pi; the manifest is wholly Aelix-additive.
 - Neovim API_LEVEL RFC — https://github.com/neovim/neovim/pull/5535
 - Zed extension.toml docs — https://zed.dev/docs/extensions/developing-extensions
 - VS Code contribution points — https://code.visualstudio.com/api/references/contribution-points

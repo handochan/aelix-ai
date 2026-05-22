@@ -51,7 +51,9 @@ site.
 
 ## 8-slot taxonomy v1
 
-Aelix v1 ships 8 slots — an Aelix-additive subset of Pi-dashboard's 22:
+Aelix v1 ships 8 slots: 6 are a Pi-dashboard subset, 2 are Aelix-additive
+(no Pi-dashboard equivalent). Pi-dashboard's full slot count at the
+pinned SHA is **21** (`packages/shared/src/dashboard-plugin/slot-types.ts`).
 
 | kind | Render site | Multiplicity | Payload primary type | TUI host | Web host (Phase 6) |
 |---|---|---|---|---|---|
@@ -108,6 +110,22 @@ a string key the plugin matches via reverse channel (the host emits a
 `plugin_action` event from frontend → host → T1 plugin's registered
 action handler). This is the same pattern Pi-dashboard uses with its
 `IntentNode` / `ActionDescriptor` types.
+
+**Aelix-additive divergences from Pi-dashboard `ActionDescriptor`**:
+
+1. **Field naming**: Aelix uses `plugin_id` (snake_case). Pi-dashboard
+   `intent-types.ts` uses `pluginId` (camelCase). Aelix JSON wire format
+   preserves snake_case; cross-repo TS SDKs MAY map to camelCase at the
+   SDK boundary via alias generation, but the canonical wire is
+   snake_case.
+2. **`confirm` field**: Aelix adds `confirm: str | None` (when set, host
+   shows a confirm dialog with this message before dispatching).
+   Pi-dashboard `ActionDescriptor` has no equivalent — confirm semantics
+   are handled by `UiAction.confirm` at the descriptor level, not the
+   action level. Aelix consolidates confirm into ActionDescriptor for
+   uniform handling.
+3. **`payload` shape**: Both `dict[str, Any]` (JSON object). No
+   divergence.
 
 ## ui:list-modules synchronous-probe pattern
 
@@ -206,7 +224,33 @@ The contract layer follows these rules:
 
 ## Pi-dashboard divergences
 
-Aelix v1's 8 slots are a subset of Pi-dashboard's 22:
+Aelix v1's 8 slots break down as follows against Pi-dashboard's 21-slot
+`slot-types.ts`:
+
+**Pi-dashboard subset (6 slots)** — slot name appears in Pi-dashboard
+`slot-types.ts`:
+
+- `footer-segment` (Pi-dashboard `slot-types.ts` line 130)
+- `command-route` (line 109) — NOTE: Pi-dashboard `command-route` has
+  `payloadTier: "react-only"`; Aelix **repurposes** it as
+  descriptor-only (intentional divergence — Aelix v1's TUI-first stance
+  forces all v1 slots to descriptor-only).
+- `breadcrumb` (line 140)
+- `toast` (line 150)
+- `management-modal` (line 125)
+- `agent-metric` (line 135)
+
+**Aelix-additive (2 slots)** — no Pi-dashboard equivalent:
+
+- `status-item` — no Pi-dashboard slot. Aelix introduces this for an
+  extension status row above the footer segment.
+- `tool-renderer-desc` — Aelix-additive variant of Pi-dashboard's
+  `tool-renderer` (line 119, `payloadTier: "react-only"`); Aelix's
+  variant is descriptor-only with `view: table/grid/form/text` (the
+  view-kind enum is Aelix-additive — Pi-dashboard `tool-renderer`
+  doesn't constrain view kind because rendering is in React).
+
+Other divergence notes:
 
 - Pi-dashboard's React-only slots (e.g., `sidebar-folder-section`,
   `anchored-popover`, `session-card-action-bar`) require Phase 6 Web
@@ -214,7 +258,10 @@ Aelix v1's 8 slots are a subset of Pi-dashboard's 22:
   minor-version bumps as Web use cases emerge in Phase 6.
 - Pi-dashboard's `payload_tier` axis is preserved (`descriptor-only`,
   `react-or-descriptor`, `react-only`); Aelix v1 sets all 8 slots to
-  `descriptor-only` because Phase 5b is TUI-first.
+  `descriptor-only` because Phase 5b is TUI-first. Two of the six
+  Pi-dashboard-subset slots (`command-route`, `tool-renderer` →
+  `tool-renderer-desc`) are repurposed from react-only to
+  descriptor-only.
 - The `removed: bool` field on the envelope is identical to
   Pi-dashboard's removal semantics.
 - The namespace regex `^[a-z0-9][a-z0-9-]{0,63}$` matches Pi-dashboard
@@ -225,8 +272,9 @@ Aelix v1's 8 slots are a subset of Pi-dashboard's 22:
 - ADR-0094 (Sprint 6h₉a) — Aelix Extension Architecture (4-tier model). T2 is this protocol's tier.
 - ADR-0096 (Sprint 6h₉a) — Aelix Plugin Manifest v1. `[contributes.descriptors]` references this protocol.
 - ADR-0097 (Sprint 6h₉a) — Multi-Frontend Architecture. Uses this protocol as the cross-repo wire.
-- Pi-dashboard `packages/shared/src/dashboard-plugin/slot-types.ts:1-300` — 22-slot reference taxonomy.
-- Pi-dashboard `packages/shared/src/dashboard-plugin/slot-registry.ts` — slot registry implementation reference.
+- Pi-dashboard `packages/shared/src/dashboard-plugin/slot-types.ts:1-300` — 21-slot reference taxonomy.
+- Pi-dashboard `packages/dashboard-plugin-runtime/src/slot-registry.ts` — slot registry implementation reference.
+- Pi-dashboard `packages/dashboard-plugin-runtime/src/server/loader.ts` — server-side plugin loader (cycle soft-fail precedent).
 - Pi-dashboard `docs/architecture.md:180-290` — `ui:list-modules` synchronous probe pattern.
 - Pi-dashboard `docs/architecture.md:221-227` — descriptor schema design notes.
-- Pi-dashboard `packages/shared/src/dashboard-plugin/intent-types.ts` — `IntentNode` + `ActionDescriptor` wire (Aelix's `ActionDescriptor` is the same shape).
+- Pi-dashboard `packages/shared/src/dashboard-plugin/intent-types.ts` — `IntentNode` + `ActionDescriptor` wire (Aelix's `ActionDescriptor` diverges via snake_case `plugin_id` and adds `confirm` — see §"ActionDescriptor").

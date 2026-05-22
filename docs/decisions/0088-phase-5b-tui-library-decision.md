@@ -25,7 +25,7 @@ overlay/dialog system. Pi extensions ship factory functions of shape
 `(tui, theme, kb, done) => Component` and consume a **31-method
 `ExtensionUIContext`** surface (modal dialogs, stateful chrome, custom
 component injection, editor remote control, theme & tool state) — see
-`pi/packages/coding-agent/src/extensions/types.ts` at the pinned SHA.
+`pi/packages/coding-agent/src/core/extensions/types.ts` at the pinned SHA (path corrected in the Sprint 6h₉a §B fold-in; the original 6h₆ ADR draft used the incorrect `src/extensions/types.ts` path).
 
 This ADR records the **library-selection analysis** undertaken during
 Sprint 6h₆ W0 study so the Phase 5b sprint kickoff has a captured
@@ -208,7 +208,8 @@ independent validation:
   Columns, form → ad-hoc Rich layout, badge/metric → Rich Text with
   styling, etc.).
 - **Widget layer (Aelix)**: thin façade implementing the
-  `ExtensionUIContext` 25-method surface. Each method maps to a
+  `ExtensionUIContext` 27-method surface (28 members including the
+  `readonly theme: Theme` property). Each method maps to a
   prompt-toolkit or Rich primitive operation. Library-agnostic
   `Component` Protocol (preserved from this ADR's CRITICAL invariant) so
   extensions don't lock to prompt-toolkit or Rich types directly.
@@ -257,7 +258,7 @@ Positive:
 
 Negative:
 - Aelix must build its own minimal widget layer (estimated 800-1200 LOC) for
-  the ExtensionUIContext 25-method surface — Textual would have provided
+  the ExtensionUIContext 27-method surface — Textual would have provided
   out-of-box widget primitives.
 - PyPI widget ecosystem leveraged by Textual (textual-fspicker, textual-
   plotext, ...) is NOT directly reusable; Aelix must either reimplement
@@ -269,8 +270,8 @@ Negative:
 ## References
 
 - Pi `pi-tui` (custom TUI library, ~9,000 LOC at SHA `734e08e…`)
-- Pi `ExtensionUIContext` 25 methods (note: original ADR text said 31; direct survey at SHA `734e08e` counted 25 methods — see ADR-0094 §"Pi reference") —
-  `pi/packages/coding-agent/src/extensions/types.ts`
+- Pi `ExtensionUIContext` 27 methods + 1 readonly `theme` property = 28 members (note: original ADR text said 31; an earlier Sprint 6h₉a draft counted 25 methods, but the Sprint 6h₉a §B fold-in critic re-counted `packages/coding-agent/src/core/extensions/types.ts:124-275` at SHA `734e08e` and confirmed 27 distinct method names + 1 readonly property — see ADR-0094 §"Pi reference") —
+  `pi/packages/coding-agent/src/core/extensions/types.ts:124-275`
 - ADR-0089 — Sprint 6h₆ Phase 5a-i + 5a-ii closure (companion ADR
   that raises NotImplementedError pointing here)
 - ADR-0083 — Runtime callback Pi parity (carry-forward consumer for
