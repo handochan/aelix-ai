@@ -6,7 +6,7 @@ Covers:
   - ``--rpc`` + ``@file`` guard.
   - ``--version`` short-circuit.
   - ``--help`` short-circuit.
-  - ``--list-models`` deferred error path.
+  - ``--list-models`` wired path (Sprint 6h₇a — was deferred-error in 6h₆).
   - Interactive mode raises :class:`NotImplementedError` (Phase 5b
     carry-forward).
   - Piped stdin → print mode promotion.
@@ -110,16 +110,37 @@ async def test_help_prints_and_exits_0(
     assert "--help" in captured.out
 
 
-# === --list-models deferred ===================================================
+# === --list-models wired (Sprint 6h₇a / ADR-0090) ============================
 
 
-async def test_list_models_deferred_returns_1(
+async def test_list_models_invokes_list_models_and_exits_0(
     capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """``--list-models`` runs the real :func:`list_models` (no longer a
+    deferred stderr diagnostic) and returns exit code 0.
+
+    With an isolated empty ``AELIX_CODING_AGENT_DIR`` (no auth.json),
+    the registry's :meth:`get_available` yields zero auth-configured
+    models, so the path lands on the inline "No models available"
+    fallback (NOT the deferred ``--list-models requires
+    SettingsManager`` stderr diagnostic the 6h₆ scope emitted).
+    """
+
+    monkeypatch.setenv("AELIX_CODING_AGENT_DIR", str(tmp_path))
     code = await _async_main(["--list-models"])
     captured = capsys.readouterr()
-    assert code == 1
-    assert "SettingsManager" in captured.err or "deferred" in captured.err.lower()
+    assert code == 0
+    # The deferred stderr diagnostic from 6h₆ MUST NOT appear.
+    assert "SettingsManager" not in captured.err
+    # Either the table header lands on stdout OR the inline fallback;
+    # both are acceptable per ADR-0090 §C step 3.
+    combined = captured.out + captured.err
+    assert (
+        "No models available" in combined
+        or "provider" in combined
+    )
 
 
 # === Diagnostic-error short-circuit ==========================================

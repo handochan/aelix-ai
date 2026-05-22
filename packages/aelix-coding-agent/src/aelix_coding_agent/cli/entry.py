@@ -158,14 +158,25 @@ async def _async_main(argv: list[str]) -> int:
         print(VERSION)
         return 0
 
-    # === --list-models — deferred (ADR-0089 §"Carry-forward") ===============
+    # === --list-models — Sprint 6h₇a (ADR-0090) wired =======================
     if parsed.list_models is not None:
-        print(
-            "Error: --list-models requires SettingsManager — deferred to "
-            "Sprint 5a-iii (use --model to choose explicitly).",
-            file=sys.stderr,
-        )
-        return 1
+        # Lazy imports — defer ``ModelRegistry`` + ``AuthStorage``
+        # construction cost off the ``--version`` / ``--help`` fast paths
+        # (~10ms saved on cold start). Hoisting these to module scope
+        # would trigger auth file I/O on every invocation.
+        from pathlib import Path
+
+        from aelix_ai.oauth import AuthStorage
+
+        from ..model_registry import ModelRegistry
+        from .config import get_agent_dir
+        from .list_models import list_models
+
+        auth_storage = AuthStorage(Path(get_agent_dir()) / "auth.json")
+        await auth_storage.load()
+        model_registry = ModelRegistry.create(auth_storage)
+        await list_models(model_registry, parsed.list_models)
+        return 0
 
     # === Mode resolution =====================================================
     stdin_is_tty = sys.stdin.isatty()
