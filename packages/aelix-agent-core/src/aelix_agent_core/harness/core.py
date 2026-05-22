@@ -29,6 +29,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, assert_never
 
+from aelix_ai.api_registry import reset_api_providers
 from aelix_ai.messages import AssistantMessage, ImageContent, TextContent, UserMessage
 from aelix_ai.streaming import (
     AssistantMessageEvent,
@@ -2186,30 +2187,109 @@ class AgentHarness:
         await self._emit_resources_discover("reload")
 
     async def reload(self) -> None:
-        """Reload settings from disk and re-discover extension resources.
+        """Pi parity: ``agent-session.ts:reload`` (``:2382-2413``, SHA ``734e08e``).
 
-        Sprint 6h₇b (Phase 5a-iii-β, ADR-0091 §D): Pi parity
-        ``agent-session.ts:reload`` (SHA ``734e08e``).
+        Sprint 6h₇c §F (Phase 5a-iii-γ, ADR-0093, P-453) expands the
+        Sprint 6h₇b 2-op stub (ADR-0091 §E) into the full 7-op chain.
+        Two Pi steps remain deferred to Phase 5b (P-380 #3 + #5 — see
+        inline TODO markers below).
 
-        Raises :class:`AgentHarnessError` with code ``"invalid_state"`` when
-        no :attr:`settings_manager` is attached — callers must supply one via
-        :class:`AgentHarnessOptions` before invoking this method.
+        Raises :class:`AgentHarnessError` with code ``"invalid_state"``
+        when no :attr:`settings_manager` is attached — callers must
+        supply one via :class:`AgentHarnessOptions` before invoking
+        this method.
 
-        Steps (Pi :``agent-session.ts:reload`` order):
+        Steps (Pi ``agent-session.ts:2382-2413`` ordering):
 
-        1. Guard: ``settings_manager`` must be present.
-        2. Delegate to ``settings_manager.reload()`` — reads both scopes from
-           disk, migrates, merges, and clears modification tracking.
-        3. Re-discover extension resources (``"reload"`` reason).
+        1. Guard: ``settings_manager`` must be present (Pi ``:2383``).
+        2. Snapshot ``previous_flag_values =
+           self._extension_runner.get_flag_values()`` (Pi ``:2384``).
+           Round-trip restoration is deferred to Phase 5b (depends on
+           full ``_buildRuntime`` extraction — P-447 partial closure).
+        3. Emit ``session_shutdown`` event with ``reason="reload"``
+           (Pi ``:2385``). Gated on
+           :meth:`ExtensionRunner.has_handlers`.
+        4. Delegate to ``self._settings_manager.reload()`` (Pi ``:2386``).
+        5. ``reset_api_providers()`` + conditional
+           ``self._model_registry.reset()`` (Pi ``:2388-2389``). The
+           model-registry call is gated on ``hasattr`` because Aelix
+           harnesses may not attach a registry.
+        6. (DEFERRED) Pi ``:2391`` ``_resourceLoader.reload()`` —
+           Phase 5b (ResourceLoader port required; ADR-0087 P-380 #3).
+        7. (DEFERRED) Pi ``:2393``
+           ``_buildRuntime({flagValues: previous_flag_values})`` —
+           Phase 5b (full ``__init__`` pipeline extraction required;
+           ADR-0087 P-380 #5).
+        8. ``has_bindings = bool(self._extension_runner.extensions)``
+           (Pi 4-field UI check proxy; Phase 5b ADR-0033 will replace
+           with the real ``_extensionUIContext`` /
+           ``_extensionCommandContextActions`` /
+           ``_extensionShutdownHandler`` / ``_extensionErrorListener``
+           check per P-449).
+        9. If ``has_bindings``: emit ``session_start`` event with
+           ``reason="reload"`` (Pi ``:2407``) THEN
+           ``await self._emit_resources_discover("reload")`` (Pi
+           ``:2411`` ``extendResourcesFromExtensions("reload")``;
+           Sprint 6h₇b wired this outside the gate — 6h₇c re-orders to
+           inside).
+
+        See ADR-0087 P-380 ledger for the remaining Phase 5b items.
         """
 
+        # 1. Guard.
         if self._settings_manager is None:
             raise AgentHarnessError(
                 "invalid_state",
                 "reload() requires options.settings_manager to be attached",
             )
+
+        # 2. Snapshot flag values for Phase 5b round-trip restoration.
+        # Pi ``:2384`` captures ``previousFlagValues`` before teardown so
+        # the post-reload ``_buildRuntime({flagValues})`` call (Pi
+        # ``:2389-2393``) can re-seed the new extension runtime. Aelix
+        # captures here for audit-trail fidelity but cannot consume the
+        # snapshot this sprint because ``_buildRuntime`` is only
+        # partially extracted (P-450 §D — only the tool-merge step
+        # lands; full extension-runner re-create deferred to Phase 5b).
+        # The leading underscore suppresses the pyright unused-local
+        # diagnostic; W4 MINOR-1 fold-in (Sprint 6h₇c) preserves the
+        # variable name vs the earlier ``del`` which destroyed the
+        # audit trail.
+        # TODO Phase 5b — pass into
+        # ``_rebuild_runtime({flag_values: _previous_flag_values})``
+        # once full ``_buildRuntime`` extraction lands (P-380 #4 + #5).
+        _previous_flag_values = self._extension_runner.get_flag_values()
+
+        # 3. Emit session_shutdown.
+        await self._emit_session_shutdown("reload")
+
+        # 4. Delegate to settings manager.
         await self._settings_manager.reload()
-        await self._emit_resources_discover("reload")
+
+        # 5. Reset API providers + model registry.
+        reset_api_providers()
+        if (
+            hasattr(self, "_model_registry")
+            and self._model_registry is not None  # type: ignore[attr-defined]
+        ):
+            self._model_registry.reset()  # type: ignore[attr-defined]
+
+        # 6. TODO Phase 5b — ``_resourceLoader.reload()`` (P-380 #3
+        # ResourceLoader port required; ADR-0093 §F deferred marker).
+
+        # 7. TODO Phase 5b — ``_buildRuntime({flagValues})`` full
+        # extraction + round-trip wire (P-380 #5; ADR-0093 §F deferred
+        # marker).
+
+        # 8. has_bindings proxy (Pi 4-field UI check deferred to
+        # Phase 5b ADR-0033 per P-449).
+        has_bindings = bool(self._extension_runner.extensions)
+
+        # 9. Conditional session_start emit + resources_discover
+        # re-order inside the gate (Pi ``:2407`` + ``:2411``).
+        if has_bindings:
+            await self._emit_session_start("reload")
+            await self._emit_resources_discover("reload")
 
     async def _emit_resources_discover(
         self, reason: Literal["startup", "reload"]
