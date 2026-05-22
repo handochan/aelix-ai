@@ -1,7 +1,7 @@
 # 0088. Phase 5b TUI Library Decision — Analysis Basis (Proposed / Deferred)
 
-Status: Proposed (deferred to Phase 5b kickoff)
-Date: 2026-05-22
+Status: Accepted (Sprint 6h₉a / W6 shipped — selection: prompt-toolkit + Rich + Aelix widget layer)
+Date: 2026-05-22; Amended 2026-05-22 (Sprint 6h₉a)
 Pi pin: `earendil-works/pi@734e08edf82ff315bc3d96472a6ebfa69a1d8016` (no advance)
 
 Top-level principle (binding): **"pi agent를 완전 동일하게 완벽하게 구현이
@@ -87,50 +87,149 @@ The selected library's widget primitive is wrapped (composition, not
 inheritance) so a future library swap touches the adapter, not the
 extension surface.
 
-## Open questions (to resolve at Phase 5b W0)
+The selected library composition (prompt-toolkit + Rich) is wrapped by a
+library-agnostic `Component` Protocol identical in spirit to Pi-tui's
+`Component` interface (synchronous `render(width: int) -> list[str]` +
+optional `handle_input(data: str) -> None` + `invalidate()`). Extensions
+call into this Protocol; the Protocol implementation delegates to
+prompt-toolkit / Rich. A future library swap (e.g., switching to a
+Python pi-tui port if maintenance costs justify) touches only the
+Protocol implementation, not extension authors.
 
-1. **Extras dep model** — single `pip install aelix[tui]` extra, or
-   split `aelix[textual]` / `aelix[prompt-toolkit]` for the contingency?
-2. **Reactive semantics** — does Pi `setState`-style imperative update
-   map cleanly onto textual `reactive` watchers, or do we expose a
-   shim `setState(fn)` that triggers `Widget.refresh()`?
-3. **Windows support** — textual + prompt-toolkit both support Windows
-   PTY; blessed does not. Confirm the Pi feature parity matrix.
-4. **Kitty image protocol** — Pi renders inline images via the Kitty
-   graphics protocol. textual has `textual.widgets.Static` image
-   helpers; prompt-toolkit requires hand-rolling. Verify protocol
-   parity at the chosen library.
-5. **Theme parity** — Pi themes ship as TypeScript modules with
-   `background` / `foreground` / `accent` / palette refs. Map to
-   textual CSS variables vs prompt-toolkit `Style.from_dict` —
-   serialization shape differs.
-6. **Snapshot testing** — textual ships `pytest-textual-snapshot`;
-   prompt-toolkit has no equivalent (snapshots typically use
-   `pyte`-driven terminal emulation).
-7. **Editor seam** — Pi `editor.ts` is a remote-control surface for
-   the prompt buffer. prompt-toolkit's `Buffer` is the strongest
-   match; textual's `TextArea` works but lacks the Pi command set.
-8. **`OverlayOptions` shape** — Pi `ExtensionUIContext.openOverlay`
-   accepts a placement union (`"center" | "top" | …`) and a focus-trap
-   spec. Map onto textual `ModalScreen` vs prompt-toolkit `Float`.
-9. **Theme live-update** — Pi swaps themes at runtime without a
-   re-render. textual reactive watchers + CSS recompile handle this;
-   prompt-toolkit needs an explicit `Application.invalidate()`.
-10. **Backpressure on event stream** — the agent event stream feeds
-    the TUI; both libraries are asyncio-native but their batch /
-    coalesce semantics differ. Verify the JSON-mode-equivalent
-    line-per-event invariant holds visually.
+## Open questions (resolved at Sprint 6h₉a unless noted)
+
+1. **Extras dep model** — **Resolved at Sprint 6h₉a** — `pip install
+   aelix[tui]` extra installs `prompt-toolkit` + `rich`. No split.
+2. **Reactive semantics** — **Resolved at Sprint 6h₉a** — Pi
+   `setState`-style imperative update maps to direct
+   `ctx.ui.set_widget(...)` re-invocation; no implicit reactive
+   watchers. Host invalidates the relevant Rich Live region.
+3. **Windows support** — **Resolved at Sprint 6h₉a** — prompt-toolkit
+   supports Windows PTY (verified via pyreadline3 / ConPTY); Rich
+   supports Windows console. Verified parity.
+4. **Kitty image protocol** — **Open — Sprint 6h₁₀ Phase 5c
+   carry-forward** — prompt-toolkit + Rich do NOT natively support
+   Kitty/iTerm2 graphics; Aelix will use `term-image` library OR direct
+   ANSI escape emission for inline image support. Decision in Sprint
+   6h₁₀c.
+5. **Theme parity** — **Resolved at Sprint 6h₉a** — Pi theme names
+   mapped to Rich Style + prompt-toolkit Style class via
+   `aelix_widget_layer.theme` module (implementation Sprint 6h₁₀b).
+6. **Snapshot testing** — **Resolved at Sprint 6h₉a** — Aelix will use
+   `pyte`-driven terminal emulation snapshots (no built-in Textual
+   equivalent). Implementation Sprint 6h₁₀d.
+7. **Editor seam** — **Resolved at Sprint 6h₉a** — prompt-toolkit
+   `Buffer` IS the editor seam. Pi `editor.ts` remote-control surface
+   maps to direct `Buffer` API + `app.invalidate()`.
+8. **`OverlayOptions` shape** — **Resolved at Sprint 6h₉a** — Pi
+   9-anchor + responsive `visible` callback maps to prompt-toolkit
+   `Float` with position + custom visibility filter (implementation
+   Sprint 6h₁₀b).
+9. **Theme live-update** — **Resolved at Sprint 6h₉a** — explicit
+   `Application.invalidate()` after theme swap (prompt-toolkit
+   standard pattern).
+10. **Backpressure on event stream** — **Open — Sprint 6h₁₀a** — Rich
+    Live update frequency vs token stream rate; implementation will
+    throttle to ~30 FPS max (16-33ms intervals).
 
 ## Decision
 
-**DEFERRED to Phase 5b kickoff.** This ADR is the captured analysis
-basis; the actual library + extras-dep + `Component` Protocol shape
-land at Phase 5b W0 with explicit user consent (interactive-mode UX is
-a user-facing surface and warrants the consultation gate per
-ADR-0085 §"Consultation").
+**prompt-toolkit (input/editor) + Rich (output rendering) + Aelix self-built minimal widget layer.**
 
-Until Phase 5b lands, `aelix` without `--print` / `--mode` raises
-:class:`NotImplementedError` with the stderr diagnostic pointing here.
+Selection finalized at Sprint 6h₉a after the Phase 5b research wave (4-agent
+investigation + Pi direct source survey). This decision replaces the prior
+PRIMARY recommendation (textual + rich) for the reasons documented in §"Why
+the PRIMARY recommendation was reversed" below.
+
+The selection covers Aelix's TUI surface only. Web UI (Phase 6) is a
+separate stack decision documented in ADR-0097.
+
+## Why the PRIMARY recommendation was reversed
+
+The Sprint 6h₆ analysis (this ADR pre-amend) selected `textual + rich` as
+PRIMARY because Textual's reactive widget model, snapshot testing, and
+`textual-serve` Phase 6 web convergence story were strongest among the
+candidates.
+
+Three post-analysis findings reversed the selection:
+
+1. **Pi-tui is NOT React/Ink** — direct investigation of
+   `earendil-works/pi/packages/tui/` (Mario Zechner authored, deps:
+   `get-east-asian-width` + `marked` only) confirmed `pi-tui` is a custom
+   imperative TUI library with `Component.render(width: number) -> string[]`,
+   differential rendering, CSI 2026 synchronized output, and CJK IME via
+   `Focusable` + `CURSOR_MARKER` APC escape. It is purpose-built for an
+   **inline scrolling + live bottom region** UX (channel-chat history flows
+   into terminal scrollback; only the bottom region is live-rendered).
+   Textual default is full-screen alternate-screen mode (vim/htop/k9s
+   style) — fundamentally different UX. Pi/Claude Code/Codex CLI/aider/
+   gemini-cli/gptme all use the inline pattern.
+
+2. **Textual `inline=True` mode is uncharted territory** — added in
+   Textual 0.55+ (~Feb 2024), but: limited examples, overlay/modal patterns
+   diverge from full-screen mode, large-output behavior unverified,
+   Textualize team's main pattern remains full-screen. Adopting Textual
+   with inline mode = betting on uncommon path.
+
+3. **`textual-serve` Phase 6 convergence is moot** — Aelix's Phase 6 Web UI
+   is architected as a **separate repository (aelix-web) running as a
+   self-hosting server daemon (Open WebUI pattern)** per ADR-0097. The Web
+   UI must support charts (Plotly/ECharts), file previews, image galleries,
+   marketplace UI — none of which textual-serve's terminal-shaped output
+   satisfies. The 4-6 week saving textual-serve offered is real ONLY in a
+   scenario where the web UI is acceptable as a terminal-shaped browser
+   app, which Aelix's user vision rejects.
+
+The selected stack — prompt-toolkit + Rich + Aelix widget layer — has
+independent validation:
+
+- **aider** (`Aider-AI/aider`) has run a Python coding-agent on
+  prompt-toolkit + Rich for 10+ years with multi-line editor, vim/emacs
+  bindings, IME support, slash commands, file completer. Direct
+  architectural precedent.
+- **IPython / ptpython** anchor prompt-toolkit stability (millions of
+  users, 10+ years).
+- **Pi's own TUI** is custom because Ink/React was inadequate; Aelix
+  building a thin widget layer on prompt-toolkit + Rich is the Python
+  analogue of Pi's choice (use language-native stable primitives, add
+  minimal application-specific layer on top).
+
+## Architecture of the selected stack
+
+- **Input layer**: prompt-toolkit `PromptSession` for the inline multi-line
+  editor. Buffer + Layout for autocomplete provider stacking. KeyBindings
+  for vim/emacs/readline mode + extension shortcuts. Pi `Focusable` +
+  CURSOR_MARKER pattern → prompt-toolkit native cursor positioning (CJK
+  IME handled by prompt-toolkit).
+- **Output rendering layer**: Rich Console for chat output (renders to
+  terminal scrollback — main message stream). Rich Live for the bottom
+  live region (footer + status + working indicator). Rich Renderable
+  mapping for descriptor primitives (table → Rich Table, grid → Rich
+  Columns, form → ad-hoc Rich layout, badge/metric → Rich Text with
+  styling, etc.).
+- **Widget layer (Aelix)**: thin façade implementing the
+  `ExtensionUIContext` 25-method surface. Each method maps to a
+  prompt-toolkit or Rich primitive operation. Library-agnostic
+  `Component` Protocol (preserved from this ADR's CRITICAL invariant) so
+  extensions don't lock to prompt-toolkit or Rich types directly.
+- **Overlay layer**: prompt-toolkit Float windows for modal-style overlays
+  (9 anchor positions per Pi-tui semantics). Rich Live temporary panel
+  for non-modal status overlays.
+- **Streaming layer**: Rich Live region updated incrementally per token.
+  prompt-toolkit `app.invalidate()` triggers redraw when output state
+  changes.
+- **Theme layer**: Pi theme `theme.fg(name, text)` / `theme.bg(name, text)`
+  mapped to Rich Style + prompt-toolkit Style class. Theme switch at
+  runtime via `ctx.ui.set_theme(name)`.
+
+**What we are NOT doing**:
+- NOT porting `pi-tui` to Python directly (rejected option γ in research —
+  5 sprint cost to maintain a self-built library long-term).
+- NOT using Textual (rejected per §"Why the PRIMARY recommendation was
+  reversed").
+- NOT using Textual inline mode (uncharted).
+- NOT using `blessed` (too low-level — pi-tui would have to be rebuilt on
+  raw escape codes, same problem as direct pi-tui port).
 
 ## Consequences
 
@@ -141,10 +240,36 @@ Until Phase 5b lands, `aelix` without `--print` / `--mode` raises
 - The `Component`-Protocol-MUST-be-library-agnostic invariant prevents
   Phase 5b from accidentally painting the extension API into a corner.
 
+## Consequences of the prompt-toolkit + Rich selection (added Sprint 6h₉a)
+
+Positive:
+- Inline scrolling + live bottom region UX matches Pi / Claude Code / Codex /
+  aider / gemini-cli — minimum surprise for terminal users.
+- prompt-toolkit + Rich are 10+ year mature Python libraries with millions of
+  users (IPython, ptpython, pip, rich-cli output adoption).
+- aider provides a direct architectural precedent of a Python coding-agent on
+  this stack.
+- No bet on uncharted Textual inline mode.
+- Phase 6 Web UI is a separate stack (per ADR-0097), so no convergence
+  advantage is lost.
+- The library-agnostic `Component` Protocol (CRITICAL invariant) allows
+  future library swap without breaking extension authors.
+
+Negative:
+- Aelix must build its own minimal widget layer (estimated 800-1200 LOC) for
+  the ExtensionUIContext 25-method surface — Textual would have provided
+  out-of-box widget primitives.
+- PyPI widget ecosystem leveraged by Textual (textual-fspicker, textual-
+  plotext, ...) is NOT directly reusable; Aelix must either reimplement
+  equivalents on prompt-toolkit + Rich or live without them.
+- Snapshot testing relies on third-party pyte (no first-party tooling).
+- Streaming output requires manual throttling (no Textual reactive
+  batching).
+
 ## References
 
 - Pi `pi-tui` (custom TUI library, ~9,000 LOC at SHA `734e08e…`)
-- Pi `ExtensionUIContext` 31 methods —
+- Pi `ExtensionUIContext` 25 methods (note: original ADR text said 31; direct survey at SHA `734e08e` counted 25 methods — see ADR-0094 §"Pi reference") —
   `pi/packages/coding-agent/src/extensions/types.ts`
 - ADR-0089 — Sprint 6h₆ Phase 5a-i + 5a-ii closure (companion ADR
   that raises NotImplementedError pointing here)
@@ -152,4 +277,12 @@ Until Phase 5b lands, `aelix` without `--print` / `--mode` raises
   `with_session` / `setup` / `forkFrom` callbacks that interactive
   mode will exercise)
 - ADR-0085 — Phase 4.16 visual fidelity + Phase 4 closure (rich-based
-  HTML export, candidate reuse target for textual + rich combo)
+  HTML export, candidate reuse target for prompt-toolkit + Rich combo)
+- ADR-0094 (Sprint 6h₉a) — Aelix Extension Architecture (4-tier model).
+  T1 trusted in-process Python uses the prompt-toolkit + Rich widget layer.
+- ADR-0095 (Sprint 6h₉a) — UI Descriptor Protocol. The Rich Renderable
+  mapping rules consume this protocol's payload schemas.
+- ADR-0097 (Sprint 6h₉a) — Multi-Frontend Architecture. Establishes the
+  separate `aelix-web` repo + self-hosting server daemon that makes the
+  textual-serve Phase 6 convergence argument moot.
+- ADR-0098 (Sprint 6h₉a closure) — Sprint 6h₉a / Phase 5b-foundation Lock.
