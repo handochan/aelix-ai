@@ -46,6 +46,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, Protocol, overload
 
+from aelix_agent_core.contracts import PluginManifest
 from aelix_agent_core.harness.hooks import (
     HOOK_RESULT_TYPES,
     AbortHandler,
@@ -599,6 +600,13 @@ class Extension:
     message_renderers: dict[str, MessageRenderer] = field(default_factory=dict)
     source_info: ExtensionSourceInfo | None = None
     resolved_path: str | None = None
+    # === Sprint 6h₉b §A — manifest-discovered extensions ===
+    # ``aelix-plugin.toml``-discovered extensions carry their parsed
+    # :class:`~aelix_agent_core.contracts.PluginManifest`; legacy
+    # ``pyproject.toml [tool.aelix]`` / ``__init__.py`` discovery paths
+    # leave this ``None``. Runtime consumers (Sprint 6h₉c/d/e/f) read
+    # declared capabilities / activation / contributes through this field.
+    manifest: PluginManifest | None = None
 
 
 ExtensionFactory = Callable[["ExtensionAPI"], Any]
