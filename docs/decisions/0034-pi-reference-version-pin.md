@@ -821,6 +821,39 @@ forward-compat field). **B 단계 stays open**; Pi pin held at
 | Pi `_rebuildSystemPrompt` reload-time re-assembly (Aelix 6h₇a has no reload trigger for append-system-prompt in scope; init-time assembly is semantically equivalent for supported lifecycle) | deferred (semantically equivalent) | ADR-0090 |
 | `SettingsManager` full standalone port (~1400-1600 LOC; proper-lockfile / 4 migrations / dual-scope / async write queue / `reload()` deep-merge / ~80 getters-setters) | deferred to Sprint 6h₇b | ADR-0090 |
 
+### Sprint 6h₇b amendment (SettingsManager standalone port + AgentHarness.reload() stub, 2026-05-22)
+
+Sprint 6h₇b ports Pi `core/settings-manager.ts` (1067 LOC TypeScript)
+→ Python `aelix_ai/settings/` standalone package. Ships the `Settings`
+dataclass tree (33 fields + 11 nested types), `SettingsStorage` Protocol
++ `FileSettingsStorage` + `InMemorySettingsStorage`, `deep_merge_settings`,
+`migrate_settings` (4 transforms), `SettingsManager` class with ~80
+getters/setters + async write queue + modification tracking, and the
+`AgentHarness.reload()` stub (covers Pi `agent-session.ts:2382-2398`
+first step only). NO Pi pin advance. NO new RPC commands. 9 Pi
+consumption site wiring deferred to Phase 5b TUI command layer.
+Aelix-additive divergences vs Pi documented in ADR-0091 §"Aelix-additive
+divergences from Pi" (`fcntl.flock` instead of `proper-lockfile` /
+`.aelix/` namespace / `aelix_ai/settings/` placement / migration +
+lock-contention tests added / `0o644` permissions / `PI_*` env vars
+retained / `reload()` is 3-step stub). **B 단계 stays open**; Pi pin
+held at `734e08e…` (no advance — Sprint 6h₇b imports no new Pi feature).
+
+| Component | Status | Owner ADR |
+|---|---|---|
+| 6h₇b | Phase 5a-iii-β | SettingsManager standalone port + AgentHarness.reload() stub | RPC roster UNCHANGED (29 / 0 / 29) | ADR-0091 |
+| `aelix_ai.settings.types` (`Settings` @dataclass 33 fields + 11 nested types + 5 Literal unions + `DEFAULT_THINKING_LEVEL = "medium"` + bidirectional translation dicts) | shipped | ADR-0091 |
+| `aelix_ai.settings.storage` (`SettingsStorage` Protocol + `FileSettingsStorage` fcntl.flock + atomic write + `InMemorySettingsStorage` + `default_settings_path` XDG + `default_project_settings_path`) | shipped | ADR-0091 |
+| `aelix_ai.settings.settings_manager` (`SettingsManager` 3 factories + `deep_merge_settings` + `migrate_settings` 4 transforms + `reload()` 5-step + `_persist_scoped_settings` re-read-before-write + async write queue + ~80 getters/setters + `drain_errors`) | shipped | ADR-0091 |
+| `AgentHarnessOptions.settings_manager: SettingsManager \| None` field + `AgentHarness.settings_manager` property + `AgentHarness.reload()` 3-step stub (guard + `settings_manager.reload()` + `_emit_resources_discover("reload")`) | shipped | ADR-0091 |
+| `tests/settings_manager/` — 7 types + 31 manager + 4 bug + ~89 getters/setters + 16 migration + 3 locking tests (Aelix-additive migration + lock-contention coverage not in Pi suite) | shipped | ADR-0091 |
+| `tests/harness/test_harness_reload.py` — 4 tests (invalid_state guard + property present/None + reload delegates) | shipped | ADR-0091 |
+| `resetApiProviders()` Aelix equivalent (ADR-0087 P-380 primitive #2) | deferred to Sprint 6h₇c+ | ADR-0091 |
+| `_resourceLoader.reload()` integration (P-380 primitive #3; requires ResourceLoader port) | deferred to Sprint 6h₇c+ | ADR-0091 |
+| `_buildRuntime()` call in reload (P-380 primitive #5) | deferred to Sprint 6h₇c+ | ADR-0091 |
+| 9 Pi consumption site wiring (Phase 5b TUI command layer) | deferred to Phase 5b | ADR-0091 |
+| Windows `fcntl.flock` fallback | deferred to Sprint 6h₇c+ | ADR-0091 |
+
 ## Consequences
 
 - Parity audits become reproducible — the W5 audit lane can `git checkout`
