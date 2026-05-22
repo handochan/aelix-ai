@@ -896,6 +896,44 @@ NO Pi pin advance. NO new RPC commands. NO `ImageContent` shape change
 | `--fork` interactive picker UI | deferred to Phase 5b | ADR-0092 |
 | Theme reads from SettingsManager + `branchSummary.skipPrompt` UI gating | deferred to Phase 5b | ADR-0092 |
 
+### Sprint 6h₇c amendment (ADR-0087 P-380 reload primitives closure, 2026-05-22)
+
+Sprint 6h₇c expands the Sprint 6h₇b `AgentHarness.reload()` 2-op stub
+(ADR-0091 §E) into the full **7-op Pi parity chain**
+(`agent-session.ts:2382-2413`). Lands `reset_api_providers()` module
+function + `ModelRegistry.reset()` alias (Pi `register-builtins.ts:
+400-403`) + `flag_values` field + getter/setter primitives on
+`_ExtensionRuntime` + `ExtensionRunner` delegation (Pi `runner.ts:
+409-411`) + `_rebuild_tool_registry()` extraction (partial port of Pi
+`_buildRuntime`) + `_emit_session_shutdown` / `_emit_session_start`
+private wrappers (Pi `runner.ts:177-189` + `agent-session.ts:2407`).
+Two of the original five ADR-0087 P-380 primitives stay deferred for
+binding reasons (ResourceLoader port + `_buildRuntime` full extraction
+— both Phase 5b). NO Pi pin advance. NO new RPC commands. **B 단계
+stays open**; Pi pin held at `734e08e…` (no advance — Sprint 6h₇c
+imports no new Pi feature beyond the pinned SHA).
+
+| Component | Status | Owner ADR |
+|---|---|---|
+| 6h₇c | Phase 5a-iii-γ | ADR-0087 P-380 reload primitives closure | RPC roster UNCHANGED (29 / 0 / 29) | ADR-0093 |
+| `aelix_ai.api_registry.reset_api_providers()` (module function — Pi `register-builtins.ts:400-403` parity; Aelix has no module-level lazy provider cache, so the port is a registry-flush wrapper around `clear_providers()`) | shipped | ADR-0093 |
+| `ModelRegistry.reset()` (Pi-parity naming alias for `refresh()`; semantic identity; `refresh()` retained for backward compatibility) | shipped | ADR-0093 |
+| `_ExtensionRuntime.flag_values: dict[str, bool \| str]` + `get_flag_values` (shallow-copy semantic) + `set_flag_value` (Pi `runner.ts:409-411`) | shipped | ADR-0093 |
+| `ExtensionRunner` `_runtime` bridge field + `get_flag_values` / `set_flag_value` delegation (returns `{}` / no-op when unwired) | shipped | ADR-0093 |
+| `AgentHarness._rebuild_tool_registry() -> list[AgentTool]` (extracted from `__init__:509-516`; merge semantic preserved — extensions setdefault, options override) | shipped | ADR-0093 |
+| `AgentHarness._emit_session_shutdown(reason)` + `_emit_session_start(reason)` (private async wrappers; gate on `has_handlers`; return True/False) | shipped | ADR-0093 |
+| `AgentHarness.reload()` 2-op → 7-op expansion (Pi `agent-session.ts:2382-2413` ordering: guard → snapshot flag_values → session_shutdown emit → settings_manager.reload → reset_api_providers + model_registry.reset → has_bindings gate → session_start emit + resources_discover) | shipped | ADR-0093 |
+| `tests/test_api_registry_reset.py` (5 tests — flush + bare-callable + idempotent + empty no-op + no auto-re-register builtins) | shipped | ADR-0093 |
+| `tests/model_registry/test_model_registry_reset.py` (5 tests — delegates to refresh + reloads models + clears stale error + empty + reset/refresh identity) | shipped | ADR-0093 |
+| `tests/harness/test_extension_runner_flag_values.py` (9 tests — default empty + mutate + last-write-wins + shallow copy + ExtensionRunner delegation 4-way + unwired no-op + end-to-end shallow copy) | shipped | ADR-0093 |
+| `tests/harness/test_rebuild_tool_registry.py` (8 tests — empty + options-only + extension-only + options override on collision + first-extension wins inter-extension + init state match + idempotent + ordering) | shipped | ADR-0093 |
+| `tests/harness/test_session_lifecycle_emit.py` (7 tests — no-handler False + with-handler True + reason propagation for both events + symmetric isolation) | shipped | ADR-0093 |
+| `tests/harness/test_harness_reload.py` (7 new tests on top of 4 existing — session_shutdown fires + session_start fires when has_bindings + session_start skipped when no extensions + flag_values snapshotted before shutdown + reset_api_providers after settings.reload + skip model_registry.reset when unattached + full 6-step ordering Pi parity) | shipped | ADR-0093 |
+| `_resourceLoader.reload()` (ADR-0087 P-380 #3 — ResourceLoader port required) | deferred to Phase 5b | ADR-0093 |
+| `_buildRuntime()` full extraction (ADR-0087 P-380 #5 — ~200 LOC `__init__` pipeline refactor) | deferred to Phase 5b | ADR-0093 |
+| `hasBindings` UI 4-field check (`_extensionUIContext` / `_extensionCommandContextActions` / `_extensionShutdownHandler` / `_extensionErrorListener` per P-449) | deferred to Phase 5b | ADR-0093 |
+| `flag_values` round-trip wire (snapshot in `reload()` → restore in `_buildRuntime`) | deferred to Phase 5b | ADR-0093 |
+
 ## Consequences
 
 - Parity audits become reproducible — the W5 audit lane can `git checkout`
