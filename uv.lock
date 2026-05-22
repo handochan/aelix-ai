@@ -50,6 +50,7 @@ source = { editable = "packages/aelix-agent-core" }
 dependencies = [
     { name = "aelix-ai" },
     { name = "pathspec" },
+    { name = "pydantic" },
     { name = "pyyaml" },
 ]
 
@@ -57,6 +58,7 @@ dependencies = [
 requires-dist = [
     { name = "aelix-ai", editable = "packages/aelix-ai" },
     { name = "pathspec", specifier = ">=0.12" },
+    { name = "pydantic", specifier = ">=2.7,<3" },
     { name = "pyyaml", specifier = ">=6.0" },
 ]
 

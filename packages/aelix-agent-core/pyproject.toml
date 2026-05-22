@@ -16,6 +16,9 @@ dependencies = [
   # parsing + skills .gitignore-style ignore matching.
   "PyYAML>=6.0",
   "pathspec>=0.12",
+  # Sprint 6h₉a (ADR-0094/0095/0096): contracts Pydantic models for the
+  # 4-tier extension architecture (descriptor envelope, manifest, primitives).
+  "pydantic>=2.7,<3",
 ]
 
 [tool.uv.sources]
