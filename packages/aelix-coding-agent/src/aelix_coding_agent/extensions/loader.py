@@ -105,14 +105,16 @@ async def load_extensions(
     result = LoadExtensionsResult(runtime=runtime)
     for entry in paths:
         try:
-            factory, name = await _resolve_factory(entry, cwd=cwd)
+            factory, name, manifest = await _resolve_factory(entry, cwd=cwd)
         except Exception as exc:  # noqa: BLE001 — surface as load error
             result.errors.append(
                 ExtensionLoadError(path=str(entry), error=str(exc))
             )
             continue
         try:
-            extension = await _invoke_factory(factory, runtime, name=name)
+            extension = await _invoke_factory(
+                factory, runtime, name=name, manifest=manifest
+            )
         except Exception as exc:  # noqa: BLE001 — surface as load error
             result.errors.append(
                 ExtensionLoadError(path=name, error=str(exc))
@@ -525,17 +527,31 @@ async def _resolve_factory(
     entry: str | Path | ExtensionFactory | _ManifestEntry,
     *,
     cwd: Path | None,
-) -> tuple[ExtensionFactory, str]:
-    """Return ``(factory, display_name)`` for a single loader entry.
+) -> tuple[ExtensionFactory, str, PluginManifest | None]:
+    """Return ``(factory, display_name, manifest)`` for a single loader entry.
 
-    Sprint 6h₉b: the ``entry`` union widens to include ``_ManifestEntry``
-    so :func:`discover_and_load_extensions` can route manifest-discovered
-    plugins through this resolver. The actual ``_ManifestEntry`` branch
-    lands in Sprint 6h₉b §C (next commit); at this commit a
-    ``_ManifestEntry`` falls into the final ``raise TypeError`` and
-    surfaces as an :class:`ExtensionLoadError` (contained by the
-    per-plugin try/except in :func:`load_extensions`).
+    Sprint 6h₉b §C: the return tuple now carries an optional manifest so
+    :func:`_invoke_factory` can attach it to the loaded :class:`Extension`.
+    Legacy entry types (callable / Path / str) carry ``manifest=None``;
+    only the :class:`_ManifestEntry` branch threads a real manifest
+    through.
     """
+
+    # Sprint 6h₉b §C — manifest-discovered plugin: resolve
+    # ``[plugin.entry] python = "module:callable"`` via
+    # :func:`_factory_from_module` (colon-form supported below).
+    if isinstance(entry, _ManifestEntry):
+        py_entry = entry.manifest.entry.python
+        if py_entry is None:
+            raise ValueError(
+                f"Manifest for plugin {entry.manifest.plugin.id!r} "
+                f"in {entry.pkg_dir} has no [plugin.entry] python; "
+                "cannot load (Sprint 6h₉b requires python entry when "
+                "any of capabilities.ui_tui_trusted / .ui_descriptor / "
+                ".mcp_serve is True — see Sprint 6h₉a fold-in §A)"
+            )
+        factory = _factory_from_module(py_entry)
+        return factory, entry.manifest.plugin.id, entry.manifest
 
     # Check callable first; the isinstance guard is defensive because Path objects
     # are not callable, but the order matters: str/Path checks must come after so
@@ -543,19 +559,49 @@ async def _resolve_factory(
     if callable(entry) and not isinstance(entry, (str, Path)):
         # Inline factory — class instance or function.
         display = getattr(entry, "__qualname__", None) or type(entry).__name__
-        return entry, display
+        return entry, display, None
     if isinstance(entry, Path):
-        return _factory_from_file(entry, cwd=cwd), str(entry)
+        return _factory_from_file(entry, cwd=cwd), str(entry), None
     if isinstance(entry, str):
         if entry.endswith(".py"):
-            return _factory_from_file(Path(entry), cwd=cwd), entry
-        return _factory_from_module(entry), entry
+            return _factory_from_file(Path(entry), cwd=cwd), entry, None
+        return _factory_from_module(entry), entry, None
     raise TypeError(
         f"Unsupported extension entry type: {type(entry).__name__}"
     )
 
 
 def _factory_from_module(module_path: str) -> ExtensionFactory:
+    """Import a module and return its factory callable.
+
+    Sprint 6h₉b §C: now accepts ``"module:callable"`` colon-separated
+    form (used by ``aelix-plugin.toml`` ``[plugin.entry] python``).
+    Legacy bare-module form ``"module.path"`` still resolves to top-level
+    ``setup`` for backward compat.
+
+    Raises:
+        ValueError: when colon-form has empty module or empty callable.
+        AttributeError: when the specified callable does not exist on
+        the imported module.
+    """
+
+    if ":" in module_path:
+        module_name, _, callable_name = module_path.partition(":")
+        if not module_name or not callable_name:
+            raise ValueError(
+                f"Invalid module:callable form {module_path!r}; "
+                "expected 'module.path:callable_name'"
+            )
+        module = importlib.import_module(module_name)
+        factory = getattr(module, callable_name, None)
+        if factory is None or not callable(factory):
+            raise AttributeError(
+                f"Module {module_name!r} has no top-level callable "
+                f"{callable_name!r} (manifest [plugin.entry] python)."
+            )
+        return factory
+
+    # Legacy form: bare module, look for top-level ``setup``.
     module = importlib.import_module(module_path)
     factory = getattr(module, "setup", None)
     if factory is None or not callable(factory):
@@ -590,8 +636,19 @@ async def _invoke_factory(
     runtime: _ExtensionRuntime,
     *,
     name: str,
+    manifest: PluginManifest | None = None,
 ) -> Extension:
-    extension = Extension(name=name)
+    """Sprint 6h₉b §C: propagate ``manifest`` to the loaded :class:`Extension`.
+
+    Legacy callers (``load_extension_from_factory``, tests that bypass
+    the discovery pipeline) pass ``manifest=None`` and the resulting
+    ``Extension.manifest`` stays ``None``; manifest-discovered plugins
+    get their parsed :class:`PluginManifest` attached so Sprint 6h₉c/d/
+    e/f consumers can read declared capabilities / activation /
+    contributes.
+    """
+
+    extension = Extension(name=name, manifest=manifest)
     api = ExtensionAPI(extension, runtime)
     result: Any = factory(api)
     if inspect.iscoroutine(result):
