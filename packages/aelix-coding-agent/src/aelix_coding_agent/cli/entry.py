@@ -114,6 +114,31 @@ async def _build_session(parsed: Args, repo: JsonlSessionRepo) -> Session:
     return await repo.create(JsonlSessionCreateOptions(cwd=cwd))
 
 
+def _validate_continue_flag(parsed: Args) -> str | None:
+    """Sprint 6h₈ §D — ``--continue`` argument-compatibility validation.
+
+    Pi parity: ``main.ts:280-281`` dispatches ``--continue`` only when
+    no other session-source flag is set. Aelix surfaces the conflicts
+    explicitly with Pi-shape error messages.
+
+    Returns
+    -------
+    str | None
+        Error message when ``--continue`` is incompatible with another
+        already-set flag, or :data:`None` when the combination is OK.
+    """
+
+    if not parsed.continue_session:
+        return None
+    if parsed.no_session:
+        return "--continue is incompatible with --no-session"
+    if parsed.session is not None:
+        return "--continue is incompatible with --session"
+    if parsed.fork is not None:
+        return "--continue is incompatible with --fork"
+    return None
+
+
 def _build_harness_options(parsed: Args, session: Session) -> AgentHarnessOptions:
     """Assemble :class:`AgentHarnessOptions` from parsed CLI args.
 
@@ -164,6 +189,16 @@ async def _async_main(argv: list[str]) -> int:
         print(VERSION)
         return 0
 
+    # === --continue flag validation (Sprint 6h₈ §D) =========================
+    # Sprint 6h₈ W5 MAJOR-2 fold-in: validate BEFORE the ``--list-models``
+    # short-circuit so that incompatible combos (e.g. ``--list-models
+    # --continue --no-session``) emit the spec-mandated stderr diagnostic
+    # rather than silently succeeding on the list-models exit path.
+    continue_error = _validate_continue_flag(parsed)
+    if continue_error is not None:
+        print(f"Error: {continue_error}", file=sys.stderr)
+        return 1
+
     # === --list-models — Sprint 6h₇a (ADR-0090) wired =======================
     if parsed.list_models is not None:
         # Lazy imports — defer ``ModelRegistry`` + ``AuthStorage``
@@ -183,6 +218,17 @@ async def _async_main(argv: list[str]) -> int:
         model_registry = ModelRegistry.create(auth_storage)
         await list_models(model_registry, parsed.list_models)
         return 0
+
+    # Sprint 6h₈ §D: --resume picker is deferred to Phase 5b TUI work.
+    if parsed.resume:
+        print(
+            "Error: --resume (interactive picker) deferred to Phase 5b — "
+            "TUI work (ADR-0088).",
+            file=sys.stderr,
+        )
+        raise NotImplementedError(
+            "--resume picker deferred to Phase 5b (ADR-0088)."
+        )
 
     # === Mode resolution =====================================================
     stdin_is_tty = sys.stdin.isatty()
@@ -230,7 +276,21 @@ async def _async_main(argv: list[str]) -> int:
     # === Harness + runtime construction ======================================
     fs = LocalFileSystem()
     repo = JsonlSessionRepo(fs=fs)
-    session = await _build_session(parsed, repo)
+
+    # Sprint 6h₈ §D: ``--continue`` / ``-c`` auto-resume short-circuit.
+    # When set, attempt to open the most-recent session in cwd; if none
+    # exist, fall back to ``_build_session`` silently (Pi parity per
+    # ``main.ts:280-281`` ``SessionManager.continueRecent`` semantics).
+    if parsed.continue_session:
+        from pathlib import Path
+
+        most_recent = await repo.find_most_recent(str(Path.cwd()))
+        if most_recent is not None:
+            session = await repo.open(most_recent)
+        else:
+            session = await _build_session(parsed, repo)
+    else:
+        session = await _build_session(parsed, repo)
 
     async def _harness_factory(new_session: Session) -> AgentHarness:
         opts = _build_harness_options(parsed, new_session)

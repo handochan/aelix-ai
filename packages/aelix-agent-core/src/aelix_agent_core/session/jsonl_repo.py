@@ -12,10 +12,12 @@ wrap in ``--...--``.
 
 from __future__ import annotations
 
+import json
 import re
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 
 from aelix_agent_core.session.fs import FileSystem, LocalFileSystem
 from aelix_agent_core.session.jsonl_storage import (
@@ -255,6 +257,111 @@ class JsonlSessionRepo:
         # Sort newest-first by created_at (Pi parity).
         sessions.sort(key=lambda m: m.created_at, reverse=True)
         return sessions
+
+    async def find_most_recent(
+        self, cwd: str
+    ) -> JsonlSessionMetadata | None:
+        """Pi parity: ``findMostRecentSession`` (``session-manager.ts:480-493``).
+
+        Returns metadata for the most-recently-modified valid session
+        file in ``cwd``'s session directory, or :data:`None` when no
+        valid sessions exist.
+
+        Sort key is **mtime DESC** (Pi parity — Pi calls
+        ``statSync(path).mtime`` and sorts via
+        ``b.mtime.getTime() - a.mtime.getTime()``). Note this diverges
+        from :meth:`list` which sorts by ``created_at`` (header
+        timestamp); the divergence is documented in ADR-0092 §B and
+        kept as-is — :meth:`list` semantics are unchanged.
+
+        Each ``.jsonl`` candidate is filtered through
+        :meth:`_is_valid_session_file` (Pi parity
+        ``session-manager.ts:464-478`` — header line must parse, have
+        ``type == "session"`` and non-empty ``id``).
+
+        Returns
+        -------
+        JsonlSessionMetadata | None
+            Metadata for the most recent valid session, or :data:`None`
+            when none exist.
+        """
+
+        try:
+            session_dir = await self._get_session_dir(cwd)
+        except SessionError:
+            return None
+
+        try:
+            present = await self._fs.exists(session_dir)
+        except OSError:
+            return None
+        if not present:
+            return None
+
+        try:
+            children = await self._fs.list_dir(session_dir)
+        except OSError:
+            return None
+
+        # Pi parity: `f.endsWith(".jsonl")` + `isValidSessionFile` + sort
+        # by mtime DESC + take the first.
+        candidates: list[tuple[float, str]] = []
+        for child in children:
+            if child.kind == "directory" or not child.name.endswith(".jsonl"):
+                continue
+            if not self._is_valid_session_file(Path(child.path)):
+                continue
+            candidates.append((child.mtime_ms, child.path))
+
+        if not candidates:
+            return None
+
+        # Sort by mtime DESC (Pi parity).
+        candidates.sort(key=lambda pair: pair[0], reverse=True)
+
+        # Iterate candidates in sort order, taking the first whose
+        # full metadata parse succeeds. Sprint 6h₈ W5 MAJOR-1 fold-in:
+        # previously the loader only tried the single most-recent file
+        # and silently fell back to "no session" if its metadata parse
+        # failed, losing access to older valid sessions. The 512-byte
+        # ``_is_valid_session_file`` sniff and the full header parse in
+        # ``load_jsonl_session_metadata`` share the same JSON line, so
+        # the divergence window is narrow — but observable in principle.
+        for _, candidate_path in candidates:
+            try:
+                return await load_jsonl_session_metadata(
+                    self._fs, candidate_path
+                )
+            except SessionError:
+                continue
+        return None
+
+    @staticmethod
+    def _is_valid_session_file(path: Path) -> bool:
+        """Pi parity: ``isValidSessionFile`` (``session-manager.ts:464-478``).
+
+        Reads the first 512 bytes of the file, parses the first line as
+        JSON, and validates ``type == "session"`` AND ``id`` is a
+        non-empty string. Any exception returns :data:`False`.
+        """
+
+        try:
+            with open(path, "rb") as f:
+                buf = f.read(512)
+            decoded = buf.decode("utf-8", errors="replace")
+            first_line = decoded.split("\n", 1)[0]
+            if not first_line:
+                return False
+            header = json.loads(first_line)
+            if not isinstance(header, dict):
+                return False
+            return (
+                header.get("type") == "session"
+                and isinstance(header.get("id"), str)
+                and bool(header["id"])
+            )
+        except Exception:
+            return False
 
     async def delete(self, metadata: JsonlSessionMetadata) -> None:
         """Pi `delete` (``jsonl-repo.ts:126-131``)."""
