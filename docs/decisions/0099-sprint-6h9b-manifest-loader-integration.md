@@ -107,18 +107,35 @@ Per Sprint 6h₉b spec §1.4 verbatim:
   `discoverAndLoadExtensions` (already mirrored by Sprint 5a;
   unchanged this sprint — manifest detection plugs into the existing
   per-directory hook).
-- `packages/coding-agent/src/core/extensions/loader.ts:454-479` —
+- `packages/coding-agent/src/core/extensions/loader.ts:496-526` —
   `resolveExtensionEntries` (already mirrored; **augmented** this
-  sprint with the `aelix-plugin.toml` priority-one branch).
-- `packages/coding-agent/src/core/extensions/loader.ts:481-518` —
+  sprint with the `aelix-plugin.toml` priority-one branch). Line
+  range corrected from `:454-479` in Sprint 6h₉b fold-in §B (W5
+  critic verified the function signature is at line 496 at SHA
+  `734e08e`; the prior range covered the tail of `loadExtensions` +
+  `PiManifest` interface + `readPiManifest`, not the target
+  function).
+- `packages/coding-agent/src/core/extensions/loader.ts:538-570` —
   `discoverExtensionsInDir` (already mirrored; the inner per-plugin
-  try/except now also contains `ExtensionManifestError`).
-- `packages/coding-agent/src/core/extensions/loader.ts:437` —
-  per-plugin try/except containment (Pi parity: one bad extension
-  never aborts the wave; manifest parse failures honor this invariant).
-- `packages/coding-agent/docs/extensions.md` §"Auto-discovery" — base
-  paths reference (Aelix translation: `cwd/.aelix/extensions/`,
-  `~/.aelix/extensions/`).
+  try/except now also contains `ExtensionManifestError`). Line range
+  corrected from `:481-518` in Sprint 6h₉b fold-in §B (W5 critic
+  verified the function signature is at line 538 at SHA `734e08e`).
+- `packages/coding-agent/src/core/extensions/loader.ts:443-454` —
+  per-extension containment in `loadExtensions`: `loadExtension`
+  returns `{ extension, error }` and the dispatcher pushes errors to
+  the result without raising. Pi parity: one bad extension never
+  aborts the wave; manifest parse failures honor this invariant.
+  Aelix uses `try/except` because Python's idiom differs from Pi's
+  return-tuple pattern; semantics match. Line citation corrected
+  from `:437` (signature line of `loadExtensions`) to `:443-454`
+  (actual loop body containment site) in Sprint 6h₉b fold-in §B
+  per W5 critic M2.
+- `packages/coding-agent/docs/extensions.md` §"Extension Locations" —
+  base paths reference (Aelix translation: `cwd/.aelix/extensions/`,
+  `~/.aelix/extensions/`). Section title corrected from
+  `§"Auto-discovery"` (callout phrase on line 7) to the actual
+  section heading `§"Extension Locations"` at line 108 in Sprint
+  6h₉b fold-in §B per W5 critic n1.
 
 External (non-Pi) references:
 
