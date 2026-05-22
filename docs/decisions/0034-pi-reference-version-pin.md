@@ -784,6 +784,43 @@ modulo the documented divergences (APP_NAME = "aelix", `argparse` /
 tests landed in this sprint (P-396 / P-397 / P-398) raise the test
 count to **2077 passed + 1 skipped**.
 
+### Sprint 6h₇a amendment (Phase 5a-iii-α — list-models + append-system-prompt, 2026-05-22)
+
+Sprint 6h₇a (ADR-0090) is the **partial** Phase 5a-iii cleanup that
+closes the two Sprint 6h₆ deferred carry-forwards without paying for
+the full Pi 5a-iii surface: ports Pi `tui/src/fuzzy.ts` (137 LOC) →
+`util/fuzzy.py`, ports Pi `cli/list-models.ts` (111 LOC) →
+`cli/list_models.py` (REPLACES the Sprint 6h₆ stderr deferred
+diagnostic at `cli/entry.py:162-168`), and wires text-only
+`--append-system-prompt` onto :class:`AgentHarnessOptions`
+(init-time `"\n\n"` join onto `_state.system_prompt`). NO
+SettingsManager port (full standalone reserved for Sprint 6h₇b
+~1400-1600 LOC) / NO ResourceLoader (no `@file` resolution) / NO
+image branch / NO migrations / NO session-picker / NO new RPC / NO
+ANSI / NO TUI. Aelix-additive divergences vs Pi documented in
+ADR-0090 §"Aelix-additive divergences from Pi" (plain stderr warning
+vs `chalk.yellow` / inline no-models-available fallback vs
+auth-guidance import / `--append-system-prompt` literal text only vs
+ResourceLoader `@file` / init-time assembly vs Pi
+`_rebuildSystemPrompt` / `FuzzyMatch.indices` Aelix-additive
+forward-compat field). **B 단계 stays open**; Pi pin held at
+`734e08e…` (no advance — Sprint 6h₇a imports no new Pi feature).
+
+| Component | Status | Owner ADR |
+|---|---|---|
+| 6h₇a | Phase 5a-iii-α | list-models + append-system-prompt | RPC roster UNCHANGED (29 / 0 / 29) | ADR-0090 |
+| `aelix_coding_agent.util.fuzzy` (Pi `tui/src/fuzzy.ts` 137 LOC stdlib-only port; LOAD-BEARING scoring constants Exact -100 / Word-boundary -10 / Consecutive -5 / Gap +2 / Position +0.1×i / Alphanumeric-swap +5) | shipped | ADR-0090 |
+| `aelix_coding_agent.cli.list_models` (Pi `cli/list-models.ts` 111 LOC port; `format_token_count` 200000→"200K" / 1500000→"1.5M" / 2000000→"2M" trailing `.0` stripped; 6-column table provider/model/context/max-out/thinking/images) | shipped | ADR-0090 |
+| `cli/entry.py:168-181` `--list-models` short-circuit (REPLACES Sprint 6h₆ deferred stderr diagnostic with `await list_models(ModelRegistry.create(AuthStorage(get_agent_dir() / "auth.json")), parsed.list_models)`; lazy imports defer ModelRegistry/AuthStorage cost off `--help` / `--version` fast paths) | shipped | ADR-0090 |
+| `AgentHarnessOptions.append_system_prompt: list[str]` field + `AgentHarness.__init__` `"\n\n"` join assembly site + `cli/entry.py:_build_harness_options` defensive-copy wire | shipped | ADR-0090 |
+| Aelix-additive `FuzzyMatch.indices` field (Pi exposes only `matches` + `score`; Aelix adds matched-positions for Phase 5b TUI highlight rendering) | shipped | ADR-0090 |
+| Plain stderr `--list-models` load-error warning (NO `chalk.yellow` / NO ANSI — Aelix-additive divergence) | shipped | ADR-0090 |
+| Inline no-models-available fallback (NO `formatNoModelsAvailableMessage` auth-guidance import — Aelix-additive divergence) | shipped | ADR-0090 |
+| `--append-system-prompt @file` resolution (requires ResourceLoader port) | deferred | ADR-0090 |
+| `--append-system-prompt` auto-discovery of `cwd/.pi/APPEND_SYSTEM.md` + `agentDir/APPEND_SYSTEM.md` (requires ResourceLoader port) | deferred | ADR-0090 |
+| Pi `_rebuildSystemPrompt` reload-time re-assembly (Aelix 6h₇a has no reload trigger for append-system-prompt in scope; init-time assembly is semantically equivalent for supported lifecycle) | deferred (semantically equivalent) | ADR-0090 |
+| `SettingsManager` full standalone port (~1400-1600 LOC; proper-lockfile / 4 migrations / dual-scope / async write queue / `reload()` deep-merge / ~80 getters-setters) | deferred to Sprint 6h₇b | ADR-0090 |
+
 ## Consequences
 
 - Parity audits become reproducible — the W5 audit lane can `git checkout`
