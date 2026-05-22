@@ -506,14 +506,14 @@ class AgentHarness:
         # ``Promise.all`` on tool error). None when idle.
         self._current_turn_task: asyncio.Task[Any] | None = None
 
-        # Build a merged tool list with application-supplied tools winning
-        # over extension-registered ones with the same name (D.1.13 M-9).
-        merged: dict[str, AgentTool] = {}
-        for extension in self._extensions:
-            for name, tool in extension.tools.items():
-                merged.setdefault(name, tool)
-        for tool in options.tools:
-            merged[tool.name] = tool
+        # Sprint 6h₇c (Phase 5a-iii-γ, ADR-0093 §D, P-450) — tool merge
+        # extracted into ``_rebuild_tool_registry`` for Pi parity with
+        # ``agent-session.ts:_buildRuntime``. Application-supplied tools
+        # still win over extension-registered ones with the same name
+        # (D.1.13 M-9) — semantic unchanged. Full ``_buildRuntime``
+        # extraction (extension runner re-create + active tool filter
+        # refresh + state assembly) stays inline (Phase 5b carry-forward).
+        merged_tools = self._rebuild_tool_registry()
 
         # Sprint 6h₇a (Phase 5a-iii-α, ADR-0090, §D): assemble
         # ``--append-system-prompt`` chunks onto the base system prompt
@@ -532,7 +532,7 @@ class AgentHarness:
         self._state = AgentState(
             system_prompt=base_system_prompt,
             model=options.model,
-            tools=list(merged.values()),
+            tools=list(merged_tools),
             messages=list(options.initial_messages),
         )
         # Sprint 4a — populate ``state.session_id`` from the attached
@@ -682,6 +682,37 @@ class AgentHarness:
         self._shutdown_action: Callable[[], None] | None = None
         # Sprint 5b §B.3 — bootstrap-fired ``resources_discover`` emit can
         # populate this lazily. AgentState.resources already exists.
+
+    # === Sprint 6h₇c (Phase 5a-iii-γ, ADR-0093 §D, P-450) ===
+    # Pi parity (partial): the tool-merge step of
+    # ``agent-session.ts:_buildRuntime``. Extension runner re-create +
+    # active tool filter refresh + state assembly stay inline in
+    # ``__init__`` until Phase 5b extracts the full constructor
+    # pipeline.
+
+    def _rebuild_tool_registry(self) -> list[AgentTool]:
+        """Pi parity (partial): tool merge step of ``agent-session.ts:_buildRuntime``.
+
+        Sprint 6h₇c §D extracted from :meth:`AgentHarness.__init__`
+        (former lines 509-516). Application-supplied tools win over
+        extension-registered ones with the same name (D.1.13 M-9) —
+        ``setdefault`` collects the first extension occurrence for each
+        name; the options.tools loop then overrides on collision via
+        direct assignment.
+
+        The full ``_buildRuntime`` port (extension runner re-create +
+        active tool names refresh + ``flagValues`` restore + state
+        assembly) stays in ``__init__`` until Phase 5b extracts the
+        entire constructor pipeline.
+        """
+
+        merged: dict[str, AgentTool] = {}
+        for extension in self._extensions:
+            for name, tool in extension.tools.items():
+                merged.setdefault(name, tool)
+        for tool in self._options.tools:
+            merged[tool.name] = tool
+        return list(merged.values())
 
     # === Public properties ===
 
