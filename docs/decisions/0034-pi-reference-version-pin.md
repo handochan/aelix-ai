@@ -854,6 +854,48 @@ held at `734e08e…` (no advance — Sprint 6h₇b imports no new Pi feature).
 | 9 Pi consumption site wiring (Phase 5b TUI command layer) | deferred to Phase 5b | ADR-0091 |
 | Windows `fcntl.flock` fallback | deferred to Sprint 6h₇c+ | ADR-0091 |
 
+### Sprint 6h₈ amendment (Phase 5a-iv — image + migrations + --continue, 2026-05-22)
+
+Sprint 6h₈ closes the binding Sprint 6h₆ carry-forwards by porting Pi
+`utils/mime.ts` (74 LOC) + `utils/image-resize.ts` (176 LOC) + wiring
+the `cli/file-processor.ts` image branch end-to-end with magic-byte
+detection (replaces Sprint 6h₆ extension-only check) + Pillow-based
+resize (replaces Pi's Photon WASM backend); ships a NO-OP `migrations.py`
+stub (Aelix has no legacy data — Pi `migrations.ts` 315 LOC orchestrates
+7 cleanups all targeting legacy shapes Aelix never had); wires
+`--continue` / `-c` auto-resume via NEW `JsonlSessionRepo.find_most_recent`
+(Pi parity `findMostRecentSession` + `isValidSessionFile`) + flag
+validation (3 conflicts) + entry.py short-circuit + `--resume`
+NotImplementedError (deferred to Phase 5b TUI). NO `takeOverStdout`
+real port (Aelix RPC mode already uses `contextlib.redirect_stdout`;
+print-mode wrapper deferred to extension framework Sprint 6i+, ADR-0058).
+NO Pi pin advance. NO new RPC commands. NO `ImageContent` shape change
+(already Sprint 6b parity). NO settings hooks beyond `auto_resize`
+(already Sprint 6h₇b). **B 단계 stays open**; Pi pin held at
+`734e08e…`.
+
+| Component | Status | Owner ADR |
+|---|---|---|
+| 6h₈ | Phase 5a-iv | image branch + migrations stub + --continue auto-resume | RPC roster UNCHANGED (29 / 0 / 29) | ADR-0092 |
+| `aelix_coding_agent.util.image_detect` (Pi parity port `utils/mime.ts:1-74` — `detect_image_mime_type` magic-byte dispatch JPEG/PNG/GIF/WebP + `detect_image_mime_type_from_file` async file reader; rejects truncated JPEG `FF D8 FF F7` + animated PNG via `acTL` chunk scan) | shipped | ADR-0092 |
+| `aelix_coding_agent.util.image_resize` (Pi parity port `utils/image-resize.ts:1-176` — `ImageResizeOptions` 2000×2000 / 4.5 MB / q=80 + `ResizedImage` frozen dataclass + `resize_image` async iterative encode + `format_dimension_note`; Pillow `ImageOps.exif_transpose` replaces ~83 LOC Pi manual TIFF parsing) | shipped | ADR-0092 |
+| `Pillow>=11.0,<12.0` added to `packages/aelix-coding-agent/pyproject.toml` + uv.lock sync (Pillow ships pyright type stubs since 10.0 — zero new baseline errors) | shipped | ADR-0092 |
+| `aelix_coding_agent.cli.file_processor.process_file_arguments` REPLACES Sprint 6h₆ image-skip stub with real branch: magic-byte detection → base64 encode → optional `resize_image` via `auto_resize_images` flag → `ImageContent` append + dimension note text reference; magic bytes win over extension (Pi parity `file-processor.ts:48-50`) | shipped | ADR-0092 |
+| `aelix_ai.migrations.run_migrations` + `show_deprecation_warnings` NO-OP stub (Pi `migrations.ts` 315 LOC — Aelix has no legacy data; stub preserves Pi return shape for Phase 5b TUI startup hook) | shipped | ADR-0092 |
+| `JsonlSessionRepo.find_most_recent(cwd)` (Pi parity `findMostRecentSession` `session-manager.ts:480-493` — mtime DESC sort + cwd filter + `_is_valid_session_file` filter; diverges from `list()` which sorts by `created_at` — divergence documented + `list()` kept as-is) | shipped | ADR-0092 |
+| `JsonlSessionRepo._is_valid_session_file(path)` private helper (Pi parity `isValidSessionFile` `session-manager.ts:464-478` — read first 512 bytes + parse first line JSON + validate `type == "session"` AND `id` non-empty string) | shipped | ADR-0092 |
+| `cli/entry.py` `--continue` / `-c` short-circuit before `_build_session` (Pi parity `main.ts:280-281` `SessionManager.continueRecent`; silent fallback to new session when zero matches) + `_validate_continue_flag` (3 incompatible flag conflicts: `--no-session` / `--session` / `--fork`) + `--resume` raises NotImplementedError (Phase 5b TUI deferred) | shipped | ADR-0092 |
+| `tests/util/test_image_detect.py` (19 tests — 4 magic-byte detectors + animated PNG rejection + truncated JPEG `0xF7` rejection + 7 Pillow round-trip tests) | shipped | ADR-0092 |
+| `tests/util/test_image_resize.py` (16 tests — fast-path + aspect ratio + JPEG quality fallback chain + EXIF 4 orientations + give-up + corrupt/invalid `None` return + frozen dataclass + dimension note shape) | shipped | ADR-0092 |
+| `tests/cli/test_file_processor.py` REWRITE (drops Sprint 6h₆ image-skip warning tests; adds 9 new real image processing tests + magic-byte fallthrough for `.jpg`-with-text-content) | shipped | ADR-0092 |
+| `tests/test_migrations.py` (4 tests — return shape + str/Path acceptance + idempotency + show_deprecation_warnings no-op) | shipped | ADR-0092 |
+| `tests/session/test_find_most_recent.py` (10 tests — empty case + single + mtime sort + mtime-overrides-created_at + cwd filter + invalid header skip + missing id skip + non-jsonl ignored + static helper) | shipped | ADR-0092 |
+| `tests/cli/test_continue_flag.py` (13 tests — 8 `_validate_continue_flag` unit + 3 e2e incompatible-flag exits + `--resume` NotImplementedError + empty cwd silent fallback) | shipped | ADR-0092 |
+| `--resume` interactive picker UI | deferred to Phase 5b | ADR-0092 |
+| `takeOverStdout` print-mode wrapper (Aelix RPC mode already uses `contextlib.redirect_stdout`; print-mode wrapper deferred until extension framework lands) | deferred to Sprint 6i+ (ADR-0058) | ADR-0092 |
+| `--fork` interactive picker UI | deferred to Phase 5b | ADR-0092 |
+| Theme reads from SettingsManager + `branchSummary.skipPrompt` UI gating | deferred to Phase 5b | ADR-0092 |
+
 ## Consequences
 
 - Parity audits become reproducible — the W5 audit lane can `git checkout`
