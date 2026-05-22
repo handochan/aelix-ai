@@ -298,6 +298,20 @@ class ModelRegistry:
 
         self._load_models()
 
+    def reset(self) -> None:
+        """Pi parity: ``model-registry.ts::reset`` naming alias.
+
+        Sprint 6h₇c §B (Phase 5a-iii-γ, ADR-0093, P-446) — Pi-parity
+        naming alias for :meth:`refresh`. Pi's ``resetApiProviders()``
+        composition (``register-builtins.ts:400-403``) plus the
+        :meth:`AgentHarness.reload` chain (`agent-session.ts:2389`)
+        call ``modelRegistry.reset()``. Aelix retains :meth:`refresh`
+        for backward compatibility; both invoke :meth:`_load_models`
+        — semantic identity.
+        """
+
+        self.refresh()
+
     def get_error(self) -> str | None:
         """Pi parity: ``model-registry.ts::getError``.
 

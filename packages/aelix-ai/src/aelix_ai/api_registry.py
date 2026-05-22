@@ -117,6 +117,22 @@ def clear_providers() -> None:
     _PROVIDERS.clear()
 
 
+def reset_api_providers() -> None:
+    """Pi parity: ``resetApiProviders()`` (``register-builtins.ts:400-403``).
+
+    Sprint 6h₇c §B (Phase 5a-iii-γ, ADR-0093, P-446) — module-level
+    wrapper invoked by :meth:`AgentHarness.reload`. Pi composes
+    ``clearApiProviders()`` + ``registerBuiltInApiProviders()``; Aelix
+    has NO module-level lazy provider cache to flush (each provider
+    package registers itself via its own init / explicit
+    ``register_all()`` call), so the Aelix port is effectively a
+    registry flush. The function exists for Pi-parity API surface and
+    future-proofing — see ADR-0093 §"Aelix-additive divergences".
+    """
+
+    clear_providers()
+
+
 def _resolve_provider(api: str) -> StreamFn:
     """Internal dispatcher helper — returns a :class:`StreamFn`-callable.
 
@@ -159,6 +175,7 @@ __all__ = [
     "get_registered_providers",
     "register_provider",
     "register_provider_object",
+    "reset_api_providers",
     "unregister_provider",
     "unregister_providers_by_source",
 ]

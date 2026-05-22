@@ -10,6 +10,7 @@ from aelix_ai.api_registry import (
     get_registered_providers,
     register_provider,
     register_provider_object,
+    reset_api_providers,
     unregister_provider,
     unregister_providers_by_source,
 )
@@ -97,6 +98,7 @@ __all__ = [
     "get_registered_providers",
     "register_provider",
     "register_provider_object",
+    "reset_api_providers",
     "stream_simple",
     "unregister_provider",
     "unregister_providers_by_source",
