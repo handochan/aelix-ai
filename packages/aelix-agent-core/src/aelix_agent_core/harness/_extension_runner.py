@@ -41,6 +41,7 @@ if TYPE_CHECKING:
         Extension,
         ExtensionSourceInfo,
         RegisteredCommand,
+        _ExtensionRuntime,
     )
 
     from aelix_agent_core.harness.hooks import HookEvent, HookEventName
@@ -109,6 +110,12 @@ class ExtensionRunner:
     _has_handlers: Callable[[HookEventName], bool] | None = None
     # Sprint 6h₅b (Phase 4.15, ADR-0083, P-362) — runtime invalidate bridge.
     _invalidate_runtime: Callable[[str], None] | None = None
+    # Sprint 6h₇c (Phase 5a-iii-γ, ADR-0093 §C, P-447) — flag-values bridge.
+    # The :class:`_ExtensionRuntime` owns the flag-values dict; the runner
+    # delegates ``get_flag_values`` / ``set_flag_value`` to it. Defaults
+    # to ``None`` so callers that haven't wired the runtime still get a
+    # safe no-op surface (returns ``{}`` from getter, drops setter).
+    _runtime: _ExtensionRuntime | None = None
 
     def invalidate(self, message: str | None = None) -> None:
         """Pi parity: ``ExtensionRunner.invalidate`` (``runner.ts:466-473``).
@@ -170,6 +177,31 @@ class ExtensionRunner:
         if self._has_handlers is None:
             return False
         return self._has_handlers(event_name)
+
+    def get_flag_values(self) -> dict[str, bool | str]:
+        """Pi parity: ``ExtensionRunner.getFlagValues`` (``runner.ts:409``).
+
+        Sprint 6h₇c (Phase 5a-iii-γ, ADR-0093 §C, P-447). Delegates to
+        :meth:`_ExtensionRuntime.get_flag_values`; returns an empty dict
+        when the runtime bridge is not wired (defensive default for
+        tests / harnesses constructed without a runtime).
+        """
+
+        if self._runtime is None:
+            return {}
+        return self._runtime.get_flag_values()
+
+    def set_flag_value(self, name: str, value: bool | str) -> None:
+        """Pi parity: ``ExtensionRunner.setFlagValue`` (``runner.ts:411``).
+
+        Sprint 6h₇c (Phase 5a-iii-γ, ADR-0093 §C, P-447). Delegates to
+        :meth:`_ExtensionRuntime.set_flag_value`; silently drops the
+        mutation when the runtime bridge is not wired.
+        """
+
+        if self._runtime is None:
+            return
+        self._runtime.set_flag_value(name, value)
 
     def get_registered_commands(self) -> list[ResolvedCommand]:
         """Pi parity: ``ExtensionRunner.getRegisteredCommands()`` (Pi

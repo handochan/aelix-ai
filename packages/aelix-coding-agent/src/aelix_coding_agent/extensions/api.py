@@ -389,6 +389,12 @@ class _ExtensionRuntime:
         # adapter (ADR-0038) replays them after binding.
         self.pending_provider_registrations: list[tuple[str, Any]] = []
         self.pending_provider_unregistrations: list[str] = []
+        # Sprint 6h₇c (Phase 5a-iii-γ, ADR-0093 §C, P-447) — flag values
+        # runtime state container. Pi parity: ``runner.ts:409-411``
+        # ``getFlagValues`` / ``setFlagValue`` over a ``Map<string,
+        # boolean | string>``. Aelix uses ``dict`` (Python idiom);
+        # shallow-copy semantic preserved.
+        self.flag_values: dict[str, bool | str] = {}
 
     @property
     def actions(self) -> ExtensionRuntimeActions:
@@ -452,6 +458,30 @@ class _ExtensionRuntime:
     def assert_active(self) -> None:
         if self._stale_message is not None:
             raise ExtensionError("stale", self._stale_message)
+
+    # ── Sprint 6h₇c (Phase 5a-iii-γ, ADR-0093 §C, P-447) ──────────
+    # Pi parity: ``runner.ts:409-411`` ``getFlagValues`` /
+    # ``setFlagValue``. The runtime owns the flag-values dict; the
+    # outer :class:`ExtensionRunner` delegates here.
+
+    def get_flag_values(self) -> dict[str, bool | str]:
+        """Pi parity: ``_ExtensionRuntime.getFlagValues`` (``runner.ts:409``).
+
+        Returns a SHALLOW COPY of the flag-values dict (Pi parity ``Map``
+        shallow copy via ``new Map(this.flagValues)``). Mutations to the
+        returned dict do NOT affect the runtime's internal state.
+        """
+
+        return dict(self.flag_values)
+
+    def set_flag_value(self, name: str, value: bool | str) -> None:
+        """Pi parity: ``_ExtensionRuntime.setFlagValue`` (``runner.ts:411``).
+
+        Mutates the runtime's internal flag-values dict. Last write wins
+        per flag name (Pi parity).
+        """
+
+        self.flag_values[name] = value
 
 
 # === Extension container ===
