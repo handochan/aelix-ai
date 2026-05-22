@@ -17,6 +17,9 @@ dependencies = [
   "markdown-it-py>=3.0",
 ]
 
+[project.scripts]
+aelix = "aelix_coding_agent.cli.entry:main_sync"
+
 [tool.uv.sources]
 aelix-ai = { workspace = true }
 aelix-agent-core = { workspace = true }
