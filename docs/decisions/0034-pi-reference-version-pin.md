@@ -737,6 +737,53 @@ dispatch table. **A 단계 (Phase 4 strict Pi-parity superset) CLOSED**
 6a → 6h₅c sprint chain. Sprint 6h₅d carries forward visual polish
 + grep tooling + minor cleanups (no RPC dispatch impact).
 
+### Sprint 6h₆ amendment (Aelix CLI entrypoint — Phase 5a-i + 5a-ii / B 단계 opens, 2026-05-22)
+
+Sprint 6h₆ ports the **non-interactive** half of the Pi CLI entry
+(`main.ts` 716 LOC reduced) — `--print` / `--mode text|json|rpc` /
+`--help` / `--version` paths plus the supporting hand-rolled arg
+parser (`cli/args.ts` 354 LOC), file-arg processor
+(`cli/file-processor.ts`), initial-message builder
+(`cli/initial-message.ts`), and the print-mode lifecycle
+(`modes/print-mode.ts` 158 LOC). Interactive mode raises
+:class:`NotImplementedError` with a stderr diagnostic pointing to
+ADR-0088 (Phase 5b TUI library decision is deferred). **B 단계
+formally opens** with Sprint 6h₆; Pi pin advances are permitted
+starting B 단계 per ADR-0034 update policy but the Sprint 6h₆ scope
+does NOT advance the pin (stays at `734e08e…`).
+
+| Component | Status | Owner ADR |
+|---|---|---|
+| 6h₆ | Phase 5a-i + 5a-ii | non-interactive CLI entrypoint | RPC roster UNCHANGED (29 / 0 / 29) | ADR-0088, ADR-0089 |
+| `aelix_coding_agent.cli.config` (`APP_NAME = "aelix"` + `VERSION = "0.1.0"`) | shipped | ADR-0089 |
+| `aelix_coding_agent.cli.args` (Pi `cli/args.ts` 354 LOC hand-rolled linear parser; 30+ flags; `Args` dataclass with `messages` + `file_args` + `unknown_flags` + `diagnostics`) | shipped | ADR-0089 |
+| `aelix_coding_agent.cli.file_processor` (Pi `cli/file-processor.ts` text branch; image branch deferred to 5a-iii) | shipped | ADR-0089 |
+| `aelix_coding_agent.cli.initial_message` (Pi `cli/initial-message.ts` w/ `.shift()` side effect on `parsed.messages`) | shipped | ADR-0089 |
+| `aelix_coding_agent.modes.print_mode` (Pi `modes/print-mode.ts` 158 LOC 9-step lifecycle) | shipped | ADR-0089 |
+| `aelix_coding_agent.cli.entry.main_sync` + `_async_main` (Pi `main.ts:96-113` + `:423-716` reduced for non-interactive scope) | shipped | ADR-0089 |
+| `aelix_coding_agent.__main__` (wires `python -m aelix_coding_agent` to `main_sync`) | shipped | ADR-0089 |
+| `[project.scripts] aelix = "aelix_coding_agent.cli.entry:main_sync"` (wires `aelix` console script) | shipped | ADR-0089 |
+| `--print` `---` triple-dash escape (W6 P-396 MAJOR Pi parity `args.ts:123-129`) | shipped | ADR-0089 |
+| `--list-models` `@` exclusion (W6 P-397 MAJOR Pi parity `args.ts:154-160`) | shipped | ADR-0089 |
+| Unknown-flag `@` exclusion (W6 P-398 MAJOR Pi parity `args.ts:167-180`) | shipped | ADR-0089 |
+| `print_help(out: TextIO \| None)` typing upgrade (W6 W4 MAJOR) | shipped | ADR-0089 |
+| Phase 5b TUI library decision analysis (textual / rich / prompt-toolkit / blessed evaluation + library-agnostic `Component` Protocol invariant) | proposed (DEFERRED) | ADR-0088 |
+| `SettingsManager` / `--list-models` real wire / image-resize / migrations / session-picker / `--append-system-prompt` harness wire / `ResourceLoader` / `takeOverStdout` / Pi `print_help` full text / Session.subscribe surface | deferred to Sprint 5a-iii / 5a-iv | ADR-0089 |
+| Interactive TUI mode (textual + rich PRIMARY recommendation, prompt-toolkit + rich ALTERNATIVE, textual alone CONTINGENCY) | deferred to Phase 5b | ADR-0088 |
+| TTY second-pass demotion (interactive mode prerequisite) | deferred to Phase 5b | ADR-0089 |
+| `killTrackedDetachedChildren` (Bash extension tracker prerequisite) | deferred — demand-driven | ADR-0089 |
+
+Sprint 6h₆ ships the non-interactive CLI **without** moving the RPC
+roster needle (SUPPORTED stays at 29, DEFERRED stays at 0, total
+stays at 29) and **without** advancing the Pi pin. The Aelix-additive
+CLI surface (entrypoint + arg parser + print mode + file processor +
+initial-message builder + config) lands as a strict Pi-parity port
+modulo the documented divergences (APP_NAME = "aelix", `argparse` /
+`click` rejected, interactive deferred, etc. — see ADR-0089
+§"Aelix-additive divergences from Pi"). The 3 Pi-parity regression
+tests landed in this sprint (P-396 / P-397 / P-398) raise the test
+count to **2077 passed + 1 skipped**.
+
 ## Consequences
 
 - Parity audits become reproducible — the W5 audit lane can `git checkout`
