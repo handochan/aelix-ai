@@ -107,6 +107,18 @@ class Activation(BaseModel):
             raise ValueError("at least one activation trigger required (no `*`)")
         return self
 
+    @model_validator(mode="after")
+    def reject_wildcard_in_trigger_lists(self) -> Activation:
+        # Spec §3.3.7: `*` wildcard activation is banned. Enforce at the
+        # per-element level so `on_command = ["valid", "*"]` is rejected,
+        # not just the all-empty case.
+        if "*" in self.on_command or "*" in self.on_tool_call:
+            raise ValueError(
+                "`*` wildcard not allowed in activation trigger lists; "
+                "declare specific commands/tools instead"
+            )
+        return self
+
 
 class CommandContrib(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -174,6 +186,25 @@ class PluginManifest(BaseModel):
     capabilities: Capabilities = Field(default_factory=Capabilities)
     activation: Activation
     contributes: Contributes = Field(default_factory=Contributes)
+
+    @model_validator(mode="after")
+    def validate_entry_python_required_for_python_capabilities(self) -> PluginManifest:
+        # Spec §3.3.3 / ADR-0096: if a plugin declares any capability that
+        # requires Python code (TUI trusted widget, descriptor emit, MCP
+        # server), `entry.python` MUST be set so the host has a load target.
+        # `mcp_invoke` alone does NOT require entry.python (the plugin only
+        # invokes MCP servers; doesn't expose its own Python surface).
+        requires_python = (
+            self.capabilities.ui_tui_trusted
+            or self.capabilities.ui_descriptor
+            or self.capabilities.mcp_serve
+        )
+        if requires_python and self.entry.python is None:
+            raise ValueError(
+                "`entry.python` is required when capabilities.ui_tui_trusted, "
+                ".ui_descriptor, or .mcp_serve is True"
+            )
+        return self
 
 
 def parse_manifest_toml(toml_text: str) -> PluginManifest:

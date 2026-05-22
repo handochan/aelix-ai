@@ -257,6 +257,118 @@ def test_plugin_manifest_capabilities_default_all_false() -> None:
     assert m.capabilities.shell_exec is False
 
 
+def test_plugin_manifest_entry_python_required_when_ui_tui_trusted():
+    """Spec §3.3.3: entry.python required when capabilities.ui_tui_trusted."""
+    from aelix_agent_core.contracts.manifest import parse_manifest_toml
+    bad_toml = """
+[plugin]
+id = "p"
+name = "P"
+version = "0.1.0"
+description = "x"
+authors = ["a"]
+repository = "https://example.com"
+license = "MIT"
+
+[plugin.api]
+level = 1
+min_level = 1
+
+[capabilities]
+ui_tui_trusted = true
+
+[activation]
+on_startup_finished = true
+"""
+    with pytest.raises(ValueError, match="entry.python"):
+        parse_manifest_toml(bad_toml)
+
+
+def test_plugin_manifest_entry_python_required_when_ui_descriptor():
+    """capabilities.ui_descriptor also requires entry.python."""
+    from aelix_agent_core.contracts.manifest import parse_manifest_toml
+    bad_toml = """
+[plugin]
+id = "p"
+name = "P"
+version = "0.1.0"
+description = "x"
+authors = ["a"]
+repository = "https://example.com"
+license = "MIT"
+
+[plugin.api]
+level = 1
+min_level = 1
+
+[capabilities]
+ui_descriptor = true
+
+[activation]
+on_startup_finished = true
+"""
+    with pytest.raises(ValueError, match="entry.python"):
+        parse_manifest_toml(bad_toml)
+
+
+def test_plugin_manifest_entry_python_not_required_when_pure_mcp_invoke():
+    """mcp_invoke alone does NOT require entry.python (the plugin only invokes
+    MCP servers; doesn't expose its own Python surface)."""
+    from aelix_agent_core.contracts.manifest import parse_manifest_toml
+    ok_toml = """
+[plugin]
+id = "p"
+name = "P"
+version = "0.1.0"
+description = "x"
+authors = ["a"]
+repository = "https://example.com"
+license = "MIT"
+
+[plugin.api]
+level = 1
+min_level = 1
+
+[capabilities]
+mcp_invoke = true
+
+[activation]
+on_startup_finished = true
+"""
+    m = parse_manifest_toml(ok_toml)
+    assert m.entry.python is None
+
+
+def test_plugin_manifest_activation_rejects_wildcard_in_on_command():
+    """Spec §3.3.7: '*' wildcard banned in activation trigger lists."""
+    from aelix_agent_core.contracts.manifest import parse_manifest_toml
+    bad_toml = """
+[plugin]
+id = "p"
+name = "P"
+version = "0.1.0"
+description = "x"
+authors = ["a"]
+repository = "https://example.com"
+license = "MIT"
+
+[plugin.api]
+level = 1
+min_level = 1
+
+[capabilities]
+ui_descriptor = true
+
+[plugin.entry]
+python = "p:ext"
+
+[activation]
+on_command = ["valid-cmd", "*"]
+"""
+    with pytest.raises(ValueError, match=r"\*"):
+        parse_manifest_toml(bad_toml)
+
+
 # === slot taxonomy ===
 
 
