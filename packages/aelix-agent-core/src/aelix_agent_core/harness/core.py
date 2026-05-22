@@ -115,6 +115,7 @@ if TYPE_CHECKING:
     # runtime import cycle (D.1.9). The concrete classes are resolved via
     # local imports inside :class:`AgentHarness.__init__` and
     # :meth:`AgentHarness._make_context`.
+    from aelix_ai.settings import SettingsManager
     from aelix_coding_agent.extensions.api import (
         Extension,
         ExtensionContext,
@@ -249,6 +250,7 @@ class AgentHarnessOptions:
     # on ``get_api_key_and_headers`` per Pi parity.
     _summarizer_override: Any | None = None
     _branch_summarizer_override: Any | None = None
+    settings_manager: SettingsManager | None = None
 
 
 # === Sprint 4a — pending session writes (Pi parity, agent-harness.ts:414-432 + 459-481) ===
@@ -492,6 +494,7 @@ class AgentHarness:
         # keeps the Aelix backward-compat path (no session = drop
         # non-message variants with a debug log).
         self._session = options.session
+        self._settings_manager = options.settings_manager
         self._extensions: list[Extension] = list(options.extensions)
         self._listeners: list[HarnessListener] = []
         self._phase: AgentHarnessPhase = "idle"
@@ -767,6 +770,18 @@ class AgentHarness:
         """
 
         return self._session
+
+    @property
+    def settings_manager(self) -> SettingsManager | None:
+        """The :class:`~aelix_ai.settings.SettingsManager` attached at
+        construction, or ``None`` when no settings manager was provided.
+
+        Sprint 6h₇b (Phase 5a-iii-β, ADR-0091): exposes the settings manager
+        so that :meth:`reload` and external consumers (CLI, RPC) can drive
+        a coordinated settings reload without reaching into private state.
+        """
+
+        return self._settings_manager
 
     @property
     def steering_mode(self) -> Literal["all", "one-at-a-time"]:
@@ -2131,6 +2146,32 @@ class AgentHarness:
         minimal CLI ``/reload`` command. Idempotent.
         """
 
+        await self._emit_resources_discover("reload")
+
+    async def reload(self) -> None:
+        """Reload settings from disk and re-discover extension resources.
+
+        Sprint 6h₇b (Phase 5a-iii-β, ADR-0091 §D): Pi parity
+        ``agent-session.ts:reload`` (SHA ``734e08e``).
+
+        Raises :class:`AgentHarnessError` with code ``"invalid_state"`` when
+        no :attr:`settings_manager` is attached — callers must supply one via
+        :class:`AgentHarnessOptions` before invoking this method.
+
+        Steps (Pi :``agent-session.ts:reload`` order):
+
+        1. Guard: ``settings_manager`` must be present.
+        2. Delegate to ``settings_manager.reload()`` — reads both scopes from
+           disk, migrates, merges, and clears modification tracking.
+        3. Re-discover extension resources (``"reload"`` reason).
+        """
+
+        if self._settings_manager is None:
+            raise AgentHarnessError(
+                "invalid_state",
+                "reload() requires options.settings_manager to be attached",
+            )
+        await self._settings_manager.reload()
         await self._emit_resources_discover("reload")
 
     async def _emit_resources_discover(
