@@ -23,6 +23,11 @@ from aelix_coding_agent.extensions.api import (
 from aelix_coding_agent.extensions.command_context import (
     ExtensionCommandContext,
 )
+from aelix_coding_agent.extensions.ext_ui import ExtensionUIContext
+from aelix_coding_agent.extensions.headless_ui import (
+    HEADLESS_UI_CONTEXT,
+    HeadlessExtensionUIContext,
+)
 from aelix_coding_agent.extensions.loader import (
     ExtensionLoadError,
     LoadExtensionsResult,
@@ -31,6 +36,7 @@ from aelix_coding_agent.extensions.loader import (
 )
 
 __all__ = [
+    "HEADLESS_UI_CONTEXT",
     "Extension",
     "ExtensionAPI",
     "ExtensionCommandContext",
@@ -40,6 +46,8 @@ __all__ = [
     "ExtensionFlag",
     "ExtensionLoadError",
     "ExtensionRuntimeActions",
+    "ExtensionUIContext",
+    "HeadlessExtensionUIContext",
     "LoadExtensionsResult",
     "_ExtensionRuntime",
     "load_extension_from_factory",

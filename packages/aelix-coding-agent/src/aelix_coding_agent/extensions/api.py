@@ -34,6 +34,14 @@ Most new methods are throwing-stub delegates pending Sprint 5b CLI / Phase 4
 provider / Phase 5 UI emit sites; ``set_session_name`` / ``get_session_name``
 / ``set_label`` / ``set_model`` / ``set_thinking_level`` / ``exec`` /
 ``get_all_tools`` are bound for real at Sprint 5a per the spec table.
+
+Sprint 6h₉c (Phase 5b-foundation, ADR-0100) closes the ``ui`` deferral:
+:attr:`ExtensionContext.ui` returns a typed :class:`ExtensionUIContext`
+(headless singleton by default; replaced via
+:meth:`_ExtensionRuntime.bind_ui` in Sprint 6h₁₀b). This clears the
+Sprint 5a phantom "ADR-0033" citation (that ADR was a reserved slot in
+``docs/decisions/`` between 0032 and 0034 that was never written —
+ADR-0100 is the actual closure).
 """
 
 from __future__ import annotations
@@ -91,6 +99,9 @@ from aelix_agent_core.harness.hooks import (
 )
 from aelix_agent_core.types import AgentTool
 from aelix_ai.streaming import Model
+
+from .ext_ui import ExtensionUIContext
+from .headless_ui import HEADLESS_UI_CONTEXT
 
 if TYPE_CHECKING:
     pass
@@ -396,6 +407,11 @@ class _ExtensionRuntime:
         # boolean | string>``. Aelix uses ``dict`` (Python idiom);
         # shallow-copy semantic preserved.
         self.flag_values: dict[str, bool | str] = {}
+        # Sprint 6h₉c (ADR-0100) — ExtensionUIContext binding.
+        # Default: HEADLESS_UI_CONTEXT singleton (raises per method).
+        # Sprint 6h₁₀b: replace via bind_ui() with concrete prompt-
+        # toolkit + Rich + Aelix widget layer impl.
+        self._ui: ExtensionUIContext = HEADLESS_UI_CONTEXT
 
     @property
     def actions(self) -> ExtensionRuntimeActions:
@@ -412,6 +428,32 @@ class _ExtensionRuntime:
     @property
     def model_registry(self) -> ModelRegistry:
         return self._model_registry
+
+    # ── Sprint 6h₉c (Phase 5b-foundation, ADR-0100) ───────────────
+    # ExtensionUIContext binding. Default is :data:`HEADLESS_UI_CONTEXT`
+    # (raises NotImplementedError per method); Sprint 6h₁₀b
+    # (Phase 5c-tui) supplies a concrete prompt-toolkit + Rich impl
+    # via :meth:`bind_ui` once the AgentHarness bridge wiring lands.
+
+    @property
+    def ui(self) -> ExtensionUIContext:
+        """Currently bound :class:`ExtensionUIContext`.
+
+        Defaults to :data:`HEADLESS_UI_CONTEXT`; replaced by
+        :meth:`bind_ui` in Sprint 6h₁₀b.
+        """
+
+        return self._ui
+
+    def bind_ui(self, ui: ExtensionUIContext) -> None:
+        """Replace the headless UI with a concrete binding (Sprint 6h₁₀b).
+
+        Idempotent: passing the same binding again is a no-op. Passing
+        :data:`HEADLESS_UI_CONTEXT` reverts to the headless default and
+        flips :attr:`ExtensionContext.has_ui` back to ``False``.
+        """
+
+        self._ui = ui
 
     def bind_core(self, actions: ExtensionRuntimeActions) -> None:
         """Install real action implementations (called by AgentHarness)."""
@@ -625,10 +667,20 @@ class ExtensionContext:
 
     Sprint 5a (Phase 3.1, P-23) extends from 5 to 14 non-UI fields to match
     Pi ``ExtensionContext`` at ``types.ts:280-310``. New fields:
-    ``has_ui`` (constant ``False`` until Phase 5), ``session_manager``,
-    ``model_registry``, ``signal``, ``has_pending_messages``, ``shutdown``,
-    ``get_context_usage``, ``compact``. ``ui`` (Pi field 1) is deferred to
-    ADR-0033 (Phase 5).
+    ``has_ui``, ``session_manager``, ``model_registry``, ``signal``,
+    ``has_pending_messages``, ``shutdown``, ``get_context_usage``,
+    ``compact``.
+
+    Sprint 6h₉c (Phase 5b-foundation, ADR-0100) closed the ``ui``
+    field (Pi field 1) by typing it as
+    :class:`~aelix_coding_agent.extensions.ext_ui.ExtensionUIContext`
+    and binding the headless default singleton
+    (:data:`~aelix_coding_agent.extensions.headless_ui.HEADLESS_UI_CONTEXT`);
+    ``has_ui`` now reflects the bound state. The concrete prompt-toolkit
+    + Rich + Aelix widget layer impl lands in Sprint 6h₁₀b
+    (Phase 5c-tui). The Sprint 5a docstrings cited a phantom "ADR-0033"
+    reserved slot that was never written; ADR-0100 is the actual
+    closure.
     """
 
     # assert_active is exempt from the staleness pre-check because it IS the
@@ -737,25 +789,51 @@ class ExtensionContext:
 
     @property
     def has_ui(self) -> bool:
-        """Pi ``hasUI`` — constant ``False`` until Phase 5 TUI ships (ADR-0033)."""
+        """Pi ``hasUI`` — True only when a concrete (non-headless) TUI is bound.
 
-        return False
+        Sprint 6h₉c (ADR-0100) clarifies: ``has_ui`` reflects whether a
+        concrete UI binding has been installed via
+        :meth:`_ExtensionRuntime.bind_ui` (Sprint 6h₁₀b). The headless
+        default does NOT flip this to True — extensions should guard
+        ``ctx.ui.*`` calls with ``if ctx.has_ui:`` to avoid the
+        :exc:`NotImplementedError` raised by the headless binding in
+        Phase 5b.
 
-    @property
-    def ui(self) -> Any:
-        """Pi ``ui: ExtensionUIContext`` — deferred to ADR-0033 (Phase 5 TUI).
+        Once Sprint 6h₁₀b lands the concrete binding via AgentHarness
+        bridge wiring, ``has_ui`` flips to ``True`` and ``ctx.ui.*``
+        calls succeed.
 
-        Sprint 5a exposes this attribute so factory code calling
-        ``ctx.ui`` does not :exc:`AttributeError` at runtime; access raises
-        :class:`ExtensionError("invalid_state")` instead, mirroring the
-        ``has_ui`` constant ``False`` guarantee.
+        (Sprint 5a code comments cited "ADR-0033" as the placeholder
+        owner; that ADR was a reserved slot never written, replaced by
+        ADR-0100 in Sprint 6h₉c.)
         """
 
-        raise ExtensionError(
-            "invalid_state",
-            "ExtensionContext.ui is deferred to ADR-0033 (Phase 5 TUI); "
-            "guard access with `if ctx.has_ui:`.",
-        )
+        runtime: _ExtensionRuntime = object.__getattribute__(self, "_runtime")
+        return runtime.ui is not HEADLESS_UI_CONTEXT
+
+    @property
+    def ui(self) -> ExtensionUIContext:
+        """Pi ``ui: ExtensionUIContext`` — ADR-0100 (Sprint 6h₉c) closure.
+
+        (Sprint 5a code comments cited a phantom "ADR-0033" reserved
+        slot that was never written; ADR-0100 is the actual closure.)
+
+        Returns the headless singleton (:data:`HEADLESS_UI_CONTEXT`) by
+        default, which raises :exc:`NotImplementedError` per method
+        call with a pointer to Sprint 6h₁₀b (Phase 5c-tui). When an
+        AgentHarness binds a real TUI via its bridge wiring (Sprint
+        6h₁₀b), a concrete :class:`ExtensionUIContext` implementation
+        replaces the headless singleton via
+        :meth:`_ExtensionRuntime.bind_ui` (new in this sprint).
+
+        :attr:`has_ui` remains ``False`` until the bridge wiring lands —
+        the headless binding is "structurally present, semantically
+        deferred" so static type checkers see the right surface but
+        runtime calls fail fast with actionable errors.
+        """
+
+        runtime: _ExtensionRuntime = object.__getattribute__(self, "_runtime")
+        return runtime.ui
 
     @property
     def session_manager(self) -> ReadonlySessionManager:
