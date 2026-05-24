@@ -79,16 +79,23 @@ Key behavioural notes:
 
 ## Surface inventory (Pi `types.ts:124-275` at SHA `734e08e`)
 
-| Group | Methods | Pi line range |
+| Group | Methods | Pi line range (verified Sprint 6h₉c fold-in §C) |
 |---|---|---|
-| Dialogs (5) | `select`, `confirm`, `input`, `notify`, `editor` | 126-141, 218 |
-| Raw input (1) | `on_terminal_input` | 144 |
-| Status / working (5) | `set_status`, `set_working_message`, `set_working_visible`, `set_working_indicator`, `set_hidden_thinking_label` | 147-170 |
-| Layout (5) | `set_widget` (×2 overloads), `set_footer`, `set_header`, `set_title` | 173-198 |
-| Custom overlays (1) | `custom` | 201-216 |
-| Editor remote control (5) | `paste_to_editor`, `set_editor_text`, `get_editor_text`, `set_editor_component`, `get_editor_component` | 221-262 |
-| Autocomplete (1) | `add_autocomplete_provider` | 232 |
-| Theme (5 methods + 1 readonly property) | `theme` (readonly property), `get_all_themes`, `get_theme`, `set_theme`, `get_tools_expanded`, `set_tools_expanded` | 265-280 |
+| Dialogs (5) | `select`, `confirm`, `input`, `notify`, `editor` | 126, 129, 132, 135, 215 |
+| Raw input (1) | `on_terminal_input` | 138 |
+| Status / working (5) | `set_status`, `set_working_message`, `set_working_visible`, `set_working_indicator`, `set_hidden_thinking_label` | 141-160 |
+| Layout (5) | `set_widget` (×2 overloads), `set_footer`, `set_header`, `set_title` | 163-186 |
+| Custom overlays (1) | `custom` | 189-204 |
+| Editor remote control (5) | `paste_to_editor`, `set_editor_text`, `get_editor_text`, `set_editor_component`, `get_editor_component` | 206-256 |
+| Autocomplete (1) | `add_autocomplete_provider` | 218 |
+| Theme (5 methods + 1 readonly property) | `theme` (readonly property), `get_all_themes`, `get_theme`, `set_theme`, `get_tools_expanded`, `set_tools_expanded` | 259-274 |
+
+**Sprint 6h₉c fold-in §C note**: line ranges corrected after W5 critic
+re-verified all 27 method citations against Pi at SHA `734e08e`. The
+prior ranges (126-141/144/147-170/173-198/201-216/221-262/232/265-280)
+were drifted by 5-15 lines and inherited from the W1 spec without
+direct verification. Sprint 6h₉c fold-in §A landed the same
+corrections inline in `ext_ui.py` per-method docstrings.
 
 **Total**: 27 methods + 1 readonly `theme` property = 28 total
 members.
@@ -106,6 +113,7 @@ members.
 | 7 | `set_widget` overload via Python `@overload` | Pi: TS overload (function declaration set) | Aelix: `typing.overload` (PEP 484) | Python equivalent |
 | 8 | `TerminalInputHandler` return shape is `TerminalInputResult` dataclass | Pi: anonymous object literal | Aelix: typed `TerminalInputResult` dataclass | Python lacks anonymous object types |
 | 9 | `custom<T>()` returns `object` instead of generic `T` | Pi: `Promise<T>` | Aelix: `object` (caller narrows) | PEP 695 generic Protocol future sprint |
+| 10 | `Component.handle_input` declared **required** on the Aelix Protocol | Pi: `handleInput?(data: string): void;` — **optional** via TS `?` marker (`pi-tui/src/tui.ts:50`) | Aelix: `def handle_input(self, data: str) -> None: ...` — required method; concrete non-interactive widgets MUST supply a stub body (`pass`) | Python `Protocol` does not cleanly support optional methods under `@runtime_checkable` — `isinstance` cannot enforce an absent attribute. Required-with-no-op-stub keeps Protocol structural conformance crisp. `invalidate` is required in both Pi (`tui.ts:62`) and Aelix; no divergence. Added Sprint 6h₉c fold-in §C per W5 critic MAJOR-4. |
 
 All divergences are net-additive — Pi behaviour is structurally
 preserved. Every Pi `ExtensionUIContext` method/property maps 1:1 to
@@ -132,15 +140,26 @@ Python conventions.
 - `packages/coding-agent/src/core/extensions/types.ts:124-275` —
   `ExtensionUIContext` 27-method + 1 readonly `theme` property
   surface (verified Sprint 6h₉a fold-in §B).
-- `packages/coding-agent/src/core/extensions/types.ts:96-122` —
-  Supporting types (`ExtensionUIDialogOptions`, `WidgetPlacement`,
-  `ExtensionWidgetOptions`, `TerminalInputHandler`,
-  `WorkingIndicatorOptions`, `AutocompleteProviderFactory`,
-  `EditorFactory`).
-- `packages/tui/src/tui.ts` — `Component`, `Container`, `Focusable`,
-  `OverlayOptions`, `OverlayHandle`, `OverlayAnchor`, `OverlayMargin`
-  interface definitions (line ranges to verify at W5 critic fold-in
-  if needed).
+- `packages/coding-agent/src/core/extensions/types.ts:89-118` —
+  Supporting types: `ExtensionUIDialogOptions` (:89-94),
+  `WidgetPlacement` (:97), `ExtensionWidgetOptions` (:100-102),
+  `TerminalInputHandler` (:106), `WorkingIndicatorOptions` (:109-114),
+  `AutocompleteProviderFactory` (:117), `EditorFactory` (:118). Line
+  ranges verified Sprint 6h₉c fold-in §C; prior `:96-122` block start
+  was off by 7.
+- `packages/tui/src/tui.ts:46-65` — `Component` interface (with
+  `handleInput?` optional at :50 vs Aelix-required — see divergence
+  #10).
+- `packages/tui/src/tui.ts:90` — `CURSOR_MARKER` literal
+  (`"\x1b_pi:c\x07"` — Aelix matches byte-for-byte after fold-in §A).
+- `packages/tui/src/tui.ts:111-117` — `OverlayMargin` interface
+  (all sides optional in Pi).
+- `packages/tui/src/tui.ts:141-169` — `OverlayOptions` interface
+  (9-anchor + responsive visibility).
+- `packages/tui/src/tui.ts:182-196` — `OverlayHandle` interface
+  (hide / set_hidden / focus / unfocus state).
+- `packages/tui/src/tui.ts:938` — `line.indexOf(CURSOR_MARKER)`
+  scanning site (proves the marker is exact-byte-match contract).
 - `packages/tui/src/index.ts` — exports list (`CURSOR_MARKER`, `TUI`,
   `Theme`, `EditorTheme`, `EditorComponent`, `KeybindingsManager`,
   `AutocompleteProvider`).
