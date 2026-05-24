@@ -2221,11 +2221,14 @@ class AgentHarness:
            Phase 5b (full ``__init__`` pipeline extraction required;
            ADR-0087 P-380 #5).
         8. ``has_bindings = bool(self._extension_runner.extensions)``
-           (Pi 4-field UI check proxy; Phase 5b ADR-0033 will replace
-           with the real ``_extensionUIContext`` /
+           (Pi 4-field UI check proxy; Phase 5c-tui Sprint 6h₁₀b (see
+           ADR-0100) will replace with the real
+           ``_extensionUIContext`` /
            ``_extensionCommandContextActions`` /
            ``_extensionShutdownHandler`` / ``_extensionErrorListener``
-           check per P-449).
+           check per P-449. ADR-0033 (cited in earlier sprint
+           comments) does not exist — reserved slot never written;
+           ADR-0100 is the actual ExtensionUIContext closure.).
         9. If ``has_bindings``: emit ``session_start`` event with
            ``reason="reload"`` (Pi ``:2407``) THEN
            ``await self._emit_resources_discover("reload")`` (Pi
@@ -2282,7 +2285,9 @@ class AgentHarness:
         # marker).
 
         # 8. has_bindings proxy (Pi 4-field UI check deferred to
-        # Phase 5b ADR-0033 per P-449).
+        # Phase 5c-tui Sprint 6h₁₀b per P-449; see ADR-0100. ADR-0033
+        # cited in earlier sprints does not exist — reserved slot
+        # never written).
         has_bindings = bool(self._extension_runner.extensions)
 
         # 9. Conditional session_start emit + resources_discover

@@ -94,7 +94,7 @@ class ExtensionCommandContext(ExtensionContext):
         raise ExtensionError(
             "invalid_state",
             "ExtensionCommandContext.new_session is deferred to Phase 5 "
-            "(ADR-0033 successor).",
+            "(deferred to Sprint 6h₁₀b — see ADR-0100).",
         )
 
     async def switch_session(
@@ -105,7 +105,7 @@ class ExtensionCommandContext(ExtensionContext):
         raise ExtensionError(
             "invalid_state",
             "ExtensionCommandContext.switch_session is deferred to Phase 5 "
-            "(ADR-0033 successor).",
+            "(deferred to Sprint 6h₁₀b — see ADR-0100).",
         )
 
 

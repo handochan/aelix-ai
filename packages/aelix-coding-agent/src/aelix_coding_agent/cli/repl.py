@@ -3,7 +3,7 @@
 Pi parity surface: enough to exercise ``user_bash`` emit + extension command
 interception + ``/reload`` dispatch into
 :meth:`AgentHarness.reload_resources`. Full TUI / interactive-mode.ts (5528
-LOC) is Phase 5 owned (ADR-0033 successor).
+LOC) is Phase 5c-tui owned (Sprint 6h₁₀b, see ADR-0100).
 """
 
 from __future__ import annotations
