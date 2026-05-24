@@ -22,20 +22,30 @@ from typing import Literal, Protocol, runtime_checkable
 
 @runtime_checkable
 class Component(Protocol):
-    """Pi ``Component`` interface (``pi-tui/src/tui.ts``).
+    """Pi ``Component`` interface (``pi-tui/src/tui.ts:46-65``).
 
-    Implementations return raw ANSI string lines per width. Optional
+    Implementations return raw ANSI string lines per width.
     ``handle_input`` consumes raw terminal input data when the component
     has focus. ``invalidate()`` clears any cached render state.
+
+    Aelix-additive divergence (ADR-0100 §"Aelix-additive divergences",
+    divergence #10 — Sprint 6h₉c fold-in §A): Pi declares
+    ``handleInput?(data: string): void`` as **optional** with the TS
+    ``?`` marker (``pi-tui/src/tui.ts:50``). Aelix Protocol declares
+    ``handle_input`` as **required** because Python ``Protocol`` does
+    not support optional methods cleanly under ``@runtime_checkable``
+    (``isinstance`` would not enforce the absent attribute). Concrete
+    non-interactive widgets MUST supply a stub body (``def
+    handle_input(self, data: str) -> None: pass``) to satisfy the
+    Protocol. ``invalidate`` is required in both Pi and Aelix
+    (``pi-tui/src/tui.ts:62``); no divergence.
     """
 
     def render(self, width: int) -> list[str]: ...
 
     def handle_input(self, data: str) -> None: ...
-    """Optional. No-op default for non-interactive components."""
 
     def invalidate(self) -> None: ...
-    """Optional. No-op default when no cache exists."""
 
 
 @runtime_checkable
@@ -73,8 +83,16 @@ class Focusable(Protocol):
     focused: bool
 
 
-CURSOR_MARKER: str = "\x1b_C\x1b\\"
-"""Pi ``CURSOR_MARKER`` APC escape sequence."""
+CURSOR_MARKER: str = "\x1b_pi:c\x07"
+"""Pi ``CURSOR_MARKER`` APC escape sequence (``pi-tui/src/tui.ts:90``).
+
+Sprint 6h₉c fold-in §A (W5 MAJOR-2): byte value corrected from the
+initial draft ``"\\x1b_C\\x1b\\\\"`` (5 bytes, generic APC + capital C
++ ST terminator) to Pi's canonical ``"\\x1b_pi:c\\x07"`` (7 bytes,
+APC + ``pi:c`` payload + BEL terminator). Pi-parity contract requires
+exact byte match because Pi host TUI scans rendered output for this
+literal via ``line.indexOf(CURSOR_MARKER)`` (``pi-tui/src/tui.ts:938``).
+"""
 
 
 # === Theme + EditorTheme ===

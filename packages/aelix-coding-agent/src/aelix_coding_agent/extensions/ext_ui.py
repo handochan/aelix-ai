@@ -37,13 +37,13 @@ from .widget_protocols import (
     Theme,
 )
 
-# Type aliases mirroring Pi types.ts:96-122
+# Type aliases mirroring Pi types.ts:89-122 (Sprint 6h₉c fold-in §A — W5 MAJOR-1 corrected from :96 to actual block start at :89)
 
 NotificationKind = Literal["info", "warning", "error"]
 """Pi ``"info" | "warning" | "error"`` (types.ts:135)."""
 
 WidgetPlacement = Literal["above_editor", "below_editor"]
-"""Pi ``WidgetPlacement`` (types.ts:108).
+"""Pi ``WidgetPlacement`` (types.ts:97).
 
 Pi camelCase: ``"aboveEditor"``/``"belowEditor"``. Aelix uses snake_case
 (PEP 8); JSON / wire round-trip preserves the Aelix snake_case form.
@@ -54,7 +54,7 @@ divergences from Pi".
 
 @dataclass(frozen=True)
 class ExtensionUIDialogOptions:
-    """Pi ``ExtensionUIDialogOptions`` parity (types.ts:96-101).
+    """Pi ``ExtensionUIDialogOptions`` parity (types.ts:89-94).
 
     AbortSignal: Pi uses ``AbortSignal``; Aelix uses ``asyncio.Event``
     via the optional ``signal`` field (set when called) — caller awaits
@@ -69,7 +69,7 @@ class ExtensionUIDialogOptions:
 
 @dataclass(frozen=True)
 class ExtensionWidgetOptions:
-    """Pi ``ExtensionWidgetOptions`` parity (types.ts:108-110)."""
+    """Pi ``ExtensionWidgetOptions`` parity (types.ts:100-102)."""
 
     placement: WidgetPlacement = "above_editor"
 
@@ -84,7 +84,7 @@ class TerminalInputResult:
 
 
 TerminalInputHandler = Callable[[str], "TerminalInputResult | None"]
-"""Pi ``TerminalInputHandler`` (types.ts:113).
+"""Pi ``TerminalInputHandler`` (types.ts:106).
 
 Aelix returns ``TerminalInputResult | None`` instead of Pi's anonymous
 object literal — same semantic.
@@ -93,22 +93,22 @@ object literal — same semantic.
 
 @dataclass(frozen=True)
 class WorkingIndicatorOptions:
-    """Pi ``WorkingIndicatorOptions`` parity (types.ts:116-119)."""
+    """Pi ``WorkingIndicatorOptions`` parity (types.ts:109-114)."""
 
     frames: list[str] | None = None
     interval_ms: int | None = None
 
 
 AutocompleteProviderFactory = Callable[[AutocompleteProvider], AutocompleteProvider]
-"""Pi ``AutocompleteProviderFactory`` (types.ts:122)."""
+"""Pi ``AutocompleteProviderFactory`` (types.ts:117)."""
 
 EditorFactory = Callable[[TUI, EditorTheme, KeybindingsManager], EditorComponent]
-"""Pi ``EditorFactory`` (types.ts:122)."""
+"""Pi ``EditorFactory`` (types.ts:118)."""
 
 
 @dataclass(frozen=True)
 class ThemeInfo:
-    """Pi ``{ name: string; path: string | undefined }[]`` element (types.ts:267)."""
+    """Pi ``{ name: string; path: string | undefined }[]`` element (types.ts:262, inline in ``getAllThemes()`` signature)."""
 
     name: str
     path: str | None = None
@@ -116,18 +116,18 @@ class ThemeInfo:
 
 @dataclass(frozen=True)
 class SetThemeResult:
-    """Pi ``{ success: boolean; error?: string }`` return shape (types.ts:273)."""
+    """Pi ``{ success: boolean; error?: string }`` return shape (types.ts:268, inline in ``setTheme()`` signature)."""
 
     success: bool
     error: str | None = None
 
 
-# Custom component factory — Pi types.ts:202-208
+# Custom component factory — Pi types.ts:190-196 (inline factory arg in ``custom<T>()`` at :189)
 CustomComponentFactory = Callable[
     [TUI, Theme, KeybindingsManager, Callable[[object], None]],
     "Component | Awaitable[Component]",
 ]
-"""Pi ``CustomComponentFactory`` (types.ts:202-208).
+"""Pi ``CustomComponentFactory`` (types.ts:190-196, inline factory arg in ``custom<T>()``).
 
 Receives ``(tui, theme, keybindings, resolve)``; returns a
 :class:`Component` synchronously OR an :class:`Awaitable` resolving to
@@ -137,29 +137,29 @@ one.
 
 @dataclass(frozen=True)
 class CustomOptions:
-    """Pi ``custom`` options bag (types.ts:209-216)."""
+    """Pi ``custom`` options bag (types.ts:197-204, inline options arg in ``custom<T>()`` at :189)."""
 
     overlay: bool = False
     overlay_options: OverlayOptions | Callable[[], OverlayOptions] | None = None
     on_handle: Callable[[OverlayHandle], None] | None = None
 
 
-# Widget factory — Pi types.ts:177
+# Widget factory — Pi types.ts:165 (inline factory in ``setWidget`` overload at :163-167)
 WidgetFactory = Callable[[TUI, Theme], Component]
-"""Pi ``WidgetFactory`` (types.ts:177)."""
+"""Pi ``WidgetFactory`` (types.ts:165, inline factory in ``setWidget`` overload at :163-167)."""
 
 
-# Footer factory — Pi types.ts:184-188
+# Footer factory — Pi types.ts:177-181 (inline factory in ``setFooter`` at :176)
 FooterFactory = Callable[
     [TUI, Theme, ReadonlyFooterDataProvider],
     Component,
 ]
-"""Pi ``FooterFactory`` (types.ts:184-188)."""
+"""Pi ``FooterFactory`` (types.ts:177-181, inline factory in ``setFooter`` at :176)."""
 
 
-# Header factory — Pi types.ts:194
+# Header factory — Pi types.ts:183 (inline factory in ``setHeader`` at :183)
 HeaderFactory = Callable[[TUI, Theme], Component]
-"""Pi ``HeaderFactory`` (types.ts:194)."""
+"""Pi ``HeaderFactory`` (types.ts:183, inline factory in ``setHeader`` at :183)."""
 
 
 # ============================================================================
@@ -171,8 +171,8 @@ HeaderFactory = Callable[[TUI, Theme], Component]
 class ExtensionUIContext(Protocol):
     """Pi-parity 27-method + 1 readonly property surface.
 
-    Pi source: ``coding-agent/src/core/extensions/types.ts:124-275`` at
-    SHA ``734e08e``.
+    Pi source: ``packages/coding-agent/src/core/extensions/types.ts:124-275``
+    at SHA ``734e08e``.
 
     Implementations:
       - :class:`~aelix_coding_agent.extensions.headless_ui.HeadlessExtensionUIContext`
@@ -223,37 +223,42 @@ class ExtensionUIContext(Protocol):
         title: str,
         prefill: str | None = None,
     ) -> str | None:
-        """Pi ``editor(title, prefill?)`` — multi-line editor dialog (types.ts:221)."""
+        """Pi ``editor(title, prefill?)`` — multi-line editor dialog (types.ts:215).
+
+        Sprint 6h₉c fold-in §A (W5 MAJOR-1): line corrected from
+        :221 (Aelix-cited) to :215 (actual at SHA 734e08e).
+        """
         ...
 
     # === Raw input (1) ===
 
     def on_terminal_input(self, handler: TerminalInputHandler) -> Callable[[], None]:
-        """Pi ``onTerminalInput(handler)`` (types.ts:144).
+        """Pi ``onTerminalInput(handler)`` (types.ts:138).
 
-        Returns an unsubscribe callable.
+        Returns an unsubscribe callable. Line corrected :144 → :138
+        in Sprint 6h₉c fold-in §A (W5 MAJOR-1).
         """
         ...
 
     # === Status / working (5) ===
 
     def set_status(self, key: str, text: str | None) -> None:
-        """Pi ``setStatus(key, text)`` (types.ts:147). ``text=None`` clears."""
+        """Pi ``setStatus(key, text)`` (types.ts:141). ``text=None`` clears."""
         ...
 
     def set_working_message(self, message: str | None = None) -> None:
-        """Pi ``setWorkingMessage(message?)`` (types.ts:150). No arg restores default."""
+        """Pi ``setWorkingMessage(message?)`` (types.ts:144). No arg restores default."""
         ...
 
     def set_working_visible(self, visible: bool) -> None:
-        """Pi ``setWorkingVisible(visible)`` (types.ts:153)."""
+        """Pi ``setWorkingVisible(visible)`` (types.ts:147)."""
         ...
 
     def set_working_indicator(
         self,
         options: WorkingIndicatorOptions | None = None,
     ) -> None:
-        """Pi ``setWorkingIndicator(options?)`` (types.ts:162).
+        """Pi ``setWorkingIndicator(options?)`` (types.ts:157).
 
         No arg restores default spinner. ``frames=[]`` hides;
         ``frames=["●"]`` static; custom frames rendered verbatim.
@@ -261,7 +266,7 @@ class ExtensionUIContext(Protocol):
         ...
 
     def set_hidden_thinking_label(self, label: str | None = None) -> None:
-        """Pi ``setHiddenThinkingLabel(label?)`` (types.ts:165). No arg restores default."""
+        """Pi ``setHiddenThinkingLabel(label?)`` (types.ts:160). No arg restores default."""
         ...
 
     # === Layout (5) ===
@@ -286,7 +291,7 @@ class ExtensionUIContext(Protocol):
         content: list[str] | WidgetFactory | None,
         options: ExtensionWidgetOptions | None = None,
     ) -> None:
-        """Pi ``setWidget(key, content, options?)`` overload (types.ts:173-178).
+        """Pi ``setWidget(key, content, options?)`` overload (types.ts:163-167).
 
         Two overloads: string-array content OR a factory. ``content=None``
         removes the widget under ``key``.
@@ -294,15 +299,15 @@ class ExtensionUIContext(Protocol):
         ...
 
     def set_footer(self, factory: FooterFactory | None) -> None:
-        """Pi ``setFooter(factory)`` (types.ts:184). ``factory=None`` restores default."""
+        """Pi ``setFooter(factory)`` (types.ts:176). ``factory=None`` restores default."""
         ...
 
     def set_header(self, factory: HeaderFactory | None) -> None:
-        """Pi ``setHeader(factory)`` (types.ts:194). ``factory=None`` restores default."""
+        """Pi ``setHeader(factory)`` (types.ts:183). ``factory=None`` restores default."""
         ...
 
     def set_title(self, title: str) -> None:
-        """Pi ``setTitle(title)`` — set terminal window/tab title (types.ts:198)."""
+        """Pi ``setTitle(title)`` — set terminal window/tab title (types.ts:186)."""
         ...
 
     # === Custom overlays (1) ===
@@ -312,7 +317,7 @@ class ExtensionUIContext(Protocol):
         factory: CustomComponentFactory,
         options: CustomOptions | None = None,
     ) -> object:
-        """Pi ``custom<T>(factory, options?)`` — custom component with focus (types.ts:201).
+        """Pi ``custom<T>(factory, options?)`` — custom component with focus (types.ts:189).
 
         Aelix returns ``object`` (untyped); callers should narrow. PEP
         695 Generic[T] could refine this in a future sprint.
@@ -322,23 +327,23 @@ class ExtensionUIContext(Protocol):
     # === Editor remote control (5) ===
 
     def paste_to_editor(self, text: str) -> None:
-        """Pi ``pasteToEditor(text)`` (types.ts:221)."""
+        """Pi ``pasteToEditor(text)`` (types.ts:206)."""
         ...
 
     def set_editor_text(self, text: str) -> None:
-        """Pi ``setEditorText(text)`` (types.ts:224)."""
+        """Pi ``setEditorText(text)`` (types.ts:209)."""
         ...
 
     def get_editor_text(self) -> str:
-        """Pi ``getEditorText()`` (types.ts:227)."""
+        """Pi ``getEditorText()`` (types.ts:212)."""
         ...
 
     def set_editor_component(self, factory: EditorFactory | None) -> None:
-        """Pi ``setEditorComponent(factory)`` (types.ts:259). ``factory=None`` restores default."""
+        """Pi ``setEditorComponent(factory)`` (types.ts:253). ``factory=None`` restores default."""
         ...
 
     def get_editor_component(self) -> EditorFactory | None:
-        """Pi ``getEditorComponent()`` (types.ts:262)."""
+        """Pi ``getEditorComponent()`` (types.ts:256)."""
         ...
 
     # === Autocomplete (1) ===
@@ -347,34 +352,34 @@ class ExtensionUIContext(Protocol):
         self,
         factory: AutocompleteProviderFactory,
     ) -> None:
-        """Pi ``addAutocompleteProvider(factory)`` (types.ts:232)."""
+        """Pi ``addAutocompleteProvider(factory)`` (types.ts:218)."""
         ...
 
     # === Theme (5 methods + 1 readonly property) ===
 
     @property
     def theme(self) -> Theme:
-        """Pi ``readonly theme: Theme`` (types.ts:265)."""
+        """Pi ``readonly theme: Theme`` (types.ts:259)."""
         ...
 
     def get_all_themes(self) -> list[ThemeInfo]:
-        """Pi ``getAllThemes()`` (types.ts:268)."""
+        """Pi ``getAllThemes()`` (types.ts:262)."""
         ...
 
     def get_theme(self, name: str) -> Theme | None:
-        """Pi ``getTheme(name)`` (types.ts:271)."""
+        """Pi ``getTheme(name)`` (types.ts:265)."""
         ...
 
     def set_theme(self, theme: str | Theme) -> SetThemeResult:
-        """Pi ``setTheme(theme)`` (types.ts:274)."""
+        """Pi ``setTheme(theme)`` (types.ts:268)."""
         ...
 
     def get_tools_expanded(self) -> bool:
-        """Pi ``getToolsExpanded()`` (types.ts:277)."""
+        """Pi ``getToolsExpanded()`` (types.ts:271)."""
         ...
 
     def set_tools_expanded(self, expanded: bool) -> None:
-        """Pi ``setToolsExpanded(expanded)`` (types.ts:280)."""
+        """Pi ``setToolsExpanded(expanded)`` (types.ts:274)."""
         ...
 
 
