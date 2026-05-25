@@ -19,6 +19,16 @@ dependencies = [
   "Pillow>=11.0,<12.0",
 ]
 
+# Sprint 6h₁₀a (ADR-0088 Q1, ADR-0104): the interactive TUI shell is an
+# optional extra. `pip install 'aelix-coding-agent[tui]'` pulls in
+# prompt-toolkit (input/editor) + rich (output rendering). The entry point
+# degrades gracefully with an actionable message when the extra is absent.
+[project.optional-dependencies]
+tui = [
+  "prompt-toolkit>=3.0,<4",
+  "rich>=13.7,<15",
+]
+
 [project.scripts]
 aelix = "aelix_coding_agent.cli.entry:main_sync"
 

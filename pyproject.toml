@@ -38,6 +38,11 @@ dev = [
   "pytest>=8",
   "pytest-asyncio>=0.23",
   "ruff>=0.6",
+  # Sprint 6h₁₀a: aelix-coding-agent[tui] extra libs, pulled into the dev
+  # env so pyright + pytest resolve them (both ship py.typed). End users
+  # still install them via the gated `[tui]` extra.
+  "prompt-toolkit>=3.0,<4",
+  "rich>=13.7,<15",
 ]
 
 [tool.ruff]
