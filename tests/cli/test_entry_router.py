@@ -7,8 +7,8 @@ Covers:
   - ``--version`` short-circuit.
   - ``--help`` short-circuit.
   - ``--list-models`` wired path (Sprint 6h₇a — was deferred-error in 6h₆).
-  - Interactive mode raises :class:`NotImplementedError` (Phase 5b
-    carry-forward).
+  - Interactive mode dispatches to :func:`run_tui` (Sprint 6h₁₀a) +
+    the missing-``[tui]``-extra graceful-degrade path.
   - Piped stdin → print mode promotion.
   - ``python -m aelix_coding_agent --version`` end-to-end smoke.
 """
@@ -174,27 +174,81 @@ async def test_rpc_plus_file_arg_returns_1(
     assert "@file" in captured.err or "file" in captured.err.lower()
 
 
-# === Interactive mode → NotImplementedError ==================================
+# === Interactive mode → run_tui dispatch (Sprint 6h₁₀a / ADR-0104) ===========
 
 
-async def test_interactive_mode_raises_not_implemented(
+class _FakeTTYStdin:
+    def isatty(self) -> bool:
+        return True
+
+    def read(self) -> str:  # pragma: no cover — never read on a TTY
+        return ""
+
+
+async def test_interactive_mode_dispatches_to_run_tui(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A TTY stdin invocation with no --print flag picks "interactive";
-    Sprint 6h₆ raises :class:`NotImplementedError` (Phase 5b deferred).
+    """A TTY stdin invocation with no --print flag picks "interactive" and
+    dispatches to :func:`run_tui` with the constructed runtime + cwd
+    (replacing the Phase 5b ``NotImplementedError`` carry-forward).
     """
-
-    class _FakeTTYStdin:
-        def isatty(self) -> bool:
-            return True
-
-        def read(self) -> str:  # pragma: no cover — never read on TTY
-            return ""
 
     monkeypatch.setattr(sys, "stdin", _FakeTTYStdin())
 
-    with pytest.raises(NotImplementedError):
-        await _async_main([])
+    calls: list[tuple[object, str]] = []
+
+    async def _stub_run_tui(runtime: object, *, cwd: str) -> int:
+        calls.append((runtime, cwd))
+        return 0
+
+    # Patch run_tui at its real home on the module object; ``modes.__getattr__``
+    # resolves through ``from aelix_coding_agent.tui import run_tui`` and picks
+    # up the stub. Patching ``modes.run_tui`` directly would pollute
+    # ``modes.__dict__`` on teardown (monkeypatch restores the __getattr__ value
+    # as a real attribute, shadowing the lazy accessor for later tests). Using
+    # the module object (not a dotted string) avoids re-resolving
+    # ``aelix_coding_agent.tui`` via getattr.
+    import aelix_coding_agent.tui as tui_pkg
+
+    monkeypatch.setattr(tui_pkg, "run_tui", _stub_run_tui)
+
+    code = await _async_main(["--no-session"])
+    assert code == 0
+    assert len(calls) == 1
+    runtime, cwd = calls[0]
+    assert runtime is not None
+    assert cwd  # a concrete cwd string was passed
+
+
+async def test_interactive_missing_tui_extra_returns_1(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """When the ``[tui]`` extra is absent, interactive mode prints an
+    actionable install hint and returns exit code 1 (no stack trace).
+    """
+
+    import aelix_coding_agent.modes as modes_mod
+
+    monkeypatch.setattr(sys, "stdin", _FakeTTYStdin())
+
+    # Simulate the extra missing: make the lazy ``run_tui`` resolution raise
+    # ImportError exactly as a real absent prompt-toolkit would at import time.
+    # (Overriding the PEP-562 module __getattr__ is deterministic; a fake
+    # submodule is re-imported by IMPORT_FROM on AttributeError.)
+    def _missing_run_tui(name: str):
+        if name == "run_tui":
+            raise ImportError(
+                "No module named 'prompt_toolkit'", name="prompt_toolkit"
+            )
+        raise AttributeError(name)
+
+    monkeypatch.setattr(modes_mod, "__getattr__", _missing_run_tui, raising=False)
+
+    code = await _async_main(["--no-session"])
+    assert code == 1
+    err = capsys.readouterr().err.lower()
+    assert "tui" in err and "extra" in err
 
 
 # === Piped stdin promotes to print mode ======================================

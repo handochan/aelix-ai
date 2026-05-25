@@ -27,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import sys
+from pathlib import Path
 from typing import Literal
 
 from aelix_agent_core.harness.core import AgentHarness, AgentHarnessOptions
@@ -108,8 +109,6 @@ async def _build_session(parsed: Args, repo: JsonlSessionRepo) -> Session:
 
     if parsed.no_session:
         return Session(MemorySessionStorage())
-    from pathlib import Path
-
     cwd = str(Path.cwd())
     return await repo.create(JsonlSessionCreateOptions(cwd=cwd))
 
@@ -204,9 +203,8 @@ async def _async_main(argv: list[str]) -> int:
         # Lazy imports — defer ``ModelRegistry`` + ``AuthStorage``
         # construction cost off the ``--version`` / ``--help`` fast paths
         # (~10ms saved on cold start). Hoisting these to module scope
-        # would trigger auth file I/O on every invocation.
-        from pathlib import Path
-
+        # would trigger auth file I/O on every invocation. (``Path`` is a
+        # zero-cost stdlib import and lives at module scope.)
         from aelix_ai.oauth import AuthStorage
 
         from ..model_registry import ModelRegistry
@@ -242,23 +240,20 @@ async def _async_main(argv: list[str]) -> int:
         )
         return 1
 
-    # === Interactive mode → Phase 5b carry-forward ===========================
-    if app_mode == "interactive":
-        print(
-            "Error: interactive mode not implemented "
-            "(Phase 5b — TUI carry-forward; see ADR-0088).",
-            file=sys.stderr,
-        )
-        raise NotImplementedError(
-            "Interactive mode is deferred to Phase 5b (ADR-0088)."
-        )
+    # === Interactive mode is dispatched post-construction (Sprint 6h₁₀a) ======
+    # The Phase 5b NotImplementedError carry-forward (ADR-0088) is replaced by
+    # run_tui; see the dispatch branch below. Interactive needs the harness +
+    # runtime built first (parity with the rpc / print branches).
 
-    # === Stdin + file processing (non-RPC) ===================================
+    # === Stdin + file processing (print / json only) =========================
+    # Interactive starts at an empty prompt (no piped stdin in a TTY; @file /
+    # -m initial messages are a Sprint 6h₁₀b carry-forward). rpc feeds input
+    # over the JSONL transport, so neither path reads stdin here.
     stdin_content: str | None = None
     file_text = ""
     file_images: list[object] | None = None
 
-    if app_mode != "rpc":
+    if app_mode in ("print", "json"):
         stdin_content = await _read_piped_stdin()
         if parsed.file_args:
             processed = await process_file_arguments(parsed.file_args)
@@ -282,8 +277,6 @@ async def _async_main(argv: list[str]) -> int:
     # exist, fall back to ``_build_session`` silently (Pi parity per
     # ``main.ts:280-281`` ``SessionManager.continueRecent`` semantics).
     if parsed.continue_session:
-        from pathlib import Path
-
         most_recent = await repo.find_most_recent(str(Path.cwd()))
         if most_recent is not None:
             session = await repo.open(most_recent)
@@ -302,6 +295,21 @@ async def _async_main(argv: list[str]) -> int:
     )
 
     try:
+        if app_mode == "interactive":
+            try:
+                from aelix_coding_agent.modes import run_tui
+            except ImportError as exc:
+                # The [tui] extra (prompt-toolkit + rich) is not installed.
+                print(
+                    "Error: interactive mode requires the TUI extra. Install "
+                    "with: pip install 'aelix-coding-agent[tui]' "
+                    f"(missing: {exc.name}).",
+                    file=sys.stderr,
+                )
+                return 1
+
+            return await run_tui(runtime, cwd=str(Path.cwd()))
+
         if app_mode == "rpc":
             from aelix_coding_agent.modes import run_rpc_mode
 
