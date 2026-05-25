@@ -79,6 +79,13 @@ class McpServerConnection:
 
     @property
     def protocol_version(self) -> str | int | None:
+        # MCP ``InitializeResult.protocolVersion`` is typed ``str | int`` by
+        # the SDK (date-strings like "2025-06-18" in practice, but the SDK
+        # union admits int). Sprint 6h₉d fold-in §F: W5 MINOR-2 proposed
+        # narrowing to ``str | None`` but direct SDK introspection
+        # (``mcp.types.InitializeResult.model_fields['protocolVersion']``)
+        # confirms the annotation is ``str | int`` — the executor's original
+        # ``str | int | None`` is correct and is retained. W5 MINOR-2 rejected.
         return self._protocol_version
 
     async def connect(self) -> None:

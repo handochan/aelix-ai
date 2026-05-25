@@ -47,6 +47,11 @@ Sprint 6h₉d ships five deliverables in five atomic commits:
    `connect_all` (partial-failure-tolerant), `collect_agent_tools` (namespaced),
    `call_tool_with_retry` (HTTP/SSE backoff; stdio reactive), `disconnect_all`.
 5. **Tests + this ADR** — 22 tests over a real stdio FastMCP echo server.
+   Tests live in `tests/mcp_client/` (NOT `tests/mcp/` as the binding spec
+   §3.5 wrote): under pytest's default `prepend` import mode, a top-level
+   `tests/mcp/` package would shadow the installed `mcp` SDK during
+   collection and break `import mcp.types`. The rename preserves the
+   "MCP tests namespaced together" intent without the collision.
 
 The new code lives in a `aelix_coding_agent.mcp` subpackage. All SDK imports
 are absolute (`from mcp import ...`) so the local subpackage never shadows the
@@ -101,8 +106,17 @@ shapes:
   `(read, write, get_session_id)`; stdio/sse yield a 2-tuple.
 - `ClientSession.call_tool(read_timeout_seconds=...)` takes a
   `datetime.timedelta`, so the connection converts a float-seconds argument.
-- `mcp` has no `__version__` attribute; the version is read via
-  `importlib.metadata.version("mcp")`.
+- `mcp` has no `__version__` attribute; the version *would be* read via
+  `importlib.metadata.version("mcp")` if needed (Sprint 6h₉d ships no
+  code path that reads the version — documented here as a gotcha only).
+- `InitializeResult.protocolVersion` is typed `str | int` by the SDK
+  (date-strings like "2025-06-18" in practice). `McpServerConnection.
+  protocol_version` retains the SDK's `str | int | None` shape. (Sprint
+  6h₉d fold-in §F note: a W5 MINOR proposed narrowing to `str | None`;
+  direct SDK introspection of `InitializeResult.model_fields` confirmed
+  the `str | int` union, so the narrowing was **rejected** — narrowing
+  would introduce a pyright assignment error at the `init.protocolVersion`
+  binding site.)
 
 ## Transport support
 
@@ -122,7 +136,9 @@ inherit). When non-empty it merges `{**os.environ, **contrib.env}`. Passing
 Adopted from the Claude Code MCP client pattern:
 
 - **stdio**: reactive, **no auto-reconnect**. The local subprocess is gone on a
-  broken pipe; `call_tool_with_retry` makes a single attempt for stdio servers.
+  broken pipe; `call_tool_with_retry` makes a single attempt for stdio servers,
+  wrapping any raw transport exception in `McpConnectionError` for
+  error-contract consistency with the HTTP/SSE path (Sprint 6h₉d fold-in §F).
   The caller must `connect()` a fresh connection.
 - **HTTP/SSE**: exponential backoff — attempt *N* sleeps
   `min(1.0 * 2**N, 32.0)` seconds, reconnecting before each retry
@@ -133,6 +149,17 @@ connect order**: each transport opens an anyio task-group cancel scope in the
 manager's task, and anyio requires sibling cancel scopes opened in one task to
 unwind strictly LIFO (FIFO teardown raises "exit cancel scope in a different
 task").
+
+**Same-task requirement (Sprint 6h₉d fold-in §F — W5 MINOR-1)**: the LIFO
+discipline only holds because `connect_all` and `disconnect_all` run in the
+**same asyncio task**. anyio's cancel-scope affinity check means a future
+caller that connects in one task and disconnects in another (e.g. a background
+reconnect supervisor, or a daemon connecting at startup and tearing down on a
+signal-handler task) will hit the same `RuntimeError`. Sprint 6h₉d never does
+this (single-task connect/disconnect), so it is correct for this scope — but
+**Sprint 6h₉f (aelix-server daemon) must use anyio task groups** if it manages
+MCP connection lifecycles across tasks. Flagged here so the hazard is not
+rediscovered the hard way.
 
 ## Deferred items
 

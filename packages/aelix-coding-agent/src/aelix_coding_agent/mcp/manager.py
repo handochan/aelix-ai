@@ -94,7 +94,22 @@ class McpClientManager:
 
         if conn.transport == "stdio":
             # stdio is a local process — reactive, single attempt.
-            return await conn.call_tool(tool, args)
+            # Sprint 6h₉d fold-in §F (W4 MINOR-3): wrap transport errors in
+            # McpConnectionError for error-contract consistency with the
+            # HTTP/SSE path. A crashed-but-not-disconnected subprocess leaves
+            # _session non-None, so the raw anyio/broken-pipe exception would
+            # otherwise escape unwrapped. McpConnectionError (already raised by
+            # call_tool when _session is None) passes through unchanged.
+            try:
+                return await conn.call_tool(tool, args)
+            except McpConnectionError:
+                raise
+            except Exception as exc:  # noqa: BLE001 — wrap for error contract
+                raise McpConnectionError(
+                    f"MCP server {server!r} call_tool {tool!r} failed (stdio, "
+                    f"reactive — subprocess likely gone; caller must reconnect "
+                    f"a fresh McpServerConnection): {exc}"
+                ) from exc
 
         last_exc: Exception | None = None
         for attempt in range(max_attempts):
