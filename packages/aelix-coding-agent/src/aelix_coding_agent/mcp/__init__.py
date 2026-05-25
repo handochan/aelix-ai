@@ -11,12 +11,20 @@ site-packages with no relative-shadow collision.
 
 from __future__ import annotations
 
+from aelix_coding_agent.mcp.adapter import (
+    mcp_tool_to_agent_tool,
+    mcp_tools_to_agent_tools,
+)
 from aelix_coding_agent.mcp.client import (
     McpConnectionError,
     McpServerConnection,
 )
+from aelix_coding_agent.mcp.manager import McpClientManager
 
 __all__ = [
+    "McpClientManager",
     "McpConnectionError",
     "McpServerConnection",
+    "mcp_tool_to_agent_tool",
+    "mcp_tools_to_agent_tools",
 ]
