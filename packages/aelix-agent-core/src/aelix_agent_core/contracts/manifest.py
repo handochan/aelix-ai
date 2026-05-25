@@ -160,7 +160,7 @@ class McpServerContrib(BaseModel):
 
 class HookContrib(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    event: str  # ADR-0017 hook event names (validated downstream Sprint 6h₉e)
+    event: str  # ADR-0017 hook event names (validated against the subprocess allowlist — ADR-0102)
     command: str = Field(..., min_length=1)
     timeout_ms: int = Field(default=60_000, ge=100, le=600_000)
 

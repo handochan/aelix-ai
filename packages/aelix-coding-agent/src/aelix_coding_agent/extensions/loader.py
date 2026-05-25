@@ -534,6 +534,20 @@ def _discover_via_entry_points(
 # === Internal helpers ===
 
 
+def _noop_factory(api: ExtensionAPI) -> None:
+    """No-op factory for hooks-only plugins (Sprint 6h₉e / ADR-0102).
+
+    A manifest declaring ``[[contributes.hooks]]`` but no ``[plugin.entry]
+    python`` has no Python surface to load. This factory does nothing —
+    :func:`_invoke_factory` still constructs the :class:`Extension` (with
+    the manifest attached) and wires the declared subprocess hooks via
+    ``api.on(...)`` after the factory runs. A named def (not a lambda) keeps
+    the ``__qualname__``-based display-name contract intact.
+    """
+
+    return None
+
+
 async def _resolve_factory(
     entry: str | Path | ExtensionFactory | _ManifestEntry,
     *,
@@ -554,6 +568,12 @@ async def _resolve_factory(
     if isinstance(entry, _ManifestEntry):
         py_entry = entry.manifest.entry.python
         if py_entry is None:
+            if entry.manifest.contributes.hooks:
+                # Hooks-only plugin (Tier 4b, Sprint 6h₉e / ADR-0102): no
+                # Python factory to load; return a no-op factory so
+                # :func:`_invoke_factory` still builds the Extension (with
+                # manifest attached) and wires the subprocess hooks.
+                return _noop_factory, entry.manifest.plugin.id, entry.manifest
             raise ValueError(
                 f"Manifest for plugin {entry.manifest.plugin.id!r} "
                 f"in {entry.pkg_dir} has no [plugin.entry] python; "
@@ -674,6 +694,45 @@ async def _invoke_factory(
     result: Any = factory(api)
     if inspect.iscoroutine(result):
         await result
+
+    # Sprint 6h₉e (Tier 4b, ADR-0102) — wire declared subprocess hooks.
+    # Function-local imports avoid a module-level cycle: ``subprocess_hooks``
+    # imports :class:`ExtensionManifestError` from this module, so this module
+    # may not import it at module scope (§6.3).
+    if manifest is not None and manifest.contributes.hooks:
+        from typing import cast
+
+        from aelix_agent_core.harness.hooks import HookEventName
+
+        from aelix_coding_agent.extensions.subprocess_hooks import (
+            make_subprocess_handler,
+            validate_subprocess_hook_event,
+        )
+
+        # Trust gate (v1 declarative): capabilities.shell_exec MUST be true.
+        if not manifest.capabilities.shell_exec:
+            raise ExtensionManifestError(
+                f"plugin {manifest.plugin.id!r} declares [[contributes.hooks]] "
+                f"but capabilities.shell_exec is false; subprocess hooks "
+                f"require shell_exec=true"
+            )
+        for contrib in manifest.contributes.hooks:
+            validate_subprocess_hook_event(contrib.event)
+            # NOTE (spec §6.2 deviation): ``ExtensionAPI.on`` does NOT accept a
+            # ``source`` kwarg (only ``HookBus.on`` does — ADR-0019 v3). The
+            # handler is already attributed to this plugin via the bound
+            # ``Extension`` (``Extension.name`` == plugin id), so source
+            # attribution is preserved when the harness later wires these
+            # handlers into its ``HookBus``. ``error_mode="continue"`` keeps a
+            # subprocess hook crash from aborting the harness (fail-open).
+            api.on(
+                # ``contrib.event`` is a validated ``str``; the 35 typed
+                # overloads narrow ``HookEventName`` so we cast to keep pyright
+                # at the 8-error baseline (prefer cast over type: ignore).
+                cast(HookEventName, contrib.event),
+                make_subprocess_handler(contrib),
+                error_mode="continue",
+            )
     return extension
 
 
