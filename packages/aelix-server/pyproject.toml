@@ -1,0 +1,31 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "aelix-server"
+version = "0.1.0"
+description = "Aelix server — FastAPI + uvicorn daemon (WS /rpc over run_rpc_mode, /healthz, /schemas). Aelix-additive (ADR-0097 / ADR-0103)."
+readme = "../../README.md"
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Aelix Contributors" }]
+dependencies = [
+  "aelix-ai",
+  "aelix-agent-core",
+  "aelix-coding-agent",
+  "anyio>=4",
+  "fastapi>=0.115,<1",
+  "uvicorn[standard]>=0.30,<1",
+]
+
+[project.scripts]
+aelix-server = "aelix_server.main:main_sync"
+
+[tool.uv.sources]
+aelix-ai = { workspace = true }
+aelix-agent-core = { workspace = true }
+aelix-coding-agent = { workspace = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/aelix_server"]
