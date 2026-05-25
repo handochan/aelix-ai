@@ -118,6 +118,12 @@ class McpClientManager:
         ) from last_exc
 
     async def disconnect_all(self) -> None:
-        """Tear down every connection (``AsyncExitStack`` unwind per server)."""
-        for conn in self._connections.values():
+        """Tear down every connection (``AsyncExitStack`` unwind per server).
+
+        Teardown runs in reverse (LIFO) connect order: each transport opens an
+        anyio task-group cancel scope in the manager's task, and anyio requires
+        sibling cancel scopes opened in one task to unwind strictly LIFO
+        ("cannot exit cancel scope in a different task / out of order").
+        """
+        for conn in reversed(list(self._connections.values())):
             await conn.disconnect()
