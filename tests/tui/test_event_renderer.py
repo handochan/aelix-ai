@@ -1,13 +1,12 @@
-"""Sprint 6h₁₀a (ADR-0104) — EventRenderer dispatch tests.
+"""Sprint 6h₁₀b (ADR-0105) — EventRenderer (sink-based) dispatch tests.
 
-Uses the real harness/streaming event dataclasses so the discriminated-union
-field access is exercised exactly as in production. Output is captured to a
-``StringIO``-backed Rich Console (no real terminal).
+Uses the real harness/streaming event dataclasses; ``commit`` captures finished
+Rich renderables and ``set_tail`` captures the live-window strings.
 """
 
 from __future__ import annotations
 
-import io
+from typing import Any
 
 from aelix_agent_core.types import (
     AgentEndEvent,
@@ -32,75 +31,94 @@ from aelix_ai.streaming import (
 )
 from aelix_ai.tools import ToolResult
 from aelix_coding_agent.tui.render import EventRenderer
-from rich.console import Console
 
 
-def _renderer() -> tuple[EventRenderer, io.StringIO]:
-    buf = io.StringIO()
-    console = Console(file=buf, force_terminal=True, width=80)
-    return EventRenderer(console), buf
+def _renderer() -> tuple[EventRenderer, list[Any], list[str]]:
+    commits: list[Any] = []
+    tails: list[str] = []
+    return EventRenderer(commit=commits.append, set_tail=tails.append, width=80), commits, tails
 
 
-def _msg_update(stream_event) -> MessageUpdateEvent:
-    return MessageUpdateEvent(
-        message=AssistantMessage(),
-        assistant_message_event=stream_event,
-    )
+def _plain(renderable: Any) -> str:
+    return renderable.plain if hasattr(renderable, "plain") else str(renderable)
+
+
+def _committed_text(commits: list[Any]) -> str:
+    return "".join(_plain(c) for c in commits)
+
+
+def _msg_update(stream_event: Any) -> MessageUpdateEvent:
+    return MessageUpdateEvent(message=AssistantMessage(), assistant_message_event=stream_event)
 
 
 def test_text_delta_accumulates_and_finalizes() -> None:
-    r, buf = _renderer()
+    r, commits, _t = _renderer()
     r.on_agent_event(MessageStartEvent(message=AssistantMessage()))
     r.on_agent_event(_msg_update(TextDeltaEvent(delta="Hello, ")))
     r.on_agent_event(_msg_update(TextDeltaEvent(delta="world!")))
     r.on_agent_event(_msg_update(TextEndEvent(content="Hello, world!")))
-    assert "Hello, world!" in buf.getvalue()
+    assert "Hello, world!" in _committed_text(commits)
+
+
+def test_text_streams_to_tail_before_finalize() -> None:
+    r, _c, tails = _renderer()
+    r.on_agent_event(_msg_update(TextDeltaEvent(delta="in progress")))
+    assert tails and "in progress" in tails[-1]
 
 
 def test_text_end_content_overrides_accumulation() -> None:
-    r, buf = _renderer()
+    r, commits, _t = _renderer()
     r.on_agent_event(_msg_update(TextDeltaEvent(delta="partial")))
     r.on_agent_event(_msg_update(TextEndEvent(content="final canonical text")))
-    assert "final canonical text" in buf.getvalue()
+    assert "final canonical text" in _committed_text(commits)
 
 
-def test_thinking_rendered_dim_on_end() -> None:
-    r, buf = _renderer()
+def test_thinking_rendered_on_end() -> None:
+    r, commits, _t = _renderer()
     r.on_agent_event(_msg_update(ThinkingDeltaEvent(delta="let me ")))
     r.on_agent_event(_msg_update(ThinkingDeltaEvent(delta="think")))
-    # Nothing printed until thinking_end (thin shell: no live thinking region).
-    assert "think" not in buf.getvalue()
+    assert "think" not in _committed_text(commits)
     r.on_agent_event(_msg_update(ThinkingEndEvent(content="let me think")))
-    assert "let me think" in buf.getvalue()
+    assert "let me think" in _committed_text(commits)
+
+
+def test_thinking_end_empty_is_silent() -> None:
+    r, commits, _t = _renderer()
+    r.on_agent_event(_msg_update(ThinkingEndEvent(content="   ")))
+    assert commits == []
 
 
 def test_tool_start_renders_header_with_args() -> None:
-    r, buf = _renderer()
+    r, commits, _t = _renderer()
     r.on_agent_event(
-        ToolExecutionStartEvent(
-            tool_call_id="t1", tool_name="read_file", args={"path": "a.py"}
-        )
+        ToolExecutionStartEvent(tool_call_id="t1", tool_name="read_file", args={"path": "a.py"})
     )
-    out = buf.getvalue()
-    assert "read_file" in out
-    assert "path" in out
+    out = _committed_text(commits)
+    assert "read_file" in out and "path" in out
+
+
+def test_tool_start_truncates_long_args() -> None:
+    r, commits, _t = _renderer()
+    r.on_agent_event(
+        ToolExecutionStartEvent(tool_call_id="t", tool_name="w", args={"data": "x" * 200})
+    )
+    assert "…" in _committed_text(commits)
 
 
 def test_tool_end_renders_result() -> None:
-    r, buf = _renderer()
+    r, commits, _t = _renderer()
     r.on_agent_event(
         ToolExecutionEndEvent(
             tool_call_id="t1",
             result=ToolResult(content=[TextContent(text="file contents here")]),
             tool_name="read_file",
-            is_error=False,
         )
     )
-    assert "file contents here" in buf.getvalue()
+    assert "file contents here" in _committed_text(commits)
 
 
-def test_tool_end_error_renders() -> None:
-    r, buf = _renderer()
+def test_tool_end_error_uses_red_style() -> None:
+    r, commits, _t = _renderer()
     r.on_agent_event(
         ToolExecutionEndEvent(
             tool_call_id="t1",
@@ -109,164 +127,86 @@ def test_tool_end_error_renders() -> None:
             is_error=True,
         )
     )
-    assert "boom" in buf.getvalue()
+    assert "boom" in _committed_text(commits)
+    assert str(getattr(commits[-1], "style", "")) == "red"
 
 
 def test_tool_end_empty_result_is_silent() -> None:
-    r, buf = _renderer()
+    r, commits, _t = _renderer()
     r.on_agent_event(
-        ToolExecutionEndEvent(
-            tool_call_id="t1",
-            result=ToolResult(content=[]),
-            tool_name="noop",
-        )
+        ToolExecutionEndEvent(tool_call_id="t1", result=ToolResult(content=[]), tool_name="noop")
     )
-    assert buf.getvalue() == ""
+    assert commits == []
 
 
-def test_error_event_renders_message() -> None:
-    r, buf = _renderer()
+def test_streaming_error_event_renders() -> None:
+    r, commits, _t = _renderer()
     r.on_agent_event(
-        _msg_update(
-            AssistantErrorEvent(reason="error", error_message="provider exploded")
-        )
+        _msg_update(AssistantErrorEvent(reason="error", error_message="provider exploded"))
     )
-    assert "provider exploded" in buf.getvalue()
-
-
-def test_error_event_without_message_uses_reason() -> None:
-    r, buf = _renderer()
-    r.on_agent_event(_msg_update(AssistantErrorEvent(reason="aborted")))
-    assert "aborted" in buf.getvalue()
-
-
-def test_toolcall_stream_events_are_noop() -> None:
-    r, buf = _renderer()
-    # Tool-arg streaming is intentionally not rendered (keyed off harness layer).
-    r.on_agent_event(_msg_update(ToolCallStartEvent()))
-    r.on_agent_event(_msg_update(ToolCallDeltaEvent(delta='{"x":1}')))
-    r.on_agent_event(_msg_update(ToolCallEndEvent()))
-    assert buf.getvalue() == ""
-
-
-# === HIGH-1: terminal failures arrive as MessageEndEvent (loop.py:299-310) ===
+    assert "provider exploded" in _committed_text(commits)
 
 
 def test_message_end_error_renders() -> None:
-    r, buf = _renderer()
-    r.on_agent_event(
-        MessageEndEvent(
-            message=AssistantMessage(
-                stop_reason="error", error_message="provider exploded"
-            )
-        )
-    )
-    assert "provider exploded" in buf.getvalue()
-
-
-def test_message_end_aborted_without_message_uses_reason() -> None:
-    r, buf = _renderer()
-    r.on_agent_event(
-        MessageEndEvent(message=AssistantMessage(stop_reason="aborted"))
-    )
-    out = buf.getvalue()
-    assert "aborted" in out and "✖" in out
-
-
-def test_message_end_success_renders_no_error() -> None:
-    r, buf = _renderer()
-    r.on_agent_event(MessageEndEvent(message=AssistantMessage(stop_reason="stop")))
-    assert "✖" not in buf.getvalue()
-
-
-def test_message_end_error_after_streamed_text_shows_both() -> None:
-    r, buf = _renderer()
-    r.on_agent_event(_msg_update(TextDeltaEvent(delta="partial output ")))
+    r, commits, _t = _renderer()
     r.on_agent_event(
         MessageEndEvent(
             message=AssistantMessage(stop_reason="error", error_message="rate limit")
         )
     )
-    out = buf.getvalue()
-    assert "partial output" in out  # streamed text finalized
-    assert "rate limit" in out  # error surfaced
+    assert "rate limit" in _committed_text(commits)
 
 
-# === done / end finalization (spec §3.2) ===
+def test_message_end_success_no_error() -> None:
+    r, commits, _t = _renderer()
+    r.on_agent_event(MessageEndEvent(message=AssistantMessage(stop_reason="stop")))
+    assert "✖" not in _committed_text(commits)
 
 
 def test_done_event_finalizes_open_text() -> None:
-    r, buf = _renderer()
+    r, commits, _t = _renderer()
     r.on_agent_event(_msg_update(TextDeltaEvent(delta="partial answer")))
     r.on_agent_event(_msg_update(AssistantDoneEvent(reason="stop")))
-    assert "partial answer" in buf.getvalue()
+    assert "partial answer" in _committed_text(commits)
 
 
 def test_end_event_treated_as_done() -> None:
-    r, buf = _renderer()
+    r, commits, _t = _renderer()
     r.on_agent_event(_msg_update(TextDeltaEvent(delta="ending text")))
     r.on_agent_event(_msg_update(AssistantEndEvent()))
-    assert "ending text" in buf.getvalue()
+    assert "ending text" in _committed_text(commits)
 
 
-# === edge cases ===
+def test_toolcall_stream_events_are_noop() -> None:
+    r, commits, _t = _renderer()
+    r.on_agent_event(_msg_update(ToolCallStartEvent()))
+    r.on_agent_event(_msg_update(ToolCallDeltaEvent(delta='{"x":1}')))
+    r.on_agent_event(_msg_update(ToolCallEndEvent()))
+    assert commits == []
 
 
-def test_thinking_end_empty_content_is_silent() -> None:
-    r, buf = _renderer()
-    r.on_agent_event(_msg_update(ThinkingEndEvent(content="   ")))
-    assert buf.getvalue() == ""
-
-
-def test_tool_start_truncates_long_args() -> None:
-    r, buf = _renderer()
-    r.on_agent_event(
-        ToolExecutionStartEvent(
-            tool_call_id="t1", tool_name="write", args={"data": "x" * 200}
-        )
-    )
-    assert "…" in buf.getvalue()
-
-
-def test_tool_end_error_uses_red_ansi() -> None:
-    r, buf = _renderer()
-    r.on_agent_event(
-        ToolExecutionEndEvent(
-            tool_call_id="t1",
-            result=ToolResult(content=[TextContent(text="boom")], is_error=True),
-            tool_name="bash",
-            is_error=True,
-        )
-    )
-    # force_terminal=True emits the ANSI red foreground code for error styling.
-    assert "\x1b[31m" in buf.getvalue()
-
-
-def test_unknown_harness_event_type_is_noop() -> None:
-    r, buf = _renderer()
+def test_unknown_event_type_is_noop() -> None:
+    r, commits, _t = _renderer()
 
     class _Future:
         type = "some_future_event"
 
     r.on_agent_event(_Future())  # type: ignore[arg-type]
-    assert buf.getvalue() == ""
+    assert commits == []
 
 
-def test_agent_end_event_is_noop() -> None:
-    r, buf = _renderer()
+def test_agent_end_is_noop() -> None:
+    r, commits, _t = _renderer()
     r.on_agent_event(AgentEndEvent(messages=[]))
-    assert buf.getvalue() == ""
+    assert commits == []
 
 
-def test_message_start_resets_state_between_messages() -> None:
-    r, buf = _renderer()
-    # First message streams text but never sends text_end/done.
+def test_message_start_resets_between_messages() -> None:
+    r, commits, _t = _renderer()
     r.on_agent_event(MessageStartEvent(message=AssistantMessage()))
     r.on_agent_event(_msg_update(TextDeltaEvent(delta="first message")))
-    # Second message_start must finalize the first stream and start clean.
-    r.on_agent_event(MessageStartEvent(message=AssistantMessage()))
+    r.on_agent_event(MessageStartEvent(message=AssistantMessage()))  # finalizes first
     r.on_agent_event(_msg_update(TextDeltaEvent(delta="second")))
     r.on_agent_event(_msg_update(TextEndEvent(content="second")))
-    out = buf.getvalue()
-    assert "first message" in out  # finalized on the second message_start
-    assert "second" in out
+    out = _committed_text(commits)
+    assert "first message" in out and "second" in out

@@ -1,27 +1,22 @@
-"""Sprint 6h₁₀a (ADR-0104) — harness-event → Rich renderer for the TUI shell.
+"""Sprint 6h₁₀a (ADR-0104) / 6h₁₀b (ADR-0105) — harness-event → output renderer.
 
 :class:`EventRenderer` is the TUI's :meth:`AgentHarness.subscribe` sink. It
-mirrors the rpc/print frontends (``rpc_mode._on_agent_event`` /
-``print_mode._emit``) but renders to a Rich console instead of serializing to
-JSONL/stdout.
+mirrors the rpc/print frontends but renders to the TUI instead of JSONL/stdout.
 
-Two event layers are dispatched (verified shapes):
+Sprint 6h₁₀b rework (ADR-0105): output no longer goes to a Rich ``Live`` (the
+live region is owned by the prompt-toolkit chrome). Instead the renderer emits
+through two synchronous sinks the chrome shell wires up:
 
-- **harness layer** — :data:`~aelix_agent_core.types.AgentEvent` (``message_*``,
-  ``tool_execution_*``, ``turn_*``, ``agent_*``).
-- **streaming layer** — :data:`~aelix_ai.streaming.AssistantMessageEvent`
-  carried inside ``MessageUpdateEvent.assistant_message_event`` (``text_delta``,
-  ``thinking_delta``, ``done``, ``error``, …).
+- ``commit(renderable)`` — a finished Rich renderable → scrollback (queued, then
+  flushed above the chrome via ``in_terminal``).
+- ``set_tail(ansi)`` — the in-progress streamed-text window → the chrome stream
+  widget (``StreamRenderer`` owns the window/throttle logic).
 
-Dispatch is ``match`` on the ``type`` Literal; an unrecognised ``type`` is a
-no-op so future event variants never crash the TUI (forward-compatible).
-
-Thin-shell scope (Sprint 6h₁₀a): streamed assistant text via
-:class:`~aelix_coding_agent.tui.stream.StreamRenderer`; thinking rendered dim
-on completion; tool calls rendered as a header + result. Tool-argument
-streaming (``toolcall_*``) is intentionally a no-op — tool rendering keys off
-the harness-layer ``tool_execution_*`` events to avoid double-render. Live
-chrome / descriptor rendering / themes land in Sprint 6h₁₀b.
+Dispatch is ``match`` on the ``type`` Literal; unknown types are no-ops
+(forward-compatible). Terminal failures surface on ``message_end`` via
+``stop_reason`` (loop.py path; the streaming ``error`` event is never re-emitted
+as a ``MessageUpdateEvent``). Out-of-band prints finalize any open text stream
+first so they never interleave with the live tail.
 """
 
 from __future__ import annotations
@@ -30,7 +25,6 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from aelix_ai.messages import AssistantMessage
-from rich.console import Console
 from rich.text import Text
 
 from .stream import StreamRenderer
@@ -41,11 +35,7 @@ if TYPE_CHECKING:
 
 
 def _result_text(result: Any) -> str:
-    """Extract a printable string from a ``ToolResult`` (or any payload).
-
-    Defensive: ``ToolResult.content`` is a list of content blocks (each may
-    expose ``.text``) or a plain string; fall back to ``str`` otherwise.
-    """
+    """Extract a printable string from a ``ToolResult`` (or any payload)."""
 
     content = getattr(result, "content", result)
     if isinstance(content, str):
@@ -65,48 +55,40 @@ def _compact_args(args: dict[str, Any]) -> str:
     if not args:
         return ""
     items = ", ".join(f"{k}={v!r}" for k, v in args.items())
-    items = items.replace("\n", " ")  # keep the header on one line
+    items = items.replace("\n", " ")
     return items if len(items) <= 80 else items[:77] + "…"
 
 
 class EventRenderer:
-    """Renders the harness :data:`AgentEvent` stream to a Rich console.
+    """Renders the harness :data:`AgentEvent` stream via commit/tail sinks.
 
-    :param console: shared output console (→ terminal scrollback).
-    :param stream_factory: builds the per-message text :class:`StreamRenderer`;
-        injectable for tests. Defaults to ``StreamRenderer(console)``.
+    :param commit: sync sink for a finished Rich renderable (→ scrollback).
+    :param set_tail: sync sink for the in-progress streamed-text window (→ chrome).
+    :param width: render width for streamed text.
     """
 
     def __init__(
         self,
-        console: Console,
         *,
-        stream_factory: Callable[[], StreamRenderer] | None = None,
+        commit: Callable[[object], None],
+        set_tail: Callable[[str], None],
+        width: int = 80,
     ) -> None:
-        self._console = console
-        self._stream_factory = stream_factory or (lambda: StreamRenderer(console))
+        self._commit = commit
+        self._set_tail = set_tail
+        self._width = width
         self._text_stream: StreamRenderer | None = None
         self._text_accum: str = ""
         self._thinking_accum: str = ""
 
     def on_agent_event(self, event: AgentEvent) -> None:
-        """Subscribe sink — synchronous (no ``await``; no turn reentrancy).
-
-        Comparing the ``type`` Literal inline lets the type checker narrow the
-        discriminated union, so each branch accesses only fields that exist on
-        the matched variant.
-        """
-
         if event.type == "message_start":
             self._reset_message_state()
         elif event.type == "message_update":
             self._on_stream_event(event.assistant_message_event)
         elif event.type == "message_end":
-            # The agent loop delivers terminal failures as a MessageEndEvent
-            # whose message carries stop_reason ∈ {"error","aborted"} +
-            # error_message (loop.py:299-310) — the streaming-layer "error"
-            # event is never re-emitted as a MessageUpdateEvent — so the error
-            # must be surfaced here, mirroring run_print_mode (print_mode.py).
+            # Terminal failures arrive here as a MessageEndEvent whose message
+            # carries stop_reason ∈ {"error","aborted"} (loop.py:299-310).
             self._finalize_text()
             self._render_message_error(event.message)
         elif event.type == "turn_end":
@@ -115,20 +97,19 @@ class EventRenderer:
             self._render_tool_start(event.tool_name, event.args)
         elif event.type == "tool_execution_end":
             self._render_tool_end(event.result, event.is_error)
-        # tool_execution_update / turn_start / agent_start / agent_end /
-        # unknown → no-op (forward-compatible).
+        # tool_execution_update / turn_start / agent_* / unknown → no-op.
 
     def finalize(self) -> None:
-        """Close any open streamed-text region (e.g. after a turn error)."""
+        """Close any open streamed-text window (e.g. after a turn error)."""
 
         self._finalize_text()
 
-    # === streaming-layer dispatch ===========================================
+    # === streaming-layer dispatch ==========================================
 
     def _on_stream_event(self, sev: AssistantMessageEvent) -> None:
         if sev.type == "text_delta":
             if self._text_stream is None:
-                self._text_stream = self._stream_factory()
+                self._text_stream = self._new_stream()
             self._text_accum += sev.delta
             self._text_stream.update(self._text_accum)
         elif sev.type == "text_end":
@@ -144,13 +125,18 @@ class EventRenderer:
         elif sev.type == "error":
             self._finalize_text()
             message = sev.error_message or f"request {sev.reason}"
-            self._console.print(Text(f"✖ {message}", style="bold red"))
-        # *_start / toolcall_* → no-op.
+            self._commit(Text(f"✖ {message}", style="bold red"))
 
-    # === rendering helpers ==================================================
+    # === helpers ===========================================================
+
+    def _new_stream(self) -> StreamRenderer:
+        return StreamRenderer(
+            commit=lambda ansi: self._commit(Text.from_ansi(ansi)),
+            set_tail=self._set_tail,
+            width=self._width,
+        )
 
     def _reset_message_state(self) -> None:
-        # Finalize any text left open by a prior message (defensive).
         self._finalize_text()
         self._text_accum = ""
         self._thinking_accum = ""
@@ -167,30 +153,27 @@ class EventRenderer:
             "aborted",
         ):
             detail = message.error_message or f"request {message.stop_reason}"
-            self._console.print(Text(f"✖ {detail}", style="bold red"))
+            self._commit(Text(f"✖ {detail}", style="bold red"))
 
     def _flush_thinking(self, content: str) -> None:
-        # Defensive: close any open text region before this out-of-band print
-        # so it never lands inside an active Live region (the canonical flow
-        # finalizes via message_end first, but don't depend on emission order).
         self._finalize_text()
         text = content.strip()
         self._thinking_accum = ""
         if text:
-            self._console.print(Text(text, style="dim italic"))
+            self._commit(Text(text, style="dim italic"))
 
     def _render_tool_start(self, tool_name: str, args: dict[str, Any]) -> None:
         self._finalize_text()
         summary = _compact_args(args)
         label = f"⚙ {tool_name}({summary})" if summary else f"⚙ {tool_name}"
-        self._console.print(Text(label, style="cyan"))
+        self._commit(Text(label, style="cyan"))
 
     def _render_tool_end(self, result: Any, is_error: bool) -> None:
         self._finalize_text()
         text = _result_text(result).rstrip()
         if not text:
             return
-        self._console.print(Text(text, style="red" if is_error else ""))
+        self._commit(Text(text, style="red" if is_error else ""))
 
 
 __all__ = ["EventRenderer"]
