@@ -30,6 +30,7 @@ from rich.text import Text
 from aelix_coding_agent.cli.repl import handle_user_bash
 from aelix_coding_agent.extensions import HEADLESS_UI_CONTEXT
 from aelix_coding_agent.tui.chrome import AelixChrome
+from aelix_coding_agent.tui.completion import DescriptorCommandCompleter
 from aelix_coding_agent.tui.context import AelixTUIContext
 from aelix_coding_agent.tui.descriptors import (
     DescriptorRegistry,
@@ -184,6 +185,11 @@ def _wire_descriptors(
     )
     registry.on_apply = renderer.render
     registry.on_remove = renderer.clear
+
+    # Surface the (live) command-routes through the input completer. The
+    # completer reads ``renderer.command_routes`` by reference on every keystroke,
+    # so descriptors applied/removed after this point change completions live.
+    chrome.set_command_completer(DescriptorCommandCompleter(lambda: renderer.command_routes))
 
     unsubscribe = event_bus.on("ui:list-modules", registry.collect)
     probe = ListModulesProbe()

@@ -54,9 +54,11 @@ from prompt_toolkit.layout import (
 from prompt_toolkit.layout.containers import AnyContainer
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
 from prompt_toolkit.layout.dimension import Dimension
+from prompt_toolkit.layout.menus import CompletionsMenu
 from rich.console import Console
 
 if TYPE_CHECKING:
+    from prompt_toolkit.completion import Completer
     from prompt_toolkit.input.base import Input
     from prompt_toolkit.output.base import Output
 
@@ -116,8 +118,17 @@ class AelixChrome:
         self._input_queue: asyncio.Queue[str | _Eof] = asyncio.Queue()
 
         # Modal overlays (dialogs / custom components) live as Floats over the
-        # main content; the overlay manager appends/removes from this list.
-        self._floats: list[Float] = []
+        # main content; the overlay manager appends/removes from this list. The
+        # completions dropdown is a permanent leading Float anchored to the cursor
+        # — inert until ``set_command_completer`` installs a completer (no
+        # completions → nothing renders); kept first so transient overlays
+        # (``add_float``) draw above it.
+        self._completions_float = Float(
+            xcursor=True,
+            ycursor=True,
+            content=CompletionsMenu(max_height=8, scroll_offset=1),
+        )
+        self._floats: list[Float] = [self._completions_float]
         self._input_window: Window | None = None
         self.app: Application[None] = self._build_app(pt_input, pt_output)
 
@@ -184,6 +195,14 @@ class AelixChrome:
 
         @kb.add("enter", filter=Condition(lambda: not self._running))
         def _accept(event: object) -> None:
+            # When the completions menu has a highlighted entry, Enter confirms it
+            # (applies + closes the menu) rather than submitting the line — the
+            # conventional autocomplete contract. Only submit when no completion
+            # is currently selected.
+            complete_state = self.buffer.complete_state
+            if complete_state is not None and complete_state.current_completion is not None:
+                self.buffer.apply_completion(complete_state.current_completion)
+                return
             text = self.buffer.text
             self.buffer.reset()
             # The queue accept path bypasses prompt-toolkit's normal handler, so
@@ -192,6 +211,18 @@ class AelixChrome:
                 with contextlib.suppress(Exception):
                     self.buffer.history.append_string(text)
             self._input_queue.put_nowait(text)
+
+        @kb.add("c-i")  # Tab: start completion, then cycle through entries.
+        def _complete(event: object) -> None:
+            buf = self.buffer
+            if buf.complete_state is not None:
+                buf.complete_next()
+            else:
+                buf.start_completion(select_first=False)
+
+        @kb.add("c-space")  # Explicitly open the completions menu.
+        def _start_complete(event: object) -> None:
+            self.buffer.start_completion(select_first=False)
 
         @kb.add("c-d", filter=Condition(lambda: not self._running and not self.buffer.text))
         def _eof(event: object) -> None:
@@ -318,6 +349,30 @@ class AelixChrome:
         # Best-effort; some outputs (DummyOutput) do not support titles.
         with contextlib.suppress(Exception):
             self.app.output.set_title(title)
+
+    # === completion seam ===================================================
+
+    def set_command_completer(self, completer: Completer | None) -> None:
+        """Install (or clear) the input-buffer completer.
+
+        Idempotent + None-safe. When a completer is set, completions pop live
+        while typing a slash command (``/…``) so the descriptor command-route
+        dropdown surfaces without needing Tab; Tab / Ctrl-Space still work and
+        the menu is inert for non-slash input. Clearing with ``None`` disables
+        completion entirely.
+        """
+        if completer is None:
+            from prompt_toolkit.completion import DummyCompleter
+
+            self.buffer.completer = DummyCompleter()
+            self.buffer.complete_while_typing = Condition(lambda: False)
+        else:
+            self.buffer.completer = completer
+            # Auto-complete only for slash commands so ordinary prompts type
+            # uninterrupted; the menu (and Tab/c-space) cover everything else.
+            self.buffer.complete_while_typing = Condition(
+                lambda: self.buffer.text.startswith("/")
+            )
 
     # === editor remote-control seam ========================================
 
