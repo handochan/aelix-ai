@@ -51,6 +51,7 @@ dev = [
   # images.py graphics tier guards the term-image import (placeholder when
   # absent); rich-pixels (Pillow>=10) drives the always-available Unicode tier.
   "rich-pixels>=3.0,<4",
+  "pyte>=0.8.2",
 ]
 
 [tool.ruff]
