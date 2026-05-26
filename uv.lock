@@ -29,6 +29,7 @@ dev = [
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "rich" },
+    { name = "rich-pixels" },
     { name = "ruff" },
 ]
 
@@ -47,6 +48,7 @@ dev = [
     { name = "pytest", specifier = ">=8" },
     { name = "pytest-asyncio", specifier = ">=0.23" },
     { name = "rich", specifier = ">=13.7,<15" },
+    { name = "rich-pixels", specifier = ">=3.0,<4" },
     { name = "ruff", specifier = ">=0.6" },
 ]
 
@@ -100,6 +102,9 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+images = [
+    { name = "rich-pixels" },
+]
 tui = [
     { name = "prompt-toolkit" },
     { name = "rich" },
@@ -115,8 +120,9 @@ requires-dist = [
     { name = "prompt-toolkit", marker = "extra == 'tui'", specifier = ">=3.0,<4" },
     { name = "pygments", specifier = ">=2.18" },
     { name = "rich", marker = "extra == 'tui'", specifier = ">=13.7,<15" },
+    { name = "rich-pixels", marker = "extra == 'images'", specifier = ">=3.0,<4" },
 ]
-provides-extras = ["tui"]
+provides-extras = ["tui", "images"]
 
 [[package]]
 name = "aelix-server"
@@ -1129,6 +1135,19 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/e9/67/cae617f1351490c25a4b8ac3b8b63a4dda609295d8222bad12242dfdc629/rich-14.3.4.tar.gz", hash = "sha256:817e02727f2b25b40ef56f5aa2217f400c8489f79ca8f46ea2b70dd5e14558a9", size = 230524, upload-time = "2026-04-11T02:57:45.419Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b3/76/6d163cfac87b632216f71879e6b2cf17163f773ff59c00b5ff4900a80fa3/rich-14.3.4-py3-none-any.whl", hash = "sha256:07e7adb4690f68864777b1450859253bed81a99a31ac321ac1817b2313558952", size = 310480, upload-time = "2026-04-11T02:57:47.484Z" },
+]
+
+[[package]]
+name = "rich-pixels"
+version = "3.0.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pillow" },
+    { name = "rich" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/31/71/6d5cd4b8d67cd49366eda19aaf37f20094ce562223a91166109202590237/rich_pixels-3.0.1.tar.gz", hash = "sha256:4a81977d45437ce5009cdcaf70af80256c3bdfab870e87ab802c577ba4133235", size = 24631, upload-time = "2024-03-30T09:37:52.834Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/08/72/7264494bc0944db1166b73c88f19d9ddfc584dbbc77c210cd0f52f59c511/rich_pixels-3.0.1-py3-none-any.whl", hash = "sha256:e82c5aa0d00885609675494f16e1ef814c68fa795634f1d6917cae9159b755e1", size = 6004, upload-time = "2024-03-30T09:37:51.169Z" },
 ]
 
 [[package]]

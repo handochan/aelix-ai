@@ -29,6 +29,21 @@ tui = [
   "rich>=13.7,<15",
 ]
 
+# Sprint 6h₁₀c (ADR-0106): inline image rendering is a further optional
+# extra on top of `[tui]`. `pip install 'aelix-coding-agent[images]'` pulls
+# in rich-pixels (the Rich-renderable Unicode half-block tier). The native
+# graphics tier (Kitty / iTerm2 escape protocols) is driven by term-image,
+# which is NOT pinned here: its current release hard-caps Pillow<11 and
+# conflicts with this package's Pillow>=11 core pin. Install it manually
+# (with a compatible Pillow) to enable graphics output:
+#   pip install 'term-image<1'
+# images.py guards the term-image import — when it is absent, capability
+# detection still works and rendering degrades to the Unicode tier or a
+# text placeholder.
+images = [
+  "rich-pixels>=3.0,<4",
+]
+
 [project.scripts]
 aelix = "aelix_coding_agent.cli.entry:main_sync"
 

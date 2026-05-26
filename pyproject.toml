@@ -43,6 +43,14 @@ dev = [
   # still install them via the gated `[tui]` extra.
   "prompt-toolkit>=3.0,<4",
   "rich>=13.7,<15",
+  # Sprint 6h₁₀c: aelix-coding-agent[images] extra libs, pulled into the dev
+  # env so pyright + pytest resolve them. End users install them via the
+  # gated `[images]` extra. term-image is NOT pulled in here: its latest
+  # release (0.7.2) hard-caps Pillow<11, conflicting with the coding-agent's
+  # Pillow>=11 core pin, so it cannot be co-resolved in this workspace. The
+  # images.py graphics tier guards the term-image import (placeholder when
+  # absent); rich-pixels (Pillow>=10) drives the always-available Unicode tier.
+  "rich-pixels>=3.0,<4",
 ]
 
 [tool.ruff]
