@@ -27,7 +27,7 @@ import time
 from collections.abc import Callable
 
 from rich.console import Console
-from rich.text import Text
+from rich.markdown import Markdown
 
 
 def _clamp(value: float, low: float, high: float) -> float:
@@ -114,8 +114,14 @@ class StreamRenderer:
     def _render_lines(self, text: str) -> list[str]:
         if not text:
             return []
+        # Render the full accumulated text as Markdown (code blocks → syntax
+        # highlight). aider mdstream parity: re-rendered each delta; only the
+        # stable prefix above the live window is committed, so partial-markdown
+        # volatility (unclosed fences, forming tables) rides in the live window.
         buf = io.StringIO()
-        Console(file=buf, force_terminal=True, width=self._width).print(Text(text), end="")
+        Console(file=buf, force_terminal=True, width=self._width).print(
+            Markdown(text), end=""
+        )
         return buf.getvalue().splitlines(keepends=True)
 
 

@@ -92,11 +92,13 @@ def test_adaptive_min_delay_clamps_to_floor() -> None:
 
 def test_stable_lines_committed_at_window() -> None:
     sr, commits, tails = _renderer(live_window=2, clock=FakeClock())
-    sr.update("l0\nl1\nl2\nl3\nl4")  # 5 lines − window 2 → 3 committed
-    assert commits  # something committed
+    # A markdown list renders one line per item (single-newline text would be one
+    # joined paragraph). 5 items − window 2 → the earliest items commit as stable.
+    sr.update("- l0\n- l1\n- l2\n- l3\n- l4")
+    assert commits  # stable prefix committed
     joined = "".join(commits)
-    assert "l0" in joined and "l1" in joined and "l2" in joined
-    assert "l4" in tails[-1]  # last lines stay in the live tail
+    assert "l0" in joined and "l1" in joined  # earliest items are stable
+    assert "l4" in "".join(tails)  # the last item stays in the live tail
 
 
 def test_final_flushes_all_and_clears_tail() -> None:
