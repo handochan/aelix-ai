@@ -42,6 +42,9 @@ from aelix_agent_core.session.jsonl_repo import (
 from aelix_agent_core.session.memory_storage import MemorySessionStorage
 from aelix_agent_core.session.session import Session
 
+from aelix_coding_agent.tools import create_all_tools
+
+from .agent_context import build_system_prompt, discover_context_files
 from .args import Args, parse_args, print_help
 from .config import VERSION
 from .file_processor import process_file_arguments
@@ -151,19 +154,39 @@ def _build_harness_options(parsed: Args, session: Session) -> AgentHarnessOption
     # Resolve the turn model (OpenRouter-from-env aware; falls back to a bare
     # model from --model/--provider). Providers are registered in main_sync.
     model = resolve_model(parsed.model, parsed.provider)
+    # Resolve to an absolute path so the tool sandbox root + AGENTS.md anchor are
+    # stable even if something later chdir's the process (e.g. a bash-tool ``cd``).
+    cwd = str(Path.cwd())
+
+    # Sprint 6h₁₁: wire the coding toolset + a real coding-agent system prompt.
+    # Previously the harness ran with EMPTY tools + EMPTY system prompt (a bare
+    # chat model with no identity and no ability to touch files). The 7 built-in
+    # tools (read/write/edit/bash/grep/find/ls) + the base prompt make it an
+    # actual coding agent. An explicit ``--system-prompt`` still overrides.
+    tools = list(create_all_tools(cwd).values())
+    system_prompt = (
+        parsed.system_prompt
+        if parsed.system_prompt is not None
+        else build_system_prompt(cwd)
+    )
     options = AgentHarnessOptions(
         model=model,
         session=session,
-        cwd=".",
+        cwd=cwd,
+        tools=tools,
+        system_prompt=system_prompt,
     )
-    if parsed.system_prompt is not None:
-        options.system_prompt = parsed.system_prompt
-    # Sprint 6h₇a (Phase 5a-iii-α, ADR-0090, §D): minimal text-only
-    # ``--append-system-prompt`` wire. ``parsed.append_system_prompt``
-    # is already a :class:`list[str]` accumulator (args.py:101). The
-    # harness joins on ``"\n\n"`` after the base system prompt at
-    # ``__init__`` time.
-    options.append_system_prompt = list(parsed.append_system_prompt)
+
+    # Auto-discovered AGENTS.md project context (Pi ``--no-context-files`` gate),
+    # then the explicit ``--append-system-prompt`` chunks. The harness joins all
+    # of these onto the base system prompt with ``"\n\n"`` at ``__init__`` time.
+    append: list[str] = []
+    if not parsed.no_context_files:
+        context = discover_context_files(cwd)
+        if context:
+            append.append(context)
+    append.extend(parsed.append_system_prompt)
+    options.append_system_prompt = append
     return options
 
 
