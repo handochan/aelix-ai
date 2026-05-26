@@ -41,12 +41,12 @@ from aelix_agent_core.session.jsonl_repo import (
 )
 from aelix_agent_core.session.memory_storage import MemorySessionStorage
 from aelix_agent_core.session.session import Session
-from aelix_ai.streaming import Model
 
 from .args import Args, parse_args, print_help
 from .config import VERSION
 from .file_processor import process_file_arguments
 from .initial_message import build_initial_message
+from .runtime_bootstrap import load_dotenv, register_providers, resolve_model
 
 AppMode = Literal["interactive", "print", "json", "rpc"]
 
@@ -148,10 +148,9 @@ def _build_harness_options(parsed: Args, session: Session) -> AgentHarnessOption
     levels, etc.) lands with the ``SettingsManager`` port.
     """
 
-    model = Model(
-        id=parsed.model or "",
-        provider=parsed.provider or "",
-    )
+    # Resolve the turn model (OpenRouter-from-env aware; falls back to a bare
+    # model from --model/--provider). Providers are registered in main_sync.
+    model = resolve_model(parsed.model, parsed.provider)
     options = AgentHarnessOptions(
         model=model,
         session=session,
@@ -342,10 +341,14 @@ async def _async_main(argv: list[str]) -> int:
 def main_sync() -> None:
     """Sync entry for ``[project.scripts] aelix = '...:main_sync'``.
 
-    Wraps :func:`_async_main` in :func:`asyncio.run` and forwards the
-    exit code to :func:`sys.exit`.
+    Loads a cwd ``.env`` + registers provider adapters (real-turn enablement;
+    done here rather than in :func:`_async_main` so tests/embedders that call
+    ``_async_main`` directly stay side-effect-free), then wraps
+    :func:`_async_main` in :func:`asyncio.run` and forwards the exit code.
     """
 
+    load_dotenv()
+    register_providers()
     exit_code = asyncio.run(_async_main(sys.argv[1:]))
     sys.exit(exit_code)
 
