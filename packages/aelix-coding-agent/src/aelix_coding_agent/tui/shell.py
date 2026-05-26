@@ -31,6 +31,11 @@ from aelix_coding_agent.cli.repl import handle_user_bash
 from aelix_coding_agent.extensions import HEADLESS_UI_CONTEXT
 from aelix_coding_agent.tui.chrome import AelixChrome
 from aelix_coding_agent.tui.context import AelixTUIContext
+from aelix_coding_agent.tui.descriptors import (
+    DescriptorRegistry,
+    DescriptorRenderer,
+    ListModulesProbe,
+)
 from aelix_coding_agent.tui.footer_data import AelixFooterData
 from aelix_coding_agent.tui.input import parse_input_line
 from aelix_coding_agent.tui.render import EventRenderer
@@ -110,6 +115,7 @@ async def run_tui(
 
     out_chrome.on_interrupt = _on_interrupt
 
+    descriptor_unsub: Callable[[], None] | None = None
     chrome_task: asyncio.Task[None] | None = None
     pump_task: asyncio.Task[None] | None = None
     try:
@@ -118,12 +124,19 @@ async def run_tui(
         # extensions never see the headless stub (ADR-0105 §1.3).
         runtime_host.harness.runtime.bind_ui(context)
         await _rebind(runtime_host.harness)
+        # Tier-2 descriptor probe (ADR-0095 / Sprint 6h₁₀c §C): build the keyed
+        # registry + per-kind renderer, subscribe to the ui:list-modules channel,
+        # then emit one synchronous probe so loaded extensions append descriptors.
+        descriptor_unsub = _wire_descriptors(runtime_host, out_chrome, footer, context, loop)
         chrome_task = asyncio.create_task(out_chrome.run())
         pump_task = asyncio.create_task(_output_pump(output_queue, out_chrome))
         await _input_loop(runtime_host, out_chrome, output_queue, renderer, cwd=cwd)
     finally:
         with contextlib.suppress(Exception):
             runtime_host.harness.runtime.bind_ui(HEADLESS_UI_CONTEXT)
+        if descriptor_unsub is not None:
+            with contextlib.suppress(Exception):
+                descriptor_unsub()
         unsub = unsubscribe_holder["u"]
         if unsub is not None:
             with contextlib.suppress(Exception):
@@ -144,6 +157,38 @@ async def run_tui(
             await runtime_host.dispose()
 
     return 0
+
+
+def _wire_descriptors(
+    runtime_host: AgentSessionRuntime,
+    chrome: AelixChrome,
+    footer: AelixFooterData,
+    context: AelixTUIContext,
+    loop: asyncio.AbstractEventLoop,
+) -> Callable[[], None] | None:
+    """Build the descriptor registry + renderer, subscribe + emit one probe.
+
+    Returns an unsubscribe callable (or ``None`` when the runtime exposes no
+    ``event_bus`` — e.g. headless test fakes — leaving all other run_tui
+    behavior intact). ``refresh_footer`` is wired to the context's single footer
+    composer so footer-segment descriptors don't clobber the ``⎇ branch`` line.
+    """
+
+    event_bus = getattr(getattr(runtime_host.harness, "runtime", None), "event_bus", None)
+    if event_bus is None:
+        return None
+
+    registry = DescriptorRegistry()
+    renderer = DescriptorRenderer(
+        chrome, footer, registry, loop=loop, refresh_footer=context._refresh_footer
+    )
+    registry.on_apply = renderer.render
+    registry.on_remove = renderer.clear
+
+    unsubscribe = event_bus.on("ui:list-modules", registry.collect)
+    probe = ListModulesProbe()
+    event_bus.emit("ui:list-modules", probe)
+    return unsubscribe
 
 
 async def _output_pump(queue: asyncio.Queue[tuple[str, object]], chrome: AelixChrome) -> None:
