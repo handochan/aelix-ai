@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from aelix_agent_core.contracts.descriptor import DescriptorEnvelope
+from aelix_agent_core.contracts.descriptor import ActionDescriptor, DescriptorEnvelope
 from aelix_coding_agent.extensions.api import EventBus
 from aelix_coding_agent.tui.descriptors import (
     DescriptorRegistry,
@@ -38,6 +38,7 @@ class FakeChrome:
         self.status: dict[str, str | None] = {}
         self.footer_line: str | None = None
         self.header_line: str | None = None
+        self.breadcrumb_line: str | None = None
         self.widgets: dict[str, list[str] | None] = {}
         self.floats: list[object] = []
         self.printed: list[object] = []
@@ -50,6 +51,9 @@ class FakeChrome:
 
     def set_header_line(self, text: str) -> None:
         self.header_line = text
+
+    def set_breadcrumb_line(self, text: str) -> None:
+        self.breadcrumb_line = text
 
     def set_widget(self, key: str, lines: list[str] | None, *, above: bool = True) -> None:  # noqa: ARG002
         self.widgets[key] = lines
@@ -258,17 +262,63 @@ def test_render_toast_no_dismiss_when_ms_zero() -> None:
     assert loop.scheduled == []  # 0 → no timer
 
 
-def test_render_breadcrumb_sets_header_chain() -> None:
+def test_render_breadcrumb_sets_breadcrumb_row_not_header() -> None:
+    # §D: breadcrumbs land in the dedicated breadcrumb row, freeing the header
+    # line (the ``set_header`` factory row) from collision.
     renderer, registry, chrome, *_ = _make_renderer()
     registry.apply(_env("breadcrumb", id_="a", label="Home"))
     registry.apply(_env("breadcrumb", id_="b", label="Repo"))
-    assert chrome.header_line == "Home › Repo"
+    assert chrome.breadcrumb_line == "Home › Repo"
+    assert chrome.header_line is None  # header line untouched
 
 
-def test_render_agent_metric_sets_widget() -> None:
+def test_render_breadcrumb_coexists_with_header_line() -> None:
+    # §D: a header line set by the set_header factory and a descriptor breadcrumb
+    # row are independent — neither overwrites the other.
     renderer, registry, chrome, *_ = _make_renderer()
-    registry.apply(_env("agent-metric", id_="m", label="tokens", value=42, delta="+3"))
-    assert chrome.widgets["ext:m"] == ["tokens: 42 (+3)"]
+    chrome.set_header_line("Aelix")
+    registry.apply(_env("breadcrumb", id_="a", label="Home"))
+    assert chrome.header_line == "Aelix"
+    assert chrome.breadcrumb_line == "Home"
+
+
+def test_render_breadcrumb_removal_recomposes() -> None:
+    renderer, registry, chrome, *_ = _make_renderer()
+    registry.apply(_env("breadcrumb", id_="a", label="Home"))
+    registry.apply(_env("breadcrumb", id_="b", label="Repo"))
+    registry.apply(_env("breadcrumb", id_="a", label="Home", removed=True))
+    assert chrome.breadcrumb_line == "Repo"
+
+
+def test_render_agent_metric_composes_single_strip_with_level_color() -> None:
+    # §E: ALL agent-metrics compose into ONE widget slot (a horizontal strip),
+    # not one widget per metric key.
+    renderer, registry, chrome, *_ = _make_renderer()
+    registry.apply(_env("agent-metric", id_="m1", label="tokens", value=42, delta="+3"))
+    registry.apply(_env("agent-metric", id_="m2", label="cost", value="0.01", level="warning"))
+    # Single shared slot — no per-key widgets.
+    assert "ext:m1" not in chrome.widgets
+    assert "ext:m2" not in chrome.widgets
+    slot = chrome.widgets[DescriptorRenderer._AGENT_METRIC_SLOT]
+    assert slot is not None
+    rendered = "\n".join(slot)
+    assert "tokens: 42 (+3)" in rendered
+    assert "cost: 0.01" in rendered
+
+
+def test_render_agent_metric_removal_recomposes_strip() -> None:
+    renderer, registry, chrome, *_ = _make_renderer()
+    registry.apply(_env("agent-metric", id_="m1", label="tokens", value=1))
+    registry.apply(_env("agent-metric", id_="m2", label="cost", value=2))
+    registry.apply(_env("agent-metric", id_="m1", label="tokens", value=1, removed=True))
+    slot = chrome.widgets[DescriptorRenderer._AGENT_METRIC_SLOT]
+    assert slot is not None
+    rendered = "\n".join(slot)
+    assert "cost: 2" in rendered
+    assert "tokens" not in rendered
+    # Removing the last metric clears the slot entirely.
+    registry.apply(_env("agent-metric", id_="m2", label="cost", value=2, removed=True))
+    assert chrome.widgets[DescriptorRenderer._AGENT_METRIC_SLOT] is None
 
 
 def test_render_command_route_stores_metadata_only() -> None:
@@ -406,3 +456,179 @@ def test_probe_seam_invalid_item_dropped_no_render() -> None:
     bus.on("ui:list-modules", registry.collect)
     bus.emit("ui:list-modules", ListModulesProbe())
     assert chrome.status == {}
+
+
+# === §A — ActionDescriptor reverse-channel (dispatch_action) =================
+
+
+def _action(confirm: str | None = None) -> ActionDescriptor:
+    return ActionDescriptor(
+        plugin_id="fix", action="restart", payload={"id": 1}, confirm=confirm
+    )
+
+
+def test_dispatch_action_emits_plugin_action_with_dict() -> None:
+    bus = EventBus()
+    captured: list[Any] = []
+    bus.on("plugin_action", captured.append)
+    chrome, footer, registry = FakeChrome(), FakeFooter(), DescriptorRegistry()
+    renderer = DescriptorRenderer(
+        chrome, footer, registry, event_bus=bus  # type: ignore[arg-type]
+    )
+    renderer.dispatch_action(_action())
+    assert len(captured) == 1
+    assert captured[0] == {
+        "plugin_id": "fix",
+        "action": "restart",
+        "payload": {"id": 1},
+        "confirm": None,
+    }
+
+
+async def test_dispatch_action_confirm_awaits_then_emits_on_yes() -> None:
+    bus = EventBus()
+    captured: list[Any] = []
+    bus.on("plugin_action", captured.append)
+    chrome, footer, registry = FakeChrome(), FakeFooter(), DescriptorRegistry()
+    asked: list[str] = []
+
+    async def _confirm(message: str) -> bool:
+        asked.append(message)
+        return True
+
+    spawned: list[Any] = []
+    renderer = DescriptorRenderer(
+        chrome,  # type: ignore[arg-type]
+        footer,  # type: ignore[arg-type]
+        registry,
+        event_bus=bus,
+        confirm=_confirm,
+        spawn=lambda coro: spawned.append(coro),
+    )
+    renderer.dispatch_action(_action(confirm="Restart?"))
+    assert len(spawned) == 1  # confirm path spawned, no sync emit yet
+    assert captured == []
+    await spawned[0]
+    assert asked == ["Restart?"]
+    assert len(captured) == 1
+
+
+async def test_dispatch_action_confirm_no_emit_on_decline() -> None:
+    bus = EventBus()
+    captured: list[Any] = []
+    bus.on("plugin_action", captured.append)
+    chrome, footer, registry = FakeChrome(), FakeFooter(), DescriptorRegistry()
+
+    async def _confirm(_message: str) -> bool:
+        return False
+
+    spawned: list[Any] = []
+    renderer = DescriptorRenderer(
+        chrome,  # type: ignore[arg-type]
+        footer,  # type: ignore[arg-type]
+        registry,
+        event_bus=bus,
+        confirm=_confirm,
+        spawn=lambda coro: spawned.append(coro),
+    )
+    renderer.dispatch_action(_action(confirm="Sure?"))
+    await spawned[0]
+    assert captured == []  # declined → no emit
+
+
+def test_dispatch_action_emit_failure_is_contained() -> None:
+    class _BoomBus:
+        def emit(self, channel: str, data: Any) -> None:
+            raise RuntimeError("bus down")
+
+    chrome, footer, registry = FakeChrome(), FakeFooter(), DescriptorRegistry()
+    renderer = DescriptorRenderer(
+        chrome, footer, registry, event_bus=_BoomBus()  # type: ignore[arg-type]
+    )
+    renderer.dispatch_action(_action())  # must not raise
+
+
+def test_dispatch_action_no_event_bus_is_noop() -> None:
+    chrome, footer, registry = FakeChrome(), FakeFooter(), DescriptorRegistry()
+    renderer = DescriptorRenderer(chrome, footer, registry)  # type: ignore[arg-type]
+    renderer.dispatch_action(_action())  # no bus → silently dropped, no raise
+
+
+def _binding_for(kb: Any, key: str) -> Any:
+    for binding in kb.bindings:
+        if tuple(str(k) for k in binding.keys) == (key,):
+            return binding
+    raise AssertionError(f"no key binding for {key!r}")
+
+
+def test_modal_action_key_dispatches_via_reverse_channel() -> None:
+    # §C↔§A integration: a modal action bound to a number key fires
+    # dispatch_action (→ plugin_action) and closes the modal.
+    bus = EventBus()
+    captured: list[Any] = []
+    bus.on("plugin_action", captured.append)
+    chrome, footer, registry = FakeChrome(), FakeFooter(), DescriptorRegistry()
+    renderer = DescriptorRenderer(
+        chrome, footer, registry, event_bus=bus  # type: ignore[arg-type]
+    )
+    closed: list[bool] = []
+    kb = renderer._build_modal_keybindings([_action()], lambda: closed.append(True))
+
+    _binding_for(kb, "1").handler(None)  # press "1"
+    assert captured == [_action().model_dump(mode="json")]  # dispatched to plugin
+    assert closed == [True]  # modal closed after dispatch
+
+
+def test_render_action_hints_lists_numbered_actions() -> None:
+    chrome, footer, registry = FakeChrome(), FakeFooter(), DescriptorRegistry()
+    renderer = DescriptorRenderer(chrome, footer, registry)  # type: ignore[arg-type]
+    a1 = ActionDescriptor(plugin_id="p", action="save")
+    a2 = ActionDescriptor(plugin_id="p", action="delete")
+    hint = renderer._render_action_hints([a1, a2])
+    assert "[1] save" in hint.plain
+    assert "[2] delete" in hint.plain
+
+
+# === §B — tool-result projection (project_tool_result) =======================
+
+
+def test_project_tool_result_table_parses_json_list() -> None:
+    env = _env("tool-renderer-desc", tool_name="grep", view="table")
+    rows = DescriptorRenderer.project_tool_result(env, '[{"file": "a.py"}, {"file": "b.py"}]')
+    assert rows == [{"file": "a.py"}, {"file": "b.py"}]
+
+
+def test_project_tool_result_table_wraps_single_dict() -> None:
+    env = _env("tool-renderer-desc", tool_name="t", view="form")
+    rows = DescriptorRenderer.project_tool_result(env, '{"k": "v"}')
+    assert rows == [{"k": "v"}]
+
+
+def test_project_tool_result_rows_path_dotted_lookup() -> None:
+    env = _env("tool-renderer-desc", tool_name="t", view="table", rows_path="data.items")
+    rows = DescriptorRenderer.project_tool_result(env, '{"data": {"items": [{"n": 1}]}}')
+    assert rows == [{"n": 1}]
+
+
+def test_project_tool_result_text_view_uses_raw() -> None:
+    env = _env("tool-renderer-desc", tool_name="t", view="text")
+    rows = DescriptorRenderer.project_tool_result(env, "plain output")
+    assert rows == ["plain output"]
+
+
+def test_project_tool_result_text_path_extracts() -> None:
+    env = _env("tool-renderer-desc", tool_name="t", view="text", text_path="message")
+    rows = DescriptorRenderer.project_tool_result(env, '{"message": "hi there"}')
+    assert rows == ["hi there"]
+
+
+def test_project_tool_result_non_json_falls_back_to_raw() -> None:
+    env = _env("tool-renderer-desc", tool_name="t", view="table")
+    rows = DescriptorRenderer.project_tool_result(env, "not json at all")
+    assert rows == ["not json at all"]
+
+
+def test_project_tool_result_unresolved_rows_path_falls_back() -> None:
+    env = _env("tool-renderer-desc", tool_name="t", view="table", rows_path="missing.key")
+    rows = DescriptorRenderer.project_tool_result(env, '{"data": []}')
+    assert rows == ["{\"data\": []}"]

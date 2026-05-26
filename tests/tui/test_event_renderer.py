@@ -210,3 +210,88 @@ def test_message_start_resets_between_messages() -> None:
     r.on_agent_event(_msg_update(TextEndEvent(content="second")))
     out = _committed_text(commits)
     assert "first message" in out and "second" in out
+
+
+# === §B — live tool-result interception ======================================
+
+
+def _env(tool_name: str, view: str = "table", **payload: Any) -> Any:
+    from aelix_agent_core.contracts.descriptor import DescriptorEnvelope
+
+    body = {"kind": "tool-renderer-desc", "tool_name": tool_name, "view": view, **payload}
+    return DescriptorEnvelope(
+        kind="tool-renderer-desc", namespace="ext", id="t", payload=body  # type: ignore[arg-type]
+    )
+
+
+def _descriptor_renderer() -> Any:
+    from aelix_coding_agent.tui.descriptors import DescriptorRegistry, DescriptorRenderer
+
+    class _FakeChrome:
+        def set_widget(self, *a: Any, **k: Any) -> None: ...
+
+    return DescriptorRenderer(_FakeChrome(), object(), DescriptorRegistry())  # type: ignore[arg-type]
+
+
+def _wire(r: EventRenderer, env: Any) -> None:
+    dr = _descriptor_renderer()
+    r.descriptor_renderer = dr
+    r.get_tool_renderer_desc = lambda name: env if name == env.payload.tool_name else None
+
+
+def test_tool_end_matching_descriptor_renders_custom_table() -> None:
+    r, commits, _t = _renderer()
+    env = _env("grep", view="table", columns=[{"key": "file", "header": "File"}])
+    _wire(r, env)
+    r.on_agent_event(
+        ToolExecutionEndEvent(
+            tool_call_id="t1",
+            result=ToolResult(content=[TextContent(text='[{"file": "a.py"}]')]),
+            tool_name="grep",
+        )
+    )
+    # The custom view is a Rich Table — NOT a plain Text dump.
+    assert commits and commits[-1].__class__.__name__ == "Table"
+
+
+def test_tool_end_text_view_descriptor_renders_panel() -> None:
+    r, commits, _t = _renderer()
+    env = _env("echo", view="text")
+    _wire(r, env)
+    r.on_agent_event(
+        ToolExecutionEndEvent(
+            tool_call_id="t1",
+            result=ToolResult(content=[TextContent(text="raw line")]),
+            tool_name="echo",
+        )
+    )
+    assert commits and commits[-1].__class__.__name__ == "Panel"
+
+
+def test_tool_end_no_matching_descriptor_uses_default() -> None:
+    r, commits, _t = _renderer()
+    env = _env("grep", view="table")
+    _wire(r, env)
+    r.on_agent_event(
+        ToolExecutionEndEvent(
+            tool_call_id="t1",
+            result=ToolResult(content=[TextContent(text="other output")]),
+            tool_name="read_file",  # no descriptor for this tool
+        )
+    )
+    # Default Text dump (not a Table) when the tool_name does not match.
+    assert "other output" in _committed_text(commits)
+    assert commits[-1].__class__.__name__ == "Text"
+
+
+def test_tool_end_no_lookup_wired_uses_default() -> None:
+    r, commits, _t = _renderer()
+    r.on_agent_event(
+        ToolExecutionEndEvent(
+            tool_call_id="t1",
+            result=ToolResult(content=[TextContent(text="plain")]),
+            tool_name="grep",
+        )
+    )
+    assert "plain" in _committed_text(commits)
+    assert commits[-1].__class__.__name__ == "Text"

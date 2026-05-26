@@ -211,6 +211,78 @@ async def test_run_tui_ctrl_c_during_turn_aborts_and_survives() -> None:
     assert runtime.harness.aborts == 1
 
 
+# === §C — management-modal command-trigger ==================================
+
+
+def _modal_module() -> dict[str, object]:
+    return {
+        "kind": "management-modal",
+        "namespace": "ext",
+        "id": "m",
+        "payload": {
+            "kind": "management-modal",
+            "command": "settings",
+            "title": "Settings",
+            "view": "form",
+        },
+    }
+
+
+class _BusExtRuntime(_FakeExtRuntime):
+    """A fake ext-runtime exposing a real EventBus that yields one modal."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        from aelix_coding_agent.extensions.api import EventBus
+
+        self.event_bus = EventBus()
+        self.event_bus.on(
+            "ui:list-modules", lambda probe: probe.modules.append(_modal_module())
+        )
+
+
+class _ModalHarness(FakeHarness):
+    def __init__(self) -> None:
+        super().__init__()
+        self.runtime = _BusExtRuntime()
+
+
+async def test_run_tui_management_modal_command_opens_not_prompts() -> None:
+    from aelix_coding_agent.tui.descriptors import DescriptorRenderer
+
+    opened: list[object] = []
+    orig = DescriptorRenderer.open_modal
+
+    def _spy(self: DescriptorRenderer, env: object) -> None:
+        opened.append(env)
+
+    DescriptorRenderer.open_modal = _spy  # type: ignore[method-assign]
+    try:
+        async with _harness_chrome(harness=_ModalHarness()) as (runtime, chrome, pipe):
+            task = _launch(runtime, chrome)
+            await _wait(lambda: chrome.app.is_running)
+            pipe.send_text("/settings\n")  # matches the stored management-modal
+            await _wait(lambda: len(opened) == 1)
+            pipe.send_text("/quit\n")
+            await asyncio.wait_for(task, timeout=5)
+    finally:
+        DescriptorRenderer.open_modal = orig  # type: ignore[method-assign]
+
+    assert len(opened) == 1
+    assert runtime.harness.prompts == []  # routed to modal, never sent to model
+
+
+async def test_run_tui_unknown_slash_still_prompts() -> None:
+    async with _harness_chrome(harness=_ModalHarness()) as (runtime, chrome, pipe):
+        task = _launch(runtime, chrome)
+        await _wait(lambda: chrome.app.is_running)
+        pipe.send_text("/unknown thing\n")  # no matching modal → goes to the model
+        await _wait(lambda: runtime.harness.prompts == [("/unknown thing", "interactive")])
+        pipe.send_text("/quit\n")
+        await asyncio.wait_for(task, timeout=5)
+    assert runtime.harness.prompts == [("/unknown thing", "interactive")]
+
+
 async def test_run_tui_bash_passthrough(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[tuple[str, bool, str]] = []
 

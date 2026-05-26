@@ -99,6 +99,7 @@ class AelixChrome:
         self._status: dict[str, str] = {}
         self._footer_line: str = ""
         self._header_line: str = ""
+        self._breadcrumb_line: str = ""
         self._working_message: str | None = None
         self._working_visible: bool = False
         self._running: bool = False
@@ -163,11 +164,23 @@ class AelixChrome:
             ),
             filter=renderer_height_is_known & Condition(lambda: bool(self._header_line)),
         )
+        # Dedicated breadcrumb row (6h₁₀e §D): descriptor breadcrumb chains land
+        # here (``set_breadcrumb_line``) so they no longer collide with the
+        # ``set_header`` factory line. Same CPR + non-empty gate as the header.
+        breadcrumb = ConditionalContainer(
+            Window(
+                FormattedTextControl(lambda: ANSI(self._breadcrumb_line)),
+                height=height1,
+                dont_extend_height=True,
+            ),
+            filter=renderer_height_is_known & Condition(lambda: bool(self._breadcrumb_line)),
+        )
         input_window = Window(BufferControl(self.buffer), wrap_lines=True, height=Dimension(min=1))
         self._input_window = input_window
         body = HSplit(
             [
                 header,
+                breadcrumb,
                 Window(FormattedTextControl(self._render_widgets_above), dont_extend_height=True),
                 input_window,
                 Window(FormattedTextControl(self._render_widgets_below), dont_extend_height=True),
@@ -335,6 +348,10 @@ class AelixChrome:
 
     def set_header_line(self, text: str) -> None:
         self._header_line = text.replace("\n", " ")  # fixed height=1 row
+        self.invalidate()
+
+    def set_breadcrumb_line(self, text: str) -> None:
+        self._breadcrumb_line = text.replace("\n", " ")  # fixed height=1 row
         self.invalidate()
 
     def set_widget(self, key: str, lines: list[str] | None, *, above: bool = True) -> None:

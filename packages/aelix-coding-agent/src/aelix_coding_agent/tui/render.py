@@ -30,8 +30,11 @@ from rich.text import Text
 from .stream import StreamRenderer
 
 if TYPE_CHECKING:
+    from aelix_agent_core.contracts.descriptor import DescriptorEnvelope
     from aelix_agent_core.types import AgentEvent
     from aelix_ai.streaming import AssistantMessageEvent
+
+    from .descriptors import DescriptorRenderer
 
 
 def _result_text(result: Any) -> str:
@@ -80,6 +83,12 @@ class EventRenderer:
         self._text_stream: StreamRenderer | None = None
         self._text_accum: str = ""
         self._thinking_accum: str = ""
+        # §B — live tool-result interception. Late-bound by run_tui to read the
+        # descriptor registry by reference (returns a matching tool-renderer-desc
+        # envelope for a tool_name, or None). ``descriptor_renderer`` builds the
+        # custom view. Both unset → default Text-dump rendering (unchanged).
+        self.get_tool_renderer_desc: Callable[[str], DescriptorEnvelope | None] | None = None
+        self.descriptor_renderer: DescriptorRenderer | None = None
 
     def on_agent_event(self, event: AgentEvent) -> None:
         if event.type == "message_start":
@@ -96,7 +105,7 @@ class EventRenderer:
         elif event.type == "tool_execution_start":
             self._render_tool_start(event.tool_name, event.args)
         elif event.type == "tool_execution_end":
-            self._render_tool_end(event.result, event.is_error)
+            self._render_tool_end(event.tool_name, event.result, event.is_error)
         # tool_execution_update / turn_start / agent_* / unknown → no-op.
 
     def finalize(self) -> None:
@@ -168,12 +177,33 @@ class EventRenderer:
         label = f"⚙ {tool_name}({summary})" if summary else f"⚙ {tool_name}"
         self._commit(Text(label, style="cyan"))
 
-    def _render_tool_end(self, result: Any, is_error: bool) -> None:
+    def _render_tool_end(self, tool_name: str, result: Any, is_error: bool) -> None:
         self._finalize_text()
         text = _result_text(result).rstrip()
+        # §B — a stored tool-renderer-desc for this tool_name renders a custom view
+        # (table/grid/form/text) instead of the default Text dump. The default
+        # rendering is unchanged whenever no descriptor matches (or the lookup /
+        # build raises — a faulty renderer must not swallow tool output).
+        if self._render_with_descriptor(tool_name, text):
+            return
         if not text:
             return
         self._commit(Text(text, style="red" if is_error else ""))
+
+    def _render_with_descriptor(self, tool_name: str, text: str) -> bool:
+        lookup = self.get_tool_renderer_desc
+        renderer = self.descriptor_renderer
+        if lookup is None or renderer is None or not tool_name:
+            return False
+        try:
+            envelope = lookup(tool_name)
+            if envelope is None:
+                return False
+            rows = renderer.project_tool_result(envelope, text)
+            self._commit(renderer.build_tool_renderable(envelope, rows))
+        except Exception:  # noqa: BLE001 — fall back to default on any failure
+            return False
+        return True
 
 
 __all__ = ["EventRenderer"]

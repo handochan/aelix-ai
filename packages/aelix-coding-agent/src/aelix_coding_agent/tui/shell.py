@@ -42,6 +42,7 @@ from aelix_coding_agent.tui.input import parse_input_line
 from aelix_coding_agent.tui.render import EventRenderer
 
 if TYPE_CHECKING:
+    from aelix_agent_core.contracts.descriptor import DescriptorEnvelope
     from aelix_agent_core.harness.core import AgentHarness
     from aelix_agent_core.runtime.agent_session_runtime import AgentSessionRuntime
 
@@ -117,6 +118,7 @@ async def run_tui(
     out_chrome.on_interrupt = _on_interrupt
 
     descriptor_unsub: Callable[[], None] | None = None
+    descriptor_renderer: DescriptorRenderer | None = None
     chrome_task: asyncio.Task[None] | None = None
     pump_task: asyncio.Task[None] | None = None
     try:
@@ -128,10 +130,19 @@ async def run_tui(
         # Tier-2 descriptor probe (ADR-0095 / Sprint 6h₁₀c §C): build the keyed
         # registry + per-kind renderer, subscribe to the ui:list-modules channel,
         # then emit one synchronous probe so loaded extensions append descriptors.
-        descriptor_unsub = _wire_descriptors(runtime_host, out_chrome, footer, context, loop)
+        descriptor_unsub, descriptor_renderer = _wire_descriptors(
+            runtime_host, out_chrome, footer, context, loop, renderer
+        )
         chrome_task = asyncio.create_task(out_chrome.run())
         pump_task = asyncio.create_task(_output_pump(output_queue, out_chrome))
-        await _input_loop(runtime_host, out_chrome, output_queue, renderer, cwd=cwd)
+        await _input_loop(
+            runtime_host,
+            out_chrome,
+            output_queue,
+            renderer,
+            descriptor_renderer,
+            cwd=cwd,
+        )
     finally:
         with contextlib.suppress(Exception):
             runtime_host.harness.runtime.bind_ui(HEADLESS_UI_CONTEXT)
@@ -166,22 +177,31 @@ def _wire_descriptors(
     footer: AelixFooterData,
     context: AelixTUIContext,
     loop: asyncio.AbstractEventLoop,
-) -> Callable[[], None] | None:
+    event_renderer: EventRenderer,
+) -> tuple[Callable[[], None] | None, DescriptorRenderer | None]:
     """Build the descriptor registry + renderer, subscribe + emit one probe.
 
-    Returns an unsubscribe callable (or ``None`` when the runtime exposes no
-    ``event_bus`` — e.g. headless test fakes — leaving all other run_tui
-    behavior intact). ``refresh_footer`` is wired to the context's single footer
-    composer so footer-segment descriptors don't clobber the ``⎇ branch`` line.
+    Returns ``(unsubscribe, descriptor_renderer)``. The unsubscribe callable (or
+    ``None`` when the runtime exposes no ``event_bus`` — e.g. headless test fakes)
+    leaves all other run_tui behavior intact. ``refresh_footer`` is wired to the
+    context's single footer composer so footer-segment descriptors don't clobber
+    the ``⎇ branch`` line. The returned :class:`DescriptorRenderer` lets the input
+    loop route ``/command`` lines that match a stored management-modal (§C).
     """
 
     event_bus = getattr(getattr(runtime_host.harness, "runtime", None), "event_bus", None)
     if event_bus is None:
-        return None
+        return None, None
 
     registry = DescriptorRegistry()
     renderer = DescriptorRenderer(
-        chrome, footer, registry, loop=loop, refresh_footer=context._refresh_footer
+        chrome,
+        footer,
+        registry,
+        loop=loop,
+        refresh_footer=context._refresh_footer,
+        event_bus=event_bus,
+        confirm=lambda message: context.confirm("Confirm", message),
     )
     registry.on_apply = renderer.render
     registry.on_remove = renderer.clear
@@ -191,10 +211,50 @@ def _wire_descriptors(
     # so descriptors applied/removed after this point change completions live.
     chrome.set_command_completer(DescriptorCommandCompleter(lambda: renderer.command_routes))
 
+    # §B — late-bind the live tool-renderer-desc lookup onto the EventRenderer so
+    # tool_execution_end can intercept matching tools by reference (descriptors
+    # applied/removed later change interception live, like command-routes).
+    event_renderer.get_tool_renderer_desc = lambda tool_name: _lookup_tool_renderer_desc(
+        registry, tool_name
+    )
+    event_renderer.descriptor_renderer = renderer
+
     unsubscribe = event_bus.on("ui:list-modules", registry.collect)
     probe = ListModulesProbe()
     event_bus.emit("ui:list-modules", probe)
-    return unsubscribe
+    return unsubscribe, renderer
+
+
+def _lookup_tool_renderer_desc(
+    registry: DescriptorRegistry, tool_name: str
+) -> DescriptorEnvelope | None:
+    """Return the stored tool-renderer-desc envelope matching ``tool_name`` (§B)."""
+    for env in registry.by_kind("tool-renderer-desc"):
+        if getattr(env.payload, "tool_name", None) == tool_name:
+            return env
+    return None
+
+
+def _match_management_modal(
+    descriptor_renderer: DescriptorRenderer, text: str
+) -> DescriptorEnvelope | None:
+    """Match a submitted prompt line to a stored management-modal command (§C).
+
+    A ``/<command>`` line whose command equals a stored management-modal's
+    ``command`` discriminator returns that envelope (so the shell opens it
+    instead of prompting the model). Non-slash lines never match.
+    """
+    if not text.startswith("/"):
+        return None
+    # Guard on the split result: "/ " → [] (whitespace-only body), not an IndexError.
+    parts = text[1:].split(maxsplit=1)
+    command = parts[0] if parts else ""
+    if not command:
+        return None
+    for env in descriptor_renderer.registry.by_kind("management-modal"):
+        if getattr(env.payload, "command", None) == command:
+            return env
+    return None
 
 
 async def _output_pump(queue: asyncio.Queue[tuple[str, object]], chrome: AelixChrome) -> None:
@@ -215,6 +275,7 @@ async def _input_loop(
     chrome: AelixChrome,
     output_queue: asyncio.Queue[tuple[str, object]],
     renderer: EventRenderer,
+    descriptor_renderer: DescriptorRenderer | None,
     *,
     cwd: str,
 ) -> None:
@@ -236,6 +297,16 @@ async def _input_loop(
         if parsed.kind == "reload":
             await harness.reload_resources()
             continue
+        # §C — a `/command` matching a stored management-modal opens the modal
+        # (its actions dispatch via §A) instead of going to the model. Builtin
+        # commands (/quit//exit//reload) are already handled above; the registry
+        # match is done here in the shell so ``parse_input_line`` stays PURE
+        # (it's reused by ``cli/repl.py``).
+        if parsed.kind == "prompt" and descriptor_renderer is not None:
+            modal = _match_management_modal(descriptor_renderer, parsed.text)
+            if modal is not None:
+                descriptor_renderer.open_modal(modal)
+                continue
         if parsed.kind in ("bash", "bash_transient"):
             if parsed.text:
                 output = await handle_user_bash(

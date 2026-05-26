@@ -37,11 +37,12 @@ Deferred (explicit, §1.6 — NOT implemented here):
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from aelix_agent_core.contracts.descriptor import DescriptorEnvelope
+from aelix_agent_core.contracts.descriptor import ActionDescriptor, DescriptorEnvelope
 from aelix_agent_core.contracts.slots import SLOT_MULTIPLICITY
 from rich.columns import Columns
 from rich.panel import Panel
@@ -53,11 +54,12 @@ from aelix_coding_agent.tui.overlay import make_float, show_modal
 from aelix_coding_agent.tui.widgets import RichComponent
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Awaitable, Callable
 
     from prompt_toolkit.layout import Float
     from prompt_toolkit.layout.containers import AnyContainer
 
+    from aelix_coding_agent.extensions.api import EventBus
     from aelix_coding_agent.tui.chrome import AelixChrome
     from aelix_coding_agent.tui.footer_data import AelixFooterData
 
@@ -233,11 +235,13 @@ class DescriptorRenderer:
       :meth:`render_tool_result`. Live tool-result interception is out of scope
       this sprint; the descriptor is stored and the renderer is exercisable.
     - ``management-modal`` (FULL render+open) → ``show_modal``. ``ActionDescriptor``
-      reverse-channel dispatch is DEFERRED (§1.6).
-    - ``command-route`` (PARTIAL) → metadata stored only; live autocomplete
-      completion is DEFERRED (ADR-0105:86).
-    - ``breadcrumb`` (DEGRADE) → ``chrome.set_header_line(chain)``.
-    - ``agent-metric`` (DEGRADE) → ``chrome.set_widget(key, lines)``.
+      actions dispatch via :meth:`dispatch_action` → ``plugin_action`` (6h₁₀e §A).
+    - ``command-route`` (FULL) → metadata stored + surfaced via the input
+      completer (6h₁₀d) and management-modal command-trigger (6h₁₀e §C).
+    - ``breadcrumb`` → dedicated breadcrumb chrome row
+      (``chrome.set_breadcrumb_line(chain)``; 6h₁₀e §D).
+    - ``agent-metric`` → ONE composed horizontal metric strip via a single
+      ``chrome.set_widget`` slot (6h₁₀e §E).
     """
 
     def __init__(
@@ -249,12 +253,20 @@ class DescriptorRenderer:
         loop: asyncio.AbstractEventLoop | None = None,
         spawn: Callable[[Any], Any] | None = None,
         refresh_footer: Callable[[], None] | None = None,
+        event_bus: EventBus | None = None,
+        confirm: Callable[[str], Awaitable[bool]] | None = None,
         width: int = _RENDER_WIDTH,
     ) -> None:
         self._chrome = chrome
         self._footer = footer
         self._registry = registry
         self._loop = loop
+        # §A — ActionDescriptor reverse-channel. ``event_bus`` (run_tui injects the
+        # runtime EventBus) receives ``plugin_action`` emits; ``confirm`` is the
+        # ExtensionUIContext confirm dialog, awaited before emit when the action
+        # carries a ``confirm`` prompt. Both optional → standalone tests / no bus.
+        self._event_bus = event_bus
+        self._confirm = confirm
         # The footer line is composed by ONE owner (``context._refresh_footer``:
         # ``⎇ branch`` + all extension statuses). footer-segment descriptors land
         # in ``footer.set_status`` like any status, so we trigger that shared
@@ -270,6 +282,11 @@ class DescriptorRenderer:
         self._toast_floats: dict[str, Float] = {}
         # Stored command-route metadata (PARTIAL: not wired to completion yet).
         self.command_routes: dict[str, Any] = {}
+
+    @property
+    def registry(self) -> DescriptorRegistry:
+        """The backing :class:`DescriptorRegistry` (read access for the shell §C)."""
+        return self._registry
 
     def _loop_now(self) -> asyncio.AbstractEventLoop | None:
         if self._loop is not None:
@@ -295,7 +312,9 @@ class DescriptorRenderer:
         elif kind == "status-item":
             self._chrome.set_status(key, None)
         elif kind == "agent-metric":
-            self._chrome.set_widget(key, None)
+            # All metrics share one slot (§E) → recompose from the survivors;
+            # the removed entry is already gone from the registry at this point.
+            self._recompose_agent_metrics()
         elif kind == "toast":
             self._dismiss_toast(key)
         elif kind == "command-route":
@@ -405,6 +424,43 @@ class DescriptorRenderer:
         self._spawn(self._chrome.print_above(renderable))
 
     @staticmethod
+    def project_tool_result(envelope: DescriptorEnvelope, result_text: str) -> Any:
+        """Project a ``ToolResult``'s text into ``build_tool_renderable`` rows (§B).
+
+        MINIMAL projection (full JSONPath DEFERRED, spec §2):
+
+        - ``text`` view → ``[result_text]`` (the raw content, shown in the Panel).
+        - ``table`` / ``grid`` / ``form`` → JSON-parse ``result_text``; honor
+          ``rows_path`` only as a simple dotted-key lookup into parsed objects,
+          else use the parsed value itself. A ``list`` parses to rows; a single
+          ``dict`` wraps to ``[dict]``. On parse failure / non-collection, fall
+          back to the raw text as a single-cell row.
+        """
+        payload = envelope.payload
+        view = getattr(payload, "view", "text")
+        if view == "text":
+            text_path = getattr(payload, "text_path", None)
+            extracted = _dotted_lookup_text(result_text, text_path)
+            return [extracted if extracted is not None else result_text]
+
+        rows_path = getattr(payload, "rows_path", None)
+        try:
+            parsed = json.loads(result_text)
+        except (ValueError, TypeError):
+            # Not JSON → can't build structured rows; fall back to the raw text.
+            return [result_text]
+
+        if rows_path:
+            parsed = _dotted_lookup(parsed, rows_path)
+
+        if isinstance(parsed, list):
+            return parsed
+        if isinstance(parsed, dict):
+            return [parsed]
+        # Scalar / unresolved path → single raw-text row.
+        return [result_text]
+
+    @staticmethod
     def build_tool_renderable(envelope: DescriptorEnvelope, rows: Any = None) -> object:
         payload = envelope.payload
         view = getattr(payload, "view", "text")
@@ -446,26 +502,103 @@ class DescriptorRenderer:
     # --- management-modal (FULL render + open) ----------------------------
 
     def _render_management_modal(self, envelope: DescriptorEnvelope, key: str) -> None:  # noqa: ARG002
-        # Stored in the registry on apply; opened on demand via open_modal so the
-        # session-start probe does not pop a blocking modal. ActionDescriptor
-        # reverse-channel dispatch is DEFERRED (§1.6).
+        # Stored in the registry on apply; opened on demand via open_modal (the
+        # session-start probe must not pop a blocking modal). The modal's actions
+        # dispatch back to the plugin via dispatch_action (§A reverse-channel).
         return
 
     def open_modal(self, envelope: DescriptorEnvelope) -> None:
-        """Open the management-modal for ``envelope`` as a focusable Float."""
+        """Open the management-modal for ``envelope`` as a focusable Float.
+
+        The modal's ``actions`` (``ManagementModalPayload.actions``) are bound to
+        number keys ``1``–``9`` and an actions hint line is rendered; pressing a
+        key dispatches that :class:`ActionDescriptor` back to its plugin via
+        :meth:`dispatch_action` (§A reverse-channel) and closes the modal.
+        ``Esc`` / ``Ctrl-C`` close without dispatching.
+        """
         renderable = self.build_tool_renderable(envelope)
+        actions = list(getattr(envelope.payload, "actions", None) or [])
 
         def build(_result: asyncio.Future[Any]) -> AnyContainer:
-            from prompt_toolkit.key_binding import KeyBindings
             from prompt_toolkit.layout import HSplit
 
-            kb = KeyBindings()
-            kb.add("escape")(lambda _e: _resolve(_result, None))
-            kb.add("c-c")(lambda _e: _resolve(_result, None))
-            inner = self._float_content(renderable)
-            return HSplit([inner], key_bindings=kb)
+            def _close() -> None:
+                _resolve(_result, None)
+
+            kb = self._build_modal_keybindings(actions, _close)
+            parts: list[AnyContainer] = [self._float_content(renderable)]
+            if actions:
+                parts.append(self._float_content(self._render_action_hints(actions)))
+            return HSplit(parts, key_bindings=kb)
 
         self._spawn(show_modal(self._chrome, build))
+
+    def _build_modal_keybindings(
+        self, actions: list[ActionDescriptor], close: Callable[[], None]
+    ) -> Any:
+        """Esc/Ctrl-C close; number keys 1–9 dispatch the matching action + close."""
+        from prompt_toolkit.key_binding import KeyBindings
+
+        kb = KeyBindings()
+        kb.add("escape")(lambda _e: close())
+        kb.add("c-c")(lambda _e: close())
+        for index, action in enumerate(actions[:9], start=1):
+
+            def _handler(_e: Any, _action: ActionDescriptor = action) -> None:
+                self.dispatch_action(_action)
+                close()
+
+            kb.add(str(index))(_handler)
+        return kb
+
+    @staticmethod
+    def _render_action_hints(actions: list[ActionDescriptor]) -> Text:
+        """A one-line ``[1] action  [2] action`` hint for the bound action keys."""
+        hint = Text()
+        for index, action in enumerate(actions[:9], start=1):
+            if index > 1:
+                hint.append("  ")
+            hint.append(f"[{index}] {action.action}")
+        return hint
+
+    # --- ActionDescriptor reverse-channel (§A) ----------------------------
+
+    def dispatch_action(self, action: ActionDescriptor) -> None:
+        """Route an :class:`ActionDescriptor` back to its plugin (``plugin_action``).
+
+        When ``action.confirm`` is set, spawn an async path that awaits the
+        confirm dialog (``ctx.confirm``) and only emits if the user accepts;
+        otherwise emit synchronously. The EventBus payload is the wire-safe
+        ``action.model_dump(mode="json")`` (no function refs cross the channel).
+        Emit failures are contained + logged — a faulty reverse-channel must not
+        abort the modal or the session.
+        """
+        if action.confirm and self._confirm is not None:
+            self._spawn(self._dispatch_with_confirm(action))
+            return
+        self._emit_action(action)
+
+    async def _dispatch_with_confirm(self, action: ActionDescriptor) -> None:
+        confirm = self._confirm
+        if confirm is None:  # pragma: no cover — guarded by dispatch_action
+            return
+        try:
+            ok = await confirm(action.confirm or "")
+        except Exception:  # noqa: BLE001 — a faulty dialog must not crash the loop
+            _log.warning("descriptor: confirm failed for action %r", action.action, exc_info=True)
+            return
+        if ok:
+            self._emit_action(action)
+
+    def _emit_action(self, action: ActionDescriptor) -> None:
+        if self._event_bus is None:
+            _log.debug("descriptor: no event_bus; dropping action %r", action.action)
+            return
+        try:
+            self._event_bus.emit("plugin_action", action.model_dump(mode="json"))
+        except Exception:  # noqa: BLE001 — contained + logged (EventBus swallows
+            # handler exc, but the emit call itself / model_dump must not bubble).
+            _log.warning("descriptor: plugin_action emit failed for %r", action.action, exc_info=True)
 
     # --- command-route (PARTIAL — store only) -----------------------------
 
@@ -487,7 +620,7 @@ class DescriptorRenderer:
                 del self.command_routes[k]
         self.command_routes[key] = envelope.payload
 
-    # --- breadcrumb (DEGRADE → header line) -------------------------------
+    # --- breadcrumb (→ dedicated breadcrumb row, §D) ----------------------
 
     def _render_breadcrumb(self, envelope: DescriptorEnvelope, key: str) -> None:  # noqa: ARG002
         self._recompose_breadcrumbs()
@@ -496,19 +629,64 @@ class DescriptorRenderer:
         labels = [
             str(getattr(env.payload, "label", "")) for env in self._registry.by_kind("breadcrumb")
         ]
-        self._chrome.set_header_line(" › ".join(p for p in labels if p))
+        self._chrome.set_breadcrumb_line(" › ".join(p for p in labels if p))
 
-    # --- agent-metric (DEGRADE → widget) ----------------------------------
+    # --- agent-metric (composed metric row, §E) ---------------------------
 
-    def _render_agent_metric(self, envelope: DescriptorEnvelope, key: str) -> None:
-        payload = envelope.payload
-        label = getattr(payload, "label", "")
-        value = getattr(payload, "value", "")
-        delta = getattr(payload, "delta", None)
-        line = f"{label}: {value}"
-        if delta:
-            line = f"{line} ({delta})"
-        self._chrome.set_widget(key, [line])
+    # All agent-metrics share ONE widget slot — a single horizontal strip — so
+    # they render as a metric ROW (inline ``full_screen=False`` model, ADR-0105),
+    # not per-metric lines / a VSplit sidebar (the true ``slot:agent-metric``
+    # sidebar is a Web Phase 6 concern; documented divergence, spec §1.E).
+    _AGENT_METRIC_SLOT = "__agent_metrics__"
+
+    def _render_agent_metric(self, envelope: DescriptorEnvelope, key: str) -> None:  # noqa: ARG002
+        self._recompose_agent_metrics()
+
+    def _recompose_agent_metrics(self) -> None:
+        cells: list[Text] = []
+        for env in self._registry.by_kind("agent-metric"):
+            payload = env.payload
+            label = getattr(payload, "label", "")
+            value = getattr(payload, "value", "")
+            delta = getattr(payload, "delta", None)
+            level = getattr(payload, "level", "info")
+            segment = f"{label}: {value}"
+            if delta:
+                segment = f"{segment} ({delta})"
+            color = _LEVEL_STYLE.get(level, "")
+            cells.append(Text(segment, style=color) if color else Text(segment))
+        if not cells:
+            self._chrome.set_widget(self._AGENT_METRIC_SLOT, None)
+            return
+        lines = RichComponent(Columns(cells)).render(self._width)
+        self._chrome.set_widget(self._AGENT_METRIC_SLOT, lines)
+
+
+def _dotted_lookup(value: Any, path: str) -> Any:
+    """Walk a simple dotted-key path into nested ``dict``s (§B; not full JSONPath).
+
+    ``"a.b"`` → ``value["a"]["b"]``. A missing/non-dict step returns ``None`` so
+    the caller falls back to the raw content (full JSONPath DEFERRED, spec §2).
+    """
+    current = value
+    for part in path.split("."):
+        if isinstance(current, dict) and part in current:
+            current = current[part]
+        else:
+            return None
+    return current
+
+
+def _dotted_lookup_text(result_text: str, path: str | None) -> str | None:
+    """Resolve ``text_path`` against JSON-parsed ``result_text`` (dotted key)."""
+    if not path:
+        return None
+    try:
+        parsed = json.loads(result_text)
+    except (ValueError, TypeError):
+        return None
+    found = _dotted_lookup(parsed, path)
+    return None if found is None else str(found)
 
 
 def _resolve(result: asyncio.Future[Any], value: Any) -> None:
