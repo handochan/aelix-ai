@@ -99,14 +99,22 @@ class AelixTUIContext:
         footer: AelixFooterData,
         *,
         model_provider: Callable[[], str | None] | None = None,
+        mode_provider: Callable[[], str | None] | None = None,
         cwd: str | None = None,
         mode: str = "default",
     ) -> None:
         self.chrome = chrome
         self._footer = footer
         self._model_provider = model_provider
+        # ``mode_provider`` reads the LIVE steering mode from the harness so the
+        # footer reflects reality instead of a stale local string; ``_mode`` is
+        # the fallback when no provider is wired (headless/tests).
+        self._mode_provider = mode_provider
         self._cwd = cwd
         self._mode = mode
+        # Live context-window usage label (e.g. "◔ 42% · 84k/200k"), refreshed
+        # async on turn_end by run_tui; None until the first turn completes.
+        self._context_label: str | None = None
         self._theme: Theme = theme_registry.DEFAULT_THEME
         self._tools_expanded = False
         self._hidden_thinking_label: str | None = None
@@ -376,18 +384,31 @@ class AelixTUIContext:
         branch = self._footer.get_git_branch()
         statuses = self._footer.get_extension_statuses()
         model = self._model_provider() if self._model_provider is not None else None
+        mode = (
+            self._mode_provider() if self._mode_provider is not None else None
+        ) or self._mode
         segments = [
             s
             for s in (
-                f"⏵⏵ {self._mode}" if self._mode else None,
+                f"⏵⏵ {mode}" if mode else None,
                 f"📂 {self._abbrev_cwd(self._cwd)}" if self._cwd else None,
                 f"✱ {model}" if model else None,
+                self._context_label,
                 f"⎇ {branch}" if branch else None,
                 *statuses.values(),
             )
             if s
         ]
         self.chrome.set_footer_line("  ·  ".join(segments))
+
+    def set_context_label(self, label: str | None) -> None:
+        """Update the live context-window usage segment + repaint the footer.
+
+        Called by ``run_tui`` after ``turn_end`` with a formatted label (or
+        ``None`` when usage is unavailable — e.g. model registry not wired).
+        """
+        self._context_label = label
+        self._refresh_footer()
 
     @staticmethod
     def _abbrev_cwd(cwd: str) -> str:

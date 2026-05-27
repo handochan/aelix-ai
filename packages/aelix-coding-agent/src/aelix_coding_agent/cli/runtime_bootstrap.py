@@ -69,11 +69,26 @@ def resolve_model(model_flag: str | None, provider_flag: str | None) -> Model:
     openrouter_key = os.environ.get("OPENROUTER_API_KEY")
     model_id = model_flag or os.environ.get("OPENROUTER_DEFAULT_MODEL")
     if openrouter_key and model_id and (provider_flag in (None, "", "openrouter")):
+        # Enrich from the Pi catalog when the id is known: a bare Model has
+        # ``context_window=0`` / ``max_tokens=0`` / empty cost, which silently
+        # disables the context-usage meter (``getContextUsage`` returns None
+        # when the window is 0), zeroes ``/cost``, and drops the model's
+        # ``thinking_level_map``. The full catalog entry carries all of these.
+        # Falls back to a bare model for ids absent from the catalog (custom /
+        # newly-released OpenRouter models). Honors a custom OPENROUTER_BASE_URL.
+        from dataclasses import replace
+
+        from aelix_ai.models import get_model
+
+        catalog = get_model("openrouter", model_id)
+        env_base_url = os.environ.get("OPENROUTER_BASE_URL")
+        if catalog is not None:
+            return replace(catalog, base_url=env_base_url) if env_base_url else catalog
         return Model(
             id=model_id,
             provider="openrouter",
             api=OPENAI_COMPLETIONS_API,
-            base_url=os.environ.get("OPENROUTER_BASE_URL") or _DEFAULT_OPENROUTER_BASE_URL,
+            base_url=env_base_url or _DEFAULT_OPENROUTER_BASE_URL,
         )
     # Existing behavior: a bare model from explicit flags (the adapter resolves
     # the per-provider key from env when the api is registered).

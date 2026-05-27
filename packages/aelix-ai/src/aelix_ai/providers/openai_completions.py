@@ -836,6 +836,46 @@ def _relocate_extra_body_params(params: dict[str, Any]) -> dict[str, Any]:
     return params
 
 
+def _attr_or_key(obj: Any, name: str) -> Any:
+    """Read ``name`` from an attr (SDK object) or a key (dict mock)."""
+    if isinstance(obj, dict):
+        return obj.get(name)
+    return getattr(obj, name, None)
+
+
+def _usage_to_dict(usage: Any) -> dict[str, Any] | None:
+    """Map an OpenAI/OpenRouter ``usage`` payload to the Aelix usage dict.
+
+    Keys match what :func:`session.compaction.calculate_context_tokens` and
+    the session-stats aggregator read (``total_tokens`` / ``input_tokens`` /
+    ``output_tokens`` / ``cache_read``), so the context-usage meter and
+    ``/cost`` reflect real numbers. Returns ``None`` for an empty payload.
+    """
+    if usage is None:
+        return None
+    prompt = _attr_or_key(usage, "prompt_tokens") or 0
+    completion = _attr_or_key(usage, "completion_tokens") or 0
+    total = _attr_or_key(usage, "total_tokens") or (prompt + completion)
+    cached = 0
+    details = _attr_or_key(usage, "prompt_tokens_details")
+    if details is not None:
+        cached = _attr_or_key(details, "cached_tokens") or 0
+    if not (prompt or completion or total):
+        return None
+    # Emit BOTH spellings: the session-stats aggregator reads ``input``/
+    # ``output`` (Usage-dataclass field names) while
+    # ``calculate_context_tokens`` accepts ``total_tokens`` /
+    # ``input_tokens``. Covering both keeps /cost and the meter consistent.
+    return {
+        "input": int(prompt),
+        "output": int(completion),
+        "input_tokens": int(prompt),
+        "output_tokens": int(completion),
+        "total_tokens": int(total),
+        "cache_read": int(cached),
+    }
+
+
 async def _open_stream(
     client: Any, params: dict[str, Any], request_options: dict[str, Any]
 ) -> tuple[AsyncIterator[Any], Any]:
@@ -895,6 +935,7 @@ async def stream_openai_completions(
     # The block dicts carry: ``content_index`` (position in output_content),
     # ``id``, ``name``, ``partial_args``, ``stream_index``.
     has_finish_reason = False
+    captured_usage: dict[str, Any] | None = None
 
     try:
         compat = get_compat(model)
@@ -967,9 +1008,15 @@ async def stream_openai_completions(
             if not chunk:
                 continue
 
-            # Pi reads `chunk.id` / `chunk.model` / `chunk.usage` —
-            # Aelix doesn't yet carry the matching fields on
-            # AssistantMessage so we ignore them in 6b.
+            # Capture the streaming usage payload. The final usage-only chunk
+            # (``stream_options.include_usage``) has EMPTY choices, so read it
+            # BEFORE the choices guard below. Populates AssistantMessage.usage
+            # → the context-window meter + /cost reflect real token counts
+            # (ADR-0116; the Sprint-6b "ignore usage" deferral is now closed).
+            chunk_usage = _usage_to_dict(getattr(chunk, "usage", None))
+            if chunk_usage is not None:
+                captured_usage = chunk_usage
+
             choices = getattr(chunk, "choices", None)
             if not choices:
                 continue
@@ -1180,6 +1227,7 @@ async def stream_openai_completions(
             content=list(output_content),
             stop_reason=stop_reason,
             error_message=error_message,
+            usage=captured_usage,
             api=model.api,
             provider=model.provider,
             model=model.id,

@@ -257,14 +257,59 @@ async def _mode_handler(ctx: CommandContext, args: str) -> None:
     ctx.commit(Text(f"mode → {args}", style="green"))
 
 
+async def _export_handler(ctx: CommandContext, args: str) -> None:
+    """``/export [path]`` — write the session transcript to an HTML file."""
+
+    if not hasattr(ctx.harness, "export_to_html"):
+        ctx.commit(Text("Export is unavailable.", style="yellow"))
+        return
+    try:
+        # export_to_html is synchronous and returns the resolved path; it
+        # raises on in-memory / empty sessions (Pi parity).
+        path = ctx.harness.export_to_html(args or None)
+    except Exception as exc:  # noqa: BLE001 — surface, never kill the REPL
+        ctx.commit(Text(f"✖ export failed: {exc}", style="bold red"))
+        return
+    ctx.commit(Text(f"exported → {path}", style="green"))
+
+
+async def _thinking_handler(ctx: CommandContext, args: str) -> None:
+    """``/thinking [level]`` — show the reasoning level, or set it.
+
+    No arg shows the current level; an arg (e.g. ``low``/``medium``/``high``)
+    sets it via the harness. Degrades gracefully on a harness lacking the API.
+    """
+
+    state = getattr(ctx.harness, "_state", None)
+    current = getattr(state, "thinking_level", None)
+    if not args:
+        if current:
+            ctx.commit(Text(f"thinking: {current}"))
+        else:
+            ctx.commit(Text("Thinking level is unavailable.", style="yellow"))
+        return
+    setter = getattr(ctx.harness, "set_thinking_level", None)
+    if not callable(setter):
+        ctx.commit(Text("Thinking level switching is unavailable.", style="yellow"))
+        return
+    try:
+        await setter(args)
+    except Exception as exc:  # noqa: BLE001 — surface, never kill the REPL
+        ctx.commit(Text(f"✖ thinking switch failed: {exc}", style="bold red"))
+        return
+    ctx.commit(Text(f"thinking → {args}", style="green"))
+
+
 BUILTIN_COMMANDS: list[BuiltinCommand] = [
     BuiltinCommand("help", "List available commands", _help_handler),
     BuiltinCommand("model", "Show or switch the active model", _model_handler),
     BuiltinCommand("clear", "Clear the scrollback transcript", _clear_handler),
     BuiltinCommand("compact", "Compact the conversation context", _compact_handler),
     BuiltinCommand("cost", "Show session token / cost usage", _cost_handler),
+    BuiltinCommand("thinking", "Show or set the reasoning level", _thinking_handler),
     BuiltinCommand("tools", "List registered tools", _tools_handler),
     BuiltinCommand("mode", "Show or set the steering mode", _mode_handler),
+    BuiltinCommand("export", "Export the transcript to HTML", _export_handler),
     BuiltinCommand("quit", "Exit Aelix", None),
     BuiltinCommand("exit", "Exit Aelix", None),
     BuiltinCommand("reload", "Reload extensions + resources", None),

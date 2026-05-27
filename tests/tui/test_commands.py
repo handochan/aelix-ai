@@ -159,7 +159,8 @@ def test_builtin_command_is_frozen() -> None:
 
 
 def test_sprint_a_registry_set() -> None:
-    # Sprint 6h₁₂d added model/clear/compact/cost/tools/mode between help and quit.
+    # Sprint 6h₁₂d added model/clear/compact/cost/tools/mode; the P0 consumer
+    # batch added thinking + export (both wired to existing harness APIs).
     names = [c.name for c in BUILTIN_COMMANDS]
     assert names == [
         "help",
@@ -167,14 +168,18 @@ def test_sprint_a_registry_set() -> None:
         "clear",
         "compact",
         "cost",
+        "thinking",
         "tools",
         "mode",
+        "export",
         "quit",
         "exit",
         "reload",
     ]
     by_name: dict[str, Any] = {c.name: c for c in BUILTIN_COMMANDS}
     assert by_name["help"].handler is not None
+    assert by_name["thinking"].handler is not None
+    assert by_name["export"].handler is not None
     assert by_name["quit"].handler is None
     assert by_name["exit"].handler is None
     assert by_name["reload"].handler is None

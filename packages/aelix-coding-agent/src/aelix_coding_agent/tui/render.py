@@ -129,6 +129,40 @@ def _bash_exit_code(result: Any) -> int | None:
     return code if isinstance(code, int) else None
 
 
+def _looks_like_diff(text: str) -> bool:
+    """True for difflib-style unified-diff output (has a ``@@`` hunk header).
+
+    The ``@@`` gate avoids mis-colouring ordinary tool output whose lines
+    merely happen to start with ``+``/``-``.
+    """
+    if "@@" not in text:
+        return False
+    return any(
+        line.startswith(("@@", "+++", "---")) for line in text.splitlines()
+    )
+
+
+def _render_diff(text: str, *, max_lines: int = 40) -> Group:
+    """Colourise a unified diff: +green / -red / @@cyan / ---|+++ bold."""
+    kept, hidden = _truncate_lines(text, max_lines=max_lines)
+    rows: list[Text] = []
+    for line in kept:
+        if line.startswith(("+++", "---")):
+            style = "bold"
+        elif line.startswith("@@"):
+            style = "cyan"
+        elif line.startswith("+"):
+            style = "green"
+        elif line.startswith("-"):
+            style = "red"
+        else:
+            style = "dim"
+        rows.append(Text(line, style=style))
+    if hidden > 0:
+        rows.append(Text(f"… (+{hidden} more lines)", style="dim"))
+    return Group(*rows)
+
+
 class EventRenderer:
     """Renders the harness :data:`AgentEvent` stream via commit/tail sinks.
 
@@ -273,6 +307,13 @@ class EventRenderer:
             return
         exit_code = _bash_exit_code(result) if tool_name == "bash" else None
         if not text:
+            return
+        # §C (ADR-0116) — edit/write tools emit a unified diff (difflib in
+        # ``result.content`` / ``EditToolDetails.diff``). Render it with +/-
+        # colour so changes read like a real diff instead of flat dim text.
+        # Errors keep the red card below (a failed edit isn't a diff to review).
+        if not is_error and _looks_like_diff(text):
+            self._commit(_render_diff(text))
             return
         # §A — truncated, styled card under the ⚙ header: a dim left-gutter block
         # (red when is_error), with a "+N more lines" footer when truncated and an

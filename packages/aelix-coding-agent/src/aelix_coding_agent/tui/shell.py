@@ -56,6 +56,28 @@ if TYPE_CHECKING:
 _RENDER_WIDTH = 80
 
 
+def _format_context_label(usage: object) -> str | None:
+    """Format a harness ``ContextUsage`` into a footer segment.
+
+    ``"◔ 42% · 84K/200K"`` when both percent and token counts are known;
+    degrades to whichever part is available; ``None`` when usage is missing
+    (e.g. model registry not wired — Pi returns undefined there too).
+    """
+    if usage is None:
+        return None
+    from aelix_coding_agent.cli.list_models import format_token_count
+
+    percent = getattr(usage, "percent", None)
+    tokens = getattr(usage, "tokens", None)
+    window = getattr(usage, "context_window", None)
+    parts: list[str] = []
+    if isinstance(percent, int | float):
+        parts.append(f"{percent:.0f}%")
+    if isinstance(tokens, int) and isinstance(window, int) and window > 0:
+        parts.append(f"{format_token_count(tokens)}/{format_token_count(window)}")
+    return f"◔ {' · '.join(parts)}" if parts else None
+
+
 async def run_tui(
     runtime_host: AgentSessionRuntime,
     *,
@@ -70,15 +92,36 @@ async def run_tui(
         that owns process signals) — mirrors ``run_rpc_mode``.
     """
 
-    out_chrome = chrome if chrome is not None else AelixChrome()
+    if chrome is not None:
+        out_chrome = chrome
+    else:
+        # Persist input history across sessions (↑/↓ + Ctrl+R) — the chrome
+        # already supports it; run_tui just never passed a path before.
+        from pathlib import Path as _Path
+
+        from aelix_coding_agent.cli.config import get_agent_dir
+
+        out_chrome = AelixChrome(
+            history_path=str(_Path(get_agent_dir()) / "tui_input_history")
+        )
     footer = AelixFooterData(cwd=cwd)
 
     def _model_id() -> str | None:
         model = getattr(runtime_host.harness, "current_model", None)
         return getattr(model, "id", None) if model is not None else None
 
+    def _steering_mode() -> str | None:
+        # Live steering mode from the harness ("one-at-a-time"/"all") so the
+        # footer ⏵⏵ segment reflects reality, not a hardcoded placeholder.
+        return getattr(runtime_host.harness, "steering_mode", None)
+
     context = AelixTUIContext(
-        out_chrome, footer, model_provider=_model_id, cwd=cwd, mode="default"
+        out_chrome,
+        footer,
+        model_provider=_model_id,
+        mode_provider=_steering_mode,
+        cwd=cwd,
+        mode="default",
     )
 
     # Output pump seam: the synchronous renderer queues TAGGED commands; the
@@ -137,12 +180,36 @@ async def run_tui(
 
     unsubscribe_holder: dict[str, Callable[[], None] | None] = {"u": None}
 
+    context_usage_tasks: set[asyncio.Task[None]] = set()
+
+    async def _refresh_context_usage() -> None:
+        # Pull the context-window meter after each turn (async; walks messages,
+        # so NOT per-frame). Degrades to no segment when usage is unavailable.
+        get_stats = getattr(runtime_host.harness, "get_session_stats", None)
+        if get_stats is None:
+            return
+        try:
+            stats = await get_stats()
+        except Exception:  # noqa: BLE001 — a stats hiccup must not kill the TUI
+            return
+        context.set_context_label(
+            _format_context_label(getattr(stats, "context_usage", None))
+        )
+
+    def _on_agent_event(event: object) -> None:
+        renderer.on_agent_event(event)  # type: ignore[arg-type]
+        if getattr(event, "type", None) == "turn_end":
+            # Keep a strong reference so the task isn't GC'd before it runs.
+            task = loop.create_task(_refresh_context_usage())
+            context_usage_tasks.add(task)
+            task.add_done_callback(context_usage_tasks.discard)
+
     async def _rebind(new_harness: AgentHarness) -> None:
         prior = unsubscribe_holder["u"]
         if prior is not None:
             with contextlib.suppress(Exception):
                 prior()
-        unsubscribe_holder["u"] = new_harness.subscribe(renderer.on_agent_event)
+        unsubscribe_holder["u"] = new_harness.subscribe(_on_agent_event)
 
     runtime_host.set_rebind_session(_rebind)
 
