@@ -120,12 +120,54 @@ class OpenAICompletionsCompat:
     supports_long_cache_retention: bool = True
 
 
+# OpenRouter provider-routing workarounds (Sprint 6h₁₃ · ADR-0114).
+#
+# Some OpenRouter provider endpoints advertise ``tools`` support yet
+# silently drop the tool-call generation for Qwen3-style hybrid-thinking
+# models: they stream only the ``<think>`` reasoning block and then close
+# the stream with ``finish_reason="stop"`` — no ``content``, no
+# ``<tool_call>`` tags, no structured ``tool_calls`` (so there is nothing
+# the adapter could parse client-side). OpenRouter load-balances onto
+# these endpoints by default, and ``require_parameters`` does NOT exclude
+# them because they DO declare ``tools`` in ``supported_parameters``. The
+# only reliable fix is to name providers via the ``provider`` routing
+# object, which the adapter already forwards from
+# :attr:`OpenAICompletionsCompat.open_router_routing`.
+#
+# This is a deliberate, documented divergence from a verbatim Pi port:
+# Pi sources routing solely from the catalog ``compat.openRouterRouting``,
+# which upstream leaves empty for these models — so a catalog edit would
+# be wiped on regeneration. Keeping the policy here (detection logic, not
+# regenerated data) makes the workaround durable. A user-supplied
+# ``model.compat`` still overrides this via :func:`get_compat`.
+#
+# Verified empirically (raw OpenRouter stream capture, 2026-05-27):
+#   qwen/qwen3.6-35b-a3b — endpoints declaring tools: Ambient, Parasail,
+#   AkashML. Ambient ❌ drops tool calls (think-only, finish=stop);
+#   Parasail ✅ and AkashML ✅ emit structured tool_calls. The routing
+#   below uses ONLY ``ignore: ["Ambient"]`` — removing the broken endpoint
+#   lets OpenRouter load-balance across the remaining tool-capable ones
+#   (Parasail/AkashML), verified 5/5 reliable. ``require_parameters: true``
+#   is deliberately NOT used: it does not exclude Ambient (Ambient declares
+#   ``tools`` support), and combined with the adapter's full param set it
+#   triggered a 404 "No endpoints found that can handle the requested
+#   parameters" by over-constraining the route.
+_OPENROUTER_TOOL_ROUTING_OVERRIDES: dict[str, dict[str, Any]] = {
+    "qwen/qwen3.6-35b-a3b": {"ignore": ["Ambient"]},
+}
+
+
 def detect_compat(model: Model) -> OpenAICompletionsCompat:
     """Detect compat settings from ``provider`` and ``baseUrl``.
 
     Pi parity: ``detectCompat`` (``openai-completions.ts:1062-1121``).
     Provider id takes precedence over URL detection; URL fallback uses
     the same substring matches Pi defines.
+
+    Divergence (Sprint 6h₁₃ · ADR-0114): for OpenRouter models listed in
+    :data:`_OPENROUTER_TOOL_ROUTING_OVERRIDES`, ``open_router_routing`` is
+    seeded with a provider-routing object that avoids endpoints which
+    silently drop tool calls. See the constant's comment for evidence.
     """
 
     provider = (getattr(model, "provider", "") or "").lower()
@@ -180,6 +222,18 @@ def detect_compat(model: Model) -> OpenAICompletionsCompat:
         provider == "openrouter" or "openrouter.ai" in base_url
     )
 
+    # Provider-routing workaround for OpenRouter endpoints that drop tool
+    # calls (ADR-0114). Copied so the shared policy dict is never mutated
+    # by a downstream caller of ``params["provider"]``.
+    open_router_routing: dict[str, Any] = {}
+    if is_openrouter:
+        _override = _OPENROUTER_TOOL_ROUTING_OVERRIDES.get(model_id)
+        if _override is not None:
+            open_router_routing = {
+                k: (list(v) if isinstance(v, list) else v)
+                for k, v in _override.items()
+            }
+
     cache_control_format: Literal["anthropic"] | None = None
     if provider == "openrouter" and model_id.startswith("anthropic/"):
         cache_control_format = "anthropic"
@@ -220,7 +274,7 @@ def detect_compat(model: Model) -> OpenAICompletionsCompat:
         requires_thinking_as_text=False,
         requires_reasoning_content_on_assistant_messages=is_deep_seek,
         thinking_format=thinking_format,
-        open_router_routing={},
+        open_router_routing=open_router_routing,
         vercel_gateway_routing={},
         zai_tool_stream=False,
         supports_strict_mode=not (

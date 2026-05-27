@@ -657,7 +657,17 @@ def build_params(
         params["store"] = False
 
     max_tokens = getattr(model, "max_tokens", 0) or 0
-    if max_tokens > 0:
+    context_window = getattr(model, "context_window", 0) or 0
+    # ADR-0114: 127 catalog models list ``maxTokens == contextWindow``.
+    # Sending the full context window as the *output* cap leaves no room
+    # for the prompt and 400s on strict OpenRouter endpoints ("this
+    # endpoint's maximum context length is N tokens. However, you
+    # requested ... in the output"). When the cap is meaningless (>= the
+    # whole context window), omit it so the provider clamps the output to
+    # whatever the context allows. Models with a real, smaller output cap
+    # keep sending it unchanged.
+    cap_is_meaningful = not (context_window and max_tokens >= context_window)
+    if max_tokens > 0 and cap_is_meaningful:
         if compat.max_tokens_field == "max_tokens":
             params["max_tokens"] = max_tokens
         else:
@@ -774,6 +784,58 @@ def _coerce_options(
     )
 
 
+# OpenRouter / provider extension params that the OpenAI **Python** SDK
+# rejects as top-level keyword arguments. Pi's TypeScript SDK forwards
+# unknown top-level fields straight into the JSON body, but the Python
+# ``openai`` SDK validates kwargs and raises ``TypeError`` on unknown
+# ones (e.g. ``AsyncCompletions.create() got an unexpected keyword
+# argument 'reasoning'``). The SDK's documented escape hatch is
+# ``extra_body``, which is merged verbatim into the request payload — so
+# these extensions reach the wire unchanged. ``reasoning_effort`` is a
+# first-class OpenAI param (o-series) and stays top-level.
+#
+# Sprint 6h₁₃ · ADR-0114. Without this relocation, every OpenRouter
+# reasoning model (which gets a ``reasoning`` param) and every model with
+# provider routing (``provider``) errored on the very first chunk through
+# the real SDK — masked until now because the test fakes accept ``**kwargs``.
+_EXTRA_BODY_PARAM_KEYS: frozenset[str] = frozenset(
+    {
+        "reasoning",
+        "provider",
+        "enable_thinking",
+        "chat_template_kwargs",
+        "thinking",
+        "tool_stream",
+        "providerOptions",
+        # ``prompt_cache_key`` IS a native OpenAI kwarg, but the
+        # ``_retention`` variant is not (verified against ``openai`` SDK):
+        # it errors the same way on the long-cache-retention path.
+        "prompt_cache_retention",
+    }
+)
+
+
+def _relocate_extra_body_params(params: dict[str, Any]) -> dict[str, Any]:
+    """Move non-OpenAI extension params into ``extra_body`` (mutates+returns).
+
+    Called at the SDK boundary so :func:`build_params` keeps its Pi-parity
+    flat shape (and the build_params unit tests stay valid) while the real
+    ``client.chat.completions.create`` only ever sees keyword arguments it
+    accepts. Any ``extra_body`` already present (e.g. injected by an
+    ``on_payload`` hook) is preserved; on a key collision the relocated
+    top-level value takes precedence over the pre-existing ``extra_body``
+    entry of the same name.
+    """
+
+    extra: dict[str, Any] = dict(params.get("extra_body") or {})
+    for key in _EXTRA_BODY_PARAM_KEYS:
+        if key in params:
+            extra[key] = params.pop(key)
+    if extra:
+        params["extra_body"] = extra
+    return params
+
+
 async def _open_stream(
     client: Any, params: dict[str, Any], request_options: dict[str, Any]
 ) -> tuple[AsyncIterator[Any], Any]:
@@ -856,6 +918,11 @@ async def stream_openai_completions(
             next_params = await _maybe_await(opts.on_payload(params, model))
             if next_params is not None:
                 params = next_params
+
+        # Pi parity gap (ADR-0114): relocate OpenRouter/provider extension
+        # params into ``extra_body`` AFTER on_payload (the hook sees the
+        # Pi-shaped flat params) so the Python SDK accepts the call.
+        params = _relocate_extra_body_params(params)
 
         # Pi parity (P-60): ``signal`` and ``max_retries`` are NOT valid
         # per-request kwargs on ``openai>=1.50`` SDK. ``max_retries`` is
