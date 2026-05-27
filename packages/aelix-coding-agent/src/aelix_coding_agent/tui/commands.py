@@ -282,13 +282,20 @@ async def _thinking_handler(ctx: CommandContext, args: str) -> None:
 
     state = getattr(ctx.harness, "_state", None)
     current = getattr(state, "thinking_level", None)
+    setter: Callable[[str], Awaitable[None]] | None = getattr(
+        ctx.harness, "set_thinking_level", None
+    )
+    supported = state is not None or callable(setter)
     if not args:
         if current:
             ctx.commit(Text(f"thinking: {current}"))
+        elif supported:
+            # ``thinking_level`` defaults to None (= off) on a fresh session —
+            # that's "unset", not "feature missing".
+            ctx.commit(Text("thinking: off"))
         else:
             ctx.commit(Text("Thinking level is unavailable.", style="yellow"))
         return
-    setter = getattr(ctx.harness, "set_thinking_level", None)
     if not callable(setter):
         ctx.commit(Text("Thinking level switching is unavailable.", style="yellow"))
         return

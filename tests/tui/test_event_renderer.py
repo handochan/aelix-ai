@@ -159,6 +159,39 @@ def test_tool_end_renders_result() -> None:
     assert "file contents here" in _committed_text(commits)
 
 
+def test_tool_end_diff_is_colorized() -> None:
+    r, commits, _t = _renderer()
+    diff = "--- a\n+++ b\n@@ -1 +1 @@\n-old\n+new\n"
+    r.on_agent_event(
+        ToolExecutionEndEvent(
+            tool_call_id="t1",
+            result=ToolResult(content=[TextContent(text=diff)]),
+            tool_name="edit",
+        )
+    )
+    styles = _row_styles(commits[0])
+    assert "green" in styles and "red" in styles
+
+
+def test_tool_end_diff_shaped_bash_keeps_exit_footer() -> None:
+    from types import SimpleNamespace
+
+    r, commits, _t = _renderer()
+    diff = "--- a\n+++ b\n@@ -1 +1 @@\n-old\n+new\n"
+    r.on_agent_event(
+        ToolExecutionEndEvent(
+            tool_call_id="t1",
+            result=ToolResult(
+                content=[TextContent(text=diff)],
+                details=SimpleNamespace(exit_code=1),  # type: ignore[arg-type]
+            ),
+            tool_name="bash",
+        )
+    )
+    out = _committed_text(commits)
+    assert "+new" in out and "exit 1" in out
+
+
 def test_tool_end_error_uses_red_style() -> None:
     r, commits, _t = _renderer()
     r.on_agent_event(

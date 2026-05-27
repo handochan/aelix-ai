@@ -65,6 +65,12 @@ def test_looks_like_diff_needs_hunk_header() -> None:
     assert _looks_like_diff("result: +1 added, -2 removed") is False
 
 
+def test_looks_like_diff_rejects_markdown_with_bare_at() -> None:
+    # markdown with a `---` rule + a literal `@@` but NO real hunk header
+    md = "# Title\n\n---\n\nsee `@@field` in the spec\n+ a bullet\n- another"
+    assert _looks_like_diff(md) is False
+
+
 def test_render_diff_colors_added_and_removed() -> None:
     grp = _render_diff(_DIFF)
     pairs = [
@@ -231,6 +237,17 @@ async def test_thinking_set_unavailable_degrades() -> None:
     h = SimpleNamespace(_state=SimpleNamespace(thinking_level=None))
     out = await _run("thinking", "high", h)
     assert "unavailable" in _plain(out[0]).lower()
+
+
+async def test_thinking_unset_shows_off_not_unavailable() -> None:
+    # level None + a working harness → "off (default)", NOT "unavailable"
+    async def _set(level: str) -> None:
+        return None
+
+    h = SimpleNamespace(_state=SimpleNamespace(thinking_level=None), set_thinking_level=_set)
+    out = await _run("thinking", "", h)
+    text = _plain(out[0]).lower()
+    assert "off" in text and "unavailable" not in text
 
 
 # === real steering-mode footer + live context label (context) ==============

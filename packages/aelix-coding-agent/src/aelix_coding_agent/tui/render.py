@@ -21,6 +21,7 @@ first so they never interleave with the live tail.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
@@ -129,17 +130,17 @@ def _bash_exit_code(result: Any) -> int | None:
     return code if isinstance(code, int) else None
 
 
-def _looks_like_diff(text: str) -> bool:
-    """True for difflib-style unified-diff output (has a ``@@`` hunk header).
+_HUNK_HEADER_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+\d+(?:,\d+)? @@", re.MULTILINE)
 
-    The ``@@`` gate avoids mis-colouring ordinary tool output whose lines
-    merely happen to start with ``+``/``-``.
+
+def _looks_like_diff(text: str) -> bool:
+    """True for difflib-style unified-diff output.
+
+    Requires a real ``@@ -n,n +n,n @@`` hunk header (not bare ``@@``) so
+    ordinary output — markdown with a ``---`` rule, lines starting with
+    ``+``/``-`` — is not mis-coloured as a diff.
     """
-    if "@@" not in text:
-        return False
-    return any(
-        line.startswith(("@@", "+++", "---")) for line in text.splitlines()
-    )
+    return _HUNK_HEADER_RE.search(text) is not None
 
 
 def _render_diff(text: str, *, max_lines: int = 40) -> Group:
@@ -308,12 +309,19 @@ class EventRenderer:
         exit_code = _bash_exit_code(result) if tool_name == "bash" else None
         if not text:
             return
-        # §C (ADR-0116) — edit/write tools emit a unified diff (difflib in
-        # ``result.content`` / ``EditToolDetails.diff``). Render it with +/-
-        # colour so changes read like a real diff instead of flat dim text.
+        # §C (ADR-0116) — diff-shaped tool output (edit/write difflib, or a
+        # bash `git diff`) renders with +/- colour instead of flat dim text.
         # Errors keep the red card below (a failed edit isn't a diff to review).
         if not is_error and _looks_like_diff(text):
-            self._commit(_render_diff(text))
+            diff_group = _render_diff(text)
+            if exit_code is not None and exit_code != 0:
+                # Preserve the bash exit footer for diff-shaped output that
+                # still reports a non-zero exit (e.g. `git diff --exit-code`).
+                self._commit(
+                    Group(*diff_group.renderables, Text(f"exit {exit_code}", style="red"))
+                )
+            else:
+                self._commit(diff_group)
             return
         # §A — truncated, styled card under the ⚙ header: a dim left-gutter block
         # (red when is_error), with a "+N more lines" footer when truncated and an
