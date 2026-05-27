@@ -150,6 +150,13 @@ class EventRenderer:
         self._text_stream: StreamRenderer | None = None
         self._text_accum: str = ""
         self._thinking_accum: str = ""
+        # Thinking is buffered during ``thinking_delta`` and flushed (dim
+        # italic) BEFORE the text/tool block that follows it — not at the
+        # ``thinking_end`` event, which the adapter emits at end-of-stream
+        # (after the text already streamed live), causing reasoning to print
+        # *after* the answer. This flag makes the flush idempotent so the
+        # late ``thinking_end`` does not double-render. (ADR-0115.)
+        self._thinking_flushed: bool = False
         # §B — live tool-result interception. Late-bound by run_tui to read the
         # descriptor registry by reference (returns a matching tool-renderer-desc
         # envelope for a tool_name, or None). ``descriptor_renderer`` builds the
@@ -185,6 +192,8 @@ class EventRenderer:
     def _on_stream_event(self, sev: AssistantMessageEvent) -> None:
         if sev.type == "text_delta":
             if self._text_stream is None:
+                # Render buffered reasoning ABOVE the answer it preceded.
+                self._flush_thinking(self._thinking_accum)
                 self._text_stream = self._new_stream()
             self._text_accum += sev.delta
             self._text_stream.update(self._text_accum)
@@ -216,6 +225,7 @@ class EventRenderer:
         self._finalize_text()
         self._text_accum = ""
         self._thinking_accum = ""
+        self._thinking_flushed = False
 
     def _finalize_text(self) -> None:
         if self._text_stream is not None:
@@ -235,10 +245,17 @@ class EventRenderer:
         self._finalize_text()
         text = content.strip()
         self._thinking_accum = ""
+        if self._thinking_flushed:
+            # Already rendered for this message (the late ``thinking_end``
+            # carries the same content) — don't print it a second time.
+            return
+        self._thinking_flushed = True
         if text:
             self._commit(Text(text, style="dim italic"))
 
     def _render_tool_start(self, tool_name: str, args: dict[str, Any]) -> None:
+        # Reasoning that preceded a tool call renders above its card too.
+        self._flush_thinking(self._thinking_accum)
         self._finalize_text()
         summary = _tool_header(tool_name, args)
         label = f"⚙ {tool_name}({summary})" if summary else f"⚙ {tool_name}"

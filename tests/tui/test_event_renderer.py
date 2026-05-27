@@ -97,6 +97,39 @@ def test_thinking_end_empty_is_silent() -> None:
     assert commits == []
 
 
+def test_thinking_renders_before_text_not_after() -> None:
+    """ADR-0115 regression: the adapter emits thinking_end at end-of-stream
+    (after the text already streamed), but reasoning must render ABOVE the
+    answer, exactly once."""
+    r, commits, _t = _renderer()
+    r.on_agent_event(MessageStartEvent(message=AssistantMessage()))
+    r.on_agent_event(_msg_update(ThinkingDeltaEvent(delta="reason ")))
+    r.on_agent_event(_msg_update(ThinkingDeltaEvent(delta="here")))
+    r.on_agent_event(_msg_update(TextDeltaEvent(delta="the answer")))
+    r.on_agent_event(_msg_update(TextEndEvent(content="the answer")))
+    # adapter's end-of-stream ordering: thinking_end fires AFTER text_end
+    r.on_agent_event(_msg_update(ThinkingEndEvent(content="reason here")))
+    text = _committed_text(commits)
+    assert "reason here" in text and "the answer" in text
+    assert text.index("reason here") < text.index("the answer")
+    assert text.count("reason here") == 1  # late thinking_end does not re-print
+
+
+def test_thinking_renders_before_tool_card() -> None:
+    """Reasoning that preceded a tool call renders above its card, once."""
+    r, commits, _t = _renderer()
+    r.on_agent_event(MessageStartEvent(message=AssistantMessage()))
+    r.on_agent_event(_msg_update(ThinkingDeltaEvent(delta="plan it")))
+    r.on_agent_event(
+        ToolExecutionStartEvent(tool_call_id="t1", tool_name="read", args={"path": "x.py"})
+    )
+    r.on_agent_event(_msg_update(ThinkingEndEvent(content="plan it")))
+    text = _committed_text(commits)
+    assert "plan it" in text and "read" in text
+    assert text.index("plan it") < text.index("read")
+    assert text.count("plan it") == 1
+
+
 def test_tool_start_renders_header_with_args() -> None:
     r, commits, _t = _renderer()
     r.on_agent_event(
