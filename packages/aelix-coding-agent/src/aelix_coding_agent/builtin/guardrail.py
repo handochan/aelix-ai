@@ -75,7 +75,10 @@ def _command_from_event(event: ToolCallHookEvent) -> str:
 
 
 def _path_from_event(event: ToolCallHookEvent) -> str:
-    for key in ("path", "file", "filename", "filepath", "target"):
+    # ``file_path`` is the edit-family arg name (ADR-0120 W4 LOW): without it the
+    # guardrail's dotenv/.git/node_modules checks read an empty path for `edit`
+    # calls and silently never fire. Keep in sync with permission._path_from_args.
+    for key in ("path", "file_path", "file", "filename", "filepath", "target"):
         value = event.args.get(key)
         if isinstance(value, str):
             return value

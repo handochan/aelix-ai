@@ -79,42 +79,54 @@ def _path_from_args(args: dict[str, Any]) -> str:
 
 
 def _rule_key(tool_name: str, args: dict[str, Any]) -> str:
-    """Build the exact rule key a call is matched against.
+    """Build the exact, TOOL-NAMESPACED rule key a call is matched against.
 
-    bash-family → the command string; write-family → the target path;
-    fallback → the tool name.
+    The ``bash:`` / ``write:`` / ``tool:`` namespace prefix is literal in both
+    the key and the synthesized wildcard, so a write rule can NEVER fnmatch a
+    bash key and vice versa (W4 code-review MEDIUM — fnmatch ``*`` crosses
+    spaces, so an un-namespaced ``src/*`` would match a bash ``src/foo.sh ...``).
     """
 
     if tool_name in _BASH_TOOLS:
-        return _command_from_args(args) or tool_name
+        return f"bash:{_command_from_args(args) or tool_name}"
     if tool_name in _WRITE_TOOLS:
-        return _path_from_args(args) or tool_name
-    return tool_name
+        return f"write:{_path_from_args(args) or tool_name}"
+    return f"tool:{tool_name}"
 
 
 def _session_wildcard(tool_name: str, args: dict[str, Any]) -> str:
-    """Synthesize a pi-style ephemeral wildcard rule from a call.
+    """Synthesize a TOOL-NAMESPACED ephemeral session rule from a call.
 
-    - bash-family: first 2 whitespace tokens of the command + ``" *"`` (e.g.
-      ``git status --short`` → ``git status *``; a single token → ``cmd *``).
-    - write-family: parent dir of the path + ``"/*"`` (e.g. ``src/.env`` →
-      ``src/*``; a bare filename with no parent → ``*``).
-    - fallback: the tool name (no wildcard).
+    NEVER emits a bare ``*`` (W4 code-review HIGH): a ``*`` wildcard would
+    fnmatch EVERY future rule_key, so approving-for-session one innocuous call
+    would silently disarm the whole gate for the session. A call with no safe
+    scope is pinned to its EXACT key instead.
+
+    - bash-family: a multi-token command → ``bash:{tok0} {tok1} *`` (matches
+      that command prefix, e.g. ``git status --short`` → ``bash:git status *``);
+      a single-token command → ``bash:{command}`` EXACT (no broadening prefix).
+    - write-family: a path with a parent dir → ``write:{parent}/*`` (covers
+      that directory and its descendants for the session — acceptable for an
+      ephemeral approval); a bare filename (no parent) → ``write:{path}`` EXACT.
+    - fallback: ``tool:{tool_name}`` exact.
     """
 
     if tool_name in _BASH_TOOLS:
         command = _command_from_args(args)
         if not command:
-            return tool_name
+            return f"bash:{tool_name}"
         tokens = command.split()
-        return " ".join(tokens[:2]) + " *"
+        if len(tokens) <= 1:
+            return f"bash:{command}"  # exact — a single token has no safe prefix
+        return f"bash:{tokens[0]} {tokens[1]} *"
     if tool_name in _WRITE_TOOLS:
         path = _path_from_args(args)
         if not path:
-            return tool_name
-        parent = path.replace("\\", "/").rsplit("/", 1)[0] if "/" in path else ""
-        return f"{parent}/*" if parent else "*"
-    return tool_name
+            return f"write:{tool_name}"
+        norm = path.replace("\\", "/")
+        parent = norm.rsplit("/", 1)[0] if "/" in norm else ""
+        return f"write:{parent}/*" if parent else f"write:{norm}"
+    return f"tool:{tool_name}"
 
 
 def _summary(tool_name: str, args: dict[str, Any]) -> str:
@@ -178,7 +190,19 @@ class PermissionExtension:
 
             summary = _summary(event.tool_name, event.args)
             title = f"Allow {event.tool_name}? {summary}".rstrip()
-            choice = await ctx.ui.select(title, _OPTIONS)
+            # Fail SAFE: if the UI prompt itself raises mid-turn (terminal
+            # detached / app torn down), block rather than let the exception
+            # abort the turn via the hook's throw default (W4 code-review MEDIUM).
+            try:
+                choice = await ctx.ui.select(title, _OPTIONS)
+            except Exception as exc:  # noqa: BLE001 — deny-on-error is fail-safe
+                return ToolCallResult(
+                    block=True,
+                    reason=(
+                        "Permission prompt unavailable; denied for safety "
+                        f"({exc.__class__.__name__})."
+                    ),
+                )
 
             if choice == _YES:
                 return None
@@ -190,7 +214,10 @@ class PermissionExtension:
             if choice == _NO:
                 return ToolCallResult(block=True, reason="Denied by the user.")
             if choice == _NO_REASON:
-                reason = await ctx.ui.input("Why is this denied?")
+                try:
+                    reason = await ctx.ui.input("Why is this denied?")
+                except Exception:  # noqa: BLE001 — reason is optional; still deny
+                    reason = None
                 return ToolCallResult(
                     block=True,
                     reason=f"Denied by the user: {reason or '(no reason given)'}",
