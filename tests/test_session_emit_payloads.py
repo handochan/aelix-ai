@@ -51,11 +51,28 @@ def _branch_summarizer() -> Any:
     return fn
 
 
+async def _seed_compactable(session: Session) -> None:
+    """Append enough conversation that ``prepare_compaction`` finds a cut.
+
+    Sprint 6h₁₂-compaction: ``prepare_compaction`` now runs the real
+    ``findCutPoint`` backward token-budget walk (``KEEP_RECENT_TOKENS`` =
+    20000), so a single ``"seed"`` message no longer crosses the budget.
+    These emit-shape tests seed several large messages so the compaction
+    preparation is non-None and the emit path is exercised.
+    """
+
+    chunk = "x" * 30_000  # ~7500 tokens each
+    for _ in range(6):
+        await session.append_message(
+            UserMessage(content=[TextContent(text=chunk)])
+        )
+
+
 async def test_session_before_compact_event_pi_payload_shape() -> None:
     """P-17: preparation + branch_entries + custom_instructions + signal."""
 
     session = Session(MemorySessionStorage())
-    await session.append_message(UserMessage(content=[TextContent(text="seed")]))
+    await _seed_compactable(session)
     h = AgentHarness(
         AgentHarnessOptions(session=session, _summarizer_override=_summarizer())
     )
@@ -80,7 +97,7 @@ async def test_session_compact_event_pi_payload_shape() -> None:
     """SessionCompactHookEvent: compaction_entry + from_hook."""
 
     session = Session(MemorySessionStorage())
-    await session.append_message(UserMessage(content=[TextContent(text="seed")]))
+    await _seed_compactable(session)
     h = AgentHarness(
         AgentHarnessOptions(session=session, _summarizer_override=_summarizer())
     )

@@ -35,7 +35,15 @@ from aelix_ai.messages import AssistantMessage, TextContent, UserMessage
 
 async def _slow_compact_session() -> tuple[AgentHarness, Session, asyncio.Event, asyncio.Event]:
     session = Session(MemorySessionStorage())
-    await session.append_message(UserMessage(content=[TextContent(text="seed")]))
+    # Sprint 6h₁₂-compaction: prepare_compaction now runs the real findCutPoint
+    # token-budget walk (KEEP_RECENT_TOKENS = 20000), so a single "seed" no
+    # longer crosses the budget. Seed several large messages so the slow
+    # _summarizer_override is reached.
+    chunk = "x" * 30_000  # ~7500 tokens each
+    for _ in range(6):
+        await session.append_message(
+            UserMessage(content=[TextContent(text=chunk)])
+        )
 
     started = asyncio.Event()
     release = asyncio.Event()

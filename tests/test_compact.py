@@ -37,9 +37,27 @@ def _override(summary: str = "TEST_SUMMARY") -> Any:
     return fn
 
 
+async def _seed_compactable(session: Session) -> None:
+    """Append enough conversation that ``prepare_compaction`` finds a cut.
+
+    Sprint 6h₁₂-compaction: ``prepare_compaction`` now runs the real
+    ``findCutPoint`` backward token-budget walk (``KEEP_RECENT_TOKENS`` =
+    20000, ``estimate_tokens`` = chars // 4). A tiny ``"seed"`` message no
+    longer exceeds the budget, so these harness-orchestration tests seed
+    several large messages so a non-empty ``messages_to_summarize`` prefix
+    exists and the emit/persist path is still exercised end-to-end.
+    """
+
+    chunk = "x" * 30_000  # ~7500 tokens each
+    for _ in range(6):
+        await session.append_message(
+            UserMessage(content=[TextContent(text=chunk)])
+        )
+
+
 async def _attached(opts: AgentHarnessOptions | None = None) -> tuple[AgentHarness, Session]:
     session = Session(MemorySessionStorage())
-    await session.append_message(UserMessage(content=[TextContent(text="seed")]))
+    await _seed_compactable(session)
     base = opts or AgentHarnessOptions()
     base.session = session
     if base._summarizer_override is None:
@@ -125,7 +143,9 @@ async def test_compact_without_session_raises_invalid_state() -> None:
 
 async def test_compact_no_summarizer_no_auth_raises_invalid_state() -> None:
     session = Session(MemorySessionStorage())
-    await session.append_message(UserMessage(content=[TextContent(text="x")]))
+    # Seed enough that prepare_compaction yields a non-None preparation so the
+    # auth guard (not the "Nothing to compact" short-circuit) is reached.
+    await _seed_compactable(session)
     # Note: no _summarizer_override and no get_api_key_and_headers.
     h = AgentHarness(AgentHarnessOptions(session=session))
     with pytest.raises(AgentHarnessError) as exc:
@@ -138,7 +158,7 @@ async def test_compact_phase_machine_blocks_concurrent_prompt() -> None:
     """While compact() is in flight, prompt() must raise ``busy``."""
 
     session = Session(MemorySessionStorage())
-    await session.append_message(UserMessage(content=[TextContent(text="seed")]))
+    await _seed_compactable(session)
 
     started = asyncio.Event()
     release = asyncio.Event()
@@ -171,7 +191,7 @@ async def test_compact_error_propagates() -> None:
         raise RuntimeError("boom")
 
     session = Session(MemorySessionStorage())
-    await session.append_message(UserMessage(content=[TextContent(text="x")]))
+    await _seed_compactable(session)
     h = AgentHarness(
         AgentHarnessOptions(session=session, _summarizer_override=bad_override)
     )
@@ -183,7 +203,7 @@ async def test_compact_error_propagates() -> None:
 
 async def test_compact_concurrent_second_raises_busy() -> None:
     session = Session(MemorySessionStorage())
-    await session.append_message(UserMessage(content=[TextContent(text="seed")]))
+    await _seed_compactable(session)
 
     started = asyncio.Event()
     release = asyncio.Event()
