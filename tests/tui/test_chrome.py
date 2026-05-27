@@ -325,3 +325,24 @@ async def test_double_backslash_submits_literal() -> None:
         pipe.send_text("x" + "\\\\" + "\n")  # types `x\\`, then Enter
         result = await asyncio.wait_for(fut, timeout=5)
         assert result == "x" + "\\" * 2  # both backslashes preserved, submitted
+
+
+# === Sprint 6h₁₅ (ADR-0123) — Ctrl+T toggle + Alt+Up dequeue ===============
+
+
+async def test_ctrl_t_fires_thinking_toggle() -> None:
+    async with _chrome(run_app=True) as (chrome, pipe, _buf):
+        toggled: list[int] = []
+        chrome.on_thinking_toggle = lambda: toggled.append(1)
+        pipe.send_text("\x14")  # Ctrl+T
+        await asyncio.sleep(0.05)
+        assert toggled == [1]
+
+
+async def test_alt_up_fires_dequeue() -> None:
+    async with _chrome(run_app=True) as (chrome, pipe, _buf):
+        dequeued: list[int] = []
+        chrome.on_dequeue = lambda: dequeued.append(1)
+        pipe.send_text("\x1b\x1b[A")  # Alt+Up = Esc then Up-arrow
+        await asyncio.sleep(0.05)
+        assert dequeued == [1]

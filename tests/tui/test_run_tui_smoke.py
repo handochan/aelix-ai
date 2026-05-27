@@ -569,3 +569,73 @@ async def test_run_tui_resume_empty_choices_does_not_switch() -> None:
         pipe.send_text("/quit\n")
         await asyncio.wait_for(task, timeout=5)
     assert runtime.switch_calls == []  # nothing to switch to
+
+
+# === Sprint 6h₁₅ (ADR-0123) — /new + Alt+Up dequeue =======================
+
+
+class _NewRuntime(FakeRuntime):
+    def __init__(self, harness: FakeHarness) -> None:
+        super().__init__(harness)
+        self.new_calls = 0
+        self.session = _ResumeSession("/s/active.jsonl", [])
+
+    async def new_session(self, **_kw: object) -> object:
+        from types import SimpleNamespace
+
+        self.new_calls += 1
+        if self.rebind_cb is not None:
+            await self.rebind_cb(self._harness)
+        return SimpleNamespace(cancelled=False)
+
+
+async def test_run_tui_new_command_starts_fresh_session() -> None:
+    runtime = _NewRuntime(FakeHarness())
+    with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
+        chrome = AelixChrome()
+        task = asyncio.ensure_future(
+            run_tui(runtime, cwd=".", chrome=chrome, install_signal_handlers=False)  # type: ignore[arg-type]
+        )
+        await _wait(lambda: chrome.app.is_running)
+        pipe.send_text("/new\n")
+        await _wait(lambda: runtime.new_calls == 1)
+        pipe.send_text("/quit\n")
+        await asyncio.wait_for(task, timeout=5)
+    assert runtime.new_calls == 1
+
+
+class _FakeQ:
+    def __init__(self, texts: list[str]) -> None:
+        from aelix_ai.messages import TextContent, UserMessage
+
+        self._messages: list[object] = [
+            UserMessage(content=[TextContent(text=t)]) for t in texts
+        ]
+
+    def clear(self) -> None:
+        self._messages = []
+
+
+class _QueueHarness(FakeHarness):
+    def __init__(self, steer: list[str], follow: list[str]) -> None:
+        super().__init__()
+        self._steering_queue = _FakeQ(steer)
+        self._follow_up_queue = _FakeQ(follow)
+
+
+async def test_run_tui_alt_up_restores_queued_messages_to_editor() -> None:
+    # Alt+Up drains steer + follow-up queues back into the editor (steer first,
+    # blank-line joined), and clears the queues.
+    harness = _QueueHarness(["steer one"], ["follow two"])
+    async with _harness_chrome(harness=harness) as (runtime, chrome, pipe):
+        task = _launch(runtime, chrome)
+        await _wait(lambda: chrome.app.is_running)
+        pipe.send_text("\x1b\x1b[A")  # Alt+Up
+        await _wait(lambda: chrome.get_editor_text().strip() != "")
+        assert chrome.get_editor_text() == "steer one\n\nfollow two"
+        assert harness._steering_queue._messages == []
+        assert harness._follow_up_queue._messages == []
+        pipe.send_text("\x03")  # Ctrl+C clears the editor (idle)
+        await _wait(lambda: chrome.get_editor_text() == "")
+        pipe.send_text("/quit\n")
+        await asyncio.wait_for(task, timeout=5)

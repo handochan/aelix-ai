@@ -160,11 +160,12 @@ def test_builtin_command_is_frozen() -> None:
 
 def test_sprint_a_registry_set() -> None:
     # Sprint 6h₁₂d added model/clear/compact/cost/tools/mode; the P0 consumer
-    # batch added thinking + export (both wired to existing harness APIs);
-    # Sprint 6h₁₄a (ADR-0121) added /expand; 6h₁₄b (ADR-0122) added /resume.
+    # batch added thinking + export; 6h₁₄a (ADR-0121) /expand; 6h₁₄b (ADR-0122)
+    # /resume; 6h₁₅ (ADR-0123) /hotkeys + /new.
     names = [c.name for c in BUILTIN_COMMANDS]
     assert names == [
         "help",
+        "hotkeys",
         "model",
         "clear",
         "compact",
@@ -175,6 +176,7 @@ def test_sprint_a_registry_set() -> None:
         "expand",
         "export",
         "resume",
+        "new",
         "quit",
         "exit",
         "reload",
@@ -185,6 +187,8 @@ def test_sprint_a_registry_set() -> None:
     assert by_name["expand"].handler is not None
     assert by_name["export"].handler is not None
     assert by_name["resume"].handler is not None
+    assert by_name["hotkeys"].handler is not None
+    assert by_name["new"].handler is not None
     assert by_name["quit"].handler is None
     assert by_name["exit"].handler is None
     assert by_name["reload"].handler is None
@@ -517,3 +521,43 @@ def test_resume_callback_failure_surfaces_not_crashes() -> None:
     ctx.resume_session = _boom
     _run("resume", ctx, "")
     assert any("resume failed" in _render(c) for c in committed)
+
+
+# === Sprint 6h₁₅ (ADR-0123) — /new + /hotkeys handlers ====================
+
+
+def test_new_invokes_wired_callback() -> None:
+    calls: list[int] = []
+
+    async def _new() -> None:
+        calls.append(1)
+
+    ctx = _ctx(_FakeHarness(), [])
+    ctx.new_session = _new
+    _run("new", ctx, "")
+    assert calls == [1]
+
+
+def test_new_unavailable_degrades() -> None:
+    committed: list[object] = []
+    _run("new", _ctx(_FakeHarness(), committed), "")  # new_session defaults None
+    assert any("New session is unavailable" in _render(c) for c in committed)
+
+
+def test_new_failure_surfaces_not_crashes() -> None:
+    committed: list[object] = []
+
+    async def _boom() -> None:
+        raise RuntimeError("storage full")
+
+    ctx = _ctx(_FakeHarness(), committed)
+    ctx.new_session = _boom
+    _run("new", ctx, "")
+    assert any("new session failed" in _render(c) for c in committed)
+
+
+def test_hotkeys_lists_shortcuts() -> None:
+    committed: list[object] = []
+    _run("hotkeys", _ctx(_FakeHarness(), committed), "")
+    out = "".join(_render(c) for c in committed)
+    assert "Enter" in out and "Ctrl+T" in out and "Alt+↑" in out

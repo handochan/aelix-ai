@@ -222,6 +222,16 @@ class EventRenderer:
         # *after* the answer. This flag makes the flush idempotent so the
         # late ``thinking_end`` does not double-render. (ADR-0115.)
         self._thinking_flushed: bool = False
+        # Thinking-block visibility (Sprint 6h₁₅, ADR-0123). Collapsed by default
+        # (pi shows an italic "Thinking…" placeholder when hidden) to keep
+        # reasoning-heavy models from flooding the transcript. Toggled live by
+        # Ctrl+T (chrome → run_tui flips this). Aelix divergence from pi: pi's
+        # Ctrl+T rebuilds the whole chat to retroactively toggle PAST blocks;
+        # inline scrollback can't, so the toggle affects subsequent renders — but
+        # a collapsed block is routed through the /expand store so its full
+        # reasoning stays recoverable (``💭 Thinking… (/expand N)``).
+        self.hide_thinking: bool = True
+        self._hidden_thinking_label: str = "Thinking…"
         # §B — live tool-result interception. Late-bound by run_tui to read the
         # descriptor registry by reference (returns a matching tool-renderer-desc
         # envelope for a tool_name, or None). ``descriptor_renderer`` builds the
@@ -315,7 +325,16 @@ class EventRenderer:
             # carries the same content) — don't print it a second time.
             return
         self._thinking_flushed = True
-        if text:
+        if not text:
+            return
+        if self.hide_thinking:
+            # Collapsed: a one-line placeholder; stash the full reasoning in the
+            # /expand store so it stays recoverable (``/expand N``).
+            n = self._store_expandable(text)
+            self._commit(
+                Text(f"💭 {self._hidden_thinking_label} (/expand {n})", style="dim italic")
+            )
+        else:
             self._commit(Text(text, style="dim italic"))
 
     def _render_tool_start(self, tool_name: str, args: dict[str, Any]) -> None:
@@ -392,6 +411,21 @@ class EventRenderer:
         """Return the full, untruncated body stored for ``/expand N`` (or None)."""
 
         return self._expand_store.get(n)
+
+    def reset_expand_store(self) -> None:
+        """Drop all ``/expand`` ids + thinking flush state (W-review 6h₁₅ MEDIUM).
+
+        The :class:`EventRenderer` is long-lived and reused across a session
+        swap (``/new`` / ``/resume``), but ``/expand`` ids are scoped to the
+        visible transcript — without this, after a swap ``/expand N`` would still
+        return the PREVIOUS session's body (a cross-session leak, now widened by
+        collapsed thinking landing in the same store). Called from ``run_tui``'s
+        rebind seam so it fires on every swap.
+        """
+
+        self._expand_store.clear()
+        self._expand_seq = 0
+        self._thinking_flushed = False
 
     def replay(self, messages: list[Any]) -> None:
         """Re-render a loaded session's static messages into scrollback.

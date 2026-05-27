@@ -84,6 +84,7 @@ def test_text_end_content_overrides_accumulation() -> None:
 
 def test_thinking_rendered_on_end() -> None:
     r, commits, _t = _renderer()
+    r.hide_thinking = False  # test the full-visible render path (ADR-0115)
     r.on_agent_event(_msg_update(ThinkingDeltaEvent(delta="let me ")))
     r.on_agent_event(_msg_update(ThinkingDeltaEvent(delta="think")))
     assert "think" not in _committed_text(commits)
@@ -97,11 +98,34 @@ def test_thinking_end_empty_is_silent() -> None:
     assert commits == []
 
 
+def test_thinking_collapsed_by_default_with_expand() -> None:
+    # Sprint 6h₁₅ (ADR-0123): thinking is collapsed by default — a "Thinking…"
+    # placeholder + /expand id; the full reasoning is recoverable, not shown.
+    r, commits, _t = _renderer()
+    assert r.hide_thinking is True
+    r.on_agent_event(_msg_update(ThinkingEndEvent(content="secret chain of thought")))
+    out = _committed_text(commits)
+    assert "Thinking" in out and "/expand 1" in out
+    assert "secret chain of thought" not in out  # collapsed, not inlined
+    assert r.get_expanded(1) == "secret chain of thought"  # recoverable
+
+
+def test_thinking_visible_when_toggled_off() -> None:
+    # Ctrl+T flips hide_thinking → subsequent thinking renders in full.
+    r, commits, _t = _renderer()
+    r.hide_thinking = False
+    r.on_agent_event(_msg_update(ThinkingEndEvent(content="open reasoning")))
+    out = _committed_text(commits)
+    assert "open reasoning" in out
+    assert "/expand" not in out  # full render, no collapse placeholder
+
+
 def test_thinking_renders_before_text_not_after() -> None:
     """ADR-0115 regression: the adapter emits thinking_end at end-of-stream
     (after the text already streamed), but reasoning must render ABOVE the
     answer, exactly once."""
     r, commits, _t = _renderer()
+    r.hide_thinking = False  # full-visible render path (ADR-0115 ordering)
     r.on_agent_event(MessageStartEvent(message=AssistantMessage()))
     r.on_agent_event(_msg_update(ThinkingDeltaEvent(delta="reason ")))
     r.on_agent_event(_msg_update(ThinkingDeltaEvent(delta="here")))
@@ -118,6 +142,7 @@ def test_thinking_renders_before_text_not_after() -> None:
 def test_thinking_renders_before_tool_card() -> None:
     """Reasoning that preceded a tool call renders above its card, once."""
     r, commits, _t = _renderer()
+    r.hide_thinking = False  # full-visible render path (ADR-0115 ordering)
     r.on_agent_event(MessageStartEvent(message=AssistantMessage()))
     r.on_agent_event(_msg_update(ThinkingDeltaEvent(delta="plan it")))
     r.on_agent_event(
@@ -562,6 +587,18 @@ def test_expand_store_is_bounded_and_evicts_oldest() -> None:
     assert r.get_expanded(ids[1]) is None
     assert r.get_expanded(ids[2]) == "body 2"
     assert r.get_expanded(ids[4]) == "body 4"
+
+
+def test_reset_expand_store_drops_ids_and_seq() -> None:
+    # W-review 6h₁₅ MEDIUM: a session swap must reset the store so post-swap
+    # /expand N can't surface the prior session's body.
+    r, _c, _t = _renderer()
+    n1 = r._store_expandable("session A body")
+    assert r.get_expanded(n1) == "session A body"
+    r.reset_expand_store()
+    assert r.get_expanded(n1) is None
+    # ids restart from 1 (no stale-id confusion with the new session).
+    assert r._store_expandable("session B body") == 1
 
 
 def test_non_truncated_card_gets_no_expand_id() -> None:

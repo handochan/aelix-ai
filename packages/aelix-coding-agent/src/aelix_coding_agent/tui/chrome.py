@@ -100,6 +100,10 @@ class AelixChrome:
         # steer()/follow_up() concurrently — mirror of the on_interrupt pattern).
         self.on_steer: Callable[[str], None] | None = None
         self.on_follow_up: Callable[[str], None] | None = None
+        # Ctrl+T toggles thinking-block visibility; Alt+Up restores queued
+        # steer/follow-up messages back into the editor (Sprint 6h₁₅, ADR-0123).
+        self.on_thinking_toggle: Callable[[], None] | None = None
+        self.on_dequeue: Callable[[], None] | None = None
 
         # === state the live regions read ===
         self._status: dict[str, str] = {}
@@ -297,6 +301,16 @@ class AelixChrome:
                     self.buffer.history.append_string(text)
                 self.on_follow_up(text)
                 return
+
+        @kb.add("c-t")  # Toggle thinking-block visibility (Sprint 6h₁₅).
+        def _toggle_thinking(event: object) -> None:
+            if self.on_thinking_toggle is not None:
+                self.on_thinking_toggle()
+
+        @kb.add("escape", "up")  # Alt+Up: restore queued messages to the editor.
+        def _dequeue(event: object) -> None:
+            if self.on_dequeue is not None:
+                self.on_dequeue()
 
         @kb.add("c-i")  # Tab: start completion, then cycle through entries.
         def _complete(event: object) -> None:

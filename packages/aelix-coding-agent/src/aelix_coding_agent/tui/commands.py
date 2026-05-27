@@ -85,6 +85,10 @@ class CommandContext:
     picker → ``runtime.switch_session`` hot-swap → transcript replay). The
     ``/resume`` handler just awaits it; ``None`` in headless tests / when no
     session repo is attached (Sprint 6h₁₄b, ADR-0122)."""
+    new_session: Callable[[], Awaitable[None]] | None = None
+    """``run_tui`` wires this to its ``_new_session`` flow (``runtime.new_session``
+    fresh-session hot-swap → clear + banner). The ``/new`` handler awaits it;
+    ``None`` in headless tests (Sprint 6h₁₅, ADR-0123)."""
 
 
 def build_help_renderable(commands: list[BuiltinCommand]) -> RenderableType:
@@ -364,8 +368,56 @@ async def _resume_handler(ctx: CommandContext, args: str) -> None:
         ctx.commit(Text(f"✖ resume failed: {exc}", style="bold red"))
 
 
+async def _new_handler(ctx: CommandContext, args: str) -> None:
+    """``/new`` — start a fresh session (ignores args).
+
+    Delegates to the host-wired ``new_session`` flow (new_session hot-swap →
+    clear + banner). Degrades when unavailable / on failure.
+    """
+
+    if ctx.new_session is None:
+        ctx.commit(Text("New session is unavailable.", style="yellow"))
+        return
+    try:
+        await ctx.new_session()
+    except Exception as exc:  # noqa: BLE001 — surface, never kill the REPL
+        ctx.commit(Text(f"✖ new session failed: {exc}", style="bold red"))
+
+
+# Aelix TUI keybindings (static — the actual bindings wired in chrome.py). Kept
+# next to the registry so /hotkeys and the real bindings can't silently drift.
+_HOTKEYS: list[tuple[str, str]] = [
+    ("Enter", "Submit message (or steer the running turn)"),
+    ("\\ + Enter", "Insert a newline (multi-line input)"),
+    ("Alt+Enter", "Queue a follow-up message (while a turn runs)"),
+    ("Alt+↑", "Restore queued messages back into the editor"),
+    ("Ctrl+T", "Toggle thinking-block visibility"),
+    ("Esc", "Interrupt the running turn"),
+    ("Ctrl+C", "Interrupt the turn / clear the input line"),
+    ("Ctrl+D", "Exit (on an empty line)"),
+    ("Tab / Ctrl+Space", "Autocomplete (slash commands, @file paths)"),
+    ("@path", "Mention a file path (autocompletes)"),
+    ("! cmd / !! cmd", "Run a bash command (in / out of context)"),
+    ("Ctrl+A / Ctrl+E", "Move to line start / end"),
+    ("Ctrl+W / Ctrl+K / Ctrl+U", "Delete word back / to line end / to line start"),
+    ("↑ / ↓", "Input history (previous / next)"),
+]
+
+
+async def _hotkeys_handler(ctx: CommandContext, args: str) -> None:
+    """``/hotkeys`` — show the keyboard shortcuts as a table (ignores args)."""
+
+    table = Table.grid(padding=(0, 2))
+    table.add_column(style="bold cyan", no_wrap=True)
+    table.add_column(style="white")
+    for key, desc in _HOTKEYS:
+        table.add_row(key, desc)
+    ctx.commit(Panel(table, title="Keyboard shortcuts", box=ROUNDED, border_style="cyan"))
+
+
 BUILTIN_COMMANDS: list[BuiltinCommand] = [
     BuiltinCommand("help", "List available commands", _help_handler),
+    BuiltinCommand("hotkeys", "Show keyboard shortcuts", _hotkeys_handler),
     BuiltinCommand("model", "Show or switch the active model", _model_handler),
     BuiltinCommand("clear", "Clear the scrollback transcript", _clear_handler),
     BuiltinCommand("compact", "Compact the conversation context", _compact_handler),
@@ -376,6 +428,7 @@ BUILTIN_COMMANDS: list[BuiltinCommand] = [
     BuiltinCommand("expand", "Show the full output of a truncated tool result", _expand_handler),
     BuiltinCommand("export", "Export the transcript to HTML", _export_handler),
     BuiltinCommand("resume", "Resume a previous session", _resume_handler),
+    BuiltinCommand("new", "Start a fresh session", _new_handler),
     BuiltinCommand("quit", "Exit Aelix", None),
     BuiltinCommand("exit", "Exit Aelix", None),
     BuiltinCommand("reload", "Reload extensions + resources", None),

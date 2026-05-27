@@ -98,6 +98,22 @@ def _format_session_choice(meta: object) -> str:
     return short_id or "session"
 
 
+def _message_text(message: object) -> str:
+    """Join the ``TextContent`` of a queued message (``/dequeue`` restore).
+
+    Defensive — a non-list content / odd payload yields ``""`` (the dequeue path
+    filters empties)."""
+
+    content = getattr(message, "content", None)
+    if not isinstance(content, (list, tuple)):
+        return ""
+    return "\n".join(
+        getattr(b, "text", "") or ""
+        for b in content
+        if getattr(b, "type", None) == "text"
+    )
+
+
 async def run_tui(
     runtime_host: AgentSessionRuntime,
     *,
@@ -240,6 +256,26 @@ async def run_tui(
         _commit(Text(f"↻ Resumed session ({len(messages)} messages)", style="green"))
         context._refresh_footer()
 
+    async def _new_session() -> None:
+        # Sprint 6h₁₅ (ADR-0123) — /new: start a fresh session in-process. Mirror
+        # of _resume_session's swap (the rebind seam re-subscribes the renderer +
+        # refreshes command_ctx.harness), but with no picker and no replay (the
+        # new session is empty) — just clear + a fresh banner.
+        if out_chrome.running:
+            _commit(Text("Can't start a new session while a turn is running.", style="yellow"))
+            return
+        try:
+            result = await runtime_host.new_session()
+        except Exception as exc:  # noqa: BLE001 — surface, never crash the REPL
+            _commit(Text(f"✖ new session failed: {exc}", style="bold red"))
+            return
+        if getattr(result, "cancelled", False):
+            _commit(Text("New session cancelled by an extension.", style="yellow"))
+            return
+        out_chrome.clear()
+        _commit(_build_banner(runtime_host.harness, cwd))
+        context._refresh_footer()
+
     command_ctx = CommandContext(
         chrome=out_chrome,
         harness=runtime_host.harness,
@@ -250,6 +286,7 @@ async def run_tui(
         refresh_footer=context._refresh_footer,
         expand_lookup=renderer.get_expanded,
         resume_session=_resume_session,
+        new_session=_new_session,
     )
 
     loop = asyncio.get_running_loop()
@@ -311,6 +348,10 @@ async def run_tui(
         # the command context pointed at it so /model, /compact, /cost, … act on
         # the resumed session, not the stale one (Sprint 6h₁₄b, ADR-0122).
         command_ctx.harness = new_harness
+        # /expand ids are scoped to the visible transcript, which a swap clears —
+        # drop the store so post-swap /expand N can't surface the prior session's
+        # body (Sprint 6h₁₅ W-review MEDIUM).
+        renderer.reset_expand_store()
 
     runtime_host.set_rebind_session(_rebind)
 
@@ -362,6 +403,49 @@ async def run_tui(
 
     out_chrome.on_steer = lambda t: _enqueue("steer", t)
     out_chrome.on_follow_up = lambda t: _enqueue("follow_up", t)
+
+    # Sprint 6h₁₅ (ADR-0123) — Ctrl+T toggles thinking visibility on the live
+    # renderer (collapsed → /expand-recoverable placeholder, vs full inline).
+    def _toggle_thinking() -> None:
+        renderer.hide_thinking = not renderer.hide_thinking
+        state = "hidden" if renderer.hide_thinking else "visible"
+        _commit(Text(f"💭 Thinking blocks: {state}", style="dim"))
+
+    out_chrome.on_thinking_toggle = _toggle_thinking
+
+    # Sprint 6h₁₅ (ADR-0123) — Alt+Up restores queued steer + follow-up messages
+    # back into the editor (pi app.message.dequeue parity). The harness has no
+    # public queue-drain, so read/clear the private _MessageQueue instances —
+    # same TUI-host private coupling as runtime._repo (documented). pi order:
+    # steer messages first, then follow-up, joined by a blank line, with the
+    # current editor text appended.
+    def _dequeue() -> None:
+        # Ungated (fires idle OR mid-turn — pi best-effort parity). Safe against
+        # the harness's in-turn queue drain ONLY because this body is await-free:
+        # single-threaded asyncio can't interleave it partway through a drain. If
+        # this ever gains an `await`, gate it on ``not out_chrome.running``.
+        harness = runtime_host.harness
+        texts: list[str] = []
+        for qname in ("_steering_queue", "_follow_up_queue"):
+            queue = getattr(harness, qname, None)
+            if queue is None:
+                continue
+            messages = getattr(queue, "_messages", None)
+            if not messages:
+                continue
+            texts.extend(_message_text(m) for m in messages)
+            with contextlib.suppress(Exception):
+                queue.clear()
+        texts = [t for t in texts if t.strip()]
+        if not texts:
+            _commit(Text("No queued messages to restore.", style="yellow"))
+            return
+        current = out_chrome.get_editor_text()
+        parts = [*texts, current] if current.strip() else texts
+        out_chrome.set_editor_text("\n\n".join(parts))
+        context._refresh_footer()  # pending count is now 0
+
+    out_chrome.on_dequeue = _dequeue
 
     descriptor_unsub: Callable[[], None] | None = None
     descriptor_renderer: DescriptorRenderer | None = None
