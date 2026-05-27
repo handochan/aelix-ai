@@ -146,6 +146,18 @@ async def test_get_input_returns_submitted_line() -> None:
         assert result == "hello world"
 
 
+async def test_submit_line_and_running_property() -> None:
+    """ADR-0119 follow-up: submit_line injects a normal-submit line (used to
+    re-route an idle late-steer); `running` mirrors set_running."""
+    async with _chrome(run_app=False) as (chrome, _pipe, _buf):
+        assert chrome.running is False
+        chrome.set_running(True)
+        assert chrome.running is True
+        chrome.set_running(False)
+        chrome.submit_line("rerouted")
+        assert await asyncio.wait_for(chrome.get_input(), timeout=5) == "rerouted"
+
+
 async def test_input_buffered_before_get_input() -> None:
     # Queue-based: a line submitted before get_input is not lost.
     async with _chrome(run_app=True) as (chrome, pipe, _buf):

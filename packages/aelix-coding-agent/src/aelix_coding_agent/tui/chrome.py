@@ -199,7 +199,7 @@ class AelixChrome:
             FloatContainer(content=body, floats=self._floats),
             focused_element=input_window,
         )
-        return Application(
+        app = Application(
             layout=layout,
             key_bindings=self._build_key_bindings(),
             full_screen=False,
@@ -208,6 +208,15 @@ class AelixChrome:
             input=pt_input,
             output=pt_output,
         )
+        # Alt+Enter (ADR-0119 follow-up) is the 2-key sequence ("escape",
+        # "enter"), which makes Esc a PREFIX key — so a standalone Esc (the
+        # "esc to interrupt" affordance while a turn runs) would otherwise wait
+        # ~0.5s (``ttimeoutlen`` default) before flushing. ``ttimeoutlen`` is an
+        # instance attribute (NOT a constructor kwarg in this prompt-toolkit
+        # version); shrink it so single-Esc stays snappy while Alt+Enter still
+        # registers (its esc+enter bytes arrive together within the window).
+        app.ttimeoutlen = 0.05
+        return app
 
     def _build_key_bindings(self) -> KeyBindings:
         kb = KeyBindings()
@@ -371,6 +380,22 @@ class AelixChrome:
         """
 
         self._input_queue.put_nowait(_EOF)
+
+    @property
+    def running(self) -> bool:
+        """True while a turn is in progress (mirrors :meth:`set_running`)."""
+        return self._running
+
+    def submit_line(self, text: str) -> None:
+        """Inject ``text`` into the input queue as if the user submitted it.
+
+        ADR-0119 follow-up: lets the steer host re-route a message that landed
+        AFTER the turn ended (the late-steer race) through the normal turn path,
+        instead of leaving it orphaned in the steering queue (echoed + counted
+        but inert until the next prompt).
+        """
+
+        self._input_queue.put_nowait(text)
 
     # === state setters (driven by AelixTUIContext) =========================
 

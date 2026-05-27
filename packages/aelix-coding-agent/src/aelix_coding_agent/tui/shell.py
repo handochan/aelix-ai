@@ -234,7 +234,22 @@ async def run_tui(
     queue_tasks: set[asyncio.Task[None]] = set()
 
     def _enqueue(kind: str, text: str) -> None:
+        label = "Steering" if kind == "steer" else "Follow-up"
+
         async def _run() -> None:
+            # Late-steer race (W4 code-review): the chrome fired this only while
+            # running, but the turn can end between that check and this coro
+            # running. ``steer()``/``follow_up()`` enqueue regardless of phase
+            # (they don't raise on idle), so an idle landing would sit ORPHANED
+            # in the queue — echoed + counted but inert until the next prompt.
+            # If the turn already ended, re-route through the normal submit path
+            # so it drives a real turn (no misleading "Steering:" echo).
+            if not out_chrome.running:
+                out_chrome.submit_line(text)
+                return
+            output_queue.put_nowait(
+                ("commit", Text(f"{label}: {text}", style="dim italic"))
+            )
             try:
                 if kind == "steer":
                     await runtime_host.harness.steer(text)
@@ -242,15 +257,11 @@ async def run_tui(
                     await runtime_host.harness.follow_up(text)
             except Exception as exc:  # noqa: BLE001 — surface, never crash chrome
                 output_queue.put_nowait(
-                    ("commit", Text(f"✖ {kind} failed: {exc}", style="bold red"))
+                    ("commit", Text(f"✖ {label} failed: {exc}", style="bold red"))
                 )
                 return
             context._refresh_footer()  # reflect the new pending count
 
-        label = "Steering" if kind == "steer" else "Follow-up"
-        output_queue.put_nowait(
-            ("commit", Text(f"{label}: {text}", style="dim italic"))
-        )
         task = loop.create_task(_run())
         queue_tasks.add(task)
         task.add_done_callback(queue_tasks.discard)
