@@ -55,6 +55,22 @@ def _result_text(result: Any) -> str:
     return str(content)
 
 
+def _join_text(content: Any) -> str:
+    """Join the ``TextContent`` blocks of a message body into one string.
+
+    Non-text blocks (images) are skipped. Defensive: a non-iterable / odd
+    payload yields ``""`` rather than raising during transcript replay.
+    """
+
+    if not isinstance(content, (list, tuple)):
+        return ""
+    return "\n".join(
+        getattr(b, "text", "") or ""
+        for b in content
+        if getattr(b, "type", None) == "text"
+    )
+
+
 def _compact_args(args: dict[str, Any]) -> str:
     """One-line, length-capped argument summary for a tool header."""
 
@@ -376,6 +392,56 @@ class EventRenderer:
         """Return the full, untruncated body stored for ``/expand N`` (or None)."""
 
         return self._expand_store.get(n)
+
+    def replay(self, messages: list[Any]) -> None:
+        """Re-render a loaded session's static messages into scrollback.
+
+        pi ``renderCurrentSessionState`` parity (Sprint 6h₁₄b, ADR-0122): used by
+        ``/resume`` after a session hot-swap to repaint the resumed transcript.
+        Reuses the live helpers (``_tool_header``, ``_render_tool_end``) so a
+        resumed transcript looks identical to a freshly-streamed one; truncated
+        tool-result cards are stored too, so ``/expand`` works on them.
+
+        Static (no streaming) — never opens a text-stream window. Each message:
+        user → ``» {text}``; assistant → thinking (dim italic) + text + ``⚙``
+        tool-call headers + a terminal-error line; toolResult → the result card.
+        """
+
+        self._finalize_text()  # belt-and-braces: no open stream during replay
+        for msg in messages:
+            role = getattr(msg, "role", None)
+            if role == "user":
+                text = _join_text(getattr(msg, "content", []))
+                if text.strip():
+                    self._commit(Text(f"» {text}", style="bold"))
+            elif role == "assistant":
+                for block in getattr(msg, "content", []) or []:
+                    btype = getattr(block, "type", None)
+                    if btype == "thinking":
+                        thinking = (getattr(block, "thinking", "") or "").strip()
+                        if thinking:
+                            self._commit(Text(thinking, style="dim italic"))
+                    elif btype == "text":
+                        body = getattr(block, "text", "") or ""
+                        if body.strip():
+                            self._commit(Text(body))
+                    elif btype == "toolCall":
+                        name = getattr(block, "tool_name", "") or ""
+                        summary = _tool_header(name, getattr(block, "input", {}) or {})
+                        label = f"⚙ {name}({summary})" if summary else f"⚙ {name}"
+                        self._commit(Text(label, style="cyan"))
+                stop = getattr(msg, "stop_reason", None)
+                if stop in ("error", "aborted"):
+                    detail = getattr(msg, "error_message", None) or f"request {stop}"
+                    self._commit(Text(f"✖ {detail}", style="bold red"))
+            elif role == "toolResult":
+                # _render_tool_end reads result.content / .is_error and applies
+                # the same truncation + /expand-store as a live tool card.
+                self._render_tool_end(
+                    getattr(msg, "tool_name", "") or "",
+                    msg,
+                    bool(getattr(msg, "is_error", False)),
+                )
 
     def _render_with_descriptor(self, tool_name: str, text: str) -> bool:
         lookup = self.get_tool_renderer_desc

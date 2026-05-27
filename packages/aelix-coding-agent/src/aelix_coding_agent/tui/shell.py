@@ -82,6 +82,22 @@ def _format_context_label(usage: object) -> str | None:
     return f"◔ {' · '.join(parts)}" if parts else None
 
 
+def _format_session_choice(meta: object) -> str:
+    """A one-line picker label for a session (``/resume``).
+
+    ``JsonlSessionMetadata`` carries id + created_at + cwd (no title / message
+    count), so the label is ``{created} · {short-id}``; degrades to the short id
+    when no timestamp is present. Defensive getattr — never raises on an odd
+    metadata shape.
+    """
+
+    short_id = (getattr(meta, "id", "") or "")[:8]
+    created = (getattr(meta, "created_at", "") or "").replace("T", " ")[:16]
+    if created:
+        return f"{created} · {short_id}" if short_id else created
+    return short_id or "session"
+
+
 async def run_tui(
     runtime_host: AgentSessionRuntime,
     *,
@@ -156,6 +172,74 @@ async def run_tui(
         context._mode = mode
         context._refresh_footer()
 
+    async def _resume_session() -> None:
+        # Sprint 6h₁₄b (ADR-0122) — /resume: list cwd sessions → picker →
+        # in-process switch_session hot-swap → transcript replay. The runtime's
+        # rebind callback (set_rebind_session → _rebind) re-subscribes the
+        # EventRenderer to the new harness automatically, so we only drive the
+        # picker + the repaint here.
+        from aelix_agent_core.session.jsonl_repo import JsonlSessionListOptions
+
+        # Guard: never swap a live harness mid-generation. /resume is dispatched
+        # from the serialized _input_loop (blocked at ``await harness.prompt()``
+        # during a turn, so it can't reach here mid-turn) and a "/resume" typed
+        # while running is routed to steer() as a message, not a command — so this
+        # is belt-and-braces, but explicit (W-review M3).
+        if out_chrome.running:
+            _commit(Text("Can't resume while a turn is running.", style="yellow"))
+            return
+        # ``_repo`` is a private attr of the runtime host (no public accessor on
+        # AgentSessionRuntime, which is protected core); same-codebase coupling,
+        # degrades to a message if it's ever renamed/absent (W-review L1).
+        repo = getattr(runtime_host, "_repo", None)
+        if repo is None:
+            _commit(Text("Resume is unavailable (no session repo).", style="yellow"))
+            return
+        try:
+            sessions = await repo.list(JsonlSessionListOptions(cwd=cwd))
+        except Exception as exc:  # noqa: BLE001 — surface, never crash the REPL
+            _commit(Text(f"✖ could not list sessions: {exc}", style="bold red"))
+            return
+        current_file = getattr(runtime_host.session, "session_file", None)
+        choices = [m for m in sessions if getattr(m, "path", None) != current_file]
+        if not choices:
+            _commit(Text("No other sessions to resume in this folder.", style="yellow"))
+            return
+        # select() shows the first 9 (newest-first); build a label→metadata map.
+        labels: list[str] = []
+        by_label: dict[str, object] = {}
+        for meta in choices:
+            label = _format_session_choice(meta)
+            while label in by_label:  # guarantee uniqueness for the reverse map
+                label += " ·"
+            labels.append(label)
+            by_label[label] = meta
+        chosen = await context.select("Resume session", labels)
+        if not chosen:
+            return  # Esc / cancelled
+        meta = by_label.get(chosen)
+        if meta is None:
+            return
+        try:
+            result = await runtime_host.switch_session(getattr(meta, "path", ""))
+        except Exception as exc:  # noqa: BLE001 — surface, never crash the REPL
+            _commit(Text(f"✖ resume failed: {exc}", style="bold red"))
+            return
+        if getattr(result, "cancelled", False):
+            _commit(Text("Resume cancelled by an extension.", style="yellow"))
+            return
+        # Repaint (pi renderCurrentSessionState parity): clear scrollback, then
+        # replay the loaded session's transcript above the chrome. Build from the
+        # PERSISTED branch via ``Session.build_context()`` (the in-memory
+        # harness._state.messages is empty right after a switch — rebuilt lazily
+        # on the next turn); this is the same path /compact reuses.
+        out_chrome.clear()
+        session = runtime_host.session
+        messages = list((await session.build_context()).messages) if session is not None else []
+        renderer.replay(messages)
+        _commit(Text(f"↻ Resumed session ({len(messages)} messages)", style="green"))
+        context._refresh_footer()
+
     command_ctx = CommandContext(
         chrome=out_chrome,
         harness=runtime_host.harness,
@@ -165,6 +249,7 @@ async def run_tui(
         set_mode=_set_mode,
         refresh_footer=context._refresh_footer,
         expand_lookup=renderer.get_expanded,
+        resume_session=_resume_session,
     )
 
     loop = asyncio.get_running_loop()
@@ -222,6 +307,10 @@ async def run_tui(
             with contextlib.suppress(Exception):
                 prior()
         unsubscribe_holder["u"] = new_harness.subscribe(_on_agent_event)
+        # A session swap (/resume, new, fork) replaces the live harness — keep
+        # the command context pointed at it so /model, /compact, /cost, … act on
+        # the resumed session, not the stale one (Sprint 6h₁₄b, ADR-0122).
+        command_ctx.harness = new_harness
 
     runtime_host.set_rebind_session(_rebind)
 

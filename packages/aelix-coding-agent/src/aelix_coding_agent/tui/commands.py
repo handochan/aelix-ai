@@ -80,6 +80,11 @@ class CommandContext:
     ``/expand N`` can recover the full, untruncated body of a tool-result card
     whose ``… (+N more lines · /expand N)`` footer elided it. ``None`` in
     headless tests / when no renderer is attached."""
+    resume_session: Callable[[], Awaitable[None]] | None = None
+    """``run_tui`` wires this to its ``_resume_session`` flow (list sessions →
+    picker → ``runtime.switch_session`` hot-swap → transcript replay). The
+    ``/resume`` handler just awaits it; ``None`` in headless tests / when no
+    session repo is attached (Sprint 6h₁₄b, ADR-0122)."""
 
 
 def build_help_renderable(commands: list[BuiltinCommand]) -> RenderableType:
@@ -342,6 +347,23 @@ async def _expand_handler(ctx: CommandContext, args: str) -> None:
     )
 
 
+async def _resume_handler(ctx: CommandContext, args: str) -> None:
+    """``/resume`` — pick a previous session and hot-swap to it (ignores args).
+
+    Delegates to the host-wired ``resume_session`` flow (picker → switch_session
+    → transcript replay). Degrades with a committed message when unavailable or
+    on any failure (never crashes the REPL).
+    """
+
+    if ctx.resume_session is None:
+        ctx.commit(Text("Resume is unavailable.", style="yellow"))
+        return
+    try:
+        await ctx.resume_session()
+    except Exception as exc:  # noqa: BLE001 — surface, never kill the REPL
+        ctx.commit(Text(f"✖ resume failed: {exc}", style="bold red"))
+
+
 BUILTIN_COMMANDS: list[BuiltinCommand] = [
     BuiltinCommand("help", "List available commands", _help_handler),
     BuiltinCommand("model", "Show or switch the active model", _model_handler),
@@ -353,6 +375,7 @@ BUILTIN_COMMANDS: list[BuiltinCommand] = [
     BuiltinCommand("mode", "Show or set the steering mode", _mode_handler),
     BuiltinCommand("expand", "Show the full output of a truncated tool result", _expand_handler),
     BuiltinCommand("export", "Export the transcript to HTML", _export_handler),
+    BuiltinCommand("resume", "Resume a previous session", _resume_handler),
     BuiltinCommand("quit", "Exit Aelix", None),
     BuiltinCommand("exit", "Exit Aelix", None),
     BuiltinCommand("reload", "Reload extensions + resources", None),

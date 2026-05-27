@@ -591,3 +591,67 @@ def test_truncated_diff_carries_expand_hint() -> None:
     out = _committed_text(commits)
     assert "/expand 1" in out
     assert r.get_expanded(1) == diff.rstrip()
+
+
+# === Sprint 6h₁₄b (ADR-0122) — transcript replay (/resume) =================
+
+
+def test_replay_renders_user_assistant_tool_transcript() -> None:
+    from aelix_ai.messages import (
+        AssistantMessage,
+        TextContent,
+        ThinkingContent,
+        ToolCallContent,
+        ToolResultMessage,
+        UserMessage,
+    )
+
+    r, commits, _t = _renderer()
+    long_body = "\n".join(f"out {i}" for i in range(30))
+    messages = [
+        UserMessage(content=[TextContent(text="read the file")]),
+        AssistantMessage(
+            content=[
+                ThinkingContent(thinking="I should read it"),
+                ToolCallContent(tool_call_id="t1", tool_name="read", input={"path": "/x.txt"}),
+            ]
+        ),
+        ToolResultMessage(
+            tool_call_id="t1", tool_name="read", content=[TextContent(text=long_body)]
+        ),
+        AssistantMessage(content=[TextContent(text="It has 30 lines.")]),
+    ]
+    r.replay(messages)
+    out = _committed_text(commits)
+    assert "» read the file" in out  # user echo
+    assert "I should read it" in out  # thinking
+    assert "⚙ read(/x.txt)" in out  # tool-call header
+    assert "out 0" in out and "out 11" in out  # truncated card body
+    assert "out 12" not in out  # truncated at 12
+    assert "/expand 1" in out  # truncated → expand hint
+    assert "It has 30 lines." in out  # assistant answer
+    assert r.get_expanded(1) == long_body  # full body recoverable via /expand
+
+
+def test_replay_renders_terminal_error_line() -> None:
+    from aelix_ai.messages import AssistantMessage, TextContent
+
+    r, commits, _t = _renderer()
+    r.replay(
+        [
+            AssistantMessage(
+                content=[TextContent(text="partial")],
+                stop_reason="error",
+                error_message="provider exploded",
+            )
+        ]
+    )
+    out = _committed_text(commits)
+    assert "partial" in out
+    assert "✖ provider exploded" in out
+
+
+def test_replay_empty_is_noop() -> None:
+    r, commits, _t = _renderer()
+    r.replay([])
+    assert commits == []

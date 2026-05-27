@@ -161,7 +161,7 @@ def test_builtin_command_is_frozen() -> None:
 def test_sprint_a_registry_set() -> None:
     # Sprint 6h₁₂d added model/clear/compact/cost/tools/mode; the P0 consumer
     # batch added thinking + export (both wired to existing harness APIs);
-    # Sprint 6h₁₄a (ADR-0121) added /expand (truncated tool-result recovery).
+    # Sprint 6h₁₄a (ADR-0121) added /expand; 6h₁₄b (ADR-0122) added /resume.
     names = [c.name for c in BUILTIN_COMMANDS]
     assert names == [
         "help",
@@ -174,6 +174,7 @@ def test_sprint_a_registry_set() -> None:
         "mode",
         "expand",
         "export",
+        "resume",
         "quit",
         "exit",
         "reload",
@@ -183,6 +184,7 @@ def test_sprint_a_registry_set() -> None:
     assert by_name["thinking"].handler is not None
     assert by_name["expand"].handler is not None
     assert by_name["export"].handler is not None
+    assert by_name["resume"].handler is not None
     assert by_name["quit"].handler is None
     assert by_name["exit"].handler is None
     assert by_name["reload"].handler is None
@@ -480,3 +482,38 @@ def test_expand_unavailable_degrades_when_no_lookup() -> None:
     committed: list[object] = []
     _run("expand", _ctx(_FakeHarness(), committed, expand_lookup=None), "1")
     assert any("Expand is unavailable" in _render(c) for c in committed)
+
+
+# === Sprint 6h₁₄b (ADR-0122) — /resume handler ============================
+
+
+def test_resume_unavailable_degrades_when_no_callback() -> None:
+    committed: list[object] = []
+    ctx = _ctx(_FakeHarness(), committed)  # resume_session defaults to None
+    _run("resume", ctx, "")
+    assert any("Resume is unavailable" in _render(c) for c in committed)
+
+
+def test_resume_invokes_wired_callback() -> None:
+    committed: list[object] = []
+    calls: list[int] = []
+
+    async def _resume() -> None:
+        calls.append(1)
+
+    ctx = _ctx(_FakeHarness(), committed)
+    ctx.resume_session = _resume
+    _run("resume", ctx, "")
+    assert calls == [1]
+
+
+def test_resume_callback_failure_surfaces_not_crashes() -> None:
+    committed: list[object] = []
+
+    async def _boom() -> None:
+        raise RuntimeError("disk gone")
+
+    ctx = _ctx(_FakeHarness(), committed)
+    ctx.resume_session = _boom
+    _run("resume", ctx, "")
+    assert any("resume failed" in _render(c) for c in committed)

@@ -433,3 +433,139 @@ async def test_run_tui_does_not_echo_bash_command_or_empty(
     echoed = [c for c in commits if c.startswith("» ")]
     assert echoed == ["» real"]
     assert runtime.harness.prompts == [("real", "interactive")]
+
+
+# === Sprint 6h₁₄b (ADR-0122) — /resume wiring ==============================
+
+
+async def test_run_tui_resume_command_degrades_without_repo() -> None:
+    # /resume is wired into the command context; with the fake runtime (no
+    # session repo) it degrades gracefully and the REPL keeps running (barrier).
+    async with _harness_chrome(harness=_ModalHarness()) as (runtime, chrome, pipe):
+        task = _launch(runtime, chrome)
+        await _wait(lambda: chrome.app.is_running)
+        pipe.send_text("/resume\n")  # no _repo → degrade, must not crash
+        pipe.send_text("hi\n")  # barrier: REPL still alive and reaching the model
+        await _wait(lambda: runtime.harness.prompts == [("hi", "interactive")])
+        pipe.send_text("/quit\n")
+        await asyncio.wait_for(task, timeout=5)
+    assert runtime.harness.prompts == [("hi", "interactive")]
+
+
+# --- orchestration fakes: a runtime with a session repo + switch_session -----
+
+
+class _ResumeMeta:
+    def __init__(self, sid: str, path: str, created_at: str) -> None:
+        self.id = sid
+        self.path = path
+        self.created_at = created_at
+        self.cwd = "."
+
+
+class _ResumeRepo:
+    def __init__(self, metas: list[_ResumeMeta]) -> None:
+        self._metas = metas
+        self.list_cwds: list[str | None] = []
+
+    async def list(self, options: object = None) -> list[_ResumeMeta]:
+        self.list_cwds.append(getattr(options, "cwd", None))
+        return list(self._metas)
+
+
+class _ResumeSession:
+    def __init__(self, session_file: str, messages: list[object]) -> None:
+        self.session_file = session_file
+        self._messages = messages
+
+    async def build_context(self) -> object:
+        from types import SimpleNamespace
+
+        return SimpleNamespace(messages=list(self._messages))
+
+
+class _ResumeRuntime(FakeRuntime):
+    def __init__(
+        self,
+        harness: FakeHarness,
+        repo: _ResumeRepo,
+        session: _ResumeSession,
+        *,
+        target: _ResumeSession | None = None,
+        cancelled: bool = False,
+    ) -> None:
+        super().__init__(harness)
+        self._repo = repo
+        self.session = session  # the ACTIVE session (excluded from the picker)
+        self._target = target
+        self._cancelled = cancelled
+        self.switch_calls: list[str] = []
+
+    async def switch_session(self, path: str, **_kw: object) -> object:
+        from types import SimpleNamespace
+
+        self.switch_calls.append(path)
+        if not self._cancelled and self._target is not None:
+            self.session = self._target  # hot-swap the live session
+            if self.rebind_cb is not None:
+                await self.rebind_cb(self._harness)  # re-subscribe + refresh ctx
+        return SimpleNamespace(cancelled=self._cancelled)
+
+
+async def test_run_tui_resume_picker_excludes_active_switches_and_replays() -> None:
+    # W-review M1: cover the _resume_session orchestration — list (cwd-scoped) →
+    # exclude the active session → picker select #1 → switch_session(path).
+    from aelix_ai.messages import AssistantMessage, TextContent, UserMessage
+
+    metas = [
+        _ResumeMeta("aaaaaaaa", "/s/active.jsonl", "2026-05-27T15:00"),  # active → excluded
+        _ResumeMeta("bbbbbbbb", "/s/new.jsonl", "2026-05-27T14:00"),  # picker #1
+        _ResumeMeta("cccccccc", "/s/old.jsonl", "2026-05-27T13:00"),  # picker #2
+    ]
+    repo = _ResumeRepo(metas)
+    active = _ResumeSession("/s/active.jsonl", [])
+    target = _ResumeSession(
+        "/s/new.jsonl",
+        [
+            UserMessage(content=[TextContent(text="hi there")]),
+            AssistantMessage(content=[TextContent(text="hello back")]),
+        ],
+    )
+    runtime = _ResumeRuntime(FakeHarness(), repo, active, target=target)
+    with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
+        chrome = AelixChrome()
+        task = asyncio.ensure_future(
+            run_tui(runtime, cwd=".", chrome=chrome, install_signal_handlers=False)  # type: ignore[arg-type]
+        )
+        await _wait(lambda: chrome.app.is_running)
+        pipe.send_text("/resume\n")
+        await _wait(lambda: bool(repo.list_cwds))  # list happened → picker shown
+        await asyncio.sleep(0.1)  # let the modal render + focus
+        pipe.send_text("1")  # pick the first NON-active session
+        await _wait(lambda: bool(runtime.switch_calls))
+        pipe.send_text("/quit\n")
+        await asyncio.wait_for(task, timeout=5)
+    assert repo.list_cwds == ["."]  # listed cwd-scoped
+    # active.jsonl excluded; #1 = the newest remaining (new.jsonl), not active.
+    assert runtime.switch_calls == ["/s/new.jsonl"]
+
+
+async def test_run_tui_resume_empty_choices_does_not_switch() -> None:
+    # Only the active session exists → no other sessions → no switch; REPL lives.
+    metas = [_ResumeMeta("aaaaaaaa", "/s/active.jsonl", "2026-05-27T15:00")]
+    repo = _ResumeRepo(metas)
+    active = _ResumeSession("/s/active.jsonl", [])
+    runtime = _ResumeRuntime(FakeHarness(), repo, active)
+    with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
+        chrome = AelixChrome()
+        task = asyncio.ensure_future(
+            run_tui(runtime, cwd=".", chrome=chrome, install_signal_handlers=False)  # type: ignore[arg-type]
+        )
+        await _wait(lambda: chrome.app.is_running)
+        pipe.send_text("/resume\n")
+        await _wait(lambda: bool(repo.list_cwds))
+        pipe.send_text("hi\n")  # barrier: REPL still reaches the model
+        await _wait(lambda: runtime.harness.prompts == [("hi", "interactive")])
+        pipe.send_text("/quit\n")
+        await asyncio.wait_for(task, timeout=5)
+    assert runtime.switch_calls == []  # nothing to switch to
