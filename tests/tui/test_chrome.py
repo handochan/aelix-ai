@@ -172,17 +172,25 @@ async def test_print_above_writes_to_scrollback() -> None:
         assert "STREAMED-OUTPUT" in buf.getvalue()
 
 
-async def test_running_gates_enter_submission() -> None:
+async def test_running_enter_steers_not_submits() -> None:
+    # Sprint 6h₁₂e — Enter is no longer gated on ``not _running``. Mid-turn Enter
+    # now STEERS (fires on_steer) instead of feeding the input queue, so the
+    # serialized _input_loop is bypassed (pi interactive-mode parity). The
+    # queue must NOT receive the line.
     async with _chrome(run_app=True) as (chrome, pipe, _buf):
-        chrome.set_running(True)  # turn in progress → enter must not submit
+        steered: list[str] = []
+        chrome.on_steer = lambda t: steered.append(t)
+        chrome.set_running(True)  # turn in progress → enter steers
         fut = asyncio.ensure_future(chrome.get_input())
         await asyncio.sleep(0.05)
-        pipe.send_text("ignored\n")
+        pipe.send_text("steer this\n")
+        # The queue stays empty (steered instead) — get_input never resolves.
         with pytest.raises(asyncio.TimeoutError):
             await asyncio.wait_for(fut, timeout=0.4)
         fut.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await fut
+        assert steered == ["steer this"]
 
 
 # === Sprint 6h₁₂b — esc-to-interrupt + working hint =====================
@@ -224,3 +232,60 @@ async def test_working_line_shows_esc_hint_when_running() -> None:
         rendered = chrome._render_working()
         assert "thinking" in rendered
         assert "esc to interrupt" in rendered
+
+
+# === Sprint 6h₁₂e — steer / follow-up (queue-while-running) =============
+
+
+async def test_running_enter_steers_idle_enter_submits() -> None:
+    # Mid-turn Enter fires on_steer (NOT the queue); idle Enter still feeds the
+    # queue (the unchanged submit path).
+    async with _chrome(run_app=True) as (chrome, pipe, _buf):
+        steered: list[str] = []
+        chrome.on_steer = lambda t: steered.append(t)
+        # running → steer
+        chrome.set_running(True)
+        await asyncio.sleep(0.02)
+        pipe.send_text("steer me\n")
+        await asyncio.sleep(0.05)
+        assert steered == ["steer me"]
+        # idle → submit to the queue (steer untouched)
+        chrome.set_running(False)
+        await asyncio.sleep(0.02)
+        pipe.send_text("normal line\n")
+        result = await asyncio.wait_for(chrome.get_input(), timeout=5)
+        assert result == "normal line"
+        assert steered == ["steer me"]
+
+
+async def test_running_alt_enter_follows_up() -> None:
+    # Alt+Enter (escape, enter) mid-turn fires on_follow_up, not on_steer / queue.
+    async with _chrome(run_app=True) as (chrome, pipe, _buf):
+        steered: list[str] = []
+        followed: list[str] = []
+        chrome.on_steer = lambda t: steered.append(t)
+        chrome.on_follow_up = lambda t: followed.append(t)
+        chrome.set_running(True)
+        await asyncio.sleep(0.02)
+        pipe.send_text("queue this\x1b\r")  # Alt+Enter = ESC then CR
+        await asyncio.sleep(0.05)
+        assert followed == ["queue this"]
+        assert steered == []
+
+
+async def test_idle_alt_enter_is_noop() -> None:
+    # Idle Alt+Enter does NOT submit (no-op) — it is only the follow-up
+    # affordance while a turn is running.
+    async with _chrome(run_app=True) as (chrome, pipe, _buf):
+        followed: list[str] = []
+        chrome.on_follow_up = lambda t: followed.append(t)
+        chrome.set_running(False)
+        fut = asyncio.ensure_future(chrome.get_input())
+        await asyncio.sleep(0.02)
+        pipe.send_text("nothing\x1b\r")
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(fut, timeout=0.4)
+        fut.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await fut
+        assert followed == []

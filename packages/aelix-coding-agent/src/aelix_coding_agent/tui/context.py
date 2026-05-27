@@ -100,12 +100,17 @@ class AelixTUIContext:
         *,
         model_provider: Callable[[], str | None] | None = None,
         mode_provider: Callable[[], str | None] | None = None,
+        pending_provider: Callable[[], int] | None = None,
         cwd: str | None = None,
         mode: str = "default",
     ) -> None:
         self.chrome = chrome
         self._footer = footer
         self._model_provider = model_provider
+        # Live count of steer/follow-up messages queued during a turn (Sprint
+        # 6h₁₂e); reads harness.pending_message_count so the footer shows a
+        # "⋯ N queued" segment that drains as messages are consumed.
+        self._pending_provider = pending_provider
         # ``mode_provider`` reads the LIVE steering mode from the harness so the
         # footer reflects reality instead of a stale local string; ``_mode`` is
         # the fallback when no provider is wired (headless/tests).
@@ -387,10 +392,12 @@ class AelixTUIContext:
         mode = (
             self._mode_provider() if self._mode_provider is not None else None
         ) or self._mode
+        pending = self._pending_provider() if self._pending_provider is not None else 0
         segments = [
             s
             for s in (
                 f"⏵⏵ {mode}" if mode else None,
+                f"⋯ {pending} queued" if pending > 0 else None,
                 f"📂 {self._abbrev_cwd(self._cwd)}" if self._cwd else None,
                 f"✱ {model}" if model else None,
                 self._context_label,

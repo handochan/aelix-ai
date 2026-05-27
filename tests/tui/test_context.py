@@ -78,6 +78,27 @@ async def test_non_dialog_methods_do_not_raise() -> None:
         assert chrome._status["__notify__"] == "hi there"
 
 
+async def test_footer_shows_pending_queued_segment() -> None:
+    # Sprint 6h₁₂e — the footer shows "⋯ N queued" when pending_provider returns
+    # a positive count, and omits the segment when it returns 0.
+    with create_pipe_input() as pipe, create_app_session(
+        input=pipe, output=DummyOutput()
+    ):
+        console = Console(file=io.StringIO(), force_terminal=True, width=80)
+        chrome = AelixChrome(console=console)
+        pending = {"n": 2}
+        ctx = AelixTUIContext(
+            chrome,
+            AelixFooterData(cwd="."),
+            pending_provider=lambda: pending["n"],
+        )
+        assert "⋯ 2 queued" in chrome._footer_line
+        # drains to 0 → segment omitted
+        pending["n"] = 0
+        ctx._refresh_footer()
+        assert "queued" not in chrome._footer_line
+
+
 async def test_theme_methods() -> None:
     async with _ctx(run_app=False) as (ctx, _chrome, _pipe):
         assert isinstance(ctx.theme, Theme)

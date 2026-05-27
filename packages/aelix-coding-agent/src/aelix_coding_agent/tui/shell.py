@@ -120,6 +120,9 @@ async def run_tui(
         footer,
         model_provider=_model_id,
         mode_provider=_steering_mode,
+        pending_provider=lambda: getattr(
+            runtime_host.harness, "pending_message_count", 0
+        ),
         cwd=cwd,
         mode="default",
     )
@@ -203,6 +206,10 @@ async def run_tui(
             task = loop.create_task(_refresh_context_usage())
             context_usage_tasks.add(task)
             task.add_done_callback(context_usage_tasks.discard)
+            # The steer/follow-up queue drains during/after the turn — recompose
+            # the footer so the "⋯ N queued" segment reflects the new count
+            # (Sprint 6h₁₂e).
+            context._refresh_footer()
 
     async def _rebind(new_harness: AgentHarness) -> None:
         prior = unsubscribe_holder["u"]
@@ -217,6 +224,39 @@ async def run_tui(
         asyncio.ensure_future(_safe_abort(runtime_host.harness))
 
     out_chrome.on_interrupt = _on_interrupt
+
+    # Sprint 6h₁₂e — steer / follow-up (queue-while-running). The chrome fires
+    # on_steer / on_follow_up ONLY while a turn is running (Enter / Alt+Enter),
+    # bypassing the serialized _input_loop (blocked on harness.prompt). Enqueue
+    # CONCURRENTLY (mirror of on_interrupt's ensure_future) and surface errors
+    # rather than crash the chrome. A strong-ref set keeps the fire-and-forget
+    # tasks alive until they finish (same pattern as context_usage_tasks).
+    queue_tasks: set[asyncio.Task[None]] = set()
+
+    def _enqueue(kind: str, text: str) -> None:
+        async def _run() -> None:
+            try:
+                if kind == "steer":
+                    await runtime_host.harness.steer(text)
+                else:
+                    await runtime_host.harness.follow_up(text)
+            except Exception as exc:  # noqa: BLE001 — surface, never crash chrome
+                output_queue.put_nowait(
+                    ("commit", Text(f"✖ {kind} failed: {exc}", style="bold red"))
+                )
+                return
+            context._refresh_footer()  # reflect the new pending count
+
+        label = "Steering" if kind == "steer" else "Follow-up"
+        output_queue.put_nowait(
+            ("commit", Text(f"{label}: {text}", style="dim italic"))
+        )
+        task = loop.create_task(_run())
+        queue_tasks.add(task)
+        task.add_done_callback(queue_tasks.discard)
+
+    out_chrome.on_steer = lambda t: _enqueue("steer", t)
+    out_chrome.on_follow_up = lambda t: _enqueue("follow_up", t)
 
     descriptor_unsub: Callable[[], None] | None = None
     descriptor_renderer: DescriptorRenderer | None = None

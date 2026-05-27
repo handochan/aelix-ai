@@ -94,6 +94,12 @@ class AelixChrome:
         self._prompt = prompt
         self._time = time_fn  # injectable clock (spinner cadence; tests)
         self.on_interrupt: Callable[[], None] | None = None
+        # Steer / follow-up callbacks (Sprint 6h₁₂e — queue-while-running). Fired
+        # from the Enter / Alt+Enter bindings ONLY while a turn is running, so the
+        # serialized _input_loop is bypassed (the host wires these to harness
+        # steer()/follow_up() concurrently — mirror of the on_interrupt pattern).
+        self.on_steer: Callable[[str], None] | None = None
+        self.on_follow_up: Callable[[str], None] | None = None
 
         # === state the live regions read ===
         self._status: dict[str, str] = {}
@@ -206,7 +212,10 @@ class AelixChrome:
     def _build_key_bindings(self) -> KeyBindings:
         kb = KeyBindings()
 
-        @kb.add("enter", filter=Condition(lambda: not self._running))
+        # Sprint 6h₁₂e — Enter is NO LONGER gated on ``not self._running``: the
+        # input editor stays live during a turn so Enter mid-turn steers (pi
+        # interactive-mode parity). The idle path is unchanged (feeds the queue).
+        @kb.add("enter")
         def _accept(event: object) -> None:
             # When the completions menu has a highlighted entry, Enter confirms it
             # (applies + closes the menu) rather than submitting the line — the
@@ -217,6 +226,15 @@ class AelixChrome:
                 self.buffer.apply_completion(complete_state.current_completion)
                 return
             text = self.buffer.text
+            # Mid-turn Enter steers (injects into the running turn) instead of
+            # feeding the serialized input queue — bypasses _input_loop, which is
+            # blocked awaiting harness.prompt(). Idle / no-callback → normal submit.
+            if self._running and text.strip() and self.on_steer is not None:
+                self.buffer.reset()
+                with contextlib.suppress(Exception):
+                    self.buffer.history.append_string(text)
+                self.on_steer(text)
+                return
             self.buffer.reset()
             # The queue accept path bypasses prompt-toolkit's normal handler, so
             # record history explicitly.
@@ -224,6 +242,20 @@ class AelixChrome:
                 with contextlib.suppress(Exception):
                     self.buffer.history.append_string(text)
             self._input_queue.put_nowait(text)
+
+        @kb.add("escape", "enter")
+        def _follow_up(event: object) -> None:
+            # Alt+Enter is the follow-up affordance: while a turn is running it
+            # queues the line for AFTER the turn (harness.follow_up). It is only
+            # meaningful mid-turn — idle Alt+Enter is a no-op (does NOT submit; the
+            # input editor is single-line so there is no newline-insert to shadow).
+            text = self.buffer.text
+            if self._running and text.strip() and self.on_follow_up is not None:
+                self.buffer.reset()
+                with contextlib.suppress(Exception):
+                    self.buffer.history.append_string(text)
+                self.on_follow_up(text)
+                return
 
         @kb.add("c-i")  # Tab: start completion, then cycle through entries.
         def _complete(event: object) -> None:
