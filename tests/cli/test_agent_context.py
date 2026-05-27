@@ -89,18 +89,18 @@ def test_discover_context_files_truncates_oversized(tmp_path) -> None:
 # --- _build_harness_options wiring -------------------------------------------
 
 
-def test_build_harness_options_wires_seven_tools() -> None:
-    options = _build_harness_options(Args(), Session(MemorySessionStorage()))
+async def test_build_harness_options_wires_seven_tools() -> None:
+    options = await _build_harness_options(Args(), Session(MemorySessionStorage()))
     assert {t.name for t in options.tools} == _TOOL_NAMES
 
 
-def test_build_harness_options_sets_coding_agent_system_prompt() -> None:
-    options = _build_harness_options(Args(), Session(MemorySessionStorage()))
+async def test_build_harness_options_sets_coding_agent_system_prompt() -> None:
+    options = await _build_harness_options(Args(), Session(MemorySessionStorage()))
     assert options.system_prompt  # non-empty (was "" → no identity)
     assert "Aelix" in options.system_prompt
 
 
-def test_build_harness_options_explicit_system_prompt_overrides() -> None:
+async def test_build_harness_options_explicit_system_prompt_overrides() -> None:
     parsed = Args(system_prompt="CUSTOM PROMPT")
-    options = _build_harness_options(parsed, Session(MemorySessionStorage()))
+    options = await _build_harness_options(parsed, Session(MemorySessionStorage()))
     assert options.system_prompt == "CUSTOM PROMPT"  # --system-prompt wins

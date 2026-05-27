@@ -42,6 +42,9 @@ from aelix_agent_core.session.jsonl_repo import (
 from aelix_agent_core.session.memory_storage import MemorySessionStorage
 from aelix_agent_core.session.session import Session
 
+from aelix_coding_agent.builtin.guardrail import GuardrailExtension
+from aelix_coding_agent.builtin.permission import PermissionExtension
+from aelix_coding_agent.extensions.loader import load_extensions
 from aelix_coding_agent.tools import create_all_tools
 
 from .agent_context import build_system_prompt, discover_context_files
@@ -141,7 +144,9 @@ def _validate_continue_flag(parsed: Args) -> str | None:
     return None
 
 
-def _build_harness_options(parsed: Args, session: Session) -> AgentHarnessOptions:
+async def _build_harness_options(
+    parsed: Args, session: Session
+) -> AgentHarnessOptions:
     """Assemble :class:`AgentHarnessOptions` from parsed CLI args.
 
     Sprint 6h₆ is print + JSON + RPC only — the ``SettingsManager`` port
@@ -169,12 +174,20 @@ def _build_harness_options(parsed: Args, session: Session) -> AgentHarnessOption
         if parsed.system_prompt is not None
         else build_system_prompt(cwd)
     )
+    # Built-in safety extensions. GuardrailExtension FIRST so hard-deny
+    # patterns (e.g. ``rm -rf``) short-circuit via first-block-wins BEFORE the
+    # permission prompt is shown. ``load_extensions`` builds them against a
+    # single shared runtime, which the harness must reuse (``runtime=``) so the
+    # ``ctx.ui`` / ``ctx.has_ui`` bindings the TUI installs reach these handlers.
+    loaded = await load_extensions([GuardrailExtension(), PermissionExtension()])
     options = AgentHarnessOptions(
         model=model,
         session=session,
         cwd=cwd,
         tools=tools,
         system_prompt=system_prompt,
+        extensions=loaded.extensions,
+        runtime=loaded.runtime,
     )
 
     # Auto-discovered AGENTS.md project context (Pi ``--no-context-files`` gate),
@@ -308,7 +321,7 @@ async def _async_main(argv: list[str]) -> int:
         session = await _build_session(parsed, repo)
 
     async def _harness_factory(new_session: Session) -> AgentHarness:
-        opts = _build_harness_options(parsed, new_session)
+        opts = await _build_harness_options(parsed, new_session)
         return AgentHarness(opts)
 
     harness = await _harness_factory(session)
