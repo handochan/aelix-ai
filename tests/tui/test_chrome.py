@@ -346,3 +346,19 @@ async def test_alt_up_fires_dequeue() -> None:
         pipe.send_text("\x1b\x1b[A")  # Alt+Up = Esc then Up-arrow
         await asyncio.sleep(0.05)
         assert dequeued == [1]
+
+
+# === Sprint 6h₁₆ (ADR-0124) — OSC 52 clipboard ============================
+
+
+async def test_copy_to_clipboard_writes_osc52() -> None:
+    import base64
+
+    async with _chrome(run_app=False) as (chrome, _pipe, _buf):
+        captured: list[str] = []
+        chrome.app.output.write_raw = lambda s: captured.append(s)  # type: ignore[method-assign]
+        chrome.app.output.flush = lambda: None  # type: ignore[method-assign]
+        ok = chrome.copy_to_clipboard("hi there")
+        assert ok is True
+        expected = base64.b64encode(b"hi there").decode("ascii")
+        assert captured == [f"\x1b]52;c;{expected}\x07"]

@@ -31,6 +31,7 @@ to not block on CPR (the 6h₁₀b architecture spike).
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import time
 from collections.abc import Callable
@@ -409,6 +410,24 @@ class AelixChrome:
             output.write_raw("\x1b[3J\x1b[2J\x1b[H")
             output.flush()
         self.invalidate()
+
+    def copy_to_clipboard(self, text: str) -> bool:
+        """Copy ``text`` to the system clipboard via the OSC 52 escape sequence.
+
+        OSC 52 is terminal-native (no dependency, works over SSH) — the terminal
+        emulator puts the base64 payload on its clipboard. Best-effort +
+        headless-safe (``DummyOutput`` swallows; the whole body is
+        exception-suppressed). Returns ``True`` if the write was attempted.
+        """
+
+        try:
+            payload = base64.b64encode(text.encode("utf-8")).decode("ascii")
+            output = self.app.output
+            output.write_raw(f"\x1b]52;c;{payload}\x07")
+            output.flush()
+            return True
+        except Exception:  # noqa: BLE001 — clipboard is best-effort, never raises
+            return False
 
     async def get_input(self) -> str:
         """Await one submitted input line. Raises ``EOFError`` on Ctrl+D."""

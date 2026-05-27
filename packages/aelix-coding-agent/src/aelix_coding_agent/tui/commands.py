@@ -415,6 +415,91 @@ async def _hotkeys_handler(ctx: CommandContext, args: str) -> None:
     ctx.commit(Panel(table, title="Keyboard shortcuts", box=ROUNDED, border_style="cyan"))
 
 
+def _last_assistant_text(harness: AgentHarness) -> str:
+    """The text of the most recent assistant message (``""`` if none)."""
+
+    messages = list(getattr(harness, "messages", []) or [])
+    for msg in reversed(messages):
+        if getattr(msg, "role", None) != "assistant":
+            continue
+        parts = [
+            getattr(b, "text", "") or ""
+            for b in (getattr(msg, "content", []) or [])
+            if getattr(b, "type", None) == "text"
+        ]
+        text = "\n".join(p for p in parts if p)
+        if text.strip():
+            return text
+    return ""
+
+
+async def _copy_handler(ctx: CommandContext, args: str) -> None:
+    """``/copy`` — copy the last assistant message to the clipboard (ignores args)."""
+
+    text = _last_assistant_text(ctx.harness)
+    if not text.strip():
+        ctx.commit(Text("Nothing to copy (no assistant message yet).", style="yellow"))
+        return
+    copy = getattr(ctx.chrome, "copy_to_clipboard", None)
+    if not callable(copy) or not copy(text):
+        ctx.commit(Text("Clipboard copy is unavailable.", style="yellow"))
+        return
+    ctx.commit(Text(f"Copied last message ({len(text)} chars) to clipboard.", style="green"))
+
+
+async def _session_handler(ctx: CommandContext, args: str) -> None:
+    """``/session`` — show session id / cwd / name / file + usage (ignores args)."""
+
+    table = Table.grid(padding=(0, 2))
+    table.add_column(style="bold cyan", no_wrap=True)
+    table.add_column(style="white")
+    session = getattr(ctx.harness, "session", None)
+    if session is not None:
+        with contextlib.suppress(Exception):
+            meta = await session.get_metadata()
+            table.add_row("id", str(getattr(meta, "id", "—")))
+            if getattr(meta, "cwd", None):
+                table.add_row("cwd", str(meta.cwd))
+        with contextlib.suppress(Exception):
+            name = await session.get_session_name()
+            if name:
+                table.add_row("name", name)
+        if getattr(session, "session_file", None):
+            table.add_row("file", str(session.session_file))
+    if hasattr(ctx.harness, "get_session_stats"):
+        with contextlib.suppress(Exception):
+            stats = await ctx.harness.get_session_stats()
+            table.add_row("messages", str(getattr(stats, "total_messages", 0)))
+            tokens = getattr(stats, "tokens", None)
+            table.add_row("tokens", str(getattr(tokens, "total", 0)))
+            table.add_row("cost (USD)", f"{getattr(stats, 'cost', 0.0):.4f}")
+    ctx.commit(Panel(table, title="Session", box=ROUNDED, border_style="cyan"))
+
+
+async def _name_handler(ctx: CommandContext, args: str) -> None:
+    """``/name [text]`` — show or set the session display name."""
+
+    session = getattr(ctx.harness, "session", None)
+    if session is None:
+        ctx.commit(Text("Session naming is unavailable.", style="yellow"))
+        return
+    if not args:
+        try:
+            name = await session.get_session_name()
+        except Exception as exc:  # noqa: BLE001 — surface, never kill the REPL
+            ctx.commit(Text(f"✖ {exc}", style="bold red"))
+            return
+        ctx.commit(Text(f"session name: {name}" if name else "session name: (unset)"))
+        return
+    try:
+        # ``append_session_name`` is a core Session method (every backend has it).
+        await session.append_session_name(args)
+    except Exception as exc:  # noqa: BLE001 — surface, never kill the REPL
+        ctx.commit(Text(f"✖ name failed: {exc}", style="bold red"))
+        return
+    ctx.commit(Text(f"session name → {args}", style="green"))
+
+
 BUILTIN_COMMANDS: list[BuiltinCommand] = [
     BuiltinCommand("help", "List available commands", _help_handler),
     BuiltinCommand("hotkeys", "Show keyboard shortcuts", _hotkeys_handler),
@@ -422,11 +507,14 @@ BUILTIN_COMMANDS: list[BuiltinCommand] = [
     BuiltinCommand("clear", "Clear the scrollback transcript", _clear_handler),
     BuiltinCommand("compact", "Compact the conversation context", _compact_handler),
     BuiltinCommand("cost", "Show session token / cost usage", _cost_handler),
+    BuiltinCommand("session", "Show session info (id, cwd, name, usage)", _session_handler),
+    BuiltinCommand("name", "Show or set the session name", _name_handler),
     BuiltinCommand("thinking", "Show or set the reasoning level", _thinking_handler),
     BuiltinCommand("tools", "List registered tools", _tools_handler),
     BuiltinCommand("mode", "Show or set the steering mode", _mode_handler),
     BuiltinCommand("expand", "Show the full output of a truncated tool result", _expand_handler),
     BuiltinCommand("export", "Export the transcript to HTML", _export_handler),
+    BuiltinCommand("copy", "Copy the last assistant message to the clipboard", _copy_handler),
     BuiltinCommand("resume", "Resume a previous session", _resume_handler),
     BuiltinCommand("new", "Start a fresh session", _new_handler),
     BuiltinCommand("quit", "Exit Aelix", None),

@@ -170,11 +170,14 @@ def test_sprint_a_registry_set() -> None:
         "clear",
         "compact",
         "cost",
+        "session",
+        "name",
         "thinking",
         "tools",
         "mode",
         "expand",
         "export",
+        "copy",
         "resume",
         "new",
         "quit",
@@ -182,13 +185,11 @@ def test_sprint_a_registry_set() -> None:
         "reload",
     ]
     by_name: dict[str, Any] = {c.name: c for c in BUILTIN_COMMANDS}
-    assert by_name["help"].handler is not None
-    assert by_name["thinking"].handler is not None
-    assert by_name["expand"].handler is not None
-    assert by_name["export"].handler is not None
-    assert by_name["resume"].handler is not None
-    assert by_name["hotkeys"].handler is not None
-    assert by_name["new"].handler is not None
+    for required in (
+        "help", "thinking", "expand", "export", "resume", "hotkeys", "new",
+        "session", "name", "copy",
+    ):
+        assert by_name[required].handler is not None
     assert by_name["quit"].handler is None
     assert by_name["exit"].handler is None
     assert by_name["reload"].handler is None
@@ -561,3 +562,99 @@ def test_hotkeys_lists_shortcuts() -> None:
     _run("hotkeys", _ctx(_FakeHarness(), committed), "")
     out = "".join(_render(c) for c in committed)
     assert "Enter" in out and "Ctrl+T" in out and "Alt+↑" in out
+
+
+# === Sprint 6h₁₆ (ADR-0124) — /copy + /session + /name ====================
+
+
+class _CopyChrome:
+    def __init__(self) -> None:
+        self.copied: str | None = None
+
+    def copy_to_clipboard(self, text: str) -> bool:
+        self.copied = text
+        return True
+
+
+class _MsgHarness:
+    current_model = None
+
+    def __init__(self, messages: list[object]) -> None:
+        self.messages = messages
+
+
+def test_copy_copies_last_assistant_message() -> None:
+    from aelix_ai.messages import AssistantMessage, TextContent, UserMessage
+
+    msgs = [
+        UserMessage(content=[TextContent(text="question")]),
+        AssistantMessage(content=[TextContent(text="the answer")]),
+    ]
+    chrome = _CopyChrome()
+    committed: list[object] = []
+    _run("copy", _ctx(_MsgHarness(msgs), committed, chrome=chrome), "")
+    assert chrome.copied == "the answer"
+    assert any("Copied" in _render(c) for c in committed)
+
+
+def test_copy_nothing_to_copy_degrades() -> None:
+    committed: list[object] = []
+    _run("copy", _ctx(_MsgHarness([]), committed, chrome=_CopyChrome()), "")
+    assert any("Nothing to copy" in _render(c) for c in committed)
+
+
+class _FakeMeta2:
+    id = "sess123"
+    cwd = "/work"
+
+
+class _FakeSession2:
+    session_file = "/work/.sessions/sess123.jsonl"
+
+    def __init__(self, name: str | None = None) -> None:
+        self._name = name
+        self.set_name: str | None = None
+
+    async def get_metadata(self) -> object:
+        return _FakeMeta2()
+
+    async def get_session_name(self) -> str | None:
+        return self._name
+
+    async def append_session_name(self, name: str) -> str:
+        self.set_name = name
+        self._name = name
+        return name
+
+
+class _SessionHarness:
+    current_model = None
+
+    def __init__(self, name: str | None = None) -> None:
+        self.session = _FakeSession2(name)
+
+    async def get_session_stats(self) -> object:
+        from types import SimpleNamespace
+
+        return SimpleNamespace(total_messages=3, cost=0.05, tokens=SimpleNamespace(total=42))
+
+
+def test_session_shows_info_and_stats() -> None:
+    committed: list[object] = []
+    _run("session", _ctx(_SessionHarness(name="my session"), committed), "")
+    out = "".join(_render(c) for c in committed)
+    assert "sess123" in out and "my session" in out and "messages" in out
+
+
+def test_name_shows_current() -> None:
+    committed: list[object] = []
+    _run("name", _ctx(_SessionHarness(name="current name"), committed), "")
+    assert any("current name" in _render(c) for c in committed)
+
+
+def test_name_sets_via_append() -> None:
+    harness = _SessionHarness()
+    committed: list[object] = []
+    _run("name", _ctx(harness, committed), "new title")
+    assert harness.session.set_name == "new title"
+    assert any("session name → new title" in _render(c) for c in committed)
