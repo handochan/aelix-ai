@@ -38,9 +38,13 @@ def parse_input_line(line: str) -> ParsedInput:
     stripped = line.strip()
     if not stripped:
         return ParsedInput("empty")
-    if stripped in ("/quit", "/exit"):
+    # Slash built-ins match on the FIRST token so trailing args (which these
+    # commands ignore) don't misclassify — e.g. "/reload now" → reload rather
+    # than a prompt that later reports "Unknown command: /reload".
+    first = stripped.split(maxsplit=1)[0]
+    if first in ("/quit", "/exit"):
         return ParsedInput("quit")
-    if stripped == "/reload":
+    if first == "/reload":
         return ParsedInput("reload")
     if line.startswith("!!"):
         return ParsedInput("bash_transient", line[2:].strip())

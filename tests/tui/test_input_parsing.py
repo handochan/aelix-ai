@@ -17,6 +17,11 @@ from aelix_coding_agent.tui.input import ParsedInput, parse_input_line
         ("  /quit  ", "quit", ""),
         ("/reload", "reload", ""),
         ("  /reload  ", "reload", ""),
+        # Slash built-ins match on the first token — trailing args are ignored,
+        # not misclassified as a prompt (Sprint 6h₁₂a fix).
+        ("/reload now", "reload", ""),
+        ("/quit please", "quit", ""),
+        ("/exit 0", "quit", ""),
         ("!ls -la", "bash", "ls -la"),
         ("!  ls  ", "bash", "ls"),
         ("!", "bash", ""),
