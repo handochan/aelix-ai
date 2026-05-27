@@ -30,6 +30,13 @@ from rich.text import Text
 from aelix_coding_agent.cli.repl import handle_user_bash
 from aelix_coding_agent.extensions import HEADLESS_UI_CONTEXT
 from aelix_coding_agent.tui.chrome import AelixChrome
+from aelix_coding_agent.tui.commands import (
+    BUILTIN_COMMANDS,
+    BuiltinCommand,
+    CommandContext,
+    match_command,
+    slash_word,
+)
 from aelix_coding_agent.tui.completion import DescriptorCommandCompleter
 from aelix_coding_agent.tui.context import AelixTUIContext
 from aelix_coding_agent.tui.descriptors import (
@@ -82,6 +89,18 @@ async def run_tui(
 
     renderer = EventRenderer(commit=_commit, set_tail=_set_tail, width=_RENDER_WIDTH)
 
+    # Sprint 6h₁₂a (ADR-0110) — first-party command core. The registry is static
+    # for the session; the context carries the live chrome/harness/commit/cwd so
+    # handlers (e.g. /help) can act on the running TUI.
+    commands = list(BUILTIN_COMMANDS)
+    command_ctx = CommandContext(
+        chrome=out_chrome,
+        harness=runtime_host.harness,
+        commit=_commit,
+        cwd=cwd,
+        commands=commands,
+    )
+
     loop = asyncio.get_running_loop()
     signals_installed: list[int] = []
     if install_signal_handlers and sys.platform != "win32":
@@ -131,16 +150,24 @@ async def run_tui(
         # registry + per-kind renderer, subscribe to the ui:list-modules channel,
         # then emit one synchronous probe so loaded extensions append descriptors.
         descriptor_unsub, descriptor_renderer = _wire_descriptors(
-            runtime_host, out_chrome, footer, context, loop, renderer
+            runtime_host, out_chrome, footer, context, loop, renderer, commands
         )
+        # No descriptor wiring (headless fakes without an event_bus) → the palette
+        # still offers built-ins. Install the union completer directly.
+        if descriptor_renderer is None:
+            out_chrome.set_command_completer(
+                DescriptorCommandCompleter(lambda: {}, builtins=commands)
+            )
         chrome_task = asyncio.create_task(out_chrome.run())
         pump_task = asyncio.create_task(_output_pump(output_queue, out_chrome))
+        _commit(_build_banner(runtime_host.harness, cwd))
         await _input_loop(
             runtime_host,
             out_chrome,
             output_queue,
             renderer,
             descriptor_renderer,
+            command_ctx,
             cwd=cwd,
         )
     finally:
@@ -178,6 +205,7 @@ def _wire_descriptors(
     context: AelixTUIContext,
     loop: asyncio.AbstractEventLoop,
     event_renderer: EventRenderer,
+    builtins: list[BuiltinCommand],
 ) -> tuple[Callable[[], None] | None, DescriptorRenderer | None]:
     """Build the descriptor registry + renderer, subscribe + emit one probe.
 
@@ -206,10 +234,13 @@ def _wire_descriptors(
     registry.on_apply = renderer.render
     registry.on_remove = renderer.clear
 
-    # Surface the (live) command-routes through the input completer. The
-    # completer reads ``renderer.command_routes`` by reference on every keystroke,
-    # so descriptors applied/removed after this point change completions live.
-    chrome.set_command_completer(DescriptorCommandCompleter(lambda: renderer.command_routes))
+    # Surface built-ins ∪ the (live) descriptor command-routes through the input
+    # completer. The completer reads ``renderer.command_routes`` by reference on
+    # every keystroke (descriptors applied/removed after this point change
+    # completions live); built-ins are static and win on a name clash (§B).
+    chrome.set_command_completer(
+        DescriptorCommandCompleter(lambda: renderer.command_routes, builtins=builtins)
+    )
 
     # §B — late-bind the live tool-renderer-desc lookup onto the EventRenderer so
     # tool_execution_end can intercept matching tools by reference (descriptors
@@ -257,6 +288,25 @@ def _match_management_modal(
     return None
 
 
+def _build_banner(harness: AgentHarness, cwd: str) -> object:
+    """Build the startup banner (Aelix + model id + cwd + /help hint).
+
+    The model id reads ``harness.current_model.id``; degrades gracefully to
+    ``unknown`` when the harness exposes no model (e.g. headless test fakes).
+    """
+    from rich.box import ROUNDED
+    from rich.panel import Panel
+
+    model = getattr(harness, "current_model", None)
+    model_id = getattr(model, "id", None) or "unknown"
+    body = Text()
+    body.append("Aelix\n", style="bold cyan")
+    body.append(f"model: {model_id}\n")
+    body.append(f"cwd:   {cwd}\n")
+    body.append("Type /help for commands.", style="dim")
+    return Panel(body, box=ROUNDED, border_style="cyan", expand=False)
+
+
 async def _output_pump(queue: asyncio.Queue[tuple[str, object]], chrome: AelixChrome) -> None:
     """Apply tagged output commands in order: commit → scrollback, tail → widget."""
 
@@ -276,6 +326,7 @@ async def _input_loop(
     output_queue: asyncio.Queue[tuple[str, object]],
     renderer: EventRenderer,
     descriptor_renderer: DescriptorRenderer | None,
+    command_ctx: CommandContext,
     *,
     cwd: str,
 ) -> None:
@@ -297,16 +348,27 @@ async def _input_loop(
         if parsed.kind == "reload":
             await harness.reload_resources()
             continue
-        # §C — a `/command` matching a stored management-modal opens the modal
-        # (its actions dispatch via §A) instead of going to the model. Builtin
-        # commands (/quit//exit//reload) are already handled above; the registry
-        # match is done here in the shell so ``parse_input_line`` stays PURE
-        # (it's reused by ``cli/repl.py``).
-        if parsed.kind == "prompt" and descriptor_renderer is not None:
-            modal = _match_management_modal(descriptor_renderer, parsed.text)
-            if modal is not None:
-                descriptor_renderer.open_modal(modal)
+        # Sprint 6h₁₂a (ADR-0110) — a `prompt`-kind `/`-line resolves through the
+        # command core BEFORE going to the model: (1) built-in registry handler,
+        # (2) descriptor management-modal (§C), (3) else an "unknown command" hint
+        # (a bare /x is NOT sent to the model). quit/exit/reload are already
+        # handled above via parse_input_line (which stays PURE for cli/repl.py);
+        # their metadata-only registry entries never reach this branch.
+        if parsed.kind == "prompt" and parsed.text.startswith("/"):
+            command = match_command(parsed.text, command_ctx.commands)
+            if command is not None and command.handler is not None:
+                await command.handler(command_ctx)
                 continue
+            if descriptor_renderer is not None:
+                modal = _match_management_modal(descriptor_renderer, parsed.text)
+                if modal is not None:
+                    descriptor_renderer.open_modal(modal)
+                    continue
+            label = "/" + slash_word(parsed.text)
+            output_queue.put_nowait(
+                ("commit", Text(f"Unknown command: {label} — type /help", style="yellow"))
+            )
+            continue
         if parsed.kind in ("bash", "bash_transient"):
             if parsed.text:
                 output = await handle_user_bash(

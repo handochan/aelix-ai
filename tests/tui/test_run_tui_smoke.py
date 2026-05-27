@@ -272,15 +272,35 @@ async def test_run_tui_management_modal_command_opens_not_prompts() -> None:
     assert runtime.harness.prompts == []  # routed to modal, never sent to model
 
 
-async def test_run_tui_unknown_slash_still_prompts() -> None:
+async def test_run_tui_unknown_slash_is_not_sent_to_model() -> None:
+    # Sprint 6h₁₂a: a `/x` matching no built-in + no modal commits an unknown-
+    # command hint and is NOT sent to the model (previously it prompted).
     async with _harness_chrome(harness=_ModalHarness()) as (runtime, chrome, pipe):
         task = _launch(runtime, chrome)
         await _wait(lambda: chrome.app.is_running)
-        pipe.send_text("/unknown thing\n")  # no matching modal → goes to the model
-        await _wait(lambda: runtime.harness.prompts == [("/unknown thing", "interactive")])
+        pipe.send_text("/unknown thing\n")  # no built-in, no matching modal
+        pipe.send_text("real prompt\n")  # a real prompt DOES reach the model
+        await _wait(lambda: runtime.harness.prompts == [("real prompt", "interactive")])
         pipe.send_text("/quit\n")
         await asyncio.wait_for(task, timeout=5)
-    assert runtime.harness.prompts == [("/unknown thing", "interactive")]
+    # The unknown /x was never forwarded to the harness.
+    assert runtime.harness.prompts == [("real prompt", "interactive")]
+
+
+async def test_run_tui_help_command_runs_handler_not_prompt() -> None:
+    # /help dispatches the built-in handler (commits the command table) and is
+    # NOT sent to the model.
+    async with _harness_chrome(harness=_ModalHarness()) as (runtime, chrome, pipe):
+        task = _launch(runtime, chrome)
+        await _wait(lambda: chrome.app.is_running)
+        pipe.send_text("/help\n")
+        # No deterministic commit hook here; instead assert it never reached the
+        # model and the REPL keeps running, then drive a real prompt as a barrier.
+        pipe.send_text("hi\n")
+        await _wait(lambda: runtime.harness.prompts == [("hi", "interactive")])
+        pipe.send_text("/quit\n")
+        await asyncio.wait_for(task, timeout=5)
+    assert runtime.harness.prompts == [("hi", "interactive")]
 
 
 async def test_run_tui_bash_passthrough(monkeypatch: pytest.MonkeyPatch) -> None:
