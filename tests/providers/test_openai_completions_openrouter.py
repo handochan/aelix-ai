@@ -55,6 +55,20 @@ def test_openrouter_reasoning_uses_system_role_not_developer() -> None:
     assert wire[0]["role"] == "system"  # NOT "developer"
 
 
+def test_compat_override_can_force_developer_role_on_openrouter() -> None:
+    """The user ``model.compat`` escape hatch still beats the ADR-0118 default —
+    an explicit ``supportsDeveloperRole=True`` override wins."""
+    model = Model(
+        api="openai-completions",
+        id="qwen/qwen3.6-35b-a3b",
+        provider="openrouter",
+        base_url="https://openrouter.ai/api/v1",
+        reasoning=True,
+        compat={"supportsDeveloperRole": True},
+    )
+    assert get_compat(model).supports_developer_role is True
+
+
 def test_native_openai_reasoning_still_uses_developer_role() -> None:
     """Native api.openai.com (not a proxy) keeps the o-series ``developer`` role."""
     from aelix_ai.messages import TextContent, UserMessage

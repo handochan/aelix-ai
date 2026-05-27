@@ -375,6 +375,14 @@ def test_detect_compat_max_tokens_and_non_standard(
     assert compat.max_tokens_field == expected_max_tokens_field
     # ``supports_store`` and ``supports_developer_role`` flip together on
     # non-standard providers (Pi parity).
+    #
+    # NOTE (ADR-0118): do NOT add ``"openrouter"`` to the parametrize list above.
+    # OpenRouter is NOT ``is_non_standard``, but ``supports_developer_role`` is
+    # deliberately forced False for it (it proxies to providers like Parasail
+    # that reject the ``developer`` role) — so this generic "flips with
+    # non_standard" assertion would fire a FALSE parity failure against correct
+    # ADR-0118 behavior. The OpenRouter case is pinned in
+    # ``tests/providers/test_openai_completions_openrouter.py``.
     assert compat.supports_store is (not expected_non_standard)
     assert compat.supports_developer_role is (not expected_non_standard)
 
