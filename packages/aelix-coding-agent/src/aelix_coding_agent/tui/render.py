@@ -143,8 +143,12 @@ def _looks_like_diff(text: str) -> bool:
     return _HUNK_HEADER_RE.search(text) is not None
 
 
-def _render_diff(text: str, *, max_lines: int = 40) -> Group:
-    """Colourise a unified diff: +green / -red / @@cyan / ---|+++ bold."""
+def _render_diff(text: str, *, max_lines: int = 40, expand_id: int | None = None) -> Group:
+    """Colourise a unified diff: +green / -red / @@cyan / ---|+++ bold.
+
+    ``expand_id`` (when the diff is truncated) is appended to the elision footer
+    as a ``/expand N`` hint so the user can recover the full diff (ADR-0121).
+    """
     kept, hidden = _truncate_lines(text, max_lines=max_lines)
     rows: list[Text] = []
     for line in kept:
@@ -160,7 +164,9 @@ def _render_diff(text: str, *, max_lines: int = 40) -> Group:
             style = "dim"
         rows.append(Text(line, style=style))
     if hidden > 0:
-        rows.append(Text(f"… (+{hidden} more lines)", style="dim"))
+        suffix = f" · /expand {expand_id}" if expand_id is not None else ""
+        hint = f"… (+{hidden} more lines{suffix})"
+        rows.append(Text(hint, style="dim"))
     return Group(*rows)
 
 
@@ -185,6 +191,14 @@ class EventRenderer:
         self._text_stream: StreamRenderer | None = None
         self._text_accum: str = ""
         self._thinking_accum: str = ""
+        # /expand support (ADR-0121) — full, untruncated tool-result bodies kept
+        # by sequential id so ``/expand N`` can recover the text a truncated card
+        # elided. Only TRUNCATED cards get an id (that's when /expand is useful);
+        # the id is surfaced on the truncation footer (``… /expand N``). Bounded
+        # so a long session can't grow this without limit (oldest dropped first).
+        self._expand_store: dict[int, str] = {}
+        self._expand_seq: int = 0
+        self._expand_max: int = 100
         # Thinking is buffered during ``thinking_delta`` and flushed (dim
         # italic) BEFORE the text/tool block that follows it — not at the
         # ``thinking_end`` event, which the adapter emits at end-of-stream
@@ -313,7 +327,9 @@ class EventRenderer:
         # bash `git diff`) renders with +/- colour instead of flat dim text.
         # Errors keep the red card below (a failed edit isn't a diff to review).
         if not is_error and _looks_like_diff(text):
-            diff_group = _render_diff(text)
+            _, diff_hidden = _truncate_lines(text, max_lines=40)
+            expand_id = self._store_expandable(text) if diff_hidden > 0 else None
+            diff_group = _render_diff(text, expand_id=expand_id)
             if exit_code is not None and exit_code != 0:
                 # Preserve the bash exit footer for diff-shaped output that
                 # still reports a non-zero exit (e.g. `git diff --exit-code`).
@@ -333,10 +349,33 @@ class EventRenderer:
         body_style = "red" if is_error else "dim"
         rows: list[Text] = [Text(f"│ {line}", style=body_style) for line in kept]
         if hidden > 0:
-            rows.append(Text(f"│ … (+{hidden} more lines)", style="dim"))
+            expand_id = self._store_expandable(text)
+            rows.append(
+                Text(f"│ … (+{hidden} more lines · /expand {expand_id})", style="dim")
+            )
         if exit_code is not None and exit_code != 0:
             rows.append(Text(f"│ exit {exit_code}", style="red"))
         self._commit(Group(*rows))
+
+    def _store_expandable(self, full_text: str) -> int:
+        """Retain ``full_text`` under a fresh id; return the id (for ``/expand``).
+
+        Bounded to ``_expand_max`` entries — the oldest id is dropped when the
+        store is full so a long session can't grow it without limit.
+        """
+
+        self._expand_seq += 1
+        n = self._expand_seq
+        self._expand_store[n] = full_text
+        if len(self._expand_store) > self._expand_max:
+            oldest = min(self._expand_store)
+            del self._expand_store[oldest]
+        return n
+
+    def get_expanded(self, n: int) -> str | None:
+        """Return the full, untruncated body stored for ``/expand N`` (or None)."""
+
+        return self._expand_store.get(n)
 
     def _render_with_descriptor(self, tool_name: str, text: str) -> bool:
         lookup = self.get_tool_renderer_desc

@@ -146,6 +146,12 @@ class AelixTUIContext:
                     lambda _e, o=option: _resolve(result, o)  # type: ignore[misc]
                 )
             kb.add("escape")(lambda _e: _resolve(result, None))
+            # Consume Enter (CR + LF) so a leaked "Enter" doesn't bubble to the
+            # chrome's global accept (ADR-0121 W-review M1). A numbered select has
+            # no highlighted default, so Enter is a deliberate no-op — the user
+            # must press a number or Esc.
+            kb.add("enter")(lambda _e: None)
+            kb.add("c-j")(lambda _e: None)
             lines = [title, *[f"{i + 1}. {o}" for i, o in enumerate(shown)]]
             if len(options) > len(shown):
                 lines.append(f"… (+{len(options) - len(shown)} more not shown)")
@@ -165,6 +171,12 @@ class AelixTUIContext:
                 kb.add(key)(lambda _e: _resolve(result, True))
             for key in ("n", "N", "escape"):
                 kb.add(key)(lambda _e: _resolve(result, False))
+            # Consume Enter (CR + LF) so it can't leak to the chrome's global
+            # accept (ADR-0121 W-review M1). Enter is a deliberate no-op rather
+            # than defaulting to "yes" — a confirm must be answered explicitly so
+            # a stray Enter never auto-approves a destructive action.
+            kb.add("enter")(lambda _e: None)
+            kb.add("c-j")(lambda _e: None)
             return Window(
                 FormattedTextControl(
                     f"{title}\n{message} [y/n]", focusable=True, key_bindings=kb
@@ -184,7 +196,13 @@ class AelixTUIContext:
 
         def build(result: asyncio.Future[Any]) -> HSplit:
             kb = KeyBindings()
+            # Bind BOTH c-m (enter) and c-j: with the chrome's main input now
+            # treating LF (c-j) as a submit key (ADR-0121 multiline), an unbound
+            # c-j here would bubble past the focused modal to that global handler
+            # and never resolve the dialog. Binding it at control level keeps
+            # "Enter" (CR or LF) resolving the modal regardless.
             kb.add("enter")(lambda _e: _resolve(result, buffer.text))
+            kb.add("c-j")(lambda _e: _resolve(result, buffer.text))
             kb.add("escape")(lambda _e: _resolve(result, None))
             return HSplit(
                 [
@@ -219,6 +237,12 @@ class AelixTUIContext:
             kb.add("c-s")(lambda _e: _resolve(result, buffer.text))
             kb.add("escape")(lambda _e: _resolve(result, None))
             kb.add("c-c")(lambda _e: _resolve(result, None))
+            # Enter (CR + LF) inserts a newline — this is a MULTILINE editor, so
+            # Enter must edit, not leak to the chrome's global accept (ADR-0121
+            # W-review M2: the editor modal previously lost the newline). Save is
+            # Ctrl+S, cancel is Esc.
+            kb.add("enter")(lambda _e: buffer.insert_text("\n"))
+            kb.add("c-j")(lambda _e: buffer.insert_text("\n"))
             return HSplit(
                 [
                     Window(

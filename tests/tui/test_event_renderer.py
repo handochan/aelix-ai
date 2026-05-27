@@ -468,7 +468,10 @@ def test_tool_end_long_result_truncated_with_footer() -> None:
     out = _committed_text(commits)
     assert "line 0" in out and "line 11" in out
     assert "line 12" not in out
-    assert "(+28 more lines)" in out
+    # ADR-0121 — a truncated card carries a ``/expand N`` hint (first id = 1) so
+    # the elided body can be recovered.
+    assert "(+28 more lines · /expand 1)" in out
+    assert r.get_expanded(1) == body
 
 
 def test_tool_end_error_uses_higher_cap_to_preserve_traceback() -> None:
@@ -545,3 +548,46 @@ def test_tool_end_matching_descriptor_skips_truncation() -> None:
     # Descriptor precedence: a Panel custom view, NOT a truncated Group card.
     assert commits[-1].__class__.__name__ == "Panel"
     assert "more lines" not in _committed_text(commits)
+
+
+# === Sprint 6h₁₄a (ADR-0121) — /expand store ==============================
+
+
+def test_expand_store_is_bounded_and_evicts_oldest() -> None:
+    r, _c, _t = _renderer()
+    r._expand_max = 3
+    ids = [r._store_expandable(f"body {i}") for i in range(5)]
+    # Only the last 3 survive; the first two ids were evicted (oldest-first).
+    assert r.get_expanded(ids[0]) is None
+    assert r.get_expanded(ids[1]) is None
+    assert r.get_expanded(ids[2]) == "body 2"
+    assert r.get_expanded(ids[4]) == "body 4"
+
+
+def test_non_truncated_card_gets_no_expand_id() -> None:
+    r, commits, _t = _renderer()
+    r.on_agent_event(
+        ToolExecutionEndEvent(
+            tool_call_id="t1",
+            result=ToolResult(content=[TextContent(text="short output")]),
+            tool_name="read",
+        )
+    )
+    # A short (non-truncated) card stores nothing and shows no /expand hint.
+    assert "/expand" not in _committed_text(commits)
+    assert r.get_expanded(1) is None
+
+
+def test_truncated_diff_carries_expand_hint() -> None:
+    r, commits, _t = _renderer()
+    diff = "@@ -1,2 +1,2 @@\n" + "\n".join(f"+added line {i}" for i in range(60))
+    r.on_agent_event(
+        ToolExecutionEndEvent(
+            tool_call_id="t1",
+            result=ToolResult(content=[TextContent(text=diff)]),
+            tool_name="bash",
+        )
+    )
+    out = _committed_text(commits)
+    assert "/expand 1" in out
+    assert r.get_expanded(1) == diff.rstrip()

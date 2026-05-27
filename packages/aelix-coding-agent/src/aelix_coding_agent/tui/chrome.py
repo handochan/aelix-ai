@@ -119,7 +119,15 @@ class AelixChrome:
         self._widgets_below: dict[str, list[str]] = {}
 
         history: History = FileHistory(history_path) if history_path else InMemoryHistory()
-        self.buffer = Buffer(name="input", multiline=False, history=history)
+        # multiline=True so the editor holds newlines: a bracketed multi-line
+        # paste keeps its line breaks (was mangled under multiline=False), and
+        # Ctrl+J inserts an explicit newline (see _build_key_bindings). Enter
+        # still SUBMITS — our app-level "enter" binding overrides the default
+        # multiline "insert newline" behaviour. (ADR-0121 — pi uses Shift+Enter
+        # for newline, but prompt-toolkit 3.0.52 maps the Shift+Enter CSI-u
+        # sequence to plain c-m, indistinguishable from Enter, so Ctrl+J is the
+        # achievable explicit-newline key.)
+        self.buffer = Buffer(name="input", multiline=True, history=history)
         # Submitted lines flow through a queue (loop-agnostic at construction;
         # robust to input arriving before/after a get_input() call).
         self._input_queue: asyncio.Queue[str | _Eof] = asyncio.Queue()
@@ -181,7 +189,11 @@ class AelixChrome:
             ),
             filter=renderer_height_is_known & Condition(lambda: bool(self._breadcrumb_line)),
         )
-        input_window = Window(BufferControl(self.buffer), wrap_lines=True, height=Dimension(min=1))
+        # height grows with multi-line content up to 10 rows, then the buffer
+        # scrolls internally (keeps the chrome from pushing scrollback off-screen).
+        input_window = Window(
+            BufferControl(self.buffer), wrap_lines=True, height=Dimension(min=1, max=10)
+        )
         self._input_window = input_window
         body = HSplit(
             [
@@ -224,7 +236,18 @@ class AelixChrome:
         # Sprint 6h₁₂e — Enter is NO LONGER gated on ``not self._running``: the
         # input editor stays live during a turn so Enter mid-turn steers (pi
         # interactive-mode parity). The idle path is unchanged (feeds the queue).
+        #
+        # Both ``enter`` (c-m / CR) and ``c-j`` (LF) submit: with ``multiline=True``
+        # the prompt-toolkit defaults would treat c-j (and c-m) as "insert newline",
+        # but in this terminal/parser both CR and LF are how "Enter" is delivered
+        # (the pipe-input tests feed ``\n`` = c-j to submit), so we bind BOTH to the
+        # accept handler to keep submit working. Manual newline entry is via
+        # backslash-continuation (a line ending in a single ``\`` — see below); pi
+        # uses Shift+Enter, but prompt-toolkit 3.0.52 collapses the Shift+Enter
+        # CSI-u sequence to c-m (== Enter), so a distinct newline key isn't
+        # available (ADR-0121).
         @kb.add("enter")
+        @kb.add("c-j")
         def _accept(event: object) -> None:
             # When the completions menu has a highlighted entry, Enter confirms it
             # (applies + closes the menu) rather than submitting the line — the
@@ -235,6 +258,15 @@ class AelixChrome:
                 self.buffer.apply_completion(complete_state.current_completion)
                 return
             text = self.buffer.text
+            # Backslash-continuation: a draft ending in an ODD number of trailing
+            # backslashes inserts a newline instead of submitting (manual multi-line
+            # entry — same idiom Claude Code uses; terminal-independent). One
+            # trailing ``\`` is consumed; ``\\`` is a literal backslash + submit.
+            trailing = len(text) - len(text.rstrip("\\"))
+            if trailing % 2 == 1 and self.buffer.cursor_position == len(text):
+                self.buffer.delete_before_cursor(1)
+                self.buffer.insert_text("\n")
+                return
             # Mid-turn Enter steers (injects into the running turn) instead of
             # feeding the serialized input queue — bypasses _input_loop, which is
             # blocked awaiting harness.prompt(). Idle / no-callback → normal submit.
@@ -470,11 +502,14 @@ class AelixChrome:
             self.buffer.completer = DummyCompleter()
             self.buffer.complete_while_typing = Condition(lambda: False)
         else:
+            from aelix_coding_agent.tui.completion import wants_completion
+
             self.buffer.completer = completer
-            # Auto-complete only for slash commands so ordinary prompts type
+            # Auto-complete only in a completable context — a ``/`` slash command
+            # or an ``@file`` mention token — so ordinary prose types
             # uninterrupted; the menu (and Tab/c-space) cover everything else.
             self.buffer.complete_while_typing = Condition(
-                lambda: self.buffer.text.startswith("/")
+                lambda: wants_completion(self.buffer.document.text_before_cursor)
             )
 
     # === editor remote-control seam ========================================

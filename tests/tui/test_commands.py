@@ -160,7 +160,8 @@ def test_builtin_command_is_frozen() -> None:
 
 def test_sprint_a_registry_set() -> None:
     # Sprint 6h₁₂d added model/clear/compact/cost/tools/mode; the P0 consumer
-    # batch added thinking + export (both wired to existing harness APIs).
+    # batch added thinking + export (both wired to existing harness APIs);
+    # Sprint 6h₁₄a (ADR-0121) added /expand (truncated tool-result recovery).
     names = [c.name for c in BUILTIN_COMMANDS]
     assert names == [
         "help",
@@ -171,6 +172,7 @@ def test_sprint_a_registry_set() -> None:
         "thinking",
         "tools",
         "mode",
+        "expand",
         "export",
         "quit",
         "exit",
@@ -179,6 +181,7 @@ def test_sprint_a_registry_set() -> None:
     by_name: dict[str, Any] = {c.name: c for c in BUILTIN_COMMANDS}
     assert by_name["help"].handler is not None
     assert by_name["thinking"].handler is not None
+    assert by_name["expand"].handler is not None
     assert by_name["export"].handler is not None
     assert by_name["quit"].handler is None
     assert by_name["exit"].handler is None
@@ -268,6 +271,7 @@ def _ctx(
     chrome: object | None = None,
     set_mode: Any | None = None,
     refresh_footer: Any | None = None,
+    expand_lookup: Any | None = None,
 ) -> CommandContext:
     return CommandContext(
         chrome=chrome if chrome is not None else _FakeChrome(),  # type: ignore[arg-type]
@@ -277,6 +281,7 @@ def _ctx(
         commands=list(BUILTIN_COMMANDS),
         set_mode=set_mode,
         refresh_footer=refresh_footer,
+        expand_lookup=expand_lookup,
     )
 
 
@@ -441,3 +446,37 @@ def test_help_lists_new_commands() -> None:
     out = _render(build_help_renderable(BUILTIN_COMMANDS))
     for name in ("model", "clear", "compact", "cost", "tools", "mode"):
         assert f"/{name}" in out
+
+
+# === Sprint 6h₁₄a (ADR-0121) — /expand handler =============================
+
+
+def test_expand_shows_full_stored_body() -> None:
+    committed: list[object] = []
+    store = {3: "FULL BODY LINE\n" * 5}
+    _run("expand", _ctx(_FakeHarness(), committed, expand_lookup=store.get), "3")
+    assert any("FULL BODY LINE" in _render(c) for c in committed)
+
+
+def test_expand_unknown_id_degrades() -> None:
+    committed: list[object] = []
+    _run("expand", _ctx(_FakeHarness(), committed, expand_lookup=lambda _n: None), "9")
+    assert any("No expandable result #9" in _render(c) for c in committed)
+
+
+def test_expand_non_numeric_arg_shows_usage() -> None:
+    committed: list[object] = []
+    _run("expand", _ctx(_FakeHarness(), committed, expand_lookup=lambda _n: "x"), "abc")
+    assert any("Usage: /expand" in _render(c) for c in committed)
+
+
+def test_expand_no_arg_shows_usage() -> None:
+    committed: list[object] = []
+    _run("expand", _ctx(_FakeHarness(), committed, expand_lookup=lambda _n: "x"), "")
+    assert any("Usage: /expand" in _render(c) for c in committed)
+
+
+def test_expand_unavailable_degrades_when_no_lookup() -> None:
+    committed: list[object] = []
+    _run("expand", _ctx(_FakeHarness(), committed, expand_lookup=None), "1")
+    assert any("Expand is unavailable" in _render(c) for c in committed)

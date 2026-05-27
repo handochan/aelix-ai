@@ -75,6 +75,11 @@ class CommandContext:
     """``run_tui`` wires this to ``context._refresh_footer`` so ``/model`` can
     re-render the footer ``✱ {model}`` segment after a switch (the footer is a
     cached string recomposed only on refresh). ``None`` in headless tests."""
+    expand_lookup: Callable[[int], str | None] | None = None
+    """``run_tui`` wires this to the live ``EventRenderer.get_expanded`` so
+    ``/expand N`` can recover the full, untruncated body of a tool-result card
+    whose ``… (+N more lines · /expand N)`` footer elided it. ``None`` in
+    headless tests / when no renderer is attached."""
 
 
 def build_help_renderable(commands: list[BuiltinCommand]) -> RenderableType:
@@ -307,6 +312,36 @@ async def _thinking_handler(ctx: CommandContext, args: str) -> None:
     ctx.commit(Text(f"thinking → {args}", style="green"))
 
 
+async def _expand_handler(ctx: CommandContext, args: str) -> None:
+    """``/expand N`` — re-print the full body of a truncated tool-result card.
+
+    ``N`` is the id shown on a truncated card's ``… (+K more lines · /expand N)``
+    footer. Degrades with a committed message (never crashes) on a missing
+    lookup, a non-numeric / absent arg, or an unknown id.
+    """
+
+    lookup = ctx.expand_lookup
+    if lookup is None:
+        ctx.commit(Text("Expand is unavailable.", style="yellow"))
+        return
+    token = args.split()[0] if args.split() else ""
+    if not token.isdigit():
+        ctx.commit(
+            Text(
+                "Usage: /expand <N> — N is the id on a truncated card's footer.",
+                style="yellow",
+            )
+        )
+        return
+    full = lookup(int(token))
+    if full is None:
+        ctx.commit(Text(f"No expandable result #{token}.", style="yellow"))
+        return
+    ctx.commit(
+        Panel(Text(full), title=f"tool result #{token}", box=ROUNDED, border_style="cyan")
+    )
+
+
 BUILTIN_COMMANDS: list[BuiltinCommand] = [
     BuiltinCommand("help", "List available commands", _help_handler),
     BuiltinCommand("model", "Show or switch the active model", _model_handler),
@@ -316,6 +351,7 @@ BUILTIN_COMMANDS: list[BuiltinCommand] = [
     BuiltinCommand("thinking", "Show or set the reasoning level", _thinking_handler),
     BuiltinCommand("tools", "List registered tools", _tools_handler),
     BuiltinCommand("mode", "Show or set the steering mode", _mode_handler),
+    BuiltinCommand("expand", "Show the full output of a truncated tool result", _expand_handler),
     BuiltinCommand("export", "Export the transcript to HTML", _export_handler),
     BuiltinCommand("quit", "Exit Aelix", None),
     BuiltinCommand("exit", "Exit Aelix", None),

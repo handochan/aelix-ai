@@ -298,3 +298,41 @@ async def test_footer_home_abbreviates_cwd() -> None:
     home = str(Path.home())
     async with _footer_chrome(footer, cwd=f"{home}/proj", mode="") as (_ctx_obj, chrome):
         assert "📂 ~/proj" in chrome._footer_line
+
+
+# === Sprint 6h₁₄a (ADR-0121 W-review) — modal Enter routing ================
+
+
+async def test_editor_enter_inserts_newline_then_ctrl_s_saves() -> None:
+    # ADR-0121 M2: the multiline editor must insert a newline on Enter (was
+    # leaking to the chrome global accept and losing the line break).
+    async with _ctx(run_app=True) as (ctx, chrome, pipe):
+        fut = asyncio.ensure_future(ctx.editor("Edit"))
+        await _wait_float(chrome)
+        pipe.send_text("a\nb\x13")  # 'a', Enter(→newline), 'b', Ctrl+S to save
+        assert await asyncio.wait_for(fut, timeout=5) == "a\nb"
+
+
+async def test_select_enter_is_noop_then_number_resolves() -> None:
+    # ADR-0121 M1: Enter on a numbered select must NOT resolve (no default, no
+    # leak to the chrome global accept) — a number or Esc is required.
+    async with _ctx(run_app=True) as (ctx, chrome, pipe):
+        fut = asyncio.ensure_future(ctx.select("Pick", ["red", "green"]))
+        await _wait_float(chrome)
+        pipe.send_text("\n")  # Enter → no-op
+        await asyncio.sleep(0.1)
+        assert not fut.done()
+        pipe.send_text("1")  # a real choice still resolves
+        assert await asyncio.wait_for(fut, timeout=5) == "red"
+
+
+async def test_confirm_enter_is_noop_then_y_resolves() -> None:
+    # ADR-0121 M1: Enter on a confirm must NOT auto-answer — explicit y/n only.
+    async with _ctx(run_app=True) as (ctx, chrome, pipe):
+        fut = asyncio.ensure_future(ctx.confirm("Sure?", "really?"))
+        await _wait_float(chrome)
+        pipe.send_text("\n")  # Enter → no-op (never auto-approves)
+        await asyncio.sleep(0.1)
+        assert not fut.done()
+        pipe.send_text("y")
+        assert await asyncio.wait_for(fut, timeout=5) is True

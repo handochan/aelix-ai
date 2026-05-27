@@ -8,10 +8,15 @@ the offered completions (the "live source" contract).
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from aelix_coding_agent.tui.commands import BuiltinCommand
-from aelix_coding_agent.tui.completion import DescriptorCommandCompleter
+from aelix_coding_agent.tui.completion import (
+    DescriptorCommandCompleter,
+    FileMentionCompleter,
+    wants_completion,
+)
 from prompt_toolkit.completion import CompleteEvent
 from prompt_toolkit.document import Document
 
@@ -177,3 +182,84 @@ def test_union_without_routes_still_offers_builtins() -> None:
 def test_union_non_slash_yields_nothing() -> None:
     builtins = [BuiltinCommand("help", "List available commands")]
     assert _complete_union({}, builtins, "help") == []
+
+
+# === Sprint 6h₁₄a (ADR-0121) — @file mention completer ======================
+
+
+def _file_complete(cwd: Path, text: str) -> list[Any]:
+    completer = FileMentionCompleter(str(cwd))
+    doc = Document(text=text, cursor_position=len(text))
+    return list(completer.get_completions(doc, CompleteEvent()))
+
+
+def _make_tree(root: Path) -> None:
+    (root / "src").mkdir()
+    (root / "src" / "foo.py").write_text("x")
+    (root / "src" / "fizz.py").write_text("x")
+    (root / "setup.py").write_text("x")
+    (root / ".hidden").write_text("x")
+
+
+def test_at_mention_lists_matching_paths(tmp_path: Path) -> None:
+    _make_tree(tmp_path)
+    out = _file_complete(tmp_path, "@s")
+    texts = sorted(c.text for c in out)
+    # A directory gets a trailing slash; a file does not.
+    assert texts == ["@setup.py", "@src/"]
+
+
+def test_at_mention_drills_into_dir(tmp_path: Path) -> None:
+    _make_tree(tmp_path)
+    out = _file_complete(tmp_path, "@src/f")
+    assert sorted(c.text for c in out) == ["@src/fizz.py", "@src/foo.py"]
+
+
+def test_at_mention_replaces_whole_token(tmp_path: Path) -> None:
+    _make_tree(tmp_path)
+    out = _file_complete(tmp_path, "@set")
+    assert len(out) == 1
+    assert out[0].text == "@setup.py"
+    assert out[0].start_position == -len("@set")
+
+
+def test_at_mention_works_mid_line(tmp_path: Path) -> None:
+    _make_tree(tmp_path)
+    out = _file_complete(tmp_path, "please read @set")
+    assert [c.text for c in out] == ["@setup.py"]
+
+
+def test_at_mention_hides_dotfiles_unless_dot_typed(tmp_path: Path) -> None:
+    _make_tree(tmp_path)
+    assert all(".hidden" not in c.text for c in _file_complete(tmp_path, "@"))
+    # Explicitly typing a dot surfaces them.
+    assert any(".hidden" in c.text for c in _file_complete(tmp_path, "@.h"))
+
+
+def test_at_mention_non_at_token_yields_nothing(tmp_path: Path) -> None:
+    _make_tree(tmp_path)
+    assert _file_complete(tmp_path, "setup") == []
+    assert _file_complete(tmp_path, "email@host") == []  # @ not at token start
+
+
+def test_at_mention_missing_dir_yields_nothing(tmp_path: Path) -> None:
+    _make_tree(tmp_path)
+    assert _file_complete(tmp_path, "@nope/x") == []
+
+
+def test_at_mention_respects_max_results(tmp_path: Path) -> None:
+    for i in range(50):
+        (tmp_path / f"file{i:02d}.txt").write_text("x")
+    completer = FileMentionCompleter(str(tmp_path), max_results=10)
+    doc = Document(text="@file", cursor_position=len("@file"))
+    out = list(completer.get_completions(doc, CompleteEvent()))
+    assert len(out) == 10
+
+
+def test_wants_completion_triggers() -> None:
+    assert wants_completion("/he") is True
+    assert wants_completion("@src") is True
+    assert wants_completion("read @sr") is True
+    assert wants_completion("hello world") is False
+    assert wants_completion("read @src ") is False  # token ended (trailing space)
+    assert wants_completion("") is False

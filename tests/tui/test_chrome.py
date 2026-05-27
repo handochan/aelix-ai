@@ -301,3 +301,27 @@ async def test_idle_alt_enter_is_noop() -> None:
         with contextlib.suppress(asyncio.CancelledError):
             await fut
         assert followed == []
+
+
+# === Sprint 6h₁₄a (ADR-0121) — multiline input ============================
+
+
+async def test_backslash_continuation_inserts_newline_not_submit() -> None:
+    # A draft ending in a single trailing backslash + Enter inserts a newline
+    # (manual multi-line entry) instead of submitting.
+    async with _chrome(run_app=True) as (chrome, pipe, _buf):
+        pipe.send_text("abc\\\n")  # types `abc\`, then Enter (\n = c-j)
+        await asyncio.sleep(0.05)
+        assert chrome.buffer.text == "abc\n"  # backslash consumed, newline added
+        assert chrome._input_queue.empty()  # NOT submitted
+
+
+async def test_double_backslash_submits_literal() -> None:
+    # An even run of trailing backslashes is NOT a continuation — `\\` is a
+    # literal backslash and the line submits.
+    async with _chrome(run_app=True) as (chrome, pipe, _buf):
+        fut = asyncio.ensure_future(chrome.get_input())
+        await asyncio.sleep(0.05)
+        pipe.send_text("x" + "\\\\" + "\n")  # types `x\\`, then Enter
+        result = await asyncio.wait_for(fut, timeout=5)
+        assert result == "x" + "\\" * 2  # both backslashes preserved, submitted

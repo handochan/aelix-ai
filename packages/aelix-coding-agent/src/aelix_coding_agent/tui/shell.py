@@ -37,7 +37,10 @@ from aelix_coding_agent.tui.commands import (
     match_command,
     slash_word,
 )
-from aelix_coding_agent.tui.completion import DescriptorCommandCompleter
+from aelix_coding_agent.tui.completion import (
+    DescriptorCommandCompleter,
+    FileMentionCompleter,
+)
 from aelix_coding_agent.tui.context import AelixTUIContext
 from aelix_coding_agent.tui.descriptors import (
     DescriptorRegistry,
@@ -52,6 +55,7 @@ if TYPE_CHECKING:
     from aelix_agent_core.contracts.descriptor import DescriptorEnvelope
     from aelix_agent_core.harness.core import AgentHarness
     from aelix_agent_core.runtime.agent_session_runtime import AgentSessionRuntime
+    from prompt_toolkit.completion import Completer
 
 _RENDER_WIDTH = 80
 
@@ -160,6 +164,7 @@ async def run_tui(
         commands=commands,
         set_mode=_set_mode,
         refresh_footer=context._refresh_footer,
+        expand_lookup=renderer.get_expanded,
     )
 
     loop = asyncio.get_running_loop()
@@ -286,13 +291,13 @@ async def run_tui(
         # registry + per-kind renderer, subscribe to the ui:list-modules channel,
         # then emit one synchronous probe so loaded extensions append descriptors.
         descriptor_unsub, descriptor_renderer = _wire_descriptors(
-            runtime_host, out_chrome, footer, context, loop, renderer, commands
+            runtime_host, out_chrome, footer, context, loop, renderer, commands, cwd
         )
         # No descriptor wiring (headless fakes without an event_bus) → the palette
         # still offers built-ins. Install the union completer directly.
         if descriptor_renderer is None:
             out_chrome.set_command_completer(
-                DescriptorCommandCompleter(lambda: {}, builtins=commands)
+                _build_input_completer(lambda: {}, commands, cwd)
             )
         chrome_task = asyncio.create_task(out_chrome.run())
         pump_task = asyncio.create_task(_output_pump(output_queue, out_chrome))
@@ -334,6 +339,23 @@ async def run_tui(
     return 0
 
 
+def _build_input_completer(
+    get_routes: Callable[[], object], builtins: list[BuiltinCommand], cwd: str
+) -> Completer:
+    """The merged input completer: slash commands ∪ descriptor routes ∪ ``@file``
+    path mentions (Sprint 6h₁₄a). Each sub-completer is inert outside its own
+    trigger (``/`` vs ``@``), so merging them is safe."""
+
+    from prompt_toolkit.completion import merge_completers
+
+    return merge_completers(
+        [
+            DescriptorCommandCompleter(get_routes, builtins=builtins),  # type: ignore[arg-type]
+            FileMentionCompleter(cwd),
+        ]
+    )
+
+
 def _wire_descriptors(
     runtime_host: AgentSessionRuntime,
     chrome: AelixChrome,
@@ -342,6 +364,7 @@ def _wire_descriptors(
     loop: asyncio.AbstractEventLoop,
     event_renderer: EventRenderer,
     builtins: list[BuiltinCommand],
+    cwd: str,
 ) -> tuple[Callable[[], None] | None, DescriptorRenderer | None]:
     """Build the descriptor registry + renderer, subscribe + emit one probe.
 
@@ -375,7 +398,7 @@ def _wire_descriptors(
     # every keystroke (descriptors applied/removed after this point change
     # completions live); built-ins are static and win on a name clash (§B).
     chrome.set_command_completer(
-        DescriptorCommandCompleter(lambda: renderer.command_routes, builtins=builtins)
+        _build_input_completer(lambda: renderer.command_routes, builtins, cwd)
     )
 
     # §B — late-bind the live tool-renderer-desc lookup onto the EventRenderer so
