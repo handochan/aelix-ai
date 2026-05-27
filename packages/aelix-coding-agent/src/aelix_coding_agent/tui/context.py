@@ -18,6 +18,7 @@ import asyncio
 import contextlib
 import inspect
 from collections.abc import Callable
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from prompt_toolkit.buffer import Buffer
@@ -92,9 +93,20 @@ def _wrap_listener(handler: Callable[[str], None], data: str) -> None:
 class AelixTUIContext:
     """Concrete :class:`~aelix_coding_agent.extensions.ext_ui.ExtensionUIContext`."""
 
-    def __init__(self, chrome: AelixChrome, footer: AelixFooterData) -> None:
+    def __init__(
+        self,
+        chrome: AelixChrome,
+        footer: AelixFooterData,
+        *,
+        model_provider: Callable[[], str | None] | None = None,
+        cwd: str | None = None,
+        mode: str = "default",
+    ) -> None:
         self.chrome = chrome
         self._footer = footer
+        self._model_provider = model_provider
+        self._cwd = cwd
+        self._mode = mode
         self._theme: Theme = theme_registry.DEFAULT_THEME
         self._tools_expanded = False
         self._hidden_thinking_label: str | None = None
@@ -363,8 +375,30 @@ class AelixTUIContext:
             return
         branch = self._footer.get_git_branch()
         statuses = self._footer.get_extension_statuses()
-        segments = [s for s in [f"⎇ {branch}" if branch else None, *statuses.values()] if s]
-        self.chrome.set_footer_line("  ".join(segments))
+        model = self._model_provider() if self._model_provider is not None else None
+        segments = [
+            s
+            for s in (
+                f"⏵⏵ {self._mode}" if self._mode else None,
+                f"📂 {self._abbrev_cwd(self._cwd)}" if self._cwd else None,
+                f"✱ {model}" if model else None,
+                f"⎇ {branch}" if branch else None,
+                *statuses.values(),
+            )
+            if s
+        ]
+        self.chrome.set_footer_line("  ·  ".join(segments))
+
+    @staticmethod
+    def _abbrev_cwd(cwd: str) -> str:
+        """Home-abbreviate a path (``/home/x/p`` → ``~/p``); identity otherwise."""
+        home = str(Path.home())
+        if cwd == home:
+            return "~"
+        prefix = home.rstrip("/") + "/"
+        if cwd.startswith(prefix):
+            return "~/" + cwd[len(prefix):]
+        return cwd
 
 
 __all__ = ["AelixKeybindings", "AelixTUI", "AelixTUIContext"]

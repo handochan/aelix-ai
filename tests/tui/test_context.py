@@ -199,3 +199,81 @@ async def test_notify_token_prevents_premature_clear() -> None:
         assert chrome._status["__notify__"] == "second"
         ctx._clear_notify(2)  # current token clears it
         assert "__notify__" not in chrome._status
+
+
+# === Sprint 6h₁₂b — status footer compose ==============================
+
+
+class _FixedBranchFooter(AelixFooterData):
+    """AelixFooterData with a deterministic branch (no real .git lookup)."""
+
+    def __init__(self, branch: str | None) -> None:
+        super().__init__(cwd=".")
+        self._branch = branch
+
+    def get_git_branch(self) -> str | None:
+        return self._branch
+
+
+@asynccontextmanager
+async def _footer_chrome(
+    footer: AelixFooterData,
+    *,
+    model_provider=None,
+    cwd=None,
+    mode: str = "default",
+) -> AsyncGenerator[tuple[AelixTUIContext, AelixChrome]]:
+    with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
+        console = Console(file=io.StringIO(), force_terminal=True, width=80)
+        chrome = AelixChrome(console=console)
+        ctx = AelixTUIContext(
+            chrome, footer, model_provider=model_provider, cwd=cwd, mode=mode
+        )
+        yield ctx, chrome
+
+
+async def test_footer_composes_mode_cwd_model_branch_in_order() -> None:
+    footer = _FixedBranchFooter("main")
+    async with _footer_chrome(
+        footer, model_provider=lambda: "Qwen/Qwen3.6-35B", cwd="/tmp/proj", mode="default"
+    ) as (_ctx_obj, chrome):
+        line = chrome._footer_line
+        assert "⏵⏵ default" in line
+        assert "📂 /tmp/proj" in line
+        assert "✱ Qwen/Qwen3.6-35B" in line
+        assert "⎇ main" in line
+        # order: mode → cwd → model → branch
+        assert (
+            line.index("⏵⏵")
+            < line.index("📂")
+            < line.index("✱")
+            < line.index("⎇")
+        )
+        assert "  ·  " in line  # segments joined by the bullet separator
+
+
+async def test_footer_omits_model_segment_when_provider_returns_none() -> None:
+    footer = _FixedBranchFooter("main")
+    async with _footer_chrome(footer, model_provider=lambda: None) as (_ctx_obj, chrome):
+        line = chrome._footer_line
+        assert "✱" not in line  # no model → segment dropped
+        assert "⎇ main" in line
+
+
+async def test_footer_degrades_to_branch_only_with_no_sources() -> None:
+    footer = _FixedBranchFooter("dev")
+    # No model_provider, no cwd, empty mode → only the branch survives.
+    async with _footer_chrome(footer, model_provider=None, cwd=None, mode="") as (
+        _ctx_obj,
+        chrome,
+    ):
+        assert chrome._footer_line == "⎇ dev"
+
+
+async def test_footer_home_abbreviates_cwd() -> None:
+    from pathlib import Path
+
+    footer = _FixedBranchFooter(None)
+    home = str(Path.home())
+    async with _footer_chrome(footer, cwd=f"{home}/proj", mode="") as (_ctx_obj, chrome):
+        assert "📂 ~/proj" in chrome._footer_line
