@@ -72,7 +72,14 @@ async def run_tui(
 
     out_chrome = chrome if chrome is not None else AelixChrome()
     footer = AelixFooterData(cwd=cwd)
-    context = AelixTUIContext(out_chrome, footer)
+
+    def _model_id() -> str | None:
+        model = getattr(runtime_host.harness, "current_model", None)
+        return getattr(model, "id", None) if model is not None else None
+
+    context = AelixTUIContext(
+        out_chrome, footer, model_provider=_model_id, cwd=cwd, mode="default"
+    )
 
     # Output pump seam: the synchronous renderer queues TAGGED commands; the
     # pump applies them above the chrome in order. Routing the live-tail update
@@ -145,6 +152,9 @@ async def run_tui(
         # Bind the real UI BEFORE the first session_start activation so
         # extensions never see the headless stub (ADR-0105 §1.3).
         runtime_host.harness.runtime.bind_ui(context)
+        # Repaint the footer now the harness is bootstrapped so the live model
+        # id (read via model_provider) shows from the first frame (Sprint 6h₁₂b).
+        context._refresh_footer()
         await _rebind(runtime_host.harness)
         # Tier-2 descriptor probe (ADR-0095 / Sprint 6h₁₀c §C): build the keyed
         # registry + per-kind renderer, subscribe to the ui:list-modules channel,
@@ -383,6 +393,10 @@ async def _input_loop(
 
         # prompt — drive a full turn while the chrome stays live (spinner on).
         # A failed turn must not kill the REPL (parity with run_print_mode).
+        # Echo the user's own line into the transcript (Sprint 6h₁₂b) so the
+        # assistant reply has its visible question above it — prompt path only
+        # (bash / commands / empty already returned/continued before here).
+        output_queue.put_nowait(("commit", Text(f"» {parsed.text}", style="bold")))
         chrome.set_running(True)
         try:
             await harness.prompt(parsed.text, source="interactive")

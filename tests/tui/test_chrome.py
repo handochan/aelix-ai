@@ -173,3 +173,44 @@ async def test_running_gates_enter_submission() -> None:
         fut.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await fut
+
+
+# === Sprint 6h₁₂b — esc-to-interrupt + working hint =====================
+
+
+def _escape_binding(chrome: AelixChrome):
+    """Return the running-gated ``escape`` Binding from the chrome key bindings."""
+    kb = chrome.app.key_bindings
+    assert kb is not None
+    for binding in kb.bindings:
+        keys = tuple(getattr(k, "value", str(k)) for k in binding.keys)
+        if keys == ("escape",):
+            return binding
+    raise AssertionError("escape binding not found")
+
+
+async def test_escape_interrupts_only_when_running() -> None:
+    async with _chrome(run_app=False) as (chrome, _pipe, _buf):
+        calls: list[int] = []
+        chrome.on_interrupt = lambda: calls.append(1)
+        binding = _escape_binding(chrome)
+
+        # idle → the running-gate filter is False, so Esc is inert.
+        chrome.set_running(False)
+        assert not binding.filter()
+        # running → filter True; invoking the handler fires on_interrupt.
+        chrome.set_running(True)
+        assert binding.filter()
+        binding.handler(None)  # type: ignore[arg-type]  # handler ignores the event
+        assert calls == [1]
+
+
+async def test_working_line_shows_esc_hint_when_running() -> None:
+    async with _chrome(run_app=False) as (chrome, _pipe, _buf):
+        chrome.set_working_visible(True)
+        chrome.set_working_message("thinking")
+        assert "esc to interrupt" not in chrome._render_working()  # idle: no hint
+        chrome.set_running(True)
+        rendered = chrome._render_working()
+        assert "thinking" in rendered
+        assert "esc to interrupt" in rendered

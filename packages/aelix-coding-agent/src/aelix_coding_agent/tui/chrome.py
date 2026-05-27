@@ -249,6 +249,14 @@ class AelixChrome:
             else:
                 self.buffer.reset()  # clear the current line (conventional REPL)
 
+        @kb.add("escape", filter=Condition(lambda: self._running))
+        def _escape_interrupt(event: object) -> None:
+            # Esc interrupts an in-progress turn (same as Ctrl-C while running);
+            # running-gated so Esc stays inert when idle (no interference with
+            # editing / the completion menu, which has no focus during a turn).
+            if self.on_interrupt is not None:
+                self.on_interrupt()
+
         return kb
 
     # === region renderers (ANSI strings) ===================================
@@ -270,7 +278,12 @@ class AelixChrome:
                 self._spinner_last = now
             frame = self._spinner_frames[self._spinner_index]
         message = (self._working_message or "Working…").replace("\n", " ")
-        return f"{frame} {message}".strip()
+        line = f"{frame} {message}".strip()
+        # Surface the esc-to-interrupt affordance while a turn is running
+        # (Sprint 6h₁₂b); dim so it reads as a hint, not part of the message.
+        if self._running:
+            line += " \x1b[2m· esc to interrupt\x1b[0m"
+        return line
 
     def _render_widgets_above(self) -> ANSI:
         return self._render_widget_lines(self._widgets_above)

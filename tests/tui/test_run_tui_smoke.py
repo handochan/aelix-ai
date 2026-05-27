@@ -323,4 +323,60 @@ async def test_run_tui_bash_passthrough(monkeypatch: pytest.MonkeyPatch) -> None
         pipe.send_text("/quit\n")
         await asyncio.wait_for(task, timeout=5)
     assert calls == [("ls", False, "/work")]
-    assert runtime.harness.prompts == []
+
+
+# === Sprint 6h₁₂b — user-message echo =======================================
+
+
+def _spy_commits(chrome: AelixChrome) -> list[str]:
+    """Record the plain text of every renderable committed to scrollback."""
+    commits: list[str] = []
+    orig = chrome.print_above
+
+    async def _capture(renderable: object) -> None:
+        text = getattr(renderable, "plain", None)
+        commits.append(text if isinstance(text, str) else str(renderable))
+        await orig(renderable)
+
+    chrome.print_above = _capture  # type: ignore[method-assign]
+    return commits
+
+
+async def test_run_tui_echoes_user_prompt_into_transcript() -> None:
+    async with _harness_chrome() as (runtime, chrome, pipe):
+        commits = _spy_commits(chrome)
+        task = _launch(runtime, chrome)
+        await _wait(lambda: chrome.app.is_running)
+        pipe.send_text("what is 2+2\n")
+        await _wait(lambda: runtime.harness.prompts == [("what is 2+2", "interactive")])
+        await _wait(lambda: any("» what is 2+2" in c for c in commits))
+        pipe.send_text("/quit\n")
+        await asyncio.wait_for(task, timeout=5)
+    # The user's own line is echoed (role-marked) before the assistant reply.
+    assert any(c == "» what is 2+2" for c in commits)
+
+
+async def test_run_tui_does_not_echo_bash_command_or_empty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _fake_bash(harness, command, *, exclude_from_context, cwd):
+        return ""  # no output → nothing committed for the bash path either
+
+    monkeypatch.setattr(tui_shell, "handle_user_bash", _fake_bash)
+    async with _harness_chrome(harness=_ModalHarness()) as (runtime, chrome, pipe):
+        commits = _spy_commits(chrome)
+        task = _launch(runtime, chrome)
+        await _wait(lambda: chrome.app.is_running)
+        pipe.send_text("!ls\n")  # bash → no echo
+        pipe.send_text("/help\n")  # command → no echo
+        pipe.send_text("\n")  # empty → no echo
+        pipe.send_text("real\n")  # prompt → DOES echo (barrier)
+        await _wait(lambda: runtime.harness.prompts == [("real", "interactive")])
+        await _wait(lambda: any(c == "» real" for c in commits))
+        pipe.send_text("/quit\n")
+        await asyncio.wait_for(task, timeout=5)
+    # Only the prompt path echoed; no `» !ls`, `» /help`, or `» ` blank echo.
+    # The barrier prompt "real" is the only model-bound line, hence the only echo.
+    echoed = [c for c in commits if c.startswith("» ")]
+    assert echoed == ["» real"]
+    assert runtime.harness.prompts == [("real", "interactive")]
