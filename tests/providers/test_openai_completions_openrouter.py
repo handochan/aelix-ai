@@ -36,6 +36,48 @@ def test_openrouter_compat_thinking_format() -> None:
     assert compat.thinking_format == "openrouter"
 
 
+def test_openrouter_reasoning_uses_system_role_not_developer() -> None:
+    """ADR-0118: OpenRouter proxies to providers (e.g. Parasail) that reject the
+    OpenAI-native ``developer`` role with HTTP 400. Reasoning models on
+    OpenRouter must send the system prompt as ``system``, not ``developer``."""
+    from aelix_ai.messages import TextContent, UserMessage
+    from aelix_ai.providers.openai_completions import convert_messages
+
+    model = _openrouter_model(reasoning=True)
+    compat = get_compat(model)
+    assert compat.supports_developer_role is False
+    ctx = Context(
+        system_prompt="sys",
+        messages=[UserMessage(content=[TextContent(text="hi")])],
+        tools=[],
+    )
+    wire = convert_messages(model, ctx, compat)
+    assert wire[0]["role"] == "system"  # NOT "developer"
+
+
+def test_native_openai_reasoning_still_uses_developer_role() -> None:
+    """Native api.openai.com (not a proxy) keeps the o-series ``developer`` role."""
+    from aelix_ai.messages import TextContent, UserMessage
+    from aelix_ai.providers.openai_completions import convert_messages
+
+    model = Model(
+        api="openai-completions",
+        id="o3",
+        provider="openai",
+        base_url="https://api.openai.com/v1",
+        reasoning=True,
+    )
+    compat = get_compat(model)
+    assert compat.supports_developer_role is True
+    ctx = Context(
+        system_prompt="sys",
+        messages=[UserMessage(content=[TextContent(text="hi")])],
+        tools=[],
+    )
+    wire = convert_messages(model, ctx, compat)
+    assert wire[0]["role"] == "developer"
+
+
 def test_openrouter_env_var_picked_up(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("OPENROUTER_API_KEY", "or-test-token")
     assert get_env_api_key("openrouter") == "or-test-token"

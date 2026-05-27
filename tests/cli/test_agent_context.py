@@ -36,6 +36,15 @@ def test_build_system_prompt_includes_environment(tmp_path) -> None:
     assert "Working directory" in prompt
 
 
+def test_build_system_prompt_has_convergence_guidance() -> None:
+    """Weak models loop on vague requests without explicit stop-when-done /
+    no-repeat guidance (pi's default prompt lacks it; authored here)."""
+    prompt = build_system_prompt(".")
+    assert "STOP calling tools" in prompt
+    assert "same tool with the same arguments twice" in prompt
+    assert "ambiguous" in prompt
+
+
 # --- AGENTS.md discovery -----------------------------------------------------
 
 

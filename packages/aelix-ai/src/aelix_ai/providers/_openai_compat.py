@@ -259,7 +259,15 @@ def detect_compat(model: Model) -> OpenAICompletionsCompat:
 
     return OpenAICompletionsCompat(
         supports_store=not is_non_standard,
-        supports_developer_role=not is_non_standard,
+        # The ``developer`` role is an OpenAI-native (api.openai.com o-series)
+        # feature. OpenRouter is a PROXY to many providers, and several (e.g.
+        # Parasail serving qwen) reject ``role:"developer"`` with HTTP 400
+        # "Unexpected message role" — while ``system`` is accepted everywhere.
+        # So reasoning models on OpenRouter must use ``system``. Deliberate
+        # OpenRouter-reality divergence from a verbatim Pi port (Pi sends
+        # ``developer`` for any non-"non-standard" provider incl. OpenRouter);
+        # see ADR-0118. Verified: developer→400, system→200 on Parasail.
+        supports_developer_role=not is_non_standard and not is_openrouter,
         supports_reasoning_effort=not (
             is_grok
             or is_zai
