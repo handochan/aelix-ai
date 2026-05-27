@@ -30,7 +30,10 @@ from aelix_ai.streaming import (
     ToolCallStartEvent,
 )
 from aelix_ai.tools import ToolResult
-from aelix_coding_agent.tui.render import EventRenderer
+from aelix_coding_agent.tools._truncate import TruncationInfo
+from aelix_coding_agent.tools.bash import BashToolDetails
+from aelix_coding_agent.tui.render import EventRenderer, _tool_header, _truncate_lines
+from rich.cells import cell_len
 
 
 def _renderer() -> tuple[EventRenderer, list[Any], list[str]]:
@@ -40,11 +43,17 @@ def _renderer() -> tuple[EventRenderer, list[Any], list[str]]:
 
 
 def _plain(renderable: Any) -> str:
+    if hasattr(renderable, "renderables"):  # rich Group → flatten its rows
+        return "".join(_plain(child) for child in renderable.renderables)
     return renderable.plain if hasattr(renderable, "plain") else str(renderable)
 
 
 def _committed_text(commits: list[Any]) -> str:
     return "".join(_plain(c) for c in commits)
+
+
+def _row_styles(group: Any) -> list[str]:
+    return [str(getattr(row, "style", "")) for row in group.renderables]
 
 
 def _msg_update(stream_event: Any) -> MessageUpdateEvent:
@@ -128,7 +137,7 @@ def test_tool_end_error_uses_red_style() -> None:
         )
     )
     assert "boom" in _committed_text(commits)
-    assert str(getattr(commits[-1], "style", "")) == "red"
+    assert "red" in _row_styles(commits[-1])
 
 
 def test_tool_end_empty_result_is_silent() -> None:
@@ -279,9 +288,9 @@ def test_tool_end_no_matching_descriptor_uses_default() -> None:
             tool_name="read_file",  # no descriptor for this tool
         )
     )
-    # Default Text dump (not a Table) when the tool_name does not match.
+    # Default card (a Group, not a Table) when the tool_name does not match.
     assert "other output" in _committed_text(commits)
-    assert commits[-1].__class__.__name__ == "Text"
+    assert commits[-1].__class__.__name__ == "Group"
 
 
 def test_tool_end_no_lookup_wired_uses_default() -> None:
@@ -294,4 +303,179 @@ def test_tool_end_no_lookup_wired_uses_default() -> None:
         )
     )
     assert "plain" in _committed_text(commits)
-    assert commits[-1].__class__.__name__ == "Text"
+    assert commits[-1].__class__.__name__ == "Group"
+
+
+# === §A — _truncate_lines (pure) =============================================
+
+
+def test_truncate_lines_under_max_keeps_all() -> None:
+    kept, hidden = _truncate_lines("a\nb\nc", max_lines=12)
+    assert kept == ["a", "b", "c"]
+    assert hidden == 0
+
+
+def test_truncate_lines_over_max_reports_hidden() -> None:
+    text = "\n".join(str(i) for i in range(20))
+    kept, hidden = _truncate_lines(text, max_lines=12)
+    assert len(kept) == 12
+    assert hidden == 8
+
+
+def test_truncate_lines_caps_long_line() -> None:
+    kept, hidden = _truncate_lines("x" * 200, max_lines=12, max_line_width=78)
+    assert len(kept[0]) == 78
+    assert kept[0].endswith("…")
+    assert hidden == 0
+
+
+# === §B — _tool_header (pure) ================================================
+
+
+def test_tool_header_read_shows_path() -> None:
+    assert _tool_header("read", {"path": "src/a.py"}) == "src/a.py"
+
+
+def test_tool_header_read_shows_line_range() -> None:
+    assert _tool_header("read", {"path": "a.py", "offset": 10, "limit": 5}) == "a.py:10-15"
+
+
+def test_tool_header_write_shows_path() -> None:
+    assert _tool_header("write", {"path": "out.txt", "content": "x" * 500}) == "out.txt"
+
+
+def test_tool_header_edit_shows_path() -> None:
+    assert _tool_header("edit", {"path": "e.py", "edits": [1, 2, 3]}) == "e.py"
+
+
+def test_tool_header_bash_shows_command() -> None:
+    assert _tool_header("bash", {"command": "ls -la"}) == "ls -la"
+
+
+def test_tool_header_generic_falls_back_to_compact_args() -> None:
+    out = _tool_header("grep", {"pattern": "foo"})
+    assert "pattern" in out and "foo" in out
+
+
+def test_tool_header_read_nonnumeric_offset_degrades_to_path() -> None:
+    # Args come from unvalidated model JSON — a non-numeric offset/limit must
+    # degrade to the bare path, not raise inside the start-header render.
+    assert _tool_header("read", {"path": "a.py", "offset": "start"}) == "a.py"
+    assert _tool_header("read", {"path": "a.py", "limit": []}) == "a.py"
+
+
+def test_truncate_lines_cjk_width_counts_cells() -> None:
+    # Korean chars are 2 terminal cells; a 50-char Hangul line is ~100 cells and
+    # must be truncated against the cell-based cap (a len()-based cap would miss it).
+    kept, _hidden = _truncate_lines("가" * 50, max_lines=12)
+    assert kept[0].endswith("…")
+    assert cell_len(kept[0]) <= 76
+
+
+# === §A — _render_tool_end card styling ======================================
+
+
+def test_tool_end_short_result_no_more_lines_footer() -> None:
+    r, commits, _t = _renderer()
+    r.on_agent_event(
+        ToolExecutionEndEvent(
+            tool_call_id="t1",
+            result=ToolResult(content=[TextContent(text="line one\nline two")]),
+            tool_name="read",
+        )
+    )
+    out = _committed_text(commits)
+    assert "line one" in out and "line two" in out
+    assert "more lines" not in out
+
+
+def test_tool_end_long_result_truncated_with_footer() -> None:
+    r, commits, _t = _renderer()
+    body = "\n".join(f"line {i}" for i in range(40))
+    r.on_agent_event(
+        ToolExecutionEndEvent(
+            tool_call_id="t1",
+            result=ToolResult(content=[TextContent(text=body)]),
+            tool_name="read",
+        )
+    )
+    out = _committed_text(commits)
+    assert "line 0" in out and "line 11" in out
+    assert "line 12" not in out
+    assert "(+28 more lines)" in out
+
+
+def test_tool_end_error_uses_higher_cap_to_preserve_traceback() -> None:
+    # Errors get a 40-line cap (vs 12) so a traceback's diagnostic tail survives.
+    r, commits, _t = _renderer()
+    body = "\n".join(f"line {i}" for i in range(30))  # >12 but <40
+    r.on_agent_event(
+        ToolExecutionEndEvent(
+            tool_call_id="t1",
+            result=ToolResult(content=[TextContent(text=body)]),
+            tool_name="bash",
+            is_error=True,
+        )
+    )
+    out = _committed_text(commits)
+    assert "line 29" in out  # full 30 lines kept under the error cap
+    assert "more lines" not in out
+
+
+def test_tool_end_card_rows_are_dim_by_default() -> None:
+    r, commits, _t = _renderer()
+    r.on_agent_event(
+        ToolExecutionEndEvent(
+            tool_call_id="t1",
+            result=ToolResult(content=[TextContent(text="ok")]),
+            tool_name="read",
+        )
+    )
+    assert "dim" in _row_styles(commits[-1])
+
+
+def test_tool_end_bash_nonzero_exit_surfaced() -> None:
+    r, commits, _t = _renderer()
+    details = BashToolDetails(exit_code=2, truncation=TruncationInfo())
+    r.on_agent_event(
+        ToolExecutionEndEvent(
+            tool_call_id="t1",
+            result=ToolResult(
+                content=[TextContent(text="boom")], details=details, is_error=True
+            ),
+            tool_name="bash",
+            is_error=True,
+        )
+    )
+    out = _committed_text(commits)
+    assert "exit 2" in out
+
+
+def test_tool_end_bash_zero_exit_not_surfaced() -> None:
+    r, commits, _t = _renderer()
+    details = BashToolDetails(exit_code=0, truncation=TruncationInfo())
+    r.on_agent_event(
+        ToolExecutionEndEvent(
+            tool_call_id="t1",
+            result=ToolResult(content=[TextContent(text="done")], details=details),
+            tool_name="bash",
+        )
+    )
+    assert "exit" not in _committed_text(commits)
+
+
+def test_tool_end_matching_descriptor_skips_truncation() -> None:
+    r, commits, _t = _renderer()
+    env = _env("grep", view="text")
+    _wire(r, env)
+    body = "\n".join(f"row {i}" for i in range(40))
+    r.on_agent_event(
+        ToolExecutionEndEvent(
+            tool_call_id="t1",
+            result=ToolResult(content=[TextContent(text=body)]),
+            tool_name="grep",
+        )
+    )
+    # Descriptor precedence: a Panel custom view, NOT a truncated Group card.
+    assert commits[-1].__class__.__name__ == "Panel"
+    assert "more lines" not in _committed_text(commits)

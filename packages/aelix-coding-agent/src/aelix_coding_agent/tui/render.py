@@ -25,6 +25,8 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from aelix_ai.messages import AssistantMessage
+from rich.cells import cell_len, set_cell_size
+from rich.console import Group
 from rich.text import Text
 
 from .stream import StreamRenderer
@@ -60,6 +62,71 @@ def _compact_args(args: dict[str, Any]) -> str:
     items = ", ".join(f"{k}={v!r}" for k, v in args.items())
     items = items.replace("\n", " ")
     return items if len(items) <= 80 else items[:77] + "…"
+
+
+def _truncate_lines(
+    text: str, max_lines: int = 12, max_line_width: int = 76
+) -> tuple[list[str], int]:
+    """Keep the first ``max_lines`` lines, each hard-capped at ``max_line_width``.
+
+    PURE. Returns ``(kept_lines, hidden_count)`` where ``hidden_count`` is the
+    number of trimmed trailing lines. Width is measured in **terminal cells**
+    (CJK / wide chars count as 2) via ``rich.cells`` so a line of Hangul doesn't
+    overflow; a too-wide line is cut to ``max_line_width - 1`` cells plus ``…``.
+    The default leaves room for the 2-cell ``│ `` card gutter within an 80-col
+    chrome.
+    """
+
+    lines = text.split("\n")
+    kept = lines[:max_lines]
+    hidden = len(lines) - len(kept)
+    capped: list[str] = [
+        line if cell_len(line) <= max_line_width else set_cell_size(line, max_line_width - 1) + "…"
+        for line in kept
+    ]
+    return capped, hidden
+
+
+def _tool_header(tool_name: str, args: dict[str, Any]) -> str:
+    """Tool-aware one-line argument summary for the ``⚙`` start header.
+
+    ``read``/``write``/``edit`` show the ``path`` (read appends an
+    ``offset:limit`` line range when present); ``bash`` shows the ``command``;
+    every other tool falls back to :func:`_compact_args`.
+    """
+
+    if tool_name in ("read", "write", "edit"):
+        path = args.get("path")
+        if isinstance(path, str) and path:
+            if tool_name == "read":
+                offset = args.get("offset")
+                limit = args.get("limit")
+                if offset or limit:
+                    # Args come from unvalidated model tool-call JSON — a
+                    # non-numeric offset/limit must degrade to the bare path,
+                    # not raise inside the (unguarded) start-header render.
+                    try:
+                        start = int(offset) if offset else 0
+                        if limit:
+                            return f"{path}:{start}-{start + int(limit)}"
+                        return f"{path}:{start}-"
+                    except (TypeError, ValueError):
+                        return path
+            return path
+    elif tool_name == "bash":
+        command = args.get("command")
+        if isinstance(command, str) and command:
+            one_line = command.replace("\n", " ")
+            return one_line if len(one_line) <= 80 else one_line[:77] + "…"
+    return _compact_args(args)
+
+
+def _bash_exit_code(result: Any) -> int | None:
+    """Extract a bash exit code from a ``ToolResult`` payload, else ``None``."""
+
+    details = getattr(result, "details", None)
+    code = getattr(details, "exit_code", None)
+    return code if isinstance(code, int) else None
 
 
 class EventRenderer:
@@ -173,7 +240,7 @@ class EventRenderer:
 
     def _render_tool_start(self, tool_name: str, args: dict[str, Any]) -> None:
         self._finalize_text()
-        summary = _compact_args(args)
+        summary = _tool_header(tool_name, args)
         label = f"⚙ {tool_name}({summary})" if summary else f"⚙ {tool_name}"
         self._commit(Text(label, style="cyan"))
 
@@ -183,12 +250,27 @@ class EventRenderer:
         # §B — a stored tool-renderer-desc for this tool_name renders a custom view
         # (table/grid/form/text) instead of the default Text dump. The default
         # rendering is unchanged whenever no descriptor matches (or the lookup /
-        # build raises — a faulty renderer must not swallow tool output).
+        # build raises — a faulty renderer must not swallow tool output). A
+        # matched descriptor keeps full precedence: no truncation is applied.
         if self._render_with_descriptor(tool_name, text):
             return
+        exit_code = _bash_exit_code(result) if tool_name == "bash" else None
         if not text:
             return
-        self._commit(Text(text, style="red" if is_error else ""))
+        # §A — truncated, styled card under the ⚙ header: a dim left-gutter block
+        # (red when is_error), with a "+N more lines" footer when truncated and an
+        # "exit N" footer for non-zero/failed bash. One committed renderable.
+        # Error output is head-truncated too, but a Python traceback's diagnostic
+        # tail (the exception type/message) lives at the bottom — so give errors a
+        # higher cap to keep that visible (full detail still via a future /expand).
+        kept, hidden = _truncate_lines(text, max_lines=40 if is_error else 12)
+        body_style = "red" if is_error else "dim"
+        rows: list[Text] = [Text(f"│ {line}", style=body_style) for line in kept]
+        if hidden > 0:
+            rows.append(Text(f"│ … (+{hidden} more lines)", style="dim"))
+        if exit_code is not None and exit_code != 0:
+            rows.append(Text(f"│ exit {exit_code}", style="red"))
+        self._commit(Group(*rows))
 
     def _render_with_descriptor(self, tool_name: str, text: str) -> bool:
         lookup = self.get_tool_renderer_desc
@@ -206,4 +288,4 @@ class EventRenderer:
         return True
 
 
-__all__ = ["EventRenderer"]
+__all__ = ["EventRenderer", "_tool_header", "_truncate_lines"]
