@@ -1250,6 +1250,19 @@ class AgentHarness:
                 details=result.details,
                 from_hook=from_hook,
             )
+            # Pi parity (agent-session.ts:1693-1695, ADR-0117): rebuild the live
+            # in-memory context from the post-compaction branch so the reduction
+            # takes effect on the NEXT turn — drop the summarized prefix + prepend
+            # the summary. Without this, _state.messages keeps the full
+            # pre-compaction history and /compact has no live effect until reload.
+            # Mutate in place (clear+extend) so the list identity is preserved.
+            from aelix_agent_core.session.context import build_session_context
+
+            rebuilt = build_session_context(
+                await self._session.get_branch()
+            ).messages
+            self._state.messages.clear()
+            self._state.messages.extend(rebuilt)
             entry = await self._session.get_entry(entry_id)
             if entry is not None and entry.type == "compaction":
                 try:

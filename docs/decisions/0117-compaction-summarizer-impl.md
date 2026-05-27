@@ -38,6 +38,14 @@ harness untouched — verified).
   returns the `CompactResult`. **Errors**: an `AssistantErrorEvent` from the
   provider raises `AgentHarnessError("compaction", …)` immediately — partial
   accumulated text is never returned as a valid summary (code-review HIGH fix).
+- **Post-compact live rebuild** (`harness/core.py::compact`, pi `agent-session.ts:1693-1695`):
+  after `append_compaction`, the harness rebuilds `self._state.messages` in place
+  (`build_session_context(await get_branch()).messages`). Surfaced by the
+  **command-level reference comparison** (vs pi's `/compact`): without it the
+  in-memory turn context kept the full pre-compaction history, so `/compact`
+  persisted to the session but had **no effect on the live session until reload**.
+  This is the only change outside `compaction.py` (a +13-line addition to the
+  existing `compact()` method — still within the user-approved compaction scope).
 - **Verbatim pi prompts**: `SUMMARIZATION_SYSTEM_PROMPT`, `SUMMARIZATION_PROMPT`,
   `UPDATE_SUMMARIZATION_PROMPT` (structured `## Goal / Constraints / Progress /
   Key Decisions / Next Steps / Critical Context` format). `_serialize_conversation`

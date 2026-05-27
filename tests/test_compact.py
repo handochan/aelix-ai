@@ -85,6 +85,23 @@ async def test_compact_happy_path_with_summarizer_override() -> None:
     assert captured[0].from_hook is False
 
 
+async def test_compact_rebuilds_live_state_messages() -> None:
+    """ADR-0117 / pi agent-session.ts:1693-1695: compact() must rebuild the
+    live ``_state.messages`` from the post-compaction branch so the reduction
+    takes effect on the NEXT turn (drop the summarized prefix + prepend the
+    summary) — not merely persist to the session."""
+    h, _session = await _attached()  # 6 large user messages seeded (~45k tokens)
+    await h.compact()
+    msgs = h._state.messages
+    # Rebuilt + reduced: summary message + kept tail, fewer than the 6 seeded.
+    assert 0 < len(msgs) < 6
+    # The first message is the compaction summary (carries the summary text).
+    first_text = "".join(
+        getattr(b, "text", "") for b in getattr(msgs[0], "content", [])
+    )
+    assert "TEST_SUMMARY" in first_text
+
+
 async def test_compact_cancel_via_hook_raises_compaction() -> None:
     """Pi parity: cancel path raises AgentHarnessError("compaction"), not "invalid_state".
 
