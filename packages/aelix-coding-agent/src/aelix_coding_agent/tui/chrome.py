@@ -307,6 +307,22 @@ class AelixChrome:
             self._console.print(renderable)
         self.app.invalidate()
 
+    def clear(self) -> None:
+        """Clear the terminal scrollback without killing the live chrome.
+
+        Sprint 6h₁₂d (`/clear`): writes the clear-scrollback + clear-screen +
+        home sequence (``\\x1b[3J\\x1b[2J\\x1b[H``) through the app output, then
+        invalidates so the chrome repaints below. Best-effort + headless-safe:
+        :class:`~prompt_toolkit.output.DummyOutput` swallows the writes and the
+        whole body is exception-suppressed, so it never raises in tests.
+        """
+
+        with contextlib.suppress(Exception):
+            output = self.app.output
+            output.write_raw("\x1b[3J\x1b[2J\x1b[H")
+            output.flush()
+        self.invalidate()
+
     async def get_input(self) -> str:
         """Await one submitted input line. Raises ``EOFError`` on Ctrl+D."""
 

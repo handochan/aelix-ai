@@ -99,6 +99,16 @@ async def test_float_add_remove_lifecycle() -> None:
         chrome.remove_float(f)  # idempotent — must not raise
 
 
+async def test_clear_is_headless_safe() -> None:
+    # Sprint 6h₁₂d — /clear path. Under DummyOutput clear() must not raise
+    # whether the app is running or not (best-effort + suppressed).
+    async with _chrome(run_app=False) as (chrome, _pipe, _buf):
+        chrome.clear()  # app not running → no-op, must not raise
+    async with _chrome(run_app=True) as (chrome, _pipe, _buf):
+        await asyncio.sleep(0.02)
+        chrome.clear()  # app running → writes clear seq through DummyOutput
+
+
 async def test_request_eof_unblocks_get_input() -> None:
     async with _chrome(run_app=True) as (chrome, _pipe, _buf):
         fut = asyncio.ensure_future(chrome.get_input())

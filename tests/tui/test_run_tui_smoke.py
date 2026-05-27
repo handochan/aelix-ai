@@ -303,6 +303,59 @@ async def test_run_tui_help_command_runs_handler_not_prompt() -> None:
     assert runtime.harness.prompts == [("hi", "interactive")]
 
 
+# === Sprint 6h₁₂d — model / context command dispatch (handler args) =========
+
+
+class _ModeFakeHarness(FakeHarness):
+    """A FakeHarness that records /mode switches through set_steering_mode."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.steering_mode = "one-at-a-time"
+        self.mode_calls: list[str] = []
+        self.runtime = _BusExtRuntime()  # so descriptor wiring (and footer) is live
+
+    def set_steering_mode(self, mode: str) -> None:
+        self.mode_calls.append(mode)
+        self.steering_mode = mode
+
+
+async def test_run_tui_mode_command_sets_and_reflects_footer() -> None:
+    # /mode all → set_steering_mode("all") + the footer ⏵⏵ segment reflects it.
+    # The footer is the chrome's footer line (set via context._refresh_footer).
+    harness = _ModeFakeHarness()
+    async with _harness_chrome(harness=harness) as (runtime, chrome, pipe):
+        task = _launch(runtime, chrome)
+        await _wait(lambda: chrome.app.is_running)
+        pipe.send_text("/mode all\n")
+        await _wait(lambda: runtime.harness.mode_calls == ["all"])  # type: ignore[attr-defined]
+        await _wait(lambda: "⏵⏵ all" in chrome._footer_line)
+        pipe.send_text("/quit\n")
+        await asyncio.wait_for(task, timeout=5)
+    assert harness.mode_calls == ["all"]
+    assert harness.prompts == []  # never sent to the model
+
+
+async def test_run_tui_clear_command_runs_handler_not_prompt() -> None:
+    # /clear dispatches the built-in handler (chrome.clear) and is NOT prompted.
+    async with _harness_chrome() as (runtime, chrome, pipe):
+        cleared: list[int] = []
+        orig = chrome.clear
+
+        def _spy() -> None:
+            cleared.append(1)
+            orig()
+
+        chrome.clear = _spy  # type: ignore[method-assign]
+        task = _launch(runtime, chrome)
+        await _wait(lambda: chrome.app.is_running)
+        pipe.send_text("/clear\n")
+        await _wait(lambda: cleared == [1])
+        pipe.send_text("/quit\n")
+        await asyncio.wait_for(task, timeout=5)
+    assert runtime.harness.prompts == []
+
+
 async def test_run_tui_bash_passthrough(monkeypatch: pytest.MonkeyPatch) -> None:
     calls: list[tuple[str, bool, str]] = []
 

@@ -100,12 +100,20 @@ async def run_tui(
     # for the session; the context carries the live chrome/harness/commit/cwd so
     # handlers (e.g. /help) can act on the running TUI.
     commands = list(BUILTIN_COMMANDS)
+
+    def _set_mode(mode: str) -> None:
+        # Reflect a /mode switch in the live footer ⏵⏵ segment (Sprint 6h₁₂d).
+        context._mode = mode
+        context._refresh_footer()
+
     command_ctx = CommandContext(
         chrome=out_chrome,
         harness=runtime_host.harness,
         commit=_commit,
         cwd=cwd,
         commands=commands,
+        set_mode=_set_mode,
+        refresh_footer=context._refresh_footer,
     )
 
     loop = asyncio.get_running_loop()
@@ -367,7 +375,11 @@ async def _input_loop(
         if parsed.kind == "prompt" and parsed.text.startswith("/"):
             command = match_command(parsed.text, command_ctx.commands)
             if command is not None and command.handler is not None:
-                await command.handler(command_ctx)
+                # args = the text after the command word (Sprint 6h₁₂d). The
+                # word is isolated by slash_word so this can never disagree with
+                # the dispatch on what the typed command word was.
+                args = parsed.text[len("/" + slash_word(parsed.text)):].strip()
+                await command.handler(command_ctx, args)
                 continue
             if descriptor_renderer is not None:
                 modal = _match_management_modal(descriptor_renderer, parsed.text)
