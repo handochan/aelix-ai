@@ -351,6 +351,16 @@ async def test_alt_up_fires_dequeue() -> None:
 # === Sprint 6h₁₆ (ADR-0124) — OSC 52 clipboard ============================
 
 
+async def test_ctrl_v_fires_image_paste() -> None:
+    # Sprint 6h₁₉ (ADR-0127): Ctrl+V fires the host-wired image-paste callback.
+    async with _chrome(run_app=True) as (chrome, pipe, _buf):
+        pasted: list[int] = []
+        chrome.on_image_paste = lambda: pasted.append(1)
+        pipe.send_text("\x16")  # Ctrl+V
+        await asyncio.sleep(0.05)
+        assert pasted == [1]
+
+
 async def test_copy_to_clipboard_writes_osc52() -> None:
     import base64
 

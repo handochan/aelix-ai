@@ -105,6 +105,11 @@ class AelixChrome:
         # steer/follow-up messages back into the editor (Sprint 6h₁₅, ADR-0123).
         self.on_thinking_toggle: Callable[[], None] | None = None
         self.on_dequeue: Callable[[], None] | None = None
+        # Ctrl+V paste-image (pi parity ``interactive-mode.ts:2430-2450``,
+        # Sprint 6h₁₉, ADR-0127). Fires a host-wired callback that reads the
+        # clipboard image, writes it to a temp file, and inserts the path at
+        # the cursor. None in headless tests / when no host is attached.
+        self.on_image_paste: Callable[[], None] | None = None
 
         # === state the live regions read ===
         self._status: dict[str, str] = {}
@@ -312,6 +317,11 @@ class AelixChrome:
         def _dequeue(event: object) -> None:
             if self.on_dequeue is not None:
                 self.on_dequeue()
+
+        @kb.add("c-v")  # Ctrl+V: paste clipboard image (pi parity).
+        def _paste_image(event: object) -> None:
+            if self.on_image_paste is not None:
+                self.on_image_paste()
 
         @kb.add("c-i")  # Tab: start completion, then cycle through entries.
         def _complete(event: object) -> None:

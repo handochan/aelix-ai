@@ -414,6 +414,7 @@ _HOTKEYS: list[tuple[str, str]] = [
     ("Alt+Enter", "Queue a follow-up message (while a turn runs)"),
     ("Alt+↑", "Restore queued messages back into the editor"),
     ("Ctrl+T", "Toggle thinking-block visibility"),
+    ("Ctrl+V", "Paste a clipboard image (inserts the temp-file path)"),
     ("Esc", "Interrupt the running turn"),
     ("Ctrl+C", "Interrupt the turn / clear the input line"),
     ("Ctrl+D", "Exit (on an empty line)"),

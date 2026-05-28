@@ -498,6 +498,46 @@ async def run_tui(
 
     out_chrome.on_dequeue = _dequeue
 
+    # Sprint 6h₁₉ (ADR-0127) — Ctrl+V paste-image. pi parity
+    # ``interactive-mode.ts:2430-2450 handleClipboardImagePaste``: read clipboard
+    # via ``PIL.ImageGrab.grabclipboard()`` (PIL is already a dep — see
+    # ``util/image_resize.py``); on a PIL Image, save to
+    # ``tempfile.gettempdir()/aelix-clipboard-<uuid>.png`` and insert the bare
+    # absolute path at the cursor. Silent no-op on no-image / file-list /
+    # clipboard error (pi behavior — try/catch swallows all).
+    def _paste_image() -> None:
+        import os
+        import tempfile
+        import uuid
+
+        try:
+            from PIL import Image, ImageGrab
+        except Exception:  # noqa: BLE001 — PIL absent (shouldn't happen): silent
+            return
+        try:
+            grabbed = ImageGrab.grabclipboard()
+        except Exception:  # noqa: BLE001 — pi parity: clipboard errors are silent
+            return
+        # ``grabclipboard`` returns ``Image.Image | list[str] | None``. pi handles
+        # only the Image path; a file-list paste is out of v1 scope.
+        if not isinstance(grabbed, Image.Image):
+            return
+        try:
+            # W-review M1: ``os.path.join`` (not f-string with "/") so the
+            # Windows path is single-separator — the model receives the bare
+            # absolute path and expects platform-correct separators.
+            path = os.path.join(
+                tempfile.gettempdir(), f"aelix-clipboard-{uuid.uuid4()}.png"
+            )
+            # pi normalizes to png as the ``?? "png"`` fallback; Aelix writes
+            # PNG unconditionally for lossless quality + universal support.
+            grabbed.save(path, "PNG")
+        except Exception:  # noqa: BLE001 — write failure: silent (pi parity)
+            return
+        out_chrome.paste_to_editor(path)
+
+    out_chrome.on_image_paste = _paste_image
+
     descriptor_unsub: Callable[[], None] | None = None
     descriptor_renderer: DescriptorRenderer | None = None
     chrome_task: asyncio.Task[None] | None = None

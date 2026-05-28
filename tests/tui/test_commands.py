@@ -562,7 +562,7 @@ def test_hotkeys_lists_shortcuts() -> None:
     committed: list[object] = []
     _run("hotkeys", _ctx(_FakeHarness(), committed), "")
     out = "".join(_render(c) for c in committed)
-    assert "Enter" in out and "Ctrl+T" in out and "Alt+↑" in out
+    assert "Enter" in out and "Ctrl+T" in out and "Alt+↑" in out and "Ctrl+V" in out
 
 
 # === Sprint 6h₁₆ (ADR-0124) — /copy + /session + /name ====================

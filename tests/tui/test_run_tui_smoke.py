@@ -687,6 +687,57 @@ async def test_run_tui_settings_cycles_thinking_level() -> None:
     assert harness.level_set == ["low"]
 
 
+async def test_run_tui_ctrl_v_pastes_clipboard_image_path_to_editor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Sprint 6h₁₉ (ADR-0127): Ctrl+V → ImageGrab.grabclipboard() → temp PNG →
+    # insert bare absolute path at the cursor (pi parity
+    # ``interactive-mode.ts:2430-2450``). Stub the clipboard with a real tiny
+    # PIL Image (PIL is already a dep) — the real save() writes a valid PNG.
+    # W-review M2: ``monkeypatch.setattr`` auto-restores even if the test body
+    # raises before reaching teardown (vs a hand-rolled try/finally that can
+    # leak a global mutation).
+    import os
+
+    from PIL import Image, ImageGrab
+
+    img = Image.new("RGB", (4, 4), color=(255, 0, 0))
+    monkeypatch.setattr(ImageGrab, "grabclipboard", lambda: img)
+    async with _harness_chrome(harness=_ModalHarness()) as (runtime, chrome, pipe):
+        task = _launch(runtime, chrome)
+        await _wait(lambda: chrome.app.is_running)
+        pipe.send_text("\x16")  # Ctrl+V
+        await _wait(lambda: chrome.get_editor_text() != "")
+        text = chrome.get_editor_text()
+        assert text.endswith(".png")
+        assert "aelix-clipboard-" in text
+        assert os.path.exists(text)  # real PNG written to disk by PIL.save
+        assert os.path.getsize(text) > 0
+        os.unlink(text)
+        pipe.send_text("\x03")  # Ctrl+C clears the editor
+        await _wait(lambda: chrome.get_editor_text() == "")
+        pipe.send_text("/quit\n")
+        await asyncio.wait_for(task, timeout=5)
+
+
+async def test_run_tui_ctrl_v_silent_noop_when_clipboard_has_no_image(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # pi parity ``interactive-mode.ts:2433-2435``: if grabclipboard returns None,
+    # silent no-op (no error, no editor change). W-review M2: monkeypatch.
+    from PIL import ImageGrab
+
+    monkeypatch.setattr(ImageGrab, "grabclipboard", lambda: None)
+    async with _harness_chrome(harness=_ModalHarness()) as (runtime, chrome, pipe):
+        task = _launch(runtime, chrome)
+        await _wait(lambda: chrome.app.is_running)
+        pipe.send_text("\x16")  # Ctrl+V on an empty-image clipboard
+        await asyncio.sleep(0.1)
+        assert chrome.get_editor_text() == ""  # no insertion, no error
+        pipe.send_text("/quit\n")
+        await asyncio.wait_for(task, timeout=5)
+
+
 async def test_run_tui_alt_up_restores_queued_messages_to_editor() -> None:
     # Alt+Up drains steer + follow-up queues back into the editor (steer first,
     # blank-line joined), and clears the queues.
