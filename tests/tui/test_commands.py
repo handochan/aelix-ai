@@ -175,6 +175,7 @@ def test_sprint_a_registry_set() -> None:
         "thinking",
         "tools",
         "mode",
+        "settings",
         "expand",
         "export",
         "copy",
@@ -187,7 +188,7 @@ def test_sprint_a_registry_set() -> None:
     by_name: dict[str, Any] = {c.name: c for c in BUILTIN_COMMANDS}
     for required in (
         "help", "thinking", "expand", "export", "resume", "hotkeys", "new",
-        "session", "name", "copy",
+        "session", "name", "copy", "settings",
     ):
         assert by_name[required].handler is not None
     assert by_name["quit"].handler is None
@@ -658,3 +659,36 @@ def test_name_sets_via_append() -> None:
     _run("name", _ctx(harness, committed), "new title")
     assert harness.session.set_name == "new title"
     assert any("session name → new title" in _render(c) for c in committed)
+
+
+# === Sprint 6h₁₇ (ADR-0125) — /settings handler ===========================
+
+
+def test_settings_unavailable_degrades() -> None:
+    committed: list[object] = []
+    _run("settings", _ctx(_FakeHarness(), committed), "")  # settings_action None
+    assert any("Settings are unavailable" in _render(c) for c in committed)
+
+
+def test_settings_invokes_wired_callback() -> None:
+    calls: list[int] = []
+
+    async def _action() -> None:
+        calls.append(1)
+
+    ctx = _ctx(_FakeHarness(), [])
+    ctx.settings_action = _action
+    _run("settings", ctx, "")
+    assert calls == [1]
+
+
+def test_settings_failure_surfaces_not_crashes() -> None:
+    committed: list[object] = []
+
+    async def _boom() -> None:
+        raise RuntimeError("settings store broke")
+
+    ctx = _ctx(_FakeHarness(), committed)
+    ctx.settings_action = _boom
+    _run("settings", ctx, "")
+    assert any("settings failed" in _render(c) for c in committed)

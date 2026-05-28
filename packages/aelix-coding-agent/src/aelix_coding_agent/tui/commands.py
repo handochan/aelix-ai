@@ -89,6 +89,11 @@ class CommandContext:
     """``run_tui`` wires this to its ``_new_session`` flow (``runtime.new_session``
     fresh-session hot-swap → clear + banner). The ``/new`` handler awaits it;
     ``None`` in headless tests (Sprint 6h₁₅, ADR-0123)."""
+    settings_action: Callable[[], Awaitable[None]] | None = None
+    """``run_tui`` wires this to its ``_open_settings`` flow (a ``ctx.ui.select``
+    menu that toggles/cycles the live harness settings — steering mode, follow-up
+    mode, thinking visibility/level). The ``/settings`` handler awaits it; ``None``
+    in headless tests (Sprint 6h₁₇, ADR-0125)."""
 
 
 def build_help_renderable(commands: list[BuiltinCommand]) -> RenderableType:
@@ -368,6 +373,23 @@ async def _resume_handler(ctx: CommandContext, args: str) -> None:
         ctx.commit(Text(f"✖ resume failed: {exc}", style="bold red"))
 
 
+async def _settings_handler(ctx: CommandContext, args: str) -> None:
+    """``/settings`` — open the live-settings toggle menu (ignores args).
+
+    Delegates to the host-wired ``settings_action`` flow (a select menu that
+    toggles/cycles steering mode, follow-up mode, thinking visibility/level).
+    Degrades when unavailable / on failure.
+    """
+
+    if ctx.settings_action is None:
+        ctx.commit(Text("Settings are unavailable.", style="yellow"))
+        return
+    try:
+        await ctx.settings_action()
+    except Exception as exc:  # noqa: BLE001 — surface, never kill the REPL
+        ctx.commit(Text(f"✖ settings failed: {exc}", style="bold red"))
+
+
 async def _new_handler(ctx: CommandContext, args: str) -> None:
     """``/new`` — start a fresh session (ignores args).
 
@@ -512,6 +534,7 @@ BUILTIN_COMMANDS: list[BuiltinCommand] = [
     BuiltinCommand("thinking", "Show or set the reasoning level", _thinking_handler),
     BuiltinCommand("tools", "List registered tools", _tools_handler),
     BuiltinCommand("mode", "Show or set the steering mode", _mode_handler),
+    BuiltinCommand("settings", "Toggle live settings (modes, thinking)", _settings_handler),
     BuiltinCommand("expand", "Show the full output of a truncated tool result", _expand_handler),
     BuiltinCommand("export", "Export the transcript to HTML", _export_handler),
     BuiltinCommand("copy", "Copy the last assistant message to the clipboard", _copy_handler),

@@ -221,8 +221,11 @@ def _modal_module() -> dict[str, object]:
         "id": "m",
         "payload": {
             "kind": "management-modal",
-            "command": "settings",
-            "title": "Settings",
+            # A non-built-in command name: built-ins (e.g. /settings) win on a
+            # name clash (ADR-0110), so the descriptor-modal example must use a
+            # name with no built-in (here /deploy).
+            "command": "deploy",
+            "title": "Deploy",
             "view": "form",
         },
     }
@@ -261,7 +264,7 @@ async def test_run_tui_management_modal_command_opens_not_prompts() -> None:
         async with _harness_chrome(harness=_ModalHarness()) as (runtime, chrome, pipe):
             task = _launch(runtime, chrome)
             await _wait(lambda: chrome.app.is_running)
-            pipe.send_text("/settings\n")  # matches the stored management-modal
+            pipe.send_text("/deploy\n")  # matches the stored management-modal
             await _wait(lambda: len(opened) == 1)
             pipe.send_text("/quit\n")
             await asyncio.wait_for(task, timeout=5)
@@ -621,6 +624,67 @@ class _QueueHarness(FakeHarness):
         super().__init__()
         self._steering_queue = _FakeQ(steer)
         self._follow_up_queue = _FakeQ(follow)
+
+
+class _SettingsHarness(FakeHarness):
+    def __init__(self) -> None:
+        super().__init__()
+        from types import SimpleNamespace
+
+        self.steering_mode = "one-at-a-time"
+        self.follow_up_mode = "one-at-a-time"
+        self.steer_set: list[str] = []
+        self.follow_set: list[str] = []
+        self.level_set: list[str] = []
+        self._state = SimpleNamespace(thinking_level=None)
+
+    def set_steering_mode(self, mode: str) -> None:
+        self.steer_set.append(mode)
+        self.steering_mode = mode
+
+    def set_follow_up_mode(self, mode: str) -> None:
+        self.follow_set.append(mode)
+        self.follow_up_mode = mode
+
+    async def set_thinking_level(self, level: str) -> None:
+        self.level_set.append(level)
+        self._state.thinking_level = level
+
+    async def cycle_thinking_level(self) -> str | None:
+        # Fake the canonical model-aware cycle: off → low (records via set).
+        await self.set_thinking_level("low")
+        return "low"
+
+
+async def test_run_tui_settings_toggles_steering_mode() -> None:
+    # W-review-lesson: cover the _open_settings orchestration — /settings → menu
+    # → select "Steering mode" (#1) → set_steering_mode toggled to "all".
+    harness = _SettingsHarness()
+    async with _harness_chrome(harness=harness) as (runtime, chrome, pipe):
+        task = _launch(runtime, chrome)
+        await _wait(lambda: chrome.app.is_running)
+        pipe.send_text("/settings\n")
+        await asyncio.sleep(0.15)  # menu render + focus
+        pipe.send_text("1")  # pick "Steering mode" → toggles one-at-a-time → all
+        await _wait(lambda: harness.steer_set == ["all"])
+        pipe.send_text("/quit\n")
+        await asyncio.wait_for(task, timeout=5)
+    assert harness.steer_set == ["all"]
+
+
+async def test_run_tui_settings_cycles_thinking_level() -> None:
+    # Select "Thinking level" (#4) cycles off → low.
+    harness = _SettingsHarness()
+    async with _harness_chrome(harness=harness) as (runtime, chrome, pipe):
+        task = _launch(runtime, chrome)
+        await _wait(lambda: chrome.app.is_running)
+        pipe.send_text("/settings\n")
+        await asyncio.sleep(0.15)
+        pipe.send_text("4")  # "Thinking level: off" → cycles to "low"
+        await _wait(lambda: harness.level_set == ["low"])
+        pipe.send_text("/quit\n")
+        await asyncio.wait_for(task, timeout=5)
+    assert harness.level_set == ["low"]
 
 
 async def test_run_tui_alt_up_restores_queued_messages_to_editor() -> None:

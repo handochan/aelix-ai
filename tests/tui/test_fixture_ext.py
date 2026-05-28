@@ -78,8 +78,11 @@ def _fixture_setup(api: ExtensionAPI) -> None:
                     "id": "modal",
                     "payload": {
                         "kind": "management-modal",
-                        "command": "settings",
-                        "title": "Settings",
+                        # Non-built-in command: built-ins (e.g. /settings) win on
+                        # a name clash (ADR-0110), so the descriptor modal uses a
+                        # name with no built-in (here /panel).
+                        "command": "panel",
+                        "title": "Panel",
                         "view": "form",
                     },
                 },
@@ -207,8 +210,8 @@ async def test_fixture_ext_management_modal_command_opens_not_prompts() -> None:
             await _wait(lambda: chrome.app.is_running)
             await _wait(lambda: "fix:stat" in chrome._status)  # probe completed
 
-            # "/settings" matches the stored management-modal → open_modal, NOT prompt.
-            pipe.send_text("/settings\n")
+            # "/panel" matches the stored management-modal → open_modal, NOT prompt.
+            pipe.send_text("/panel\n")
             await _wait(lambda: len(opened) == 1)
             pipe.send_text("/quit\n")
             await asyncio.wait_for(task, timeout=5)
@@ -216,4 +219,4 @@ async def test_fixture_ext_management_modal_command_opens_not_prompts() -> None:
             DescriptorRenderer.open_modal = orig_open  # type: ignore[method-assign]
 
     assert len(opened) == 1
-    assert getattr(opened[0].payload, "command", None) == "settings"
+    assert getattr(opened[0].payload, "command", None) == "panel"

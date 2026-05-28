@@ -276,6 +276,56 @@ async def run_tui(
         _commit(_build_banner(runtime_host.harness, cwd))
         context._refresh_footer()
 
+    async def _open_settings() -> None:
+        # Sprint 6h₁₇ (ADR-0125) — /settings: a 1-level select over the live,
+        # session-settable options; picking a row toggles (2-value) or cycles
+        # (thinking level) that setting via the verified harness setters + the
+        # renderer's thinking flag. Auto-compaction is intentionally OMITTED —
+        # its threshold trigger is unwired (audit #3), so a toggle would be a lie.
+        harness = runtime_host.harness
+        state = getattr(harness, "_state", None)
+        level = (getattr(state, "thinking_level", None) or "off") if state else "off"
+        rows = [
+            ("Steering mode", getattr(harness, "steering_mode", "?")),
+            ("Follow-up mode", getattr(harness, "follow_up_mode", "?")),
+            ("Thinking blocks", "hidden" if renderer.hide_thinking else "visible"),
+            ("Thinking level", level),
+        ]
+        choice = await context.select(
+            "Settings — select to change", [f"{k}: {v}" for k, v in rows]
+        )
+        if not choice:
+            return
+        key = choice.split(":", 1)[0]
+        try:
+            if key == "Steering mode":
+                new = "all" if harness.steering_mode == "one-at-a-time" else "one-at-a-time"
+                harness.set_steering_mode(new)
+                _commit(Text(f"steering mode → {new}", style="green"))
+            elif key == "Follow-up mode":
+                new = "all" if harness.follow_up_mode == "one-at-a-time" else "one-at-a-time"
+                harness.set_follow_up_mode(new)
+                _commit(Text(f"follow-up mode → {new}", style="green"))
+            elif key == "Thinking blocks":
+                renderer.hide_thinking = not renderer.hide_thinking
+                shown = "hidden" if renderer.hide_thinking else "visible"
+                _commit(Text(f"thinking blocks → {shown}", style="green"))
+            elif key == "Thinking level":
+                # Delegate to the canonical model-aware cycle (W-review 6h₁₇
+                # MEDIUM): rotates the model's supported levels, no-ops on a
+                # non-reasoning model (returns None), and preserves the off/None
+                # sentinel — vs a hardcoded list that could set an unsupported
+                # level or miss minimal/xhigh.
+                new_level = await harness.cycle_thinking_level()
+                if new_level is None:
+                    _commit(Text("This model has no thinking levels to cycle.", style="yellow"))
+                else:
+                    _commit(Text(f"thinking level → {new_level}", style="green"))
+        except Exception as exc:  # noqa: BLE001 — surface, never crash the REPL
+            _commit(Text(f"✖ settings change failed: {exc}", style="bold red"))
+            return
+        context._refresh_footer()  # steering-mode segment reads the live value
+
     command_ctx = CommandContext(
         chrome=out_chrome,
         harness=runtime_host.harness,
@@ -287,6 +337,7 @@ async def run_tui(
         expand_lookup=renderer.get_expanded,
         resume_session=_resume_session,
         new_session=_new_session,
+        settings_action=_open_settings,
     )
 
     loop = asyncio.get_running_loop()
