@@ -41,15 +41,24 @@ def _stub_tool_result() -> ToolResult:
 
 
 def test_to_hook_event_handles_every_agent_event_variant() -> None:
-    """Every variant in :data:`AgentEvent` maps to a concrete :class:`HookEvent`."""
+    """Every variant in :data:`AgentEvent` is either projected to a concrete
+    :class:`HookEvent` (extension lifecycle observers) or is explicitly
+    listener-only (auto_retry events — Sprint 6h₂₀ ADR-0128). The listener-only
+    set is asserted by behavior: ``_to_hook_event`` raises ``RuntimeError`` if
+    those events ever reach it (they're skipped at the caller).
+    """
+
+    from aelix_agent_core.types import AutoRetryEndEvent, AutoRetryStartEvent
+
     am = _stub_assistant_message()
-    samples: list[AgentEvent] = [
+    # Variants projected to HookEvent (every AgentEvent except the listener-only
+    # auto_retry pair — see ``_run``'s ``emit`` closure skip-guard).
+    projected_samples: list[AgentEvent] = [
         AgentStartEvent(),
         TurnStartEvent(),
         MessageStartEvent(message=am),
         MessageUpdateEvent(
             message=am,
-            # AssistantMessageEvent is a Union — pick any concrete variant.
             assistant_message_event=AssistantStartEvent(),
         ),
         MessageEndEvent(message=am),
@@ -62,16 +71,32 @@ def test_to_hook_event_handles_every_agent_event_variant() -> None:
         TurnEndEvent(message=am, tool_results=[]),
         AgentEndEvent(messages=[]),
     ]
-    # Sanity: we covered every variant of the union.
+    # Listener-only variants — must not reach ``_to_hook_event``; documented by
+    # an explicit raise inside the match.
+    listener_only_samples: list[AgentEvent] = [
+        AutoRetryStartEvent(
+            attempt=1, max_attempts=3, delay_ms=2000, error_message="overloaded"
+        ),
+        AutoRetryEndEvent(success=False, attempt=1, final_error="x"),
+    ]
+    # Sanity: the union has no other variants beyond these two buckets.
     variant_count = len(get_args(AgentEvent))
-    assert len(samples) == variant_count, (
-        f"covered {len(samples)} variants but AgentEvent has {variant_count}"
+    assert len(projected_samples) + len(listener_only_samples) == variant_count, (
+        f"covered {len(projected_samples) + len(listener_only_samples)} variants "
+        f"but AgentEvent has {variant_count}"
     )
-    for ev in samples:
+    for ev in projected_samples:
         hook_ev = _to_hook_event(ev)
         assert isinstance(hook_ev, HookEvent)
         # Pi parity: the projected type literal matches the source type literal.
         assert hook_ev.type == ev.type
+    for ev in listener_only_samples:
+        # Documented invariant: these are skipped at the caller; reaching
+        # ``_to_hook_event`` is a contract violation.
+        import pytest as _pytest
+
+        with _pytest.raises(RuntimeError, match=r"auto_retry event"):
+            _to_hook_event(ev)
 
 
 def test_to_hook_event_return_type_is_hook_event_not_optional() -> None:

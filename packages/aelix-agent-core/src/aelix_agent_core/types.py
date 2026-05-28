@@ -224,6 +224,27 @@ class AgentEndEvent:
     type: Literal["agent_end"] = "agent_end"
 
 
+# pi parity: ``agent-session.ts:1948-1953``/``2456-2462`` — auto-retry events.
+# Emitted from :meth:`AgentHarness._handle_retryable_error` (Sprint 6h₂₀,
+# ADR-0128) so the TUI can render a countdown (pi
+# ``interactive-mode.ts:2919-2948``).
+@dataclass(frozen=True)
+class AutoRetryStartEvent:
+    attempt: int  # 1-based attempt number
+    max_attempts: int
+    delay_ms: int  # exponential backoff: base_delay * 2^(attempt-1)
+    error_message: str
+    type: Literal["auto_retry_start"] = "auto_retry_start"
+
+
+@dataclass(frozen=True)
+class AutoRetryEndEvent:
+    success: bool
+    attempt: int
+    final_error: str | None = None  # populated only when ``success=False``
+    type: Literal["auto_retry_end"] = "auto_retry_end"
+
+
 AgentEvent = (
     AgentStartEvent
     | TurnStartEvent
@@ -235,6 +256,8 @@ AgentEvent = (
     | ToolExecutionEndEvent
     | TurnEndEvent
     | AgentEndEvent
+    | AutoRetryStartEvent
+    | AutoRetryEndEvent
 )
 
 

@@ -24,6 +24,7 @@ import asyncio
 import contextlib
 import inspect
 import logging
+import re
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -478,6 +479,31 @@ class _MessageQueue:
 _AUTO_COMPACT_RESERVE_TOKENS = 16384
 
 
+# pi parity (``settings-manager.ts:721-727 getRetrySettings``):
+# ``maxRetries=3``, ``baseDelayMs=2000`` (exponential backoff 2s / 4s / 8s).
+# Aelix has no SettingsManager in core → module constants (Sprint 6h₂₀,
+# ADR-0128).
+_AUTO_RETRY_MAX_ATTEMPTS = 3
+_AUTO_RETRY_BASE_DELAY_MS = 2000
+
+# pi parity (``agent-session.ts:2414-2426`` ``_isRetryableError``): verbatim
+# case-insensitive regex over ``AssistantMessage.error_message``. ``.?`` matches
+# the same single-char OR empty separator pi's JS regex matches (e.g. "rate
+# limit" / "rate-limit" / "ratelimit"). Context-overflow exclusion is handled
+# by 6h₁₈ auto-compaction trigger preemptively; the regex does not match
+# overflow markers anyway.
+_RETRYABLE_ERROR_PATTERN = re.compile(
+    r"overloaded|provider.?returned.?error|rate.?limit|too many requests|"
+    r"429|500|502|503|504|service.?unavailable|server.?error|internal.?error|"
+    r"network.?error|connection.?error|connection.?refused|connection.?lost|"
+    r"websocket.?closed|websocket.?error|other side closed|fetch failed|"
+    r"upstream.?connect|reset before headers|socket hang up|ended without|"
+    r"stream ended before message_stop|http2 request did not get a response|"
+    r"timed? out|timeout|terminated|retry delay",
+    re.IGNORECASE,
+)
+
+
 class AgentHarness:
     """Hook-aware orchestrator built on top of :func:`agent_loop`.
 
@@ -696,6 +722,12 @@ class AgentHarness:
         self._shutdown_action: Callable[[], None] | None = None
         # Sprint 5b §B.3 — bootstrap-fired ``resources_discover`` emit can
         # populate this lazily. AgentState.resources already exists.
+        # Sprint 6h₂₀ (ADR-0128) — auto-retry state machine. pi parity
+        # ``agent-session.ts:2432-2506`` ``_handleRetryableError``. The abort
+        # event is created on demand by the retry handler so ``abort_retry()``
+        # can signal an in-flight ``asyncio.sleep`` to cancel mid-backoff.
+        self._retry_attempt: int = 0
+        self._retry_abort_event: asyncio.Event | None = None
 
     # === Sprint 6h₇c (Phase 5a-iii-γ, ADR-0093 §D, P-450) ===
     # Pi parity (partial): the tool-merge step of
@@ -1054,12 +1086,58 @@ class AgentHarness:
                 else self._state.system_prompt
             )
             result = await self._run(prompts, system_prompt=system_prompt)
-            # Sprint 6h₁₈ (ADR-0126) — auto-compaction trigger. pi parity:
-            # ``agent-session.ts:572-585`` ``_processAgentEvent`` invokes
-            # ``_checkCompaction`` after every ``agent_end``; this is the
-            # equivalent Aelix site, right after ``_run`` returns (which has
-            # already reset ``_phase`` to ``idle`` in its own ``finally``).
-            # ``compact()`` re-flips ``_phase`` to ``compaction`` as usual.
+            # Sprint 6h₂₀ (ADR-0128) — auto-retry loop. pi parity
+            # ``agent-session.ts:572-585`` ``_processAgentEvent``: the retry
+            # check fires after every ``agent_end`` BEFORE compaction. While
+            # the last assistant message is a retriable error, sleep with
+            # backoff and re-run the turn from the existing context (the user
+            # message is already in ``_state.messages``; ``_handle_retryable_error``
+            # pops the error assistant). Empty ``prompts=[]`` means ``_run``
+            # appends no new user message — equivalent to pi's ``agent.continue()``.
+            while True:
+                last_assistant = None
+                for msg in reversed(self._state.messages):
+                    if isinstance(msg, AssistantMessage):
+                        last_assistant = msg
+                        break
+                if last_assistant is None or not self._is_retryable_error(
+                    last_assistant
+                ):
+                    break
+                did_retry = await self._handle_retryable_error(last_assistant)
+                if not did_retry:
+                    break  # max retries / disabled / aborted
+                # W-review MEDIUM-2: invariant — the user message must still be
+                # in state for ``agent_loop`` to have something to continue from.
+                # ``_handle_retryable_error`` pops only the trailing error
+                # assistant, so a preceding ``UserMessage`` is preserved.
+                assert any(
+                    isinstance(m, UserMessage) for m in self._state.messages
+                ), "retry continue requires a pending user message in state"
+                result = await self._run([], system_prompt=system_prompt)
+
+            # pi ``agent-session.ts:561-567`` — reset retry counter on a
+            # terminal-success assistant; emit ``auto_retry_end {success: True}``.
+            if self._retry_attempt > 0:
+                terminal_assistant = None
+                for msg in reversed(self._state.messages):
+                    if isinstance(msg, AssistantMessage):
+                        terminal_assistant = msg
+                        break
+                if (
+                    terminal_assistant is not None
+                    and terminal_assistant.stop_reason != "error"
+                ):
+                    from aelix_agent_core.types import AutoRetryEndEvent
+
+                    success_attempt = self._retry_attempt
+                    self._retry_attempt = 0
+                    await self._emit_to_subscribers(
+                        AutoRetryEndEvent(success=True, attempt=success_attempt)
+                    )
+
+            # Sprint 6h₁₈ (ADR-0126) — auto-compaction trigger AFTER retry.
+            # pi order is retry-then-compact (``agent-session.ts:577-582``).
             await self._check_auto_compaction()
             return result
         except Exception:
@@ -1370,6 +1448,121 @@ class AgentHarness:
                 if exc.code == "invalid_state" and "Nothing to compact" in str(exc):
                     return
                 raise
+
+    # === Sprint 6h₂₀ (ADR-0128) — auto-retry state machine ====================
+
+    async def _emit_to_subscribers(self, event: Any) -> None:
+        """Fan out an event to ``self._listeners`` (no hook bus emit).
+
+        Mirrors the listener loop in ``_run``'s ``emit`` closure. Used for
+        UI-only events (``auto_retry_start``/``auto_retry_end``) that
+        subscribers receive but extensions don't see as lifecycle hooks.
+        """
+
+        for listener in list(self._listeners):
+            try:
+                raw = listener(event)
+                if inspect.isawaitable(raw):
+                    await raw
+            except Exception:  # noqa: BLE001 — listener errors must not break
+                _log.debug("auto-retry listener raised", exc_info=True)
+
+    def _is_retryable_error(self, message: Any) -> bool:
+        """pi parity ``agent-session.ts:2414-2426`` ``_isRetryableError``.
+
+        Returns True only when the assistant ``stop_reason == "error"`` and
+        the ``error_message`` matches the retriable regex (network /
+        rate-limit / 5xx / etc.). Context-overflow exclusion is handled
+        preemptively by 6h₁₈ auto-compaction; the regex doesn't match
+        overflow markers anyway.
+        """
+
+        if getattr(message, "stop_reason", None) != "error":
+            return False
+        err = getattr(message, "error_message", None)
+        if not err:
+            return False
+        return _RETRYABLE_ERROR_PATTERN.search(err) is not None
+
+    async def _handle_retryable_error(self, message: Any) -> bool:
+        """pi parity ``agent-session.ts:2432-2506`` ``_handleRetryableError``.
+
+        Emits ``auto_retry_start`` + sleeps with exponential backoff
+        (``base_delay * 2^(attempt-1)``, 2s/4s/8s) + supports mid-sleep
+        abort via :meth:`abort_retry`. On max-retries-exceeded or abort,
+        emits ``auto_retry_end {success: False}`` and returns False.
+        Returns True when the caller should re-run the turn.
+        """
+
+        from aelix_agent_core.types import AutoRetryEndEvent, AutoRetryStartEvent
+
+        if not self._state.auto_retry_enabled:
+            return False
+
+        # W-review MEDIUM-1: clear the abort flag at retry entry so it tracks
+        # the CURRENT retry's cancellation state — not a stale ``True`` from a
+        # prior session. pi parity: pi's ``_retryAbortController`` is recreated
+        # per retry (``agent-session.ts:2479``).
+        self._state.retry_aborted = False
+
+        self._retry_attempt += 1
+        if self._retry_attempt > _AUTO_RETRY_MAX_ATTEMPTS:
+            # pi ``:2447-2453``: max retries exceeded — emit final failure + reset.
+            attempt = self._retry_attempt - 1
+            self._retry_attempt = 0
+            await self._emit_to_subscribers(
+                AutoRetryEndEvent(
+                    success=False,
+                    attempt=attempt,
+                    final_error=getattr(message, "error_message", None),
+                )
+            )
+            return False
+
+        # pi ``:2458``: ``delayMs = baseDelayMs * 2^(attempt-1)`` (2s/4s/8s).
+        delay_ms = _AUTO_RETRY_BASE_DELAY_MS * (2 ** (self._retry_attempt - 1))
+        await self._emit_to_subscribers(
+            AutoRetryStartEvent(
+                attempt=self._retry_attempt,
+                max_attempts=_AUTO_RETRY_MAX_ATTEMPTS,
+                delay_ms=delay_ms,
+                error_message=getattr(message, "error_message", "") or "Unknown error",
+            )
+        )
+
+        # pi ``:2473-2476``: remove the error message from agent state (keep in
+        # session history). The next turn re-runs from the pre-error context.
+        if self._state.messages and isinstance(
+            self._state.messages[-1], AssistantMessage
+        ):
+            self._state.messages.pop()
+
+        # pi ``:2479-2495``: ``await sleep(delayMs, abortSignal)``. asyncio
+        # equivalent: wait_for(abort_event.wait, timeout) — TimeoutError means
+        # the sleep completed normally; success means the abort fired.
+        self._retry_abort_event = asyncio.Event()
+        try:
+            await asyncio.wait_for(
+                self._retry_abort_event.wait(), timeout=delay_ms / 1000.0
+            )
+            aborted = True
+        except TimeoutError:
+            aborted = False
+        finally:
+            self._retry_abort_event = None
+
+        if aborted:
+            # pi ``:2484-2492``: abort during sleep → emit cancel + reset.
+            attempt = self._retry_attempt
+            self._retry_attempt = 0
+            await self._emit_to_subscribers(
+                AutoRetryEndEvent(
+                    success=False, attempt=attempt, final_error="Retry cancelled"
+                )
+            )
+            return False
+
+        return True
 
     async def navigate_tree(
         self,
@@ -1734,12 +1927,16 @@ class AgentHarness:
         """Pi parity: ``session.abortRetry``
         (``rpc-mode.ts:530-533`` + ``agent-session.ts:2511-2516``).
 
-        Sprint 6h₂ (P-250): the Aelix retry loop is not yet ported; this
-        setter persists the cancel intent (``_state.retry_aborted=True``)
-        for the future Sprint 6h₃+ retry-loop port. P-4 setter-no-emit.
+        Sprint 6h₂₀ (ADR-0128): the retry loop is now ported, so this also
+        wakes the in-flight ``asyncio.sleep`` mid-backoff via
+        :attr:`_retry_abort_event`. The pre-existing ``retry_aborted`` state
+        flag is still set for any consumer still reading it. No-op when no
+        retry is in flight.
         """
 
         self._state.retry_aborted = True
+        if self._retry_abort_event is not None:
+            self._retry_abort_event.set()
 
     def abort_bash(self) -> None:
         """Pi parity: ``session.abortBash``
@@ -3427,6 +3624,15 @@ class AgentHarness:
                             await raw
                     except Exception:  # noqa: BLE001 — listener errors must not break
                         _log.debug("listener raised", exc_info=True)
+                # Sprint 6h₂₀ (ADR-0128) — UI-only retry events
+                # (``auto_retry_start``/``auto_retry_end``) go to subscribers
+                # via the listener loop above (the TUI renderer subscribes for
+                # the countdown UI), but they are NOT extension lifecycle hooks
+                # and have no ``HookEvent`` projection in ``_to_hook_event``.
+                # pi parity: pi emits these only to ``agent-session``'s own
+                # listeners, not through the hook bus.
+                if event.type in ("auto_retry_start", "auto_retry_end"):
+                    return
                 # Then fan-out to the hook bus as observational lifecycle events.
                 # ADR-0030: ``_to_hook_event`` returns ``HookEvent`` (not
                 # ``HookEvent | None``) — every AgentEvent has a 1:1 projection.
@@ -3604,6 +3810,15 @@ def _to_hook_event(event: AgentEvent) -> HookEvent:
                 tool_call_id=event.tool_call_id,
                 tool_name=event.tool_name,
                 is_error=event.is_error,
+            )
+        case "auto_retry_start" | "auto_retry_end":
+            # Sprint 6h₂₀ (ADR-0128) — UI-only events skipped at the caller
+            # (the ``emit`` closure in ``_run``) before this projection runs;
+            # explicit cases here only to satisfy the match-exhaustiveness
+            # contract. Unreachable at runtime.
+            raise RuntimeError(
+                f"auto_retry event {event.type!r} reached _to_hook_event "
+                "(should have been skipped by the UI-only-events guard)"
             )
         case _ as unreachable:
             assert_never(unreachable)
