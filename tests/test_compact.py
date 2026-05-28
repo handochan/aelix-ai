@@ -264,3 +264,257 @@ async def test_compact_emits_session_before_compact_payload_shape() -> None:
     assert len(ev.branch_entries) >= 1
     # signal slot exists (Pi parity).
     assert hasattr(ev, "signal")
+
+
+# ============================================================================
+# Sprint 6h₁₈ (ADR-0126) — _check_auto_compaction (auto-compaction trigger)
+# ============================================================================
+
+
+from types import SimpleNamespace  # noqa: E402
+
+from aelix_ai.messages import AssistantMessage  # noqa: E402
+
+
+async def _harness_with_model(
+    *,
+    context_window: int = 20_000,
+    enabled: bool = True,
+) -> AgentHarness:
+    """Build a harness wired with a stub model + a spy on ``compact()``.
+
+    The spy records calls and returns a stand-in :class:`CompactResult`, so the
+    test asserts ``_check_auto_compaction`` *decided to compact* without running
+    the real summarization pipeline (which is covered by the tests above).
+    """
+
+    h, _ = await _attached()
+    # Stub model exposing only ``context_window`` (all _check_auto_compaction
+    # reads via getattr — SimpleNamespace is intentionally minimal).
+    h._state.model = SimpleNamespace(context_window=context_window)  # type: ignore[assignment]
+    h._state.auto_compaction_enabled = enabled
+    return h
+
+
+def _install_compact_spy(h: AgentHarness) -> list[None]:
+    """Replace ``h.compact`` with an async spy and return a call-counter list."""
+
+    calls: list[None] = []
+
+    async def _spy(_ci: object = None) -> Any:
+        calls.append(None)
+        return CompactResult(
+            summary="(spy)", first_kept_entry_id="x", tokens_before=0, details={}
+        )
+
+    h.compact = _spy  # type: ignore[method-assign]
+    return calls
+
+
+async def test_check_auto_compaction_no_op_when_flag_disabled() -> None:
+    h = await _harness_with_model(enabled=False)
+    calls = _install_compact_spy(h)
+    h._state.messages = [
+        AssistantMessage(content=[], usage={"total_tokens": 19_000})
+    ]
+    await h._check_auto_compaction()
+    assert calls == []  # disabled flag short-circuits before any token math
+
+
+async def test_check_auto_compaction_no_op_when_no_model() -> None:
+    h = await _harness_with_model()
+    h._state.model = None  # type: ignore[assignment]
+    calls = _install_compact_spy(h)
+    h._state.messages = [
+        AssistantMessage(content=[], usage={"total_tokens": 19_000})
+    ]
+    await h._check_auto_compaction()
+    assert calls == []
+
+
+async def test_check_auto_compaction_no_op_when_context_window_zero() -> None:
+    h = await _harness_with_model(context_window=0)
+    calls = _install_compact_spy(h)
+    h._state.messages = [
+        AssistantMessage(content=[], usage={"total_tokens": 19_000})
+    ]
+    await h._check_auto_compaction()
+    assert calls == []
+
+
+async def test_check_auto_compaction_no_op_below_threshold() -> None:
+    # context_window 20_000 − reserve 16_384 = threshold 3_616 tokens; 3_000 is
+    # under, so pi ``shouldCompact`` returns False → no compact call.
+    h = await _harness_with_model(context_window=20_000)
+    calls = _install_compact_spy(h)
+    h._state.messages = [
+        AssistantMessage(content=[], usage={"total_tokens": 3_000})
+    ]
+    await h._check_auto_compaction()
+    assert calls == []
+
+
+async def test_check_auto_compaction_compacts_above_threshold_via_usage() -> None:
+    # Same window; 5_000 > 3_616 → pi ``shouldCompact`` True → compact() called.
+    h = await _harness_with_model(context_window=20_000)
+    calls = _install_compact_spy(h)
+    h._state.messages = [
+        AssistantMessage(content=[], usage={"total_tokens": 5_000})
+    ]
+    await h._check_auto_compaction()
+    assert len(calls) == 1
+
+
+async def test_check_auto_compaction_uses_estimate_on_error_turn() -> None:
+    # pi ``agent-session.ts:1824-1840`` switches from ``calculate_context_tokens``
+    # to ``estimate_context_tokens`` when the last assistant turn is error/aborted
+    # (its usage is not trustworthy). Seed a large user message so the heuristic
+    # estimate clears the threshold.
+    from aelix_ai.messages import TextContent, UserMessage
+
+    h = await _harness_with_model(context_window=20_000)
+    calls = _install_compact_spy(h)
+    h._state.messages = [
+        UserMessage(content=[TextContent(text="x" * 30_000)]),  # heuristic: chars/4
+        AssistantMessage(content=[], stop_reason="error", usage=None),
+    ]
+    await h._check_auto_compaction()
+    assert len(calls) == 1
+
+
+async def test_check_auto_compaction_invoked_from_prompt() -> None:
+    # Integration: prompt() must invoke _check_auto_compaction after _run.
+    # Replace both compact + _run with spies so this exercises only the
+    # call-site wiring in prompt().
+    h, _ = await _attached()
+    h._state.model = SimpleNamespace(context_window=20_000)  # type: ignore[assignment]
+    h._state.auto_compaction_enabled = True
+    compact_calls = _install_compact_spy(h)
+
+    run_called: list[None] = []
+
+    async def _fake_run(_prompts: object, *, system_prompt: object = None) -> list[Any]:
+        run_called.append(None)
+        # populate a high-usage assistant message so the threshold check fires
+        h._state.messages.append(
+            AssistantMessage(content=[], usage={"total_tokens": 5_000})
+        )
+        return []
+
+    h._run = _fake_run  # type: ignore[method-assign]
+    await h.prompt("hi")
+    assert run_called == [None]
+    assert len(compact_calls) == 1  # auto-trigger fired after _run
+
+
+# === W-review fixes — HIGH-1, HIGH-2, MEDIUM tests =========================
+
+
+async def test_check_auto_compaction_no_op_when_no_session() -> None:
+    # W-review HIGH-1: backward-compat in-memory mode (no Session) must not
+    # propagate ``compact() requires options.session to be attached``.
+    base = AgentHarnessOptions()
+    base._summarizer_override = _override()
+    h = AgentHarness(base)
+    h._state.model = SimpleNamespace(context_window=20_000)  # type: ignore[assignment]
+    h._state.auto_compaction_enabled = True
+    h._state.messages = [
+        AssistantMessage(content=[], usage={"total_tokens": 19_000})  # way above
+    ]
+    # Must not raise (compact() would, but the no-session short-circuit catches it).
+    await h._check_auto_compaction()
+
+
+async def test_check_auto_compaction_swallows_nothing_to_compact() -> None:
+    # W-review HIGH-2: ``Nothing to compact`` from prepare_compaction must not
+    # turn a successful turn into a propagated exception.
+    h = await _harness_with_model(context_window=20_000)
+    raised: list[Exception] = []
+
+    async def _raises_nothing_to_compact(_ci: object = None) -> Any:
+        raise AgentHarnessError("invalid_state", "Nothing to compact")
+
+    h.compact = _raises_nothing_to_compact  # type: ignore[method-assign]
+    h._state.messages = [
+        AssistantMessage(content=[], usage={"total_tokens": 19_000})
+    ]
+    try:
+        await h._check_auto_compaction()
+    except Exception as exc:
+        raised.append(exc)
+    assert raised == []  # swallowed
+
+
+async def test_check_auto_compaction_propagates_other_invalid_state_errors() -> None:
+    # W-review HIGH-2 follow-up: OTHER invalid_state errors must still bubble
+    # (silent failure of a non-no-op compaction would mask real bugs).
+    h = await _harness_with_model(context_window=20_000)
+
+    async def _raises_other(_ci: object = None) -> Any:
+        raise AgentHarnessError("invalid_state", "Some other failure")
+
+    h.compact = _raises_other  # type: ignore[method-assign]
+    h._state.messages = [
+        AssistantMessage(content=[], usage={"total_tokens": 19_000})
+    ]
+    with pytest.raises(AgentHarnessError) as ei:
+        await h._check_auto_compaction()
+    assert "Some other failure" in str(ei.value)
+
+
+async def test_check_auto_compaction_real_compact_integration() -> None:
+    # W-review MEDIUM: at least one test must let the REAL compact() path run
+    # (the spy tests mask call-chain failures). _attached() seeds the SESSION
+    # with 6 large user messages; trip the threshold and assert the real
+    # compact() pipeline runs end-to-end, leaving the pi-shape compaction
+    # summary marker in _state.messages (which the compact() finally rebuilds
+    # from the compacted branch).
+    h, session = await _attached()
+    h._state.model = SimpleNamespace(context_window=20_000)  # type: ignore[assignment]
+    h._state.auto_compaction_enabled = True
+    h._state.messages.append(
+        AssistantMessage(content=[], usage={"total_tokens": 19_000})
+    )
+    await h._check_auto_compaction()  # no spy → real compact() runs end-to-end
+    # The pi-shape summary header from the summarization prompt (ADR-0117).
+    text = "".join(
+        getattr(b, "text", "") or ""
+        for m in h._state.messages
+        for b in (getattr(m, "content", []) or [])
+    )
+    assert "compacted into" in text.lower()
+    # And a compaction entry was appended to the session.
+    entries = await session.get_entries()
+    assert any(getattr(e, "type", None) == "compaction" for e in entries)
+
+
+async def test_check_auto_compaction_not_invoked_on_input_handled() -> None:
+    # W-review MEDIUM: an InputHandled hook short-circuits prompt() before
+    # _run — auto-compact must NOT fire on that path.
+    from aelix_agent_core.harness.hooks import InputHandled
+
+    h, _ = await _attached()
+    h._state.model = SimpleNamespace(context_window=20_000)  # type: ignore[assignment]
+    h._state.auto_compaction_enabled = True
+    compact_calls = _install_compact_spy(h)
+
+    async def _handled(_ev: Any, _ctx: Any) -> InputHandled:
+        return InputHandled()
+
+    h.hooks.on("input", _handled)
+    await h.prompt("never reaches the model")
+    assert compact_calls == []  # InputHandled short-circuit skipped _run + auto-compact
+
+
+async def test_check_auto_compaction_not_invoked_on_busy_raise() -> None:
+    # W-review MEDIUM: a concurrent prompt() that hits the phase-busy guard
+    # raises BEFORE _run, so the rejected caller must not trigger auto-compact.
+    h, _ = await _attached()
+    h._state.model = SimpleNamespace(context_window=20_000)  # type: ignore[assignment]
+    h._state.auto_compaction_enabled = True
+    compact_calls = _install_compact_spy(h)
+    h._phase = "turn"  # simulate an in-flight turn from another caller
+    with pytest.raises(AgentHarnessError) as ei:
+        await h.prompt("blocked")
+    assert ei.value.code == "busy"
+    assert compact_calls == []

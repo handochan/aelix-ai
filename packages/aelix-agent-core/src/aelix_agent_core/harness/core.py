@@ -471,6 +471,13 @@ class _MessageQueue:
         self.mode = mode
 
 
+# pi parity (``settings-manager.ts:681-683``): default
+# ``compaction.reserveTokens`` is 16384. Aelix has no SettingsManager in core,
+# so the reserve is a module constant — same value, same ``shouldCompact``
+# semantics (``compaction.ts:219-222``).
+_AUTO_COMPACT_RESERVE_TOKENS = 16384
+
+
 class AgentHarness:
     """Hook-aware orchestrator built on top of :func:`agent_loop`.
 
@@ -1046,7 +1053,15 @@ class AgentHarness:
                 if injected and injected.system_prompt is not None
                 else self._state.system_prompt
             )
-            return await self._run(prompts, system_prompt=system_prompt)
+            result = await self._run(prompts, system_prompt=system_prompt)
+            # Sprint 6h₁₈ (ADR-0126) — auto-compaction trigger. pi parity:
+            # ``agent-session.ts:572-585`` ``_processAgentEvent`` invokes
+            # ``_checkCompaction`` after every ``agent_end``; this is the
+            # equivalent Aelix site, right after ``_run`` returns (which has
+            # already reset ``_phase`` to ``idle`` in its own ``finally``).
+            # ``compact()`` re-flips ``_phase`` to ``compaction`` as usual.
+            await self._check_auto_compaction()
+            return result
         except Exception:
             # If anything before _run raises, reset phase so the harness is
             # usable again (note: _run resets phase in its own finally block).
@@ -1281,6 +1296,80 @@ class AgentHarness:
         finally:
             self._phase = "idle"
             self._idle_event.set()
+
+    async def _check_auto_compaction(self) -> None:
+        """pi parity: ``agent-session.ts:1766-1843`` ``_checkCompaction`` —
+        threshold path only (Sprint 6h₁₈ v1, ADR-0126).
+
+        Called from :meth:`prompt` after ``_run`` returns. When the
+        ``auto_compaction_enabled`` flag is set (default ``True``) and the
+        most-recent assistant message's context-token count exceeds
+        ``context_window - reserveTokens`` (pi ``compaction.ts:219-222``
+        ``shouldCompact``), invokes the same :meth:`compact` path manual
+        ``/compact`` uses (ADR-0117). The overflow path (LLM-returned
+        context-overflow re-run) is deferred to v2.
+
+        Auto-trigger MUST NOT turn a successful turn into a propagated
+        exception (W-review HIGH-1/HIGH-2):
+        - no Session attached → skip (manual ``compact()`` raises, but
+          the in-memory backward-compat path has no session to compact);
+        - ``Nothing to compact`` (``prepare_compaction`` finds no viable cut
+          — small kept-tail, or no message entries) → swallow, since the
+          auto-trigger is a best-effort side effect, not a hard contract.
+        """
+
+        from aelix_ai.messages import AssistantMessage
+
+        from aelix_agent_core.session.compaction import (
+            calculate_context_tokens,
+            estimate_context_tokens,
+        )
+
+        if not self._state.auto_compaction_enabled:
+            return
+        if self._session is None:
+            # Aelix in-memory backward-compat path (ADR-0022) — no session
+            # to compact. W-review HIGH-1 fix.
+            return
+        model = self._state.model
+        if model is None:
+            return
+        context_window = getattr(model, "context_window", 0) or 0
+        if context_window <= 0:
+            return
+
+        # pi (``agent-session.ts:1824-1840``): on a NORMAL turn the
+        # context-token source is ``calculate_context_tokens(assistant.usage)``;
+        # on an error/aborted turn — where the assistant's usage is not
+        # trustworthy — pi switches to ``estimate_context_tokens`` (which
+        # itself walks back to the most-recent NON-error assistant's usage
+        # plus a heuristic for trailing messages).
+        last_assistant: AssistantMessage | None = None
+        for msg in reversed(self._state.messages):
+            if isinstance(msg, AssistantMessage):
+                last_assistant = msg
+                break
+        if last_assistant is None or last_assistant.stop_reason in ("error", "aborted"):
+            context_tokens = estimate_context_tokens(self._state.messages).tokens
+        else:
+            context_tokens = calculate_context_tokens(last_assistant.usage)
+
+        # pi ``compaction.ts:219-222`` ``shouldCompact``.
+        if context_tokens > context_window - _AUTO_COMPACT_RESERVE_TOKENS:
+            try:
+                await self.compact()
+            except AgentHarnessError as exc:
+                # W-review HIGH-2 fix: a "Nothing to compact" raise means
+                # ``prepare_compaction`` found no viable cut (small kept-tail
+                # under ``KEEP_RECENT_TOKENS``, or no message entries). The
+                # threshold check tripped but there's nothing to do; swallow
+                # so the auto-trigger does not turn a successful turn into
+                # an exception. Any OTHER ``AgentHarnessError`` still
+                # propagates (the user's turn just succeeded — silent failure
+                # of a non-no-op compaction would mask real bugs).
+                if exc.code == "invalid_state" and "Nothing to compact" in str(exc):
+                    return
+                raise
 
     async def navigate_tree(
         self,
