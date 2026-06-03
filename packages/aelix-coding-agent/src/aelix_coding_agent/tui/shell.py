@@ -62,6 +62,10 @@ if TYPE_CHECKING:
     from prompt_toolkit.completion import Completer
 
 _RENDER_WIDTH = 80
+# Sprint 6h₂₂ (ADR-0130) — chrome widget key for the auto-retry countdown.
+# W-review LOW-4: keep this module-level so tests + future docs reference one
+# canonical name; ``__dunder__`` convention signals private-to-shell.
+_RETRY_WIDGET_KEY = "__auto_retry__"
 
 
 def _format_context_label(usage: object) -> str | None:
@@ -548,9 +552,116 @@ async def run_tui(
             _format_context_label(getattr(stats, "context_usage", None))
         )
 
+    # Sprint 6h₂₂ (ADR-0130) — auto-retry UI countdown (closes the 6h₂₀ v2
+    # deferral). Pi parity: ``interactive-mode.ts:2919-2948`` —
+    # ``CountdownTimer + Loader`` show "Retrying (N/M) in Xs… (Esc to cancel)"
+    # while the harness sleeps in ``_handle_retryable_error``. Aelix uses the
+    # chrome's ``set_widget`` overlay above the input + a per-second ticker
+    # task; Esc during countdown calls ``abort_retry()`` (Pi parity — pi's Esc
+    # hook calls ``session.abortRetry()``, NOT ``abort()`` — the latter would
+    # tear down the whole turn).
+    retry_countdown_ref: dict[str, asyncio.Task[None] | None] = {"task": None}
+
+    async def _tick_retry_countdown(
+        attempt: int, max_attempts: int, delay_ms: int
+    ) -> None:
+        # W-review MEDIUM-1: self-supersession — back-to-back ``auto_retry_start``
+        # events (attempt N → N+1) cancel the prior task but ``cancel()`` is
+        # cooperative; if the prior body is past an ``await`` checkpoint it can
+        # still write a stale widget label before CancelledError lands. Capture
+        # the spawning task and exit the loop if a new ticker has replaced it.
+        current = asyncio.current_task()
+        # W-review LOW-2: defensive coerce — a malformed ``delay_ms`` (None /
+        # non-numeric) would crash the ticker silently via ``None / 1000.0``.
+        if not isinstance(delay_ms, (int, float)) or delay_ms < 0:
+            delay_ms = 0
+        remaining = max(0.0, delay_ms / 1000.0)
+        # W-review MEDIUM-2: the prior ``try/except CancelledError: raise`` was
+        # a no-op + misleading. Catch ``Exception`` to log + return so a stray
+        # widget/sleep crash never gets swallowed by ``loop.create_task``'s
+        # "Task exception was never retrieved" log-only fate. CancelledError is
+        # BaseException → not in this except → propagates as the cooperative
+        # cancellation it is.
+        try:
+            while remaining > 0:
+                if retry_countdown_ref["task"] is not current:
+                    return  # superseded by a new ticker — exit cleanly
+                line = (
+                    f"⟳ Retrying ({attempt}/{max_attempts}) in "
+                    f"{int(remaining)}s… Esc to cancel"
+                )
+                out_chrome.set_widget(_RETRY_WIDGET_KEY, [line], above=True)
+                step = min(1.0, remaining)
+                await asyncio.sleep(step)
+                remaining -= step
+            if retry_countdown_ref["task"] is not current:
+                return
+            # Pi parity: after the sleep ends the harness immediately re-runs;
+            # leave a "now…" placeholder until ``auto_retry_end`` arrives (or a
+            # new ``auto_retry_start`` for the next attempt overwrites it).
+            out_chrome.set_widget(
+                _RETRY_WIDGET_KEY,
+                [f"⟳ Retrying ({attempt}/{max_attempts}) now…"],
+                above=True,
+            )
+        except Exception:  # noqa: BLE001 — log + return, never crash the TUI
+            return
+
+    def _start_retry_countdown(event: object) -> None:
+        # Cancel any prior ticker (e.g. between attempt N and N+1) — the new
+        # start event refreshes the countdown from scratch.
+        prior = retry_countdown_ref["task"]
+        if prior is not None and not prior.done():
+            prior.cancel()
+        # Swap the interrupt handler so Esc cancels the retry sleep (Pi
+        # parity), not the whole turn. The original is restored on end.
+        out_chrome.on_interrupt = _on_retry_interrupt
+        retry_countdown_ref["task"] = loop.create_task(
+            _tick_retry_countdown(
+                getattr(event, "attempt", 1),
+                getattr(event, "max_attempts", 1),
+                getattr(event, "delay_ms", 0),
+            )
+        )
+
+    def _end_retry_countdown(event: object) -> None:
+        # W-review HIGH: an ``auto_retry_end`` arriving without a prior
+        # ``auto_retry_start`` (out-of-order emit, double-end, defensive code)
+        # would commit a misleading "✖ Retry failed" line. Skip the commit when
+        # no active retry was in progress, but still restore the chrome
+        # invariants (widget cleared, original interrupt handler) idempotently.
+        task = retry_countdown_ref["task"]
+        had_active = task is not None
+        if task is not None and not task.done():
+            task.cancel()
+        retry_countdown_ref["task"] = None
+        out_chrome.set_widget(_RETRY_WIDGET_KEY, None, above=True)
+        out_chrome.on_interrupt = _on_interrupt
+        if not had_active:
+            return
+        # Commit a final transcript line so the user has a record after the
+        # transient widget clears. ``success=True`` is the terminal-success
+        # path (counter reset in core.py); ``success=False`` is at-max or
+        # user-cancel via ``abort_retry``.
+        if getattr(event, "success", False):
+            _commit(
+                Text(
+                    f"✓ Retry succeeded (attempt {getattr(event, 'attempt', '?')})",
+                    style="green",
+                )
+            )
+        else:
+            reason = getattr(event, "final_error", None) or "cancelled"
+            _commit(Text(f"✖ Retry failed: {reason}", style="bold red"))
+
     def _on_agent_event(event: object) -> None:
         renderer.on_agent_event(event)  # type: ignore[arg-type]
-        if getattr(event, "type", None) == "turn_end":
+        etype = getattr(event, "type", None)
+        if etype == "auto_retry_start":
+            _start_retry_countdown(event)
+        elif etype == "auto_retry_end":
+            _end_retry_countdown(event)
+        elif etype == "turn_end":
             # Keep a strong reference so the task isn't GC'd before it runs.
             task = loop.create_task(_refresh_context_usage())
             context_usage_tasks.add(task)
@@ -579,6 +690,19 @@ async def run_tui(
 
     def _on_interrupt() -> None:
         asyncio.ensure_future(_safe_abort(runtime_host.harness))
+
+    def _on_retry_interrupt() -> None:
+        # Sprint 6h₂₂ (ADR-0130) — Esc during the auto-retry countdown calls
+        # ``abort_retry()`` (Pi parity ``interactive-mode.ts:2919-2948``).
+        # ``abort_retry`` is synchronous (sets the flag + wakes the sleep
+        # event) — no ``ensure_future`` needed. The countdown task observes
+        # CancelledError when ``_end_retry_countdown`` cancels it from the
+        # ``auto_retry_end`` event handler.
+        harness = runtime_host.harness
+        abort_retry = getattr(harness, "abort_retry", None)
+        if callable(abort_retry):
+            with contextlib.suppress(Exception):
+                abort_retry()
 
     out_chrome.on_interrupt = _on_interrupt
 
@@ -757,6 +881,14 @@ async def run_tui(
             with contextlib.suppress(Exception):
                 unsub()
         out_chrome.exit()
+        # Sprint 6h₂₂ (ADR-0130) — cancel the auto-retry countdown ticker if a
+        # shutdown lands mid-backoff. The end-event handler is the normal
+        # cleanup path; this is the belt-and-braces for /quit + signals.
+        countdown_task = retry_countdown_ref["task"]
+        if countdown_task is not None and not countdown_task.done():
+            countdown_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await countdown_task
         for task in (pump_task, chrome_task):
             if task is not None:
                 task.cancel()

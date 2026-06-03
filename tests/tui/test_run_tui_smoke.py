@@ -8,7 +8,7 @@ the lifecycle calls (bootstrap, bind_ui, subscribe, prompt, dispose).
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager
 
 import pytest
@@ -866,5 +866,206 @@ async def test_run_tui_fork_with_no_user_message_degrades_gracefully() -> None:
         # be called. A small post-submit settle keeps the assertion robust.
         await asyncio.sleep(0.05)
         assert runtime.fork_calls == []
+        pipe.send_text("/quit\n")
+        await asyncio.wait_for(task, timeout=5)
+
+
+# === Sprint 6h₂₂ (ADR-0130) — auto-retry UI countdown subscriber ============
+# Closes the 6h₂₀ v2 deferral. Drives synthetic AutoRetryStart/End events into
+# the harness subscriber and asserts the chrome ``__auto_retry__`` widget +
+# the interrupt-handler swap (Esc during countdown calls abort_retry, not
+# abort).
+
+
+class _RetryHarness(FakeHarness):
+    """FakeHarness + ``abort_retry`` recording for the Esc-during-countdown
+    handler swap test."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.retry_aborts = 0
+
+    def abort_retry(self) -> None:
+        self.retry_aborts += 1
+
+
+async def test_run_tui_auto_retry_countdown_shows_and_clears_widget() -> None:
+    from aelix_agent_core.types import (
+        AutoRetryEndEvent,
+        AutoRetryStartEvent,
+    )
+
+    async with _harness_chrome(harness=_RetryHarness()) as (runtime, chrome, pipe):
+        task = _launch(runtime, chrome)
+        await _wait(lambda: chrome.app.is_running)
+        # Renderer subscribed → there's exactly one subscriber wired by run_tui.
+        await _wait(lambda: bool(runtime.harness.subscribers))
+        subscriber: Callable[[object], None] = (
+            runtime.harness.subscribers[0]  # type: ignore[assignment]
+        )
+
+        # Emit start (delay 1s so the tick task gets a real cycle but the test
+        # doesn't sit too long).
+        subscriber(
+            AutoRetryStartEvent(
+                attempt=2,
+                max_attempts=3,
+                delay_ms=1000,
+                error_message="overloaded",
+            )
+        )
+        # The widget shows up on the very first tick (set_widget is called
+        # before the first sleep). Poll the chrome widget slot.
+        await _wait(lambda: "__auto_retry__" in chrome._widgets_above)
+        widget_lines = chrome._widgets_above["__auto_retry__"]
+        text = " ".join(widget_lines)
+        assert "Retrying (2/3)" in text
+        assert "Esc to cancel" in text
+
+        # End event clears the widget + commits a transcript line.
+        subscriber(AutoRetryEndEvent(success=True, attempt=2, final_error=None))
+        await _wait(lambda: "__auto_retry__" not in chrome._widgets_above)
+
+        pipe.send_text("/quit\n")
+        await asyncio.wait_for(task, timeout=5)
+
+
+async def test_run_tui_auto_retry_esc_calls_abort_retry_not_abort() -> None:
+    # Sprint 6h₂₂ — during the countdown, ``out_chrome.on_interrupt`` is
+    # swapped to call ``harness.abort_retry()`` (Pi parity). ``abort()`` (which
+    # tears down the whole turn) must NOT be invoked.
+    from aelix_agent_core.types import (
+        AutoRetryEndEvent,
+        AutoRetryStartEvent,
+    )
+
+    harness = _RetryHarness()
+    async with _harness_chrome(harness=harness) as (runtime, chrome, pipe):
+        task = _launch(runtime, chrome)
+        await _wait(lambda: chrome.app.is_running)
+        await _wait(lambda: bool(runtime.harness.subscribers))
+        subscriber: Callable[[object], None] = (
+            runtime.harness.subscribers[0]  # type: ignore[assignment]
+        )
+
+        subscriber(
+            AutoRetryStartEvent(
+                attempt=1, max_attempts=3, delay_ms=2000, error_message="429"
+            )
+        )
+        await _wait(lambda: "__auto_retry__" in chrome._widgets_above)
+
+        # Fire the swapped handler (chrome.on_interrupt is what Esc binds to).
+        assert chrome.on_interrupt is not None
+        chrome.on_interrupt()
+        # The swap routed Esc to ``abort_retry`` — NOT ``abort``.
+        assert harness.retry_aborts == 1
+        assert harness.aborts == 0
+
+        # Cleanly end so the test doesn't hang on the ticker.
+        subscriber(AutoRetryEndEvent(success=False, attempt=1, final_error="cancelled"))
+        await _wait(lambda: "__auto_retry__" not in chrome._widgets_above)
+
+        # After end, the interrupt handler is restored → Esc calls ``abort``.
+        chrome.on_interrupt()
+        await _wait(lambda: harness.aborts == 1)
+        assert harness.retry_aborts == 1  # unchanged
+
+        pipe.send_text("/quit\n")
+        await asyncio.wait_for(task, timeout=5)
+
+
+async def test_run_tui_auto_retry_end_without_prior_start_is_idempotent() -> None:
+    # W-review HIGH (Sprint 6h₂₂): a stray ``auto_retry_end`` arriving without
+    # an active retry must NOT commit a misleading "✖ Retry failed" transcript
+    # line — chrome invariants (widget cleared, handler restored) are still
+    # applied idempotently, but the commit is skipped.
+    from aelix_agent_core.types import AutoRetryEndEvent
+
+    async with _harness_chrome(harness=_RetryHarness()) as (runtime, chrome, pipe):
+        task = _launch(runtime, chrome)
+        await _wait(lambda: chrome.app.is_running)
+        await _wait(lambda: bool(runtime.harness.subscribers))
+        subscriber: Callable[[object], None] = (
+            runtime.harness.subscribers[0]  # type: ignore[assignment]
+        )
+
+        # No prior start. Send a stray end.
+        subscriber(AutoRetryEndEvent(success=False, attempt=0, final_error="stray"))
+        # A short settle so the test doesn't pass on async-not-yet-scheduled.
+        await asyncio.sleep(0.05)
+        # Widget never appeared.
+        assert "__auto_retry__" not in chrome._widgets_above
+        # No retry-related transcript line was committed. The smoke test
+        # doesn't read scrollback directly, but the subscriber returning
+        # without raising is the actual contract.
+
+        pipe.send_text("/quit\n")
+        await asyncio.wait_for(task, timeout=5)
+
+
+async def test_run_tui_auto_retry_shutdown_cancels_ticker_mid_backoff() -> None:
+    # W-review LOW-3 (Sprint 6h₂₂): /quit during the auto-retry backoff sleep
+    # must cancel the ticker via the ``finally`` block (no orphan task, fast
+    # shutdown). A 10s delay would hang the test for 10s without the cleanup.
+    from aelix_agent_core.types import AutoRetryStartEvent
+
+    async with _harness_chrome(harness=_RetryHarness()) as (runtime, chrome, pipe):
+        task = _launch(runtime, chrome)
+        await _wait(lambda: chrome.app.is_running)
+        await _wait(lambda: bool(runtime.harness.subscribers))
+        subscriber: Callable[[object], None] = (
+            runtime.harness.subscribers[0]  # type: ignore[assignment]
+        )
+
+        subscriber(
+            AutoRetryStartEvent(
+                attempt=1, max_attempts=3, delay_ms=10_000, error_message="overloaded"
+            )
+        )
+        await _wait(lambda: "__auto_retry__" in chrome._widgets_above)
+
+        # /quit mid-backoff. If the finally block doesn't cancel the ticker,
+        # this hangs ~10s; the timeout=2 makes a regression loud.
+        pipe.send_text("/quit\n")
+        await asyncio.wait_for(task, timeout=2)
+
+
+async def test_run_tui_auto_retry_back_to_back_starts_cancel_prior_ticker() -> None:
+    # A second ``auto_retry_start`` (attempt 2) arriving while attempt 1 is
+    # still ticking must cancel the prior task + refresh the widget label to
+    # the new attempt count.
+    from aelix_agent_core.types import (
+        AutoRetryEndEvent,
+        AutoRetryStartEvent,
+    )
+
+    async with _harness_chrome(harness=_RetryHarness()) as (runtime, chrome, pipe):
+        task = _launch(runtime, chrome)
+        await _wait(lambda: chrome.app.is_running)
+        await _wait(lambda: bool(runtime.harness.subscribers))
+        subscriber: Callable[[object], None] = (
+            runtime.harness.subscribers[0]  # type: ignore[assignment]
+        )
+
+        subscriber(
+            AutoRetryStartEvent(
+                attempt=1, max_attempts=3, delay_ms=5000, error_message="429"
+            )
+        )
+        await _wait(lambda: "__auto_retry__" in chrome._widgets_above)
+        assert "(1/3)" in " ".join(chrome._widgets_above["__auto_retry__"])
+
+        subscriber(
+            AutoRetryStartEvent(
+                attempt=2, max_attempts=3, delay_ms=5000, error_message="429"
+            )
+        )
+        # The new ticker overwrites the widget label.
+        await _wait(lambda: "(2/3)" in " ".join(chrome._widgets_above["__auto_retry__"]))
+
+        subscriber(AutoRetryEndEvent(success=True, attempt=2, final_error=None))
+        await _wait(lambda: "__auto_retry__" not in chrome._widgets_above)
+
         pipe.send_text("/quit\n")
         await asyncio.wait_for(task, timeout=5)
