@@ -8,6 +8,7 @@ the lifecycle calls (bootstrap, bind_ui, subscribe, prompt, dispose).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager
 
@@ -1029,6 +1030,163 @@ async def test_run_tui_auto_retry_shutdown_cancels_ticker_mid_backoff() -> None:
         # this hangs ~10s; the timeout=2 makes a regression loud.
         pipe.send_text("/quit\n")
         await asyncio.wait_for(task, timeout=2)
+
+
+async def test_run_tui_ctrl_g_external_editor_round_trips_through_subprocess(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Sprint 6h₂₃ (ADR-0131): Ctrl+G snapshots the current editor text into a
+    # temp file, suspends prompt-toolkit via ``in_terminal``, spawns $EDITOR,
+    # then replaces the editor text with the saved content. The smoke test:
+    #   - patches ``subprocess.run`` to rewrite the temp file in place
+    #     (simulating the user editing + :wq);
+    #   - patches ``in_terminal`` to a no-op async context manager so the
+    #     headless ``DummyOutput`` chrome doesn't deadlock on the TTY suspend.
+    import subprocess as _subprocess
+    from contextlib import asynccontextmanager as _ctxmgr
+
+    from aelix_coding_agent.tui import shell as _shell
+
+    captured_paths: list[str] = []
+
+    def _fake_run(argv: list[str], **_kw: object) -> object:
+        # ``argv = [editor, path]``. Rewrite the temp file as if the user
+        # edited it, then return a CompletedProcess so caller code is happy.
+        path = argv[-1]
+        captured_paths.append(path)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("edited prompt body\n")
+
+        class _CP:
+            returncode = 0
+
+        return _CP()
+
+    @_ctxmgr
+    async def _fake_in_terminal() -> AsyncGenerator[None, None]:
+        yield None
+
+    monkeypatch.setattr(_subprocess, "run", _fake_run)
+    # ``shell.py`` hoists ``in_terminal`` to module-level; patch the binding
+    # the closure actually resolves through. W-review LOW-2 simplification
+    # over the prior ``importlib`` dance.
+    monkeypatch.setattr(_shell, "in_terminal", _fake_in_terminal)
+
+    async with _harness_chrome() as (runtime, chrome, pipe):
+        task = _launch(runtime, chrome)
+        try:
+            await _wait(lambda: chrome.app.is_running)
+            chrome.set_editor_text("draft prompt")
+            pipe.send_text("\x07")  # Ctrl+G
+            await _wait(lambda: chrome.get_editor_text() == "edited prompt body")
+            assert len(captured_paths) == 1
+            import os as _os
+
+            assert not _os.path.exists(captured_paths[0])
+        finally:
+            # The test's success condition is the editor-text round-trip, NOT
+            # graceful run_tui shutdown — cancel the task to release the
+            # context manager regardless of test outcome.
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
+
+
+async def test_run_tui_ctrl_g_input_loop_gates_during_editor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # W-review HIGH-1 (Sprint 6h₂₃, ADR-0131): while $EDITOR is open, any
+    # input that lands on the parent TTY (buffered Enter, pasted /quit, …)
+    # MUST be dropped by the input loop — the editor's set_editor_text will
+    # overwrite the buffer in a moment and a turn must not start.
+    import subprocess as _subprocess
+    from contextlib import asynccontextmanager as _ctxmgr
+
+    from aelix_coding_agent.tui import shell as _shell
+
+    release = asyncio.Event()
+
+    def _slow_fake_run(argv: list[str], **_kw: object) -> object:
+        # The mock blocks in a worker thread (asyncio.to_thread) until the
+        # test releases it — simulating the user editing for a while.
+        # ``asyncio.run`` from a non-loop thread won't work, so poll instead.
+        import time
+
+        while not release.is_set():
+            time.sleep(0.01)
+        path = argv[-1]
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("done\n")
+
+        class _CP:
+            returncode = 0
+
+        return _CP()
+
+    @_ctxmgr
+    async def _fake_in_terminal() -> AsyncGenerator[None, None]:
+        yield None
+
+    monkeypatch.setattr(_subprocess, "run", _slow_fake_run)
+    monkeypatch.setattr(_shell, "in_terminal", _fake_in_terminal)
+
+    harness = FakeHarness()
+    async with _harness_chrome(harness=harness) as (runtime, chrome, pipe):
+        task = _launch(runtime, chrome)
+        try:
+            await _wait(lambda: chrome.app.is_running)
+            chrome.set_editor_text("draft")
+            pipe.send_text("\x07")  # Ctrl+G — opens the (slow) editor
+            # Let the input loop pick up the Ctrl+G + start the editor task.
+            await asyncio.sleep(0.05)
+            # Now the editor is mid-flight. A pasted-Enter scenario:
+            pipe.send_text("this would have been a turn\n")
+            pipe.send_text("/quit\n")
+            # Settle so the input loop processes both lines.
+            await asyncio.sleep(0.1)
+            # The gate dropped both lines — no turn fired, no quit-return.
+            assert harness.prompts == []
+            assert chrome.app.is_running, "input loop must not have exited"
+        finally:
+            # Release the editor so the task can complete; then cancel.
+            release.set()
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
+
+
+async def test_run_tui_ctrl_g_blocked_while_running(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The Ctrl+G handler refuses to spawn the editor while a turn is running
+    # (the editor would compete for the TTY with the live model output).
+    import subprocess as _subprocess
+
+    called: list[int] = []
+
+    def _fake_run(_argv: list[str], **_kw: object) -> object:
+        called.append(1)
+
+        class _CP:
+            returncode = 0
+
+        return _CP()
+
+    monkeypatch.setattr(_subprocess, "run", _fake_run)
+
+    async with _harness_chrome() as (runtime, chrome, pipe):
+        task = _launch(runtime, chrome)
+        try:
+            await _wait(lambda: chrome.app.is_running)
+            chrome.set_running(True)  # simulate an in-flight turn
+            pipe.send_text("\x07")  # Ctrl+G
+            await asyncio.sleep(0.1)
+            assert called == []
+            chrome.set_running(False)
+        finally:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
 
 
 async def test_run_tui_auto_retry_back_to_back_starts_cancel_prior_ticker() -> None:

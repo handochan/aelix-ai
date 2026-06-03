@@ -361,6 +361,17 @@ async def test_ctrl_v_fires_image_paste() -> None:
         assert pasted == [1]
 
 
+async def test_ctrl_g_fires_external_editor() -> None:
+    # Sprint 6h₂₃ (ADR-0131): Ctrl+G fires the host-wired external-editor
+    # callback (pi parity). \x07 is the ASCII BEL = Ctrl+G.
+    async with _chrome(run_app=True) as (chrome, pipe, _buf):
+        opened: list[int] = []
+        chrome.on_external_editor = lambda: opened.append(1)
+        pipe.send_text("\x07")
+        await asyncio.sleep(0.05)
+        assert opened == [1]
+
+
 async def test_copy_to_clipboard_writes_osc52() -> None:
     import base64
 

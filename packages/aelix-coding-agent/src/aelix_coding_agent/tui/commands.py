@@ -118,6 +118,11 @@ class CommandContext:
     ``session.get_metadata().parent_session_path`` recursively through the repo,
     render the lineage as a table). The ``/tree`` handler awaits it; ``None`` in
     headless tests (Sprint 6h₂₁, ADR-0129)."""
+    is_editor_open: Callable[[], bool] | None = None
+    """``run_tui`` wires this to ``editor_open_ref["open"]`` so the input loop
+    can short-circuit a buffered/pasted Enter that lands while ``$EDITOR`` is
+    still applying its result (W-review HIGH-1, Sprint 6h₂₃, ADR-0131).
+    ``None`` in headless tests / when no editor is wired."""
 
 
 def build_help_renderable(commands: list[BuiltinCommand]) -> RenderableType:
@@ -523,6 +528,7 @@ _HOTKEYS: list[tuple[str, str]] = [
     ("Alt+↑", "Restore queued messages back into the editor"),
     ("Ctrl+T", "Toggle thinking-block visibility"),
     ("Ctrl+V", "Paste a clipboard image (inserts the temp-file path)"),
+    ("Ctrl+G", "Open the current input in $EDITOR (vim/nano/…) for long prompts"),
     ("Esc", "Interrupt the running turn"),
     ("Ctrl+C", "Interrupt the turn / clear the input line"),
     ("Ctrl+D", "Exit (on an empty line)"),

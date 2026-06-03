@@ -110,6 +110,12 @@ class AelixChrome:
         # clipboard image, writes it to a temp file, and inserts the path at
         # the cursor. None in headless tests / when no host is attached.
         self.on_image_paste: Callable[[], None] | None = None
+        # Ctrl+G external-editor (pi parity, Sprint 6h₂₃, ADR-0131). Fires a
+        # host-wired callback that snapshots the current editor text into a
+        # temp file, suspends prompt-toolkit via ``in_terminal``, spawns
+        # ``$EDITOR`` (or ``vi`` fallback), then replaces the editor text with
+        # the edited result. None in headless tests / when no host is attached.
+        self.on_external_editor: Callable[[], None] | None = None
 
         # === state the live regions read ===
         self._status: dict[str, str] = {}
@@ -322,6 +328,11 @@ class AelixChrome:
         def _paste_image(event: object) -> None:
             if self.on_image_paste is not None:
                 self.on_image_paste()
+
+        @kb.add("c-g")  # Ctrl+G: open the current input in $EDITOR (pi parity).
+        def _external_editor(event: object) -> None:
+            if self.on_external_editor is not None:
+                self.on_external_editor()
 
         @kb.add("c-i")  # Tab: start completion, then cycle through entries.
         def _complete(event: object) -> None:

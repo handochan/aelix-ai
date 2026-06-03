@@ -20,12 +20,16 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 import signal
+import subprocess
 import sys
+import tempfile
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from aelix_agent_core.session.jsonl_storage import load_jsonl_session_metadata
+from prompt_toolkit.application.run_in_terminal import in_terminal
 from rich.box import ROUNDED
 from rich.panel import Panel
 from rich.table import Table
@@ -513,6 +517,7 @@ async def run_tui(
         fork_session=_fork_session,
         clone_session=_clone_session,
         tree_action=_tree_action,
+        is_editor_open=lambda: editor_open_ref["open"],
     )
 
     loop = asyncio.get_running_loop()
@@ -833,6 +838,101 @@ async def run_tui(
 
     out_chrome.on_image_paste = _paste_image
 
+    # Sprint 6h₂₃ (ADR-0131) — Ctrl+G external editor. pi reference: pi
+    # binds Ctrl+G to open ``$EDITOR`` on the current input (per the 6h₁₅
+    # audit; line citation not in the audit memo). Aelix snapshots the
+    # editor text → temp ``.md`` file (Aelix choice: many long prompts are
+    # markdown; pi extension not in audit memo) → suspends prompt-toolkit
+    # via ``in_terminal`` → spawns ``$VISUAL or $EDITOR or vi`` (POSIX
+    # precedence: ``$VISUAL`` is the full-screen editor, the preferred
+    # binding when one terminal escape is involved) via ``asyncio.to_thread``
+    # so the event loop keeps draining (auto-retry ticker, signal handlers,
+    # backend events) while the user edits → reads back → replaces editor
+    # text. The ``editor_open_ref`` flag gates the input loop so an Enter
+    # buffered/typed mid-edit can't drive a real turn (W-review HIGH-1).
+    external_editor_tasks: set[asyncio.Task[None]] = set()
+    editor_open_ref: dict[str, bool] = {"open": False}
+
+    async def _run_external_editor(initial: str) -> None:
+        editor = (
+            os.environ.get("VISUAL")
+            or os.environ.get("EDITOR")
+            or "vi"
+        )
+        # ``delete=False`` so we control cleanup in the ``finally`` — the
+        # editor's atomic save (vim ``:w`` → write-to-tmp + rename) won't
+        # leave us with a stale fd.
+        fd, path = tempfile.mkstemp(prefix="aelix-edit-", suffix=".md")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(initial)
+            # Suspend prompt-toolkit's TTY ownership so ``$EDITOR`` (vim /
+            # nano / emacs / VSCode CLI) can paint full-screen. ``in_terminal``
+            # restores the chrome on exit. W-review MEDIUM-1: run the
+            # synchronous blocking subprocess in a worker thread so the
+            # asyncio loop keeps making progress (signal handlers, auto-retry
+            # tickers, backend disconnects) for the minutes the user spends
+            # editing.
+            async with in_terminal():
+                try:
+                    await asyncio.to_thread(
+                        subprocess.run, [editor, path], check=False  # noqa: S603,S607
+                    )
+                except (FileNotFoundError, OSError) as exc:
+                    _commit(
+                        Text(
+                            f"✖ external editor failed: {exc}",
+                            style="bold red",
+                        )
+                    )
+                    return
+            try:
+                with open(path, encoding="utf-8") as f:
+                    new_text = f.read()
+            except OSError as exc:
+                _commit(
+                    Text(
+                        f"✖ external editor read-back failed: {exc}",
+                        style="bold red",
+                    )
+                )
+                return
+            # Most editors append a trailing newline on save — strip exactly
+            # one so the round-trip preserves user intent (no spurious blank
+            # line at the bottom of the editor).
+            if new_text.endswith("\n"):
+                new_text = new_text[:-1]
+            # W-review LOW-1: intentional overwrite of any concurrent input.
+            # ``editor_open_ref["open"]`` gates the input loop so it shouldn't
+            # have driven a real turn; if the user typed into the buffer
+            # the editor result replaces it. Pi behavior parity.
+            out_chrome.set_editor_text(new_text)
+        finally:
+            with contextlib.suppress(OSError):
+                os.unlink(path)
+            editor_open_ref["open"] = False
+
+    def _open_external_editor() -> None:
+        # Fire-time guards: never spawn a sub-editor while a turn is in flight
+        # OR while another editor is already open (back-to-back Ctrl+G).
+        if out_chrome.running:
+            _commit(
+                Text(
+                    "Can't open the external editor while a turn is running.",
+                    style="yellow",
+                )
+            )
+            return
+        if editor_open_ref["open"]:
+            return  # already open; ignore the second Ctrl+G silently
+        editor_open_ref["open"] = True
+        initial = out_chrome.get_editor_text()
+        task = loop.create_task(_run_external_editor(initial))
+        external_editor_tasks.add(task)
+        task.add_done_callback(external_editor_tasks.discard)
+
+    out_chrome.on_external_editor = _open_external_editor
+
     descriptor_unsub: Callable[[], None] | None = None
     descriptor_renderer: DescriptorRenderer | None = None
     chrome_task: asyncio.Task[None] | None = None
@@ -889,6 +989,16 @@ async def run_tui(
             countdown_task.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await countdown_task
+        # Sprint 6h₂₃ (ADR-0131, W-review MEDIUM-2) — cancel any in-flight
+        # external-editor task. Cancellation propagates after the editor
+        # subprocess exits (we don't kill the child), but tagging the task
+        # cancelled stops a "Task exception was never retrieved" warning
+        # under shutdown and keeps the file-cleanup ``finally`` reachable.
+        for ext_task in list(external_editor_tasks):
+            if not ext_task.done():
+                ext_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await ext_task
         for task in (pump_task, chrome_task):
             if task is not None:
                 task.cancel()
@@ -1063,6 +1173,16 @@ async def _input_loop(
             line = await chrome.get_input()
         except EOFError:
             return  # Ctrl+D exits
+
+        # W-review HIGH-1 (Sprint 6h₂₃, ADR-0131): if the external editor is
+        # still applying its result, any line that was buffered/pasted into
+        # the parent TTY while the editor owned it (Enter, /quit, etc.) MUST
+        # NOT drive a turn or escape the editor session. Silently drop the
+        # line — the editor will overwrite the buffer in a moment via
+        # ``set_editor_text``. ``quit``/``reload``/``empty`` are also dropped
+        # since they'd race the editor's set_editor_text.
+        if command_ctx.is_editor_open is not None and command_ctx.is_editor_open():
+            continue
 
         parsed = parse_input_line(line)
         harness = runtime_host.harness
