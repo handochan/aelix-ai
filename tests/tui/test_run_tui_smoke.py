@@ -754,3 +754,117 @@ async def test_run_tui_alt_up_restores_queued_messages_to_editor() -> None:
         await _wait(lambda: chrome.get_editor_text() == "")
         pipe.send_text("/quit\n")
         await asyncio.wait_for(task, timeout=5)
+
+
+# === Sprint 6h₂₁ (ADR-0129) — /fork shell smoke test =======================
+# The /fork closure is the logic-dense one (newest-first walk for the most
+# recent user-role ``message`` entry). Other 6h₂₁ closures (/import, /clone,
+# /tree) are thin glue and covered by the handler-level dispatch tests.
+
+
+class _FakeMessage:
+    def __init__(self, role: str) -> None:
+        self.role = role
+
+
+class _FakeEntry:
+    def __init__(self, entry_id: str, kind: str, role: str | None = None) -> None:
+        self.id = entry_id
+        self.type = kind
+        self.message = _FakeMessage(role) if role is not None else None
+
+
+class _FakeForkSession:
+    """Minimal Session shape for ``_fork_session`` — only needs
+    ``get_entries`` + ``build_context`` (post-swap replay)."""
+
+    def __init__(self, entries: list[_FakeEntry]) -> None:
+        self._entries = entries
+
+    async def get_entries(self) -> list[_FakeEntry]:
+        return self._entries
+
+    async def build_context(self) -> object:
+        class _Ctx:
+            messages: list[object] = []
+
+        return _Ctx()
+
+
+class _ForkRuntime(FakeRuntime):
+    """Records ``runtime.fork`` args; returns a non-cancelled result so the
+    closure proceeds to the replay branch."""
+
+    def __init__(self, harness: FakeHarness, entries: list[_FakeEntry]) -> None:
+        super().__init__(harness)
+        self._session = _FakeForkSession(entries)
+        self.fork_calls: list[tuple[str, str]] = []
+
+    @property
+    def session(self) -> _FakeForkSession:
+        return self._session
+
+    async def fork(self, entry_id: str, *, position: str = "before") -> object:
+        self.fork_calls.append((entry_id, position))
+
+        class _Result:
+            cancelled = False
+
+        return _Result()
+
+
+async def test_run_tui_fork_picks_most_recent_user_message() -> None:
+    # Entries in append order (oldest → newest): u1, a1, u2, a2. Reversed walk
+    # in ``_fork_session`` must select ``u2`` (the most recent user-role
+    # ``message`` entry) and call ``runtime.fork("u2", position="before")``.
+    entries = [
+        _FakeEntry("u1", "message", role="user"),
+        _FakeEntry("a1", "message", role="assistant"),
+        _FakeEntry("u2", "message", role="user"),
+        _FakeEntry("a2", "message", role="assistant"),
+    ]
+    harness = FakeHarness()
+    async with _harness_chrome(harness=harness) as (_runtime, chrome, pipe):
+        runtime = _ForkRuntime(harness, entries)
+        task = asyncio.ensure_future(
+            run_tui(
+                runtime,  # type: ignore[arg-type]
+                cwd=".",
+                chrome=chrome,
+                install_signal_handlers=False,
+            )
+        )
+        await _wait(lambda: chrome.app.is_running)
+        pipe.send_text("/fork\n")
+        await _wait(lambda: runtime.fork_calls == [("u2", "before")])
+        pipe.send_text("/quit\n")
+        await asyncio.wait_for(task, timeout=5)
+
+
+async def test_run_tui_fork_with_no_user_message_degrades_gracefully() -> None:
+    # Entries with no user-role ``message``: the closure must emit
+    # "No user message to fork before." and NOT call ``runtime.fork``.
+    entries = [
+        _FakeEntry("a1", "message", role="assistant"),
+        _FakeEntry("t1", "thinking_level_change", role=None),
+    ]
+    harness = FakeHarness()
+    async with _harness_chrome(harness=harness) as (_runtime, chrome, pipe):
+        runtime = _ForkRuntime(harness, entries)
+        task = asyncio.ensure_future(
+            run_tui(
+                runtime,  # type: ignore[arg-type]
+                cwd=".",
+                chrome=chrome,
+                install_signal_handlers=False,
+            )
+        )
+        await _wait(lambda: chrome.app.is_running)
+        pipe.send_text("/fork\n")
+        # The closure commits a yellow Text; we don't easily read scrollback in
+        # this smoke test, so the assertion is the negative: ``fork`` MUST NOT
+        # be called. A small post-submit settle keeps the assertion robust.
+        await asyncio.sleep(0.05)
+        assert runtime.fork_calls == []
+        pipe.send_text("/quit\n")
+        await asyncio.wait_for(task, timeout=5)

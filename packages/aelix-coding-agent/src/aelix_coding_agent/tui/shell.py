@@ -25,6 +25,10 @@ import sys
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
+from aelix_agent_core.session.jsonl_storage import load_jsonl_session_metadata
+from rich.box import ROUNDED
+from rich.panel import Panel
+from rich.table import Table
 from rich.text import Text
 
 from aelix_coding_agent.cli.repl import handle_user_bash
@@ -276,6 +280,169 @@ async def run_tui(
         _commit(_build_banner(runtime_host.harness, cwd))
         context._refresh_footer()
 
+    async def _replay_after_swap(banner: str) -> None:
+        """Common post-swap repaint (Sprint 6h₂₁): clear + replay persisted
+        transcript + status + footer. The runtime's rebind seam already
+        re-subscribed the renderer + refreshed ``command_ctx.harness``."""
+
+        out_chrome.clear()
+        session = runtime_host.session
+        messages = list((await session.build_context()).messages) if session is not None else []
+        renderer.replay(messages)
+        _commit(Text(banner, style="green"))
+        context._refresh_footer()
+
+    async def _import_session(path: str) -> None:
+        # Sprint 6h₂₁ (ADR-0129) — /import: copy a JSONL file into the local
+        # sessions root and swap to it. Pi parity:
+        # ``AgentSessionRuntime.import_from_jsonl`` (``agent-session-runtime.ts:329-364``)
+        # which Aelix already exposes; this is the TUI consumer.
+        if out_chrome.running:
+            _commit(Text("Can't import while a turn is running.", style="yellow"))
+            return
+        # W-review MEDIUM-1: ``import_from_jsonl`` requires a cwd (either the
+        # explicit override or the current session's). With no session bound,
+        # the runtime raises ``RuntimeError("import_from_jsonl requires a cwd …")``
+        # — gate here so the user sees the same friendly yellow degrade as the
+        # other three closures instead of a raw runtime-internals string.
+        if runtime_host.session is None:
+            _commit(Text("Import is unavailable (no session).", style="yellow"))
+            return
+        try:
+            result = await runtime_host.import_from_jsonl(path)
+        except Exception as exc:  # noqa: BLE001 — surface, never crash the REPL
+            _commit(Text(f"✖ import failed: {exc}", style="bold red"))
+            return
+        if getattr(result, "cancelled", False):
+            _commit(Text("Import cancelled by an extension.", style="yellow"))
+            return
+        await _replay_after_swap(f"↻ Imported session from {path}")
+
+    async def _fork_session() -> None:
+        # Sprint 6h₂₁ (ADR-0129) — /fork: cut the session before the most
+        # recent user message. Pi parity:
+        # ``AgentSessionRuntime.fork(entry_id, position="before")`` (``:262-280``)
+        # — Aelix already exposes the user-message walk + ``position="before"``
+        # branch + the ``Invalid entry ID for forking`` raise.
+        if out_chrome.running:
+            _commit(Text("Can't fork while a turn is running.", style="yellow"))
+            return
+        session = runtime_host.session
+        if session is None:
+            _commit(Text("Fork is unavailable (no session).", style="yellow"))
+            return
+        try:
+            entries = await session.get_entries()
+        except Exception as exc:  # noqa: BLE001 — surface, never crash the REPL
+            _commit(Text(f"✖ fork failed: {exc}", style="bold red"))
+            return
+        # Walk newest-first; find the most recent ``message`` entry with a
+        # user-role message — the only entry shape ``runtime.fork`` accepts on
+        # ``position="before"`` (Pi parity ``:268-273``).
+        target_id: str | None = None
+        for entry in reversed(entries):
+            if getattr(entry, "type", None) != "message":
+                continue
+            message = getattr(entry, "message", None)
+            if message is None or getattr(message, "role", None) != "user":
+                continue
+            target_id = getattr(entry, "id", None)
+            if target_id:
+                break
+        if target_id is None:
+            _commit(Text("No user message to fork before.", style="yellow"))
+            return
+        try:
+            result = await runtime_host.fork(target_id, position="before")
+        except Exception as exc:  # noqa: BLE001 — surface, never crash the REPL
+            _commit(Text(f"✖ fork failed: {exc}", style="bold red"))
+            return
+        if getattr(result, "cancelled", False):
+            _commit(Text("Fork cancelled by an extension.", style="yellow"))
+            return
+        await _replay_after_swap("⎇ Forked session (cut before last user message)")
+
+    async def _clone_session() -> None:
+        # Sprint 6h₂₁ (ADR-0129) — /clone: copy the entire session into a new
+        # file (no truncation). Pi parity: ``runtime.fork(leaf_id, position="at")``
+        # — ``position="at"`` keeps the leaf itself and every ancestor entry in
+        # the new session (``agent-session-runtime.ts:255-261, 282-296``).
+        if out_chrome.running:
+            _commit(Text("Can't clone while a turn is running.", style="yellow"))
+            return
+        session = runtime_host.session
+        if session is None:
+            _commit(Text("Clone is unavailable (no session).", style="yellow"))
+            return
+        # ``Session.get_leaf_id`` is the public accessor for the session tip
+        # (Pi parity ``Session.get_leaf_id`` ``session.py:128``); degrades
+        # silently when the session has no entries yet.
+        try:
+            leaf_id = await session.get_leaf_id()
+        except Exception as exc:  # noqa: BLE001 — surface, never crash the REPL
+            _commit(Text(f"✖ clone failed: {exc}", style="bold red"))
+            return
+        if not leaf_id:
+            _commit(Text("Nothing to clone (session is empty).", style="yellow"))
+            return
+        try:
+            result = await runtime_host.fork(leaf_id, position="at")
+        except Exception as exc:  # noqa: BLE001 — surface, never crash the REPL
+            _commit(Text(f"✖ clone failed: {exc}", style="bold red"))
+            return
+        if getattr(result, "cancelled", False):
+            _commit(Text("Clone cancelled by an extension.", style="yellow"))
+            return
+        await _replay_after_swap("⎇ Cloned session (full transcript)")
+
+    async def _tree_action() -> None:
+        # Sprint 6h₂₁ (ADR-0129) — /tree: render the session lineage by walking
+        # ``parent_session_path`` recursively. Each ancestor is loaded via the
+        # repo seam so per-cwd lineage with cross-cwd ``parent_session_path``
+        # round-trips. Defensive: a broken ancestor breaks the chain at that
+        # row (no recurse-into-missing-file), never the REPL.
+        session = runtime_host.session
+        if session is None:
+            _commit(Text("Tree is unavailable (no session).", style="yellow"))
+            return
+        fs = getattr(runtime_host, "_fs", None)
+        if fs is None:
+            _commit(Text("Tree is unavailable (no fs).", style="yellow"))
+            return
+        try:
+            meta = await session.get_metadata()
+        except Exception as exc:  # noqa: BLE001 — surface, never crash the REPL
+            _commit(Text(f"✖ tree failed: {exc}", style="bold red"))
+            return
+        # Build the ancestor chain (current → root). Cap the walk so a circular
+        # ``parent_session_path`` (corrupted file) can't loop forever.
+        chain: list[object] = [meta]
+        seen_paths: set[str] = {str(getattr(meta, "path", ""))}
+        cursor: object = meta
+        for _ in range(64):
+            parent_path = getattr(cursor, "parent_session_path", None)
+            if not parent_path or parent_path in seen_paths:
+                break
+            seen_paths.add(parent_path)
+            try:
+                parent_meta = await load_jsonl_session_metadata(fs, parent_path)
+            except Exception:
+                # Broken / missing ancestor: stop the walk, record nothing more.
+                break
+            chain.append(parent_meta)
+            cursor = parent_meta
+        table = Table.grid(padding=(0, 2))
+        table.add_column(style="bold cyan", no_wrap=True)
+        table.add_column(style="white")
+        for depth, ancestor in enumerate(chain):
+            marker = "●" if depth == 0 else "↳"
+            short_id = (getattr(ancestor, "id", "") or "")[:8]
+            created = (getattr(ancestor, "created_at", "") or "").replace("T", " ")[:16]
+            path = str(getattr(ancestor, "path", ""))
+            label = " · ".join(p for p in (created, short_id) if p) or short_id or "session"
+            table.add_row(f"{marker} {label}", path)
+        _commit(Panel(table, title="Session lineage", box=ROUNDED, border_style="cyan"))
+
     async def _open_settings() -> None:
         # Sprint 6h₁₇ (ADR-0125) — /settings: a 1-level select over the live,
         # session-settable options; picking a row toggles (2-value) or cycles
@@ -338,6 +505,10 @@ async def run_tui(
         resume_session=_resume_session,
         new_session=_new_session,
         settings_action=_open_settings,
+        import_session=_import_session,
+        fork_session=_fork_session,
+        clone_session=_clone_session,
+        tree_action=_tree_action,
     )
 
     loop = asyncio.get_running_loop()

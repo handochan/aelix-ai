@@ -161,7 +161,8 @@ def test_builtin_command_is_frozen() -> None:
 def test_sprint_a_registry_set() -> None:
     # Sprint 6h₁₂d added model/clear/compact/cost/tools/mode; the P0 consumer
     # batch added thinking + export; 6h₁₄a (ADR-0121) /expand; 6h₁₄b (ADR-0122)
-    # /resume; 6h₁₅ (ADR-0123) /hotkeys + /new.
+    # /resume; 6h₁₅ (ADR-0123) /hotkeys + /new; 6h₂₁ (ADR-0129) /import + /fork
+    # + /clone + /tree.
     names = [c.name for c in BUILTIN_COMMANDS]
     assert names == [
         "help",
@@ -181,6 +182,10 @@ def test_sprint_a_registry_set() -> None:
         "copy",
         "resume",
         "new",
+        "import",
+        "fork",
+        "clone",
+        "tree",
         "quit",
         "exit",
         "reload",
@@ -189,6 +194,7 @@ def test_sprint_a_registry_set() -> None:
     for required in (
         "help", "thinking", "expand", "export", "resume", "hotkeys", "new",
         "session", "name", "copy", "settings",
+        "import", "fork", "clone", "tree",
     ):
         assert by_name[required].handler is not None
     assert by_name["quit"].handler is None
@@ -692,3 +698,169 @@ def test_settings_failure_surfaces_not_crashes() -> None:
     ctx.settings_action = _boom
     _run("settings", ctx, "")
     assert any("settings failed" in _render(c) for c in committed)
+
+
+# === Sprint 6h₂₁ (ADR-0129) — /import + /fork + /clone + /tree =============
+
+
+def test_import_no_path_shows_usage() -> None:
+    committed: list[object] = []
+    ctx = _ctx(_FakeHarness(), committed)
+    # Even with a wired callback, a missing path arg short-circuits before
+    # dispatch — the handler emits a usage hint.
+    calls: list[str] = []
+
+    async def _imp(path: str) -> None:
+        calls.append(path)
+
+    ctx.import_session = _imp
+    _run("import", ctx, "")
+    assert calls == []
+    assert any("Usage: /import" in _render(c) for c in committed)
+
+
+def test_import_unavailable_degrades_when_no_callback() -> None:
+    committed: list[object] = []
+    ctx = _ctx(_FakeHarness(), committed)  # import_session defaults to None
+    _run("import", ctx, "/tmp/whatever.jsonl")
+    assert any("Import is unavailable" in _render(c) for c in committed)
+
+
+def test_import_invokes_wired_callback_with_path() -> None:
+    paths: list[str] = []
+
+    async def _imp(path: str) -> None:
+        paths.append(path)
+
+    ctx = _ctx(_FakeHarness(), [])
+    ctx.import_session = _imp
+    _run("import", ctx, "/tmp/abc.jsonl")
+    assert paths == ["/tmp/abc.jsonl"]
+
+
+def test_import_strips_arg_whitespace() -> None:
+    # ``parsed.text[len("/" + slash_word):]`` is then .strip()'d before
+    # reaching the handler (see shell.py), but the handler also defends
+    # against whitespace-only "args" by treating them as no-arg.
+    committed: list[object] = []
+    ctx = _ctx(_FakeHarness(), committed)
+    ctx.import_session = lambda path: (_ for _ in ()).throw(  # never called
+        AssertionError("should not dispatch on whitespace-only path"),
+    )
+    _run("import", ctx, "   ")
+    assert any("Usage: /import" in _render(c) for c in committed)
+
+
+def test_import_failure_surfaces_not_crashes() -> None:
+    committed: list[object] = []
+
+    async def _boom(_path: str) -> None:
+        raise RuntimeError("not a session")
+
+    ctx = _ctx(_FakeHarness(), committed)
+    ctx.import_session = _boom
+    _run("import", ctx, "/tmp/bad.jsonl")
+    assert any("import failed" in _render(c) for c in committed)
+
+
+def test_fork_unavailable_degrades_when_no_callback() -> None:
+    committed: list[object] = []
+    ctx = _ctx(_FakeHarness(), committed)  # fork_session defaults to None
+    _run("fork", ctx, "")
+    assert any("Fork is unavailable" in _render(c) for c in committed)
+
+
+def test_fork_invokes_wired_callback() -> None:
+    calls: list[int] = []
+
+    async def _fork() -> None:
+        calls.append(1)
+
+    ctx = _ctx(_FakeHarness(), [])
+    ctx.fork_session = _fork
+    _run("fork", ctx, "")
+    assert calls == [1]
+
+
+def test_fork_failure_surfaces_not_crashes() -> None:
+    committed: list[object] = []
+
+    async def _boom() -> None:
+        raise RuntimeError("invalid entry")
+
+    ctx = _ctx(_FakeHarness(), committed)
+    ctx.fork_session = _boom
+    _run("fork", ctx, "")
+    assert any("fork failed" in _render(c) for c in committed)
+
+
+def test_clone_unavailable_degrades_when_no_callback() -> None:
+    committed: list[object] = []
+    ctx = _ctx(_FakeHarness(), committed)  # clone_session defaults to None
+    _run("clone", ctx, "")
+    assert any("Clone is unavailable" in _render(c) for c in committed)
+
+
+def test_clone_invokes_wired_callback() -> None:
+    calls: list[int] = []
+
+    async def _clone() -> None:
+        calls.append(1)
+
+    ctx = _ctx(_FakeHarness(), [])
+    ctx.clone_session = _clone
+    _run("clone", ctx, "")
+    assert calls == [1]
+
+
+def test_clone_failure_surfaces_not_crashes() -> None:
+    committed: list[object] = []
+
+    async def _boom() -> None:
+        raise RuntimeError("disk full")
+
+    ctx = _ctx(_FakeHarness(), committed)
+    ctx.clone_session = _boom
+    _run("clone", ctx, "")
+    assert any("clone failed" in _render(c) for c in committed)
+
+
+def test_tree_unavailable_degrades_when_no_callback() -> None:
+    committed: list[object] = []
+    ctx = _ctx(_FakeHarness(), committed)  # tree_action defaults to None
+    _run("tree", ctx, "")
+    assert any("Tree is unavailable" in _render(c) for c in committed)
+
+
+def test_tree_invokes_wired_callback() -> None:
+    calls: list[int] = []
+
+    async def _tree() -> None:
+        calls.append(1)
+
+    ctx = _ctx(_FakeHarness(), [])
+    ctx.tree_action = _tree
+    _run("tree", ctx, "")
+    assert calls == [1]
+
+
+def test_tree_failure_surfaces_not_crashes() -> None:
+    committed: list[object] = []
+
+    async def _boom() -> None:
+        raise RuntimeError("repo unavailable")
+
+    ctx = _ctx(_FakeHarness(), committed)
+    ctx.tree_action = _boom
+    _run("tree", ctx, "")
+    assert any("tree failed" in _render(c) for c in committed)
+
+
+def test_new_commands_listed_in_help_table() -> None:
+    committed: list[object] = []
+    _run("help", _ctx(_FakeHarness(), committed), "")
+    out = "".join(_render(c) for c in committed)
+    assert "/import" in out
+    assert "/fork" in out
+    assert "/clone" in out
+    assert "/tree" in out

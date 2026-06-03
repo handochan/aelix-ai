@@ -94,6 +94,30 @@ class CommandContext:
     menu that toggles/cycles the live harness settings — steering mode, follow-up
     mode, thinking visibility/level). The ``/settings`` handler awaits it; ``None``
     in headless tests (Sprint 6h₁₇, ADR-0125)."""
+    import_session: Callable[[str], Awaitable[None]] | None = None
+    """``run_tui`` wires this to its ``_import_session`` flow
+    (``runtime.import_from_jsonl(path)`` → repaint). The ``/import`` handler
+    parses the path arg then awaits it; ``None`` in headless tests
+    (Sprint 6h₂₁, ADR-0129). Pi parity:
+    :func:`AgentSessionRuntime.import_from_jsonl` (``agent-session-runtime.ts:329-364``)."""
+    fork_session: Callable[[], Awaitable[None]] | None = None
+    """``run_tui`` wires this to its ``_fork_session`` flow (resolve the most
+    recent user entry → ``runtime.fork(entry_id, position="before")`` → repaint).
+    The ``/fork`` handler awaits it; ``None`` in headless tests
+    (Sprint 6h₂₁, ADR-0129). Pi parity:
+    :func:`AgentSessionRuntime.fork` (``agent-session-runtime.ts:234-320``,
+    ``position="before"`` branch)."""
+    clone_session: Callable[[], Awaitable[None]] | None = None
+    """``run_tui`` wires this to its ``_clone_session`` flow (resolve the leaf
+    entry → ``runtime.fork(leaf_id, position="at")`` so ALL entries are kept →
+    repaint). The ``/clone`` handler awaits it; ``None`` in headless tests
+    (Sprint 6h₂₁, ADR-0129). Pi parity: same ``runtime.fork`` API, ``position="at"``
+    at the leaf (no truncation)."""
+    tree_action: Callable[[], Awaitable[None]] | None = None
+    """``run_tui`` wires this to its ``_tree_action`` flow (walk
+    ``session.get_metadata().parent_session_path`` recursively through the repo,
+    render the lineage as a table). The ``/tree`` handler awaits it; ``None`` in
+    headless tests (Sprint 6h₂₁, ADR-0129)."""
 
 
 def build_help_renderable(commands: list[BuiltinCommand]) -> RenderableType:
@@ -406,6 +430,90 @@ async def _new_handler(ctx: CommandContext, args: str) -> None:
         ctx.commit(Text(f"✖ new session failed: {exc}", style="bold red"))
 
 
+async def _import_handler(ctx: CommandContext, args: str) -> None:
+    """``/import <path>`` — import a JSONL session file and swap to it.
+
+    Delegates to the host-wired ``import_session`` flow (which calls
+    ``runtime.import_from_jsonl(path)``, then repaints the transcript). Pi
+    parity: ``slash-commands.ts`` ``/import`` → ``importFromJsonl``
+    (``agent-session-runtime.ts:329-364``). Sprint 6h₂₁ (ADR-0129).
+    """
+
+    path = args.strip()
+    if not path:
+        ctx.commit(
+            Text(
+                "Usage: /import <path> — absolute or relative path to a .jsonl session file.",
+                style="yellow",
+            )
+        )
+        return
+    if ctx.import_session is None:
+        ctx.commit(Text("Import is unavailable.", style="yellow"))
+        return
+    try:
+        await ctx.import_session(path)
+    except Exception as exc:  # noqa: BLE001 — surface, never kill the REPL
+        ctx.commit(Text(f"✖ import failed: {exc}", style="bold red"))
+
+
+async def _fork_handler(ctx: CommandContext, args: str) -> None:
+    """``/fork`` — fork the current session at the most recent user message (ignores args).
+
+    Delegates to the host-wired ``fork_session`` flow (resolve the most recent
+    user entry via ``session.get_entries()`` → ``runtime.fork(entry_id,
+    position="before")`` → repaint). The new session contains entries up to
+    BEFORE the resolved user message (Pi parity:
+    ``agent-session-runtime.ts:262-280``, ``position="before"`` branch). Sprint
+    6h₂₁ (ADR-0129).
+    """
+
+    if ctx.fork_session is None:
+        ctx.commit(Text("Fork is unavailable.", style="yellow"))
+        return
+    try:
+        await ctx.fork_session()
+    except Exception as exc:  # noqa: BLE001 — surface, never kill the REPL
+        ctx.commit(Text(f"✖ fork failed: {exc}", style="bold red"))
+
+
+async def _clone_handler(ctx: CommandContext, args: str) -> None:
+    """``/clone`` — clone the current session (whole transcript) into a new file.
+
+    Delegates to the host-wired ``clone_session`` flow (resolve the leaf entry
+    → ``runtime.fork(leaf_id, position="at")`` so the new session keeps ALL
+    entries → repaint). Pi parity: ``slash-commands.ts`` ``/clone`` semantics
+    (clone-without-truncation) over the same ``runtime.fork`` surface. Sprint
+    6h₂₁ (ADR-0129).
+    """
+
+    if ctx.clone_session is None:
+        ctx.commit(Text("Clone is unavailable.", style="yellow"))
+        return
+    try:
+        await ctx.clone_session()
+    except Exception as exc:  # noqa: BLE001 — surface, never kill the REPL
+        ctx.commit(Text(f"✖ clone failed: {exc}", style="bold red"))
+
+
+async def _tree_handler(ctx: CommandContext, args: str) -> None:
+    """``/tree`` — show the parent-session lineage of the current session (ignores args).
+
+    Delegates to the host-wired ``tree_action`` flow (walks
+    ``session.get_metadata().parent_session_path`` recursively through the
+    repo, rendering each ancestor as a row). Pi parity: ``slash-commands.ts``
+    ``/tree`` shows the branch lineage. Sprint 6h₂₁ (ADR-0129).
+    """
+
+    if ctx.tree_action is None:
+        ctx.commit(Text("Tree is unavailable.", style="yellow"))
+        return
+    try:
+        await ctx.tree_action()
+    except Exception as exc:  # noqa: BLE001 — surface, never kill the REPL
+        ctx.commit(Text(f"✖ tree failed: {exc}", style="bold red"))
+
+
 # Aelix TUI keybindings (static — the actual bindings wired in chrome.py). Kept
 # next to the registry so /hotkeys and the real bindings can't silently drift.
 _HOTKEYS: list[tuple[str, str]] = [
@@ -541,6 +649,10 @@ BUILTIN_COMMANDS: list[BuiltinCommand] = [
     BuiltinCommand("copy", "Copy the last assistant message to the clipboard", _copy_handler),
     BuiltinCommand("resume", "Resume a previous session", _resume_handler),
     BuiltinCommand("new", "Start a fresh session", _new_handler),
+    BuiltinCommand("import", "Import a JSONL session file and swap to it", _import_handler),
+    BuiltinCommand("fork", "Fork the current session at the last user message", _fork_handler),
+    BuiltinCommand("clone", "Clone the current session into a new file", _clone_handler),
+    BuiltinCommand("tree", "Show the parent-session lineage", _tree_handler),
     BuiltinCommand("quit", "Exit Aelix", None),
     BuiltinCommand("exit", "Exit Aelix", None),
     BuiltinCommand("reload", "Reload extensions + resources", None),
