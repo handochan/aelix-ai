@@ -386,16 +386,31 @@ async def test_run_tui_bash_passthrough(monkeypatch: pytest.MonkeyPatch) -> None
 
 
 def _spy_commits(chrome: AelixChrome) -> list[str]:
-    """Record the plain text of every renderable committed to scrollback."""
-    commits: list[str] = []
-    orig = chrome.print_above
+    """Record the plain text of every renderable committed to scrollback.
 
-    async def _capture(renderable: object) -> None:
+    Sprint 6h₂₄ — the pump now drives chrome.print_above_many for the batch
+    case (the flicker fix); print_above stays as a public API and is still
+    spied as a belt-and-braces in case any caller routes around the pump.
+    """
+    commits: list[str] = []
+    orig_single = chrome.print_above
+    orig_many = chrome.print_above_many
+
+    def _record(renderable: object) -> None:
         text = getattr(renderable, "plain", None)
         commits.append(text if isinstance(text, str) else str(renderable))
-        await orig(renderable)
 
-    chrome.print_above = _capture  # type: ignore[method-assign]
+    async def _capture_single(renderable: object) -> None:
+        _record(renderable)
+        await orig_single(renderable)
+
+    async def _capture_many(renderables: list[object]) -> None:
+        for r in renderables:
+            _record(r)
+        await orig_many(renderables)
+
+    chrome.print_above = _capture_single  # type: ignore[method-assign]
+    chrome.print_above_many = _capture_many  # type: ignore[method-assign]
     return commits
 
 
@@ -545,7 +560,9 @@ async def test_run_tui_resume_picker_excludes_active_switches_and_replays() -> N
         pipe.send_text("/resume\n")
         await _wait(lambda: bool(repo.list_cwds))  # list happened → picker shown
         await asyncio.sleep(0.1)  # let the modal render + focus
-        pipe.send_text("1")  # pick the first NON-active session
+        # Sprint 6h₂₄: arrow-key select — Enter picks the cursor row (idx 0 =
+        # the first non-active session, "new.jsonl" — matches the prior intent).
+        pipe.send_text("\r")
         await _wait(lambda: bool(runtime.switch_calls))
         pipe.send_text("/quit\n")
         await asyncio.wait_for(task, timeout=5)
@@ -658,15 +675,15 @@ class _SettingsHarness(FakeHarness):
 
 
 async def test_run_tui_settings_toggles_steering_mode() -> None:
-    # W-review-lesson: cover the _open_settings orchestration — /settings → menu
-    # → select "Steering mode" (#1) → set_steering_mode toggled to "all".
+    # Sprint 6h₂₄ — digit shortcuts replaced by arrow nav + Enter. Cursor
+    # starts at idx 0 ("Steering mode"), so a bare Enter picks it.
     harness = _SettingsHarness()
     async with _harness_chrome(harness=harness) as (runtime, chrome, pipe):
         task = _launch(runtime, chrome)
         await _wait(lambda: chrome.app.is_running)
         pipe.send_text("/settings\n")
         await asyncio.sleep(0.15)  # menu render + focus
-        pipe.send_text("1")  # pick "Steering mode" → toggles one-at-a-time → all
+        pipe.send_text("\r")  # Enter on default cursor (idx 0 = Steering mode)
         await _wait(lambda: harness.steer_set == ["all"])
         pipe.send_text("/quit\n")
         await asyncio.wait_for(task, timeout=5)
@@ -674,14 +691,15 @@ async def test_run_tui_settings_toggles_steering_mode() -> None:
 
 
 async def test_run_tui_settings_cycles_thinking_level() -> None:
-    # Select "Thinking level" (#4) cycles off → low.
+    # Sprint 6h₂₄ — "Thinking level" is the 4th option (idx 3); 3× Down +
+    # Enter selects it. Pi-faithful arrow navigation pattern.
     harness = _SettingsHarness()
     async with _harness_chrome(harness=harness) as (runtime, chrome, pipe):
         task = _launch(runtime, chrome)
         await _wait(lambda: chrome.app.is_running)
         pipe.send_text("/settings\n")
         await asyncio.sleep(0.15)
-        pipe.send_text("4")  # "Thinking level: off" → cycles to "low"
+        pipe.send_text("\x1b[B\x1b[B\x1b[B\r")  # Down × 3 → Enter
         await _wait(lambda: harness.level_set == ["low"])
         pipe.send_text("/quit\n")
         await asyncio.wait_for(task, timeout=5)

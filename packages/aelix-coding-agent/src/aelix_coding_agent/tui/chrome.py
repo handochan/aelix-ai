@@ -34,7 +34,7 @@ import asyncio
 import base64
 import contextlib
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING
 
 from prompt_toolkit.application import Application
@@ -414,6 +414,26 @@ class AelixChrome:
 
         async with in_terminal():
             self._console.print(renderable)
+        self.app.invalidate()
+
+    async def print_above_many(self, renderables: Sequence[object]) -> None:
+        """Batch-render ``renderables`` to scrollback in ONE ``in_terminal`` block.
+
+        Sprint 6h₂₄ — flicker fix. Each ``in_terminal()`` suspends the renderer,
+        emits to scrollback, then re-paints the chrome below; doing this once per
+        committed line during a fast token stream is what the user perceives as
+        flicker. Grouping consecutive renderables under a single suspend cuts the
+        number of full-chrome repaints to one per batch (down from one per
+        committed line), without changing visible ordering.
+
+        Empty ``renderables`` is a no-op (no suspend, no invalidate).
+        """
+
+        if not renderables:
+            return
+        async with in_terminal():
+            for renderable in renderables:
+                self._console.print(renderable)
         self.app.invalidate()
 
     def clear(self) -> None:

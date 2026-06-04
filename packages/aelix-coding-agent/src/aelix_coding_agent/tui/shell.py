@@ -466,12 +466,27 @@ async def run_tui(
             ("Thinking blocks", "hidden" if renderer.hide_thinking else "visible"),
             ("Thinking level", level),
         ]
-        choice = await context.select(
-            "Settings — select to change", [f"{k}: {v}" for k, v in rows]
-        )
+        # Pi screenshot parity: pad the key column so values line up — easier to
+        # scan than the "{k}: {v}" form. Width = widest key + 2 (constant padding).
+        # Note: ``len(k)`` counts code points, not display columns — fine while
+        # row keys stay ASCII; revisit (wcswidth) before adding CJK/wide labels.
+        width = max(len(k) for k, _ in rows) + 2
+        labels = [f"{k.ljust(width)}{v}" for k, v in rows]
+        choice = await context.select("Settings — select to change", labels)
         if not choice:
             return
-        key = choice.split(":", 1)[0]
+        # W-review 6h₂₄ MEDIUM-1: recover the row via exact-label index, NOT a
+        # ``startswith`` prefix scan. The label list IS the option set we just
+        # passed in, so equality round-trips losslessly; a future row whose key
+        # is a prefix of another key (e.g. "Thinking" vs "Thinking blocks") or
+        # a format change can't silently mis-route. ``ValueError`` surfaces as
+        # a visible error rather than a silent no-op.
+        try:
+            row_idx = labels.index(choice)
+        except ValueError:
+            _commit(Text(f"✖ settings: unknown row {choice!r}", style="bold red"))
+            return
+        key = rows[row_idx][0]
         try:
             if key == "Steering mode":
                 new = "all" if harness.steering_mode == "one-at-a-time" else "one-at-a-time"
@@ -1144,16 +1159,46 @@ def _build_banner(harness: AgentHarness, cwd: str) -> object:
 
 
 async def _output_pump(queue: asyncio.Queue[tuple[str, object]], chrome: AelixChrome) -> None:
-    """Apply tagged output commands in order: commit → scrollback, tail → widget."""
+    """Apply tagged output commands in order: commit → scrollback, tail → widget.
+
+    Sprint 6h₂₄ — flicker fix. The pump drains every item the queue can offer
+    without blocking after the first ``await queue.get()`` and groups consecutive
+    ``commit`` items into ONE ``print_above_many`` call (one ``in_terminal()``
+    suspend per batch, regardless of how many committed lines arrived together).
+    A ``tail`` item interleaved between commits flushes the pending commits
+    first, then applies the tail, so visible ordering is unchanged.
+    """
 
     while True:
-        kind, payload = await queue.get()
-        if kind == "commit":
+        first = await queue.get()
+        items: list[tuple[str, object]] = [first]
+        # Drain any items already in the queue WITHOUT awaiting — they arrived
+        # while we were processing the prior batch and would otherwise each
+        # trigger their own in_terminal suspend.
+        while True:
+            try:
+                items.append(queue.get_nowait())
+            except asyncio.QueueEmpty:
+                break
+
+        # Coalesce consecutive commits while preserving order against tails.
+        pending: list[object] = []
+        for kind, payload in items:
+            if kind == "commit":
+                pending.append(payload)
+            else:
+                if pending:
+                    with contextlib.suppress(Exception):
+                        await chrome.print_above_many(pending)
+                    pending = []
+                if kind == "tail":
+                    ansi = payload if isinstance(payload, str) else ""
+                    chrome.set_widget(
+                        "__stream__", ansi.split("\n") if ansi else None, above=True
+                    )
+        if pending:
             with contextlib.suppress(Exception):
-                await chrome.print_above(payload)
-        elif kind == "tail":
-            ansi = payload if isinstance(payload, str) else ""
-            chrome.set_widget("__stream__", ansi.split("\n") if ansi else None, above=True)
+                await chrome.print_above_many(pending)
 
 
 async def _input_loop(

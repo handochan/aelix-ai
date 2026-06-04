@@ -131,6 +131,25 @@ async def test_confirm_no_via_escape() -> None:
         assert await asyncio.wait_for(fut, timeout=5) is False
 
 
+async def test_confirm_ctrl_c_cancels() -> None:
+    # Sprint 6h₂₄ W-review LOW-4: c-c cancels the confirm dialog (consistent
+    # with select/editor); previously leaked to the chrome global handler.
+    async with _ctx(run_app=True) as (ctx, _chrome, pipe):
+        fut = asyncio.ensure_future(ctx.confirm("Quit?", "Sure?"))
+        await asyncio.sleep(0.05)
+        pipe.send_text("\x03")  # Ctrl+C
+        assert await asyncio.wait_for(fut, timeout=5) is False
+
+
+async def test_input_ctrl_c_cancels() -> None:
+    # Sprint 6h₂₄ W-review LOW-4: c-c cancels the input dialog.
+    async with _ctx(run_app=True) as (ctx, _chrome, pipe):
+        fut = asyncio.ensure_future(ctx.input("Name?"))
+        await asyncio.sleep(0.05)
+        pipe.send_text("\x03")  # Ctrl+C
+        assert await asyncio.wait_for(fut, timeout=5) is None
+
+
 async def test_input_returns_text() -> None:
     async with _ctx(run_app=True) as (ctx, _chrome, pipe):
         fut = asyncio.ensure_future(ctx.input("Name?"))
@@ -139,12 +158,79 @@ async def test_input_returns_text() -> None:
         assert await asyncio.wait_for(fut, timeout=5) == "alice"
 
 
-async def test_select_by_number() -> None:
+async def test_select_arrow_down_then_enter() -> None:
+    # Sprint 6h₂₄: arrow-key + Enter is the canonical confirm path now (digit
+    # shortcuts dropped — they collided with type-to-filter, e.g. filtering
+    # for "gpt-4" needed "4" to be a filter char, not a select-row-4 shortcut).
     async with _ctx(run_app=True) as (ctx, _chrome, pipe):
         fut = asyncio.ensure_future(ctx.select("Pick", ["red", "green", "blue"]))
         await asyncio.sleep(0.05)
-        pipe.send_text("2")
+        pipe.send_text("\x1b[B")  # Down — moves cursor to "green"
+        pipe.send_text("\r")  # Enter — confirm
         assert await asyncio.wait_for(fut, timeout=5) == "green"
+
+
+async def test_select_arrow_up_wraps() -> None:
+    # Sprint 6h₂₄: ↑ at the top wraps to the last item (pi parity).
+    async with _ctx(run_app=True) as (ctx, _chrome, pipe):
+        fut = asyncio.ensure_future(ctx.select("Pick", ["red", "green", "blue"]))
+        await asyncio.sleep(0.05)
+        pipe.send_text("\x1b[A")  # Up — wraps from idx 0 to last ("blue")
+        pipe.send_text("\r")
+        assert await asyncio.wait_for(fut, timeout=5) == "blue"
+
+
+async def test_select_space_confirms() -> None:
+    # Sprint 6h₂₄: pi's hint reads "Enter/Space to change" — Space confirms
+    # too. ALSO documents that Space cannot be used as a filter char (the
+    # caller must accept that constraint — single-word options only).
+    async with _ctx(run_app=True) as (ctx, _chrome, pipe):
+        fut = asyncio.ensure_future(ctx.select("Pick", ["red", "green", "blue"]))
+        await asyncio.sleep(0.05)
+        pipe.send_text(" ")
+        assert await asyncio.wait_for(fut, timeout=5) == "red"
+
+
+async def test_select_escape_cancels() -> None:
+    async with _ctx(run_app=True) as (ctx, _chrome, pipe):
+        fut = asyncio.ensure_future(ctx.select("Pick", ["red", "green", "blue"]))
+        await asyncio.sleep(0.05)
+        pipe.send_text("\x1b")  # Escape
+        assert await asyncio.wait_for(fut, timeout=5) is None
+
+
+async def test_select_type_to_filter_then_enter() -> None:
+    # Sprint 6h₂₄: typing narrows the visible list; Enter confirms the
+    # cursor row within the FILTERED view. Here "g" filters to just
+    # "green", so the only-remaining row is what Enter resolves.
+    async with _ctx(run_app=True) as (ctx, _chrome, pipe):
+        fut = asyncio.ensure_future(ctx.select("Pick", ["red", "green", "blue"]))
+        await asyncio.sleep(0.05)
+        pipe.send_text("g")
+        pipe.send_text("\r")
+        assert await asyncio.wait_for(fut, timeout=5) == "green"
+
+
+async def test_select_empty_options_resolves_none() -> None:
+    # Sprint 6h₂₄: zero options → no modal opens, immediate None.
+    async with _ctx(run_app=False) as (ctx, _chrome, _pipe):
+        assert await ctx.select("Pick", []) is None
+
+
+async def test_select_no_match_enter_stays_open() -> None:
+    # Sprint 6h₂₄ W-review LOW-3: when the filter yields zero matches, Enter
+    # must be a no-op (NOT resolve with the first un-filtered item). Otherwise
+    # a stale cursor + a "no matches" view could silently confirm a hidden row.
+    async with _ctx(run_app=True) as (ctx, _chrome, pipe):
+        fut = asyncio.ensure_future(ctx.select("Pick", ["red", "green", "blue"]))
+        await asyncio.sleep(0.05)
+        pipe.send_text("zzz")  # filter matches nothing
+        await asyncio.sleep(0.05)
+        pipe.send_text("\r")  # Enter → must not resolve
+        await asyncio.sleep(0.1)
+        assert not fut.done()
+        pipe.send_text("\x1b")  # Esc → cancel cleanly
+        assert await asyncio.wait_for(fut, timeout=5) is None
 
 
 # === review-fix coverage (ADR-0105 W4) =================================
@@ -160,13 +246,17 @@ async def _wait_float(chrome: AelixChrome, *, timeout: float = 3.0) -> None:
     raise AssertionError("modal float not shown")
 
 
-async def test_select_caps_at_nine_options() -> None:
+async def test_select_supports_more_than_nine_options() -> None:
+    # Sprint 6h₂₄: the 9-option cap is gone — arrow keys (or type-to-filter)
+    # handle any list size. Here we filter for "o11" → only "o11" remains →
+    # Enter confirms. Documents that the picker scales past 9 items.
     async with _ctx(run_app=True) as (ctx, chrome, pipe):
         options = [f"o{i}" for i in range(12)]
         fut = asyncio.ensure_future(ctx.select("Pick", options))
         await _wait_float(chrome)
-        pipe.send_text("9")  # key 9 → index 8 → "o8" (only first 9 bindable)
-        assert await asyncio.wait_for(fut, timeout=5) == "o8"
+        pipe.send_text("o11")
+        pipe.send_text("\r")
+        assert await asyncio.wait_for(fut, timeout=5) == "o11"
 
 
 async def test_editor_ctrl_s_saves() -> None:
@@ -313,16 +403,15 @@ async def test_editor_enter_inserts_newline_then_ctrl_s_saves() -> None:
         assert await asyncio.wait_for(fut, timeout=5) == "a\nb"
 
 
-async def test_select_enter_is_noop_then_number_resolves() -> None:
-    # ADR-0121 M1: Enter on a numbered select must NOT resolve (no default, no
-    # leak to the chrome global accept) — a number or Esc is required.
+async def test_select_enter_confirms_cursor_row() -> None:
+    # Sprint 6h₂₄: Enter now CONFIRMS the cursor row (was: no-op). idx defaults
+    # to 0 so the first option is the default. The chrome-leak prevention that
+    # motivated the old no-op behavior (ADR-0121 M1) is preserved — Enter is
+    # still bound at the modal layer, just to a confirm rather than a no-op.
     async with _ctx(run_app=True) as (ctx, chrome, pipe):
         fut = asyncio.ensure_future(ctx.select("Pick", ["red", "green"]))
         await _wait_float(chrome)
-        pipe.send_text("\n")  # Enter → no-op
-        await asyncio.sleep(0.1)
-        assert not fut.done()
-        pipe.send_text("1")  # a real choice still resolves
+        pipe.send_text("\n")
         assert await asyncio.wait_for(fut, timeout=5) == "red"
 
 

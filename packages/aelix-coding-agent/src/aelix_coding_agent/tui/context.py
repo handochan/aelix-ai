@@ -137,26 +137,117 @@ class AelixTUIContext:
     async def select(
         self, title: str, options: list[str], opts: ExtensionUIDialogOptions | None = None
     ) -> str | None:
-        shown = options[:9]  # number keys 1-9 select; only these are bindable
+        """Pi-parity arrow-key select with type-to-filter (Sprint 6h₂₄).
+
+        Pi UX (``interactive-mode.ts`` settings/model pickers): ``→`` marker
+        on the current row, ↑/↓ to move (wraps), Enter/Space to confirm,
+        Esc to cancel, printable chars filter the list incrementally. The
+        prior impl exposed only digit shortcuts 1-9 — broken UX for menus
+        with more than 9 items (e.g. /model) and surprising for anyone used
+        to pi. Both the digit-only shortcut and the 9-item cap are gone.
+
+        Empty ``options`` resolves to ``None`` immediately (no dialog).
+        """
+
+        if not options:
+            return None
+
+        # Per-call mutable state. ``idx`` is into the FILTERED view, not
+        # ``options`` — the filter changes the visible set so the cursor is
+        # naturally relative to what's on screen.
+        state: dict[str, Any] = {"idx": 0, "filter": ""}
+        viewport = 8  # max rows of options shown at once; ⋮ markers for scroll
+
+        def filtered() -> list[tuple[int, str]]:
+            """``(orig_index, text)`` rows matching the current filter (case-insensitive)."""
+            needle = state["filter"].lower()
+            if not needle:
+                return list(enumerate(options))
+            return [(i, o) for i, o in enumerate(options) if needle in o.lower()]
+
+        def render() -> str:
+            items = filtered()
+            if not items:
+                return (
+                    f"{title}\n\n(no matches)\n"
+                    f"Filter: {state['filter']}\n"
+                    "Backspace to clear · Esc to cancel"
+                )
+            idx = max(0, min(state["idx"], len(items) - 1))
+            state["idx"] = idx
+            # Scroll window so the cursor stays visible. W-review 6h₂₄ LOW-1:
+            # centers cursor when interior; clamps to top/bottom near edges.
+            start = max(0, min(idx - viewport // 2, len(items) - viewport))
+            end = min(len(items), start + viewport)
+            rows: list[str] = [title]
+            if start > 0:
+                rows.append("  ⋮")
+            for i in range(start, end):
+                marker = "→ " if i == idx else "  "
+                rows.append(f"{marker}{items[i][1]}")
+            if end < len(items):
+                rows.append("  ⋮")
+            rows.append(f"  ({idx + 1}/{len(items)})")
+            if state["filter"]:
+                rows.append(f"  Filter: {state['filter']}")
+            rows.append(
+                "  Type to search · ↑/↓ to move · Enter/Space to change · Esc to cancel"
+            )
+            return "\n".join(rows)
 
         def build(result: asyncio.Future[Any]) -> Window:
             kb = KeyBindings()
-            for index, option in enumerate(shown):
-                kb.add(str(index + 1))(
-                    lambda _e, o=option: _resolve(result, o)  # type: ignore[misc]
-                )
+
+            def _confirm(_e: object) -> None:
+                items = filtered()
+                if not items:
+                    return
+                idx = max(0, min(state["idx"], len(items) - 1))
+                _resolve(result, items[idx][1])
+
+            @kb.add("up")
+            def _up(_e: object) -> None:
+                items = filtered()
+                if not items:
+                    return
+                state["idx"] = (state["idx"] - 1) % len(items)
+                self.chrome.invalidate()
+
+            @kb.add("down")
+            def _down(_e: object) -> None:
+                items = filtered()
+                if not items:
+                    return
+                state["idx"] = (state["idx"] + 1) % len(items)
+                self.chrome.invalidate()
+
+            kb.add("enter")(_confirm)
+            kb.add("c-j")(_confirm)
+            kb.add("space")(_confirm)
             kb.add("escape")(lambda _e: _resolve(result, None))
-            # Consume Enter (CR + LF) so a leaked "Enter" doesn't bubble to the
-            # chrome's global accept (ADR-0121 W-review M1). A numbered select has
-            # no highlighted default, so Enter is a deliberate no-op — the user
-            # must press a number or Esc.
-            kb.add("enter")(lambda _e: None)
-            kb.add("c-j")(lambda _e: None)
-            lines = [title, *[f"{i + 1}. {o}" for i, o in enumerate(shown)]]
-            if len(options) > len(shown):
-                lines.append(f"… (+{len(options) - len(shown)} more not shown)")
+            kb.add("c-c")(lambda _e: _resolve(result, None))
+
+            @kb.add("backspace")
+            def _backspace(_e: object) -> None:
+                if state["filter"]:
+                    state["filter"] = state["filter"][:-1]
+                    state["idx"] = 0
+                    self.chrome.invalidate()
+
+            # Type-to-filter: catch every other key and append printable
+            # single-char data to the filter. ``<any>`` runs ONLY when no
+            # earlier (more-specific) binding matched, so arrow keys / Enter /
+            # Space / Esc / Backspace are not affected.
+            @kb.add("<any>")
+            def _filter_char(event: Any) -> None:
+                data = getattr(event, "data", None) or ""
+                if len(data) == 1 and data.isprintable():
+                    state["filter"] += data
+                    state["idx"] = 0
+                    self.chrome.invalidate()
+
             return Window(
-                FormattedTextControl("\n".join(lines), focusable=True, key_bindings=kb),
+                FormattedTextControl(render, focusable=True, key_bindings=kb),
                 dont_extend_height=True,
             )
 
@@ -171,6 +262,10 @@ class AelixTUIContext:
                 kb.add(key)(lambda _e: _resolve(result, True))
             for key in ("n", "N", "escape"):
                 kb.add(key)(lambda _e: _resolve(result, False))
+            # W-review 6h₂₄ LOW-4: Ctrl+C cancels (matches ``select`` + ``editor``).
+            # Without this, c-c leaks to the chrome global "clear buffer" while
+            # a modal is focused — inconsistent UX across the dialog set.
+            kb.add("c-c")(lambda _e: _resolve(result, False))
             # Consume Enter (CR + LF) so it can't leak to the chrome's global
             # accept (ADR-0121 W-review M1). Enter is a deliberate no-op rather
             # than defaulting to "yes" — a confirm must be answered explicitly so
@@ -204,6 +299,8 @@ class AelixTUIContext:
             kb.add("enter")(lambda _e: _resolve(result, buffer.text))
             kb.add("c-j")(lambda _e: _resolve(result, buffer.text))
             kb.add("escape")(lambda _e: _resolve(result, None))
+            # W-review 6h₂₄ LOW-4: c-c cancels (matches confirm/select/editor).
+            kb.add("c-c")(lambda _e: _resolve(result, None))
             return HSplit(
                 [
                     Window(FormattedTextControl(title), dont_extend_height=True),

@@ -184,6 +184,31 @@ async def test_print_above_writes_to_scrollback() -> None:
         assert "STREAMED-OUTPUT" in buf.getvalue()
 
 
+async def test_print_above_many_writes_each_in_order() -> None:
+    # Sprint 6h₂₄ — flicker fix. print_above_many batches multiple renderables
+    # into ONE in_terminal suspend; each renderable still appears in scrollback
+    # in submission order.
+    async with _chrome(run_app=True) as (chrome, _pipe, buf):
+        await asyncio.sleep(0.02)
+        await asyncio.wait_for(
+            chrome.print_above_many(
+                [Text("FIRST-LINE"), Text("SECOND-LINE"), Text("THIRD-LINE")]
+            ),
+            timeout=5,
+        )
+        out = buf.getvalue()
+        i1, i2, i3 = out.find("FIRST-LINE"), out.find("SECOND-LINE"), out.find("THIRD-LINE")
+        assert i1 >= 0 < i2 < i3, f"order broken: {i1},{i2},{i3} in {out!r}"
+
+
+async def test_print_above_many_empty_is_noop() -> None:
+    # Sprint 6h₂₄: an empty batch must NOT suspend the renderer (no in_terminal,
+    # no invalidate). Smoke test: completes instantly without raising.
+    async with _chrome(run_app=True) as (chrome, _pipe, _buf):
+        await asyncio.sleep(0.02)
+        await asyncio.wait_for(chrome.print_above_many([]), timeout=1)
+
+
 async def test_running_enter_steers_not_submits() -> None:
     # Sprint 6h₁₂e — Enter is no longer gated on ``not _running``. Mid-turn Enter
     # now STEERS (fires on_steer) instead of feeding the input queue, so the
