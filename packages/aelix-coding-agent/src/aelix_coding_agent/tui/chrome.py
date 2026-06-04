@@ -207,8 +207,17 @@ class AelixChrome:
         )
         # height grows with multi-line content up to 10 rows, then the buffer
         # scrolls internally (keeps the chrome from pushing scrollback off-screen).
+        # ``preferred=1``: prompt-toolkit's Dimension defaults ``preferred`` to
+        # ``max`` when omitted, which made HSplit allocate 10 rows for the editor
+        # at all times — a ~12-row blank gap (10 editor + status + footer) below
+        # the chat output, even when the editor held zero lines. Pinning
+        # ``preferred=1`` lets the editor START at 1 row and grow only when
+        # content needs more space, matching pi / Claude Code's compact-when-idle
+        # editor footprint.
         input_window = Window(
-            BufferControl(self.buffer), wrap_lines=True, height=Dimension(min=1, max=10)
+            BufferControl(self.buffer),
+            wrap_lines=True,
+            height=Dimension(min=1, max=10, preferred=1),
         )
         self._input_window = input_window
         body = HSplit(
