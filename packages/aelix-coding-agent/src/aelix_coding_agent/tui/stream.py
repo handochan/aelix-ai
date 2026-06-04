@@ -51,11 +51,25 @@ class StreamRenderer:
         commit: Callable[[str], None],
         set_tail: Callable[[str], None],
         width: int = 80,
-        live_window: int = 6,
-        min_delay: float = 1 / 20,
+        live_window: int = 12,
+        min_delay: float = 0.1,
         max_delay: float = 2.0,
         time_fn: Callable[[], float] = time.monotonic,
     ) -> None:
+        # Sprint 6h₂₄ v2 — flicker fix tier 2. Defaults changed:
+        # - ``live_window`` 6 → 12: a stable-line commit triggers an
+        #   ``in_terminal`` suspend on the chrome (flicker frame); doubling the
+        #   window halves how often that happens during a long stream — by the
+        #   time text reaches 12 visible lines the assistant is usually winding
+        #   down anyway, so most streams now commit zero or one batch instead
+        #   of three to five.
+        # - ``min_delay`` 1/20 → 0.1 (20 FPS → 10 FPS floor): the floor caps
+        #   how often ``set_tail`` repaints the chrome's stream widget. Above
+        #   the human flicker threshold (~16 Hz) the eye perceives the
+        #   widget-growth + cursor-jitter as continuous "thrash" rather than a
+        #   smooth update. 10 FPS still feels live for prose; below that the
+        #   adaptive bump (render_time × 10) raises the gap further on slow
+        #   markdown renders.
         self._commit = commit
         self._set_tail = set_tail
         self._width = max(1, width)

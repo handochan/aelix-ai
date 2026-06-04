@@ -231,8 +231,20 @@ class AelixChrome:
             layout=layout,
             key_bindings=self._build_key_bindings(),
             full_screen=False,
-            refresh_interval=0.05,
-            min_redraw_interval=0.05,
+            # Sprint 6h₂₄ v2 — flicker fix. The chrome's redraw cadence is what
+            # the user perceives as "the bottom UI flickers": every
+            # ``refresh_interval`` tick re-evaluates the spinner + status + tail
+            # widget, and ``min_redraw_interval`` is the floor for how often
+            # those re-evaluations flush to the terminal. At 50 ms (20 FPS) both
+            # the working spinner and the tail-widget rerenders thrash visibly
+            # during a token stream. The actual perceptual smoothness of a
+            # spinner sits around 10 Hz (the human flicker threshold for small
+            # glyph changes is ~16 Hz), so 100 ms keeps motion live while
+            # halving the terminal write rate. ``min_redraw_interval`` lifted to
+            # 80 ms (12.5 FPS) so back-to-back ``invalidate`` calls (e.g. tail
+            # + status + footer in the same loop tick) coalesce into one frame.
+            refresh_interval=0.1,
+            min_redraw_interval=0.08,
             input=pt_input,
             output=pt_output,
         )

@@ -162,6 +162,45 @@ Mirrored the new `select`'s `c-c → cancel` binding in `confirm()` (returns
 this, Ctrl+C while a modal owns focus leaks to the chrome global handler
 (clear-buffer when not running) — inconsistent UX.
 
+## v2 follow-up — flicker fix tier 2
+
+The initial commit (`592c56c`) reduced **commit-driven** in_terminal suspends
+by batching the pump. The user reported the chrome STILL flickered during
+streaming — meaning the perceived flicker had a second source the batching
+didn't touch. Diagnosis pointed at two surviving causes:
+
+1. **Chrome redraw cadence (20 FPS).** `Application(refresh_interval=0.05,
+   min_redraw_interval=0.05)` had the renderer re-evaluate state every 50 ms
+   and flush at 20 FPS even when nothing material changed (e.g., the
+   spinner only needed an ~80 ms cycle). At 20 FPS, the working line + tail
+   widget + status + footer all re-emit cursor-movement sequences on every
+   tick — visually indistinguishable from "flicker" on most terminals.
+2. **`set_tail` repaint frequency.** `StreamRenderer.min_delay` floor was
+   1/20 s (20 FPS). Each tail update grew the chrome's `__stream__` widget
+   by zero or one row, but the chrome re-emits ALL rows below the change.
+   At 20 Hz that's continuous repaint over the live region.
+3. **`live_window` commits.** Live window = 6 lines meant a longer response
+   would trigger 3-5 print_above batches over the stream — each one
+   visible as an in_terminal flicker frame.
+
+Tier 2 changes (chrome.py + stream.py):
+
+- `refresh_interval` 0.05 → **0.1** (10 FPS state ticks; spinner still
+  smooth — human flicker threshold for small glyph changes ~16 Hz, comfort
+  ~10 Hz)
+- `min_redraw_interval` 0.05 → **0.08** (12.5 FPS redraw ceiling; coalesces
+  back-to-back `invalidate` calls into one frame)
+- `StreamRenderer` default `min_delay` 1/20 → **0.1** (10 FPS tail-widget
+  repaint floor)
+- `StreamRenderer` default `live_window` 6 → **12** (most token streams now
+  finish before hitting the commit threshold; print_above flicker frames
+  drop from 3-5 to 0-1)
+
+Tests pass unchanged — existing `test_stream_renderer.py` cases pass
+explicit `live_window=6` / `min_delay=1/20`, so defaults moved without
+breakage. The 20-FPS / 6-line numbers were never load-bearing values, just
+the original throwaway picks from Sprint 6h₁₀b.
+
 ## Deferred (intentional)
 
 - **i18n widths in `_open_settings`** (W-review MEDIUM-2). `len(k)` counts code
