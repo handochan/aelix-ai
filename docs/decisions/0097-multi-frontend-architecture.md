@@ -31,16 +31,24 @@ small-kernel + RPC + multiple-frontends architecture.
 
 ## Architecture overview (small kernel + RPC + multiple frontends)
 
+> **Amendment (2026-06-16, ADR-0133).** The TUI shipped **inside**
+> `aelix-coding-agent` as `aelix_coding_agent/tui/` (+ `[tui]` extra),
+> not as a separate `apps/aelix-tui`. pi keeps its chat UI inside
+> `packages/coding-agent` likewise; pi's `packages/tui` is a generic
+> toolkit whose role Aelix fills with prompt-toolkit + Rich (ADR-0088).
+> Read the `apps/aelix-tui` line below as `aelix-coding-agent/tui/`.
+
 ```
 Aelix Runtime (Python — small kernel)
   ├─ aelix-ai
   ├─ aelix-agent-core (+ contracts/ via Sprint 6h₉a)
   ├─ aelix-coding-agent
+  │    └─ tui/ (Phase 5c — prompt-toolkit + Rich + Aelix widget layer; [tui] extra)
   └─ aelix-server (Phase 5b — Sprint 6h₉f) — FastAPI HTTP + WS gateway
      └─ JSONL RPC (ADR-0056) adapter + REST API + WebSocket event stream
 
-apps/aelix-tui (Python — Phase 5c, Sprint 6h₁₀a-d)
-  └─ prompt-toolkit + Rich + Aelix widget layer (ADR-0088 amend)
+# (was: "apps/aelix-tui (Python — Phase 5c)" — see ADR-0133; the TUI is
+#  aelix_coding_agent/tui/, not a standalone package)
 
 ┌── separate repo: aelix-web (Phase 6) ───────────────────┐
 │  apps/aelix-web (TS/React/Svelte — Phase 6 stack decision) │

@@ -1,6 +1,27 @@
 # 0015. Monorepo Layout — uv Workspaces
 
-Status: Accepted (Phase 1.3 shipped)
+Status: Accepted (Phase 1.3 shipped); mapping rows partially Superseded by: ADR-0133
+
+> **Amendment (2026-06-16, ADR-0133).** The uv-workspaces decision stands,
+> but three forward-looking rows of the "Pi 패키지 → Aelix 패키지" mapping
+> below were never realised and are **superseded by ADR-0133**:
+> - `packages/tui → aelix-tui`: no `aelix-tui` package. pi's `packages/tui`
+>   is a generic terminal-UI **library** (no `bin`, no app deps); ADR-0088
+>   filled that role with **prompt-toolkit + Rich**, and the chat UI lives
+>   inside `aelix-coding-agent` (`aelix_coding_agent/tui/`) — exactly as pi
+>   keeps its chat UI inside `packages/coding-agent`. The split was
+>   evaluated and rejected (ADR-0133).
+> - `Pi --mode rpc → aelix-rpc`: the RPC surface ships inside
+>   `aelix_coding_agent/rpc/` (ADR-0056); no standalone `aelix-rpc`.
+> - `packages/web-ui → aelix-web-ui`: the Web frontend lives in a separate
+>   repo `aelix-web` (ADR-0097 D3), not an in-repo package.
+>
+> The actually-shipped workspace is: `aelix-ai`, `aelix-agent-core`,
+> `aelix-coding-agent` (TUI inside + `[tui]`/`[images]` extras),
+> `aelix-server` (Aelix-additive, ADR-0097 / ADR-0103). The package-dependency
+> rule below should read `aelix-coding-agent → aelix-agent-core → aelix-ai`
+> (and `aelix-server → aelix-coding-agent`); the `aelix-tui → aelix-agent-core`
+> rule is moot.
 
 ## Context
 
