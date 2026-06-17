@@ -72,24 +72,31 @@ def create_write_tool(
                 content=[TextContent(text="write: 'content' must be str")],
                 is_error=True,
             )
-        path = resolve_to_cwd(raw_path, cwd)
+        absolute_path = resolve_to_cwd(raw_path, cwd)
 
         async def _do_write() -> ToolResult:
-            parent = str(Path(path).parent)
+            parent = str(Path(absolute_path).parent)
             try:
                 await operations.mkdir(parent)
                 data = content.encode("utf-8")
-                await operations.write_file(path, data)
+                await operations.write_file(absolute_path, data)
             except OSError as exc:
                 return ToolResult(
                     content=[TextContent(text=f"write: failed: {exc}")],
                     is_error=True,
                 )
+            # Pi parity: report ``content.length`` (JS UTF-16 code-unit count)
+            # to the RAW user-supplied path, not the resolved absolute path.
+            length = sum(1 + (ord(c) > 0xFFFF) for c in content)
             return ToolResult(
-                content=[TextContent(text=f"Wrote {len(data)} bytes to {path}")],
+                content=[
+                    TextContent(
+                        text=f"Successfully wrote {length} bytes to {raw_path}"
+                    )
+                ],
             )
 
-        return await with_file_mutation_queue(path, _do_write)
+        return await with_file_mutation_queue(absolute_path, _do_write)
 
     return AgentTool(
         name="write",

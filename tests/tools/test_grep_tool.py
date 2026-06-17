@@ -72,3 +72,100 @@ async def test_grep_no_matches(tmp_path):
     tool = create_grep_tool(str(tmp_path))
     result = await _exec(tool, {"pattern": "absent-zzz-pattern"})
     assert result.is_error is False
+
+
+# --- P0 #3 behavior parity (grep.ts @ 734e08e) -----------------------------
+
+
+async def test_grep_relativizes_paths_under_directory(tmp_path):
+    # Pi parity ``formatPath``: directory searches emit POSIX-relative paths
+    # (no leading ``./``, no absolute prefix) for matched files.
+    (tmp_path / "a.txt").write_text("hello world\n")
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    (sub / "b.txt").write_text("hello again\n")
+    tool = create_grep_tool(str(tmp_path))
+    result = await _exec(tool, {"pattern": "hello"})
+    text = result.content[0].text
+    # Pi parity ``formatBlock``: ``path:N: text`` (space before content).
+    assert "a.txt:1: hello world" in text
+    assert "sub/b.txt:1: hello again" in text
+    # No absolute prefix and no ``./`` prefix leaks into the output.
+    assert str(tmp_path) not in text
+    assert "./" not in text
+
+
+async def test_grep_file_search_uses_basename(tmp_path):
+    # Pi parity: when the search path is a single FILE, the match path is the
+    # basename only.
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    target = sub / "b.txt"
+    target.write_text("hello again\n")
+    tool = create_grep_tool(str(tmp_path))
+    result = await _exec(tool, {"pattern": "hello", "path": str(target)})
+    text = result.content[0].text
+    # Pi parity ``formatBlock``: ``path:N: text`` (space before content).
+    assert "b.txt:1: hello again" in text
+    assert "sub/b.txt" not in text
+
+
+async def test_grep_matches_limit_notice(tmp_path):
+    # Pi parity: ``${effectiveLimit} matches limit reached. Use
+    # limit=${effectiveLimit*2} for more, or refine pattern`` in a ``[…]`` block.
+    (tmp_path / "many.txt").write_text("\n".join("hit" for _ in range(20)))
+    tool = create_grep_tool(str(tmp_path))
+    result = await _exec(tool, {"pattern": "hit", "limit": 3})
+    text = result.content[0].text
+    assert (
+        "[3 matches limit reached. Use limit=6 for more, or refine pattern]"
+        in text
+    )
+    assert isinstance(result.details, GrepToolDetails)
+    assert result.details.match_limit_reached is True
+
+
+async def test_grep_effective_limit_floor(tmp_path):
+    # Pi parity: ``Math.max(1, limit ?? 100)`` — limit=0 floors to 1, not 100.
+    (tmp_path / "many.txt").write_text("\n".join("hit" for _ in range(5)))
+    tool = create_grep_tool(str(tmp_path))
+    result = await _exec(tool, {"pattern": "hit", "limit": 0})
+    text = result.content[0].text
+    assert "[1 matches limit reached. Use limit=2 for more, or refine pattern]" in text
+
+
+async def test_grep_long_line_truncated_to_500(tmp_path):
+    # Pi parity: per-line cap is 500 chars (not 250) and emits the lines-
+    # truncated notice + the ``... [truncated]`` marker.
+    (tmp_path / "long.txt").write_text("X" + ("y" * 600) + "\n")
+    tool = create_grep_tool(str(tmp_path))
+    result = await _exec(tool, {"pattern": "X"})
+    text = result.content[0].text
+    assert "... [truncated]" in text
+    assert (
+        "[Some lines truncated to 500 chars. Use read tool to see full lines]"
+        in text
+    )
+    assert result.details.lines_truncated == 1
+    # The kept prefix is exactly 500 chars before the ``... [truncated]`` marker.
+    body = text.split("\n\n[")[0]
+    first = body.split("\n")[0]
+    assert first.endswith("... [truncated]")
+    assert len(first) == 500 + len("... [truncated]")
+
+
+async def test_grep_byte_cap_notice(tmp_path):
+    # Pi parity: output is capped at DEFAULT_MAX_BYTES (50KB) via truncateHead,
+    # appending the ``50.0KB limit reached`` notice.
+    lines = "\n".join(
+        f"match line number {i} padding padding padding" for i in range(2000)
+    )
+    (tmp_path / "big.txt").write_text(lines + "\n")
+    tool = create_grep_tool(str(tmp_path))
+    result = await _exec(tool, {"pattern": "match", "limit": 5000})
+    text = result.content[0].text
+    assert "[50.0KB limit reached]" in text
+    assert result.details.truncated is True
+    # Body (before the notice block) must not exceed the 50KB cap.
+    body = text.split("\n\n[")[0]
+    assert len(body.encode("utf-8")) <= 50 * 1024
