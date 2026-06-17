@@ -609,6 +609,20 @@ def _has_tool_history(messages: list[Message]) -> bool:
     return False
 
 
+def _native_effort(model: Model, effort: str) -> str | int:
+    """Pi parity: ``model.thinkingLevelMap?.[effort] ?? effort``.
+
+    Maps a (clamped) thinking level to the provider's native effort token,
+    falling back to the level itself. Faithful to JS ``??``: only a *missing*
+    or explicitly-``None`` map value falls back; any present value (even ``""``)
+    is used verbatim (pi does not type-guard the OpenAI-family branches, unlike
+    the Anthropic ``mapThinkingLevelToEffort`` string check).
+    """
+
+    value = (model.thinking_level_map or {}).get(effort)
+    return effort if value is None else value
+
+
 def build_params(
     model: Model,
     context: Context,
@@ -703,26 +717,49 @@ def build_params(
             "preserve_thinking": True,
         }
     elif compat.thinking_format == "deepseek" and is_reasoning:
+        # Pi parity (openai-completions.ts:567-572).
         params["thinking"] = {
             "type": "enabled" if reasoning_effort else "disabled"
         }
         if reasoning_effort:
-            params["reasoning_effort"] = reasoning_effort
+            params["reasoning_effort"] = _native_effort(model, reasoning_effort)
     elif compat.thinking_format == "openrouter" and is_reasoning:
+        # Pi parity (openai-completions.ts:573-582).
+        thinking_map = model.thinking_level_map or {}
         if reasoning_effort:
-            params["reasoning"] = {"effort": reasoning_effort}
-        else:
-            params["reasoning"] = {"effort": "none"}
+            params["reasoning"] = {
+                "effort": _native_effort(model, reasoning_effort)
+            }
+        elif not ("off" in thinking_map and thinking_map["off"] is None):
+            # Honor an explicit ``off`` mapping; omit ``reasoning`` entirely
+            # only when ``thinkingLevelMap.off`` is explicitly ``null``. Faithful
+            # to ``?? "none"``: a present ``off`` string (even ``""``) is used.
+            off_value = thinking_map.get("off")
+            params["reasoning"] = {
+                "effort": "none" if off_value is None else off_value
+            }
     elif compat.thinking_format == "together" and is_reasoning:
+        # Pi parity (openai-completions.ts:583-591).
         params["reasoning"] = {"enabled": bool(reasoning_effort)}
         if reasoning_effort and compat.supports_reasoning_effort:
-            params["reasoning_effort"] = reasoning_effort
+            params["reasoning_effort"] = _native_effort(model, reasoning_effort)
     elif (
         reasoning_effort
         and is_reasoning
         and compat.supports_reasoning_effort
     ):
-        params["reasoning_effort"] = reasoning_effort
+        # Pi parity (openai-completions.ts:592-594) — OpenAI-style effort.
+        params["reasoning_effort"] = _native_effort(model, reasoning_effort)
+    elif (
+        not reasoning_effort
+        and is_reasoning
+        and compat.supports_reasoning_effort
+    ):
+        # Pi parity (openai-completions.ts:595-600): with no requested effort,
+        # emit ``thinkingLevelMap.off`` only when it is an explicit string.
+        off_value = (model.thinking_level_map or {}).get("off")
+        if isinstance(off_value, str):
+            params["reasoning_effort"] = off_value
 
     # OpenRouter routing — Pi parity (M-1 / P-59): read the merged
     # compat the caller already resolved via :func:`get_compat`. That

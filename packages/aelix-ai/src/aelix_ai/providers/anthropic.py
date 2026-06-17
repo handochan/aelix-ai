@@ -40,9 +40,11 @@ from aelix_ai.messages import (
 )
 from aelix_ai.providers._anthropic_client import create_async_client
 from aelix_ai.providers._anthropic_transforms import (
+    INTERLEAVED_THINKING_BETA,
     build_params,
     is_oauth_token,
     map_stop_reason,
+    resolve_anthropic_thinking,
 )
 from aelix_ai.providers._base import Provider
 from aelix_ai.streaming import (
@@ -103,6 +105,26 @@ async def _maybe_await(value: Any) -> Any:
     return value
 
 
+def _with_interleaved_beta(
+    headers: dict[str, str] | None, needs: bool
+) -> dict[str, str] | None:
+    """Append the interleaved-thinking beta to ``anthropic-beta`` when a
+    budget-based reasoning request needs it (ADR-0135; pi anthropic.ts:784-790).
+
+    Returns ``headers`` unchanged when no beta is needed so the caller keeps
+    the existing ``opts.headers or None`` default-header semantics.
+    """
+
+    if not needs:
+        return headers
+    merged = dict(headers or {})
+    existing = [b for b in (merged.get("anthropic-beta") or "").split(",") if b]
+    if INTERLEAVED_THINKING_BETA not in existing:
+        existing.append(INTERLEAVED_THINKING_BETA)
+    merged["anthropic-beta"] = ",".join(existing)
+    return merged
+
+
 async def stream_anthropic(
     model: Model,
     context: Context,
@@ -155,6 +177,16 @@ async def stream_anthropic(
     # Anthropic with the correct auth header. ``anthropic-beta`` mirrors
     # Pi (``providers/anthropic.ts``) OAuth branch.
     oauth_mode = is_oauth_token(opts.api_key)
+    # ADR-0135 (P0 #1): resolve the per-turn thinking level into the Anthropic
+    # request thinking param (adaptive effort for Opus 4.6+/Sonnet 4.6,
+    # budget_tokens for older reasoning models) and decide whether the
+    # interleaved-thinking beta header is needed. Computed before client
+    # creation so the header can be attached to the SDK client default headers.
+    thinking_extra, thinking_max_tokens, needs_interleaved = (
+        resolve_anthropic_thinking(
+            model, opts.reasoning, model.max_tokens or 4096
+        )
+    )
     if oauth_mode:
         import logging as _logging
 
@@ -171,6 +203,9 @@ async def stream_anthropic(
             oauth_headers: dict[str, str] = dict(opts.headers or {})
             oauth_headers["Authorization"] = f"Bearer {opts.api_key}"
             oauth_headers.setdefault("anthropic-beta", "oauth-2025-04-20")
+            oauth_headers = dict(
+                _with_interleaved_beta(oauth_headers, needs_interleaved) or {}
+            )
             client = create_async_client(
                 # Blank api_key — auth lives in the Authorization header.
                 api_key="",
@@ -183,18 +218,24 @@ async def stream_anthropic(
             client = create_async_client(
                 api_key=opts.api_key,
                 base_url=model.base_url or None,
-                default_headers=opts.headers or None,
+                default_headers=_with_interleaved_beta(
+                    opts.headers, needs_interleaved
+                )
+                or None,
                 timeout_ms=opts.timeout_ms,
                 max_retries=opts.max_retries,
             )
 
-        # 2) Map context → SDK params.
+        # 2) Map context → SDK params. ``thinking_extra`` injects the
+        # resolved ADR-0135 thinking param (+ ``output_config`` for adaptive
+        # models); ``thinking_max_tokens`` is the budget-adjusted cap.
         params = build_params(
             model=model,
             system_prompt=context.system_prompt,
             messages=list(context.messages),
             tools=list(context.tools),
-            max_tokens=model.max_tokens or 4096,
+            max_tokens=thinking_max_tokens,
+            extra=thinking_extra or None,
         )
 
         # 3) before_provider_payload callback (Pi ``onPayload``).

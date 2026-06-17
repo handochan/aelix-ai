@@ -187,6 +187,175 @@ def build_params(
     return params
 
 
+# === ADR-0135 (P0 #1): Anthropic extended-thinking resolution ===
+#
+# Pi parity (all anchors at SHA 734e08e): ``providers/anthropic.ts``
+# (``streamSimpleAnthropic`` 728-767, ``mapThinkingLevelToEffort`` 708-726,
+# ``supportsAdaptiveThinking`` 692-702, ``buildParams`` thinking block
+# 939-968) + ``providers/simple-options.ts`` (``clampReasoning`` 22-24,
+# ``adjustMaxTokensForThinking`` 26-50).
+
+#: Pi ``INTERLEAVED_THINKING_BETA`` (anthropic.ts:165). Sent only for
+#: budget-based (older) reasoning models — adaptive models (Opus 4.6+/
+#: Sonnet 4.6) have interleaved thinking built-in, so pi skips the header.
+INTERLEAVED_THINKING_BETA = "interleaved-thinking-2025-05-14"
+
+#: Pi default thinking budgets (simple-options.ts:32-37). ``xhigh`` is not a
+#: budget tier — :func:`clamp_reasoning` collapses it onto ``high``.
+_DEFAULT_THINKING_BUDGETS: dict[str, int] = {
+    "minimal": 1024,
+    "low": 2048,
+    "medium": 8192,
+    "high": 16384,
+}
+_MIN_OUTPUT_TOKENS = 1024
+
+
+def supports_adaptive_thinking(model_id: str) -> bool:
+    """Pi parity ``supportsAdaptiveThinking`` (anthropic.ts:692-702).
+
+    Opus 4.6+/Sonnet 4.6 use *adaptive* thinking (Claude decides how much to
+    think, steered by an ``effort`` level); older reasoning models use
+    *budget-based* thinking (an explicit ``budget_tokens`` allowance).
+    """
+
+    mid = model_id or ""
+    return any(
+        marker in mid
+        for marker in (
+            "opus-4-6",
+            "opus-4.6",
+            "opus-4-7",
+            "opus-4.7",
+            "sonnet-4-6",
+            "sonnet-4.6",
+        )
+    )
+
+
+def map_thinking_level_to_effort(model: Model, level: str | None) -> str:
+    """Pi parity ``mapThinkingLevelToEffort`` (anthropic.ts:708-726).
+
+    Prefer the model's ``thinkingLevelMap`` native string (e.g. ``xhigh`` →
+    ``"max"`` on Opus 4.6, ``"xhigh"`` on Opus 4.7); otherwise fall back to a
+    coarse mapping (minimal/low → ``"low"``, medium → ``"medium"``, else
+    ``"high"``).
+    """
+
+    thinking_map = model.thinking_level_map or {}
+    mapped = thinking_map.get(level) if level else None
+    if isinstance(mapped, str):
+        return mapped
+    if level in ("minimal", "low"):
+        return "low"
+    if level == "medium":
+        return "medium"
+    if level == "high":
+        return "high"
+    return "high"
+
+
+def clamp_reasoning(level: str) -> str:
+    """Pi parity ``clampReasoning`` (simple-options.ts:22-24)."""
+
+    return "high" if level == "xhigh" else level
+
+
+def adjust_max_tokens_for_thinking(
+    base_max_tokens: int,
+    model_max_tokens: int,
+    reasoning_level: str,
+    custom_budgets: dict[str, int] | None = None,
+) -> tuple[int, int]:
+    """Pi parity ``adjustMaxTokensForThinking`` (simple-options.ts:26-50).
+
+    Returns ``(max_tokens, thinking_budget)``. The budget is carved out of
+    ``max_tokens`` and shrunk to leave at least ``_MIN_OUTPUT_TOKENS`` of
+    room for the visible answer.
+    """
+
+    budgets = {**_DEFAULT_THINKING_BUDGETS, **(custom_budgets or {})}
+    level = clamp_reasoning(reasoning_level)
+    thinking_budget = budgets.get(level, _DEFAULT_THINKING_BUDGETS["medium"])
+    max_tokens = min(base_max_tokens + thinking_budget, model_max_tokens)
+    if max_tokens <= thinking_budget:
+        thinking_budget = max(0, max_tokens - _MIN_OUTPUT_TOKENS)
+    return max_tokens, thinking_budget
+
+
+def resolve_anthropic_thinking(
+    model: Model,
+    reasoning: str | None,
+    default_max_tokens: int,
+) -> tuple[dict[str, Any], int, bool]:
+    """Pi parity: ``streamSimpleAnthropic`` + ``buildParams`` thinking block.
+
+    Given the per-turn thinking level (``reasoning``), return
+    ``(extra_params, max_tokens, needs_interleaved_beta)`` where
+    ``extra_params`` carries the ``thinking`` request object (plus
+    ``output_config`` for adaptive models) to merge into the Anthropic call.
+
+    Behaviour (pi-faithful):
+      * non-reasoning model → ``{}`` (never send a thinking param);
+      * reasoning model, no level → ``{"thinking": {"type": "disabled"}}``;
+      * adaptive model → ``thinking.type = "adaptive"`` + ``output_config``;
+      * older reasoning model → ``thinking.type = "enabled"`` with a
+        ``budget_tokens`` carved from ``max_tokens``.
+
+    ``needs_interleaved_beta`` is True ONLY on the active budget-thinking path
+    (non-adaptive reasoning model with a level set). **Deliberate narrower scope
+    than pi:** pi sends the beta for EVERY non-adaptive model — even
+    non-reasoning / thinking "off" — via ``(interleavedThinking ?? true) &&
+    !supportsAdaptiveThinking`` (anthropic.ts:479, 784), and lets a caller's
+    ``anthropic-beta`` *replace* it via ``mergeHeaders`` ordering. Aelix instead
+    preserves its established "caller ``anthropic-beta`` wins" setdefault
+    contract (tests/oauth) and gates the beta on active thinking — the only case
+    where interleaved thinking is functional. Full pi parity (universal beta +
+    mergeHeaders replace semantics) is an OAuth-header-architecture change
+    tracked as a follow-up, out of ADR-0135's reasoning scope.
+    """
+
+    model_id = model.id or model.name or ""
+
+    if not getattr(model, "reasoning", False):
+        return {}, default_max_tokens, False
+
+    if not reasoning:
+        return {"thinking": {"type": "disabled"}}, default_max_tokens, False
+
+    # Pi defaults thinking display to "summarized" so newer models match the
+    # API default older Claude 4 models already use (anthropic.ts:943-945).
+    display = "summarized"
+
+    if supports_adaptive_thinking(model_id):
+        extra: dict[str, Any] = {
+            "thinking": {"type": "adaptive", "display": display}
+        }
+        effort = map_thinking_level_to_effort(model, reasoning)
+        if effort:
+            extra["output_config"] = {"effort": effort}
+        return extra, default_max_tokens, False  # adaptive: beta built-in
+
+    # Budget-based (older) reasoning models. Pi uses ``base.maxTokens``
+    # (= options.maxTokens ?? model.maxTokens) as the budget base; aelix has no
+    # per-turn options.maxTokens plumbed into this adapter, so the base IS the
+    # model cap — thinking is carved from within it. Faithful for the
+    # SimpleStream path (pi's base also defaults to model.maxTokens); revisit if
+    # options.maxTokens is ever plumbed.
+    model_max = model.max_tokens or default_max_tokens
+    max_tokens, budget = adjust_max_tokens_for_thinking(
+        model_max, model_max, reasoning
+    )
+    extra = {
+        "thinking": {
+            "type": "enabled",
+            "budget_tokens": budget or 1024,
+            "display": display,
+        }
+    }
+    return extra, max_tokens, True  # budget thinking active → interleaved beta
+
+
 def is_oauth_token(api_key: str | None) -> bool:
     """Pi parity ``providers/anthropic.ts:769`` — detect Anthropic OAuth bearer.
 

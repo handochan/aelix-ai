@@ -3580,6 +3580,20 @@ class AgentHarness:
                 after_tool_call=self._after_tool_call_bridge,
                 # Sprint 3c §A.5 — Pi parity, default "parallel".
                 tool_execution=self._options.tool_execution,
+                # ADR-0135 (P0 #1): snapshot the live thinking level into the
+                # per-turn config so the loop forwards it on
+                # ``SimpleStreamOptions.reasoning``. ``"off"``/unset collapses
+                # to ``None`` so adapters omit reasoning uniformly (pi parity:
+                # ``streamSimpleAnthropic`` gates on ``!options.reasoning`` and
+                # OpenAI maps ``"off"`` → ``undefined``). Re-read every turn —
+                # a ``set_thinking_level`` between prompts is picked up here
+                # with no ``prepare_next_turn`` dependency (mirrors set_model).
+                reasoning=(
+                    self._state.thinking_level
+                    if self._state.thinking_level
+                    and self._state.thinking_level != "off"
+                    else None
+                ),
             )
             # F-9: apply the active-tool filter without mutating ``_state.tools``.
             active = self._state.active_tool_names

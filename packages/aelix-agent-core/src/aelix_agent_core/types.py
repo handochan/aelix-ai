@@ -299,6 +299,14 @@ class AgentLoopConfig:
     tool_execution: ToolExecutionMode = "parallel"
     headers: dict[str, str] = field(default_factory=dict)
     metadata: dict[str, str] = field(default_factory=dict)
+    # ADR-0135 (P0 #1): per-turn snapshot of ``AgentState.thinking_level``,
+    # forwarded onto ``SimpleStreamOptions.reasoning`` by the loop so each
+    # provider adapter resolves it natively (OpenAI → reasoning_effort;
+    # Anthropic → adaptive effort / thinking budget). ``None`` means "no
+    # reasoning requested" — pi parity: the coding-agent harness passes
+    # ``streamOptions.reasoning`` as the raw thinking-level string and the
+    # adapters gate on its falsiness (``"off"`` arrives as ``None``).
+    reasoning: str | None = None
 
 
 __all__ = [

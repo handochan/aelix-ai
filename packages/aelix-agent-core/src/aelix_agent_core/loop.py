@@ -246,6 +246,12 @@ async def _stream_assistant_response(
         headers=dict(config.headers),
         metadata=dict(config.metadata),
         signal=signal,
+        # ADR-0135 (P0 #1): forward the per-turn thinking level so the
+        # provider adapters can request reasoning. The harness already
+        # copies ``options.reasoning`` into the final provider options
+        # (``core.py`` ``_make_stream_fn``); without this line it was
+        # always ``None`` and the entire thinking stack was a no-op.
+        reasoning=config.reasoning,
     )
 
     fn = stream_fn or _resolve_stream_simple()
