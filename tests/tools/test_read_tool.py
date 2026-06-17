@@ -24,17 +24,23 @@ async def test_read_with_offset(tmp_path):
     f = tmp_path / "n.txt"
     f.write_text("a\nb\nc\nd\n")
     tool = create_read_tool(str(tmp_path))
+    # Pi parity: offset is 1-INDEXED — offset=2 starts at the SECOND line (b),
+    # it does NOT skip to the third line.
     result = await _exec(tool, {"path": "n.txt", "offset": 2})
-    assert "c" in result.content[0].text
+    assert result.content[0].text.startswith("b\nc\nd")
 
 
 async def test_read_with_limit(tmp_path):
     f = tmp_path / "n.txt"
-    f.write_text("\n".join(str(i) for i in range(100)))
+    f.write_text("\n".join(str(i) for i in range(100)))  # 100 lines, no trailing nl
     tool = create_read_tool(str(tmp_path))
     result = await _exec(tool, {"path": "n.txt", "limit": 5})
-    assert isinstance(result.details, ReadToolDetails)
-    assert result.details.truncation.kept_lines == 5
+    assert result.is_error is False
+    text = result.content[0].text
+    assert text.startswith("0\n1\n2\n3\n4")
+    # Pi parity branch C: a "N more lines" continuation notice; details undefined.
+    assert "95 more lines in file. Use offset=6 to continue." in text
+    assert result.details is None
 
 
 async def test_read_absolute_path(tmp_path):
@@ -63,13 +69,38 @@ async def test_read_directory_is_error(tmp_path):
     assert result.is_error is True
 
 
-async def test_read_line_numbering(tmp_path):
+async def test_read_no_line_numbering(tmp_path):
+    # Pi parity: read returns the RAW slice — NO cat -n style line numbering.
     f = tmp_path / "ln.txt"
     f.write_text("alpha\nbeta\n")
     tool = create_read_tool(str(tmp_path))
     result = await _exec(tool, {"path": "ln.txt"})
-    # Pi parity: cat -n style line numbers.
-    assert "1" in result.content[0].text
+    assert result.content[0].text == "alpha\nbeta\n"
+    assert "\t" not in result.content[0].text
+
+
+async def test_read_offset_beyond_eof_is_error(tmp_path):
+    f = tmp_path / "n.txt"
+    f.write_text("only\n")
+    tool = create_read_tool(str(tmp_path))
+    result = await _exec(tool, {"path": "n.txt", "offset": 50})
+    assert result.is_error is True
+    assert "beyond end of file" in result.content[0].text
+
+
+async def test_read_byte_cap_truncation_notice(tmp_path):
+    # Pi parity branch B: total bytes exceed 50KB -> truncateHead byte cap +
+    # a continuation notice; details carry truncated_by="bytes".
+    f = tmp_path / "big.txt"
+    line = "x" * 200
+    f.write_text("\n".join(line for _ in range(400)))  # ~80KB
+    tool = create_read_tool(str(tmp_path))
+    result = await _exec(tool, {"path": "big.txt"})
+    text = result.content[0].text
+    assert "50.0KB limit" in text
+    assert "Use offset=" in text
+    assert isinstance(result.details, ReadToolDetails)
+    assert result.details.truncation.truncated_by == "bytes"
 
 
 async def test_read_unicode(tmp_path):

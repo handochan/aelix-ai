@@ -198,6 +198,32 @@ def test_tool_end_diff_is_colorized() -> None:
     assert "green" in styles and "red" in styles
 
 
+def test_tool_end_edit_diff_from_details_is_colorized() -> None:
+    # Pi parity (ADR-0138): edit returns a SUCCESS MESSAGE as content + the diff
+    # in details (line-numbered +/- format, NOT @@). The card must surface and
+    # colorize the diff read from details, not flatten to a dim success line.
+    from types import SimpleNamespace
+
+    r, commits, _t = _renderer()
+    diff = " 1 ctx\n-2 old line\n+2 new line\n 3 ctx"
+    r.on_agent_event(
+        ToolExecutionEndEvent(
+            tool_call_id="t1",
+            result=ToolResult(
+                content=[
+                    TextContent(text="Successfully replaced 1 block(s) in f.txt.")
+                ],
+                details=SimpleNamespace(diff=diff, first_changed_line=2),  # type: ignore[arg-type]
+            ),
+            tool_name="edit",
+        )
+    )
+    out = _committed_text(commits)
+    styles = _row_styles(commits[0])
+    assert "Successfully replaced" in out and "new line" in out
+    assert "green" in styles and "red" in styles
+
+
 def test_tool_end_diff_shaped_bash_keeps_exit_footer() -> None:
     from types import SimpleNamespace
 

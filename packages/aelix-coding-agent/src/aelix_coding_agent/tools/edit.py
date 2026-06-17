@@ -1,8 +1,8 @@
-"""edit tool — Pi parity ``coding-agent/src/core/tools/edit.ts``."""
+"""edit tool — Pi parity ``coding-agent/src/core/tools/edit.ts`` (734e08e)."""
 
 from __future__ import annotations
 
-import difflib
+import errno
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -12,6 +12,16 @@ from aelix_agent_core.types import AgentTool
 from aelix_ai.messages import TextContent
 from aelix_ai.tools import ToolExecutionContext, ToolResult
 
+from aelix_coding_agent.tools._edit_diff import (
+    EditError,
+    apply_edits_to_normalized_content,
+    detect_line_ending,
+    generate_diff_string,
+    normalize_to_lf,
+    prepare_edit_arguments,
+    restore_line_endings,
+    strip_bom,
+)
 from aelix_coding_agent.tools._file_mutation_queue import (
     with_file_mutation_queue,
 )
@@ -20,7 +30,8 @@ from aelix_coding_agent.tools._path_utils import resolve_to_cwd
 
 @dataclass(frozen=True)
 class EditToolDetails:
-    """Pi parity ``EditToolDetails``."""
+    """Pi parity ``EditToolDetails`` — diff + first-changed line for the TUI
+    edit card (NOT sent to the model; the model gets the success message)."""
 
     diff: str
     first_changed_line: int
@@ -46,11 +57,9 @@ class _LocalEditOperations:
 
 
 # Pi parity: ``createEditToolDefinition`` (``edit.ts``) parameter schema —
-# camelCase field names (``oldText``/``newText``) + per-field descriptions.
-# Top-level/array descriptions follow Pi's wording but omit Pi's
-# "matched against the *original* file" clause: Aelix currently applies edits
-# against the running buffer (a P0 #3 behavior gap tracked for follow-up), so
-# claiming original-file matching here would be a false schema promise.
+# camelCase field names + per-field descriptions, VERBATIM pi text. Edits are
+# now matched against the ORIGINAL file content (P0 #3 / ADR-0138), so pi's
+# "matched against the original file" wording is restored.
 _EDIT_PARAMETERS_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -61,10 +70,10 @@ _EDIT_PARAMETERS_SCHEMA: dict[str, Any] = {
         "edits": {
             "type": "array",
             "description": (
-                "One or more targeted replacements. Each oldText must be "
-                "unique and must not overlap or nest with another edit in the "
-                "same call. If two changes touch the same block or nearby "
-                "lines, merge them into one edit instead."
+                "One or more targeted replacements. Each edit is matched "
+                "against the original file, not incrementally. Do not include "
+                "overlapping or nested edits. If two changes touch the same "
+                "block or nearby lines, merge them into one edit instead."
             ),
             "items": {
                 "type": "object",
@@ -73,8 +82,9 @@ _EDIT_PARAMETERS_SCHEMA: dict[str, Any] = {
                         "type": "string",
                         "description": (
                             "Exact text for one targeted replacement. It must "
-                            "be unique in the file and must not overlap with "
-                            "any other edits[].oldText in the same call."
+                            "be unique in the original file and must not "
+                            "overlap with any other edits[].oldText in the "
+                            "same call."
                         ),
                     },
                     "newText": {
@@ -90,18 +100,10 @@ _EDIT_PARAMETERS_SCHEMA: dict[str, Any] = {
 }
 
 
-def _detect_line_ending(text: str) -> str:
-    if "\r\n" in text:
-        return "\r\n"
-    if "\r" in text:
-        return "\r"
-    return "\n"
-
-
 def create_edit_tool(
     cwd: str, options: dict | None = None
 ) -> AgentTool:
-    """Pi parity ``createEditToolDefinition`` (``edit.ts:288-487``)."""
+    """Pi parity ``createEditToolDefinition`` (``edit.ts``)."""
 
     opts = options or {}
     operations: EditOperations = opts.get("operations") or _LocalEditOperations()
@@ -109,6 +111,9 @@ def create_edit_tool(
     async def execute(
         args: dict[str, Any], ctx: ToolExecutionContext
     ) -> ToolResult:
+        # Pi parity ``prepareArguments``: coerce edits-as-JSON-string + fold
+        # legacy top-level oldText/newText into edits.
+        args = prepare_edit_arguments(args)
         raw_path = args.get("path")
         edits = args.get("edits")
         if not isinstance(raw_path, str) or not raw_path:
@@ -121,104 +126,73 @@ def create_edit_tool(
                 content=[TextContent(text="edit: 'edits' must be a non-empty list")],
                 is_error=True,
             )
+        for i, edit in enumerate(edits):
+            if (
+                not isinstance(edit, dict)
+                or not isinstance(edit.get("oldText"), str)
+                or not isinstance(edit.get("newText"), str)
+            ):
+                return ToolResult(
+                    content=[
+                        TextContent(
+                            text=f"edit: edits[{i}] must have str oldText/newText"
+                        )
+                    ],
+                    is_error=True,
+                )
         path = resolve_to_cwd(raw_path, cwd)
 
         async def _do_edit() -> ToolResult:
+            # Pi parity ``computeEditsDiff``: access/read failures surface as
+            # ``Could not edit file: {path}. Error code: {code}.`` (raw path).
             try:
                 data = await operations.read_file(path)
-            except (FileNotFoundError, OSError) as exc:
-                return ToolResult(
-                    content=[TextContent(text=f"edit: read failed: {exc}")],
-                    is_error=True,
-                )
-            # Pi parity: detect BOM + line endings.
-            bom = b""
-            if data.startswith(b"\xef\xbb\xbf"):
-                bom = b"\xef\xbb\xbf"
-                data = data[3:]
-            text = data.decode("utf-8", errors="replace")
-            line_ending = _detect_line_ending(text)
-            original = text
-            new_text = text
-            for i, edit in enumerate(edits):
-                if not isinstance(edit, dict):
-                    return ToolResult(
-                        content=[TextContent(text=f"edit: edits[{i}] not a dict")],
-                        is_error=True,
-                    )
-                old = edit.get("oldText", "")
-                new = edit.get("newText", "")
-                if not isinstance(old, str) or not isinstance(new, str):
-                    return ToolResult(
-                        content=[
-                            TextContent(
-                                text=f"edit: edits[{i}] oldText/newText must be str"
-                            )
-                        ],
-                        is_error=True,
-                    )
-                # Pi parity: each oldText must appear EXACTLY once.
-                count = new_text.count(old)
-                if count == 0:
-                    return ToolResult(
-                        content=[
-                            TextContent(text=f"edit: edits[{i}] oldText not found")
-                        ],
-                        is_error=True,
-                    )
-                if count > 1:
-                    return ToolResult(
-                        content=[
-                            TextContent(
-                                text=(
-                                    f"edit: edits[{i}] oldText matches {count} times "
-                                    "— it must be unique"
-                                )
-                            )
-                        ],
-                        is_error=True,
-                    )
-                new_text = new_text.replace(old, new, 1)
-            if new_text == original:
-                return ToolResult(
-                    content=[TextContent(text="edit: no changes")],
-                    details=EditToolDetails(diff="", first_changed_line=-1),
-                )
-            # Restore line endings + BOM.
-            if line_ending != "\n":
-                new_text = new_text.replace("\n", line_ending)
-            out_bytes = bom + new_text.encode("utf-8")
-            try:
-                await operations.write_file(path, out_bytes)
             except OSError as exc:
+                code = errno.errorcode.get(exc.errno, str(exc.errno or exc))
                 return ToolResult(
-                    content=[TextContent(text=f"edit: write failed: {exc}")],
+                    content=[
+                        TextContent(
+                            text=f"Could not edit file: {raw_path}. Error code: {code}."
+                        )
+                    ],
                     is_error=True,
                 )
-            diff = "\n".join(
-                difflib.unified_diff(
-                    original.splitlines(),
-                    new_text.replace(line_ending, "\n").splitlines(),
-                    fromfile=path,
-                    tofile=path,
-                    lineterm="",
+            text = data.decode("utf-8", errors="replace")
+            bom, content = strip_bom(text)
+            line_ending = detect_line_ending(content)
+            normalized = normalize_to_lf(content)
+            try:
+                base_content, new_content = apply_edits_to_normalized_content(
+                    normalized, edits, raw_path
                 )
-            )
-            # First changed line: walk in parallel until divergence.
-            first_changed = -1
-            old_lines = original.splitlines()
-            new_lines = new_text.replace(line_ending, "\n").splitlines()
-            for i, (a, b) in enumerate(zip(old_lines, new_lines, strict=False)):
-                if a != b:
-                    first_changed = i + 1
-                    break
-            if first_changed < 0 and len(old_lines) != len(new_lines):
-                first_changed = min(len(old_lines), len(new_lines)) + 1
+            except EditError as exc:
+                return ToolResult(
+                    content=[TextContent(text=str(exc))],
+                    is_error=True,
+                )
+            out_text = bom + restore_line_endings(new_content, line_ending)
+            try:
+                await operations.write_file(path, out_text.encode("utf-8"))
+            except OSError as exc:
+                code = errno.errorcode.get(exc.errno, str(exc.errno or exc))
+                return ToolResult(
+                    content=[
+                        TextContent(
+                            text=f"Could not edit file: {raw_path}. Error code: {code}."
+                        )
+                    ],
+                    is_error=True,
+                )
+            diff, first_changed = generate_diff_string(base_content, new_content)
+            # Pi parity: result CONTENT is the success message; the diff lives
+            # only in ``details`` (the TUI edit card reads it from there).
             return ToolResult(
-                content=[TextContent(text=diff)],
-                details=EditToolDetails(
-                    diff=diff, first_changed_line=first_changed
-                ),
+                content=[
+                    TextContent(
+                        text=f"Successfully replaced {len(edits)} block(s) in {raw_path}."
+                    )
+                ],
+                details=EditToolDetails(diff=diff, first_changed_line=first_changed),
             )
 
         return await with_file_mutation_queue(path, _do_edit)
@@ -226,12 +200,12 @@ def create_edit_tool(
     return AgentTool(
         name="edit",
         description=(
-            "Edit a single file using exact text replacement. Each "
+            "Edit a single file using exact text replacement. Every "
             "edits[].oldText must match a unique, non-overlapping region of "
-            "the file. If two changes affect the same block or nearby lines, "
-            "merge them into one edit instead of emitting overlapping edits. "
-            "Do not include large unchanged regions just to connect distant "
-            "changes."
+            "the original file. If two changes affect the same block or nearby "
+            "lines, merge them into one edit instead of emitting overlapping "
+            "edits. Do not include large unchanged regions just to connect "
+            "distant changes."
         ),
         parameters=_EDIT_PARAMETERS_SCHEMA,
         execute=execute,

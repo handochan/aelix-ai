@@ -358,6 +358,21 @@ class EventRenderer:
         exit_code = _bash_exit_code(result) if tool_name == "bash" else None
         if not text:
             return
+        # §C′ (ADR-0138) — the edit tool now returns a SUCCESS MESSAGE as content
+        # and its diff in ``details`` (Pi parity). Surface the colorized diff from
+        # details: pi's diff is a line-numbered +/- format (NOT a ``@@`` unified
+        # diff), so _looks_like_diff would miss it, but _render_diff colours by
+        # the +/- prefix and renders it correctly.
+        if not is_error and tool_name == "edit":
+            diff_text = getattr(getattr(result, "details", None), "diff", "")
+            if isinstance(diff_text, str) and diff_text.strip():
+                _, diff_hidden = _truncate_lines(diff_text, max_lines=40)
+                expand_id = (
+                    self._store_expandable(diff_text) if diff_hidden > 0 else None
+                )
+                diff_group = _render_diff(diff_text, expand_id=expand_id)
+                self._commit(Group(Text(text, style="green"), *diff_group.renderables))
+                return
         # §C (ADR-0116) — diff-shaped tool output (edit/write difflib, or a
         # bash `git diff`) renders with +/- colour instead of flat dim text.
         # Errors keep the red card below (a failed edit isn't a diff to review).
