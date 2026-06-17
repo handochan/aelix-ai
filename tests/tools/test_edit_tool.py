@@ -18,7 +18,7 @@ async def test_edit_single_change(tmp_path):
     tool = create_edit_tool(str(tmp_path))
     result = await _exec(
         tool,
-        {"path": "e.txt", "edits": [{"old_text": "world", "new_text": "aelix"}]},
+        {"path": "e.txt", "edits": [{"oldText": "world", "newText": "aelix"}]},
     )
     assert result.is_error is False
     assert f.read_text() == "hello aelix\n"
@@ -33,8 +33,8 @@ async def test_edit_multiple_changes(tmp_path):
         {
             "path": "e.txt",
             "edits": [
-                {"old_text": "aaa", "new_text": "X"},
-                {"old_text": "ccc", "new_text": "Y"},
+                {"oldText": "aaa", "newText": "X"},
+                {"oldText": "ccc", "newText": "Y"},
             ],
         },
     )
@@ -48,7 +48,7 @@ async def test_edit_old_text_not_unique(tmp_path):
     tool = create_edit_tool(str(tmp_path))
     result = await _exec(
         tool,
-        {"path": "e.txt", "edits": [{"old_text": "dup", "new_text": "x"}]},
+        {"path": "e.txt", "edits": [{"oldText": "dup", "newText": "x"}]},
     )
     assert result.is_error is True
 
@@ -59,14 +59,14 @@ async def test_edit_old_text_not_found(tmp_path):
     tool = create_edit_tool(str(tmp_path))
     result = await _exec(
         tool,
-        {"path": "e.txt", "edits": [{"old_text": "absent", "new_text": "x"}]},
+        {"path": "e.txt", "edits": [{"oldText": "absent", "newText": "x"}]},
     )
     assert result.is_error is True
 
 
 async def test_edit_missing_path():
     tool = create_edit_tool("/tmp")
-    result = await _exec(tool, {"edits": [{"old_text": "x", "new_text": "y"}]})
+    result = await _exec(tool, {"edits": [{"oldText": "x", "newText": "y"}]})
     assert result.is_error is True
 
 
@@ -84,7 +84,7 @@ async def test_edit_no_change_produces_empty_diff(tmp_path):
     tool = create_edit_tool(str(tmp_path))
     result = await _exec(
         tool,
-        {"path": "e.txt", "edits": [{"old_text": "same", "new_text": "same"}]},
+        {"path": "e.txt", "edits": [{"oldText": "same", "newText": "same"}]},
     )
     assert result.is_error is False
 
@@ -95,7 +95,7 @@ async def test_edit_preserves_crlf_line_endings(tmp_path):
     tool = create_edit_tool(str(tmp_path))
     result = await _exec(
         tool,
-        {"path": "crlf.txt", "edits": [{"old_text": "line1", "new_text": "L1"}]},
+        {"path": "crlf.txt", "edits": [{"oldText": "line1", "newText": "L1"}]},
     )
     assert result.is_error is False
     assert b"\r\n" in f.read_bytes()
@@ -109,13 +109,13 @@ async def test_edit_concurrent_serialised_by_file_lock(tmp_path):
     async def edit1():
         return await _exec(
             tool,
-            {"path": "lock.txt", "edits": [{"old_text": "aaa", "new_text": "1"}]},
+            {"path": "lock.txt", "edits": [{"oldText": "aaa", "newText": "1"}]},
         )
 
     async def edit2():
         return await _exec(
             tool,
-            {"path": "lock.txt", "edits": [{"old_text": "bbb", "new_text": "2"}]},
+            {"path": "lock.txt", "edits": [{"oldText": "bbb", "newText": "2"}]},
         )
 
     r1, r2 = await asyncio.gather(edit1(), edit2())

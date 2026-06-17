@@ -45,19 +45,44 @@ class _LocalEditOperations:
         return os.access(path, os.R_OK | os.W_OK)
 
 
+# Pi parity: ``createEditToolDefinition`` (``edit.ts``) parameter schema —
+# camelCase field names (``oldText``/``newText``) + per-field descriptions.
+# Top-level/array descriptions follow Pi's wording but omit Pi's
+# "matched against the *original* file" clause: Aelix currently applies edits
+# against the running buffer (a P0 #3 behavior gap tracked for follow-up), so
+# claiming original-file matching here would be a false schema promise.
 _EDIT_PARAMETERS_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
-        "path": {"type": "string"},
+        "path": {
+            "type": "string",
+            "description": "Path to the file to edit (relative or absolute)",
+        },
         "edits": {
             "type": "array",
+            "description": (
+                "One or more targeted replacements. Each oldText must be "
+                "unique and must not overlap or nest with another edit in the "
+                "same call. If two changes touch the same block or nearby "
+                "lines, merge them into one edit instead."
+            ),
             "items": {
                 "type": "object",
                 "properties": {
-                    "old_text": {"type": "string"},
-                    "new_text": {"type": "string"},
+                    "oldText": {
+                        "type": "string",
+                        "description": (
+                            "Exact text for one targeted replacement. It must "
+                            "be unique in the file and must not overlap with "
+                            "any other edits[].oldText in the same call."
+                        ),
+                    },
+                    "newText": {
+                        "type": "string",
+                        "description": "Replacement text for this targeted edit.",
+                    },
                 },
-                "required": ["old_text", "new_text"],
+                "required": ["oldText", "newText"],
             },
         },
     },
@@ -121,21 +146,23 @@ def create_edit_tool(
                         content=[TextContent(text=f"edit: edits[{i}] not a dict")],
                         is_error=True,
                     )
-                old = edit.get("old_text", "")
-                new = edit.get("new_text", "")
+                old = edit.get("oldText", "")
+                new = edit.get("newText", "")
                 if not isinstance(old, str) or not isinstance(new, str):
                     return ToolResult(
                         content=[
-                            TextContent(text=f"edit: edits[{i}] old/new must be str")
+                            TextContent(
+                                text=f"edit: edits[{i}] oldText/newText must be str"
+                            )
                         ],
                         is_error=True,
                     )
-                # Pi parity: each old_text must appear EXACTLY once.
+                # Pi parity: each oldText must appear EXACTLY once.
                 count = new_text.count(old)
                 if count == 0:
                     return ToolResult(
                         content=[
-                            TextContent(text=f"edit: edits[{i}] old_text not found")
+                            TextContent(text=f"edit: edits[{i}] oldText not found")
                         ],
                         is_error=True,
                     )
@@ -144,7 +171,7 @@ def create_edit_tool(
                         content=[
                             TextContent(
                                 text=(
-                                    f"edit: edits[{i}] old_text matches {count} times "
+                                    f"edit: edits[{i}] oldText matches {count} times "
                                     "— it must be unique"
                                 )
                             )
@@ -199,8 +226,12 @@ def create_edit_tool(
     return AgentTool(
         name="edit",
         description=(
-            "Apply one or more (old_text, new_text) edits to a file. "
-            "Each old_text must be unique."
+            "Edit a single file using exact text replacement. Each "
+            "edits[].oldText must match a unique, non-overlapping region of "
+            "the file. If two changes affect the same block or nearby lines, "
+            "merge them into one edit instead of emitting overlapping edits. "
+            "Do not include large unchanged regions just to connect distant "
+            "changes."
         ),
         parameters=_EDIT_PARAMETERS_SCHEMA,
         execute=execute,

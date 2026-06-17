@@ -30,7 +30,7 @@ async def test_grep_literal(tmp_path):
 async def test_grep_ignore_case(tmp_path):
     (tmp_path / "a.txt").write_text("HELLO\n")
     tool = create_grep_tool(str(tmp_path))
-    result = await _exec(tool, {"pattern": "hello", "ignore_case": True})
+    result = await _exec(tool, {"pattern": "hello", "ignoreCase": True})
     assert result.is_error is False
     assert "HELLO" in result.content[0].text
 

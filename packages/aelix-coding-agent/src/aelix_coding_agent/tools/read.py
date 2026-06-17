@@ -50,12 +50,26 @@ class _LocalReadOperations:
         }.get(ext)
 
 
+# Pi parity: ``createReadToolDefinition`` (``read.ts``) parameter schema —
+# per-field descriptions + Pi's ``number`` types. NOTE: Pi describes ``offset``
+# as "(1-indexed)"; Aelix's ``offset`` is currently 0-based (a P0 #3 behavior
+# gap tracked for follow-up), so the parenthetical is omitted here rather than
+# making a false 1-indexed promise.
 _READ_PARAMETERS_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
-        "path": {"type": "string"},
-        "offset": {"type": "integer"},
-        "limit": {"type": "integer"},
+        "path": {
+            "type": "string",
+            "description": "Path to the file to read (relative or absolute)",
+        },
+        "offset": {
+            "type": "number",
+            "description": "Line number to start reading from",
+        },
+        "limit": {
+            "type": "number",
+            "description": "Maximum number of lines to read",
+        },
     },
     "required": ["path"],
 }
@@ -133,7 +147,13 @@ def create_read_tool(
 
     return AgentTool(
         name="read",
-        description="Read a file. Supports offset+limit for paging.",
+        description=(
+            "Read the contents of a file. Supports text files and images "
+            "(png, jpg, jpeg, gif, webp); images are returned as image "
+            "content. For text files, output is truncated to 2000 lines by "
+            "default — use offset/limit for large files, and continue with "
+            "offset until you have read the whole file."
+        ),
         parameters=_READ_PARAMETERS_SCHEMA,
         execute=execute,
         execution_mode="parallel",

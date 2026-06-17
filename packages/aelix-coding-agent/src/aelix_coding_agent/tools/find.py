@@ -40,12 +40,29 @@ class _LocalFindOperations:
         return [str(p) for p in Path(base).rglob(pattern) if p.is_file()]
 
 
+# Pi parity: ``createFindToolDefinition`` (``find.ts``) parameter schema +
+# per-field descriptions + Pi's ``number`` type. The top-level description
+# omits Pi's "relative paths" + ".gitignore" claims (Aelix returns absolute
+# paths and the Python fallback does not honor .gitignore — P0 #3 behavior
+# gaps tracked for follow-up).
 _FIND_PARAMETERS_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
-        "pattern": {"type": "string"},
-        "path": {"type": "string"},
-        "limit": {"type": "integer"},
+        "pattern": {
+            "type": "string",
+            "description": (
+                "Glob pattern to match files, e.g. '*.ts', '**/*.json', or "
+                "'src/**/*.spec.ts'"
+            ),
+        },
+        "path": {
+            "type": "string",
+            "description": "Directory to search in (default: current directory)",
+        },
+        "limit": {
+            "type": "number",
+            "description": "Maximum number of results (default: 1000)",
+        },
     },
     "required": ["pattern"],
 }
@@ -124,7 +141,10 @@ def create_find_tool(
 
     return AgentTool(
         name="find",
-        description="Find files matching a glob pattern (fd when available).",
+        description=(
+            "Search for files by glob pattern. Returns matching file paths. "
+            "Output is limited to 1000 results by default."
+        ),
         parameters=_FIND_PARAMETERS_SCHEMA,
         execute=execute,
         execution_mode="parallel",

@@ -30,11 +30,20 @@ class _LocalWriteOperations:
         Path(path).mkdir(parents=True, exist_ok=True)
 
 
+# Pi parity: ``createWriteToolDefinition`` (``write.ts``) parameter schema +
+# top-level description (Aelix behavior matches Pi here, so the description is
+# verbatim).
 _WRITE_PARAMETERS_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
-        "path": {"type": "string"},
-        "content": {"type": "string"},
+        "path": {
+            "type": "string",
+            "description": "Path to the file to write (relative or absolute)",
+        },
+        "content": {
+            "type": "string",
+            "description": "Content to write to the file",
+        },
     },
     "required": ["path", "content"],
 }
@@ -84,7 +93,10 @@ def create_write_tool(
 
     return AgentTool(
         name="write",
-        description="Write content to a file, creating parents as needed.",
+        description=(
+            "Write content to a file. Creates the file if it doesn't exist, "
+            "overwrites if it does. Automatically creates parent directories."
+        ),
         parameters=_WRITE_PARAMETERS_SCHEMA,
         execute=execute,
         execution_mode="sequential",

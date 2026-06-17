@@ -44,16 +44,48 @@ class _LocalGrepOperations:
         return Path(path).read_bytes()
 
 
+# Pi parity: ``createGrepToolDefinition`` (``grep.ts``) parameter schema —
+# camelCase ``ignoreCase`` + per-field descriptions + Pi's ``number`` types.
+# The top-level description omits Pi's ".gitignore" claim (Aelix's pure-Python
+# fallback does not honor .gitignore — a P0 #3 behavior gap) and states the
+# actual 250-char line cap.
 _GREP_PARAMETERS_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
-        "pattern": {"type": "string"},
-        "path": {"type": "string"},
-        "glob": {"type": "string"},
-        "ignore_case": {"type": "boolean"},
-        "literal": {"type": "boolean"},
-        "context": {"type": "integer"},
-        "limit": {"type": "integer"},
+        "pattern": {
+            "type": "string",
+            "description": "Search pattern (regex or literal string)",
+        },
+        "path": {
+            "type": "string",
+            "description": "Directory or file to search (default: current directory)",
+        },
+        "glob": {
+            "type": "string",
+            "description": "Filter files by glob pattern, e.g. '*.ts' or '**/*.spec.ts'",
+        },
+        "ignoreCase": {
+            "type": "boolean",
+            "description": "Case-insensitive search (default: false)",
+        },
+        "literal": {
+            "type": "boolean",
+            "description": (
+                "Treat pattern as literal string instead of regex "
+                "(default: false)"
+            ),
+        },
+        "context": {
+            "type": "number",
+            "description": (
+                "Number of lines to show before and after each match "
+                "(default: 0)"
+            ),
+        },
+        "limit": {
+            "type": "number",
+            "description": "Maximum number of matches to return (default: 100)",
+        },
     },
     "required": ["pattern"],
 }
@@ -182,7 +214,7 @@ def create_grep_tool(
         glob_raw = args.get("glob")
         glob_filter: str | None = glob_raw if isinstance(glob_raw, str) and glob_raw else None
         glob_for_python = glob_filter if glob_filter is not None else "**/*"
-        ignore_case = bool(args.get("ignore_case", False))
+        ignore_case = bool(args.get("ignoreCase", False))
         literal = bool(args.get("literal", False))
         context = int(args.get("context") or 0)
         limit = int(args.get("limit") or _DEFAULT_LIMIT)
@@ -219,7 +251,11 @@ def create_grep_tool(
 
     return AgentTool(
         name="grep",
-        description="Search for a pattern in files (ripgrep when available).",
+        description=(
+            "Search file contents for a pattern. Returns matching lines with "
+            "file paths and line numbers. Output is limited to 100 matches by "
+            "default; long lines are truncated to 250 characters."
+        ),
         parameters=_GREP_PARAMETERS_SCHEMA,
         execute=execute,
         execution_mode="parallel",

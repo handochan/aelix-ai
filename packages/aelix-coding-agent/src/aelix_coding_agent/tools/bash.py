@@ -153,11 +153,21 @@ def create_local_bash_operations() -> BashOperations:
     return _LocalBashOperations()
 
 
+# Pi parity: ``createBashToolDefinition`` (``bash.ts``) parameter schema +
+# per-field descriptions. The top-level description states Aelix's ACTUAL caps
+# (256 lines / 32KB, no temp-file recovery); Pi's 2000/50KB cap + temp-file
+# save are a P0 #3 behavior gap tracked for follow-up.
 _BASH_PARAMETERS_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
-        "command": {"type": "string"},
-        "timeout": {"type": "number"},
+        "command": {
+            "type": "string",
+            "description": "Bash command to execute",
+        },
+        "timeout": {
+            "type": "number",
+            "description": "Timeout in seconds (optional, no default timeout)",
+        },
     },
     "required": ["command"],
 }
@@ -214,8 +224,10 @@ def create_bash_tool(
     return AgentTool(
         name="bash",
         description=(
-            "Run a shell command in the working directory. Sequential — only "
-            "one bash command runs at a time."
+            "Execute a bash command in the current working directory. Returns "
+            "combined stdout and stderr. Output is truncated to the last 256 "
+            "lines or 32KB (whichever is hit first). Optionally provide a "
+            "timeout in seconds."
         ),
         parameters=_BASH_PARAMETERS_SCHEMA,
         execute=execute,

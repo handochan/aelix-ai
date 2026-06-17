@@ -42,11 +42,21 @@ class _LocalLsOperations:
         return [p.name for p in Path(path).iterdir()]
 
 
+# Pi parity: ``createLsToolDefinition`` (``ls.ts``) parameter schema +
+# per-field descriptions + Pi's ``number`` type. Aelix's ls behavior matches
+# Pi (alphabetical sort, '/' dir suffix, dotfiles included), so the top-level
+# description follows Pi's wording.
 _LS_PARAMETERS_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
-        "path": {"type": "string"},
-        "limit": {"type": "integer"},
+        "path": {
+            "type": "string",
+            "description": "Directory to list (default: current directory)",
+        },
+        "limit": {
+            "type": "number",
+            "description": "Maximum number of entries to return (default: 500)",
+        },
     },
     "required": [],
 }
@@ -94,7 +104,11 @@ def create_ls_tool(
 
     return AgentTool(
         name="ls",
-        description="List entries in a directory.",
+        description=(
+            "List directory contents. Returns entries sorted alphabetically, "
+            "with a '/' suffix for directories. Includes dotfiles. Output is "
+            "limited to 500 entries by default."
+        ),
         parameters=_LS_PARAMETERS_SCHEMA,
         execute=execute,
         execution_mode="parallel",
