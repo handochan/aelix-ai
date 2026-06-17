@@ -445,7 +445,7 @@ Misc:
   --export <path>                 Export the current session to HTML
   --list-models [pattern]         List available models (optional filter)
   --verbose                       Verbose logging
-  --offline                       Disable network calls
+  --offline                       Disable startup network operations (same as PI_OFFLINE=1)
   --help, -h                      Show this help
   --version, -v                   Show version ({VERSION})
 

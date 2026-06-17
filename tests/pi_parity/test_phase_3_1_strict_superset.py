@@ -160,23 +160,46 @@ def test_hook_event_name_has_at_least_31_entries() -> None:
     assert len(get_args(HookEventName)) >= 31
 
 
-def test_adr_0041_deadline_not_passed() -> None:
-    """ADR-0041 specifies 2026-06-14 deadline for Sprint 5b. If passed without 5b ship, demote ADR.
+def test_adr_0041_sprint_5b_closure_landed() -> None:
+    """ADR-0041 closure guard (was: 2026-06-14 deadline time-bomb).
 
-    Skippable via OMC_SKIP_DEADLINE_GUARD=1 for offline development.
+    ADR-0041's "Time-bound deferral clause" said that if Sprint 5b (ADR-0042
+    CLI loop) did not ship by 2026-06-14, ADR-0041 auto-demotes and the
+    ``input``/``user_bash``/``resources_discover`` deferrals are re-evaluated.
+
+    Sprint 5b shipped 2026-05-17 (ADR-0042 / ADR-0044), ahead of the net, so
+    the wall-clock deadline guarded nothing real and went RED-by-default once
+    the date passed. This guard now asserts the *condition* the deadline
+    protected — Sprint 5b closure — instead of comparing dates: it stays green
+    while still failing loudly if anyone reverts 5b or re-defers the events.
     """
-    import os
 
-    import pytest
+    import importlib.util as _importlib_util
+    from pathlib import Path as _Path
 
-    if os.environ.get("OMC_SKIP_DEADLINE_GUARD"):
-        pytest.skip("Deadline guard skipped via env")
-    from datetime import date
-
-    deadline = date(2026, 6, 14)
-    today = date.today()
-    if today > deadline:
-        pytest.fail(
-            f"ADR-0041 deadline 2026-06-14 has passed (today: {today}). "
-            f"Sprint 5b must ship OR ADR-0041 must be demoted from Accepted → Draft."
+    decisions = _Path(__file__).parents[2] / "docs" / "decisions"
+    for adr in ("0042-built-in-coding-tools.md", "0044-phase-3-strict-superset-closure.md"):
+        status_line = next(
+            line
+            for line in (decisions / adr).read_text(encoding="utf-8").splitlines()
+            if line.startswith("Status:")
         )
+        assert "Accepted" in status_line, (
+            f"{adr} Status is not Accepted ({status_line!r}); Sprint 5b closure "
+            "reverted — ADR-0041 deferral clause re-opens."
+        )
+
+    spec = _importlib_util.spec_from_file_location(
+        "_phase_2_1_superset",
+        _Path(__file__).parent / "test_phase_2_1_strict_superset.py",
+    )
+    assert spec is not None and spec.loader is not None
+    mod = _importlib_util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    DEFERRED_ALLOWLIST = mod.DEFERRED_ALLOWLIST
+
+    still_deferred = _PHASE_3_1_NEW_EVENTS & set(DEFERRED_ALLOWLIST)
+    assert not still_deferred, (
+        f"{still_deferred} re-added to DEFERRED_ALLOWLIST after Sprint 5b; "
+        "ADR-0041 deferral clause re-opens."
+    )

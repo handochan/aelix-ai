@@ -154,6 +154,10 @@ class McpServerContrib(BaseModel):
     name: str
     transport: Literal["stdio", "http", "sse"]
     command: str | None = None
+    # Argv for the stdio ``command`` (e.g. ``["-y", "@modelcontextprotocol/
+    # server-filesystem", "/tmp"]`` for npx-style servers). Additive optional
+    # field — backward compatible with existing manifests.
+    args: list[str] = Field(default_factory=list)
     url: str | None = None
     env: dict[str, str] = Field(default_factory=dict)
 

@@ -1667,6 +1667,7 @@ class AgentHarness:
                     self._options.get_api_key_and_headers,
                     entries,
                     opts.custom_instructions,
+                    replace_instructions=opts.replace_instructions,
                     _summarizer_override=(
                         self._options._branch_summarizer_override
                     ),
@@ -2870,8 +2871,8 @@ class AgentHarness:
         ``ReplacedSessionContext extends ExtensionCommandContext``):
 
         - ``wait_for_idle`` / ``navigate_tree`` / ``reload`` live on the
-          :class:`AgentHarness` (this object — ``reload`` is an
-          Aelix-additive stub raising :class:`NotImplementedError`).
+          :class:`AgentHarness` (this object — ``reload`` delegates to
+          :meth:`AgentHarness.reload`, Pi parity).
         - ``new_session`` / ``fork`` / ``switch_session`` live on the
           :class:`AgentSessionRuntime`; the runtime is threaded in via
           ``runtime`` so post-replace work routes through the SAME
@@ -2921,9 +2922,9 @@ class AgentHarness:
         # methods. Pi ``extensions/types.ts:333-364``. ``wait_for_idle`` /
         # ``navigate_tree`` live on the harness; ``new_session`` / ``fork`` /
         # ``switch_session`` live on the runtime (threaded via ``runtime``
-        # kwarg from ``_finish_session_replacement``); ``reload`` is an
-        # Aelix-additive stub (no in-place reload primitive today — Pi's
-        # is a TUI helper).
+        # kwarg from ``_finish_session_replacement``); ``reload`` delegates
+        # to :meth:`AgentHarness.reload` (Pi parity — ctx.reload ===
+        # AgentSession.reload via the runner's reloadHandler).
         async def _wait_for_idle() -> None:
             await self.wait_for_idle()
 
@@ -2931,14 +2932,15 @@ class AgentHarness:
             return await self.navigate_tree(target_id, options)
 
         async def _reload() -> None:
-            # Aelix-additive divergence from Pi: no in-place reload
-            # primitive today. ``reload`` is exposed for Protocol
-            # conformance + future TUI integration; raises so callers
-            # don't silently succeed.
-            raise NotImplementedError(
-                "ReplacedSessionContext.reload is not implemented "
-                "(Aelix-additive Pi parity stub — Sprint 6h₅+ TUI work)"
-            )
+            # Pi parity: ``ctx.reload`` === ``AgentSession.reload`` via the
+            # runner's ``reloadHandler`` (``extensions/runner.ts:664-666`` →
+            # ``agent-session.ts:reload``). Delegate to the harness's
+            # already-implemented :meth:`reload` (raises
+            # ``AgentHarnessError("invalid_state")`` when no settings_manager
+            # is attached). The two Pi sub-steps still deferred to Phase 5b
+            # (``_resourceLoader.reload`` + full ``_buildRuntime``) live
+            # inside :meth:`reload` itself (P-380 #3/#5 TODOs).
+            await self.reload()
 
         if runtime is not None:
             new_session_cb = runtime.new_session

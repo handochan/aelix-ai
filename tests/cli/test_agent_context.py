@@ -104,3 +104,79 @@ async def test_build_harness_options_explicit_system_prompt_overrides() -> None:
     parsed = Args(system_prompt="CUSTOM PROMPT")
     options = await _build_harness_options(parsed, Session(MemorySessionStorage()))
     assert options.system_prompt == "CUSTOM PROMPT"  # --system-prompt wins
+
+
+# --- cli flag wiring: --tools / --no-tools (active_tool_names) ---------------
+
+
+def test_resolve_active_tools() -> None:
+    from aelix_coding_agent.cli.entry import _resolve_active_tools
+
+    assert _resolve_active_tools(Args(no_tools=True)) == []
+    assert _resolve_active_tools(Args(tools=["read", "grep"])) == ["read", "grep"]
+    assert _resolve_active_tools(Args()) is None
+
+
+async def test_build_harness_options_wires_active_tool_names() -> None:
+    """--tools / --no-tools flow into AgentHarnessOptions.active_tool_names."""
+
+    opts_all = await _build_harness_options(Args(), Session(MemorySessionStorage()))
+    assert opts_all.active_tool_names is None  # default: all tools active
+
+    opts_allow = await _build_harness_options(
+        Args(tools=["read"]), Session(MemorySessionStorage())
+    )
+    assert opts_allow.active_tool_names == ["read"]
+
+    opts_none = await _build_harness_options(
+        Args(no_tools=True), Session(MemorySessionStorage())
+    )
+    assert opts_none.active_tool_names == []
+
+
+async def test_build_harness_options_appends_mcp_tools() -> None:
+    """MCP tools passed to _build_harness_options join the harness toolset."""
+
+    base = await _build_harness_options(Args(), Session(MemorySessionStorage()))
+    builtin_count = len(base.tools)
+
+    sentinel = next(iter(base.tools))  # reuse a real AgentTool as the "mcp" tool
+    opts = await _build_harness_options(
+        Args(), Session(MemorySessionStorage()), mcp_tools=[sentinel]
+    )
+    assert len(opts.tools) == builtin_count + 1
+
+
+async def test_build_harness_options_warns_on_on_disk_extension(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """On-disk extensions (beyond the 2 built-ins) trigger the security warning."""
+
+    # Isolate discovery: cwd = tmp project with one project-local extension;
+    # global agent dir → empty tmp so no real ~/.aelix extensions leak in.
+    (tmp_path / ".aelix" / "extensions").mkdir(parents=True)
+    (tmp_path / ".aelix" / "extensions" / "probe.py").write_text(
+        'def setup(aelix):\n    aelix.register_flag("probe_flag", type="bool", default=True)\n'
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("AELIX_CODING_AGENT_DIR", str(tmp_path / "empty_agent"))
+
+    opts = await _build_harness_options(Args(), Session(MemorySessionStorage()))
+    err = capsys.readouterr().err
+    assert "on-disk extension(s) with full system permissions" in err
+    # built-ins (2) + the discovered probe (1)
+    assert len(opts.extensions) == 3
+
+
+async def test_build_harness_options_no_warning_without_on_disk(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """No on-disk extensions → no security warning (only the 2 built-ins load)."""
+
+    monkeypatch.chdir(tmp_path)  # empty project, no .aelix/extensions
+    monkeypatch.setenv("AELIX_CODING_AGENT_DIR", str(tmp_path / "empty_agent"))
+
+    opts = await _build_harness_options(Args(), Session(MemorySessionStorage()))
+    err = capsys.readouterr().err
+    assert "full system permissions" not in err
+    assert len(opts.extensions) == 2

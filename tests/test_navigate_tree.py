@@ -96,6 +96,56 @@ async def test_navigate_tree_summarize_true_with_override_returns_summary() -> N
     _ = third_user_id
 
 
+async def test_generate_branch_summary_real_path_prepends_preamble(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Real (non-override) path: streams via stream_simple, prepends preamble.
+
+    Every other branch-summary test uses ``_branch_summarizer_override``; this
+    exercises the ported LLM path with a faked ``stream_simple`` so the wiring
+    (prompt + <conversation> wrapping + BRANCH_SUMMARY_PREAMBLE) is proven, not
+    just the test seam ('rails but no train' guard).
+    """
+
+    from aelix_agent_core.session.branch_summarization import (
+        BRANCH_SUMMARY_PREAMBLE,
+        generate_branch_summary,
+    )
+    from aelix_ai.streaming import AssistantDoneEvent, Model, TextDeltaEvent
+
+    captured: dict[str, Any] = {}
+
+    async def _fake_stream_simple(model: Any, context: Any, options: Any) -> Any:
+        captured["system_prompt"] = context.system_prompt
+        captured["user_text"] = context.messages[0].content[0].text
+
+        async def _gen() -> Any:
+            yield TextDeltaEvent(delta="branch body")
+            yield AssistantDoneEvent(
+                message=AssistantMessage(
+                    content=[TextContent(text="branch body")],
+                    stop_reason="end_turn",
+                )
+            )
+
+        return _gen()
+
+    monkeypatch.setattr("aelix_ai.streaming.stream_simple", _fake_stream_simple)
+
+    session, _, _ = await _seeded_session()
+    entries = await session.get_entries()
+    summary = await generate_branch_summary(
+        Model(id="mock", provider="mock"),
+        lambda _m: {"apiKey": "x", "headers": {}},
+        entries,
+    )
+
+    assert summary.startswith(BRANCH_SUMMARY_PREAMBLE)
+    assert "branch body" in summary
+    assert "<conversation>" in captured["user_text"]
+    assert "## Goal" in captured["user_text"]  # BRANCH_SUMMARY_PROMPT appended
+
+
 async def test_navigate_tree_cancel_via_hook() -> None:
     session, user_id, asst_id = await _seeded_session()
     # Add a third entry so the leaf is past asst_id and navigation actually
@@ -189,3 +239,50 @@ async def test_navigate_tree_phase_machine_blocks_concurrent_prompt() -> None:
     release.set()
     await task
     assert h.phase == "idle"
+
+
+async def test_generate_branch_summary_raises_on_stream_error() -> None:
+    """A provider AssistantErrorEvent → AgentHarnessError (no partial summary)."""
+
+    import pytest
+    from aelix_agent_core.harness.core import AgentHarnessError
+    from aelix_agent_core.session.branch_summarization import generate_branch_summary
+    from aelix_ai.streaming import AssistantErrorEvent, Model, TextDeltaEvent
+
+    async def _fake(_model: Any, _context: Any, _options: Any) -> Any:
+        async def _gen() -> Any:
+            yield TextDeltaEvent(delta="partial")
+            yield AssistantErrorEvent(error_message="provider boom")
+
+        return _gen()
+
+    import aelix_ai.streaming as streaming_mod
+
+    orig = streaming_mod.stream_simple
+    streaming_mod.stream_simple = _fake  # type: ignore[assignment]
+    try:
+        session, _, _ = await _seeded_session()
+        entries = await session.get_entries()
+        with pytest.raises(AgentHarnessError) as exc:
+            await generate_branch_summary(
+                Model(id="mock", provider="mock"),
+                lambda _m: {"apiKey": "x", "headers": {}},
+                entries,
+            )
+        assert exc.value.code == "invalid_state"
+    finally:
+        streaming_mod.stream_simple = orig  # type: ignore[assignment]
+
+
+async def test_generate_branch_summary_no_entries_returns_no_content() -> None:
+    """Empty entry list → 'No content to summarize' (Pi early return, no preamble)."""
+
+    from aelix_agent_core.session.branch_summarization import generate_branch_summary
+    from aelix_ai.streaming import Model
+
+    summary = await generate_branch_summary(
+        Model(id="mock", provider="mock"),
+        lambda _m: {"apiKey": "x", "headers": {}},
+        [],
+    )
+    assert summary == "No content to summarize"

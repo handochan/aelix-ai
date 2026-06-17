@@ -154,15 +154,40 @@ async def test_unbound_runtime_commands_raise_clear_error() -> None:
             await method("dummy") if method_name != "new_session" else await method()
 
 
-async def test_reload_is_aelix_additive_stub() -> None:
-    """Sprint 6h₅b W6 (P-364): ``reload`` is an Aelix-additive stub
-    raising :class:`NotImplementedError` (no in-place reload primitive
-    today — Pi's is a TUI helper). Exposed for Protocol conformance.
+async def test_reload_delegates_to_harness_reload_guard() -> None:
+    """``ctx.reload`` delegates to :meth:`AgentHarness.reload` (Pi parity).
+
+    With no settings_manager attached, the delegation reaches reload()'s guard
+    and raises :class:`AgentHarnessError("invalid_state")` — NOT the old
+    ``NotImplementedError`` stub. The changed error type/code is itself proof
+    the closure now routes through ``self.reload()``.
     """
 
     import pytest
+    from aelix_agent_core.harness.core import AgentHarnessError
 
     h = _new_harness()
     ctx = h.create_replaced_session_context()
-    with pytest.raises(NotImplementedError, match=r"reload"):
+    with pytest.raises(AgentHarnessError) as excinfo:
         await ctx.reload()
+    assert excinfo.value.code == "invalid_state"
+
+
+async def test_reload_delegation_succeeds_with_settings_manager() -> None:
+    """End-to-end: with a settings_manager attached, ``ctx.reload`` completes.
+
+    Proves the delegation actually FIRES the real reload chain (not just that a
+    unit stub is gone) — guards against the 'rails but no train' failure mode.
+    """
+
+    from aelix_ai.settings import SettingsManager
+
+    h = AgentHarness(
+        AgentHarnessOptions(
+            model=Model(id="mock", provider="mock"),
+            stream_fn=_stream(),
+            settings_manager=SettingsManager.in_memory(),
+        )
+    )
+    ctx = h.create_replaced_session_context()
+    await ctx.reload()  # must not raise

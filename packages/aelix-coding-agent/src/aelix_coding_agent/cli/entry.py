@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 import sys
 from pathlib import Path
 from typing import Literal
@@ -41,15 +42,17 @@ from aelix_agent_core.session.jsonl_repo import (
 )
 from aelix_agent_core.session.memory_storage import MemorySessionStorage
 from aelix_agent_core.session.session import Session
+from aelix_agent_core.types import AgentTool
 
 from aelix_coding_agent.builtin.guardrail import GuardrailExtension
 from aelix_coding_agent.builtin.permission import PermissionExtension
-from aelix_coding_agent.extensions.loader import load_extensions
+from aelix_coding_agent.extensions.loader import discover_and_load_extensions
+from aelix_coding_agent.mcp import McpClientManager
 from aelix_coding_agent.tools import create_all_tools
 
 from .agent_context import build_system_prompt, discover_context_files
 from .args import Args, parse_args, print_help
-from .config import VERSION
+from .config import VERSION, get_agent_dir, load_mcp_server_contribs
 from .file_processor import process_file_arguments
 from .initial_message import build_initial_message
 from .runtime_bootstrap import load_dotenv, register_providers, resolve_model
@@ -144,8 +147,30 @@ def _validate_continue_flag(parsed: Args) -> str | None:
     return None
 
 
+def _resolve_active_tools(parsed: Args) -> list[str] | None:
+    """Pi ``main.ts:369-375`` tool gating → harness ``active_tool_names``.
+
+    - ``--no-tools`` → ``[]`` (disable every tool).
+    - ``--tools a,b`` → ``[a, b]`` (explicit allowlist; the harness's F-9
+      validator rejects unknown names after full tool registration).
+    - else → ``None`` (all tools active — the Aelix default).
+
+    ``--no-builtin-tools`` (built-ins off, extension/MCP tools on) is NOT wired
+    here: ``active_tool_names`` is seeded before extensions register their
+    tools, so expressing it faithfully needs post-load tool knowledge. Deferred
+    (tracked) rather than shipped as a divergent approximation that would also
+    disable extension tools.
+    """
+
+    if parsed.no_tools:
+        return []
+    if parsed.tools:
+        return list(parsed.tools)
+    return None
+
+
 async def _build_harness_options(
-    parsed: Args, session: Session
+    parsed: Args, session: Session, *, mcp_tools: list[AgentTool] | None = None
 ) -> AgentHarnessOptions:
     """Assemble :class:`AgentHarnessOptions` from parsed CLI args.
 
@@ -169,17 +194,44 @@ async def _build_harness_options(
     # tools (read/write/edit/bash/grep/find/ls) + the base prompt make it an
     # actual coding agent. An explicit ``--system-prompt`` still overrides.
     tools = list(create_all_tools(cwd).values())
+    # MCP (Tier 4) tools, connected once in _async_main and shared across
+    # harness rebuilds, join the built-in toolset (``<server>__<tool>`` names).
+    if mcp_tools:
+        tools.extend(mcp_tools)
+    # --tools / --no-tools gating (Pi ``main.ts:369-375``).
+    active_tool_names = _resolve_active_tools(parsed)
     system_prompt = (
         parsed.system_prompt
         if parsed.system_prompt is not None
         else build_system_prompt(cwd)
     )
-    # Built-in safety extensions. GuardrailExtension FIRST so hard-deny
-    # patterns (e.g. ``rm -rf``) short-circuit via first-block-wins BEFORE the
-    # permission prompt is shown. ``load_extensions`` builds them against a
-    # single shared runtime, which the harness must reuse (``runtime=``) so the
-    # ``ctx.ui`` / ``ctx.has_ui`` bindings the TUI installs reach these handlers.
-    loaded = await load_extensions([GuardrailExtension(), PermissionExtension()])
+    # Extensions: built-in safety (Guardrail FIRST so hard-deny patterns like
+    # ``rm -rf`` short-circuit via first-block-wins BEFORE the permission
+    # prompt) PREPENDED ahead of on-disk + explicit ``--extension`` paths.
+    # ``--no-extensions`` disables auto-discovery (project-local + global +
+    # entry_points) but keeps explicit ``-e`` paths — Pi ``noExtensions``
+    # (``resource-loader.ts:395-399``). All build against ONE shared runtime
+    # the harness reuses (``runtime=``) so ``ctx.ui`` / ``ctx.has_ui`` bindings
+    # reach the handlers.
+    loaded = await discover_and_load_extensions(
+        [str(p) for p in parsed.extensions],
+        cwd=Path(cwd),
+        agent_dir=Path(get_agent_dir()),
+        prepend=[GuardrailExtension(), PermissionExtension()],
+        no_discovery=parsed.no_extensions,
+    )
+    for err in loaded.errors:
+        print(f"Warning: extension load: {err}", file=sys.stderr)
+    # Security (Aelix-additive hardening; Pi only warns in docs): on-disk
+    # extensions import + run arbitrary .py with FULL user privileges. Warn
+    # when any load beyond the 2 prepended built-ins.
+    on_disk = max(0, len(loaded.extensions) - 2)
+    if on_disk > 0:
+        print(
+            f"Warning: loaded {on_disk} on-disk extension(s) with full system "
+            "permissions from .aelix/extensions (project-local + global).",
+            file=sys.stderr,
+        )
     options = AgentHarnessOptions(
         model=model,
         session=session,
@@ -188,6 +240,7 @@ async def _build_harness_options(
         system_prompt=system_prompt,
         extensions=loaded.extensions,
         runtime=loaded.runtime,
+        active_tool_names=active_tool_names,
     )
 
     # Auto-discovered AGENTS.md project context (Pi ``--no-context-files`` gate),
@@ -214,6 +267,13 @@ async def _async_main(argv: list[str]) -> int:
         print(f"{prefix}{diag['message']}", file=sys.stderr)
     if any(d["type"] == "error" for d in parsed.diagnostics):
         return 1
+
+    # === --offline (Pi main.ts:425-427) ======================================
+    # Mirror Pi: ``--offline`` OR a pre-set ``PI_OFFLINE`` env both engage
+    # offline mode (Pi reads the flag with ``||`` over the env). Inert today
+    # (Aelix has no startup network operations) but preserves the contract.
+    if parsed.offline or os.environ.get("PI_OFFLINE"):
+        os.environ["PI_OFFLINE"] = "1"
 
     # === Help / version short-circuit ========================================
     if parsed.help:
@@ -320,8 +380,25 @@ async def _async_main(argv: list[str]) -> int:
     else:
         session = await _build_session(parsed, repo)
 
+    # MCP servers (Tier 4): connect ONCE here, share the connected tools across
+    # every harness rebuild (the tool closures hold live connections, so they
+    # survive rebuilds), and dispose ONCE in the finally block. A failed server
+    # warns and is skipped — one bad server never aborts the agent.
+    mcp_contribs, mcp_warnings = load_mcp_server_contribs(str(Path.cwd()))
+    for warning in mcp_warnings:
+        print(f"Warning: MCP config: {warning}", file=sys.stderr)
+    mcp_manager: McpClientManager | None = None
+    mcp_tools: list[AgentTool] = []
+    if mcp_contribs:
+        mcp_manager = McpClientManager(mcp_contribs)
+        for conn_err in await mcp_manager.connect_all():
+            print(f"Warning: MCP server failed: {conn_err}", file=sys.stderr)
+        mcp_tools = await mcp_manager.collect_agent_tools()
+
     async def _harness_factory(new_session: Session) -> AgentHarness:
-        opts = await _build_harness_options(parsed, new_session)
+        opts = await _build_harness_options(
+            parsed, new_session, mcp_tools=mcp_tools
+        )
         return AgentHarness(opts)
 
     harness = await _harness_factory(session)
@@ -372,6 +449,10 @@ async def _async_main(argv: list[str]) -> int:
         # error here is swallowed because the run already completed.
         with contextlib.suppress(Exception):
             await runtime.dispose()
+        # Tear down MCP connections (LIFO via each connection's AsyncExitStack).
+        if mcp_manager is not None:
+            with contextlib.suppress(Exception):
+                await mcp_manager.disconnect_all()
 
 
 def main_sync() -> None:

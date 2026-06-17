@@ -447,3 +447,29 @@ def test_generated_schemas_present() -> None:
         "slot-taxonomy.schema.json",
     ):
         assert (contracts_dir / name).exists(), f"missing {name}"
+
+
+def test_generated_schemas_match_models_no_drift() -> None:
+    """Content-equality drift guard (root-cause fix for the McpServerContrib.args
+    drift): the committed JSON Schemas MUST equal what the Pydantic models
+    generate. Runs the generator's ``--check`` mode so any additive/changed
+    contract field that isn't regenerated fails the gate — previously only file
+    existence was asserted, so a model change could silently desync the
+    cross-repo (aelix-web) contract.
+    """
+
+    import subprocess
+    import sys
+
+    repo_root = pathlib.Path(__file__).parent.parent.parent
+    result = subprocess.run(
+        [sys.executable, "scripts/generate_contracts_schemas.py", "--check"],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, (
+        "contracts JSON Schema drift detected — run "
+        "`python scripts/generate_contracts_schemas.py` and commit the result:\n"
+        + result.stderr
+    )

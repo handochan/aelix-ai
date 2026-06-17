@@ -169,3 +169,58 @@ async def test_discover_empty_dirs_returns_empty_result(tmp_path: Path) -> None:
     )
     assert result.extensions == []
     assert result.errors == []
+
+
+# === Sprint: built-ins prepend + --no-extensions (no_discovery) ============
+
+
+async def test_prepend_factories_load_before_discovered(tmp_path: Path) -> None:
+    """``prepend`` factories register FIRST, before any discovered extension."""
+
+    from aelix_coding_agent.builtin.guardrail import GuardrailExtension
+    from aelix_coding_agent.builtin.permission import PermissionExtension
+
+    cwd = tmp_path / "proj"
+    _write_ext(cwd / ".aelix" / "extensions" / "ext_p.py", "project_flag")
+
+    result = await discover_and_load_extensions(
+        [],
+        cwd=cwd,
+        agent_dir=tmp_path / "no_global",
+        prepend=[GuardrailExtension(), PermissionExtension()],
+    )
+    assert len(result.errors) == 0
+    assert len(result.extensions) == 3
+    # Built-ins first; the discovered project extension lands LAST.
+    assert "project_flag" not in result.extensions[0].flags
+    assert "project_flag" not in result.extensions[1].flags
+    assert "project_flag" in result.extensions[-1].flags
+
+
+async def test_no_discovery_skips_dirs_but_keeps_configured(tmp_path: Path) -> None:
+    """``no_discovery`` skips dir auto-scan (Pi noExtensions) but still loads
+    explicit configured paths + prepended built-ins."""
+
+    from aelix_coding_agent.builtin.guardrail import GuardrailExtension
+
+    cwd = tmp_path / "proj"
+    _write_ext(cwd / ".aelix" / "extensions" / "ext_local.py", "local_flag")
+    home = tmp_path / "home"
+    _write_ext(home / "extensions" / "ext_global.py", "global_flag")
+    explicit = tmp_path / "explicit" / "ext_e.py"
+    _write_ext(explicit, "explicit_flag")
+
+    result = await discover_and_load_extensions(
+        [str(explicit)],
+        cwd=cwd,
+        agent_dir=home,
+        prepend=[GuardrailExtension()],
+        no_discovery=True,
+    )
+    assert len(result.errors) == 0
+    flags = {f for ext in result.extensions for f in ext.flags}
+    # Auto-discovered dirs are skipped...
+    assert "local_flag" not in flags
+    assert "global_flag" not in flags
+    # ...but the explicit -e path still loads (Pi keeps cliEnabledExtensions).
+    assert "explicit_flag" in flags

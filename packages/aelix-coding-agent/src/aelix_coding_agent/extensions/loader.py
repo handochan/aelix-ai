@@ -144,6 +144,8 @@ async def discover_and_load_extensions(
     *,
     cwd: Path,
     agent_dir: Path | None = None,
+    prepend: list[ExtensionFactory] | None = None,
+    no_discovery: bool = False,
 ) -> LoadExtensionsResult:
     """Pi-parity 3-tier discovery + Aelix-additive entry_points pass.
 
@@ -183,6 +185,12 @@ async def discover_and_load_extensions(
     seen_ep: set[str] = set()
     errors: list[ExtensionLoadError] = []
 
+    # Aelix-additive built-ins (``prepend``) register FIRST; load-order
+    # precedence then follows Pi (resource-loader.ts) so discovered/user
+    # extensions can never shadow Guardrail/Permission.
+    if prepend:
+        all_entries.extend(prepend)
+
     def _push_entry(entry: Path | _ManifestEntry) -> None:
         # Sprint 6h₉b §B: dedupe by ``pkg_dir.resolve()`` for manifest
         # carriers (one manifest = one extension); legacy ``Path``
@@ -206,16 +214,19 @@ async def discover_and_load_extensions(
         seen_paths.add(resolved)
         all_entries.append(entry)
 
-    # 1. Project-local: cwd/.aelix/extensions/
-    local_dir = (cwd / ".aelix" / "extensions").resolve(strict=False)
-    for discovered in _discover_in_dir(local_dir, errors=errors):
-        _push_entry(discovered)
+    # 1+2: directory auto-discovery (skipped under ``no_discovery`` — Pi
+    # ``noExtensions`` keeps only explicit ``configured_paths``).
+    if not no_discovery:
+        # 1. Project-local: cwd/.aelix/extensions/
+        local_dir = (cwd / ".aelix" / "extensions").resolve(strict=False)
+        for discovered in _discover_in_dir(local_dir, errors=errors):
+            _push_entry(discovered)
 
-    # 2. Global: ~/.aelix/extensions/  (or override via agent_dir)
-    home_aelix = Path.home() / ".aelix" if agent_dir is None else agent_dir
-    global_dir = (home_aelix / "extensions").resolve(strict=False)
-    for discovered in _discover_in_dir(global_dir, errors=errors):
-        _push_entry(discovered)
+        # 2. Global: ~/.aelix/extensions/  (or override via agent_dir)
+        home_aelix = Path.home() / ".aelix" if agent_dir is None else agent_dir
+        global_dir = (home_aelix / "extensions").resolve(strict=False)
+        for discovered in _discover_in_dir(global_dir, errors=errors):
+            _push_entry(discovered)
 
     # 3. Explicit configured paths.
     for entry in configured_paths:
@@ -244,13 +255,14 @@ async def discover_and_load_extensions(
                 ExtensionLoadError(path=str(entry), error=str(exc))
             )
 
-    # 4. Aelix-additive: entry_points loaded LAST.
-    for ep_entry, ep_error in _discover_via_entry_points(seen_ep):
-        if ep_error is not None:
-            errors.append(ep_error)
-            continue
-        if ep_entry is not None:
-            all_entries.append(ep_entry)
+    # 4. Aelix-additive: entry_points loaded LAST (skipped under no_discovery).
+    if not no_discovery:
+        for ep_entry, ep_error in _discover_via_entry_points(seen_ep):
+            if ep_error is not None:
+                errors.append(ep_error)
+                continue
+            if ep_entry is not None:
+                all_entries.append(ep_entry)
 
     result = await load_extensions(all_entries, cwd=cwd)
     # Splice discovery-time errors in front of loader-time errors so the

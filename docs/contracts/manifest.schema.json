@@ -209,6 +209,13 @@
     "McpServerContrib": {
       "additionalProperties": false,
       "properties": {
+        "args": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Args",
+          "type": "array"
+        },
         "command": {
           "anyOf": [
             {

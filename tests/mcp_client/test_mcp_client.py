@@ -371,3 +371,45 @@ def test_env_none_default_inherit(monkeypatch: pytest.MonkeyPatch) -> None:
     assert env["FOO"] == "bar"
     assert "PATH" in env or len(env) > 1  # os.environ merged in
     assert os.environ  # sanity
+
+
+@pytest.mark.asyncio
+async def test_stdio_args_flow_to_server_parameters(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """McpServerContrib.args reaches StdioServerParameters (npx-style servers).
+
+    Proves the ADR fix replacing the hardcoded ``args=[]``. Captures the params
+    at the ``stdio_client`` seam and short-circuits before a real spawn.
+    """
+
+    import aelix_coding_agent.mcp.client as client_mod
+
+    captured: dict[str, object] = {}
+
+    def _fake_stdio_client(params: object) -> object:
+        captured["command"] = params.command  # type: ignore[attr-defined]
+        captured["args"] = list(params.args)  # type: ignore[attr-defined]
+        raise RuntimeError("stop-before-spawn")
+
+    monkeypatch.setattr(client_mod, "stdio_client", _fake_stdio_client)
+
+    contrib = McpServerContrib(
+        name="fs",
+        transport="stdio",
+        command="npx",
+        args=["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+    )
+    conn = McpServerConnection(contrib)
+    try:
+        async with conn:
+            pass
+    except Exception:  # noqa: BLE001 — the fake raises to avoid a real spawn
+        pass
+
+    assert captured.get("command") == "npx"
+    assert captured.get("args") == [
+        "-y",
+        "@modelcontextprotocol/server-filesystem",
+        "/tmp",
+    ]

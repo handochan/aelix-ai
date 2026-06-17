@@ -138,9 +138,7 @@ class McpServerConnection:
                 )
             params = StdioServerParameters(
                 command=self._contrib.command,
-                # Sprint 6h₉d: McpServerContrib has no args field yet;
-                # see §3.4 — args is a deferred McpServerContrib v2 field.
-                args=[],
+                args=list(self._contrib.args),
                 env=(
                     {**os.environ, **self._contrib.env}
                     if self._contrib.env
