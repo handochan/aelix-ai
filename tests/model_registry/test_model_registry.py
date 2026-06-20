@@ -10,7 +10,6 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-import pytest
 from aelix_ai.oauth import AuthStorage
 from aelix_ai.oauth.types import OAuthCredentials
 from aelix_ai.streaming import Model
@@ -56,18 +55,27 @@ async def test_in_memory_factory_passes_none_path(tmp_path: Path) -> None:
     assert isinstance(r, ModelRegistry)
 
 
-def test_constructor_raises_for_non_none_models_json_path(tmp_path: Path) -> None:
-    """Pi parity (Sprint 6f₁ §E): ``models_json_path != None`` raises."""
+async def test_constructor_with_nonexistent_models_json_loads_builtins(
+    tmp_path: Path,
+) -> None:
+    """P0 #4 (ADR-0140): a ``models_json_path`` that doesn't exist loads
+    built-ins only — the loader returns an empty custom result, no raise.
+    (Pre-0140 this raised :class:`NotImplementedError`.)
+    """
 
-    s = AuthStorage(path=tmp_path / "auth.json")
-    with pytest.raises(NotImplementedError):
-        ModelRegistry(s, models_json_path="/tmp/models.json")
+    s = await _ready_storage(tmp_path)
+    r = ModelRegistry(s, models_json_path=str(tmp_path / "nope.json"))
+    assert len(r.get_all()) >= 10
+    assert r.get_error() is None
 
 
-def test_create_factory_raises_for_non_none_path(tmp_path: Path) -> None:
-    s = AuthStorage(path=tmp_path / "auth.json")
-    with pytest.raises(NotImplementedError):
-        ModelRegistry.create(s, models_json_path="/tmp/models.json")
+async def test_create_factory_with_explicit_path_loads_builtins(
+    tmp_path: Path,
+) -> None:
+    s = await _ready_storage(tmp_path)
+    r = ModelRegistry.create(s, models_json_path=str(tmp_path / "nope.json"))
+    assert isinstance(r, ModelRegistry)
+    assert len(r.get_all()) >= 10
 
 
 # === Model access ==============================================================
@@ -188,9 +196,14 @@ async def test_get_api_key_and_headers_returns_ok_true(tmp_path: Path) -> None:
     assert resolved.headers == {}
 
 
-async def test_get_api_key_and_headers_returns_ok_false_when_missing(
+async def test_get_api_key_and_headers_ok_true_with_no_key_when_missing(
     tmp_path: Path,
 ) -> None:
+    """P0 #4 (ADR-0140): pi-faithful — a provider with NO resolvable key
+    returns ``ok=True`` with ``api_key=None`` (OAuth-only providers attach
+    their bearer via ``model.headers``). Pre-0140 this returned ``ok=False``.
+    """
+
     s = await _ready_storage(tmp_path)
     r = ModelRegistry.in_memory(s)
     m = r.find("anthropic", "claude-sonnet-4-5")
@@ -199,9 +212,9 @@ async def test_get_api_key_and_headers_returns_ok_false_when_missing(
     saved = {k: os.environ.pop(k, None) for k in keys_to_clear}
     try:
         resolved = await r.get_api_key_and_headers(m)
-        assert resolved.ok is False
-        assert resolved.error is not None
-        assert "anthropic" in resolved.error
+        assert resolved.ok is True
+        assert resolved.api_key is None
+        assert resolved.headers == {}
     finally:
         for k, v in saved.items():
             if v is not None:

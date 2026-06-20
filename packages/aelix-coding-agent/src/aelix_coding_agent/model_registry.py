@@ -20,20 +20,35 @@ Surface (Pi parity):
 - Display: :meth:`get_provider_display_name`
 
 The constructor takes an :class:`AuthStorage` (Sprint 6c+6e) +
-optional ``models_json_path`` (raises :class:`NotImplementedError`
-until Sprint 6g).
+optional ``models_json_path``. P0 #4 (ADR-0140) lands the real
+``models.json`` loader (custom models + provider/model overrides +
+``apiKey``/header config-value indirection) — see
+:mod:`aelix_coding_agent.models_json`.
 """
 
 from __future__ import annotations
 
 import asyncio
+import os
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
-from aelix_ai.models import get_models, get_providers
 from aelix_ai.oauth import AuthStorage
+from aelix_ai.oauth._resolve_config import (
+    resolve_config_value_or_throw,
+    resolve_config_value_uncached,
+    resolve_headers_or_throw,
+)
 from aelix_ai.oauth.types import AuthStatus, OAuthProvider
 from aelix_ai.streaming import Model
+
+from .models_json import (
+    empty_custom_models_result,
+    load_built_in_models,
+    load_custom_models,
+    merge_custom_models,
+)
 
 
 @dataclass
@@ -70,12 +85,32 @@ class ProviderConfigInput:
     Authorization-vs-x-api-key, not a header name.
     """
 
+    # Pi parity: ``ProviderConfigInput.name`` — display name source for
+    # :meth:`get_provider_display_name` (P0 #4 / ADR-0140).
+    name: str | None = None
     api_key: str | None = None
     headers: dict[str, str] | None = None
     auth_header: bool | None = None
     oauth: OAuthProvider | None = None
     # Custom catalog entries — Sprint 6g wires the merge path.
     models: dict[str, Model] | None = None
+
+
+@dataclass
+class ProviderRequestConfig:
+    """Pi parity: ``model-registry.ts::ProviderRequestConfig``.
+
+    The request-time auth subset extracted from a ``models.json`` provider
+    block (or a dynamically-registered :class:`ProviderConfigInput`) and
+    consulted by :meth:`ModelRegistry.get_api_key_and_headers` /
+    :meth:`get_provider_auth_status`. ``api_key`` may be a literal, an
+    env-var name, or a ``!command`` indirection (resolved lazily at
+    request time via :func:`aelix_ai.oauth._resolve_config`).
+    """
+
+    api_key: str | None = None
+    headers: dict[str, str] | None = None
+    auth_header: bool | None = None
 
 
 # Pi parity: ``model-registry.ts`` — provider display names. Sprint 6f₁
@@ -93,10 +128,10 @@ _BUILT_IN_DISPLAY_NAMES: dict[str, str] = {
 class ModelRegistry:
     """Pi parity: ``coding-agent/src/core/model-registry.ts:ModelRegistry``.
 
-    Sprint 6f₁ surface — 14 public methods. The ``models.json`` loader
-    (Pi ``loadCustomModels(path)``) is deferred to Sprint 6g; passing
-    a non-:data:`None` ``models_json_path`` raises
-    :class:`NotImplementedError`.
+    Sprint 6f₁ surface — 14 public methods. P0 #4 (ADR-0140) lands the
+    ``models.json`` loader (Pi ``loadCustomModels(path)``): a non-``None``
+    ``models_json_path`` is read on every load and may add custom
+    providers/models or override built-ins.
     """
 
     def __init__(
@@ -105,16 +140,16 @@ class ModelRegistry:
         models_json_path: str | None = None,
     ) -> None:
         # Pi parity: constructor stores ``authStorage`` + ``modelsJsonPath``
-        # + ``modifyModelsCallbacks``. Sprint 6f₁ ships in-memory only.
-        if models_json_path is not None:
-            raise NotImplementedError(
-                "models.json loading deferred to Sprint 6g "
-                "(ADR-0065 §Carry-forward / ADR-0066)"
-            )
+        # then runs ``loadModels``. ``models_json_path=None`` = in-memory
+        # (no models.json); a path is read on every load (P0 #4 / ADR-0140).
         self._auth_storage = auth_storage
         self._models_json_path = models_json_path
         self._models: list[Model] = []
-        self._provider_request_configs: dict[str, ProviderConfigInput] = {}
+        # Pi ``providerRequestConfigs`` / ``modelRequestHeaders`` — rebuilt
+        # from models.json (+ re-applied registered providers) on every
+        # load; cleared at the top of :meth:`_load_models`.
+        self._provider_request_configs: dict[str, ProviderRequestConfig] = {}
+        self._model_request_headers: dict[str, dict[str, str]] = {}
         self._registered_providers: dict[str, ProviderConfigInput] = {}
         self._load_error: str | None = None
         self._load_models()
@@ -126,8 +161,18 @@ class ModelRegistry:
         auth_storage: AuthStorage,
         models_json_path: str | None = None,
     ) -> ModelRegistry:
-        """Pi parity: ``model-registry.ts::ModelRegistry.create``."""
+        """Pi parity: ``model-registry.ts::ModelRegistry.create``.
 
+        Defaults ``models_json_path`` to ``<agent-dir>/models.json`` (Pi
+        ``join(getAgentDir(), "models.json")``) when omitted, so the CLI
+        picks up a user's custom models without an explicit path. Pass an
+        explicit path to override; use :meth:`in_memory` for no models.json.
+        """
+
+        if models_json_path is None:
+            from .cli.config import get_agent_dir
+
+            models_json_path = str(Path(get_agent_dir()) / "models.json")
         return cls(auth_storage, models_json_path)
 
     @classmethod
@@ -191,6 +236,12 @@ class ModelRegistry:
 
         if get_env_api_key(provider):
             return True
+        # Pi parity: a models.json (or re-applied registered) provider
+        # ``apiKey`` counts as configured auth even before it's resolved
+        # (Pi ``providerRequestConfigs.get(p)?.apiKey !== undefined``).
+        request_config = self._provider_request_configs.get(provider)
+        if request_config is not None and request_config.api_key is not None:
+            return True
         # Dynamic registration: ProviderConfigInput.api_key or oauth.
         config = self._registered_providers.get(provider)
         if config is not None:
@@ -224,48 +275,120 @@ class ModelRegistry:
           callback; the registry only forwards what
           :class:`ProviderConfigInput` carries here).
 
-        Sprint 6f₁ ships the canonical bridge — Sprint 6g extends with
-        models.json-driven header packs.
+        Resolution order (Pi):
+
+        1. ``api_key`` = AuthStorage cascade (``include_fallback=False``);
+           else the ``models.json`` provider ``apiKey`` resolved via
+           :func:`resolve_config_value_or_throw` (env-var / ``!command`` /
+           literal indirection).
+        2. ``headers`` = ``model.headers`` < provider request-config headers
+           < per-model request headers (each value resolved through the
+           same indirection; later sources win).
+        3. If the provider config sets ``authHeader``, attach
+           ``Authorization: Bearer <api_key>`` (erroring when no key).
+
+        Pi parity (P0 #4 / ADR-0140): a provider with NO resolvable key now
+        returns ``ok=True`` with ``api_key=None`` (OAuth-only providers
+        attach their bearer via ``model.headers`` from ``modify_models``);
+        the prior ``ok=False`` "No configured auth" early-return diverged.
+        Any resolution failure (e.g. a ``!command`` that produced no
+        output) is reported as ``ok=False`` with the message (Pi try/catch).
         """
 
-        provider = model.provider
-        api_key = await self._auth_storage.get_api_key_cascade(
-            provider, include_fallback=False
-        )
-        headers: dict[str, str] = {}
-        # Pi parity: ProviderConfigInput.headers merged onto the
-        # outgoing request.
-        config = self._registered_providers.get(provider)
-        if config is not None and config.headers is not None:
-            headers.update(config.headers)
-        if api_key is None:
-            return ResolvedRequestAuth(
-                ok=False,
-                error=f"No configured auth for provider: {provider}",
+        try:
+            provider = model.provider
+            provider_config = self._provider_request_configs.get(provider)
+
+            api_key = await self._auth_storage.get_api_key_cascade(
+                provider, include_fallback=False
             )
-        return ResolvedRequestAuth(ok=True, api_key=api_key, headers=headers)
+            if (
+                api_key is None
+                and provider_config is not None
+                and provider_config.api_key
+            ):
+                api_key = resolve_config_value_or_throw(
+                    provider_config.api_key,
+                    f'API key for provider "{provider}"',
+                )
+
+            provider_headers = resolve_headers_or_throw(
+                provider_config.headers if provider_config is not None else None,
+                f'provider "{provider}"',
+            )
+            model_headers = resolve_headers_or_throw(
+                self._model_request_headers.get(
+                    self._get_model_request_key(provider, model.id)
+                ),
+                f'model "{provider}/{model.id}"',
+            )
+
+            headers: dict[str, str] = {}
+            if model.headers or provider_headers or model_headers:
+                headers = {
+                    **(model.headers or {}),
+                    **(provider_headers or {}),
+                    **(model_headers or {}),
+                }
+
+            if provider_config is not None and provider_config.auth_header:
+                if not api_key:
+                    return ResolvedRequestAuth(
+                        ok=False, error=f'No API key found for "{provider}"'
+                    )
+                headers = {**headers, "Authorization": f"Bearer {api_key}"}
+
+            return ResolvedRequestAuth(ok=True, api_key=api_key, headers=headers)
+        except Exception as exc:  # noqa: BLE001 — Pi reports the message.
+            return ResolvedRequestAuth(ok=False, error=str(exc))
 
     async def get_api_key_for_provider(self, provider: str) -> str | None:
         """Pi parity: ``model-registry.ts::getApiKeyForProvider``.
 
-        Thin wrapper over :meth:`AuthStorage.get_api_key_cascade` so the
-        registry is the single source of truth for resolved keys.
+        AuthStorage cascade first; else the ``models.json`` provider
+        ``apiKey`` resolved uncached (env-var / ``!command`` / literal).
         """
 
-        return await self._auth_storage.get_api_key_cascade(
+        api_key = await self._auth_storage.get_api_key_cascade(
             provider, include_fallback=False
         )
+        if api_key is not None:
+            return api_key
+        provider_config = self._provider_request_configs.get(provider)
+        if provider_config is not None and provider_config.api_key:
+            return resolve_config_value_uncached(provider_config.api_key)
+        return None
 
     async def get_provider_auth_status(self, provider: str) -> AuthStatus:
         """Pi parity: ``model-registry.ts::getProviderAuthStatus``.
 
         Delegates to :meth:`AuthStorage.get_auth_status` for the
         layered-source resolution (stored / runtime / environment /
-        fallback). Reports source WITHOUT exposing the credential value
-        or refreshing OAuth tokens.
+        fallback). When no source resolves, falls back to the
+        ``models.json`` provider ``apiKey`` and reports its source
+        (``models_json_command`` for a ``!command``, ``environment`` when
+        the value names a set env var, else ``models_json_key``). Reports
+        source WITHOUT exposing the credential value or refreshing OAuth.
         """
 
-        return await self._auth_storage.get_auth_status(provider)
+        auth_status = await self._auth_storage.get_auth_status(provider)
+        if auth_status.source:
+            return auth_status
+
+        provider_config = self._provider_request_configs.get(provider)
+        provider_api_key = (
+            provider_config.api_key if provider_config is not None else None
+        )
+        if not provider_api_key:
+            return auth_status
+
+        if provider_api_key.startswith("!"):
+            return AuthStatus(configured=True, source="models_json_command")
+        if os.environ.get(provider_api_key):
+            return AuthStatus(
+                configured=True, source="environment", label=provider_api_key
+            )
+        return AuthStatus(configured=True, source="models_json_key")
 
     def is_using_oauth(self, model: Model) -> bool:
         """Pi parity: ``model-registry.ts::isUsingOAuth``.
@@ -355,12 +478,80 @@ class ModelRegistry:
         wired through models.json.
         """
 
+        # P0 #4 (ADR-0140): a registered / models.json provider ``name``
+        # takes precedence (Pi ``registeredProvider?.name`` first). Two
+        # INTENTIONAL divergences from Pi (cosmetic, off the loader data
+        # path) are kept so this sprint introduces no UI shift:
+        #   1. the built-in display map sits ABOVE the OAuth-registry name
+        #      lookup (Pi checks ``oauthProvider?.name`` before ``BUILT_IN``)
+        #      — preserves bare built-in names ("Anthropic", not "Anthropic
+        #      (Claude Pro/Max)");
+        #   2. the final fallback title-cases an unknown id (``my-prov`` →
+        #      ``My-Prov``) where Pi returns the RAW id — the pre-existing
+        #      Sprint 6f₁ behavior, retained for back-compat.
+        # The full Pi precedence is a separate P2-cosmetic item.
+        config = self._registered_providers.get(provider)
+        if config is not None and config.name:
+            return config.name
         if provider in _BUILT_IN_DISPLAY_NAMES:
             return _BUILT_IN_DISPLAY_NAMES[provider]
-        config = self._registered_providers.get(provider)
-        if config is not None and config.oauth is not None:
+        if config is not None and config.oauth is not None and config.oauth.name:
             return config.oauth.name
         return provider.title()
+
+    # ── models.json request-config helpers (Pi parity) ─────────────
+    @staticmethod
+    def _get_model_request_key(provider: str, model_id: str) -> str:
+        """Pi parity: ``model-registry.ts::getModelRequestKey``."""
+
+        return f"{provider}:{model_id}"
+
+    def _store_provider_request_config(
+        self,
+        provider_name: str,
+        *,
+        api_key: str | None,
+        headers: dict[str, str] | None,
+        auth_header: bool | None,
+    ) -> None:
+        """Pi parity: ``model-registry.ts::storeProviderRequestConfig``.
+
+        Only stores a config carrying at least one of
+        ``apiKey``/``headers``/``authHeader`` (Pi early-returns otherwise).
+        """
+
+        if not api_key and not headers and not auth_header:
+            return
+        self._provider_request_configs[provider_name] = ProviderRequestConfig(
+            api_key=api_key, headers=headers, auth_header=auth_header
+        )
+
+    def _store_provider_request_config_from_config(
+        self, provider_name: str, provider_config: dict[str, Any]
+    ) -> None:
+        """``loadCustomModels`` callback — adapts a JSON provider block.
+
+        Pi passes the whole ``providerConfig`` to ``storeProviderRequestConfig``
+        which reads ``apiKey``/``headers``/``authHeader`` off it.
+        """
+
+        self._store_provider_request_config(
+            provider_name,
+            api_key=provider_config.get("apiKey"),
+            headers=provider_config.get("headers"),
+            auth_header=provider_config.get("authHeader"),
+        )
+
+    def _store_model_headers(
+        self, provider: str, model_id: str, headers: dict[str, str] | None
+    ) -> None:
+        """Pi parity: ``model-registry.ts::storeModelHeaders``."""
+
+        key = self._get_model_request_key(provider, model_id)
+        if not headers or len(headers) == 0:
+            self._model_request_headers.pop(key, None)
+            return
+        self._model_request_headers[key] = headers
 
     # ── Loading pipeline ───────────────────────────────────────────
     def _load_models(self) -> None:
@@ -368,34 +559,60 @@ class ModelRegistry:
 
         Pipeline:
 
-        1. Load built-ins from :func:`aelix_ai.models.get_providers` +
-           :func:`aelix_ai.models.get_models` (Pi
-           ``loadBuiltInModels``).
-        2. (Sprint 6g) Load custom from :data:`_models_json_path`.
-        3. Apply OAuth ``modify_models`` callback for every registered
-           OAuth provider that has live credentials in
-           :class:`AuthStorage` (Pi P-132).
+        1. Load custom models + overrides from ``models.json`` (P0 #4 /
+           ADR-0140). The per-load request-config maps are cleared first,
+           then repopulated via the
+           :meth:`_store_provider_request_config_from_config` /
+           :meth:`_store_model_headers` callbacks. A parse/validate failure
+           is recorded on ``_load_error`` (built-ins still load).
+        2. Load built-ins with provider/model overrides applied, then merge
+           the custom models on top (custom wins on a ``(provider, id)``
+           conflict).
+        3. Re-apply dynamically-registered providers' request configs so
+           they survive the map clear (Pi rebuilds these in ``refresh``).
+        4. Apply each OAuth provider's ``modify_models`` callback when live
+           credentials exist (Pi P-132).
 
-        Sprint 6f W6 (P-175): ``_load_error`` is cleared at the top
-        of every call so a successful reload after a transient failure
-        actually drops the stale error string. Multiple provider
-        failures within one pass are joined with newlines so
-        :meth:`get_error` surfaces every cause.
+        Sprint 6f W6 (P-175): multiple provider failures within one pass
+        are joined with newlines so :meth:`get_error` surfaces every cause.
         """
 
-        # P-175: reset error state before reloading so successful
-        # refreshes drop stale failures. Multi-provider failures
-        # within this pass accumulate via newline join below.
-        self._load_error = None
+        # Pi parity: the request-config maps are fully rebuilt from the
+        # current models.json each load, so clear them first.
+        self._provider_request_configs.clear()
+        self._model_request_headers.clear()
 
-        # Step 1: built-ins.
-        loaded: list[Model] = []
-        for provider in get_providers():
-            loaded.extend(get_models(provider))
+        # Step 1: custom models + overrides from models.json.
+        if self._models_json_path is not None:
+            result = load_custom_models(
+                self._models_json_path,
+                store_provider_request_config=(
+                    self._store_provider_request_config_from_config
+                ),
+                store_model_headers=self._store_model_headers,
+            )
+        else:
+            result = empty_custom_models_result()
+        # P-175: a successful load drops any stale error (result.error is
+        # None on success); a failed parse keeps built-ins + records why.
+        self._load_error = result.error
 
-        # Step 2: Sprint 6g — load custom from models.json.
+        # Step 2: built-ins (with overrides) + merge custom on top.
+        built_in = load_built_in_models(result.overrides, result.model_overrides)
+        loaded = merge_custom_models(built_in, result.models)
 
-        # Step 3: OAuth modify_models callbacks (Pi P-132 wire-up).
+        # Step 3: re-apply dynamically-registered providers' request configs
+        # (register_provider stores into _registered_providers; the maps
+        # were just cleared above).
+        for name, config in self._registered_providers.items():
+            self._store_provider_request_config(
+                name,
+                api_key=config.api_key,
+                headers=config.headers,
+                auth_header=config.auth_header,
+            )
+
+        # Step 4: OAuth modify_models callbacks (Pi P-132 wire-up).
         # Consult every registered OAuth provider; if AuthStorage has a
         # live credential AND the provider exposes ``modify_models``,
         # invoke it. Pi parity: per-provider error swallowed onto
@@ -491,5 +708,6 @@ class ModelRegistry:
 __all__ = [
     "ModelRegistry",
     "ProviderConfigInput",
+    "ProviderRequestConfig",
     "ResolvedRequestAuth",
 ]
