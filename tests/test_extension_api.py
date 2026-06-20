@@ -117,11 +117,59 @@ def test_register_flag_stores_default() -> None:
     assert ext.flags["verbose"].type == "bool"
 
 
-def test_get_flag_returns_default_before_cli_override() -> None:
+# === P0 #7 item 1 — get_flag reads runtime.flag_values (pi loader.ts:246-267) ===
+
+
+def test_register_flag_seeds_flag_values_with_default() -> None:
+    """``register_flag`` seeds ``runtime.flag_values`` (pi loader.ts:251-253)."""
+
+    api, _, rt = _make_api()
+    api.register_flag("verbose", type="bool", default=True)
+    assert rt.flag_values["verbose"] is True
+
+
+def test_get_flag_returns_seeded_default() -> None:
+    """``get_flag`` reads the value seeded at registration time."""
+
     api, _, _ = _make_api()
     api.register_flag("debug", type="bool", default=True)
-    # Phase 1.2: always returns default (no CLI override yet).
     assert api.get_flag("debug") is True
+
+
+def test_get_flag_runtime_value_takes_precedence_over_default() -> None:
+    """A ``set_flag_value`` override wins over the registered default (precedence)."""
+
+    api, _, rt = _make_api()
+    api.register_flag("debug", type="bool", default=True)
+    rt.set_flag_value("debug", False)
+    assert api.get_flag("debug") is False
+
+
+def test_register_flag_does_not_overwrite_existing_flag_value() -> None:
+    """Re-registering with a new default does NOT clobber an already-set value.
+
+    Pi ``!flagValues.has(name)`` guard (loader.ts:251).
+    """
+
+    api, _, rt = _make_api()
+    api.register_flag("debug", type="bool", default=True)
+    rt.set_flag_value("debug", False)
+    # Second registration with a different default must not re-seed.
+    api.register_flag("debug", type="bool", default=True)
+    assert rt.flag_values["debug"] is False
+    assert api.get_flag("debug") is False
+
+
+def test_get_flag_no_default_returns_none() -> None:
+    """A flag registered without a default is unseeded → ``get_flag`` is ``None``.
+
+    Pi reads ``flagValues.get(name)`` which is ``undefined`` when never seeded.
+    """
+
+    api, _, rt = _make_api()
+    api.register_flag("plain", type="str")
+    assert "plain" not in rt.flag_values
+    assert api.get_flag("plain") is None
 
 
 def test_get_flag_returns_none_for_unknown_flag() -> None:
@@ -289,6 +337,81 @@ def test_add_cleanup_returns_unregister_callable() -> None:
 
     unreg()
     assert cleanup not in ext.cleanups
+
+
+# === P0 #7 item 2 — register*/get_flag assert_active on a stale runtime ===
+
+
+def _noop_handler(event: Any, ctx: Any) -> None:
+    return None
+
+
+def test_on_raises_on_stale_runtime() -> None:
+    api, _, rt = _make_api()
+    rt.invalidate("disposed")
+    with pytest.raises(ExtensionError) as exc_info:
+        api.on("context", _noop_handler)
+    assert exc_info.value.code == "stale"
+
+
+def test_register_tool_raises_on_stale_runtime() -> None:
+    api, _, rt = _make_api()
+    rt.invalidate("disposed")
+    tool = AgentTool(name="late", execute=_noop_execute)
+    with pytest.raises(ExtensionError) as exc_info:
+        api.register_tool(tool)
+    assert exc_info.value.code == "stale"
+
+
+def test_register_flag_raises_on_stale_runtime() -> None:
+    api, _, rt = _make_api()
+    rt.invalidate("disposed")
+    with pytest.raises(ExtensionError) as exc_info:
+        api.register_flag("x", type="bool", default=True)
+    assert exc_info.value.code == "stale"
+
+
+def test_get_flag_raises_on_stale_runtime() -> None:
+    api, _, rt = _make_api()
+    api.register_flag("x", type="bool", default=True)
+    rt.invalidate("disposed")
+    with pytest.raises(ExtensionError) as exc_info:
+        api.get_flag("x")
+    assert exc_info.value.code == "stale"
+
+
+def test_register_command_raises_on_stale_runtime() -> None:
+    api, _, rt = _make_api()
+    rt.invalidate("disposed")
+    with pytest.raises(ExtensionError) as exc_info:
+        api.register_command("c", handler=_noop_handler)
+    assert exc_info.value.code == "stale"
+
+
+def test_register_shortcut_raises_on_stale_runtime() -> None:
+    api, _, rt = _make_api()
+    rt.invalidate("disposed")
+    with pytest.raises(ExtensionError) as exc_info:
+        api.register_shortcut("ctrl+x", handler=_noop_handler)
+    assert exc_info.value.code == "stale"
+
+
+def test_register_message_renderer_raises_on_stale_runtime() -> None:
+    api, _, rt = _make_api()
+    rt.invalidate("disposed")
+    with pytest.raises(ExtensionError) as exc_info:
+        api.register_message_renderer("custom", _noop_handler)
+    assert exc_info.value.code == "stale"
+
+
+def test_add_cleanup_raises_on_stale_runtime() -> None:
+    """Aelix-additive guard (item 2): stale runtime rejects cleanup registration."""
+
+    api, _, rt = _make_api()
+    rt.invalidate("disposed")
+    with pytest.raises(ExtensionError) as exc_info:
+        api.add_cleanup(lambda: None)
+    assert exc_info.value.code == "stale"
 
 
 # === H-3: stale ctx raises for is_idle() and abort() after dispose ===

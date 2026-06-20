@@ -1,15 +1,29 @@
-"""ExtensionCommandContext (Sprint 5b §D, ADR-0042).
+"""ExtensionCommandContext (Sprint 5b §D, ADR-0042; P0 #7 item 4).
 
 Pi parity ``ExtensionCommandContext`` (``types.ts:333-364``) extends
 :class:`ExtensionContext` with 6 lifecycle methods exposed to slash-command
-handlers. Sprint 5b lands 4 of 6 (P-35): ``wait_for_idle`` / ``fork`` /
-``navigate_tree`` / ``reload``. ``new_session`` / ``switch_session`` are
-deferred to Phase 5 (CLI lifecycle).
+handlers: ``wait_for_idle`` / ``new_session`` / ``fork`` / ``navigate_tree`` /
+``switch_session`` / ``reload``.
+
+Sprint 5b landed 4 of 6 (``wait_for_idle`` / ``fork`` / ``navigate_tree`` /
+``reload``); ``new_session`` / ``switch_session`` raised a "deferred" error.
+
+P0 #7 item 4 closes the gap: ``new_session`` / ``switch_session`` now delegate
+to :class:`AgentSessionRuntime` (Pi ``runner.ts:636-668`` overlays delegating
+to ``newSessionHandler`` / ``switchSessionHandler`` / ``forkHandler``) when an
+:class:`AgentSessionRuntime` is bound; ``fork`` is realigned to Pi's
+``fork(entryId: string, options)`` signature (Pi ``types.ts:341-344``) and
+delegates to :meth:`AgentSessionRuntime.fork` when bound, keeping
+:meth:`JsonlSessionRepo.fork` as the unattached fallback.
+
+The optional ``with_session`` callback flows into the runtime, which already
+produces the :class:`ReplacedSessionContext` handle via
+``finishSessionReplacement`` → ``create_replaced_session_context``.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from aelix_coding_agent.extensions.api import (
     ExtensionContext,
@@ -23,21 +37,29 @@ if TYPE_CHECKING:
         NavigateTreeOptions,
         NavigateTreeResult,
     )
+    from aelix_agent_core.runtime.agent_session_runtime import (
+        AgentSessionRuntime,
+    )
+    from aelix_agent_core.runtime._types import (
+        ReplacedSessionContext,
+        RuntimeReplaceResult,
+    )
     from aelix_agent_core.session import Session
     from aelix_agent_core.session.jsonl_repo import (
         JsonlSessionMetadata,
         JsonlSessionRepo,
     )
-    from aelix_agent_core.session.repo_utils import ForkOptions
+    from aelix_agent_core.session.repo_utils import ForkOptions, ForkPosition
 
 
 class ExtensionCommandContext(ExtensionContext):
-    """Pi parity ``ExtensionCommandContext`` (Sprint 5b §D, ADR-0042).
+    """Pi parity ``ExtensionCommandContext`` (Sprint 5b §D, ADR-0042; P0 #7 item 4).
 
     Constructed by the CLI command dispatcher; carries the same fields as a
-    plain :class:`ExtensionContext` plus 4 lifecycle methods (Sprint 5b lands
-    4 of 6; ``new_session`` + ``switch_session`` raise until Phase 5 lands
-    the ``SessionManager.replaceSession`` plumbing).
+    plain :class:`ExtensionContext` plus 6 lifecycle methods. ``new_session`` /
+    ``switch_session`` / ``fork`` delegate to a bound
+    :class:`AgentSessionRuntime` (Pi ``runner.ts:636-668``); ``fork`` falls back
+    to :meth:`JsonlSessionRepo.fork` when no runtime is bound.
     """
 
     def __init__(
@@ -46,11 +68,16 @@ class ExtensionCommandContext(ExtensionContext):
         *,
         harness: AgentHarness,
         repo: JsonlSessionRepo | None = None,
+        session_runtime: AgentSessionRuntime | None = None,
         **kwargs: Any,
     ) -> None:
         super().__init__(runtime, **kwargs)
         object.__setattr__(self, "_harness", harness)
         object.__setattr__(self, "_repo", repo)
+        # Distinct slot from ``_runtime`` (the ``_ExtensionRuntime``); this
+        # holds the AgentSessionRuntime command surface (Pi
+        # ``newSessionHandler`` / ``forkHandler`` / ``switchSessionHandler``).
+        object.__setattr__(self, "_runtime_session", session_runtime)
 
     async def wait_for_idle(self) -> None:
         """Pi parity ``waitForIdle`` — block until phase returns to idle."""
@@ -59,18 +86,46 @@ class ExtensionCommandContext(ExtensionContext):
 
     async def fork(
         self,
-        source: JsonlSessionMetadata,
-        options: ForkOptions,
-    ) -> Session:
-        """Pi parity ``fork`` — delegates to :meth:`JsonlSessionRepo.fork`."""
+        entry_id: str | JsonlSessionMetadata,
+        options: Any | None = None,
+    ) -> RuntimeReplaceResult | Session:
+        """Pi parity ``fork`` (``types.ts:341-344``).
+
+        Pi shape: ``fork(entryId: string, options?: {position?, withSession?})``.
+
+        When an :class:`AgentSessionRuntime` is bound (``session_runtime``),
+        delegate to :meth:`AgentSessionRuntime.fork` with the realigned
+        ``(entry_id, position, with_session)`` shape — this is the Pi-faithful
+        ``forkHandler`` path (Pi ``runner.ts:637``).
+
+        When no runtime is bound, fall back to the legacy
+        :meth:`JsonlSessionRepo.fork` path (``source: JsonlSessionMetadata``,
+        ``options: ForkOptions``) for callers that drive the repo directly.
+        """
+
+        session_runtime = object.__getattribute__(self, "_runtime_session")
+        if session_runtime is not None:
+            position: ForkPosition = "before"
+            with_session: (
+                Callable[[ReplacedSessionContext], Awaitable[None]] | None
+            ) = None
+            if options is not None:
+                position = _opt(options, "position", "before")
+                with_session = _opt(options, "with_session", None)
+            return await session_runtime.fork(
+                entry_id,  # type: ignore[arg-type]
+                position=position,
+                with_session=with_session,
+            )
 
         repo = object.__getattribute__(self, "_repo")
         if repo is None:
             raise ExtensionError(
                 "invalid_state",
-                "ExtensionCommandContext.fork() requires a JsonlSessionRepo binding.",
+                "ExtensionCommandContext.fork() requires either an "
+                "AgentSessionRuntime binding or a JsonlSessionRepo binding.",
             )
-        return await repo.fork(source, options)
+        return await repo.fork(entry_id, options)  # type: ignore[arg-type]
 
     async def navigate_tree(
         self,
@@ -88,25 +143,77 @@ class ExtensionCommandContext(ExtensionContext):
 
         await object.__getattribute__(self, "_harness").reload_resources()
 
-    async def new_session(self, options: Any | None = None) -> None:
-        """Pi parity ``newSession`` — deferred to Phase 5 CLI lifecycle."""
+    async def new_session(
+        self, options: Any | None = None
+    ) -> RuntimeReplaceResult:
+        """Pi parity ``newSession`` (``runner.ts:636``; ``types.ts:336-340``).
 
-        raise ExtensionError(
-            "invalid_state",
-            "ExtensionCommandContext.new_session is deferred to Phase 5 "
-            "(deferred to Sprint 6h₁₀b — see ADR-0100).",
+        Pi shape: ``newSession(options?: {parentSession?, setup?, withSession?})``.
+        Delegates to :meth:`AgentSessionRuntime.new_session` when a runtime is
+        bound; raises a clear error otherwise.
+        """
+
+        session_runtime = object.__getattribute__(self, "_runtime_session")
+        if session_runtime is None:
+            raise ExtensionError(
+                "invalid_state",
+                "ExtensionCommandContext.new_session() requires an "
+                "AgentSessionRuntime binding.",
+            )
+        parent_session: str | None = None
+        setup: Callable[[Any], Awaitable[None]] | None = None
+        with_session: (
+            Callable[[ReplacedSessionContext], Awaitable[None]] | None
+        ) = None
+        if options is not None:
+            parent_session = _opt(options, "parent_session", None)
+            setup = _opt(options, "setup", None)
+            with_session = _opt(options, "with_session", None)
+        return await session_runtime.new_session(
+            parent_session=parent_session,
+            setup=setup,
+            with_session=with_session,
         )
 
     async def switch_session(
-        self, target: Any, options: Any | None = None
-    ) -> None:
-        """Pi parity ``switchSession`` — deferred to Phase 5 CLI lifecycle."""
+        self, target: str, options: Any | None = None
+    ) -> RuntimeReplaceResult:
+        """Pi parity ``switchSession`` (``runner.ts:638``; ``types.ts:349-352``).
 
-        raise ExtensionError(
-            "invalid_state",
-            "ExtensionCommandContext.switch_session is deferred to Phase 5 "
-            "(deferred to Sprint 6h₁₀b — see ADR-0100).",
+        Pi shape: ``switchSession(sessionPath: string, options?: {withSession?})``.
+        Delegates to :meth:`AgentSessionRuntime.switch_session` when a runtime
+        is bound; raises a clear error otherwise.
+        """
+
+        session_runtime = object.__getattribute__(self, "_runtime_session")
+        if session_runtime is None:
+            raise ExtensionError(
+                "invalid_state",
+                "ExtensionCommandContext.switch_session() requires an "
+                "AgentSessionRuntime binding.",
+            )
+        with_session: (
+            Callable[[ReplacedSessionContext], Awaitable[None]] | None
+        ) = None
+        if options is not None:
+            with_session = _opt(options, "with_session", None)
+        return await session_runtime.switch_session(
+            target, with_session=with_session
         )
+
+
+def _opt(options: Any, key: str, default: Any) -> Any:
+    """Read an option key from a Mapping or an attribute-style object.
+
+    Pi passes options as a plain object (``options?.withSession``); Aelix
+    callers may pass a ``dict`` or a dataclass/namespace, so accept both.
+    """
+
+    if options is None:
+        return default
+    if isinstance(options, dict):
+        return options.get(key, default)
+    return getattr(options, key, default)
 
 
 __all__ = ["ExtensionCommandContext"]

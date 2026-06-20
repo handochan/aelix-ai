@@ -220,18 +220,25 @@ async def test_session_dir_roots_sessions(
     assert any(root.rglob("*.jsonl"))
 
 
-async def test_api_key_emits_deferred_warning(
+async def test_api_key_without_provider_errors(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """P0 #7 (ITEM 6): ``--api-key`` with no resolvable provider is a Pi-shape
+    error (``main.ts:574-582``) + exit 1, and never echoes the key value."""
+
     monkeypatch.setattr(sys, "stdin", _FakePipedStdin())
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    # Clear any ambient OPENROUTER_API_KEY so resolve_model can't infer a
+    # provider from env (which would otherwise pass the requires-model gate).
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     secret = "sk-LEAKCANARY-9z7q"
-    await _async_main(["--api-key", secret, "--print"])
+    code = await _async_main(["--api-key", secret, "--print"])
     err = capsys.readouterr().err
-    assert "--api-key" in err
-    # SECURITY: the deferred-flag warning must NOT echo the key value.
+    assert code == 1
+    assert "--api-key requires a model" in err
+    # SECURITY: the error must NOT echo the key value.
     assert secret not in err
 
 

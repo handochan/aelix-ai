@@ -28,8 +28,9 @@ import asyncio
 import contextlib
 import os
 import sys
+from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from aelix_agent_core.harness.core import AgentHarness, AgentHarnessOptions
 from aelix_agent_core.runtime.agent_session_runtime import (
@@ -64,6 +65,11 @@ from .config import (
 from .file_processor import process_file_arguments
 from .initial_message import build_initial_message
 from .runtime_bootstrap import load_dotenv, register_providers, resolve_model
+
+if TYPE_CHECKING:
+    from aelix_ai.streaming import Model
+
+    from ..model_registry import ModelRegistry
 
 AppMode = Literal["interactive", "print", "json", "rpc"]
 
@@ -262,8 +268,46 @@ def _resolve_active_tools(parsed: Args) -> list[str] | None:
     return None
 
 
+def _make_auth_callback(
+    model_registry: ModelRegistry,
+) -> Callable[[Model], Awaitable[dict[str, Any] | None]]:
+    """Adapt :meth:`ModelRegistry.get_api_key_and_headers` to the harness
+    callback contract (``AgentHarnessOptions.get_api_key_and_headers``).
+
+    The harness (``core.py:_make_stream_fn`` @3447-3472) expects a callable
+    returning a ``dict`` with ``"apiKey"`` / ``"headers"`` keys (or
+    :data:`None` = "no opinion" — Pi ``types.ts:808-811``). The registry
+    instead returns a :class:`ResolvedRequestAuth` dataclass, so a thin
+    adapter converts it:
+
+    - ``ok=False`` → raise (the harness wraps it as an ``"auth"`` error;
+      Pi treats a resolution failure as fatal).
+    - ``ok=True`` with a key or headers → ``{"apiKey": ..., "headers": ...}``.
+    - ``ok=True`` with NEITHER a key NOR headers → :data:`None` so the
+      harness's "neither apiKey nor headers" guard (@3463) is not tripped
+      and the adapter's env fallback (``get_env_api_key``) still resolves.
+      This keeps OAuth-only / env-only providers working.
+    """
+
+    async def _resolve(model: Model) -> dict[str, Any] | None:
+        auth = await model_registry.get_api_key_and_headers(model)
+        if not auth.ok:
+            # Surfaced by the harness as an ``"auth"`` AgentHarnessError.
+            raise RuntimeError(auth.error or "auth resolution failed")
+        if not auth.api_key and not auth.headers:
+            # "No opinion" — let the adapter's env fallback take over.
+            return None
+        return {"apiKey": auth.api_key, "headers": auth.headers}
+
+    return _resolve
+
+
 async def _build_harness_options(
-    parsed: Args, session: Session, *, mcp_tools: list[AgentTool] | None = None
+    parsed: Args,
+    session: Session,
+    *,
+    mcp_tools: list[AgentTool] | None = None,
+    get_api_key_and_headers: Callable[..., Any] | None = None,
 ) -> AgentHarnessOptions:
     """Assemble :class:`AgentHarnessOptions` from parsed CLI args.
 
@@ -272,6 +316,12 @@ async def _build_harness_options(
     ``--provider`` / ``--model`` flags via a bare :class:`Model` — Pi's
     rich model-resolution path (provider lookup, cost map, thinking
     levels, etc.) lands with the ``SettingsManager`` port.
+
+    ``get_api_key_and_headers`` (P0 #7 / ITEM 6) is threaded onto the
+    harness options so the provider-auth cascade (runtime ``--api-key``
+    override → stored → OAuth → env) reaches ``_make_stream_fn``. It is
+    :data:`None` on the env-only path (no ``--api-key``), preserving the
+    adapter's direct ``get_env_api_key`` resolution (no regression).
     """
 
     # Resolve the turn model (OpenRouter-from-env aware; falls back to a bare
@@ -334,6 +384,7 @@ async def _build_harness_options(
         extensions=loaded.extensions,
         runtime=loaded.runtime,
         active_tool_names=active_tool_names,
+        get_api_key_and_headers=get_api_key_and_headers,
     )
 
     # Auto-discovered AGENTS.md project context (Pi ``--no-context-files`` gate),
@@ -396,7 +447,6 @@ async def _async_main(argv: list[str]) -> int:
         from aelix_ai.oauth import AuthStorage
 
         from ..model_registry import ModelRegistry
-        from .config import get_agent_dir
         from .list_models import list_models
 
         auth_storage = AuthStorage(Path(get_agent_dir()) / "auth.json")
@@ -481,18 +531,49 @@ async def _async_main(argv: list[str]) -> int:
 
     cwd = str(Path.cwd())
 
-    # === Deferred flags — honest diagnostics (not silently ignored) ==========
-    # ``--api-key`` needs provider-auth wired into the harness (the agent-run
-    # path constructs no AuthStorage today — Phase 4 carry-forward). ``--models``
-    # (scoped model patterns) needs ``resolveModelScope`` + the /scoped-models
-    # subsystem. Both are tracked follow-ups; surface a warning rather than
-    # silently dropping a user-supplied flag.
+    # === Provider auth wiring (P0 #7 / ITEM 6, Pi main.ts:574-582) ===========
+    # Build the AuthStorage + ModelRegistry ONCE (reuses the --list-models
+    # pattern @402-404) so the provider-auth cascade reaches the harness. The
+    # registry is threaded into every harness rebuild via the factory below.
+    #
+    # ``--api-key`` (Pi ``main.ts:574-582``): requires a model with a
+    # resolvable provider; the key becomes a runtime override (cascade layer 1,
+    # wins over stored/OAuth/env). On the env-only path (no ``--api-key``) the
+    # harness callback stays ``None`` so the adapter's direct ``get_env_api_key``
+    # resolution is preserved — no regression (design (i)).
+    from aelix_ai.oauth import AuthStorage
+
+    from ..model_registry import ModelRegistry
+
+    auth_storage = AuthStorage(Path(get_agent_dir()) / "auth.json")
+    await auth_storage.load()
+    model_registry = ModelRegistry.create(auth_storage)
+
+    get_api_key_and_headers: Callable[..., Any] | None = None
     if parsed.api_key is not None:
-        print(
-            "Warning: --api-key is not yet wired (harness provider-auth is "
-            "deferred); the key was ignored.",
-            file=sys.stderr,
-        )
+        # Pi parity (main.ts:574-582): ``--api-key`` is meaningless without a
+        # model whose provider we can attach the runtime key to.
+        model = resolve_model(parsed.model, parsed.provider)
+        # NOTE: this ``not model.provider`` guard is STRICTER than pi only
+        # because ``resolve_model`` does not yet parse the ``<provider>/<pattern>``
+        # shorthand (it returns ``Model(provider="")`` for a bare
+        # ``--model openrouter/gpt-4`` with no separate ``--provider``). Pi's
+        # ``resolveModelFromCli`` (main.ts:303-304) splits that form so its
+        # ``model.provider`` is always populated, and its guard fires only when
+        # NO model resolves at all. When the SettingsManager / resolveModelFromCli
+        # port lands, add the ``provider/pattern`` split here so this guard stops
+        # rejecting pi-valid invocations. The OpenRouter-from-env path already
+        # populates ``provider``, so the common case works.
+        if not model.provider:
+            print(
+                "Error: --api-key requires a model to be specified via "
+                "--model, --provider/--model, or --models",
+                file=sys.stderr,
+            )
+            return 1
+        auth_storage.set_runtime_api_key(model.provider, parsed.api_key)
+        get_api_key_and_headers = _make_auth_callback(model_registry)
+
     if parsed.models:
         print(
             "Warning: --models (scoped models) is not yet implemented; the "
@@ -536,7 +617,10 @@ async def _async_main(argv: list[str]) -> int:
 
     async def _harness_factory(new_session: Session) -> AgentHarness:
         opts = await _build_harness_options(
-            parsed, new_session, mcp_tools=mcp_tools
+            parsed,
+            new_session,
+            mcp_tools=mcp_tools,
+            get_api_key_and_headers=get_api_key_and_headers,
         )
         return AgentHarness(opts)
 

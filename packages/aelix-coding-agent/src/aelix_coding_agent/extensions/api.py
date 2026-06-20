@@ -1285,8 +1285,12 @@ class ExtensionAPI:
         by ``scripts/pyright_spike.py`` which exercises each overload
         against a concrete handler and asserts pyright sees the narrowed
         payload type. Suppression is scoped to ``reportInconsistentOverload`` only.
+
+        Pi parity (P0 #7 item 2, ``loader.ts:145``): begins with
+        ``runtime.assertActive()``.
         """
 
+        self._runtime.assert_active()
         if event not in HOOK_RESULT_TYPES:
             raise KeyError(f"Unknown hook event: {event!r}")
         bucket = self._extension.handlers.setdefault(event, [])
@@ -1311,8 +1315,14 @@ class ExtensionAPI:
 
         Application-supplied tools (``AgentHarnessOptions.tools``) win over
         extension tools at harness assembly time per D.1.13 M-9.
+
+        Pi parity (P0 #7 item 2, ``loader.ts:217``): begins with
+        ``runtime.assertActive()``. The ``runtime.refreshTools()`` call
+        (``loader.ts:220``) is Wave 2 (item 3) and intentionally NOT added
+        here.
         """
 
+        self._runtime.assert_active()
         self._extension.tools[tool.name] = tool
 
     # Phase 1.3: CLI flag plumbing — currently registered but not wired to a parser.
@@ -1324,26 +1334,54 @@ class ExtensionAPI:
         default: bool | str | None = None,
         description: str | None = None,
     ) -> None:
-        """Declare a flag. CLI integration is deferred to Phase 1.3+."""
+        """Declare a flag and seed its runtime value with the default.
 
+        Pi parity (P0 #7 item 1, ``loader.ts:246-255``): begins with
+        ``runtime.assertActive()`` (item 2), stores the flag, then seeds
+        ``runtime.flagValues`` with the default when one is supplied and the
+        name is not already present
+        (``if (default !== undefined && !flagValues.has(name)) ...``). The
+        ``!has(name)`` guard means a second registration with a different
+        default does NOT overwrite an already-set value (e.g. a CLI override
+        applied via :meth:`_ExtensionRuntime.set_flag_value`).
+        """
+
+        self._runtime.assert_active()
         self._extension.flags[name] = ExtensionFlag(
             name=name,
             type=type,
             default=default,
             description=description,
         )
+        if default is not None and name not in self._runtime.flag_values:
+            self._runtime.flag_values[name] = default
 
     def get_flag(self, name: str) -> bool | str | None:
-        """Return the flag's current value (Phase 1.2: always the default)."""
+        """Return the flag's current value from the runtime flag-values dict.
 
-        flag = self._extension.flags.get(name)
-        if flag is None:
+        Pi parity (P0 #7 item 1, ``loader.ts:262-267``): asserts the runtime
+        is active (item 2), returns ``None`` if this extension never
+        registered the flag, otherwise reads the live value from
+        ``runtime.flagValues`` (seeded at registration, overridable via
+        :meth:`_ExtensionRuntime.set_flag_value`) — it does NOT fall back to
+        the static :attr:`ExtensionFlag.default` at read time.
+        """
+
+        self._runtime.assert_active()
+        if name not in self._extension.flags:
             return None
-        return flag.default
+        return self._runtime.flag_values.get(name)
 
     def add_cleanup(self, cleanup: HookCleanup) -> Callable[[], None]:
-        """Register a cleanup callable. LIFO on harness dispose."""
+        """Register a cleanup callable. LIFO on harness dispose.
 
+        Aelix-additive (pi has no ``addCleanup``); guarded with
+        ``assert_active`` for consistency with the pi-parity register*
+        methods (P0 #7 item 2) so a stale runtime rejects registrations
+        uniformly.
+        """
+
+        self._runtime.assert_active()
         self._extension.cleanups.append(cleanup)
 
         def unregister() -> None:
@@ -1367,8 +1405,12 @@ class ExtensionAPI:
 
         Sprint 5a stores the command on :attr:`Extension.commands`; the CLI
         loop (ADR-0042) reads it back to populate slash-command completion.
+
+        Pi parity (P0 #7 item 2, ``loader.ts``): begins with
+        ``runtime.assertActive()``.
         """
 
+        self._runtime.assert_active()
         self._extension.commands[name] = RegisteredCommand(
             name=name,
             handler=handler,
@@ -1387,8 +1429,12 @@ class ExtensionAPI:
 
         Sprint 5a stores the shortcut on :attr:`Extension.shortcuts`; the
         TUI (Phase 5) wires the dispatch table.
+
+        Pi parity (P0 #7 item 2, ``loader.ts``): begins with
+        ``runtime.assertActive()``.
         """
 
+        self._runtime.assert_active()
         self._extension.shortcuts[key] = ExtensionShortcut(
             key=key, handler=handler, description=description
         )
@@ -1398,8 +1444,13 @@ class ExtensionAPI:
         custom_type: str,
         renderer: MessageRenderer,
     ) -> None:
-        """Register a custom-message renderer. Pi ``registerMessageRenderer``."""
+        """Register a custom-message renderer. Pi ``registerMessageRenderer``.
 
+        Pi parity (P0 #7 item 2, ``loader.ts``): begins with
+        ``runtime.assertActive()``.
+        """
+
+        self._runtime.assert_active()
         self._extension.message_renderers[custom_type] = renderer
 
     def register_provider(self, name: str, config: Any) -> None:
