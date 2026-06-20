@@ -226,3 +226,94 @@ async def test_bash_partial_line_notice_reports_last_line_bytes(tmp_path):
     assert isinstance(result.details, BashToolDetails)
     assert result.details.truncation.last_line_partial is True
     assert result.details.full_output_path is not None
+
+
+# --- P0 #3 HEAVY (ADR-0139): commandPrefix / spawnHook / shellPath ---
+
+
+async def test_bash_command_prefix_prepended(tmp_path):
+    """Pi parity ``bash.ts:284``: ``commandPrefix`` is prepended as
+    ``${prefix}\n${command}`` so prefix shell setup is in scope."""
+
+    tool = create_bash_tool(str(tmp_path), {"command_prefix": "PIPREFIX=hello"})
+    result = await _exec(tool, {"command": "echo $PIPREFIX"}, cwd=str(tmp_path))
+    assert result.is_error is False
+    assert "hello" in result.content[0].text
+
+
+async def test_bash_spawn_hook_rewrites_command(tmp_path):
+    """Pi parity ``resolveSpawnContext``: ``spawn_hook`` can rewrite the
+    command before it is spawned."""
+
+    from aelix_coding_agent.tools.bash import BashSpawnContext
+
+    def hook(ctx: BashSpawnContext) -> BashSpawnContext:
+        ctx.command = "echo rewritten"
+        return ctx
+
+    tool = create_bash_tool(str(tmp_path), {"spawn_hook": hook})
+    result = await _exec(tool, {"command": "echo original"}, cwd=str(tmp_path))
+    assert "rewritten" in result.content[0].text
+    assert "original" not in result.content[0].text
+
+
+async def test_bash_spawn_hook_injects_env(tmp_path):
+    """Pi parity: ``spawn_hook`` may mutate ``ctx.env`` in place; the spawned
+    command sees the injected variable."""
+
+    from aelix_coding_agent.tools.bash import BashSpawnContext
+
+    def hook(ctx: BashSpawnContext) -> BashSpawnContext:
+        ctx.env["INJECTED_BY_HOOK"] = "yes"
+        return ctx
+
+    tool = create_bash_tool(str(tmp_path), {"spawn_hook": hook})
+    result = await _exec(
+        tool, {"command": "echo $INJECTED_BY_HOOK"}, cwd=str(tmp_path)
+    )
+    assert "yes" in result.content[0].text
+
+
+async def test_bash_spawn_hook_receives_shell_env_path(tmp_path):
+    """The base spawn context env carries the bin dir on PATH (getShellEnv)."""
+
+    from aelix_coding_agent.cli.config import get_bin_dir
+    from aelix_coding_agent.tools.bash import BashSpawnContext
+
+    seen = {}
+
+    def hook(ctx: BashSpawnContext) -> BashSpawnContext:
+        seen["path"] = ctx.env.get("PATH", "")
+        return ctx
+
+    tool = create_bash_tool(str(tmp_path), {"spawn_hook": hook})
+    await _exec(tool, {"command": "true"}, cwd=str(tmp_path))
+    assert get_bin_dir() in seen["path"].split(":")
+
+
+async def test_bash_shell_path_missing_raises(tmp_path):
+    """Pi parity ``getShellConfig``: a missing custom shell path raises with
+    Pi's ``Custom shell path not found`` message."""
+
+    import pytest
+
+    tool = create_bash_tool(
+        str(tmp_path), {"shell_path": "/nonexistent/shell/bin/zzz"}
+    )
+    with pytest.raises(ValueError, match="Custom shell path not found"):
+        await _exec(tool, {"command": "echo hi"}, cwd=str(tmp_path))
+
+
+async def test_bash_shell_path_valid_used(tmp_path):
+    """A valid explicit shell path is honored."""
+
+    import shutil
+
+    sh = shutil.which("bash") or "/bin/bash"
+    if not Path(sh).exists():
+        import pytest
+
+        pytest.skip("no bash available")
+    tool = create_bash_tool(str(tmp_path), {"shell_path": sh})
+    result = await _exec(tool, {"command": "echo viashell"}, cwd=str(tmp_path))
+    assert "viashell" in result.content[0].text

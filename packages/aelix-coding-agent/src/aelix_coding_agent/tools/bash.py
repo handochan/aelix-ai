@@ -30,6 +30,7 @@ from aelix_coding_agent.tools._truncate import (
     format_size,
     truncate_tail,
 )
+from aelix_coding_agent.util.shell_env import get_shell_env
 
 # Pi parity defaults (``OutputAccumulator``/``truncate.ts``): 2000 lines / 50KB.
 _DEFAULT_MAX_LINES = DEFAULT_MAX_LINES
@@ -40,16 +41,23 @@ _DEFAULT_MAX_BYTES = DEFAULT_MAX_BYTES
 _TEMP_FILE_PREFIX = "pi-bash"
 
 
-def _resolve_shell(env: dict[str, str]) -> str:
+def _resolve_shell(env: dict[str, str], shell_path: str | None = None) -> str:
     """Pi parity ``getShellConfig()`` resolution chain (``utils/shell.ts``).
 
-    W4 MAJOR-4 fix: Pi tries /bin/bash, then bash on PATH, then falls back
-    to sh. We additionally honor ``$SHELL`` first so user-configured shells
-    (zsh, fish-via-bash, etc.) win when the env exports one — matches Pi's
-    spirit of "respect the user's shell" while preserving the bash-first
-    invariant that Pi's bash.ts and shellrc handling assume.
+    Resolution order:
+
+    1. An explicit ``shell_path`` (Pi parity ``getShellConfig(customShellPath)``
+       — validated with :meth:`Path.exists`; raises ``ValueError`` with Pi's
+       ``Custom shell path not found: {path}`` message when absent).
+    2. ``$SHELL`` (Aelix-additive — documented ``$SHELL``-first divergence so
+       user-configured shells win when the env exports one).
+    3. ``/bin/bash`` → ``bash`` on ``PATH`` → ``/bin/sh`` (Pi's Unix chain).
     """
 
+    if shell_path:
+        if Path(shell_path).exists():
+            return shell_path
+        raise ValueError(f"Custom shell path not found: {shell_path}")
     shell = env.get("SHELL")
     if shell:
         return shell
@@ -93,7 +101,15 @@ class BashOperations(Protocol):
 
 
 class _LocalBashOperations:
-    """Local default — subprocess.Popen w/ session group kill on abort."""
+    """Local default — subprocess.Popen w/ session group kill on abort.
+
+    Pi parity ``createLocalBashOperations({ shellPath })`` — an explicit
+    ``shell_path`` (from settings) is validated and used in preference to the
+    resolution chain.
+    """
+
+    def __init__(self, shell_path: str | None = None) -> None:
+        self._shell_path = shell_path
 
     async def exec(
         self,
@@ -105,12 +121,14 @@ class _LocalBashOperations:
         timeout: float | None = None,
         env: dict[str, str] | None = None,
     ) -> ExecExitResult:
-        env_dict = dict(os.environ)
-        if env is not None:
-            env_dict.update(env)
-        # Pi parity: ``getShellConfig()`` — $SHELL → /bin/bash → bash-on-PATH
-        # → /bin/sh. See ``_resolve_shell`` for the full chain.
-        shell = _resolve_shell(env_dict)
+        # Pi parity ``env ?? getShellEnv()`` — when the caller supplies an env
+        # (the bash tool always does, via the spawn-context) use it verbatim;
+        # otherwise fall back to the shell env (process env + bin dir on PATH)
+        # so a bare ``operations.exec`` still resolves auto-downloaded tools.
+        env_dict = dict(env) if env is not None else get_shell_env()
+        # Pi parity: ``getShellConfig(shellPath)`` — explicit shell path →
+        # $SHELL → /bin/bash → bash-on-PATH → /bin/sh. See ``_resolve_shell``.
+        shell = _resolve_shell(env_dict, self._shell_path)
         try:
             proc = subprocess.Popen(  # noqa: S603
                 [shell, "-c", command],
@@ -156,10 +174,44 @@ def _kill_group(pid: int) -> None:
         return
 
 
-def create_local_bash_operations() -> BashOperations:
-    """Pi parity ``createLocalBashOperations()``."""
+def create_local_bash_operations(
+    shell_path: str | None = None,
+) -> BashOperations:
+    """Pi parity ``createLocalBashOperations(options?: { shellPath })``."""
 
-    return _LocalBashOperations()
+    return _LocalBashOperations(shell_path)
+
+
+@dataclass
+class BashSpawnContext:
+    """Pi parity ``BashSpawnContext`` (``bash.ts:129-133``).
+
+    The ``(command, cwd, env)`` triple a :data:`BashSpawnHook` may rewrite
+    before the command is spawned. Mutable (non-frozen) so a hook can adjust
+    ``env`` in place and return the same instance, mirroring Pi's mutable
+    object ergonomics.
+    """
+
+    command: str
+    cwd: str
+    env: dict[str, str]
+
+
+# Pi parity ``BashSpawnHook`` (``bash.ts:135``): ``(context) => context``.
+BashSpawnHook = Callable[[BashSpawnContext], BashSpawnContext]
+
+
+def _resolve_spawn_context(
+    command: str, cwd: str, spawn_hook: BashSpawnHook | None
+) -> BashSpawnContext:
+    """Pi parity ``resolveSpawnContext`` (``bash.ts:137-140``).
+
+    Builds the base context with a fresh :func:`get_shell_env` env (Pi
+    ``{ ...getShellEnv() }``) and applies ``spawn_hook`` when provided.
+    """
+
+    base = BashSpawnContext(command=command, cwd=cwd, env=get_shell_env())
+    return spawn_hook(base) if spawn_hook else base
 
 
 def _write_full_output(raw: str) -> str:
@@ -249,7 +301,13 @@ def create_bash_tool(
     """Pi parity ``createBashToolDefinition`` (``bash.ts:264-440``)."""
 
     opts = options or {}
-    operations: BashOperations = opts.get("operations") or create_local_bash_operations()
+    # Pi parity ``BashToolOptions`` — ``operations`` / ``shellPath`` /
+    # ``commandPrefix`` / ``spawnHook``.
+    operations: BashOperations = opts.get(
+        "operations"
+    ) or create_local_bash_operations(opts.get("shell_path"))
+    command_prefix: str | None = opts.get("command_prefix")
+    spawn_hook: BashSpawnHook | None = opts.get("spawn_hook")
     max_lines: int = int(opts.get("max_lines", _DEFAULT_MAX_LINES))
     max_bytes: int = int(opts.get("max_bytes", _DEFAULT_MAX_BYTES))
 
@@ -264,18 +322,30 @@ def create_bash_tool(
             )
         timeout_arg = args.get("timeout")
         timeout: float | None = float(timeout_arg) if timeout_arg else None
-        if not Path(cwd).is_dir():
+        # Pi parity ``bash.ts:284-285``: prepend ``commandPrefix`` (separated by
+        # a newline), then resolve the spawn context (base env = getShellEnv,
+        # optionally rewritten by ``spawnHook``).
+        resolved_command = (
+            f"{command_prefix}\n{command}" if command_prefix else command
+        )
+        spawn_context = _resolve_spawn_context(resolved_command, cwd, spawn_hook)
+        if not Path(spawn_context.cwd).is_dir():
             return ToolResult(
-                content=[TextContent(text=f"bash: cwd {cwd!r} is not a directory")],
+                content=[
+                    TextContent(
+                        text=f"bash: cwd {spawn_context.cwd!r} is not a directory"
+                    )
+                ],
                 is_error=True,
             )
         chunks: list[bytes] = []
         exit_result = await operations.exec(
-            command,
-            cwd,
+            spawn_context.command,
+            spawn_context.cwd,
             on_data=chunks.append,
             signal=getattr(ctx, "signal", None),
             timeout=timeout,
+            env=spawn_context.env,
         )
         raw = b"".join(chunks).decode("utf-8", errors="replace")
         body, info = truncate_tail(
@@ -352,6 +422,8 @@ def create_bash_tool(
 
 __all__ = [
     "BashOperations",
+    "BashSpawnContext",
+    "BashSpawnHook",
     "BashToolDetails",
     "ExecExitResult",
     "create_bash_tool",

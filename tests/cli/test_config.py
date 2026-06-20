@@ -108,6 +108,7 @@ def test_module_exports() -> None:
         "VERSION",
         "expand_tilde_path",
         "get_agent_dir",
+        "get_bin_dir",
         "get_session_dir",
         "load_mcp_server_contribs",
     }

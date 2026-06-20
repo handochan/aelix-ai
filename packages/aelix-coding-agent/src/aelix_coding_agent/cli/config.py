@@ -92,6 +92,20 @@ def get_agent_dir() -> str:
     return str(Path.home() / CONFIG_DIR_NAME / "agent")
 
 
+def get_bin_dir() -> str:
+    """Pi parity: ``getBinDir`` (``config.ts:483-485`` → ``join(getAgentDir(),
+    "bin")``).
+
+    Directory where :mod:`aelix_coding_agent.util.tools_manager` installs
+    auto-downloaded ``rg`` / ``fd`` binaries and which
+    :func:`aelix_coding_agent.util.shell_env.get_shell_env` prepends to
+    ``PATH`` so spawned bash commands can resolve them. Pi default is
+    ``~/.pi/agent/bin`` → Aelix ``~/.aelix/agent/bin``.
+    """
+
+    return str(Path(get_agent_dir()) / "bin")
+
+
 def get_session_dir() -> str | None:
     """Pi parity: :data:`ENV_SESSION_DIR` override.
 
@@ -180,6 +194,7 @@ __all__ = [
     "VERSION",
     "expand_tilde_path",
     "get_agent_dir",
+    "get_bin_dir",
     "get_session_dir",
     "load_mcp_server_contribs",
 ]

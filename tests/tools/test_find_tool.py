@@ -212,3 +212,60 @@ async def test_find_byte_cap_notice(tmp_path, _no_fd):
     assert isinstance(result.details, FindToolDetails)
     assert result.details.truncated is True
     assert "50.0KB limit reached" in result.content[0].text
+
+
+# --- fd-backed path: deterministic via a stubbed subprocess (no real fd) -----
+
+
+async def test_find_fd_path_relativizes(tmp_path, monkeypatch):
+    """P0 #3 HEAVY (ADR-0139): exercise the fd-backed branch of find. The
+    gitignore-respect flag ``--no-require-git`` is passed and absolute fd output
+    is relativized to the search dir (mirrors grep's rg lock-in test)."""
+
+    import subprocess as _sp
+
+    from aelix_coding_agent.tools import find as _find_mod
+
+    (tmp_path / "src").mkdir()
+    captured: dict = {}
+
+    def _fake_run(cmd, **_kw):
+        captured["cmd"] = cmd
+        out = f"{tmp_path}/src/app.py\n{tmp_path}/src/util.py\n"
+        return _sp.CompletedProcess(cmd, 0, stdout=out, stderr="")
+
+    async def _fd(_tool, silent=True):
+        return "/fake/fd"
+
+    monkeypatch.setattr(_find_mod.subprocess, "run", _fake_run)
+    monkeypatch.setattr(_find_mod, "ensure_tool", _fd)
+    tool = create_find_tool(str(tmp_path))
+    result = await _exec(tool, {"pattern": "*.py"})
+    assert "--no-require-git" in captured["cmd"]  # gitignore-respect flag
+    text = result.content[0].text
+    assert "src/app.py" in text and "src/util.py" in text
+    assert str(tmp_path) not in text  # paths are relativized, not absolute
+
+
+async def test_find_fd_exact_limit_not_truncated(tmp_path, monkeypatch):
+    """fd path: a result set exactly equal to ``limit`` is NOT flagged truncated
+    (W4 MAJOR-3 overflow-vs-exact boundary), only strictly-over is."""
+
+    import subprocess as _sp
+
+    from aelix_coding_agent.tools import find as _find_mod
+
+    # fd is invoked with --max-results limit+1; emit exactly `limit` (2) lines.
+    def _fake_run(cmd, **_kw):
+        out = f"{tmp_path}/a.py\n{tmp_path}/b.py\n"
+        return _sp.CompletedProcess(cmd, 0, stdout=out, stderr="")
+
+    async def _fd(_tool, silent=True):
+        return "/fake/fd"
+
+    monkeypatch.setattr(_find_mod.subprocess, "run", _fake_run)
+    monkeypatch.setattr(_find_mod, "ensure_tool", _fd)
+    tool = create_find_tool(str(tmp_path))
+    result = await _exec(tool, {"pattern": "*.py", "limit": 2})
+    assert "limit reached" not in result.content[0].text
+    assert result.details.result_limit_reached is False

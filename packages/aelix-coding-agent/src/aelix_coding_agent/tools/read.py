@@ -21,6 +21,31 @@ from aelix_coding_agent.tools._truncate import (
     truncate_head,
 )
 from aelix_coding_agent.util.image_detect import detect_image_mime_type_from_file
+from aelix_coding_agent.util.image_resize import format_dimension_note, resize_image
+
+
+def _get_non_vision_image_note(model: Any | None) -> str | None:
+    """Pi parity ``getNonVisionImageNote`` (``read.ts:90-95``).
+
+    Pi: ``if (!model || model.input.includes("image")) return undefined;`` then
+    returns the omission note. So the note appears ONLY when a model is present
+    AND it does NOT declare the ``"image"`` input modality. ``None`` (note
+    absent) for bare-loop callers (``ctx.model is None``) or vision-capable
+    models. Tolerates both a :class:`~aelix_ai.streaming.Model` (``.input``
+    attr) and a raw mapping (``["input"]``) defensively.
+    """
+
+    if model is None:
+        return None
+    inputs = getattr(model, "input", None)
+    if inputs is None and isinstance(model, dict):
+        inputs = model.get("input")
+    if inputs and "image" in inputs:
+        return None
+    return (
+        "[Current model does not support images. "
+        "The image will be omitted from this request.]"
+    )
 
 
 @dataclass(frozen=True)
@@ -77,6 +102,9 @@ def create_read_tool(cwd: str, options: dict | None = None) -> AgentTool:
 
     opts = options or {}
     operations: ReadOperations = opts.get("operations") or _LocalReadOperations()
+    # Pi parity ``ReadToolOptions.autoResizeImages`` (default ``true``) — resize
+    # images to fit 2000x2000 / 4.5 MB before returning them to the model.
+    auto_resize_images: bool = bool(opts.get("auto_resize_images", True))
 
     async def execute(args: dict[str, Any], ctx: ToolExecutionContext) -> ToolResult:
         raw_path = args.get("path")
@@ -97,17 +125,62 @@ def create_read_tool(cwd: str, options: dict | None = None) -> AgentTool:
                 is_error=True,
             )
 
-        # --- image branch (magic-byte MIME). Resize/dimension-note/non-vision
-        # handling is a HEAVY follow-up; here the raw image is returned. ---
+        # --- image branch (magic-byte MIME). Pi parity ``read.ts:249-277``:
+        # optional in-process resize (default on) + ``Read image file [mime]``
+        # text note + dimension note (resized only) + non-vision-model note. ---
         mime = await operations.detect_image_mime_type(path)
         if mime is not None:
             data = await operations.read_file(path)
             payload = data if isinstance(data, bytes) else str(data).encode("utf-8")
-            encoded = base64.b64encode(payload).decode("ascii")
+            base64_str = base64.b64encode(payload).decode("ascii")
+            non_vision_note = _get_non_vision_image_note(getattr(ctx, "model", None))
+
+            if auto_resize_images:
+                resized = await resize_image(
+                    ImageContent(mime_type=mime, data=base64_str)
+                )
+                if resized is None:
+                    # Pi parity: resize gave up → text-only note, NO image
+                    # attachment is sent to the model.
+                    text_note = (
+                        f"Read image file [{mime}]\n"
+                        "[Image omitted: could not be resized below the inline "
+                        "image size limit.]"
+                    )
+                    if non_vision_note:
+                        text_note += f"\n{non_vision_note}"
+                    return ToolResult(
+                        content=[TextContent(text=text_note)],
+                        details=ReadToolDetails(
+                            truncation=TruncationInfo(), mime_type=mime
+                        ),
+                    )
+                # Pi parity: ``formatDimensionNote`` returns ``None`` unless the
+                # image was actually resized.
+                dimension_note = format_dimension_note(resized)
+                text_note = f"Read image file [{resized.mime_type}]"
+                if dimension_note:
+                    text_note += f"\n{dimension_note}"
+                if non_vision_note:
+                    text_note += f"\n{non_vision_note}"
+                return ToolResult(
+                    content=[
+                        TextContent(text=text_note),
+                        ImageContent(mime_type=resized.mime_type, data=resized.data),
+                    ],
+                    details=ReadToolDetails(
+                        truncation=TruncationInfo(), mime_type=resized.mime_type
+                    ),
+                )
+
+            # Pi parity: ``autoResizeImages`` disabled → forward raw image.
+            text_note = f"Read image file [{mime}]"
+            if non_vision_note:
+                text_note += f"\n{non_vision_note}"
             return ToolResult(
                 content=[
-                    TextContent(text=f"[image {Path(path).name}]"),
-                    ImageContent(source=f"data:{mime};base64,{encoded}"),
+                    TextContent(text=text_note),
+                    ImageContent(mime_type=mime, data=base64_str),
                 ],
                 details=ReadToolDetails(truncation=TruncationInfo(), mime_type=mime),
             )

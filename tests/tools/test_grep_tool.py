@@ -169,3 +169,100 @@ async def test_grep_byte_cap_notice(tmp_path):
     # Body (before the notice block) must not exceed the 50KB cap.
     body = text.split("\n\n[")[0]
     assert len(body.encode("utf-8")) <= 50 * 1024
+
+
+async def test_grep_no_matches_message(tmp_path):
+    """Pi parity ``grep.ts:308-310``: zero matches → ``No matches found``."""
+
+    (tmp_path / "f.txt").write_text("nothing here\n")
+    tool = create_grep_tool(str(tmp_path))
+    result = await _exec(tool, {"pattern": "ZZZ_no_such_pattern"})
+    assert result.content[0].text == "No matches found"
+    assert result.is_error is False
+
+
+# --- rg-backed path: deterministic via a stubbed subprocess (no real rg) -----
+
+
+def _stub_rg(monkeypatch, stdout: str, captured: dict | None = None):
+    """Stub the rg subprocess + force ensure_tool to a fake path, so the rg
+    branch of grep runs deterministically without a real ripgrep binary."""
+
+    import subprocess as _sp
+
+    from aelix_coding_agent.tools import grep as _grep_mod
+
+    def _fake_run(cmd, **_kw):
+        if captured is not None:
+            captured["cmd"] = cmd
+        return _sp.CompletedProcess(cmd, 0, stdout=stdout, stderr="")
+
+    async def _rg(_tool, silent=True):
+        return "/fake/rg"
+
+    monkeypatch.setattr(_grep_mod.subprocess, "run", _fake_run)
+    monkeypatch.setattr(_grep_mod, "ensure_tool", _rg)
+
+
+async def test_grep_rg_path_basename(tmp_path, monkeypatch):
+    """P0 #3 HEAVY (ADR-0139): lock in the rg ``-H`` single-file parity — the
+    flag is passed AND the path-prefixed rg line relativizes to the
+    basename-prefixed ``b.txt:1: text`` (matching pi's ``--json`` mode)."""
+
+    sub = tmp_path / "sub"
+    sub.mkdir()
+    target = sub / "b.txt"
+    target.write_text("hello again\n")
+    captured: dict = {}
+    _stub_rg(monkeypatch, f"{target}:1:hello again\n", captured)
+    tool = create_grep_tool(str(tmp_path))
+    result = await _exec(tool, {"pattern": "hello", "path": str(target)})
+    assert "-H" in captured["cmd"]  # the single-file parity flag is passed
+    assert "b.txt:1: hello again" in result.content[0].text
+
+
+async def test_grep_rg_match_count_cap_drops_excess(tmp_path, monkeypatch):
+    """P0 #3 HEAVY (ADR-0139): the rg branch caps on MATCH count, not raw lines.
+    With context, limit=1 keeps the first match + its context and drops the
+    second match's block (pi ``matchCount`` semantics) — NOT a mid-block slice."""
+
+    base = str(tmp_path)
+    stdout = "\n".join(
+        [
+            f"{base}/a.txt-1- before",
+            f"{base}/a.txt:2:MATCH one",
+            f"{base}/a.txt-3- after",
+            "--",
+            f"{base}/b.txt-9- before",
+            f"{base}/b.txt:10:MATCH two",
+            f"{base}/b.txt-11- after",
+        ]
+    ) + "\n"
+    _stub_rg(monkeypatch, stdout)
+    tool = create_grep_tool(base)
+    result = await _exec(tool, {"pattern": "MATCH", "context": 1, "limit": 1})
+    text = result.content[0].text
+    assert "a.txt:2: MATCH one" in text
+    assert "a.txt-1- before" in text and "a.txt-3- after" in text  # context kept
+    assert "MATCH two" not in text  # second match dropped by the match cap
+    assert not text.split("\n\n[")[0].rstrip().endswith("--")  # dangling sep stripped
+    assert "[1 matches limit reached." in text
+
+
+async def test_grep_rg_match_count_cap_keeps_all_under_limit(tmp_path, monkeypatch):
+    """Under the limit, both matches + their context are kept; no limit notice."""
+
+    base = str(tmp_path)
+    stdout = "\n".join(
+        [
+            f"{base}/a.txt:2:MATCH one",
+            "--",
+            f"{base}/b.txt:10:MATCH two",
+        ]
+    ) + "\n"
+    _stub_rg(monkeypatch, stdout)
+    tool = create_grep_tool(base)
+    result = await _exec(tool, {"pattern": "MATCH", "context": 1, "limit": 5})
+    text = result.content[0].text
+    assert "a.txt:2: MATCH one" in text and "b.txt:10: MATCH two" in text
+    assert "matches limit reached" not in text

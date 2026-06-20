@@ -495,6 +495,11 @@ async def _execute_and_finalize(
         tool_call_id=prepared.tool_call.tool_call_id,
         signal=signal,
         on_partial=_on_partial,
+        # P0 #3 HEAVY (ADR-0139). Pi parity ``ctx.model`` — thread the turn's
+        # resolved model so tools (read's non-vision image note) can inspect
+        # ``model.input``. Single-line surgical wiring of a non-protected
+        # ToolExecutionContext field; ``config.model`` is already in scope.
+        model=config.model,
     )
     try:
         result = await prepared.tool.execute(prepared.args, exec_ctx)

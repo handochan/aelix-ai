@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 import re
-import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,6 +24,7 @@ from aelix_coding_agent.tools._truncate import (
     truncate_head,
     truncate_line,
 )
+from aelix_coding_agent.util.tools_manager import ensure_tool
 
 _DEFAULT_LIMIT = 100
 # Pi parity: ``truncateHead`` is called with ``maxLines: Number.MAX_SAFE_INTEGER``
@@ -58,9 +58,10 @@ class _LocalGrepOperations:
 
 # Pi parity: ``createGrepToolDefinition`` (``grep.ts``) parameter schema —
 # camelCase ``ignoreCase`` + per-field descriptions + Pi's ``number`` types.
-# The top-level description omits Pi's ".gitignore" claim (Aelix's pure-Python
-# fallback does not honor .gitignore — a P0 #3 behavior gap) and states the
-# actual 250-char line cap.
+# P0 #3 HEAVY (ADR-0139): with ``ensure_tool`` guaranteeing ripgrep (download
+# on demand), the top-level description restores Pi's verbatim ".gitignore"
+# claim. The pure-Python fallback (offline + rg unavailable) does not honor
+# .gitignore — a documented intentional divergence, not a description bug.
 _GREP_PARAMETERS_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -120,18 +121,24 @@ def _space_after_lineno(remainder: str) -> str:
     return f"{m.group(1)}{m.group(2)}{m.group(3)} {m.group(4)}"
 
 
-def _relativize_rg_line(line: str, base: str, *, is_directory: bool) -> str:
+def _relativize_rg_line(
+    line: str, base: str, *, is_directory: bool
+) -> tuple[str, bool]:
     """Pi parity ``formatPath`` applied to a single rg text-mode output line.
 
-    rg text-mode lines are ``<abspath>:<lineno>:<content>`` (or ``-`` separated
-    for context lines); ``--`` group separators carry no path. When ``base`` is
-    a directory, strip the ``base`` prefix so the path is relative+POSIX (no
-    ``./``); when ``base`` is a file (or the match is outside ``base``), fall
-    back to the basename — matching pi's ``path.relative`` / ``path.basename``.
+    Returns ``(rendered_line, is_match)``. rg text-mode lines are
+    ``<abspath>:<lineno>:<content>`` for MATCHES and ``<abspath>-<lineno>-<content>``
+    for CONTEXT lines (with ``-C``); ``--`` group separators carry no path.
+    ``is_match`` is the lineno-separator discriminator (``:`` match / ``-``
+    context / ``--`` separator → not a match) — used by :func:`_try_ripgrep` to
+    cap on MATCH count (pi's ``matchCount``), not raw line count. When ``base``
+    is a directory, strip the ``base`` prefix (relative+POSIX, no ``./``); when
+    ``base`` is a file (or the match is outside ``base``), fall back to the
+    basename — matching pi's ``path.relative`` / ``path.basename``.
     """
 
     if line == "--":
-        return line
+        return line, False
     # rg emits ``path:lineno:content`` for matches and ``path-lineno-content``
     # for context lines. Split off the leading absolute path on the first
     # separator that follows the (possibly ``:``-containing on Windows) path.
@@ -140,21 +147,32 @@ def _relativize_rg_line(line: str, base: str, *, is_directory: bool) -> str:
         if idx <= 0:
             continue
         candidate = line[:idx]
+        is_match = sep == ":"
         # Only treat the prefix as a path when it actually points under/at base.
         if is_directory:
             if candidate == base or candidate.startswith(base + "/"):
                 rel = relativize_to_posix(candidate, base)
-                return rel + _space_after_lineno(line[idx:])
+                return rel + _space_after_lineno(line[idx:]), is_match
         else:
             if candidate == base:
-                return os.path.basename(candidate) + _space_after_lineno(line[idx:])
-    return line
+                return (
+                    os.path.basename(candidate) + _space_after_lineno(line[idx:]),
+                    is_match,
+                )
+    # Unrecognized shape: keep verbatim and treat as NON-match for counting.
+    # Match lines (``:``-separated lineno) parse reliably via the ``:`` branch
+    # above (paths almost never contain ``:``); the only lines that reach here
+    # are context lines whose ``-``-separated lineno collides with a ``-`` in
+    # the path. Counting them as matches would over-count and drop real matches,
+    # so they must NOT count toward the match cap.
+    return line, False
 
 
 def _try_ripgrep(
     pattern: str,
     base: str,
     *,
+    rg_path: str,
     glob: str | None,
     ignore_case: bool,
     literal: bool,
@@ -162,14 +180,21 @@ def _try_ripgrep(
     limit: int,
     is_directory: bool,
 ) -> tuple[str, bool, int] | None:
-    """Return (output, limit_reached, lines_truncated) or None if rg absent/failed."""
+    """Return (output, limit_reached, lines_truncated) or None if rg failed.
 
-    rg = shutil.which("rg")
-    if rg is None:
-        return None
+    ``rg_path`` is the resolved ripgrep binary (system, cached, or
+    auto-downloaded) supplied by :func:`ensure_tool` — guaranteeing rg's
+    default ``.gitignore`` respect (Pi parity).
+    """
+
+    rg = rg_path
     # Pi parity ``grep.ts`` argv: ``--hidden`` searches dotfiles; rg's default
     # ``.gitignore`` respect is intentionally kept (pi does NOT pass --no-ignore).
-    cmd = [rg, "--line-number", "--no-heading", "--color=never", "--hidden"]
+    # ``-H``/``--with-filename`` forces rg to print the path even for a
+    # single-file search — rg's text mode otherwise omits it, whereas pi's
+    # ``--json`` match objects always carry the path. Without ``-H`` a
+    # single-file grep would emit ``1: text`` instead of pi's ``b.txt:1: text``.
+    cmd = [rg, "-H", "--line-number", "--no-heading", "--color=never", "--hidden"]
     if ignore_case:
         cmd.append("-i")
     if literal:
@@ -186,17 +211,38 @@ def _try_ripgrep(
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return None
     raw_lines = proc.stdout.splitlines()
-    limit_reached = len(raw_lines) > limit
-    raw_lines = raw_lines[:limit]
+    # Pi parity: the limit is a MATCH-count cap (pi increments ``matchCount``
+    # once per ``--json`` match event), NOT a raw-line cap. With ``-C`` rg
+    # interleaves context lines and ``--`` separators, so counting raw lines
+    # would falsely trip the limit and slice mid-block. Count only match lines
+    # (lineno separator ``:``); keep each kept match's context; stop before the
+    # ``limit``-th-plus-one match.
     lines_trimmed = 0
+    match_count = 0
+    limit_reached = False
     out_lines: list[str] = []
     for ln in raw_lines:
-        rel = _relativize_rg_line(ln, base, is_directory=is_directory)
+        rel, is_match = _relativize_rg_line(ln, base, is_directory=is_directory)
+        if is_match:
+            if match_count >= limit:
+                limit_reached = True
+                break
+            match_count += 1
         if len(rel) > GREP_MAX_LINE_LENGTH:
             lines_trimmed += 1
-            out_lines.append(truncate_line(rel, GREP_MAX_LINE_LENGTH))
-        else:
-            out_lines.append(rel)
+            rel = truncate_line(rel, GREP_MAX_LINE_LENGTH)
+        out_lines.append(rel)
+    if limit_reached:
+        # We broke at the (limit+1)-th match — drop its partial leading block
+        # (everything from the last ``--`` group separator onward).
+        for i in range(len(out_lines) - 1, -1, -1):
+            if out_lines[i] == "--":
+                del out_lines[i:]
+                break
+    # Drop a dangling ``--`` group separator left by a trailing context-only
+    # block.
+    while out_lines and out_lines[-1] == "--":
+        out_lines.pop()
     return "\n".join(out_lines), limit_reached, lines_trimmed
 
 
@@ -302,15 +348,25 @@ def create_grep_tool(
         # it is a directory; a single-file search uses the basename.
         is_directory = Path(base).is_dir()
 
-        rg_result = _try_ripgrep(
-            pattern,
-            base,
-            glob=glob_filter,
-            ignore_case=ignore_case,
-            literal=literal,
-            context=context,
-            limit=effective_limit,
-            is_directory=is_directory,
+        # Pi parity ``grep.ts:171``: ``await ensureTool("rg", true)`` — prefer a
+        # system/cached/auto-downloaded ripgrep (which respects ``.gitignore``).
+        # Aelix divergence: when rg is unavailable (offline + absent), fall back
+        # to the pure-Python scanner instead of erroring like Pi does.
+        rg_path = await ensure_tool("rg")
+        rg_result = (
+            _try_ripgrep(
+                pattern,
+                base,
+                rg_path=rg_path,
+                glob=glob_filter,
+                ignore_case=ignore_case,
+                literal=literal,
+                context=context,
+                limit=effective_limit,
+                is_directory=is_directory,
+            )
+            if rg_path is not None
+            else None
         )
         if rg_result is not None:
             raw_output, limit_reached, lines_truncated = rg_result
@@ -325,6 +381,12 @@ def create_grep_tool(
                 limit=effective_limit,
                 is_directory=is_directory,
             )
+
+        # Pi parity ``grep.ts:308-310``: zero matches → ``"No matches found"``
+        # (details undefined), mirroring find's ``No files found matching
+        # pattern`` empty-result guard.
+        if not raw_output:
+            return ToolResult(content=[TextContent(text="No matches found")])
 
         # Pi parity: ``truncateHead(rawOutput, { maxLines: MAX_SAFE_INTEGER })``
         # so only the 50KB byte cap can bind.
@@ -363,9 +425,9 @@ def create_grep_tool(
         name="grep",
         description=(
             "Search file contents for a pattern. Returns matching lines with "
-            "file paths and line numbers. Output is truncated to 100 matches "
-            "or 50KB (whichever is hit first). Long lines are truncated to 500 "
-            "characters."
+            "file paths and line numbers. Respects .gitignore. Output is "
+            "truncated to 100 matches or 50KB (whichever is hit first). Long "
+            "lines are truncated to 500 characters."
         ),
         parameters=_GREP_PARAMETERS_SCHEMA,
         execute=execute,

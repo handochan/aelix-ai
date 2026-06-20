@@ -21,6 +21,8 @@ from aelix_agent_core.types import AgentTool
 
 from aelix_coding_agent.tools.bash import (
     BashOperations,
+    BashSpawnContext,
+    BashSpawnHook,
     BashToolDetails,
     create_bash_tool,
     create_local_bash_operations,
@@ -115,6 +117,8 @@ def create_all_tools(
 __all__ = [
     "ALL_TOOL_NAMES",
     "BashOperations",
+    "BashSpawnContext",
+    "BashSpawnHook",
     "BashToolDetails",
     "EditOperations",
     "EditToolDetails",

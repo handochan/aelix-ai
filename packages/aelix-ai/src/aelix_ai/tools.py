@@ -49,6 +49,13 @@ class ToolExecutionContext:
 
     ``on_partial`` is ``None`` when no harness is registered (bare-loop
     callers); tools MUST tolerate the ``None`` value before invoking it.
+
+    ``model`` is the resolved :class:`~aelix_ai.streaming.Model` for the
+    current turn (Pi parity: ``ctx.model`` on the tool execute signature,
+    ``agent-loop.ts``). It is ``None`` for bare-loop callers that do not
+    thread a model through the loop; tools that read it (e.g. the read
+    tool's non-vision image note) MUST tolerate ``None``. Typed ``Any`` to
+    avoid a hard import coupling onto the streaming module.
     """
 
     tool_call_id: str = ""
@@ -56,6 +63,9 @@ class ToolExecutionContext:
     # Sprint 3d (P-9). See ``ToolPartialCallback`` for the Pi-equivalent
     # contract.
     on_partial: ToolPartialCallback | None = None
+    # P0 #3 HEAVY (ADR-0139). Pi parity ``ctx.model`` — the model executing
+    # the current turn. ``None`` for bare-loop callers (note simply absent).
+    model: Any | None = None
 
 
 @dataclass(frozen=True)

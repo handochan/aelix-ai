@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,6 +21,7 @@ from aelix_coding_agent.tools._truncate import (
     format_size,
     truncate_head,
 )
+from aelix_coding_agent.util.tools_manager import ensure_tool
 
 _DEFAULT_LIMIT = 1000
 # Pi parity: ``truncateHead(rawOutput, { maxLines: Number.MAX_SAFE_INTEGER })``
@@ -77,8 +77,14 @@ _FIND_PARAMETERS_SCHEMA: dict[str, Any] = {
 }
 
 
-def _try_fd(pattern: str, base: str, limit: int) -> tuple[list[str], bool] | None:
+def _try_fd(
+    pattern: str, base: str, limit: int, *, fd_path: str
+) -> tuple[list[str], bool] | None:
     """Run ``fd`` Pi-faithfully; return (raw_lines, limit_reached) or None.
+
+    ``fd_path`` is the resolved fd binary (system, cached, or auto-downloaded)
+    supplied by :func:`ensure_tool` — guaranteeing fd's ``--no-require-git``
+    hierarchical ``.gitignore`` respect (Pi parity).
 
     Pi parity ``find.ts`` default impl: invoke fd with
     ``--glob --color=never --hidden --no-require-git --max-results <limit>``
@@ -91,9 +97,7 @@ def _try_fd(pattern: str, base: str, limit: int) -> tuple[list[str], bool] | Non
     Returns the lines sliced back to ``limit``.
     """
 
-    fd = shutil.which("fd")
-    if fd is None:
-        return None
+    fd = fd_path
 
     # Pi parity fd argv. Request limit + 1 to detect overflow before slicing.
     args = [
@@ -187,10 +191,20 @@ def create_find_tool(
                 is_error=True,
             )
 
+        # Pi parity ``find.ts:217``: ``await ensureTool("fd", true)`` — prefer a
+        # system/cached/auto-downloaded fd (which respects ``.gitignore`` via
+        # ``--no-require-git``). Aelix divergence: when fd is unavailable
+        # (offline + absent), fall back to ``rglob`` instead of erroring.
+        #
         # W4 MAJOR-3: compute overflow from the collected count BEFORE slicing.
         # A result set whose size equals ``limit`` exactly is NOT truncated;
         # only strictly more than ``limit`` is.
-        fd_result = _try_fd(pattern, base, limit)
+        fd_path = await ensure_tool("fd")
+        fd_result = (
+            _try_fd(pattern, base, limit, fd_path=fd_path)
+            if fd_path is not None
+            else None
+        )
         if fd_result is not None:
             raw_lines, limit_reached = fd_result
         else:
@@ -238,8 +252,8 @@ def create_find_tool(
         name="find",
         description=(
             "Search for files by glob pattern. Returns matching file paths "
-            "relative to the search directory. Output is truncated to 1000 "
-            "results or 50KB (whichever is hit first)."
+            "relative to the search directory. Respects .gitignore. Output is "
+            "truncated to 1000 results or 50KB (whichever is hit first)."
         ),
         parameters=_FIND_PARAMETERS_SCHEMA,
         execute=execute,
