@@ -21,6 +21,14 @@ dependencies = [
     { name = "aelix-coding-agent" },
 ]
 
+[package.optional-dependencies]
+images = [
+    { name = "aelix-coding-agent", extra = ["images", "tui"] },
+]
+tui = [
+    { name = "aelix-coding-agent", extra = ["tui"] },
+]
+
 [package.dev-dependencies]
 dev = [
     { name = "httpx" },
@@ -39,7 +47,10 @@ requires-dist = [
     { name = "aelix-agent-core", editable = "packages/aelix-agent-core" },
     { name = "aelix-ai", editable = "packages/aelix-ai" },
     { name = "aelix-coding-agent", editable = "packages/aelix-coding-agent" },
+    { name = "aelix-coding-agent", extras = ["tui"], marker = "extra == 'tui'", editable = "packages/aelix-coding-agent" },
+    { name = "aelix-coding-agent", extras = ["tui", "images"], marker = "extra == 'images'", editable = "packages/aelix-coding-agent" },
 ]
+provides-extras = ["tui", "images"]
 
 [package.metadata.requires-dev]
 dev = [

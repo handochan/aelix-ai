@@ -117,6 +117,16 @@ class Args:
     no_extensions: bool = False
     """Pi parity: ``--no-extensions`` / ``-ne``."""
 
+    project_trust_override: bool | None = None
+    """Pi parity: ``--approve`` / ``-a`` (True), ``--no-approve`` / ``-na``
+    (False) — Sprint P0 #10 Project Trust (``args.ts:180-183``).
+
+    :data:`None` = no override (resolve via the trust store / prompt /
+    deny-by-default); :data:`True` = trust project-local ``.aelix``
+    resources for this run; :data:`False` = ignore them for this run.
+    Short-circuits :func:`resolve_project_trusted` (no prompt, no
+    persistence)."""
+
     skills: list[str] = field(default_factory=list)
     """Pi parity: ``--skill <name>`` (repeatable)."""
 
@@ -306,6 +316,12 @@ def parse_args(argv: list[str]) -> Args:
                 i += 1
         elif arg in ("--no-extensions", "-ne"):
             parsed.no_extensions = True
+        elif arg in ("--approve", "-a"):
+            # Pi parity: ``args.ts:180`` — trust project-local files this run.
+            parsed.project_trust_override = True
+        elif arg in ("--no-approve", "-na"):
+            # Pi parity: ``args.ts:182`` — ignore project-local files this run.
+            parsed.project_trust_override = False
         elif arg == "--skill":
             if i + 1 < n:
                 parsed.skills.append(argv[i + 1])
@@ -433,6 +449,8 @@ Tools / Extensions:
   --tools, -t <csv>               Restrict tools to this comma-separated list
   --extension, -e <name>          Load extension (repeatable)
   --no-extensions, -ne            Disable all extensions
+  --approve, -a                   Trust project-local files for this run
+  --no-approve, -na               Ignore project-local files for this run
   --skill <name>                  Enable skill (repeatable)
   --no-skills, -ns                Disable all skills
   --prompt-template <name>        Enable prompt template (repeatable)

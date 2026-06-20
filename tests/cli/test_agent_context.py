@@ -147,10 +147,11 @@ async def test_build_harness_options_appends_mcp_tools() -> None:
     assert len(opts.tools) == builtin_count + 1
 
 
-async def test_build_harness_options_warns_on_on_disk_extension(
+async def test_build_harness_options_trusted_loads_on_disk_extension(
     tmp_path, monkeypatch, capsys
 ) -> None:
-    """On-disk extensions (beyond the 2 built-ins) trigger the security warning."""
+    """Sprint P0 #10: a TRUSTED project loads its on-disk extension and the
+    old post-hoc security warning is GONE (replaced by the trust gate)."""
 
     # Isolate discovery: cwd = tmp project with one project-local extension;
     # global agent dir → empty tmp so no real ~/.aelix extensions leak in.
@@ -161,11 +162,34 @@ async def test_build_harness_options_warns_on_on_disk_extension(
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("AELIX_CODING_AGENT_DIR", str(tmp_path / "empty_agent"))
 
-    opts = await _build_harness_options(Args(), Session(MemorySessionStorage()))
+    opts = await _build_harness_options(
+        Args(), Session(MemorySessionStorage()), project_trusted=True
+    )
     err = capsys.readouterr().err
-    assert "on-disk extension(s) with full system permissions" in err
+    # The old cosmetic warning was removed in favor of the real gate.
+    assert "full system permissions" not in err
     # built-ins (2) + the discovered probe (1)
     assert len(opts.extensions) == 3
+
+
+async def test_build_harness_options_untrusted_suppresses_on_disk_extension(
+    tmp_path, monkeypatch, capsys
+) -> None:
+    """Sprint P0 #10: an UNTRUSTED project drops its project-local on-disk
+    extension (``no_project_local``) — only the 2 built-ins load."""
+
+    (tmp_path / ".aelix" / "extensions").mkdir(parents=True)
+    (tmp_path / ".aelix" / "extensions" / "probe.py").write_text(
+        'def setup(aelix):\n    aelix.register_flag("probe_flag", type="bool", default=True)\n'
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("AELIX_CODING_AGENT_DIR", str(tmp_path / "empty_agent"))
+
+    opts = await _build_harness_options(
+        Args(), Session(MemorySessionStorage()), project_trusted=False
+    )
+    # The project-local probe was NOT loaded; only Guardrail + Permission.
+    assert len(opts.extensions) == 2
 
 
 async def test_build_harness_options_no_warning_without_on_disk(

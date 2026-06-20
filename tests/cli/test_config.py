@@ -106,6 +106,7 @@ def test_module_exports() -> None:
         "ENV_MCP_CONFIG",
         "ENV_SESSION_DIR",
         "VERSION",
+        "McpConfigSource",
         "expand_tilde_path",
         "get_agent_dir",
         "get_bin_dir",
@@ -129,9 +130,12 @@ def test_load_mcp_contribs_missing_returns_empty(tmp_path, monkeypatch) -> None:
     monkeypatch.delenv("AELIX_MCP_CONFIG", raising=False)
     # Point the global fallback at an empty agent dir so nothing is found.
     monkeypatch.setenv("AELIX_CODING_AGENT_DIR", str(tmp_path / "agent"))
-    contribs, warnings = config.load_mcp_server_contribs(str(tmp_path / "proj"))
+    contribs, warnings, source = config.load_mcp_server_contribs(
+        str(tmp_path / "proj")
+    )
     assert contribs == []
     assert warnings == []
+    assert source is None
 
 
 def test_load_mcp_contribs_cwd_file_with_args(tmp_path, monkeypatch) -> None:
@@ -142,8 +146,9 @@ def test_load_mcp_contribs_cwd_file_with_args(tmp_path, monkeypatch) -> None:
         '{"mcpServers": {"fs": {"command": "npx", '
         '"args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]}}}'
     )
-    contribs, warnings = config.load_mcp_server_contribs(str(cwd))
+    contribs, warnings, source = config.load_mcp_server_contribs(str(cwd))
     assert warnings == []
+    assert source == "project"
     assert len(contribs) == 1
     assert contribs[0].name == "fs"
     assert contribs[0].transport == "stdio"  # inferred from command
@@ -155,9 +160,10 @@ def test_load_mcp_contribs_malformed_json_warns(tmp_path, monkeypatch) -> None:
     cwd = tmp_path / "proj"
     (cwd / ".aelix").mkdir(parents=True)
     (cwd / ".aelix" / "mcp.json").write_text("{not valid json")
-    contribs, warnings = config.load_mcp_server_contribs(str(cwd))
+    contribs, warnings, source = config.load_mcp_server_contribs(str(cwd))
     assert contribs == []
     assert len(warnings) == 1
+    assert source == "project"
 
 
 def test_load_mcp_contribs_bad_entry_isolated(tmp_path, monkeypatch) -> None:
@@ -169,9 +175,10 @@ def test_load_mcp_contribs_bad_entry_isolated(tmp_path, monkeypatch) -> None:
     (cwd / ".aelix" / "mcp.json").write_text(
         '{"mcpServers": {"good": {"command": "echo"}, "bad": "not-an-object"}}'
     )
-    contribs, warnings = config.load_mcp_server_contribs(str(cwd))
+    contribs, warnings, source = config.load_mcp_server_contribs(str(cwd))
     assert [c.name for c in contribs] == ["good"]
     assert len(warnings) == 1
+    assert source == "project"
 
 
 def test_load_mcp_contribs_env_override_precedence(tmp_path, monkeypatch) -> None:
@@ -182,5 +189,6 @@ def test_load_mcp_contribs_env_override_precedence(tmp_path, monkeypatch) -> Non
     cwd = tmp_path / "proj"
     (cwd / ".aelix").mkdir(parents=True)
     (cwd / ".aelix" / "mcp.json").write_text('{"mcpServers": {"cwd_one": {"command": "echo"}}}')
-    contribs, _ = config.load_mcp_server_contribs(str(cwd))
+    contribs, _, source = config.load_mcp_server_contribs(str(cwd))
     assert [c.name for c in contribs] == ["via_env"]
+    assert source == "env"

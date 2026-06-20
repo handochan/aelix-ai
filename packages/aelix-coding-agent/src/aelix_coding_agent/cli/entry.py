@@ -68,6 +68,14 @@ from .config import (
 )
 from .file_processor import process_file_arguments
 from .initial_message import build_initial_message
+from .project_trust import (
+    ProjectTrustPromptResult,
+    ProjectTrustStore,
+    format_project_trust_prompt,
+    interpret_trust_option,
+    project_trust_options,
+    resolve_project_trusted,
+)
 from .runtime_bootstrap import load_dotenv, register_providers, resolve_model
 
 if TYPE_CHECKING:
@@ -312,6 +320,7 @@ async def _build_harness_options(
     *,
     mcp_tools: list[AgentTool] | None = None,
     get_api_key_and_headers: Callable[..., Any] | None = None,
+    project_trusted: bool = True,
 ) -> AgentHarnessOptions:
     """Assemble :class:`AgentHarnessOptions` from parsed CLI args.
 
@@ -360,25 +369,24 @@ async def _build_harness_options(
     # (``resource-loader.ts:395-399``). All build against ONE shared runtime
     # the harness reuses (``runtime=``) so ``ctx.ui`` / ``ctx.has_ui`` bindings
     # reach the handlers.
+    #
+    # Project Trust gate (Sprint P0 #10): when ``project_trusted`` is False the
+    # auto-discovered ``cwd/.aelix/extensions/`` tier is SUPPRESSED
+    # (``no_project_local=True``) so untrusted project-local .py is never
+    # exec_module'd — but explicit ``-e`` paths and the global tier still load
+    # (they are user-chosen, not project-local). The trust decision is resolved
+    # in ``_async_main`` BEFORE this factory runs, so the gate precedes any
+    # project-local code execution.
     loaded = await discover_and_load_extensions(
         [str(p) for p in parsed.extensions],
         cwd=Path(cwd),
         agent_dir=Path(get_agent_dir()),
         prepend=[GuardrailExtension(), PermissionExtension()],
         no_discovery=parsed.no_extensions,
+        no_project_local=not project_trusted,
     )
     for err in loaded.errors:
         print(f"Warning: extension load: {err}", file=sys.stderr)
-    # Security (Aelix-additive hardening; Pi only warns in docs): on-disk
-    # extensions import + run arbitrary .py with FULL user privileges. Warn
-    # when any load beyond the 2 prepended built-ins.
-    on_disk = max(0, len(loaded.extensions) - 2)
-    if on_disk > 0:
-        print(
-            f"Warning: loaded {on_disk} on-disk extension(s) with full system "
-            "permissions from .aelix/extensions (project-local + global).",
-            file=sys.stderr,
-        )
     options = AgentHarnessOptions(
         model=model,
         session=session,
@@ -402,6 +410,106 @@ async def _build_harness_options(
     append.extend(parsed.append_system_prompt)
     options.append_system_prompt = append
     return options
+
+
+async def _prompt_project_trust_interactive(
+    cwd: Path,
+) -> ProjectTrustPromptResult | None:
+    """A1 seam (Sprint P0 #10) — one-shot pre-``run_tui`` trust selector.
+
+    The bootstrap-order tension (spec §2.6): extensions load inside the
+    harness factory and MCP connects BEFORE ``run_tui`` builds its chrome, so
+    the trust decision must be made before any project-local code runs — but
+    the persistent TUI's ``ctx.ui.select`` is not yet bound. A1 resolves this
+    with a tiny DEDICATED ``prompt_toolkit.Application`` (a one-shot full-screen
+    selector) that runs to completion and returns BEFORE the harness factory /
+    MCP connect, so the gate strictly precedes execution.
+
+    Returns the user's :class:`ProjectTrustPromptResult`, or :data:`None` on
+    Esc / Ctrl+C (→ deny). Returns :data:`None` if the ``[tui]`` extra is
+    missing (prompt-toolkit unavailable) — the caller then denies by default,
+    which is the safe direction.
+    """
+
+    try:
+        from prompt_toolkit.application import Application
+        from prompt_toolkit.key_binding import KeyBindings
+        from prompt_toolkit.layout import Layout, Window
+        from prompt_toolkit.layout.controls import FormattedTextControl
+    except ImportError:
+        # No TUI extra → cannot prompt; caller denies by default.
+        return None
+
+    options = project_trust_options(cwd)
+    state = {"idx": 0}
+
+    body = format_project_trust_prompt(cwd)
+
+    def _render() -> str:
+        rows = [body, ""]
+        for i, label in enumerate(options):
+            marker = "→ " if i == state["idx"] else "  "
+            rows.append(f"{marker}{label}")
+        rows.append("")
+        rows.append("↑/↓ to move · Enter to choose · Esc to cancel")
+        return "\n".join(rows)
+
+    kb = KeyBindings()
+    chosen: dict[str, str | None] = {"label": None}
+
+    @kb.add("up")
+    def _up(_e: object) -> None:
+        state["idx"] = (state["idx"] - 1) % len(options)
+
+    @kb.add("down")
+    def _down(_e: object) -> None:
+        state["idx"] = (state["idx"] + 1) % len(options)
+
+    @kb.add("enter")
+    @kb.add("c-j")
+    def _enter(event: Any) -> None:
+        chosen["label"] = options[state["idx"]]
+        event.app.exit()
+
+    @kb.add("escape")
+    @kb.add("c-c")
+    def _cancel(event: Any) -> None:
+        chosen["label"] = None
+        event.app.exit()
+
+    app: Any = Application(
+        layout=Layout(
+            Window(FormattedTextControl(_render, focusable=True, key_bindings=kb))
+        ),
+        full_screen=False,
+    )
+    await app.run_async()
+
+    label = chosen["label"]
+    if label is None:
+        return None
+    return interpret_trust_option(label, cwd)
+
+
+async def _resolve_project_trust(parsed: Args, cwd: str, app_mode: AppMode) -> bool:
+    """Resolve project trust ONCE, before any project-local code executes.
+
+    ``has_ui`` is True only in interactive mode (print/json/rpc cannot prompt →
+    deny-by-default). The interactive prompt is the A1 one-shot selector. On a
+    denied + non-interactive run with resources present, prints a clear stderr
+    notice (replacing the old post-hoc warning).
+    """
+
+    cwd_path = Path(cwd)
+    has_ui = app_mode == "interactive"
+    trusted = await resolve_project_trusted(
+        cwd_path,
+        override=parsed.project_trust_override,
+        has_ui=has_ui,
+        prompt=_prompt_project_trust_interactive if has_ui else None,
+        store=ProjectTrustStore(get_agent_dir()),
+    )
+    return trusted
 
 
 async def _async_main(argv: list[str]) -> int:
@@ -604,13 +712,35 @@ async def _async_main(argv: list[str]) -> int:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 
+    # === Project Trust gate (Sprint P0 #10) — resolve ONCE, BEFORE any =======
+    # project-local code executes (MCP subprocess spawn + extension
+    # exec_module). The interactive prompt is the A1 one-shot selector; print/
+    # json/rpc cannot prompt → deny-by-default. The resolved bool gates BOTH
+    # the project-local MCP contribs (below) AND the auto-discovered
+    # ``cwd/.aelix/extensions`` tier (threaded into ``_build_harness_options``).
+    project_trusted = await _resolve_project_trust(parsed, cwd, app_mode)
+
     # MCP servers (Tier 4): connect ONCE here, share the connected tools across
     # every harness rebuild (the tool closures hold live connections, so they
     # survive rebuilds), and dispose ONCE in the finally block. A failed server
     # warns and is skipped — one bad server never aborts the agent.
-    mcp_contribs, mcp_warnings = load_mcp_server_contribs(str(Path.cwd()))
+    mcp_contribs, mcp_warnings, mcp_source = load_mcp_server_contribs(
+        str(Path.cwd())
+    )
     for warning in mcp_warnings:
         print(f"Warning: MCP config: {warning}", file=sys.stderr)
+    # Project Trust gate: drop ONLY the auto-discovered project-local
+    # ``cwd/.aelix/mcp.json`` contribs from an untrusted directory. ``$AELIX_MCP_CONFIG``
+    # (``env``) and the user-global config are explicit user choices and are
+    # NEVER gated. When dropped in a non-interactive run, print a clear stderr
+    # notice (replaces the old post-hoc "loaded N on-disk extensions" warning).
+    if mcp_contribs and mcp_source == "project" and not project_trusted:
+        print(
+            "Notice: project-local .aelix/mcp.json servers skipped in an "
+            "untrusted directory; pass --approve to trust.",
+            file=sys.stderr,
+        )
+        mcp_contribs = []
     mcp_manager: McpClientManager | None = None
     mcp_tools: list[AgentTool] = []
     if mcp_contribs:
@@ -619,12 +749,26 @@ async def _async_main(argv: list[str]) -> int:
             print(f"Warning: MCP server failed: {conn_err}", file=sys.stderr)
         mcp_tools = await mcp_manager.collect_agent_tools()
 
+    # Non-interactive untrusted notice for the EXTENSION surface (the gate
+    # itself happens inside the factory via ``no_project_local``). Interactive
+    # users already saw/answered the A1 prompt, so only warn for headless runs.
+    if not project_trusted and app_mode != "interactive":
+        from .project_trust import has_trust_requiring_project_resources
+
+        if has_trust_requiring_project_resources(Path(cwd)):
+            print(
+                "Notice: project-local .aelix/extensions skipped in an "
+                "untrusted directory; pass --approve to trust.",
+                file=sys.stderr,
+            )
+
     async def _harness_factory(new_session: Session) -> AgentHarness:
         opts = await _build_harness_options(
             parsed,
             new_session,
             mcp_tools=mcp_tools,
             get_api_key_and_headers=get_api_key_and_headers,
+            project_trusted=project_trusted,
         )
         return AgentHarness(opts)
 

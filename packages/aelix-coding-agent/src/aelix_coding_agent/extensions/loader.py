@@ -146,6 +146,7 @@ async def discover_and_load_extensions(
     agent_dir: Path | None = None,
     prepend: list[ExtensionFactory] | None = None,
     no_discovery: bool = False,
+    no_project_local: bool = False,
 ) -> LoadExtensionsResult:
     """Pi-parity 3-tier discovery + Aelix-additive entry_points pass.
 
@@ -178,6 +179,14 @@ async def discover_and_load_extensions(
     Error containment: per-entry try/except inside each tier — a single
     bad endpoint never aborts the wave. Errors append to
     :attr:`LoadExtensionsResult.errors`.
+
+    ``no_project_local`` (Sprint P0 #10 Project Trust): when ``True``, skip
+    ONLY tier 1 (the auto-discovered ``cwd/.aelix/extensions/`` project-local
+    directory) while still loading the global tier 2, the explicit
+    ``configured_paths`` (tier 3, i.e. ``-e``), and entry_points (tier 4).
+    This is a FINER gate than ``no_discovery`` (which disables tiers 1, 2, AND
+    4): the trust gate must suppress untrusted project-local code WITHOUT
+    breaking user-chosen global/explicit/installed extensions.
     """
 
     all_entries: list[str | Path | ExtensionFactory | _ManifestEntry] = []
@@ -217,10 +226,16 @@ async def discover_and_load_extensions(
     # 1+2: directory auto-discovery (skipped under ``no_discovery`` — Pi
     # ``noExtensions`` keeps only explicit ``configured_paths``).
     if not no_discovery:
-        # 1. Project-local: cwd/.aelix/extensions/
-        local_dir = (cwd / ".aelix" / "extensions").resolve(strict=False)
-        for discovered in _discover_in_dir(local_dir, errors=errors):
-            _push_entry(discovered)
+        # 1. Project-local: cwd/.aelix/extensions/ — gated by the Project
+        # Trust gate via ``no_project_local`` (Sprint P0 #10). When an
+        # untrusted directory resolves to ``project_trusted=False`` the caller
+        # passes ``no_project_local=True`` so this tier's arbitrary .py is
+        # NEVER exec_module'd, while the global/explicit/entry_point tiers
+        # below still load (they are user-chosen, not project-local).
+        if not no_project_local:
+            local_dir = (cwd / ".aelix" / "extensions").resolve(strict=False)
+            for discovered in _discover_in_dir(local_dir, errors=errors):
+                _push_entry(discovered)
 
         # 2. Global: ~/.aelix/extensions/  (or override via agent_dir)
         home_aelix = Path.home() / ".aelix" if agent_dir is None else agent_dir

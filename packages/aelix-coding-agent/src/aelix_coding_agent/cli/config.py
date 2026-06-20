@@ -21,7 +21,7 @@ import json
 import os
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 if TYPE_CHECKING:
     from aelix_agent_core.contracts.manifest import McpServerContrib
@@ -118,7 +118,15 @@ def get_session_dir() -> str | None:
     return expand_tilde_path(env) if env else None
 
 
-def load_mcp_server_contribs(cwd: str) -> tuple[list[McpServerContrib], list[str]]:
+McpConfigSource = Literal["env", "project", "global"]
+"""Where the resolved MCP config came from — used by the Project Trust gate
+(Sprint P0 #10) to drop ONLY auto-discovered ``project`` contribs from an
+untrusted directory while keeping user-chosen ``env`` / ``global`` ones."""
+
+
+def load_mcp_server_contribs(
+    cwd: str,
+) -> tuple[list[McpServerContrib], list[str], McpConfigSource | None]:
     """Load MCP server definitions from a Claude-Code-style JSON config.
 
     Resolution precedence:
@@ -135,31 +143,46 @@ def load_mcp_server_contribs(cwd: str) -> tuple[list[McpServerContrib], list[str
 
     ``transport`` defaults to ``"stdio"`` when ``command`` is present, else
     ``"http"`` when ``url`` is present (an explicit ``transport`` always wins).
-    Missing file → ``([], [])``. Per-entry errors (bad JSON / invalid entry)
-    are returned as warning strings rather than raised, so one malformed
+    Missing file → ``([], [], None)``. Per-entry errors (bad JSON / invalid
+    entry) are returned as warning strings rather than raised, so one malformed
     server never aborts startup.
+
+    Returns a 3-tuple ``(contribs, warnings, source)`` where ``source`` tags
+    which tier the resolved config came from (``"env"`` / ``"project"`` /
+    ``"global"``), or :data:`None` when no config file was found. The Project
+    Trust gate (Sprint P0 #10) uses ``source`` to suppress ONLY ``"project"``
+    (auto-discovered ``cwd/.aelix/mcp.json``) contribs in an untrusted
+    directory — ``"env"`` (``$AELIX_MCP_CONFIG``) and ``"global"`` are explicit
+    user choices and are never gated.
     """
 
     from aelix_agent_core.contracts.manifest import McpServerContrib
 
+    source: McpConfigSource
     override = os.environ.get(ENV_MCP_CONFIG)
     if override:
         path = Path(expand_tilde_path(override))
+        source = "env"
     else:
         local = Path(cwd) / CONFIG_DIR_NAME / "mcp.json"
-        path = local if local.is_file() else Path(get_agent_dir()) / "mcp.json"
+        if local.is_file():
+            path = local
+            source = "project"
+        else:
+            path = Path(get_agent_dir()) / "mcp.json"
+            source = "global"
 
     if not path.is_file():
-        return [], []
+        return [], [], None
 
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        return [], [f"{path}: {exc}"]
+        return [], [f"{path}: {exc}"], source
 
     servers = raw.get("mcpServers") if isinstance(raw, dict) else None
     if not isinstance(servers, dict):
-        return [], [f"{path}: missing or invalid 'mcpServers' object"]
+        return [], [f"{path}: missing or invalid 'mcpServers' object"], source
 
     contribs: list[McpServerContrib] = []
     warnings: list[str] = []
@@ -182,7 +205,7 @@ def load_mcp_server_contribs(cwd: str) -> tuple[list[McpServerContrib], list[str
         except Exception as exc:  # noqa: BLE001 — Pydantic ValidationError et al.
             warnings.append(f"{path}: server {name!r}: {exc}")
 
-    return contribs, warnings
+    return contribs, warnings, source
 
 
 __all__ = [
@@ -192,6 +215,7 @@ __all__ = [
     "ENV_MCP_CONFIG",
     "ENV_SESSION_DIR",
     "VERSION",
+    "McpConfigSource",
     "expand_tilde_path",
     "get_agent_dir",
     "get_bin_dir",
