@@ -33,6 +33,14 @@ dependencies = [
   "aelix-coding-agent==0.1.0",
 ]
 
+[project.optional-dependencies]
+# `pip install 'aelix[tui]'` (or `uv tool install 'aelix[tui]'`) pulls the
+# interactive TUI deps through the coding-agent extra; `[images]` adds inline
+# image rendering on top. The bare `aelix` install provides the `aelix` CLI +
+# the non-interactive (print/json/rpc) modes.
+tui = ["aelix-coding-agent[tui]==0.1.0"]
+images = ["aelix-coding-agent[tui,images]==0.1.0"]
+
 [project.urls]
 Homepage = "https://github.com/handochan/aelix-ai"
 Repository = "https://github.com/handochan/aelix-ai"

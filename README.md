@@ -20,7 +20,7 @@ systems.
 
 ```text
 aelix-ai/
-├── pyproject.toml                    # workspace anchor + aelix script
+├── pyproject.toml                    # workspace anchor + `aelix` umbrella package
 ├── src/aelix/                        # umbrella re-export package
 ├── packages/
 │   ├── aelix-ai/                     # AI primitives (messages, tools, streaming)
@@ -31,6 +31,37 @@ aelix-ai/
 
 See ADR-0015 for the full package boundary rationale.
 
+## Install
+
+Aelix installs as a single global `aelix` command. The recommended way to get an
+isolated, always-on-PATH CLI:
+
+```bash
+uv tool install 'aelix[tui]'     # recommended (uv) — CLI + interactive TUI
+pipx install 'aelix[tui]'        # or pipx
+```
+
+Or into an environment with pip:
+
+```bash
+pip install 'aelix[tui]'         # CLI + interactive TUI
+pip install aelix                # CLI + non-interactive (print / json / rpc) only
+pip install 'aelix[images]'      # also enable inline image rendering
+```
+
+Then run it from anywhere:
+
+```bash
+aelix                                            # interactive agent (TUI)
+aelix --model openai/gpt-4o-mini "summarise this repo"
+aelix --print "what files changed?"              # one-shot
+aelix --help
+```
+
+`aelix` needs a provider key — set `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` /
+`OPENROUTER_API_KEY` (or run `aelix auth login <provider>`). To publish a
+release, see [RELEASING.md](RELEASING.md).
+
 ## Quick Start
 
 Aelix uses [uv](https://docs.astral.sh/uv/) for environment and dependency
@@ -39,7 +70,7 @@ management.
 ```bash
 uv sync                  # create .venv and install all workspace packages (dev included)
 uv run pytest            # run the test suite
-uv run aelix             # run the built-in echo demo
+uv run aelix --help      # the real CLI (`python -m aelix` runs the credential-free demo)
 ```
 
 For live LLM tests (Phase 2+), copy `.env.example` to `.env` and fill in your

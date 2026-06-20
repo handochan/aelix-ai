@@ -145,6 +145,19 @@ def test_banner_degrades_when_no_model() -> None:
     assert "/work" in out
 
 
+def test_banner_includes_terminal_logo_header() -> None:
+    """The startup banner renders the Aelix terminal logo as a header — the
+    block art, the title, and the tagline (B: TUI logo header)."""
+
+    from aelix_coding_agent.tui._logo import LOGO_TAGLINE
+    from aelix_coding_agent.tui.shell import _build_banner
+
+    out = _render(_build_banner(_BannerHarness(), "/home/me/project"))  # type: ignore[arg-type]
+    assert "█" in out  # block-art glyph rendered
+    assert "Aelix Agent Runtime" in out  # title
+    assert LOGO_TAGLINE in out  # positioning tagline
+
+
 # === registry shape =========================================================
 
 

@@ -1140,22 +1140,36 @@ def _match_management_modal(
 
 
 def _build_banner(harness: AgentHarness, cwd: str) -> object:
-    """Build the startup banner (Aelix + model id + cwd + /help hint).
+    """Build the startup banner: the Aelix terminal-logo header + a panel with
+    the model id, cwd, and /help hint.
 
     The model id reads ``harness.current_model.id``; degrades gracefully to
     ``unknown`` when the harness exposes no model (e.g. headless test fakes).
+    The block-art logo (:mod:`aelix_coding_agent.tui._logo`) is styled with
+    Rich, so it degrades to plain text on no-color terminals.
     """
     from rich.box import ROUNDED
+    from rich.console import Group
     from rich.panel import Panel
+
+    from aelix_coding_agent.tui._logo import LOGO_ART, LOGO_TAGLINE, LOGO_TITLE
 
     model = getattr(harness, "current_model", None)
     model_id = getattr(model, "id", None) or "unknown"
+
+    logo = Text()
+    logo.append(LOGO_ART + "\n", style="bold cyan")
+    logo.append(f" {LOGO_TITLE}\n", style="bold")
+    logo.append(f" {LOGO_TAGLINE}", style="dim")
+
     body = Text()
-    body.append("Aelix\n", style="bold cyan")
     body.append(f"model: {model_id}\n")
     body.append(f"cwd:   {cwd}\n")
     body.append("Type /help for commands.", style="dim")
-    return Panel(body, box=ROUNDED, border_style="cyan", expand=False)
+    panel = Panel(body, box=ROUNDED, border_style="cyan", expand=False)
+
+    # Logo header, a blank spacer line, then the info panel.
+    return Group(logo, Text(), panel)
 
 
 async def _output_pump(queue: asyncio.Queue[tuple[str, object]], chrome: AelixChrome) -> None:
