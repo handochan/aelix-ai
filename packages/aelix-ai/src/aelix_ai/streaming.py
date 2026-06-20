@@ -407,6 +407,15 @@ class SimpleStreamOptions:
     metadata: dict[str, str] = field(default_factory=dict)
     signal: Any | None = None  # AbortSignal-shaped (Sprint 6a)
 
+    # --- P0 #6 (compaction fidelity): per-turn output-token cap ---
+    # Pi ``SimpleStreamOptions.maxTokens`` (providers/simple-options.ts). When
+    # set, this overrides the model default output cap at the adapter payload
+    # level (pi ``base.maxTokens = options.maxTokens ?? model.maxTokens``). The
+    # compaction summarizer uses it to bound the summary length
+    # (``floor(0.8 * reserveTokens)``) and the turn-prefix summary
+    # (``floor(0.5 * reserveTokens)``); branch summaries cap at ``2048``.
+    max_tokens: int | None = None
+
     # --- Sprint 6a (ADR-0045) provider-adapter extensions ---
     cache_retention: Literal["none", "short", "long"] | None = None
     transport: Literal["sse", "websocket", "websocket-cached", "auto"] | None = None

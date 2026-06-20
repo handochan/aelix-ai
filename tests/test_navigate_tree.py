@@ -146,6 +146,87 @@ async def test_generate_branch_summary_real_path_prepends_preamble(
     assert "## Goal" in captured["user_text"]  # BRANCH_SUMMARY_PROMPT appended
 
 
+async def test_generate_branch_summary_file_ops_tail_and_max_tokens_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P0 #6 branch-summary parity: the abandoned branch's read/write/edit tool
+    calls produce a verbatim ``<read-files>`` / ``<modified-files>`` tail (with
+    pi sort/dedup + read-exclusion), and the streamed call is capped at
+    ``max_tokens=2048`` (spec deliverable 3 + branch-summary cap).
+
+    Without this, a mutation deleting the branch file-op block or dropping the
+    2048 cap passes the whole suite (the only other real-path branch test seeds
+    a text-only session and never inspects ``options``).
+    """
+
+    from aelix_agent_core.session.branch_summarization import (
+        BRANCH_SUMMARY_PREAMBLE,
+        generate_branch_summary,
+    )
+    from aelix_ai.messages import ToolCallContent
+    from aelix_ai.streaming import (
+        AssistantDoneEvent,
+        Model,
+        SimpleStreamOptions,
+        TextDeltaEvent,
+    )
+
+    captured: dict[str, Any] = {}
+
+    async def _fake_stream_simple(model: Any, context: Any, options: Any) -> Any:
+        captured["options"] = options
+
+        async def _gen() -> Any:
+            yield TextDeltaEvent(delta="branch body")
+            yield AssistantDoneEvent(
+                message=AssistantMessage(
+                    content=[TextContent(text="branch body")],
+                    stop_reason="end_turn",
+                )
+            )
+
+        return _gen()
+
+    monkeypatch.setattr("aelix_ai.streaming.stream_simple", _fake_stream_simple)
+
+    def _tool(name: str, path: str) -> AssistantMessage:
+        return AssistantMessage(
+            content=[
+                ToolCallContent(tool_call_id="c", tool_name=name, input={"path": path})
+            ]
+        )
+
+    # Seed an abandoned branch whose assistant tool calls read/write/edit
+    # distinct paths; ``shared.py`` is BOTH read and edited so the read-exclusion
+    # (pi computeFileLists) is proven — it must appear only under modified-files.
+    session = Session(MemorySessionStorage())
+    await session.append_message(UserMessage(content=[TextContent(text="go")]))
+    await session.append_message(_tool("read", "b_read.py"))
+    await session.append_message(_tool("read", "shared.py"))
+    await session.append_message(_tool("write", "z_write.py"))
+    await session.append_message(_tool("edit", "shared.py"))
+    await session.append_message(_tool("edit", "m_edit.py"))
+    entries = await session.get_entries()
+
+    summary = await generate_branch_summary(
+        Model(id="mock", provider="mock"),
+        lambda _m: {"apiKey": "x", "headers": {}},
+        entries,
+    )
+
+    assert summary.startswith(BRANCH_SUMMARY_PREAMBLE)
+    # Verbatim file-op tail: read-only (sorted, shared.py excluded) then modified
+    # (sorted union of edited+written).
+    assert summary.endswith(
+        "\n\n<read-files>\nb_read.py\n</read-files>"
+        "\n\n<modified-files>\nm_edit.py\nshared.py\nz_write.py\n</modified-files>"
+    )
+    # The branch-summary cap reaches the adapter via SimpleStreamOptions.
+    opts = captured["options"]
+    assert isinstance(opts, SimpleStreamOptions)
+    assert opts.max_tokens == 2048
+
+
 async def test_navigate_tree_cancel_via_hook() -> None:
     session, user_id, asst_id = await _seeded_session()
     # Add a third entry so the leaf is past asst_id and navigation actually

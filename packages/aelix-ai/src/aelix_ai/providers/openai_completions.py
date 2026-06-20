@@ -672,20 +672,32 @@ def build_params(
 
     max_tokens = getattr(model, "max_tokens", 0) or 0
     context_window = getattr(model, "context_window", 0) or 0
-    # ADR-0114: 127 catalog models list ``maxTokens == contextWindow``.
-    # Sending the full context window as the *output* cap leaves no room
-    # for the prompt and 400s on strict OpenRouter endpoints ("this
-    # endpoint's maximum context length is N tokens. However, you
-    # requested ... in the output"). When the cap is meaningless (>= the
-    # whole context window), omit it so the provider clamps the output to
-    # whatever the context allows. Models with a real, smaller output cap
-    # keep sending it unchanged.
-    cap_is_meaningful = not (context_window and max_tokens >= context_window)
-    if max_tokens > 0 and cap_is_meaningful:
+    # P0 #6 (compaction fidelity): pi ``base.maxTokens = options.maxTokens ??
+    # model.maxTokens``. A caller-supplied ``options.max_tokens`` (e.g. the
+    # compaction summarizer's ``floor(0.8 * reserveTokens)`` cap) overrides the
+    # model default output cap and bypasses the ADR-0114 context-window guard
+    # below — it is an explicit, intentionally-small cap, never the full window.
+    options_max_tokens = getattr(options, "max_tokens", None)
+    if options_max_tokens is not None and options_max_tokens > 0:
         if compat.max_tokens_field == "max_tokens":
-            params["max_tokens"] = max_tokens
+            params["max_tokens"] = options_max_tokens
         else:
-            params["max_completion_tokens"] = max_tokens
+            params["max_completion_tokens"] = options_max_tokens
+    else:
+        # ADR-0114: 127 catalog models list ``maxTokens == contextWindow``.
+        # Sending the full context window as the *output* cap leaves no room
+        # for the prompt and 400s on strict OpenRouter endpoints ("this
+        # endpoint's maximum context length is N tokens. However, you
+        # requested ... in the output"). When the cap is meaningless (>= the
+        # whole context window), omit it so the provider clamps the output to
+        # whatever the context allows. Models with a real, smaller output cap
+        # keep sending it unchanged.
+        cap_is_meaningful = not (context_window and max_tokens >= context_window)
+        if max_tokens > 0 and cap_is_meaningful:
+            if compat.max_tokens_field == "max_tokens":
+                params["max_tokens"] = max_tokens
+            else:
+                params["max_completion_tokens"] = max_tokens
 
     tools = list(context.tools or [])
     if tools:
@@ -818,6 +830,9 @@ def _coerce_options(
         on_payload=options.on_payload,
         on_response=options.on_response,
         client=options.client,
+        # P0 #6 (compaction fidelity): carry the per-turn output cap through
+        # the widen so ``build_params`` honors ``options.max_tokens``.
+        max_tokens=options.max_tokens,
     )
 
 

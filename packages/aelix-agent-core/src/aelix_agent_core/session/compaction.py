@@ -8,23 +8,31 @@ to ``AgentHarnessOptions``. Pi calls ``compact()`` inline using
 this. A test-only ``_summarizer_override`` callable is supported
 (Aelix-additive, documented in ADR-0023).
 
-Sprint 6h₁₂-compaction lands the real Pi pipeline:
-- ``findCutPoint`` (backward token-budget walk via :func:`_find_cut_index`)
-- ``generateSummary`` (via :func:`_generate_summary` + :func:`stream_simple`)
-- ``first_kept_entry_id`` now maps to the **cut entry** (not the head) so
+Sprint 6h₁₂-compaction landed the first real pipeline; P0 #6 (compaction
+fidelity) completes it:
+- entry-level ``findCutPoint`` / ``findValidCutPoints`` / ``findTurnStartIndex``
+  (:func:`find_cut_point` et al.) with the control-entry back-up loop, so the
+  first-kept entry is never a ``toolResult`` / control entry;
+- ``prepareCompaction`` boundary-start from the previous compaction's
+  ``first_kept_entry_id``, split-turn detection, and ``historyEnd``;
+- split-turn (turn-prefix) summarization — :func:`_generate_turn_prefix_summary`
+  combined with the history summary via the verbatim separator;
+- file-op extraction — ``<read-files>`` / ``<modified-files>`` tail +
+  ``details={"readFiles", "modifiedFiles"}`` (seeded from the prior compaction);
+- ``max_tokens`` cap on the summary (``floor(0.8 * RESERVE_TOKENS)``) and the
+  turn-prefix (``floor(0.5 * RESERVE_TOKENS)``) via the new
+  :class:`SimpleStreamOptions.max_tokens` field (honored REAL at the provider
+  payload level).
+- ``first_kept_entry_id`` maps to the **cut entry** (not the head) so
   :func:`build_session_context` drops the summarized prefix correctly.
-
-Known remaining gaps (deferred):
-- ``file_ops`` / ``turn_prefix_messages`` / ``is_split_turn`` still absent.
-- No ``max_tokens`` cap on the summarization call (``SimpleStreamOptions``
-  has no ``max_tokens`` field yet — infra gap, Pi uses
-  ``floor(0.8 * reserveTokens)`` here).
 """
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import json
+import math
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -128,6 +136,32 @@ TOOL_RESULT_MAX_CHARS = 2000
 # token estimate is within this budget stay; everything older is summarized.
 KEEP_RECENT_TOKENS = 20000
 
+# Pi ``DEFAULT_COMPACTION_SETTINGS.reserveTokens`` (compaction.ts). The summary
+# output cap is ``floor(0.8 * RESERVE_TOKENS)`` and the turn-prefix cap is
+# ``floor(0.5 * RESERVE_TOKENS)`` (P0 #6). Mirrors
+# ``core._AUTO_COMPACT_RESERVE_TOKENS`` (same value, separate constants because
+# core has no SettingsManager).
+RESERVE_TOKENS = 16384
+
+# Pi ``TURN_PREFIX_SUMMARIZATION_PROMPT`` (``compaction.ts``) — verbatim. Used
+# when the cut lands mid-turn (a "split turn"): the turn PREFIX is summarized
+# separately and combined with the history summary so the retained SUFFIX
+# (recent work) keeps its context.
+TURN_PREFIX_SUMMARIZATION_PROMPT = """This is the PREFIX of a turn that was too large to keep. The SUFFIX (recent work) is retained.
+
+Summarize the prefix to provide context for the retained suffix:
+
+## Original Request
+[What did the user ask for in this turn?]
+
+## Early Progress
+- [Key decisions and work done in the prefix]
+
+## Context for Suffix
+- [Information needed to understand the retained recent work]
+
+Be concise. Focus on what's needed to understand the kept suffix."""
+
 
 # === Result dataclasses (Pi parity, ``compaction.ts:89-99 / 521-538``) ===
 
@@ -150,10 +184,15 @@ class CompactionPreparation:
     is_split_turn: bool = False
     tokens_before: int = 0
     previous_summary: str | None = None
-    # ``file_ops`` and ``settings`` are Pi dicts/dataclasses — ship as Any
-    # placeholders to keep the cross-runtime shape stable until Phase 4 wires
-    # the real CompactionSettings + FileOperations ports.
-    file_ops: Any | None = None
+    # ``file_ops`` is the P0 #6 :class:`FileOperations` (read/written/edited
+    # path sets) computed in :func:`prepare_compaction`; ``compact`` folds it
+    # into the ``<read-files>`` / ``<modified-files>`` summary tail + details.
+    # Defaults to ``None`` so legacy test constructions (which pass only the
+    # first few fields) still work — ``compact`` coerces ``None`` to an empty
+    # :func:`create_file_ops`. ``settings`` remains an ``Any`` placeholder
+    # (aelix uses module constants ``RESERVE_TOKENS`` / ``KEEP_RECENT_TOKENS``
+    # instead of a per-call CompactionSettings object).
+    file_ops: FileOperations | None = None
     settings: Any | None = None
 
 
@@ -248,38 +287,317 @@ def _serialize_conversation(messages: list[Any]) -> str:
     return "\n".join(lines)
 
 
-def _find_cut_index(messages: list[Any], keep_recent_tokens: int) -> int | None:
-    """Pi ``findCutPoint`` (simplified backward token-budget walk).
+# === File-operation extraction (Pi parity, ``utils.ts``) ===================
+#
+# Pi tracks which files a turn read / wrote / edited and appends
+# ``<read-files>`` / ``<modified-files>`` tags to the summary (so the kept
+# context still names the files the prefix touched). aelix maps pi
+# ``block.name`` → :attr:`ToolCallContent.tool_name` and pi ``block.arguments``
+# → :attr:`ToolCallContent.input` (``input["path"]``).
 
-    Walk ``messages`` backward accumulating :func:`estimate_tokens`. Once the
-    accumulated estimate reaches ``keep_recent_tokens``, that message is the
-    boundary: messages BEFORE it are summarized, it and everything after stay.
-    A :class:`ToolResultMessage` must never be the first kept message (it must
-    stay with its tool call), so the cut moves earlier to the preceding
-    non-tool-result message when it lands on one. Returns ``None`` when the
-    total estimate never reaches the budget (nothing worth compacting).
+
+@dataclass
+class FileOperations:
+    """Pi ``FileOperations`` (``utils.ts``) — three disjoint path sets."""
+
+    read: set[str] = field(default_factory=set)
+    written: set[str] = field(default_factory=set)
+    edited: set[str] = field(default_factory=set)
+
+
+def create_file_ops() -> FileOperations:
+    """Pi ``createFileOps`` (``utils.ts``)."""
+
+    return FileOperations()
+
+
+def extract_file_ops_from_message(message: Any, file_ops: FileOperations) -> None:
+    """Pi ``extractFileOpsFromMessage`` (``utils.ts``).
+
+    Scans an assistant message's :class:`ToolCallContent` blocks; a
+    ``read`` / ``write`` / ``edit`` tool call whose ``input["path"]`` is a
+    string is recorded in the matching set. Non-assistant messages and blocks
+    without a string ``path`` are ignored (pi guards identically).
     """
 
-    from aelix_ai.messages import ToolResultMessage
+    from aelix_ai.messages import AssistantMessage, ToolCallContent
 
+    if not isinstance(message, AssistantMessage):
+        # Pi: ``if (message.role !== "assistant") return;``
+        return
+    content = getattr(message, "content", None)
+    if not isinstance(content, list):
+        return
+    for block in content:
+        if not isinstance(block, ToolCallContent):
+            continue
+        args = block.input or {}
+        path = args.get("path") if isinstance(args, dict) else None
+        if not isinstance(path, str) or not path:
+            continue
+        name = block.tool_name or ""
+        if name == "read":
+            file_ops.read.add(path)
+        elif name == "write":
+            file_ops.written.add(path)
+        elif name == "edit":
+            file_ops.edited.add(path)
+
+
+def compute_file_lists(file_ops: FileOperations) -> tuple[list[str], list[str]]:
+    """Pi ``computeFileLists`` (``utils.ts``).
+
+    Returns ``(read_files, modified_files)``. ``modified`` = written ∪ edited;
+    ``read_files`` excludes anything that was also modified (a file you wrote
+    is reported as modified, not read). Both lists are sorted.
+    """
+
+    modified = set(file_ops.edited) | set(file_ops.written)
+    read_only = sorted(f for f in file_ops.read if f not in modified)
+    modified_files = sorted(modified)
+    return read_only, modified_files
+
+
+def format_file_operations(read_files: list[str], modified_files: list[str]) -> str:
+    """Pi ``formatFileOperations`` (``utils.ts``).
+
+    Emits the ``<read-files>`` / ``<modified-files>`` tail (prefixed with two
+    newlines) appended to a summary. Returns ``""`` when both lists are empty.
+    """
+
+    sections: list[str] = []
+    if read_files:
+        sections.append("<read-files>\n" + "\n".join(read_files) + "\n</read-files>")
+    if modified_files:
+        sections.append(
+            "<modified-files>\n" + "\n".join(modified_files) + "\n</modified-files>"
+        )
+    if not sections:
+        return ""
+    return "\n\n" + "\n\n".join(sections)
+
+
+def _extract_file_operations(
+    messages: list[Any],
+    entries: list[SessionTreeEntry],
+    prev_compaction_index: int,
+) -> FileOperations:
+    """Pi ``extractFileOperations`` (``compaction.ts``).
+
+    Seeds the file-op sets from the previous (non-hook) compaction entry's
+    ``details`` (so file references carry across consecutive compactions),
+    then folds in every message's tool calls. Hook-substituted compactions are
+    NOT trusted as a seed (pi: ``!prevCompaction.fromHook``).
+    """
+
+    file_ops = create_file_ops()
+    if prev_compaction_index >= 0:
+        prev_compaction = entries[prev_compaction_index]
+        from_hook = getattr(prev_compaction, "from_hook", None)
+        details = getattr(prev_compaction, "details", None)
+        if not from_hook and isinstance(details, dict):
+            read_seed = details.get("readFiles")
+            if isinstance(read_seed, list):
+                for f in read_seed:
+                    if isinstance(f, str):
+                        file_ops.read.add(f)
+            modified_seed = details.get("modifiedFiles")
+            if isinstance(modified_seed, list):
+                for f in modified_seed:
+                    if isinstance(f, str):
+                        file_ops.edited.add(f)
+    for msg in messages:
+        extract_file_ops_from_message(msg, file_ops)
+    return file_ops
+
+
+# === Entry-level cut-point (Pi parity, ``compaction.ts``) ==================
+#
+# Pi cuts at the ENTRY level (so control entries — model_change /
+# thinking_level_change — and tool-result roles never become the first kept
+# entry), and snaps the cut to a turn boundary (split-turn detection).
+
+# Entry types that are NOT a ``message`` but ARE legal cut points (pi's
+# trailing ``branch_summary`` / ``custom_message`` push). Message-role cut
+# legality is handled separately because ``toolResult`` is never a cut point.
+_CONTROL_CUT_POINT_TYPES = ("branch_summary", "custom_message")
+
+
+def find_valid_cut_points(
+    entries: list[SessionTreeEntry], start_index: int, end_index: int
+) -> list[int]:
+    """Pi ``findValidCutPoints`` (``compaction.ts``).
+
+    Returns the entry indices in ``[start_index, end_index)`` that are legal
+    cut points. A ``message`` entry is a cut point UNLESS its role is
+    ``toolResult`` (a tool result must stay with its tool call). The
+    ``branch_summary`` / ``custom_message`` control entries are also valid cut
+    points; all other control entries (model_change / thinking_level_change /
+    compaction / label / session_info / leaf / custom) are not.
+    """
+
+    cut_points: list[int] = []
+    for i in range(start_index, end_index):
+        entry = entries[i]
+        etype = entry.type
+        if etype == "message":
+            role = getattr(getattr(entry, "message", None), "role", None)
+            if role != "toolResult":
+                cut_points.append(i)
+        elif etype in _CONTROL_CUT_POINT_TYPES:
+            cut_points.append(i)
+    return cut_points
+
+
+def find_turn_start_index(
+    entries: list[SessionTreeEntry], entry_index: int, start_index: int
+) -> int:
+    """Pi ``findTurnStartIndex`` (``compaction.ts``).
+
+    Walks backward from ``entry_index`` (inclusive) to ``start_index`` looking
+    for the entry that STARTS the current turn: a ``branch_summary`` /
+    ``custom_message`` entry, or a ``message`` whose role is ``user`` or
+    ``bashExecution``. Returns ``-1`` when none is found.
+    """
+
+    for i in range(entry_index, start_index - 1, -1):
+        entry = entries[i]
+        etype = entry.type
+        if etype in _CONTROL_CUT_POINT_TYPES:
+            return i
+        if etype == "message":
+            role = getattr(getattr(entry, "message", None), "role", None)
+            if role in ("user", "bashExecution"):
+                return i
+    return -1
+
+
+@dataclass(frozen=True)
+class _CutPointResult:
+    """Pi ``CutPointResult`` (``compaction.ts``)."""
+
+    first_kept_entry_index: int
+    turn_start_index: int
+    is_split_turn: bool
+
+
+def find_cut_point(
+    entries: list[SessionTreeEntry],
+    start_index: int,
+    end_index: int,
+    keep_recent_tokens: int,
+) -> _CutPointResult:
+    """Pi ``findCutPoint`` (``compaction.ts``).
+
+    Picks the entry index where the kept-recent suffix begins. Walks the
+    message entries backward accumulating :func:`estimate_tokens`; once the
+    accumulated estimate reaches ``keep_recent_tokens`` it snaps to the first
+    valid cut point at or after that message. The cut is then backed up over
+    control entries so the first-kept entry is a ``message`` or ``compaction``.
+    Finally, if the cut does NOT land on a ``user`` message, the turn-start is
+    located and a split turn is reported.
+    """
+
+    cut_points = find_valid_cut_points(entries, start_index, end_index)
+    if not cut_points:
+        return _CutPointResult(
+            first_kept_entry_index=start_index,
+            turn_start_index=-1,
+            is_split_turn=False,
+        )
+
+    cut_index = cut_points[0]
     accumulated = 0
-    cut_index: int | None = None
-    for i in range(len(messages) - 1, -1, -1):
-        accumulated += estimate_tokens(messages[i])
+    for i in range(end_index - 1, start_index - 1, -1):
+        entry = entries[i]
+        if entry.type != "message":
+            continue
+        accumulated += estimate_tokens(entry.message)  # type: ignore[union-attr]
         if accumulated >= keep_recent_tokens:
-            cut_index = i
+            for c in cut_points:
+                if c >= i:
+                    cut_index = c
+                    break
             break
-    if cut_index is None:
-        return None
-    # Never let a ToolResultMessage be the first kept message — back the cut
-    # up until the first kept message is not a tool result (or we run out).
-    while cut_index < len(messages) and isinstance(
-        messages[cut_index], ToolResultMessage
-    ):
+
+    # Back the cut up over control entries so first-kept is message/compaction.
+    while cut_index > start_index:
+        prev_entry = entries[cut_index - 1]
+        if prev_entry.type == "compaction":
+            break
+        if prev_entry.type == "message":
+            break
         cut_index -= 1
-    if cut_index <= 0:
+
+    cut_entry = entries[cut_index]
+    is_user_message = (
+        cut_entry.type == "message"
+        and getattr(getattr(cut_entry, "message", None), "role", None) == "user"
+    )
+    turn_start_index = (
+        -1
+        if is_user_message
+        else find_turn_start_index(entries, cut_index, start_index)
+    )
+    return _CutPointResult(
+        first_kept_entry_index=cut_index,
+        turn_start_index=turn_start_index,
+        is_split_turn=(not is_user_message and turn_start_index != -1),
+    )
+
+
+def _get_message_from_entry(entry: SessionTreeEntry) -> Any | None:
+    """Pi ``getMessageFromEntry`` (compaction variant — ``compaction.ts``).
+
+    INCLUDES ``message`` entries verbatim (so ``toolResult``-role messages are
+    summarized, unlike the branch-summary variant which drops them), and
+    converts ``custom_message`` / ``branch_summary`` / ``compaction`` entries
+    to their rendered message. Other control entries map to ``None``.
+    """
+
+    from aelix_agent_core.session.context import (
+        create_branch_summary_message,
+        create_compaction_summary_message,
+        create_custom_message,
+    )
+
+    etype = entry.type
+    if etype == "message":
+        return entry.message  # type: ignore[union-attr]
+    if etype == "custom_message":
+        return create_custom_message(
+            entry.custom_type,  # type: ignore[union-attr]
+            entry.content,  # type: ignore[union-attr]
+            entry.display,  # type: ignore[union-attr]
+            entry.details,  # type: ignore[union-attr]
+            entry.timestamp,
+        )
+    if etype == "branch_summary":
+        return create_branch_summary_message(
+            entry.summary or "",  # type: ignore[union-attr]
+            entry.from_id,  # type: ignore[union-attr]
+            entry.timestamp,
+        )
+    if etype == "compaction":
+        return create_compaction_summary_message(
+            entry.summary,  # type: ignore[union-attr]
+            entry.tokens_before,  # type: ignore[union-attr]
+            entry.timestamp,
+        )
+    return None
+
+
+def _get_message_from_entry_for_compaction(entry: SessionTreeEntry) -> Any | None:
+    """Pi ``getMessageFromEntryForCompaction`` (``compaction.ts``).
+
+    Like :func:`_get_message_from_entry` but DROPS ``compaction`` entries (a
+    prior compaction summary inside the summarized prefix must not be re-fed to
+    the summarizer; the previous summary is threaded separately).
+    """
+
+    if entry.type == "compaction":
         return None
-    return cut_index
+    return _get_message_from_entry(entry)
 
 
 # === Public API (Pi parity, ``compaction.ts:541-606`` + ``:626-705``) =====
@@ -289,20 +607,29 @@ def prepare_compaction(
     path_entries: list[SessionTreeEntry],
     custom_instructions: str | None = None,
 ) -> CompactionPreparation | None:
-    """Pi ``prepareCompaction`` (``compaction.ts:541-606``).
+    """Pi ``prepareCompaction`` (``compaction.ts``).
 
-    Sprint 4b ships a minimal port — the heavy logic (``findCutPoint``,
-    ``estimateContextTokens``, ``extractFileOperations``) lands when Phase 4
-    provider adapter (ADR-0038) wires real token accounting. For now we
-    return ``None`` when there is nothing to compact (mirroring Pi's empty /
-    already-compacted short-circuits) and otherwise a preparation that names
-    the **first** entry as the cut point. This keeps the emit + persist
-    pipeline exercisable in unit tests without depending on a real LLM.
+    Full entry-level port (P0 #6). Computes the cut at the ENTRY level via
+    :func:`find_cut_point`, snapping to a turn boundary (split-turn) so the
+    first-kept entry is never a ``toolResult``/control entry. Threads:
 
-    The ``custom_instructions`` parameter is accepted to match Pi's
-    Sprint 4b call site (``agent-harness.ts:706-708``) but not yet threaded
-    into the preparation — the harness passes it independently into the
-    summarizer call.
+    - ``boundary_start`` = the previous compaction's ``first_kept_entry_id``
+      index (so a second compaction only re-summarizes what the first kept),
+      falling back to ``prev_compaction_index + 1``;
+    - ``history_end`` = ``turn_start_index`` on a split turn, else the cut;
+    - ``messages_to_summarize`` over ``[boundary_start, history_end)`` and
+      ``turn_prefix_messages`` over ``[turn_start_index, cut)`` (split turn
+      only), both via :func:`_get_message_from_entry_for_compaction` (which
+      INCLUDES ``toolResult`` messages but EXCLUDES prior compaction entries);
+    - ``file_ops`` seeded from the previous compaction's ``details`` then
+      folded over the summarized + turn-prefix messages.
+
+    Returns ``None`` when there is nothing to compact (empty entries, the tail
+    is already a compaction, or the cut yields no first-kept id) so the harness
+    short-circuits with "Nothing to compact".
+
+    The ``custom_instructions`` parameter is accepted to match the call site
+    (``agent-harness.ts``) but threaded into the summarizer call separately.
     """
 
     if not path_entries:
@@ -311,76 +638,96 @@ def prepare_compaction(
         # Already compacted to the tail.
         return None
 
-    first_kept = path_entries[0]
-    if not first_kept.id:
-        return None
-
     _ = custom_instructions  # accepted for Pi-parity signature (threaded at summarize time)
 
-    from aelix_agent_core.session.context import (
-        create_branch_summary_message,
-        create_custom_message,
-    )
-
-    # Build (entry_id, message) pairs in the same order build_session_context
-    # would — type=="message" → entry.message; type=="custom_message" → its
-    # conversion; type=="branch_summary" → create_branch_summary_message.
-    # Non-message entry types (thinking_level_change, model_change, compaction)
-    # are skipped because they produce no message slot.  The 1:1 mapping lets
-    # us resolve first_kept_entry_id to the exact cut entry below.
-    pairs: list[tuple[str, Any]] = []
-    for entry in path_entries:
-        eid = entry.id or ""
-        if entry.type == "message":
-            pairs.append((eid, entry.message))  # type: ignore[union-attr]
-        elif entry.type == "custom_message":
-            msg = create_custom_message(
-                entry.custom_type,  # type: ignore[union-attr]
-                entry.content,  # type: ignore[union-attr]
-                entry.display,  # type: ignore[union-attr]
-                entry.details,  # type: ignore[union-attr]
-                entry.timestamp,
-            )
-            pairs.append((eid, msg))
-        elif entry.type == "branch_summary" and getattr(entry, "summary", None):
-            msg = create_branch_summary_message(
-                entry.summary,  # type: ignore[union-attr]
-                entry.from_id,  # type: ignore[union-attr]
-                entry.timestamp,
-            )
-            pairs.append((eid, msg))
-
-    if not pairs:
-        return None
-
-    msgs = [m for _, m in pairs]
-    cut_index = _find_cut_index(msgs, KEEP_RECENT_TOKENS)
-    if cut_index is None or cut_index <= 0:
-        # Below the keep-recent budget (or no valid cut after tool-result
-        # back-up) — nothing worth compacting.
-        return None
-
-    messages_to_summarize = msgs[:cut_index]
-    if not messages_to_summarize:
-        return None
-
-    # first_kept_entry_id = the entry id of the first KEPT message (pairs[cut_index]).
-    # build_session_context uses this to skip everything before it, so the
-    # summarized prefix is dropped from the live context.
-    first_kept_entry_id = pairs[cut_index][0]
-
-    tokens_before = estimate_context_tokens(msgs).tokens
+    # Locate the most recent compaction so a second pass only re-summarizes
+    # what the first kept (boundary_start) + can seed file-ops from its details.
+    prev_compaction_index = -1
+    for i in range(len(path_entries) - 1, -1, -1):
+        if path_entries[i].type == "compaction":
+            prev_compaction_index = i
+            break
 
     previous_summary: str | None = None
-    latest_compaction = get_latest_compaction_entry(path_entries)
-    if latest_compaction is not None:
-        previous_summary = getattr(latest_compaction, "summary", None)
+    boundary_start = 0
+    if prev_compaction_index >= 0:
+        prev_compaction = path_entries[prev_compaction_index]
+        previous_summary = getattr(prev_compaction, "summary", None)
+        prev_first_kept_id = getattr(prev_compaction, "first_kept_entry_id", None)
+        first_kept_index = -1
+        for idx, e in enumerate(path_entries):
+            if e.id == prev_first_kept_id:
+                first_kept_index = idx
+                break
+        boundary_start = (
+            first_kept_index
+            if first_kept_index >= 0
+            else prev_compaction_index + 1
+        )
+
+    boundary_end = len(path_entries)
+
+    # tokens_before is over the WHOLE live context (build_session_context honors
+    # the prior compaction boundary already), matching pi's
+    # estimateContextTokens(buildSessionContext(pathEntries).messages).
+    from aelix_agent_core.session.context import build_session_context
+
+    tokens_before = estimate_context_tokens(
+        build_session_context(path_entries).messages
+    ).tokens
+
+    cut_point = find_cut_point(
+        path_entries, boundary_start, boundary_end, KEEP_RECENT_TOKENS
+    )
+    first_kept_entry = path_entries[cut_point.first_kept_entry_index]
+    if not first_kept_entry.id:
+        # Pi raises CompactionError("invalid_session"); aelix returns None so
+        # the harness surfaces the standard "Nothing to compact" path rather
+        # than a hard error on an un-migrated session.
+        return None
+    first_kept_entry_id = first_kept_entry.id
+
+    history_end = (
+        cut_point.turn_start_index
+        if cut_point.is_split_turn
+        else cut_point.first_kept_entry_index
+    )
+
+    messages_to_summarize: list[AgentMessage] = []
+    for i in range(boundary_start, history_end):
+        msg = _get_message_from_entry_for_compaction(path_entries[i])
+        if msg is not None:
+            messages_to_summarize.append(msg)
+
+    turn_prefix_messages: list[AgentMessage] = []
+    if cut_point.is_split_turn:
+        for i in range(
+            cut_point.turn_start_index, cut_point.first_kept_entry_index
+        ):
+            msg = _get_message_from_entry_for_compaction(path_entries[i])
+            if msg is not None:
+                turn_prefix_messages.append(msg)
+
+    # Nothing actually summarizable (the kept-recent budget covers everything
+    # in-bounds) — short-circuit so the harness reports "Nothing to compact".
+    if not messages_to_summarize and not turn_prefix_messages:
+        return None
+
+    file_ops = _extract_file_operations(
+        messages_to_summarize, path_entries, prev_compaction_index
+    )
+    if cut_point.is_split_turn:
+        for msg in turn_prefix_messages:
+            extract_file_ops_from_message(msg, file_ops)
 
     return CompactionPreparation(
         first_kept_entry_id=first_kept_entry_id,
         messages_to_summarize=messages_to_summarize,
+        turn_prefix_messages=turn_prefix_messages,
+        is_split_turn=cut_point.is_split_turn,
         tokens_before=tokens_before,
         previous_summary=previous_summary,
+        file_ops=file_ops,
     )
 
 
@@ -424,15 +771,64 @@ async def compact(
             "compact requires options.get_api_key_and_headers (Phase 4 owner)",
         )
 
-    summary = await _generate_summary(
-        model, get_api_key_and_headers, preparation, custom_instructions
-    )
+    # Pi parity (``compaction.ts`` ``compact``): on a split turn, summarize the
+    # history prefix and the turn prefix concurrently (asyncio.gather), then
+    # combine with the verbatim separator. When the history is empty (the cut
+    # is at the very start of a fresh turn) pi substitutes "No prior history.".
+    if preparation.is_split_turn and preparation.turn_prefix_messages:
+        if preparation.messages_to_summarize:
+            history_coro = _generate_summary(
+                model, get_api_key_and_headers, preparation, custom_instructions
+            )
+        else:
+            history_coro = _resolved("No prior history.")
+        turn_prefix_coro = _generate_turn_prefix_summary(
+            model, get_api_key_and_headers, preparation.turn_prefix_messages
+        )
+        history_summary, turn_prefix_summary = await asyncio.gather(
+            history_coro, turn_prefix_coro
+        )
+        summary = (
+            f"{history_summary}\n\n---\n\n"
+            f"**Turn Context (split turn):**\n\n{turn_prefix_summary}"
+        )
+    else:
+        summary = await _generate_summary(
+            model, get_api_key_and_headers, preparation, custom_instructions
+        )
+
+    file_ops = preparation.file_ops or create_file_ops()
+    read_files, modified_files = compute_file_lists(file_ops)
+    summary += format_file_operations(read_files, modified_files)
     return CompactResult(
         summary=summary,
         first_kept_entry_id=preparation.first_kept_entry_id,
         tokens_before=preparation.tokens_before,
-        details=None,
+        details={"readFiles": read_files, "modifiedFiles": modified_files},
     )
+
+
+async def _resolved(value: str) -> str:
+    """Awaitable wrapper so :func:`asyncio.gather` can mix a constant with a
+    real coroutine (pi's ``Promise.resolve(ok("No prior history."))``)."""
+
+    return value
+
+
+def _summary_max_tokens(model: Model, fraction: float) -> int:
+    """Pi parity: ``Math.min(floor(fraction * reserveTokens), model.maxTokens
+    > 0 ? model.maxTokens : +Infinity)``.
+
+    Used for the summary cap (``fraction = 0.8``) and the turn-prefix cap
+    (``fraction = 0.5``). ``model.max_tokens == 0`` means "no model cap"
+    (``+Infinity``), so the floor-of-reserve value stands.
+    """
+
+    cap = math.floor(fraction * RESERVE_TOKENS)
+    model_max = getattr(model, "max_tokens", 0) or 0
+    if model_max > 0:
+        cap = min(cap, model_max)
+    return cap
 
 
 async def _generate_summary(
@@ -491,12 +887,13 @@ async def _generate_summary(
         messages=[UserMessage(content=[TextContent(text=user_text)])],
         tools=[],
     )
-    # NOTE: Pi caps the summarization call at floor(0.8 * reserveTokens) output
-    # tokens via SimpleStreamOptions.maxTokens.  Aelix's SimpleStreamOptions
-    # has no max_tokens field yet (infra gap) — this is a known divergence.
+    # Pi caps the summarization call at floor(0.8 * reserveTokens) output tokens
+    # (clamped by model.maxTokens when > 0). Wired through the new
+    # SimpleStreamOptions.max_tokens (P0 #6) so the cap reaches the adapter.
     options = SimpleStreamOptions(
         api_key=auth.get("apiKey"),
         headers=auth.get("headers") or {},
+        max_tokens=_summary_max_tokens(model, 0.8),
     )
 
     summary = ""
@@ -538,6 +935,87 @@ async def _generate_summary(
     if not summary:
         raise AgentHarnessError("compaction", "summarization produced empty summary")
     return summary
+
+
+async def _generate_turn_prefix_summary(
+    model: Model,
+    get_api_key_and_headers: Callable[..., Any],
+    messages: list[AgentMessage],
+) -> str:
+    """Pi ``generateTurnPrefixSummary`` (``compaction.ts``).
+
+    Summarizes the PREFIX of a split turn with
+    :data:`TURN_PREFIX_SUMMARIZATION_PROMPT` (no previous-summary / custom-focus
+    threading — pi keeps it minimal). Caps output at
+    ``floor(0.5 * reserveTokens)`` (clamped by ``model.max_tokens`` when > 0)
+    via :class:`SimpleStreamOptions.max_tokens` (P0 #6). Shares the
+    ``AssistantErrorEvent``-raises + terminal-text-preferred event loop.
+    """
+
+    from aelix_ai.messages import AssistantMessage, TextContent, UserMessage
+    from aelix_ai.streaming import (
+        AssistantDoneEvent,
+        AssistantErrorEvent,
+        Context,
+        SimpleStreamOptions,
+        TextDeltaEvent,
+        stream_simple,
+    )
+
+    from aelix_agent_core.harness.core import AgentHarnessError
+
+    serialized = _serialize_conversation(messages)
+    user_text = (
+        f"<conversation>\n{serialized}\n</conversation>\n\n"
+        f"{TURN_PREFIX_SUMMARIZATION_PROMPT}"
+    )
+
+    auth = get_api_key_and_headers(model)
+    if inspect.isawaitable(auth):
+        auth = await auth
+    auth = auth if isinstance(auth, dict) else {}
+
+    context = Context(
+        system_prompt=SUMMARIZATION_SYSTEM_PROMPT,
+        messages=[UserMessage(content=[TextContent(text=user_text)])],
+        tools=[],
+    )
+    options = SimpleStreamOptions(
+        api_key=auth.get("apiKey"),
+        headers=auth.get("headers") or {},
+        max_tokens=_summary_max_tokens(model, 0.5),
+    )
+
+    summary = ""
+    done_message: AssistantMessage | None = None
+    iterator = await stream_simple(model, context, options)
+    async for event in iterator:
+        if isinstance(event, TextDeltaEvent):
+            summary += event.delta
+        elif isinstance(event, AssistantErrorEvent):
+            raise AgentHarnessError(
+                "compaction",
+                getattr(event, "error_message", None)
+                or "turn-prefix summarization failed",
+            )
+        elif isinstance(event, AssistantDoneEvent):
+            done_message = event.message
+
+    if done_message is not None:
+        if done_message.stop_reason == "error":
+            raise AgentHarnessError(
+                "compaction",
+                done_message.error_message or "turn-prefix summarization failed",
+            )
+        text_blocks = [
+            block.text
+            for block in (done_message.content or [])
+            if isinstance(block, TextContent) and block.text
+        ]
+        if text_blocks:
+            summary = "\n".join(text_blocks)
+
+    return summary.strip()
 
 
 # === Sprint 6h₅c (ADR-0085 P-369) — context-token helpers ===================
@@ -665,17 +1143,27 @@ def get_latest_compaction_entry(branch_entries: list[Any]) -> Any | None:
 
 __all__ = [
     "KEEP_RECENT_TOKENS",
+    "RESERVE_TOKENS",
     "SUMMARIZATION_PROMPT",
     "SUMMARIZATION_SYSTEM_PROMPT",
     "TOOL_RESULT_MAX_CHARS",
+    "TURN_PREFIX_SUMMARIZATION_PROMPT",
     "UPDATE_SUMMARIZATION_PROMPT",
     "CompactResult",
     "CompactionPreparation",
+    "FileOperations",
     "SummarizerOverride",
     "calculate_context_tokens",
     "compact",
+    "compute_file_lists",
+    "create_file_ops",
     "estimate_context_tokens",
     "estimate_tokens",
+    "extract_file_ops_from_message",
+    "find_cut_point",
+    "find_turn_start_index",
+    "find_valid_cut_points",
+    "format_file_operations",
     "get_latest_compaction_entry",
     "prepare_compaction",
 ]

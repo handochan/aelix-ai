@@ -212,14 +212,20 @@ async def generate_branch_summary(
     A test-only ``_summarizer_override`` seam returns a deterministic summary
     (without the preamble) for fixtures.
 
-    Known bounded divergences from Pi (deferred, not silently dropped):
+    P0 #6 (compaction fidelity) parity additions:
 
-    - returns ``str``, not Pi's ``{summary, readFiles, modifiedFiles}`` — no
-      file-operation extraction / ``formatFileOperations`` tail.
+    - file-operation extraction over the branch messages
+      (``extractFileOpsFromMessage``) + ``formatFileOperations`` tail appended
+      to the returned summary string (pi ``generateBranchSummary`` also emits
+      ``<read-files>`` / ``<modified-files>``). KEEPS returning ``str`` (the
+      harness contract is unchanged — the tail is appended in-line, the
+      ``details`` round-trip stays on the compaction path).
+    - ``max_tokens = 2048`` cap via :class:`SimpleStreamOptions.max_tokens`.
+
+    Known bounded divergence from Pi (deferred, not silently dropped):
+
     - no ``prepareBranchEntries`` token-budget backward walk; all entries are
-      included.
-    - no ``max_tokens`` cap (``SimpleStreamOptions`` has no field — the same
-      infra gap documented in ``compaction.py``; Pi uses ``maxTokens: 2048``).
+      included (a separate fidelity concern not named in P0 #6).
     """
 
     from aelix_ai.messages import AssistantMessage, TextContent, UserMessage
@@ -236,6 +242,10 @@ async def generate_branch_summary(
     from aelix_agent_core.session.compaction import (
         SUMMARIZATION_SYSTEM_PROMPT,
         _serialize_conversation,
+        compute_file_lists,
+        create_file_ops,
+        extract_file_ops_from_message,
+        format_file_operations,
     )
 
     if _summarizer_override is not None:
@@ -262,6 +272,14 @@ async def generate_branch_summary(
     if not messages:
         return "No content to summarize"
 
+    # P0 #6: extract the read/written/edited files the branch touched so the
+    # returned summary carries a ``<read-files>`` / ``<modified-files>`` tail.
+    file_ops = create_file_ops()
+    for msg in messages:
+        extract_file_ops_from_message(msg, file_ops)
+    read_files, modified_files = compute_file_lists(file_ops)
+    file_ops_tail = format_file_operations(read_files, modified_files)
+
     serialized = _serialize_conversation(messages)
     if replace_instructions and custom_instructions:
         instructions = custom_instructions
@@ -285,6 +303,8 @@ async def generate_branch_summary(
     options = SimpleStreamOptions(
         api_key=auth.get("apiKey"),
         headers=auth.get("headers") or {},
+        # P0 #6: pi ``generateBranchSummary`` caps the call at maxTokens=2048.
+        max_tokens=2048,
     )
 
     summary = ""
@@ -320,7 +340,9 @@ async def generate_branch_summary(
         if text_blocks:
             summary = "\n".join(text_blocks)
 
-    return BRANCH_SUMMARY_PREAMBLE + summary
+    # P0 #6: append the file-op tail (pi ``summary += formatFileOperations(...)``)
+    # before the preamble prepend, so the returned str carries the file lists.
+    return BRANCH_SUMMARY_PREAMBLE + summary + file_ops_tail
 
 
 __all__ = [

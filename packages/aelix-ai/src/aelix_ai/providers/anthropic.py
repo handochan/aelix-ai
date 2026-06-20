@@ -182,10 +182,18 @@ async def stream_anthropic(
     # budget_tokens for older reasoning models) and decide whether the
     # interleaved-thinking beta header is needed. Computed before client
     # creation so the header can be attached to the SDK client default headers.
+    # P0 #6 (compaction fidelity): pi ``base.maxTokens = options.maxTokens ??
+    # model.maxTokens``. When the caller (e.g. the compaction summarizer)
+    # supplies ``options.max_tokens``, it becomes the base output cap that the
+    # thinking-budget math carves from and the request ``max_tokens`` value —
+    # replacing the ``model.max_tokens or 4096`` default.
+    default_max_tokens = (
+        opts.max_tokens
+        if opts.max_tokens is not None and opts.max_tokens > 0
+        else (model.max_tokens or 4096)
+    )
     thinking_extra, thinking_max_tokens, needs_interleaved = (
-        resolve_anthropic_thinking(
-            model, opts.reasoning, model.max_tokens or 4096
-        )
+        resolve_anthropic_thinking(model, opts.reasoning, default_max_tokens)
     )
     if oauth_mode:
         import logging as _logging

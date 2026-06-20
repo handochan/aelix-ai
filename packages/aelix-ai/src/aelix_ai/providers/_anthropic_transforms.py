@@ -337,14 +337,15 @@ def resolve_anthropic_thinking(
         return extra, default_max_tokens, False  # adaptive: beta built-in
 
     # Budget-based (older) reasoning models. Pi uses ``base.maxTokens``
-    # (= options.maxTokens ?? model.maxTokens) as the budget base; aelix has no
-    # per-turn options.maxTokens plumbed into this adapter, so the base IS the
-    # model cap — thinking is carved from within it. Faithful for the
-    # SimpleStream path (pi's base also defaults to model.maxTokens); revisit if
-    # options.maxTokens is ever plumbed.
-    model_max = model.max_tokens or default_max_tokens
+    # (= options.maxTokens ?? model.maxTokens) as the budget base and
+    # ``model.maxTokens`` as the hard clamp (simple-options.ts:26-50). P0 #6
+    # plumbs ``options.maxTokens`` through ``default_max_tokens`` at the call
+    # site (anthropic.py), so the base honors a caller override (e.g. the
+    # compaction summarizer cap); the clamp stays the model cap.
+    base_max = default_max_tokens
+    model_clamp = model.max_tokens or default_max_tokens
     max_tokens, budget = adjust_max_tokens_for_thinking(
-        model_max, model_max, reasoning
+        base_max, model_clamp, reasoning
     )
     extra = {
         "thinking": {

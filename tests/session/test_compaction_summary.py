@@ -259,7 +259,9 @@ async def test_compact_streams_summary_from_provider() -> None:
     assert result.summary == _CANNED_SUMMARY
     assert result.first_kept_entry_id == "entry-1"
     assert result.tokens_before == 12_345
-    assert result.details is None
+    # P0 #6: details now always carries the file-op lists (pi parity). With no
+    # read/write/edit tool calls in the summarized prefix both lists are empty.
+    assert result.details == {"readFiles": [], "modifiedFiles": []}
     # The summarizer saw the conversation wrapped as DATA + the custom focus.
     ctx = captured["context"]
     user_text = ctx.messages[0].content[0].text
