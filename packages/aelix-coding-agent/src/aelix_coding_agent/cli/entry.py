@@ -38,10 +38,13 @@ from aelix_agent_core.runtime.agent_session_runtime import (
 from aelix_agent_core.session.fs import LocalFileSystem
 from aelix_agent_core.session.jsonl_repo import (
     JsonlSessionCreateOptions,
+    JsonlSessionListOptions,
     JsonlSessionRepo,
 )
+from aelix_agent_core.session.jsonl_storage import load_jsonl_session_metadata
 from aelix_agent_core.session.memory_storage import MemorySessionStorage
 from aelix_agent_core.session.session import Session
+from aelix_agent_core.session.storage import JsonlSessionMetadata, SessionError
 from aelix_agent_core.types import AgentTool
 
 from aelix_coding_agent.builtin.guardrail import GuardrailExtension
@@ -52,7 +55,12 @@ from aelix_coding_agent.tools import create_all_tools
 
 from .agent_context import build_system_prompt, discover_context_files
 from .args import Args, parse_args, print_help
-from .config import VERSION, get_agent_dir, load_mcp_server_contribs
+from .config import (
+    VERSION,
+    get_agent_dir,
+    get_session_dir,
+    load_mcp_server_contribs,
+)
 from .file_processor import process_file_arguments
 from .initial_message import build_initial_message
 from .runtime_bootstrap import load_dotenv, register_providers, resolve_model
@@ -105,21 +113,106 @@ async def _read_piped_stdin() -> str | None:
     return stripped or None
 
 
-async def _build_session(parsed: Args, repo: JsonlSessionRepo) -> Session:
-    """Build a :class:`Session` per ``--no-session`` semantics.
+async def _resolve_session_metadata(
+    repo: JsonlSessionRepo,
+    fs: LocalFileSystem,
+    arg: str,
+    cwd: str,
+) -> JsonlSessionMetadata | None:
+    """Resolve a ``--session`` / ``--fork`` argument to session metadata.
+
+    Pi parity: ``resolveSessionPath`` (``main.ts``) — a value that looks
+    like a file path (contains a path separator or ends in ``.jsonl``) is
+    loaded directly via :func:`load_jsonl_session_metadata`; otherwise it
+    is treated as a session-id prefix and matched against the cwd-local
+    sessions first, then globally across projects. Returns :data:`None`
+    when an id prefix matches nothing (path-like inputs raise
+    :class:`SessionError` for a bad/missing file).
+
+    The classification uses ONLY structural cues (Pi's exact heuristic) —
+    no on-disk existence check — so a separator-free session-id that
+    happens to collide with a file name in ``cwd`` is still resolved as an
+    id, not mis-routed to the path loader.
+    """
+
+    looks_like_path = "/" in arg or "\\" in arg or arg.endswith(".jsonl")
+    if looks_like_path:
+        return await load_jsonl_session_metadata(fs, arg)
+    # Session-id prefix: cwd-local first (Pi searches local before global).
+    for opts in (JsonlSessionListOptions(cwd=cwd), JsonlSessionListOptions()):
+        for meta in await repo.list(opts):
+            if meta.id == arg or meta.id.startswith(arg):
+                return meta
+    return None
+
+
+async def _build_session(
+    parsed: Args, repo: JsonlSessionRepo, fs: LocalFileSystem, cwd: str
+) -> Session:
+    """Build a :class:`Session` per the session-source flags.
 
     - ``--no-session`` → in-memory :class:`MemorySessionStorage` (not
       persisted to disk).
-    - Otherwise → :meth:`JsonlSessionRepo.create` rooted at cwd.
+    - ``--session <path|id>`` → open the resolved session (Pi
+      ``SessionManager.open``); ``cwd`` is rewritten onto the loaded
+      session via ``cwd_override``.
+    - ``--fork <path|id>`` → fork the resolved session into ``cwd`` (Pi
+      ``SessionManager.forkFrom``).
+    - otherwise → a fresh session rooted at ``cwd``.
 
-    Pi has the same branch (``main.ts``) — Aelix mirrors via the
-    workspace-local :class:`JsonlSessionRepo`.
+    ``--session`` / ``--fork`` raise :class:`SessionError` (``not_found``)
+    when the argument resolves to nothing; the caller surfaces it as a
+    startup diagnostic.
     """
 
     if parsed.no_session:
         return Session(MemorySessionStorage())
-    cwd = str(Path.cwd())
+    if parsed.session is not None:
+        meta = await _resolve_session_metadata(repo, fs, parsed.session, cwd)
+        if meta is None:
+            raise SessionError(
+                "not_found",
+                f"No session matching --session {parsed.session!r}",
+            )
+        return await repo.open(meta, cwd_override=cwd)
+    if parsed.fork is not None:
+        meta = await _resolve_session_metadata(repo, fs, parsed.fork, cwd)
+        if meta is None:
+            raise SessionError(
+                "not_found", f"No session matching --fork {parsed.fork!r}"
+            )
+        return await repo.fork_from(meta, cwd)
     return await repo.create(JsonlSessionCreateOptions(cwd=cwd))
+
+
+async def _run_export(
+    parsed: Args, repo: JsonlSessionRepo, fs: LocalFileSystem
+) -> int:
+    """Pi parity: ``--export <src> [out]`` (``main.ts`` ``exportFromFile``).
+
+    Loads the JSONL session at ``parsed.export``, renders its messages to
+    a standalone HTML document, and writes it to the optional output path
+    (the first positional, ``parsed.messages[0]``; default
+    ``aelix-session-<basename>.html``). Prints the resolved output path.
+    Raises :class:`SessionError` when the source can't be loaded (the
+    caller surfaces it as a startup diagnostic).
+    """
+
+    assert parsed.export is not None  # guarded by the caller
+    # Lazy import — ``export_html`` pulls Pygments; keep it off the cold
+    # path for every non-export invocation.
+    from aelix_coding_agent._export_html import export_html
+
+    meta = await load_jsonl_session_metadata(fs, parsed.export)
+    session = await repo.open(meta)
+    context = await session.build_context()
+    output_path = parsed.messages[0] if parsed.messages else None
+    basename = Path(parsed.export).stem or "untitled"
+    resolved = export_html(
+        context.messages, output_path, session_basename=basename
+    )
+    print(resolved)
+    return 0
 
 
 def _validate_continue_flag(parsed: Args) -> str | None:
@@ -312,6 +405,20 @@ async def _async_main(argv: list[str]) -> int:
         await list_models(model_registry, parsed.list_models)
         return 0
 
+    # === --export <src> [out] — early-exit action (Pi ``exportFromFile``) =====
+    # Renders a saved JSONL session to standalone HTML and exits, before any
+    # mode resolution / stdin processing (Pi runs export as a terminal action).
+    if parsed.export is not None:
+        fs = LocalFileSystem()
+        repo = JsonlSessionRepo(
+            fs=fs, sessions_root=parsed.session_dir or get_session_dir()
+        )
+        try:
+            return await _run_export(parsed, repo, fs)
+        except SessionError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 1
+
     # Sprint 6h₈ §D: --resume picker is deferred to Phase 5b TUI work.
     if parsed.resume:
         print(
@@ -365,20 +472,52 @@ async def _async_main(argv: list[str]) -> int:
 
     # === Harness + runtime construction ======================================
     fs = LocalFileSystem()
-    repo = JsonlSessionRepo(fs=fs)
+    # Pi parity (``--session-dir``): flag > ``AELIX_CODING_AGENT_SESSION_DIR``
+    # env (Pi ``PI_SESSION_DIR``) > the JsonlSessionRepo default
+    # (``~/.aelix/sessions``). ``get_session_dir`` returns the tilde-expanded
+    # env value or :data:`None`; ``None`` lets the repo apply its own default.
+    sessions_root = parsed.session_dir or get_session_dir()
+    repo = JsonlSessionRepo(fs=fs, sessions_root=sessions_root)
+
+    cwd = str(Path.cwd())
+
+    # === Deferred flags — honest diagnostics (not silently ignored) ==========
+    # ``--api-key`` needs provider-auth wired into the harness (the agent-run
+    # path constructs no AuthStorage today — Phase 4 carry-forward). ``--models``
+    # (scoped model patterns) needs ``resolveModelScope`` + the /scoped-models
+    # subsystem. Both are tracked follow-ups; surface a warning rather than
+    # silently dropping a user-supplied flag.
+    if parsed.api_key is not None:
+        print(
+            "Warning: --api-key is not yet wired (harness provider-auth is "
+            "deferred); the key was ignored.",
+            file=sys.stderr,
+        )
+    if parsed.models:
+        print(
+            "Warning: --models (scoped models) is not yet implemented; the "
+            "patterns were ignored.",
+            file=sys.stderr,
+        )
 
     # Sprint 6h₈ §D: ``--continue`` / ``-c`` auto-resume short-circuit.
     # When set, attempt to open the most-recent session in cwd; if none
     # exist, fall back to ``_build_session`` silently (Pi parity per
     # ``main.ts:280-281`` ``SessionManager.continueRecent`` semantics).
-    if parsed.continue_session:
-        most_recent = await repo.find_most_recent(str(Path.cwd()))
-        if most_recent is not None:
-            session = await repo.open(most_recent)
+    # ``--session`` / ``--fork`` resolution failures surface as a startup
+    # diagnostic rather than a traceback.
+    try:
+        if parsed.continue_session:
+            most_recent = await repo.find_most_recent(cwd)
+            if most_recent is not None:
+                session = await repo.open(most_recent)
+            else:
+                session = await _build_session(parsed, repo, fs, cwd)
         else:
-            session = await _build_session(parsed, repo)
-    else:
-        session = await _build_session(parsed, repo)
+            session = await _build_session(parsed, repo, fs, cwd)
+    except SessionError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
 
     # MCP servers (Tier 4): connect ONCE here, share the connected tools across
     # every harness rebuild (the tool closures hold live connections, so they
