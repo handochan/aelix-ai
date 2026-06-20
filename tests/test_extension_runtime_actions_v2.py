@@ -1,8 +1,10 @@
-"""Sprint 5a (Phase 3.1) — ExtensionRuntimeActions 15-field dataclass tests (P-28).
+"""Sprint 5a (Phase 3.1) — ExtensionRuntimeActions dataclass tests (P-28).
 
 Pi parity (``types.ts:1471-1488``): ``ExtensionActions`` defines 15 action
-handlers. Sprint 5a extends the dataclass from 3 fields to 15 and makes
-:meth:`_ExtensionRuntime.bind_core` accept the wider table.
+handlers. Sprint 5a extended the dataclass from 3 fields to 15 and made
+:meth:`_ExtensionRuntime.bind_core` accept the wider table. P0 #7 Wave 2
+(item 3) adds a 16th action, ``refresh_tools`` (pi ``loader.ts:220``), whose
+pre-bind default is a NO-OP rather than a throwing stub.
 """
 
 from __future__ import annotations
@@ -17,7 +19,7 @@ from aelix_coding_agent.extensions.api import (
 )
 
 
-def test_extension_runtime_actions_has_15_fields() -> None:
+def test_extension_runtime_actions_has_16_fields() -> None:
     names = {f.name for f in fields(ExtensionRuntimeActions)}
     expected = {
         # Sprint 3a originals.
@@ -37,9 +39,21 @@ def test_extension_runtime_actions_has_15_fields() -> None:
         "get_thinking_level",
         "set_thinking_level",
         "exec",
+        # P0 #7 Wave 2 (item 3) — register_tool refresh.
+        "refresh_tools",
     }
     assert names == expected
-    assert len(names) == 15
+    assert len(names) == 16
+
+
+def test_default_refresh_tools_is_noop_not_throwing_stub() -> None:
+    """P0 #7 Wave 2 (item 3): refresh_tools default diverges from the throwing
+    convention — it is a NO-OP (pi ``loader.ts:171``: ``() => {}``) so
+    register_tool is valid pre-bind. It must NOT raise when called."""
+
+    actions = _default_actions()
+    # Calling the default refresh_tools must return None without raising.
+    assert actions.refresh_tools() is None
 
 
 def test_default_actions_returns_all_throwing_stubs() -> None:
@@ -80,6 +94,7 @@ def test_bind_core_replaces_full_action_table() -> None:
         get_thinking_level=lambda: "off",
         set_thinking_level=lambda level: None,
         exec=_make_throwing_stub("exec"),
+        refresh_tools=lambda: None,
     )
     rt.bind_core(fresh)
     assert rt.actions is fresh

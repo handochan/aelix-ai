@@ -230,6 +230,7 @@ def test_action_stubs_succeed_after_harness_bind() -> None:
         get_thinking_level=_make_throwing_stub("get_thinking_level"),
         set_thinking_level=_make_throwing_stub("set_thinking_level"),
         exec=_make_throwing_stub("exec"),
+        refresh_tools=lambda: None,
     )
     rt.bind_core(actions)
 

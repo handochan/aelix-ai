@@ -332,6 +332,14 @@ class ExtensionRuntimeActions:
     get_thinking_level: Callable[[], str]
     set_thinking_level: Callable[[str], None]
     exec: Callable[..., Awaitable[ExecResult]]
+    # P0 #7 Wave 2 (item 3) — register_tool refresh. Pi parity:
+    # ``loader.ts:220`` calls ``runtime.refreshTools()`` after storing a
+    # newly-registered tool. The pre-bind stub is a NO-OP
+    # (``loader.ts:171``: ``refreshTools: () => {}``) — NOT a throwing stub —
+    # so ``register_tool`` is valid during extension setup before the harness
+    # binds the real action. The harness rebinds it to
+    # ``AgentHarness._refresh_extension_tools`` at ``bind_core`` time.
+    refresh_tools: Callable[[], None]
 
 
 def _make_throwing_stub(name: str) -> Callable[..., Any]:
@@ -365,6 +373,13 @@ def _default_actions() -> ExtensionRuntimeActions:
         get_thinking_level=_make_throwing_stub("get_thinking_level"),
         set_thinking_level=_make_throwing_stub("set_thinking_level"),
         exec=_make_throwing_stub("exec"),
+        # P0 #7 Wave 2 (item 3): NO-OP default, NOT a throwing stub. This is
+        # the one action whose pre-bind default deliberately diverges from
+        # aelix's throwing-stub convention, matching pi's pre-bind stub
+        # (``loader.ts:171``: ``refreshTools: () => {}``). It keeps
+        # ``register_tool`` valid during extension setup before
+        # :meth:`bind_core` installs the real harness implementation.
+        refresh_tools=lambda: None,
     )
 
 
@@ -1316,14 +1331,18 @@ class ExtensionAPI:
         Application-supplied tools (``AgentHarnessOptions.tools``) win over
         extension tools at harness assembly time per D.1.13 M-9.
 
-        Pi parity (P0 #7 item 2, ``loader.ts:217``): begins with
-        ``runtime.assertActive()``. The ``runtime.refreshTools()`` call
-        (``loader.ts:220``) is Wave 2 (item 3) and intentionally NOT added
-        here.
+        Pi parity (``loader.ts:217-225``): ``runtime.assertActive()`` (P0 #7
+        item 2), store the tool on the extension, then
+        ``runtime.refreshTools()`` (P0 #7 Wave 2 item 3). The refresh
+        recomputes the harness tool registry and auto-activates the
+        newly-registered tool on top of the previous active set. Pre-bind
+        (during extension setup) ``refresh_tools`` is a NO-OP, so this call is
+        safe before the harness binds the runtime.
         """
 
         self._runtime.assert_active()
         self._extension.tools[tool.name] = tool
+        self._runtime.actions.refresh_tools()
 
     # Phase 1.3: CLI flag plumbing — currently registered but not wired to a parser.
     def register_flag(

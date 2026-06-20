@@ -629,6 +629,9 @@ class AgentHarness:
                 send_user_message=self._action_send_user_message,
                 append_entry=self._action_append_entry,
                 get_commands=self._action_get_commands,
+                # P0 #7 Wave 2 (item 3) — register_tool refresh. Pi:
+                # agent-session.ts:2192 ``refreshTools: () => this._refreshToolRegistry()``.
+                refresh_tools=self._refresh_extension_tools,
             )
         )
 
@@ -759,6 +762,67 @@ class AgentHarness:
         for tool in self._options.tools:
             merged[tool.name] = tool
         return list(merged.values())
+
+    def _refresh_extension_tools(self) -> None:
+        """P0 #7 Wave 2 (item 3): recompute the live tool registry + active set.
+
+        Bound into the extension runtime as ``refresh_tools`` and invoked by
+        :meth:`ExtensionAPI.register_tool` (pi ``loader.ts:220``
+        ``runtime.refreshTools()``). Implements pi's ``_refreshToolRegistry``
+        no-options path (``agent-session.ts:2238-2326``):
+
+        1. Snapshot the previous registry names and the previous *active*
+           names (``getActiveToolNames()`` → :meth:`_action_get_active_tools`,
+           which materializes ``None`` ⇒ all registered names).
+        2. Rebuild ``_state.tools`` via :meth:`_rebuild_tool_registry`
+           (extension tools merged with app tools — app tools win).
+        3. Compute the next active set = previous active names ∪
+           newly-registered names (names now in the registry that were absent
+           before), then filter to names still present in the rebuilt
+           registry (drops any tool removed from the registry — pi's
+           ``filter(isAllowedTool)``). This is pi's
+           ``else if (!options?.activeToolNames)`` branch, which fires because
+           ``register_tool`` calls ``refresh_tools()`` with NO options — so a
+           newly-registered tool is auto-activated *even when an explicit
+           active filter already exists* (added on top of it).
+        4. Assign ``_state.active_tool_names`` **directly** (NOT via
+           :meth:`_action_set_active_tools` / :meth:`set_tools`, whose
+           validators raise on stale names mid-rebuild).
+
+        None→explicit-list materialization decision: pi always materializes
+        the active set via ``setActiveToolsByName([...])``. We mirror that —
+        after a refresh ``active_tool_names`` is always a concrete list, never
+        ``None``. This is pi-faithful and observably identical: the previous
+        active names already enumerated every tool when the filter was
+        ``None`` (step 1 via ``_action_get_active_tools``), so materializing
+        the union does not change which tools are active.
+        """
+
+        previous_registry_names = {tool.name for tool in self._state.tools}
+        previous_active_names = self._action_get_active_tools()
+
+        self._state.tools = self._rebuild_tool_registry()
+        current_registry_names = {tool.name for tool in self._state.tools}
+
+        # pi: nextActiveToolNames = [...previousActiveToolNames], then push
+        # every registry name not present before the rebuild (auto-activate).
+        next_active = list(previous_active_names)
+        for tool in self._state.tools:
+            if tool.name not in previous_registry_names:
+                next_active.append(tool.name)
+
+        # pi: filter(isAllowedTool) + new Set(...) — keep only names still in
+        # the registry, dedup while preserving order.
+        seen: set[str] = set()
+        materialized: list[str] = []
+        for name in next_active:
+            if name in current_registry_names and name not in seen:
+                seen.add(name)
+                materialized.append(name)
+
+        # Direct assignment — _action_set_active_tools/set_tools validators
+        # would raise on any stale name that slipped through.
+        self._state.active_tool_names = materialized
 
     # === Public properties ===
 

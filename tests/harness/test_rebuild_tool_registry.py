@@ -179,3 +179,165 @@ def test_rebuild_preserves_extension_then_options_ordering() -> None:
     result = harness._rebuild_tool_registry()
 
     assert [t.name for t in result] == ["a", "b", "c", "d"]
+
+
+# === P0 #7 Wave 2 (item 3) — register_tool refresh ===
+#
+# Pi parity (loader.ts:217-225 + agent-session.ts:2238-2326,
+# _refreshToolRegistry no-options path). ``register_tool`` calls
+# ``runtime.refreshTools()`` with NO options, so newly-registered tools
+# auto-activate on top of the previous active set — even when an explicit
+# active filter already exists.
+
+
+def _api_for(harness: AgentHarness, ext: Extension) -> Any:
+    """Build an ExtensionAPI bound to the harness's already-bound runtime.
+
+    Mirrors what a hook handler sees: the same ``_ExtensionRuntime`` the
+    harness installed its real action table onto via ``bind_core``, so
+    ``register_tool`` routes through the live ``_refresh_extension_tools``.
+    """
+
+    from aelix_coding_agent.extensions.api import ExtensionAPI
+
+    return ExtensionAPI(ext, harness.runtime)
+
+
+def test_register_tool_refresh_adds_to_state_and_active_none_case() -> None:
+    """(a) register_tool from a handler → tool in state.tools AND active set.
+
+    ``active_tool_names is None`` (every registered tool active) before the
+    refresh; afterwards the new tool is present and active.
+    """
+
+    from aelix_coding_agent.extensions.api import _ExtensionRuntime
+
+    ext = Extension(name="ext")
+    ext.tools["seed"] = _tool("seed")
+    rt = _ExtensionRuntime()
+    harness = AgentHarness(
+        AgentHarnessOptions(
+            model=Model(id="mock", provider="mock"),
+            stream_fn=_stream(),
+            tools=[],
+            extensions=[ext],
+            runtime=rt,
+        )
+    )
+
+    # Default active filter: None ⇒ all registered tools active.
+    assert harness.state.active_tool_names is None
+    assert [t.name for t in harness.state.tools] == ["seed"]
+
+    api = _api_for(harness, ext)
+    api.register_tool(_tool("added"))
+
+    names = [t.name for t in harness.state.tools]
+    assert "added" in names  # rebuilt registry contains the new tool.
+    # pi materializes the active set; after a refresh it is a concrete list.
+    assert harness.state.active_tool_names is not None
+    assert "added" in harness.state.active_tool_names
+    assert "seed" in harness.state.active_tool_names
+
+
+def test_register_tool_refresh_auto_activates_over_explicit_filter() -> None:
+    """(b) Explicit active filter present → new tool added ON TOP of it.
+
+    This is the pi-correct behavior (``else if (!options?.activeToolNames)``
+    branch fires because register_tool passes NO options). The recon's
+    "NOT auto-activated with an explicit filter" claim was WRONG.
+    """
+
+    from aelix_coding_agent.extensions.api import _ExtensionRuntime
+
+    ext = Extension(name="ext")
+    ext.tools["a"] = _tool("a")
+    ext.tools["b"] = _tool("b")
+    rt = _ExtensionRuntime()
+    harness = AgentHarness(
+        AgentHarnessOptions(
+            model=Model(id="mock", provider="mock"),
+            stream_fn=_stream(),
+            tools=[],
+            extensions=[ext],
+            # Explicit filter: only "a" active (drops "b").
+            active_tool_names=["a"],
+            runtime=rt,
+        )
+    )
+
+    assert harness.state.active_tool_names == ["a"]
+
+    api = _api_for(harness, ext)
+    api.register_tool(_tool("c"))
+
+    # Previous active ("a") ∪ newly-registered ("c"); "b" stays inactive
+    # because it was neither active before nor newly registered.
+    assert harness.state.active_tool_names is not None
+    assert set(harness.state.active_tool_names) == {"a", "c"}
+    assert "b" not in harness.state.active_tool_names
+    assert "c" in [t.name for t in harness.state.tools]
+
+
+def test_register_tool_pre_bind_refresh_is_noop() -> None:
+    """(c) Pre-bind/default refresh_tools is a NO-OP → register_tool valid.
+
+    During extension setup the runtime action table is the default (refresh
+    is ``lambda: None``), so register_tool stores the tool without raising.
+    """
+
+    from aelix_coding_agent.extensions.api import (
+        ExtensionAPI,
+        _ExtensionRuntime,
+    )
+
+    rt = _ExtensionRuntime()  # not bound to any harness yet.
+    ext = Extension(name="ext")
+    api = ExtensionAPI(ext, rt)
+
+    # Must not raise even though no harness has bound the real refresh action.
+    api.register_tool(_tool("pre_bind"))
+
+    assert "pre_bind" in ext.tools
+
+
+def test_refresh_drops_stale_active_name_for_removed_tool() -> None:
+    """(d) A previously-active tool removed from the registry doesn't linger.
+
+    pi ``filter(isAllowedTool)`` / our "filter to names still present" keeps
+    the materialized active set free of stale names. Removing the extension
+    tool then refreshing must drop it from active_tool_names.
+    """
+
+    from aelix_coding_agent.extensions.api import _ExtensionRuntime
+
+    ext = Extension(name="ext")
+    ext.tools["keep"] = _tool("keep")
+    ext.tools["drop"] = _tool("drop")
+    rt = _ExtensionRuntime()
+    harness = AgentHarness(
+        AgentHarnessOptions(
+            model=Model(id="mock", provider="mock"),
+            stream_fn=_stream(),
+            tools=[],
+            extensions=[ext],
+            runtime=rt,
+        )
+    )
+
+    # Both active under the None (all-active) default.
+    assert set(harness._action_get_active_tools()) == {"keep", "drop"}
+
+    api = _api_for(harness, ext)
+    # Force-materialize the active set to include "drop" via a refresh, then
+    # remove "drop" from the extension and refresh again.
+    api.register_tool(_tool("extra"))
+    assert "drop" in (harness.state.active_tool_names or [])
+
+    del ext.tools["drop"]
+    harness._refresh_extension_tools()
+
+    assert harness.state.active_tool_names is not None
+    assert "drop" not in harness.state.active_tool_names
+    assert "drop" not in [t.name for t in harness.state.tools]
+    assert "keep" in harness.state.active_tool_names
