@@ -56,6 +56,10 @@ from aelix_coding_agent.tools import create_all_tools
 
 from .agent_context import build_system_prompt, discover_context_files
 from .args import Args, parse_args, print_help
+from .auth_guidance import (
+    format_no_api_key_found_message,
+    format_no_model_selected_message,
+)
 from .config import (
     VERSION,
     get_agent_dir,
@@ -656,6 +660,40 @@ async def _async_main(argv: list[str]) -> int:
                 fs=fs,
             )
             return 0
+
+        # === No-usable-model guard (ITEM #2, Pi main.ts ``!session.model``) ===
+        # Pi aborts a NON-INTERACTIVE run with an auth-guidance message BEFORE
+        # the first turn when no usable model is available. Placed at the print/
+        # json dispatch (turn time, mirroring Pi's ``!session.model``) AFTER the
+        # session build + ``--models`` warning + ``--session`` resolution so none
+        # of those paths is shadowed; the ``finally`` still disposes the runtime.
+        #
+        # ``resolve_model`` is TOTAL (always returns a Model), so the real
+        # "unusable" conditions are:
+        #   (a) provider empty/unknown — a bare ``--model`` with no ``--provider``
+        #       and no OpenRouter env: nothing to authenticate against → emit
+        #       ``formatNoModelSelectedMessage``; OR
+        #   (b) provider set but NO API key resolvable for it via the auth cascade
+        #       (runtime override / stored / OAuth / env / models.json), checked
+        #       sync via ``ModelRegistry.has_configured_auth`` (P0 #7 Wave 1
+        #       registry reuse) → emit ``formatNoApiKeyFoundMessage(provider)``.
+        # When ``--api-key`` was supplied it already set a runtime override above
+        # (so has_configured_auth is True) AND owns the empty-provider diagnostic,
+        # so condition (a) cannot wrongly fire for it.
+        if app_mode in ("print", "json"):
+            turn_model = resolve_model(parsed.model, parsed.provider)
+            if not turn_model.provider:
+                print(format_no_model_selected_message(), file=sys.stderr)
+                return 1
+            if not model_registry.has_configured_auth(turn_model):
+                provider_display = model_registry.get_provider_display_name(
+                    turn_model.provider
+                )
+                print(
+                    format_no_api_key_found_message(provider_display),
+                    file=sys.stderr,
+                )
+                return 1
 
         from aelix_coding_agent.modes import run_print_mode
 

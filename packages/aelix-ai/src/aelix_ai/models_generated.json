@@ -1837,6 +1837,33 @@
       "contextWindow": 200000,
       "maxTokens": 4096
     },
+    "claude-fable-5": {
+      "id": "claude-fable-5",
+      "name": "Claude Fable 5",
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "baseUrl": "https://api.anthropic.com",
+      "compat": {
+        "forceAdaptiveThinking": true
+      },
+      "reasoning": true,
+      "thinkingLevelMap": {
+        "off": null,
+        "xhigh": "xhigh"
+      },
+      "input": [
+        "text",
+        "image"
+      ],
+      "cost": {
+        "input": 10,
+        "output": 50,
+        "cacheRead": 1,
+        "cacheWrite": 12.5
+      },
+      "contextWindow": 1000000,
+      "maxTokens": 128000
+    },
     "claude-haiku-4-5": {
       "id": "claude-haiku-4-5",
       "name": "Claude Haiku 4.5 (latest)",
@@ -2026,6 +2053,33 @@
       "api": "anthropic-messages",
       "provider": "anthropic",
       "baseUrl": "https://api.anthropic.com",
+      "reasoning": true,
+      "thinkingLevelMap": {
+        "xhigh": "xhigh"
+      },
+      "input": [
+        "text",
+        "image"
+      ],
+      "cost": {
+        "input": 5,
+        "output": 25,
+        "cacheRead": 0.5,
+        "cacheWrite": 6.25
+      },
+      "contextWindow": 1000000,
+      "maxTokens": 128000
+    },
+    "claude-opus-4-8": {
+      "id": "claude-opus-4-8",
+      "name": "Claude Opus 4.8",
+      "api": "anthropic-messages",
+      "provider": "anthropic",
+      "baseUrl": "https://api.anthropic.com",
+      "compat": {
+        "forceAdaptiveThinking": true,
+        "supportsTemperature": false
+      },
       "reasoning": true,
       "thinkingLevelMap": {
         "xhigh": "xhigh"
@@ -6995,6 +7049,26 @@
       },
       "contextWindow": 204800,
       "maxTokens": 131072
+    },
+    "MiniMax-M3": {
+      "id": "MiniMax-M3",
+      "name": "MiniMax-M3",
+      "api": "anthropic-messages",
+      "provider": "minimax",
+      "baseUrl": "https://api.minimax.io/anthropic",
+      "reasoning": true,
+      "input": [
+        "text",
+        "image"
+      ],
+      "cost": {
+        "input": 0.6,
+        "output": 2.4,
+        "cacheRead": 0.12,
+        "cacheWrite": 0
+      },
+      "contextWindow": 512000,
+      "maxTokens": 128000
     }
   },
   "minimax-cn": {

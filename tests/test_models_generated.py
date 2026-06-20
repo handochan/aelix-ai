@@ -114,3 +114,29 @@ def test_load_catalog_raises_keyerror_on_missing_required_field(
     )
     with pytest.raises(KeyError, match="name"):
         _load_catalog()
+
+
+def test_flagship_models_resolve() -> None:
+    """Since-pin refresh: latest flagship ids resolve from pi HEAD's catalog.
+
+    Adds ``claude-opus-4-8`` / ``claude-fable-5`` under ``anthropic`` and
+    ``MiniMax-M3`` under ``minimax``, matching pi HEAD
+    ``packages/ai/src/models.generated.ts``. Each must deserialize to a
+    :class:`Model` with reasoning enabled and a sane context window.
+    """
+
+    flagships = {
+        ("anthropic", "claude-opus-4-8"): 1_000_000,
+        ("anthropic", "claude-fable-5"): 1_000_000,
+        ("anthropic", "claude-sonnet-4-6"): 1_000_000,
+        ("minimax", "MiniMax-M3"): 512_000,
+    }
+    for (provider, model_id), context_window in flagships.items():
+        assert provider in MODELS, provider
+        assert model_id in MODELS[provider], f"{provider}/{model_id}"
+        model = MODELS[provider][model_id]
+        assert isinstance(model, Model), f"{provider}/{model_id}"
+        assert model.provider == provider
+        assert model.id == model_id
+        assert model.reasoning is True, f"{provider}/{model_id}"
+        assert model.context_window == context_window, f"{provider}/{model_id}"

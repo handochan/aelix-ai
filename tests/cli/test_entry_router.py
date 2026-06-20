@@ -277,6 +277,105 @@ async def test_piped_stdin_promotes_to_print(
     assert code in (0, 1)
 
 
+# === No-usable-model guard (ITEM #2 — auth-guidance + non-interactive abort) ==
+
+
+class _FakePipedStdin:
+    """Non-tty stdin so ``_async_main`` resolves to print mode (no TUI)."""
+
+    def isatty(self) -> bool:
+        return False
+
+    def read(self) -> str:
+        return ""
+
+
+async def test_no_provider_print_emits_guidance_and_exits_1(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ITEM #2: a non-interactive (print) run with NO provider (bare flags,
+    no OpenRouter env) aborts BEFORE a turn with the "No model selected"
+    auth-guidance on stderr + exit 1 (mirrors Pi's ``!session.model`` guard).
+    """
+
+    monkeypatch.setattr(sys, "stdin", _FakePipedStdin())
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    # No provider/model flags, and no OpenRouter env to infer a provider from.
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_DEFAULT_MODEL", raising=False)
+
+    code = await _async_main(["--no-session", "--print"])
+    err = capsys.readouterr().err
+    assert code == 1
+    # Pi-shape "no model selected" guidance, honestly adapted (no doc paths).
+    assert "No model selected." in err
+    # Honesty adaptation: references the REAL /model command + the env-var
+    # route, and does NOT claim non-existent doc files OR a non-existent
+    # /login command (Aelix has no /login — see auth_guidance honesty note).
+    assert "/login" not in err
+    assert "/model" in err
+    assert "_API_KEY" in err
+    assert "providers.md" not in err
+    assert "models.md" not in err
+
+
+async def test_provider_without_key_emits_no_api_key_guidance(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A provider IS named but no key is resolvable for it (no env, no stored,
+    no runtime override) → "No API key found for <provider>" + exit 1.
+    """
+
+    monkeypatch.setattr(sys, "stdin", _FakePipedStdin())
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    # Ensure the anthropic provider has NO resolvable key in the environment.
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_OAUTH_TOKEN", raising=False)
+
+    code = await _async_main(
+        ["--provider", "anthropic", "--model", "claude-3", "--no-session", "--print"]
+    )
+    err = capsys.readouterr().err
+    assert code == 1
+    assert "No API key found for" in err
+    # The provider display name appears in the message.
+    assert "Anthropic" in err
+    # Honesty: the env-var route is surfaced, and NO /login command is claimed
+    # (Aelix does not register one — see auth_guidance honesty note).
+    assert "/login" not in err
+    assert "_API_KEY" in err
+
+
+async def test_env_authenticated_print_passes_guard(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A normal env-authenticated run is UNAFFECTED by the guard: with a
+    provider + ``ANTHROPIC_API_KEY`` set, the guard passes and the run proceeds
+    to the turn (which may still exit 1 on the mocked/absent real backend, but
+    NEVER emits the auth-guidance message)."""
+
+    monkeypatch.setattr(sys, "stdin", _FakePipedStdin())
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-env-key")
+
+    code = await _async_main(
+        ["--provider", "anthropic", "--model", "claude-3", "--no-session", "--print"]
+    )
+    err = capsys.readouterr().err
+    # The guard did NOT fire — no auth-guidance on stderr.
+    assert "No model selected." not in err
+    assert "No API key found for" not in err
+    # Exit code may be 0 or 1 (the latter only from the actual model turn,
+    # not the guard) — what matters is the guard let it through.
+    assert code in (0, 1)
+
+
 # === End-to-end subprocess smoke tests =======================================
 
 

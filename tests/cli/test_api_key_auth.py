@@ -190,11 +190,19 @@ async def test_async_main_env_only_does_not_error(
     """The full ``_async_main`` env-only path (no ``--api-key``) constructs
     the registry but never emits an --api-key diagnostic and never exits 1
     on the auth wiring (it may still exit 1 later for the missing real key —
-    that is the model turn, not the wiring)."""
+    that is the model turn, not the wiring).
+
+    ITEM #2: provide an env-AUTHENTICATED model (``--provider anthropic`` +
+    ``ANTHROPIC_API_KEY``) so the new no-usable-model guard does NOT abort
+    before the wiring — this test pins the env-key path the guard must leave
+    untouched."""
 
     monkeypatch.setattr(sys, "stdin", _FakePipedStdin())
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
-    code = await _async_main(["--print"])
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-env-key")
+    code = await _async_main(
+        ["--provider", "anthropic", "--model", "claude-3", "--print"]
+    )
     err = capsys.readouterr().err
     assert code in (0, 1)
     assert "--api-key" not in err
@@ -301,6 +309,9 @@ async def test_async_main_env_only_leaves_callback_none(
 
     monkeypatch.setattr(sys, "stdin", _FakePipedStdin())
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    # ITEM #2: an env-authenticated model so the no-usable-model guard does not
+    # abort before the factory runs (the guard leaves env-key paths untouched).
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-env-key")
 
     captured: dict[str, object] = {"sentinel": object()}
     real_build = entry_mod._build_harness_options
@@ -311,7 +322,9 @@ async def test_async_main_env_only_leaves_callback_none(
 
     monkeypatch.setattr(entry_mod, "_build_harness_options", _spy_build)
 
-    await _async_main(["--print"])
+    await _async_main(
+        ["--provider", "anthropic", "--model", "claude-3", "--print"]
+    )
 
     # The factory ran (sentinel replaced) and threaded None on the env path.
     assert "get_api_key_and_headers" in captured
