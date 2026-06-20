@@ -1,0 +1,131 @@
+name: Release
+
+# Tag-triggered publish for the Aelix v1 distribution set.
+#
+# Trigger: pushing a version tag of the form `vX.Y.Z` (e.g. `v0.1.0`).
+#
+# Pipeline:
+#   build   — `uv build --all-packages`, then DROP the aelix-server
+#             artifacts (Web-UI daemon is deferred to v1.1 and is NOT
+#             part of the v1 PyPI publish set). Uploads sdists + wheels
+#             as a build artifact.
+#   publish — downloads the artifact and uploads to PyPI via
+#             **Trusted Publishing** (OIDC). No API token is stored in
+#             the repository or in any secret.
+#
+# ──────────────────────────────────────────────────────────────────────
+# ONE-TIME MAINTAINER SETUP (required before the FIRST release):
+#
+#   PyPI Trusted Publishing must be configured on PyPI for EACH project
+#   in the publish set BEFORE the tag is pushed. For each of:
+#       aelix-ai, aelix-agent-core, aelix-coding-agent, aelix
+#   create a "pending publisher" at https://pypi.org/manage/account/publishing/
+#   (or, once the project exists, under the project's
+#   "Publishing" settings) pointing at:
+#       Owner:            handochan
+#       Repository:       aelix-ai
+#       Workflow name:    release.yml
+#       Environment name: pypi
+#
+#   No password, no API token, no secret is added to this repository —
+#   OIDC mints a short-lived token at publish time. See RELEASING.md.
+# ──────────────────────────────────────────────────────────────────────
+#
+# Third-party actions are PINNED to a commit SHA (supply-chain hardening);
+# the trailing comment records the human-readable release tag.
+
+on:
+  push:
+    tags:
+      # Strict-ish glob (GitHub filter syntax supports `+`); a hard regex
+      # gate in the build job (below) is the real enforcement.
+      - "v[0-9]+.[0-9]+.[0-9]+*"
+
+# Default to read-only at the workflow level; the publish job opts into
+# the `id-token: write` permission it needs for OIDC.
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build distributions
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Validate release tag is strict semver
+        run: |
+          tag="${{ github.ref_name }}"
+          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.]+)?$ ]]; then
+            echo "::error::Tag '$tag' is not a valid vX.Y.Z[-prerelease] release tag; refusing to publish."
+            exit 1
+          fi
+          echo "Release tag: $tag"
+
+      - name: Checkout
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          version: "0.11.14"
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: Build all workspace packages
+        run: uv build --all-packages --out-dir dist
+
+      - name: Drop aelix-server artifacts (excluded from v1 publish set)
+        run: |
+          # aelix-server is the deferred Web-UI daemon (v1.1). Remove its
+          # sdist + wheel so only the v1 publish set is uploaded to PyPI:
+          #   aelix-ai, aelix-agent-core, aelix-coding-agent, aelix
+          rm -f dist/aelix_server-*.whl dist/aelix_server-*.tar.gz
+          echo "Artifacts to publish:"
+          ls -1 dist
+
+      - name: Upload distributions artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    name: Publish to PyPI (Trusted Publishing)
+    needs: build
+    runs-on: ubuntu-latest
+    # GitHub Environment adds an approval/protection gate around the
+    # publish step. The maintainer references this same environment name
+    # ("pypi") when configuring the PyPI Trusted Publisher (see header).
+    environment:
+      name: pypi
+      url: https://pypi.org/project/aelix/
+    permissions:
+      # OIDC: mint a short-lived token for Trusted Publishing. This is the
+      # ONLY elevated permission, and it replaces any stored API token.
+      id-token: write
+    steps:
+      - name: Download distributions artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # v1.14.0
+        with:
+          packages-dir: dist/
+          # No `password:` — Trusted Publishing (OIDC) is used instead.
+          # Generate + upload PEP 740 build provenance attestations (uses the
+          # same OIDC id-token; no extra secret). Defense-in-depth between
+          # build and publish.
+          attestations: true
+          # Fail loudly if a build is somehow already on PyPI rather than
+          # silently skipping.
+          skip-existing: false
+          print-hash: true

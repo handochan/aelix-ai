@@ -6,10 +6,22 @@ build-backend = "hatchling.build"
 name = "aelix-ai"
 version = "0.1.0"
 description = "Aelix AI primitives — messages, tools, streaming types. Pi-ai parity."
-readme = "../../README.md"
+readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "Apache-2.0" }
 authors = [{ name = "Aelix Contributors" }]
+keywords = ["ai", "llm", "agent", "anthropic", "openai", "streaming", "tools"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Application Frameworks",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 dependencies = [
     # Sprint 6a (Phase 4.1, ADR-0045) — official Anthropic Python SDK
     # for byte-level Pi parity (Pi providers/anthropic.ts uses
@@ -27,6 +39,11 @@ dependencies = [
     # dep of openai+anthropic SDKs; pinning here makes it explicit.
     "httpx>=0.27,<1.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/handochan/aelix-ai"
+Repository = "https://github.com/handochan/aelix-ai"
+Issues = "https://github.com/handochan/aelix-ai/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/aelix_ai"]

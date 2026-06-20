@@ -5,14 +5,30 @@ build-backend = "hatchling.build"
 [project]
 name = "aelix-coding-agent"
 version = "0.1.0"
-description = "Aelix coding agent — ExtensionAPI + built-ins + example tools. Pi-coding-agent parity (non-UI)."
-readme = "../../README.md"
+description = "Aelix coding agent — ExtensionAPI + built-ins + example tools + TUI. Pi-coding-agent parity."
+readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "Apache-2.0" }
 authors = [{ name = "Aelix Contributors" }]
+keywords = ["ai", "agent", "llm", "coding-agent", "cli", "tui", "extensions", "tools"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: Apache Software License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Software Development :: Code Generators",
+  "Topic :: Software Development :: Libraries :: Application Frameworks",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 dependencies = [
-  "aelix-ai",
-  "aelix-agent-core",
+  # Pinned to the shared release version; the workspace sources below are
+  # dev-only and stripped from the built metadata.
+  "aelix-ai==0.1.0",
+  "aelix-agent-core==0.1.0",
   "pygments>=2.18",
   "markdown-it-py>=3.0",
   "mcp>=1.27,<2",
@@ -44,6 +60,14 @@ images = [
   "rich-pixels>=3.0,<4",
 ]
 
+[project.urls]
+Homepage = "https://github.com/handochan/aelix-ai"
+Repository = "https://github.com/handochan/aelix-ai"
+Issues = "https://github.com/handochan/aelix-ai/issues"
+
+# The real `aelix` CLI. This is the canonical owner of the `aelix`
+# console script across the workspace (the umbrella meta-package
+# intentionally does NOT define one — see the root pyproject.toml).
 [project.scripts]
 aelix = "aelix_coding_agent.cli.entry:main_sync"
 

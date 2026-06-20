@@ -1,0 +1,56 @@
+name: CI
+
+# Continuous integration for the Aelix uv workspace.
+#
+# Runs on every push and pull request: lint (ruff), format check (ruff),
+# and the test gate (pytest) across the supported Python versions.
+#
+# Third-party actions are PINNED to a commit SHA (supply-chain hardening);
+# the trailing comment records the human-readable release tag.
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+# Minimal permissions: CI only needs to read the repository contents.
+permissions:
+  contents: read
+
+# Cancel superseded in-progress runs for the same ref to save CI minutes.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: lint + test (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          # Pin uv itself for reproducible CI; bump deliberately.
+          version: "0.11.14"
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
+
+      - name: Sync workspace (all members + dev group)
+        run: uv sync --all-packages
+
+      - name: Lint (ruff check)
+        run: uv run ruff check .
+
+      - name: Format check (ruff format --check)
+        run: uv run ruff format --check .
+
+      - name: Test gate (pytest)
+        run: uv run pytest -p no:cacheprovider -q

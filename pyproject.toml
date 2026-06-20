@@ -5,19 +5,44 @@ build-backend = "hatchling.build"
 [project]
 name = "aelix"
 version = "0.1.0"
-description = "Aelix umbrella — convenience re-exports + demo entry."
+description = "Aelix — a pi-faithful Python agent runtime (providers, tools, compaction, extensions, TUI)."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "Apache-2.0" }
 authors = [{ name = "Aelix Contributors" }]
+keywords = ["ai", "agent", "llm", "tui", "cli", "coding-agent", "anthropic", "openai"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: Apache Software License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Software Development :: Libraries :: Application Frameworks",
+  "Topic :: Software Development :: Code Generators",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+# Inter-package deps are pinned to the shared release version so the
+# published umbrella pulls a compatible, lock-step set from PyPI. The
+# `[tool.uv.sources] workspace = true` entries below are dev-only and are
+# stripped from the built metadata — the published wheel uses these pins.
 dependencies = [
-  "aelix-ai",
-  "aelix-agent-core",
-  "aelix-coding-agent",
+  "aelix-ai==0.1.0",
+  "aelix-agent-core==0.1.0",
+  "aelix-coding-agent==0.1.0",
 ]
 
-[project.scripts]
-aelix = "aelix.__main__:main"
+[project.urls]
+Homepage = "https://github.com/handochan/aelix-ai"
+Repository = "https://github.com/handochan/aelix-ai"
+Issues = "https://github.com/handochan/aelix-ai/issues"
+
+# NOTE: the `aelix` console script is intentionally NOT defined here.
+# The real CLI ships from aelix-coding-agent
+# (`aelix = "aelix_coding_agent.cli.entry:main_sync"`), which owns the
+# `aelix` command. The demo entry in src/aelix/__main__.py remains
+# reachable via `python -m aelix`.
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/aelix"]

@@ -6,12 +6,26 @@ build-backend = "hatchling.build"
 name = "aelix-agent-core"
 version = "0.1.0"
 description = "Aelix agent loop + harness + hook bus. Pi-agent-core parity."
-readme = "../../README.md"
+readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "Apache-2.0" }
 authors = [{ name = "Aelix Contributors" }]
+keywords = ["ai", "agent", "llm", "agent-loop", "harness", "hooks"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: Apache Software License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Software Development :: Libraries :: Application Frameworks",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 dependencies = [
-  "aelix-ai",
+  # Pinned to the shared release version; the workspace source below is
+  # dev-only and stripped from the built metadata.
+  "aelix-ai==0.1.0",
   # Sprint 6h₁ (ADR-0069, P-216/P-217): prompt-templates frontmatter
   # parsing + skills .gitignore-style ignore matching.
   "PyYAML>=6.0",
@@ -20,6 +34,11 @@ dependencies = [
   # 4-tier extension architecture (descriptor envelope, manifest, primitives).
   "pydantic>=2.7,<3",
 ]
+
+[project.urls]
+Homepage = "https://github.com/handochan/aelix-ai"
+Repository = "https://github.com/handochan/aelix-ai"
+Issues = "https://github.com/handochan/aelix-ai/issues"
 
 [tool.uv.sources]
 aelix-ai = { workspace = true }
