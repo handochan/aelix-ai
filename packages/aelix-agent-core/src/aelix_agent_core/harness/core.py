@@ -3677,25 +3677,76 @@ class AgentHarness:
                 tools=active_tools,
             )
 
-            async def emit(event: AgentEvent) -> None:
-                # Sprint 4a — Pi ``handleAgentEvent`` (``agent-harness.ts:483-510``)
-                # primary write path: every ``message_end`` event is
-                # persisted via ``session.appendMessage`` BEFORE the
-                # observational re-emit. When no session is attached we
-                # skip the call (Aelix backward-compat path per ADR-0022).
-                if event.type == "message_end" and self._session is not None:
+            async def emit(event: AgentEvent) -> AgentMessage | None:
+                # P0 #7 Wave 3 (ADR-0145, supersedes ADR-0013 + ADR-0018) —
+                # ``message_end`` is now a REPLACEMENT reducer. The order is
+                # REORDERED vs the old observational path: the hook reduction
+                # runs FIRST so we can persist (and return) the REPLACEMENT,
+                # not the original. pi parity: ``runner.ts:714``
+                # ``emitMessageEnd`` returns the replaced message; the consumer
+                # (``agent-session.ts:669``) mutates the message in place so the
+                # persisted/state copies all see it. ``AgentMessage`` is a
+                # frozen dataclass, so aelix swaps by identity (loop return)
+                # instead — see ``loop.py`` ``_stream_assistant_response``.
+                if event.type == "message_end":
+                    # 1) Run the hook reduction FIRST. The new
+                    #    ``_reducer_message_end`` returns the replaced
+                    #    ``AgentMessage`` (same role) or ``None`` (no
+                    #    replacement). Hook errors are listener-style swallowed
+                    #    so a faulty handler cannot break the loop (the reducer
+                    #    itself only raises for ``error_mode="throw"``; any such
+                    #    raise is caught here and logged — pi parity with the
+                    #    observational fan-out it replaces).
+                    reduced: AgentMessage | None = None
                     try:
-                        await self._session.append_message(event.message)
+                        reduced = await self._hooks.emit(_to_hook_event(event))
                     except Exception as exc:  # noqa: BLE001
-                        # Session failure during message_end is logged but
-                        # does not break the lifecycle emit chain — the
-                        # observational hook fan-out still runs so
-                        # extensions see the event.
                         _log.debug(
-                            "session.append_message raised on message_end: %r",
+                            "message_end hook reducer raised: %r",
                             exc,
                             exc_info=True,
                         )
+                        reduced = None
+                    final_message = (
+                        reduced
+                        if (reduced is not None and reduced is not event.message)
+                        else event.message
+                    )
+                    # 2) Persist the REPLACEMENT (Sprint 4a primary write path,
+                    #    pi ``handleAgentEvent`` ``agent-harness.ts:483-510``).
+                    #    When no session is attached we skip — the no-session
+                    #    path carries the replacement via the loop return into
+                    #    ``_state.messages`` (ADR-0022 backward-compat).
+                    if self._session is not None:
+                        try:
+                            await self._session.append_message(final_message)
+                        except Exception as exc:  # noqa: BLE001
+                            # Session failure during message_end is logged but
+                            # does not break the lifecycle emit chain — the
+                            # listeners below still run so the UI/observers see
+                            # the event.
+                            _log.debug(
+                                "session.append_message raised on message_end: %r",
+                                exc,
+                                exc_info=True,
+                            )
+                    # 3) Dispatch to local listeners with the ORIGINAL event
+                    #    (observers stay observational — they do not see a
+                    #    rewritten event; the replacement flows through the loop
+                    #    return, not the listener payload).
+                    for listener in list(self._listeners):
+                        try:
+                            raw = listener(event)
+                            if inspect.isawaitable(raw):
+                                await raw
+                        except Exception:  # noqa: BLE001 — listener errors must not break
+                            _log.debug("listener raised", exc_info=True)
+                    # 4) Return the replacement (or ``None``) so the loop can
+                    #    apply the identity swap into ``context.messages`` and
+                    #    ``new_messages`` → ``_state.messages``. Do NOT run the
+                    #    generic ``_to_hook_event`` fan-out again — for
+                    #    message_end that fan-out IS the reduction in step 1.
+                    return reduced
                 # Dispatch to local listeners first.
                 for listener in list(self._listeners):
                     try:
@@ -3712,7 +3763,7 @@ class AgentHarness:
                 # pi parity: pi emits these only to ``agent-session``'s own
                 # listeners, not through the hook bus.
                 if event.type in ("auto_retry_start", "auto_retry_end"):
-                    return
+                    return None
                 # Then fan-out to the hook bus as observational lifecycle events.
                 # ADR-0030: ``_to_hook_event`` returns ``HookEvent`` (not
                 # ``HookEvent | None``) — every AgentEvent has a 1:1 projection.
@@ -3743,6 +3794,8 @@ class AgentHarness:
                             exc,
                             exc_info=True,
                         )
+                # Non-message_end events never carry a replacement.
+                return None
 
             try:
                 # Sprint 6a (Phase 4.1, ADR-0045 §D.1): if an explicit

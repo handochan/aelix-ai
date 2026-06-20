@@ -1,7 +1,7 @@
 # 0013. message_end Reducer Policy — Observational in Phase 1.2
 
-Status: Accepted (Phase 1.2 임시 결정)
-Superseded by: Sprint 3b P-3 verdict (ADR-0018 deprecated); message_end remains observational; Pi has no replacement reducer at SHA 734e08e.
+Status: Superseded by ADR-0145
+Superseded by: **ADR-0145** (P0 #7 Wave 3) — the "message_end is observational / Pi has no replacement reducer" basis was a LAYER MIX-UP: pi's reducer lives in the extension-runner layer (`runner.ts:714` `emitMessageEnd`), which aelix mirrors. ADR-0145 implements the replacement reducer. (Earlier note: superseded by Sprint 3b P-3 verdict / ADR-0018 deprecated — both now reverted by ADR-0145.)
 
 ## Context
 

@@ -1,9 +1,14 @@
-"""§E.6 — message_end wiring tests (Sprint 4a).
+"""§E.6 — message_end wiring tests (Sprint 4a; updated P0 #7 Wave 3, ADR-0145).
 
-Pi parity (``agent-harness.ts:483-510``): every ``message_end`` event is
-persisted via ``session.appendMessage`` BEFORE the observational hook
-fan-out. Aelix Sprint 4a mirrors this in the harness ``emit`` callback
-inside ``_run``.
+Pi parity (``agent-harness.ts:483-510`` + ``runner.ts:714``): every
+``message_end`` event is persisted via ``session.appendMessage``. P0 #7
+Wave 3 made ``message_end`` a REPLACEMENT reducer (ADR-0145, supersedes
+ADR-0018), so the harness ``emit`` callback now REORDERS: the hook reduction
+runs FIRST (to compute the possibly-replaced message), THEN
+``session.append_message`` persists the REPLACEMENT, THEN the local listeners
+fire. This module pins the final persisted state + the new ordering; the
+replacement-semantics behavior lives in
+``test_message_end_replacement_reducer.py``.
 """
 
 from __future__ import annotations
@@ -41,13 +46,16 @@ def _stream() -> Any:
     return fn
 
 
-async def test_message_end_appends_to_session_before_emit() -> None:
-    """Pi parity: ``session.append_message`` runs BEFORE the observational
-    hook emit so handlers see the entry already persisted.
+async def test_message_end_reduces_before_session_append() -> None:
+    """P0 #7 Wave 3 (ADR-0145): the ``message_end`` hook reduction now runs
+    BEFORE ``session.append_message`` so the harness can persist the
+    REPLACEMENT (reorder vs the old observational persist-then-emit path).
 
     The loop emits ``message_end`` for both the user prompt
-    (``loop.py:89``) and the assistant reply (``loop.py:279``). Each one
-    must land in the session BEFORE the corresponding hook fires.
+    (``loop.py``) and the assistant reply. The hook (a reducer) runs first,
+    so at the moment each handler fires the CURRENT entry has NOT yet been
+    persisted: the user-prompt handler sees 0 entries, and the assistant
+    handler sees 1 (the user prompt, already persisted in its own emit cycle).
     """
 
     session = Session(MemorySessionStorage())
@@ -63,9 +71,13 @@ async def test_message_end_appends_to_session_before_emit() -> None:
     h.hooks.on("message_end", hook)  # type: ignore[arg-type]
     await h.prompt("hi")
 
-    # Two message_end events fire (user + assistant); the session has the
-    # corresponding entry persisted at each emit moment.
-    assert observed_session_entry_count_at_emit == [1, 2]
+    # Two message_end events fire (user + assistant). The reduction runs
+    # BEFORE the persist, so the current message is not yet appended when its
+    # handler fires.
+    assert observed_session_entry_count_at_emit == [0, 1]
+    # Final persisted state: both messages landed.
+    entries = await session.get_entries()
+    assert len(entries) == 2
 
 
 async def test_message_end_does_not_break_without_session() -> None:

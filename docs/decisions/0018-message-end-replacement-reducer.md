@@ -1,7 +1,7 @@
 # 0018. message_end Replacement Reducer (Pi parity)
 
-Status: Deprecated — superseded by Sprint 3b P-3 verdict; Pi has no message_end reducer at SHA 734e08e
-Supersedes: ADR-0013 (now amended — message_end remains observational)
+Status: Superseded by ADR-0145 — the "Pi has no message_end reducer at SHA 734e08e" deprecation was a LAYER MIX-UP (the reducer lives in pi's extension-runner layer `runner.ts:714`, which aelix mirrors). ADR-0145 (P0 #7 Wave 3) implements this reducer's intent.
+Supersedes: ADR-0013
 
 ## Context
 

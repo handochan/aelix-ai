@@ -301,6 +301,28 @@ ToolResultPatch = AfterToolCallResult
 
 
 @dataclass(frozen=True)
+class MessageEndEventResult:
+    """Result of a ``message_end`` handler (P0 #7 Wave 3, ADR-0145).
+
+    pi parity: ``MessageEndEventResult { message?: AgentMessage }``
+    (``runner.ts``/``types.ts``; jsdoc: "Replace the finalized message. The
+    replacement must keep the original message role.").
+
+    ``message`` (when not ``None``) REPLACES the finalized message for the rest
+    of the run — it is persisted (when a session is attached), flows into
+    ``_state.messages`` via the loop return, and the next handler in the chain
+    sees it. ``message=None`` (or returning a bare ``None``) means "no
+    replacement"; the original message is kept.
+
+    The replacement MUST keep the original message's ``role``. A role mismatch
+    is logged as a warning and SKIPPED (aelix equivalent of pi's ``emitError``;
+    aelix does NOT raise) — see :func:`_reducer_message_end`.
+    """
+
+    message: AgentMessage | None = None
+
+
+@dataclass(frozen=True)
 class BeforeProviderRequestResult:
     """Pi parity: ``types.ts`` ``BeforeProviderRequestResult``.
 
@@ -424,8 +446,11 @@ class ToolResultHookEvent(HookEvent):
 class MessageEndHookEvent(HookEvent):
     """Emitted at the end of every message (user, assistant, tool result).
 
-    Observational only in Phase 1.2 — replacement reducer is deferred to
-    ADR-0018 (Sprint 3b). Sprint 3a leaves this unchanged per spec §H.
+    P0 #7 Wave 3 (ADR-0145, supersedes ADR-0013 + ADR-0018): handlers may
+    return a :class:`MessageEndEventResult` to REPLACE the finalized message
+    (same role required). The replacement is persisted (when a session is
+    attached) and flows into agent state for the next turn. Returning ``None``
+    keeps the original message (purely observational).
     """
 
     message: AgentMessage | None = None
@@ -1165,7 +1190,10 @@ HOOK_RESULT_TYPES: dict[HookEventName, type | None] = {
     "before_agent_start": BeforeAgentStartResult,
     "tool_call": ToolCallResult,
     "tool_result": ToolResultPatch,
-    "message_end": None,
+    # P0 #7 Wave 3 (ADR-0145): message_end is now a replacement reducer
+    # (reverts ADR-0018's "observational only" — a layer mix-up; pi DOES
+    # implement this in its extension-runner layer, which aelix mirrors).
+    "message_end": MessageEndEventResult,
     "agent_start": None,
     "agent_end": None,
     "turn_start": None,
@@ -1374,6 +1402,54 @@ async def _reducer_tool_result(
             ),
         )
     return accumulated
+
+
+async def _reducer_message_end(
+    handlers: list[HandlerEntry],
+    event: MessageEndHookEvent,
+    ctx: ExtensionContext,
+) -> AgentMessage | None:
+    """Sequential replacement reducer for ``message_end`` (P0 #7 Wave 3, ADR-0145).
+
+    Verbatim pi parity (``runner.ts:714`` ``emitMessageEnd``): each handler may
+    return a :class:`MessageEndEventResult` whose ``message`` REPLACES the
+    finalized message. The chain is sequential — handler ``N`` sees handler
+    ``N-1``'s replacement (the event's ``message`` is rebuilt each iteration,
+    matching pi's ``{ ...event, message: currentMessage }``).
+
+    A replacement MUST keep the original message's ``role``. A role mismatch is
+    logged as a WARNING and SKIPPED — the aelix equivalent of pi's
+    ``emitError`` (pi emits an error event; aelix logs and continues). It is NOT
+    an exception: a faulty handler must not break the lifecycle.
+
+    Returns the replaced :class:`AgentMessage` if any handler modified it, else
+    ``None`` (pi ``undefined`` = "no replacement"). The harness uses ``is`` /
+    ``None`` to detect a real replacement (``AgentMessage`` is a frozen
+    dataclass, so the swap is identity-based, never in-place mutation).
+    """
+
+    current = event.message
+    modified = False
+    for handler, mode in handlers:
+        # Rebuild the event so the next handler in the chain sees the prior
+        # replacement (pi ``{ ...event, message: currentMessage }``).
+        chained = MessageEndHookEvent(message=current)
+        raw = await _safe_invoke(handler, chained, ctx, mode)
+        if not isinstance(raw, MessageEndEventResult) or raw.message is None:
+            continue
+        if current is not None and raw.message.role != current.role:
+            # pi emits an error event here; aelix logs a warning + skips.
+            _log.warning(
+                "message_end handler returned a message with role %r "
+                "(expected %r); skipping the replacement. "
+                "message_end handlers must return a message with the same role.",
+                raw.message.role,
+                current.role,
+            )
+            continue
+        current = raw.message
+        modified = True
+    return current if modified else None
 
 
 async def _reducer_session_before(
@@ -1700,7 +1776,8 @@ _REDUCERS: dict[HookEventName, Callable[..., Awaitable[Any]]] = {
     "tool_call": _reducer_tool_call,
     "tool_result": _reducer_tool_result,
     "session_before_compact": _reducer_session_before,
-    "message_end": _reducer_observational,
+    # P0 #7 Wave 3 (ADR-0145): replacement reducer (reverts ADR-0018).
+    "message_end": _reducer_message_end,
     "agent_start": _reducer_observational,
     "agent_end": _reducer_observational,
     "turn_start": _reducer_observational,
@@ -1757,7 +1834,9 @@ ToolResultHandler = Callable[
 ]
 MessageEndHandler = Callable[
     [MessageEndHookEvent, "ExtensionContext"],
-    None | Awaitable[None],
+    # P0 #7 Wave 3 (ADR-0145): may return a MessageEndEventResult to REPLACE
+    # the finalized message (same role required), or None for "no replacement".
+    MessageEndEventResult | None | Awaitable[MessageEndEventResult | None],
 ]
 AgentStartHandler = Callable[
     [AgentStartHookEvent, "ExtensionContext"],
@@ -2471,6 +2550,7 @@ __all__ = [
     "InputTransform",
     "LsToolCallHookEvent",
     "LsToolResultHookEvent",
+    "MessageEndEventResult",
     "MessageEndHandler",
     "MessageEndHookEvent",
     "MessageStartHandler",

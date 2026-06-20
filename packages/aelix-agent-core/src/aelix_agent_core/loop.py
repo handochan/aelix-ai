@@ -27,7 +27,7 @@ import inspect
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, replace
-from typing import Any
+from typing import Any, TypeGuard
 
 from aelix_ai.messages import (
     AssistantMessage,
@@ -61,7 +61,36 @@ from aelix_agent_core.types import (
     TurnStartEvent,
 )
 
-AgentEventSink = Callable[[AgentEvent], Awaitable[None]]
+# P0 #7 Wave 3 (ADR-0145): the sink may return a replacement ``AgentMessage``
+# for ``message_end`` events (the message_end replacement reducer; pi
+# ``emitMessageEnd`` returns the replaced message). For every other event the
+# sink returns ``None``. The loop only inspects the return at the two
+# ``message_end`` emit sites in :func:`_stream_assistant_response`; all other
+# ``await emit(...)`` callers ignore it.
+AgentEventSink = Callable[[AgentEvent], Awaitable[AgentMessage | None]]
+
+
+def _is_replacement(
+    replacement: AgentMessage | None, original: AgentMessage
+) -> TypeGuard[AgentMessage]:
+    """True when ``message_end`` returned a real, applicable replacement.
+
+    P0 #7 Wave 3 (ADR-0145): the sink returns ``None`` (no replacement) or a
+    replacement :class:`AgentMessage`. ``_reducer_message_end`` already enforces
+    the pi same-role invariant (``runner.ts:714`` — a role mismatch is logged +
+    skipped, never returned), so this loop-side guard is defense-in-depth: it
+    rejects ``None``, the identity no-op (frozen dataclass — ``is``-based swap),
+    and any handler that somehow violated the role contract. Applies the swap at
+    EVERY persisting ``message_end`` site (prompt, follow-up, tool-result, and
+    the two assistant sites) so a replacement is never silently dropped — pi's
+    ``_replaceMessageInPlace`` mutates in place at every message_end event.
+    """
+
+    return (
+        replacement is not None
+        and replacement is not original
+        and replacement.role == original.role
+    )
 
 
 async def agent_loop(
@@ -84,9 +113,25 @@ async def agent_loop(
 
     await emit(AgentStartEvent())
     await emit(TurnStartEvent())
-    for prompt in prompts:
+    # P0 #7 Wave 3 (ADR-0145): the prompt objects live in BOTH ``new_messages``
+    # (``list(prompts)``) and ``current_context.messages`` (``[*context.messages,
+    # *prompts]``). A ``message_end`` replacement here (pi
+    # ``_replaceMessageInPlace`` applies at EVERY message_end) must propagate to
+    # both — frozen-dataclass identity swap, same pattern as the assistant
+    # sites. Index ``i`` in the enumeration maps to ``new_messages[i]`` and to
+    # ``current_context.messages[len(context.messages) + i]``.
+    base = len(context.messages)
+    for i, prompt in enumerate(prompts):
         await emit(MessageStartEvent(message=prompt))
-        await emit(MessageEndEvent(message=prompt))
+        replacement = await emit(MessageEndEvent(message=prompt))
+        if _is_replacement(replacement, prompt):
+            new_messages[i] = replacement
+            ctx_index = base + i
+            if (
+                0 <= ctx_index < len(current_context.messages)
+                and current_context.messages[ctx_index] is prompt
+            ):
+                current_context.messages[ctx_index] = replacement
 
     await _run_loop(current_context, new_messages, config, signal, emit, stream_fn)
     return new_messages
@@ -148,7 +193,15 @@ async def _run_loop(
             if pending_messages:
                 for msg in pending_messages:
                     await emit(MessageStartEvent(message=msg))
-                    await emit(MessageEndEvent(message=msg))
+                    # P0 #7 Wave 3 (ADR-0145): apply a ``message_end``
+                    # replacement to the steering/follow-up message BEFORE it is
+                    # appended, so the REPLACEMENT (not the original) lands in
+                    # both ``current_context.messages`` and ``new_messages`` →
+                    # persisted via ``_state.messages``. pi applies
+                    # ``_replaceMessageInPlace`` at every message_end event.
+                    replacement = await emit(MessageEndEvent(message=msg))
+                    if _is_replacement(replacement, msg):
+                        msg = replacement
                     current_context.messages.append(msg)
                     new_messages.append(msg)
                 pending_messages = []
@@ -301,7 +354,25 @@ async def _stream_assistant_response(
                 context.messages[partial_index] = final
             elif partial is None:
                 context.messages.append(final)
-            await emit(MessageEndEvent(message=final))
+            # P0 #7 Wave 3 (ADR-0145): the sink returns a replacement message
+            # from the ``message_end`` reducer (same role) or ``None``. Swap by
+            # identity (``AgentMessage`` is a frozen dataclass) so the
+            # replacement propagates to ``context.messages``, the loop return
+            # (``final`` → ``new_messages``), and thus ``_state.messages``. The
+            # reducer enforces same-role, so the replacement of an assistant
+            # ``message_end`` is always an ``AssistantMessage``; the
+            # ``isinstance`` guard makes that invariant explicit (and is a
+            # defense-in-depth no-op if a non-assistant somehow slips through).
+            replacement = await emit(MessageEndEvent(message=final))
+            if (
+                isinstance(replacement, AssistantMessage)
+                and replacement is not final
+            ):
+                if partial_index is not None:
+                    context.messages[partial_index] = replacement
+                elif context.messages and context.messages[-1] is final:
+                    context.messages[-1] = replacement
+                final = replacement
         elif event.type == "error":
             # Sprint 6a (ADR-0037): Pi ``AssistantErrorEvent`` carries the
             # in-flight assistant message in ``error`` with ``stop_reason``
@@ -313,7 +384,21 @@ async def _stream_assistant_response(
                 context.messages[partial_index] = final
             elif partial is None:
                 context.messages.append(final)
-            await emit(MessageEndEvent(message=final))
+            # P0 #7 Wave 3 (ADR-0145): identity-swap the replacement (if any)
+            # — same as the ``done`` branch. An error/abort message has no
+            # extension to replace it in practice, but the path must tolerate
+            # (and apply) the new return without crashing. Same-role guard via
+            # ``isinstance`` (an error ``final`` is also an ``AssistantMessage``).
+            replacement = await emit(MessageEndEvent(message=final))
+            if (
+                isinstance(replacement, AssistantMessage)
+                and replacement is not final
+            ):
+                if partial_index is not None:
+                    context.messages[partial_index] = replacement
+                elif context.messages and context.messages[-1] is final:
+                    context.messages[-1] = replacement
+                final = replacement
 
     if final is None:
         raise RuntimeError(
@@ -618,7 +703,7 @@ async def _execute_tool_calls_sequential(
                     is_error=prepared.result.is_error,
                 )
             )
-            await _emit_tool_result_message(msg, emit)
+            msg = await _emit_tool_result_message(msg, emit)
             result_messages.append(msg)
             all_terminate = False
             continue
@@ -643,7 +728,7 @@ async def _execute_tool_calls_sequential(
                 is_error=result.is_error,
             )
         )
-        await _emit_tool_result_message(msg, emit)
+        msg = await _emit_tool_result_message(msg, emit)
         result_messages.append(msg)
 
     return _ExecutedBatch(result_messages, all_terminate)
@@ -764,7 +849,17 @@ async def _execute_tool_calls_parallel(
         msg = _to_tool_result_message(
             finalized.tool_call.tool_call_id, finalized.result
         )
-        await _emit_tool_result_message(msg, emit)
+        # P0 #7 Wave 3 (ADR-0145): CAPTURE the (possibly-replaced) message —
+        # mirror the two sequential sites (lines 706/731). ``_emit_tool_result_message``
+        # RETURNS the swapped ``ToolResultMessage``; discarding it here (the prior
+        # ``await _emit_tool_result_message(msg, emit)`` form) silently dropped a
+        # tool-result ``message_end`` replacement on the DEFAULT parallel path —
+        # the replacement got persisted to the session but never reached
+        # ``result_messages`` → ``new_messages`` → ``_state.messages``, diverging
+        # the in-memory agent state from the session and feeding the LLM the
+        # unredacted original next turn. The helper guards role/identity via
+        # ``_is_replacement`` + ``isinstance(ToolResultMessage)``.
+        msg = await _emit_tool_result_message(msg, emit)
         result_messages.append(msg)
         if not finalized.result.terminate:
             all_terminate = False
@@ -786,7 +881,7 @@ def _to_tool_result_message(tool_call_id: str, result: ToolResult) -> ToolResult
 
 async def _emit_tool_result_message(
     msg: ToolResultMessage, emit: AgentEventSink
-) -> None:
+) -> ToolResultMessage:
     """Emit ``message_start`` + ``message_end`` for a tool-result message.
 
     Pi parity: ``emitToolResultMessage`` (``agent-loop.ts:715-718``). Both
@@ -795,10 +890,24 @@ async def _emit_tool_result_message(
     source-order loop both call this helper; ``_run_loop`` does NOT emit
     message events for tool-result messages so this helper is the only
     site, mirroring Pi where ``runLoop`` defers to ``emitToolResultMessage``.
+
+    P0 #7 Wave 3 (ADR-0145): ``message_end`` is a replacement reducer. pi
+    applies ``_replaceMessageInPlace`` at EVERY message_end event, including
+    tool-result messages, so a handler that rewrites/redacts a tool result
+    takes effect. This helper RETURNS the (possibly-replaced) message; the
+    caller swaps the object it appends to its batch list so the replacement
+    flows into ``new_messages`` → persisted ``_state.messages``. ``role`` is
+    enforced same by the reducer (``tool_result``); the loop-side
+    :func:`_is_replacement` guard is defense-in-depth.
     """
 
     await emit(MessageStartEvent(message=msg))
-    await emit(MessageEndEvent(message=msg))
+    replacement = await emit(MessageEndEvent(message=msg))
+    if _is_replacement(replacement, msg) and isinstance(
+        replacement, ToolResultMessage
+    ):
+        return replacement
+    return msg
 
 
 def _apply_after_override(
