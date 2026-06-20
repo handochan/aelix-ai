@@ -731,6 +731,12 @@ class AgentHarness:
         # can signal an in-flight ``asyncio.sleep`` to cancel mid-backoff.
         self._retry_attempt: int = 0
         self._retry_abort_event: asyncio.Event | None = None
+        # Sprint 3 cooperative-abort: registry of in-flight bash AbortSignals.
+        # Typed ``Any`` to avoid an import cycle (``_abort`` lives in the
+        # coding-agent package; harness is in agent-core).  Each entry is an
+        # ``AbortSignal`` instance registered by the RPC bash handler before the
+        # exec starts and unregistered in its ``finally`` block.
+        self._active_bash_signals: set[Any] = set()
 
     # === Sprint 6h₇c (Phase 5a-iii-γ, ADR-0093 §D, P-450) ===
     # Pi parity (partial): the tool-merge step of
@@ -1297,6 +1303,11 @@ class AgentHarness:
         turn_task = self._current_turn_task
         if turn_task is not None and not turn_task.done():
             turn_task.cancel()
+        # Sprint 3 Lane B — fire all registered bash AbortSignals so that an
+        # in-flight bash subprocess is killed by Esc, not just the Python task.
+        # Mirrors abort_bash() which fires the same set via the RPC path.
+        for sig in list(self._active_bash_signals):
+            sig.abort()
         # Sprint 3d (P-10) — emit dedicated abort lifecycle event with the
         # cleared-queue snapshots. Closes the last Phase 2.1 emit-site gap.
         try:
@@ -2003,17 +2014,42 @@ class AgentHarness:
         if self._retry_abort_event is not None:
             self._retry_abort_event.set()
 
+    def register_bash_signal(self, sig: Any) -> None:
+        """Register an in-flight :class:`~aelix_coding_agent.tools._abort.AbortSignal`.
+
+        Sprint 3 cooperative-abort: called by the RPC bash handler
+        (:func:`~aelix_coding_agent.rpc.rpc_mode._handle_bash`) **before**
+        ``ops.exec`` is awaited so that :meth:`abort_bash` can reach the
+        signal regardless of which asyncio task is running.
+        """
+
+        self._active_bash_signals.add(sig)
+
+    def unregister_bash_signal(self, sig: Any) -> None:
+        """Unregister an :class:`~aelix_coding_agent.tools._abort.AbortSignal`.
+
+        Called in the ``finally`` block of the RPC bash handler so the
+        registry never leaks stale signals after the exec completes.
+        """
+
+        self._active_bash_signals.discard(sig)
+
     def abort_bash(self) -> None:
         """Pi parity: ``session.abortBash``
         (``rpc-mode.ts:544-547`` + ``agent-session.ts:2622-2625``).
 
-        Sprint 6h₂ (P-250): the Sprint 5b bash tool does not yet honor a
-        cancellation token; this setter persists the cancel intent
-        (``_state.bash_aborted=True``) so a future bash hardening sprint
-        can poll the flag. P-4 setter-no-emit.
+        Sprint 6h₂ (P-250) persisted cancel intent via ``_state.bash_aborted``
+        as a future-sprint placeholder.  Sprint 3 cooperative-abort (this
+        sprint) fulfils that promise: in addition to setting the state flag,
+        every :class:`~aelix_coding_agent.tools._abort.AbortSignal` registered
+        via :meth:`register_bash_signal` is fired here, causing the watcher
+        task inside the in-flight RPC bash exec to kill the subprocess group.
+        P-4 setter-no-emit.
         """
 
         self._state.bash_aborted = True
+        for sig in list(self._active_bash_signals):
+            sig.abort()
 
     # === Sprint 6h₃ (ADR-0073) — session inspection methods =================
     # Pi parity: ``session.getSessionStats()``

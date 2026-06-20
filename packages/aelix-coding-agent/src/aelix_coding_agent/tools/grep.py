@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import re
-import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -17,6 +17,7 @@ from aelix_coding_agent.tools._path_utils import (
     relativize_to_posix,
     resolve_to_cwd,
 )
+from aelix_coding_agent.tools._subprocess import run_cancellable
 from aelix_coding_agent.tools._truncate import (
     DEFAULT_MAX_BYTES,
     GREP_MAX_LINE_LENGTH,
@@ -168,7 +169,7 @@ def _relativize_rg_line(
     return line, False
 
 
-def _try_ripgrep(
+async def _try_ripgrep(
     pattern: str,
     base: str,
     *,
@@ -185,6 +186,12 @@ def _try_ripgrep(
     ``rg_path`` is the resolved ripgrep binary (system, cached, or
     auto-downloaded) supplied by :func:`ensure_tool` — guaranteeing rg's
     default ``.gitignore`` respect (Pi parity).
+
+    Uses :func:`~aelix_coding_agent.tools._subprocess.run_cancellable` instead
+    of the blocking ``subprocess.run`` so the asyncio event loop stays free
+    during the rg call.  This allows ``harness.abort()`` / Esc to deliver
+    ``CancelledError`` mid-scan and kill the rg child process immediately,
+    rather than waiting for rg to finish before the cancellation is noticed.
     """
 
     rg = rg_path
@@ -204,13 +211,11 @@ def _try_ripgrep(
     if glob:
         cmd.extend(["-g", glob])
     cmd.extend([pattern, base])
-    try:
-        proc = subprocess.run(  # noqa: S603
-            cmd, capture_output=True, text=True, timeout=30, check=False
-        )
-    except (FileNotFoundError, subprocess.TimeoutExpired):
+    result = await run_cancellable(cmd, timeout=30)
+    if result is None:
         return None
-    raw_lines = proc.stdout.splitlines()
+    stdout, _rc = result
+    raw_lines = stdout.splitlines()
     # Pi parity: the limit is a MATCH-count cap (pi increments ``matchCount``
     # once per ``--json`` match event), NOT a raw-line cap. With ``-C`` rg
     # interleaves context lines and ``--`` separators, so counting raw lines
@@ -354,7 +359,7 @@ def create_grep_tool(
         # to the pure-Python scanner instead of erroring like Pi does.
         rg_path = await ensure_tool("rg")
         rg_result = (
-            _try_ripgrep(
+            await _try_ripgrep(
                 pattern,
                 base,
                 rg_path=rg_path,
@@ -371,7 +376,13 @@ def create_grep_tool(
         if rg_result is not None:
             raw_output, limit_reached, lines_truncated = rg_result
         else:
-            raw_output, limit_reached, lines_truncated = _python_grep(
+            # The rg path is now non-blocking (run_cancellable); the pure-Python
+            # fallback runs an rglob walk in a thread so the event loop is not
+            # frozen on the offline/rg-absent path either.  Note: the threaded
+            # rglob is not mid-scan interruptible (CancelledError arrives only
+            # after the thread returns), but this path is rare (offline + rg absent).
+            raw_output, limit_reached, lines_truncated = await asyncio.to_thread(
+                _python_grep,
                 pattern,
                 base,
                 glob=glob_for_python,

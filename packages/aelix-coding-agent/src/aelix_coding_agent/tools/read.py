@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import os
 from dataclasses import dataclass
@@ -66,10 +67,10 @@ class ReadOperations(Protocol):
 
 class _LocalReadOperations:
     async def read_file(self, path: str) -> bytes:
-        return Path(path).read_bytes()
+        return await asyncio.to_thread(Path(path).read_bytes)
 
     async def access(self, path: str) -> bool:
-        return os.access(path, os.R_OK)
+        return await asyncio.to_thread(os.access, path, os.R_OK)
 
     async def detect_image_mime_type(self, path: str) -> str | None:
         # Pi parity: magic-byte sniff (``detectSupportedImageMimeTypeFromFile``),
@@ -119,7 +120,7 @@ def create_read_tool(cwd: str, options: dict | None = None) -> AgentTool:
                 content=[TextContent(text=f"read: cannot access {path!r}")],
                 is_error=True,
             )
-        if not Path(path).is_file():
+        if not await asyncio.to_thread(Path(path).is_file):
             return ToolResult(
                 content=[TextContent(text=f"read: {path!r} is not a file")],
                 is_error=True,

@@ -31,7 +31,10 @@ def _no_fd(monkeypatch):
 
     import aelix_coding_agent.tools.find as find_mod
 
-    monkeypatch.setattr(find_mod, "_try_fd", lambda *a, **k: None)
+    async def _disabled(*a, **k):
+        return None
+
+    monkeypatch.setattr(find_mod, "_try_fd", _disabled)
 
 
 async def test_find_returns_matches(tmp_path):
@@ -222,22 +225,20 @@ async def test_find_fd_path_relativizes(tmp_path, monkeypatch):
     gitignore-respect flag ``--no-require-git`` is passed and absolute fd output
     is relativized to the search dir (mirrors grep's rg lock-in test)."""
 
-    import subprocess as _sp
-
     from aelix_coding_agent.tools import find as _find_mod
 
     (tmp_path / "src").mkdir()
     captured: dict = {}
 
-    def _fake_run(cmd, **_kw):
+    async def _fake_run_cancellable(cmd, **_kw):
         captured["cmd"] = cmd
         out = f"{tmp_path}/src/app.py\n{tmp_path}/src/util.py\n"
-        return _sp.CompletedProcess(cmd, 0, stdout=out, stderr="")
+        return (out, 0)
 
     async def _fd(_tool, silent=True):
         return "/fake/fd"
 
-    monkeypatch.setattr(_find_mod.subprocess, "run", _fake_run)
+    monkeypatch.setattr(_find_mod, "run_cancellable", _fake_run_cancellable)
     monkeypatch.setattr(_find_mod, "ensure_tool", _fd)
     tool = create_find_tool(str(tmp_path))
     result = await _exec(tool, {"pattern": "*.py"})
@@ -251,19 +252,17 @@ async def test_find_fd_exact_limit_not_truncated(tmp_path, monkeypatch):
     """fd path: a result set exactly equal to ``limit`` is NOT flagged truncated
     (W4 MAJOR-3 overflow-vs-exact boundary), only strictly-over is."""
 
-    import subprocess as _sp
-
     from aelix_coding_agent.tools import find as _find_mod
 
     # fd is invoked with --max-results limit+1; emit exactly `limit` (2) lines.
-    def _fake_run(cmd, **_kw):
+    async def _fake_run_cancellable(cmd, **_kw):
         out = f"{tmp_path}/a.py\n{tmp_path}/b.py\n"
-        return _sp.CompletedProcess(cmd, 0, stdout=out, stderr="")
+        return (out, 0)
 
     async def _fd(_tool, silent=True):
         return "/fake/fd"
 
-    monkeypatch.setattr(_find_mod.subprocess, "run", _fake_run)
+    monkeypatch.setattr(_find_mod, "run_cancellable", _fake_run_cancellable)
     monkeypatch.setattr(_find_mod, "ensure_tool", _fd)
     tool = create_find_tool(str(tmp_path))
     result = await _exec(tool, {"pattern": "*.py", "limit": 2})

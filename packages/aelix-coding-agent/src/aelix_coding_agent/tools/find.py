@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
-import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -16,6 +16,7 @@ from aelix_coding_agent.tools._path_utils import (
     relativize_to_posix,
     resolve_to_cwd,
 )
+from aelix_coding_agent.tools._subprocess import run_cancellable
 from aelix_coding_agent.tools._truncate import (
     DEFAULT_MAX_BYTES,
     format_size,
@@ -49,7 +50,16 @@ class _LocalFindOperations:
         return Path(path).exists()
 
     async def glob(self, base: str, pattern: str) -> list[str]:
-        return [str(p) for p in Path(base).rglob(pattern) if p.is_file()]
+        # Run the blocking rglob walk in a thread so the event loop is not
+        # frozen while scanning the filesystem on the offline/fd-absent path.
+        # Note: unlike the fd path (run_cancellable), a cancelled task only
+        # interrupts at the next await after the thread returns — the rglob
+        # itself cannot be preempted mid-scan.  This is acceptable because the
+        # offline fallback is rare (fd absent + no network).
+        def _walk() -> list[str]:
+            return [str(p) for p in Path(base).rglob(pattern) if p.is_file()]
+
+        return await asyncio.to_thread(_walk)
 
 
 # Pi parity: ``createFindToolDefinition`` (``find.ts``) parameter schema +
@@ -77,7 +87,7 @@ _FIND_PARAMETERS_SCHEMA: dict[str, Any] = {
 }
 
 
-def _try_fd(
+async def _try_fd(
     pattern: str, base: str, limit: int, *, fd_path: str
 ) -> tuple[list[str], bool] | None:
     """Run ``fd`` Pi-faithfully; return (raw_lines, limit_reached) or None.
@@ -95,6 +105,12 @@ def _try_fd(
     (overflow) and only flag the strictly-over case as truncated. ``limit``
     of 0 is preserved verbatim (requests 1 raw line; overflow if any match).
     Returns the lines sliced back to ``limit``.
+
+    Uses :func:`~aelix_coding_agent.tools._subprocess.run_cancellable` instead
+    of the blocking ``subprocess.run`` so the asyncio event loop stays free
+    during the fd call.  This allows ``harness.abort()`` / Esc to deliver
+    ``CancelledError`` mid-scan and kill the fd child process immediately,
+    rather than waiting for fd to finish before the cancellation is noticed.
     """
 
     fd = fd_path
@@ -124,17 +140,11 @@ def _try_fd(
             effective_pattern = f"**/{pattern}"
     args += ["--", effective_pattern, base]
 
-    try:
-        proc = subprocess.run(  # noqa: S603
-            args,
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
-        )
-    except (FileNotFoundError, subprocess.TimeoutExpired):
+    result = await run_cancellable(args, timeout=30)
+    if result is None:
         return None
-    raw_lines = proc.stdout.splitlines()
+    stdout, _rc = result
+    raw_lines = stdout.splitlines()
     limit_reached = len(raw_lines) > limit
     return raw_lines[:limit], limit_reached
 
@@ -201,7 +211,7 @@ def create_find_tool(
         # only strictly more than ``limit`` is.
         fd_path = await ensure_tool("fd")
         fd_result = (
-            _try_fd(pattern, base, limit, fd_path=fd_path)
+            await _try_fd(pattern, base, limit, fd_path=fd_path)
             if fd_path is not None
             else None
         )

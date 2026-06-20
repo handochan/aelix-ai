@@ -484,33 +484,38 @@ async def _handle_bash(
     model-issued tool call.
     """
 
+    from aelix_coding_agent.tools._abort import AbortSignal
     from aelix_coding_agent.tools._truncate import truncate_tail
     from aelix_coding_agent.tools.bash import create_local_bash_operations
 
     ops = create_local_bash_operations()
     cwd = harness._options.cwd or "."
     chunks: list[bytes] = []
-    exit_result = await ops.exec(
-        cmd.command,
-        cwd,
-        on_data=chunks.append,
-        signal=None,
-    )
+    sig = AbortSignal()
+    harness.register_bash_signal(sig)
+    try:
+        exit_result = await ops.exec(
+            cmd.command,
+            cwd,
+            on_data=chunks.append,
+            signal=sig,
+        )
+    finally:
+        harness.unregister_bash_signal(sig)
     raw = b"".join(chunks).decode("utf-8", errors="replace")
     body, info = truncate_tail(raw, max_lines=256, max_bytes=32 * 1024)
-    # P-115 BLOCKING: Pi ``BashResult`` shape (Pi
-    # ``coding-agent/core/bash-executor.ts:29-40``):
+    # Pi ``BashResult`` shape (Pi ``coding-agent/core/bash-executor.ts:29-40``):
     #   ``{output: string, exitCode: number | undefined,
     #     cancelled: boolean, truncated: boolean,
     #     fullOutputPath?: string}``
-    # Sprint 6d has no bash cancellation signal yet (see
-    # ``DEFERRED_COMMANDS["abort_bash"]`` → ADR-0058 Sprint 6f), so
-    # ``cancelled`` is always False. ``fullOutputPath`` is omitted when
-    # the local executor produced no spill file.
+    # Sprint 3 cooperative-abort: ``cancelled`` now reflects whether the
+    # in-flight exec was aborted via :meth:`AgentHarness.abort_bash` (which
+    # fires ``sig.abort()``).  ``fullOutputPath`` is omitted when the local
+    # executor produced no spill file.
     data: dict[str, Any] = {
         "output": body,
         "exitCode": exit_result.exit_code,
-        "cancelled": False,
+        "cancelled": sig.aborted,
         "truncated": bool(info.truncated) if info else False,
     }
     full_path = getattr(info, "full_output_path", None) if info else None

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -24,10 +25,10 @@ class WriteOperations(Protocol):
 
 class _LocalWriteOperations:
     async def write_file(self, path: str, data: bytes) -> None:
-        Path(path).write_bytes(data)
+        await asyncio.to_thread(Path(path).write_bytes, data)
 
     async def mkdir(self, path: str) -> None:
-        Path(path).mkdir(parents=True, exist_ok=True)
+        await asyncio.to_thread(Path(path).mkdir, parents=True, exist_ok=True)
 
 
 # Pi parity: ``createWriteToolDefinition`` (``write.ts``) parameter schema +

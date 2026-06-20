@@ -8,6 +8,7 @@ remote execution (e.g. SSH) — local default via
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import secrets
 import shutil
@@ -157,11 +158,45 @@ class _LocalBashOperations:
                 _kill_group(proc.pid)
                 return None
 
+        # Track whether the abort signal (not timeout) triggered a kill so we
+        # can return exit_code=None parity with the timeout-kill path.
+        _signal_aborted = False
+
+        async def _watch_signal() -> None:
+            """Kill the process group when the abort signal fires."""
+            nonlocal _signal_aborted
+            assert signal is not None  # watcher only started when signal is set
+            await signal.wait()
+            _signal_aborted = True
+            _kill_group(proc.pid)
+
         drain_task = asyncio.create_task(_drain())
+        watcher_task: asyncio.Task[None] | None = None
+        if signal is not None and hasattr(signal, "wait"):
+            watcher_task = asyncio.create_task(_watch_signal())
         try:
-            exit_code = await _wait()
+            try:
+                exit_code = await _wait()
+            except asyncio.CancelledError:
+                # Esc-path: the harness cancelled our turn task.  Kill
+                # the child group so it does not become an orphan, then
+                # re-raise after the finally drain so the caller sees the
+                # cancellation.
+                _kill_group(proc.pid)
+                exit_code = None
+                raise
         finally:
+            if watcher_task is not None:
+                watcher_task.cancel()
+                # Swallow the watcher's own cancellation (and any teardown
+                # error) — the outer turn cancellation is captured and
+                # re-raised at the ``except asyncio.CancelledError`` above.
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await watcher_task
             await drain_task
+        # Pi parity: signal-kill and timeout-kill both report exit_code=None.
+        if _signal_aborted:
+            exit_code = None
         return ExecExitResult(exit_code=exit_code)
 
 

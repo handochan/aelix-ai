@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import errno
 import os
 from dataclasses import dataclass
@@ -47,13 +48,13 @@ class EditOperations(Protocol):
 
 class _LocalEditOperations:
     async def read_file(self, path: str) -> bytes:
-        return Path(path).read_bytes()
+        return await asyncio.to_thread(Path(path).read_bytes)
 
     async def write_file(self, path: str, data: bytes) -> None:
-        Path(path).write_bytes(data)
+        await asyncio.to_thread(Path(path).write_bytes, data)
 
     async def access(self, path: str) -> bool:
-        return os.access(path, os.R_OK | os.W_OK)
+        return await asyncio.to_thread(os.access, path, os.R_OK | os.W_OK)
 
 
 # Pi parity: ``createEditToolDefinition`` (``edit.ts``) parameter schema —

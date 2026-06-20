@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -39,13 +40,13 @@ class LsOperations(Protocol):
 
 class _LocalLsOperations:
     async def exists(self, path: str) -> bool:
-        return Path(path).exists()
+        return await asyncio.to_thread(Path(path).exists)
 
     async def stat(self, path: str) -> Any:
-        return Path(path).stat()
+        return await asyncio.to_thread(Path(path).stat)
 
     async def readdir(self, path: str) -> list[str]:
-        return [p.name for p in Path(path).iterdir()]
+        return await asyncio.to_thread(lambda: [p.name for p in Path(path).iterdir()])
 
 
 # Pi parity: ``createLsToolDefinition`` (``ls.ts``) parameter schema +
@@ -114,7 +115,7 @@ def create_ls_tool(
                 break
             sub = base_p / name
             try:
-                is_dir = sub.is_dir()
+                is_dir = await asyncio.to_thread(sub.is_dir)
             except OSError:
                 # Skip entries we cannot stat.
                 continue

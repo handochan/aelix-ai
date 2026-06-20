@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 from aelix_ai.tools import ToolExecutionContext
 from aelix_coding_agent.tools import create_grep_tool
 from aelix_coding_agent.tools.grep import GrepToolDetails
@@ -185,22 +186,20 @@ async def test_grep_no_matches_message(tmp_path):
 
 
 def _stub_rg(monkeypatch, stdout: str, captured: dict | None = None):
-    """Stub the rg subprocess + force ensure_tool to a fake path, so the rg
+    """Stub run_cancellable + force ensure_tool to a fake path, so the rg
     branch of grep runs deterministically without a real ripgrep binary."""
-
-    import subprocess as _sp
 
     from aelix_coding_agent.tools import grep as _grep_mod
 
-    def _fake_run(cmd, **_kw):
+    async def _fake_run_cancellable(cmd, **_kw):
         if captured is not None:
             captured["cmd"] = cmd
-        return _sp.CompletedProcess(cmd, 0, stdout=stdout, stderr="")
+        return (stdout, 0)
 
     async def _rg(_tool, silent=True):
         return "/fake/rg"
 
-    monkeypatch.setattr(_grep_mod.subprocess, "run", _fake_run)
+    monkeypatch.setattr(_grep_mod, "run_cancellable", _fake_run_cancellable)
     monkeypatch.setattr(_grep_mod, "ensure_tool", _rg)
 
 
@@ -266,3 +265,82 @@ async def test_grep_rg_match_count_cap_keeps_all_under_limit(tmp_path, monkeypat
     text = result.content[0].text
     assert "a.txt:2: MATCH one" in text and "b.txt:10: MATCH two" in text
     assert "matches limit reached" not in text
+
+
+# --- Lane B cancellation: _try_ripgrep re-raises CancelledError -------------
+
+
+async def test_grep_try_ripgrep_reraises_cancelled_error(
+    tmp_path, monkeypatch
+) -> None:
+    """CancelledError from run_cancellable propagates OUT of the grep tool.
+
+    Lane B (grep/find cooperative abort): ``_try_ripgrep`` must NOT swallow
+    ``CancelledError`` — it must propagate up through ``tool.execute`` so the
+    harness abort unwinds the whole turn.  This is the end-to-end wiring test
+    (tool surface → run_cancellable → CancelledError).
+    """
+    import asyncio
+
+    from aelix_coding_agent.tools import grep as _grep_mod
+
+    (tmp_path / "a.txt").write_text("hello world\n")
+
+    async def _cancellable_that_raises(*_args, **_kwargs):
+        raise asyncio.CancelledError()
+
+    async def _fake_rg(_tool, silent=True):
+        return "/fake/rg"
+
+    monkeypatch.setattr(_grep_mod, "run_cancellable", _cancellable_that_raises)
+    monkeypatch.setattr(_grep_mod, "ensure_tool", _fake_rg)
+
+    tool = create_grep_tool(str(tmp_path))
+
+    async def _run():
+        return await tool.execute(
+            {"pattern": "hello"}, ToolExecutionContext(tool_call_id="t-cancel")
+        )
+
+    task = asyncio.create_task(_run())
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(asyncio.shield(task), timeout=5.0)
+
+
+# --- Find tool Lane B: _try_fd re-raises CancelledError --------------------
+
+
+async def test_find_try_fd_reraises_cancelled_error(
+    tmp_path, monkeypatch
+) -> None:
+    """CancelledError from run_cancellable propagates OUT of the find tool.
+
+    Lane B (find cooperative abort): ``_try_fd`` must NOT swallow
+    ``CancelledError`` — it must propagate through ``tool.execute``.
+    """
+    import asyncio
+
+    from aelix_coding_agent.tools import create_find_tool
+    from aelix_coding_agent.tools import find as _find_mod
+
+    (tmp_path / "a.txt").write_text("content\n")
+
+    async def _cancellable_that_raises(*_args, **_kwargs):
+        raise asyncio.CancelledError()
+
+    async def _fake_fd(_tool, silent=True):
+        return "/fake/fd"
+
+    monkeypatch.setattr(_find_mod, "run_cancellable", _cancellable_that_raises)
+    monkeypatch.setattr(_find_mod, "ensure_tool", _fake_fd)
+
+    tool = create_find_tool(str(tmp_path))
+
+    async def _run():
+        return await tool.execute(
+            {"pattern": "*.txt"}, ToolExecutionContext(tool_call_id="t-find-cancel")
+        )
+
+    task = asyncio.create_task(_run())
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(asyncio.shield(task), timeout=5.0)
