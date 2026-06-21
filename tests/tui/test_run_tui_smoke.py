@@ -100,6 +100,33 @@ async def _wait(predicate, *, timeout: float = 3.0) -> None:
     raise AssertionError("condition not met within timeout")
 
 
+async def _esc_until_settings_closed(
+    chrome: AelixChrome, pipe: PipeInput, *, tries: int = 6
+) -> None:
+    """Close the looping /settings menu deterministically.
+
+    The driver re-opens ``context.select`` after each applied change (and, for the
+    async delegate rows, only after the action's awaits settle). A single Esc can
+    land in the unmount gap. Send one Esc, then give the driver up to ~0.5s to
+    settle into "closed"; if it re-opened, send another Esc. Crucially we wait for
+    EACH Esc to be processed before sending the next, so we never out-pace the key
+    queue (which previously corrupted the input buffer).
+    """
+
+    for _ in range(tries):
+        if not chrome.is_modal_open():
+            # Confirm it STAYS closed (no pending re-mount) before returning.
+            await asyncio.sleep(0.1)
+            if not chrome.is_modal_open():
+                return
+        pipe.send_text("\x1b")
+        try:
+            await _wait(lambda: not chrome.is_modal_open(), timeout=0.5)
+        except AssertionError:
+            continue  # re-opened mid-Esc; loop sends another
+    raise AssertionError("settings menu did not close")
+
+
 @asynccontextmanager
 async def _harness_chrome(
     *, harness: FakeHarness | None = None
@@ -110,9 +137,20 @@ async def _harness_chrome(
         yield runtime, chrome, pipe
 
 
-def _launch(runtime: FakeRuntime, chrome: AelixChrome) -> asyncio.Task[int]:
+def _launch(
+    runtime: FakeRuntime,
+    chrome: AelixChrome,
+    *,
+    settings_manager: object | None = None,
+) -> asyncio.Task[int]:
     return asyncio.ensure_future(
-        run_tui(runtime, cwd=".", chrome=chrome, install_signal_handlers=False)  # type: ignore[arg-type]
+        run_tui(
+            runtime,  # type: ignore[arg-type]
+            cwd=".",
+            chrome=chrome,
+            install_signal_handlers=False,
+            settings_manager=settings_manager,  # type: ignore[arg-type]
+        )
     )
 
 
@@ -708,35 +746,100 @@ class _SettingsHarness(FakeHarness):
 
 
 async def test_run_tui_settings_toggles_steering_mode() -> None:
-    # Sprint 6h₂₄ — digit shortcuts replaced by arrow nav + Enter. Cursor
-    # starts at idx 0 ("Steering mode"), so a bare Enter picks it.
+    # ImplConsumers (ADR-0161) — /settings is SettingsManager-backed; the
+    # "Steering mode" row dual-writes the live harness AND the persisted
+    # SettingsManager. Type-to-filter "Steering" narrows to the single row, Enter
+    # cycles one-at-a-time → all (chars + Enter sent atomically so the select's
+    # <any> filter handlers drain before the accept).
+    from aelix_ai.settings import SettingsManager
+
+    sm = SettingsManager.in_memory({})
     harness = _SettingsHarness()
     async with _harness_chrome(harness=harness) as (runtime, chrome, pipe):
-        task = _launch(runtime, chrome)
+        task = _launch(runtime, chrome, settings_manager=sm)
         await _wait(lambda: chrome.app.is_running)
         pipe.send_text("/settings\n")
-        await asyncio.sleep(0.15)  # menu render + focus
-        pipe.send_text("\r")  # Enter on default cursor (idx 0 = Steering mode)
-        await _wait(lambda: harness.steer_set == ["all"])
-        pipe.send_text("/quit\n")
+        await _wait(lambda: chrome.is_modal_open())
+        pipe.send_text("Steering\n")  # filter → Enter cycles the row
+        await _wait(lambda: harness.steer_set == ["all"])  # live half
+        await _wait(lambda: sm.get_steering_mode() == "all")  # persisted half
+        # The menu loops (re-opens after each change). Esc until closed (the loop
+        # then fully exits), then terminate via the EOF path the signal handler
+        # uses (typed /quit would land in a re-opened filter and race the unmount).
+        await _esc_until_settings_closed(chrome, pipe)
+        chrome.request_eof()
+        chrome.exit()
         await asyncio.wait_for(task, timeout=5)
-    assert harness.steer_set == ["all"]
+    assert harness.steer_set == ["all"]  # live dual-write
+    assert sm.get_steering_mode() == "all"  # persisted dual-write
 
 
 async def test_run_tui_settings_cycles_thinking_level() -> None:
-    # Sprint 6h₂₄ — "Thinking level" is the 4th option (idx 3); 3× Down +
-    # Enter selects it. Pi-faithful arrow navigation pattern.
+    # ImplConsumers (ADR-0161) — the "Thinking level" row delegates to the
+    # model-aware cycle (live) AND persists the new level as the default. Filter
+    # to "Thinking level" then Enter triggers the delegated action.
+    from aelix_ai.settings import SettingsManager
+
+    sm = SettingsManager.in_memory({})
     harness = _SettingsHarness()
     async with _harness_chrome(harness=harness) as (runtime, chrome, pipe):
-        task = _launch(runtime, chrome)
+        task = _launch(runtime, chrome, settings_manager=sm)
         await _wait(lambda: chrome.app.is_running)
         pipe.send_text("/settings\n")
-        await asyncio.sleep(0.15)
-        pipe.send_text("\x1b[B\x1b[B\x1b[B\r")  # Down × 3 → Enter
-        await _wait(lambda: harness.level_set == ["low"])
+        await _wait(lambda: chrome.is_modal_open())
+        pipe.send_text("Thinking level\n")  # filter → Enter delegates the cycle
+        await _wait(lambda: harness.level_set == ["low"])  # live cycle ran
+        await _wait(lambda: sm.get_default_thinking_level() == "low")  # persisted
+        # The thinking row delegates to an ASYNC action (cycle + flush); the menu
+        # re-opens only after those awaits settle. Esc once the menu is showing
+        # again, then wait for it to close (loop fully exited), then EOF-exit.
+        await _esc_until_settings_closed(chrome, pipe)
+        chrome.request_eof()
+        chrome.exit()
+        await asyncio.wait_for(task, timeout=5)
+    assert harness.level_set == ["low"]  # live half
+    assert sm.get_default_thinking_level() == "low"  # persisted default
+
+
+async def test_run_tui_seeds_theme_from_persisted_setting() -> None:
+    # WP-2 (ADR-0160): the live theme is seeded from the persisted ``theme``
+    # setting at startup so the /settings → Theme choice applies on the NEXT
+    # launch (not only the session that set it). Without the seed the context
+    # starts on DEFAULT_THEME and the persisted theme is write-only.
+    from aelix_ai.settings import SettingsManager
+
+    sm = SettingsManager.in_memory({"theme": "dark"})
+    async with _harness_chrome() as (runtime, chrome, pipe):
+        task = _launch(runtime, chrome, settings_manager=sm)
+        await _wait(lambda: chrome.app.is_running)
+        # The real UI context is bound onto the ext-runtime first (see
+        # test_run_tui_binds_then_unbinds_ui); read its live theme.
+        await _wait(lambda: bool(runtime.harness.runtime.bound))
+        context = runtime.harness.runtime.bound[0]
+        await _wait(lambda: getattr(context._theme, "name", None) == "dark")
         pipe.send_text("/quit\n")
         await asyncio.wait_for(task, timeout=5)
-    assert harness.level_set == ["low"]
+    assert getattr(context._theme, "name", None) == "dark"
+
+
+async def test_run_tui_unknown_persisted_theme_falls_back_to_default() -> None:
+    # A stale/removed theme name in settings must NOT break startup: the seed
+    # is guarded (set_theme no-ops on an unknown name) and the context keeps the
+    # default theme.
+    from aelix_ai.settings import SettingsManager
+    from aelix_coding_agent.tui import themes as _themes
+
+    sm = SettingsManager.in_memory({"theme": "no-such-theme"})
+    async with _harness_chrome() as (runtime, chrome, pipe):
+        task = _launch(runtime, chrome, settings_manager=sm)
+        await _wait(lambda: chrome.app.is_running)
+        await _wait(lambda: bool(runtime.harness.runtime.bound))
+        context = runtime.harness.runtime.bound[0]
+        # Settle so any (no-op) seed attempt has run.
+        await asyncio.sleep(0.05)
+        assert context._theme is _themes.DEFAULT_THEME
+        pipe.send_text("/quit\n")
+        await asyncio.wait_for(task, timeout=5)
 
 
 async def test_run_tui_ctrl_v_pastes_clipboard_image_path_to_editor(

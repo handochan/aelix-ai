@@ -51,6 +51,8 @@ if TYPE_CHECKING:
     from aelix_coding_agent.extensions.ext_ui import AutocompleteProviderFactory
     from aelix_coding_agent.tui.chrome import AelixChrome
     from aelix_coding_agent.tui.footer_data import AelixFooterData
+    from aelix_coding_agent.tui.footer_segments import FooterSegment
+    from aelix_coding_agent.tui.statusline_store import StatuslineStore
 
 _RENDER_WIDTH = 80  # best-effort width for factory-rendered widget lines
 
@@ -109,6 +111,7 @@ class AelixTUIContext:
         permission_badge_provider: Callable[[], str | None] | None = None,
         cwd: str | None = None,
         mode: str = _DEFAULT_STEERING_MODE,
+        statusline_store: StatuslineStore | None = None,
     ) -> None:
         self.chrome = chrome
         self._footer = footer
@@ -131,6 +134,14 @@ class AelixTUIContext:
         # Live context-window usage label (e.g. "◔ 42% · 84k/200k"), refreshed
         # async on turn_end by run_tui; None until the first turn completes.
         self._context_label: str | None = None
+        # WP-2 (ADR-0160) — cached usage scalars for the OPTIONAL token/cost footer
+        # segments. The footer refreshes on invalidate (NOT in an await context) and
+        # get_session_stats is async, so run_tui pushes these via set_usage_stats on
+        # turn_end (same cadence as the context-window label). Stale-between-turns is
+        # acceptable (matches the context% segment).
+        self._usage_input_tokens: int = 0
+        self._usage_output_tokens: int = 0
+        self._usage_cost: float = 0.0
         self._theme: Theme = theme_registry.DEFAULT_THEME
         self._tools_expanded = False
         self._hidden_thinking_label: str | None = None
@@ -141,6 +152,18 @@ class AelixTUIContext:
         self._notify_seq = 0
         self._tui = AelixTUI(self)
         self._kb = AelixKeybindings()
+        # WP-2 (ADR-0160) — the named footer-segment registry. Built once here
+        # (after the providers are assigned) so each segment's produce() closure
+        # reads the LIVE context state. The ADR-0159 rules (permission badge
+        # leading + omit-when-no-provider; steering hidden at default) live INSIDE
+        # the producers, independent of the enabled-set.
+        from aelix_coding_agent.tui.footer_segments import build_footer_registry
+
+        self._segments: list[FooterSegment] = build_footer_registry(self)
+        # The statusline store gates which segments render. None → the registry
+        # default-enabled set (byte-identical to the pre-ADR-0160 footer); a wired
+        # store reads the user's enabled-id set (load() degrades to defaults).
+        self._statusline_store = statusline_store
         self._refresh_footer()
 
     # === Dialogs (5) =======================================================
@@ -279,6 +302,178 @@ class AelixTUIContext:
                 if len(data) == 1 and data.isprintable():
                     state["filter"] += data
                     state["idx"] = 0
+                    self.chrome.invalidate()
+
+            return Window(
+                FormattedTextControl(render, focusable=True, key_bindings=kb),
+                dont_extend_height=True,
+            )
+
+        return await show_modal(self.chrome, build)
+
+    async def multiselect(
+        self,
+        title: str,
+        options: list[tuple[str, str, str]],
+        *,
+        selected: set[str],
+        extra_toggles: list[tuple[str, str]] | None = None,
+        preview: Callable[[set[str], dict[str, bool]], list[str]] | None = None,
+    ) -> tuple[set[str], dict[str, bool]] | None:
+        """WP-2 (ADR-0160) — a multi-checkbox picker (sibling to :meth:`select`).
+
+        Reuses the ``select`` scaffolding (``show_modal`` + arrow-nav +
+        type-to-filter + viewport + ``<any>`` catch-all + Esc/c-c cancel); the
+        only additions are Space=toggle ✓/☐ on the highlight and a live preview
+        line. The shared dependency of ``/scoped-models`` (ImplConsumers) and
+        ``/statusline``.
+
+        :param options: ``(id, label, description)`` rows — ``id`` is the stable
+            key toggled in the returned set; ``description`` is shown under the
+            list for the highlighted row (cosmetic, guarded).
+        :param selected: the initial checked id set (copied; not mutated).
+        :param extra_toggles: optional ``(key, label)`` boolean toggles rendered
+            below the option list (e.g. "Use theme colors"). Returned as the
+            second tuple element.
+        :param preview: optional ``(selected, toggles) -> lines`` callback for a
+            live preview block (e.g. a sample footer). Guarded — a raising
+            preview never breaks the modal.
+        :returns: ``(selected_ids, toggle_states)`` on Enter, or ``None`` on
+            Esc / Ctrl+C (caller treats None as "no change").
+
+        .. note::
+            The type-to-filter is SINGLE-TOKEN: Space toggles the highlighted row
+            (it is not appended to the filter), so a multi-word label like
+            ``Permission mode`` can only be matched by a single token substring
+            (``permis`` or ``mode``), not the full phrase. This matches the
+            single-choice :meth:`select` behavior (pi parity); it is intentional.
+        """
+
+        if not options and not extra_toggles:
+            return None
+
+        chosen: set[str] = set(selected)
+        toggles: dict[str, bool] = {key: False for key, _ in (extra_toggles or [])}
+        # ``cursor`` indexes a UNIFIED list: the filtered option rows first, then
+        # the extra toggle rows. Space toggles whichever the cursor is on.
+        state: dict[str, Any] = {"cursor": 0, "filter": ""}
+        viewport = 10
+
+        def filtered_options() -> list[tuple[int, tuple[str, str, str]]]:
+            needle = state["filter"].lower()
+            if not needle:
+                return list(enumerate(options))
+            return [
+                (i, o)
+                for i, o in enumerate(options)
+                if needle in o[1].lower() or needle in o[0].lower()
+            ]
+
+        def total_rows() -> int:
+            return len(filtered_options()) + len(extra_toggles or [])
+
+        def render() -> str:
+            opts = filtered_options()
+            n_opts = len(opts)
+            n_total = total_rows()
+            if n_total == 0:
+                return (
+                    f"{title}\n\n(no matches)\n"
+                    f"Filter: {state['filter']}\n"
+                    "Backspace to clear · Esc to cancel"
+                )
+            cursor = max(0, min(state["cursor"], n_total - 1))
+            state["cursor"] = cursor
+            rows: list[str] = [title]
+            # Scroll window across the OPTION rows only (toggles always trail).
+            start = max(0, min(cursor - viewport // 2, max(0, n_opts - viewport)))
+            end = min(n_opts, start + viewport)
+            if start > 0:
+                rows.append("  ⋮")
+            for vi in range(start, end):
+                orig_idx, (oid, label, _desc) = opts[vi]
+                marker = "→" if vi == cursor else " "
+                box = "✓" if oid in chosen else "☐"
+                rows.append(f"{marker} [{box}] {label}")
+            if end < n_opts:
+                rows.append("  ⋮")
+            # Extra toggle rows (rendered after the option list).
+            for ti, (key, label) in enumerate(extra_toggles or []):
+                row_idx = n_opts + ti
+                marker = "→" if row_idx == cursor else " "
+                box = "✓" if toggles.get(key) else "☐"
+                rows.append(f"{marker} [{box}] {label}")
+            rows.append(f"  ({min(cursor + 1, n_total)}/{n_total})")
+            if state["filter"]:
+                rows.append(f"  Filter: {state['filter']}")
+            if preview is not None:
+                with contextlib.suppress(Exception):
+                    lines = preview(set(chosen), dict(toggles))
+                    if lines:
+                        rows.append("")
+                        rows.extend(lines)
+            rows.append(
+                "  Type to search · ↑/↓ move · Space toggle · "
+                "Enter confirm · Esc cancel"
+            )
+            return "\n".join(rows)
+
+        def build(result: asyncio.Future[Any]) -> Window:
+            kb = KeyBindings()
+
+            @kb.add("up")
+            def _up(_e: object) -> None:
+                n = total_rows()
+                if n:
+                    state["cursor"] = (state["cursor"] - 1) % n
+                    self.chrome.invalidate()
+
+            @kb.add("down")
+            def _down(_e: object) -> None:
+                n = total_rows()
+                if n:
+                    state["cursor"] = (state["cursor"] + 1) % n
+                    self.chrome.invalidate()
+
+            def _toggle(_e: object) -> None:
+                opts = filtered_options()
+                n_opts = len(opts)
+                cursor = state["cursor"]
+                if cursor < n_opts:
+                    oid = opts[cursor][1][0]
+                    if oid in chosen:
+                        chosen.discard(oid)
+                    else:
+                        chosen.add(oid)
+                elif extra_toggles:
+                    ti = cursor - n_opts
+                    if 0 <= ti < len(extra_toggles):
+                        key = extra_toggles[ti][0]
+                        toggles[key] = not toggles.get(key)
+                self.chrome.invalidate()
+
+            kb.add("space")(_toggle)
+
+            # Enter / c-j CONFIRM (return the full selection). Bound LOCALLY so
+            # they never leak to the chrome's global accept (ADR-0121 pattern).
+            kb.add("enter")(lambda _e: _resolve(result, (set(chosen), dict(toggles))))
+            kb.add("c-j")(lambda _e: _resolve(result, (set(chosen), dict(toggles))))
+            kb.add("escape")(lambda _e: _resolve(result, None))
+            kb.add("c-c")(lambda _e: _resolve(result, None))
+
+            @kb.add("backspace")
+            def _backspace(_e: object) -> None:
+                if state["filter"]:
+                    state["filter"] = state["filter"][:-1]
+                    state["cursor"] = 0
+                    self.chrome.invalidate()
+
+            @kb.add("<any>")
+            def _filter_char(event: Any) -> None:
+                data = getattr(event, "data", None) or ""
+                if len(data) == 1 and data.isprintable():
+                    state["filter"] += data
+                    state["cursor"] = 0
                     self.chrome.invalidate()
 
             return Window(
@@ -537,60 +732,48 @@ class AelixTUIContext:
 
     # === internal ==========================================================
 
+    def _enabled_segment_ids(self) -> set[str] | None:
+        """The set of enabled footer-segment ids (WP-2, ADR-0160).
+
+        ``None`` → use each segment's ``default_enabled`` flag (no store wired /
+        fresh install). A wired store reads the user's enabled-id set;
+        ``StatuslineStore.load`` degrades to the registry defaults on a missing/
+        corrupt file, so this never raises.
+        """
+
+        if self._statusline_store is None:
+            return None
+        with contextlib.suppress(Exception):
+            return set(self._statusline_store.load().enabled)
+        return None
+
     def _refresh_footer(self) -> None:
         if self._footer_factory is not None:
             component = self._footer_factory(self._tui, self._theme, self._footer)
             self.chrome.set_footer_line("\n".join(component.render(_RENDER_WIDTH)))
             return
-        branch = self._footer.get_git_branch()
-        statuses = self._footer.get_extension_statuses()
-        model = self._model_provider() if self._model_provider is not None else None
-        mode = (
-            self._mode_provider() if self._mode_provider is not None else None
-        ) or self._mode
-        pending = self._pending_provider() if self._pending_provider is not None else 0
-        # Permission posture badge (WP-0, ADR-0157; ADR-0159) — the LEADING
-        # footer segment, shown at ALL times when a posture is wired (the user
-        # wants the permission mode visible at the front always). The live
-        # provider returns a glyph badge (✎/⏸/⚠/🤖) for non-DEFAULT modes and
-        # ``None`` on DEFAULT; on DEFAULT we substitute a neutral "● default"
-        # label so the segment never disappears. When NO provider is wired
-        # (headless / no posture) the segment is omitted entirely (degrade, never
-        # crash). Distinct glyphs keep it from colliding with the ⏵⏵ steering
-        # segment.
-        permission_badge: str | None
-        if self._permission_badge_provider is not None:
-            from aelix_coding_agent.builtin.permission_mode import DEFAULT_BADGE
-
-            permission_badge = self._permission_badge_provider() or DEFAULT_BADGE
-        else:
-            permission_badge = None
-        # Steering ⏵⏵ segment (ADR-0159) — HIDDEN at the default
-        # "one-at-a-time"; surfaces only when the user switched steering to "all".
-        # The literal "default" is also hidden: the steering sentinel is
-        # "one-at-a-time" but a missing-attribute path could surface the legacy
-        # "default" string, which is NOT a real steering mode (it belongs to the
-        # permission posture) and would render a stray, misleading ⏵⏵ default.
-        steering_segment = (
-            f"⏵⏵ {mode}"
-            if mode and mode not in (_DEFAULT_STEERING_MODE, "default")
-            else None
-        )
-        segments = [
-            s
-            for s in (
-                permission_badge,
-                steering_segment,
-                f"⋯ {pending} queued" if pending > 0 else None,
-                f"📂 {self._abbrev_cwd(self._cwd)}" if self._cwd else None,
-                f"✱ {model}" if model else None,
-                self._context_label,
-                f"⎇ {branch}" if branch else None,
-                *statuses.values(),
+        # WP-2 (ADR-0160) — compose from the named segment registry. The registry
+        # order is canonical (matches the pre-ADR-0160 hard-coded footer); an
+        # enabled-set gates membership. The ADR-0159 invariants (permission badge
+        # leading + omit-when-no-provider; steering hidden at default) live INSIDE
+        # the producers, so an adversarial/empty enabled-set can only hide a
+        # segment the user explicitly unchecked — it can never surface a stray
+        # badge or vanish the leading position of the security-visible one.
+        enabled = self._enabled_segment_ids()
+        parts: list[str] = []
+        for segment in self._segments:
+            is_on = (
+                segment.default_enabled if enabled is None else segment.id in enabled
             )
-            if s
-        ]
-        self.chrome.set_footer_line("  ·  ".join(segments))
+            if not is_on:
+                continue
+            value = segment.produce()
+            if value:
+                parts.append(value)
+        # Extension statuses are NOT registry segments (an extension owns its own
+        # slot, never user-toggleable) — append them after the registry loop.
+        parts.extend(v for v in self._footer.get_extension_statuses().values() if v)
+        self.chrome.set_footer_line("  ·  ".join(parts))
 
     def set_context_label(self, label: str | None) -> None:
         """Update the live context-window usage segment + repaint the footer.
@@ -599,6 +782,22 @@ class AelixTUIContext:
         ``None`` when usage is unavailable — e.g. model registry not wired).
         """
         self._context_label = label
+        self._refresh_footer()
+
+    def set_usage_stats(
+        self, input_tokens: int, output_tokens: int, cost: float
+    ) -> None:
+        """Cache the session usage scalars for the optional token/cost footer
+        segments + repaint the footer (WP-2, ADR-0160).
+
+        Called by ``run_tui`` after ``turn_end`` (same cadence as
+        :meth:`set_context_label`). The token/cost segments are default-OFF, so
+        this is inert until the user enables them via ``/statusline``.
+        """
+
+        self._usage_input_tokens = input_tokens
+        self._usage_output_tokens = output_tokens
+        self._usage_cost = cost
         self._refresh_footer()
 
     @staticmethod

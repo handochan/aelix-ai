@@ -206,12 +206,15 @@ async def test_interactive_mode_dispatches_to_run_tui(
         mcp_manager: object = None,
         permission_ext: object = None,
         permission_posture: object = None,
+        settings_manager: object = None,
     ) -> int:
         # Sprint 6h₂₆ (ADR-0154): the real model_registry must be threaded so
         # /model can list get_available() — the harness does not expose it.
         # Sprint 6h₂₇ (ADR-0155): mcp_manager is threaded the same way for /mcp.
         # WP-0 (ADR-0157): the held permission_ext + posture are threaded so
         # shift+tab + the approval dialog operate on the gate's own state.
+        # WP-2 (ADR-0160): the held SettingsManager is threaded for /settings +
+        # /scoped-models + /statusline.
         calls.append((runtime, cwd, model_registry, mcp_manager))
         tui_permission["ext"] = permission_ext
         tui_permission["posture"] = permission_posture
@@ -268,6 +271,83 @@ async def test_interactive_mode_dispatches_to_run_tui(
     assert tui_permission["posture"] is not None
     assert tui_permission["ext"] is created.get("ext")
     assert tui_permission["posture"] is created.get("posture")
+
+
+async def test_interactive_seeds_model_from_persisted_default(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """WP-2 (ADR-0160): with NO ``--model``/``--provider`` flag, the startup model
+    is seeded from the PERSISTED ``defaultModel``/``defaultProvider`` settings so
+    the /settings → "Default model" choice actually applies on the next launch
+    (not only the session that set it). The persisted default reaches the live
+    harness's ``current_model``.
+    """
+
+    monkeypatch.setattr(sys, "stdin", _FakeTTYStdin())
+    # Isolate the agent dir and pre-seed the global settings.json with a default.
+    agent_dir = tmp_path / "agent"
+    agent_dir.mkdir()
+    (agent_dir / "settings.json").write_text(
+        '{"defaultProvider": "anthropic", "defaultModel": "claude-3"}'
+    )
+    monkeypatch.setenv("AELIX_CODING_AGENT_DIR", str(agent_dir))
+
+    seen: dict[str, object] = {}
+
+    async def _stub_run_tui(runtime: object, **_k: object) -> int:
+        harness = getattr(runtime, "harness", None)
+        seen["model"] = getattr(harness, "current_model", None)
+        return 0
+
+    import aelix_coding_agent.tui as tui_pkg
+
+    monkeypatch.setattr(tui_pkg, "run_tui", _stub_run_tui)
+
+    code = await _async_main(["--no-session"])
+    assert code == 0
+    model = seen["model"]
+    assert model is not None
+    assert getattr(model, "provider", None) == "anthropic"
+    assert getattr(model, "id", None) == "claude-3"
+
+
+async def test_interactive_explicit_model_flag_overrides_persisted_default(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The explicit ``--model``/``--provider`` flags WIN over the persisted
+    default (CLI > settings, pi parity) — the seed only fills the gap.
+    """
+
+    monkeypatch.setattr(sys, "stdin", _FakeTTYStdin())
+    agent_dir = tmp_path / "agent"
+    agent_dir.mkdir()
+    (agent_dir / "settings.json").write_text(
+        '{"defaultProvider": "anthropic", "defaultModel": "claude-3"}'
+    )
+    monkeypatch.setenv("AELIX_CODING_AGENT_DIR", str(agent_dir))
+
+    seen: dict[str, object] = {}
+
+    async def _stub_run_tui(runtime: object, **_k: object) -> int:
+        harness = getattr(runtime, "harness", None)
+        seen["model"] = getattr(harness, "current_model", None)
+        return 0
+
+    import aelix_coding_agent.tui as tui_pkg
+
+    monkeypatch.setattr(tui_pkg, "run_tui", _stub_run_tui)
+
+    code = await _async_main(
+        ["--no-session", "--provider", "openai", "--model", "gpt-4o"]
+    )
+    assert code == 0
+    model = seen["model"]
+    assert model is not None
+    # The CLI flag won — NOT the persisted anthropic/claude-3 default.
+    assert getattr(model, "provider", None) == "openai"
+    assert getattr(model, "id", None) == "gpt-4o"
 
 
 async def test_interactive_missing_tui_extra_returns_1(

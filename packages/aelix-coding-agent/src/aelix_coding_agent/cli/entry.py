@@ -671,6 +671,43 @@ async def _async_main(argv: list[str]) -> int:
     await auth_storage.load()
     model_registry = ModelRegistry.create(auth_storage)
 
+    # === SettingsManager (WP-2, ADR-0160) — constructed ONCE, threaded to the TUI
+    # as a PURE CONSUMER (construct via the factory + call the existing
+    # get_*/set_*/flush API; no edit to the pi-parity-pinned aelix_ai settings).
+    # MUST pass ``agent_dir=get_agent_dir()`` explicitly: the create() default is
+    # XDG ~/.config/aelix, which would split settings.json from the agent's
+    # auth.json/mcp.json (open-risk: path divergence). ``create`` is synchronous +
+    # side-effect-free on read (load errors are captured into drain_errors, never
+    # raised). Surface any load errors as a startup warning (MCP/extension parity).
+    from aelix_ai.settings import SettingsManager
+
+    settings_manager = SettingsManager.create(
+        cwd=str(Path.cwd()), agent_dir=Path(get_agent_dir())
+    )
+    for setting_err in settings_manager.drain_errors():
+        print(
+            f"Warning: settings ({setting_err.scope}): {setting_err.error}",
+            file=sys.stderr,
+        )
+
+    # WP-2 (ADR-0160) — seed the startup model from the PERSISTED default when the
+    # user passed NO ``--model``/``--provider`` flag. This is what makes the
+    # /settings → "Default model" choice actually apply on the next launch (not
+    # only the session that set it). The explicit flags always win (pi parity:
+    # CLI > settings); we only fill the gap. Mutating ``parsed`` here means EVERY
+    # downstream ``resolve_model(parsed.model, parsed.provider)`` (the harness
+    # build + the --api-key guard + the print/json no-model guard) inherits the
+    # default uniformly — no per-call seeding to drift. Guarded so a malformed
+    # settings file never blocks launch.
+    if parsed.model is None and parsed.provider is None:
+        with contextlib.suppress(Exception):
+            default_model = settings_manager.get_default_model()
+            default_provider = settings_manager.get_default_provider()
+            if default_model:
+                parsed.model = default_model
+            if default_provider:
+                parsed.provider = default_provider
+
     # === Permission posture (WP-0, ADR-0157) — built ONCE, held by reference ===
     # The shift+tab-cycled posture + the PermissionExtension are constructed here
     # and threaded into EVERY harness rebuild via the factory closure (mirror of
@@ -820,6 +857,7 @@ async def _async_main(argv: list[str]) -> int:
                 mcp_manager=mcp_manager,
                 permission_ext=permission_ext,
                 permission_posture=permission_posture,
+                settings_manager=settings_manager,
             )
 
         if app_mode == "rpc":

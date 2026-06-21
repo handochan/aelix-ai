@@ -71,6 +71,7 @@ if TYPE_CHECKING:
     from aelix_agent_core.contracts.descriptor import DescriptorEnvelope
     from aelix_agent_core.harness.core import AgentHarness
     from aelix_agent_core.runtime.agent_session_runtime import AgentSessionRuntime
+    from aelix_ai.settings import SettingsManager
     from prompt_toolkit.completion import Completer
 
     from aelix_coding_agent.builtin.permission import PermissionExtension
@@ -147,6 +148,7 @@ async def run_tui(
     mcp_manager: McpClientManager | None = None,
     permission_ext: PermissionExtension | None = None,
     permission_posture: PermissionPosture | None = None,
+    settings_manager: SettingsManager | None = None,
     chrome: AelixChrome | None = None,
     install_signal_handlers: bool = True,
 ) -> int:
@@ -171,6 +173,10 @@ async def run_tui(
         builds it once) so shift+tab cycling + the footer badge read/write the
         SAME object the gate consults. ``None`` (tests) disables the badge +
         cycle (no posture to mutate).
+    :param settings_manager: the held :class:`SettingsManager` (entry.py
+        constructs it once via ``SettingsManager.create``) so ``/settings`` +
+        ``/scoped-models`` read/persist the pi-parity settings. ``None`` (tests)
+        leaves those commands on their degraded fallback. WP-2 (ADR-0160).
     :param chrome: injectable for tests (headless pipe input + DummyOutput).
     :param install_signal_handlers: pass ``False`` when embedding (tests / a host
         that owns process signals) — mirrors ``run_rpc_mode``.
@@ -216,6 +222,17 @@ async def run_tui(
 
         return MODE_META[permission_posture.get()].badge_text or None
 
+    # WP-2 (ADR-0160) — the coding-agent-owned statusline store gates which footer
+    # segments render. Its defaults are the registry default-enabled ids, so a
+    # fresh install (no statusline.json) renders the byte-identical pre-ADR-0160
+    # footer. Built here so the context + the /statusline picker share one store.
+    from aelix_coding_agent.tui.footer_segments import default_enabled_ids_from_spec
+    from aelix_coding_agent.tui.statusline_store import StatuslineStore
+
+    statusline_store = StatuslineStore(
+        default_enabled=default_enabled_ids_from_spec(),
+    )
+
     context = AelixTUIContext(
         out_chrome,
         footer,
@@ -227,7 +244,19 @@ async def run_tui(
         permission_badge_provider=_permission_badge,
         cwd=cwd,
         mode="default",
+        statusline_store=statusline_store,
     )
+
+    # WP-2 (ADR-0160) — seed the live theme from the persisted setting so the
+    # /settings → Theme choice actually applies on the NEXT launch (not only the
+    # session that set it). Without this the context starts on DEFAULT_THEME and
+    # the persisted ``theme`` field is write-only across launches. Guarded: an
+    # unknown/stale theme name (theme since removed) leaves the default in place.
+    if settings_manager is not None:
+        with contextlib.suppress(Exception):
+            persisted_theme = settings_manager.get_theme()
+            if persisted_theme:
+                context.set_theme(persisted_theme)  # no-op SetThemeResult on miss
 
     # Output pump seam: the synchronous renderer queues TAGGED commands; the
     # pump applies them above the chrome in order. Routing the live-tail update
@@ -505,70 +534,202 @@ async def run_tui(
             table.add_row(f"{marker} {label}", path)
         _commit(Panel(table, title="Session lineage", box=ROUNDED, border_style="cyan"))
 
-    async def _open_settings() -> None:
-        # Sprint 6h₁₇ (ADR-0125) — /settings: a 1-level select over the live,
-        # session-settable options; picking a row toggles (2-value) or cycles
-        # (thinking level) that setting via the verified harness setters + the
-        # renderer's thinking flag. Auto-compaction is intentionally OMITTED —
-        # its threshold trigger is unwired (audit #3), so a toggle would be a lie.
-        harness = runtime_host.harness
-        state = getattr(harness, "_state", None)
-        level = (getattr(state, "thinking_level", None) or "off") if state else "off"
-        rows = [
-            ("Steering mode", getattr(harness, "steering_mode", "?")),
-            ("Follow-up mode", getattr(harness, "follow_up_mode", "?")),
-            ("Thinking blocks", "hidden" if renderer.hide_thinking else "visible"),
-            ("Thinking level", level),
-        ]
-        # Pi screenshot parity: pad the key column so values line up — easier to
-        # scan than the "{k}: {v}" form. Width = widest key + 2 (constant padding).
-        # Note: ``len(k)`` counts code points, not display columns — fine while
-        # row keys stay ASCII; revisit (wcswidth) before adding CJK/wide labels.
-        width = max(len(k) for k, _ in rows) + 2
-        labels = [f"{k.ljust(width)}{v}" for k, v in rows]
-        choice = await context.select("Settings — select to change", labels)
-        if not choice:
+    async def _settings_theme_action() -> None:
+        # /settings → Theme: sub-select over the registered theme names → apply
+        # live (context.set_theme repaints the footer + chrome) AND persist
+        # (sm.set_theme). The select round-trips losslessly (names are unique).
+        if settings_manager is None:
             return
-        # W-review 6h₂₄ MEDIUM-1: recover the row via exact-label index, NOT a
-        # ``startswith`` prefix scan. The label list IS the option set we just
-        # passed in, so equality round-trips losslessly; a future row whose key
-        # is a prefix of another key (e.g. "Thinking" vs "Thinking blocks") or
-        # a format change can't silently mis-route. ``ValueError`` surfaces as
-        # a visible error rather than a silent no-op.
+        from aelix_coding_agent.tui import themes as theme_registry
+
+        names = list(theme_registry.THEMES.keys())
+        if not names:
+            return
+        current = settings_manager.get_theme() or "default"
+        labels = [f"✱ {n}" if n == current else f"  {n}" for n in names]
+        chosen = await context.select("Theme", labels)
+        if not chosen:
+            return
         try:
-            row_idx = labels.index(choice)
+            idx = labels.index(chosen)
         except ValueError:
-            _commit(Text(f"✖ settings: unknown row {choice!r}", style="bold red"))
             return
-        key = rows[row_idx][0]
-        try:
-            if key == "Steering mode":
-                new = "all" if harness.steering_mode == "one-at-a-time" else "one-at-a-time"
-                harness.set_steering_mode(new)
-                _commit(Text(f"steering mode → {new}", style="green"))
-            elif key == "Follow-up mode":
-                new = "all" if harness.follow_up_mode == "one-at-a-time" else "one-at-a-time"
-                harness.set_follow_up_mode(new)
-                _commit(Text(f"follow-up mode → {new}", style="green"))
-            elif key == "Thinking blocks":
-                renderer.hide_thinking = not renderer.hide_thinking
-                shown = "hidden" if renderer.hide_thinking else "visible"
-                _commit(Text(f"thinking blocks → {shown}", style="green"))
-            elif key == "Thinking level":
-                # Delegate to the canonical model-aware cycle (W-review 6h₁₇
-                # MEDIUM): rotates the model's supported levels, no-ops on a
-                # non-reasoning model (returns None), and preserves the off/None
-                # sentinel — vs a hardcoded list that could set an unsupported
-                # level or miss minimal/xhigh.
-                new_level = await harness.cycle_thinking_level()
-                if new_level is None:
-                    _commit(Text("This model has no thinking levels to cycle.", style="yellow"))
-                else:
-                    _commit(Text(f"thinking level → {new_level}", style="green"))
-        except Exception as exc:  # noqa: BLE001 — surface, never crash the REPL
-            _commit(Text(f"✖ settings change failed: {exc}", style="bold red"))
+        name = names[idx]
+        result = context.set_theme(name)  # live repaint
+        if not getattr(result, "success", True):
+            _commit(Text(f"✖ {getattr(result, 'error', 'theme')}", style="bold red"))
             return
-        context._refresh_footer()  # steering-mode segment reads the live value
+        settings_manager.set_theme(name)  # persist (global scope)
+        await settings_manager.flush()
+        _commit(Text(f"theme → {name}", style="green"))
+        context._refresh_footer()
+
+    async def _settings_default_model_action() -> None:
+        # /settings → Default model: reuse the rich /model picker to switch the
+        # live session, then persist the new (provider, model) as the default.
+        if settings_manager is None:
+            return
+        # Capture the (provider, id) BEFORE the picker so we only persist when the
+        # user actually CHOSE a different model. Opening the picker and Esc'ing
+        # must NOT silently pin the current model as the persisted default
+        # (W-review LOW): the picker no-ops on Esc, leaving current_model
+        # unchanged, so an unconditional write would mislead the user.
+        before = getattr(runtime_host.harness, "current_model", None)
+        before_key = (getattr(before, "provider", None), getattr(before, "id", None))
+        await _open_model_picker()  # live: switches harness.current_model
+        model = getattr(runtime_host.harness, "current_model", None)
+        model_id = getattr(model, "id", None)
+        provider = getattr(model, "provider", None)
+        if not (model_id and provider):
+            return
+        if (provider, model_id) == before_key:
+            return  # picker cancelled / same model — nothing to persist
+        settings_manager.set_default_model_and_provider(provider, model_id)
+        await settings_manager.flush()
+        _commit(Text(f"default model → {model_id} (persisted)", style="green"))
+
+    async def _settings_thinking_action() -> None:
+        # /settings → Thinking level: cycle the live model's supported levels
+        # (model-aware, session) AND persist the new level as the default.
+        if settings_manager is None:
+            return
+        new_level = await runtime_host.harness.cycle_thinking_level()  # live
+        if new_level is None:
+            _commit(Text("This model has no thinking levels to cycle.", style="yellow"))
+            return
+        settings_manager.set_default_thinking_level(new_level)  # persist default
+        await settings_manager.flush()
+        _commit(
+            Text(
+                f"thinking level → {new_level} (persisted as default)",
+                style="green",
+            )
+        )
+
+    async def _apply_live_setting(key: str, value: object) -> None:
+        # Mirror a persisted dual-write row onto the LIVE session. The persist
+        # half already ran in apply_setting; this is the in-session half so the
+        # change takes effect this run (not only next launch). Steering/follow-up
+        # write the harness (no persist of their own); hide-thinking writes the
+        # renderer flag (live, not persisted by the renderer).
+        harness = runtime_host.harness
+        with contextlib.suppress(Exception):
+            if key == "steering_mode":
+                harness.set_steering_mode(str(value))
+                context._refresh_footer()  # footer ⏵⏵ reads the live value
+            elif key == "follow_up_mode":
+                harness.set_follow_up_mode(str(value))
+            elif key == "hide_thinking_block":
+                renderer.hide_thinking = bool(value)
+
+    async def _open_settings() -> None:
+        # ImplConsumers (ADR-0161) — /settings: an expanded select over the
+        # SettingsManager-backed rows (build_settings_rows). Picking a row
+        # toggles (bool) / cycles (enum) / inputs (int) / delegates (action) the
+        # setting via the held SettingsManager (persist) + the live session
+        # (dual-write) where supported. Loops until Esc so several settings can be
+        # changed in one open (pi parity). Sprint 6h₁₇ (ADR-0125) shipped a 4-row
+        # subset; this grows it to ~16 via the SettingsManager seam.
+        from aelix_coding_agent.tui.settings_rows import (
+            apply_setting,
+            build_settings_rows,
+        )
+
+        if settings_manager is None:
+            # Degraded fallback: no SettingsManager threaded (older entrypoint /
+            # tests). Surface honestly rather than presenting an inert menu.
+            # run_tui always threads it, so this is belt-and-braces.
+            _commit(
+                Text(
+                    "Settings are unavailable (no settings manager wired).",
+                    style="yellow",
+                )
+            )
+            return
+
+        # Delegated live flows keyed by the action row key.
+        actions: dict[str, Callable[[], object]] = {
+            "theme": _settings_theme_action,
+            "default_model": _settings_default_model_action,
+            "thinking_level": _settings_thinking_action,
+        }
+
+        while True:
+            rows = build_settings_rows(settings_manager)
+            # Pi screenshot parity: pad the label column so values line up.
+            width = max(len(r.label) for r in rows) + 2
+            labels = [
+                f"{r.label.ljust(width)}{r.read(settings_manager)}" for r in rows
+            ]
+            # Bind ``rows`` via a default arg so the per-highlight detail closure
+            # references THIS iteration's rows (ruff B023 — the loop rebuilds rows
+            # each pass; the lambda is consumed synchronously within the same pass
+            # but the explicit bind documents + guarantees it).
+            choice = await context.select(
+                "Settings — select to change (Esc to close)",
+                labels,
+                detail=lambda i, _rows=rows: [_rows[i].help] if _rows[i].help else [],
+            )
+            if not choice:
+                return  # Esc closes the menu
+            # Lossless exact-label index recovery (the label list IS the option
+            # set we passed in) — no startswith prefix scan (W-review 6h₂₄ M-1).
+            try:
+                row_idx = labels.index(choice)
+            except ValueError:
+                _commit(Text(f"✖ settings: unknown row {choice!r}", style="bold red"))
+                continue
+            row = rows[row_idx]
+
+            # int rows: collect the new value via an input dialog first.
+            int_value: int | None = None
+            if row.kind == "int":
+                lo, hi = row.int_range or (0, 0)
+                raw = await context.input(f"{row.label} ({lo}-{hi})")
+                if raw is None or not raw.strip():
+                    continue  # cancelled / empty — no change
+                try:
+                    int_value = int(raw.strip())
+                except ValueError:
+                    _commit(
+                        Text(
+                            f"✖ {row.label}: not a number ({raw!r})",
+                            style="bold red",
+                        )
+                    )
+                    continue
+
+            result = apply_setting(row, settings_manager, int_value=int_value)
+            if result.kind == "delegate":
+                action = actions.get(row.key)
+                if action is not None:
+                    await action()  # type: ignore[misc]
+                continue
+            if result.kind == "error":
+                _commit(Text(f"✖ {result.message}", style="bold red"))
+                continue
+            # ok: persisted — flush + mirror live (dual-write) + commit.
+            await settings_manager.flush()
+            if result.live is not None:
+                live_key, live_value = result.live
+                await _apply_live_setting(live_key, live_value)
+            _commit(Text(result.message, style="green"))
+
+    async def _open_scoped_models() -> None:
+        # ImplConsumers (ADR-0161) — /scoped-models: a multi-checkbox picker over
+        # the auth-filtered catalog (ModelRegistry.get_available) that reads/writes
+        # the enabled_models allow-list via the held SettingsManager (global scope,
+        # pi parity). The flow lives in scoped_models.run_scoped_models (DI so it
+        # is unit-testable without the prompt-toolkit app); this wires the live
+        # registry + settings manager + multiselect + commit into it.
+        from aelix_coding_agent.tui.scoped_models import run_scoped_models
+
+        await run_scoped_models(
+            registry=model_registry,
+            settings_manager=settings_manager,
+            multiselect=context.multiselect,
+            commit=_commit,
+        )
 
     async def _open_model_picker() -> None:
         # Sprint 6h₂₆ (ADR-0154, WP-7) — /model: a searchable picker over the
@@ -611,6 +772,25 @@ async def run_tui(
         # as model_registry).
         await run_mcp_viewer(manager=mcp_manager, commit=_commit)
 
+    async def _open_statusline() -> None:
+        # WP-2 (ADR-0160) — /statusline: a multi-checkbox picker over the footer
+        # segment registry → persist the enabled-id set to the coding-agent-owned
+        # statusline store → repaint the footer. The flow lives in
+        # statusline_picker.run_statusline_picker (dependency-injected so it is
+        # unit-testable without the prompt-toolkit app); this wires the live store
+        # + multiselect + commit + footer refresh into it. The segment registry is
+        # the SAME one the context composes the footer from (context._segments).
+        from aelix_coding_agent.tui.statusline_picker import run_statusline_picker
+
+        await run_statusline_picker(
+            segments=context._segments,
+            load=statusline_store.load,
+            save=statusline_store.save,
+            multiselect=context.multiselect,
+            commit=_commit,
+            refresh_footer=context._refresh_footer,
+        )
+
     command_ctx = CommandContext(
         chrome=out_chrome,
         harness=runtime_host.harness,
@@ -626,11 +806,14 @@ async def run_tui(
         resume_session=_resume_session,
         new_session=_new_session,
         settings_action=_open_settings,
+        scoped_models_action=_open_scoped_models,
+        statusline_action=_open_statusline,
         import_session=_import_session,
         fork_session=_fork_session,
         clone_session=_clone_session,
         tree_action=_tree_action,
         is_editor_open=lambda: editor_open_ref["open"],
+        settings_manager=settings_manager,
     )
 
     loop = asyncio.get_running_loop()
@@ -669,6 +852,16 @@ async def run_tui(
         context.set_context_label(
             _format_context_label(getattr(stats, "context_usage", None))
         )
+        # WP-2 (ADR-0160) — also cache the token/cost scalars for the OPTIONAL
+        # input-tokens / output-tokens / cost footer segments (default-OFF). One
+        # turn_end task feeds both the context% label + these scalars.
+        tokens = getattr(stats, "tokens", None)
+        with contextlib.suppress(Exception):
+            context.set_usage_stats(
+                int(getattr(tokens, "input", 0) or 0),
+                int(getattr(tokens, "output", 0) or 0),
+                float(getattr(stats, "cost", 0.0) or 0.0),
+            )
 
     # Sprint 6h₂₂ (ADR-0130) — auto-retry UI countdown (closes the 6h₂₀ v2
     # deferral). Pi parity: ``interactive-mode.ts:2919-2948`` —
@@ -1173,6 +1366,12 @@ async def run_tui(
             for sig in signals_installed:
                 with contextlib.suppress(NotImplementedError, RuntimeError):
                     loop.remove_signal_handler(sig)
+        # WP-2 (ADR-0160) — flush any in-flight SettingsManager writes (the
+        # setters are fire-and-forget asyncio tasks) so /settings + /scoped-models
+        # changes are durable on disk before the loop tears down.
+        if settings_manager is not None:
+            with contextlib.suppress(Exception):
+                await settings_manager.flush()
         with contextlib.suppress(Exception):
             await runtime_host.dispose()
 

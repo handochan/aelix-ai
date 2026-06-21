@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
     from aelix_agent_core.harness.core import AgentHarness
+    from aelix_ai.settings import SettingsManager
     from rich.console import RenderableType
 
     from aelix_coding_agent.tui.chrome import AelixChrome
@@ -151,6 +152,24 @@ class CommandContext:
     permission_mode: Callable[[], str | None] | None = None
     """``run_tui`` wires this to read the current posture badge/name so
     ``/permissions`` (no-arg) can surface it. ``None`` in headless tests."""
+    statusline_action: Callable[[], Awaitable[None]] | None = None
+    """``run_tui`` wires this to its ``_open_statusline`` flow (a multi-checkbox
+    picker over the footer-segment registry that persists the enabled-id set to
+    the coding-agent-owned statusline store + repaints the footer). The
+    ``/statusline`` handler awaits it; ``None`` in headless tests (WP-2,
+    ADR-0160)."""
+    settings_manager: SettingsManager | None = None
+    """``run_tui`` threads the held :class:`SettingsManager` (constructed once in
+    entry.py via ``SettingsManager.create``) so ``/settings`` (ImplConsumers,
+    ADR-0161) + ``/scoped-models`` can read/persist the pi-parity settings via
+    its existing get_*/set_*/flush API. ``None`` in headless tests (WP-2,
+    ADR-0160)."""
+    scoped_models_action: Callable[[], Awaitable[None]] | None = None
+    """``run_tui`` wires this to its ``_open_scoped_models`` flow (a multi-checkbox
+    picker over ``ModelRegistry.get_available()`` that reads/writes the
+    ``enabled_models`` allow-list via the held SettingsManager — global scope, pi
+    parity). The ``/scoped-models`` handler awaits it; ``None`` in headless tests /
+    when no registry or settings manager is attached (ImplConsumers, ADR-0161)."""
 
 
 def build_help_renderable(commands: list[BuiltinCommand]) -> RenderableType:
@@ -481,11 +500,14 @@ async def _resume_handler(ctx: CommandContext, args: str) -> None:
 
 
 async def _settings_handler(ctx: CommandContext, args: str) -> None:
-    """``/settings`` — open the live-settings toggle menu (ignores args).
+    """``/settings`` — open the settings menu (ignores args).
 
-    Delegates to the host-wired ``settings_action`` flow (a select menu that
-    toggles/cycles steering mode, follow-up mode, thinking visibility/level).
-    Degrades when unavailable / on failure.
+    Delegates to the host-wired ``settings_action`` flow: a looping select menu
+    over the SettingsManager-backed rows (theme, default model, steering/follow-up
+    modes, thinking visibility/level, autocomplete size, image handling, …) that
+    toggles/cycles/inputs each setting and persists it (the live rows also apply to
+    the current session). Degrades when unavailable / on failure (ImplConsumers,
+    ADR-0161).
     """
 
     if ctx.settings_action is None:
@@ -495,6 +517,42 @@ async def _settings_handler(ctx: CommandContext, args: str) -> None:
         await ctx.settings_action()
     except Exception as exc:  # noqa: BLE001 — surface, never kill the REPL
         ctx.commit(Text(f"✖ settings failed: {exc}", style="bold red"))
+
+
+async def _scoped_models_handler(ctx: CommandContext, args: str) -> None:
+    """``/scoped-models`` — choose which models are enabled (ignores args).
+
+    Delegates to the host-wired ``scoped_models_action`` flow (a multi-checkbox
+    picker over ``ModelRegistry.get_available()`` that reads/writes the
+    ``enabled_models`` allow-list via the held SettingsManager — global scope, pi
+    parity). Degrades when unavailable / on failure (ImplConsumers, ADR-0161).
+    """
+
+    if ctx.scoped_models_action is None:
+        ctx.commit(Text("Scoped models are unavailable.", style="yellow"))
+        return
+    try:
+        await ctx.scoped_models_action()
+    except Exception as exc:  # noqa: BLE001 — surface, never kill the REPL
+        ctx.commit(Text(f"✖ scoped-models failed: {exc}", style="bold red"))
+
+
+async def _statusline_handler(ctx: CommandContext, args: str) -> None:
+    """``/statusline`` — configure which footer segments render (ignores args).
+
+    Delegates to the host-wired ``statusline_action`` flow (a multi-checkbox
+    picker over the footer-segment registry → persist the enabled-id set to the
+    coding-agent-owned statusline store → repaint the footer). Degrades when
+    unavailable / on failure (WP-2, ADR-0160).
+    """
+
+    if ctx.statusline_action is None:
+        ctx.commit(Text("Statusline is unavailable.", style="yellow"))
+        return
+    try:
+        await ctx.statusline_action()
+    except Exception as exc:  # noqa: BLE001 — surface, never kill the REPL
+        ctx.commit(Text(f"✖ statusline failed: {exc}", style="bold red"))
 
 
 async def _new_handler(ctx: CommandContext, args: str) -> None:
@@ -883,7 +941,11 @@ BUILTIN_COMMANDS: list[BuiltinCommand] = [
     BuiltinCommand(
         "permissions", "Show or cycle the permission posture (shift+tab)", _permissions_handler
     ),
-    BuiltinCommand("settings", "Toggle live settings (modes, thinking)", _settings_handler),
+    BuiltinCommand("settings", "View and change settings (modes, theme, thinking, …)", _settings_handler),
+    BuiltinCommand(
+        "scoped-models", "Choose which models are enabled", _scoped_models_handler
+    ),
+    BuiltinCommand("statusline", "Configure the status line segments", _statusline_handler),
     BuiltinCommand("expand", "Show the full output of a truncated tool result", _expand_handler),
     BuiltinCommand("export", "Export the transcript to HTML", _export_handler),
     BuiltinCommand("copy", "Copy the last assistant message to the clipboard", _copy_handler),

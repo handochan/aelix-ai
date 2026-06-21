@@ -256,7 +256,8 @@ def test_sprint_a_registry_set() -> None:
     # batch added thinking + export; 6h₁₄a (ADR-0121) /expand; 6h₁₄b (ADR-0122)
     # /resume; 6h₁₅ (ADR-0123) /hotkeys + /new; 6h₂₁ (ADR-0129) /import + /fork
     # + /clone + /tree; 6h₂₇ (ADR-0155) /hooks + /mcp + /context; WP-0 (ADR-0157)
-    # /permissions.
+    # /permissions; WP-2 (ADR-0160) /statusline; ImplConsumers (ADR-0161)
+    # /scoped-models.
     names = [c.name for c in BUILTIN_COMMANDS]
     assert names == [
         "help",
@@ -275,6 +276,8 @@ def test_sprint_a_registry_set() -> None:
         "mode",
         "permissions",
         "settings",
+        "scoped-models",
+        "statusline",
         "expand",
         "export",
         "copy",
@@ -291,7 +294,7 @@ def test_sprint_a_registry_set() -> None:
     by_name: dict[str, Any] = {c.name: c for c in BUILTIN_COMMANDS}
     for required in (
         "help", "thinking", "expand", "export", "resume", "hotkeys", "new",
-        "session", "name", "copy", "settings",
+        "session", "name", "copy", "settings", "scoped-models", "statusline",
         "import", "fork", "clone", "tree", "hooks", "mcp", "context",
     ):
         assert by_name[required].handler is not None
@@ -1225,3 +1228,62 @@ def test_wp7_handlers_degrade_on_bare_fake_harness() -> None:
         committed: list[object] = []
         _run(name, _ctx(_FakeHarness(), committed), "")
         assert committed, f"/{name} committed nothing on a bare harness"
+
+
+# === ImplConsumers (ADR-0161) — /scoped-models command wiring ==============
+
+
+async def test_scoped_models_degrades_when_action_none() -> None:
+    committed: list[object] = []
+    ctx = CommandContext(
+        chrome=object(),  # type: ignore[arg-type]
+        harness=object(),  # type: ignore[arg-type]
+        commit=committed.append,
+        cwd=".",
+        commands=list(BUILTIN_COMMANDS),
+        scoped_models_action=None,
+    )
+    cmd = match_command("/scoped-models", ctx.commands)
+    assert cmd is not None and cmd.handler is not None
+    await cmd.handler(ctx, "")
+    assert committed and "unavailable" in _render(committed[0]).lower()
+
+
+async def test_scoped_models_invokes_action_when_wired() -> None:
+    calls = {"n": 0}
+
+    async def _action() -> None:
+        calls["n"] += 1
+
+    ctx = CommandContext(
+        chrome=object(),  # type: ignore[arg-type]
+        harness=object(),  # type: ignore[arg-type]
+        commit=lambda r: None,
+        cwd=".",
+        commands=list(BUILTIN_COMMANDS),
+        scoped_models_action=_action,
+    )
+    cmd = match_command("/scoped-models", ctx.commands)
+    assert cmd is not None and cmd.handler is not None
+    await cmd.handler(ctx, "")
+    assert calls["n"] == 1
+
+
+async def test_scoped_models_handler_surfaces_action_failure() -> None:
+    committed: list[object] = []
+
+    async def _action() -> None:
+        raise RuntimeError("boom")
+
+    ctx = CommandContext(
+        chrome=object(),  # type: ignore[arg-type]
+        harness=object(),  # type: ignore[arg-type]
+        commit=committed.append,
+        cwd=".",
+        commands=list(BUILTIN_COMMANDS),
+        scoped_models_action=_action,
+    )
+    cmd = match_command("/scoped-models", ctx.commands)
+    assert cmd is not None and cmd.handler is not None
+    await cmd.handler(ctx, "")
+    assert any("scoped-models failed" in _render(c) for c in committed)
