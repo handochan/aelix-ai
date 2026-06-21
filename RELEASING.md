@@ -93,7 +93,6 @@ is needed for subsequent releases.
    ```bash
    uv sync --all-packages
    uv run ruff check .
-   uv run ruff format --check .
    uv run pytest -p no:cacheprovider -q
    uv build --all-packages   # confirms all wheels + sdists build
    ```

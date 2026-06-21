@@ -36,6 +36,12 @@ agent platform.
 - **Extensions API (`aelix-coding-agent`)** — 4-tier extension architecture,
   extension loader, built-in policy/guardrail extensions, runtime tool
   registration, and example tools.
+- **Project Trust** — running in an untrusted directory gates project-local
+  extensions (`.aelix/extensions/`) and MCP servers (`.aelix/mcp.json`) behind a
+  trust prompt with on-disk persistence; deny-by-default in headless mode.
+- **Cooperative abort** — `Esc` cancels in-flight tools (bash, grep, find, read,
+  write, edit, ls) without orphaning processes, and the RPC `abort_bash` kills
+  the running shell.
 - **TUI** — an interactive terminal shell (optional `[tui]` extra) with slash
   commands, streaming Markdown output, compact tool cards, a status footer and
   context meter, steer/queue, session resume/fork, and an external-editor

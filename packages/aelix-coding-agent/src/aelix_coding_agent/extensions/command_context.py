@@ -23,7 +23,8 @@ produces the :class:`ReplacedSessionContext` handle via
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Awaitable, Callable
+from collections.abc import Awaitable, Callable
+from typing import TYPE_CHECKING, Any
 
 from aelix_coding_agent.extensions.api import (
     ExtensionContext,
@@ -37,19 +38,19 @@ if TYPE_CHECKING:
         NavigateTreeOptions,
         NavigateTreeResult,
     )
-    from aelix_agent_core.runtime.agent_session_runtime import (
-        AgentSessionRuntime,
-    )
     from aelix_agent_core.runtime._types import (
         ReplacedSessionContext,
         RuntimeReplaceResult,
+    )
+    from aelix_agent_core.runtime.agent_session_runtime import (
+        AgentSessionRuntime,
     )
     from aelix_agent_core.session import Session
     from aelix_agent_core.session.jsonl_repo import (
         JsonlSessionMetadata,
         JsonlSessionRepo,
     )
-    from aelix_agent_core.session.repo_utils import ForkOptions, ForkPosition
+    from aelix_agent_core.session.repo_utils import ForkPosition
 
 
 class ExtensionCommandContext(ExtensionContext):

@@ -18,10 +18,10 @@ from typing import Any
 from aelix_agent_core import (
     AgentContext,
     AgentLoopConfig,
+    AgentTool,
     agent_loop,
     default_convert_to_llm,
 )
-from aelix_agent_core import AgentTool
 from aelix_agent_core.harness.core import AgentHarness, AgentHarnessOptions
 from aelix_ai.messages import (
     AssistantMessage,

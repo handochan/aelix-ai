@@ -2,8 +2,13 @@ name: CI
 
 # Continuous integration for the Aelix uv workspace.
 #
-# Runs on every push and pull request: lint (ruff), format check (ruff),
-# and the test gate (pytest) across the supported Python versions.
+# Runs on every push and pull request: lint (ruff check) and the test gate
+# (pytest) across the supported Python versions.
+#
+# Note: ``ruff format --check`` is intentionally NOT enforced — the codebase is
+# hand-formatted for readability (pi-parity annotations, multi-line calls), which
+# the opinionated ``ruff format`` would collapse. ``ruff check`` (the linter)
+# remains the style gate. See ADR-0152.
 #
 # Third-party actions are PINNED to a commit SHA (supply-chain hardening);
 # the trailing comment records the human-readable release tag.
@@ -48,9 +53,6 @@ jobs:
 
       - name: Lint (ruff check)
         run: uv run ruff check .
-
-      - name: Format check (ruff format --check)
-        run: uv run ruff format --check .
 
       - name: Test gate (pytest)
         run: uv run pytest -p no:cacheprovider -q
