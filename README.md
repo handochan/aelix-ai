@@ -59,8 +59,14 @@ aelix --help
 ```
 
 `aelix` needs a provider key — set `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` /
-`OPENROUTER_API_KEY` (or run `aelix auth login <provider>`). To publish a
-release, see [RELEASING.md](RELEASING.md).
+`OPENROUTER_API_KEY` (or pass `--api-key`, or configure a key in
+`~/.aelix/agent/models.json`). The [providers guide](docs/guides/providers-and-models.md)
+has the full list. To publish a release, see [RELEASING.md](RELEASING.md).
+
+**User guides:** [getting started](docs/guides/getting-started.md) ·
+[providers & models](docs/guides/providers-and-models.md) ·
+[custom models](docs/guides/models-json.md) ·
+[writing an extension](docs/guides/extension-authoring.md).
 
 ## Quick Start
 

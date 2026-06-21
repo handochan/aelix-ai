@@ -10,6 +10,7 @@
 - `02-initial-requirements.md`: 초기 요구사항과 설계 제약
 - `03-architecture-principles.md`: 런타임/확장/마켓플레이스 설계 원칙
 - `04-reference-projects.md`: 계속 참조할 외부/내부 프로젝트 목록
+- `guides/`: 사용자 가이드(설치/실행/provider/models.json/extension 작성). 인덱스는 [`guides/README.md`](guides/README.md) 참조
 - `decisions/`: 중요한 설계 결정 기록. 인덱스는 [`decisions/README.md`](decisions/README.md) 참조
 
 ## 문서 상태
