@@ -316,6 +316,30 @@ async def test_select_detail_exception_does_not_break_modal() -> None:
         assert await asyncio.wait_for(fut, timeout=5) == "red"
 
 
+async def test_select_initial_index_starts_at_given_row() -> None:
+    # Sprint 6h₃₀ (ADR-0163): initial_index restores the cursor so /settings keeps
+    # your row after returning from a sub-picker (e.g. the /model selector) instead
+    # of snapping to the top. Enter immediately confirms the highlighted row.
+    async with _ctx(run_app=True) as (ctx, _chrome, pipe):
+        fut = asyncio.ensure_future(
+            ctx.select("Pick", ["red", "green", "blue"], initial_index=2)
+        )
+        await asyncio.sleep(0.05)
+        pipe.send_text("\r")  # Enter — confirm the initially-highlighted row
+        assert await asyncio.wait_for(fut, timeout=5) == "blue"
+
+
+async def test_select_initial_index_out_of_range_is_clamped() -> None:
+    # Sprint 6h₃₀ (ADR-0163): an out-of-range initial_index clamps to the last row.
+    async with _ctx(run_app=True) as (ctx, _chrome, pipe):
+        fut = asyncio.ensure_future(
+            ctx.select("Pick", ["red", "green"], initial_index=99)
+        )
+        await asyncio.sleep(0.05)
+        pipe.send_text("\r")
+        assert await asyncio.wait_for(fut, timeout=5) == "green"
+
+
 async def test_select_empty_options_resolves_none() -> None:
     # Sprint 6h₂₄: zero options → no modal opens, immediate None.
     async with _ctx(run_app=False) as (ctx, _chrome, _pipe):

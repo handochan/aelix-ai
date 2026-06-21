@@ -61,6 +61,39 @@ _RENDER_WIDTH = 80  # best-effort width for factory-rendered widget lines
 # user switches steering to "all".
 _DEFAULT_STEERING_MODE = "one-at-a-time"
 
+# Sprint 6h₃₀ (ADR-0163) — picker visual polish for select()/multiselect(): a
+# framed panel (bold title + top/bottom dividers), a COLOR-highlighted current
+# row, and DIMMED counter / detail / hint so the eye lands on the selection.
+# Raw ANSI (theme-agnostic — independent of the app style map; mirrors the
+# approval-dialog precedent of Rich→ANSI). Returned via ``ANSI(...)`` so
+# prompt-toolkit interprets the escapes instead of printing them literally.
+_PICK_SEL = "\x1b[1;36m"  # bold cyan — the highlighted row
+_PICK_DIM = "\x1b[2m"  # dim — dividers, counter, detail/help, hint
+_PICK_BOLD = "\x1b[1m"  # bold — the title
+_PICK_RST = "\x1b[0m"
+_PICK_MIN_WIDTH = 28
+_PICK_MAX_WIDTH = 78
+
+
+def _picker_frame(title: str, body: list[str], hint: str, content_width: int) -> ANSI:
+    """Frame a picker body: bold title + top/bottom dividers + dim hint (ADR-0163).
+
+    ``body`` rows are already styled by the caller (the current row colored, the
+    counter/detail dimmed). ``content_width`` is the widest PLAIN content line so
+    the dividers span the panel. Returns :class:`ANSI` so the escapes render.
+    """
+
+    width = max(_PICK_MIN_WIDTH, min(content_width, _PICK_MAX_WIDTH))
+    divider = f"{_PICK_DIM}{'─' * width}{_PICK_RST}"
+    lines = [
+        f"{_PICK_BOLD}{title}{_PICK_RST}",
+        divider,
+        *body,
+        divider,
+        f"{_PICK_DIM}{hint}{_PICK_RST}",
+    ]
+    return ANSI("\n".join(lines))
+
 
 def _resolve(future: asyncio.Future[Any], value: Any) -> None:
     if not future.done():
@@ -174,6 +207,7 @@ class AelixTUIContext:
         options: list[str],
         opts: ExtensionUIDialogOptions | None = None,
         detail: Callable[[int], list[str]] | None = None,
+        initial_index: int = 0,
     ) -> str | None:
         """Pi-parity arrow-key select with type-to-filter (Sprint 6h₂₄).
 
@@ -205,8 +239,16 @@ class AelixTUIContext:
 
         # Per-call mutable state. ``idx`` is into the FILTERED view, not
         # ``options`` — the filter changes the visible set so the cursor is
-        # naturally relative to what's on screen.
-        state: dict[str, Any] = {"idx": 0, "filter": ""}
+        # naturally relative to what's on screen. ``initial_index`` (clamped)
+        # restores the cursor when a caller re-opens the picker (Sprint 6h₃₀,
+        # ADR-0163: /settings keeps your row after returning from a sub-picker
+        # like the /model selector, instead of snapping back to the top). The
+        # filter starts empty, so the filtered view == ``options`` at open and
+        # the index maps 1:1.
+        state: dict[str, Any] = {
+            "idx": max(0, min(initial_index, len(options) - 1)),
+            "filter": "",
+        }
         viewport = 8  # max rows of options shown at once; ⋮ markers for scroll
 
         def filtered() -> list[tuple[int, str]]:
@@ -216,13 +258,20 @@ class AelixTUIContext:
                 return list(enumerate(options))
             return [(i, o) for i, o in enumerate(options) if needle in o.lower()]
 
-        def render() -> str:
+        def render() -> ANSI:
+            # Sprint 6h₃₀ (ADR-0163) — framed + colored. Current row is bold cyan
+            # with a ▸ marker; counter / detail / hint are dim; a top+bottom
+            # divider frames the panel. See _picker_frame.
             items = filtered()
             if not items:
-                return (
-                    f"{title}\n\n(no matches)\n"
-                    f"Filter: {state['filter']}\n"
-                    "Backspace to clear · Esc to cancel"
+                return _picker_frame(
+                    title,
+                    [
+                        f"{_PICK_DIM}(no matches){_PICK_RST}",
+                        f"{_PICK_DIM}Filter: {state['filter']}{_PICK_RST}",
+                    ],
+                    "Backspace to clear · Esc to cancel",
+                    max(len(title), 40),
                 )
             idx = max(0, min(state["idx"], len(items) - 1))
             state["idx"] = idx
@@ -230,28 +279,38 @@ class AelixTUIContext:
             # centers cursor when interior; clamps to top/bottom near edges.
             start = max(0, min(idx - viewport // 2, len(items) - viewport))
             end = min(len(items), start + viewport)
-            rows: list[str] = [title]
-            if start > 0:
-                rows.append("  ⋮")
-            for i in range(start, end):
-                marker = "→ " if i == idx else "  "
-                rows.append(f"{marker}{items[i][1]}")
-            if end < len(items):
-                rows.append("  ⋮")
-            rows.append(f"  ({idx + 1}/{len(items)})")
-            if state["filter"]:
-                rows.append(f"  Filter: {state['filter']}")
+            detail_lines: list[str] = []
             if detail is not None:
                 # Per-highlight detail panel (Sprint 6h₂₆, ADR-0154). The callback
                 # gets the ORIGINAL option index (``items[idx][0]`` — the index
-                # into ``options``, not the filtered view) and returns extra lines.
-                # Cosmetic + guarded: a raising callback must never break the modal.
+                # into ``options``, not the filtered view). Guarded: a raising
+                # callback must never break the modal.
                 with contextlib.suppress(Exception):
-                    rows.extend(detail(items[idx][0]))
-            rows.append(
-                "  Type to search · ↑/↓ to move · Enter/Space to change · Esc to cancel"
+                    detail_lines = list(detail(items[idx][0]))
+            counter = f"({idx + 1}/{len(items)})"
+            if state["filter"]:
+                counter += f"  ·  Filter: {state['filter']}"
+            hint = "↑/↓ move · type to filter · Enter select · Esc cancel"
+            width = max(
+                [len(title), len(counter), len(hint)]
+                + [len(items[i][1]) + 2 for i in range(start, end)]
+                + [len(d) for d in detail_lines]
             )
-            return "\n".join(rows)
+            body: list[str] = []
+            if start > 0:
+                body.append(f"{_PICK_DIM}  ⋮{_PICK_RST}")
+            for i in range(start, end):
+                text = items[i][1]
+                if i == idx:
+                    body.append(f"{_PICK_SEL}▸ {text}{_PICK_RST}")
+                else:
+                    body.append(f"  {text}")
+            if end < len(items):
+                body.append(f"{_PICK_DIM}  ⋮{_PICK_RST}")
+            body.append(f"{_PICK_DIM}  {counter}{_PICK_RST}")
+            for d in detail_lines:
+                body.append(f"{_PICK_DIM}{d}{_PICK_RST}")
+            return _picker_frame(title, body, hint, width)
 
         def build(result: asyncio.Future[Any]) -> Window:
             kb = KeyBindings()
@@ -372,51 +431,68 @@ class AelixTUIContext:
         def total_rows() -> int:
             return len(filtered_options()) + len(extra_toggles or [])
 
-        def render() -> str:
+        def render() -> ANSI:
+            # Sprint 6h₃₀ (ADR-0163) — framed + colored, matching select(): the
+            # cursor row is bold cyan with a ▸ marker; checkboxes stay ✓/☐;
+            # counter / preview / hint are dim; a top+bottom divider frames it.
             opts = filtered_options()
             n_opts = len(opts)
             n_total = total_rows()
             if n_total == 0:
-                return (
-                    f"{title}\n\n(no matches)\n"
-                    f"Filter: {state['filter']}\n"
-                    "Backspace to clear · Esc to cancel"
+                return _picker_frame(
+                    title,
+                    [
+                        f"{_PICK_DIM}(no matches){_PICK_RST}",
+                        f"{_PICK_DIM}Filter: {state['filter']}{_PICK_RST}",
+                    ],
+                    "Backspace to clear · Esc to cancel",
+                    max(len(title), 40),
                 )
             cursor = max(0, min(state["cursor"], n_total - 1))
             state["cursor"] = cursor
-            rows: list[str] = [title]
             # Scroll window across the OPTION rows only (toggles always trail).
             start = max(0, min(cursor - viewport // 2, max(0, n_opts - viewport)))
             end = min(n_opts, start + viewport)
+            plain_rows: list[str] = []  # for width sizing
+            body: list[str] = []
+
+            def _row(is_cursor: bool, plain: str) -> str:
+                plain_rows.append(plain)
+                if is_cursor:
+                    return f"{_PICK_SEL}▸ {plain}{_PICK_RST}"
+                return f"  {plain}"
+
             if start > 0:
-                rows.append("  ⋮")
+                body.append(f"{_PICK_DIM}  ⋮{_PICK_RST}")
             for vi in range(start, end):
-                orig_idx, (oid, label, _desc) = opts[vi]
-                marker = "→" if vi == cursor else " "
+                _orig_idx, (oid, label, _desc) = opts[vi]
                 box = "✓" if oid in chosen else "☐"
-                rows.append(f"{marker} [{box}] {label}")
+                body.append(_row(vi == cursor, f"[{box}] {label}"))
             if end < n_opts:
-                rows.append("  ⋮")
+                body.append(f"{_PICK_DIM}  ⋮{_PICK_RST}")
             # Extra toggle rows (rendered after the option list).
             for ti, (key, label) in enumerate(extra_toggles or []):
-                row_idx = n_opts + ti
-                marker = "→" if row_idx == cursor else " "
                 box = "✓" if toggles.get(key) else "☐"
-                rows.append(f"{marker} [{box}] {label}")
-            rows.append(f"  ({min(cursor + 1, n_total)}/{n_total})")
+                body.append(_row(n_opts + ti == cursor, f"[{box}] {label}"))
+            counter = f"({min(cursor + 1, n_total)}/{n_total})"
             if state["filter"]:
-                rows.append(f"  Filter: {state['filter']}")
+                counter += f"  ·  Filter: {state['filter']}"
+            body.append(f"{_PICK_DIM}  {counter}{_PICK_RST}")
+            preview_lines: list[str] = []
             if preview is not None:
                 with contextlib.suppress(Exception):
-                    lines = preview(set(chosen), dict(toggles))
-                    if lines:
-                        rows.append("")
-                        rows.extend(lines)
-            rows.append(
-                "  Type to search · ↑/↓ move · Space toggle · "
-                "Enter confirm · Esc cancel"
+                    pl = preview(set(chosen), dict(toggles))
+                    if pl:
+                        preview_lines = list(pl)
+            for p in preview_lines:
+                body.append(f"{_PICK_DIM}{p}{_PICK_RST}")
+            hint = "↑/↓ move · Space toggle · Enter confirm · Esc cancel"
+            width = max(
+                [len(title), len(counter), len(hint)]
+                + [len(r) + 2 for r in plain_rows]
+                + [len(p) for p in preview_lines]
             )
-            return "\n".join(rows)
+            return _picker_frame(title, body, hint, width)
 
         def build(result: asyncio.Future[Any]) -> Window:
             kb = KeyBindings()

@@ -654,6 +654,11 @@ async def run_tui(
             "thinking_level": _settings_thinking_action,
         }
 
+        # Sprint 6h₃₀ (ADR-0163) — remember the highlighted row across re-opens so
+        # returning from a sub-flow (e.g. the /model picker launched by the
+        # "Default model" row) keeps the cursor on that row instead of snapping
+        # back to the top. ``select(initial_index=...)`` restores it each pass.
+        cursor_idx = 0
         while True:
             rows = build_settings_rows(settings_manager)
             # Pi screenshot parity: pad the label column so values line up.
@@ -661,6 +666,7 @@ async def run_tui(
             labels = [
                 f"{r.label.ljust(width)}{r.read(settings_manager)}" for r in rows
             ]
+            cursor_idx = max(0, min(cursor_idx, len(labels) - 1))
             # Bind ``rows`` via a default arg so the per-highlight detail closure
             # references THIS iteration's rows (ruff B023 — the loop rebuilds rows
             # each pass; the lambda is consumed synchronously within the same pass
@@ -669,6 +675,7 @@ async def run_tui(
                 "Settings — select to change (Esc to close)",
                 labels,
                 detail=lambda i, _rows=rows: [_rows[i].help] if _rows[i].help else [],
+                initial_index=cursor_idx,
             )
             if not choice:
                 return  # Esc closes the menu
@@ -679,6 +686,7 @@ async def run_tui(
             except ValueError:
                 _commit(Text(f"✖ settings: unknown row {choice!r}", style="bold red"))
                 continue
+            cursor_idx = row_idx  # keep the cursor here on the next re-open
             row = rows[row_idx]
 
             # int rows: collect the new value via an input dialog first.
