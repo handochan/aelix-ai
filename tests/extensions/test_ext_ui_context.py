@@ -254,9 +254,17 @@ def test_headless_add_autocomplete_provider_raises() -> None:
 # === Tests 26-30 — Theme (5 + 1 property) ===
 
 
-def test_headless_theme_property_raises() -> None:
-    with pytest.raises(NotImplementedError, match=f"theme.*{EXPECTED_MSG_FRAGMENT}"):
-        _ = HEADLESS_UI_CONTEXT.theme
+def test_headless_theme_property_returns_default() -> None:
+    # ``theme`` is the protocol's only *property* member, so an
+    # ``isinstance(ctx, ExtensionUIContext)`` check under ``@runtime_checkable``
+    # INVOKES its getter on Python 3.11 (3.11 probes data members via
+    # ``hasattr``; 3.12 uses ``getattr_static`` and does not). It must therefore
+    # return a value rather than raise — a no-op default Theme. The callable
+    # theme methods (``get_theme`` / ``set_theme`` / ``get_all_themes``) still
+    # raise when invoked.
+    from aelix_coding_agent.extensions.widget_protocols import Theme
+
+    assert isinstance(HEADLESS_UI_CONTEXT.theme, Theme)
 
 
 def test_headless_get_all_themes_raises() -> None:
@@ -338,11 +346,14 @@ def test_unbind_ui_back_to_headless() -> None:
 # === Tests 35 — Theme readonly property semantics ===
 
 
-def test_theme_property_raises_for_headless() -> None:
-    """Accessing `.theme` on the headless triggers the NotImplementedError path."""
+def test_theme_property_does_not_raise_for_headless() -> None:
+    """Accessing `.theme` on the headless returns a default Theme and must NOT
+    raise — it is invoked by ``isinstance()`` under ``@runtime_checkable`` on
+    Python 3.11, where raising would break structural conformance."""
 
-    with pytest.raises(NotImplementedError):
-        _ = HEADLESS_UI_CONTEXT.theme
+    from aelix_coding_agent.extensions.widget_protocols import Theme
+
+    assert isinstance(HEADLESS_UI_CONTEXT.theme, Theme)
 
 
 # === Tests 36-37 — set_widget overload signature inventory ===

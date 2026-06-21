@@ -40,15 +40,29 @@ by the maintainer:
   ordering, unused-import removal; behavior-neutral).
 - **Complete the `[0.1.0]` changelog** — it pre-dated Sprints 2–4 and omitted
   Project Trust (S2) and cooperative abort (S3). Both added.
+- **Fix a Python 3.11-only test failure that the now-green `ruff check` step
+  revealed** (CI had died at `ruff check` in ~16 s before pytest ever ran, so the
+  py3.11 break was never surfaced). The headless `ExtensionUIContext.theme`
+  *property* raised `NotImplementedError`. Under `@runtime_checkable`,
+  `isinstance(ctx, ExtensionUIContext)` probes data-member getters via `hasattr`
+  on 3.11 (which *invokes* the property → raises) but via `getattr_static` on
+  3.12 (which does not), so the raise broke structural conformance **on 3.11
+  only**. Fix: the headless `theme` now returns a no-op default `Theme` (identity
+  resolvers) instead of raising — semantically sound for a no-UI context, with no
+  production reliance on the raise; the callable theme members
+  (`get_theme`/`set_theme`/`get_all_themes`) still raise. The two "theme raises"
+  tests were updated to the new contract.
 
 `ruff format` is not removed from the repo config (`[tool.ruff.format]` stays for
 anyone who opts to run it locally); it is simply no longer a CI gate.
 
 ## Consequences
 
-- CI goes green for the first time: committed-tree `ruff check` passes
-  (verified via `git ls-files '*.py' | xargs ruff check` → clean) and the gate is
-  3553 pass / 1 skip / 0 fail.
+- CI goes green for the first time, on **both** matrix Pythons: committed-tree
+  `ruff check` passes (verified via `git ls-files '*.py' | xargs ruff check` →
+  clean) and the pytest gate is green on py3.11 **and** py3.12 (3553 pass / 1
+  skip / 0 fail; the py3.11 `theme` fix closed the last 2 failures that the green
+  ruff step had newly exposed).
 - The release path in `RELEASING.md` is now actually satisfiable end-to-end.
 - Style policy is explicit: lint-enforced, format-by-convention. A future sprint
   may adopt strict `ruff format` deliberately (one large reformat commit) if the
@@ -61,3 +75,6 @@ anyone who opts to run it locally); it is simply no longer a CI gate.
 - `packages/aelix-coding-agent/src/aelix_coding_agent/extensions/command_context.py`,
   `tests/test_adr0135_reasoning_state_wiring.py` (lint fixes)
 - `CHANGELOG.md` (Project Trust + cooperative abort)
+- `packages/aelix-coding-agent/src/aelix_coding_agent/extensions/headless_ui.py`
+  (headless `theme` returns a default Theme), `tests/extensions/test_ext_ui_context.py`
+  (the two theme tests updated to the new contract) — the py3.11 conformance fix

@@ -191,7 +191,16 @@ class HeadlessExtensionUIContext:
 
     @property
     def theme(self) -> Theme:
-        raise _raise_headless("theme")
+        # Return a no-op default Theme rather than raising. ``theme`` is the
+        # protocol's only *property* member, so ``isinstance(ctx,
+        # ExtensionUIContext)`` under ``@runtime_checkable`` INVOKES this getter
+        # on Python 3.11 (3.11 probes data members via ``hasattr`` → calls the
+        # property; 3.12 does not). Raising here breaks that structural
+        # conformance check on 3.11. The callable members raise only when
+        # *invoked*, so they are unaffected. The default ``Theme``'s fg/bg/bold/
+        # italic resolvers are identity functions — safe no-op styling for
+        # headless output; ``get_theme``/``set_theme`` still raise.
+        return Theme(name="headless")
 
     def get_all_themes(self) -> list[ThemeInfo]:
         raise _raise_headless("get_all_themes")
