@@ -130,6 +130,18 @@ class CommandContext:
     can short-circuit a buffered/pasted Enter that lands while ``$EDITOR`` is
     still applying its result (W-review HIGH-1, Sprint 6h₂₃, ADR-0131).
     ``None`` in headless tests / when no editor is wired."""
+    thinking_picker: Callable[[], Awaitable[None]] | None = None
+    """``run_tui`` wires this to its ``_open_thinking_picker`` flow: a
+    ``ctx.ui.select`` over ``get_supported_thinking_levels(current_model)`` →
+    ``harness.set_thinking_level``. The no-arg ``/thinking`` handler awaits it;
+    ``None`` in headless tests / when no picker is wired, in which case
+    ``/thinking`` falls back to its status print (Sprint 6h₂₇, ADR-0155)."""
+    mcp_status: Callable[[], Awaitable[None]] | None = None
+    """``run_tui`` wires this to its ``_open_mcp_status`` flow (a read-only
+    panel over the live ``McpClientManager``: servers, transport, state, tool
+    counts). The ``/mcp`` handler awaits it; ``None`` in headless tests / when
+    no MCP manager is attached, in which case ``/mcp`` degrades with a committed
+    message (Sprint 6h₂₇, ADR-0155)."""
 
 
 def build_help_renderable(commands: list[BuiltinCommand]) -> RenderableType:
@@ -339,10 +351,12 @@ async def _export_handler(ctx: CommandContext, args: str) -> None:
 
 
 async def _thinking_handler(ctx: CommandContext, args: str) -> None:
-    """``/thinking [level]`` — show the reasoning level, or set it.
+    """``/thinking [level]`` — no arg opens the picker; a level sets it directly.
 
-    No arg shows the current level; an arg (e.g. ``low``/``medium``/``high``)
-    sets it via the harness. Degrades gracefully on a harness lacking the API.
+    No-arg opens the interactive level picker (Sprint 6h₂₇, ADR-0155) when the
+    host wired one, else prints the current level. An explicit level
+    (``/thinking high``) skips the picker and sets it via the harness. Degrades
+    gracefully on a harness lacking the API.
     """
 
     state = getattr(ctx.harness, "_state", None)
@@ -352,6 +366,15 @@ async def _thinking_handler(ctx: CommandContext, args: str) -> None:
     )
     supported = state is not None or callable(setter)
     if not args:
+        # Sprint 6h₂₇ (ADR-0155) — no-arg /thinking opens the level picker when
+        # the host wired it; falls back to a one-line status print headlessly /
+        # when no picker is attached (FakeHarness tests, RPC).
+        if ctx.thinking_picker is not None:
+            try:
+                await ctx.thinking_picker()
+            except Exception as exc:  # noqa: BLE001 — never kill the REPL
+                ctx.commit(Text(f"✖ thinking picker failed: {exc}", style="bold red"))
+            return
         if current:
             ctx.commit(Text(f"thinking: {current}"))
         elif supported:
@@ -536,6 +559,156 @@ async def _tree_handler(ctx: CommandContext, args: str) -> None:
         ctx.commit(Text(f"✖ tree failed: {exc}", style="bold red"))
 
 
+async def _hooks_handler(ctx: CommandContext, args: str) -> None:
+    """``/hooks`` — list registered hook handlers per event type (read-only).
+
+    Sprint 6h₂₇ (ADR-0155, WP-7). Read-only viewer over the harness
+    :class:`HookBus`: for each hook event that has at least one handler, show the
+    handler count. Read-only — edit ``settings.json`` to add/remove hooks.
+    Degrades with a committed message when the harness has no ``HookBus``
+    (headless / FakeHarness). Ignores ``args`` (like ``/tools`` / ``/session``).
+    """
+
+    # ``harness.hooks`` is a public @property returning the HookBus; ``_handlers``
+    # is the semi-private event-name → handler-list map (same coupling tier as
+    # ``_action_get_all_tools`` in _tools_handler). Read-only; no protected-core
+    # mutation.
+    hooks = getattr(ctx.harness, "hooks", None)
+    handlers = getattr(hooks, "_handlers", None) if hooks is not None else None
+    if not isinstance(handlers, dict):
+        ctx.commit(Text("Hooks are unavailable.", style="yellow"))
+        return
+    # Only events with ≥1 handler (the 35-event union is mostly empty → noise);
+    # mirrors the banner Feature A counting.
+    rows = sorted((name, len(hs)) for name, hs in handlers.items() if hs)
+    if not rows:
+        ctx.commit(Text("No hook handlers registered.", style="yellow"))
+        return
+    table = Table.grid(padding=(0, 2))
+    table.add_column(style="bold cyan", no_wrap=True)  # event type
+    table.add_column(style="white", justify="right")  # handler count
+    for name, count in rows:
+        table.add_row(name, str(count))
+    table.add_row("", "")
+    table.add_row(
+        Text("read-only", style="dim"),
+        Text("edit settings.json to change", style="dim"),
+    )
+    ctx.commit(Panel(table, title="Hooks", box=ROUNDED, border_style="cyan"))
+
+
+async def _mcp_handler(ctx: CommandContext, args: str) -> None:
+    """``/mcp`` — show MCP server status (servers, state, tool counts); ignores args.
+
+    Sprint 6h₂₇ (ADR-0155, WP-7). Delegates to the host-wired ``mcp_status`` flow
+    (a read-only panel over the live ``McpClientManager``). Degrades with a
+    committed message when no MCP manager is wired (headless / no servers) and on
+    any failure (never crashes the REPL).
+    """
+
+    if ctx.mcp_status is None:
+        ctx.commit(Text("MCP is unavailable.", style="yellow"))
+        return
+    try:
+        await ctx.mcp_status()
+    except Exception as exc:  # noqa: BLE001 — surface, never kill the REPL
+        ctx.commit(Text(f"✖ mcp failed: {exc}", style="bold red"))
+
+
+def _context_bar(used: int, window: int, threshold: int, width: int = 32) -> Text:
+    """A small 3-segment context-usage bar (PURE).
+
+    ``used`` (cyan) ▸ ``free up to the compaction threshold`` (green) ▸
+    ``autocompact buffer`` (yellow). Segment widths are proportional to
+    ``window``; the segments always sum to ``width`` (the buffer absorbs
+    rounding so the bar never over/underflows). Defensive on a zero/odd window.
+    """
+
+    bar = Text()
+    if window <= 0:
+        return bar
+    used = max(min(used, window), 0)
+    threshold = max(min(threshold, window), 0)
+    used_cells = round(used / window * width)
+    # Free band = the room left before compaction triggers.
+    free_to_threshold = max(threshold - used, 0)
+    free_cells = round(free_to_threshold / window * width)
+    used_cells = min(used_cells, width)
+    free_cells = min(free_cells, width - used_cells)
+    buffer_cells = width - used_cells - free_cells  # absorbs rounding
+    bar.append("█" * used_cells, style="cyan")
+    bar.append("█" * free_cells, style="green")
+    bar.append("█" * buffer_cells, style="yellow")
+    return bar
+
+
+async def _context_handler(ctx: CommandContext, args: str) -> None:
+    """``/context`` — context-window usage bar + compaction thresholds.
+
+    Sprint 6h₂₇ (ADR-0155, WP-7/WP-8). Read-only over
+    ``harness.get_session_stats().context_usage``. DEGRADED panel vs the mockup:
+    Used / Free / Autocompact-buffer + token totals + percent + the compaction
+    threshold; the per-category usage section is OMITTED because no backing
+    instrumentation exists (``ContextUsage`` carries a single ``tokens`` total
+    only — system-vs-tools-vs-messages categories are not measured anywhere).
+    Never crashes the REPL.
+    """
+
+    if not hasattr(ctx.harness, "get_session_stats"):
+        ctx.commit(Text("Context usage is unavailable.", style="yellow"))
+        return
+    try:
+        stats = await ctx.harness.get_session_stats()
+    except Exception as exc:  # noqa: BLE001 — surface, never kill the REPL
+        ctx.commit(Text(f"✖ context failed: {exc}", style="bold red"))
+        return
+    usage = getattr(stats, "context_usage", None)
+    window = getattr(usage, "context_window", 0) or 0
+    tokens = getattr(usage, "tokens", None)
+    percent = getattr(usage, "percent", None)
+    if usage is None or window <= 0:
+        ctx.commit(
+            Text("Context usage unavailable (no model bound yet).", style="yellow")
+        )
+        return
+
+    # The autocompact reserve is read-only from protected core, fully guarded so
+    # headless / a core without the symbol degrades to the documented 16384.
+    reserve = 16384
+    with contextlib.suppress(Exception):
+        from aelix_agent_core.harness.core import (  # noqa: PLC0415
+            _AUTO_COMPACT_RESERVE_TOKENS as reserve,
+        )
+    from aelix_coding_agent.cli.list_models import (  # noqa: PLC0415
+        format_token_count as fmt,
+    )
+
+    threshold = max(window - reserve, 0)
+    used = tokens if isinstance(tokens, int) else None
+    table = Table.grid(padding=(0, 2))
+    table.add_column(style="bold cyan", no_wrap=True)
+    table.add_column(style="white")
+    table.add_row("context window", fmt(window))
+    if used is not None:
+        free = max(window - used, 0)
+        pct = percent if isinstance(percent, (int, float)) else (used / window * 100)
+        table.add_row("used", f"{fmt(used)}  ({pct:.0f}%)")
+        table.add_row("free", fmt(free))
+        table.add_row("autocompact buffer", fmt(reserve))
+        table.add_row(
+            "compacts at", f"{fmt(threshold)}  ({threshold / window * 100:.0f}%)"
+        )
+        table.add_row("", _context_bar(used, window, threshold))
+    else:
+        # tokens=None sentinel: post-compaction-no-usage-yet OR not measured.
+        table.add_row("used", "n/a (no post-turn usage yet)")
+        table.add_row(
+            "compacts at", f"{fmt(threshold)}  ({threshold / window * 100:.0f}%)"
+        )
+    # usage-by-category section OMITTED vs mockup — no backing data (see docstring).
+    ctx.commit(Panel(table, title="Context", box=ROUNDED, border_style="cyan"))
+
+
 # Aelix TUI keybindings (static — the actual bindings wired in chrome.py). Kept
 # next to the registry so /hotkeys and the real bindings can't silently drift.
 _HOTKEYS: list[tuple[str, str]] = [
@@ -663,8 +836,11 @@ BUILTIN_COMMANDS: list[BuiltinCommand] = [
     BuiltinCommand("cost", "Show session token / cost usage", _cost_handler),
     BuiltinCommand("session", "Show session info (id, cwd, name, usage)", _session_handler),
     BuiltinCommand("name", "Show or set the session name", _name_handler),
-    BuiltinCommand("thinking", "Show or set the reasoning level", _thinking_handler),
+    BuiltinCommand("thinking", "Show, pick, or set the reasoning level", _thinking_handler),
     BuiltinCommand("tools", "List registered tools", _tools_handler),
+    BuiltinCommand("hooks", "List registered hook handlers (read-only)", _hooks_handler),
+    BuiltinCommand("mcp", "Show MCP server status (servers, state, tool counts)", _mcp_handler),
+    BuiltinCommand("context", "Show context-window usage + compaction thresholds", _context_handler),
     BuiltinCommand("mode", "Show or set the steering mode", _mode_handler),
     BuiltinCommand("settings", "Toggle live settings (modes, thinking)", _settings_handler),
     BuiltinCommand("expand", "Show the full output of a truncated tool result", _expand_handler),

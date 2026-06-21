@@ -501,3 +501,22 @@ async def test_copy_to_clipboard_writes_osc52() -> None:
         assert ok is True
         expected = base64.b64encode(b"hi there").decode("ascii")
         assert captured == [f"\x1b]52;c;{expected}\x07"]
+
+
+# === Sprint 6h₂₆ (ADR-0156) — marked completions menu mounted ===========
+
+
+async def test_completions_float_uses_marked_menu() -> None:
+    # The completions dropdown Float mounts the marker+counter menu container
+    # (not the stock CompletionsMenu) — guards against an import / construction
+    # regression at chrome __init__ time.
+    from aelix_coding_agent.tui.chrome import (
+        _MarkedCompletionsMenu,
+        _MarkedCompletionsMenuControl,
+    )
+
+    async with _chrome(run_app=False) as (chrome, _pipe, _buf):
+        menu = chrome._completions_float.content
+        assert isinstance(menu, _MarkedCompletionsMenu)
+        # The window's control is the marked control.
+        assert isinstance(menu.content.content, _MarkedCompletionsMenuControl)

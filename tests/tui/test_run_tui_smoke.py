@@ -482,6 +482,28 @@ async def test_run_tui_resume_command_degrades_without_repo() -> None:
     assert runtime.harness.prompts == [("hi", "interactive")]
 
 
+# === Sprint 6h₂₇ (ADR-0155) — /thinking + /mcp + /hooks + /context wiring ===
+
+
+async def test_run_tui_wp7_commands_degrade_and_survive() -> None:
+    # The WP-7 commands are wired into the command context; with the bare fake
+    # harness (no current_model / set_thinking_level / get_session_stats; a
+    # _FakeHooks without _handlers) + no mcp_manager threaded, each degrades
+    # gracefully and the REPL keeps running (barrier proves it never crashed).
+    async with _harness_chrome() as (runtime, chrome, pipe):
+        task = _launch(runtime, chrome)
+        await _wait(lambda: chrome.app.is_running)
+        pipe.send_text("/thinking\n")  # picker wired → degrade (no current_model)
+        pipe.send_text("/mcp\n")  # mcp_status wired → "No MCP servers configured."
+        pipe.send_text("/hooks\n")  # hooks bus has no _handlers → degrade
+        pipe.send_text("/context\n")  # no get_session_stats → degrade
+        pipe.send_text("hi\n")  # barrier: REPL still alive and reaching the model
+        await _wait(lambda: runtime.harness.prompts == [("hi", "interactive")])
+        pipe.send_text("/quit\n")
+        await asyncio.wait_for(task, timeout=5)
+    assert runtime.harness.prompts == [("hi", "interactive")]
+
+
 # --- orchestration fakes: a runtime with a session repo + switch_session -----
 
 

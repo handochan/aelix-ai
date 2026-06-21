@@ -195,14 +195,19 @@ async def test_interactive_mode_dispatches_to_run_tui(
 
     monkeypatch.setattr(sys, "stdin", _FakeTTYStdin())
 
-    calls: list[tuple[object, str, object]] = []
+    calls: list[tuple[object, str, object, object]] = []
 
     async def _stub_run_tui(
-        runtime: object, *, cwd: str, model_registry: object = None
+        runtime: object,
+        *,
+        cwd: str,
+        model_registry: object = None,
+        mcp_manager: object = None,
     ) -> int:
         # Sprint 6h₂₆ (ADR-0154): the real model_registry must be threaded so
         # /model can list get_available() — the harness does not expose it.
-        calls.append((runtime, cwd, model_registry))
+        # Sprint 6h₂₇ (ADR-0155): mcp_manager is threaded the same way for /mcp.
+        calls.append((runtime, cwd, model_registry, mcp_manager))
         return 0
 
     # Patch run_tui at its real home on the module object; ``modes.__getattr__``
@@ -219,11 +224,14 @@ async def test_interactive_mode_dispatches_to_run_tui(
     code = await _async_main(["--no-session"])
     assert code == 0
     assert len(calls) == 1
-    runtime, cwd, model_registry = calls[0]
+    runtime, cwd, model_registry, mcp_manager = calls[0]
     assert runtime is not None
     assert cwd  # a concrete cwd string was passed
     # The real ModelRegistry is threaded through (so /model can list models).
     assert model_registry is not None
+    # mcp_manager is threaded too (None here: --no-session run has no MCP
+    # contribs, so entry.py leaves it None — the kwarg must still be accepted).
+    assert mcp_manager is None
 
 
 async def test_interactive_missing_tui_extra_returns_1(

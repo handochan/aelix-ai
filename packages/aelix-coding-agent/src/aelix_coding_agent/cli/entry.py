@@ -792,7 +792,10 @@ async def _async_main(argv: list[str]) -> int:
                 return 1
 
             return await run_tui(
-                runtime, cwd=str(Path.cwd()), model_registry=model_registry
+                runtime,
+                cwd=str(Path.cwd()),
+                model_registry=model_registry,
+                mcp_manager=mcp_manager,
             )
 
         if app_mode == "rpc":

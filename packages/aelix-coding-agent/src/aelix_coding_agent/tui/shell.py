@@ -57,8 +57,10 @@ from aelix_coding_agent.tui.descriptors import (
 )
 from aelix_coding_agent.tui.footer_data import AelixFooterData
 from aelix_coding_agent.tui.input import parse_input_line
+from aelix_coding_agent.tui.mcp_viewer import run_mcp_viewer
 from aelix_coding_agent.tui.model_picker import run_model_picker
 from aelix_coding_agent.tui.render import EventRenderer, render_user_message
+from aelix_coding_agent.tui.thinking_picker import run_thinking_picker
 
 if TYPE_CHECKING:
     from aelix_agent_core.contracts.descriptor import DescriptorEnvelope
@@ -66,6 +68,7 @@ if TYPE_CHECKING:
     from aelix_agent_core.runtime.agent_session_runtime import AgentSessionRuntime
     from prompt_toolkit.completion import Completer
 
+    from aelix_coding_agent.mcp import McpClientManager
     from aelix_coding_agent.model_registry import ModelRegistry
 
 _RENDER_WIDTH = 80
@@ -134,6 +137,7 @@ async def run_tui(
     *,
     cwd: str,
     model_registry: ModelRegistry | None = None,
+    mcp_manager: McpClientManager | None = None,
     chrome: AelixChrome | None = None,
     install_signal_handlers: bool = True,
 ) -> int:
@@ -145,6 +149,11 @@ async def run_tui(
         NOTE: it is threaded explicitly because the harness does NOT expose the
         registry — ``AgentHarness`` never sets ``_model_registry`` (W-review 6h₂₆
         CRITICAL: reading it off the harness made the picker always unavailable).
+    :param mcp_manager: the live :class:`McpClientManager` (entry.py builds it
+        once and threads it here) so ``/mcp`` can report server status. ``None``
+        (no servers / tests) makes ``/mcp`` degrade with a committed message.
+        Threaded explicitly for the same reason as ``model_registry``: the
+        harness does NOT expose the manager (Sprint 6h₂₇, ADR-0155).
     :param chrome: injectable for tests (headless pipe input + DummyOutput).
     :param install_signal_handlers: pass ``False`` when embedding (tests / a host
         that owns process signals) — mirrors ``run_rpc_mode``.
@@ -543,6 +552,30 @@ async def run_tui(
             refresh_footer=context._refresh_footer,
         )
 
+    async def _open_thinking_picker() -> None:
+        # Sprint 6h₂₇ (ADR-0155, WP-7) — /thinking: a picker over the current
+        # model's supported reasoning levels (get_supported_thinking_levels) →
+        # harness.set_thinking_level. The flow lives in
+        # thinking_picker.run_thinking_picker (dependency-injected so it is
+        # unit-testable without the prompt-toolkit app); this wires the live
+        # harness/select/commit into it. ``runtime_host.harness`` is read live
+        # (post-hot-swap) rather than a captured local — same reason as the model
+        # picker. No footer refresh: there is no thinking footer segment today.
+        await run_thinking_picker(
+            harness=runtime_host.harness,
+            select=context.select,
+            commit=_commit,
+        )
+
+    async def _open_mcp_status() -> None:
+        # Sprint 6h₂₇ (ADR-0155, WP-7) — /mcp: a read-only status panel over the
+        # live McpClientManager (servers, transport, state, tool counts). The
+        # flow lives in mcp_viewer.run_mcp_viewer (dependency-injected so it is
+        # unit-testable without the prompt-toolkit app); the manager is threaded
+        # from entry.py into run_tui — the harness does NOT expose it (same seam
+        # as model_registry).
+        await run_mcp_viewer(manager=mcp_manager, commit=_commit)
+
     command_ctx = CommandContext(
         chrome=out_chrome,
         harness=runtime_host.harness,
@@ -552,6 +585,8 @@ async def run_tui(
         set_mode=_set_mode,
         refresh_footer=context._refresh_footer,
         model_picker=_open_model_picker,
+        thinking_picker=_open_thinking_picker,
+        mcp_status=_open_mcp_status,
         expand_lookup=renderer.get_expanded,
         resume_session=_resume_session,
         new_session=_new_session,

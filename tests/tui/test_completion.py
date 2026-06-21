@@ -7,9 +7,10 @@ the offered completions (the "live source" contract).
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from aelix_coding_agent.tui.commands import BuiltinCommand
 from aelix_coding_agent.tui.completion import (
@@ -17,8 +18,18 @@ from aelix_coding_agent.tui.completion import (
     FileMentionCompleter,
     wants_completion,
 )
-from prompt_toolkit.completion import CompleteEvent
+from prompt_toolkit.application import Application, create_app_session
+from prompt_toolkit.application.current import set_app
+from prompt_toolkit.buffer import Buffer, CompletionState
+from prompt_toolkit.completion import CompleteEvent, Completion
 from prompt_toolkit.document import Document
+from prompt_toolkit.input.defaults import create_pipe_input
+from prompt_toolkit.layout import Layout, Window
+from prompt_toolkit.layout.controls import BufferControl
+from prompt_toolkit.output import DummyOutput
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 
 @dataclass
@@ -263,3 +274,104 @@ def test_wants_completion_triggers() -> None:
     assert wants_completion("hello world") is False
     assert wants_completion("read @src ") is False  # token ended (trailing space)
     assert wants_completion("") is False
+
+
+# === Sprint 6h₂₆ (ADR-0156) — marked completions-menu CONTROL ===============
+#
+# The custom dropdown control adds a selected-row marker + a (current/total)
+# match counter. These tests drive ``_MarkedCompletionsMenuControl.create_content``
+# headlessly under ``set_app`` over a Buffer carrying a hand-built
+# ``CompletionState`` — no Application.run, no TTY (pure UIControl).
+
+
+@contextmanager
+def _menu_control(
+    completions: list[Completion], complete_index: int | None
+) -> Iterator[tuple[Any, Buffer]]:
+    """Yield a ``_MarkedCompletionsMenuControl`` + the focused buffer it reads.
+
+    The control resolves completions via ``get_app().current_buffer``, so a tiny
+    Application is mounted (focused on the buffer) and entered with ``set_app``;
+    the buffer's ``complete_state`` is set directly to the requested completions.
+    """
+
+    from aelix_coding_agent.tui.chrome import _MarkedCompletionsMenuControl
+
+    buf = Buffer(name="input")
+    ctrl = BufferControl(buffer=buf)
+    with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
+        app = Application(layout=Layout(Window(ctrl), focused_element=ctrl))
+        with set_app(app):
+            buf.set_document(Document("/", 1), bypass_readonly=True)
+            buf.complete_state = CompletionState(
+                original_document=buf.document,
+                completions=completions,
+                complete_index=complete_index,
+            )
+            yield _MarkedCompletionsMenuControl(), buf
+
+
+def _line_text(fragments: Any) -> str:
+    return "".join(text for _style, text in fragments)
+
+
+def test_menu_marker_and_counter_render() -> None:
+    completions = [
+        Completion("/deploy", display="deploy", display_meta="Deploy the app"),
+        Completion("/destroy", display="destroy", display_meta="Destroy the app"),
+    ]
+    with _menu_control(completions, complete_index=1) as (control, _buf):
+        content = control.create_content(40, 10)
+        # (a) one synthetic counter row beyond the two completions.
+        assert content.line_count == len(completions) + 1
+        # (d) cursor tracks the highlighted index.
+        assert content.cursor_position.y == 1
+        non_current = _line_text(content.get_line(0))
+        current = _line_text(content.get_line(1))
+        counter = _line_text(content.get_line(content.line_count - 1))
+        # (b) the marker leads the current row; a plain space leads the other.
+        assert current.startswith("→")
+        assert non_current.startswith(" ") and not non_current.startswith("→")
+        # The description column (display_meta) still renders.
+        assert "Deploy the app" in non_current
+        # (c) the trailing row is the 1-based match counter.
+        assert "(2/2)" in counter
+
+
+def test_menu_counter_is_none_index_safe() -> None:
+    # complete_index=None (nothing highlighted) must render "(1/N)" without
+    # crashing — confirms the ``(index or 0) + 1`` guard and a y=0 cursor.
+    completions = [
+        Completion("/a", display="a"),
+        Completion("/b", display="b"),
+        Completion("/c", display="c"),
+    ]
+    with _menu_control(completions, complete_index=None) as (control, _buf):
+        content = control.create_content(40, 10)
+        assert content.cursor_position.y == 0
+        counter = _line_text(content.get_line(content.line_count - 1))
+        assert "(1/3)" in counter
+
+
+def test_menu_empty_state_is_inert() -> None:
+    # With complete_state=None the control returns an empty UIContent and
+    # preferred_height is 0 (renders nothing when there is nothing to show).
+    from aelix_coding_agent.tui.chrome import _MarkedCompletionsMenuControl
+
+    buf = Buffer(name="input")
+    ctrl = BufferControl(buffer=buf)
+    with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
+        app = Application(layout=Layout(Window(ctrl), focused_element=ctrl))
+        with set_app(app):
+            buf.complete_state = None
+            control = _MarkedCompletionsMenuControl()
+            content = control.create_content(40, 10)
+            assert content.line_count == 0
+            assert control.preferred_height(40, 10, True, None) == 0
+
+
+def test_menu_preferred_height_counts_counter_row() -> None:
+    completions = [Completion("/x", display="x"), Completion("/y", display="y")]
+    with _menu_control(completions, complete_index=0) as (control, _buf):
+        # preferred_height includes the synthetic counter row (+1).
+        assert control.preferred_height(40, 10, True, None) == len(completions) + 1

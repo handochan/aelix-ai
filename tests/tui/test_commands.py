@@ -255,7 +255,7 @@ def test_sprint_a_registry_set() -> None:
     # Sprint 6h₁₂d added model/clear/compact/cost/tools/mode; the P0 consumer
     # batch added thinking + export; 6h₁₄a (ADR-0121) /expand; 6h₁₄b (ADR-0122)
     # /resume; 6h₁₅ (ADR-0123) /hotkeys + /new; 6h₂₁ (ADR-0129) /import + /fork
-    # + /clone + /tree.
+    # + /clone + /tree; 6h₂₇ (ADR-0155) /hooks + /mcp + /context.
     names = [c.name for c in BUILTIN_COMMANDS]
     assert names == [
         "help",
@@ -268,6 +268,9 @@ def test_sprint_a_registry_set() -> None:
         "name",
         "thinking",
         "tools",
+        "hooks",
+        "mcp",
+        "context",
         "mode",
         "settings",
         "expand",
@@ -287,7 +290,7 @@ def test_sprint_a_registry_set() -> None:
     for required in (
         "help", "thinking", "expand", "export", "resume", "hotkeys", "new",
         "session", "name", "copy", "settings",
-        "import", "fork", "clone", "tree",
+        "import", "fork", "clone", "tree", "hooks", "mcp", "context",
     ):
         assert by_name[required].handler is not None
     assert by_name["quit"].handler is None
@@ -380,6 +383,8 @@ def _ctx(
     refresh_footer: Any | None = None,
     expand_lookup: Any | None = None,
     model_picker: Any | None = None,
+    thinking_picker: Any | None = None,
+    mcp_status: Any | None = None,
 ) -> CommandContext:
     return CommandContext(
         chrome=chrome if chrome is not None else _FakeChrome(),  # type: ignore[arg-type]
@@ -391,6 +396,8 @@ def _ctx(
         refresh_footer=refresh_footer,
         expand_lookup=expand_lookup,
         model_picker=model_picker,
+        thinking_picker=thinking_picker,
+        mcp_status=mcp_status,
     )
 
 
@@ -989,3 +996,230 @@ def test_new_commands_listed_in_help_table() -> None:
     assert "/fork" in out
     assert "/clone" in out
     assert "/tree" in out
+
+
+# === Sprint 6h₂₇ (ADR-0155) — /thinking picker routing ====================
+
+
+class _ThinkingHarness:
+    """A harness exposing the typed-set path (set_thinking_level + _state)."""
+
+    def __init__(self) -> None:
+        from types import SimpleNamespace
+
+        self._state = SimpleNamespace(thinking_level=None)
+        self.set_calls: list[str] = []
+
+    async def set_thinking_level(self, level: str) -> None:
+        self.set_calls.append(level)
+        self._state.thinking_level = level
+
+
+def test_thinking_no_arg_opens_picker() -> None:
+    calls: list[int] = []
+
+    async def picker() -> None:
+        calls.append(1)
+
+    committed: list[object] = []
+    _run("thinking", _ctx(_FakeHarness(), committed, thinking_picker=picker), "")
+    assert calls == [1]
+    # The picker owns its own output → the handler commits nothing on this path.
+    assert committed == []
+
+
+def test_thinking_no_arg_headless_falls_back() -> None:
+    committed: list[object] = []
+    # thinking_picker defaults to None → the status-print path still runs.
+    _run("thinking", _ctx(_ThinkingHarness(), committed), "")
+    assert any("thinking" in _render(c) for c in committed)
+
+
+def test_thinking_with_arg_still_sets() -> None:
+    harness = _ThinkingHarness()
+    committed: list[object] = []
+    # An explicit level skips the picker even when one is wired (no regression).
+    _run(
+        "thinking",
+        _ctx(harness, committed, thinking_picker=_unreachable_picker),
+        "high",
+    )
+    assert harness.set_calls == ["high"]
+    assert any("thinking → high" in _render(c) for c in committed)
+
+
+def test_thinking_picker_failure_surfaces_not_crashes() -> None:
+    committed: list[object] = []
+
+    async def _boom() -> None:
+        raise RuntimeError("picker blew up")
+
+    _run("thinking", _ctx(_FakeHarness(), committed, thinking_picker=_boom), "")
+    assert any("thinking picker failed" in _render(c) for c in committed)
+
+
+async def _unreachable_picker() -> None:
+    raise AssertionError("picker must not be opened on the arg path")
+
+
+# === Sprint 6h₂₇ (ADR-0155) — /hooks viewer ===============================
+
+
+class _HookBus:
+    def __init__(self, handlers: dict[str, list[object]]) -> None:
+        self._handlers = handlers
+
+
+class _HooksHarness:
+    def __init__(self, handlers: dict[str, list[object]]) -> None:
+        self.hooks = _HookBus(handlers)
+
+
+def test_hooks_lists_registered_events() -> None:
+    committed: list[object] = []
+    harness = _HooksHarness(
+        {"tool_call": [lambda: None, lambda: None], "context": [lambda: None]}
+    )
+    _run("hooks", _ctx(harness, committed), "")
+    out = "".join(_render(c) for c in committed)
+    assert "tool_call" in out and "2" in out
+    assert "context" in out and "1" in out
+
+
+def test_hooks_skips_empty_event_buckets() -> None:
+    committed: list[object] = []
+    harness = _HooksHarness({"tool_call": [lambda: None], "abort": []})
+    _run("hooks", _ctx(harness, committed), "")
+    out = "".join(_render(c) for c in committed)
+    assert "tool_call" in out
+    assert "abort" not in out  # zero-handler buckets are not rendered
+
+
+def test_hooks_no_handlers_degrades() -> None:
+    committed: list[object] = []
+    _run("hooks", _ctx(_HooksHarness({}), committed), "")
+    assert any("No hook handlers registered" in _render(c) for c in committed)
+
+
+def test_hooks_unavailable_on_bare_fake_harness() -> None:
+    committed: list[object] = []
+    _run("hooks", _ctx(_FakeHarness(), committed), "")  # no hooks attr
+    assert any("Hooks are unavailable" in _render(c) for c in committed)
+
+
+# === Sprint 6h₂₇ (ADR-0155) — /mcp viewer routing =========================
+
+
+def test_mcp_unavailable_degrades_when_no_callback() -> None:
+    committed: list[object] = []
+    _run("mcp", _ctx(_FakeHarness(), committed), "")  # mcp_status defaults None
+    assert any("MCP is unavailable" in _render(c) for c in committed)
+
+
+def test_mcp_invokes_wired_callback() -> None:
+    calls: list[int] = []
+
+    async def _status() -> None:
+        calls.append(1)
+
+    _run("mcp", _ctx(_FakeHarness(), [], mcp_status=_status), "")
+    assert calls == [1]
+
+
+def test_mcp_failure_surfaces_not_crashes() -> None:
+    committed: list[object] = []
+
+    async def _boom() -> None:
+        raise RuntimeError("mcp blew up")
+
+    _run("mcp", _ctx(_FakeHarness(), committed, mcp_status=_boom), "")
+    assert any("mcp failed" in _render(c) for c in committed)
+
+
+# === Sprint 6h₂₇ (ADR-0155) — /context panel ==============================
+
+
+class _Usage:
+    def __init__(
+        self, tokens: int | None, context_window: int, percent: float | None
+    ) -> None:
+        self.tokens = tokens
+        self.context_window = context_window
+        self.percent = percent
+
+
+class _ContextHarness:
+    def __init__(self, usage: object) -> None:
+        self._usage = usage
+
+    async def get_session_stats(self) -> object:
+        from types import SimpleNamespace
+
+        return SimpleNamespace(context_usage=self._usage)
+
+
+def test_context_shows_bar_and_thresholds() -> None:
+    committed: list[object] = []
+    harness = _ContextHarness(_Usage(tokens=84000, context_window=200000, percent=42.0))
+    _run("context", _ctx(harness, committed), "")
+    out = "".join(_render(c) for c in committed)
+    assert "42%" in out
+    assert "compacts at" in out
+    assert "200K" in out  # format_token_count of the window
+
+
+def test_context_degrades_when_usage_none() -> None:
+    committed: list[object] = []
+    _run("context", _ctx(_ContextHarness(None), committed), "")
+    assert any("unavailable" in _render(c) for c in committed)
+
+
+def test_context_handles_tokens_none_sentinel() -> None:
+    committed: list[object] = []
+    harness = _ContextHarness(
+        _Usage(tokens=None, context_window=200000, percent=None)
+    )
+    _run("context", _ctx(harness, committed), "")
+    out = "".join(_render(c) for c in committed)
+    assert "n/a" in out
+    assert "compacts at" in out  # threshold still shown
+
+
+def test_context_no_get_session_stats() -> None:
+    committed: list[object] = []
+    _run("context", _ctx(_FakeHarness(), committed), "")  # no get_session_stats
+    assert any("Context usage is unavailable" in _render(c) for c in committed)
+
+
+def test_context_bar_pure() -> None:
+    from aelix_coding_agent.tui.commands import _context_bar
+
+    bar = _context_bar(used=50, window=100, threshold=80, width=10)
+    # 3 colored segments always sum to the requested width (buffer absorbs round).
+    assert len(bar.plain) == 10
+    # used = 50/100 of 10 = 5 cells.
+    assert bar.plain.count("█") == 10
+
+
+def test_context_bar_zero_window_is_empty() -> None:
+    from aelix_coding_agent.tui.commands import _context_bar
+
+    assert _context_bar(used=0, window=0, threshold=0).plain == ""
+
+
+# === Sprint 6h₂₇ (ADR-0155) — help + bare-harness degradation =============
+
+
+def test_help_lists_wp7_commands() -> None:
+    out = _render(build_help_renderable(BUILTIN_COMMANDS))
+    for name in ("hooks", "mcp", "context"):
+        assert f"/{name}" in out
+
+
+def test_wp7_handlers_degrade_on_bare_fake_harness() -> None:
+    # /hooks + /mcp + /context must degrade with a committed message (never raise)
+    # on a bare harness that exposes only current_model.
+    for name in ("hooks", "mcp", "context"):
+        committed: list[object] = []
+        _run(name, _ctx(_FakeHarness(), committed), "")
+        assert committed, f"/{name} committed nothing on a bare harness"

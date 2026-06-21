@@ -38,10 +38,12 @@ from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING
 
 from prompt_toolkit.application import Application
+from prompt_toolkit.application.current import get_app
 from prompt_toolkit.application.run_in_terminal import in_terminal
 from prompt_toolkit.buffer import Buffer
-from prompt_toolkit.filters import Condition, renderer_height_is_known
-from prompt_toolkit.formatted_text import ANSI
+from prompt_toolkit.data_structures import Point
+from prompt_toolkit.filters import Condition, has_completions, is_done, renderer_height_is_known
+from prompt_toolkit.formatted_text import ANSI, to_formatted_text
 from prompt_toolkit.history import FileHistory, History, InMemoryHistory
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.layout import (
@@ -52,24 +54,35 @@ from prompt_toolkit.layout import (
     Layout,
     Window,
 )
-from prompt_toolkit.layout.containers import AnyContainer
-from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
+from prompt_toolkit.layout.containers import AnyContainer, ScrollOffsets
+from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl, UIContent
 from prompt_toolkit.layout.dimension import Dimension
-from prompt_toolkit.layout.menus import CompletionsMenu
+from prompt_toolkit.layout.margins import ScrollbarMargin
+from prompt_toolkit.layout.menus import CompletionsMenuControl, _get_menu_item_fragments
 from prompt_toolkit.layout.processors import (
     BeforeInput,
     Processor,
     Transformation,
     TransformationInput,
 )
+from prompt_toolkit.utils import get_cwidth
 from rich.console import Console
 
 if TYPE_CHECKING:
     from prompt_toolkit.completion import Completer
+    from prompt_toolkit.formatted_text import StyleAndTextTuples
     from prompt_toolkit.input.base import Input
+    from prompt_toolkit.layout.controls import GetLinePrefixCallable
     from prompt_toolkit.output.base import Output
 
 _DEFAULT_SPINNER = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
+
+# Sprint 6h₂₆ (ADR-0156) — the selected-row pointer drawn in front of the
+# highlighted completion (claude/qwen-additive polish over pi's plain menu).
+_MENU_MARKER = "→"
+# The counter row is styled with the menu's already-defined meta class so it
+# tracks the active theme without adding a new style key.
+_MENU_COUNTER_STYLE = "class:completion-menu.meta.completion"
 
 
 class _Eof:
@@ -107,6 +120,109 @@ class _PlaceholderProcessor(Processor):
             # together: ``❯ Type your message or @path/to/file``.
             return Transformation(ti.fragments + [(self._style, self._text)])
         return Transformation(ti.fragments)
+
+
+class _MarkedCompletionsMenuControl(CompletionsMenuControl):
+    """``CompletionsMenuControl`` + a selected-row marker and a match counter.
+
+    Sprint 6h₂₆ (ADR-0156). Two additive affordances over the stock control:
+
+    * the current (highlighted) row is prefixed with :data:`_MENU_MARKER` in
+      place of the single leading space the stock control emits, and
+    * a synthetic trailing row renders ``(current/total)`` so the user can see
+      their position in a long completion list.
+
+    Implementation is deliberately surgical: it overrides ONLY
+    :meth:`create_content` and :meth:`preferred_height`, reusing the base
+    control's width / meta-column / show-meta helpers so the per-command
+    description column (``display_meta``) keeps rendering unchanged. The marker
+    swap relies on the documented shape of
+    :func:`~prompt_toolkit.layout.menus._get_menu_item_fragments`: with
+    ``space_after=True`` its first fragment is always ``("", " ")`` (a single
+    leading space), so the current row swaps that fragment's text for the
+    marker glyph and leaves every non-current row untouched.
+
+    Pure :class:`~prompt_toolkit.layout.controls.UIControl`: no I/O, so it
+    renders headlessly under ``DummyOutput`` (verified in the menu-control
+    render tests).
+    """
+
+    def create_content(self, width: int, height: int) -> UIContent:
+        complete_state = get_app().current_buffer.complete_state
+        if not complete_state:
+            return UIContent()
+
+        completions = complete_state.completions
+        index = complete_state.complete_index  # may be None when nothing is selected
+        menu_width = self._get_menu_width(width, complete_state)
+        menu_meta_width = self._get_menu_meta_width(width - menu_width, complete_state)
+        show_meta = self._show_meta(complete_state)
+        # 1-based display; None index (no selection) reads as the first row.
+        counter = f"({(index or 0) + 1}/{len(completions)})"
+
+        def get_line(i: int) -> StyleAndTextTuples:
+            if i == len(completions):
+                # Synthetic counter row pinned to the bottom of the content.
+                pad = " " * max(0, (menu_width + menu_meta_width) - get_cwidth(counter) - 1)
+                return to_formatted_text([(_MENU_COUNTER_STYLE, " " + counter + pad)])
+            c = completions[i]
+            is_current = i == index
+            frags = list(
+                _get_menu_item_fragments(c, is_current, menu_width, space_after=True)
+            )
+            # Swap the stock leading space for the marker on the current row only.
+            if is_current and frags and frags[0][1] == " ":
+                frags[0] = (frags[0][0], _MENU_MARKER)
+            if show_meta:
+                frags += self._get_menu_item_meta_fragments(c, is_current, menu_meta_width)
+            return frags
+
+        return UIContent(
+            get_line=get_line,
+            cursor_position=Point(x=0, y=index or 0),
+            line_count=len(completions) + 1,  # +1 for the synthetic counter row
+        )
+
+    def preferred_height(
+        self,
+        width: int,
+        max_available_height: int,
+        wrap_lines: bool,
+        get_line_prefix: GetLinePrefixCallable | None,
+    ) -> int | None:
+        complete_state = get_app().current_buffer.complete_state
+        # +1 = counter row; 0 when there is nothing to show (inert / headless).
+        return (len(complete_state.completions) + 1) if complete_state else 0
+
+
+class _MarkedCompletionsMenu(ConditionalContainer):
+    """``CompletionsMenu`` shape mounting :class:`_MarkedCompletionsMenuControl`.
+
+    Sprint 6h₂₆ (ADR-0156). Mirrors
+    :class:`~prompt_toolkit.layout.menus.CompletionsMenu` exactly (same window
+    sizing, scroll offsets, scrollbar margin, z-index, and
+    ``has_completions & ~is_done`` visibility filter) but swaps in the marked
+    control. The synthetic counter row consumes one menu row, so at
+    ``max_height`` the window scrolls (``scroll_offset`` keeps the selected row
+    visible) while the counter pins to the content bottom. With no completions
+    the :class:`~prompt_toolkit.layout.ConditionalContainer` filter renders
+    nothing, so the menu stays inert exactly like the stock one.
+    """
+
+    def __init__(self, max_height: int = 8, scroll_offset: int = 1) -> None:
+        super().__init__(
+            content=Window(
+                content=_MarkedCompletionsMenuControl(),
+                width=Dimension(min=8),
+                height=Dimension(min=1, max=max_height),
+                scroll_offsets=ScrollOffsets(top=scroll_offset, bottom=scroll_offset),
+                right_margins=[ScrollbarMargin(display_arrows=False)],
+                dont_extend_width=True,
+                style="class:completion-menu",
+                z_index=10**8,
+            ),
+            filter=has_completions & ~is_done,
+        )
 
 
 class AelixChrome:
@@ -198,7 +314,10 @@ class AelixChrome:
         self._completions_float = Float(
             xcursor=True,
             ycursor=True,
-            content=CompletionsMenu(max_height=8, scroll_offset=1),
+            # Sprint 6h₂₆ (ADR-0156): the marked menu adds a selected-row marker
+            # and a (current/total) match counter; otherwise identical to the
+            # stock CompletionsMenu(max_height=8, scroll_offset=1).
+            content=_MarkedCompletionsMenu(max_height=8, scroll_offset=1),
         )
         self._floats: list[Float] = [self._completions_float]
         self._input_window: Window | None = None
