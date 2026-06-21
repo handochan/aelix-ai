@@ -181,7 +181,16 @@ async def test_print_above_writes_to_scrollback() -> None:
     async with _chrome(run_app=True) as (chrome, _pipe, buf):
         await asyncio.sleep(0.02)
         await asyncio.wait_for(chrome.print_above(Text("STREAMED-OUTPUT")), timeout=5)
-        assert "STREAMED-OUTPUT" in buf.getvalue()
+        out = buf.getvalue()
+        assert "STREAMED-OUTPUT" in out
+        # Sprint 6h₂₅ (ADR-0153, WP-9): the single-renderable path shares the CSI
+        # 2026 begin/end bracket with print_above_many — assert begin<body<end so
+        # both near-identical code paths have symmetric coverage.
+        begin = out.find("\x1b[?2026h")
+        end = out.find("\x1b[?2026l")
+        body = out.find("STREAMED-OUTPUT")
+        assert begin >= 0 and end >= 0, "CSI 2026 begin/end not emitted"
+        assert begin < body < end, f"sync bracket does not wrap the write: {out!r}"
 
 
 async def test_print_above_many_writes_each_in_order() -> None:
@@ -261,14 +270,98 @@ async def test_escape_interrupts_only_when_running() -> None:
 
 
 async def test_working_line_shows_esc_hint_when_running() -> None:
+    # Sprint 6h₂₅ (ADR-0153, WP-3): the affordance text is now "esc to cancel"
+    # (was "esc to interrupt") to match the user mockup.
     async with _chrome(run_app=False) as (chrome, _pipe, _buf):
         chrome.set_working_visible(True)
         chrome.set_working_message("thinking")
-        assert "esc to interrupt" not in chrome._render_working()  # idle: no hint
+        assert "esc to cancel" not in chrome._render_working()  # idle: no hint
         chrome.set_running(True)
         rendered = chrome._render_working()
         assert "thinking" in rendered
-        assert "esc to interrupt" in rendered
+        assert "esc to cancel" in rendered
+
+
+async def test_working_line_shows_elapsed_seconds_while_running() -> None:
+    # Sprint 6h₂₅ (ADR-0153, WP-3): a turn-elapsed counter ({n}s) ticks in the
+    # working line while running, stamped on set_running(True) and cleared on
+    # set_running(False). The counter advances with the injected clock.
+    clock = FakeClock()
+    with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
+        chrome = AelixChrome(
+            console=Console(file=io.StringIO(), force_terminal=True, width=80), time_fn=clock
+        )
+        chrome.set_working_visible(True)
+        chrome.set_working_message("thinking")
+        chrome.set_running(True)
+        clock.advance(4.0)
+        rendered = chrome._render_working()
+        assert "4s" in rendered
+        assert "esc to cancel" in rendered
+        chrome.set_running(False)
+        assert chrome._run_started is None  # falling edge clears the stamp
+
+
+# === Sprint 6h₂₅ (ADR-0153, WP-3) — input prefix + placeholder =========
+
+
+async def test_input_prefix_and_placeholder_wired() -> None:
+    # The input BufferControl carries a BeforeInput ``❯ `` prefix processor and a
+    # placeholder processor (headless-safe pure transformations).
+    from aelix_coding_agent.tui.chrome import _INPUT_PLACEHOLDER, _INPUT_PREFIX
+    from prompt_toolkit.layout.processors import BeforeInput
+
+    async with _chrome(run_app=False) as (chrome, _pipe, _buf):
+        control = chrome._input_window.content  # type: ignore[union-attr]
+        procs = control.input_processors
+        before = [p for p in procs if isinstance(p, BeforeInput)]
+        assert before, "input prefix (BeforeInput) not wired"
+        # BeforeInput stores its text as formatted text; the prefix glyph is present.
+        assert _INPUT_PREFIX.strip() in str(before[0].text)
+        placeholders = [p for p in procs if type(p).__name__ == "_PlaceholderProcessor"]
+        assert placeholders, "placeholder processor not wired"
+        assert placeholders[0]._text == _INPUT_PLACEHOLDER
+
+
+async def test_placeholder_shows_when_empty_hides_when_typed() -> None:
+    from aelix_coding_agent.tui.chrome import _INPUT_PLACEHOLDER
+    from prompt_toolkit.document import Document
+    from prompt_toolkit.layout.processors import TransformationInput
+
+    async with _chrome(run_app=False) as (chrome, _pipe, _buf):
+        control = chrome._input_window.content  # type: ignore[union-attr]
+        ph = next(p for p in control.input_processors if type(p).__name__ == "_PlaceholderProcessor")
+        # Empty buffer on line 0 → placeholder fragments rendered (dim). The
+        # placeholder processor runs AFTER BeforeInput, so its incoming fragments
+        # carry the ``❯ `` prefix — feed those and assert the prefix SURVIVES
+        # alongside the placeholder (locks in the append-not-replace fix).
+        prefix_frags = [("class:aelix.prompt bold fg:cyan", "❯ ")]
+        empty = TransformationInput(control, Document(""), 0, lambda i: i, prefix_frags, 80, 1)
+        empty_frags = ph.apply_transformation(empty).fragments
+        assert any(_INPUT_PLACEHOLDER in text for _style, text in empty_frags)
+        assert any("❯" in text for _style, text in empty_frags), "prefix swallowed"
+        # Non-empty buffer → placeholder gone; original fragments pass through.
+        full = TransformationInput(control, Document("hi"), 0, lambda i: i, [("", "hi")], 80, 1)
+        full_frags = ph.apply_transformation(full).fragments
+        assert not any(_INPUT_PLACEHOLDER in text for _style, text in full_frags)
+        assert full_frags == [("", "hi")]
+
+
+async def test_print_above_emits_csi_2026_synchronized_update() -> None:
+    # Sprint 6h₂₅ (ADR-0153, WP-9): print_above_many brackets the scrollback write
+    # with CSI 2026 Begin (?2026h) / End (?2026l) so a supporting terminal paints
+    # it atomically. The sequences go through the Rich console file.
+    async with _chrome(run_app=True) as (chrome, _pipe, buf):
+        await asyncio.sleep(0.02)
+        await asyncio.wait_for(
+            chrome.print_above_many([Text("ONLY-LINE")]), timeout=5
+        )
+        out = buf.getvalue()
+        begin = out.find("\x1b[?2026h")
+        end = out.find("\x1b[?2026l")
+        body = out.find("ONLY-LINE")
+        assert begin >= 0 and end >= 0, "CSI 2026 begin/end not emitted"
+        assert begin < body < end, f"sync bracket does not wrap the write: {out!r}"
 
 
 # === Sprint 6h₁₂e — steer / follow-up (queue-while-running) =============

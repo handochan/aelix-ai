@@ -718,3 +718,44 @@ def test_replay_empty_is_noop() -> None:
     r, commits, _t = _renderer()
     r.replay([])
     assert commits == []
+
+
+# === Sprint 6h₂₅ (ADR-0153, WP-6) — shared user-echo helper ================
+
+
+def _group_rows(group: Any) -> list[Any]:
+    return list(getattr(group, "renderables", []))
+
+
+def test_render_user_message_blank_line_chevron_and_cyan() -> None:
+    from aelix_coding_agent.tui.render import render_user_message
+
+    group = render_user_message("hello there")
+    rows = _group_rows(group)
+    assert len(rows) == 2
+    # First row is a LEADING blank line for separation.
+    assert rows[0].plain == ""
+    # Second row keeps the ``» `` chevron and is styled bold cyan (stands out).
+    assert rows[1].plain == "» hello there"
+    assert "bold cyan" in str(rows[1].style)
+
+
+def test_render_user_message_steer_and_follow_up_labels_same_visual() -> None:
+    from aelix_coding_agent.tui.render import render_user_message
+
+    steer = _group_rows(render_user_message("go left", kind="steer"))
+    follow = _group_rows(render_user_message("then commit", kind="follow_up"))
+    # Distinct labels...
+    assert steer[1].plain == "Steering: go left"
+    assert follow[1].plain == "Follow-up: then commit"
+    # ...but the SAME visual language: leading blank line + bold cyan.
+    for rows in (steer, follow):
+        assert rows[0].plain == ""
+        assert "bold cyan" in str(rows[1].style)
+
+
+def test_render_user_message_unknown_kind_degrades_to_prompt() -> None:
+    from aelix_coding_agent.tui.render import render_user_message
+
+    rows = _group_rows(render_user_message("oops", kind="mystery"))
+    assert rows[1].plain == "» oops"

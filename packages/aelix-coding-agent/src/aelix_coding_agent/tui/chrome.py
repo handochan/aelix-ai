@@ -56,6 +56,12 @@ from prompt_toolkit.layout.containers import AnyContainer
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
 from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.layout.menus import CompletionsMenu
+from prompt_toolkit.layout.processors import (
+    BeforeInput,
+    Processor,
+    Transformation,
+    TransformationInput,
+)
 from rich.console import Console
 
 if TYPE_CHECKING:
@@ -71,6 +77,36 @@ class _Eof:
 
 
 _EOF = _Eof()
+
+# Sprint 6h₂₅ (ADR-0153, WP-3) — live input affordances.
+_INPUT_PREFIX = "❯ "
+_INPUT_PLACEHOLDER = "Type your message or @path/to/file"
+
+
+class _PlaceholderProcessor(Processor):
+    """Render a dim placeholder on the FIRST input line while the buffer is empty.
+
+    Sprint 6h₂₅ (ADR-0153, WP-3). prompt-toolkit 3.0.52 has no first-class
+    placeholder for a bare :class:`BufferControl`, so this small processor
+    appends the placeholder fragments only when ``document.text == ""`` (it
+    disappears on the first keystroke). Operates on ``lineno == 0`` only and is
+    a pure transformation, so it is headless-safe (no I/O, no app state).
+    """
+
+    def __init__(self, text: str, style: str = "class:aelix.placeholder fg:gray") -> None:
+        self._text = text
+        self._style = style
+
+    def apply_transformation(self, ti: TransformationInput) -> Transformation:
+        if ti.lineno == 0 and ti.document.text == "":
+            # APPEND, don't replace: this processor is chained AFTER BeforeInput,
+            # which has already prepended the ``❯ `` prefix fragments on line 0.
+            # Replacing them would swallow the prefix on the idle/empty buffer —
+            # the state the user stares at most — so it must reappear only after
+            # a keystroke. Concatenating keeps the prefix and the placeholder
+            # together: ``❯ Type your message or @path/to/file``.
+            return Transformation(ti.fragments + [(self._style, self._text)])
+        return Transformation(ti.fragments)
 
 
 class AelixChrome:
@@ -125,6 +161,11 @@ class AelixChrome:
         self._working_message: str | None = None
         self._working_visible: bool = False
         self._running: bool = False
+        # Sprint 6h₂₅ (ADR-0153, WP-3) — turn-elapsed clock. ``set_running(True)``
+        # stamps a monotonic start; ``_render_working`` renders ``({elapsed}s)``
+        # while running, ticking with the existing ``refresh_interval`` repaints
+        # (no extra loop). Reset to None on ``set_running(False)``.
+        self._run_started: float | None = None
         self._spinner_frames: tuple[str, ...] = _DEFAULT_SPINNER
         self._spinner_index: int = 0
         # Spinner advances by wall-clock time (not render cadence) so its speed
@@ -214,8 +255,18 @@ class AelixChrome:
         # ``preferred=1`` lets the editor START at 1 row and grow only when
         # content needs more space, matching pi / Claude Code's compact-when-idle
         # editor footprint.
+        # Sprint 6h₂₅ (ADR-0153, WP-3) — a live ``❯ `` input prefix (bold cyan)
+        # plus a dim empty-buffer placeholder. Both are pure ``BufferControl``
+        # input processors (no I/O), so they render headlessly under DummyOutput.
+        # BeforeInput draws the prefix BEFORE the placeholder/text on line 0.
         input_window = Window(
-            BufferControl(self.buffer),
+            BufferControl(
+                self.buffer,
+                input_processors=[
+                    BeforeInput(_INPUT_PREFIX, style="class:aelix.prompt bold fg:cyan"),
+                    _PlaceholderProcessor(_INPUT_PLACEHOLDER),
+                ],
+            ),
             wrap_lines=True,
             height=Dimension(min=1, max=10, preferred=1),
         )
@@ -259,7 +310,7 @@ class AelixChrome:
         )
         # Alt+Enter (ADR-0119 follow-up) is the 2-key sequence ("escape",
         # "enter"), which makes Esc a PREFIX key — so a standalone Esc (the
-        # "esc to interrupt" affordance while a turn runs) would otherwise wait
+        # "esc to cancel" affordance while a turn runs) would otherwise wait
         # ~0.5s (``ttimeoutlen`` default) before flushing. ``ttimeoutlen`` is an
         # instance attribute (NOT a constructor kwarg in this prompt-toolkit
         # version); shrink it so single-Esc stays snappy while Alt+Enter still
@@ -409,10 +460,23 @@ class AelixChrome:
             frame = self._spinner_frames[self._spinner_index]
         message = (self._working_message or "Working…").replace("\n", " ")
         line = f"{frame} {message}".strip()
-        # Surface the esc-to-interrupt affordance while a turn is running
-        # (Sprint 6h₁₂b); dim so it reads as a hint, not part of the message.
+        # Sprint 6h₂₅ (ADR-0153, WP-3) — while a turn runs, append a dim suffix
+        # group: elapsed seconds + the cancel affordance. The elapsed counter
+        # ticks with the existing ``refresh_interval`` repaints (no extra loop).
+        # NOTE: a ``↑ N tokens`` clause is intentionally OMITTED — the streaming
+        # event path carries text deltas (strings), not an incremental
+        # output-token / usage signal, so no real source exists to count from
+        # without fabricating a number (deferred; see ADR-0153 WP-3).
         if self._running:
-            line += " \x1b[2m· esc to interrupt\x1b[0m"
+            parts: list[str] = []
+            # set_running sets _running and _run_started atomically, so this is a
+            # belt-and-suspenders guard against a hypothetical out-of-band
+            # _running mutation — _run_started is normally non-None when running.
+            if self._run_started is not None:
+                elapsed = max(0, int(self._time() - self._run_started))
+                parts.append(f"{elapsed}s")
+            parts.append("esc to cancel")
+            line += " \x1b[2m(" + " · ".join(parts) + ")\x1b[0m"
         return line
 
     def _render_widgets_above(self) -> ANSI:
@@ -430,11 +494,33 @@ class AelixChrome:
 
     # === public output / input =============================================
 
+    def _sync_update(self, on: bool) -> None:
+        """Emit the CSI 2026 Begin/End Synchronized Update sequence (WP-9).
+
+        Sprint 6h₂₅ (ADR-0153). ``\\x1b[?2026h`` tells a supporting terminal to
+        buffer screen updates until ``\\x1b[?2026l`` (it then paints the whole
+        scrollback write + chrome repaint in ONE frame, removing tearing).
+        Written through the SAME stream Rich uses (``self._console.file``) so it
+        brackets the Rich ``print`` atomically. Best-effort + exception-
+        suppressed: terminals without support ignore the unknown private CSI, and
+        a non-writable file (DummyOutput path in tests) is a harmless no-op.
+        """
+
+        with contextlib.suppress(Exception):
+            self._console.file.write("\x1b[?2026h" if on else "\x1b[?2026l")
+            self._console.file.flush()
+
     async def print_above(self, renderable: object) -> None:
         """Render ``renderable`` to scrollback ABOVE the pinned chrome."""
 
         async with in_terminal():
-            self._console.print(renderable)
+            # CSI 2026 synchronized output (WP-9): bracket the scrollback write so
+            # supporting terminals paint it + the chrome repaint in one frame.
+            self._sync_update(True)
+            try:
+                self._console.print(renderable)
+            finally:
+                self._sync_update(False)
         self.app.invalidate()
 
     async def print_above_many(self, renderables: Sequence[object]) -> None:
@@ -448,13 +534,23 @@ class AelixChrome:
         committed line), without changing visible ordering.
 
         Empty ``renderables`` is a no-op (no suspend, no invalidate).
+
+        Sprint 6h₂₅ (ADR-0153, WP-9): the whole batch is bracketed by CSI 2026
+        Begin/End Synchronized Update so a supporting terminal paints the entire
+        scrollback write + the chrome repaint in ONE frame (no tearing). The
+        sync sequences live INSIDE the ``in_terminal`` block so the bracket is
+        atomic with the suspend; ordering of the renderables is unchanged.
         """
 
         if not renderables:
             return
         async with in_terminal():
-            for renderable in renderables:
-                self._console.print(renderable)
+            self._sync_update(True)
+            try:
+                for renderable in renderables:
+                    self._console.print(renderable)
+            finally:
+                self._sync_update(False)
         self.app.invalidate()
 
     def clear(self) -> None:
@@ -553,6 +649,9 @@ class AelixChrome:
 
     def set_running(self, running: bool) -> None:
         self._running = running
+        # Sprint 6h₂₅ (ADR-0153, WP-3) — stamp the turn-start on rising edge so
+        # _render_working can show elapsed seconds; clear on falling edge.
+        self._run_started = self._time() if running else None
         self.invalidate()
 
     def set_footer_line(self, text: str) -> None:

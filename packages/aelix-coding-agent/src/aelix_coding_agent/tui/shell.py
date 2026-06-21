@@ -57,7 +57,7 @@ from aelix_coding_agent.tui.descriptors import (
 )
 from aelix_coding_agent.tui.footer_data import AelixFooterData
 from aelix_coding_agent.tui.input import parse_input_line
-from aelix_coding_agent.tui.render import EventRenderer
+from aelix_coding_agent.tui.render import EventRenderer, render_user_message
 
 if TYPE_CHECKING:
     from aelix_agent_core.contracts.descriptor import DescriptorEnvelope
@@ -749,7 +749,7 @@ async def run_tui(
                 out_chrome.submit_line(text)
                 return
             output_queue.put_nowait(
-                ("commit", Text(f"{label}: {text}", style="dim italic"))
+                ("commit", render_user_message(text, kind=kind))
             )
             try:
                 if kind == "steer":
@@ -1141,12 +1141,20 @@ def _match_management_modal(
 
 def _build_banner(harness: AgentHarness, cwd: str) -> object:
     """Build the startup banner: the Aelix terminal-logo header + a panel with
-    the model id, cwd, and /help hint.
+    the runtime summary (model / base url / cwd / version) followed by compact
+    [Context] / [Tools] / [Skills] / [Hooks] / [Extensions] sections and a hint.
+
+    Sprint 6h₂₅ (ADR-0153, TUI v2 quick-wins WP-5). Everything is re-derived
+    INSIDE this function from ``(harness, cwd)`` so the two call sites (fresh
+    start + ``/resume`` re-banner) need not change. EVERY field read is
+    ``getattr``-guarded / exception-suppressed: the headless ``_BannerHarness``
+    fakes (and minimal real harnesses) lack ``skills`` / ``hooks`` /
+    ``extension_runner`` / ``state``, so the banner MUST degrade to a dim
+    ``none`` rather than raise.
 
     The model id reads ``harness.current_model.id``; degrades gracefully to
-    ``unknown`` when the harness exposes no model (e.g. headless test fakes).
-    The block-art logo (:mod:`aelix_coding_agent.tui._logo`) is styled with
-    Rich, so it degrades to plain text on no-color terminals.
+    ``unknown``. The block-art logo (:mod:`aelix_coding_agent.tui._logo`) is
+    styled with Rich, so it degrades to plain text on no-color terminals.
     """
     from rich.box import ROUNDED
     from rich.console import Group
@@ -1156,16 +1164,109 @@ def _build_banner(harness: AgentHarness, cwd: str) -> object:
 
     model = getattr(harness, "current_model", None)
     model_id = getattr(model, "id", None) or "unknown"
+    base_url = getattr(model, "base_url", "") or ""
+
+    # Version: PEP 621 read via the CLI config (Pi parity). Import-guarded so a
+    # broken/absent config never crashes the first frame.
+    version = "unknown"
+    try:
+        from aelix_coding_agent.cli.config import VERSION as _VERSION
+
+        version = _VERSION or "unknown"
+    except Exception:  # noqa: BLE001 — banner must never raise
+        version = "unknown"
 
     logo = Text()
     logo.append(LOGO_ART + "\n", style="bold cyan")
     logo.append(f" {LOGO_TITLE}\n", style="bold")
     logo.append(f" {LOGO_TAGLINE}", style="dim")
 
+    # === runtime summary =================================================
     body = Text()
-    body.append(f"model: {model_id}\n")
-    body.append(f"cwd:   {cwd}\n")
-    body.append("Type /help for commands.", style="dim")
+    body.append(f"model:   {model_id}\n")
+    if base_url:
+        body.append(f"baseurl: {base_url}\n")
+    body.append(f"cwd:     {cwd}\n")
+    body.append(f"version: {version}")
+
+    # === compact sections ================================================
+    # [Context] — discover_context_files at render time; non-empty → AGENTS.md
+    # loaded, else 'none'. Any failure → 'none' (never crash startup).
+    context_label = "none"
+    try:
+        from aelix_coding_agent.cli.agent_context import discover_context_files
+
+        if discover_context_files(cwd).strip():
+            context_label = "AGENTS.md"
+    except Exception:  # noqa: BLE001
+        context_label = "none"
+
+    # [Tools] — SAME source the /tools command uses (harness._action_get_all_tools).
+    tool_names: list[str] = []
+    try:
+        getter = getattr(harness, "_action_get_all_tools", None)
+        if callable(getter):
+            tool_names = [getattr(t, "name", str(t)) for t in (getter() or [])]
+    except Exception:  # noqa: BLE001
+        tool_names = []
+    if tool_names:
+        preview = ", ".join(tool_names[:4])
+        if len(tool_names) > 4:
+            preview += ", …"
+        tools_label = f"{len(tool_names)} active ({preview})"
+    else:
+        tools_label = "none"
+
+    # [Skills] — count of the harness skill registry (commonly 0; that's fine).
+    try:
+        skills_count = len(getattr(harness, "skills", []) or [])
+    except Exception:  # noqa: BLE001
+        skills_count = 0
+    skills_label = str(skills_count) if skills_count else "none"
+
+    # [Hooks] — count distinct event types with at least one handler on the bus.
+    hooks_count = 0
+    try:
+        hooks = getattr(harness, "hooks", None)
+        handlers = getattr(hooks, "_handlers", None)
+        if isinstance(handlers, dict):
+            hooks_count = sum(1 for v in handlers.values() if v)
+    except Exception:  # noqa: BLE001
+        hooks_count = 0
+    hooks_label = str(hooks_count) if hooks_count else "none"
+
+    # [Extensions] — names of the runtime's loaded extensions (the user's
+    # explicit "show which extensions are active" ask). Built-ins guardrail +
+    # permission are always present in the real CLI, so this is non-empty there.
+    ext_names: list[str] = []
+    try:
+        runner = getattr(harness, "extension_runner", None)
+        for ext in getattr(runner, "extensions", []) or []:
+            name = getattr(ext, "name", None)
+            if name:
+                ext_names.append(str(name))
+    except Exception:  # noqa: BLE001
+        ext_names = []
+    ext_label = ", ".join(ext_names) if ext_names else "none"
+
+    for tag, value in (
+        ("[Context]   ", context_label),
+        ("[Tools]     ", tools_label),
+        ("[Skills]    ", skills_label),
+        ("[Hooks]     ", hooks_label),
+        ("[Extensions]", ext_label),
+    ):
+        body.append("\n")
+        body.append(f"{tag} ", style="bold cyan")
+        body.append(value, style="dim" if value == "none" else "")
+
+    # === hint line =======================================================
+    # Verified against chrome.py key bindings (Sprint 6h₂₅): the c-c handler
+    # interrupts while running and clears the buffer when idle — there is NO
+    # double-Ctrl+C-to-exit binding, so advertise only what is TRUE.
+    body.append("\n\n")
+    body.append("/help for commands • Ctrl+C to interrupt", style="dim")
+
     panel = Panel(body, box=ROUNDED, border_style="cyan", expand=False)
 
     # Logo header, a blank spacer line, then the info panel.
@@ -1295,7 +1396,7 @@ async def _input_loop(
         # Echo the user's own line into the transcript (Sprint 6h₁₂b) so the
         # assistant reply has its visible question above it — prompt path only
         # (bash / commands / empty already returned/continued before here).
-        output_queue.put_nowait(("commit", Text(f"» {parsed.text}", style="bold")))
+        output_queue.put_nowait(("commit", render_user_message(parsed.text)))
         chrome.set_running(True)
         try:
             await harness.prompt(parsed.text, source="interactive")

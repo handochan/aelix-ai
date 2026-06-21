@@ -118,10 +118,37 @@ async def test_help_handler_commits_table() -> None:
 
 class _Model:
     id = "anthropic/claude-opus-4-7"
+    base_url = "https://api.anthropic.com"
+
+
+class _Hooks:
+    # HookBus shape: ``_handlers`` maps event-name → list of handlers (Feature A
+    # counts the event types that have at least one handler).
+    _handlers = {"before_tool_call": [lambda: None]}
+
+
+class _Ext:
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+
+class _Runner:
+    extensions = [_Ext("guardrail"), _Ext("permission")]
+
+
+class _Tool:
+    def __init__(self, name: str) -> None:
+        self.name = name
 
 
 class _BannerHarness:
     current_model = _Model()
+    skills: list[Any] = []
+    hooks = _Hooks()
+    extension_runner = _Runner()
+
+    def _action_get_all_tools(self) -> list[Any]:
+        return [_Tool(n) for n in ("bash", "read", "write", "edit", "grep")]
 
 
 def test_banner_contains_model_id_cwd_and_help_hint() -> None:
@@ -132,6 +159,59 @@ def test_banner_contains_model_id_cwd_and_help_hint() -> None:
     assert "/home/me/project" in out
     assert "/help" in out
     assert "Aelix" in out
+
+
+def test_banner_shows_version_and_all_sections() -> None:
+    """Feature A (WP-5): the panel surfaces version + base url + the compact
+    [Context]/[Tools]/[Skills]/[Hooks]/[Extensions] sections."""
+
+    from aelix_coding_agent.cli.config import VERSION
+    from aelix_coding_agent.tui.shell import _build_banner
+
+    out = _render(_build_banner(_BannerHarness(), "/home/me/project"))  # type: ignore[arg-type]
+    assert f"version: {VERSION}" in out
+    assert "https://api.anthropic.com" in out  # base url rendered when non-empty
+    assert "[Context]" in out
+    assert "[Tools]" in out
+    assert "5 active" in out  # tool count from _action_get_all_tools
+    assert "[Skills]" in out
+    assert "[Hooks]" in out
+    assert "[Extensions]" in out
+    assert "guardrail" in out and "permission" in out  # active extension names
+    # Hint advertises only the binding that EXISTS (no double-Ctrl+C exit).
+    assert "Ctrl+C to interrupt" in out
+
+
+def test_banner_hides_base_url_when_empty() -> None:
+    """base url renders ONLY when non-empty (Feature A)."""
+
+    class _NoBaseUrl:
+        id = "local/model"
+        base_url = ""
+
+    class _Harness:
+        current_model = _NoBaseUrl()
+
+    from aelix_coding_agent.tui.shell import _build_banner
+
+    out = _render(_build_banner(_Harness(), "/work"))  # type: ignore[arg-type]
+    assert "baseurl:" not in out
+    assert "local/model" in out
+
+
+def test_banner_minimal_harness_does_not_raise() -> None:
+    """A minimal/fake harness lacking skills/hooks/extension_runner/tools must
+    render the sections as 'none' rather than raise (Feature A getattr-guards)."""
+
+    class _Bare:
+        current_model = None  # also exercises the 'unknown' model degrade
+
+    from aelix_coding_agent.tui.shell import _build_banner
+
+    out = _render(_build_banner(_Bare(), "/x"))  # type: ignore[arg-type]
+    assert "unknown" in out
+    assert "[Extensions]" in out
+    assert "none" in out  # empty sections degrade to a dim 'none'
 
 
 def test_banner_degrades_when_no_model() -> None:

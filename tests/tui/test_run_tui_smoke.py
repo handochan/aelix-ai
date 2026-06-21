@@ -396,9 +396,20 @@ def _spy_commits(chrome: AelixChrome) -> list[str]:
     orig_single = chrome.print_above
     orig_many = chrome.print_above_many
 
-    def _record(renderable: object) -> None:
+    def _plain(renderable: object) -> str:
+        # Sprint 6h₂₅ (ADR-0153) — the user echo is now a Rich Group (leading
+        # blank line + bold-cyan echo via render_user_message). Flatten a Group
+        # into its rows' plain text and drop the leading/trailing blank rows so
+        # the echo reads as the bare ``» text`` line (matches the pre-helper
+        # capture shape these tests assert on).
+        rows = getattr(renderable, "renderables", None)
+        if rows is not None:
+            return "\n".join(_plain(r) for r in rows).strip("\n")
         text = getattr(renderable, "plain", None)
-        commits.append(text if isinstance(text, str) else str(renderable))
+        return text if isinstance(text, str) else str(renderable)
+
+    def _record(renderable: object) -> None:
+        commits.append(_plain(renderable))
 
     async def _capture_single(renderable: object) -> None:
         _record(renderable)

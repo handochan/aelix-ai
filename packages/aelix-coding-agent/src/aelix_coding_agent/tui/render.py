@@ -186,6 +186,38 @@ def _render_diff(text: str, *, max_lines: int = 40, expand_id: int | None = None
     return Group(*rows)
 
 
+# Sprint 6h₂₅ (ADR-0153, TUI v2 quick-wins WP-6 trivial tier) — shared user-echo
+# vocabulary. Human input was the weakest visual element (monochrome ``» text``
+# with no separation, buried among colored tool cards / diffs / thinking). The
+# trivial-tier lift = ONE helper every human-input site shares: a leading blank
+# line for separation + a bold-cyan echo that stands out. (The full-width
+# background bubble — WP-6 medium tier — is deferred.)
+_USER_MESSAGE_LABELS: dict[str, str] = {
+    "prompt": "» ",
+    "steer": "Steering: ",
+    "follow_up": "Follow-up: ",
+}
+
+
+def render_user_message(text: str, kind: str = "prompt") -> Group:
+    """Build the canonical echo for a human turn (Sprint 6h₂₅, ADR-0153).
+
+    Every site that echoes the user's own input — the live prompt, the replayed
+    transcript, and steer / follow-up injections — routes through this helper so
+    they share ONE visual language: a LEADING blank line (separation from the
+    colored output above) followed by the echo line styled to STAND OUT (bold
+    cyan).
+
+    ``kind`` selects the leading marker: ``"prompt"`` keeps the ``» `` chevron;
+    ``"steer"`` / ``"follow_up"`` use a distinct ``Steering: `` / ``Follow-up: ``
+    label but the SAME blank-line + bold-cyan visual language. An unknown kind
+    degrades to the prompt chevron.
+    """
+
+    label = _USER_MESSAGE_LABELS.get(kind, _USER_MESSAGE_LABELS["prompt"])
+    return Group(Text(""), Text(f"{label}{text}", style="bold cyan"))
+
+
 class EventRenderer:
     """Renders the harness :data:`AgentEvent` stream via commit/tail sinks.
 
@@ -462,7 +494,9 @@ class EventRenderer:
             if role == "user":
                 text = _join_text(getattr(msg, "content", []))
                 if text.strip():
-                    self._commit(Text(f"» {text}", style="bold"))
+                    # Sprint 6h₂₅ (ADR-0153) — shared user-echo vocabulary so a
+                    # replayed transcript echoes input identically to a live turn.
+                    self._commit(render_user_message(text))
             elif role == "assistant":
                 for block in getattr(msg, "content", []) or []:
                     btype = getattr(block, "type", None)
@@ -508,4 +542,4 @@ class EventRenderer:
         return True
 
 
-__all__ = ["EventRenderer", "_tool_header", "_truncate_lines"]
+__all__ = ["EventRenderer", "render_user_message", "_tool_header", "_truncate_lines"]
