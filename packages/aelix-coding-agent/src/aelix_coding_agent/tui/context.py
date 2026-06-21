@@ -54,6 +54,11 @@ if TYPE_CHECKING:
 
 _RENDER_WIDTH = 80  # best-effort width for factory-rendered widget lines
 
+# Sprint 6h₂₈ (ADR-0159) — the steering ⏵⏵ segment is HIDDEN at this value (the
+# user does not want "one-at-a-time" shown by default); it surfaces only when the
+# user switches steering to "all".
+_DEFAULT_STEERING_MODE = "one-at-a-time"
+
 
 def _resolve(future: asyncio.Future[Any], value: Any) -> None:
     if not future.done():
@@ -103,7 +108,7 @@ class AelixTUIContext:
         pending_provider: Callable[[], int] | None = None,
         permission_badge_provider: Callable[[], str | None] | None = None,
         cwd: str | None = None,
-        mode: str = "default",
+        mode: str = _DEFAULT_STEERING_MODE,
     ) -> None:
         self.chrome = chrome
         self._footer = footer
@@ -544,19 +549,38 @@ class AelixTUIContext:
             self._mode_provider() if self._mode_provider is not None else None
         ) or self._mode
         pending = self._pending_provider() if self._pending_provider is not None else 0
-        # Permission posture badge (WP-0, ADR-0157) — a SEPARATE segment with its
-        # own glyph (✎/⏸/⚠/🤖 via MODE_META), omitted entirely on DEFAULT, so it
-        # never collides with the ⏵⏵ {mode} steering segment.
-        permission_badge = (
-            self._permission_badge_provider()
-            if self._permission_badge_provider is not None
+        # Permission posture badge (WP-0, ADR-0157; ADR-0159) — the LEADING
+        # footer segment, shown at ALL times when a posture is wired (the user
+        # wants the permission mode visible at the front always). The live
+        # provider returns a glyph badge (✎/⏸/⚠/🤖) for non-DEFAULT modes and
+        # ``None`` on DEFAULT; on DEFAULT we substitute a neutral "● default"
+        # label so the segment never disappears. When NO provider is wired
+        # (headless / no posture) the segment is omitted entirely (degrade, never
+        # crash). Distinct glyphs keep it from colliding with the ⏵⏵ steering
+        # segment.
+        permission_badge: str | None
+        if self._permission_badge_provider is not None:
+            from aelix_coding_agent.builtin.permission_mode import DEFAULT_BADGE
+
+            permission_badge = self._permission_badge_provider() or DEFAULT_BADGE
+        else:
+            permission_badge = None
+        # Steering ⏵⏵ segment (ADR-0159) — HIDDEN at the default
+        # "one-at-a-time"; surfaces only when the user switched steering to "all".
+        # The literal "default" is also hidden: the steering sentinel is
+        # "one-at-a-time" but a missing-attribute path could surface the legacy
+        # "default" string, which is NOT a real steering mode (it belongs to the
+        # permission posture) and would render a stray, misleading ⏵⏵ default.
+        steering_segment = (
+            f"⏵⏵ {mode}"
+            if mode and mode not in (_DEFAULT_STEERING_MODE, "default")
             else None
         )
         segments = [
             s
             for s in (
-                f"⏵⏵ {mode}" if mode else None,
                 permission_badge,
+                steering_segment,
                 f"⋯ {pending} queued" if pending > 0 else None,
                 f"📂 {self._abbrev_cwd(self._cwd)}" if self._cwd else None,
                 f"✱ {model}" if model else None,

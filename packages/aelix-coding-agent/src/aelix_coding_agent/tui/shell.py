@@ -196,8 +196,15 @@ async def run_tui(
 
     def _steering_mode() -> str | None:
         # Live steering mode from the harness ("one-at-a-time"/"all") so the
-        # footer ⏵⏵ segment reflects reality, not a hardcoded placeholder.
-        return getattr(runtime_host.harness, "steering_mode", None)
+        # footer ⏵⏵ segment reflects reality, not a hardcoded placeholder. Falls
+        # back to the "one-at-a-time" sentinel (NOT None) when the harness lacks
+        # the attribute, so the footer hides the ⏵⏵ segment instead of surfacing
+        # a stray "⏵⏵ default" (ADR-0159, review MEDIUM).
+        from aelix_coding_agent.tui.context import _DEFAULT_STEERING_MODE
+
+        return getattr(
+            runtime_host.harness, "steering_mode", _DEFAULT_STEERING_MODE
+        )
 
     def _permission_badge() -> str | None:
         # Live permission posture badge (WP-0, ADR-0157): the held posture's

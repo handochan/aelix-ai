@@ -102,14 +102,33 @@ def _build_runner_modal(captured: dict[str, Any]):
     async def _show_modal(chrome: Any, build_content: Any, **_kw: Any) -> Any:
         loop = asyncio.get_running_loop()
         result: asyncio.Future[Any] = loop.create_future()
-        window = build_content(result)
-        captured["window"] = window
-        captured["kb"] = window.content.key_bindings
+        content = build_content(result)
+        captured["window"] = content
+        captured["kb"] = _find_key_bindings(content)
         captured["result"] = result
         # The caller (the test) drives a key, then awaits the result.
         return await result
 
     return _show_modal
+
+
+def _find_key_bindings(content: Any) -> Any:
+    """Locate the option-window key bindings on the dialog content.
+
+    Sprint 6h₂₈ (ADR-0159, review HIGH): the runner now returns an ``HSplit`` of
+    [scrollable body, spacer, fixed options window] so the Yes/No rows are pinned
+    outside the height cap. The key bindings live on the options window's control,
+    so walk for the first control that exposes them (the body control has none).
+    """
+
+    kb = getattr(getattr(content, "content", None), "key_bindings", None)
+    if kb is not None:
+        return kb
+    for child in getattr(content, "children", []) or []:
+        found = _find_key_bindings(child)
+        if found is not None:
+            return found
+    return None
 
 
 def _press(captured: dict[str, Any], key: str) -> None:
@@ -208,3 +227,62 @@ async def test_runner_space_does_not_auto_approve() -> None:
     # Resolve the dialog so the task doesn't leak.
     _press(captured, "n")
     assert await asyncio.wait_for(task, timeout=2) is ApprovalDecision.NO
+
+
+# === HIGH (ADR-0159): options pinned outside the height cap, never clipped ===
+
+
+def _captured_content(request: ApprovalRequest) -> Any:
+    """Synchronously build the dialog content via a fake show_modal."""
+
+    box: dict[str, Any] = {}
+
+    async def _show_modal(_chrome: Any, build_content: Any, **_kw: Any) -> Any:
+        loop = asyncio.get_running_loop()
+        result: asyncio.Future[Any] = loop.create_future()
+        box["content"] = build_content(result)
+        result.set_result(ApprovalDecision.CANCEL)
+        return await result
+
+    asyncio.run(
+        run_approval_dialog(
+            request=request, show_modal=_show_modal, chrome=_FakeChrome()
+        )
+    )
+    return box["content"]
+
+
+def test_runner_pins_options_in_fixed_height_window_outside_cap() -> None:
+    # SECURITY/HIGH (ADR-0159): a body taller than the height cap must NOT clip
+    # the Yes/No option rows. The dialog is an HSplit of [scrollable body, spacer,
+    # FIXED-height options window]; an HSplit shrinks the flexible body first and
+    # keeps the fixed options window at full height under the cap, so the deny
+    # option stays visible no matter how tall the diff body is.
+    from prompt_toolkit.layout import HSplit
+    from prompt_toolkit.layout.containers import to_container
+
+    # A write with a very long content → a tall synthetic diff body.
+    big = "\n".join(f"new line {i}" for i in range(200))
+    content = _captured_content(
+        ApprovalRequest("write", {"path": "/tmp/x", "content": big}, "write")
+    )
+    container = to_container(content)
+    assert isinstance(container, HSplit)
+    children = container.get_children()
+    # [body, spacer, options]
+    assert len(children) == 3
+    body_win, _spacer, options_win = children
+
+    # The options window is FIXED at exactly its row count (3 options + 1 hint),
+    # and that height is independent of the available height (so the cap can't
+    # squeeze it away).
+    n_rows = len(build_options_view(0))
+    for avail in (4, 6, 40, 200):
+        dim = options_win.preferred_height(80, avail)
+        assert dim.min == n_rows
+        assert dim.max == n_rows
+        assert dim.preferred == n_rows
+
+    # The body, by contrast, is flexible (no exact pin) so it absorbs the squeeze.
+    body_dim = body_win.preferred_height(80, 6)
+    assert body_dim.min <= n_rows  # body can shrink below the option height

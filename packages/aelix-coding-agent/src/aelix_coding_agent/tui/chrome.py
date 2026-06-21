@@ -48,6 +48,7 @@ from prompt_toolkit.history import FileHistory, History, InMemoryHistory
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.layout import (
     ConditionalContainer,
+    DynamicContainer,
     Float,
     FloatContainer,
     HSplit,
@@ -326,6 +327,23 @@ class AelixChrome:
             content=_MarkedCompletionsMenu(max_height=8, scroll_offset=1),
         )
         self._floats: list[Float] = [self._completions_float]
+        # Sprint 6h₂₈ (ADR-0159) — the in-flow modal slot. A captured modal
+        # (``/model`` picker, ``/settings``, the WP-0 approval dialog, …) is
+        # mounted HERE rather than as a centered ``Float``: a Float never
+        # contributes to the non-fullscreen app's rendered height
+        # (``FloatContainer.preferred_height`` delegates to the body only), so a
+        # modal taller than the few rows the inline app owns at the terminal
+        # bottom overflowed below the edge and clipped (the user-reported "Yes/No
+        # is cut off"). Mounting the modal as a real HSplit child ABOVE the input
+        # makes the body's preferred height grow to include it, so the renderer
+        # allocates the taller region (capped at terminal rows) and the terminal
+        # scrolls prior scrollback UP — the whole modal renders, never clipped.
+        # ``None`` → the placeholder (0 rows) renders, so the slot is invisible
+        # when idle. Set BEFORE the app is built (``_render_modal_slot`` reads it).
+        self._modal: AnyContainer | None = None
+        # A zero-row idle placeholder — measured to contribute 0 rows, so the
+        # slot adds no gap to the chrome when no modal is open.
+        self._modal_placeholder: Window = Window(height=0)
         self._input_window: Window | None = None
         self.app: Application[None] = self._build_app(pt_input, pt_output)
 
@@ -396,11 +414,20 @@ class AelixChrome:
             height=Dimension(min=1, max=10, preferred=1),
         )
         self._input_window = input_window
+        # Sprint 6h₂₈ (ADR-0159) — the in-flow modal slot. A DynamicContainer
+        # re-resolves its child every render via ``_render_modal_slot`` (a plain
+        # ConditionalContainer can't SWAP which container it shows — it only
+        # toggles a FIXED child's visibility — so DynamicContainer is required to
+        # mount/unmount the active modal). Placed ABOVE ``input_window`` so the
+        # modal renders in the same in-flow zone as widgets_above / the stream
+        # tail / the autocomplete menu — "below the chat, above the prompt".
+        modal_slot = DynamicContainer(self._render_modal_slot)
         body = HSplit(
             [
                 header,
                 breadcrumb,
                 Window(FormattedTextControl(self._render_widgets_above), dont_extend_height=True),
+                modal_slot,
                 input_window,
                 Window(FormattedTextControl(self._render_widgets_below), dont_extend_height=True),
                 _ansi_row(self._render_working, gate_visible=True),
@@ -577,7 +604,10 @@ class AelixChrome:
         # through to this GLOBAL binding and silently cycle the posture behind the
         # open modal (a confusing UX wart — and posture changes mid-prompt). The
         # focus check keeps shift+tab inert whenever a modal owns focus.
-        @kb.add("s-tab", filter=Condition(self._input_has_focus))
+        @kb.add(
+            "s-tab",
+            filter=Condition(lambda: self._input_has_focus() and not self.is_modal_open()),
+        )
         def _cycle_permission(event: object) -> None:
             if self.on_permission_cycle is not None:
                 self.on_permission_cycle()
@@ -863,6 +893,41 @@ class AelixChrome:
         self.buffer.insert_text(text)
 
     # === overlay support ===================================================
+
+    def _render_modal_slot(self) -> AnyContainer:
+        """The container the in-flow modal slot draws (Sprint 6h₂₈, ADR-0159).
+
+        Returns the active modal when one is mounted, else the zero-row
+        placeholder (so the slot is invisible + contributes 0 rows when idle).
+        Called every render by the :class:`DynamicContainer` in the body HSplit.
+        """
+
+        return self._modal if self._modal is not None else self._modal_placeholder
+
+    def mount_modal(self, content: AnyContainer) -> None:
+        """Mount ``content`` in the in-flow modal slot (Sprint 6h₂₈, ADR-0159).
+
+        REPLACES the role :meth:`add_float` played for ``show_modal``: the slot
+        is a real HSplit child, so the body's preferred height grows to include
+        the modal and the non-fullscreen renderer allocates the taller region
+        (capped at terminal rows) — the modal renders fully, never clipped below
+        the terminal edge. Kept separate from :meth:`add_float` so the
+        completions menu + descriptor toasts (which never clip) stay as Floats.
+        """
+
+        self._modal = content
+        self.invalidate()
+
+    def unmount_modal(self) -> None:
+        """Remove the in-flow modal so the slot collapses to 0 rows (ADR-0159)."""
+
+        self._modal = None
+        self.invalidate()
+
+    def is_modal_open(self) -> bool:
+        """Whether an in-flow modal is currently mounted (ADR-0159)."""
+
+        return self._modal is not None
 
     def add_float(self, float_: Float) -> None:
         self._floats.append(float_)

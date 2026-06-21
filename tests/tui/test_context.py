@@ -13,6 +13,7 @@ import io
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
+import pytest
 from aelix_coding_agent.extensions.ext_ui import ExtensionUIContext
 from aelix_coding_agent.extensions.widget_protocols import Theme
 from aelix_coding_agent.tui.chrome import AelixChrome
@@ -100,9 +101,12 @@ async def test_footer_shows_pending_queued_segment() -> None:
 
 
 async def test_footer_permission_badge_segment() -> None:
-    # WP-0 (ADR-0157) — the permission posture badge renders as a SEPARATE
-    # segment with its own glyph (✎/⏸/⚠/🤖), distinct from the ⏵⏵ steering
-    # segment, and is omitted on DEFAULT.
+    # WP-0 (ADR-0157) + ADR-0159 — the permission posture badge is the LEADING
+    # footer segment, shown at ALL times when a posture is wired: a glyph badge
+    # (✎/⏸/⚠/🤖) for non-DEFAULT modes and a neutral "● default" label on
+    # DEFAULT (provider returns None). Distinct from the ⏵⏵ steering segment.
+    from aelix_coding_agent.builtin.permission_mode import DEFAULT_BADGE
+
     with create_pipe_input() as pipe, create_app_session(
         input=pipe, output=DummyOutput()
     ):
@@ -112,21 +116,62 @@ async def test_footer_permission_badge_segment() -> None:
         ctx = AelixTUIContext(
             chrome,
             AelixFooterData(cwd="."),
-            mode_provider=lambda: "all",  # steering segment present
+            mode_provider=lambda: "all",  # steering segment present (non-default)
             permission_badge_provider=lambda: badge["v"],
         )
-        # DEFAULT → no posture badge, but the steering ⏵⏵ segment still shows.
-        assert "⏵⏵ all" in chrome._footer_line
-        assert "⏸" not in chrome._footer_line and "⚠" not in chrome._footer_line
-        # Set the plan badge → its glyph appears, separate from ⏵⏵.
+        # DEFAULT → the neutral "● default" label shows as the LEADING segment,
+        # and the steering ⏵⏵ segment (switched to "all") shows after it.
+        line = chrome._footer_line
+        assert DEFAULT_BADGE in line
+        assert "⏵⏵ all" in line
+        assert "⏸" not in line and "⚠" not in line
+        # The permission badge is leftmost (before the steering segment).
+        assert line.index(DEFAULT_BADGE) < line.index("⏵⏵ all")
+        # Set the plan badge → its glyph appears (leading), separate from ⏵⏵.
         badge["v"] = "⏸ plan"
         ctx._refresh_footer()
-        assert "⏸ plan" in chrome._footer_line
-        assert "⏵⏵ all" in chrome._footer_line  # steering segment unaffected
+        line = chrome._footer_line
+        assert "⏸ plan" in line
+        assert DEFAULT_BADGE not in line  # live badge replaces the default label
+        assert "⏵⏵ all" in line  # steering segment unaffected
+        assert line.index("⏸ plan") < line.index("⏵⏵ all")  # badge leftmost
         # yolo badge
         badge["v"] = "⚠ yolo"
         ctx._refresh_footer()
         assert "⚠ yolo" in chrome._footer_line
+
+
+async def test_footer_no_permission_provider_omits_badge() -> None:
+    # ADR-0159 — headless / no-posture wiring (provider is None) degrades: no
+    # permission badge segment at all, and it must not crash.
+    from aelix_coding_agent.builtin.permission_mode import DEFAULT_BADGE
+
+    with create_pipe_input() as pipe, create_app_session(
+        input=pipe, output=DummyOutput()
+    ):
+        console = Console(file=io.StringIO(), force_terminal=True, width=80)
+        chrome = AelixChrome(console=console)
+        AelixTUIContext(chrome, AelixFooterData(cwd="."))  # no providers wired
+        assert DEFAULT_BADGE not in chrome._footer_line
+        assert "●" not in chrome._footer_line
+
+
+async def test_footer_hides_steering_when_one_at_a_time() -> None:
+    # ADR-0159 — the steering ⏵⏵ segment is hidden at the default
+    # "one-at-a-time"; it surfaces only when switched to "all".
+    with create_pipe_input() as pipe, create_app_session(
+        input=pipe, output=DummyOutput()
+    ):
+        console = Console(file=io.StringIO(), force_terminal=True, width=80)
+        chrome = AelixChrome(console=console)
+        mode = {"v": "one-at-a-time"}
+        ctx = AelixTUIContext(
+            chrome, AelixFooterData(cwd="."), mode_provider=lambda: mode["v"]
+        )
+        assert "⏵⏵" not in chrome._footer_line  # hidden at the default value
+        mode["v"] = "all"
+        ctx._refresh_footer()
+        assert "⏵⏵ all" in chrome._footer_line  # surfaces when switched
 
 
 async def test_theme_methods() -> None:
@@ -297,13 +342,15 @@ async def test_select_no_match_enter_stays_open() -> None:
 
 
 async def _wait_float(chrome: AelixChrome, *, timeout: float = 3.0) -> None:
+    # Sprint 6h₂₈ (ADR-0159): captured modals mount in the in-flow slot, not the
+    # Float list — wait on ``is_modal_open()`` rather than ``chrome._floats``.
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
     while loop.time() < deadline:
-        if chrome._floats:
+        if chrome.is_modal_open():
             return
         await asyncio.sleep(0.005)
-    raise AssertionError("modal float not shown")
+    raise AssertionError("modal not mounted")
 
 
 async def test_select_supports_more_than_nine_options() -> None:
@@ -405,11 +452,14 @@ async def _footer_chrome(
 
 async def test_footer_composes_mode_cwd_model_branch_in_order() -> None:
     footer = _FixedBranchFooter("main")
+    # Use a NON-default steering mode ("all"): the ⏵⏵ segment is HIDDEN at the
+    # "one-at-a-time" sentinel (and the legacy "default" string) per ADR-0159, so
+    # it only surfaces — and so is only orderable here — when steering is "all".
     async with _footer_chrome(
-        footer, model_provider=lambda: "Qwen/Qwen3.6-35B", cwd="/tmp/proj", mode="default"
+        footer, model_provider=lambda: "Qwen/Qwen3.6-35B", cwd="/tmp/proj", mode="all"
     ) as (_ctx_obj, chrome):
         line = chrome._footer_line
-        assert "⏵⏵ default" in line
+        assert "⏵⏵ all" in line
         assert "📂 /tmp/proj" in line
         assert "✱ Qwen/Qwen3.6-35B" in line
         assert "⎇ main" in line
@@ -421,6 +471,29 @@ async def test_footer_composes_mode_cwd_model_branch_in_order() -> None:
             < line.index("⎇")
         )
         assert "  ·  " in line  # segments joined by the bullet separator
+
+
+@pytest.mark.parametrize("mode", ["default", "one-at-a-time", ""])
+async def test_footer_hides_steering_segment_for_default_modes(mode: str) -> None:
+    # ADR-0159 (review MEDIUM): the ⏵⏵ steering segment is omitted for the
+    # "one-at-a-time" sentinel, the legacy "default" string (which is NOT a real
+    # steering mode), and the empty fallback — so the footer never shows a stray,
+    # misleading "⏵⏵ default".
+    footer = _FixedBranchFooter("main")
+    async with _footer_chrome(footer, model_provider=None, mode=mode) as (_ctx_obj, chrome):
+        assert "⏵⏵" not in chrome._footer_line
+
+
+async def test_footer_hides_steering_segment_when_provider_returns_none() -> None:
+    # When the mode_provider returns None (harness lacks steering_mode), the
+    # footer must fall back to the hidden "one-at-a-time" sentinel — never a stray
+    # "⏵⏵ default" (ADR-0159, review MEDIUM).
+    footer = _FixedBranchFooter("main")
+    console = Console(file=io.StringIO(), force_terminal=True, width=200)
+    chrome = AelixChrome(console=console)
+    ctx = AelixTUIContext(chrome, footer, mode_provider=lambda: None)
+    ctx._refresh_footer()
+    assert "⏵⏵" not in chrome._footer_line
 
 
 async def test_footer_omits_model_segment_when_provider_returns_none() -> None:

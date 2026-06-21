@@ -262,11 +262,14 @@ async def test_footer_shows_real_mode_and_context_label() -> None:
         ctx = AelixTUIContext(
             chrome,
             AelixFooterData(cwd="."),
-            mode_provider=lambda: "one-at-a-time",
+            # ADR-0159: the steering ⏵⏵ segment is hidden at the default
+            # "one-at-a-time"; use "all" so the provider-wins behaviour is still
+            # observable in the footer.
+            mode_provider=lambda: "all",
             mode="default",
         )
-        # mode_provider wins over the "default" placeholder
-        assert "one-at-a-time" in chrome._footer_line
+        # mode_provider ("all") wins over the local "default" placeholder
+        assert "⏵⏵ all" in chrome._footer_line
         assert "default" not in chrome._footer_line
         # live context meter segment appears after a turn
         ctx.set_context_label("◔ 5%")

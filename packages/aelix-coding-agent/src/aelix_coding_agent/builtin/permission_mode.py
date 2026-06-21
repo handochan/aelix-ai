@@ -55,6 +55,16 @@ class PermissionMode(StrEnum):
     AUTO = "auto"
 
 
+# Sprint 6h₂₈ (ADR-0159) — the leading footer label shown for DEFAULT mode. The
+# user wants the permission posture visible at the FRONT of the footer at ALL
+# times (including DEFAULT), so the footer substitutes this neutral label when
+# the live badge is empty. Kept SEPARATE from ``MODE_META[DEFAULT].badge_text``
+# (which stays ``""`` — its empty value is a security-relevant contract relied on
+# by ``PermissionPosture.badge()`` returning ``None`` and by the toast / command
+# fallbacks ``badge_text or "default"``).
+DEFAULT_BADGE = "● default"
+
+
 # The shift+tab cycle order. ``AUTO`` is included (the tree-sitter classifier
 # ships in the same sprint, ADR-0158); if the grammar is unavailable at runtime
 # the AUTO branch fails safe to DEFAULT prompting (never silent-allow).
@@ -174,6 +184,7 @@ class PermissionPosture:
 
 __all__ = [
     "CYCLE_ORDER",
+    "DEFAULT_BADGE",
     "MODE_META",
     "ModeMeta",
     "PermissionMode",

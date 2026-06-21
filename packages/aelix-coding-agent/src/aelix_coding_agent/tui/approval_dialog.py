@@ -273,21 +273,43 @@ async def run_approval_dialog(
     flow is unit-testable without standing up the prompt-toolkit app. Esc /
     Ctrl+C / an unknown key resolves to :data:`ApprovalDecision.CANCEL`
     (fail-safe deny).
+
+    Sprint 6h₂₈ (ADR-0159, review HIGH) — the dialog is an ``HSplit`` of a
+    SCROLLABLE body window over a FIXED-height options window. ``show_modal``
+    height-caps the whole modal to the terminal; an HSplit shrinks its flexible
+    child (the body) first and keeps the fixed child (the Yes/No option rows) at
+    full height, so the security-critical deny option is ALWAYS visible even when
+    the diff body is far taller than the cap. The body scrolls (PageUp/PageDown,
+    a cursor-tracking control so prompt-toolkit's scroll-to-cursor reaches the
+    bottom) instead of clipping its overflow off the terminal.
     """
 
+    from prompt_toolkit.data_structures import Point  # noqa: PLC0415
     from prompt_toolkit.formatted_text import ANSI  # noqa: PLC0415
     from prompt_toolkit.key_binding import KeyBindings  # noqa: PLC0415
-    from prompt_toolkit.layout import Window  # noqa: PLC0415
+    from prompt_toolkit.layout import HSplit, ScrollOffsets, Window  # noqa: PLC0415
     from prompt_toolkit.layout.controls import FormattedTextControl  # noqa: PLC0415
+    from prompt_toolkit.layout.dimension import Dimension  # noqa: PLC0415
 
     body_lines = build_approval_view(request, render_diff=render_diff, width=width)
-    state = {"idx": 0}
+    # ``scroll`` is the body line the cursor sits on — moving it lets ptk's
+    # scroll-to-cursor reveal the rest of an over-tall body. ``idx`` is the
+    # highlighted option row.
+    state = {"idx": 0, "scroll": 0}
+    last_body = max(0, len(body_lines) - 1)
 
-    def _render() -> str:
-        opts = build_options_view(state["idx"])
-        return "\n".join([*body_lines, "", *opts])
+    def _render_body() -> str:
+        return "\n".join(body_lines)
 
-    def build(result: asyncio.Future[Any]) -> Window:
+    def _body_cursor() -> Point:
+        # Track the cursor on the active scroll line so scroll_offsets keep it
+        # (and therefore the surrounding lines) within the windowed body region.
+        return Point(x=0, y=max(0, min(state["scroll"], last_body)))
+
+    def _render_options() -> str:
+        return "\n".join(build_options_view(state["idx"]))
+
+    def build(result: asyncio.Future[Any]) -> HSplit:
         kb = KeyBindings()
 
         def _resolve(value: ApprovalDecision) -> None:
@@ -307,6 +329,17 @@ async def run_approval_dialog(
             state["idx"] = (state["idx"] + 1) % len(_ROWS)
             chrome.invalidate()
 
+        # PageUp/PageDown (and Ctrl+Up/Ctrl+Down) scroll the body so a diff taller
+        # than the height cap stays fully reachable; option nav keeps ↑/↓.
+        def _scroll(delta: int) -> None:
+            state["scroll"] = max(0, min(state["scroll"] + delta, last_body))
+            chrome.invalidate()
+
+        kb.add("pageup")(lambda _e: _scroll(-5))
+        kb.add("pagedown")(lambda _e: _scroll(5))
+        kb.add("c-up")(lambda _e: _scroll(-1))
+        kb.add("c-down")(lambda _e: _scroll(1))
+
         kb.add("enter")(_confirm)
         kb.add("c-j")(_confirm)
         # NOTE (nit WP-0): ``space`` is deliberately NOT a confirm key here. The
@@ -323,10 +356,27 @@ async def run_approval_dialog(
         kb.add("escape")(lambda _e: _resolve(ApprovalDecision.CANCEL))
         kb.add("c-c")(lambda _e: _resolve(ApprovalDecision.CANCEL))
 
-        return Window(
-            FormattedTextControl(lambda: ANSI(_render()), focusable=True, key_bindings=kb),
+        # The body is FLEXIBLE (shrinks under the cap → scrolls); the options
+        # window is FIXED at exactly its row count (it is the cursor/focus owner
+        # so the dialog navigates), pinned below the body OUTSIDE the cap's
+        # squeeze so Yes/No can never be clipped. A blank spacer separates them.
+        n_option_rows = len(_ROWS) + 1  # rows + the hint line
+        body_window = Window(
+            FormattedTextControl(
+                lambda: ANSI(_render_body()), get_cursor_position=_body_cursor
+            ),
+            scroll_offsets=ScrollOffsets(top=1, bottom=1),
+            wrap_lines=False,
+        )
+        options_window = Window(
+            FormattedTextControl(
+                lambda: ANSI(_render_options()), focusable=True, key_bindings=kb
+            ),
+            height=Dimension.exact(n_option_rows),
             dont_extend_height=True,
         )
+        spacer = Window(height=Dimension.exact(1))
+        return HSplit([body_window, spacer, options_window])
 
     decision = await show_modal(chrome, build)
     return decision if isinstance(decision, ApprovalDecision) else ApprovalDecision.CANCEL
