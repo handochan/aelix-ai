@@ -255,7 +255,8 @@ def test_sprint_a_registry_set() -> None:
     # Sprint 6h₁₂d added model/clear/compact/cost/tools/mode; the P0 consumer
     # batch added thinking + export; 6h₁₄a (ADR-0121) /expand; 6h₁₄b (ADR-0122)
     # /resume; 6h₁₅ (ADR-0123) /hotkeys + /new; 6h₂₁ (ADR-0129) /import + /fork
-    # + /clone + /tree; 6h₂₇ (ADR-0155) /hooks + /mcp + /context.
+    # + /clone + /tree; 6h₂₇ (ADR-0155) /hooks + /mcp + /context; WP-0 (ADR-0157)
+    # /permissions.
     names = [c.name for c in BUILTIN_COMMANDS]
     assert names == [
         "help",
@@ -272,6 +273,7 @@ def test_sprint_a_registry_set() -> None:
         "mcp",
         "context",
         "mode",
+        "permissions",
         "settings",
         "expand",
         "export",

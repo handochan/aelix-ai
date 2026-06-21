@@ -101,12 +101,18 @@ class AelixTUIContext:
         model_provider: Callable[[], str | None] | None = None,
         mode_provider: Callable[[], str | None] | None = None,
         pending_provider: Callable[[], int] | None = None,
+        permission_badge_provider: Callable[[], str | None] | None = None,
         cwd: str | None = None,
         mode: str = "default",
     ) -> None:
         self.chrome = chrome
         self._footer = footer
         self._model_provider = model_provider
+        # Permission posture badge (WP-0, ADR-0157). Reads the LIVE posture mode
+        # → its distinct footer glyph (✎/⏸/⚠/🤖); returns None on DEFAULT so the
+        # segment is omitted. Kept SEPARATE from the ⏵⏵ steering segment so the
+        # two never collide. None in headless tests (no posture wired).
+        self._permission_badge_provider = permission_badge_provider
         # Live count of steer/follow-up messages queued during a turn (Sprint
         # 6h₁₂e); reads harness.pending_message_count so the footer shows a
         # "⋯ N queued" segment that drains as messages are consumed.
@@ -538,10 +544,19 @@ class AelixTUIContext:
             self._mode_provider() if self._mode_provider is not None else None
         ) or self._mode
         pending = self._pending_provider() if self._pending_provider is not None else 0
+        # Permission posture badge (WP-0, ADR-0157) — a SEPARATE segment with its
+        # own glyph (✎/⏸/⚠/🤖 via MODE_META), omitted entirely on DEFAULT, so it
+        # never collides with the ⏵⏵ {mode} steering segment.
+        permission_badge = (
+            self._permission_badge_provider()
+            if self._permission_badge_provider is not None
+            else None
+        )
         segments = [
             s
             for s in (
                 f"⏵⏵ {mode}" if mode else None,
+                permission_badge,
                 f"⋯ {pending} queued" if pending > 0 else None,
                 f"📂 {self._abbrev_cwd(self._cwd)}" if self._cwd else None,
                 f"✱ {model}" if model else None,

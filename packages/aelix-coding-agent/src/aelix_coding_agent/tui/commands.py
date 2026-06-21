@@ -142,6 +142,15 @@ class CommandContext:
     counts). The ``/mcp`` handler awaits it; ``None`` in headless tests / when
     no MCP manager is attached, in which case ``/mcp`` degrades with a committed
     message (Sprint 6h₂₇, ADR-0155)."""
+    cycle_permission_mode: Callable[[], None] | None = None
+    """``run_tui`` wires this to its ``_cycle_permission`` flow (advance the held
+    ``PermissionPosture`` + toast + footer repaint) so the ``/permissions``
+    command can cycle the posture from the prompt. shift+tab is the PRIMARY
+    affordance; the slash command is optional sugar. ``None`` in headless tests /
+    when no posture is wired (WP-0, ADR-0157)."""
+    permission_mode: Callable[[], str | None] | None = None
+    """``run_tui`` wires this to read the current posture badge/name so
+    ``/permissions`` (no-arg) can surface it. ``None`` in headless tests."""
 
 
 def build_help_renderable(commands: list[BuiltinCommand]) -> RenderableType:
@@ -332,6 +341,35 @@ async def _mode_handler(ctx: CommandContext, args: str) -> None:
         with contextlib.suppress(Exception):
             ctx.set_mode(args)
     ctx.commit(Text(f"mode → {args}", style="green"))
+
+
+async def _permissions_handler(ctx: CommandContext, args: str) -> None:
+    """``/permissions`` — show the permission posture, or cycle it (WP-0).
+
+    No-arg shows the current posture; ``/permissions cycle`` (or any arg)
+    advances it. shift+tab is the PRIMARY affordance; this is optional sugar.
+    """
+
+    if ctx.cycle_permission_mode is None:
+        ctx.commit(
+            Text(
+                "Permission posture switching is unavailable. Use shift+tab in "
+                "the interactive TUI.",
+                style="yellow",
+            )
+        )
+        return
+    if args.strip():
+        ctx.cycle_permission_mode()
+        return
+    current = ctx.permission_mode() if ctx.permission_mode is not None else None
+    ctx.commit(
+        Text(
+            f"permission mode: {current or 'default'}  "
+            "(shift+tab or /permissions cycle to change)",
+            style="cyan",
+        )
+    )
 
 
 async def _export_handler(ctx: CommandContext, args: str) -> None:
@@ -842,6 +880,9 @@ BUILTIN_COMMANDS: list[BuiltinCommand] = [
     BuiltinCommand("mcp", "Show MCP server status (servers, state, tool counts)", _mcp_handler),
     BuiltinCommand("context", "Show context-window usage + compaction thresholds", _context_handler),
     BuiltinCommand("mode", "Show or set the steering mode", _mode_handler),
+    BuiltinCommand(
+        "permissions", "Show or cycle the permission posture (shift+tab)", _permissions_handler
+    ),
     BuiltinCommand("settings", "Toggle live settings (modes, thinking)", _settings_handler),
     BuiltinCommand("expand", "Show the full output of a truncated tool result", _expand_handler),
     BuiltinCommand("export", "Export the transcript to HTML", _export_handler),

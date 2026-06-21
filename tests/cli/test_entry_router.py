@@ -196,6 +196,7 @@ async def test_interactive_mode_dispatches_to_run_tui(
     monkeypatch.setattr(sys, "stdin", _FakeTTYStdin())
 
     calls: list[tuple[object, str, object, object]] = []
+    tui_permission: dict[str, object] = {}
 
     async def _stub_run_tui(
         runtime: object,
@@ -203,12 +204,40 @@ async def test_interactive_mode_dispatches_to_run_tui(
         cwd: str,
         model_registry: object = None,
         mcp_manager: object = None,
+        permission_ext: object = None,
+        permission_posture: object = None,
     ) -> int:
         # Sprint 6h₂₆ (ADR-0154): the real model_registry must be threaded so
         # /model can list get_available() — the harness does not expose it.
         # Sprint 6h₂₇ (ADR-0155): mcp_manager is threaded the same way for /mcp.
+        # WP-0 (ADR-0157): the held permission_ext + posture are threaded so
+        # shift+tab + the approval dialog operate on the gate's own state.
         calls.append((runtime, cwd, model_registry, mcp_manager))
+        tui_permission["ext"] = permission_ext
+        tui_permission["posture"] = permission_posture
         return 0
+
+    # WP-0 nit: capture the held permission objects entry.py constructs so we can
+    # assert run_tui receives the SAME instances (not a fresh per-call object) —
+    # the held-ref guarantee that survives /resume / /new / /fork rebuilds.
+    import aelix_coding_agent.cli.entry as entry_mod
+
+    created: dict[str, object] = {}
+    real_ext_cls = entry_mod.PermissionExtension
+    real_posture_cls = entry_mod.PermissionPosture
+
+    def _capturing_posture(*a: object, **k: object) -> object:
+        obj = real_posture_cls(*a, **k)  # type: ignore[arg-type]
+        created["posture"] = obj
+        return obj
+
+    def _capturing_ext(*a: object, **k: object) -> object:
+        obj = real_ext_cls(*a, **k)  # type: ignore[arg-type]
+        created["ext"] = obj
+        return obj
+
+    monkeypatch.setattr(entry_mod, "PermissionPosture", _capturing_posture)
+    monkeypatch.setattr(entry_mod, "PermissionExtension", _capturing_ext)
 
     # Patch run_tui at its real home on the module object; ``modes.__getattr__``
     # resolves through ``from aelix_coding_agent.tui import run_tui`` and picks
@@ -232,6 +261,13 @@ async def test_interactive_mode_dispatches_to_run_tui(
     # mcp_manager is threaded too (None here: --no-session run has no MCP
     # contribs, so entry.py leaves it None — the kwarg must still be accepted).
     assert mcp_manager is None
+    # WP-0 nit: run_tui must receive the SAME held permission instances entry.py
+    # built (identity, not a fresh per-call object) so shift+tab + the gate share
+    # state across rebuilds. ``created`` holds the singletons entry.py constructed.
+    assert tui_permission["ext"] is not None
+    assert tui_permission["posture"] is not None
+    assert tui_permission["ext"] is created.get("ext")
+    assert tui_permission["posture"] is created.get("posture")
 
 
 async def test_interactive_missing_tui_extra_returns_1(

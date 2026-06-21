@@ -50,6 +50,7 @@ from aelix_agent_core.types import AgentTool
 
 from aelix_coding_agent.builtin.guardrail import GuardrailExtension
 from aelix_coding_agent.builtin.permission import PermissionExtension
+from aelix_coding_agent.builtin.permission_mode import PermissionPosture
 from aelix_coding_agent.extensions.loader import discover_and_load_extensions
 from aelix_coding_agent.mcp import McpClientManager
 from aelix_coding_agent.tools import create_all_tools
@@ -321,6 +322,7 @@ async def _build_harness_options(
     mcp_tools: list[AgentTool] | None = None,
     get_api_key_and_headers: Callable[..., Any] | None = None,
     project_trusted: bool = True,
+    permission_ext: PermissionExtension | None = None,
 ) -> AgentHarnessOptions:
     """Assemble :class:`AgentHarnessOptions` from parsed CLI args.
 
@@ -377,11 +379,19 @@ async def _build_harness_options(
     # (they are user-chosen, not project-local). The trust decision is resolved
     # in ``_async_main`` BEFORE this factory runs, so the gate precedes any
     # project-local code execution.
+    # Hold-the-ref (WP-0 STEP 3, ADR-0157): the ONE ``permission_ext`` built in
+    # ``_async_main`` is threaded in so the posture + ``_session_allows`` survive
+    # ``/resume`` / ``/new`` / ``/fork`` rebuilds — a security requirement (a
+    # fresh per-rebuild instance would silently reset posture to DEFAULT AND lose
+    # the session-approve set). The Guardrail stays FIRST so its hard-deny
+    # patterns short-circuit BEFORE the permission gate (first-block-wins); DO
+    # NOT reorder — YOLO posture relies on Guardrail running first.
+    permission = permission_ext if permission_ext is not None else PermissionExtension()
     loaded = await discover_and_load_extensions(
         [str(p) for p in parsed.extensions],
         cwd=Path(cwd),
         agent_dir=Path(get_agent_dir()),
-        prepend=[GuardrailExtension(), PermissionExtension()],
+        prepend=[GuardrailExtension(), permission],
         no_discovery=parsed.no_extensions,
         no_project_local=not project_trusted,
     )
@@ -661,6 +671,17 @@ async def _async_main(argv: list[str]) -> int:
     await auth_storage.load()
     model_registry = ModelRegistry.create(auth_storage)
 
+    # === Permission posture (WP-0, ADR-0157) — built ONCE, held by reference ===
+    # The shift+tab-cycled posture + the PermissionExtension are constructed here
+    # and threaded into EVERY harness rebuild via the factory closure (mirror of
+    # ``model_registry`` / ``mcp_tools``). This is a security requirement: a
+    # fresh per-rebuild PermissionExtension would silently reset the posture to
+    # DEFAULT and lose the session-approve set across ``/resume`` / ``/new`` /
+    # ``/fork``. The same ``posture`` object is also passed to ``run_tui`` so a
+    # shift+tab cycle and the gate read/write the SAME holder.
+    permission_posture = PermissionPosture()
+    permission_ext = PermissionExtension(posture=permission_posture)
+
     get_api_key_and_headers: Callable[..., Any] | None = None
     if parsed.api_key is not None:
         # Pi parity (main.ts:574-582): ``--api-key`` is meaningless without a
@@ -769,6 +790,7 @@ async def _async_main(argv: list[str]) -> int:
             mcp_tools=mcp_tools,
             get_api_key_and_headers=get_api_key_and_headers,
             project_trusted=project_trusted,
+            permission_ext=permission_ext,
         )
         return AgentHarness(opts)
 
@@ -796,6 +818,8 @@ async def _async_main(argv: list[str]) -> int:
                 cwd=str(Path.cwd()),
                 model_registry=model_registry,
                 mcp_manager=mcp_manager,
+                permission_ext=permission_ext,
+                permission_posture=permission_posture,
             )
 
         if app_mode == "rpc":

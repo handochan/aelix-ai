@@ -59,7 +59,12 @@ from aelix_coding_agent.tui.footer_data import AelixFooterData
 from aelix_coding_agent.tui.input import parse_input_line
 from aelix_coding_agent.tui.mcp_viewer import run_mcp_viewer
 from aelix_coding_agent.tui.model_picker import run_model_picker
-from aelix_coding_agent.tui.render import EventRenderer, render_user_message
+from aelix_coding_agent.tui.overlay import show_modal
+from aelix_coding_agent.tui.render import (
+    EventRenderer,
+    _render_diff,
+    render_user_message,
+)
 from aelix_coding_agent.tui.thinking_picker import run_thinking_picker
 
 if TYPE_CHECKING:
@@ -68,6 +73,8 @@ if TYPE_CHECKING:
     from aelix_agent_core.runtime.agent_session_runtime import AgentSessionRuntime
     from prompt_toolkit.completion import Completer
 
+    from aelix_coding_agent.builtin.permission import PermissionExtension
+    from aelix_coding_agent.builtin.permission_mode import PermissionPosture
     from aelix_coding_agent.mcp import McpClientManager
     from aelix_coding_agent.model_registry import ModelRegistry
 
@@ -138,6 +145,8 @@ async def run_tui(
     cwd: str,
     model_registry: ModelRegistry | None = None,
     mcp_manager: McpClientManager | None = None,
+    permission_ext: PermissionExtension | None = None,
+    permission_posture: PermissionPosture | None = None,
     chrome: AelixChrome | None = None,
     install_signal_handlers: bool = True,
 ) -> int:
@@ -154,6 +163,14 @@ async def run_tui(
         (no servers / tests) makes ``/mcp`` degrade with a committed message.
         Threaded explicitly for the same reason as ``model_registry``: the
         harness does NOT expose the manager (Sprint 6h₂₇, ADR-0155).
+    :param permission_ext: the held :class:`PermissionExtension` (entry.py builds
+        it once and threads it here) so the TUI can wire the purpose-built
+        approval dialog onto it (``approval_runner``). ``None`` (tests) leaves the
+        extension on its generic ``ctx.ui.select`` prompt fallback.
+    :param permission_posture: the held :class:`PermissionPosture` (entry.py
+        builds it once) so shift+tab cycling + the footer badge read/write the
+        SAME object the gate consults. ``None`` (tests) disables the badge +
+        cycle (no posture to mutate).
     :param chrome: injectable for tests (headless pipe input + DummyOutput).
     :param install_signal_handlers: pass ``False`` when embedding (tests / a host
         that owns process signals) — mirrors ``run_rpc_mode``.
@@ -182,6 +199,16 @@ async def run_tui(
         # footer ⏵⏵ segment reflects reality, not a hardcoded placeholder.
         return getattr(runtime_host.harness, "steering_mode", None)
 
+    def _permission_badge() -> str | None:
+        # Live permission posture badge (WP-0, ADR-0157): the held posture's
+        # distinct glyph (✎/⏸/⚠/🤖) via MODE_META, or None on DEFAULT so the
+        # segment is omitted. Reads the SAME object shift+tab mutates.
+        if permission_posture is None:
+            return None
+        from aelix_coding_agent.builtin.permission_mode import MODE_META
+
+        return MODE_META[permission_posture.get()].badge_text or None
+
     context = AelixTUIContext(
         out_chrome,
         footer,
@@ -190,6 +217,7 @@ async def run_tui(
         pending_provider=lambda: getattr(
             runtime_host.harness, "pending_message_count", 0
         ),
+        permission_badge_provider=_permission_badge,
         cwd=cwd,
         mode="default",
     )
@@ -841,6 +869,56 @@ async def run_tui(
         _commit(Text(f"💭 Thinking blocks: {state}", style="dim"))
 
     out_chrome.on_thinking_toggle = _toggle_thinking
+
+    # WP-0 (ADR-0157) — shift+tab cycles the permission posture. Advances the
+    # held PermissionPosture (the SAME object the gate reads), commits a transient
+    # toast describing the new posture + its gate rule, and repaints the footer
+    # badge. No-op when no posture is wired (tests).
+    def _cycle_permission() -> None:
+        if permission_posture is None:
+            return
+        from aelix_coding_agent.builtin.permission_mode import MODE_META
+
+        new_mode = permission_posture.cycle()
+        meta = MODE_META[new_mode]
+        badge = meta.badge_text or "default"
+        _commit(
+            Text(
+                f"⇧⇥ permission mode → {badge}  ·  {meta.description}",
+                style=meta.badge_style or "dim",
+            )
+        )
+        context._refresh_footer()
+
+    out_chrome.on_permission_cycle = _cycle_permission
+    # Surface the cycle + current posture through the command context so the
+    # optional ``/permissions`` slash command works (shift+tab stays primary).
+    if permission_posture is not None:
+        command_ctx.cycle_permission_mode = _cycle_permission
+
+        def _permission_mode_name() -> str | None:
+            from aelix_coding_agent.builtin.permission_mode import MODE_META
+
+            mode = permission_posture.get()
+            return MODE_META[mode].badge_text or mode.value
+
+        command_ctx.permission_mode = _permission_mode_name
+
+    # WP-0 (ADR-0157) — wire the purpose-built approval dialog onto the held
+    # PermissionExtension so the DEFAULT / AUTO_ACCEPT-bash / AUTO-ask prompt uses
+    # the full-command + diff-preview modal instead of the generic select().
+    if permission_ext is not None:
+        from aelix_coding_agent.tui.approval_dialog import run_approval_dialog
+
+        async def _run_approval(request: object) -> object:
+            return await run_approval_dialog(
+                request=request,  # type: ignore[arg-type]
+                show_modal=show_modal,
+                chrome=out_chrome,
+                render_diff=_render_diff,
+            )
+
+        permission_ext.approval_runner = _run_approval
 
     # Sprint 6h₁₅ (ADR-0123) — Alt+Up restores queued steer + follow-up messages
     # back into the editor (pi app.message.dequeue parity). The harness has no

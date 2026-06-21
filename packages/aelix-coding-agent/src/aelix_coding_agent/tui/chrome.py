@@ -268,6 +268,12 @@ class AelixChrome:
         # ``$EDITOR`` (or ``vi`` fallback), then replaces the editor text with
         # the edited result. None in headless tests / when no host is attached.
         self.on_external_editor: Callable[[], None] | None = None
+        # shift+tab cycles the permission posture (WP-0, ADR-0157). Fires a
+        # host-wired callback (``run_tui._cycle_permission``) that advances
+        # ``PermissionPosture.cycle()`` + repaints the footer badge. Safe idle or
+        # mid-turn (it only flips a field + repaints; the gate reads the posture
+        # on the next tool_call under its lock). None in headless tests.
+        self.on_permission_cycle: Callable[[], None] | None = None
 
         # === state the live regions read ===
         self._status: dict[str, str] = {}
@@ -556,6 +562,25 @@ class AelixChrome:
             # editing / the completion menu, which has no focus during a turn).
             if self.on_interrupt is not None:
                 self.on_interrupt()
+
+        # shift+tab cycles the permission posture (WP-0, ADR-0157). prompt-toolkit
+        # maps the shift+tab / backtab escape sequence (CSI Z) to the single key
+        # name ``s-tab`` (the literal ``"backtab"`` is NOT a valid prompt-toolkit
+        # key name and raises at binding time). ``s-tab`` is FREE (Tab itself is
+        # c-i, bound above for completion). Safe idle + running (the handler just
+        # flips a field + repaints; the gate reads the posture on the next
+        # tool_call under its lock).
+        #
+        # FILTER (nit WP-0): gate on the input window holding focus. A modal Float
+        # (the approval dialog / /model picker / /settings) focuses its own Window
+        # but does NOT consume ``s-tab``, so prompt-toolkit would otherwise fall
+        # through to this GLOBAL binding and silently cycle the posture behind the
+        # open modal (a confusing UX wart — and posture changes mid-prompt). The
+        # focus check keeps shift+tab inert whenever a modal owns focus.
+        @kb.add("s-tab", filter=Condition(self._input_has_focus))
+        def _cycle_permission(event: object) -> None:
+            if self.on_permission_cycle is not None:
+                self.on_permission_cycle()
 
         return kb
 
@@ -855,6 +880,21 @@ class AelixChrome:
     def focus_input(self) -> None:
         if self._input_window is not None:
             self.focus(self._input_window)
+
+    def _input_has_focus(self) -> bool:
+        """Whether the editor input window currently holds layout focus.
+
+        Used to gate the global ``s-tab`` permission-cycle binding so it stays
+        inert while a modal Float (approval dialog / picker / settings) owns
+        focus (nit WP-0). Fail-safe: any error → ``False`` (binding inert).
+        """
+
+        if self._input_window is None:
+            return False
+        try:
+            return self.app.layout.has_focus(self._input_window)
+        except Exception:  # noqa: BLE001 — pre-run / torn-down layout → inert
+            return False
 
     # === lifecycle =========================================================
 

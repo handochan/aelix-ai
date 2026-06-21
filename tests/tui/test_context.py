@@ -99,6 +99,36 @@ async def test_footer_shows_pending_queued_segment() -> None:
         assert "queued" not in chrome._footer_line
 
 
+async def test_footer_permission_badge_segment() -> None:
+    # WP-0 (ADR-0157) — the permission posture badge renders as a SEPARATE
+    # segment with its own glyph (✎/⏸/⚠/🤖), distinct from the ⏵⏵ steering
+    # segment, and is omitted on DEFAULT.
+    with create_pipe_input() as pipe, create_app_session(
+        input=pipe, output=DummyOutput()
+    ):
+        console = Console(file=io.StringIO(), force_terminal=True, width=80)
+        chrome = AelixChrome(console=console)
+        badge = {"v": None}
+        ctx = AelixTUIContext(
+            chrome,
+            AelixFooterData(cwd="."),
+            mode_provider=lambda: "all",  # steering segment present
+            permission_badge_provider=lambda: badge["v"],
+        )
+        # DEFAULT → no posture badge, but the steering ⏵⏵ segment still shows.
+        assert "⏵⏵ all" in chrome._footer_line
+        assert "⏸" not in chrome._footer_line and "⚠" not in chrome._footer_line
+        # Set the plan badge → its glyph appears, separate from ⏵⏵.
+        badge["v"] = "⏸ plan"
+        ctx._refresh_footer()
+        assert "⏸ plan" in chrome._footer_line
+        assert "⏵⏵ all" in chrome._footer_line  # steering segment unaffected
+        # yolo badge
+        badge["v"] = "⚠ yolo"
+        ctx._refresh_footer()
+        assert "⚠ yolo" in chrome._footer_line
+
+
 async def test_theme_methods() -> None:
     async with _ctx(run_app=False) as (ctx, _chrome, _pipe):
         assert isinstance(ctx.theme, Theme)

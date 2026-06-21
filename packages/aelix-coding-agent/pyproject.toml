@@ -33,6 +33,13 @@ dependencies = [
   "markdown-it-py>=3.0",
   "mcp>=1.27,<2",
   "Pillow>=11.0,<12.0",
+  # WP-0 (ADR-0158) — tree-sitter-bash AUTO-mode safety classifier. Prebuilt
+  # cross-platform wheels (linux/macos/windows), no compiler, ~3.4 MiB. Pinned
+  # to one grammar-ABI line so node-type names don't silently drift. The
+  # classifier fails safe to ASK if the grammar is unavailable (exotic no-wheel
+  # platform → sdist build skipped), so the other four postures are unaffected.
+  "tree-sitter>=0.25,<0.26",
+  "tree-sitter-bash>=0.25,<0.26",
 ]
 
 # Sprint 6h₁₀a (ADR-0088 Q1, ADR-0104): the interactive TUI shell is an
