@@ -25,10 +25,29 @@ _LOGO_LINES = (
 LOGO_ART = "\n".join(_LOGO_LINES)
 """The multi-line block-art logo (no trailing newline)."""
 
+# Sprint 6h₃₁ (ADR-0164) — per-line 24-bit truecolor gradient (cyan → blue →
+# purple), reproducing ``docs/assets/aelix-terminal-logo.ansi``. The colour
+# stops are embedded as code (NOT the docs/ asset file, which is not packaged)
+# so the gradient ships in the wheel; ``Text.from_ansi`` renders the SGR escapes
+# and downgrades cleanly on no-color terminals.
+_LOGO_GRADIENT = (
+    (0, 242, 254),
+    (0, 204, 255),
+    (0, 153, 255),
+    (51, 102, 255),
+    (102, 51, 255),
+    (153, 0, 255),
+)
+LOGO_ANSI = "\n".join(
+    f"\x1b[38;2;{r};{g};{b}m{line}\x1b[0m"
+    for line, (r, g, b) in zip(_LOGO_LINES, _LOGO_GRADIENT, strict=True)
+)
+"""The block-art logo with an embedded per-line truecolor gradient (24-bit)."""
+
 LOGO_TITLE = "Aelix Agent Runtime"
 """Product title rendered under the block art (contains ``Aelix``)."""
 
 LOGO_TAGLINE = "small kernel | extension platform | policy-first execution"
 """One-line positioning tagline rendered dim under the title."""
 
-__all__ = ["LOGO_ART", "LOGO_TAGLINE", "LOGO_TITLE"]
+__all__ = ["LOGO_ANSI", "LOGO_ART", "LOGO_TAGLINE", "LOGO_TITLE"]

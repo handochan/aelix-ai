@@ -1516,7 +1516,7 @@ def _build_banner(harness: AgentHarness, cwd: str) -> object:
     from rich.console import Group
     from rich.panel import Panel
 
-    from aelix_coding_agent.tui._logo import LOGO_ART, LOGO_TAGLINE, LOGO_TITLE
+    from aelix_coding_agent.tui._logo import LOGO_ANSI, LOGO_TAGLINE, LOGO_TITLE
 
     model = getattr(harness, "current_model", None)
     model_id = getattr(model, "id", None) or "unknown"
@@ -1532,9 +1532,11 @@ def _build_banner(harness: AgentHarness, cwd: str) -> object:
     except Exception:  # noqa: BLE001 — banner must never raise
         version = "unknown"
 
-    logo = Text()
-    logo.append(LOGO_ART + "\n", style="bold cyan")
-    logo.append(f" {LOGO_TITLE}\n", style="bold")
+    # Gradient block-art (ADR-0164): Text.from_ansi renders the embedded 24-bit
+    # truecolor SGR escapes (cyan → blue → purple) — no style= override so the
+    # gradient shows; degrades cleanly on no-color terminals.
+    logo = Text.from_ansi(LOGO_ANSI)
+    logo.append(f"\n {LOGO_TITLE}\n", style="bold")
     logo.append(f" {LOGO_TAGLINE}", style="dim")
 
     # === runtime summary =================================================
