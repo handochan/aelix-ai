@@ -70,6 +70,7 @@ def _model_get_text(model: Model) -> str:
 async def list_models(
     model_registry: ModelRegistry,
     search_pattern: str | bool | None = None,
+    settings_manager: object | None = None,
 ) -> None:
     """Pi parity: ``listModels`` (``list-models.ts:30-111``).
 
@@ -78,7 +79,10 @@ async def list_models(
     1. Surface :meth:`ModelRegistry.get_error` as a plain stderr
        warning (Aelix-additive divergence — no ANSI).
     2. Fetch available models via :meth:`ModelRegistry.get_available`
-       (Pi parity for ``getAvailable()``).
+       (Pi parity for ``getAvailable()``) — narrowed by the persisted
+       ``enabled_models`` allow-list when ``settings_manager`` is supplied
+       (ADR-0162 enforcement; an empty-match list degrades to all + a stderr
+       warning so ``--list-models`` is never empty due to a stale allow-list).
     3. If empty: print the inline no-models-available fallback and
        return.
     4. If ``search_pattern`` is a non-empty string: fuzzy-filter the
@@ -104,7 +108,20 @@ async def list_models(
             file=sys.stderr,
         )
 
-    models = model_registry.get_available()
+    if settings_manager is not None:
+        # ADR-0162: scope to the persisted enabled_models allow-list (parity
+        # with the /model picker). The helper degrades an empty-match list to
+        # the full set + warns, so --list-models is never empty due to a stale
+        # allow-list. Read LIVE — no startup snapshot.
+        from ..core.scoped_models_filter import scoped_available
+
+        models = await scoped_available(
+            model_registry,
+            settings_manager,
+            warn=lambda m: print(f"Warning: {m}", file=sys.stderr),
+        )
+    else:
+        models = model_registry.get_available()
 
     if not models:
         # Aelix-additive divergence: inline fallback (Pi delegates to

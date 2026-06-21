@@ -73,6 +73,13 @@ the existing `get_*`/`set_*`/`flush` API only — no field added to the pinned
 - `/scoped-models` is **global-scope only** (pi parity): `SettingsManager` exposes
   no `set_project_enabled_models`, and adding one would require a forbidden
   `aelix-ai` edit. Per-project scoping is out of scope.
+- **PERSIST-ONLY at this ADR — enforcement landed later in ADR-0162.** This ADR
+  shipped `/scoped-models` as a writer of the `enabled_models` allow-list; NOTHING
+  consumed it (`ModelRegistry.get_available()` filtered by configured auth only),
+  so the allow-list was durable but inert and the confirmation said "enforcement
+  pending". **ADR-0162** wires the consumption (a `scoped_models_filter.scoped_available`
+  helper at the `/model` picker + `--list-models`); the "enforcement pending"
+  phrasing here is now obsolete — see ADR-0162.
 - Persistence is fire-and-forget (`set_*` → asyncio task); the in-memory read-back
   is synchronous + reliable, but durability needs the next loop tick — hence the
   `flush()` after each change + in `run_tui`'s `finally`. Tests drive setters under

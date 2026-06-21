@@ -18,14 +18,26 @@ then ``flush()`` lands the write and the flow re-reads ``get_enabled_models()`` 
 commit a round-trip confirmation line. The setter mutates the merged view
 synchronously, so the read-back is reliable even before the disk task lands.
 
-ENFORCEMENT IS PENDING (honest scope): this command PERSISTS the allow-list but
-nothing in the coding-agent yet CONSUMES it — :meth:`ModelRegistry.get_available`
-filters by configured auth only, and the ``/model`` picker reads that same
-unfiltered list. So after ``/scoped-models`` the user still sees the full catalog
-in ``/model`` (the allow-list is durable but not active). The confirmation message
-says so verbatim ("persisted … enforcement pending"); wiring the picker/registry
-to intersect with the allow-list is a follow-up (it would diverge from pi's
-auth-only ``get_available`` and is out of WP-2 scope).
+ENFORCEMENT IS ACTIVE (ADR-0162): the allow-list this command persists now
+RESTRICTS the model list the user sees/selects. The intersection lives in
+:func:`aelix_coding_agent.core.scoped_models_filter.scoped_available` (read LIVE
+on every call, so a change here takes effect on the next ``/model`` open with no
+restart). :meth:`ModelRegistry.get_available` itself is UNCHANGED (auth-only, pi
+parity); ``scoped_available`` is layered at the consumers. Scoped consumers: the
+``/model`` picker (headline) and ``--list-models`` (CLI parity). An empty-match
+allow-list degrades to the full list (never a lockout). PARTIAL SCOPE: the RPC
+``set_model`` / ``cycle_model`` / ``get_available_models`` handlers are NOT
+scoped this turn (the protected harness has no model-list rotation, but RPC's
+``run_rpc_mode`` is not threaded a ``SettingsManager`` today) — an external RPC
+client can still reach a disabled model; the scope is a TUI/CLI-surface guard,
+not a hard policy boundary. The startup model resolution
+(``resolve_cli_model`` / current selection) is intentionally NOT scoped so a
+default/chosen model outside the allow-list stays usable.
+
+THE SEED IS DELIBERATELY UNSCOPED: this picker keeps seeding from the FULL
+auth-filtered :meth:`ModelRegistry.get_available` (not the scoped helper) so a
+previously-DISABLED model is still visible + re-checkable here — scoping the seed
+would make a disabled model invisible and permanently un-re-enableable.
 
 HONEST CONSTRAINT: ``set_enabled_models`` writes the GLOBAL scope only — there is
 NO ``set_project_enabled_models`` on the SettingsManager surface, so this is a
@@ -151,13 +163,11 @@ async def run_scoped_models(
     # Read-back round-trip confirmation (the setter mutates the merged view
     # synchronously, so this reflects the new state reliably).
     #
-    # HONEST PHRASING (W-review MEDIUM): the allow-list PERSISTS (round-trips +
-    # lands on disk) but is NOT yet ENFORCED — ModelRegistry.get_available()
-    # filters by configured auth only and the /model picker reads that same
-    # unfiltered list, so nothing in the coding-agent consumes enabled_models.
-    # The message must not imply an active filter that does not exist; it mirrors
-    # the "persisted; applies … when a consumer is wired" phrasing the persist-only
-    # /settings rows already use.
+    # ENFORCED (ADR-0162): the allow-list now RESTRICTS the /model picker (and
+    # --list-models) via scoped_models_filter.scoped_available — read live, so
+    # it takes effect immediately on the next /model open. The message states the
+    # active effect. (RPC handlers remain unscoped this turn — see the module
+    # docstring's PARTIAL SCOPE note.)
     with contextlib.suppress(Exception):
         readback = settings_manager.get_enabled_models()
         if readback is None:
@@ -171,8 +181,8 @@ async def run_scoped_models(
         else:
             commit(
                 Text(
-                    f"scoped models → {len(readback)} model(s) "
-                    "(persisted, global scope; enforcement pending)",
+                    f"scoped models → {len(readback)} model(s) enabled "
+                    "(persisted, global scope; /model now restricted to these)",
                     style="green",
                 )
             )

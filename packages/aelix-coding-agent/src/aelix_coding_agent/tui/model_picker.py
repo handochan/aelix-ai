@@ -112,6 +112,7 @@ async def run_model_picker(
     select: Callable[..., Awaitable[str | None]],
     commit: Callable[[object], None],
     refresh_footer: Callable[[], None] | None = None,
+    settings_manager: Any = None,
 ) -> None:
     """Drive the ``/model`` picker end-to-end (Sprint 6h₂₆, ADR-0154, WP-7).
 
@@ -124,6 +125,14 @@ async def run_model_picker(
     expose ``current_model`` + ``set_model``. Every failure mode (no registry,
     list failure, empty catalog, missing ``set_model``, switch raising, unknown
     chosen row) surfaces a committed message and returns — never crashes the REPL.
+
+    ENFORCEMENT (ADR-0162): when ``settings_manager`` is supplied, the offered
+    list is narrowed to the persisted ``enabled_models`` allow-list via
+    :func:`aelix_coding_agent.core.scoped_models_filter.scoped_available` (read
+    LIVE — a runtime ``/scoped-models`` change is reflected on the next open).
+    An empty-match allow-list degrades to the full list with a warning (never a
+    lockout). When ``settings_manager`` is :data:`None` the full auth-filtered
+    list is shown (unchanged behaviour).
     """
 
     from rich.text import Text  # local import keeps this module import-light
@@ -132,7 +141,15 @@ async def run_model_picker(
         commit(Text("Model picker unavailable (no model registry).", style="yellow"))
         return
     try:
-        models = list(registry.get_available())
+        from aelix_coding_agent.core.scoped_models_filter import scoped_available
+
+        models = list(
+            await scoped_available(
+                registry,
+                settings_manager,
+                warn=lambda m: commit(Text(m, style="yellow")),
+            )
+        )
     except Exception as exc:  # noqa: BLE001 — surface, never crash the REPL
         commit(Text(f"✖ model list failed: {exc}", style="bold red"))
         return

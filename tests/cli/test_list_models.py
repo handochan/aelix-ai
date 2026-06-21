@@ -141,6 +141,89 @@ async def test_fuzzy_filter_reduces_rows(
     assert "claude" not in out
 
 
+# === enabled_models enforcement (ADR-0162) ==================================
+
+
+class _FakeSettings:
+    """SettingsManager double exposing only ``get_enabled_models`` (read live)."""
+
+    def __init__(self, patterns: list[str] | None) -> None:
+        self._patterns = patterns
+
+    def get_enabled_models(self) -> list[str] | None:
+        return None if self._patterns is None else list(self._patterns)
+
+
+async def test_list_models_scoped_by_enabled_allow_list(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    registry = _FakeRegistry(
+        available=[
+            _make_model("anthropic", "claude-3-5-sonnet"),
+            _make_model("openai", "gpt-4o"),
+            _make_model("openai", "gpt-3.5"),
+        ]
+    )
+    # Allow only the openai models (glob; * does not cross /).
+    await list_models(registry, None, _FakeSettings(["openai/*"]))  # type: ignore[arg-type]
+    out = capsys.readouterr().out
+    assert "gpt-4o" in out
+    assert "gpt-3.5" in out
+    assert "claude" not in out  # anthropic filtered out by the allow-list
+
+
+async def test_list_models_empty_match_degrades_to_all_with_warning(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    registry = _FakeRegistry(
+        available=[
+            _make_model("anthropic", "claude-3-5-sonnet"),
+            _make_model("openai", "gpt-4o"),
+        ]
+    )
+    # A stale allow-list that matches nothing must NOT empty the table.
+    await list_models(registry, None, _FakeSettings(["ghost/missing"]))  # type: ignore[arg-type]
+    captured = capsys.readouterr()
+    assert "claude-3-5-sonnet" in captured.out
+    assert "gpt-4o" in captured.out
+    assert "matched no available models" in captured.err  # warn → stderr
+
+
+async def test_list_models_none_settings_unchanged(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # No settings_manager → full auth list (back-compat, no scoping).
+    registry = _FakeRegistry(
+        available=[
+            _make_model("anthropic", "claude-3-5-sonnet"),
+            _make_model("openai", "gpt-4o"),
+        ]
+    )
+    await list_models(registry, None)  # type: ignore[arg-type]
+    out = capsys.readouterr().out
+    assert "claude-3-5-sonnet" in out
+    assert "gpt-4o" in out
+
+
+async def test_list_models_scope_then_fuzzy_compose(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # The allow-list narrows FIRST, then the fuzzy pattern + sort still apply to
+    # the scoped set.
+    registry = _FakeRegistry(
+        available=[
+            _make_model("anthropic", "claude-3-5-sonnet"),
+            _make_model("openai", "gpt-4o"),
+            _make_model("openai", "gpt-3.5"),
+        ]
+    )
+    await list_models(registry, "4o", _FakeSettings(["openai/*"]))  # type: ignore[arg-type]
+    out = capsys.readouterr().out
+    assert "gpt-4o" in out
+    assert "gpt-3.5" not in out  # fuzzy-excluded within the scoped openai set
+    assert "claude" not in out  # scope-excluded
+
+
 async def test_empty_filter_result_prints_no_models_matching(
     capsys: pytest.CaptureFixture[str],
 ) -> None:

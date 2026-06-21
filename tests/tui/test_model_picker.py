@@ -214,3 +214,91 @@ async def test_run_model_picker_selecting_current_model_round_trips() -> None:
         registry=_FakeRegistry(models), harness=harness, select=select, commit=committed.append
     )
     assert harness.set_calls == [models[1]]
+
+
+# ── enabled_models enforcement (ADR-0162) ──────────────────────────────────────
+
+
+class _FakeSettings:
+    """SettingsManager double exposing only ``get_enabled_models`` (read live)."""
+
+    def __init__(self, patterns: list[str] | None) -> None:
+        self._patterns = patterns
+
+    def get_enabled_models(self) -> list[str] | None:
+        return None if self._patterns is None else list(self._patterns)
+
+
+async def test_run_model_picker_scopes_to_enabled_allow_list() -> None:
+    # 3-model catalog, allow-list of 2 → only the 2 enabled rows are offered;
+    # the ✱ current marker still applies WITHIN the scoped subset.
+    models = [
+        Model(id="a", provider="p"),
+        Model(id="b", provider="p"),
+        Model(id="c", provider="p"),
+    ]
+    harness = _FakeHarness(current=models[1])  # "b" is current
+    committed: list[object] = []
+    seen: dict[str, Any] = {}
+
+    async def select(title: str, options: list[str], detail: Any = None) -> str | None:
+        seen["options"] = options
+        return options[0]  # pick the first offered (scoped) row
+
+    await run_model_picker(
+        registry=_FakeRegistry(models),
+        harness=harness,
+        select=select,
+        commit=committed.append,
+        settings_manager=_FakeSettings(["p/a", "p/b"]),
+    )
+    # Only the 2 enabled rows ("a", "b") are offered — "c" is filtered out.
+    assert len(seen["options"]) == 2
+    assert all("[p] c" not in o for o in seen["options"])
+    # "b" (current) keeps its ✱ marker within the scoped subset.
+    assert any(o.startswith("✱ ") and "[p] b" in o for o in seen["options"])
+    # Selecting the first scoped row switched to "a".
+    assert harness.set_calls == [models[0]]
+
+
+async def test_run_model_picker_empty_match_degrades_to_all_with_warning() -> None:
+    # A concrete allow-list matching ZERO available models must NOT lock the
+    # picker out — it shows all rows and commits a warning line.
+    models = [Model(id="a", provider="p"), Model(id="b", provider="p")]
+    harness = _FakeHarness()
+    committed: list[object] = []
+    seen: dict[str, Any] = {}
+
+    async def select(title: str, options: list[str], detail: Any = None) -> str | None:
+        seen["options"] = options
+        return None  # Esc after seeing the full list
+
+    await run_model_picker(
+        registry=_FakeRegistry(models),
+        harness=harness,
+        select=select,
+        commit=committed.append,
+        settings_manager=_FakeSettings(["ghost/missing"]),
+    )
+    assert len(seen["options"]) == 2  # full list, no lockout
+    assert any("matched no available models" in _plain(c) for c in committed)
+
+
+async def test_run_model_picker_none_settings_shows_full_list() -> None:
+    # settings_manager omitted/None → unchanged behaviour (full auth list).
+    models = [Model(id="a", provider="p"), Model(id="b", provider="p")]
+    harness = _FakeHarness()
+    seen: dict[str, Any] = {}
+
+    async def select(title: str, options: list[str], detail: Any = None) -> str | None:
+        seen["options"] = options
+        return None
+
+    await run_model_picker(
+        registry=_FakeRegistry(models),
+        harness=harness,
+        select=select,
+        commit=lambda _c: None,
+        settings_manager=None,
+    )
+    assert len(seen["options"]) == 2

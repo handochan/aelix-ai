@@ -92,8 +92,35 @@ async def test_subset_writes_sorted_ids() -> None:
     )
     assert sm.get_enabled_models() == ["a", "c"]  # sorted
     assert any("2 model" in _plain(c) for c in committed)
-    # The confirmation is HONEST: the allow-list persists but is NOT yet enforced.
-    assert any("enforcement pending" in _plain(c) for c in committed)
+    # ENFORCED (ADR-0162): the confirmation now states the active effect — the
+    # allow-list restricts /model. The old "enforcement pending" phrasing is gone.
+    assert any("/model now restricted" in _plain(c) for c in committed)
+    assert not any("enforcement pending" in _plain(c) for c in committed)
+
+
+async def test_seed_is_not_scoped_disabled_model_stays_visible() -> None:
+    # REGRESSION GUARD (ADR-0162): the /scoped-models picker seeds from the FULL
+    # auth-filtered catalog (NOT scoped_available), so a model that is currently
+    # DISABLED via the allow-list is still listed + re-checkable. Scoping the seed
+    # would make a disabled model invisible and permanently un-re-enableable.
+    sm = SettingsManager.in_memory({"enabledModels": ["a"]})  # only "a" enabled
+    captured: dict[str, Any] = {}
+
+    async def ms(title, options, *, selected, extra_toggles=None, preview=None):  # noqa: ANN001
+        captured["option_ids"] = [oid for oid, _, _ in options]
+        captured["selected"] = set(selected)
+        return None  # Esc — just inspect the seed, no write
+
+    await run_scoped_models(
+        registry=_FakeRegistry(_MODELS),
+        settings_manager=sm,
+        multiselect=ms,
+        commit=lambda c: None,
+    )
+    # ALL catalog ids are offered (the disabled "b"/"c" are still visible).
+    assert captured["option_ids"] == ["a", "b", "c"]
+    # Only the enabled model is pre-checked.
+    assert captured["selected"] == {"a"}
 
 
 async def test_seed_prunes_stale_ids() -> None:

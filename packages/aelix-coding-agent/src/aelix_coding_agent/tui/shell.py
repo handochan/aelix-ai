@@ -746,6 +746,7 @@ async def run_tui(
             select=context.select,
             commit=_commit,
             refresh_footer=context._refresh_footer,
+            settings_manager=settings_manager,
         )
 
     async def _open_thinking_picker() -> None:

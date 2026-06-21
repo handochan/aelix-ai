@@ -567,6 +567,7 @@ async def _async_main(argv: list[str]) -> int:
         # would trigger auth file I/O on every invocation. (``Path`` is a
         # zero-cost stdlib import and lives at module scope.)
         from aelix_ai.oauth import AuthStorage
+        from aelix_ai.settings import SettingsManager
 
         from ..model_registry import ModelRegistry
         from .list_models import list_models
@@ -574,7 +575,14 @@ async def _async_main(argv: list[str]) -> int:
         auth_storage = AuthStorage(Path(get_agent_dir()) / "auth.json")
         await auth_storage.load()
         model_registry = ModelRegistry.create(auth_storage)
-        await list_models(model_registry, parsed.list_models)
+        # ADR-0162: scope --list-models to the persisted enabled_models
+        # allow-list for parity with the /model picker. MUST pass
+        # ``agent_dir=get_agent_dir()`` (same as the main path at ~684) so both
+        # read the same settings.json. An empty-match list degrades to all.
+        list_settings = SettingsManager.create(
+            cwd=str(Path.cwd()), agent_dir=Path(get_agent_dir())
+        )
+        await list_models(model_registry, parsed.list_models, list_settings)
         return 0
 
     # === --export <src> [out] — early-exit action (Pi ``exportFromFile``) =====
