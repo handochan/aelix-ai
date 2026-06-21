@@ -195,10 +195,14 @@ async def test_interactive_mode_dispatches_to_run_tui(
 
     monkeypatch.setattr(sys, "stdin", _FakeTTYStdin())
 
-    calls: list[tuple[object, str]] = []
+    calls: list[tuple[object, str, object]] = []
 
-    async def _stub_run_tui(runtime: object, *, cwd: str) -> int:
-        calls.append((runtime, cwd))
+    async def _stub_run_tui(
+        runtime: object, *, cwd: str, model_registry: object = None
+    ) -> int:
+        # Sprint 6h₂₆ (ADR-0154): the real model_registry must be threaded so
+        # /model can list get_available() — the harness does not expose it.
+        calls.append((runtime, cwd, model_registry))
         return 0
 
     # Patch run_tui at its real home on the module object; ``modes.__getattr__``
@@ -215,9 +219,11 @@ async def test_interactive_mode_dispatches_to_run_tui(
     code = await _async_main(["--no-session"])
     assert code == 0
     assert len(calls) == 1
-    runtime, cwd = calls[0]
+    runtime, cwd, model_registry = calls[0]
     assert runtime is not None
     assert cwd  # a concrete cwd string was passed
+    # The real ModelRegistry is threaded through (so /model can list models).
+    assert model_registry is not None
 
 
 async def test_interactive_missing_tui_extra_returns_1(

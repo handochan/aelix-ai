@@ -211,6 +211,36 @@ async def test_select_type_to_filter_then_enter() -> None:
         assert await asyncio.wait_for(fut, timeout=5) == "green"
 
 
+async def test_select_with_detail_resolves_normally() -> None:
+    # Sprint 6h₂₆ (ADR-0154): passing the optional detail callback must not change
+    # navigation/confirm — the picker still resolves the highlighted row. (Detail
+    # CONTENT is unit-tested in test_model_picker.py; whether the headless harness
+    # repaints to invoke the callback is not asserted here.)
+    def detail(i: int) -> list[str]:
+        return [f"detail-{i}"]
+
+    async with _ctx(run_app=True) as (ctx, _chrome, pipe):
+        fut = asyncio.ensure_future(
+            ctx.select("Pick", ["red", "green", "blue"], detail=detail)
+        )
+        await asyncio.sleep(0.05)
+        pipe.send_text("\x1b[B")  # Down → highlight "green"
+        pipe.send_text("\r")  # Enter → confirm
+        assert await asyncio.wait_for(fut, timeout=5) == "green"
+
+
+async def test_select_detail_exception_does_not_break_modal() -> None:
+    # A raising detail callback is cosmetic-only and must never break the picker.
+    def detail(_i: int) -> list[str]:
+        raise RuntimeError("boom")
+
+    async with _ctx(run_app=True) as (ctx, _chrome, pipe):
+        fut = asyncio.ensure_future(ctx.select("Pick", ["red", "green"], detail=detail))
+        await asyncio.sleep(0.05)
+        pipe.send_text("\r")  # Enter still resolves the highlighted row
+        assert await asyncio.wait_for(fut, timeout=5) == "red"
+
+
 async def test_select_empty_options_resolves_none() -> None:
     # Sprint 6h₂₄: zero options → no modal opens, immediate None.
     async with _ctx(run_app=False) as (ctx, _chrome, _pipe):

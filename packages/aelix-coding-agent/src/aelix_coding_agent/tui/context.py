@@ -135,7 +135,11 @@ class AelixTUIContext:
     # === Dialogs (5) =======================================================
 
     async def select(
-        self, title: str, options: list[str], opts: ExtensionUIDialogOptions | None = None
+        self,
+        title: str,
+        options: list[str],
+        opts: ExtensionUIDialogOptions | None = None,
+        detail: Callable[[int], list[str]] | None = None,
     ) -> str | None:
         """Pi-parity arrow-key select with type-to-filter (Sprint 6h₂₄).
 
@@ -145,6 +149,19 @@ class AelixTUIContext:
         prior impl exposed only digit shortcuts 1-9 — broken UX for menus
         with more than 9 items (e.g. /model) and surprising for anyone used
         to pi. Both the digit-only shortcut and the 9-item cap are gone.
+
+        ``detail`` (Sprint 6h₂₆, ADR-0154) is an optional per-highlight footer:
+        a callback given the ORIGINAL option index of the highlighted row,
+        returning extra lines rendered below the list (e.g. ``/model``'s
+        modality / context-window / base-url panel). Default ``None`` preserves
+        the prior behavior for every existing caller (/settings, /resume, the
+        permission prompt). It is purely cosmetic and guarded — a raising
+        ``detail`` never breaks the modal.
+
+        NOTE: ``detail`` is an ``AelixTUIContext``-only extension and is
+        deliberately NOT part of the ``ExtensionUIContext`` protocol (extensions
+        calling ``ctx.ui.select`` have no need for it). Callers that pass it must
+        be typed against the concrete ``AelixTUIContext``, not the protocol.
 
         Empty ``options`` resolves to ``None`` immediately (no dialog).
         """
@@ -190,6 +207,13 @@ class AelixTUIContext:
             rows.append(f"  ({idx + 1}/{len(items)})")
             if state["filter"]:
                 rows.append(f"  Filter: {state['filter']}")
+            if detail is not None:
+                # Per-highlight detail panel (Sprint 6h₂₆, ADR-0154). The callback
+                # gets the ORIGINAL option index (``items[idx][0]`` — the index
+                # into ``options``, not the filtered view) and returns extra lines.
+                # Cosmetic + guarded: a raising callback must never break the modal.
+                with contextlib.suppress(Exception):
+                    rows.extend(detail(items[idx][0]))
             rows.append(
                 "  Type to search · ↑/↓ to move · Enter/Space to change · Esc to cancel"
             )

@@ -57,6 +57,7 @@ from aelix_coding_agent.tui.descriptors import (
 )
 from aelix_coding_agent.tui.footer_data import AelixFooterData
 from aelix_coding_agent.tui.input import parse_input_line
+from aelix_coding_agent.tui.model_picker import run_model_picker
 from aelix_coding_agent.tui.render import EventRenderer, render_user_message
 
 if TYPE_CHECKING:
@@ -64,6 +65,8 @@ if TYPE_CHECKING:
     from aelix_agent_core.harness.core import AgentHarness
     from aelix_agent_core.runtime.agent_session_runtime import AgentSessionRuntime
     from prompt_toolkit.completion import Completer
+
+    from aelix_coding_agent.model_registry import ModelRegistry
 
 _RENDER_WIDTH = 80
 # Sprint 6h₂₂ (ADR-0130) — chrome widget key for the auto-retry countdown.
@@ -130,11 +133,18 @@ async def run_tui(
     runtime_host: AgentSessionRuntime,
     *,
     cwd: str,
+    model_registry: ModelRegistry | None = None,
     chrome: AelixChrome | None = None,
     install_signal_handlers: bool = True,
 ) -> int:
     """Run the interactive TUI (persistent chrome) until ``/quit`` or EOF.
 
+    :param model_registry: the live :class:`ModelRegistry` (entry.py builds it
+        once and threads it here) so ``/model`` can list ``get_available()``.
+        ``None`` (e.g. tests) makes ``/model`` fall back to its status print.
+        NOTE: it is threaded explicitly because the harness does NOT expose the
+        registry — ``AgentHarness`` never sets ``_model_registry`` (W-review 6h₂₆
+        CRITICAL: reading it off the harness made the picker always unavailable).
     :param chrome: injectable for tests (headless pipe input + DummyOutput).
     :param install_signal_handlers: pass ``False`` when embedding (tests / a host
         that owns process signals) — mirrors ``run_rpc_mode``.
@@ -516,6 +526,23 @@ async def run_tui(
             return
         context._refresh_footer()  # steering-mode segment reads the live value
 
+    async def _open_model_picker() -> None:
+        # Sprint 6h₂₆ (ADR-0154, WP-7) — /model: a searchable picker over the
+        # auth-filtered catalog (ModelRegistry.get_available) with a per-highlight
+        # detail footer (modality / context-window / base-url / api-key), then
+        # harness.set_model. The flow lives in model_picker.run_model_picker
+        # (dependency-injected so it is unit-testable without the prompt-toolkit
+        # app); this wires the live registry/select/commit/footer into it. The
+        # registry is threaded from entry.py into run_tui — the harness does NOT
+        # expose it (W-review 6h₂₆ CRITICAL).
+        await run_model_picker(
+            registry=model_registry,
+            harness=runtime_host.harness,
+            select=context.select,
+            commit=_commit,
+            refresh_footer=context._refresh_footer,
+        )
+
     command_ctx = CommandContext(
         chrome=out_chrome,
         harness=runtime_host.harness,
@@ -524,6 +551,7 @@ async def run_tui(
         commands=commands,
         set_mode=_set_mode,
         refresh_footer=context._refresh_footer,
+        model_picker=_open_model_picker,
         expand_lookup=renderer.get_expanded,
         resume_session=_resume_session,
         new_session=_new_session,

@@ -75,6 +75,13 @@ class CommandContext:
     """``run_tui`` wires this to ``context._refresh_footer`` so ``/model`` can
     re-render the footer ``✱ {model}`` segment after a switch (the footer is a
     cached string recomposed only on refresh). ``None`` in headless tests."""
+    model_picker: Callable[[], Awaitable[None]] | None = None
+    """``run_tui`` wires this to its ``_open_model_picker`` flow: a ``ctx.ui.select``
+    over ``ModelRegistry.get_available()`` with a per-highlight detail footer
+    (modality / context-window / base-url / api-key) → ``harness.set_model``. The
+    no-arg ``/model`` handler awaits it; ``None`` in headless tests / when no model
+    registry is attached, in which case ``/model`` falls back to a status print
+    (Sprint 6h₂₆, ADR-0154)."""
     expand_lookup: Callable[[int], str | None] | None = None
     """``run_tui`` wires this to the live ``EventRenderer.get_expanded`` so
     ``/expand N`` can recover the full, untruncated body of a tool-result card
@@ -143,7 +150,11 @@ async def _help_handler(ctx: CommandContext, args: str) -> None:
 
 
 async def _model_handler(ctx: CommandContext, args: str) -> None:
-    """``/model [id]`` — no arg shows the current model; an id switches to it.
+    """``/model [id]`` — no arg opens the rich picker; an id switches directly.
+
+    No-arg opens the interactive picker (searchable provider-tagged list + a
+    detail footer) when the host wired one, else prints the current model. An
+    explicit id (``/model openai/gpt-4o``) skips the picker and switches directly.
 
     Defensive: degrades with a committed message (never crashes) when the
     harness lacks ``current_model`` / ``set_model``, when model resolution
@@ -151,6 +162,12 @@ async def _model_handler(ctx: CommandContext, args: str) -> None:
     """
 
     if not args:
+        # Sprint 6h₂₆ (ADR-0154) — no-arg /model opens the rich picker when the
+        # host wired it; falls back to a one-line status print headlessly / when
+        # no model registry is attached (FakeHarness tests, RPC).
+        if ctx.model_picker is not None:
+            await ctx.model_picker()
+            return
         model = getattr(ctx.harness, "current_model", None)
         model_id = getattr(model, "id", None) if model is not None else None
         if model_id:

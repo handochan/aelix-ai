@@ -379,6 +379,7 @@ def _ctx(
     set_mode: Any | None = None,
     refresh_footer: Any | None = None,
     expand_lookup: Any | None = None,
+    model_picker: Any | None = None,
 ) -> CommandContext:
     return CommandContext(
         chrome=chrome if chrome is not None else _FakeChrome(),  # type: ignore[arg-type]
@@ -389,6 +390,7 @@ def _ctx(
         set_mode=set_mode,
         refresh_footer=refresh_footer,
         expand_lookup=expand_lookup,
+        model_picker=model_picker,
     )
 
 
@@ -408,6 +410,36 @@ def test_model_no_arg_shows_current() -> None:
     committed: list[object] = []
     _run("model", _ctx(_SwitchHarness(), committed), "")
     assert any("anthropic/claude-opus-4-7" in _render(c) for c in committed)
+
+
+def test_model_no_arg_opens_picker_when_wired() -> None:
+    # Sprint 6h₂₆ (ADR-0154): no-arg /model opens the rich picker when the host
+    # wired one, instead of printing the one-line status. The picker owns its own
+    # output, so the handler commits nothing on this path.
+    committed: list[object] = []
+    calls: list[int] = []
+
+    async def picker() -> None:
+        calls.append(1)
+
+    _run("model", _ctx(_SwitchHarness(), committed, model_picker=picker), "")
+    assert calls == [1]
+    assert committed == []
+
+
+def test_model_with_id_skips_picker() -> None:
+    # An explicit id switches directly even when a picker is wired (the picker is
+    # the no-arg affordance only).
+    harness = _SwitchHarness()
+    committed: list[object] = []
+    calls: list[int] = []
+
+    async def picker() -> None:
+        calls.append(1)
+
+    _run("model", _ctx(harness, committed, model_picker=picker), "gpt-4o")
+    assert calls == []
+    assert len(harness.set_calls) == 1
 
 
 def test_model_with_id_calls_set_model() -> None:

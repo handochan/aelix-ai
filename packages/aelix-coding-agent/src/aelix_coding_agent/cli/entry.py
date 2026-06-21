@@ -791,7 +791,9 @@ async def _async_main(argv: list[str]) -> int:
                 )
                 return 1
 
-            return await run_tui(runtime, cwd=str(Path.cwd()))
+            return await run_tui(
+                runtime, cwd=str(Path.cwd()), model_registry=model_registry
+            )
 
         if app_mode == "rpc":
             from aelix_coding_agent.modes import run_rpc_mode
