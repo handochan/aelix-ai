@@ -67,3 +67,21 @@ managers threaded from `entry.py`.
   inflated; and `tabbed()` leaked Enter to the chrome global accept (now consumed).
 - No protected-core change; no permission/trust posture change. `multiselect.extra_toggles` is the
   only widened public dialog signature (back-compatible — the 2-tuple form still works).
+
+## Deferred / not implemented (resume after the blocking dependency lands)
+
+These were deliberately left out or shipped degraded because the backing data/subsystem does not
+exist yet. Each is to be (re)implemented once its dependency is in place — none is abandoned.
+
+| # | Item | Status today | Blocking dependency | Resume plan |
+|---|------|--------------|---------------------|-------------|
+| D1 | **Per-subagent activity line** (statusline mockup A: `○ Explore: … ▶ Ns · Nk tokens`, plus "N local agents") | Not built | The **subagent-lifecycle subsystem** — agent lifecycle events (`agent_start/agent_progress/agent_end`) carry **empty payloads** today (`tui/types.py`). | When events carry `{name,status,tool,elapsed,tokens}`: add a chrome widget row + a footer row in the grouped multi-line statusline composer. |
+| D2 | **`auto mode (classifier-evaluated)` statusline segment** (mockup A line 3) | Footer shows the real posture badge (`● default` etc.), not "auto mode" | The **auto-mode permission classifier** (roadmap WP-4; tree-sitter bash classifier ADR-0158 is only partial). | Once the classifier posture exists, add it as a permission-mode badge variant in `footer_segments.py`. |
+| D3 | **/stats cross-session analytics** — Activity heatmap, token-trend braille chart, Sessions·Duration·Projects table | Session-scoped only (current run) | **Per-turn time-series persisted across sessions** (nothing retained today). | Add a cross-session stats store (jsonl under the agent dir) written on `turn_end`; the Activity tab reads it. |
+| D4 | **/stats latency metrics** — per-tool / avg / per-model latency cards | Not shown (tracker records calls/failures, not durations) | None external — pure TUI-side; `ToolStat`/`ActivitySnapshot` need duration fields + start/end pairing in `SessionActivityTracker`. | **Low-effort follow-up:** pair `tool_execution_start`→`tool_execution_end` timestamps, add `duration` fields, render the cards. |
+| D5 | **/extension Discover + Sources tabs + runtime enable/disable** | Honest-empty tabs; Installed is read-only | An **extension marketplace/registry** + a **runtime enable/disable API** (extensions load once at startup). | When a registry + toggle API exist, populate Discover/Sources and wire Space=enable/disable on the Installed tab. |
+| D6 | **/context exact per-category breakdown** | Heuristic estimate (`ceil(len/4)`); Skills category omitted | Core `ContextUsage` carries a single total only — exact per-category measurement is an **aelix-agent-core (protected)** change. | When core emits a measured per-category split, swap the estimator for the real numbers (keep the estimator as fallback). |
+| D7 | **/login custom-provider model wiring** | Stores the API key; the custom model is **not selectable** until added via models.json/`--models` | A **TUI-driven models.json edit / custom-provider model-registration flow**. | Add a models.json writer (or a "register custom model" step) so the custom provider's model appears in `/model`. |
+
+Known minor (refinement, not blocked): the /stats Efficiency cache-hit % is provider-inconsistent
+(understates for OpenAI, whose `input` already includes cached tokens) — left as a labelled estimate.
