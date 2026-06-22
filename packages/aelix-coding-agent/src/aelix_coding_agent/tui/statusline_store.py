@@ -37,10 +37,15 @@ class StatuslineConfig:
     :param use_theme_colors: a forward-looking flag (the footer is a single plain
         joined string today; per-segment theme palette is a follow-on — ADR-0160
         open-risk). Stored so the ``/statusline`` picker can round-trip it.
+    :param multiline: WP-8 (Feature 5) — render the footer as the grouped
+        multi-line block (mockup A) instead of the single `"  ·  "`-joined row.
+        Default ``False`` keeps the byte-identical single-line footer; the
+        ``/statusline`` picker owns the toggle.
     """
 
     enabled: list[str] = field(default_factory=list)
     use_theme_colors: bool = True
+    multiline: bool = False
 
 
 class StatuslineStore:
@@ -88,9 +93,11 @@ class StatuslineStore:
         else:
             resolved_enabled = list(self._default_enabled)
         use_theme = raw.get("use_theme_colors")
+        multiline = raw.get("multiline")
         return StatuslineConfig(
             enabled=resolved_enabled,
             use_theme_colors=bool(use_theme) if isinstance(use_theme, bool) else True,
+            multiline=bool(multiline) if isinstance(multiline, bool) else False,
         )
 
     def save(self, config: StatuslineConfig) -> None:
@@ -105,6 +112,7 @@ class StatuslineStore:
         payload = json.dumps(
             {
                 "enabled": list(config.enabled),
+                "multiline": bool(config.multiline),
                 "use_theme_colors": bool(config.use_theme_colors),
                 "version": _VERSION,
             },

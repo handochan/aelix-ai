@@ -102,7 +102,14 @@ async def run_statusline_picker(
             "Status line — toggle footer segments",
             options,
             selected=current,
-            extra_toggles=[("use_theme_colors", "Use theme colors")],
+            # Seed both toggles from the PERSISTED config so a confirm preserves
+            # them. The 3rd tuple element is the initial checked state — without
+            # it the picker would reset ``multiline`` (and ``use_theme_colors``)
+            # to False on every confirm, silently wiping a stored ``True``.
+            extra_toggles=[
+                ("use_theme_colors", "Use theme colors", config.use_theme_colors),
+                ("multiline", "Multi-line status line", config.multiline),
+            ],
             preview=_preview,
         )
     except Exception as exc:  # noqa: BLE001 — surface, never crash the REPL
@@ -115,6 +122,10 @@ async def run_statusline_picker(
     new_config = StatuslineConfig(
         enabled=[s.id for s in segments if s.id in chosen],  # registry order
         use_theme_colors=bool(toggles.get("use_theme_colors", config.use_theme_colors)),
+        # Carry the multiline flag through the rebuild — the toggle is seeded from
+        # (and round-trips) the persisted value, so confirming the picker never
+        # silently collapses a multi-line footer back to single-line.
+        multiline=bool(toggles.get("multiline", config.multiline)),
     )
     try:
         save(new_config)

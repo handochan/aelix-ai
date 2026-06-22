@@ -207,6 +207,8 @@ async def test_interactive_mode_dispatches_to_run_tui(
         permission_ext: object = None,
         permission_posture: object = None,
         settings_manager: object = None,
+        auth_storage: object = None,
+        extensions: object = None,
     ) -> int:
         # Sprint 6h₂₆ (ADR-0154): the real model_registry must be threaded so
         # /model can list get_available() — the harness does not expose it.
@@ -215,9 +217,13 @@ async def test_interactive_mode_dispatches_to_run_tui(
         # shift+tab + the approval dialog operate on the gate's own state.
         # WP-2 (ADR-0160): the held SettingsManager is threaded for /settings +
         # /scoped-models + /statusline.
+        # WP-8 (Features 1 + 3): the held auth_storage (for /login + /logout) +
+        # the discovered extensions list (for /extension) are threaded.
         calls.append((runtime, cwd, model_registry, mcp_manager))
         tui_permission["ext"] = permission_ext
         tui_permission["posture"] = permission_posture
+        tui_permission["auth_storage"] = auth_storage
+        tui_permission["extensions"] = extensions
         return 0
 
     # WP-0 nit: capture the held permission objects entry.py constructs so we can
@@ -271,6 +277,12 @@ async def test_interactive_mode_dispatches_to_run_tui(
     assert tui_permission["posture"] is not None
     assert tui_permission["ext"] is created.get("ext")
     assert tui_permission["posture"] is created.get("posture")
+    # WP-8 (Feature 1): a real AuthStorage is threaded (so /login storing a key
+    # is visible to the model registry built over the SAME object).
+    assert tui_permission["auth_storage"] is not None
+    # WP-8 (Feature 3): the extensions list is threaded (a list, even if empty —
+    # the kwarg must always be a stable value, never None, for the viewer).
+    assert isinstance(tui_permission["extensions"], list)
 
 
 async def test_interactive_seeds_model_from_persisted_default(

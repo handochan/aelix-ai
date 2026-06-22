@@ -582,3 +582,239 @@ async def test_confirm_enter_is_noop_then_y_resolves() -> None:
         assert not fut.done()
         pipe.send_text("y")
         assert await asyncio.wait_for(fut, timeout=5) is True
+
+
+# === WP-8 (the shared tabbed() primitive) ==================================
+
+
+async def test_tabbed_empty_returns_immediately() -> None:
+    # Empty tabs must return without mounting a modal (spec).
+    async with _ctx(run_app=True) as (ctx, chrome, _pipe):
+        result = await asyncio.wait_for(ctx.tabbed("T", []), timeout=5)
+        assert result is None
+        assert not chrome.is_modal_open()
+
+
+async def test_tabbed_escape_closes() -> None:
+    # Esc closes the viewer and tabbed() resolves to None.
+    async with _ctx(run_app=True) as (ctx, chrome, pipe):
+        fut = asyncio.ensure_future(
+            ctx.tabbed("T", [("A", lambda: ["a-body"]), ("B", lambda: ["b-body"])])
+        )
+        await _wait_float(chrome)
+        pipe.send_text("\x1b")  # Escape
+        assert await asyncio.wait_for(fut, timeout=5) is None
+
+
+async def test_tabbed_q_closes() -> None:
+    async with _ctx(run_app=True) as (ctx, chrome, pipe):
+        fut = asyncio.ensure_future(ctx.tabbed("T", [("A", lambda: ["a"])]))
+        await _wait_float(chrome)
+        pipe.send_text("q")  # q closes
+        assert await asyncio.wait_for(fut, timeout=5) is None
+
+
+async def test_tabbed_ctrl_c_closes() -> None:
+    async with _ctx(run_app=True) as (ctx, chrome, pipe):
+        fut = asyncio.ensure_future(ctx.tabbed("T", [("A", lambda: ["a"])]))
+        await _wait_float(chrome)
+        pipe.send_text("\x03")  # Ctrl+C
+        assert await asyncio.wait_for(fut, timeout=5) is None
+
+
+async def test_tabbed_tab_key_advances_active_tab() -> None:
+    # Tab moves to the next tab; the active tab's render() is what shows. Verify
+    # by checking which render closure fired (recorded into a shared list).
+    rendered: list[str] = []
+
+    def _render(name: str) -> list[str]:
+        rendered.append(name)
+        return [f"body-{name}"]
+
+    async with _ctx(run_app=True) as (ctx, chrome, pipe):
+        fut = asyncio.ensure_future(
+            ctx.tabbed(
+                "T",
+                [("A", lambda: _render("A")), ("B", lambda: _render("B"))],
+            )
+        )
+        await _wait_float(chrome)
+        await asyncio.sleep(0.1)  # let the first paint fire
+        # First render shows tab A (index 0).
+        assert "A" in rendered
+        rendered.clear()
+        pipe.send_text("\t")  # Tab → advance to B
+        await asyncio.sleep(0.15)
+        assert "B" in rendered  # the second tab's render fired
+        pipe.send_text("\x1b")
+        await asyncio.wait_for(fut, timeout=5)
+
+
+async def test_tabbed_left_arrow_wraps_to_last() -> None:
+    # ← (prev) from the first tab wraps to the last (spec: both directions wrap).
+    rendered: list[str] = []
+
+    async with _ctx(run_app=True) as (ctx, chrome, pipe):
+        fut = asyncio.ensure_future(
+            ctx.tabbed(
+                "T",
+                [
+                    ("A", lambda: (rendered.append("A"), ["a"])[1]),
+                    ("B", lambda: (rendered.append("B"), ["b"])[1]),
+                    ("C", lambda: (rendered.append("C"), ["c"])[1]),
+                ],
+            )
+        )
+        await _wait_float(chrome)
+        await asyncio.sleep(0.1)  # let the first paint fire
+        rendered.clear()
+        pipe.send_text("\x1b[D")  # Left → wraps from A to the last tab (C)
+        await asyncio.sleep(0.15)
+        assert "C" in rendered
+        pipe.send_text("\x1b")
+        await asyncio.wait_for(fut, timeout=5)
+
+
+async def test_tabbed_raising_tab_does_not_break_modal() -> None:
+    # A render() that raises shows an error line, never crashes the modal: the
+    # modal stays open and Esc still closes it.
+    def _boom() -> list[str]:
+        raise RuntimeError("kaboom")
+
+    async with _ctx(run_app=True) as (ctx, chrome, pipe):
+        fut = asyncio.ensure_future(ctx.tabbed("T", [("Bad", _boom)]))
+        await _wait_float(chrome)
+        await asyncio.sleep(0.05)
+        assert chrome.is_modal_open()  # survived the raising render
+        pipe.send_text("\x1b")
+        assert await asyncio.wait_for(fut, timeout=5) is None
+
+
+# === WP-8 (Feature 5 — multi-line statusline composer) =====================
+
+
+def _multiline_ctx(
+    chrome: AelixChrome,
+    footer: AelixFooterData,
+    *,
+    multiline: bool,
+    **kwargs,
+) -> AelixTUIContext:
+    from aelix_coding_agent.tui.statusline_store import StatuslineConfig, StatuslineStore
+
+    class _MemStore(StatuslineStore):
+        def __init__(self, cfg: StatuslineConfig) -> None:
+            self._cfg = cfg
+
+        def load(self) -> StatuslineConfig:  # type: ignore[override]
+            return self._cfg
+
+    # All default-on segments enabled so the row grouping is exercised.
+    from aelix_coding_agent.tui.footer_segments import default_enabled_ids_from_spec
+
+    store = _MemStore(
+        StatuslineConfig(enabled=default_enabled_ids_from_spec(), multiline=multiline)
+    )
+    return AelixTUIContext(chrome, footer, statusline_store=store, **kwargs)
+
+
+async def test_footer_single_line_default_is_one_row() -> None:
+    # Default (multiline=False) keeps the single ``  ·  ``-joined row (no \n).
+    footer = AelixFooterData(cwd="/tmp/proj")
+    with create_pipe_input() as pipe, create_app_session(
+        input=pipe, output=DummyOutput()
+    ):
+        console = Console(file=io.StringIO(), force_terminal=True, width=80)
+        chrome = AelixChrome(console=console)
+        _multiline_ctx(
+            chrome,
+            footer,
+            multiline=False,
+            model_provider=lambda: "openai/gpt-4o-mini",
+            cwd="/tmp/proj",
+        )
+        assert chrome.footer_line_count() == 1
+        assert "\n" not in chrome._footer_line
+        assert "✱ openai/gpt-4o-mini" in chrome._footer_line
+
+
+async def test_footer_multiline_groups_into_rows() -> None:
+    # Multiline composes the mockup-A grouped rows: model on row 1, cwd on
+    # row 2 — so model and cwd land on DIFFERENT lines (a \n between them).
+    footer = AelixFooterData(cwd="/tmp/proj")
+    with create_pipe_input() as pipe, create_app_session(
+        input=pipe, output=DummyOutput()
+    ):
+        console = Console(file=io.StringIO(), force_terminal=True, width=80)
+        chrome = AelixChrome(console=console)
+        _multiline_ctx(
+            chrome,
+            footer,
+            multiline=True,
+            model_provider=lambda: "openai/gpt-4o-mini",
+            cwd="/tmp/proj",
+        )
+        rows = chrome._footer_line.split("\n")
+        assert chrome.footer_line_count() >= 2
+        # model + cwd are in different rows.
+        model_row = next(i for i, r in enumerate(rows) if "✱ openai/gpt-4o-mini" in r)
+        cwd_row = next(i for i, r in enumerate(rows) if "📂" in r)
+        assert model_row != cwd_row
+
+
+async def test_footer_multiline_omits_empty_rows(tmp_path) -> None:
+    # With NO model and NO cwd, the model/cwd rows vanish — empty rows are not
+    # emitted (the permission/steering row is also empty here → footer is empty).
+    # The footer points at a non-git tmp dir so the git-branch segment is empty.
+    footer = AelixFooterData(cwd=str(tmp_path))
+    with create_pipe_input() as pipe, create_app_session(
+        input=pipe, output=DummyOutput()
+    ):
+        console = Console(file=io.StringIO(), force_terminal=True, width=80)
+        chrome = AelixChrome(console=console)
+        _multiline_ctx(
+            chrome,
+            footer,
+            multiline=True,
+            model_provider=lambda: None,
+            cwd=None,
+        )
+        # No enabled segment produces a value → footer is empty (count floors 1).
+        assert chrome._footer_line == ""
+        assert chrome.footer_line_count() == 1
+
+
+async def test_footer_multiline_toggle_applies_live() -> None:
+    # Flipping the persisted flag + calling _refresh_footer applies live: the
+    # same enabled set collapses from N rows to 1.
+    from aelix_coding_agent.tui.footer_segments import default_enabled_ids_from_spec
+    from aelix_coding_agent.tui.statusline_store import StatuslineConfig, StatuslineStore
+
+    cfg = StatuslineConfig(
+        enabled=default_enabled_ids_from_spec(), multiline=True
+    )
+
+    class _MemStore(StatuslineStore):
+        def __init__(self) -> None:
+            pass
+
+        def load(self) -> StatuslineConfig:  # type: ignore[override]
+            return cfg
+
+    footer = AelixFooterData(cwd="/tmp/proj")
+    with create_pipe_input() as pipe, create_app_session(
+        input=pipe, output=DummyOutput()
+    ):
+        console = Console(file=io.StringIO(), force_terminal=True, width=80)
+        chrome = AelixChrome(console=console)
+        ctx = AelixTUIContext(
+            chrome,
+            footer,
+            statusline_store=_MemStore(),
+            model_provider=lambda: "m",
+            cwd="/tmp/proj",
+        )
+        assert chrome.footer_line_count() >= 2  # multi-line at construction
+        cfg.multiline = False
+        ctx._refresh_footer()
+        assert chrome.footer_line_count() == 1  # collapsed live

@@ -37,6 +37,7 @@ from rich.text import Text
 
 from aelix_coding_agent.cli.repl import handle_user_bash
 from aelix_coding_agent.extensions import HEADLESS_UI_CONTEXT
+from aelix_coding_agent.tui.activity_tracker import SessionActivityTracker
 from aelix_coding_agent.tui.chrome import AelixChrome
 from aelix_coding_agent.tui.commands import (
     BUILTIN_COMMANDS,
@@ -71,11 +72,13 @@ if TYPE_CHECKING:
     from aelix_agent_core.contracts.descriptor import DescriptorEnvelope
     from aelix_agent_core.harness.core import AgentHarness
     from aelix_agent_core.runtime.agent_session_runtime import AgentSessionRuntime
+    from aelix_ai.oauth import AuthStorage
     from aelix_ai.settings import SettingsManager
     from prompt_toolkit.completion import Completer
 
     from aelix_coding_agent.builtin.permission import PermissionExtension
     from aelix_coding_agent.builtin.permission_mode import PermissionPosture
+    from aelix_coding_agent.extensions.api import Extension
     from aelix_coding_agent.mcp import McpClientManager
     from aelix_coding_agent.model_registry import ModelRegistry
 
@@ -149,6 +152,8 @@ async def run_tui(
     permission_ext: PermissionExtension | None = None,
     permission_posture: PermissionPosture | None = None,
     settings_manager: SettingsManager | None = None,
+    auth_storage: AuthStorage | None = None,
+    extensions: list[Extension] | None = None,
     chrome: AelixChrome | None = None,
     install_signal_handlers: bool = True,
 ) -> int:
@@ -177,10 +182,25 @@ async def run_tui(
         constructs it once via ``SettingsManager.create``) so ``/settings`` +
         ``/scoped-models`` read/persist the pi-parity settings. ``None`` (tests)
         leaves those commands on their degraded fallback. WP-2 (ADR-0160).
+    :param auth_storage: the held :class:`~aelix_ai.oauth.AuthStorage` (entry.py
+        builds it once, line ~680, and the ``ModelRegistry`` is created over the
+        SAME object) so WP-8 ``/login`` storing a key is visible to model
+        resolution immediately. ``None`` (tests) leaves ``/login`` / ``/logout``
+        on their degraded fallback. WP-8 (Feature 1).
+    :param extensions: the list of :class:`~aelix_coding_agent.extensions.api.
+        Extension` objects discovered on the first harness build (entry.py
+        threads it; empty when nothing loaded) so WP-8 ``/extension`` can list
+        them. ``None`` → an empty list. WP-8 (Feature 3).
     :param chrome: injectable for tests (headless pipe input + DummyOutput).
     :param install_signal_handlers: pass ``False`` when embedding (tests / a host
         that owns process signals) — mirrors ``run_rpc_mode``.
     """
+
+    # WP-8 — normalize the optional extensions list to a stable value so the
+    # stage-B /extension flow (wired later) reads it without re-guarding None.
+    # ``auth_storage`` is a parameter and threads straight into the stage-B
+    # /login + /logout flows.
+    extensions = list(extensions) if extensions else []
 
     if chrome is not None:
         out_chrome = chrome
@@ -272,6 +292,14 @@ async def run_tui(
         output_queue.put_nowait(("tail", ansi))
 
     renderer = EventRenderer(commit=_commit, set_tail=_set_tail, width=_RENDER_WIDTH)
+
+    # WP-8 (Feature 2) — the TUI-side session activity tracker. The harness
+    # SessionStats carries no per-tool success/failure split, no per-model
+    # breakdown, and no wall-clock timing, so the tracker observes the agent event
+    # stream to fill that gap for the /stats dashboard. ``model_provider=_model_id``
+    # supplies the live model id for message_end events that omit it. Fed at the
+    # TOP of _on_agent_event (before the renderer) and reset on _rebind.
+    tracker = SessionActivityTracker(model_provider=_model_id)
 
     # Sprint 6h₁₂a (ADR-0110) — first-party command core. The registry is static
     # for the session; the context carries the live chrome/harness/commit/cwd so
@@ -800,6 +828,74 @@ async def run_tui(
             refresh_footer=context._refresh_footer,
         )
 
+    async def _open_login() -> None:
+        # WP-8 (Feature 1) — /login: the auth wizard (OAuth / built-in API key /
+        # custom provider → AuthStorage). The flow lives in
+        # login_wizard.run_login (dependency-injected so it is unit-testable
+        # without the prompt-toolkit app); this wires the live auth storage +
+        # context dialog callables + commit into it. ``auth_storage`` is the SAME
+        # object the ModelRegistry was built over (entry.py) so a stored key is
+        # visible to model resolution immediately (no reload).
+        from aelix_coding_agent.tui.login_wizard import run_login
+
+        await run_login(
+            auth_storage=auth_storage,
+            select=context.select,
+            prompt_input=context.input,
+            confirm=context.confirm,
+            notify=context.notify,
+            commit=_commit,
+        )
+
+    async def _open_logout() -> None:
+        # WP-8 (Feature 1) — /logout: list stored credentials → picker → confirm
+        # → AuthStorage.logout. Same DI module as /login; wires the live auth
+        # storage + select + confirm + commit.
+        from aelix_coding_agent.tui.login_wizard import run_logout
+
+        await run_logout(
+            auth_storage=auth_storage,
+            select=context.select,
+            confirm=context.confirm,
+            commit=_commit,
+        )
+
+    async def _open_stats() -> None:
+        # WP-8 (Feature 2) — /stats: the usage dashboard (a framed tabbed viewer
+        # over the harness SessionStats + the TUI-side tracker snapshot — Session
+        # / Activity / Efficiency tabs). The flow lives in
+        # stats_dashboard.run_stats (dependency-injected so it is unit-testable
+        # without the prompt-toolkit app); this wires the live async stats getter
+        # + a point-in-time tracker snapshot + context.tabbed + commit into it.
+        # The snapshot is captured ONCE at open time so the tabs are consistent
+        # across switches. ``runtime_host.harness`` is read live (post-hot-swap).
+        from aelix_coding_agent.tui.stats_dashboard import run_stats
+
+        await run_stats(
+            stats_getter=runtime_host.harness.get_session_stats,
+            snapshot=tracker.snapshot(),
+            tabbed=context.tabbed,
+            commit=_commit,
+        )
+
+    async def _open_extension() -> None:
+        # WP-8 (Feature 3) — /extension: a read-only framed tabbed viewer over the
+        # discovered extensions + the live MCP manager (Installed / Discover /
+        # Sources tabs). The flow lives in extension_manager.run_extension_manager
+        # (dependency-injected so it is unit-testable without the prompt-toolkit
+        # app); this wires the discovered extensions list + the MCP manager +
+        # context.tabbed + commit into it. The extensions list is threaded from
+        # entry.py (the first harness build's discovery); the MCP manager is the
+        # SAME object /mcp consults.
+        from aelix_coding_agent.tui.extension_manager import run_extension_manager
+
+        await run_extension_manager(
+            extensions=extensions,
+            mcp_manager=mcp_manager,
+            tabbed=context.tabbed,
+            commit=_commit,
+        )
+
     command_ctx = CommandContext(
         chrome=out_chrome,
         harness=runtime_host.harness,
@@ -817,6 +913,10 @@ async def run_tui(
         settings_action=_open_settings,
         scoped_models_action=_open_scoped_models,
         statusline_action=_open_statusline,
+        login_action=_open_login,
+        logout_action=_open_logout,
+        stats_action=_open_stats,
+        extension_action=_open_extension,
         import_session=_import_session,
         fork_session=_fork_session,
         clone_session=_clone_session,
@@ -975,6 +1075,10 @@ async def run_tui(
             _commit(Text(f"✖ Retry failed: {reason}", style="bold red"))
 
     def _on_agent_event(event: object) -> None:
+        # WP-8 (Feature 2) — feed the activity tracker FIRST (before the renderer)
+        # so /stats reflects every event. on_event is internally guarded (a
+        # malformed event never crashes the pump).
+        tracker.on_event(event)
         renderer.on_agent_event(event)  # type: ignore[arg-type]
         etype = getattr(event, "type", None)
         if etype == "auto_retry_start":
@@ -1005,6 +1109,10 @@ async def run_tui(
         # drop the store so post-swap /expand N can't surface the prior session's
         # body (Sprint 6h₁₅ W-review MEDIUM).
         renderer.reset_expand_store()
+        # WP-8 (Feature 2) — a session swap starts a fresh /stats lifetime: the
+        # tracker's per-tool / per-model / turn / wall accounting belongs to the
+        # prior session, so reset it to track the resumed/new session from zero.
+        tracker.reset()
 
     runtime_host.set_rebind_session(_rebind)
 

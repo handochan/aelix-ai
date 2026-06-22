@@ -1381,3 +1381,157 @@ async def test_run_tui_auto_retry_back_to_back_starts_cancel_prior_ticker() -> N
 
         pipe.send_text("/quit\n")
         await asyncio.wait_for(task, timeout=5)
+
+
+# === WP-8 — /login + /logout + /stats + /extension wiring ===================
+
+
+async def test_run_tui_wp8_commands_resolve_and_survive() -> None:
+    # The four WP-8 commands are wired into the command context. With the bare
+    # fake harness (no auth_storage / no get_session_stats threaded) /login,
+    # /logout, and /stats each degrade gracefully and the REPL keeps running
+    # (the barrier prompt proves nothing crashed and none were sent to the model).
+    async with _harness_chrome() as (runtime, chrome, pipe):
+        task = _launch(runtime, chrome)
+        await _wait(lambda: chrome.app.is_running)
+        pipe.send_text("/login\n")  # no auth_storage → red "no auth storage"
+        pipe.send_text("/logout\n")  # no auth_storage → red "no auth storage"
+        pipe.send_text("/stats\n")  # no get_session_stats → degrade
+        pipe.send_text("hi\n")  # barrier: REPL still alive and reaching the model
+        await _wait(lambda: runtime.harness.prompts == [("hi", "interactive")])
+        pipe.send_text("/quit\n")
+        await asyncio.wait_for(task, timeout=5)
+    assert runtime.harness.prompts == [("hi", "interactive")]
+
+
+async def test_run_tui_extension_command_opens_tabbed_viewer_and_closes() -> None:
+    # /extension is wired to context.tabbed (Stage A primitive). With no
+    # extensions threaded + no mcp_manager the Installed tab is the empty-state
+    # text; the modal opens and Esc closes it, then the REPL keeps running.
+    async with _harness_chrome() as (runtime, chrome, pipe):
+        task = _launch(runtime, chrome)
+        await _wait(lambda: chrome.app.is_running)
+        pipe.send_text("/extension\n")
+        await _wait(lambda: chrome.is_modal_open())  # the tabbed viewer opened
+        pipe.send_text("\x1b")  # Esc closes the viewer
+        await _wait(lambda: not chrome.is_modal_open())
+        pipe.send_text("hi\n")  # barrier: REPL still alive
+        await _wait(lambda: runtime.harness.prompts == [("hi", "interactive")])
+        pipe.send_text("/quit\n")
+        await asyncio.wait_for(task, timeout=5)
+    assert runtime.harness.prompts == [("hi", "interactive")]
+
+
+class _FakePluginIdentity:
+    def __init__(self, name: str, version: str) -> None:
+        self.name = name
+        self.version = version
+
+
+class _FakePluginManifest:
+    def __init__(self, name: str, version: str) -> None:
+        self.plugin = _FakePluginIdentity(name, version)
+
+
+class _FakeExtension:
+    def __init__(self, name: str, manifest: object | None) -> None:
+        self.name = name
+        self.manifest = manifest
+
+
+class _FakeMcpConn:
+    def __init__(self, name: str, transport: str, *, connected: bool) -> None:
+        self.name = name
+        self.transport = transport
+        self.connected = connected
+
+
+class _FakeMcpManager:
+    def __init__(self, conns: list[_FakeMcpConn]) -> None:
+        self.connections = {c.name: c for c in conns}
+
+
+async def test_run_tui_extension_command_renders_populated_installed_tab() -> None:
+    # End-to-end: a discovered extension list + a live mcp_manager threaded into
+    # run_tui must reach the /extension Installed tab. Spy on context.tabbed to
+    # capture the tabs the wired _open_extension passes, then drive the Installed
+    # render closure and assert it shows the plugin + MCP rows (not just the
+    # empty-state path the other smoke test covers).
+    captured: dict[str, object] = {}
+
+    async def _spy_tabbed(self, title, tabs, *, initial=0):  # type: ignore[no-untyped-def]
+        captured["title"] = title
+        captured["tabs"] = list(tabs)
+        # Do not actually mount a modal — just record the wiring + return.
+        return None
+
+    ext = _FakeExtension("my-plugin", _FakePluginManifest("My Plugin", "3.1.4"))
+    mcp = _FakeMcpManager([_FakeMcpConn("srv", "stdio", connected=True)])
+
+    with create_pipe_input() as pipe, create_app_session(
+        input=pipe, output=DummyOutput()
+    ):
+        runtime = FakeRuntime(FakeHarness())
+        chrome = AelixChrome()
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(AelixTUIContext, "tabbed", _spy_tabbed, raising=True)
+            task = asyncio.ensure_future(
+                run_tui(
+                    runtime,  # type: ignore[arg-type]
+                    cwd=".",
+                    chrome=chrome,
+                    install_signal_handlers=False,
+                    extensions=[ext],  # type: ignore[list-item]
+                    mcp_manager=mcp,  # type: ignore[arg-type]
+                )
+            )
+            await _wait(lambda: chrome.app.is_running)
+            pipe.send_text("/extension\n")
+            await _wait(lambda: "tabs" in captured)
+            pipe.send_text("/quit\n")
+            await asyncio.wait_for(task, timeout=5)
+
+    assert captured["title"] == "Extensions"
+    tabs = dict(captured["tabs"])  # type: ignore[arg-type]
+    assert list(tabs.keys()) == ["Installed", "Discover", "Sources"]
+    installed_body = "\n".join(tabs["Installed"]())  # type: ignore[operator]
+    # The threaded extension (manifest name + version) and the live MCP server
+    # row both render — proving the discovered list + mcp_manager reached here.
+    assert "✓ My Plugin 3.1.4" in installed_body
+    assert "srv — stdio — connected" in installed_body
+
+
+class _StatsTrackerHarness(FakeHarness):
+    """FakeHarness exposing ``get_session_stats`` so /stats opens its dashboard."""
+
+    async def get_session_stats(self) -> object:
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            tokens=SimpleNamespace(
+                input=100, output=50, cache_read=10, cache_write=5, total=160
+            ),
+            cost=0.0123,
+            total_messages=4,
+            user_messages=2,
+            assistant_messages=2,
+        )
+
+
+async def test_run_tui_stats_command_opens_dashboard_and_closes() -> None:
+    # With a harness exposing get_session_stats, /stats opens the framed tabbed
+    # dashboard (Session/Activity/Efficiency); Esc closes it; REPL survives.
+    async with _harness_chrome(harness=_StatsTrackerHarness()) as (runtime, chrome, pipe):
+        task = _launch(runtime, chrome)
+        await _wait(lambda: chrome.app.is_running)
+        pipe.send_text("/stats\n")
+        await _wait(lambda: chrome.is_modal_open())  # dashboard opened
+        pipe.send_text("\t")  # Tab switches Session → Activity (no crash)
+        await asyncio.sleep(0.05)
+        pipe.send_text("\x1b")  # Esc closes
+        await _wait(lambda: not chrome.is_modal_open())
+        pipe.send_text("hi\n")  # barrier
+        await _wait(lambda: runtime.harness.prompts == [("hi", "interactive")])
+        pipe.send_text("/quit\n")
+        await asyncio.wait_for(task, timeout=5)
+    assert runtime.harness.prompts == [("hi", "interactive")]

@@ -85,3 +85,31 @@ def test_default_path_is_agent_dir(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("AELIX_CODING_AGENT_DIR", str(tmp_path))
     store = StatuslineStore(default_enabled=_DEFAULTS)
     assert store.path == tmp_path / "statusline.json"
+
+
+# === WP-8 (Feature 5) — the multiline toggle round-trips ===================
+
+
+def test_multiline_defaults_false(tmp_path: Path) -> None:
+    store = StatuslineStore(tmp_path / "statusline.json", default_enabled=_DEFAULTS)
+    assert store.load().multiline is False  # missing file → opt-in default
+
+
+def test_multiline_round_trips(tmp_path: Path) -> None:
+    path = tmp_path / "statusline.json"
+    store = StatuslineStore(path, default_enabled=_DEFAULTS)
+    store.save(StatuslineConfig(enabled=["model"], multiline=True))
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    assert raw["multiline"] is True
+    assert store.load().multiline is True
+
+
+def test_bad_multiline_type_falls_back_to_false(tmp_path: Path) -> None:
+    path = tmp_path / "statusline.json"
+    path.write_text(
+        json.dumps({"enabled": ["model"], "multiline": "yes"}), encoding="utf-8"
+    )
+    store = StatuslineStore(path, default_enabled=_DEFAULTS)
+    cfg = store.load()
+    assert cfg.multiline is False  # non-bool → False
+    assert cfg.enabled == ["model"]  # valid key preserved

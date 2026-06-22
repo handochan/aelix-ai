@@ -323,6 +323,7 @@ async def _build_harness_options(
     get_api_key_and_headers: Callable[..., Any] | None = None,
     project_trusted: bool = True,
     permission_ext: PermissionExtension | None = None,
+    captured_extensions: list[Any] | None = None,
 ) -> AgentHarnessOptions:
     """Assemble :class:`AgentHarnessOptions` from parsed CLI args.
 
@@ -397,6 +398,15 @@ async def _build_harness_options(
     )
     for err in loaded.errors:
         print(f"Warning: extension load: {err}", file=sys.stderr)
+    # WP-8 (Feature 3) — capture the discovered extensions ONCE for the TUI's
+    # /extension viewer. ``discover_and_load_extensions`` runs per harness build
+    # (it is called here, inside the factory), so the caller passes a mutable
+    # holder and reads back the list AFTER the first build. The list is stable
+    # across rebuilds (same on-disk set); a fresh holder is repopulated each
+    # build, which is harmless (the TUI captured the first one).
+    if captured_extensions is not None:
+        captured_extensions.clear()
+        captured_extensions.extend(loaded.extensions)
     options = AgentHarnessOptions(
         model=model,
         session=session,
@@ -828,6 +838,11 @@ async def _async_main(argv: list[str]) -> int:
                 file=sys.stderr,
             )
 
+    # WP-8 (Feature 3) — a stable holder the factory fills with the discovered
+    # extensions on the FIRST build so run_tui's /extension viewer gets the live
+    # list (default empty when nothing loaded / non-interactive).
+    discovered_extensions: list[Any] = []
+
     async def _harness_factory(new_session: Session) -> AgentHarness:
         opts = await _build_harness_options(
             parsed,
@@ -836,6 +851,7 @@ async def _async_main(argv: list[str]) -> int:
             get_api_key_and_headers=get_api_key_and_headers,
             project_trusted=project_trusted,
             permission_ext=permission_ext,
+            captured_extensions=discovered_extensions,
         )
         return AgentHarness(opts)
 
@@ -866,6 +882,13 @@ async def _async_main(argv: list[str]) -> int:
                 permission_ext=permission_ext,
                 permission_posture=permission_posture,
                 settings_manager=settings_manager,
+                # WP-8 (Feature 1) — the SAME AuthStorage object the
+                # ModelRegistry was built over (line ~680), so /login storing a
+                # key is visible to model resolution immediately (no reload).
+                auth_storage=auth_storage,
+                # WP-8 (Feature 3) — the extensions discovered on the first
+                # harness build (empty when none loaded), for /extension.
+                extensions=discovered_extensions,
             )
 
         if app_mode == "rpc":

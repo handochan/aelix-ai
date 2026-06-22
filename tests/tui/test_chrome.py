@@ -520,3 +520,39 @@ async def test_completions_float_uses_marked_menu() -> None:
         assert isinstance(menu, _MarkedCompletionsMenu)
         # The window's control is the marked control.
         assert isinstance(menu.content.content, _MarkedCompletionsMenuControl)
+
+
+# === WP-8 (Feature 5) — multi-line-capable footer =========================
+
+
+async def test_footer_line_preserves_newlines() -> None:
+    # The footer row is multi-line-capable now: set_footer_line KEEPS \n (the
+    # single-line caller passes \n-free text, so this is a no-op there).
+    async with _chrome(run_app=False) as (chrome, _pipe, _buf):
+        chrome.set_footer_line("row1\nrow2")
+        assert chrome._footer_line == "row1\nrow2"
+        assert chrome.footer_line_count() == 2
+
+
+async def test_set_footer_block_joins_rows() -> None:
+    async with _chrome(run_app=False) as (chrome, _pipe, _buf):
+        chrome.set_footer_block(["a", "b", "c"])
+        assert chrome._footer_line == "a\nb\nc"
+        assert chrome.footer_line_count() == 3
+
+
+async def test_footer_line_count_empty_is_one() -> None:
+    async with _chrome(run_app=False) as (chrome, _pipe, _buf):
+        chrome.set_footer_block([])
+        assert chrome._footer_line == ""
+        assert chrome.footer_line_count() == 1  # an empty footer still reserves 1
+
+
+async def test_header_breadcrumb_still_strip_newlines() -> None:
+    # Only the FOOTER is multi-line — header/breadcrumb stay single-line (their
+    # rows are fixed height=1, so a leaked \n would corrupt the layout).
+    async with _chrome(run_app=False) as (chrome, _pipe, _buf):
+        chrome.set_header_line("h1\nh2")
+        chrome.set_breadcrumb_line("b1\nb2")
+        assert "\n" not in chrome._header_line
+        assert "\n" not in chrome._breadcrumb_line

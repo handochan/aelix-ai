@@ -257,21 +257,26 @@ def test_sprint_a_registry_set() -> None:
     # /resume; 6h₁₅ (ADR-0123) /hotkeys + /new; 6h₂₁ (ADR-0129) /import + /fork
     # + /clone + /tree; 6h₂₇ (ADR-0155) /hooks + /mcp + /context; WP-0 (ADR-0157)
     # /permissions; WP-2 (ADR-0160) /statusline; ImplConsumers (ADR-0161)
-    # /scoped-models.
+    # /scoped-models; WP-8 /login + /logout (after model), /stats (after cost),
+    # /extension (after mcp).
     names = [c.name for c in BUILTIN_COMMANDS]
     assert names == [
         "help",
         "hotkeys",
         "model",
+        "login",
+        "logout",
         "clear",
         "compact",
         "cost",
+        "stats",
         "session",
         "name",
         "thinking",
         "tools",
         "hooks",
         "mcp",
+        "extension",
         "context",
         "mode",
         "permissions",
@@ -296,6 +301,7 @@ def test_sprint_a_registry_set() -> None:
         "help", "thinking", "expand", "export", "resume", "hotkeys", "new",
         "session", "name", "copy", "settings", "scoped-models", "statusline",
         "import", "fork", "clone", "tree", "hooks", "mcp", "context",
+        "login", "logout", "stats", "extension",
     ):
         assert by_name[required].handler is not None
     assert by_name["quit"].handler is None
@@ -1287,3 +1293,165 @@ async def test_scoped_models_handler_surfaces_action_failure() -> None:
     assert cmd is not None and cmd.handler is not None
     await cmd.handler(ctx, "")
     assert any("scoped-models failed" in _render(c) for c in committed)
+
+
+# === WP-8 — /login /logout /stats /extension handlers =======================
+
+
+class _FakeStatsHarnessWithSources:
+    """A harness exposing the Feature-4 /context sources + get_session_stats."""
+
+    current_model = None
+
+    def __init__(self, *, window: int = 200000, tokens: int | None = 5000) -> None:
+        self._window = window
+        self._tokens = tokens
+
+    async def get_session_stats(self) -> Any:
+        class _Usage:
+            pass
+
+        u = _Usage()
+        u.context_window = self._window  # type: ignore[attr-defined]
+        u.tokens = self._tokens  # type: ignore[attr-defined]
+        u.percent = None  # type: ignore[attr-defined]
+
+        class _Stats:
+            pass
+
+        s = _Stats()
+        s.context_usage = u  # type: ignore[attr-defined]
+        return s
+
+    def _action_get_system_prompt(self) -> str:
+        return "You are Aelix. " * 100
+
+    def _action_get_all_tools(self) -> list[Any]:
+        class _T:
+            def __init__(self, n: str) -> None:
+                self.name = n
+                self.description = "does a thing " * 8
+
+        return [_T("bash"), _T("read"), _T("write")]
+
+    messages = [
+        {"role": "user", "content": "hello world " * 40},
+        {"role": "assistant", "content": [{"type": "text", "text": "hi there " * 40}]},
+    ]
+
+
+def _ctx_with(**kwargs: Any) -> CommandContext:
+    return CommandContext(
+        chrome=object(),  # type: ignore[arg-type]
+        harness=kwargs.pop("harness", _FakeHarness()),  # type: ignore[arg-type]
+        commit=kwargs.pop("commit", lambda r: None),
+        cwd=kwargs.pop("cwd", "."),
+        commands=list(BUILTIN_COMMANDS),
+        **kwargs,
+    )
+
+
+async def test_wp8_handlers_degrade_when_unwired() -> None:
+    # No *_action wired → each commits a yellow "unavailable" line, no crash.
+    for name, needle in (
+        ("login", "Login is unavailable"),
+        ("logout", "Logout is unavailable"),
+        ("stats", "Stats are unavailable"),
+        ("extension", "Extension manager is unavailable"),
+    ):
+        committed: list[object] = []
+        ctx = _ctx_with(commit=committed.append)
+        cmd = match_command(f"/{name}", ctx.commands)
+        assert cmd is not None and cmd.handler is not None
+        await cmd.handler(ctx, "")
+        assert any(needle in _render(c) for c in committed), (name, committed)
+
+
+async def test_wp8_handlers_invoke_action_when_wired() -> None:
+    for name, field in (
+        ("login", "login_action"),
+        ("logout", "logout_action"),
+        ("stats", "stats_action"),
+        ("extension", "extension_action"),
+    ):
+        calls = {"n": 0}
+
+        async def _action(_c: dict[str, int] = calls) -> None:
+            _c["n"] += 1
+
+        ctx = _ctx_with(**{field: _action})
+        cmd = match_command(f"/{name}", ctx.commands)
+        assert cmd is not None and cmd.handler is not None
+        await cmd.handler(ctx, "")
+        assert calls["n"] == 1, name
+
+
+async def test_wp8_handlers_surface_action_failure() -> None:
+    for name, field, needle in (
+        ("login", "login_action", "login failed"),
+        ("logout", "logout_action", "logout failed"),
+        ("stats", "stats_action", "stats failed"),
+        ("extension", "extension_action", "extension manager failed"),
+    ):
+
+        async def _boom() -> None:
+            raise RuntimeError("kaboom")
+
+        committed: list[object] = []
+        ctx = _ctx_with(commit=committed.append, **{field: _boom})
+        cmd = match_command(f"/{name}", ctx.commands)
+        assert cmd is not None and cmd.handler is not None
+        await cmd.handler(ctx, "")
+        rendered = "\n".join(_render(c) for c in committed)
+        assert needle in rendered and "kaboom" in rendered, (name, rendered)
+
+
+# === WP-8 Feature 4 — /context estimated-composition enrichment =============
+
+
+async def test_context_handler_appends_composition_when_sources_reachable() -> None:
+    committed: list[object] = []
+    ctx = _ctx_with(
+        harness=_FakeStatsHarnessWithSources(),
+        commit=committed.append,
+        cwd="/no/such/dir/for/memory",  # memory omitted (unreachable)
+    )
+    cmd = match_command("/context", ctx.commands)
+    assert cmd is not None and cmd.handler is not None
+    await cmd.handler(ctx, "")
+    full = "\n".join(_render(c) for c in committed)
+    # The measured table AND the estimated composition section both render.
+    assert "context window" in full
+    assert "Estimated composition" in full
+    assert "may not sum to the measured total" in full
+    assert "System prompt" in full
+    assert "Built-in tools" in full
+    assert "Messages" in full
+    # Memory source unreachable (bad cwd) → its category is omitted, not faked.
+    assert "Memory files" not in full
+
+
+async def test_context_handler_omits_composition_for_bare_harness() -> None:
+    # A harness with get_session_stats but NO sources → only the measured panel,
+    # no composition section (no source means no fabricated 0-token rows).
+    class _Bare:
+        current_model = None
+
+        async def get_session_stats(self) -> Any:
+            class _Usage:
+                context_window = 200000
+                tokens = None
+                percent = None
+
+            class _Stats:
+                context_usage = _Usage()
+
+            return _Stats()
+
+    committed: list[object] = []
+    ctx = _ctx_with(harness=_Bare(), commit=committed.append, cwd="/no/such/dir")
+    cmd = match_command("/context", ctx.commands)
+    assert cmd is not None and cmd.handler is not None
+    await cmd.handler(ctx, "")
+    full = "\n".join(_render(c) for c in committed)
+    assert "Estimated composition" not in full

@@ -124,6 +124,26 @@ async def test_extra_toggle_round_trips() -> None:
         assert toggles == {"flag": True}
 
 
+async def test_extra_toggle_seeded_initial_state_round_trips() -> None:
+    # WP-8: a ``(key, label, initial)`` triple seeds the toggle's checked state
+    # from a persisted value. Confirming WITHOUT touching it must return True
+    # (not silently reset to False) — the data-loss guard for /statusline.
+    async with _ctx() as (ctx, chrome, pipe):
+        fut = asyncio.ensure_future(
+            ctx.multiselect(
+                "Pick",
+                _OPTIONS,
+                selected={"a"},
+                extra_toggles=[("flag", "A flag", True)],
+            )
+        )
+        await _wait_float(chrome)
+        pipe.send_text("\r")  # confirm with no changes
+        chosen, toggles = await asyncio.wait_for(fut, timeout=5)
+        assert chosen == {"a"}
+        assert toggles == {"flag": True}
+
+
 async def test_type_to_filter_then_toggle() -> None:
     async with _ctx() as (ctx, chrome, pipe):
         fut = asyncio.ensure_future(

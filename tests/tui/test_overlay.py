@@ -97,3 +97,56 @@ def test_overlay_handle_focus_routes_to_chrome() -> None:
     assert chrome.focused == "input"
     # is_focused is defensive (no real app) → False, never raises.
     assert handle.is_focused() is False
+
+
+# === WP-8 (Feature 5) — modal reserve grows with the multi-line footer ======
+
+
+class _FakeBuffer:
+    def __init__(self, text: str = "") -> None:
+        self.text = text
+
+
+class _FakeReserveChrome:
+    """Minimal chrome for ``_reserve_rows``: a buffer + a footer_line_count."""
+
+    def __init__(self, *, footer_rows: int, buffer_text: str = "") -> None:
+        self._footer_rows = footer_rows
+        self.buffer = _FakeBuffer(buffer_text)
+
+    def footer_line_count(self) -> int:
+        return self._footer_rows
+
+
+def test_reserve_rows_single_line_footer_matches_floor() -> None:
+    from aelix_coding_agent.tui.overlay import _MODAL_RESERVE_ROWS, _reserve_rows
+
+    chrome = _FakeReserveChrome(footer_rows=1)
+    # 1-row idle input + status(1) + footer(1) = 3, below the floor → floor wins.
+    assert _reserve_rows(chrome) == _MODAL_RESERVE_ROWS  # type: ignore[arg-type]
+
+
+def test_reserve_rows_grows_with_multiline_footer() -> None:
+    from aelix_coding_agent.tui.overlay import _MODAL_RESERVE_ROWS, _reserve_rows
+
+    one = _reserve_rows(_FakeReserveChrome(footer_rows=1))  # type: ignore[arg-type]
+    three = _reserve_rows(_FakeReserveChrome(footer_rows=3))  # type: ignore[arg-type]
+    # A 3-row footer reserves strictly more than a 1-row footer (input 1 +
+    # status 1 + footer 3 = 5 vs the floor 5 → equal here, so push input up).
+    tall = _reserve_rows(
+        _FakeReserveChrome(footer_rows=3, buffer_text="a\nb")  # 2-row input
+    )  # type: ignore[arg-type]
+    assert three >= one
+    # input(2) + status(1) + footer(3) = 6 > the floor.
+    assert tall == 6
+    assert tall > _MODAL_RESERVE_ROWS
+
+
+def test_reserve_rows_missing_counter_falls_back_to_floor() -> None:
+    from aelix_coding_agent.tui.overlay import _MODAL_RESERVE_ROWS, _reserve_rows
+
+    class _NoCounter:
+        buffer = _FakeBuffer("")
+
+    # No footer_line_count attr → assumes a 1-row footer, floor applies.
+    assert _reserve_rows(_NoCounter()) == _MODAL_RESERVE_ROWS  # type: ignore[arg-type]

@@ -77,6 +77,59 @@ async def test_confirm_persists_selection_in_registry_order() -> None:
         assert "status line →" in commits.text()
 
 
+async def test_multiline_toggle_is_reachable_and_persists() -> None:
+    # WP-8 Feature 5: the /statusline picker OWNS the multiline toggle. Drive the
+    # picker with the multiline toggle checked and assert the saved config has
+    # multiline=True (the toggle is exposed in extra_toggles and read back).
+    async with _segments() as segments:
+        saved: dict[str, StatuslineConfig] = {}
+        seen_toggle_keys: list[str] = []
+
+        async def fake_multiselect(title, options, *, selected, extra_toggles, preview):
+            seen_toggle_keys.extend(t[0] for t in extra_toggles)
+            return set(selected), {"use_theme_colors": True, "multiline": True}
+
+        await run_statusline_picker(
+            segments=segments,
+            load=lambda: StatuslineConfig(enabled=["model"], multiline=False),
+            save=lambda cfg: saved.__setitem__("cfg", cfg),
+            multiselect=fake_multiselect,
+            commit=_Commits(),
+        )
+        # The picker offers a "multiline" toggle (feature is reachable from the UI).
+        assert "multiline" in seen_toggle_keys
+        assert saved["cfg"].multiline is True
+
+
+async def test_confirm_preserves_persisted_multiline_true() -> None:
+    # Data-loss regression: a user with multiline=True already persisted who
+    # confirms the picker (without touching the multiline toggle) must NOT have
+    # the flag silently reset to False. The toggle is seeded from the persisted
+    # value, so an unchanged confirm round-trips multiline=True.
+    async with _segments() as segments:
+        saved: dict[str, StatuslineConfig] = {}
+        seen_initial: dict[str, bool] = {}
+
+        async def fake_multiselect(title, options, *, selected, extra_toggles, preview):
+            # Capture the seeded initial state (3rd tuple element) + return it
+            # unchanged, mirroring the real picker seeding toggles from config.
+            for t in extra_toggles:
+                seen_initial[t[0]] = bool(t[2]) if len(t) > 2 else False
+            return set(selected), dict(seen_initial)
+
+        await run_statusline_picker(
+            segments=segments,
+            load=lambda: StatuslineConfig(enabled=["model"], multiline=True),
+            save=lambda cfg: saved.__setitem__("cfg", cfg),
+            multiselect=fake_multiselect,
+            commit=_Commits(),
+        )
+        # The picker seeded the multiline toggle from the persisted True...
+        assert seen_initial["multiline"] is True
+        # ...and the save round-trip preserved it (no silent collapse).
+        assert saved["cfg"].multiline is True
+
+
 async def test_cancel_does_not_save() -> None:
     async with _segments() as segments:
         saved: dict[str, StatuslineConfig] = {}

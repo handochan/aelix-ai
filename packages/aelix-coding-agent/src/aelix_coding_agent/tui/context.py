@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import inspect
+import re
 from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -27,6 +28,7 @@ from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.layout import HSplit, Window
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
 from prompt_toolkit.layout.dimension import Dimension
+from prompt_toolkit.layout.processors import PasswordProcessor, Processor
 
 from aelix_coding_agent.extensions.ext_ui import (
     CustomComponentFactory,
@@ -93,6 +95,21 @@ def _picker_frame(title: str, body: list[str], hint: str, content_width: int) ->
         f"{_PICK_DIM}{hint}{_PICK_RST}",
     ]
     return ANSI("\n".join(lines))
+
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _visible_len(text: str) -> int:
+    """Display width of ``text`` ignoring SGR (color/dim) escape sequences.
+
+    ``_picker_frame`` sizes its dividers from the widest PLAIN content line, so a
+    body line carrying its own ANSI (e.g. a dim footer note from the stats /
+    extension tabs) must be measured by its VISIBLE length — counting the escape
+    bytes would over-pad the frame.
+    """
+
+    return len(_ANSI_RE.sub("", text))
 
 
 def _resolve(future: asyncio.Future[Any], value: Any) -> None:
@@ -370,13 +387,109 @@ class AelixTUIContext:
 
         return await show_modal(self.chrome, build)
 
+    async def tabbed(
+        self,
+        title: str,
+        tabs: list[tuple[str, Callable[[], list[str]]]],
+        *,
+        initial: int = 0,
+    ) -> None:
+        """A framed read-only tabbed viewer (WP-8, the /stats + /extension shell).
+
+        Built like :meth:`select` (``show_modal`` + a local ``KeyBindings``), NOT
+        ``custom()`` — ``custom``'s Window has no key bindings and cannot handle
+        Tab/arrows. Renders a tab header row (the active tab ``_PICK_SEL``), the
+        active tab's rendered lines, and a dim hint. Keys: ``Tab`` / ``→`` next
+        tab, ``Shift-Tab`` / ``←`` prev tab (both wrap); ``Esc`` / ``Ctrl-C`` /
+        ``q`` close. Each ``render()`` is guarded — a raising tab shows an error
+        line instead of breaking the modal. Empty ``tabs`` returns immediately.
+
+        :param tabs: ``(tab_name, render)`` pairs; ``render`` is a no-arg callable
+            returning the active tab's body lines.
+        :param initial: the tab index shown first (clamped into range).
+        """
+
+        if not tabs:
+            return None
+
+        state: dict[str, Any] = {"idx": max(0, min(initial, len(tabs) - 1))}
+
+        def render() -> ANSI:
+            idx = max(0, min(state["idx"], len(tabs) - 1))
+            state["idx"] = idx
+            # Header row: each tab name, the active one bold-cyan, the rest plain.
+            header_cells: list[str] = []
+            for i, (name, _render) in enumerate(tabs):
+                if i == idx:
+                    header_cells.append(f"{_PICK_SEL}{name}{_PICK_RST}")
+                else:
+                    header_cells.append(name)
+            header = "  ".join(header_cells)
+            # Active tab body — guarded so a raising formatter never breaks the
+            # modal (spec: "a raising tab shows an error line").
+            try:
+                body_lines = list(tabs[idx][1]())
+            except Exception as exc:  # noqa: BLE001 — degrade, never crash
+                body_lines = [f"{_PICK_DIM}(this tab failed to render: {exc}){_PICK_RST}"]
+            hint = "Tab/←→ switch · Esc close"
+            # Plain (un-styled) widths for the divider span: measure the raw tab
+            # names for the header, and the VISIBLE length of each body line
+            # (a tab body may carry its own ANSI — counting the escape bytes
+            # would over-pad the frame).
+            plain_header_len = len("  ".join(name for name, _ in tabs))
+            width = max(
+                [len(title), plain_header_len, len(hint)]
+                + [_visible_len(line) for line in body_lines]
+            )
+            body = [header, *body_lines]
+            return _picker_frame(title, body, hint, width)
+
+        def build(result: asyncio.Future[Any]) -> Window:
+            kb = KeyBindings()
+
+            def _next(_e: object) -> None:
+                state["idx"] = (state["idx"] + 1) % len(tabs)
+                self.chrome.invalidate()
+
+            def _prev(_e: object) -> None:
+                state["idx"] = (state["idx"] - 1) % len(tabs)
+                self.chrome.invalidate()
+
+            kb.add("tab")(_next)
+            kb.add("right")(_next)
+            kb.add("s-tab")(_prev)
+            kb.add("left")(_prev)
+            kb.add("escape")(lambda _e: _resolve(result, None))
+            kb.add("c-c")(lambda _e: _resolve(result, None))
+            kb.add("q")(lambda _e: _resolve(result, None))
+            # Consume Enter (CR + LF) so it can't leak past the focused viewer to
+            # the chrome's global accept (submit / steer) — Enter dismisses this
+            # read-only viewer (matches q / Esc). Same leak-guard the other modals
+            # apply (ADR-0121 W-review M1/M2: select/confirm/input/editor all bind
+            # enter + c-j at control level).
+            kb.add("enter")(lambda _e: _resolve(result, None))
+            kb.add("c-j")(lambda _e: _resolve(result, None))
+            # Catch every other (unbound) key as a no-op so a stray keystroke
+            # never bubbles past the focused viewer into the hidden input buffer.
+            # ``<any>`` runs only when no more-specific binding matched, so the
+            # tab-switch / close keys above are unaffected.
+            kb.add("<any>")(lambda _e: None)
+
+            return Window(
+                FormattedTextControl(render, focusable=True, key_bindings=kb),
+                dont_extend_height=True,
+            )
+
+        await show_modal(self.chrome, build)
+        return None
+
     async def multiselect(
         self,
         title: str,
         options: list[tuple[str, str, str]],
         *,
         selected: set[str],
-        extra_toggles: list[tuple[str, str]] | None = None,
+        extra_toggles: list[tuple[str, str]] | list[tuple[str, str, bool]] | None = None,
         preview: Callable[[set[str], dict[str, bool]], list[str]] | None = None,
     ) -> tuple[set[str], dict[str, bool]] | None:
         """WP-2 (ADR-0160) — a multi-checkbox picker (sibling to :meth:`select`).
@@ -391,9 +504,12 @@ class AelixTUIContext:
             key toggled in the returned set; ``description`` is shown under the
             list for the highlighted row (cosmetic, guarded).
         :param selected: the initial checked id set (copied; not mutated).
-        :param extra_toggles: optional ``(key, label)`` boolean toggles rendered
-            below the option list (e.g. "Use theme colors"). Returned as the
-            second tuple element.
+        :param extra_toggles: optional boolean toggles rendered below the option
+            list (e.g. "Use theme colors"). Each is a ``(key, label)`` pair OR a
+            ``(key, label, initial)`` triple — when the third element is given it
+            seeds the toggle's initial checked state from a persisted value (so a
+            stored ``True`` is preserved on confirm instead of silently reset to
+            ``False``). Returned as the second tuple element.
         :param preview: optional ``(selected, toggles) -> lines`` callback for a
             live preview block (e.g. a sample footer). Guarded — a raising
             preview never breaks the modal.
@@ -412,7 +528,13 @@ class AelixTUIContext:
             return None
 
         chosen: set[str] = set(selected)
-        toggles: dict[str, bool] = {key: False for key, _ in (extra_toggles or [])}
+        # Seed each toggle from its optional initial state (the 3rd tuple element,
+        # when present); a 2-tuple defaults to ``False``. This preserves a stored
+        # ``True`` (e.g. a persisted ``multiline``) across confirm instead of the
+        # picker silently resetting it.
+        toggles: dict[str, bool] = {
+            t[0]: bool(t[2]) if len(t) > 2 else False for t in (extra_toggles or [])
+        }
         # ``cursor`` indexes a UNIFIED list: the filtered option rows first, then
         # the extra toggle rows. Space toggles whichever the cursor is on.
         state: dict[str, Any] = {"cursor": 0, "filter": ""}
@@ -470,8 +592,10 @@ class AelixTUIContext:
                 body.append(_row(vi == cursor, f"[{box}] {label}"))
             if end < n_opts:
                 body.append(f"{_PICK_DIM}  ⋮{_PICK_RST}")
-            # Extra toggle rows (rendered after the option list).
-            for ti, (key, label) in enumerate(extra_toggles or []):
+            # Extra toggle rows (rendered after the option list). Each entry is a
+            # ``(key, label)`` pair or a ``(key, label, initial)`` triple.
+            for ti, toggle in enumerate(extra_toggles or []):
+                key, label = toggle[0], toggle[1]
                 box = "✓" if toggles.get(key) else "☐"
                 body.append(_row(n_opts + ti == cursor, f"[{box}] {label}"))
             counter = f"({min(cursor + 1, n_total)}/{n_total})"
@@ -592,8 +716,17 @@ class AelixTUIContext:
         title: str,
         placeholder: str | None = None,
         opts: ExtensionUIDialogOptions | None = None,
+        *,
+        password: bool = False,
     ) -> str | None:
         buffer = Buffer(multiline=False)
+        # WP-8 (Feature 1) — when ``password`` is set, mask the typed characters
+        # so a secret (API key / OAuth code) is NOT echoed to the screen or left
+        # in the terminal scrollback. The buffer still holds the real text, only
+        # the rendering is replaced (PasswordProcessor draws ``*`` per char).
+        processors: list[Processor] | None = (
+            [PasswordProcessor()] if password else None
+        )
 
         def build(result: asyncio.Future[Any]) -> HSplit:
             kb = KeyBindings()
@@ -610,7 +743,14 @@ class AelixTUIContext:
             return HSplit(
                 [
                     Window(FormattedTextControl(title), dont_extend_height=True),
-                    Window(BufferControl(buffer, key_bindings=kb), height=Dimension(min=1)),
+                    Window(
+                        BufferControl(
+                            buffer,
+                            key_bindings=kb,
+                            input_processors=processors,
+                        ),
+                        height=Dimension(min=1),
+                    ),
                 ]
             )
 
@@ -823,20 +963,31 @@ class AelixTUIContext:
             return set(self._statusline_store.load().enabled)
         return None
 
-    def _refresh_footer(self) -> None:
-        if self._footer_factory is not None:
-            component = self._footer_factory(self._tui, self._theme, self._footer)
-            self.chrome.set_footer_line("\n".join(component.render(_RENDER_WIDTH)))
-            return
-        # WP-2 (ADR-0160) — compose from the named segment registry. The registry
-        # order is canonical (matches the pre-ADR-0160 hard-coded footer); an
-        # enabled-set gates membership. The ADR-0159 invariants (permission badge
-        # leading + omit-when-no-provider; steering hidden at default) live INSIDE
-        # the producers, so an adversarial/empty enabled-set can only hide a
-        # segment the user explicitly unchecked — it can never surface a stray
-        # badge or vanish the leading position of the security-visible one.
+    def _statusline_multiline(self) -> bool:
+        """Whether the footer renders as the WP-8 grouped multi-line block.
+
+        Reads the persisted ``StatuslineConfig.multiline`` flag; ``False`` (the
+        default + no-store + corrupt-store path) keeps the single-line footer.
+        Never raises — ``load()`` degrades to defaults.
+        """
+
+        if self._statusline_store is None:
+            return False
+        with contextlib.suppress(Exception):
+            return bool(self._statusline_store.load().multiline)
+        return False
+
+    def _enabled_segment_values(self) -> dict[str, str]:
+        """``{segment_id: rendered_value}`` for every enabled, non-empty segment.
+
+        Shared by the single- and multi-line footer composers so both read the
+        SAME segment registry (no value re-derivation). The ADR-0159 in-producer
+        invariants (badge leading + omit-when-no-provider; steering hidden at
+        default) are enforced inside each ``produce``.
+        """
+
         enabled = self._enabled_segment_ids()
-        parts: list[str] = []
+        values: dict[str, str] = {}
         for segment in self._segments:
             is_on = (
                 segment.default_enabled if enabled is None else segment.id in enabled
@@ -845,10 +996,65 @@ class AelixTUIContext:
                 continue
             value = segment.produce()
             if value:
-                parts.append(value)
+                values[segment.id] = value
+        return values
+
+    # WP-8 (Feature 5) — the mockup-A grouped row layout: each row lists the
+    # segment ids it carries, in render order. Empty rows (no enabled, non-empty
+    # segment) are omitted. ``permission-mode`` stays the LEADING segment of its
+    # row (ADR-0159). Extension statuses join the LAST row.
+    _MULTILINE_ROWS: tuple[tuple[str, ...], ...] = (
+        ("model", "git-branch", "context-remaining", "input-tokens", "output-tokens", "cost"),
+        ("current-dir",),
+        ("permission-mode", "steering", "pending-queued"),
+    )
+
+    def _refresh_footer(self) -> None:
+        if self._footer_factory is not None:
+            component = self._footer_factory(self._tui, self._theme, self._footer)
+            rendered = component.render(_RENDER_WIDTH)
+            # WP-8 (Feature 5): ``set_footer_line`` now PRESERVES ``\n`` for the
+            # multi-line statusline. A factory footer must still honor the
+            # default-OFF opt-in — join its lines by ``\n`` only when multi-line
+            # mode is on; otherwise collapse to a single row (the pre-WP-8
+            # behavior, when ``set_footer_line`` stripped newlines) so an
+            # extension footer can't silently grow the chrome unguarded.
+            sep = "\n" if self._statusline_multiline() else "  ·  "
+            self.chrome.set_footer_line(sep.join(rendered))
+            return
+        # WP-2 (ADR-0160) — compose from the named segment registry. The registry
+        # order is canonical (matches the pre-ADR-0160 hard-coded footer); an
+        # enabled-set gates membership. The ADR-0159 invariants (permission badge
+        # leading + omit-when-no-provider; steering hidden at default) live INSIDE
+        # the producers, so an adversarial/empty enabled-set can only hide a
+        # segment the user explicitly unchecked — it can never surface a stray
+        # badge or vanish the leading position of the security-visible one.
+        values = self._enabled_segment_values()
         # Extension statuses are NOT registry segments (an extension owns its own
-        # slot, never user-toggleable) — append them after the registry loop.
-        parts.extend(v for v in self._footer.get_extension_statuses().values() if v)
+        # slot, never user-toggleable) — gathered once for both layouts.
+        ext_statuses = [v for v in self._footer.get_extension_statuses().values() if v]
+
+        if self._statusline_multiline():
+            # WP-8 (Feature 5) — grouped multi-line block (mockup A). Each row
+            # joins its enabled+non-empty segments by ``  ·  ``; empty rows are
+            # omitted; extension statuses join the last rendered row's tail.
+            rows: list[str] = []
+            for row_ids in self._MULTILINE_ROWS:
+                cells = [values[sid] for sid in row_ids if sid in values]
+                if cells:
+                    rows.append("  ·  ".join(cells))
+            if ext_statuses:
+                ext_row = "  ·  ".join(ext_statuses)
+                if rows:
+                    rows[-1] = f"{rows[-1]}  ·  {ext_row}"
+                else:
+                    rows.append(ext_row)
+            self.chrome.set_footer_block(rows)
+            return
+
+        # Single-line (default): the canonical registry order joined by ``  ·  ``.
+        parts = [values[segment.id] for segment in self._segments if segment.id in values]
+        parts.extend(ext_statuses)
         self.chrome.set_footer_line("  ·  ".join(parts))
 
     def set_context_label(self, label: str | None) -> None:

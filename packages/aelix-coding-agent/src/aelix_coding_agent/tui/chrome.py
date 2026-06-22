@@ -370,6 +370,24 @@ class AelixChrome:
                 filter=cond,
             )
 
+        # WP-8 (Feature 5) — the footer is the ONE chrome row that may grow to
+        # multiple lines (the mockup-A multi-line statusline). Unlike the fixed
+        # ``height1`` helper above, it carries a ``min=1`` Dimension with NO fixed
+        # ``max`` so ``self._footer_line`` may hold ``\n``-separated rows. Header /
+        # breadcrumb / status stay single-line (they still use ``_ansi_row`` and
+        # their setters strip ``\n``). ``dont_extend_height`` keeps it as tall as
+        # its content (1 row in the default single-line mode).
+        def _footer_row() -> ConditionalContainer:
+            return ConditionalContainer(
+                Window(
+                    FormattedTextControl(lambda: ANSI(self._footer_line)),
+                    height=Dimension(min=1),
+                    dont_extend_height=True,
+                    style="class:aelix.chrome",
+                ),
+                filter=renderer_height_is_known,
+            )
+
         header = ConditionalContainer(
             Window(
                 FormattedTextControl(lambda: ANSI(self._header_line)),
@@ -432,7 +450,7 @@ class AelixChrome:
                 Window(FormattedTextControl(self._render_widgets_below), dont_extend_height=True),
                 _ansi_row(self._render_working, gate_visible=True),
                 _ansi_row(self._render_status),
-                _ansi_row(lambda: self._footer_line),
+                _footer_row(),
             ]
         )
         layout = Layout(
@@ -829,8 +847,37 @@ class AelixChrome:
         self.invalidate()
 
     def set_footer_line(self, text: str) -> None:
-        self._footer_line = text.replace("\n", " ")  # fixed height=1 row
+        # WP-8 (Feature 5) — the footer row is multi-line-capable, so it KEEPS
+        # ``\n`` (the footer Window's Dimension is min=1 with no fixed max). The
+        # caller (``_refresh_footer``) decides single- vs multi-line; in
+        # single-line mode it passes a ``\n``-free string, so this is a no-op
+        # change there. Header / breadcrumb / status still strip ``\n`` (below).
+        self._footer_line = text
         self.invalidate()
+
+    def set_footer_block(self, lines: list[str]) -> None:
+        """Set the footer to a list of rows (joined by ``\\n``); multi-line-capable.
+
+        WP-8 (Feature 5). A convenience over :meth:`set_footer_line` for the
+        grouped multi-line statusline composer. Empty list clears the footer.
+        """
+
+        self._footer_line = "\n".join(lines)
+        self.invalidate()
+
+    def footer_line_count(self) -> int:
+        """The number of rows the footer currently occupies (≥1).
+
+        WP-8 (Feature 5) — :func:`overlay._reserve_rows` reads this so a taller
+        multi-line footer grows the modal reserve and a near-cap modal never
+        clips. An empty footer still reserves 1 row (its ConditionalContainer is
+        gated on ``renderer_height_is_known``, not on content, and reports its
+        ``min=1`` Dimension).
+        """
+
+        if not self._footer_line:
+            return 1
+        return self._footer_line.count("\n") + 1
 
     def set_header_line(self, text: str) -> None:
         self._header_line = text.replace("\n", " ")  # fixed height=1 row

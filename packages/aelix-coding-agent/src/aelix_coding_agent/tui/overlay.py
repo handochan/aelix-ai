@@ -169,15 +169,30 @@ def _reserve_rows(chrome: AelixChrome) -> int:
     :data:`_MODAL_RESERVE_ROWS` floor when the buffer is unavailable. (Review LOW.)
     """
 
+    # WP-8 (Feature 5) — the footer may now be multi-line (the mockup-A grouped
+    # statusline). The fixed ``_MODAL_STATUS_FOOTER_ROWS`` (status 1 + footer 1)
+    # assumed a 1-row footer; read the LIVE footer row count so the reserve grows
+    # by the extra footer rows and a near-cap modal never clips. Guarded: an
+    # absent/raising accessor floors back to the single-row assumption.
+    footer_rows = 1
+    counter: Callable[[], int] | None = getattr(chrome, "footer_line_count", None)
+    if callable(counter):
+        try:
+            footer_rows = max(1, int(counter()))
+        except Exception:  # noqa: BLE001 — torn-down chrome → 1-row floor
+            footer_rows = 1
+    # status (1) + the live footer row count.
+    status_footer_rows = max(_MODAL_STATUS_FOOTER_ROWS, 1 + footer_rows)
+
     buffer = getattr(chrome, "buffer", None)
     if buffer is None:
-        return _MODAL_RESERVE_ROWS
+        return max(_MODAL_RESERVE_ROWS, status_footer_rows)
     try:
         line_count = buffer.text.count("\n") + 1
     except Exception:  # noqa: BLE001 — torn-down buffer → floor
-        return _MODAL_RESERVE_ROWS
+        return max(_MODAL_RESERVE_ROWS, status_footer_rows)
     input_rows = max(1, min(line_count, _INPUT_MAX_ROWS))
-    return max(_MODAL_RESERVE_ROWS, input_rows + _MODAL_STATUS_FOOTER_ROWS)
+    return max(_MODAL_RESERVE_ROWS, input_rows + status_footer_rows)
 
 
 class _CappedContainer(Container):

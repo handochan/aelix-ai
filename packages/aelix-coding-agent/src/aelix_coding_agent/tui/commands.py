@@ -25,6 +25,7 @@ from rich.text import Text
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
+    from typing import Any
 
     from aelix_agent_core.harness.core import AgentHarness
     from aelix_ai.settings import SettingsManager
@@ -170,6 +171,28 @@ class CommandContext:
     ``enabled_models`` allow-list via the held SettingsManager — global scope, pi
     parity). The ``/scoped-models`` handler awaits it; ``None`` in headless tests /
     when no registry or settings manager is attached (ImplConsumers, ADR-0161)."""
+    login_action: Callable[[], Awaitable[None]] | None = None
+    """``run_tui`` wires this to its ``_open_login`` flow (the auth wizard:
+    OAuth / built-in API key / custom provider → ``AuthStorage``). The ``/login``
+    handler awaits it; ``None`` in headless tests / when no auth storage is
+    attached, in which case ``/login`` degrades with a committed message
+    (WP-8, Feature 1)."""
+    logout_action: Callable[[], Awaitable[None]] | None = None
+    """``run_tui`` wires this to its ``_open_logout`` flow (list stored
+    credentials → picker → confirm → ``AuthStorage.logout``). The ``/logout``
+    handler awaits it; ``None`` in headless tests / when no auth storage is
+    attached (WP-8, Feature 1)."""
+    stats_action: Callable[[], Awaitable[None]] | None = None
+    """``run_tui`` wires this to its ``_open_stats`` flow (the usage dashboard: a
+    framed tabbed viewer over the harness ``SessionStats`` + the TUI-side
+    ``SessionActivityTracker`` snapshot — Session / Activity / Efficiency tabs).
+    The ``/stats`` handler awaits it; ``None`` in headless tests (WP-8,
+    Feature 2)."""
+    extension_action: Callable[[], Awaitable[None]] | None = None
+    """``run_tui`` wires this to its ``_open_extension`` flow (a read-only framed
+    tabbed viewer over the discovered extensions + the live MCP manager —
+    Installed / Discover / Sources tabs). The ``/extension`` handler awaits it;
+    ``None`` in headless tests (WP-8, Feature 3)."""
 
 
 def build_help_renderable(commands: list[BuiltinCommand]) -> RenderableType:
@@ -711,6 +734,77 @@ async def _mcp_handler(ctx: CommandContext, args: str) -> None:
         ctx.commit(Text(f"✖ mcp failed: {exc}", style="bold red"))
 
 
+async def _login_handler(ctx: CommandContext, args: str) -> None:
+    """``/login`` — sign in / add a provider API key (ignores args).
+
+    Sprint WP-8 (Feature 1). Delegates to the host-wired ``login_action`` flow
+    (the auth wizard: OAuth / built-in API key / custom provider →
+    ``AuthStorage``). Degrades with a committed message when unavailable / on any
+    failure (never crashes the REPL).
+    """
+
+    if ctx.login_action is None:
+        ctx.commit(Text("Login is unavailable.", style="yellow"))
+        return
+    try:
+        await ctx.login_action()
+    except Exception as exc:  # noqa: BLE001 — surface, never kill the REPL
+        ctx.commit(Text(f"✖ login failed: {exc}", style="bold red"))
+
+
+async def _logout_handler(ctx: CommandContext, args: str) -> None:
+    """``/logout`` — remove a provider's stored credentials (ignores args).
+
+    Sprint WP-8 (Feature 1). Delegates to the host-wired ``logout_action`` flow
+    (list stored credentials → picker → confirm → ``AuthStorage.logout``).
+    Degrades with a committed message when unavailable / on any failure.
+    """
+
+    if ctx.logout_action is None:
+        ctx.commit(Text("Logout is unavailable.", style="yellow"))
+        return
+    try:
+        await ctx.logout_action()
+    except Exception as exc:  # noqa: BLE001 — surface, never kill the REPL
+        ctx.commit(Text(f"✖ logout failed: {exc}", style="bold red"))
+
+
+async def _stats_handler(ctx: CommandContext, args: str) -> None:
+    """``/stats`` — session usage dashboard (tools, tokens, models); ignores args.
+
+    Sprint WP-8 (Feature 2). Delegates to the host-wired ``stats_action`` flow (a
+    framed tabbed viewer over the harness ``SessionStats`` + the TUI-side
+    ``SessionActivityTracker`` snapshot — Session / Activity / Efficiency tabs).
+    Degrades with a committed message when unavailable / on any failure.
+    """
+
+    if ctx.stats_action is None:
+        ctx.commit(Text("Stats are unavailable.", style="yellow"))
+        return
+    try:
+        await ctx.stats_action()
+    except Exception as exc:  # noqa: BLE001 — surface, never kill the REPL
+        ctx.commit(Text(f"✖ stats failed: {exc}", style="bold red"))
+
+
+async def _extension_handler(ctx: CommandContext, args: str) -> None:
+    """``/extension`` — manage installed extensions + MCP servers (ignores args).
+
+    Sprint WP-8 (Feature 3). Delegates to the host-wired ``extension_action`` flow
+    (a read-only framed tabbed viewer over the discovered extensions + the live
+    MCP manager — Installed / Discover / Sources tabs). Degrades with a committed
+    message when unavailable / on any failure (never crashes the REPL).
+    """
+
+    if ctx.extension_action is None:
+        ctx.commit(Text("Extension manager is unavailable.", style="yellow"))
+        return
+    try:
+        await ctx.extension_action()
+    except Exception as exc:  # noqa: BLE001 — surface, never kill the REPL
+        ctx.commit(Text(f"✖ extension manager failed: {exc}", style="bold red"))
+
+
 def _context_bar(used: int, window: int, threshold: int, width: int = 32) -> Text:
     """A small 3-segment context-usage bar (PURE).
 
@@ -738,16 +832,87 @@ def _context_bar(used: int, window: int, threshold: int, width: int = 32) -> Tex
     return bar
 
 
+def _estimate_context_categories(ctx: CommandContext, window: int) -> list[str]:
+    """Gather the live context sources + render the estimated-composition lines.
+
+    WP-8 (Feature 4). Each source is read defensively (the seams are semi-private
+    / may be absent on a sparse harness — same coupling tier as
+    :func:`_tools_handler`'s ``_action_get_all_tools`` use) and is OMITTED when
+    unreachable. Returns ``[]`` when no category has a non-trivial source (the
+    caller then skips the section entirely). Never raises — a gather failure
+    degrades to no section, never crashes the ``/context`` handler.
+    """
+
+    harness = ctx.harness
+
+    # System prompt — the current effective prompt string. ``_action_get_system_prompt``
+    # is the read seam (semi-private, like ``_action_get_all_tools``); guard it.
+    system_prompt: str | None = None
+    # Annotate the duck-typed read seams so pyright keeps the call-result types
+    # (CI runs only ruff+pytest, not pyright — these annotations keep the local
+    # type discipline so a future regression in the gather is caught by a type
+    # check rather than silently slipping through).
+    getter: Callable[[], str] | None = getattr(
+        harness, "_action_get_system_prompt", None
+    )
+    if callable(getter):
+        with contextlib.suppress(Exception):
+            system_prompt = getter()
+
+    # Built-in tools — ToolInfo(name/description) views (full JSON schemas are not
+    # exposed; the name+description text is the best available estimate seam).
+    tool_schemas: list[object] = []
+    tools_getter: Callable[[], list[Any]] | None = getattr(
+        harness, "_action_get_all_tools", None
+    )
+    if callable(tools_getter):
+        with contextlib.suppress(Exception):
+            tool_schemas = list(tools_getter() or [])
+
+    # Messages — the public live transcript property.
+    messages: list[object] = []
+    with contextlib.suppress(Exception):
+        messages = list(getattr(harness, "messages", []) or [])
+
+    # Memory — the loaded AGENTS.md text for this cwd (may be absent → omitted).
+    memory_text: str | None = None
+    with contextlib.suppress(Exception):
+        from aelix_coding_agent.cli.agent_context import (  # noqa: PLC0415
+            discover_context_files,
+        )
+
+        memory_text = discover_context_files(ctx.cwd) or None
+
+    try:
+        from aelix_coding_agent.tui.context_usage import (  # noqa: PLC0415
+            build_category_lines,
+            estimate_categories,
+        )
+
+        categories = estimate_categories(
+            system_prompt=system_prompt,
+            tool_schemas=tool_schemas,
+            messages=messages,
+            memory_text=memory_text,
+        )
+        if not categories:
+            return []
+        return build_category_lines(categories, window)
+    except Exception:  # noqa: BLE001 — the section is best-effort; never crash
+        return []
+
+
 async def _context_handler(ctx: CommandContext, args: str) -> None:
     """``/context`` — context-window usage bar + compaction thresholds.
 
-    Sprint 6h₂₇ (ADR-0155, WP-7/WP-8). Read-only over
-    ``harness.get_session_stats().context_usage``. DEGRADED panel vs the mockup:
-    Used / Free / Autocompact-buffer + token totals + percent + the compaction
-    threshold; the per-category usage section is OMITTED because no backing
-    instrumentation exists (``ContextUsage`` carries a single ``tokens`` total
-    only — system-vs-tools-vs-messages categories are not measured anywhere).
-    Never crashes the REPL.
+    Sprint 6h₂₇ (ADR-0155, WP-7) + WP-8 (Feature 4). Read-only over
+    ``harness.get_session_stats().context_usage``: the MEASURED Used / Free /
+    Autocompact-buffer + token totals + percent + the compaction threshold (the
+    authoritative numbers). WP-8 additionally appends a HEURISTIC estimated
+    per-category composition section (system prompt / built-in tools / memory /
+    messages) when those sources are reachable — labelled as an estimate that may
+    not sum to the measured total. The section is OMITTED when no source is
+    reachable. Never crashes the REPL.
     """
 
     if not hasattr(ctx.harness, "get_session_stats"):
@@ -762,7 +927,17 @@ async def _context_handler(ctx: CommandContext, args: str) -> None:
     window = getattr(usage, "context_window", 0) or 0
     tokens = getattr(usage, "tokens", None)
     percent = getattr(usage, "percent", None)
-    if usage is None or window <= 0:
+    # WP-8 (Feature 4) — when no live usage has been measured yet (a fresh
+    # session, before the first turn), fall back to the bound model's STATIC
+    # context-window so /context is useful on session open instead of an
+    # "unavailable" line. The Used/Free rows still read "n/a" until the first
+    # turn supplies real usage; only the window size + the estimated composition
+    # come from the static source. Guarded — degrades to the prior message when
+    # no model is bound either.
+    if window <= 0:
+        model = getattr(ctx.harness, "current_model", None)
+        window = getattr(model, "context_window", 0) or 0
+    if window <= 0:
         ctx.commit(
             Text("Context usage unavailable (no model bound yet).", style="yellow")
         )
@@ -801,8 +976,22 @@ async def _context_handler(ctx: CommandContext, args: str) -> None:
         table.add_row(
             "compacts at", f"{fmt(threshold)}  ({threshold / window * 100:.0f}%)"
         )
-    # usage-by-category section OMITTED vs mockup — no backing data (see docstring).
+
+    # WP-8 (Feature 4) — estimated per-category composition. The measured Used /
+    # Free table above stays authoritative; this section is a HEURISTIC
+    # (ceil(len/4)) breakdown of the live sources (system prompt, tools, memory,
+    # messages), each guarded so an unreachable source is simply omitted. We only
+    # append it when ≥1 category is produced (an all-empty estimate adds nothing).
+    category_lines = _estimate_context_categories(ctx, window)
     ctx.commit(Panel(table, title="Context", box=ROUNDED, border_style="cyan"))
+    if category_lines:
+        body = Text()
+        body.append(
+            "Estimated composition (≈, may not sum to the measured total)\n",
+            style="dim",
+        )
+        body.append("\n".join(category_lines))
+        ctx.commit(Panel(body, title="Context composition", box=ROUNDED, border_style="cyan"))
 
 
 # Aelix TUI keybindings (static — the actual bindings wired in chrome.py). Kept
@@ -927,15 +1116,19 @@ BUILTIN_COMMANDS: list[BuiltinCommand] = [
     BuiltinCommand("help", "List available commands", _help_handler),
     BuiltinCommand("hotkeys", "Show keyboard shortcuts", _hotkeys_handler),
     BuiltinCommand("model", "Show or switch the active model", _model_handler),
+    BuiltinCommand("login", "Sign in / add a provider API key", _login_handler),
+    BuiltinCommand("logout", "Remove a provider's stored credentials", _logout_handler),
     BuiltinCommand("clear", "Clear the scrollback transcript", _clear_handler),
     BuiltinCommand("compact", "Compact the conversation context", _compact_handler),
     BuiltinCommand("cost", "Show session token / cost usage", _cost_handler),
+    BuiltinCommand("stats", "Session usage statistics (tools, tokens, models)", _stats_handler),
     BuiltinCommand("session", "Show session info (id, cwd, name, usage)", _session_handler),
     BuiltinCommand("name", "Show or set the session name", _name_handler),
     BuiltinCommand("thinking", "Show, pick, or set the reasoning level", _thinking_handler),
     BuiltinCommand("tools", "List registered tools", _tools_handler),
     BuiltinCommand("hooks", "List registered hook handlers (read-only)", _hooks_handler),
     BuiltinCommand("mcp", "Show MCP server status (servers, state, tool counts)", _mcp_handler),
+    BuiltinCommand("extension", "Manage installed extensions + MCP servers", _extension_handler),
     BuiltinCommand("context", "Show context-window usage + compaction thresholds", _context_handler),
     BuiltinCommand("mode", "Show or set the steering mode", _mode_handler),
     BuiltinCommand(
