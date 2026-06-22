@@ -62,6 +62,8 @@ async def run_login(
     confirm: Callable[..., Awaitable[bool]],
     notify: Callable[..., None],
     commit: Callable[[object], None],
+    multiselect: Callable[..., Awaitable[Any]] | None = None,
+    model_registry: Any = None,
 ) -> None:
     """Drive the ``/login`` wizard end-to-end (Sprint WP-8, Feature 1).
 
@@ -117,6 +119,8 @@ async def run_login(
             prompt_input=prompt_input,
             commit=commit,
             Text=Text,
+            multiselect=multiselect,
+            model_registry=model_registry,
         )
     else:  # pragma: no cover — select only returns one of the offered labels
         commit(Text(f"✖ login: unknown method {method!r}", style="bold red"))
@@ -312,6 +316,16 @@ async def _run_api_key(
     )
 
 
+# Custom-provider protocol → the registered adapter ``api`` id. Only
+# OpenAI-compatible and Anthropic-compatible have an adapter in this build;
+# Gemini-compatible has none (``None``) so its models can't be auto-registered.
+_PROTOCOL_API: dict[str, str | None] = {
+    "OpenAI-compatible": "openai-completions",
+    "Anthropic-compatible": "anthropic-messages",
+    "Gemini-compatible": None,
+}
+
+
 async def _run_custom(
     *,
     auth_storage: Any,
@@ -319,8 +333,18 @@ async def _run_custom(
     prompt_input: Callable[..., Awaitable[str | None]],
     commit: Callable[[object], None],
     Text: Any,
+    multiselect: Callable[..., Awaitable[Any]] | None = None,
+    model_registry: Any = None,
 ) -> None:
-    """Custom-provider sub-flow: pick a protocol, gather id/url/key, store key."""
+    """Custom-provider sub-flow: pick a protocol, gather id/url/key, store key.
+
+    For an **OpenAI-compatible** endpoint (when the host wired ``multiselect`` +
+    ``model_registry``) the flow then fetches ``{base_url}/models``, lets the user
+    pick which models to add, and writes them to ``models.json`` so they appear in
+    ``/model`` immediately — no manual models.json editing. Every other case
+    (other protocols, no fetch wiring, a fetch/registration failure) degrades to
+    the HONEST "add via models.json" note; the stored key is never lost.
+    """
 
     protocol = await select("Endpoint protocol", list(_CUSTOM_PROTOCOLS))
     if not protocol:
@@ -345,23 +369,48 @@ async def _run_custom(
     if not key or not key.strip():
         commit(Text("✖ no API key entered — nothing stored.", style="bold red"))
         return
+    key = key.strip()
 
     try:
-        await auth_storage.set_api_key(provider_id, key.strip())
+        await auth_storage.set_api_key(provider_id, key)
     except Exception as exc:  # noqa: BLE001 — persistence failure must degrade
         commit(Text(f"✖ failed to store key: {exc}", style="bold red"))
         return
 
     commit(Text(f"API key stored for {provider_id}", style="green"))
-    # HONEST note: the auth half is done, but the model itself is NOT selectable
-    # until it is declared in models.json / via --models. The base URL is NOT
-    # persisted by auth storage (only the API key is) — it is surfaced purely as
-    # a reminder of what to put in the models.json entry, so we say so plainly
-    # rather than implying the endpoint is wired.
+
+    # OpenAI-compatible → try to fetch + register models so the user doesn't have
+    # to hand-edit models.json. The only protocol with both a ``/models`` list
+    # endpoint AND a registered adapter (``openai-completions``).
+    api = _PROTOCOL_API.get(protocol)
+    if (
+        protocol == "OpenAI-compatible"
+        and api is not None
+        and base_url
+        and multiselect is not None
+        and model_registry is not None
+    ):
+        registered = await _register_custom_models(
+            provider_id=provider_id,
+            base_url=base_url,
+            api=api,
+            api_key=key,
+            model_registry=model_registry,
+            multiselect=multiselect,
+            commit=commit,
+            Text=Text,
+        )
+        if registered:
+            return  # success message already committed
+
+    # HONEST fallback note: the auth half is done, but no model was registered
+    # (other protocol, no fetch wiring, empty/failed fetch). The base URL is NOT
+    # persisted by auth storage (only the API key is) — surface it as a reminder
+    # of what to put in the models.json entry rather than implying it is wired.
     note_lines = [
         f"Stored a {protocol} API key for '{provider_id}'.",
         "",
-        "NOTE: the credential is saved, but the model is not selectable yet.",
+        "NOTE: the credential is saved, but no model was registered yet.",
         "Add the provider's model(s) via models.json or the --models flag for",
         "them to appear in /model — auth alone does not register a model.",
     ]
@@ -371,6 +420,189 @@ async def _run_custom(
             f"Use this base URL in the models.json entry (NOT stored here): {base_url}"
         )
     commit(Text("\n".join(note_lines), style="yellow"))
+
+
+async def _fetch_openai_model_ids(
+    base_url: str, api_key: str, *, timeout: float = 10.0
+) -> list[str]:
+    """``GET {base_url}/models`` (OpenAI-compatible) → sorted, de-duped model ids.
+
+    Handles the common response shapes: ``{"data": [{"id": …}]}`` (OpenAI),
+    ``{"models": [...]}``, and a bare list. Raises on transport / HTTP error
+    (the caller degrades). The key is sent as a Bearer token.
+    """
+
+    import httpx
+
+    url = base_url.rstrip("/") + "/models"
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        resp = await client.get(url, headers=headers)
+        resp.raise_for_status()
+        data = resp.json()
+
+    items: Any = None
+    if isinstance(data, dict):
+        items = data.get("data")
+        if items is None:
+            items = data.get("models")
+    elif isinstance(data, list):
+        items = data
+    ids: set[str] = set()
+    for item in items or []:
+        if isinstance(item, str):
+            ids.add(item)
+        elif isinstance(item, dict):
+            mid = item.get("id") or item.get("name")
+            if mid:
+                ids.add(str(mid))
+    return sorted(ids)
+
+
+def _write_custom_models_json(
+    path: str,
+    provider_id: str,
+    base_url: str,
+    api: str,
+    api_key: str,
+    model_ids: list[str],
+) -> None:
+    """Merge a custom provider + its models into ``models.json`` at ``path``.
+
+    Creates the file if absent; merges into an existing config (preserving other
+    providers + any extra fields already on this provider's models). The
+    ``apiKey`` IS written — the models.json loader's semantic validator REQUIRES
+    it for a non-built-in provider that defines models
+    (``models_json.validate_config_semantics``); without it the whole file is
+    rejected and the custom models never load. To match ``auth.json``'s
+    protection, the file is chmod-ed ``0o600`` after the atomic write so the
+    stored secret is owner-only.
+    """
+
+    import json
+    import os
+    from pathlib import Path
+
+    p = Path(path)
+    config: dict[str, Any] = {}
+    if p.exists():
+        with contextlib.suppress(Exception):
+            from aelix_coding_agent.models_json import strip_json_comments
+
+            text = p.read_text(encoding="utf-8")
+            if text.strip():
+                loaded = json.loads(strip_json_comments(text))
+                if isinstance(loaded, dict):
+                    config = loaded
+    providers = config.get("providers")
+    if not isinstance(providers, dict):
+        providers = config["providers"] = {}
+    entry = providers.get(provider_id)
+    if not isinstance(entry, dict):
+        entry = {}
+    entry["name"] = entry.get("name") or provider_id
+    if base_url:
+        entry["baseUrl"] = base_url
+    entry["api"] = api
+    entry["apiKey"] = api_key  # REQUIRED by the loader's semantic validator.
+    # Merge model ids, keeping any existing model dict (with its extra fields).
+    existing: dict[str, Any] = {
+        m["id"]: m
+        for m in entry.get("models", [])
+        if isinstance(m, dict) and m.get("id")
+    }
+    for mid in model_ids:
+        existing.setdefault(mid, {"id": mid})
+    entry["models"] = [existing[k] for k in sorted(existing)]
+    providers[provider_id] = entry
+
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_suffix(p.suffix + ".tmp")
+    tmp.write_text(json.dumps(config, indent=2), encoding="utf-8")
+    tmp.replace(p)
+    # The file now holds a secret — restrict to owner-only (mirrors auth.json).
+    with contextlib.suppress(OSError):
+        os.chmod(p, 0o600)
+
+
+async def _register_custom_models(
+    *,
+    provider_id: str,
+    base_url: str,
+    api: str,
+    api_key: str,
+    model_registry: Any,
+    multiselect: Callable[..., Awaitable[Any]],
+    commit: Callable[[object], None],
+    Text: Any,
+) -> bool:
+    """Fetch the endpoint's models, let the user pick, persist + reload.
+
+    Returns ``True`` when ≥1 model was registered (a success line is committed);
+    ``False`` on any failure / empty fetch / no selection (the caller then shows
+    the honest models.json note). Never raises.
+    """
+
+    try:
+        ids = await _fetch_openai_model_ids(base_url, api_key)
+    except Exception as exc:  # noqa: BLE001 — degrade to the manual note
+        commit(
+            Text(
+                f"Could not fetch models from {base_url}/models ({exc}).",
+                style="yellow",
+            )
+        )
+        return False
+    if not ids:
+        commit(Text(f"No models returned by {base_url}/models.", style="yellow"))
+        return False
+
+    options = [(mid, mid, f"{provider_id} model") for mid in ids]
+    try:
+        result = await multiselect(
+            f"Models from '{provider_id}' — choose which to add",
+            options,
+            selected=set(ids),
+        )
+    except Exception as exc:  # noqa: BLE001 — degrade to the manual note
+        commit(Text(f"Model picker failed: {exc}", style="yellow"))
+        return False
+    if result is None:
+        return False  # Esc — fall through to the note (key already stored)
+    chosen, _toggles = result
+    if not chosen:
+        commit(Text("No models selected — none added.", style="yellow"))
+        return False
+
+    path = getattr(model_registry, "_models_json_path", None)
+    if not path:
+        from pathlib import Path
+
+        from aelix_coding_agent.cli.config import get_agent_dir
+
+        path = str(Path(get_agent_dir()) / "models.json")
+    try:
+        _write_custom_models_json(
+            path, provider_id, base_url, api, api_key, sorted(chosen)
+        )
+    except Exception as exc:  # noqa: BLE001 — persistence failure must degrade
+        commit(Text(f"✖ failed to write models.json: {exc}", style="bold red"))
+        return False
+
+    # Reload so the new models appear in /model immediately (the registry re-reads
+    # models.json on every load — ADR-0140). Guarded: a reload failure still
+    # leaves a valid persisted file picked up next launch.
+    with contextlib.suppress(Exception):
+        model_registry._load_models()
+
+    commit(
+        Text(
+            f"Added {len(chosen)} model(s) for '{provider_id}' → they now appear "
+            "in /model.",
+            style="green",
+        )
+    )
+    return True
 
 
 async def _commit_status(

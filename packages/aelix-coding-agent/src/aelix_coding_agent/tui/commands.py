@@ -246,8 +246,18 @@ async def _model_handler(ctx: CommandContext, args: str) -> None:
         return
     try:
         from aelix_coding_agent.cli.runtime_bootstrap import resolve_model
+        from aelix_coding_agent.core.runnable_models import (
+            is_runnable,
+            unsupported_message,
+        )
 
         model = resolve_model(args, None)
+        # WP-8 follow-up — guard an explicit id whose api has no adapter (e.g.
+        # ``/model gpt-5.x`` → openai-responses): surface the actionable reason,
+        # not the cryptic ``No provider registered for api=...`` the loop raises.
+        if not is_runnable(model):
+            ctx.commit(Text(unsupported_message(model), style="bold red"))
+            return
         await ctx.harness.set_model(model)
     except Exception as exc:  # noqa: BLE001 — surface, never kill the REPL
         ctx.commit(Text(f"✖ model switch failed: {exc}", style="bold red"))

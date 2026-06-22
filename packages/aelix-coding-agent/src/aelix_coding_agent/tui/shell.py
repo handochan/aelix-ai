@@ -845,6 +845,11 @@ async def run_tui(
             confirm=context.confirm,
             notify=context.notify,
             commit=_commit,
+            # WP-8 follow-up — wire the checkbox picker + the live registry so a
+            # custom OpenAI-compatible endpoint can fetch its /models, let the
+            # user pick, and persist them to models.json (→ appear in /model).
+            multiselect=context.multiselect,
+            model_registry=model_registry,
         )
 
     async def _open_logout() -> None:

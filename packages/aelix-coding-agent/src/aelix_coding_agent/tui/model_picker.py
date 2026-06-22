@@ -153,14 +153,39 @@ async def run_model_picker(
     except Exception as exc:  # noqa: BLE001 — surface, never crash the REPL
         commit(Text(f"✖ model list failed: {exc}", style="bold red"))
         return
-    if not models:
+    # WP-8 follow-up — hide models whose ``api`` has no registered adapter (e.g.
+    # ``openai-responses``, used by OpenAI / GitHub-Copilot gpt-5.x) so the user
+    # can't pick a model that fails at the first turn with the cryptic
+    # ``No provider registered for api=...``. Empty registered set (headless /
+    # providers not wired) → no filtering (partition_runnable returns all).
+    from aelix_coding_agent.core.runnable_models import partition_runnable
+
+    models, blocked = partition_runnable(models)
+    if blocked:
         commit(
             Text(
-                "No models available — set a provider API key "
-                "(e.g. OPENROUTER_API_KEY / ANTHROPIC_API_KEY) then retry /model.",
-                style="yellow",
+                f"({len(blocked)} model(s) hidden — their API has no adapter in "
+                "this build, e.g. openai-responses / Copilot gpt-5.x)",
+                style="dim",
             )
         )
+    if not models:
+        if blocked:
+            commit(
+                Text(
+                    "No runnable models — every available model uses an API this "
+                    "build has no adapter for (e.g. openai-responses).",
+                    style="yellow",
+                )
+            )
+        else:
+            commit(
+                Text(
+                    "No models available — set a provider API key "
+                    "(e.g. OPENROUTER_API_KEY / ANTHROPIC_API_KEY) then retry /model.",
+                    style="yellow",
+                )
+            )
         return
 
     current = getattr(harness, "current_model", None)
@@ -182,6 +207,14 @@ async def run_model_picker(
         commit(Text(f"✖ model: unknown row {choice!r}", style="bold red"))
         return
     chosen = models[row_idx]
+    # Defensive guard (the list is already filtered): never switch to a model
+    # whose api has no adapter — surface the actionable reason, not the cryptic
+    # provider error the agent loop would raise on the first turn.
+    from aelix_coding_agent.core.runnable_models import is_runnable, unsupported_message
+
+    if not is_runnable(chosen):
+        commit(Text(unsupported_message(chosen), style="bold red"))
+        return
     if not hasattr(harness, "set_model"):
         commit(Text("Model switching is unavailable.", style="yellow"))
         return
