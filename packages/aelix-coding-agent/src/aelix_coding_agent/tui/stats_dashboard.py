@@ -5,8 +5,10 @@ The harness :class:`aelix_agent_core.harness._session_stats.SessionStats`
 TUI-side :class:`aelix_coding_agent.tui.activity_tracker.SessionActivityTracker`
 (its :class:`ActivitySnapshot`) adds the per-tool success/failure split, the
 per-model breakdown, the turn count, and wall-clock timing the harness does NOT
-retain. This module turns those two read-only inputs into three tab bodies and
-drives the framed tabbed viewer.
+retain. This module turns those two read-only inputs into the per-session tab
+bodies, adds a persisted cross-session **History** tab (WP-8 D3, fed by
+:class:`aelix_coding_agent.tui.stats_history.StatsHistoryStore`), and drives the
+framed tabbed viewer.
 
 Design (mirrors :mod:`aelix_coding_agent.tui.model_picker` /
 :mod:`aelix_coding_agent.tui.mcp_viewer`):
@@ -21,9 +23,10 @@ Design (mirrors :mod:`aelix_coding_agent.tui.model_picker` /
   ``AelixTUIContext.tabbed`` + output-committer into it.
 - **Degrade, never crash.** A ``stats_getter`` failure commits a red line and
   returns — the tracker-only tabs are NOT shown half-built, the REPL survives.
-- **Honesty.** Cross-session heatmaps / trend lines are NOT available (no history
-  is retained) — every tab states the gap on a dim footer line rather than
-  silently implying the data exists.
+- **Honesty.** The per-session tabs are live-only; the cross-session heatmap /
+  token trend / project table live on the persisted History tab (each per-session
+  tab footer points there). Empty history degrades to an honest one-liner rather
+  than a fabricated chart.
 
 The dim footer escape codes mirror ``context.py`` (``_PICK_DIM`` / ``_PICK_RST``)
 so a note renders dim inside the framed modal; they are duplicated here as small
@@ -33,6 +36,8 @@ a leaf consumer that never reaches into a shared file).
 
 from __future__ import annotations
 
+import time
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -46,11 +51,12 @@ _RST = "\x1b[0m"
 # Width of the small inline composition / leaderboard bars.
 _BAR_WIDTH = 16
 
-# Honest disclaimer: the data this dashboard CANNOT show (no history retained).
-_NO_HISTORY_NOTE = (
-    "Cross-session heatmap / trend omitted — only the live session is tracked "
-    "(no history retained)."
-)
+# Pointer (the per-session tabs are live-only; the cross-session views are now
+# persisted and live on the History tab — Sprint 6h₃₃ / D3).
+_HISTORY_TAB_NOTE = "Cross-session heatmap · token trend · project table → the History tab."
+
+# Intensity ramp for the activity-by-hour heatmap (9 levels, light → dark).
+_HEAT_RAMP = " ▁▂▃▄▅▆▇█"
 
 
 def _dim(text: str) -> str:
@@ -202,7 +208,7 @@ def build_session_tab(stats: Any, snapshot: Any) -> list[str]:
         # does NOT advance while the session sits idle waiting on the user.
         f"Active time   {_wall(getattr(snapshot, 'wall_seconds', 0.0))}",
         "",
-        _dim(_NO_HISTORY_NOTE),
+        _dim(_HISTORY_TAB_NOTE),
     ]
     return lines
 
@@ -240,7 +246,7 @@ def build_activity_tab(snapshot: Any) -> list[str]:
                 f"{_num(getattr(stat, 'output', 0)):>10}"
                 f"{_num(getattr(stat, 'cache_read', 0)):>10}"
             )
-    lines.extend(["", _dim(_NO_HISTORY_NOTE)])
+    lines.extend(["", _dim(_HISTORY_TAB_NOTE)])
     return lines
 
 
@@ -291,8 +297,198 @@ def build_efficiency_tab(snapshot: Any) -> list[str]:
                 f"  {name:<18}{_bar(frac)}  "
                 f"{_num(calls)} calls · {_num(failures)} fail · {row_latency}"
             )
-    lines.extend(["", _dim(_NO_HISTORY_NOTE)])
+    lines.extend(["", _dim(_HISTORY_TAB_NOTE)])
     return lines
+
+
+# === History tab (WP-8 D3, Sprint 6h₃₃) — cross-session, persisted ===========
+
+
+def _rec_tokens(record: Any) -> int:
+    """Throughput tokens (fresh input + output) off a duck-typed history record."""
+
+    return int(getattr(record, "input", 0) or 0) + int(getattr(record, "output", 0) or 0)
+
+
+def _project_name(cwd: Any) -> str:
+    """Short project label = the final path component of ``cwd`` (else ``(unknown)``)."""
+
+    text = str(cwd or "").strip()
+    if not text:
+        return "(unknown)"
+    return Path(text).name or text
+
+
+def _local_hour(ts: float) -> int:
+    """Hour-of-day (0–23) in local time, for the heatmap bucketing."""
+
+    return time.localtime(ts).tm_hour
+
+
+def _short_when(ts: Any) -> str:
+    """Compact local ``MM-DD HH:MM`` stamp for a history row (``—`` on a bad ts)."""
+
+    try:
+        return time.strftime("%m-%d %H:%M", time.localtime(float(ts)))
+    except (TypeError, ValueError, OSError):
+        return "—"
+
+
+def _latest_per_session(records: list[Any]) -> list[Any]:
+    """Collapse the cumulative per-turn rows to the LATEST row per ``session_id``.
+
+    Rows are cumulative, so the highest-``ts`` row for a session is its final
+    state. Rows with no ``session_id`` are kept individually (each its own
+    "session") so a legacy/odd row still contributes to the project table.
+    """
+
+    latest: dict[str, Any] = {}
+    for record in records:
+        sid = str(getattr(record, "session_id", "") or "")
+        key = sid or f"@{id(record)}"
+        prev = latest.get(key)
+        if prev is None or float(getattr(record, "ts", 0.0) or 0.0) >= float(
+            getattr(prev, "ts", 0.0) or 0.0
+        ):
+            latest[key] = record
+    return list(latest.values())
+
+
+def _compact_tokens(n: int) -> str:
+    """Token count bounded to a narrow column: ``987.7M`` / ``12.3k`` / ``3,900``."""
+
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.1f}M"
+    if n >= 10_000:
+        return f"{n / 1_000:.1f}k"
+    return _num(n)
+
+
+def _compact_cost(c: Any) -> str:
+    """USD bounded to a narrow column: ``$1.2k`` / ``$150.00`` / ``$0.0400``."""
+
+    try:
+        v = max(0.0, float(c))
+    except (TypeError, ValueError):
+        return "$0.0000"
+    if v >= 1000:
+        return f"${v / 1000:.1f}k"
+    if v >= 100:
+        return f"${v:.2f}"
+    return f"${v:.4f}"
+
+
+def _project_table_lines(sessions: list[Any]) -> list[str]:
+    """Per-project aggregate (sessions / tokens / cost / tool calls), busiest first.
+
+    A CROSS-SESSION cumulative aggregate, so token totals and costs can grow large.
+    Columns are abbreviated (``987.7M`` / ``$1.2k``) AND separated by a literal
+    space so the worst case can't fuse into a digit-wall (6h₃₃ review, ux LOW-1).
+    """
+
+    agg: dict[str, dict[str, float]] = {}
+    for s in sessions:
+        proj = _project_name(getattr(s, "cwd", ""))
+        a = agg.setdefault(proj, {"sessions": 0, "tokens": 0, "cost": 0.0, "calls": 0})
+        a["sessions"] += 1
+        a["tokens"] += _rec_tokens(s)
+        a["cost"] += float(getattr(s, "cost", 0.0) or 0.0)
+        a["calls"] += int(getattr(s, "tool_calls", 0) or 0)
+    if not agg:
+        return ["  (no projects recorded yet)"]
+    rows = sorted(agg.items(), key=lambda kv: (-kv[1]["tokens"], kv[0]))
+    out = [f"  {'project':<20} {'sess':>5} {'tokens':>9} {'cost':>9} {'tools':>7}"]
+    for proj, a in rows[:10]:
+        label = proj if len(proj) <= 20 else proj[:19] + "…"
+        out.append(
+            f"  {label:<20}"
+            f" {_num(a['sessions']):>5}"
+            f" {_compact_tokens(int(a['tokens'])):>9}"
+            f" {_compact_cost(a['cost']):>9}"
+            f" {_num(a['calls']):>7}"
+        )
+    if len(rows) > 10:
+        out.append(_dim(f"  … {len(rows) - 10} more project(s) (top 10 by tokens shown)"))
+    return out
+
+
+def _token_trend_lines(sessions: list[Any], *, rows: int = 8, width: int = 20) -> list[str]:
+    """Recent sessions' throughput tokens as small bars (oldest → newest)."""
+
+    ordered = sorted(sessions, key=lambda s: float(getattr(s, "ts", 0.0) or 0.0))[-rows:]
+    if not ordered:
+        return ["  (no sessions recorded yet)"]
+    peak = max((_rec_tokens(s) for s in ordered), default=0)
+    out: list[str] = []
+    for s in ordered:
+        tok = _rec_tokens(s)
+        frac = (tok / peak) if peak > 0 else 0.0
+        out.append(f"  {_short_when(getattr(s, 'ts', 0.0))}  {_bar(frac, width)}  {_num(tok)}")
+    return out
+
+
+def _heatmap_lines(records: list[Any], hour_of: Callable[[float], int]) -> list[str]:
+    """Activity (≈ turns, one row each) in 4 six-hour blocks, light → dark."""
+
+    counts = [0] * 24
+    for record in records:
+        ts = getattr(record, "ts", None)
+        if ts is None:
+            continue
+        try:
+            hour = int(hour_of(float(ts))) % 24
+        except (TypeError, ValueError, OSError):
+            continue
+        counts[hour] += 1
+    peak = max(counts)
+    if peak <= 0:
+        return ["  (no activity recorded yet)"]
+    last = len(_HEAT_RAMP) - 1
+
+    def cell(count: int) -> str:
+        return _HEAT_RAMP[round(count / peak * last)]
+
+    out: list[str] = []
+    for start in (0, 6, 12, 18):
+        block = "".join(cell(counts[start + i]) for i in range(6))
+        out.append(f"  {start:02d}–{start + 5:02d}  {block}")
+    return out
+
+
+def build_history_tab(
+    records: list[Any], *, hour_of: Callable[[float], int] = _local_hour
+) -> list[str]:
+    """Cross-session History tab: per-project table + token trend + hour heatmap.
+
+    ``records`` is the duck-typed :class:`StatsHistoryRecord` list from
+    :class:`aelix_coding_agent.tui.stats_history.StatsHistoryStore` (cumulative,
+    one row per turn). ``hour_of`` is injected so the heatmap's local-hour
+    bucketing is deterministic under test. Empty history degrades to an honest
+    one-liner (never a fabricated chart).
+    """
+
+    rows = list(records or [])
+    if not rows:
+        return [
+            "No cross-session history yet.",
+            "",
+            _dim("History accrues one row per turn in stats-history.jsonl (agent dir)."),
+        ]
+    sessions = _latest_per_session(rows)
+    projects = {_project_name(getattr(s, "cwd", "")) for s in sessions}
+    return [
+        f"Sessions      {_num(len(sessions))}",
+        f"Projects      {_num(len(projects))}",
+        "",
+        "Per-project",
+        *_project_table_lines(sessions),
+        "",
+        "Token trend (recent sessions, oldest → newest)",
+        *_token_trend_lines(sessions),
+        "",
+        "Activity by hour (local, busier = darker)",
+        *_heatmap_lines(rows, hour_of),
+    ]
 
 
 async def run_stats(
@@ -301,6 +497,7 @@ async def run_stats(
     snapshot: Any,
     tabbed: Callable[..., Awaitable[None]],
     commit: Callable[[object], None],
+    history_getter: Callable[[], list[Any]] | None = None,
 ) -> None:
     """Drive the ``/stats`` dashboard end-to-end (WP-8, Feature 2).
 
@@ -325,15 +522,27 @@ async def run_stats(
         commit(Text(f"✖ stats unavailable: {exc}", style="bold red"))
         return
 
+    tabs: list[tuple[str, Any]] = [
+        ("Session", lambda: build_session_tab(stats, snapshot)),
+        ("Activity", lambda: build_activity_tab(snapshot)),
+        ("Efficiency", lambda: build_efficiency_tab(snapshot)),
+    ]
+    # The History tab is added ONLY when a history source is wired (D3). It is
+    # bound LATE like the others, and the load itself is guarded so a corrupt
+    # store degrades to the empty-history one-liner rather than failing the modal.
+    if history_getter is not None:
+
+        def _history() -> list[str]:
+            try:
+                records = history_getter()
+            except Exception:  # noqa: BLE001 — a bad store never breaks the tab
+                records = []
+            return build_history_tab(records)
+
+        tabs.append(("History", _history))
+
     try:
-        await tabbed(
-            "Usage statistics",
-            [
-                ("Session", lambda: build_session_tab(stats, snapshot)),
-                ("Activity", lambda: build_activity_tab(snapshot)),
-                ("Efficiency", lambda: build_efficiency_tab(snapshot)),
-            ],
-        )
+        await tabbed("Usage statistics", tabs)
     except Exception as exc:  # noqa: BLE001 — surface, never crash the REPL
         commit(Text(f"✖ stats viewer failed: {exc}", style="bold red"))
         return
@@ -342,6 +551,7 @@ async def run_stats(
 __all__ = [
     "build_activity_tab",
     "build_efficiency_tab",
+    "build_history_tab",
     "build_session_tab",
     "run_stats",
 ]

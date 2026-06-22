@@ -83,6 +83,9 @@ if TYPE_CHECKING:
     from aelix_coding_agent.model_registry import ModelRegistry
 
 _RENDER_WIDTH = 80
+# Sprint 6h₃₃ (ADR-0168, WP-8 D3) — cap on retained /stats history rows. Pruned
+# once at startup so stats-history.jsonl can't grow without bound across sessions.
+_HISTORY_MAX_RECORDS = 5000
 # Sprint 6h₂₂ (ADR-0130) — chrome widget key for the auto-retry countdown.
 # W-review LOW-4: keep this module-level so tests + future docs reference one
 # canonical name; ``__dunder__`` convention signals private-to-shell.
@@ -300,6 +303,16 @@ async def run_tui(
     # supplies the live model id for message_end events that omit it. Fed at the
     # TOP of _on_agent_event (before the renderer) and reset on _rebind.
     tracker = SessionActivityTracker(model_provider=_model_id)
+
+    # WP-8 D3 (ADR-0168) — cross-session /stats history. The tracker above is
+    # live-only (reset on swap, lost on exit); this store persists a cumulative
+    # snapshot row per turn under get_agent_dir()/stats-history.jsonl so the
+    # /stats History tab renders per-project / token-trend / hour-heatmap views
+    # across sessions. Pruned ONCE here so the file can't grow without bound.
+    from aelix_coding_agent.tui.stats_history import StatsHistoryStore
+
+    history_store = StatsHistoryStore()
+    history_store.prune(_HISTORY_MAX_RECORDS)
 
     # Sprint 6h₁₂a (ADR-0110) — first-party command core. The registry is static
     # for the session; the context carries the live chrome/harness/commit/cwd so
@@ -881,6 +894,9 @@ async def run_tui(
             snapshot=tracker.snapshot(),
             tabbed=context.tabbed,
             commit=_commit,
+            # D3 — the persisted cross-session History tab. Read live at open time
+            # (capped) so it reflects rows this session has appended too.
+            history_getter=lambda: history_store.load(limit=_HISTORY_MAX_RECORDS),
         )
 
     async def _open_extension() -> None:
@@ -952,6 +968,7 @@ async def run_tui(
     unsubscribe_holder: dict[str, Callable[[], None] | None] = {"u": None}
 
     context_usage_tasks: set[asyncio.Task[None]] = set()
+    history_tasks: set[asyncio.Task[None]] = set()
 
     async def _refresh_context_usage() -> None:
         # Pull the context-window meter after each turn (async; walks messages,
@@ -1079,6 +1096,39 @@ async def run_tui(
             reason = getattr(event, "final_error", None) or "cancelled"
             _commit(Text(f"✖ Retry failed: {reason}", style="bold red"))
 
+    async def _record_history() -> None:
+        # WP-8 D3 (ADR-0168) — persist a CUMULATIVE snapshot row for this session
+        # at each turn end. Tokens + cost + session_id come from the authoritative
+        # harness SessionStats; tool counts / turns / tool-seconds from the live
+        # tracker. Fully guarded: a stats failure simply skips this row (store
+        # ``append`` is itself best-effort), never disturbing the turn.
+        try:
+            stats = await runtime_host.harness.get_session_stats()
+        except Exception:  # noqa: BLE001 — a stats failure must not break the turn
+            return
+        snap = tracker.snapshot()
+        tokens = getattr(stats, "tokens", None)
+        history_store.append(
+            {
+                "session_id": str(getattr(stats, "session_id", "") or ""),
+                "cwd": cwd,
+                "model": _model_id() or "",
+                "turns": int(getattr(snap, "turns", 0) or 0),
+                "tool_calls": int(getattr(snap, "tool_calls", 0) or 0),
+                "tool_failures": int(getattr(snap, "tool_failures", 0) or 0),
+                "input": int(getattr(tokens, "input", 0) or 0),
+                "output": int(getattr(tokens, "output", 0) or 0),
+                "cache_read": int(getattr(tokens, "cache_read", 0) or 0),
+                "cost": float(getattr(stats, "cost", 0.0) or 0.0),
+                "tool_seconds": float(
+                    sum(
+                        float(getattr(t, "total_duration", 0.0) or 0.0)
+                        for t in getattr(snap, "per_tool", []) or []
+                    )
+                ),
+            }
+        )
+
     def _on_agent_event(event: object) -> None:
         # WP-8 (Feature 2) — feed the activity tracker FIRST (before the renderer)
         # so /stats reflects every event. on_event is internally guarded (a
@@ -1095,6 +1145,11 @@ async def run_tui(
             task = loop.create_task(_refresh_context_usage())
             context_usage_tasks.add(task)
             task.add_done_callback(context_usage_tasks.discard)
+            # D3 — persist a cumulative /stats history row for this turn (async +
+            # guarded; same strong-reference pattern as the context-usage task).
+            htask = loop.create_task(_record_history())
+            history_tasks.add(htask)
+            htask.add_done_callback(history_tasks.discard)
             # The steer/follow-up queue drains during/after the turn — recompose
             # the footer so the "⋯ N queued" segment reflects the new count
             # (Sprint 6h₁₂e).
@@ -1477,6 +1532,14 @@ async def run_tui(
                 ext_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError, Exception):
                     await ext_task
+        # D3 (ADR-0168) — cancel any in-flight /stats history-append task. A
+        # dropped final row is acceptable (best-effort persistence); tagging the
+        # task cancelled avoids a "Task exception was never retrieved" warning.
+        for htask in list(history_tasks):
+            if not htask.done():
+                htask.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await htask
         for task in (pump_task, chrome_task):
             if task is not None:
                 task.cancel()
