@@ -285,6 +285,46 @@ async def test_interactive_mode_dispatches_to_run_tui(
     assert isinstance(tui_permission["extensions"], list)
 
 
+async def test_auth_callback_wired_without_api_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """WP-8 follow-up regression: the harness ``get_api_key_and_headers`` auth
+    callback MUST be wired even WITHOUT ``--api-key``.
+
+    Previously it was gated behind ``--api-key``, so a ``/login``-stored key
+    (auth.json) or a custom ``models.json`` provider ``apiKey`` was never
+    consulted at runtime — the agent fell through to env vars only and a custom
+    provider like ``openwebui`` failed with "No API key for provider". This
+    asserts the callback reaches ``_build_harness_options`` on a plain launch.
+    """
+
+    monkeypatch.setattr(sys, "stdin", _FakeTTYStdin())
+
+    import aelix_coding_agent.cli.entry as entry_mod
+
+    captured: dict[str, object] = {}
+    real_build = entry_mod._build_harness_options
+
+    async def _capturing_build(parsed: object, session: object, **kw: object) -> object:
+        captured["auth_cb"] = kw.get("get_api_key_and_headers")
+        return await real_build(parsed, session, **kw)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(entry_mod, "_build_harness_options", _capturing_build)
+
+    async def _stub_run_tui(runtime: object, **_k: object) -> int:
+        return 0
+
+    import aelix_coding_agent.tui as tui_pkg
+
+    monkeypatch.setattr(tui_pkg, "run_tui", _stub_run_tui)
+
+    code = await _async_main(["--no-session"])  # NO --api-key
+    assert code == 0
+    # The auth callback is wired unconditionally → auth.json / models.json keys
+    # resolve at runtime (not just env vars).
+    assert captured.get("auth_cb") is not None
+
+
 async def test_interactive_seeds_model_from_persisted_default(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

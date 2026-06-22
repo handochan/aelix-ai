@@ -737,10 +737,23 @@ async def _async_main(argv: list[str]) -> int:
     permission_posture = PermissionPosture()
     permission_ext = PermissionExtension(posture=permission_posture)
 
-    get_api_key_and_headers: Callable[..., Any] | None = None
+    # ALWAYS wire the auth callback so credentials stored in auth.json (via
+    # ``/login``) AND models.json provider ``apiKey`` entries resolve at runtime —
+    # NOT only when ``--api-key`` is passed. (Previously this was gated behind
+    # ``--api-key``, so a ``/login``-stored key or a custom models.json provider
+    # was never consulted by the harness — it fell through to env vars only, which
+    # is why a custom provider like ``openwebui`` failed with "No API key for
+    # provider". WP-8 follow-up.) ``_make_auth_callback`` returns "no opinion"
+    # (``None``) for a provider with no stored key, so env-only providers keep
+    # working via the adapter's ``get_env_api_key`` fallback.
+    get_api_key_and_headers: Callable[..., Any] | None = _make_auth_callback(
+        model_registry
+    )
     if parsed.api_key is not None:
         # Pi parity (main.ts:574-582): ``--api-key`` is meaningless without a
-        # model whose provider we can attach the runtime key to.
+        # model whose provider we can attach the runtime key to. It adds a
+        # RUNTIME OVERRIDE layer (highest cascade precedence) on top of the
+        # always-wired callback above.
         model = resolve_model(parsed.model, parsed.provider)
         # NOTE: this ``not model.provider`` guard is STRICTER than pi only
         # because ``resolve_model`` does not yet parse the ``<provider>/<pattern>``
@@ -760,7 +773,8 @@ async def _async_main(argv: list[str]) -> int:
             )
             return 1
         auth_storage.set_runtime_api_key(model.provider, parsed.api_key)
-        get_api_key_and_headers = _make_auth_callback(model_registry)
+        # (the auth callback is already wired above — the runtime override now
+        # takes precedence in the cascade.)
 
     if parsed.models:
         print(

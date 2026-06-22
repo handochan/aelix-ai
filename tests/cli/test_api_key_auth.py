@@ -10,9 +10,13 @@ Covers:
 - ``--api-key`` sets a runtime override that the stream actually sees
   (``_make_auth_callback`` adapts the registry → harness dict contract).
 - ``--api-key`` with no resolvable provider → Pi-verbatim error + exit 1.
-- env-only auth still resolves WITHOUT a callback (regression guard for
-  design (i): the harness callback stays ``None`` on the env path so the
-  adapter's direct ``get_env_api_key`` resolution is untouched).
+- env-only auth still resolves. (WP-8 follow-up / ADR-0166 SUPERSEDED the
+  former "design (i)": the harness callback is now wired on EVERY launch — not
+  only with ``--api-key`` — so ``/login`` auth.json + custom models.json keys
+  resolve at runtime. Env-only providers are unaffected: the cascade resolves
+  the env var and threads the same key. ``test_env_only_path_still_authenticates``
+  guards the no-callback harness path; ``…_wires_callback_and_resolves_env``
+  guards the wired path.)
 - ``--api-key`` runtime override wins over an ambient env var (cascade
   layer 1 beats layer 4).
 """
@@ -293,18 +297,23 @@ async def test_async_main_api_key_sets_override_and_attaches_callback(
     assert captured["get_api_key_and_headers"] is not None
 
 
-async def test_async_main_env_only_leaves_callback_none(
+async def test_async_main_env_only_wires_callback_and_resolves_env(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Real-invariant env-only guard (design (i)): WITHOUT ``--api-key`` the
-    harness options' ``get_api_key_and_headers`` MUST stay ``None`` so the
-    adapter's direct ``get_env_api_key`` resolution is preserved.
+    """WP-8 follow-up (ADR-0166) — SUPERSEDES the former "design (i)" guard.
 
-    Mutation proof this guard catches: forcing
-    ``get_api_key_and_headers = _make_auth_callback(...)`` on the env-only
-    path (the exact regression) makes ``captured`` non-``None`` and fails here
-    — unlike the prior tautological guards that only checked exit codes.
+    The harness options' ``get_api_key_and_headers`` callback is now wired on
+    EVERY launch (not only with ``--api-key``) so ``/login``-stored credentials
+    (auth.json) + custom ``models.json`` provider keys resolve at runtime —
+    previously it was gated behind ``--api-key`` and a stored/custom key was
+    never consulted (the agent fell through to env vars only, so a custom
+    provider like ``openwebui`` failed with "No API key for provider").
+
+    Env-only providers are UNAFFECTED: the cascade resolves the env var, so the
+    wired callback threads the SAME key the adapter would have env-resolved
+    itself. This asserts both halves — the callback is wired AND it resolves the
+    env key.
     """
 
     monkeypatch.setattr(sys, "stdin", _FakePipedStdin())
@@ -326,6 +335,13 @@ async def test_async_main_env_only_leaves_callback_none(
         ["--provider", "anthropic", "--model", "claude-3", "--print"]
     )
 
-    # The factory ran (sentinel replaced) and threaded None on the env path.
-    assert "get_api_key_and_headers" in captured
-    assert captured["get_api_key_and_headers"] is None
+    # The callback is WIRED on the env-only path (the former guard asserted None).
+    cb = captured.get("get_api_key_and_headers")
+    assert cb is not None
+    # And env-only auth is PRESERVED: the wired callback resolves the env key
+    # (same value the adapter's own get_env_api_key would have produced).
+    result = await cb(  # type: ignore[operator]
+        Model(api="anthropic-messages", provider="anthropic", id="claude-3")
+    )
+    assert result is not None
+    assert result.get("apiKey") == "sk-env-key"

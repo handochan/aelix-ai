@@ -24,6 +24,14 @@ After WP-8 shipped (ADR-0165) the user reported three things from real use:
    ("add the model via models.json"). The user asked it to fetch the endpoint's model list and
    register them.
 
+4. **`/login` was inert at runtime (THE real cause of #1's "No API key").** Diagnosing #1 surfaced a
+   deeper bug: `entry.py` wired the harness `get_api_key_and_headers` auth callback **only when
+   `--api-key` was passed** (`if parsed.api_key is not None:`). On a normal launch it was `None`, so
+   the harness resolved keys from **environment variables only** — never from `auth.json` (`/login`)
+   or a `models.json` provider `apiKey`. Built-in providers were masked (they usually have an env
+   var); the custom `openwebui` provider (no env var) exposed it. So `/login` (API-key AND OAuth) was
+   effectively a no-op at runtime without `--api-key`.
+
 ## Decision
 
 All pure TUI/CLI-consumer (`aelix_ai`/`aelix_agent_core` untouched).
@@ -42,6 +50,13 @@ All pure TUI/CLI-consumer (`aelix_ai`/`aelix_agent_core` untouched).
   reloads the registry so they appear in `/model` immediately. Anthropic/Gemini-compatible keep the
   honest "add via models.json" note (no `/models` list endpoint / no adapter). This resolves D7 for
   the common case.
+- **Auth callback wired unconditionally** (`entry.py`): `get_api_key_and_headers =
+  _make_auth_callback(model_registry)` now runs on every launch (the `--api-key` block only adds the
+  runtime-override layer on top). This is what makes `/login`-stored credentials (auth.json) and
+  custom `models.json` provider keys actually resolve at runtime. `_make_auth_callback` returns "no
+  opinion" (`None`) for providers with no stored key, so env-only providers keep working via the
+  adapter's `get_env_api_key` fallback — no regression. Regression test:
+  `test_entry_router.py::test_auth_callback_wired_without_api_key`.
 - **auto-mode doc fix**: corrected — auto-mode is implemented (ADR-0158).
 
 ## Consequences
