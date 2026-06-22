@@ -52,11 +52,30 @@ def _read(obj: Any, key: str, default: Any = 0) -> Any:
 
 @dataclass(frozen=True)
 class ToolStat:
-    """Per-tool call/failure tally for the efficiency leaderboard."""
+    """Per-tool call/failure tally + latency for the efficiency leaderboard.
+
+    ``total_duration`` / ``timed_calls`` accumulate wall-clock latency from
+    ``tool_execution_start`` → ``tool_execution_end`` pairs matched by
+    ``tool_call_id``. ``timed_calls`` can be < ``calls``: a call only counts
+    toward latency when BOTH its start and end were observed (a replayed
+    transcript, or an end whose start was missed, still bumps ``calls`` but not
+    the latency average). Both default to 0 so a tally built without any timing
+    compares/constructs exactly as before (WP-8 backward-compat).
+    """
 
     name: str
     calls: int
     failures: int
+    total_duration: float = 0.0
+    timed_calls: int = 0
+
+    @property
+    def avg_duration(self) -> float | None:
+        """Mean wall-clock seconds per *timed* call, or None if none were timed."""
+
+        if self.timed_calls <= 0:
+            return None
+        return self.total_duration / self.timed_calls
 
 
 @dataclass(frozen=True)
@@ -97,11 +116,27 @@ class ActivitySnapshot:
             return None
         return (self.tool_calls - self.tool_failures) / self.tool_calls
 
+    @property
+    def avg_tool_seconds(self) -> float | None:
+        """Mean latency across ALL *timed* tool calls, or None if none were timed.
+
+        Aggregates ``per_tool`` (each tool's ``total_duration`` / ``timed_calls``)
+        rather than dividing by ``tool_calls``, so untimed calls (no paired start)
+        don't drag the average toward zero.
+        """
+
+        timed = sum(t.timed_calls for t in self.per_tool)
+        if timed <= 0:
+            return None
+        return sum(t.total_duration for t in self.per_tool) / timed
+
 
 @dataclass
 class _ToolAccum:
     calls: int = 0
     failures: int = 0
+    total_duration: float = 0.0
+    timed_calls: int = 0
 
 
 @dataclass
@@ -134,6 +169,9 @@ class SessionActivityTracker:
         self._turns = 0
         self._first_ts: float | None = None
         self._last_ts: float | None = None
+        # Open ``tool_execution_start`` timestamps keyed by ``tool_call_id`` (the
+        # pairing key for latency); popped when the matching end arrives.
+        self._pending_starts: dict[str, float] = {}
 
     def reset(self) -> None:
         """Clear all accumulated activity (new/hot-swapped session)."""
@@ -143,6 +181,9 @@ class SessionActivityTracker:
         self._turns = 0
         self._first_ts = None
         self._last_ts = None
+        # Drop unpaired starts too, or a post-reset end could pair against a
+        # pre-reset start and bleed a stale duration into the new session.
+        self._pending_starts = {}
 
     # -- event ingestion ----------------------------------------------------
 
@@ -156,14 +197,16 @@ class SessionActivityTracker:
         try:
             self._stamp()
             event_type = getattr(event, "type", None)
-            if event_type == "tool_execution_end":
+            if event_type == "tool_execution_start":
+                self._on_tool_start(event)
+            elif event_type == "tool_execution_end":
                 self._on_tool_end(event)
             elif event_type == "message_end":
                 self._on_message_end(event)
             elif event_type == "turn_end":
                 self._turns += 1
-            # tool_execution_start / message_start / message_update /
-            # turn_start / agent_* / unknown → timing-only (already stamped).
+            # message_start / message_update / turn_start / agent_* / unknown →
+            # timing-only (already stamped).
         except Exception:  # noqa: BLE001 — never crash the event pump
             return
 
@@ -175,6 +218,15 @@ class SessionActivityTracker:
             self._first_ts = now
         self._last_ts = now
 
+    def _on_tool_start(self, event: object) -> None:
+        # Record the start instant against the call id for latency pairing. Reuse
+        # ``_last_ts`` (just advanced by ``_stamp``) instead of re-reading the
+        # clock — a scripted test clock pops a tick per read, so an extra read
+        # would desync the wall-clock window.
+        tcid = getattr(event, "tool_call_id", None)
+        if tcid is not None and self._last_ts is not None:
+            self._pending_starts[str(tcid)] = self._last_ts
+
     def _on_tool_end(self, event: object) -> None:
         name = getattr(event, "tool_name", None) or "(unknown)"
         accum = self._tools.get(name)
@@ -184,6 +236,15 @@ class SessionActivityTracker:
         accum.calls += 1
         if getattr(event, "is_error", False):
             accum.failures += 1
+        # Pair with the open start (if any) to accumulate latency. ``_last_ts`` is
+        # the end instant; an end without a matched start (replay / missed start)
+        # bumps ``calls`` but not ``timed_calls``.
+        tcid = getattr(event, "tool_call_id", None)
+        if tcid is not None:
+            start = self._pending_starts.pop(str(tcid), None)
+            if start is not None and self._last_ts is not None:
+                accum.total_duration += max(0.0, self._last_ts - start)
+                accum.timed_calls += 1
 
     def _on_message_end(self, event: object) -> None:
         message = getattr(event, "message", None)
@@ -222,7 +283,13 @@ class SessionActivityTracker:
         """Build an immutable view of the tracked activity so far."""
 
         per_tool = [
-            ToolStat(name=name, calls=accum.calls, failures=accum.failures)
+            ToolStat(
+                name=name,
+                calls=accum.calls,
+                failures=accum.failures,
+                total_duration=accum.total_duration,
+                timed_calls=accum.timed_calls,
+            )
             for name, accum in self._tools.items()
         ]
         # Busiest tools first; ties broken by name for stable ordering.

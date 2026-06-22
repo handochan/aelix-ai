@@ -688,7 +688,7 @@ def test_replay_renders_user_assistant_tool_transcript() -> None:
     out = _committed_text(commits)
     assert "» read the file" in out  # user echo
     assert "I should read it" in out  # thinking
-    assert "⚙ read(/x.txt)" in out  # tool-call header
+    assert "● read(/x.txt)" in out  # tool-call header (Sprint 6h₃₂: ● marker)
     assert "out 0" in out and "out 11" in out  # truncated card body
     assert "out 12" not in out  # truncated at 12
     assert "/expand 1" in out  # truncated → expand hint
@@ -732,10 +732,12 @@ def test_render_user_message_blank_line_chevron_and_cyan() -> None:
 
     group = render_user_message("hello there")
     rows = _group_rows(group)
-    assert len(rows) == 2
-    # First row is a LEADING blank line for separation.
-    assert rows[0].plain == ""
-    # Second row keeps the ``» `` chevron and is styled bold cyan (stands out).
+    # Sprint 6h₃₂ — blank lines ABOVE and BELOW fence the echo off (the single
+    # leading blank of ADR-0153 was too subtle).
+    assert len(rows) == 3
+    assert rows[0].plain == ""  # leading blank
+    assert rows[2].plain == ""  # trailing blank
+    # The middle row keeps the ``» `` chevron and is styled bold cyan (stands out).
     assert rows[1].plain == "» hello there"
     assert "bold cyan" in str(rows[1].style)
 
@@ -759,3 +761,25 @@ def test_render_user_message_unknown_kind_degrades_to_prompt() -> None:
 
     rows = _group_rows(render_user_message("oops", kind="mystery"))
     assert rows[1].plain == "» oops"
+
+
+# === Sprint 6h₃₂ — shared tool-call header helper ==========================
+
+
+def test_render_tool_call_line_marker_bold_name_and_args() -> None:
+    from aelix_coding_agent.tui.render import render_tool_call_line
+
+    line = render_tool_call_line("bash", "git log --oneline")
+    # The ● marker replaces the old ⚙ gear; the plain text carries name + args.
+    assert line.plain == "● bash(git log --oneline)"
+    # The marker and the tool NAME are bold (so the name reads first); the args
+    # keep the plain cyan card weight (NOT bold).
+    assert any(str(s.style) == "bold cyan" for s in line.spans)  # marker/name
+    assert any(str(s.style) == "cyan" for s in line.spans)  # args, not bold
+
+
+def test_render_tool_call_line_no_summary_omits_parens() -> None:
+    from aelix_coding_agent.tui.render import render_tool_call_line
+
+    line = render_tool_call_line("noop", "")
+    assert line.plain == "● noop"

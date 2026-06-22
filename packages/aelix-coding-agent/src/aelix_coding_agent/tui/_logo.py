@@ -25,18 +25,20 @@ _LOGO_LINES = (
 LOGO_ART = "\n".join(_LOGO_LINES)
 """The multi-line block-art logo (no trailing newline)."""
 
-# Sprint 6h₃₁ (ADR-0164) — per-line 24-bit truecolor gradient (cyan → blue →
-# purple), reproducing ``docs/assets/aelix-terminal-logo.ansi``. The colour
-# stops are embedded as code (NOT the docs/ asset file, which is not packaged)
-# so the gradient ships in the wheel; ``Text.from_ansi`` renders the SGR escapes
-# and downgrades cleanly on no-color terminals.
+# Sprint 6h₃₁ (ADR-0164) — per-line 24-bit truecolor gradient, reproducing
+# ``docs/assets/aelix-terminal-logo-cyan.ansi``. A sleek all-cyan ramp (icy
+# bright cyan → vibrant cyan → deep ocean blue), matching ``print_logo_cyan.py``
+# — NOT the earlier cyan→purple ramp (the purple tail read as off-brand). The
+# colour stops are embedded as code (NOT the docs/ asset file, which is not
+# packaged) so the gradient ships in the wheel; ``Text.from_ansi`` renders the
+# SGR escapes and downgrades cleanly on no-color terminals.
 _LOGO_GRADIENT = (
-    (0, 242, 254),
-    (0, 204, 255),
-    (0, 153, 255),
-    (51, 102, 255),
-    (102, 51, 255),
-    (153, 0, 255),
+    (200, 255, 255),  # icy bright cyan
+    (100, 242, 254),  # bright sky cyan
+    (0, 220, 240),  # pure vibrant cyan
+    (0, 180, 216),  # sleek tealish cyan
+    (0, 130, 200),  # electric blue-teal
+    (0, 95, 175),  # deep ocean blue
 )
 LOGO_ANSI = "\n".join(
     f"\x1b[38;2;{r};{g};{b}m{line}\x1b[0m"

@@ -56,8 +56,14 @@ def _model(model: str, **over: Any) -> SimpleNamespace:
     )
 
 
-def _tool(name: str, calls: int, failures: int) -> SimpleNamespace:
-    return SimpleNamespace(name=name, calls=calls, failures=failures)
+def _tool(name: str, calls: int, failures: int, **over: Any) -> SimpleNamespace:
+    return SimpleNamespace(
+        name=name,
+        calls=calls,
+        failures=failures,
+        total_duration=over.get("total_duration", 0.0),
+        timed_calls=over.get("timed_calls", 0),
+    )
 
 
 def _snapshot(**over: Any) -> SimpleNamespace:
@@ -125,6 +131,18 @@ def test_session_tab_has_honest_no_history_footer() -> None:
 def test_session_tab_success_rate_none_is_dash() -> None:
     lines = build_session_tab(_stats(), _snapshot(tool_calls=0, success_rate=None))
     assert any("Success rate  —" in ln for ln in lines)
+
+
+def test_session_tab_shows_tool_latency() -> None:
+    # WP-8 D4: 3.0s over 2 timed calls → 1.5s average.
+    snap = _snapshot(per_tool=[_tool("bash", 2, 0, total_duration=3.0, timed_calls=2)])
+    lines = build_session_tab(_stats(), snap)
+    assert any("Tool latency  1.5s" in ln for ln in lines)
+
+
+def test_session_tab_tool_latency_dash_when_untimed() -> None:
+    lines = build_session_tab(_stats(), _snapshot())  # fixture tools are untimed
+    assert any("Tool latency  —" in ln for ln in lines)
 
 
 # -- Activity tab -----------------------------------------------------------
@@ -202,6 +220,31 @@ def test_efficiency_tab_empty_leaderboard_states_so() -> None:
 def test_efficiency_tab_has_honest_footer() -> None:
     lines = build_efficiency_tab(_snapshot())
     assert any(_NO_HISTORY in ln for ln in lines)
+
+
+def test_efficiency_tab_summary_and_per_tool_latency() -> None:
+    # WP-8 D4: 8.0s over 4 timed calls → 2.0s, shown both as the summary line
+    # and on the per-tool leaderboard row.
+    snap = _snapshot(per_tool=[_tool("bash", 4, 1, total_duration=8.0, timed_calls=4)])
+    lines = build_efficiency_tab(snap)
+    body = "\n".join(lines)
+    assert "Tool latency     2.0s" in body
+    bash_row = next(ln for ln in lines if ln.strip().startswith("bash"))
+    assert "2.0s" in bash_row
+
+
+def test_efficiency_tab_latency_dash_when_untimed() -> None:
+    lines = build_efficiency_tab(_snapshot())  # fixture tools are untimed
+    assert any("Tool latency     —" in ln for ln in lines)
+    # Each untimed leaderboard row reports — for its latency column too.
+    read_row = next(ln for ln in lines if ln.strip().startswith("read"))
+    assert read_row.rstrip().endswith("—")
+
+
+def test_efficiency_tab_sub_second_latency_is_ms() -> None:
+    snap = _snapshot(per_tool=[_tool("read", 1, 0, total_duration=0.84, timed_calls=1)])
+    lines = build_efficiency_tab(snap)
+    assert any("840ms" in ln for ln in lines)
 
 
 # -- robustness of the formatters ------------------------------------------

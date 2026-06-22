@@ -78,6 +78,15 @@ if TYPE_CHECKING:
 
 _DEFAULT_SPINNER = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
 
+# Sprint 6h₃₂ — the working spinner glyph is wrapped in a vibrant 24-bit green so
+# it reads as "alive / in progress" against the dim ``({elapsed}s · esc …)``
+# suffix and the default-weight message. ``_render_working`` returns a raw ANSI
+# string (consumed via ``_ansi_row`` → ``ANSI(...)``), so the SGR escapes render;
+# they degrade to no-op on terminals that strip truecolor. Only the glyph is
+# coloured — the message keeps the terminal's default foreground.
+_SPINNER_COLOR = "\x1b[38;2;87;224;120m"
+_SPINNER_RESET = "\x1b[0m"
+
 # Sprint 6h₂₆ (ADR-0156) — the selected-row pointer drawn in front of the
 # highlighted completion (claude/qwen-additive polish over pi's plain menu).
 _MENU_MARKER = "→"
@@ -649,7 +658,7 @@ class AelixChrome:
             if now - self._spinner_last >= self._spinner_interval:
                 self._spinner_index = (self._spinner_index + 1) % len(self._spinner_frames)
                 self._spinner_last = now
-            frame = self._spinner_frames[self._spinner_index]
+            frame = f"{_SPINNER_COLOR}{self._spinner_frames[self._spinner_index]}{_SPINNER_RESET}"
         message = (self._working_message or "Working…").replace("\n", " ")
         line = f"{frame} {message}".strip()
         # Sprint 6h₂₅ (ADR-0153, WP-3) — while a turn runs, append a dim suffix

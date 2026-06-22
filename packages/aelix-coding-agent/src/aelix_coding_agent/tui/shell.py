@@ -1653,12 +1653,9 @@ def _build_banner(harness: AgentHarness, cwd: str) -> object:
     logo.append(f" {LOGO_TAGLINE}", style="dim")
 
     # === runtime summary =================================================
-    body = Text()
-    body.append(f"model:   {model_id}\n")
-    if base_url:
-        body.append(f"baseurl: {base_url}\n")
-    body.append(f"cwd:     {cwd}\n")
-    body.append(f"version: {version}")
+    # The body is assembled AFTER the section labels are computed (below) so the
+    # separator rule can be sized to the widest rendered row; see the assembly
+    # block at the end of this function.
 
     # === compact sections ================================================
     # [Context] — discover_context_files at render time; non-empty → AGENTS.md
@@ -1720,25 +1717,62 @@ def _build_banner(harness: AgentHarness, cwd: str) -> object:
         ext_names = []
     ext_label = ", ".join(ext_names) if ext_names else "none"
 
-    for tag, value in (
-        ("[Context]   ", context_label),
-        ("[Tools]     ", tools_label),
-        ("[Skills]    ", skills_label),
-        ("[Hooks]     ", hooks_label),
+    # === assemble the panel body =========================================
+    # Sprint 6h₃₂ — three UX fixes over the ADR-0153 banner:
+    #   1. ALIGN: the runtime-summary values (model / baseurl / cwd / version)
+    #      now start at the SAME column as the section values below them — both
+    #      groups left-pad their label to ``label_w`` then one space.
+    #   2. DIM the summary LABELS (``model:`` … ``version:``) so the live values
+    #      read first; the values keep the default (normal) weight.
+    #   3. A separator RULE between the two groups. It is a Rich ``Rule`` (NOT a
+    #      hand-sized ``"─" * n`` run): Rich sizes the rule to the resolved panel
+    #      interior, so it can never overflow into an orphaned wrapped dash row
+    #      when a row (e.g. a deep cwd / long base url) exceeds the terminal width
+    #      (6h₃₂ adversarial review, ux LOW-1).
+    from rich.rule import Rule
+
+    label_w = 12  # widest section tag ("[Extensions]") sets the shared value column
+
+    meta_rows: list[tuple[str, str]] = [("model:", model_id)]
+    if base_url:
+        meta_rows.append(("baseurl:", base_url))
+    meta_rows.extend([("cwd:", cwd), ("version:", version)])
+
+    section_rows: list[tuple[str, str]] = [
+        ("[Context]", context_label),
+        ("[Tools]", tools_label),
+        ("[Skills]", skills_label),
+        ("[Hooks]", hooks_label),
         ("[Extensions]", ext_label),
-    ):
-        body.append("\n")
-        body.append(f"{tag} ", style="bold cyan")
-        body.append(value, style="dim" if value == "none" else "")
+    ]
 
-    # === hint line =======================================================
-    # Verified against chrome.py key bindings (Sprint 6h₂₅): the c-c handler
-    # interrupts while running and clears the buffer when idle — there is NO
-    # double-Ctrl+C-to-exit binding, so advertise only what is TRUE.
-    body.append("\n\n")
-    body.append("/help for commands • Ctrl+C to interrupt", style="dim")
+    # The summary block: dim labels + aligned values, no trailing newline so the
+    # rule sits flush below it inside the Group.
+    meta_text = Text()
+    for i, (label, value) in enumerate(meta_rows):
+        if i:
+            meta_text.append("\n")
+        meta_text.append(f"{label:<{label_w}} ", style="dim")
+        meta_text.append(value)
 
-    panel = Panel(body, box=ROUNDED, border_style="cyan", expand=False)
+    # The sections block + a blank line + the hint. Verified against chrome.py key
+    # bindings (Sprint 6h₂₅): the c-c handler interrupts while running and clears
+    # the buffer when idle — there is NO double-Ctrl+C-to-exit binding, so
+    # advertise only what is TRUE.
+    sections_text = Text()
+    for tag, value in section_rows:
+        sections_text.append(f"{tag:<{label_w}} ", style="bold cyan")
+        sections_text.append(value, style="dim" if value == "none" else "")
+        sections_text.append("\n")
+    sections_text.append("\n")
+    sections_text.append("/help for commands • Ctrl+C to interrupt", style="dim")
+
+    panel = Panel(
+        Group(meta_text, Rule(style="dim", characters="─"), sections_text),
+        box=ROUNDED,
+        border_style="cyan",
+        expand=False,
+    )
 
     # Logo header, a blank spacer line, then the info panel.
     return Group(logo, Text(), panel)

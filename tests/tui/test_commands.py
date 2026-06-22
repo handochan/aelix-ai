@@ -169,7 +169,10 @@ def test_banner_shows_version_and_all_sections() -> None:
     from aelix_coding_agent.tui.shell import _build_banner
 
     out = _render(_build_banner(_BannerHarness(), "/home/me/project"))  # type: ignore[arg-type]
-    assert f"version: {VERSION}" in out
+    # Aligned layout (Sprint 6h₃₂): the summary label is dim + left-padded so its
+    # value lines up with the section values below, so assert the label and value
+    # share a line rather than pinning the exact (now multi-space) spacing.
+    assert any("version:" in ln and VERSION in ln for ln in out.splitlines())
     assert "https://api.anthropic.com" in out  # base url rendered when non-empty
     assert "[Context]" in out
     assert "[Tools]" in out

@@ -116,6 +116,43 @@ def _wall(seconds: Any) -> str:
     return f"{total // 3600}h {(total % 3600) // 60:02d}m"
 
 
+def _dur(seconds: Any) -> str:
+    """Per-call latency: ``—`` (None/bad) / ``840ms`` / ``1.2s`` / ``45s``.
+
+    Sub-second values read in milliseconds (tool calls are often <1s); ``[1s,10s)``
+    keeps one decimal; ≥10s rounds to whole seconds. Distinct from :func:`_wall`
+    (which formats long minute/hour spans for *session* duration).
+    """
+
+    if seconds is None:
+        return "—"
+    try:
+        s = max(0.0, float(seconds))
+    except (TypeError, ValueError):
+        return "—"
+    if s < 1.0:
+        return f"{round(s * 1000)}ms"
+    if s < 10.0:
+        return f"{s:.1f}s"
+    return f"{round(s)}s"
+
+
+def _avg_tool_seconds(per_tool: Any) -> float | None:
+    """Mean latency across all *timed* tool calls in a per-tool list (duck-typed).
+
+    Reads ``timed_calls`` / ``total_duration`` off each duck-typed stat so it
+    works for a real :class:`ToolStat` AND a sparse ``SimpleNamespace`` fixture.
+    None when nothing was timed (no paired start/end) — never a misleading ``0``.
+    """
+
+    rows = list(per_tool or [])
+    timed = sum(int(getattr(t, "timed_calls", 0) or 0) for t in rows)
+    if timed <= 0:
+        return None
+    total = sum(float(getattr(t, "total_duration", 0.0) or 0.0) for t in rows)
+    return total / timed
+
+
 def build_session_tab(stats: Any, snapshot: Any) -> list[str]:
     """Session-summary tab: tool calls (ok/fail), success %, tokens, cost, etc.
 
@@ -143,9 +180,12 @@ def build_session_tab(stats: Any, snapshot: Any) -> list[str]:
     except (TypeError, ValueError):
         cost_str = "$0.0000"
 
+    avg_latency = _dur(_avg_tool_seconds(getattr(snapshot, "per_tool", [])))
+
     lines = [
         f"Tool calls    {_num(calls)}  (✓ {_num(ok)}  ✗ {_num(failures)})",
         f"Success rate  {success}",
+        f"Tool latency  {avg_latency}",
         "",
         f"Tokens in     {_num(tok_in)}",
         f"Tokens out    {_num(tok_out)}",
@@ -225,14 +265,17 @@ def build_efficiency_tab(snapshot: Any) -> list[str]:
 
     success = _pct(getattr(snapshot, "success_rate", None))
 
+    per_tool = list(getattr(snapshot, "per_tool", []) or [])
+    avg_latency = _dur(_avg_tool_seconds(per_tool))
+
     lines = [
         f"Cache-hit rate   {cache_hit}",
         _dim("  (assumes uncached input; gross-input providers under-report)"),
         f"Tool success     {success}",
+        f"Tool latency     {avg_latency}",
         "",
         "Tool leaderboard",
     ]
-    per_tool = list(getattr(snapshot, "per_tool", []) or [])
     if not per_tool:
         lines.append("  (no tool calls recorded yet)")
     else:
@@ -242,9 +285,11 @@ def build_efficiency_tab(snapshot: Any) -> list[str]:
             failures = int(getattr(stat, "failures", 0) or 0)
             ok = max(0, calls - failures)
             frac = (ok / calls) if calls > 0 else 0.0
+            # Per-tool average latency (``—`` when the tool had no timed calls).
+            row_latency = _dur(_avg_tool_seconds([stat]))
             lines.append(
                 f"  {name:<18}{_bar(frac)}  "
-                f"{_num(calls)} calls · {_num(failures)} fail"
+                f"{_num(calls)} calls · {_num(failures)} fail · {row_latency}"
             )
     lines.extend(["", _dim(_NO_HISTORY_NOTE)])
     return lines

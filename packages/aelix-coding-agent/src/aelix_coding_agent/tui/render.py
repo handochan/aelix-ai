@@ -105,7 +105,7 @@ def _truncate_lines(
 
 
 def _tool_header(tool_name: str, args: dict[str, Any]) -> str:
-    """Tool-aware one-line argument summary for the ``⚙`` start header.
+    """Tool-aware one-line argument summary for the ``●`` start header.
 
     ``read``/``write``/``edit`` show the ``path`` (read appends an
     ``offset:limit`` line range when present); ``bash`` shows the ``command``;
@@ -198,24 +198,52 @@ _USER_MESSAGE_LABELS: dict[str, str] = {
     "follow_up": "Follow-up: ",
 }
 
+# Sprint 6h₃₂ — the tool-call header marker. A bold filled ``●`` (replacing the
+# thin ``⚙`` gear) reads at a glance against the dim result card below it; the
+# tool NAME is bolded so it stands out from its argument summary. Shared by the
+# live render path and transcript replay via :func:`render_tool_call_line`.
+_TOOL_MARKER = "●"
+
 
 def render_user_message(text: str, kind: str = "prompt") -> Group:
     """Build the canonical echo for a human turn (Sprint 6h₂₅, ADR-0153).
 
     Every site that echoes the user's own input — the live prompt, the replayed
     transcript, and steer / follow-up injections — routes through this helper so
-    they share ONE visual language: a LEADING blank line (separation from the
-    colored output above) followed by the echo line styled to STAND OUT (bold
-    cyan).
+    they share ONE visual language: the echo line is wrapped in blank lines ABOVE
+    AND BELOW (vertical padding that fences the human turn off from the colored
+    tool cards / diffs / streamed answer it sits between) and styled to STAND OUT
+    (bold cyan). Sprint 6h₃₂ added the trailing blank — a single LEADING blank
+    (the ADR-0153 original) was too subtle when the turn landed mid-stream.
 
     ``kind`` selects the leading marker: ``"prompt"`` keeps the ``» `` chevron;
     ``"steer"`` / ``"follow_up"`` use a distinct ``Steering: `` / ``Follow-up: ``
-    label but the SAME blank-line + bold-cyan visual language. An unknown kind
+    label but the SAME padding + bold-cyan visual language. An unknown kind
     degrades to the prompt chevron.
     """
 
     label = _USER_MESSAGE_LABELS.get(kind, _USER_MESSAGE_LABELS["prompt"])
-    return Group(Text(""), Text(f"{label}{text}", style="bold cyan"))
+    return Group(Text(""), Text(f"{label}{text}", style="bold cyan"), Text(""))
+
+
+def render_tool_call_line(tool_name: str, summary: str) -> Text:
+    """Build the styled one-line header for a tool call (Sprint 6h₃₂).
+
+    A bold ``●`` marker (more visible than the prior thin ``⚙`` gear) + the tool
+    NAME in bold, then the argument ``summary`` in the default card weight inside
+    parentheses. The whole line keeps the card's cyan hue; only the marker and
+    name are bolded so the name reads first and the args stay secondary. Shared
+    by the live (:meth:`EventRenderer._render_tool_start`) and replayed
+    (:meth:`EventRenderer.replay`) paths so a resumed transcript is pixel-identical
+    to a freshly-streamed turn.
+    """
+
+    line = Text()
+    line.append(f"{_TOOL_MARKER} ", style="bold cyan")
+    line.append(tool_name, style="bold cyan")
+    if summary:
+        line.append(f"({summary})", style="cyan")
+    return line
 
 
 class EventRenderer:
@@ -374,8 +402,7 @@ class EventRenderer:
         self._flush_thinking(self._thinking_accum)
         self._finalize_text()
         summary = _tool_header(tool_name, args)
-        label = f"⚙ {tool_name}({summary})" if summary else f"⚙ {tool_name}"
-        self._commit(Text(label, style="cyan"))
+        self._commit(render_tool_call_line(tool_name, summary))
 
     def _render_tool_end(self, tool_name: str, result: Any, is_error: bool) -> None:
         self._finalize_text()
@@ -421,7 +448,7 @@ class EventRenderer:
             else:
                 self._commit(diff_group)
             return
-        # §A — truncated, styled card under the ⚙ header: a dim left-gutter block
+        # §A — truncated, styled card under the ● header: a dim left-gutter block
         # (red when is_error), with a "+N more lines" footer when truncated and an
         # "exit N" footer for non-zero/failed bash. One committed renderable.
         # Error output is head-truncated too, but a Python traceback's diagnostic
@@ -484,7 +511,7 @@ class EventRenderer:
         tool-result cards are stored too, so ``/expand`` works on them.
 
         Static (no streaming) — never opens a text-stream window. Each message:
-        user → ``» {text}``; assistant → thinking (dim italic) + text + ``⚙``
+        user → ``» {text}``; assistant → thinking (dim italic) + text + ``●``
         tool-call headers + a terminal-error line; toolResult → the result card.
         """
 
@@ -511,8 +538,7 @@ class EventRenderer:
                     elif btype == "toolCall":
                         name = getattr(block, "tool_name", "") or ""
                         summary = _tool_header(name, getattr(block, "input", {}) or {})
-                        label = f"⚙ {name}({summary})" if summary else f"⚙ {name}"
-                        self._commit(Text(label, style="cyan"))
+                        self._commit(render_tool_call_line(name, summary))
                 stop = getattr(msg, "stop_reason", None)
                 if stop in ("error", "aborted"):
                     detail = getattr(msg, "error_message", None) or f"request {stop}"
@@ -542,4 +568,10 @@ class EventRenderer:
         return True
 
 
-__all__ = ["EventRenderer", "render_user_message", "_tool_header", "_truncate_lines"]
+__all__ = [
+    "EventRenderer",
+    "render_tool_call_line",
+    "render_user_message",
+    "_tool_header",
+    "_truncate_lines",
+]

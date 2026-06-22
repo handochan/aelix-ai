@@ -89,6 +89,21 @@ async def test_spinner_advances_by_time_not_render_count() -> None:
         assert chrome._render_working() != first  # advanced by elapsed time
 
 
+async def test_working_spinner_glyph_is_green() -> None:
+    # Sprint 6h₃₂ — the spinner glyph is wrapped in a vibrant green SGR escape so
+    # it reads as "in progress" against the dim suffix; the message stays default
+    # (the green escape is present, but does NOT wrap the message word).
+    async with _chrome(run_app=False) as (chrome, _pipe, _buf):
+        chrome.set_working_visible(True)
+        chrome.set_working_message("thinking")
+        rendered = chrome._render_working()
+        assert "\x1b[38;2;87;224;120m" in rendered  # green wraps the glyph
+        assert "thinking" in rendered
+        # The green run is closed before the message (only the glyph is coloured).
+        green_at = rendered.index("\x1b[38;2;87;224;120m")
+        assert rendered.index("thinking") > rendered.index("\x1b[0m", green_at)
+
+
 async def test_float_add_remove_lifecycle() -> None:
     async with _chrome(run_app=False) as (chrome, _pipe, _buf):
         f = Float(content=Window())

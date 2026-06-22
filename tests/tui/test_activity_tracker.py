@@ -39,6 +39,22 @@ def _tool_end(name: str, *, is_error: bool = False) -> SimpleNamespace:
     )
 
 
+def _tool_start_id(name: str, tcid: str) -> SimpleNamespace:
+    return SimpleNamespace(
+        type="tool_execution_start", tool_name=name, tool_call_id=tcid, args={}
+    )
+
+
+def _tool_end_id(name: str, tcid: str, *, is_error: bool = False) -> SimpleNamespace:
+    return SimpleNamespace(
+        type="tool_execution_end",
+        tool_name=name,
+        tool_call_id=tcid,
+        result="ok",
+        is_error=is_error,
+    )
+
+
 def _message_end(
     *, model: str | None = None, usage: object = None, role: str = "assistant"
 ) -> SimpleNamespace:
@@ -118,6 +134,70 @@ def test_tool_end_missing_name_falls_back() -> None:
     snap = tracker.snapshot()
     assert snap.tool_calls == 1
     assert snap.per_tool[0].name == "(unknown)"
+
+
+# -- per-tool latency (WP-8 D4): start↔end pairing by tool_call_id ----------
+
+
+def test_per_tool_latency_paired_by_call_id() -> None:
+    # Two bash calls: 0.5s then 2.0s. The fake clock pops one tick per event
+    # (one _stamp per on_event), so 4 events consume exactly 4 ticks.
+    clock = _FakeClock([100.0, 100.5, 200.0, 202.0])
+    tracker = SessionActivityTracker(clock=clock)
+    tracker.on_event(_tool_start_id("bash", "c1"))  # 100.0
+    tracker.on_event(_tool_end_id("bash", "c1"))  # 100.5 → 0.5s
+    tracker.on_event(_tool_start_id("bash", "c2"))  # 200.0
+    tracker.on_event(_tool_end_id("bash", "c2"))  # 202.0 → 2.0s
+
+    stat = tracker.snapshot().per_tool[0]
+    assert stat.name == "bash"
+    assert stat.calls == 2
+    assert stat.timed_calls == 2
+    assert stat.total_duration == 2.5
+    assert stat.avg_duration == 1.25
+
+
+def test_tool_end_without_start_is_counted_but_not_timed() -> None:
+    # An end whose start was never seen (replay / missed start) still counts as a
+    # call but contributes no latency — avg_duration stays None.
+    tracker = SessionActivityTracker()
+    tracker.on_event(_tool_end_id("read", "x1"))
+    stat = tracker.snapshot().per_tool[0]
+    assert stat.calls == 1
+    assert stat.timed_calls == 0
+    assert stat.avg_duration is None
+    assert stat.total_duration == 0.0
+
+
+def test_avg_tool_seconds_aggregates_timed_calls_only() -> None:
+    clock = _FakeClock([0.0, 1.0, 10.0, 13.0])
+    tracker = SessionActivityTracker(clock=clock)
+    tracker.on_event(_tool_start_id("a", "1"))
+    tracker.on_event(_tool_end_id("a", "1"))  # 1.0s
+    tracker.on_event(_tool_start_id("b", "2"))
+    tracker.on_event(_tool_end_id("b", "2"))  # 3.0s
+    # (1.0 + 3.0) / 2 timed calls = 2.0s, independent of any untimed calls.
+    assert tracker.snapshot().avg_tool_seconds == 2.0
+
+
+def test_avg_tool_seconds_none_before_any_timed_call() -> None:
+    tracker = SessionActivityTracker()
+    tracker.on_event(_tool_end("read"))  # counted, but untimed (no start)
+    assert tracker.snapshot().avg_tool_seconds is None
+
+
+def test_reset_clears_pending_starts() -> None:
+    # A start before reset must not pair against an end after reset (no stale
+    # duration bleeding into the new session).
+    clock = _FakeClock([5.0, 99.0])
+    tracker = SessionActivityTracker(clock=clock)
+    tracker.on_event(_tool_start_id("bash", "c1"))  # pending @5.0
+    tracker.reset()
+    tracker.on_event(_tool_end_id("bash", "c1"))  # @99.0, no matching start
+    stat = tracker.snapshot().per_tool[0]
+    assert stat.calls == 1
+    assert stat.timed_calls == 0
+    assert stat.avg_duration is None
 
 
 # -- per-model token accumulation ------------------------------------------
