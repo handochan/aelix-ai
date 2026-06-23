@@ -36,7 +36,12 @@ from aelix_ai.messages import (
     ToolResultMessage,
 )
 from aelix_ai.streaming import Context, SimpleStreamOptions, StreamFn
-from aelix_ai.tools import ToolExecutionContext, ToolResult, validate_tool_arguments
+from aelix_ai.tools import (
+    ToolArgumentValidationError,
+    ToolExecutionContext,
+    ToolResult,
+    validate_tool_arguments,
+)
 
 from aelix_agent_core.types import (
     AfterToolCallContext,
@@ -486,7 +491,21 @@ async def _prepare_tool_call(
             ),
         )
 
-    args = await validate_tool_arguments(tool, dict(tc.input))
+    try:
+        args = await validate_tool_arguments(tool, dict(tc.input))
+    except ToolArgumentValidationError as exc:
+        # Issue #13: malformed tool-args become a structured, model-readable
+        # error RESULT (re-grounding) — never an uncaught crash of the turn.
+        # Mirrors the unknown-tool _Immediate above and pi's prepareToolCall
+        # catch (``agent-loop.ts``).
+        return _Immediate(
+            tool_call=tc,
+            tool_name=tc.tool_name,
+            result=ToolResult(
+                content=[TextContent(text=str(exc))],
+                is_error=True,
+            ),
+        )
 
     if config.before_tool_call is not None:
         before_ctx = BeforeToolCallContext(

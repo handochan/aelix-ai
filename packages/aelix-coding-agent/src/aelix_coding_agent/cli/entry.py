@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 from aelix_agent_core.harness.core import AgentHarness, AgentHarnessOptions
+from aelix_agent_core.harness.skills import load_skills
 from aelix_agent_core.runtime.agent_session_runtime import (
     create_agent_session_runtime,
 )
@@ -62,6 +63,7 @@ from .auth_guidance import (
     format_no_model_selected_message,
 )
 from .config import (
+    CONFIG_DIR_NAME,
     VERSION,
     get_agent_dir,
     get_session_dir,
@@ -315,6 +317,84 @@ def _make_auth_callback(
     return _resolve
 
 
+def _env_float(name: str) -> float | None:
+    """Read a non-negative float from the environment (issue #11).
+
+    Returns ``None`` when unset or unparseable so the tool factory falls back
+    to its own default. ``.env`` values are already loaded into ``os.environ``
+    by :mod:`runtime_bootstrap`, so this picks up both real env and ``.env``.
+    """
+
+    raw = os.environ.get(name)
+    if raw is None or raw.strip() == "":
+        return None
+    try:
+        value = float(raw)
+    except ValueError:
+        return None
+    return value if value >= 0 else None
+
+
+def _tool_options_from_env() -> dict[str, dict[str, float]]:
+    """Build the per-tool ``options`` for :func:`create_all_tools` from env vars
+    (issue #11). Only keys with a configured value are included, so each tool
+    keeps its own module default otherwise.
+
+    - ``AELIX_BASH_DEFAULT_TIMEOUT`` / ``AELIX_BASH_MAX_TIMEOUT`` → bash
+      (0 disables the default / lifts the cap respectively).
+    - ``AELIX_TOOL_SEARCH_TIMEOUT`` → grep + find subprocess timeout.
+    """
+
+    options: dict[str, dict[str, float]] = {}
+    bash: dict[str, float] = {}
+    default_timeout = _env_float("AELIX_BASH_DEFAULT_TIMEOUT")
+    if default_timeout is not None:
+        bash["default_timeout"] = default_timeout
+    max_timeout = _env_float("AELIX_BASH_MAX_TIMEOUT")
+    if max_timeout is not None:
+        bash["max_timeout"] = max_timeout
+    if bash:
+        options["bash"] = bash
+    search_timeout = _env_float("AELIX_TOOL_SEARCH_TIMEOUT")
+    if search_timeout is not None and search_timeout > 0:
+        options["grep"] = {"timeout": search_timeout}
+        options["find"] = {"timeout": search_timeout}
+    return options
+
+
+def _resolve_skill_dirs(
+    parsed: Args, cwd: str, project_trusted: bool
+) -> list[str | Path]:
+    """Compose the skill directories to scan (issue #12).
+
+    - Explicit ``--skill <path>`` entries are always included (resolved against
+      ``cwd`` when relative). Aelix has no skill package-manager, so ``--skill``
+      is a path to a skill directory (or a ``SKILL.md`` whose parent is
+      scanned) rather than an installable name.
+    - Unless ``--no-skills`` is set, the global agent skills dir
+      (``~/.aelix/agent/skills``) is scanned, plus the project-local
+      ``<cwd>/.aelix/skills`` ONLY when the project is trusted — a malicious
+      project ``SKILL.md`` is a prompt-injection vector once skills reach the
+      model, so it is gated like project-local extensions/MCP.
+
+    Missing directories are silently skipped by :func:`load_skills`.
+    """
+
+    dirs: list[str | Path] = []
+    for entry in parsed.skills:
+        path = Path(entry)
+        if not path.is_absolute():
+            path = Path(cwd) / path
+        if path.name == "SKILL.md":
+            path = path.parent
+        dirs.append(str(path))
+    if not parsed.no_skills:
+        dirs.append(str(Path(get_agent_dir()) / "skills"))
+        if project_trusted:
+            dirs.append(str(Path(cwd) / CONFIG_DIR_NAME / "skills"))
+    return dirs
+
+
 async def _build_harness_options(
     parsed: Args,
     session: Session,
@@ -352,7 +432,7 @@ async def _build_harness_options(
     # chat model with no identity and no ability to touch files). The 7 built-in
     # tools (read/write/edit/bash/grep/find/ls) + the base prompt make it an
     # actual coding agent. An explicit ``--system-prompt`` still overrides.
-    tools = list(create_all_tools(cwd).values())
+    tools = list(create_all_tools(cwd, _tool_options_from_env()).values())
     # MCP (Tier 4) tools, connected once in _async_main and shared across
     # harness rebuilds, join the built-in toolset (``<server>__<tool>`` names).
     if mcp_tools:
@@ -857,6 +937,18 @@ async def _async_main(argv: list[str]) -> int:
     # list (default empty when nothing loaded / non-interactive).
     discovered_extensions: list[Any] = []
 
+    # Issue #12: load skills ONCE (the dirs are stable for the process) and
+    # re-apply them on every harness build below, so ``harness.skills`` is never
+    # empty after a /resume, /new, or /fork rebuild. Diagnostics are emitted
+    # here (once) rather than per-rebuild.
+    skill_dirs = _resolve_skill_dirs(parsed, cwd, project_trusted)
+    skills_result = load_skills(skill_dirs)
+    for diag in skills_result.diagnostics:
+        print(
+            f"Warning: skill load: {diag.message} ({diag.path})",
+            file=sys.stderr,
+        )
+
     async def _harness_factory(new_session: Session) -> AgentHarness:
         opts = await _build_harness_options(
             parsed,
@@ -867,7 +959,10 @@ async def _async_main(argv: list[str]) -> int:
             permission_ext=permission_ext,
             captured_extensions=discovered_extensions,
         )
-        return AgentHarness(opts)
+        harness = AgentHarness(opts)
+        # Re-apply the loaded skills on every (re)build (issue #12).
+        harness.set_skills(skills_result.skills)
+        return harness
 
     harness = await _harness_factory(session)
     runtime = await create_agent_session_runtime(

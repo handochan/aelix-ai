@@ -261,7 +261,7 @@ def test_sprint_a_registry_set() -> None:
     # + /clone + /tree; 6h₂₇ (ADR-0155) /hooks + /mcp + /context; WP-0 (ADR-0157)
     # /permissions; WP-2 (ADR-0160) /statusline; ImplConsumers (ADR-0161)
     # /scoped-models; WP-8 /login + /logout (after model), /stats (after cost),
-    # /extension (after mcp).
+    # /extension (after mcp); issue #12 /skills (after tools).
     names = [c.name for c in BUILTIN_COMMANDS]
     assert names == [
         "help",
@@ -277,6 +277,7 @@ def test_sprint_a_registry_set() -> None:
         "name",
         "thinking",
         "tools",
+        "skills",
         "hooks",
         "mcp",
         "extension",
@@ -516,6 +517,49 @@ def test_compact_no_arg_passes_none() -> None:
     assert harness.compact_args == [None]
 
 
+class _NothingToCompactHarness:
+    """Harness whose ``compact`` raises the real "Nothing to compact" signal.
+
+    Mirrors the production contract: ``AgentHarness.compact`` RAISES
+    ``AgentHarnessError("invalid_state", "Nothing to compact")`` (it never
+    returns ``None``) — see ``core.py``.
+    """
+
+    async def compact(self, instructions: str | None = None) -> object:
+        from aelix_agent_core.harness.core import AgentHarnessError
+
+        raise AgentHarnessError("invalid_state", "Nothing to compact")
+
+
+class _CompactFailureHarness:
+    """Harness whose ``compact`` raises a GENUINE failure (must stay red)."""
+
+    async def compact(self, instructions: str | None = None) -> object:
+        from aelix_agent_core.harness.core import AgentHarnessError
+
+        raise AgentHarnessError("session", "session backend exploded")
+
+
+def test_compact_nothing_to_compact_is_neutral_not_error() -> None:
+    """#10: the "Nothing to compact" raise renders neutral yellow, not red."""
+    committed: list[object] = []
+    _run("compact", _ctx(_NothingToCompactHarness(), committed), "")
+    rendered = "".join(_render(c) for c in committed)
+    assert "Nothing to compact" in rendered
+    # The bug was rendering this as a bold-red "✖ compact failed" error.
+    assert "compact failed" not in rendered
+    assert "✖" not in rendered
+
+
+def test_compact_genuine_failure_still_red() -> None:
+    """#10: a real compaction failure must still surface as a red error."""
+    committed: list[object] = []
+    _run("compact", _ctx(_CompactFailureHarness(), committed), "")
+    rendered = "".join(_render(c) for c in committed)
+    assert "compact failed" in rendered
+    assert "session backend exploded" in rendered
+
+
 def test_cost_renders_stats() -> None:
     harness = _StatsHarness()
     committed: list[object] = []
@@ -564,6 +608,54 @@ def test_tools_degrades_when_empty() -> None:
     committed: list[object] = []
     _run("tools", _ctx(_EmptyTools(), committed), "")
     assert any("No tools" in _render(c) for c in committed)
+
+
+class _SkillView:
+    def __init__(
+        self,
+        name: str,
+        description: str,
+        disable_model_invocation: bool = False,
+    ) -> None:
+        self.name = name
+        self.description = description
+        self.disable_model_invocation = disable_model_invocation
+
+
+class _SkillsHarness:
+    def __init__(self, skills: list[object]) -> None:
+        self.skills = skills
+
+
+def test_skills_lists_loaded_skills() -> None:
+    harness = _SkillsHarness(
+        [
+            _SkillView("py-helper", "Python utilities"),
+            _SkillView("internal", "Hidden one", disable_model_invocation=True),
+        ]
+    )
+    committed: list[object] = []
+    _run("skills", _ctx(harness, committed), "")
+    rendered = "".join(_render(c) for c in committed)
+    assert "py-helper" in rendered
+    assert "Python utilities" in rendered
+    # disable-model-invocation skills are still listed, but flagged.
+    assert "model-invocation disabled" in rendered
+
+
+def test_skills_degrades_when_empty() -> None:
+    committed: list[object] = []
+    _run("skills", _ctx(_SkillsHarness([]), committed), "")
+    assert any("No skills loaded" in _render(c) for c in committed)
+
+
+def test_skills_degrades_when_harness_lacks_skills() -> None:
+    class _NoSkills:
+        pass
+
+    committed: list[object] = []
+    _run("skills", _ctx(_NoSkills(), committed), "")
+    assert any("No skills loaded" in _render(c) for c in committed)
 
 
 def test_mode_no_arg_shows_mode() -> None:

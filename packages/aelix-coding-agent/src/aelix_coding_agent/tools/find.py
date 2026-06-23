@@ -25,6 +25,10 @@ from aelix_coding_agent.tools._truncate import (
 from aelix_coding_agent.util.tools_manager import ensure_tool
 
 _DEFAULT_LIMIT = 1000
+# Issue #11 — the fd subprocess timeout (seconds). Bounded by run_cancellable so
+# it cannot hang the agent loop; exposed via ``options["timeout"]`` (wired from
+# ``AELIX_TOOL_SEARCH_TIMEOUT`` in ``entry.py``) so a huge-tree scan can raise it.
+_DEFAULT_SEARCH_TIMEOUT = 30.0
 # Pi parity: ``truncateHead(rawOutput, { maxLines: Number.MAX_SAFE_INTEGER })``
 # — only the byte cap bounds find output (line cap is effectively disabled).
 _MAX_LINES = 2**53 - 1
@@ -88,7 +92,12 @@ _FIND_PARAMETERS_SCHEMA: dict[str, Any] = {
 
 
 async def _try_fd(
-    pattern: str, base: str, limit: int, *, fd_path: str
+    pattern: str,
+    base: str,
+    limit: int,
+    *,
+    fd_path: str,
+    timeout: float = _DEFAULT_SEARCH_TIMEOUT,
 ) -> tuple[list[str], bool] | None:
     """Run ``fd`` Pi-faithfully; return (raw_lines, limit_reached) or None.
 
@@ -140,7 +149,7 @@ async def _try_fd(
             effective_pattern = f"**/{pattern}"
     args += ["--", effective_pattern, base]
 
-    result = await run_cancellable(args, timeout=30)
+    result = await run_cancellable(args, timeout=timeout)
     if result is None:
         return None
     stdout, _rc = result
@@ -179,6 +188,12 @@ def create_find_tool(
 
     opts = options or {}
     operations: FindOperations = opts.get("operations") or _LocalFindOperations()
+    timeout_opt = opts.get("timeout")
+    search_timeout = (
+        float(timeout_opt)
+        if isinstance(timeout_opt, (int, float)) and timeout_opt > 0
+        else _DEFAULT_SEARCH_TIMEOUT
+    )
 
     async def execute(
         args: dict[str, Any], ctx: ToolExecutionContext
@@ -211,7 +226,9 @@ def create_find_tool(
         # only strictly more than ``limit`` is.
         fd_path = await ensure_tool("fd")
         fd_result = (
-            await _try_fd(pattern, base, limit, fd_path=fd_path)
+            await _try_fd(
+                pattern, base, limit, fd_path=fd_path, timeout=search_timeout
+            )
             if fd_path is not None
             else None
         )

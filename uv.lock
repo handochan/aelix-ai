@@ -91,6 +91,7 @@ source = { editable = "packages/aelix-ai" }
 dependencies = [
     { name = "anthropic" },
     { name = "httpx" },
+    { name = "jsonschema" },
     { name = "openai" },
 ]
 
@@ -98,6 +99,7 @@ dependencies = [
 requires-dist = [
     { name = "anthropic", specifier = ">=0.40,<1.0" },
     { name = "httpx", specifier = ">=0.27,<1.0" },
+    { name = "jsonschema", specifier = ">=4.18,<5" },
     { name = "openai", specifier = ">=1.50,<2.0" },
 ]
 

@@ -38,6 +38,15 @@ dependencies = [
     # the token endpoint, not the SDK). httpx is already a transitive
     # dep of openai+anthropic SDKs; pinning here makes it explicit.
     "httpx>=0.27,<1.0",
+    # Issue #13 (validate_tool_arguments) — JSON-Schema validation of model
+    # tool-args before dispatch. Pi's ``validateToolArguments`` uses TypeBox's
+    # ``Value.Check``/``Errors``; the Python parity port uses ``jsonschema``
+    # (the ``Tool.parameters`` are plain JSON-Schema dicts). Floor is 4.18 (the
+    # ``referencing``-based line) — pre-4.18 used the legacy ``RefResolver``
+    # which auto-fetches remote/file ``$ref`` targets during validation (an
+    # SSRF / local-file-read vector when a tool ships an attacker-controlled
+    # schema). Already present transitively; pinned here as a first-class dep.
+    "jsonschema>=4.18,<5",
 ]
 
 [project.urls]

@@ -162,29 +162,139 @@ async def test_bash_tempfile_only_when_truncated(tmp_path):
 
 
 async def test_bash_timeout_status(tmp_path):
-    """Pi parity ``Command timed out after {timeout} seconds`` (exit_code None)."""
+    """Issue #11 ``Command timed out`` — driven by the ``timed_out`` flag, with
+    actionable retry guidance appended."""
 
     class _TimeoutOps:
         async def exec(self, command, cwd, *, on_data, signal=None, timeout=None, env=None):
-            return ExecExitResult(exit_code=None)
+            return ExecExitResult(exit_code=None, timed_out=True)
 
     tool = create_bash_tool(str(tmp_path), {"operations": _TimeoutOps()})
     result = await _exec(tool, {"command": "sleep 100", "timeout": 5})
     assert result.is_error is True
-    assert result.content[0].text == "Command timed out after 5 seconds"
+    text = result.content[0].text
+    assert text.startswith("Command timed out after 5 seconds")
+    assert "retry with a larger 'timeout'" in text
 
 
 async def test_bash_abort_status(tmp_path):
-    """Pi parity ``Command aborted`` — killed/None exit with no timeout set."""
+    """Issue #11 ``Command aborted`` — a kill that is NOT a timeout
+    (``timed_out=False``) must stay labeled as an abort even though a default
+    timeout is now always armed."""
 
     class _AbortOps:
         async def exec(self, command, cwd, *, on_data, signal=None, timeout=None, env=None):
-            return ExecExitResult(exit_code=None)
+            return ExecExitResult(exit_code=None)  # timed_out defaults False
 
     tool = create_bash_tool(str(tmp_path), {"operations": _AbortOps()})
     result = await _exec(tool, {"command": "sleep 100"})
     assert result.is_error is True
     assert result.content[0].text == "Command aborted"
+
+
+class _CaptureTimeoutOps:
+    """Records the timeout the bash tool resolved + passed to operations.exec."""
+
+    def __init__(self) -> None:
+        self.timeout: object = "unset"
+
+    async def exec(self, command, cwd, *, on_data, signal=None, timeout=None, env=None):
+        self.timeout = timeout
+        return ExecExitResult(exit_code=0)
+
+
+async def test_bash_default_timeout_applied_on_omission(tmp_path):
+    """Issue #11: omitting ``timeout`` arms the configured default."""
+    ops = _CaptureTimeoutOps()
+    tool = create_bash_tool(
+        str(tmp_path),
+        {"operations": ops, "default_timeout": 120, "max_timeout": 600},
+    )
+    await _exec(tool, {"command": "echo hi"})
+    assert ops.timeout == 120
+
+
+async def test_bash_explicit_timeout_clamped_to_max(tmp_path):
+    """Issue #11: an explicit timeout above the cap is clamped to it."""
+    ops = _CaptureTimeoutOps()
+    tool = create_bash_tool(
+        str(tmp_path),
+        {"operations": ops, "default_timeout": 120, "max_timeout": 600},
+    )
+    await _exec(tool, {"command": "echo hi", "timeout": 99999})
+    assert ops.timeout == 600
+
+
+async def test_bash_explicit_timeout_below_default_honored(tmp_path):
+    """Issue #11: an explicit value (below default) is honored verbatim."""
+    ops = _CaptureTimeoutOps()
+    tool = create_bash_tool(
+        str(tmp_path),
+        {"operations": ops, "default_timeout": 120, "max_timeout": 600},
+    )
+    await _exec(tool, {"command": "echo hi", "timeout": 5})
+    assert ops.timeout == 5
+
+
+async def test_bash_default_timeout_disabled_with_zero(tmp_path):
+    """Issue #11: default_timeout=0 restores pi's unbounded behavior (None)."""
+    ops = _CaptureTimeoutOps()
+    tool = create_bash_tool(
+        str(tmp_path), {"operations": ops, "default_timeout": 0}
+    )
+    await _exec(tool, {"command": "echo hi"})
+    assert ops.timeout is None
+
+
+async def test_bash_uncapped_when_max_zero(tmp_path):
+    """Issue #11: max_timeout=0 lifts the cap so any explicit value is honored."""
+    ops = _CaptureTimeoutOps()
+    tool = create_bash_tool(
+        str(tmp_path),
+        {"operations": ops, "default_timeout": 120, "max_timeout": 0},
+    )
+    await _exec(tool, {"command": "echo hi", "timeout": 99999})
+    assert ops.timeout == 99999
+
+
+async def test_bash_schema_describes_default_timeout(tmp_path):
+    """Issue #11: the timeout param description states the resolved default+cap."""
+    tool = create_bash_tool(
+        str(tmp_path), {"default_timeout": 120, "max_timeout": 600}
+    )
+    desc = tool.parameters["properties"]["timeout"]["description"]
+    assert "120" in desc and "600" in desc
+
+
+async def test_bash_real_default_timeout_kills_hanging_command(tmp_path):
+    """Issue #11 end-to-end: an OMITTED timeout + tiny default kills a hang via
+    the real local operations, and the result is labeled a timeout."""
+    tool = create_bash_tool(
+        str(tmp_path), {"default_timeout": 0.3, "max_timeout": 5}
+    )
+    result = await _exec(tool, {"command": "sleep 10"})
+    assert result.is_error is True
+    assert "Command timed out after" in result.content[0].text
+
+
+async def test_bash_clamped_timeout_message_is_honest(tmp_path):
+    """Issue #11 (review fix): when an explicit timeout above the cap times out,
+    the guidance states the cap was applied — not 'retry up to' the value the
+    model already exceeded."""
+
+    class _TimeoutOps:
+        async def exec(self, command, cwd, *, on_data, signal=None, timeout=None, env=None):
+            return ExecExitResult(exit_code=None, timed_out=True)
+
+    tool = create_bash_tool(
+        str(tmp_path),
+        {"operations": _TimeoutOps(), "default_timeout": 120, "max_timeout": 3600},
+    )
+    result = await _exec(tool, {"command": "sleep 99999", "timeout": 7200})
+    text = result.content[0].text
+    assert "Command timed out after 3600 seconds" in text
+    assert "exceeded the 3600s cap" in text
+    assert "AELIX_BASH_MAX_TIMEOUT" in text
 
 
 async def test_bash_operations_swap(tmp_path):

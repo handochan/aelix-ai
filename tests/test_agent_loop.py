@@ -224,6 +224,60 @@ async def test_unknown_tool_returns_error_result() -> None:
     assert "Unknown tool" in tr_messages[0].content[0].text
 
 
+async def test_invalid_tool_args_reground_not_crash() -> None:
+    """Issue #13: malformed tool-args become an is_error result (re-grounding),
+    the tool's ``execute`` is NEVER called, and the turn does NOT crash."""
+
+    executed: list[dict[str, Any]] = []
+
+    async def needs_path_execute(
+        args: dict[str, Any], ctx: ToolExecutionContext
+    ) -> ToolResult:
+        executed.append(args)
+        return ToolResult(content=[TextContent(text="ran")])
+
+    tool = AgentTool(
+        name="reader",
+        parameters={
+            "type": "object",
+            "properties": {"path": {"type": "string"}},
+            "required": ["path"],
+        },
+        execute=needs_path_execute,
+    )
+
+    turn1 = AssistantMessage(
+        content=[
+            ToolCallContent(tool_call_id="t1", tool_name="reader", input={})
+        ],
+        stop_reason="tool_use",
+    )
+    turn2 = AssistantMessage(
+        content=[TextContent(text="ok")], stop_reason="end_turn"
+    )
+    events, emit = _emit_collector()
+    stream_fn = _make_mock_stream([turn1, turn2])
+
+    new_messages = await agent_loop(
+        [UserMessage(content=[TextContent(text="read")])],
+        AgentContext(tools=[tool]),
+        _basic_config(),
+        emit=emit,
+        stream_fn=stream_fn,
+    )
+
+    tr_messages = [
+        m for m in new_messages if isinstance(m, ToolResultMessage)
+    ]
+    assert len(tr_messages) == 1
+    assert tr_messages[0].is_error
+    assert "Validation failed" in tr_messages[0].content[0].text
+    # The handler must not have run — the model re-grounds from the error.
+    assert executed == []
+    # The loop ran to completion (no uncaught exception).
+    assert events[-1].type == "agent_end"
+
+
 async def test_before_tool_call_block() -> None:
     """``before_tool_call`` returning ``block=True`` prevents execution."""
 

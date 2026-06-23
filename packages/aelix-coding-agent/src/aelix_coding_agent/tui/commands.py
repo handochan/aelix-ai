@@ -297,7 +297,15 @@ async def _clear_handler(ctx: CommandContext, args: str) -> None:
 
 
 async def _compact_handler(ctx: CommandContext, args: str) -> None:
-    """``/compact [instructions]`` — compact context; report before/after."""
+    """``/compact [instructions]`` — compact context; report before/after.
+
+    "Nothing to compact" is an expected NO-OP, not a failure: the harness
+    signals it by RAISING ``AgentHarnessError(code="invalid_state",
+    "Nothing to compact")`` (``core.py``) — it never returns ``None``. We
+    discriminate that one raise (duck-typed on ``.code`` + message, mirroring
+    the harness's own auto-compaction guard at ``core.py:1523``) and render it
+    NEUTRAL yellow, while every genuine failure still surfaces in red.
+    """
 
     if not hasattr(ctx.harness, "compact"):
         ctx.commit(Text("Compaction is unavailable.", style="yellow"))
@@ -305,10 +313,13 @@ async def _compact_handler(ctx: CommandContext, args: str) -> None:
     try:
         result = await ctx.harness.compact(args or None)
     except Exception as exc:  # noqa: BLE001 — surface, never kill the REPL
+        if (
+            getattr(exc, "code", None) == "invalid_state"
+            and "Nothing to compact" in str(exc)
+        ):
+            ctx.commit(Text("Nothing to compact.", style="yellow"))
+            return
         ctx.commit(Text(f"✖ compact failed: {exc}", style="bold red"))
-        return
-    if result is None:
-        ctx.commit(Text("Nothing to compact.", style="yellow"))
         return
     tokens_before = getattr(result, "tokens_before", None)
     summary = getattr(result, "summary", "") or ""
@@ -368,6 +379,39 @@ async def _tools_handler(ctx: CommandContext, args: str) -> None:
         desc = getattr(tool, "description", None) or ""
         table.add_row(name, desc)
     ctx.commit(Panel(table, title="Tools", box=ROUNDED, border_style="cyan"))
+
+
+async def _skills_handler(ctx: CommandContext, args: str) -> None:
+    """``/skills`` — list the skills loaded into the harness (name + description).
+
+    Issue #12: skills are loaded at startup (``entry.py``) and stored via
+    ``harness.set_skills``. This is a read-only consumer of the
+    ``harness.skills`` property; prompt injection into the system prompt is a
+    separate follow-up.
+    """
+
+    skills: list[object] = []
+    if hasattr(ctx.harness, "skills"):
+        try:
+            skills = list(ctx.harness.skills)
+        except Exception as exc:  # noqa: BLE001 — surface, never kill the REPL
+            ctx.commit(Text(f"✖ skills failed: {exc}", style="bold red"))
+            return
+    if not skills:
+        ctx.commit(Text("No skills loaded.", style="yellow"))
+        return
+    table = Table.grid(padding=(0, 2))
+    table.add_column(style="bold cyan", no_wrap=True)
+    table.add_column(style="white")
+    for skill in skills:
+        name = getattr(skill, "name", str(skill))
+        desc = getattr(skill, "description", None) or ""
+        # A skill the model cannot auto-invoke is still listed for the user,
+        # but flagged so the distinction is visible.
+        if getattr(skill, "disable_model_invocation", False):
+            desc = f"{desc} (model-invocation disabled)".strip()
+        table.add_row(name, desc)
+    ctx.commit(Panel(table, title="Skills", box=ROUNDED, border_style="cyan"))
 
 
 async def _mode_handler(ctx: CommandContext, args: str) -> None:
@@ -1136,6 +1180,7 @@ BUILTIN_COMMANDS: list[BuiltinCommand] = [
     BuiltinCommand("name", "Show or set the session name", _name_handler),
     BuiltinCommand("thinking", "Show, pick, or set the reasoning level", _thinking_handler),
     BuiltinCommand("tools", "List registered tools", _tools_handler),
+    BuiltinCommand("skills", "List loaded skills", _skills_handler),
     BuiltinCommand("hooks", "List registered hook handlers (read-only)", _hooks_handler),
     BuiltinCommand("mcp", "Show MCP server status (servers, state, tool counts)", _mcp_handler),
     BuiltinCommand("extension", "Manage installed extensions + MCP servers", _extension_handler),

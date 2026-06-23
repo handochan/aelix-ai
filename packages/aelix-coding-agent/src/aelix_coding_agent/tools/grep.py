@@ -28,6 +28,11 @@ from aelix_coding_agent.tools._truncate import (
 from aelix_coding_agent.util.tools_manager import ensure_tool
 
 _DEFAULT_LIMIT = 100
+# Issue #11 — the ripgrep subprocess timeout. Unlike bash this cannot hang the
+# agent loop (``run_cancellable`` bounds it), but a huge monorepo scan can hit
+# the 30s wall; exposed via ``options["timeout"]`` (wired from
+# ``AELIX_TOOL_SEARCH_TIMEOUT`` in ``entry.py``) so it can be raised.
+_DEFAULT_SEARCH_TIMEOUT = 30.0
 # Pi parity: ``truncateHead`` is called with ``maxLines: Number.MAX_SAFE_INTEGER``
 # so the 50KB byte cap (``DEFAULT_MAX_BYTES``) is the only bound that fires.
 _NO_LINE_CAP = 1 << 62
@@ -180,6 +185,7 @@ async def _try_ripgrep(
     context: int,
     limit: int,
     is_directory: bool,
+    timeout: float = _DEFAULT_SEARCH_TIMEOUT,
 ) -> tuple[str, bool, int] | None:
     """Return (output, limit_reached, lines_truncated) or None if rg failed.
 
@@ -211,7 +217,7 @@ async def _try_ripgrep(
     if glob:
         cmd.extend(["-g", glob])
     cmd.extend([pattern, base])
-    result = await run_cancellable(cmd, timeout=30)
+    result = await run_cancellable(cmd, timeout=timeout)
     if result is None:
         return None
     stdout, _rc = result
@@ -316,11 +322,18 @@ def create_grep_tool(
 ) -> AgentTool:
     """Pi parity ``createGrepToolDefinition`` (``grep.ts:122-384``).
 
-    ``options`` is accepted for parity with the other tool factories — the
-    grep tool itself takes all knobs via per-call ``args``.
+    ``options`` carries the optional ``timeout`` knob (issue #11) — the
+    ripgrep subprocess timeout in seconds; all other grep knobs are per-call
+    ``args``.
     """
 
-    _ = options  # parity-only; grep accepts knobs per-call via args.
+    opts = options or {}
+    timeout_opt = opts.get("timeout")
+    search_timeout = (
+        float(timeout_opt)
+        if isinstance(timeout_opt, (int, float)) and timeout_opt > 0
+        else _DEFAULT_SEARCH_TIMEOUT
+    )
 
     async def execute(
         args: dict[str, Any], ctx: ToolExecutionContext
@@ -369,6 +382,7 @@ def create_grep_tool(
                 context=context,
                 limit=effective_limit,
                 is_directory=is_directory,
+                timeout=search_timeout,
             )
             if rg_path is not None
             else None

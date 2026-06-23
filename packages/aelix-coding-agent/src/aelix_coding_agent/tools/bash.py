@@ -41,6 +41,19 @@ _DEFAULT_MAX_BYTES = DEFAULT_MAX_BYTES
 # ``<tmpdir>/pi-bash-<hex>.log`` where ``<hex> = randomBytes(8).toString("hex")``.
 _TEMP_FILE_PREFIX = "pi-bash"
 
+# Issue #11 — Aelix-additive default + max bash timeout (pi has NEITHER, by
+# design — pi assumes a capable model that always supplies ``timeout`` and an
+# interactive Esc). Aelix serves modest local models too: one that OMITS
+# ``timeout`` would otherwise hang the agent loop forever. So a default is
+# armed ONLY when the model omits ``timeout`` (or passes ≤0); an EXPLICIT value
+# is always honored, clamped to the max cap. Both are overridable per-tool via
+# ``options`` (wired from env vars in ``entry.py``). Setting either to 0
+# disables that knob: ``default_timeout=0`` restores pi's unbounded behavior;
+# ``max_timeout=0`` lifts the cap so a model can request an arbitrarily long
+# window (full CI, hour-plus compiles).
+_DEFAULT_TIMEOUT = 600.0  # 10 min — generous enough for most builds/installs/tests
+_MAX_TIMEOUT = 3600.0  # 1 hour hard cap on an explicit model-supplied value
+
 
 def _resolve_shell(env: dict[str, str], shell_path: str | None = None) -> str:
     """Pi parity ``getShellConfig()`` resolution chain (``utils/shell.ts``).
@@ -75,6 +88,16 @@ class ExecExitResult:
     """Pi parity ``ExecExitResult`` (``bash.ts:30-32``)."""
 
     exit_code: int | None  # None when killed
+    # Issue #11 — distinguishes a TIMEOUT-kill from an ABORT/signal-kill (both
+    # yield ``exit_code=None``). Pi's ``ExecExitResult`` carries only
+    # ``exit_code`` because pi has no default timeout — a ``None`` exit was
+    # unambiguously an abort. Once a default timeout is ALWAYS armed (so the
+    # model omitting ``timeout`` no longer means "unbounded"), the status
+    # formatter can no longer infer timeout-vs-abort from "was a timeout set?";
+    # this flag is the authoritative signal. Defaults ``False`` so existing
+    # custom :class:`BashOperations` impls keep working (their kills read as
+    # aborts unless they opt in).
+    timed_out: bool = False
 
 
 @dataclass(frozen=True)
@@ -151,10 +174,16 @@ class _LocalBashOperations:
                     break
                 on_data(chunk)
 
+        # Track whether the timeout (not the abort signal) triggered the kill,
+        # so the bash tool can label the result correctly (issue #11).
+        _timed_out = False
+
         async def _wait() -> int | None:
+            nonlocal _timed_out
             try:
                 return await asyncio.to_thread(proc.wait, timeout)
             except subprocess.TimeoutExpired:
+                _timed_out = True
                 _kill_group(proc.pid)
                 return None
 
@@ -197,7 +226,11 @@ class _LocalBashOperations:
         # Pi parity: signal-kill and timeout-kill both report exit_code=None.
         if _signal_aborted:
             exit_code = None
-        return ExecExitResult(exit_code=exit_code)
+        # Issue #11: a signal-abort takes precedence over a timeout label (if
+        # both somehow fired, the user's abort is the operative cause).
+        return ExecExitResult(
+            exit_code=exit_code, timed_out=_timed_out and not _signal_aborted
+        )
 
 
 def _kill_group(pid: int) -> None:
@@ -309,25 +342,83 @@ def _append_status(text: str, status: str) -> str:
     return f"{text}\n\n{status}" if text else status
 
 
+def _fmt_secs(value: float) -> str:
+    """Render a seconds value without a trailing ``.0`` (``600.0`` → ``600``)."""
+
+    return str(int(value)) if value == int(value) else str(value)
+
+
+def _resolve_timeout_knob(value: Any, fallback: float) -> float:
+    """Resolve a configured timeout knob (issue #11).
+
+    ``None`` (unset) → the module ``fallback``; a non-positive or non-numeric
+    value → ``0.0`` (the knob is DISABLED — see :data:`_DEFAULT_TIMEOUT` /
+    :data:`_MAX_TIMEOUT` docs for what disabling each means).
+    """
+
+    if value is None:
+        return fallback
+    try:
+        resolved = float(value)
+    except (TypeError, ValueError):
+        return fallback
+    return resolved if resolved > 0 else 0.0
+
+
+def _resolve_call_timeout(
+    timeout_arg: Any, default_timeout: float, max_timeout: float
+) -> tuple[float | None, bool]:
+    """Pick the effective timeout for one bash call (issue #11).
+
+    Returns ``(timeout, was_clamped)``. An explicit positive ``timeout_arg`` is
+    honored, clamped to ``max_timeout`` when that cap is enabled (``was_clamped``
+    is then ``True`` so the status message can be honest rather than telling the
+    model to "retry with a larger timeout" up to a value it already exceeded).
+    Otherwise the ``default_timeout`` safety net applies; when the default is
+    disabled (0) the command runs unbounded (pi behavior).
+    """
+
+    try:
+        requested = float(timeout_arg) if timeout_arg is not None else None
+    except (TypeError, ValueError):
+        requested = None
+    if requested is not None and requested > 0:
+        if max_timeout > 0 and requested > max_timeout:
+            return max_timeout, True
+        return requested, False
+    return (default_timeout if default_timeout > 0 else None), False
+
+
 # Pi parity: ``createBashToolDefinition`` (``bash.ts``) parameter schema +
 # per-field descriptions. Output is truncated at the pi-parity caps (2000 lines
 # / 50KB via DEFAULT_MAX_LINES/DEFAULT_MAX_BYTES) and the full untruncated output
 # is persisted to a temp file when truncated (see ``_write_full_output`` +
-# ``_format_truncation_notice``).
-_BASH_PARAMETERS_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "properties": {
-        "command": {
-            "type": "string",
-            "description": "Bash command to execute",
+# ``_format_truncation_notice``). The ``timeout`` description is built per-tool
+# (issue #11) so it states the resolved default + cap.
+def _build_bash_parameters(default_timeout: float, max_timeout: float) -> dict[str, Any]:
+    if default_timeout > 0:
+        cap = f", capped at {_fmt_secs(max_timeout)}s" if max_timeout > 0 else ""
+        timeout_desc = (
+            f"Timeout in seconds. When omitted, defaults to "
+            f"{_fmt_secs(default_timeout)}s{cap}. Pass a larger value for "
+            "long-running commands (builds, installs, test suites)."
+        )
+    else:
+        timeout_desc = "Timeout in seconds (optional, no default timeout)."
+    return {
+        "type": "object",
+        "properties": {
+            "command": {
+                "type": "string",
+                "description": "Bash command to execute",
+            },
+            "timeout": {
+                "type": "number",
+                "description": timeout_desc,
+            },
         },
-        "timeout": {
-            "type": "number",
-            "description": "Timeout in seconds (optional, no default timeout)",
-        },
-    },
-    "required": ["command"],
-}
+        "required": ["command"],
+    }
 
 
 def create_bash_tool(
@@ -345,6 +436,12 @@ def create_bash_tool(
     spawn_hook: BashSpawnHook | None = opts.get("spawn_hook")
     max_lines: int = int(opts.get("max_lines", _DEFAULT_MAX_LINES))
     max_bytes: int = int(opts.get("max_bytes", _DEFAULT_MAX_BYTES))
+    # Issue #11 — resolve the per-tool default/max timeout knobs (0 disables).
+    default_timeout = _resolve_timeout_knob(
+        opts.get("default_timeout"), _DEFAULT_TIMEOUT
+    )
+    max_timeout = _resolve_timeout_knob(opts.get("max_timeout"), _MAX_TIMEOUT)
+    parameters = _build_bash_parameters(default_timeout, max_timeout)
 
     async def execute(
         args: dict[str, Any], ctx: ToolExecutionContext
@@ -355,8 +452,11 @@ def create_bash_tool(
                 content=[TextContent(text="bash: missing 'command'")],
                 is_error=True,
             )
-        timeout_arg = args.get("timeout")
-        timeout: float | None = float(timeout_arg) if timeout_arg else None
+        # Issue #11: arm the default timeout when the model omits ``timeout``
+        # (or passes ≤0); honor an explicit value, clamped to the max cap.
+        timeout, timeout_clamped = _resolve_call_timeout(
+            args.get("timeout"), default_timeout, max_timeout
+        )
         # Pi parity ``bash.ts:284-285``: prepend ``commandPrefix`` (separated by
         # a newline), then resolve the spawn context (base env = getShellEnv,
         # optionally rewritten by ``spawnHook``).
@@ -422,15 +522,34 @@ def create_bash_tool(
 
         # Pi parity error paths throw ``appendStatus(text, status)`` where the
         # catch-path ``formatOutput`` uses an empty ``emptyText`` (so an empty
-        # body yields the bare status line). ``exit_code is None`` maps to the
-        # timeout status when a timeout was set (``_wait`` kills the group on
-        # ``TimeoutExpired``), else to the abort status.
+        # body yields the bare status line). ``exit_code is None`` is a kill;
+        # issue #11 uses the authoritative ``timed_out`` flag (NOT "was a
+        # timeout set?", which is now always true) to label timeout vs abort,
+        # and appends actionable retry guidance so a model whose long command
+        # was cut can re-run it with a larger ``timeout``.
         if exit_code is None:
-            if timeout is not None:
-                # Pi renders the verbatim user-supplied seconds (string split);
-                # drop a trailing ``.0`` so an integer ``5`` stays ``5``.
-                timeout_secs = int(timeout) if timeout == int(timeout) else timeout
-                status = f"Command timed out after {timeout_secs} seconds"
+            if exit_result.timed_out and timeout is not None:
+                if timeout_clamped:
+                    # The model asked for MORE than the cap; "retry larger" would
+                    # be non-actionable. Tell it the cap was applied + how to lift.
+                    retry = (
+                        f" The requested timeout exceeded the "
+                        f"{_fmt_secs(max_timeout)}s cap; raise "
+                        "AELIX_BASH_MAX_TIMEOUT to allow longer."
+                    )
+                elif max_timeout > 0:
+                    retry = (
+                        " If this command needs longer, retry with a larger "
+                        f"'timeout' (up to {_fmt_secs(max_timeout)} seconds)."
+                    )
+                else:
+                    retry = (
+                        " If this command needs longer, retry with a larger "
+                        "'timeout'."
+                    )
+                status = (
+                    f"Command timed out after {_fmt_secs(timeout)} seconds.{retry}"
+                )
             else:
                 status = "Command aborted"
         else:
@@ -447,9 +566,10 @@ def create_bash_tool(
             "Execute a bash command in the current working directory. Returns "
             "stdout and stderr. Output is truncated to last 2000 lines or 50KB "
             "(whichever is hit first). If truncated, full output is saved to a "
-            "temp file. Optionally provide a timeout in seconds."
+            "temp file. Provide a timeout in seconds for long-running commands "
+            "(see the timeout parameter)."
         ),
-        parameters=_BASH_PARAMETERS_SCHEMA,
+        parameters=parameters,
         execute=execute,
         execution_mode="sequential",
     )
