@@ -80,8 +80,19 @@ def setup(aelix: ExtensionAPI) -> None:
     )
 ```
 
-The TUI reads registered commands back to populate slash-command completion, so
-`/hello` becomes available.
+Registered commands are merged into both slash-command **autocomplete** and
+**dispatch**, so typing `/hello` runs `_hello`. The handler is called as
+`handler(args, ctx)`:
+
+- `args` is the raw text after the command word (`"world"` for `/hello world`);
+- `ctx` is an `ExtensionCommandContext` — drive interactive UI through
+  `ctx.ui.select` / `confirm` / `input` / `notify`, and session control through
+  `ctx.fork` / `new_session` / `switch_session` / `reload`.
+
+A non-empty **string** return is shown in the transcript (a convenience for
+simple commands); richer output should go through `ctx.ui`. Built-in commands
+(`/help`, `/model`, …) win on a name collision, and a command colliding with
+another extension's gets a `name:N` invocation name.
 
 ## Other `ExtensionAPI` surface
 

@@ -71,9 +71,15 @@ class DescriptorCommandCompleter(Completer):
         self,
         get_routes: Callable[[], Mapping[str, Any]],
         builtins: list[BuiltinCommand] | None = None,
+        get_ext_commands: Callable[[], list[tuple[str, str]]] | None = None,
     ) -> None:
         self._get_routes = get_routes
         self._builtins = builtins or []
+        # Issue #9: live ``(invocation_name, description)`` source for
+        # extension-registered commands (read every keystroke so a /reload or
+        # session swap reflects immediately). Built-ins + descriptor routes win
+        # on a name collision (they are yielded first and dedup via ``seen``).
+        self._get_ext_commands = get_ext_commands
 
     def get_completions(
         self, document: Document, complete_event: CompleteEvent
@@ -125,6 +131,24 @@ class DescriptorCommandCompleter(Completer):
                 display=command,
                 display_meta=meta,
             )
+
+        # Issue #9: extension-registered commands, last (built-ins + descriptor
+        # routes win on a name collision via ``seen``).
+        if self._get_ext_commands is not None:
+            try:
+                ext_commands = self._get_ext_commands()
+            except Exception:  # noqa: BLE001 — a faulty source must not break input
+                ext_commands = []
+            for name, description in ext_commands:
+                if not name or not name.startswith(typed) or name in seen:
+                    continue
+                seen.add(name)
+                yield Completion(
+                    "/" + name,
+                    start_position=-len(typed_with_slash),
+                    display=name,
+                    display_meta=description or "",
+                )
 
 
 class FileMentionCompleter(Completer):

@@ -2817,18 +2817,19 @@ class AgentHarness:
 
     # === Internal: callback bridges ===
 
-    def _make_context(self) -> ExtensionContext:
-        """Build a fresh :class:`ExtensionContext` for the current hook emit.
+    def _make_context_kwargs(self) -> dict[str, Any]:
+        """Assemble the shared :class:`ExtensionContext` constructor kwargs.
 
-        Sprint 5a (Phase 3.1, P-23) wires the 8 new non-UI fields:
+        Issue #9 — extracted from :meth:`_make_context` so the command-context
+        factory (:meth:`make_command_context`) builds its
+        :class:`ExtensionCommandContext` from the SAME closure assembly, with
+        no drift between the hook context and the command context.
+
+        Sprint 5a (Phase 3.1, P-23) wires the 8 non-UI fields:
         ``has_ui`` (constant), ``session_manager``, ``model_registry``,
         ``signal``, ``has_pending_messages``, ``shutdown``,
         ``get_context_usage``, ``compact``.
         """
-
-        from aelix_coding_agent.extensions.api import (
-            ExtensionContext as _ExtensionContext,
-        )
 
         # Adapter binding ``ReadonlySessionManager`` to the harness session.
         session_manager: Any | None
@@ -2920,20 +2921,59 @@ class AgentHarness:
                 return
             self._mark_abort()
 
-        return _ExtensionContext(
+        return {
+            "cwd": self._options.cwd,
+            "model": self._state.model,
+            "is_idle": lambda: self._phase == "idle",
+            "abort": lambda: self._mark_abort(),
+            "get_active_tools": self._action_get_active_tools,
+            "get_system_prompt": self._action_get_system_prompt,
+            "session_manager": session_manager,
+            "signal": None,  # Phase 4 provider work threads the real signal.
+            "has_pending_messages": _has_pending,
+            "shutdown": _shutdown_default,
+            "get_context_usage": _get_context_usage,
+            "compact": _compact_action,
+        }
+
+    def _make_context(self) -> ExtensionContext:
+        """Build a fresh :class:`ExtensionContext` for the current hook emit."""
+
+        from aelix_coding_agent.extensions.api import (
+            ExtensionContext as _ExtensionContext,
+        )
+
+        return _ExtensionContext(self._runtime, **self._make_context_kwargs())
+
+    def make_command_context(
+        self,
+        *,
+        repo: Any | None = None,
+        session_runtime: Any | None = None,
+    ) -> Any:
+        """Issue #9 — build an :class:`ExtensionCommandContext` for a slash
+        command handler.
+
+        Reuses :meth:`_make_context_kwargs` (the SAME closures as the hook
+        context) and layers the 6 Pi ``ExtensionCommandContext`` lifecycle
+        methods (``wait_for_idle`` / ``new_session`` / ``fork`` /
+        ``switch_session`` / ``navigate_tree`` / ``reload``). The bound UI flows
+        through ``self._runtime.ui`` (set by the surface's ``bind_ui``), so a
+        handler's ``ctx.ui.select`` / ``confirm`` / ``notify`` drive the live
+        surface. Constructed by the coding-agent ``CommandDispatchService``
+        (the Pi ``createCommandContext`` construction site).
+        """
+
+        from aelix_coding_agent.extensions.command_context import (
+            ExtensionCommandContext,
+        )
+
+        return ExtensionCommandContext(
             self._runtime,
-            cwd=self._options.cwd,
-            model=self._state.model,
-            is_idle=lambda: self._phase == "idle",
-            abort=lambda: self._mark_abort(),
-            get_active_tools=self._action_get_active_tools,
-            get_system_prompt=self._action_get_system_prompt,
-            session_manager=session_manager,
-            signal=None,  # Phase 4 provider work threads the real signal.
-            has_pending_messages=_has_pending,
-            shutdown=_shutdown_default,
-            get_context_usage=_get_context_usage,
-            compact=_compact_action,
+            harness=self,
+            repo=repo,
+            session_runtime=session_runtime,
+            **self._make_context_kwargs(),
         )
 
     def create_replaced_session_context(

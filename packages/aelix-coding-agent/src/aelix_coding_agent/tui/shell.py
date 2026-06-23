@@ -37,6 +37,11 @@ from rich.text import Text
 
 from aelix_coding_agent.cli.repl import handle_user_bash
 from aelix_coding_agent.extensions import HEADLESS_UI_CONTEXT
+from aelix_coding_agent.extensions.command_dispatch import (
+    CommandDispatchService,
+    CommandSurfaceBindings,
+    DispatchOutcome,
+)
 from aelix_coding_agent.tui.activity_tracker import SessionActivityTracker
 from aelix_coding_agent.tui.chrome import AelixChrome
 from aelix_coding_agent.tui.commands import (
@@ -1161,6 +1166,14 @@ async def run_tui(
             with contextlib.suppress(Exception):
                 prior()
         unsubscribe_holder["u"] = new_harness.subscribe(_on_agent_event)
+        # A session swap (/resume, new, fork) builds a BRAND-NEW harness whose
+        # fresh _ExtensionRuntime defaults to the HEADLESS ui — re-bind the live
+        # TUI ui onto it (issue #9) so an extension command's ctx.ui.select /
+        # confirm / notify (and hook/descriptor ui) keep driving the real surface
+        # post-swap instead of hitting the headless stub. Mirrors the initial
+        # bind at run-start.
+        with contextlib.suppress(Exception):
+            new_harness.runtime.bind_ui(context)
         # A session swap (/resume, new, fork) replaces the live harness — keep
         # the command context pointed at it so /model, /compact, /cost, … act on
         # the resumed session, not the stale one (Sprint 6h₁₄b, ADR-0122).
@@ -1482,14 +1495,27 @@ async def run_tui(
         # Tier-2 descriptor probe (ADR-0095 / Sprint 6h₁₀c §C): build the keyed
         # registry + per-kind renderer, subscribe to the ui:list-modules channel,
         # then emit one synchronous probe so loaded extensions append descriptors.
+        # Issue #9 — the extension-command execution authority. Reads the harness
+        # LIVE (so it survives /resume·/new·/fork rebinds) and powers BOTH the
+        # input-loop dispatch and the autocomplete source. ``repo`` +
+        # ``session_runtime`` let a handler's ctx drive fork / new_session /
+        # switch_session.
+        dispatch = CommandDispatchService(
+            lambda: runtime_host.harness,
+            repo=getattr(runtime_host, "_repo", None),
+            session_runtime=runtime_host,
+        )
         descriptor_unsub, descriptor_renderer = _wire_descriptors(
-            runtime_host, out_chrome, footer, context, loop, renderer, commands, cwd
+            runtime_host, out_chrome, footer, context, loop, renderer, commands, cwd,
+            dispatch.list_commands,
         )
         # No descriptor wiring (headless fakes without an event_bus) → the palette
-        # still offers built-ins. Install the union completer directly.
+        # still offers built-ins + extension commands. Install the union completer.
         if descriptor_renderer is None:
             out_chrome.set_command_completer(
-                _build_input_completer(lambda: {}, commands, cwd)
+                _build_input_completer(
+                    lambda: {}, commands, cwd, dispatch.list_commands
+                )
             )
         chrome_task = asyncio.create_task(out_chrome.run())
         pump_task = asyncio.create_task(_output_pump(output_queue, out_chrome))
@@ -1502,6 +1528,7 @@ async def run_tui(
             descriptor_renderer,
             command_ctx,
             cwd=cwd,
+            dispatch=dispatch,
         )
     finally:
         with contextlib.suppress(Exception):
@@ -1564,17 +1591,25 @@ async def run_tui(
 
 
 def _build_input_completer(
-    get_routes: Callable[[], object], builtins: list[BuiltinCommand], cwd: str
+    get_routes: Callable[[], object],
+    builtins: list[BuiltinCommand],
+    cwd: str,
+    get_ext_commands: Callable[[], list[tuple[str, str]]] | None = None,
 ) -> Completer:
-    """The merged input completer: slash commands ∪ descriptor routes ∪ ``@file``
-    path mentions (Sprint 6h₁₄a). Each sub-completer is inert outside its own
-    trigger (``/`` vs ``@``), so merging them is safe."""
+    """The merged input completer: slash commands ∪ descriptor routes ∪
+    extension commands (issue #9) ∪ ``@file`` path mentions (Sprint 6h₁₄a). Each
+    sub-completer is inert outside its own trigger (``/`` vs ``@``), so merging
+    them is safe."""
 
     from prompt_toolkit.completion import merge_completers
 
     return merge_completers(
         [
-            DescriptorCommandCompleter(get_routes, builtins=builtins),  # type: ignore[arg-type]
+            DescriptorCommandCompleter(
+                get_routes,  # type: ignore[arg-type]
+                builtins=builtins,
+                get_ext_commands=get_ext_commands,
+            ),
             FileMentionCompleter(cwd),
         ]
     )
@@ -1589,6 +1624,7 @@ def _wire_descriptors(
     event_renderer: EventRenderer,
     builtins: list[BuiltinCommand],
     cwd: str,
+    get_ext_commands: Callable[[], list[tuple[str, str]]] | None = None,
 ) -> tuple[Callable[[], None] | None, DescriptorRenderer | None]:
     """Build the descriptor registry + renderer, subscribe + emit one probe.
 
@@ -1622,7 +1658,9 @@ def _wire_descriptors(
     # every keystroke (descriptors applied/removed after this point change
     # completions live); built-ins are static and win on a name clash (§B).
     chrome.set_command_completer(
-        _build_input_completer(lambda: renderer.command_routes, builtins, cwd)
+        _build_input_completer(
+            lambda: renderer.command_routes, builtins, cwd, get_ext_commands
+        )
     )
 
     # §B — late-bind the live tool-renderer-desc lookup onto the EventRenderer so
@@ -1893,8 +1931,19 @@ async def _input_loop(
     command_ctx: CommandContext,
     *,
     cwd: str,
+    dispatch: CommandDispatchService | None = None,
 ) -> None:
     """Read → classify → drive the harness, one turn at a time."""
+
+    # Issue #9 — surface bindings for extension-command output: a handler's
+    # str-return and any failure commit to scrollback (a handler's own ctx.ui
+    # toasts/dialogs flow through the separately-bound TUI ui).
+    ext_command_bindings = CommandSurfaceBindings(
+        emit_text=lambda s: output_queue.put_nowait(("commit", Text(s))),
+        emit_error=lambda s: output_queue.put_nowait(
+            ("commit", Text(s, style="bold red"))
+        ),
+    )
 
     while True:
         try:
@@ -1937,6 +1986,17 @@ async def _input_loop(
                 args = parsed.text[len("/" + slash_word(parsed.text)):].strip()
                 await command.handler(command_ctx, args)
                 continue
+            # Issue #9: extension-registered commands run HERE — after built-ins
+            # (so a built-in always wins a name collision, pi parity) and BEFORE
+            # the descriptor modal / "unknown command" fallback. A handled/errored
+            # command suppresses the model turn; only a true miss (NOT_A_COMMAND)
+            # falls through.
+            if dispatch is not None:
+                ext_result = await dispatch.try_execute(
+                    parsed.text, ext_command_bindings
+                )
+                if ext_result.outcome is not DispatchOutcome.NOT_A_COMMAND:
+                    continue
             if descriptor_renderer is not None:
                 modal = _match_management_modal(descriptor_renderer, parsed.text)
                 if modal is not None:

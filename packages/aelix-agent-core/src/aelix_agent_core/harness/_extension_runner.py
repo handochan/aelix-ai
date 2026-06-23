@@ -261,5 +261,20 @@ class ExtensionRunner:
             )
         return resolved
 
+    def get_command(self, invocation_name: str) -> ResolvedCommand | None:
+        """Pi parity: ``ExtensionRunner.getCommand`` (``runner.ts:557-559``).
+
+        Issue #9 — resolve a typed slash-command word to its
+        :class:`ResolvedCommand`, matching on the disambiguated
+        ``invocation_name`` (so the ``{name}:{N}`` collision suffix is honored
+        identically to :meth:`get_registered_commands`). Returns ``None`` on a
+        miss so the caller can fall through to the model / built-in dispatch.
+        """
+
+        for resolved in self.get_registered_commands():
+            if resolved.invocation_name == invocation_name:
+                return resolved
+        return None
+
 
 __all__ = ["ExtensionRunner", "ResolvedCommand"]

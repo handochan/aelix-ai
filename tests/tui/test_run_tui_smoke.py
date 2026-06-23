@@ -1535,3 +1535,99 @@ async def test_run_tui_stats_command_opens_dashboard_and_closes() -> None:
         pipe.send_text("/quit\n")
         await asyncio.wait_for(task, timeout=5)
     assert runtime.harness.prompts == [("hi", "interactive")]
+
+
+# === Issue #9 — extension /commands execute in the TUI ======================
+
+
+def _ext_harness(handler, name: str = "hello") -> FakeHarness:
+    from aelix_agent_core.harness._extension_runner import ExtensionRunner
+    from aelix_coding_agent.extensions.api import Extension, RegisteredCommand
+
+    class _ExtHarness(FakeHarness):
+        def __init__(self) -> None:
+            super().__init__()
+            ext = Extension(name="demo")
+            ext.commands[name] = RegisteredCommand(
+                name=name, handler=handler, description="greet", source="demo"
+            )
+            self.extension_runner = ExtensionRunner(extensions=[ext])
+
+        def make_command_context(self, *, repo=None, session_runtime=None):
+            return object()  # the handlers in these tests ignore ctx
+
+    return _ExtHarness()
+
+
+async def test_run_tui_extension_command_runs_not_prompts() -> None:
+    ran: list[str] = []
+
+    def _hello(args, ctx):
+        ran.append(args)
+        return "hi from ext"
+
+    async with _harness_chrome(harness=_ext_harness(_hello)) as (runtime, chrome, pipe):
+        task = _launch(runtime, chrome)
+        await _wait(lambda: chrome.app.is_running)
+        pipe.send_text("/hello world\n")
+        await _wait(lambda: ran == ["world"])
+        pipe.send_text("/quit\n")
+        await asyncio.wait_for(task, timeout=5)
+
+    # The extension command ran with raw args and was NOT sent to the model.
+    assert ran == ["world"]
+    assert runtime.harness.prompts == []
+
+
+async def test_run_tui_builtin_wins_over_extension_command() -> None:
+    ran: list[str] = []
+
+    # An extension also registers "help" — the built-in /help must win, so this
+    # handler must NEVER run.
+    harness = _ext_harness(lambda args, ctx: ran.append(args), name="help")
+    async with _harness_chrome(harness=harness) as (runtime, chrome, pipe):
+        task = _launch(runtime, chrome)
+        await _wait(lambda: chrome.app.is_running)
+        pipe.send_text("/help\n")
+        # barrier: a real prompt proves the input loop processed past /help.
+        pipe.send_text("ping\n")
+        await _wait(lambda: runtime.harness.prompts == [("ping", "interactive")])
+        pipe.send_text("/quit\n")
+        await asyncio.wait_for(task, timeout=5)
+
+    assert ran == []  # the built-in won; the extension's /help never ran
+
+
+async def test_run_tui_rebind_rebinds_ui_to_new_harness() -> None:
+    """Review MEDIUM-1: a session swap builds a fresh harness whose runtime
+    defaults to the headless UI — the rebind must re-bind the live TUI ui so an
+    extension command's ctx.ui (and hook/descriptor ui) keep working post-swap."""
+    async with _harness_chrome() as (runtime, chrome, pipe):
+        task = _launch(runtime, chrome)
+        await _wait(lambda: chrome.app.is_running)
+        assert runtime.rebind_cb is not None
+        new_harness = FakeHarness()
+        await runtime.rebind_cb(new_harness)
+        # bind_ui was called on the NEW harness's runtime with the real TUI ui.
+        assert new_harness.runtime.bound, "new harness runtime was not re-bound"
+        assert isinstance(new_harness.runtime.bound[-1], AelixTUIContext)
+        pipe.send_text("/quit\n")
+        await asyncio.wait_for(task, timeout=5)
+
+
+async def test_run_tui_extension_command_throw_survives() -> None:
+    def _boom(args, ctx):
+        raise RuntimeError("kaboom")
+
+    async with _harness_chrome(harness=_ext_harness(_boom)) as (runtime, chrome, pipe):
+        task = _launch(runtime, chrome)
+        await _wait(lambda: chrome.app.is_running)
+        pipe.send_text("/hello\n")  # handler raises — REPL must survive
+        # barrier proves the loop survived the throw and is NOT stuck.
+        pipe.send_text("ping\n")
+        await _wait(lambda: runtime.harness.prompts == [("ping", "interactive")])
+        pipe.send_text("/quit\n")
+        await asyncio.wait_for(task, timeout=5)
+
+    # The thrown command did not fall through to the model.
+    assert runtime.harness.prompts == [("ping", "interactive")]

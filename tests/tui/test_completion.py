@@ -55,6 +55,45 @@ def _complete_union(
     return list(completer.get_completions(doc, CompleteEvent()))
 
 
+def _complete_ext(
+    routes: dict[str, Any],
+    builtins: list[BuiltinCommand],
+    ext_commands: list[tuple[str, str]],
+    text: str,
+) -> list[Any]:
+    completer = DescriptorCommandCompleter(
+        lambda: routes, builtins=builtins, get_ext_commands=lambda: ext_commands
+    )
+    doc = Document(text=text, cursor_position=len(text))
+    return list(completer.get_completions(doc, CompleteEvent()))
+
+
+def test_ext_commands_are_offered() -> None:
+    # Issue #9: extension commands join the palette.
+    out = _complete_ext({}, [], [("hello", "Greet"), ("deploy", "Ship")], "/hel")
+    assert [c.text for c in out] == ["/hello"]
+
+
+def test_builtin_wins_over_ext_command_collision() -> None:
+    builtins = [BuiltinCommand("model", "Pick a model")]
+    out = _complete_ext({}, builtins, [("model", "ext model")], "/mod")
+    # Only the built-in /model is offered (ext is deduped against it).
+    assert [c.text for c in out] == ["/model"]
+
+
+def test_descriptor_route_wins_over_ext_command_collision() -> None:
+    routes = {"ns:deploy": _Route(command="deploy", description="route deploy")}
+    out = _complete_ext(routes, [], [("deploy", "ext deploy")], "/dep")
+    # Exactly one /deploy (the descriptor route); the ext one is deduped.
+    assert [c.text for c in out] == ["/deploy"]
+
+
+def test_ext_commands_absent_when_source_unset() -> None:
+    completer = DescriptorCommandCompleter(lambda: {}, builtins=[])
+    doc = Document(text="/", cursor_position=1)
+    assert list(completer.get_completions(doc, CompleteEvent())) == []
+
+
 def test_empty_command_is_skipped() -> None:
     # A route whose command is "" must not yield a bare "/" completion.
     routes = {"ext:blank": _Route(command=""), "ext:deploy": _Route(command="deploy")}

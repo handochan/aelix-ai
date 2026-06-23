@@ -175,3 +175,37 @@ def test_resolved_command_is_dataclass_with_three_fields() -> None:
 
     fields = set(ResolvedCommand.__dataclass_fields__.keys())
     assert fields == {"command", "invocation_name", "source_info"}
+
+
+# === Issue #9 — get_command(invocation_name) ===============================
+
+
+def test_get_command_resolves_by_invocation_name() -> None:
+    ext = Extension(name="ext1")
+    ext.commands["a"] = _make_command("a", "ext1")
+    ext.commands["b"] = _make_command("b", "ext1")
+    runner = ExtensionRunner(extensions=[ext])
+    a = runner.get_command("a")
+    assert a is not None and a.command.name == "a"
+    assert runner.get_command("b").command.name == "b"
+
+
+def test_get_command_miss_returns_none() -> None:
+    ext = Extension(name="ext1")
+    ext.commands["a"] = _make_command("a", "ext1")
+    runner = ExtensionRunner(extensions=[ext])
+    assert runner.get_command("missing") is None
+    assert ExtensionRunner().get_command("anything") is None
+
+
+def test_get_command_honors_collision_suffix() -> None:
+    """A name collision resolves the first to the bare name and the second to
+    ``{name}:1`` — matching ``get_registered_commands`` disambiguation."""
+    ext1 = Extension(name="ext1")
+    ext1.commands["dup"] = _make_command("dup", "ext1")
+    ext2 = Extension(name="ext2")
+    ext2.commands["dup"] = _make_command("dup", "ext2")
+    runner = ExtensionRunner(extensions=[ext1, ext2])
+    assert runner.get_command("dup").command.source == "ext1"
+    assert runner.get_command("dup:1").command.source == "ext2"
+    assert runner.get_command("dup:2") is None
