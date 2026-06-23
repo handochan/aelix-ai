@@ -80,8 +80,12 @@ def setup(aelix: ExtensionAPI) -> None:
     )
 ```
 
-The TUI reads registered commands back to populate slash-command completion, so
-`/hello` becomes available.
+Registered commands are surfaced today over the **RPC interface** — an RPC client
+driving `aelix --mode rpc` can list them (`get_commands`) and invoke them.
+**Interactive-TUI dispatch is not yet wired:** a `/hello` typed in the TUI does
+not yet resolve to an extension command (only built-in commands are matched).
+Merging extension commands into the TUI command dispatch is tracked work on the
+project board; until then, target the RPC surface for extension commands.
 
 ## Other `ExtensionAPI` surface
 
@@ -91,7 +95,7 @@ The handle exposes more than tools and commands. The most useful members:
 | ----------------------------------- | -------------------------------------------------------- |
 | `register_tool(tool)`               | Register an `AgentTool`.                                 |
 | `register_command(name, *, handler, description=None)` | Register a slash command.             |
-| `register_provider(name, config)` / `unregister_provider(name)` | Register / drop a model provider.  |
+| `register_provider(name, config)` / `unregister_provider(name)` | Queue a model-provider registration. ⚠ Queued only — not yet replayed into live model resolution. |
 | `register_flag(...)` / `get_flag(name)` | Declare a flag / read its value (bool, str, or `None`). |
 | `on(...)`                           | Subscribe to a typed hook event (e.g. the tool-call lifecycle). |
 | `get_active_tools()` / `get_system_prompt()` | Inspect the running agent.                      |
@@ -109,6 +113,24 @@ A hook handler registered through `on(...)` receives a read-only
 
 The full surface is defined in
 `packages/aelix-coding-agent/src/aelix_coding_agent/extensions/api.py`.
+
+## Current support status
+
+Not every declared surface is wired end-to-end yet. As of this writing:
+
+- **Fully wired:** `register_tool` (live-activated via `refresh_tools`), `on(...)`
+  hook handlers (incl. the `tool_call` block reducer the built-in Guardrail /
+  Permission extensions use), `register_flag` / `get_flag`.
+- **RPC only (TUI dispatch in progress):** `register_command` — listable /
+  invocable over `aelix --mode rpc`, not yet matched by the interactive TUI.
+- **Stored but not yet consumed:** `register_shortcut`, `register_message_renderer`.
+- **Queued, not yet live:** `register_provider` (not replayed into model resolution).
+- **Manifest `contributes.*`:** only `contributes.hooks` is consumed at runtime;
+  `commands` / `tui_widgets` / `descriptors` / `tools` / `themes` / `mcp_servers`
+  are validated but not yet activated.
+
+These gaps are tracked on the project board. For production extensions today,
+build against the **Fully wired** surface.
 
 ## Loading an extension
 
