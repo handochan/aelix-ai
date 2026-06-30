@@ -76,6 +76,7 @@ class FakeRuntime:
         self._harness = harness
         self.rebind_cb = None
         self.disposed = 0
+        self.reloads = 0
 
     @property
     def harness(self) -> FakeHarness:
@@ -83,6 +84,11 @@ class FakeRuntime:
 
     def set_rebind_session(self, cb) -> None:
         self.rebind_cb = cb
+
+    async def reload(self) -> None:
+        # Issue #24 — /reload routes here by default (go-live); the cheap
+        # harness.reload_resources() path is the AELIX_RELOAD_REBUILD=0 kill-switch.
+        self.reloads += 1
 
     async def dispose(self) -> None:
         self.disposed += 1
@@ -187,10 +193,13 @@ async def test_run_tui_reload_command() -> None:
         task = _launch(runtime, chrome)
         await _wait(lambda: chrome.app.is_running)
         pipe.send_text("/reload\n")
-        await _wait(lambda: runtime.harness.reloads == 1)
+        # Issue #24 go-live: /reload routes through runtime.reload() (the full
+        # factory rebuild) by default, not harness.reload_resources().
+        await _wait(lambda: runtime.reloads == 1)
         pipe.send_text("/quit\n")
         await asyncio.wait_for(task, timeout=5)
-    assert runtime.harness.reloads == 1
+    assert runtime.reloads == 1
+    assert runtime.harness.reloads == 0  # the kill-switch path was NOT taken
     assert runtime.harness.prompts == []
 
 

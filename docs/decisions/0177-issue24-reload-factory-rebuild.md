@@ -1,6 +1,6 @@
 # ADR-0177 — #24 harness hot-reload round-trip via the P-302 factory rebuild
 
-- **Status:** Accepted — machinery LIVE behind a default-OFF toggle (dormant); production `/reload` flip pending owner go-live.
+- **Status:** Accepted — **LIVE**. Production `/reload` routes through the factory rebuild by default (`_reload_rebuild_enabled()` default-ON after the adversarial review; `AELIX_RELOAD_REBUILD=0` is the kill-switch). The dormant build → go-live flip both landed.
 - **Date:** 2026-06-30
 - **Sprint:** Moat chain — keystone. `#24` is the named BLOCKER for `#53` (self-extensible epic): "agent writes `.aelix/extensions/foo.py` → `/reload` → `/foo` + its tool work, no process restart".
 - **Pi pin:** `earendil-works/pi@734e08e`. Ported from `agent-session.ts:reload` (`:2382-2413`) + `_buildRuntime` (`:2329-2381`).
@@ -55,5 +55,5 @@
 
 ## Go-live + follow-ups
 
-- **Go-live:** flip `_reload_rebuild_enabled` default (or set the env in shipped config) so `/reload` routes through `runtime.reload()` — pending owner sign-off after the adversarial review.
-- Re-point `ctx.reload()` to the runtime path at flip time; thread `ModelRegistry` into `AgentSessionRuntime` for removed-ext provider reset; `active_tool_names`/`includeAllExtensionTools` round-trip; give the minimal REPL a runtime. Then **#53 Track A** (the imperative-hot-reload flagship) lands on this.
+- **Go-live — DONE.** `_reload_rebuild_enabled()` flipped to default-ON (owner-approved post-review); production TUI `/reload` now routes through `AgentSessionRuntime.reload()`. `AELIX_RELOAD_REBUILD=0` is the kill-switch. This delivers the observable **#53 Track A** imperative-hot-reload flagship (write extension → `/reload` → live, no restart); Project-Trust is re-applied via the `no_project_local` closure (reload never silently upgrades/downgrades trust — confirmed by the security-trust review lens).
+- **Remaining v1 follow-ups:** re-point `ctx.reload()` to the runtime path; thread `ModelRegistry` into `AgentSessionRuntime` for removed-ext provider reset; `active_tool_names`/`includeAllExtensionTools` round-trip + seed `previous_flag_values` into the factory (so `setup()` reads restored values); give the minimal REPL a runtime. **#53** epic remainder = `#21` (declarative `contributes.*`/activation — aelix-original, deferred per ADR-0174) + `#19` (install) + `#32` (marketplace).

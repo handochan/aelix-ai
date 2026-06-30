@@ -98,22 +98,21 @@ _RETRY_WIDGET_KEY = "__auto_retry__"
 
 
 def _reload_rebuild_enabled() -> bool:
-    """Issue #24 — dormant gate for the full factory-rebuild ``/reload``.
+    """Issue #24 / #53 — full factory-rebuild ``/reload`` (go-live default, ADR-0177).
 
-    Default OFF: ``/reload`` keeps calling ``harness.reload_resources()`` (a cheap
-    resources-discover refresh, zero behaviour change). When ``AELIX_RELOAD_REBUILD``
-    is truthy it routes through :meth:`AgentSessionRuntime.reload` — the full
-    hot-reload that re-discovers on-disk extensions + rebuilds the runtime via the
-    P-302 factory WITHOUT a process restart (the #53 moat). The machinery ships
-    behind this toggle so the protected-core rebuild path is reviewable before it
-    becomes the observable default.
+    ``/reload`` routes through :meth:`AgentSessionRuntime.reload` — re-discovers
+    on-disk extensions + rebuilds the runtime via the P-302 factory, so an
+    agent-written extension goes live WITHOUT a process restart (the #53 moat).
+    DEFAULT-ON after the multi-lens adversarial review. Set ``AELIX_RELOAD_REBUILD``
+    to a falsy value (``0``/``false``/``no``/``off``) as a kill-switch to fall back
+    to the cheap resources-discover refresh (``harness.reload_resources()``).
     """
 
-    return os.environ.get("AELIX_RELOAD_REBUILD", "").strip().lower() in (
-        "1",
-        "true",
-        "yes",
-        "on",
+    return os.environ.get("AELIX_RELOAD_REBUILD", "").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
     )
 
 
