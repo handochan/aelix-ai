@@ -103,6 +103,28 @@ async def test_fetch_openai_compatible_stays_bearer(monkeypatch) -> None:
     assert _FakeClient.last_headers == {"Authorization": "Bearer k"}
 
 
+async def test_fetch_gemini_compatible_headers_and_prefix(monkeypatch) -> None:
+    # Issue #36: the Gemini Developer API ListModels authenticates with
+    # ``x-goog-api-key`` (a Bearer token 401s against generativelanguage), and
+    # returns ``name: "models/<id>"`` — the ``models/`` prefix must be stripped
+    # so the registered id matches the catalog id (and reads cleanly in /model).
+    _patch_httpx(
+        monkeypatch,
+        {"models": [{"name": "models/gemini-2.0-flash"}, {"name": "models/gemini-1.5-pro"}]},
+    )
+    ids = await lw._fetch_openai_model_ids(
+        "https://generativelanguage.googleapis.com/v1beta",
+        "gkey",
+        api="google-generative-ai",
+    )
+    assert ids == ["gemini-1.5-pro", "gemini-2.0-flash"]  # sorted + prefix-stripped
+    assert (
+        _FakeClient.last_url
+        == "https://generativelanguage.googleapis.com/v1beta/models"
+    )
+    assert _FakeClient.last_headers == {"x-goog-api-key": "gkey"}
+
+
 # ── _write_custom_models_json ──────────────────────────────────────────
 def test_write_models_json_is_schema_valid(tmp_path) -> None:
     from aelix_coding_agent.models_json import validate_config_semantics
@@ -288,4 +310,51 @@ async def test_run_custom_anthropic_auto_registers(tmp_path, monkeypatch) -> Non
     assert prov["api"] == "anthropic-messages"
     assert prov["baseUrl"] == "https://anth.test/v1"
     assert [m["id"] for m in prov["models"]] == ["claude-x", "claude-y"]
+    assert validate_models_config(cfg) == []
+
+
+async def test_run_custom_gemini_auto_registers(tmp_path, monkeypatch) -> None:
+    # Issue #36 / #15 (ADR-0173): a Gemini-compatible custom provider now maps to
+    # the ``google-generative-ai`` adapter (was ``None`` → manual-note fallback),
+    # so its ListModels result auto-registers into models.json.
+    monkeypatch.setattr(lw, "_fetch_openai_model_ids", _aret(["gemini-2.0-flash"]))
+    stored: dict[str, str] = {}
+    reloaded: list[bool] = []
+
+    class _Auth:
+        async def set_api_key(self, provider: str, key: str) -> None:
+            stored[provider] = key
+
+    reg = types.SimpleNamespace(
+        _models_json_path=str(tmp_path / "models.json"),
+        _load_models=lambda: reloaded.append(True),
+    )
+
+    async def fake_select(_title: str, _options: object) -> str:
+        return "Gemini-compatible"
+
+    async def fake_multiselect(_title, _options, *, selected):
+        return (set(selected), {})
+
+    await lw._run_custom(
+        auth_storage=_Auth(),
+        select=fake_select,
+        prompt_input=_prompt_seq(
+            "mygemini", "https://generativelanguage.googleapis.com/v1beta", "gkey"
+        ),
+        commit=lambda _x: None,
+        Text=Text,
+        multiselect=fake_multiselect,
+        model_registry=reg,
+    )
+
+    # Key stored AND models registered under the google-generative-ai adapter
+    # (not skipped to the manual-note fallback).
+    assert stored == {"mygemini": "gkey"}
+    assert reloaded == [True]
+    cfg = json.loads((tmp_path / "models.json").read_text())
+    prov = cfg["providers"]["mygemini"]
+    assert prov["api"] == "google-generative-ai"
+    assert prov["baseUrl"] == "https://generativelanguage.googleapis.com/v1beta"
+    assert [m["id"] for m in prov["models"]] == ["gemini-2.0-flash"]
     assert validate_models_config(cfg) == []

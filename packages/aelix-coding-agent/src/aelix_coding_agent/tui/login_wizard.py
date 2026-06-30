@@ -17,10 +17,12 @@ Three login methods are offered (Pi parity: ``interactive-mode.ts`` auth menu):
 2. **API key** — pick a built-in provider (the keys of
    :data:`aelix_ai.providers._env_api_keys.ENV_API_KEYS`) and store a raw API key
    via :meth:`AuthStorage.set_api_key` (persists immediately — no ``save()``).
-3. **Custom provider** — store an API key for an OpenAI / Anthropic /
-   Gemini-compatible endpoint. The auth half works; the model itself must still
-   be added via ``models.json`` / ``--models`` to become selectable — we say so
-   HONESTLY rather than implying the model is ready.
+3. **Custom provider** — store an API key for an OpenAI- / Anthropic- /
+   Gemini-compatible endpoint. When the host wired model-fetch (``multiselect`` +
+   ``model_registry``) the flow also fetches the endpoint's model list and
+   registers the picked models into ``models.json`` so they appear in ``/model``
+   immediately; otherwise (or on any fetch/registration failure) it degrades to
+   an HONEST "add via models.json" note — the stored key is never lost.
 
 Backing APIs are PROTECTED, READ-ONLY (``aelix_ai.oauth`` / ``aelix_ai.providers``);
 this module only CALLS them. ``auth_storage`` is the SAME object behind
@@ -316,13 +318,18 @@ async def _run_api_key(
     )
 
 
-# Custom-provider protocol → the registered adapter ``api`` id. Only
-# OpenAI-compatible and Anthropic-compatible have an adapter in this build;
-# Gemini-compatible has none (``None``) so its models can't be auto-registered.
+# Custom-provider protocol → the registered adapter ``api`` id. All three now
+# have a native adapter, so their models can be auto-fetched + registered:
+# OpenAI-compatible (``openai-completions``), Anthropic-compatible
+# (``anthropic-messages``, OpenAI-shaped ``/v1/models``), and Gemini-compatible
+# (``google-generative-ai``, the Gemini Developer API ListModels — #15/ADR-0173
+# un-hid the adapter, #36 wires it here). ``google-vertex`` is intentionally NOT
+# offered (OAuth/ADC + a ``{location}`` base-url, no API-key /models list) — a
+# Vertex custom endpoint stays on the honest manual-note fallback.
 _PROTOCOL_API: dict[str, str | None] = {
     "OpenAI-compatible": "openai-completions",
     "Anthropic-compatible": "anthropic-messages",
-    "Gemini-compatible": None,
+    "Gemini-compatible": "google-generative-ai",
 }
 
 
@@ -338,12 +345,13 @@ async def _run_custom(
 ) -> None:
     """Custom-provider sub-flow: pick a protocol, gather id/url/key, store key.
 
-    For an endpoint with a registered adapter — **OpenAI-compatible** or
-    **Anthropic-compatible** (whose ``/v1/models`` is OpenAI-shaped) — and when
-    the host wired ``multiselect`` + ``model_registry``, the flow then fetches
-    ``{base_url}/models``, lets the user pick which models to add, and writes
-    them to ``models.json`` so they appear in ``/model`` immediately — no manual
-    models.json editing. Every other case (Gemini-compatible / no adapter, no
+    For an endpoint with a registered adapter — **OpenAI-compatible**,
+    **Anthropic-compatible** (whose ``/v1/models`` is OpenAI-shaped), or
+    **Gemini-compatible** (``google-generative-ai``, the Gemini Developer API
+    ListModels) — and when the host wired ``multiselect`` + ``model_registry``,
+    the flow then fetches ``{base_url}/models``, lets the user pick which models
+    to add, and writes them to ``models.json`` so they appear in ``/model``
+    immediately — no manual models.json editing. Every other case (no adapter, no
     fetch wiring, a fetch/registration failure) degrades to the HONEST "add via
     models.json" note; the stored key is never lost.
     """
@@ -382,12 +390,12 @@ async def _run_custom(
     commit(Text(f"API key stored for {provider_id}", style="green"))
 
     # Try to fetch + register models so the user doesn't have to hand-edit
-    # models.json. This covers every protocol that exposes a ``/models`` list
-    # endpoint AND has a registered adapter: OpenAI-compatible
-    # (``openai-completions``) and Anthropic-compatible (``anthropic-messages``,
-    # whose ``/v1/models`` endpoint is OpenAI-shaped). Gemini-compatible maps to
-    # ``None`` so it stays on the honest manual-note fallback. Issue #49: an
-    # Anthropic-compatible custom provider used to show "no model registered".
+    # models.json. This covers every protocol with a registered adapter that
+    # exposes a model-list endpoint: OpenAI-compatible (``openai-completions``),
+    # Anthropic-compatible (``anthropic-messages``, OpenAI-shaped ``/v1/models``),
+    # and Gemini-compatible (``google-generative-ai``, Gemini ListModels with
+    # ``x-goog-api-key`` — #36/#15). Issue #49: an Anthropic-compatible custom
+    # provider used to show "no model registered".
     api = _PROTOCOL_API.get(protocol)
     if (
         api is not None
@@ -438,15 +446,19 @@ def _model_list_headers(api: str | None, api_key: str) -> dict[str, str]:
 
     A genuine Anthropic-compatible endpoint (``anthropic-messages``) authenticates
     with ``x-api-key`` and REQUIRES an ``anthropic-version`` header — a
-    ``Authorization: Bearer`` token 401s there. OpenAI-shaped endpoints take the
-    key as a Bearer token. No key → no auth header (some endpoints list models
-    unauthenticated).
+    ``Authorization: Bearer`` token 401s there. The Gemini Developer API
+    (``google-generative-ai``) authenticates with ``x-goog-api-key`` (the
+    google-genai SDK header) — Bearer also 401s there. OpenAI-shaped endpoints
+    take the key as a Bearer token. No key → no auth header (some endpoints list
+    models unauthenticated).
     """
 
     if not api_key:
         return {}
     if api is not None and api.startswith("anthropic"):
         return {"x-api-key": api_key, "anthropic-version": _ANTHROPIC_VERSION}
+    if api is not None and api.startswith("google"):
+        return {"x-goog-api-key": api_key}
     return {"Authorization": f"Bearer {api_key}"}
 
 
@@ -456,12 +468,13 @@ async def _fetch_openai_model_ids(
     """``GET {base_url}/models`` → sorted, de-duped model ids.
 
     Handles the common response shapes: ``{"data": [{"id": …}]}`` (OpenAI),
-    ``{"models": [...]}``, and a bare list. Raises on transport / HTTP error
-    (the caller degrades). The auth headers depend on ``api``: an
-    Anthropic-compatible endpoint gets ``x-api-key`` + ``anthropic-version``;
+    ``{"models": [{"name": …}]}`` (Gemini ListModels), and a bare list. Raises on
+    transport / HTTP error (the caller degrades). The auth headers depend on
+    ``api``: an Anthropic-compatible endpoint gets ``x-api-key`` +
+    ``anthropic-version``, the Gemini Developer API gets ``x-goog-api-key``, and
     everything else sends the key as a Bearer token (see
-    :func:`_model_list_headers`). Both Anthropic and OpenAI expose an
-    OpenAI-shaped ``/models`` body, so the parsing below is shared.
+    :func:`_model_list_headers`). For ``google-*`` apis the ``models/`` prefix
+    Gemini returns on each ``name`` is stripped so ids match the catalog.
     """
 
     import httpx
@@ -487,7 +500,17 @@ async def _fetch_openai_model_ids(
         elif isinstance(item, dict):
             mid = item.get("id") or item.get("name")
             if mid:
-                ids.add(str(mid))
+                mid = str(mid)
+                # Gemini ListModels returns ``name: "models/gemini-2.0-flash"``;
+                # strip the ``models/`` prefix so the registered id matches the
+                # catalog id (``gemini-2.0-flash``) and reads cleanly in /model.
+                if (
+                    api is not None
+                    and api.startswith("google")
+                    and mid.startswith("models/")
+                ):
+                    mid = mid[len("models/") :]
+                ids.add(mid)
     return sorted(ids)
 
 
