@@ -32,6 +32,13 @@ from typing import Any, Literal
 @dataclass(frozen=True)
 class TextContent:
     text: str = ""
+    # Pi parity (#15): ``TextContent.textSignature`` (``types.ts``). The
+    # OpenAI **Responses** adapter stores a JSON ``TextSignatureV1`` payload
+    # (``{"v":1,"id":...,"phase":...}``) here so the assistant message id +
+    # phase can be replayed verbatim on the next request. ADDITIVE default
+    # ``""`` keeps every existing caller / snapshot / parity fixture intact;
+    # all other adapters leave it empty.
+    text_signature: str = ""
     type: Literal["text"] = "text"
 
 
@@ -115,6 +122,12 @@ class AssistantMessage:
     api: str | None = None
     provider: str | None = None
     model: str | None = None
+    # Pi parity (#15): ``AssistantMessage.responseId`` (``types.ts``). The
+    # OpenAI **Responses** adapter records the ``response.id`` returned by
+    # the stream so subsequent turns can chain via ``previous_response_id``
+    # (server-side reasoning continuity). ADDITIVE default ``None`` preserves
+    # the pre-#15 shape; all other adapters leave it unset.
+    response_id: str | None = None
     role: Literal["assistant"] = "assistant"
 
 

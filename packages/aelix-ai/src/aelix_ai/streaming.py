@@ -81,6 +81,13 @@ class Usage:
     # this slice separately. ADDITIVE default ``0`` keeps the cost formula
     # identical for callers that never set it (5m-only writes).
     cache_write_1h: int = 0
+    # Pi parity (#15): ``Usage.reasoning`` (``ai/src/types.ts::Usage``). The
+    # count of output tokens spent on reasoning (sourced from the OpenAI
+    # Responses ``output_tokens_details.reasoning_tokens`` usage field). It
+    # is a *subset* of ``output`` — not added on top — so the cost formula
+    # is unchanged. ADDITIVE default ``0`` keeps every existing caller and
+    # parity fixture identical; only the Responses adapter populates it.
+    reasoning: int = 0
     cost: UsageCost = field(default_factory=UsageCost)
 
 

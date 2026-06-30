@@ -32,7 +32,13 @@ dependencies = [
     # byte-level Pi parity with providers/openai-completions.ts (uses
     # the official ``openai`` npm package). Wrapped via
     # ``providers/_openai_client.py`` for future ``httpx`` swap.
-    "openai>=1.50,<2.0",
+    #
+    # #15 (OpenAI **Responses** adapter): bumped the floor to ``>=1.66``
+    # so ``openai.resources.responses`` (the Responses streaming event
+    # types + ``client.responses.create``) is guaranteed present. The
+    # shared engine consumes duck-typed SSE event objects, but the thin
+    # adapter that follows needs the SDK surface.
+    "openai>=1.66,<2.0",
     # Sprint 6c (Phase 4.3, ADR-0052) — direct httpx use for OAuth
     # token exchange + refresh (Pi anthropic.ts uses ``fetch`` for
     # the token endpoint, not the SDK). httpx is already a transitive
