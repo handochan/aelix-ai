@@ -57,5 +57,14 @@
     "session_before_fork": "529-533",
     "session_shutdown": "552-557"
   },
-  "extension_session_lifecycle_added_by": "Sprint 6h₅a (Phase 4.14, ADR-0081)"
+  "extension_session_lifecycle_added_by": "Sprint 6h₅a (Phase 4.14, ADR-0081)",
+  "since_pin_event_names": [
+    "project_trust"
+  ],
+  "since_pin_event_source_file": "packages/coding-agent/src/core/extensions/types.ts",
+  "since_pin_event_pi_sha": "927e98068cda276bf9188f4774fb927c89823388",
+  "since_pin_event_pi_lines": {
+    "project_trust": "503-525"
+  },
+  "since_pin_event_added_by": "Issue #5 Lane C — adopted since-pin pi project_trust event"
 }

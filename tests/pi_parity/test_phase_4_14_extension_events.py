@@ -77,7 +77,8 @@ def test_hook_event_name_includes_4_new_extension_events() -> None:
     assert "session_before_switch" in names
     assert "session_before_fork" in names
     assert "session_shutdown" in names
-    assert len(names) == 35
+    # 36 = 35 (Phase 4.14 closure) + 1 (Issue #5 Lane C — project_trust).
+    assert len(names) == 36
 
 
 # === Closure invariant 2 — HOOK_RESULT_TYPES registry ============================
@@ -116,18 +117,19 @@ def test_reducers_session_start_and_shutdown_are_observational() -> None:
 # === Closure invariant 4 — overload counts ======================================
 
 
-def test_extension_api_on_has_35_overloads() -> None:
-    """Pyright runtime introspection: ``ExtensionAPI.on`` carries 35
-    ``@overload`` decls (28 baseline + 3 Sprint 5a + 4 Sprint 6h₅a).
+def test_extension_api_on_has_36_overloads() -> None:
+    """Pyright runtime introspection: ``ExtensionAPI.on`` carries 36
+    ``@overload`` decls (28 baseline + 3 Sprint 5a + 4 Sprint 6h₅a +
+    1 Issue #5 Lane C ``project_trust``).
     """
 
     overloads = typing.get_overloads(ExtensionAPI.on)
-    assert len(overloads) == 35
+    assert len(overloads) == 36
 
 
-def test_hook_bus_on_has_35_overloads() -> None:
+def test_hook_bus_on_has_36_overloads() -> None:
     overloads = typing.get_overloads(HookBus.on)
-    assert len(overloads) == 35
+    assert len(overloads) == 36
 
 
 # === Closure invariant 5 — Pi line citation drift detector =====================

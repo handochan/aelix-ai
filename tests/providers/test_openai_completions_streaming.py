@@ -406,3 +406,179 @@ async def test_no_finish_reason_triggers_error() -> None:
         )
     )
     assert any(isinstance(ev, AssistantErrorEvent) for ev in out)
+
+
+# === #36: explicit ``model.compat`` metadata drives headers / tool-fields ===
+#
+# A user-defined custom provider (provider name + base_url that match NO
+# built-in substring heuristic) must still get the right session-affinity
+# headers and tool-field handling purely from explicit ``model.compat``.
+# Pi parity: ``createClient`` / ``convertTools`` (openai-completions.ts).
+
+
+@dataclass
+class _FakeTool:
+    name: str = "search"
+    description: str = "search the web"
+    parameters: dict = field(
+        default_factory=lambda: {"type": "object", "properties": {}}
+    )
+
+
+def _custom_model(
+    compat: dict | None, headers: dict | None = None
+) -> Model:
+    """Provider name + base_url that match NO built-in detection heuristic."""
+    return Model(
+        api="openai-completions",
+        id="custom-model",
+        provider="my-private-llm",
+        base_url="https://llm.internal.example/v1",
+        compat=compat,
+        headers=headers,
+    )
+
+
+def _patch_create_client(
+    monkeypatch: Any, chunks: list[_Chunk], captured: dict[str, Any]
+) -> None:
+    """Capture the ``default_headers`` the adapter hands to the real client."""
+
+    def _fake(**kwargs: Any) -> _FakeAsyncOpenAI:
+        captured["default_headers"] = kwargs.get("default_headers")
+        return _FakeAsyncOpenAI(_AsyncIter(chunks))
+
+    monkeypatch.setattr(
+        "aelix_ai.providers.openai_completions.create_async_client", _fake
+    )
+
+
+async def test_custom_compat_session_affinity_headers_injected(
+    monkeypatch: Any,
+) -> None:
+    """Explicit ``sendSessionAffinityHeaders`` injects the trio for an unknown
+    provider name. Pi parity: ``createClient`` (openai-completions.ts:521-524)."""
+    chunks = [
+        _Chunk(choices=[_Choice(delta=_Delta(content="hi"), finish_reason="stop")])
+    ]
+    captured: dict[str, Any] = {}
+    _patch_create_client(monkeypatch, chunks, captured)
+    out = await _collect(
+        stream_openai_completions(
+            _custom_model({"sendSessionAffinityHeaders": True}),
+            Context(),
+            SimpleStreamOptions(api_key="k", session_id="sess-123"),
+        )
+    )
+    assert any(isinstance(ev, AssistantDoneEvent) for ev in out)
+    headers = captured["default_headers"]
+    assert headers["session_id"] == "sess-123"
+    assert headers["x-client-request-id"] == "sess-123"
+    assert headers["x-session-affinity"] == "sess-123"
+
+
+async def test_no_session_affinity_headers_without_compat(
+    monkeypatch: Any,
+) -> None:
+    """Default compat (no metadata, unknown provider) ships no affinity headers."""
+    chunks = [
+        _Chunk(choices=[_Choice(delta=_Delta(content="hi"), finish_reason="stop")])
+    ]
+    captured: dict[str, Any] = {}
+    _patch_create_client(monkeypatch, chunks, captured)
+    await _collect(
+        stream_openai_completions(
+            _custom_model(None),
+            Context(),
+            SimpleStreamOptions(api_key="k", session_id="sess-123"),
+        )
+    )
+    headers = captured["default_headers"] or {}
+    assert "session_id" not in headers
+    assert "x-session-affinity" not in headers
+    assert "x-client-request-id" not in headers
+
+
+async def test_session_affinity_suppressed_when_cache_retention_none(
+    monkeypatch: Any,
+) -> None:
+    """Pi gates affinity headers behind caching: retention ``"none"`` →
+    ``cacheSessionId`` undefined (openai-completions.ts:181), so no headers
+    even with the compat flag on."""
+    chunks = [
+        _Chunk(choices=[_Choice(delta=_Delta(content="hi"), finish_reason="stop")])
+    ]
+    captured: dict[str, Any] = {}
+    _patch_create_client(monkeypatch, chunks, captured)
+    await _collect(
+        stream_openai_completions(
+            _custom_model({"sendSessionAffinityHeaders": True}),
+            Context(),
+            SimpleStreamOptions(
+                api_key="k", session_id="sess-123", cache_retention="none"
+            ),
+        )
+    )
+    headers = captured["default_headers"] or {}
+    assert "session_id" not in headers
+
+
+async def test_model_headers_flow_through_options_headers_override(
+    monkeypatch: Any,
+) -> None:
+    """``model.headers`` seed client headers; ``options.headers`` win on
+    collision. Pi parity: ``createClient`` header merge order."""
+    chunks = [
+        _Chunk(choices=[_Choice(delta=_Delta(content="hi"), finish_reason="stop")])
+    ]
+    captured: dict[str, Any] = {}
+    _patch_create_client(monkeypatch, chunks, captured)
+    model = _custom_model(None, headers={"x-org": "acme", "x-shared": "from-model"})
+    await _collect(
+        stream_openai_completions(
+            model,
+            Context(),
+            SimpleStreamOptions(
+                api_key="k", headers={"x-shared": "from-options", "x-extra": "1"}
+            ),
+        )
+    )
+    headers = captured["default_headers"]
+    assert headers["x-org"] == "acme"
+    assert headers["x-shared"] == "from-options"
+    assert headers["x-extra"] == "1"
+
+
+async def test_custom_compat_strict_mode_false_omits_tool_strict() -> None:
+    """Explicit ``supportsStrictMode: false`` omits ``strict`` from tool defs
+    for an unknown provider name (tool-field handling without name heuristics)."""
+    chunks = [
+        _Chunk(choices=[_Choice(delta=_Delta(content="ok"), finish_reason="stop")])
+    ]
+    client = _FakeAsyncOpenAI(_AsyncIter(chunks))
+    await _collect(
+        stream_openai_completions(
+            _custom_model({"supportsStrictMode": False}),
+            Context(tools=[_FakeTool()]),
+            SimpleStreamOptions(api_key="k", client=client),
+        )
+    )
+    tools = client.captured["params"]["tools"]
+    assert tools and "strict" not in tools[0]["function"]
+
+
+async def test_custom_compat_strict_mode_default_keeps_tool_strict() -> None:
+    """Unknown provider with no compat keeps the default ``strict: false``."""
+    chunks = [
+        _Chunk(choices=[_Choice(delta=_Delta(content="ok"), finish_reason="stop")])
+    ]
+    client = _FakeAsyncOpenAI(_AsyncIter(chunks))
+    await _collect(
+        stream_openai_completions(
+            _custom_model(None),
+            Context(tools=[_FakeTool()]),
+            SimpleStreamOptions(api_key="k", client=client),
+        )
+    )
+    tools = client.captured["params"]["tools"]
+    assert tools[0]["function"]["strict"] is False

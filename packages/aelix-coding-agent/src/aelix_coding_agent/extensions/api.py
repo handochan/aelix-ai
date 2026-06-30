@@ -74,6 +74,7 @@ from aelix_agent_core.harness.hooks import (
     MessageStartHandler,
     MessageUpdateHandler,
     ModelSelectHandler,
+    ProjectTrustHandler,
     QueueUpdateHandler,
     ResourcesDiscoverHandler,
     ResourcesUpdateHandler,
@@ -721,6 +722,10 @@ class ExtensionContext:
         shutdown: Callable[[], None] | None = None,
         get_context_usage: Callable[[], ContextUsage | None] | None = None,
         compact: Callable[..., None] | None = None,
+        # Issue #5 (Lane C) — Pi ``isProjectTrusted`` (``extensions/types.ts:318``).
+        # Defaults to ``True`` matching Pi's pre-bind default
+        # (``runner.ts:273`` ``isProjectTrustedFn = () => true``).
+        is_project_trusted: Callable[[], bool] | None = None,
     ) -> None:
         # Bypass our own __setattr__ guard via object.__setattr__ for the
         # private slots we want excluded from the staleness check.
@@ -754,6 +759,10 @@ class ExtensionContext:
             self, "_get_context_usage", get_context_usage or (lambda: None)
         )
         object.__setattr__(self, "_compact_action", compact or (lambda **_: None))
+        # Issue #5 (Lane C): default to "trusted" (Pi ``runner.ts:273``).
+        object.__setattr__(
+            self, "_is_project_trusted", is_project_trusted or (lambda: True)
+        )
 
     def __getattribute__(self, name: str) -> Any:
         # Allow private/dunder access without the staleness check.
@@ -787,6 +796,16 @@ class ExtensionContext:
 
     def is_idle(self) -> bool:
         return object.__getattribute__(self, "_is_idle")()
+
+    def is_project_trusted(self) -> bool:
+        """Pi ``isProjectTrusted`` (``extensions/types.ts:318``).
+
+        Whether project-local trust is active for this context. Reflects the
+        harness's resolved Project-Trust decision; defaults to ``True`` when no
+        binding is supplied (Pi ``runner.ts:273`` ``() => true``).
+        """
+
+        return bool(object.__getattribute__(self, "_is_project_trusted")())
 
     def abort(self) -> None:
         object.__getattribute__(self, "_abort")()
@@ -1265,6 +1284,15 @@ class ExtensionAPI:
         self,
         event: Literal["session_shutdown"],
         handler: SessionShutdownHandler,
+        *,
+        cleanup: HookCleanup | None = None,
+        error_mode: HookErrorMode = "throw",
+    ) -> Callable[[], None]: ...
+    @overload
+    def on(
+        self,
+        event: Literal["project_trust"],
+        handler: ProjectTrustHandler,
         *,
         cleanup: HookCleanup | None = None,
         error_mode: HookErrorMode = "throw",

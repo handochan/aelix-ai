@@ -51,13 +51,17 @@ def test_hook_event_name_literal_matches_pi_734e08e() -> None:
     pi_own = set(fixture["harness_own_event_names"])
     pi_coding = set(fixture["coding_agent_event_names"])
     pi_ext_session = set(fixture["extension_session_lifecycle_event_names"])
+    # Issue #5 (Lane C): aelix adopted the since-pin pi ``project_trust`` event
+    # (pi SHA ``927e980``); the fixture records it separately so the drift
+    # detector still distinguishes "pinned @734e08e" from "since-pin adopted".
+    pi_since_pin = set(fixture["since_pin_event_names"])
     aelix = set(get_args(HookEventName))
 
-    expected = pi_loop | pi_own | pi_coding | pi_ext_session
+    expected = pi_loop | pi_own | pi_coding | pi_ext_session | pi_since_pin
     missing = expected - aelix
     extra = aelix - expected
     assert aelix == expected, f"missing={missing}, extra={extra}"
-    assert len(aelix) == 35, f"expected 35 names, got {len(aelix)}"
+    assert len(aelix) == 36, f"expected 36 names, got {len(aelix)}"
 
 
 def test_agent_event_name_matches_pi_loop_set() -> None:
@@ -85,13 +89,15 @@ def test_agent_harness_event_name_matches_pi_own_set() -> None:
     pi_own = set(fixture["harness_own_event_names"])
     pi_coding = set(fixture["coding_agent_event_names"])
     pi_ext_session = set(fixture["extension_session_lifecycle_event_names"])
+    pi_since_pin = set(fixture["since_pin_event_names"])  # Issue #5 — project_trust
     aelix_own = set(get_args(AgentHarnessEventName))
-    expected = pi_own | pi_coding | pi_ext_session
+    expected = pi_own | pi_coding | pi_ext_session | pi_since_pin
     assert aelix_own == expected, (
         f"missing={expected - aelix_own}, extra={aelix_own - expected}"
     )
     # 18 harness-own + 3 coding-agent (Sprint 5a) + 4 ext-session (Sprint 6h₅a)
-    assert len(aelix_own) == 25
+    # + 1 since-pin (Issue #5 Lane C — project_trust)
+    assert len(aelix_own) == 26
 
 
 def test_loop_and_harness_name_sets_disjoint() -> None:

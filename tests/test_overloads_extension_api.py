@@ -71,12 +71,13 @@ def _make_api() -> ExtensionAPI:
     return ExtensionAPI(ext, runtime)
 
 
-def test_extension_api_accepts_all_35_event_names() -> None:
+def test_extension_api_accepts_all_36_event_names() -> None:
     """Smoke test — every name in HookEventName is accepted by ExtensionAPI.on.
 
-    35 = Sprint 3a 28 + Sprint 5a Phase 3.1 (input / user_bash /
+    36 = Sprint 3a 28 + Sprint 5a Phase 3.1 (input / user_bash /
     resources_discover) + Sprint 6h₅a Phase 4.14 (session_start /
-    session_before_switch / session_before_fork / session_shutdown).
+    session_before_switch / session_before_fork / session_shutdown) +
+    Issue #5 Lane C (project_trust).
     """
 
     api = _make_api()
@@ -86,10 +87,10 @@ def test_extension_api_accepts_all_35_event_names() -> None:
 
     for name in get_args(HookEventName):
         api.on(name, noop)  # type: ignore[arg-type]
-    # 35 names registered.
+    # 36 names registered.
     total = sum(len(handlers) for handlers in api.extension.handlers.values())
-    assert total == 35
-    assert len(HOOK_RESULT_TYPES) == 35
+    assert total == 36
+    assert len(HOOK_RESULT_TYPES) == 36
 
 
 def test_extension_api_rejects_unknown_event_name() -> None:

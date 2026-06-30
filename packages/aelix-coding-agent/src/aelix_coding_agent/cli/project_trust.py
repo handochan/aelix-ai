@@ -24,11 +24,23 @@ This is a since-pin pi feature (pi added Project Trust after aelix's pin
 
 Aelix narrows the resource set to the two live surfaces (pi's
 ``settings.json``/``skills``/``prompts``/``themes``/``SYSTEM.md``/
-``APPEND_SYSTEM.md`` loaders do not exist in aelix yet — Sprint spec §2.2),
-and DEFERS the protected-core items (the ``project_trust`` extension event
-and ``ctx.is_project_trusted()`` — those live in the gate-protected
-``aelix-agent-core`` runner). So ``resolve_project_trusted`` is pi's order
-MINUS the extension-event step.
+``APPEND_SYSTEM.md`` loaders do not exist in aelix yet — Sprint spec §2.2).
+
+Issue #5 (Lane C) closed ONE of the originally-deferred protected-core items
+end-to-end — ``ctx.is_project_trusted()`` (the event types live in
+``aelix-agent-core`` :mod:`aelix_agent_core.harness.hooks`; the context bridge is
+wired by the harness and reaches production). It also *implements and tests* the
+``project_trust`` extension event (:func:`emit_project_trust_event`) and the
+``defaultProjectTrust`` handling inside :func:`resolve_project_trusted`, so the
+orchestrator can follow pi's full order when those inputs are supplied.
+
+Those last two, however, remain **deferred at the production bootstrap**: the
+sole CLI caller (``entry.py`` ``_resolve_project_trust``) does not yet pass
+``extensions=`` or ``default_project_trust=``, so in the shipped CLI the
+``project_trust`` event is never fired and ``defaultProjectTrust`` is always
+treated as ``"ask"``. Wiring them at the call site is a follow-up — it needs the
+user/global extensions loaded BEFORE trust resolution plus a ``SettingsManager``
+source for the default (related to #44).
 
 Non-interactive (print/json/rpc) default is **DENY** (pi parity,
 ``project-trust.ts:86-88``): without ``--approve`` and without a persisted
@@ -50,20 +62,35 @@ intentional simplification of pi's ``proper-lockfile`` sync lock.
 from __future__ import annotations
 
 import contextlib
+import inspect
 import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
+
+from aelix_agent_core.harness.hooks import (
+    ProjectTrustContext,
+    ProjectTrustEventResult,
+    ProjectTrustHookEvent,
+)
 
 from .config import CONFIG_DIR_NAME, get_agent_dir
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Awaitable, Callable, Sequence
+    from typing import Any
+
+# Pi ``DefaultProjectTrust`` (``settings-manager.ts:61``): the global-only
+# "default project trust" setting consulted AFTER the extension event + the
+# on-disk store but BEFORE prompting. Default ``"ask"``.
+DefaultProjectTrust = Literal["ask", "always", "never"]
 
 __all__ = [
+    "DefaultProjectTrust",
     "ProjectTrustPromptResult",
     "ProjectTrustStore",
+    "emit_project_trust_event",
     "format_project_trust_prompt",
     "has_trust_requiring_project_resources",
     "project_trust_options",
@@ -335,7 +362,57 @@ class ProjectTrustStore:
         self._write(data)
 
 
-# === The orchestrator (pi ``resolveProjectTrusted`` MINUS the event) ========
+# === The project_trust extension event (pi ``emitProjectTrustEvent``) =======
+
+
+async def emit_project_trust_event(
+    extensions: Sequence[Any],
+    event: ProjectTrustHookEvent,
+    ctx: ProjectTrustContext,
+) -> tuple[ProjectTrustEventResult | None, list[str]]:
+    """Pi parity ``emitProjectTrustEvent`` (``extensions/runner.ts:197-227``).
+
+    Walks every extension's ``project_trust`` handlers in registration order.
+    The FIRST handler returning a ``"yes"``/``"no"`` decision wins;
+    ``"undecided"`` (or no handlers) falls through. Handler exceptions are
+    collected (never raised) so one bad extension cannot abort startup.
+
+    Only *already-loaded* extensions get a vote — at trust-resolution time the
+    untrusted project-local tier has NOT been loaded yet, so this is the
+    user-trusted (explicit ``-e`` / global / entry-point) surface deciding
+    whether to trust the project, exactly mirroring Pi's security model.
+
+    Returns ``(result, errors)`` where ``result`` is the deciding
+    :class:`ProjectTrustEventResult` (or ``None`` when every handler deferred)
+    and ``errors`` is a list of formatted handler-error messages.
+    """
+
+    errors: list[str] = []
+    for ext in extensions:
+        handlers_map = getattr(ext, "handlers", None)
+        if not handlers_map:
+            continue
+        handlers = handlers_map.get("project_trust")
+        if not handlers:
+            continue
+        for handler in handlers:
+            try:
+                raw = handler(event, ctx)
+                result = await raw if inspect.isawaitable(raw) else raw
+            except Exception as exc:  # noqa: BLE001 — one bad ext never aborts startup
+                name = getattr(ext, "name", None) or getattr(ext, "path", "?")
+                errors.append(
+                    f'Extension "{name}" project_trust error: {exc}'
+                )
+                continue
+            # A handler that returns ``None``/``undecided`` defers to the next.
+            if result is None or result.trusted == "undecided":
+                continue
+            return result, errors
+    return None, errors
+
+
+# === The orchestrator (pi ``resolveProjectTrusted`` — event now wired) ======
 
 
 # A prompt callback: given the cwd, return the user's choice, or ``None`` on
@@ -353,26 +430,43 @@ async def resolve_project_trusted(
     prompt: PromptCallback | None = None,
     store: ProjectTrustStore | None = None,
     agent_dir: str | Path | None = None,
+    extensions: Sequence[Any] | None = None,
+    project_trust_ctx: ProjectTrustContext | None = None,
+    default_project_trust: DefaultProjectTrust = "ask",
+    on_extension_error: Callable[[str], None] | None = None,
 ) -> bool:
     """Resolve whether ``cwd``'s project-local resources are trusted.
 
-    Pi source: ``project-trust.ts:46-96`` ``resolveProjectTrusted``, MINUS
-    the ``project_trust`` extension event (deferred — it lives in
-    gate-protected ``aelix-agent-core``) and MINUS the ``defaultProjectTrust``
-    setting (aelix never constructs a ``SettingsManager`` in the coding-agent
-    bootstrap — Sprint spec §2.2 / §4.2; that step is Option B).
+    Pi source: ``project-trust.ts:46-96`` ``resolveProjectTrusted``. Issue #5
+    (Lane C) *implements and tests* the ``project_trust`` extension event and the
+    ``defaultProjectTrust`` setting inside this orchestrator (both were stubbed
+    out in the original Option A+ landing). NOTE: these two steps fire only when
+    the caller threads ``extensions=`` / ``default_project_trust=``; the
+    production CLI bootstrap (``entry.py`` ``_resolve_project_trust``) does not
+    yet pass either, so in the shipped CLI the event step and
+    ``defaultProjectTrust`` remain DEFERRED (call-site wiring is a follow-up —
+    see the module docstring).
 
-    Resolution order:
+    Resolution order (pi-faithful):
 
     1. ``override`` (``--approve`` / ``--no-approve``): short-circuit
        (no prompt, no persistence).
     2. No trust-requiring resources → ``True`` (nothing dangerous to gate).
-    3. Persisted ``trust.json`` decision (nearest-ancestor) → return it if
+    3. ``project_trust`` extension event (when ``extensions`` supplied): the
+       first ``"yes"``/``"no"`` decision wins; ``remember=True`` persists it.
+       Handler errors are reported via ``on_extension_error``.
+    4. Persisted ``trust.json`` decision (nearest-ancestor) → return it if
        not ``None``.
-    4. ``has_ui`` → prompt; otherwise **DENY** (``False``) — non-interactive
+    5. ``default_project_trust``: ``"always"`` → ``True``, ``"never"`` →
+       ``False``, ``"ask"`` → fall through.
+    6. ``has_ui`` → prompt; otherwise **DENY** (``False``) — non-interactive
        deny-by-default (pi ``project-trust.ts:86-88``).
-    5. On a prompt result: persist unless "session only", then return its
+    7. On a prompt result: persist unless "session only", then return its
        ``trusted``. A cancelled prompt (``None``) → ``False``.
+
+    Backward-compat: with ``extensions=None`` and ``default_project_trust="ask"``
+    (the defaults), steps 3 and 5 are inert, so the resolution reproduces the
+    original Option A+ order exactly.
 
     A malformed store is treated as "no decision" (we do NOT block startup on
     a corrupt trust file — we fall through to the prompt/deny path, which is
@@ -389,7 +483,26 @@ async def resolve_project_trusted(
 
     trust_store = store if store is not None else ProjectTrustStore(agent_dir)
 
-    # 3. Persisted decision (nearest-ancestor walk).
+    # 3. project_trust extension event (pi: emitted BEFORE the store lookup).
+    if extensions:
+        ctx = project_trust_ctx or ProjectTrustContext(
+            cwd=str(cwd), has_ui=has_ui
+        )
+        result, errors = await emit_project_trust_event(
+            extensions, ProjectTrustHookEvent(cwd=str(cwd)), ctx
+        )
+        if on_extension_error is not None:
+            for message in errors:
+                on_extension_error(message)
+        if result is not None:
+            trusted = result.trusted == "yes"
+            if result.remember is True:
+                # Honor the in-session decision even if persistence fails.
+                with contextlib.suppress(ValueError, OSError):
+                    trust_store.set(cwd, trusted)
+            return trusted
+
+    # 4. Persisted decision (nearest-ancestor walk).
     try:
         decision = trust_store.get(cwd)
     except ValueError:
@@ -398,11 +511,17 @@ async def resolve_project_trusted(
     if decision is not None:
         return decision
 
-    # 4. No UI → deny-by-default (pi non-interactive default).
+    # 5. defaultProjectTrust (global-only setting). "ask" falls through.
+    if default_project_trust == "always":
+        return True
+    if default_project_trust == "never":
+        return False
+
+    # 6. No UI → deny-by-default (pi non-interactive default).
     if not has_ui or prompt is None:
         return False
 
-    # 5. Prompt the user.
+    # 7. Prompt the user.
     result = await prompt(cwd)
     if result is None:
         # Cancelled (Esc / Ctrl+C) → deny.

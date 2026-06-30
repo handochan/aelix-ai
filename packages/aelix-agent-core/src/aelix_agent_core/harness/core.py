@@ -256,6 +256,14 @@ class AgentHarnessOptions:
     _branch_summarizer_override: Any | None = None
     settings_manager: SettingsManager | None = None
 
+    # === Issue #5 (Lane C) — Project Trust extension surface ===
+    # Resolved project-trust state for the active ``cwd``; surfaced to
+    # extensions via ``ctx.is_project_trusted()`` (Pi ``isProjectTrusted``,
+    # ``extensions/types.ts:318``). Defaults to ``True`` (Pi pre-bind default
+    # ``runner.ts:273`` ``() => true``); the coding-agent threads the resolved
+    # decision in from :func:`resolve_project_trusted`.
+    project_trusted: bool = True
+
 
 # === Sprint 4a — pending session writes (Pi parity, agent-harness.ts:414-432 + 459-481) ===
 #
@@ -489,9 +497,11 @@ _AUTO_RETRY_BASE_DELAY_MS = 2000
 # pi parity (``agent-session.ts:2414-2426`` ``_isRetryableError``): verbatim
 # case-insensitive regex over ``AssistantMessage.error_message``. ``.?`` matches
 # the same single-char OR empty separator pi's JS regex matches (e.g. "rate
-# limit" / "rate-limit" / "ratelimit"). Context-overflow exclusion is handled
-# by 6h₁₈ auto-compaction trigger preemptively; the regex does not match
-# overflow markers anyway.
+# limit" / "rate-limit" / "ratelimit"). Context-overflow exclusion is enforced
+# explicitly in :meth:`_is_retryable_error` (pi ``:2486`` short-circuits
+# ``isContextOverflow`` before this regex) — a provider can wrap an overflow in a
+# retryable-looking envelope (e.g. "provider returned error: ...maximum context
+# length is 200000 tokens") that this regex WOULD otherwise match.
 _RETRYABLE_ERROR_PATTERN = re.compile(
     r"overloaded|provider.?returned.?error|rate.?limit|too many requests|"
     r"429|500|502|503|504|service.?unavailable|server.?error|internal.?error|"
@@ -524,6 +534,8 @@ class AgentHarness:
         from aelix_coding_agent.extensions.api import _ExtensionRuntime
 
         self._options = options
+        # Issue #5 (Lane C) — resolved Project-Trust state for ``ctx.is_project_trusted()``.
+        self._project_trusted: bool = options.project_trusted
         self._runtime = options.runtime or _ExtensionRuntime()
         # Sprint 4a — Session is owned by the caller; we just hold a
         # reference and route writes/append_message through it. ``None``
@@ -654,8 +666,17 @@ class AgentHarness:
                     mode = extension.handler_error_modes.get(
                         (event_name, id(handler)), "throw"
                     )
-                    self._hooks.on(
-                        event_name,
+                    # The ``HookBus.on`` overloads narrow handler-by-event; this
+                    # generic registration loop feeds the union ``HookEventName``
+                    # / ``HookHandler`` straight from ``extension.handlers``, so
+                    # no single narrowed overload matches (the impl carries the
+                    # dual ``reportInconsistentOverload`` suppression). The call
+                    # is correct at runtime — ``event_name``/``handler`` are the
+                    # paired key/value of the same map. (Adding the #5
+                    # ``project_trust`` overload tipped pyright's union-expansion
+                    # threshold and surfaced this pre-existing imprecision.)
+                    self._hooks.on(  # pyright: ignore[reportCallIssue]
+                        event_name,  # pyright: ignore[reportArgumentType]
                         handler,
                         source=extension.name,
                         error_mode=mode,
@@ -731,6 +752,12 @@ class AgentHarness:
         # can signal an in-flight ``asyncio.sleep`` to cancel mid-backoff.
         self._retry_attempt: int = 0
         self._retry_abort_event: asyncio.Event | None = None
+        # Issue #4 Lane B (ADR-0126 follow-up) — overflow-driven compaction
+        # recovery. pi parity ``agent-session.ts:_checkCompaction`` Case 1 +
+        # ``_overflowRecoveryAttempted``. Reset at the start of each ``prompt()``
+        # so a turn gets at most ONE compact-and-retry on context overflow,
+        # guaranteeing no infinite retry loop (pi #5720).
+        self._overflow_recovery_attempted: bool = False
         # Sprint 3 cooperative-abort: registry of in-flight bash AbortSignals.
         # Typed ``Any`` to avoid an import cycle (``_abort`` lives in the
         # coding-agent package; harness is in agent-core).  Each entry is an
@@ -847,6 +874,22 @@ class AgentHarness:
     @property
     def runtime(self) -> _ExtensionRuntime:
         return self._runtime
+
+    @property
+    def project_trusted(self) -> bool:
+        """Resolved Project-Trust state surfaced via ``ctx.is_project_trusted()``."""
+
+        return self._project_trusted
+
+    def set_project_trusted(self, trusted: bool) -> None:
+        """Issue #5 (Lane C) — update the Project-Trust flag.
+
+        Pi binds ``isProjectTrustedFn`` once at ``bindCore``; aelix mirrors with
+        a mutable flag the context bridge reads live, so a trust decision made
+        after harness construction is reflected in subsequent hook contexts.
+        """
+
+        self._project_trusted = bool(trusted)
 
     @property
     def is_idle(self) -> bool:
@@ -1105,6 +1148,10 @@ class AgentHarness:
         # see the guard immediately (C-2 re-entrancy fix).
         self._phase = "turn"
         self._idle_event.clear()
+        # Issue #4 Lane B — fresh overflow-recovery budget for this turn. pi
+        # parity: ``agent-session.ts:492`` resets ``_overflowRecoveryAttempted``
+        # on every user ``message_start``.
+        self._overflow_recovery_attempted = False
         try:
             # Sprint 5b §B.1 — ``input`` emit (P-24/P-34). Pi parity
             # (``agent-session.ts:984-1001``): runs BEFORE existing
@@ -1156,55 +1203,74 @@ class AgentHarness:
                 else self._state.system_prompt
             )
             result = await self._run(prompts, system_prompt=system_prompt)
-            # Sprint 6h₂₀ (ADR-0128) — auto-retry loop. pi parity
-            # ``agent-session.ts:572-585`` ``_processAgentEvent``: the retry
-            # check fires after every ``agent_end`` BEFORE compaction. While
-            # the last assistant message is a retriable error, sleep with
-            # backoff and re-run the turn from the existing context (the user
-            # message is already in ``_state.messages``; ``_handle_retryable_error``
-            # pops the error assistant). Empty ``prompts=[]`` means ``_run``
-            # appends no new user message — equivalent to pi's ``agent.continue()``.
+            # Issue #4 Lane B — outer recovery loop. pi parity
+            # ``agent-session.ts:_runAgentPrompt`` (``while (_handlePostAgentRun())
+            # agent.continue()``). Each pass first drains the auto-retry loop
+            # (retriable provider errors), then attempts ONE overflow-driven
+            # compact-and-retry. The loop re-enters after an overflow re-run so a
+            # retriable error on the recovered turn is still retried while a
+            # second overflow is refused by ``_overflow_recovery_attempted`` —
+            # guaranteeing no infinite retry.
             while True:
-                last_assistant = None
-                for msg in reversed(self._state.messages):
-                    if isinstance(msg, AssistantMessage):
-                        last_assistant = msg
+                # Sprint 6h₂₀ (ADR-0128) — auto-retry loop. pi parity
+                # ``agent-session.ts:572-585`` ``_processAgentEvent``: the retry
+                # check fires after every ``agent_end`` BEFORE compaction. While
+                # the last assistant message is a retriable error, sleep with
+                # backoff and re-run the turn from the existing context (the user
+                # message is already in ``_state.messages``;
+                # ``_handle_retryable_error`` pops the error assistant). Empty
+                # ``prompts=[]`` means ``_run`` appends no new user message —
+                # equivalent to pi's ``agent.continue()``.
+                while True:
+                    last_assistant = None
+                    for msg in reversed(self._state.messages):
+                        if isinstance(msg, AssistantMessage):
+                            last_assistant = msg
+                            break
+                    if last_assistant is None or not self._is_retryable_error(
+                        last_assistant
+                    ):
                         break
-                if last_assistant is None or not self._is_retryable_error(
-                    last_assistant
-                ):
+                    did_retry = await self._handle_retryable_error(last_assistant)
+                    if not did_retry:
+                        break  # max retries / disabled / aborted
+                    # W-review MEDIUM-2: invariant — the user message must still
+                    # be in state for ``agent_loop`` to have something to continue
+                    # from. ``_handle_retryable_error`` pops only the trailing
+                    # error assistant, so a preceding ``UserMessage`` is preserved.
+                    assert any(
+                        isinstance(m, UserMessage) for m in self._state.messages
+                    ), "retry continue requires a pending user message in state"
+                    result = await self._run([], system_prompt=system_prompt)
+
+                # pi ``agent-session.ts:561-567`` — reset retry counter on a
+                # terminal-success assistant; emit ``auto_retry_end {success: True}``.
+                if self._retry_attempt > 0:
+                    terminal_assistant = None
+                    for msg in reversed(self._state.messages):
+                        if isinstance(msg, AssistantMessage):
+                            terminal_assistant = msg
+                            break
+                    if (
+                        terminal_assistant is not None
+                        and terminal_assistant.stop_reason != "error"
+                    ):
+                        from aelix_agent_core.types import AutoRetryEndEvent
+
+                        success_attempt = self._retry_attempt
+                        self._retry_attempt = 0
+                        await self._emit_to_subscribers(
+                            AutoRetryEndEvent(success=True, attempt=success_attempt)
+                        )
+
+                # Issue #4 Lane B — overflow-driven compaction recovery. pi
+                # parity ``agent-session.ts:_checkCompaction`` Case 1: a provider
+                # context-overflow on the last assistant triggers a compaction
+                # with reason="overflow" and a single re-run of the failed turn.
+                # Returns ``True`` only when a re-run is warranted (will_retry).
+                if not await self._try_overflow_recovery(system_prompt):
                     break
-                did_retry = await self._handle_retryable_error(last_assistant)
-                if not did_retry:
-                    break  # max retries / disabled / aborted
-                # W-review MEDIUM-2: invariant — the user message must still be
-                # in state for ``agent_loop`` to have something to continue from.
-                # ``_handle_retryable_error`` pops only the trailing error
-                # assistant, so a preceding ``UserMessage`` is preserved.
-                assert any(
-                    isinstance(m, UserMessage) for m in self._state.messages
-                ), "retry continue requires a pending user message in state"
                 result = await self._run([], system_prompt=system_prompt)
-
-            # pi ``agent-session.ts:561-567`` — reset retry counter on a
-            # terminal-success assistant; emit ``auto_retry_end {success: True}``.
-            if self._retry_attempt > 0:
-                terminal_assistant = None
-                for msg in reversed(self._state.messages):
-                    if isinstance(msg, AssistantMessage):
-                        terminal_assistant = msg
-                        break
-                if (
-                    terminal_assistant is not None
-                    and terminal_assistant.stop_reason != "error"
-                ):
-                    from aelix_agent_core.types import AutoRetryEndEvent
-
-                    success_attempt = self._retry_attempt
-                    self._retry_attempt = 0
-                    await self._emit_to_subscribers(
-                        AutoRetryEndEvent(success=True, attempt=success_attempt)
-                    )
 
             # Sprint 6h₁₈ (ADR-0126) — auto-compaction trigger AFTER retry.
             # pi order is retry-then-compact (``agent-session.ts:577-582``).
@@ -1333,6 +1399,7 @@ class AgentHarness:
         custom_instructions: str | None = None,
         *,
         reason: Literal["manual", "threshold", "overflow"] = "manual",
+        will_retry: bool = False,
     ) -> CompactResult:
         """Pi ``compact()`` (``agent-harness.ts:689-745``, Sprint 4b §B).
 
@@ -1340,8 +1407,9 @@ class AgentHarness:
         :class:`SessionBeforeCompactHookEvent` /
         :class:`SessionCompactHookEvent` so extensions can distinguish a manual
         ``/compact`` (default) from threshold auto-compaction. ``will_retry``
-        on those events stays ``False`` (the context-overflow re-run path is
-        deferred).
+        (issue #4 Lane B) is ``True`` only on the overflow recovery path
+        (:meth:`_try_overflow_recovery`) where the harness re-runs the failed
+        turn after compaction; manual / threshold callers leave it ``False``.
 
         Phase flow:
 
@@ -1397,6 +1465,7 @@ class AgentHarness:
                         custom_instructions=custom_instructions,
                         signal=None,
                         reason=reason,
+                        will_retry=will_retry,
                     )
                 )
             except Exception as exc:
@@ -1452,6 +1521,7 @@ class AgentHarness:
                             compaction_entry=entry,
                             from_hook=from_hook,
                             reason=reason,
+                            will_retry=will_retry,
                         )
                     )
                 except Exception as exc:
@@ -1473,8 +1543,10 @@ class AgentHarness:
         most-recent assistant message's context-token count exceeds
         ``context_window - reserveTokens`` (pi ``compaction.ts:219-222``
         ``shouldCompact``), invokes the same :meth:`compact` path manual
-        ``/compact`` uses (ADR-0117). The overflow path (LLM-returned
-        context-overflow re-run) is deferred to v2.
+        ``/compact`` uses (ADR-0117). The complementary overflow path
+        (LLM-returned context-overflow → compact + re-run) is handled
+        separately by :meth:`_try_overflow_recovery` (issue #4 Lane B), which
+        runs BEFORE this threshold check in :meth:`prompt`'s recovery loop.
 
         Auto-trigger MUST NOT turn a successful turn into a propagated
         exception (W-review HIGH-1/HIGH-2):
@@ -1538,6 +1610,117 @@ class AgentHarness:
                     return
                 raise
 
+    async def _try_overflow_recovery(self, system_prompt: str) -> bool:
+        """Issue #4 Lane B — overflow-driven compact-and-retry.
+
+        pi parity: ``agent-session.ts:_checkCompaction`` **Case 1** (overflow)
+        + ``_runAutoCompaction("overflow", will_retry)``. Called once per pass
+        of :meth:`prompt`'s outer recovery loop, AFTER the auto-retry loop has
+        drained retriable provider errors. Detects a provider context-overflow
+        on the most-recent assistant message and, when recoverable, compacts
+        with ``reason="overflow"`` then signals the caller to re-run the failed
+        turn (``_run([])``, equivalent to pi's ``agent.continue()``).
+
+        Returns ``True`` iff the caller should re-run the turn.
+
+        Faithful guards:
+
+        - **pi #5720** (already-completed response): a *successful* overflow
+          (``stop_reason in {"stop","end_turn"}`` — e.g. z.ai silent overflow)
+          already produced an answer that ``_run([])`` cannot continue from, so
+          it compacts but does NOT retry (``will_retry=False``).
+        - **No infinite retry**: ``_overflow_recovery_attempted`` (reset per
+          ``prompt()``) allows at most ONE compact-and-retry per turn; a second
+          overflow refuses the re-run (pi ``:1848-1859``).
+        - **pi #4811** (nothing eligible to compact): a "Nothing to compact"
+          raise from :meth:`compact` is swallowed and no re-run happens (pi
+          ``prepareCompaction`` returning ``None`` → ``:1931-1934``).
+        """
+
+        from aelix_ai.utils.overflow import is_context_overflow
+
+        # pi ``:1812-1813`` — gated by the compaction-enabled flag. Also keeps
+        # the in-memory backward-compat path (no Session → ``compact()`` raises)
+        # and the model-less path a no-op, mirroring :meth:`_check_auto_compaction`.
+        if not self._state.auto_compaction_enabled:
+            return False
+        if self._session is None:
+            return False
+        model = self._state.model
+        if model is None:
+            return False
+        context_window = getattr(model, "context_window", 0) or 0
+
+        last_assistant: AssistantMessage | None = None
+        for msg in reversed(self._state.messages):
+            if isinstance(msg, AssistantMessage):
+                last_assistant = msg
+                break
+        if last_assistant is None:
+            return False
+
+        # pi ``:1824-1825`` — skip an overflow attributed to a DIFFERENT model
+        # (the user may have switched to a larger-context model after the error).
+        # Aelix adapters do not always populate the provider/model provenance
+        # trio (``messages.py``: Sprint 6a leaves it ``None``), so absent
+        # provenance is treated as same-model — an explicit mismatch still skips.
+        msg_provider = getattr(last_assistant, "provider", None)
+        msg_model = getattr(last_assistant, "model", None)
+        has_provenance = msg_provider is not None and msg_model is not None
+        if has_provenance and (
+            msg_provider != getattr(model, "provider", None)
+            or msg_model != getattr(model, "id", None)
+        ):
+            return False
+
+        if not is_context_overflow(last_assistant, context_window):
+            return False
+
+        # pi ``:1842`` — ``will_retry = stopReason !== "stop"``. Aelix's Anthropic
+        # adapter emits ``"end_turn"`` (not ``"stop"``) for a completed answer,
+        # so both count as "completed, do not retry" (pi #5720).
+        will_retry = last_assistant.stop_reason not in ("stop", "end_turn")
+
+        if not will_retry:
+            # pi ``:1844-1846`` — silent overflow on a completed answer: compact
+            # to shrink context for the NEXT turn, but do not re-run this one.
+            try:
+                await self.compact(reason="overflow", will_retry=False)
+            except AgentHarnessError as exc:
+                if exc.code == "invalid_state" and "Nothing to compact" in str(exc):
+                    return False
+                _log.debug("overflow compaction (no-retry) failed: %r", exc, exc_info=True)
+            return False
+
+        # pi ``:1848-1859`` — already recovered once this turn; refuse a second
+        # compact-and-retry so a persistently-overflowing turn cannot loop.
+        if self._overflow_recovery_attempted:
+            _log.debug(
+                "context-overflow recovery already attempted this turn; refusing re-run"
+            )
+            return False
+        self._overflow_recovery_attempted = True
+
+        # pi ``:1862-1867`` — drop the error assistant from the live context
+        # before the retry (it remains in session history). The retry re-runs
+        # from the compacted pre-error context.
+        if self._state.messages and isinstance(
+            self._state.messages[-1], AssistantMessage
+        ):
+            self._state.messages.pop()
+
+        # pi ``:1868`` — ``runAutoCompaction("overflow", will_retry=True)``.
+        try:
+            await self.compact(reason="overflow", will_retry=True)
+        except AgentHarnessError as exc:
+            # pi ``:1931-1934`` / #4811 — nothing eligible to compact: no retry.
+            if exc.code == "invalid_state" and "Nothing to compact" in str(exc):
+                return False
+            # pi ``:2054-2069`` — compaction itself failed: no retry.
+            _log.debug("overflow compaction failed: %r", exc, exc_info=True)
+            return False
+        return True
+
     # === Sprint 6h₂₀ (ADR-0128) — auto-retry state machine ====================
 
     async def _emit_to_subscribers(self, event: Any) -> None:
@@ -1557,14 +1740,31 @@ class AgentHarness:
                 _log.debug("auto-retry listener raised", exc_info=True)
 
     def _is_retryable_error(self, message: Any) -> bool:
-        """pi parity ``agent-session.ts:2414-2426`` ``_isRetryableError``.
+        """pi parity ``agent-session.ts:2484-2488`` ``_isRetryableError``.
 
-        Returns True only when the assistant ``stop_reason == "error"`` and
-        the ``error_message`` matches the retriable regex (network /
-        rate-limit / 5xx / etc.). Context-overflow exclusion is handled
-        preemptively by 6h₁₈ auto-compaction; the regex doesn't match
-        overflow markers anyway.
+        Returns True only when the assistant ``stop_reason == "error"`` and the
+        ``error_message`` matches the retriable regex (network / rate-limit /
+        5xx / etc.) AND the message is **not** a context overflow.
+
+        pi ``:2486`` short-circuits ``isContextOverflow(message, contextWindow)``
+        to ``false`` first: context overflow is recovered by compact-and-retry
+        (:meth:`_try_overflow_recovery`), NOT this backoff retry loop. A provider
+        that wraps an overflow in a retryable-looking envelope (e.g. "Provider
+        returned error: ...maximum context length is 200000 tokens") matches
+        BOTH the retryable regex and an overflow pattern; excluding overflow here
+        routes it straight to overflow recovery instead of burning the auto-retry
+        budget re-running the same oversized context.
         """
+
+        from aelix_ai.utils.overflow import is_context_overflow
+
+        # pi ``:2486`` — context overflow is handled by compaction, not retry.
+        model = self._state.model
+        context_window = (
+            (getattr(model, "context_window", 0) or 0) if model is not None else 0
+        )
+        if is_context_overflow(message, context_window):
+            return False
 
         if getattr(message, "stop_reason", None) != "error":
             return False
@@ -2948,6 +3148,9 @@ class AgentHarness:
             "shutdown": _shutdown_default,
             "get_context_usage": _get_context_usage,
             "compact": _compact_action,
+            # Issue #5 (Lane C) — Pi ``isProjectTrusted`` bridge. Reads the
+            # live flag so a later :meth:`set_project_trusted` is reflected.
+            "is_project_trusted": lambda: self._project_trusted,
         }
 
     def _make_context(self) -> ExtensionContext:
@@ -3121,6 +3324,7 @@ class AgentHarness:
             signal=base.signal,
             has_ui=base.has_ui,
             is_idle=base.is_idle,
+            is_project_trusted=base.is_project_trusted,  # Issue #5 (Lane C)
             abort=base.abort,
             get_active_tools=base.get_active_tools,
             get_system_prompt=base.get_system_prompt,

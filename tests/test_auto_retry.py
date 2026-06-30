@@ -101,6 +101,34 @@ def test_is_retryable_error_negative_no_message_text() -> None:
     assert h._is_retryable_error(msg) is False
 
 
+def test_is_retryable_error_excludes_overflow_in_retryable_envelope() -> None:
+    """pi ``:2486`` — overflow wrapped in a retryable envelope is NOT retryable.
+
+    A provider can surface a context overflow inside a retryable-looking
+    envelope; this message matches BOTH ``_RETRYABLE_ERROR_PATTERN``
+    (``provider returned error``) AND an overflow pattern (``maximum context
+    length is N tokens``). The explicit ``isContextOverflow`` short-circuit must
+    win so the overflow routes to compact-and-retry instead of burning the
+    auto-retry backoff budget re-running the same oversized context.
+    """
+
+    from aelix_agent_core.harness.core import _RETRYABLE_ERROR_PATTERN
+    from aelix_ai.utils.overflow import is_context_overflow
+
+    h = _build_harness()
+    wrapped = (
+        "Provider returned error: this model's maximum context length "
+        "is 200000 tokens"
+    )
+    # Precondition: the envelope genuinely matches the retryable regex...
+    assert _RETRYABLE_ERROR_PATTERN.search(wrapped) is not None
+    # ...and is also a recognizable context overflow (error-message case,
+    # context_window irrelevant here).
+    assert is_context_overflow(_err(wrapped), 0) is True
+    # Therefore it must be excluded from retry (overflow recovery handles it).
+    assert h._is_retryable_error(_err(wrapped)) is False
+
+
 # === _handle_retryable_error =================================================
 
 

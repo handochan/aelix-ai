@@ -143,6 +143,12 @@ AgentHarnessEventName = Literal[
     "session_before_switch",
     "session_before_fork",
     "session_shutdown",
+    # Issue #5 (Lane C) — Project Trust extension surface. Pi ``project_trust``
+    # decide/defer event at SHA ``927e980`` (``extensions/types.ts:503-525``,
+    # ``core/project-trust.ts``). Fired (via the standalone
+    # ``emit_project_trust_event`` helper, NOT the reducer pipeline) before any
+    # project-local code executes so a user-trusted extension can decide trust.
+    "project_trust",
 ]
 
 # Union of both (31 names total — Sprint 5a Phase 3.1 added 3 own events).
@@ -189,6 +195,9 @@ HookEventName = Literal[
     "session_before_switch",
     "session_before_fork",
     "session_shutdown",
+    # Issue #5 (Lane C) — Project Trust extension surface (see
+    # ``AgentHarnessEventName`` above for the Pi citation).
+    "project_trust",
 ]
 
 
@@ -558,9 +567,9 @@ class SessionBeforeCompactHookEvent(HookEvent):
     # pi #5962 — why the compaction is happening + whether the harness will
     # re-run the turn afterwards. Added with safe defaults so existing
     # constructors/tests keep working (frozen dataclass, additive). ``reason``
-    # is populated at the emit sites determinable today (manual ``/compact`` vs
-    # threshold auto-compaction); ``overflow`` is reserved for the deferred
-    # context-overflow re-run path. ``will_retry`` is always ``False`` today.
+    # is populated at every emit site: manual ``/compact`` vs threshold
+    # auto-compaction vs ``overflow`` recovery (issue #4 Lane B). ``will_retry``
+    # is ``True`` only on the overflow compact-and-retry path.
     reason: Literal["manual", "threshold", "overflow"] = "manual"
     will_retry: bool = False
     type: Literal["session_before_compact"] = "session_before_compact"
@@ -998,6 +1007,66 @@ class ResourcesDiscoverHookEvent(HookEvent):
     type: Literal["resources_discover"] = "resources_discover"
 
 
+# === Issue #5 (Lane C) — Project Trust extension surface ====================
+#
+# Pi parity (SHA ``927e980``): the ``project_trust`` decide/defer event lets a
+# user-trusted extension (explicit ``-e`` / global / entry-point — NOT the
+# untrusted project-local tier) decide whether a project folder is trusted,
+# BEFORE any project-local code runs. Unlike the reducer-aggregated events,
+# Pi emits this with a dedicated ``emitProjectTrustEvent`` walk
+# (``core/extensions/runner.ts:197-227``): the FIRST handler returning
+# ``"yes"``/``"no"`` wins; ``"undecided"`` falls through. Aelix mirrors that in
+# :func:`aelix_coding_agent.cli.project_trust.emit_project_trust_event`.
+#
+# Handlers receive a lightweight :class:`ProjectTrustContext` (Pi
+# ``extensions/types.ts:515-520``) — NOT the full ``ExtensionContext`` — because
+# trust resolves at startup before a harness/session exists.
+
+ProjectTrustEventDecision = Literal["yes", "no", "undecided"]
+"""Pi ``ProjectTrustEventDecision`` (``extensions/types.ts:508``)."""
+
+
+@dataclass(frozen=True)
+class ProjectTrustEventResult:
+    """Pi ``ProjectTrustEventResult`` (``extensions/types.ts:510-513``).
+
+    A ``project_trust`` handler returns this to decide trust. ``trusted ==
+    "undecided"`` defers to the next handler / the normal resolution order;
+    ``"yes"``/``"no"`` short-circuit. ``remember=True`` persists the decision to
+    the on-disk trust store.
+    """
+
+    trusted: ProjectTrustEventDecision
+    remember: bool | None = None
+
+
+@dataclass(frozen=True)
+class ProjectTrustContext:
+    """Pi ``ProjectTrustContext`` (``extensions/types.ts:515-520``).
+
+    The narrow context passed to ``project_trust`` handlers at startup. ``ui``
+    is typed loosely (``Any``) so ``aelix-agent-core`` does not depend on the
+    coding-agent UI layer; callers pass an ``ExtensionUIContext``-shaped object.
+    """
+
+    cwd: str
+    mode: str = "print"
+    has_ui: bool = False
+    ui: Any = None
+
+
+@dataclass(frozen=True)
+class ProjectTrustHookEvent(HookEvent):
+    """Pi ``ProjectTrustEvent`` (``extensions/types.ts:503-506``).
+
+    Fired (via :func:`emit_project_trust_event`) before project-local resources
+    load. NOT emitted through the :class:`HookBus` reducer pipeline.
+    """
+
+    cwd: str = ""
+    type: Literal["project_trust"] = "project_trust"
+
+
 # === Sprint 5b (Phase 3.2) — tool-typed ToolCallEvent variants (P-31, ADR-0043) ===
 #
 # Pi parity (``coding-agent/src/core/extensions/types.ts:771-830``): Pi ships a
@@ -1240,6 +1309,10 @@ HOOK_RESULT_TYPES: dict[HookEventName, type | None] = {
     "session_before_switch": SessionBeforeSwitchResult,
     "session_before_fork": SessionBeforeForkResult,
     "session_shutdown": None,                             # observational
+    # === Issue #5 (Lane C) — Project Trust extension surface ===
+    # Result type lets ``on("project_trust", ...)`` register; the decision is
+    # consumed by the standalone ``emit_project_trust_event`` walk, not the bus.
+    "project_trust": ProjectTrustEventResult,
 }
 
 
@@ -1823,6 +1896,10 @@ _REDUCERS: dict[HookEventName, Callable[..., Awaitable[Any]]] = {
     "session_before_switch": _reducer_session_before,
     "session_before_fork": _reducer_session_before,
     "session_shutdown": _reducer_observational,
+    # Issue #5 (Lane C) — ``project_trust`` is decided by the standalone
+    # ``emit_project_trust_event`` walk, never the bus; the observational entry
+    # only keeps the bus safe if a handler is wired in (it never fires there).
+    "project_trust": _reducer_observational,
 }
 
 
@@ -1956,6 +2033,13 @@ UserBashHandler = Callable[
 ResourcesDiscoverHandler = Callable[
     [ResourcesDiscoverHookEvent, "ExtensionContext"],
     ResourcesDiscoverResult | None | Awaitable[ResourcesDiscoverResult | None],
+]
+# Issue #5 (Lane C) — Pi ``ProjectTrustHandler`` (``extensions/types.ts:522-525``).
+# Receives the narrow :class:`ProjectTrustContext` (not ``ExtensionContext``) and
+# returns a decision (no ``None`` arm — Pi handlers always return a result).
+ProjectTrustHandler = Callable[
+    [ProjectTrustHookEvent, "ProjectTrustContext"],
+    ProjectTrustEventResult | Awaitable[ProjectTrustEventResult],
 ]
 # Sprint 6h₅a (Phase 4.14, ADR-0081) additions ---------------------------------
 SessionStartHandler = Callable[
@@ -2364,6 +2448,17 @@ class HookBus:
         cleanup: HookCleanup | None = None,
         error_mode: HookErrorMode = "throw",
     ) -> Callable[[], None]: ...
+    # --- Issue #5 (Lane C) — Project Trust extension surface ---
+    @overload
+    def on(
+        self,
+        event_type: Literal["project_trust"],
+        handler: ProjectTrustHandler,
+        *,
+        source: str | None = None,
+        cleanup: HookCleanup | None = None,
+        error_mode: HookErrorMode = "throw",
+    ) -> Callable[[], None]: ...
 
     def on(  # pyright: ignore[reportInconsistentOverload]
         self,
@@ -2572,6 +2667,11 @@ __all__ = [
     "MessageUpdateHookEvent",
     "ModelSelectHandler",
     "ModelSelectHookEvent",
+    "ProjectTrustContext",
+    "ProjectTrustEventDecision",
+    "ProjectTrustEventResult",
+    "ProjectTrustHandler",
+    "ProjectTrustHookEvent",
     "QueueUpdateHandler",
     "QueueUpdateHookEvent",
     "ReadToolCallHookEvent",

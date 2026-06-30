@@ -996,11 +996,33 @@ async def stream_openai_completions(
         # Resolve API key — Pi parity: ``apiKey || getEnvApiKey(model.provider) || ""``.
         api_key = opts.api_key or get_env_api_key(model.provider) or ""
 
+        # Pi parity: ``createClient`` (openai-completions.ts:502-535) assembles
+        # request headers as ``{...model.headers}``, injects the session-affinity
+        # trio (``session_id`` / ``x-client-request-id`` / ``x-session-affinity``)
+        # when the *resolved* compat opts in and a cache session id is present,
+        # then lets ``options.headers`` override. ``cacheSessionId`` is undefined
+        # when retention is ``"none"`` (``:181``) so affinity headers only ship
+        # while caching is enabled. Mirroring this is what lets a user-defined
+        # custom provider carrying explicit ``compat.sendSessionAffinityHeaders``
+        # route to the same cache replica WITHOUT matching a built-in provider
+        # name — the resolved ``compat`` already prefers ``model.compat`` over the
+        # substring heuristics (#36, get_compat).
+        default_headers: dict[str, str] = dict(getattr(model, "headers", None) or {})
+        cache_session_id = (
+            None if cache_retention == "none" else opts.session_id
+        )
+        if cache_session_id and compat.send_session_affinity_headers:
+            default_headers["session_id"] = cache_session_id
+            default_headers["x-client-request-id"] = cache_session_id
+            default_headers["x-session-affinity"] = cache_session_id
+        if opts.headers:
+            default_headers.update(opts.headers)
+
         # Build SDK client (or use injected ``options.client``).
         client = opts.client or create_async_client(
             api_key=api_key,
             base_url=getattr(model, "base_url", "") or None,
-            default_headers=opts.headers or None,
+            default_headers=default_headers or None,
             timeout_ms=opts.timeout_ms,
             max_retries=opts.max_retries,
         )

@@ -55,13 +55,13 @@ def _make_bus() -> HookBus:
 # === Registry sanity ===
 
 
-async def test_hook_result_types_registry_has_35_entries() -> None:
-    """35 = Sprint 3a 28 + Sprint 5a Phase 3.1 (input/user_bash/resources_discover) +
+async def test_hook_result_types_registry_has_36_entries() -> None:
+    """36 = Sprint 3a 28 + Sprint 5a Phase 3.1 (input/user_bash/resources_discover) +
     Sprint 6h₅a Phase 4.14 (session_start/session_before_switch/
-    session_before_fork/session_shutdown).
+    session_before_fork/session_shutdown) + Issue #5 Lane C (project_trust).
     """
 
-    assert len(HOOK_RESULT_TYPES) == 35
+    assert len(HOOK_RESULT_TYPES) == 36
 
 
 async def test_all_new_sprint_3a_event_names_registered() -> None:
@@ -152,7 +152,7 @@ async def test_session_compact_roundtrip() -> None:
 
 async def test_session_tree_roundtrip() -> None:
     bus = _make_bus()
-    seen: list[tuple[str, str]] = []
+    seen: list[tuple[str | None, str | None]] = []
 
     def handler(event: SessionTreeHookEvent, ctx: Any) -> None:
         seen.append((event.old_leaf_id, event.new_leaf_id))

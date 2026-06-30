@@ -497,6 +497,9 @@ async def _build_harness_options(
         runtime=loaded.runtime,
         active_tool_names=active_tool_names,
         get_api_key_and_headers=get_api_key_and_headers,
+        # Issue #5 (Lane C): surface the resolved trust state to extensions via
+        # ``ctx.is_project_trusted()``.
+        project_trusted=project_trusted,
     )
 
     # Auto-discovered AGENTS.md project context (Pi ``--no-context-files`` gate),
@@ -960,6 +963,26 @@ async def _async_main(argv: list[str]) -> int:
             captured_extensions=discovered_extensions,
         )
         harness = AgentHarness(opts)
+        # Issue #22 — replay pending provider registrations into the LIVE
+        # ModelRegistry. Extensions that call ``ctx.api.register_provider``
+        # during setup queue onto ``runtime.pending_provider_registrations``;
+        # without this bind they are silently dropped (the runtime defaults to a
+        # ``_StubModelRegistry``), so an extension/custom-registered provider
+        # never resolves in ``/model`` or at stream time. Pi parity:
+        # ``ExtensionRunner.bindCore`` flushes ``runtime.pendingProviderRegistrations``
+        # into ``modelRegistry`` and rebinds register/unregister to apply
+        # immediately (``runner.ts:344-377``). Aelix threads the registry
+        # separately from the harness (see ``run_tui`` docstring on why the
+        # harness must NOT hold it), so the bind lands here — the single
+        # bootstrap point shared by every mode and re-run on each harness
+        # rebuild (a fresh runtime re-queues, so the replay stays correct).
+        # ``bind_model_registry`` only replays via ``register_provider`` /
+        # ``unregister_provider`` (both present on the concrete registry); the
+        # protocol's ``get_models`` is an unimplemented stub member (pi's real
+        # ModelRegistry has no ``getModels`` either — only ``getAll`` /
+        # ``getAvailable``), so the bind is correct at runtime even though the
+        # concrete registry does not structurally satisfy the stub protocol.
+        harness.runtime.bind_model_registry(model_registry)  # pyright: ignore[reportArgumentType]
         # Re-apply the loaded skills on every (re)build (issue #12).
         harness.set_skills(skills_result.skills)
         return harness
