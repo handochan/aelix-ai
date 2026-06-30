@@ -1094,29 +1094,58 @@ class _EstimateResult:
     tokens: int
 
 
-def estimate_context_tokens(messages: list[Any]) -> _EstimateResult:
-    """Pi parity: ``estimateContextTokens`` (``compaction.ts:186-214``).
+def _valid_assistant_usage(msg: Any) -> dict[str, Any] | None:
+    """Pi parity: ``getAssistantUsage`` (``compaction.ts:121-134``).
 
-    Sprint 6h₅c (ADR-0085, P-369). Walk ``messages`` in reverse, find the
-    last assistant message whose :attr:`AssistantMessage.stop_reason` is
-    not ``"aborted"`` or ``"error"``, and sum that assistant turn's
-    :attr:`AssistantMessage.usage` tokens with the heuristic estimate for
-    any trailing messages. When no eligible assistant message is found,
-    the result is the heuristic estimate over every message.
+    pi #5526. Return an assistant turn's :attr:`AssistantMessage.usage`
+    ONLY when the message is a non-``"aborted"`` / non-``"error"`` assistant
+    whose usage is present AND sums to a POSITIVE token count
+    (``calculateContextTokens(usage) > 0``). A truncated / malformed response
+    can leave an assistant message whose ``usage`` is missing or all-zero;
+    trusting that block would UNDER-estimate the live context and can suppress
+    threshold auto-compaction. Callers walk back to the previous VALID
+    assistant instead (returns :data:`None` here so the reverse walk
+    continues).
     """
 
     from aelix_ai.messages import AssistantMessage
 
+    if not isinstance(msg, AssistantMessage):
+        return None
+    if getattr(msg, "stop_reason", None) in ("aborted", "error"):
+        return None
+    usage = getattr(msg, "usage", None)
+    if not usage:
+        return None
+    if calculate_context_tokens(usage) <= 0:
+        return None
+    return usage
+
+
+def estimate_context_tokens(messages: list[Any]) -> _EstimateResult:
+    """Pi parity: ``estimateContextTokens`` (``compaction.ts:186-214``).
+
+    Sprint 6h₅c (ADR-0085, P-369). Walk ``messages`` in reverse, find the
+    last assistant message whose usage is *valid* per
+    :func:`_valid_assistant_usage` (pi #5526 — non-aborted/non-error AND a
+    positive token sum), and add that assistant turn's
+    :attr:`AssistantMessage.usage` tokens to the heuristic estimate for any
+    trailing messages. When no eligible assistant message is found, the
+    result is the heuristic estimate over every message.
+
+    pi #5526: previously the walk stopped at the first non-aborted/non-error
+    assistant even when its usage was all-zero / malformed (a truncated
+    response), under-reporting the context. The validity guard now skips
+    those and continues back to the previous VALID assistant.
+    """
+
     last_idx: int | None = None
     last_usage: dict[str, Any] | None = None
     for i in range(len(messages) - 1, -1, -1):
-        msg = messages[i]
-        if isinstance(msg, AssistantMessage):
-            stop = getattr(msg, "stop_reason", None)
-            if stop in ("aborted", "error"):
-                continue
+        usage = _valid_assistant_usage(messages[i])
+        if usage is not None:
             last_idx = i
-            last_usage = getattr(msg, "usage", None)
+            last_usage = usage
             break
     if last_idx is None:
         return _EstimateResult(tokens=sum(estimate_tokens(m) for m in messages))

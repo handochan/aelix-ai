@@ -338,12 +338,14 @@ async def _run_custom(
 ) -> None:
     """Custom-provider sub-flow: pick a protocol, gather id/url/key, store key.
 
-    For an **OpenAI-compatible** endpoint (when the host wired ``multiselect`` +
-    ``model_registry``) the flow then fetches ``{base_url}/models``, lets the user
-    pick which models to add, and writes them to ``models.json`` so they appear in
-    ``/model`` immediately — no manual models.json editing. Every other case
-    (other protocols, no fetch wiring, a fetch/registration failure) degrades to
-    the HONEST "add via models.json" note; the stored key is never lost.
+    For an endpoint with a registered adapter — **OpenAI-compatible** or
+    **Anthropic-compatible** (whose ``/v1/models`` is OpenAI-shaped) — and when
+    the host wired ``multiselect`` + ``model_registry``, the flow then fetches
+    ``{base_url}/models``, lets the user pick which models to add, and writes
+    them to ``models.json`` so they appear in ``/model`` immediately — no manual
+    models.json editing. Every other case (Gemini-compatible / no adapter, no
+    fetch wiring, a fetch/registration failure) degrades to the HONEST "add via
+    models.json" note; the stored key is never lost.
     """
 
     protocol = await select("Endpoint protocol", list(_CUSTOM_PROTOCOLS))
@@ -379,13 +381,16 @@ async def _run_custom(
 
     commit(Text(f"API key stored for {provider_id}", style="green"))
 
-    # OpenAI-compatible → try to fetch + register models so the user doesn't have
-    # to hand-edit models.json. The only protocol with both a ``/models`` list
-    # endpoint AND a registered adapter (``openai-completions``).
+    # Try to fetch + register models so the user doesn't have to hand-edit
+    # models.json. This covers every protocol that exposes a ``/models`` list
+    # endpoint AND has a registered adapter: OpenAI-compatible
+    # (``openai-completions``) and Anthropic-compatible (``anthropic-messages``,
+    # whose ``/v1/models`` endpoint is OpenAI-shaped). Gemini-compatible maps to
+    # ``None`` so it stays on the honest manual-note fallback. Issue #49: an
+    # Anthropic-compatible custom provider used to show "no model registered".
     api = _PROTOCOL_API.get(protocol)
     if (
-        protocol == "OpenAI-compatible"
-        and api is not None
+        api is not None
         and base_url
         and multiselect is not None
         and model_registry is not None
@@ -422,20 +427,47 @@ async def _run_custom(
     commit(Text("\n".join(note_lines), style="yellow"))
 
 
+# Anthropic pins its API version in the official SDK at ``2023-06-01`` (it sends
+# this on every request, including ``GET /v1/models``). We mirror that pinned
+# value so a genuine Anthropic-compatible endpoint accepts the model-list probe.
+_ANTHROPIC_VERSION = "2023-06-01"
+
+
+def _model_list_headers(api: str | None, api_key: str) -> dict[str, str]:
+    """Auth headers for the ``GET {base_url}/models`` probe, keyed by ``api``.
+
+    A genuine Anthropic-compatible endpoint (``anthropic-messages``) authenticates
+    with ``x-api-key`` and REQUIRES an ``anthropic-version`` header — a
+    ``Authorization: Bearer`` token 401s there. OpenAI-shaped endpoints take the
+    key as a Bearer token. No key → no auth header (some endpoints list models
+    unauthenticated).
+    """
+
+    if not api_key:
+        return {}
+    if api is not None and api.startswith("anthropic"):
+        return {"x-api-key": api_key, "anthropic-version": _ANTHROPIC_VERSION}
+    return {"Authorization": f"Bearer {api_key}"}
+
+
 async def _fetch_openai_model_ids(
-    base_url: str, api_key: str, *, timeout: float = 10.0
+    base_url: str, api_key: str, *, api: str | None = None, timeout: float = 10.0
 ) -> list[str]:
-    """``GET {base_url}/models`` (OpenAI-compatible) → sorted, de-duped model ids.
+    """``GET {base_url}/models`` → sorted, de-duped model ids.
 
     Handles the common response shapes: ``{"data": [{"id": …}]}`` (OpenAI),
     ``{"models": [...]}``, and a bare list. Raises on transport / HTTP error
-    (the caller degrades). The key is sent as a Bearer token.
+    (the caller degrades). The auth headers depend on ``api``: an
+    Anthropic-compatible endpoint gets ``x-api-key`` + ``anthropic-version``;
+    everything else sends the key as a Bearer token (see
+    :func:`_model_list_headers`). Both Anthropic and OpenAI expose an
+    OpenAI-shaped ``/models`` body, so the parsing below is shared.
     """
 
     import httpx
 
     url = base_url.rstrip("/") + "/models"
-    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    headers = _model_list_headers(api, api_key)
     async with httpx.AsyncClient(timeout=timeout) as client:
         resp = await client.get(url, headers=headers)
         resp.raise_for_status()
@@ -544,7 +576,7 @@ async def _register_custom_models(
     """
 
     try:
-        ids = await _fetch_openai_model_ids(base_url, api_key)
+        ids = await _fetch_openai_model_ids(base_url, api_key, api=api)
     except Exception as exc:  # noqa: BLE001 — degrade to the manual note
         commit(
             Text(

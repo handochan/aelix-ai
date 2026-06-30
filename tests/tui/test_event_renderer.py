@@ -98,11 +98,19 @@ def test_thinking_end_empty_is_silent() -> None:
     assert commits == []
 
 
-def test_thinking_collapsed_by_default_with_expand() -> None:
-    # Sprint 6h₁₅ (ADR-0123): thinking is collapsed by default — a "Thinking…"
+def test_thinking_visible_by_default() -> None:
+    # Issue #50 reconcile: the renderer's hardcoded default is now VISIBLE
+    # (matching pi's ``hideThinkingBlock`` default of False), so headless /
+    # no-settings contexts agree with the run_tui startup seed.
+    r, _commits, _t = _renderer()
+    assert r.hide_thinking is False
+
+
+def test_thinking_collapsed_when_hidden_with_expand() -> None:
+    # Sprint 6h₁₅ (ADR-0123): when HIDDEN, thinking collapses to a "Thinking…"
     # placeholder + /expand id; the full reasoning is recoverable, not shown.
     r, commits, _t = _renderer()
-    assert r.hide_thinking is True
+    r.hide_thinking = True  # issue #50: hidden is no longer the default
     r.on_agent_event(_msg_update(ThinkingEndEvent(content="secret chain of thought")))
     out = _committed_text(commits)
     assert "Thinking" in out and "/expand 1" in out

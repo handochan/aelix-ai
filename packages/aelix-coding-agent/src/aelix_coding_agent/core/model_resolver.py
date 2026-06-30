@@ -43,13 +43,20 @@ if TYPE_CHECKING:
 
 
 # Pi parity: ``model-resolver.ts:14-47`` — default model id per known
-# provider. 32 entries verbatim.
+# provider. Model-catalog refresh (#15) grows the map from 32 to 35 by
+# adding the three new OpenAI-compatible providers' Pi defaults verbatim:
+# ``ant-ling`` → ``Ring-2.6-1T``, ``nvidia`` →
+# ``nvidia/nemotron-3-super-120b-a12b``, ``zai-coding-cn`` → ``glm-5.1``.
+# Existing entries are kept at their pinned values (Pi's own version bumps
+# of e.g. anthropic/openai defaults are a separate item).
 DEFAULT_MODEL_PER_PROVIDER: dict[str, str] = {
     "amazon-bedrock": "us.anthropic.claude-opus-4-6-v1",
+    "ant-ling": "Ring-2.6-1T",
     "anthropic": "claude-opus-4-7",
     "openai": "gpt-5.4",
     "azure-openai-responses": "gpt-5.4",
     "openai-codex": "gpt-5.5",
+    "nvidia": "nvidia/nemotron-3-super-120b-a12b",
     "deepseek": "deepseek-v4-pro",
     "google": "gemini-3.1-pro-preview",
     "google-vertex": "gemini-3.1-pro-preview",
@@ -60,6 +67,7 @@ DEFAULT_MODEL_PER_PROVIDER: dict[str, str] = {
     "groq": "openai/gpt-oss-120b",
     "cerebras": "zai-glm-4.7",
     "zai": "glm-5.1",
+    "zai-coding-cn": "glm-5.1",
     "mistral": "devstral-medium-latest",
     "minimax": "MiniMax-M2.7",
     "minimax-cn": "MiniMax-M2.7",

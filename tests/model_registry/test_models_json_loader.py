@@ -206,14 +206,42 @@ def test_semantic_custom_provider_requires_baseurl() -> None:
         validate_config_semantics(config)
 
 
-def test_semantic_custom_provider_requires_apikey() -> None:
+def test_semantic_custom_provider_apikey_optional_default() -> None:
+    # Pi #5953: an apiKey-less custom provider no longer errors by default —
+    # auth may resolve from auth.json / OAuth / --api-key / env at request time.
+    config = {
+        "providers": {
+            "myco": {"baseUrl": "https://x/v1", "models": [_model_def(api="x")]}
+        }
+    }
+    validate_config_semantics(config)  # no resolver → no raise (Pi default)
+
+
+def test_semantic_custom_provider_apikey_ok_with_stored_auth() -> None:
+    # apiKey absent but the credential-aware resolver reports a stored
+    # credential for the provider → no error (Pi #5953).
+    config = {
+        "providers": {
+            "myco": {"baseUrl": "https://x/v1", "models": [_model_def(api="x")]}
+        }
+    }
+    validate_config_semantics(
+        config, provider_has_stored_auth=lambda provider: provider == "myco"
+    )
+
+
+def test_semantic_custom_provider_apikey_required_when_no_auth_path() -> None:
+    # apiKey absent AND the resolver confirms no stored credential → error
+    # (the "truly no auth path" case is the only one that still raises).
     config = {
         "providers": {
             "myco": {"baseUrl": "https://x/v1", "models": [_model_def(api="x")]}
         }
     }
     with pytest.raises(ValueError, match='"apiKey" is required'):
-        validate_config_semantics(config)
+        validate_config_semantics(
+            config, provider_has_stored_auth=lambda provider: False
+        )
 
 
 def test_semantic_empty_provider_must_specify_something() -> None:
@@ -360,6 +388,30 @@ def test_load_semantic_error_reports_load_failure(tmp_path: Path) -> None:
     )
     assert result.error is not None
     assert "Failed to load models.json" in result.error
+
+
+def test_load_apikeyless_custom_provider_is_pi_faithful(tmp_path: Path) -> None:
+    # Review LOW (B2): the production caller deliberately does NOT pass
+    # ``provider_has_stored_auth`` — Pi's ``validateConfig`` has no apiKey/stored-
+    # auth check (coding-agent/src/core/model-registry.ts:531), so a custom
+    # provider with baseUrl + models but NO apiKey and NO stored credentials must
+    # LOAD WITHOUT ERROR (missing-auth surfaces later, never aborting the file).
+    path = _write_models_json(
+        tmp_path,
+        {
+            "providers": {
+                "myco": {
+                    "baseUrl": "https://myco.test/v1",
+                    "models": [_model_def(api="openai-completions")],
+                }
+            }
+        },
+    )
+    result = load_custom_models(
+        path, store_provider_request_config=_no_store, store_model_headers=_no_store
+    )
+    assert result.error is None  # no friendly-error abort (Pi parity)
+    assert [m.id for m in result.models] == ["m1"]  # model still loads
 
 
 # === ModelRegistry integration =================================================

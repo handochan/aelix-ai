@@ -289,3 +289,70 @@ async def test_edit_edits_as_json_string(tmp_path):
     )
     assert result.is_error is False
     assert f.read_text() == "J mode\n"
+
+
+async def test_edit_fuzzy_preserves_untouched_lines_verbatim(tmp_path):
+    # Regression (pi #5899): when ANY edit uses fuzzy matching, untouched line
+    # blocks must stay byte-for-byte identical. Previously the WHOLE file was
+    # switched to the fuzzy-normalized view, rewriting trailing whitespace on
+    # lines no edit ever touched (spurious whole-file diff). Mix one fuzzy edit
+    # (ASCII oldText vs curly-quoted file content) with one exact edit; the
+    # untouched lines carry trailing whitespace that MUST be preserved.
+    f = tmp_path / "mix.txt"
+    f.write_text(
+        "keep me   \n"  # untouched, trailing spaces
+        "target “x”\n"  # fuzzy target (curly double quotes in file)
+        "also keep\t\n"  # untouched, trailing tab
+        "exactline\n"  # exact target
+        "tail   \n"  # untouched, trailing spaces
+    )
+    tool = create_edit_tool(str(tmp_path))
+    result = await _exec(
+        tool,
+        {
+            "path": "mix.txt",
+            "edits": [
+                {"oldText": 'target "x"', "newText": "target DONE"},  # fuzzy
+                {"oldText": "exactline", "newText": "EXACT"},  # exact
+            ],
+        },
+    )
+    assert result.is_error is False
+    # Untouched lines keep their trailing whitespace verbatim; only the two
+    # intended regions changed.
+    assert f.read_text() == (
+        "keep me   \n"
+        "target DONE\n"
+        "also keep\t\n"
+        "EXACT\n"
+        "tail   \n"
+    )
+    # The diff must NOT report the untouched whitespace-bearing lines as changed.
+    diff = result.details.diff
+    assert "-1 keep me" not in diff
+    assert "-3 also keep" not in diff
+    assert "-5 tail" not in diff
+
+
+async def test_apply_edits_fuzzy_base_is_original_no_whole_file_diff(tmp_path):
+    # Regression (pi #5899) at the unit level: a fuzzy edit must return the
+    # ORIGINAL normalized content as base_content (so the diff is local), not the
+    # fuzzy-normalized whole file.
+    from aelix_coding_agent.tools._edit_diff import (
+        apply_edits_to_normalized_content,
+        generate_diff_string,
+    )
+
+    orig = "alpha   \nbravo “y”\ncharlie\t\n"  # lines 1 & 3 untouched + trailing ws
+    base, new = apply_edits_to_normalized_content(
+        orig, [{"oldText": 'bravo "y"', "newText": "bravo Z"}], "f.txt"
+    )
+    # base_content is the untouched original (no whole-file normalization).
+    assert base == orig
+    assert new == "alpha   \nbravo Z\ncharlie\t\n"
+    diff, first_changed = generate_diff_string(base, new)
+    # Only line 2 is a change; untouched trailing-whitespace lines are context.
+    assert first_changed == 2
+    assert "+2 bravo Z" in diff
+    assert " 1 alpha   " in diff
+    assert " 3 charlie\t" in diff

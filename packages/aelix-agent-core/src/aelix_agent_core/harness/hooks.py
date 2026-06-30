@@ -555,6 +555,14 @@ class SessionBeforeCompactHookEvent(HookEvent):
     branch_entries: list[SessionTreeEntry] = field(default_factory=list)
     custom_instructions: str | None = None
     signal: Any | None = None
+    # pi #5962 — why the compaction is happening + whether the harness will
+    # re-run the turn afterwards. Added with safe defaults so existing
+    # constructors/tests keep working (frozen dataclass, additive). ``reason``
+    # is populated at the emit sites determinable today (manual ``/compact`` vs
+    # threshold auto-compaction); ``overflow`` is reserved for the deferred
+    # context-overflow re-run path. ``will_retry`` is always ``False`` today.
+    reason: Literal["manual", "threshold", "overflow"] = "manual"
+    will_retry: bool = False
     type: Literal["session_before_compact"] = "session_before_compact"
 
 
@@ -650,6 +658,11 @@ class SessionCompactHookEvent(HookEvent):
 
     compaction_entry: Any = None  # Phase 2.2 (ADR-0022) — Session entry type
     from_hook: bool = False
+    # pi #5962 — mirrors the SessionBeforeCompactHookEvent fields so observers
+    # of the post-compaction event see the same ``reason`` / ``will_retry``.
+    # Additive frozen-dataclass fields with safe defaults (manual / no-retry).
+    reason: Literal["manual", "threshold", "overflow"] = "manual"
+    will_retry: bool = False
     type: Literal["session_compact"] = "session_compact"
 
 

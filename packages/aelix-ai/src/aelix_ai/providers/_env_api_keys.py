@@ -35,8 +35,12 @@ import os
 ENV_API_KEYS: dict[str, list[str]] = {
     "github-copilot": ["COPILOT_GITHUB_TOKEN"],
     "anthropic": ["ANTHROPIC_OAUTH_TOKEN", "ANTHROPIC_API_KEY"],
+    # Model-catalog refresh (#15): Ant Ling OpenAI-compatible provider.
+    "ant-ling": ["ANT_LING_API_KEY"],
     "openai": ["OPENAI_API_KEY"],
     "azure-openai-responses": ["AZURE_OPENAI_API_KEY"],
+    # Model-catalog refresh (#15): NVIDIA NIM OpenAI-compatible provider.
+    "nvidia": ["NVIDIA_API_KEY"],
     "deepseek": ["DEEPSEEK_API_KEY"],
     "google": ["GEMINI_API_KEY"],
     "google-vertex": ["GOOGLE_CLOUD_API_KEY"],
@@ -46,6 +50,8 @@ ENV_API_KEYS: dict[str, list[str]] = {
     "openrouter": ["OPENROUTER_API_KEY"],
     "vercel-ai-gateway": ["AI_GATEWAY_API_KEY"],
     "zai": ["ZAI_API_KEY"],
+    # Model-catalog refresh (#15): Z.AI Coding Plan China endpoint.
+    "zai-coding-cn": ["ZAI_CODING_CN_API_KEY"],
     "mistral": ["MISTRAL_API_KEY"],
     "minimax": ["MINIMAX_API_KEY"],
     "minimax-cn": ["MINIMAX_CN_API_KEY"],

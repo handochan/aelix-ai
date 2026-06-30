@@ -69,8 +69,9 @@ def test_catalog_provider_order_matches_pi_models_generated() -> None:
     assert providers[0] == "amazon-bedrock"
     # Anthropic / OpenAI / OpenRouter all present (Sprint 6f₁ invariant).
     assert {"anthropic", "openai", "openrouter"} <= set(providers)
-    # 32-provider catalog (Pi parity, ADR-0067 P-197).
-    assert len(providers) == 32
+    # 35-provider catalog: model-catalog refresh (#15) added ``ant-ling``,
+    # ``nvidia`` (NIM), and ``zai-coding-cn`` to the original 32.
+    assert len(providers) == 35
 
 
 def test_load_catalog_raises_keyerror_on_missing_required_field(

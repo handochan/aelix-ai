@@ -74,29 +74,45 @@ class Usage:
     output: int = 0
     cache_read: int = 0
     cache_write: int = 0
+    # pi #5738 (``ai/src/types.ts::Usage.cacheWrite1h``): the subset of
+    # ``cache_write`` written with a 1-hour TTL (sourced from the Anthropic
+    # ``cache_creation.ephemeral_1h_input_tokens`` usage field). Anthropic
+    # bills 1h cache-writes at 2× base input, so :func:`calculate_cost` prices
+    # this slice separately. ADDITIVE default ``0`` keeps the cost formula
+    # identical for callers that never set it (5m-only writes).
+    cache_write_1h: int = 0
     cost: UsageCost = field(default_factory=UsageCost)
 
 
-# Sprint 6g₁ (ADR-0067 P-199): Pi parity 32-provider KnownProvider Literal
-# union from Pi ``ai/src/types.ts``. Used by ``defaultModelPerProvider``
-# typing and Sprint 6f₁ ``Model.provider: str`` (the Literal narrows
-# without breaking existing string-typed callers).
+# Sprint 6g₁ (ADR-0067 P-199): Pi parity KnownProvider Literal union from
+# Pi ``ai/src/types.ts``. Used by ``defaultModelPerProvider`` typing and
+# Sprint 6f₁ ``Model.provider: str`` (the Literal narrows without breaking
+# existing string-typed callers).
 #
 # Sprint 6g₂ W6 P-208 MAJOR fix: reordered verbatim from Pi
-# ``packages/ai/src/types.ts:23-55`` at SHA 734e08e. The earlier Sprint
-# 6g₁ port shipped the 32 strings in alphabetical order; Pi groups them
-# semantically (first-party → OpenAI family → community providers →
-# self-hosted → Xiaomi family). Closure pin
+# ``packages/ai/src/types.ts:23-55``. Pi groups them semantically
+# (first-party → OpenAI family → community providers → self-hosted →
+# Xiaomi family) rather than alphabetically. Closure pin
 # ``test_known_provider_literal_order_matches_pi_types_ts`` locks the
 # order against future drift.
+#
+# Model-catalog refresh (#15): Pi's current ``types.ts`` grew the union
+# from 32 to 35 by inserting three OpenAI-compatible providers at their
+# semantic positions — ``ant-ling`` (after ``amazon-bedrock``),
+# ``nvidia`` NIM (after ``openai-codex``), and ``zai-coding-cn`` (the
+# Z.AI Coding Plan China endpoint, after ``zai``). Env-key wiring lands
+# in ``providers/_env_api_keys.py``; defaults in
+# ``model_resolver.DEFAULT_MODEL_PER_PROVIDER``.
 KnownProvider = Literal[
     "amazon-bedrock",
+    "ant-ling",
     "anthropic",
     "google",
     "google-vertex",
     "openai",
     "azure-openai-responses",
     "openai-codex",
+    "nvidia",
     "deepseek",
     "github-copilot",
     "xai",
@@ -105,6 +121,7 @@ KnownProvider = Literal[
     "openrouter",
     "vercel-ai-gateway",
     "zai",
+    "zai-coding-cn",
     "mistral",
     "minimax",
     "minimax-cn",
@@ -423,6 +440,12 @@ class SimpleStreamOptions:
     max_retries: int | None = None
     max_retry_delay_ms: int | None = None
     reasoning: str | None = None
+    # pi #5251 (``StreamOptions.temperature``): sampling temperature. The
+    # Anthropic adapter forwards it only when the model's compat allows it
+    # (``supportsTemperature``) and thinking is not enabled — it is suppressed
+    # for Opus 4.7+ (``supportsTemperature: false``), where the deprecated
+    # param is rejected / conflicts with adaptive thinking.
+    temperature: float | None = None
     session_id: str | None = None
     # Callbacks — used by the harness's ``_make_stream_fn`` to wire the
     # ``before_provider_payload`` and ``after_provider_response`` emit

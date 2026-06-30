@@ -1328,8 +1328,20 @@ class AgentHarness:
 
     # === Sprint 4b §B/§C — compact() + navigate_tree() ===
 
-    async def compact(self, custom_instructions: str | None = None) -> CompactResult:
+    async def compact(
+        self,
+        custom_instructions: str | None = None,
+        *,
+        reason: Literal["manual", "threshold", "overflow"] = "manual",
+    ) -> CompactResult:
         """Pi ``compact()`` (``agent-harness.ts:689-745``, Sprint 4b §B).
+
+        ``reason`` (pi #5962) flows verbatim into the emitted
+        :class:`SessionBeforeCompactHookEvent` /
+        :class:`SessionCompactHookEvent` so extensions can distinguish a manual
+        ``/compact`` (default) from threshold auto-compaction. ``will_retry``
+        on those events stays ``False`` (the context-overflow re-run path is
+        deferred).
 
         Phase flow:
 
@@ -1384,6 +1396,7 @@ class AgentHarness:
                         branch_entries=list(branch_entries),
                         custom_instructions=custom_instructions,
                         signal=None,
+                        reason=reason,
                     )
                 )
             except Exception as exc:
@@ -1438,6 +1451,7 @@ class AgentHarness:
                         SessionCompactHookEvent(
                             compaction_entry=entry,
                             from_hook=from_hook,
+                            reason=reason,
                         )
                     )
                 except Exception as exc:
@@ -1510,7 +1524,7 @@ class AgentHarness:
         # pi ``compaction.ts:219-222`` ``shouldCompact``.
         if context_tokens > context_window - _AUTO_COMPACT_RESERVE_TOKENS:
             try:
-                await self.compact()
+                await self.compact(reason="threshold")
             except AgentHarnessError as exc:
                 # W-review HIGH-2 fix: a "Nothing to compact" raise means
                 # ``prepare_compaction`` found no viable cut (small kept-tail

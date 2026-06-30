@@ -605,8 +605,13 @@ def test_parsed_model_result_shape() -> None:
     assert r.warning is None
 
 
-def test_default_model_per_provider_has_32_entries() -> None:
-    assert len(DEFAULT_MODEL_PER_PROVIDER) == 32
+def test_default_model_per_provider_has_35_entries() -> None:
+    # Model-catalog refresh (#15): map grew 32 -> 35 with ``ant-ling``,
+    # ``nvidia`` (NIM), and ``zai-coding-cn`` Pi defaults.
+    assert len(DEFAULT_MODEL_PER_PROVIDER) == 35
     assert DEFAULT_MODEL_PER_PROVIDER["anthropic"] == "claude-opus-4-7"
     assert DEFAULT_MODEL_PER_PROVIDER["openai"] == "gpt-5.4"
     assert DEFAULT_MODEL_PER_PROVIDER["openrouter"] == "moonshotai/kimi-k2.6"
+    assert DEFAULT_MODEL_PER_PROVIDER["ant-ling"] == "Ring-2.6-1T"
+    assert DEFAULT_MODEL_PER_PROVIDER["nvidia"] == "nvidia/nemotron-3-super-120b-a12b"
+    assert DEFAULT_MODEL_PER_PROVIDER["zai-coding-cn"] == "glm-5.1"

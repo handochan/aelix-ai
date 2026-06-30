@@ -83,12 +83,19 @@ def calculate_cost(model: Model, usage: Usage) -> UsageCost:
     rate before multiplication by token counts.
     """
 
+    # pi #5738 (models.ts:386-392): "Anthropic charges 2x base input for 1h cache
+    # writes." Split the cache-write tokens into the 1h-TTL slice
+    # (``cache_write_1h``, priced at 2× the model's base input rate) and the 5m
+    # remainder (``short_write``, priced at the model's cache_write rate). When
+    # ``cache_write_1h`` is 0 this reduces to the original 5m-only formula.
+    long_write = usage.cache_write_1h or 0
+    short_write = usage.cache_write - long_write
     usage.cost.input = (model.cost.input / 1_000_000) * usage.input
     usage.cost.output = (model.cost.output / 1_000_000) * usage.output
     usage.cost.cache_read = (model.cost.cache_read / 1_000_000) * usage.cache_read
     usage.cost.cache_write = (
-        (model.cost.cache_write / 1_000_000) * usage.cache_write
-    )
+        model.cost.cache_write * short_write + model.cost.input * 2 * long_write
+    ) / 1_000_000
     usage.cost.total = (
         usage.cost.input
         + usage.cost.output

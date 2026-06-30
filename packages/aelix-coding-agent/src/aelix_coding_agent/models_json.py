@@ -271,12 +271,27 @@ def validate_models_config(parsed: Any) -> list[ValidationError]:
     return errors
 
 
-def validate_config_semantics(config: dict[str, Any]) -> None:
-    """Pi parity: ``model-registry.ts::validateConfig`` (verbatim).
+def validate_config_semantics(
+    config: dict[str, Any],
+    *,
+    provider_has_stored_auth: Callable[[str], bool] | None = None,
+) -> None:
+    """Pi parity: ``model-registry.ts::validateConfig`` (Pi #5953).
 
     Raises :class:`ValueError` (Pi throws ``Error``) on a semantic failure
     that the structural schema can't express — e.g. a custom-model
-    provider missing ``baseUrl`` / ``apiKey``.
+    provider missing ``baseUrl``.
+
+    Pi #5953: ``apiKey`` is NOT a hard requirement for a non-built-in
+    provider that defines custom models. Auth can instead come from stored
+    credentials (``auth.json`` / OAuth in the credential store), ``--api-key``,
+    env vars, or the provider request config — none of which this pure
+    validator can observe. ``provider_has_stored_auth`` lets a caller that
+    *can* see the credential store (e.g. the registry's ``AuthStorage``) opt
+    in to a friendlier early error: when supplied, an ``apiKey``-less provider
+    only fails if the resolver reports there is *truly* no auth path. When it
+    is omitted (the default), an absent ``apiKey`` never errors here — matching
+    Pi, where the missing-auth case surfaces later, at request time.
     """
 
     built_in_providers = set(get_providers())
@@ -305,10 +320,18 @@ def validate_config_semantics(config: dict[str, Any]) -> None:
                     f'Provider {provider_name}: "baseUrl" is required '
                     f"when defining custom models."
                 )
-            if not provider_config.get("apiKey"):
+            # Pi #5953: ``apiKey`` is no longer mandatory — a custom provider
+            # may resolve its key from stored credentials / env / --api-key.
+            # Only flag the case where a credential-aware caller confirms there
+            # is no resolvable stored credential either (truly no auth path).
+            if not provider_config.get("apiKey") and (
+                provider_has_stored_auth is not None
+                and not provider_has_stored_auth(provider_name)
+            ):
                 raise ValueError(
                     f'Provider {provider_name}: "apiKey" is required '
-                    f"when defining custom models."
+                    f"when defining custom models "
+                    f"(no stored credentials found for this provider)."
                 )
 
         for model_def in models:
@@ -623,6 +646,15 @@ def load_custom_models(
         config: dict[str, Any] = parsed
 
         # Pi: additional (semantic) validation — throws on failure.
+        # ``provider_has_stored_auth`` is DELIBERATELY not passed here: Pi's
+        # ``validateConfig`` (coding-agent/src/core/model-registry.ts:531) performs
+        # NO apiKey / stored-auth check for custom-model providers (only baseUrl) and
+        # defers a missing auth path to request time. Wiring a raising stored-auth
+        # closure would make this ported loader stricter than Pi — one auth-less
+        # provider would abort the WHOLE file's custom models (the broad ``except``
+        # below returns an empty result). An auth-less model still loads but is
+        # filtered out of the available list by ``has_configured_auth`` (Pi parity).
+        # The parameter stays an opt-in fail-fast hook for callers that want it.
         validate_config_semantics(config)
 
         overrides: dict[str, ProviderOverride] = {}

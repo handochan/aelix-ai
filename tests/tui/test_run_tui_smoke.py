@@ -842,6 +842,127 @@ async def test_run_tui_unknown_persisted_theme_falls_back_to_default() -> None:
         await asyncio.wait_for(task, timeout=5)
 
 
+# === Issue #50 — startup seed of persisted thinking settings ================
+
+
+def _capture_renderer(monkeypatch: pytest.MonkeyPatch) -> list[object]:
+    """Patch the module-level ``EventRenderer`` so the test can read the live
+    instance run_tui builds (it is otherwise wrapped in a closure subscriber)."""
+
+    from aelix_coding_agent.tui.render import EventRenderer as _RealRenderer
+
+    captured: list[object] = []
+
+    def _factory(*args: object, **kwargs: object) -> object:
+        r = _RealRenderer(*args, **kwargs)  # type: ignore[arg-type]
+        captured.append(r)
+        return r
+
+    monkeypatch.setattr(tui_shell, "EventRenderer", _factory)
+    return captured
+
+
+async def test_run_tui_seeds_visible_thinking_from_persisted_setting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Issue #50 (a): hideThinkingBlock=False (visible) saved → after startup the
+    # renderer's hide_thinking is False, so reasoning renders in full this run.
+    from aelix_ai.settings import SettingsManager
+
+    captured = _capture_renderer(monkeypatch)
+    sm = SettingsManager.in_memory({"hideThinkingBlock": False})
+    async with _harness_chrome() as (runtime, chrome, pipe):
+        task = _launch(runtime, chrome, settings_manager=sm)
+        await _wait(lambda: chrome.app.is_running)
+        await _wait(lambda: bool(captured))
+        await _wait(lambda: captured[0].hide_thinking is False)  # type: ignore[attr-defined]
+        pipe.send_text("/quit\n")
+        await asyncio.wait_for(task, timeout=5)
+    assert captured[0].hide_thinking is False  # type: ignore[attr-defined]
+
+
+async def test_run_tui_seeds_hidden_thinking_from_persisted_setting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Issue #50 (a) — the discriminating direction: hideThinkingBlock=True saved
+    # → the renderer hides even though the hardcoded default is now visible.
+    from aelix_ai.settings import SettingsManager
+
+    captured = _capture_renderer(monkeypatch)
+    sm = SettingsManager.in_memory({"hideThinkingBlock": True})
+    async with _harness_chrome() as (runtime, chrome, pipe):
+        task = _launch(runtime, chrome, settings_manager=sm)
+        await _wait(lambda: chrome.app.is_running)
+        await _wait(lambda: bool(captured))
+        await _wait(lambda: captured[0].hide_thinking is True)  # type: ignore[attr-defined]
+        pipe.send_text("/quit\n")
+        await asyncio.wait_for(task, timeout=5)
+    assert captured[0].hide_thinking is True  # type: ignore[attr-defined]
+
+
+class _ThinkingSeedHarness(FakeHarness):
+    """FakeHarness exposing a fixed ``current_model`` + recording
+    ``set_thinking_level`` so the issue #50 (b) startup seed is observable."""
+
+    def __init__(self, model: object) -> None:
+        super().__init__()
+        from types import SimpleNamespace
+
+        self._model = model
+        self.level_set: list[str] = []
+        self._state = SimpleNamespace(thinking_level=None)
+
+    @property
+    def current_model(self) -> object:
+        return self._model
+
+    async def set_thinking_level(self, level: str) -> None:
+        self.level_set.append(level)
+        self._state.thinking_level = level
+
+
+async def test_run_tui_seeds_default_thinking_level_when_supported() -> None:
+    # Issue #50 (b): a persisted defaultThinkingLevel the current model supports
+    # is applied to the live harness at startup (mirror of the default-model seed).
+    from aelix_ai.models import Model
+    from aelix_ai.settings import SettingsManager
+
+    model = Model(
+        id="m",
+        api="anthropic",
+        reasoning=True,
+        thinking_level_map={"low": 2048, "medium": 8192, "high": 16384},
+    )
+    harness = _ThinkingSeedHarness(model)
+    sm = SettingsManager.in_memory({"defaultThinkingLevel": "medium"})
+    async with _harness_chrome(harness=harness) as (runtime, chrome, pipe):
+        task = _launch(runtime, chrome, settings_manager=sm)
+        await _wait(lambda: chrome.app.is_running)
+        await _wait(lambda: harness.level_set == ["medium"])
+        pipe.send_text("/quit\n")
+        await asyncio.wait_for(task, timeout=5)
+    assert harness.level_set == ["medium"]
+
+
+async def test_run_tui_skips_default_thinking_level_when_unsupported() -> None:
+    # Issue #50 (b): a non-reasoning model supports only "off"; a persisted
+    # "high" is NOT applied (the seed validates via get_supported_thinking_levels).
+    from aelix_ai.models import Model
+    from aelix_ai.settings import SettingsManager
+
+    model = Model(id="m", api="anthropic", reasoning=False)
+    harness = _ThinkingSeedHarness(model)
+    sm = SettingsManager.in_memory({"defaultThinkingLevel": "high"})
+    async with _harness_chrome(harness=harness) as (runtime, chrome, pipe):
+        task = _launch(runtime, chrome, settings_manager=sm)
+        await _wait(lambda: chrome.app.is_running)
+        pipe.send_text("hi\n")  # barrier: the startup seed already ran before this
+        await _wait(lambda: runtime.harness.prompts == [("hi", "interactive")])
+        pipe.send_text("/quit\n")
+        await asyncio.wait_for(task, timeout=5)
+    assert harness.level_set == []  # unsupported level was skipped
+
+
 async def test_run_tui_ctrl_v_pastes_clipboard_image_path_to_editor(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

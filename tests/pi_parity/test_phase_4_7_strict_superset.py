@@ -7,7 +7,8 @@ Pi-strict superset assertions for:
 - ``Model.compat`` passthrough field (P-200).
 - ``_is_alias`` regex (P-198).
 - ``parse_model_pattern`` recursive colon-suffix (P-198).
-- Catalog 32 providers + canonical models present (P-197/P-203).
+- Catalog 35 providers + canonical models present (P-197/P-203;
+  model-catalog refresh #15 added ant-ling, nvidia, zai-coding-cn).
 - Sprint 6f closure pin invariants still hold (no regressions).
 """
 
@@ -36,10 +37,14 @@ from aelix_coding_agent.core.model_resolver import (
 # ── DEFAULT_MODEL_PER_PROVIDER ─────────────────────────────────────
 
 
-def test_default_model_per_provider_has_exactly_32_entries() -> None:
-    """Pi parity: ``model-resolver.ts:14-47`` — exactly 32 rows."""
+def test_default_model_per_provider_has_exactly_35_entries() -> None:
+    """Pi parity: ``model-resolver.ts:14-47`` — 35 rows.
 
-    assert len(DEFAULT_MODEL_PER_PROVIDER) == 32
+    Model-catalog refresh (#15) grew the map from 32 to 35 by adding the
+    ``ant-ling``, ``nvidia``, and ``zai-coding-cn`` Pi defaults.
+    """
+
+    assert len(DEFAULT_MODEL_PER_PROVIDER) == 35
 
 
 def test_default_model_per_provider_specific_values_match_pi() -> None:
@@ -58,38 +63,55 @@ def test_default_model_per_provider_specific_values_match_pi() -> None:
     assert DEFAULT_MODEL_PER_PROVIDER["xai"] == "grok-4.20-0309-reasoning"
     assert DEFAULT_MODEL_PER_PROVIDER["kimi-coding"] == "kimi-for-coding"
     assert DEFAULT_MODEL_PER_PROVIDER["zai"] == "glm-5.1"
+    # Model-catalog refresh (#15): new OpenAI-compatible providers.
+    assert DEFAULT_MODEL_PER_PROVIDER["ant-ling"] == "Ring-2.6-1T"
+    assert (
+        DEFAULT_MODEL_PER_PROVIDER["nvidia"]
+        == "nvidia/nemotron-3-super-120b-a12b"
+    )
+    assert DEFAULT_MODEL_PER_PROVIDER["zai-coding-cn"] == "glm-5.1"
 
 
 # ── KnownProvider Literal ───────────────────────────────────────────
 
 
-def test_known_provider_literal_has_32_distinct_values() -> None:
-    """Pi parity: ``types.ts::KnownProvider`` is a 32-string Literal union."""
+def test_known_provider_literal_has_35_distinct_values() -> None:
+    """Pi parity: ``types.ts::KnownProvider`` is a 35-string Literal union.
+
+    Model-catalog refresh (#15) added ``ant-ling``, ``nvidia``, and
+    ``zai-coding-cn`` to the original 32.
+    """
 
     args = typing.get_args(KnownProvider)
-    assert len(args) == 32
-    assert len(set(args)) == 32
+    assert len(args) == 35
+    assert len(set(args)) == 35
 
 
 def test_known_provider_literal_order_matches_pi_types_ts() -> None:
     """Pi parity (Sprint 6g₂ W6 P-208 MAJOR fix).
 
-    Verbatim from ``packages/ai/src/types.ts:23-55`` at SHA 734e08e —
-    Pi groups providers semantically (first-party → OpenAI family →
-    community providers → self-hosted → Xiaomi family), NOT
-    alphabetically. The Sprint 6g₁ port shipped alphabetical order;
-    P-208 reordered to match Pi. This closure pin locks the order
-    against future drift.
+    Verbatim from ``packages/ai/src/types.ts`` — Pi groups providers
+    semantically (first-party → OpenAI family → community providers →
+    self-hosted → Xiaomi family), NOT alphabetically. The Sprint 6g₁
+    port shipped alphabetical order; P-208 reordered to match Pi. This
+    closure pin locks the order against future drift.
+
+    Model-catalog refresh (#15): Pi's current ``types.ts`` inserted
+    ``ant-ling`` (after ``amazon-bedrock``), ``nvidia`` (after
+    ``openai-codex``), and ``zai-coding-cn`` (after ``zai``) at their
+    semantic positions, growing the union from 32 to 35.
     """
 
     pi_order: list[str] = [
         "amazon-bedrock",
+        "ant-ling",
         "anthropic",
         "google",
         "google-vertex",
         "openai",
         "azure-openai-responses",
         "openai-codex",
+        "nvidia",
         "deepseek",
         "github-copilot",
         "xai",
@@ -98,6 +120,7 @@ def test_known_provider_literal_order_matches_pi_types_ts() -> None:
         "openrouter",
         "vercel-ai-gateway",
         "zai",
+        "zai-coding-cn",
         "mistral",
         "minimax",
         "minimax-cn",
@@ -251,10 +274,15 @@ def test_parse_model_pattern_invalid_scope_warns() -> None:
 # ── Catalog provider count + canonical models present ──────────────
 
 
-def test_catalog_has_32_providers() -> None:
-    """Pi parity (P-197): 32-provider catalog."""
+def test_catalog_has_35_providers() -> None:
+    """Pi parity (P-197): 35-provider catalog.
 
-    assert len(MODELS) == 32
+    Model-catalog refresh (#15) added ``ant-ling``, ``nvidia`` (NIM),
+    and ``zai-coding-cn`` to the original 32.
+    """
+
+    assert len(MODELS) == 35
+    assert {"ant-ling", "nvidia", "zai-coding-cn"} <= set(MODELS)
 
 
 def test_catalog_has_canonical_providers() -> None:

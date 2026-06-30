@@ -43,7 +43,7 @@ from aelix_ai.providers._anthropic_transforms import (
     INTERLEAVED_THINKING_BETA,
     build_params,
     is_oauth_token,
-    map_stop_reason,
+    map_stop_reason_with_details,
     resolve_anthropic_thinking,
 )
 from aelix_ai.providers._base import Provider
@@ -93,6 +93,68 @@ def _build_partial(model: Model) -> AssistantMessage:
     """Construct the initial empty ``AssistantMessage`` for ``AssistantStartEvent``."""
 
     return AssistantMessage(content=[])
+
+
+def _attr_or_key(obj: Any, name: str) -> Any:
+    """Read ``name`` as an attribute (SDK object) or a dict key (test mock)."""
+
+    if isinstance(obj, dict):
+        return obj.get(name)
+    return getattr(obj, name, None)
+
+
+def _anthropic_usage_to_dict(usage: Any) -> dict[str, Any] | None:
+    """Map an Anthropic SDK ``Message.usage`` payload → the Aelix usage dict.
+
+    Pi parity: ``api/anthropic-messages.ts:549-559`` reads these exact fields
+    off ``event.message.usage`` (``message_start``) and re-reads the output
+    subset off ``event.usage`` (``message_delta``). The Anthropic Python SDK
+    accumulates both into ``stream.get_final_message().usage``, so the adapter
+    extracts once from the final message.
+
+    Field mapping (pi → Aelix usage dict):
+
+    * ``input_tokens`` → ``input``
+    * ``output_tokens`` → ``output``
+    * ``cache_read_input_tokens`` → ``cache_read``
+    * ``cache_creation_input_tokens`` → ``cache_write`` (all cache writes)
+    * ``cache_creation.ephemeral_1h_input_tokens`` → ``cache_write_1h`` (the
+      1h-TTL subset — :func:`aelix_ai.models.calculate_cost` prices it at 2×
+      the model's base input rate, pi #5738)
+
+    Keys mirror :func:`openai_completions._usage_to_dict` (``input`` / ``output``
+    plus the ``*_tokens`` spellings the context meter / ``/cost`` read) and add
+    the Anthropic-only cache-write buckets. Returns ``None`` for an empty or
+    absent payload so the adapter leaves ``AssistantMessage.usage`` untouched.
+    """
+
+    if usage is None:
+        return None
+    input_tokens = int(_attr_or_key(usage, "input_tokens") or 0)
+    output_tokens = int(_attr_or_key(usage, "output_tokens") or 0)
+    cache_read = int(_attr_or_key(usage, "cache_read_input_tokens") or 0)
+    cache_write = int(_attr_or_key(usage, "cache_creation_input_tokens") or 0)
+    cache_creation = _attr_or_key(usage, "cache_creation")
+    cache_write_1h = (
+        int(_attr_or_key(cache_creation, "ephemeral_1h_input_tokens") or 0)
+        if cache_creation is not None
+        else 0
+    )
+    if not (input_tokens or output_tokens or cache_read or cache_write):
+        return None
+    # Anthropic doesn't return total_tokens — compute from the components
+    # (pi anthropic-messages.ts:557-558 sums input+output+cacheRead+cacheWrite).
+    total = input_tokens + output_tokens + cache_read + cache_write
+    return {
+        "input": input_tokens,
+        "output": output_tokens,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": total,
+        "cache_read": cache_read,
+        "cache_write": cache_write,
+        "cache_write_1h": cache_write_1h,
+    }
 
 
 async def _maybe_await(value: Any) -> Any:
@@ -237,6 +299,10 @@ async def stream_anthropic(
         # 2) Map context → SDK params. ``thinking_extra`` injects the
         # resolved ADR-0135 thinking param (+ ``output_config`` for adaptive
         # models); ``thinking_max_tokens`` is the budget-adjusted cap.
+        # pi #5251: temperature is gated on "thinking off" — derive that from
+        # the resolved thinking param (enabled/adaptive ⇒ thinking is active).
+        thinking_type = (thinking_extra or {}).get("thinking", {}).get("type")
+        thinking_enabled = thinking_type in ("enabled", "adaptive")
         params = build_params(
             model=model,
             system_prompt=context.system_prompt,
@@ -244,6 +310,8 @@ async def stream_anthropic(
             tools=list(context.tools),
             max_tokens=thinking_max_tokens,
             extra=thinking_extra or None,
+            temperature=opts.temperature,
+            thinking_enabled=thinking_enabled,
         )
 
         # 3) before_provider_payload callback (Pi ``onPayload``).
@@ -281,12 +349,29 @@ async def stream_anthropic(
                     yield translated
 
             # 6a) Success: snapshot the SDK's final assistant message.
+            # pi #5666: a ``refusal`` stop reason maps to ``"error"`` AND carries
+            # ``stop_details.explanation`` — preserve that text into
+            # ``error_message`` so the surfaced error says *why* the model
+            # refused (it is re-raised below as the error path's message).
             final_message = await sdk_stream.get_final_message()
-            stop_reason = map_stop_reason(getattr(final_message, "stop_reason", None))
+            stop_reason, refusal_message = map_stop_reason_with_details(
+                getattr(final_message, "stop_reason", None),
+                getattr(final_message, "stop_details", None),
+            )
+            # pi #5738 (anthropic-messages.ts:549-559): snapshot the SDK's
+            # accumulated token usage onto ``AssistantMessage.usage`` so the
+            # context meter / ``/cost`` see real numbers — including the
+            # ``cache_write_1h`` slice (``cache_creation.ephemeral_1h_input_tokens``)
+            # that :func:`aelix_ai.models.calculate_cost` prices at 2× input.
+            usage_dict = _anthropic_usage_to_dict(
+                getattr(final_message, "usage", None)
+            )
             output = replace(
                 output,
                 content=list(output_content),
                 stop_reason=stop_reason,
+                error_message=refusal_message or output.error_message,
+                usage=usage_dict if usage_dict is not None else output.usage,
             )
 
         # Abort detection — check after the stream context exits.

@@ -580,8 +580,20 @@ async def _execute_and_finalize(
 
     update_events: list[asyncio.Task[None]] = []
     loop_ref = asyncio.get_running_loop()
+    # Pi #5573 (``agent-loop.ts:634, 645, 656, 660, 666``): a tool that invokes
+    # its ``on_partial`` callback AFTER ``execute`` has resolved — e.g. from
+    # leftover async work it spawned — must not schedule a stale
+    # ``ToolExecutionUpdateEvent``. Pi tracks this with ``acceptingUpdates``;
+    # once the call settles the callback becomes a no-op. We mirror that with a
+    # ``settled`` flag flipped True the instant ``execute`` returns/raises
+    # (before draining ``update_events``), so late callbacks are ignored.
+    settled = False
 
     def _on_partial(partial: ToolResult) -> None:
+        # Pi parity ``if (!acceptingUpdates) return;`` — once settled, drop the
+        # late progress callback (no task scheduled, no event emitted).
+        if settled:
+            return
         # Eagerly schedule the emit (Pi parity: ``Promise.resolve(emit(...))``).
         # Lazy coroutines would queue all partials at the gather point — that
         # would change ordering relative to Pi.
@@ -608,6 +620,11 @@ async def _execute_and_finalize(
     try:
         result = await prepared.tool.execute(prepared.args, exec_ctx)
     except Exception as exc:  # noqa: BLE001 — tool author errors must not break the loop
+        # Pi #5573 (``agent-loop.ts:656``): stop accepting progress callbacks
+        # the instant the call settles, BEFORE draining, so leftover async work
+        # firing ``on_partial`` during/after the drain cannot enqueue a stale
+        # update event.
+        settled = True
         # Drain in the error path so partial-emit hook handlers complete
         # before the synthesized isError result reaches the loop. Pi parity
         # ``agent-loop.ts:630`` runs the same ``Promise.all(updateEvents)``
@@ -621,6 +638,10 @@ async def _execute_and_finalize(
             is_error=True,
         )
     else:
+        # Pi #5573 (``agent-loop.ts:645``): settle before draining the happy
+        # path, mirroring ``acceptingUpdates = false`` set immediately after the
+        # ``await tool.execute(...)`` resolves.
+        settled = True
         # Drain in the happy path. Pi parity ``agent-loop.ts:630``.
         if update_events:
             await asyncio.gather(*update_events, return_exceptions=False)

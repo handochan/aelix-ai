@@ -153,19 +153,128 @@ def _no_change_error(path: str, total: int) -> str:
     return f"No changes made to {path}. The replacements produced identical content."
 
 
+# --- line-span splice helpers (Pi parity, preserve untouched lines) ---------
+
+# Pi parity ``splitLinesWithEndings`` — keep each line's trailing ``\n``; the
+# final line keeps no newline. Empty content yields ``[]``.
+_LINE_WITH_ENDING = re.compile(r"[^\n]*\n|[^\n]+")
+
+
+def _split_lines_with_endings(content: str) -> list[str]:
+    return _LINE_WITH_ENDING.findall(content)
+
+
+def _get_line_spans(content: str) -> list[tuple[int, int]]:
+    """Pi parity ``getLineSpans`` — ``(start, end)`` byte offsets per line."""
+
+    spans: list[tuple[int, int]] = []
+    offset = 0
+    for line in _split_lines_with_endings(content):
+        spans.append((offset, offset + len(line)))
+        offset += len(line)
+    return spans
+
+
+def _get_replacement_line_range(
+    lines: list[tuple[int, int]], replacement: _MatchedEdit
+) -> tuple[int, int]:
+    """Pi parity ``getReplacementLineRange`` — the half-open line range
+    ``[start_line, end_line)`` that a replacement's span actually touches."""
+
+    start = replacement.match_index
+    end = replacement.match_index + replacement.match_length
+
+    start_line = -1
+    for i, (line_start, line_end) in enumerate(lines):
+        if start >= line_start and start < line_end:
+            start_line = i
+            break
+    if start_line == -1:
+        raise EditError("Replacement range is outside the base content.")
+
+    end_line = start_line
+    while end_line < len(lines) and lines[end_line][1] < end:
+        end_line += 1
+    if end_line >= len(lines):
+        raise EditError("Replacement range is outside the base content.")
+
+    return start_line, end_line + 1
+
+
+def _apply_replacements(content: str, replacements: list[_MatchedEdit], offset: int = 0) -> str:
+    """Pi parity ``applyReplacements`` — splice right-to-left; ``offset``
+    rebases absolute match indices to a sliced-out region."""
+
+    result = content
+    for r in reversed(replacements):
+        idx = r.match_index - offset
+        result = result[:idx] + r.new_text + result[idx + r.match_length :]
+    return result
+
+
+def apply_replacements_preserving_unchanged_lines(
+    original_content: str, base_content: str, replacements: list[_MatchedEdit]
+) -> str:
+    """Pi parity ``applyReplacementsPreservingUnchangedLines`` (pi #5899).
+
+    ``base_content`` is a normalized view of ``original_content`` (same line
+    count). Each replacement — located against ``base_content`` — is widened to
+    the lines it actually touches; those touched lines are rewritten from the
+    normalized base while every other line is copied back VERBATIM from
+    ``original_content`` so untouched whitespace / EOL is preserved byte-for-byte.
+    """
+
+    original_lines = _split_lines_with_endings(original_content)
+    base_lines = _get_line_spans(base_content)
+    if len(original_lines) != len(base_lines):
+        raise EditError(
+            "Cannot preserve unchanged lines because the base content has a "
+            "different line count."
+        )
+
+    groups: list[dict] = []
+    for r in sorted(replacements, key=lambda m: m.match_index):
+        start_line, end_line = _get_replacement_line_range(base_lines, r)
+        current = groups[-1] if groups else None
+        if current is not None and start_line < current["end_line"]:
+            current["end_line"] = max(current["end_line"], end_line)
+            current["replacements"].append(r)
+            continue
+        groups.append({"start_line": start_line, "end_line": end_line, "replacements": [r]})
+
+    original_line_index = 0
+    result = ""
+    for group in groups:
+        result += "".join(original_lines[original_line_index : group["start_line"]])
+        group_start_offset = base_lines[group["start_line"]][0]
+        group_end_offset = base_lines[group["end_line"] - 1][1]
+        result += _apply_replacements(
+            base_content[group_start_offset:group_end_offset],
+            group["replacements"],
+            group_start_offset,
+        )
+        original_line_index = group["end_line"]
+    result += "".join(original_lines[original_line_index:])
+
+    return result
+
+
 # --- apply (Pi parity ``applyEditsToNormalizedContent``) --------------------
 
 
 def apply_edits_to_normalized_content(
     normalized_content: str, edits: list[dict], path: str
 ) -> tuple[str, str]:
-    """Pi parity ``applyEditsToNormalizedContent``.
+    """Pi parity ``applyEditsToNormalizedContent`` (pi #5899).
 
     ``edits`` is a list of ``{"oldText", "newText"}`` dicts. Each ``oldText`` is
     matched against the ORIGINAL (base) content — not a running buffer — and
     edits apply right-to-left by match index. If ANY edit needs fuzzy matching,
-    the whole base switches to the fuzzy-normalized content (pi's behavior).
-    Raises :class:`EditError` with a pi-verbatim message on any failure.
+    matches are LOCATED in a fuzzy-normalized view of the base, but the
+    replacement is spliced into the ORIGINAL content so untouched lines stay
+    byte-for-byte identical (no spurious whole-file whitespace/EOL diff). The
+    returned ``base_content`` is therefore always the original normalized
+    content. Raises :class:`EditError` with a pi-verbatim message on failure.
     """
 
     normalized_edits = [
@@ -181,18 +290,17 @@ def apply_edits_to_normalized_content(
             raise EditError(_empty_old_text_error(path, i, total))
 
     initial = [fuzzy_find_text(normalized_content, e["oldText"]) for e in normalized_edits]
-    base_content = (
-        normalize_for_fuzzy_match(normalized_content)
-        if any(m.used_fuzzy for m in initial)
-        else normalized_content
+    used_fuzzy = any(m.used_fuzzy for m in initial)
+    replacement_base = (
+        normalize_for_fuzzy_match(normalized_content) if used_fuzzy else normalized_content
     )
 
     matched: list[_MatchedEdit] = []
     for i, e in enumerate(normalized_edits):
-        m = fuzzy_find_text(base_content, e["oldText"])
+        m = fuzzy_find_text(replacement_base, e["oldText"])
         if not m.found:
             raise EditError(_not_found_error(path, i, total))
-        occ = count_occurrences(base_content, e["oldText"])
+        occ = count_occurrences(replacement_base, e["oldText"])
         if occ > 1:
             raise EditError(_duplicate_error(path, i, total, occ))
         matched.append(_MatchedEdit(i, m.index, m.match_length, e["newText"]))
@@ -206,13 +314,16 @@ def apply_edits_to_normalized_content(
                 f"in {path}. Merge them into one edit or target disjoint regions."
             )
 
-    new_content = base_content
-    for m in reversed(matched):
-        new_content = (
-            new_content[: m.match_index]
-            + m.new_text
-            + new_content[m.match_index + m.match_length :]
+    # Pi #5899: base_content is ALWAYS the original normalized content. When
+    # fuzzy matching was used, splice replacements into the original while
+    # preserving untouched lines verbatim; otherwise splice directly.
+    base_content = normalized_content
+    if used_fuzzy:
+        new_content = apply_replacements_preserving_unchanged_lines(
+            normalized_content, replacement_base, matched
         )
+    else:
+        new_content = _apply_replacements(replacement_base, matched)
 
     if base_content == new_content:
         raise EditError(_no_change_error(path, total))
@@ -297,6 +408,7 @@ def prepare_edit_arguments(args: dict) -> dict:
 __all__ = [
     "EditError",
     "apply_edits_to_normalized_content",
+    "apply_replacements_preserving_unchanged_lines",
     "count_occurrences",
     "detect_line_ending",
     "fuzzy_find_text",

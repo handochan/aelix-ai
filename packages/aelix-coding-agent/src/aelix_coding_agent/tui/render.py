@@ -282,15 +282,18 @@ class EventRenderer:
         # *after* the answer. This flag makes the flush idempotent so the
         # late ``thinking_end`` does not double-render. (ADR-0115.)
         self._thinking_flushed: bool = False
-        # Thinking-block visibility (Sprint 6h₁₅, ADR-0123). Collapsed by default
-        # (pi shows an italic "Thinking…" placeholder when hidden) to keep
-        # reasoning-heavy models from flooding the transcript. Toggled live by
-        # Ctrl+T (chrome → run_tui flips this). Aelix divergence from pi: pi's
-        # Ctrl+T rebuilds the whole chat to retroactively toggle PAST blocks;
-        # inline scrollback can't, so the toggle affects subsequent renders — but
-        # a collapsed block is routed through the /expand store so its full
-        # reasoning stays recoverable (``💭 Thinking… (/expand N)``).
-        self.hide_thinking: bool = True
+        # Thinking-block visibility (Sprint 6h₁₅, ADR-0123). Default VISIBLE to
+        # match pi's ``hideThinkingBlock`` default (False) — issue #50 reconcile:
+        # the run_tui startup seed overwrites this from the persisted setting, so
+        # this hardcoded default only governs headless / no-settings contexts and
+        # must agree with the settings default (visible). When HIDDEN (persisted
+        # setting or live Ctrl+T), pi shows an italic "Thinking…" placeholder to
+        # keep reasoning-heavy models from flooding the transcript. Aelix
+        # divergence from pi: pi's Ctrl+T rebuilds the whole chat to retroactively
+        # toggle PAST blocks; inline scrollback can't, so the toggle affects
+        # subsequent renders — but a collapsed block is routed through the /expand
+        # store so its full reasoning stays recoverable (``💭 Thinking… (/expand N)``).
+        self.hide_thinking: bool = False
         self._hidden_thinking_label: str = "Thinking…"
         # §B — live tool-result interception. Late-bound by run_tui to read the
         # descriptor registry by reference (returns a matching tool-renderer-desc

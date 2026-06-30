@@ -8,10 +8,15 @@ from aelix_ai.models_generated import MODELS
 from aelix_ai.streaming import Model
 
 
-def test_full_catalog_provider_count_is_32() -> None:
-    """Pi parity: 32 providers in ``models.generated.ts``."""
+def test_full_catalog_provider_count_is_35() -> None:
+    """Pi parity: 35 providers in ``models.generated.ts``.
 
-    assert len(MODELS) == 32
+    Model-catalog refresh (#15) grew the catalog from 32 to 35 by adding
+    ``ant-ling``, ``nvidia`` (NIM), and ``zai-coding-cn``.
+    """
+
+    assert len(MODELS) == 35
+    assert {"ant-ling", "nvidia", "zai-coding-cn"} <= set(MODELS)
 
 
 def test_full_catalog_total_model_count_at_least_200() -> None:

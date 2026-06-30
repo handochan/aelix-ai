@@ -76,6 +76,33 @@ async def test_fetch_models_key_and_bare_list(monkeypatch) -> None:
     assert _FakeClient.last_headers == {}
 
 
+async def test_fetch_anthropic_compatible_headers(monkeypatch) -> None:
+    # A genuine Anthropic-compatible endpoint authenticates the model-list probe
+    # with ``x-api-key`` + a pinned ``anthropic-version`` — a Bearer token 401s
+    # there and the feature silently degrades to the manual note (review LOW).
+    _patch_httpx(monkeypatch, {"data": [{"id": "claude-x"}]})
+    ids = await lw._fetch_openai_model_ids(
+        "https://anth.test/v1", "sk-ant", api="anthropic-messages"
+    )
+    assert ids == ["claude-x"]
+    assert _FakeClient.last_url == "https://anth.test/v1/models"
+    assert _FakeClient.last_headers == {
+        "x-api-key": "sk-ant",
+        "anthropic-version": lw._ANTHROPIC_VERSION,
+    }
+    assert lw._ANTHROPIC_VERSION == "2023-06-01"  # the SDK-pinned value
+
+
+async def test_fetch_openai_compatible_stays_bearer(monkeypatch) -> None:
+    # The OpenAI-shaped path (and any non-anthropic api) keeps Bearer auth.
+    _patch_httpx(monkeypatch, {"data": [{"id": "gpt-x"}]})
+    await lw._fetch_openai_model_ids("https://h/v1", "k", api="openai-completions")
+    assert _FakeClient.last_headers == {"Authorization": "Bearer k"}
+    # api=None (the legacy positional call) also stays on Bearer.
+    await lw._fetch_openai_model_ids("https://h/v1", "k")
+    assert _FakeClient.last_headers == {"Authorization": "Bearer k"}
+
+
 # ── _write_custom_models_json ──────────────────────────────────────────
 def test_write_models_json_is_schema_valid(tmp_path) -> None:
     from aelix_coding_agent.models_json import validate_config_semantics
@@ -201,3 +228,64 @@ async def test_register_empty_fetch_and_cancel(tmp_path, monkeypatch) -> None:
         Text=Text,
     )
     assert ok2 is False
+
+
+# ── _run_custom: Anthropic-compatible auto-registration (issue #49) ─────
+def _prompt_seq(provider_id: str, base_url: str, key: str):
+    """A ``prompt_input`` stub answering by the prompt text it is shown."""
+
+    async def _f(prompt: str, *_a: object, **_k: object) -> str:
+        if "Provider id" in prompt:
+            return provider_id
+        if "Base URL" in prompt:
+            return base_url
+        if "API key" in prompt:
+            return key
+        return ""
+
+    return _f
+
+
+async def test_run_custom_anthropic_auto_registers(tmp_path, monkeypatch) -> None:
+    # Issue #49 / Pi #5953: an Anthropic-compatible custom provider whose
+    # endpoint exposes ``/v1/models`` must auto-register (previously the gate
+    # only fired for OpenAI-compatible → "no model registered").
+    monkeypatch.setattr(lw, "_fetch_openai_model_ids", _aret(["claude-x", "claude-y"]))
+    stored: dict[str, str] = {}
+    reloaded: list[bool] = []
+
+    class _Auth:
+        async def set_api_key(self, provider: str, key: str) -> None:
+            stored[provider] = key
+
+    reg = types.SimpleNamespace(
+        _models_json_path=str(tmp_path / "models.json"),
+        _load_models=lambda: reloaded.append(True),
+    )
+
+    async def fake_select(_title: str, _options: object) -> str:
+        return "Anthropic-compatible"
+
+    async def fake_multiselect(_title, _options, *, selected):
+        return (set(selected), {})
+
+    await lw._run_custom(
+        auth_storage=_Auth(),
+        select=fake_select,
+        prompt_input=_prompt_seq("myanth", "https://anth.test/v1", "sk-ant"),
+        commit=lambda _x: None,
+        Text=Text,
+        multiselect=fake_multiselect,
+        model_registry=reg,
+    )
+
+    # The key was stored AND the models were registered under the
+    # anthropic-messages adapter (not skipped to the manual-note fallback).
+    assert stored == {"myanth": "sk-ant"}
+    assert reloaded == [True]
+    cfg = json.loads((tmp_path / "models.json").read_text())
+    prov = cfg["providers"]["myanth"]
+    assert prov["api"] == "anthropic-messages"
+    assert prov["baseUrl"] == "https://anth.test/v1"
+    assert [m["id"] for m in prov["models"]] == ["claude-x", "claude-y"]
+    assert validate_models_config(cfg) == []

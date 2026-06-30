@@ -301,7 +301,9 @@ def _install_compact_spy(h: AgentHarness) -> list[None]:
 
     calls: list[None] = []
 
-    async def _spy(_ci: object = None) -> Any:
+    async def _spy(_ci: object = None, **_kw: object) -> Any:
+        # ``**_kw`` absorbs the keyword-only ``reason`` the threshold path now
+        # passes (``self.compact(reason="threshold")``).
         calls.append(None)
         return CompactResult(
             summary="(spy)", first_kept_entry_id="x", tokens_before=0, details={}
@@ -431,7 +433,7 @@ async def test_check_auto_compaction_swallows_nothing_to_compact() -> None:
     h = await _harness_with_model(context_window=20_000)
     raised: list[Exception] = []
 
-    async def _raises_nothing_to_compact(_ci: object = None) -> Any:
+    async def _raises_nothing_to_compact(_ci: object = None, **_kw: object) -> Any:
         raise AgentHarnessError("invalid_state", "Nothing to compact")
 
     h.compact = _raises_nothing_to_compact  # type: ignore[method-assign]
@@ -450,7 +452,7 @@ async def test_check_auto_compaction_propagates_other_invalid_state_errors() -> 
     # (silent failure of a non-no-op compaction would mask real bugs).
     h = await _harness_with_model(context_window=20_000)
 
-    async def _raises_other(_ci: object = None) -> Any:
+    async def _raises_other(_ci: object = None, **_kw: object) -> Any:
         raise AgentHarnessError("invalid_state", "Some other failure")
 
     h.compact = _raises_other  # type: ignore[method-assign]

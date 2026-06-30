@@ -43,15 +43,67 @@ _ANTHROPIC_STOP_REASON_MAP: dict[str | None, str] = {
 }
 
 
+#: pi #5666 (anthropic-messages.ts:1227) — generic refusal text used when the
+#: provider supplies a ``refusal`` stop reason without a ``stop_details``
+#: explanation.
+_REFUSAL_FALLBACK_MESSAGE = "The model refused to complete the request"
+
+
+def map_stop_reason_with_details(
+    anthropic_reason: str | None,
+    stop_details: Any | None = None,
+) -> tuple[str, str | None]:
+    """Pi parity ``mapStopReason`` (anthropic-messages.ts:1213-1235).
+
+    Returns ``(stop_reason, error_message)``. pi #5666: a ``refusal`` stop
+    reason is mapped to ``"error"`` *and* the provider's ``stop_details``
+    object carries the human-readable reason — preserve its ``explanation`` text
+    into the surfaced error message so observers see *why* the model refused,
+    instead of dropping it for a generic "unknown error". ``stop_details`` may be
+    an SDK object (``.explanation``) or a plain dict; falls back to a generic
+    refusal message when no explanation is present.
+    """
+
+    reason = _ANTHROPIC_STOP_REASON_MAP.get(
+        anthropic_reason, anthropic_reason or "stop"
+    )
+    if anthropic_reason == "refusal":
+        explanation: str | None = None
+        if stop_details is not None:
+            explanation = getattr(stop_details, "explanation", None)
+            if explanation is None and isinstance(stop_details, dict):
+                explanation = stop_details.get("explanation")
+        return reason, (explanation or _REFUSAL_FALLBACK_MESSAGE)
+    return reason, None
+
+
 def map_stop_reason(anthropic_reason: str | None) -> str:
     """Map Anthropic SDK ``stop_reason`` to Aelix ``AssistantMessage.stop_reason``.
 
     Unknown reasons fall through as the raw string so callers can
     inspect them; the agent loop's terminal-detection compares against
     ``("error", "aborted")`` so a benign unknown reason continues the loop.
+
+    Thin wrapper over :func:`map_stop_reason_with_details` that drops the
+    refusal error text — kept for callers that only need the mapped reason.
     """
 
-    return _ANTHROPIC_STOP_REASON_MAP.get(anthropic_reason, anthropic_reason or "stop")
+    return map_stop_reason_with_details(anthropic_reason)[0]
+
+
+def supports_temperature(model: Model) -> bool:
+    """Pi parity ``getAnthropicCompat().supportsTemperature`` (anthropic-messages.ts:178).
+
+    Anthropic deprecated the ``temperature`` sampling param on Claude Opus 4.7+
+    (catalog ``compat.supportsTemperature: false``); sending it there is rejected
+    and conflicts with adaptive thinking. Mirrors pi's ``model.compat?.
+    supportsTemperature ?? true`` — defaults to ``True`` when the model carries no
+    compat flag.
+    """
+
+    compat = getattr(model, "compat", None) or {}
+    value = compat.get("supportsTemperature")
+    return True if value is None else bool(value)
 
 
 def _content_blocks_to_anthropic(
@@ -148,6 +200,8 @@ def build_params(
     *,
     max_tokens: int = 4096,
     extra: dict[str, Any] | None = None,
+    temperature: float | None = None,
+    thinking_enabled: bool = False,
 ) -> dict[str, Any]:
     """Assemble ``messages.create`` kwargs for the Anthropic SDK.
 
@@ -155,6 +209,11 @@ def build_params(
 
     ``extra`` lets callers inject ``cache_retention`` / ``thinking`` /
     other provider-specific top-level kwargs without forking this helper.
+
+    ``temperature`` is forwarded only when supplied, ``thinking_enabled`` is
+    False, and the model supports it (pi #5251, anthropic-messages.ts:943-945):
+    temperature is incompatible with extended thinking and unsupported on
+    Claude Opus 4.7+.
     """
 
     params: dict[str, Any] = {
@@ -182,6 +241,15 @@ def build_params(
                     }
                 )
         params["tools"] = sdk_tools
+    # pi #5251 (anthropic-messages.ts:943-945): temperature is incompatible with
+    # extended thinking and unsupported on Claude Opus 4.7+ — send it only when a
+    # value is supplied, thinking is off, and the model's compat allows it.
+    if (
+        temperature is not None
+        and not thinking_enabled
+        and supports_temperature(model)
+    ):
+        params["temperature"] = temperature
     if extra:
         params.update(extra)
     return params
@@ -373,5 +441,7 @@ __all__ = [
     "build_params",
     "is_oauth_token",
     "map_stop_reason",
+    "map_stop_reason_with_details",
+    "supports_temperature",
     "transform_messages",
 ]

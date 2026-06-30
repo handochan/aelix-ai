@@ -301,6 +301,35 @@ async def run_tui(
 
     renderer = EventRenderer(commit=_commit, set_tail=_set_tail, width=_RENDER_WIDTH)
 
+    # Issue #50 — seed the live thinking settings from the persisted store at
+    # startup (mirror of the WP-2/ADR-0160 theme + default-model seeds above).
+    # Without this the /settings → "Show thinking" + "Default thinking level"
+    # choices were write-only across launches: the renderer started on its
+    # hardcoded default and the harness on ``off``, so the user had to re-toggle
+    # them every session. Both seeds are guarded so a malformed settings file
+    # never blocks launch.
+    if settings_manager is not None:
+        # (a) thinking-block VISIBILITY → the renderer flag. ``get_hide_thinking_
+        # block`` defaults to False (visible, pi parity) which now also matches
+        # render.py's hardcoded default, so headless / no-settings stays sane.
+        with contextlib.suppress(Exception):
+            renderer.hide_thinking = settings_manager.get_hide_thinking_block()
+        # (b) default THINKING LEVEL → the live harness. SKIP when the current
+        # model does not support the stored level (a reasoning-off model collapses
+        # to ``["off"]``) so an unsupported level is never forced. ``None`` (unset)
+        # preserves the default ``off`` — nothing to apply. Runs pre-bootstrap;
+        # ``bootstrap`` only discovers resources, it never resets thinking_level.
+        with contextlib.suppress(Exception):
+            seed_level = settings_manager.get_default_thinking_level()
+            if seed_level:
+                from aelix_ai.models import get_supported_thinking_levels
+
+                seed_model = getattr(runtime_host.harness, "current_model", None)
+                if seed_model is not None and seed_level in get_supported_thinking_levels(
+                    seed_model
+                ):
+                    await runtime_host.harness.set_thinking_level(seed_level)
+
     # WP-8 (Feature 2) — the TUI-side session activity tracker. The harness
     # SessionStats carries no per-tool success/failure split, no per-model
     # breakdown, and no wall-clock timing, so the tracker observes the agent event
