@@ -82,6 +82,14 @@ class ToolCallContent:
     tool_call_id: str = ""
     tool_name: str = ""
     input: dict[str, Any] = field(default_factory=dict)
+    # Pi parity (#15): Gemini's multi-turn ``thoughtSignature`` (base64).
+    # Google's API attaches an opaque signed token to a function-call part so
+    # the model can continue the same chain of thought across turns; the
+    # adapter must echo it back verbatim on replay. Mirrors
+    # :attr:`TextContent.text_signature` / :attr:`ThinkingContent.thinking_signature`
+    # — ADDITIVE default ``""`` keeps every existing caller / snapshot / parity
+    # fixture intact; all non-Gemini adapters leave it empty.
+    thought_signature: str = ""
     type: Literal["toolCall"] = "toolCall"
 
 

@@ -53,6 +53,13 @@ dependencies = [
     # SSRF / local-file-read vector when a tool ships an attacker-controlled
     # schema). Already present transitively; pinned here as a first-class dep.
     "jsonschema>=4.18,<5",
+    # #15 (Gemini adapters: ``google`` + ``google-vertex``) — official
+    # ``google-genai`` Python SDK for byte-level Pi parity with
+    # providers/google.ts + api/google-generative-ai.ts (Pi pins
+    # ``@google/genai`` 1.52.0). The adapters lazy-import this inside
+    # ``create_client`` / ``stream`` so a missing optional dep never hard-fails
+    # module import; the pin keeps it explicit for installs that want Gemini.
+    "google-genai>=1.52,<2",
 ]
 
 [project.urls]
