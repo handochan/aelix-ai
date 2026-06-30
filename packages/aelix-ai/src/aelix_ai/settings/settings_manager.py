@@ -63,6 +63,7 @@ from aelix_ai.settings.types import (
     SETTINGS_NESTED_CLASSES,
     SETTINGS_PY_TO_JSON,
     CompactionSettings,
+    DefaultProjectTrust,
     DoubleEscapeAction,
     FollowUpMode,
     ImageSettings,
@@ -941,6 +942,31 @@ class SettingsManager:
 
         self._global_settings.transport = transport
         self._mark_modified("transport")
+        self._save()
+
+    # --- defaultProjectTrust (Pi `:884-892`) — issue #5 ---
+    def get_default_project_trust(self) -> DefaultProjectTrust:
+        """Pi parity: ``settings-manager.ts::getDefaultProjectTrust`` (884-887). Default: "ask".
+
+        SECURITY (issue #5): reads the GLOBAL scope ONLY (``self._global_settings``),
+        NOT the merged ``self._settings`` that every other getter uses. A project's
+        own ``.aelix/settings.json`` is loaded ungated, so reading the merged view
+        would let an untrusted project set ``defaultProjectTrust: "always"`` in its
+        project settings and SELF-ELEVATE to trusted, defeating the trust gate. pi
+        makes this a global-only setting for exactly this reason.
+        """
+
+        return self._global_settings.default_project_trust or "ask"
+
+    def set_default_project_trust(self, value: DefaultProjectTrust) -> None:
+        """Pi parity: ``settings-manager.ts::setDefaultProjectTrust`` (889-892).
+
+        Global-scope only (pi ``:96`` — "global setting only"); writes
+        ``_global_settings`` like every other setter.
+        """
+
+        self._global_settings.default_project_trust = value
+        self._mark_modified("default_project_trust")
         self._save()
 
     # --- compaction (Pi `:668-695`) ---

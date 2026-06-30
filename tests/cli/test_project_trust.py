@@ -764,3 +764,37 @@ async def test_no_project_local_keeps_entry_points_extension(
     assert result.errors == []
     flags = {f for ext in result.extensions for f in ext.flags}
     assert "from_ep" in flags
+
+
+# --- issue #5 bootstrap wiring: _resolve_project_trust threads vote+default ---
+
+
+async def test_bootstrap_resolve_threads_vote_extensions_and_default(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Issue #5: the production caller _resolve_project_trust now threads the
+    user/global vote surface + persisted defaultProjectTrust + an error sink into
+    resolve_project_trusted, so the project_trust event fires and the default is
+    honored (both were inert while the caller omitted them). The orchestrator's
+    own event/default behavior is covered by test_extension_issue5_runtime_and_trust."""
+
+    captured: dict[str, object] = {}
+
+    async def _spy(cwd: Path, **kwargs: object) -> bool:
+        captured.update(kwargs)
+        return True
+
+    monkeypatch.setattr(entry_mod, "resolve_project_trusted", _spy)
+    sentinel = object()
+    result = await entry_mod._resolve_project_trust(
+        parse_args([]),
+        str(tmp_path),
+        "print",
+        extensions=[sentinel],
+        default_project_trust="always",
+    )
+
+    assert result is True
+    assert captured["extensions"] == [sentinel]
+    assert captured["default_project_trust"] == "always"
+    assert callable(captured["on_extension_error"])

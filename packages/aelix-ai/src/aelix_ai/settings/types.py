@@ -40,6 +40,12 @@ DEFAULT_THINKING_LEVEL: Final[str] = "medium"
 
 # === 5 union string-literal types (Pi `settings-manager.ts:80-105`) ===
 ThinkingLevel = Literal["off", "minimal", "low", "medium", "high", "xhigh"]
+
+DefaultProjectTrust = Literal["ask", "always", "never"]
+"""Pi parity: ``settings-manager.ts:61`` ``DefaultProjectTrust``. The persisted
+``defaultProjectTrust`` GLOBAL setting (issue #5) — how to resolve trust for a
+project with no stored decision and no extension vote: ``"ask"`` (default,
+interactive prompt), ``"always"`` (auto-trust), ``"never"`` (auto-deny)."""
 SteeringMode = Literal["all", "one-at-a-time"]
 FollowUpMode = Literal["all", "one-at-a-time"]
 DoubleEscapeAction = Literal["fork", "tree", "none"]
@@ -200,6 +206,10 @@ class Settings:
     markdown: MarkdownSettings | None = None
     warnings: WarningSettings | None = None
     session_dir: str | None = None
+    # Issue #5 — pi ``settings-manager.ts:96`` ``defaultProjectTrust`` (GLOBAL
+    # setting only; read GLOBAL-scope, never merged — a project must not be able
+    # to self-elevate via its own settings.json). Default applied in the getter.
+    default_project_trust: DefaultProjectTrust | None = None
 
 
 SettingsScope = Literal["global", "project"]
@@ -262,6 +272,7 @@ SETTINGS_PY_TO_JSON: Final[dict[str, str]] = {
     "markdown": "markdown",
     "warnings": "warnings",
     "session_dir": "sessionDir",
+    "default_project_trust": "defaultProjectTrust",
 }
 
 
@@ -355,6 +366,7 @@ __all__ = [
     "SETTINGS_PY_TO_JSON",
     "BranchSummarySettings",
     "CompactionSettings",
+    "DefaultProjectTrust",
     "DoubleEscapeAction",
     "FollowUpMode",
     "ImageSettings",

@@ -72,9 +72,11 @@ from .config import (
 from .file_processor import process_file_arguments
 from .initial_message import build_initial_message
 from .project_trust import (
+    DefaultProjectTrust,
     ProjectTrustPromptResult,
     ProjectTrustStore,
     format_project_trust_prompt,
+    has_trust_requiring_project_resources,
     interpret_trust_option,
     project_trust_options,
     resolve_project_trusted,
@@ -609,13 +611,27 @@ async def _prompt_project_trust_interactive(
     return interpret_trust_option(label, cwd)
 
 
-async def _resolve_project_trust(parsed: Args, cwd: str, app_mode: AppMode) -> bool:
+async def _resolve_project_trust(
+    parsed: Args,
+    cwd: str,
+    app_mode: AppMode,
+    *,
+    extensions: list[Any] | None = None,
+    default_project_trust: DefaultProjectTrust = "ask",
+) -> bool:
     """Resolve project trust ONCE, before any project-local code executes.
 
     ``has_ui`` is True only in interactive mode (print/json/rpc cannot prompt →
     deny-by-default). The interactive prompt is the A1 one-shot selector. On a
     denied + non-interactive run with resources present, prints a clear stderr
     notice (replacing the old post-hoc warning).
+
+    Issue #5 bootstrap: ``extensions`` is the USER/GLOBAL-only vote surface (NEVER
+    project-local — those are what's being gated) loaded before this call, and
+    ``default_project_trust`` is the persisted global setting. Threading both makes
+    ``resolve_project_trusted``'s ``project_trust`` extension event (step 3) fire
+    and its ``defaultProjectTrust`` branch (step 5) take effect — both were inert
+    in the shipped CLI while this caller omitted them.
     """
 
     cwd_path = Path(cwd)
@@ -626,6 +642,11 @@ async def _resolve_project_trust(parsed: Args, cwd: str, app_mode: AppMode) -> b
         has_ui=has_ui,
         prompt=_prompt_project_trust_interactive if has_ui else None,
         store=ProjectTrustStore(get_agent_dir()),
+        extensions=extensions,
+        default_project_trust=default_project_trust,
+        on_extension_error=lambda msg: print(
+            f"Warning: project_trust extension: {msg}", file=sys.stderr
+        ),
     )
     return trusted
 
@@ -906,7 +927,50 @@ async def _async_main(argv: list[str]) -> int:
     # json/rpc cannot prompt → deny-by-default. The resolved bool gates BOTH
     # the project-local MCP contribs (below) AND the auto-discovered
     # ``cwd/.aelix/extensions`` tier (threaded into ``_build_harness_options``).
-    project_trusted = await _resolve_project_trust(parsed, cwd, app_mode)
+    #
+    # Issue #5 — load the USER/GLOBAL-only extension surface as the project_trust
+    # VOTE surface BEFORE resolving trust (so the ``project_trust`` event can fire).
+    # SECURITY: ``no_project_local=True`` so an untrusted ``cwd/.aelix/extensions``
+    # is NEVER exec_module'd before the gate; NO ``prepend`` built-ins (Guardrail /
+    # permission_ext have no project_trust handler and the held-ref permission_ext
+    # must be instantiated exactly once, by the factory). This is a THROWAWAY load
+    # (de-dup OPTION B, ADR-pending): its fresh runtime is bound to nothing, so a
+    # vote extension's ``register_provider`` only QUEUES onto a discarded runtime
+    # and is never applied — the factory re-discovers + binds the real set later.
+    # Cost: user/global ``setup()`` side-effects run twice (documented; OPTION A
+    # reuse is a deferred efficiency refinement that would collide with the factory).
+    trust_vote_extensions: list[Any] = []
+    # Only pay for the (expensive) vote-load when the orchestrator will actually
+    # consult it — the ``project_trust`` event (step 3) is UNREACHABLE when an
+    # override is set (``--approve``/``--no-approve`` short-circuits at step 1) or
+    # the cwd has no trust-requiring resources (step 2 returns trusted). Gating on
+    # the SAME predicate the orchestrator uses is behavior-identical and keeps the
+    # full user/global extension load (+ its ``setup()``) off the common startup
+    # path (most directories have no ``.aelix/extensions``/``.aelix/mcp.json``).
+    if parsed.project_trust_override is None and has_trust_requiring_project_resources(
+        Path(cwd)
+    ):
+        try:
+            _vote_loaded = await discover_and_load_extensions(
+                [str(p) for p in parsed.extensions],
+                cwd=Path(cwd),
+                agent_dir=Path(get_agent_dir()),
+                no_discovery=parsed.no_extensions,
+                no_project_local=True,  # SECURITY: never the project-local tier
+            )
+            trust_vote_extensions = list(_vote_loaded.extensions)
+            for _err in _vote_loaded.errors:
+                print(f"Warning: project_trust vote-load: {_err}", file=sys.stderr)
+        except Exception as exc:  # noqa: BLE001 — vote-load failure must not block startup
+            print(f"Warning: project_trust vote-load failed: {exc}", file=sys.stderr)
+
+    project_trusted = await _resolve_project_trust(
+        parsed,
+        cwd,
+        app_mode,
+        extensions=trust_vote_extensions,
+        default_project_trust=settings_manager.get_default_project_trust(),
+    )
 
     # MCP servers (Tier 4): connect ONCE here, share the connected tools across
     # every harness rebuild (the tool closures hold live connections, so they
@@ -940,15 +1004,16 @@ async def _async_main(argv: list[str]) -> int:
     # Non-interactive untrusted notice for the EXTENSION surface (the gate
     # itself happens inside the factory via ``no_project_local``). Interactive
     # users already saw/answered the A1 prompt, so only warn for headless runs.
-    if not project_trusted and app_mode != "interactive":
-        from .project_trust import has_trust_requiring_project_resources
-
-        if has_trust_requiring_project_resources(Path(cwd)):
-            print(
-                "Notice: project-local .aelix/extensions skipped in an "
-                "untrusted directory; pass --approve to trust.",
-                file=sys.stderr,
-            )
+    if (
+        not project_trusted
+        and app_mode != "interactive"
+        and has_trust_requiring_project_resources(Path(cwd))
+    ):
+        print(
+            "Notice: project-local .aelix/extensions skipped in an "
+            "untrusted directory; pass --approve to trust.",
+            file=sys.stderr,
+        )
 
     # WP-8 (Feature 3) — a stable holder the factory fills with the discovered
     # extensions on the FIRST build so run_tui's /extension viewer gets the live

@@ -395,6 +395,48 @@ async def test_set_transport_persists(
     )
 
 
+# --- defaultProjectTrust (issue #5) — global-scope-only ---
+
+
+def test_get_default_project_trust_default(manager: SettingsManager) -> None:
+    assert manager.get_default_project_trust() == "ask"
+
+
+async def test_set_default_project_trust_persists_to_global(
+    manager: SettingsManager,
+    settings_dirs: dict[str, Path],
+    read_settings: Any,
+) -> None:
+    manager.set_default_project_trust("always")
+    assert manager.get_default_project_trust() == "always"
+    await manager.flush()
+    # Persisted to GLOBAL scope (agent dir) only — never the project scope.
+    assert (
+        read_settings(settings_dirs["global_path"])["defaultProjectTrust"]
+        == "always"
+    )
+    assert read_settings(settings_dirs["project_path"]) == {}
+
+
+def test_get_default_project_trust_is_global_scope_only(
+    settings_dirs: dict[str, Path],
+    write_settings: Any,
+) -> None:
+    # SECURITY (issue #5): a PROJECT-scope settings.json must NOT influence the
+    # getter — otherwise an untrusted project could set defaultProjectTrust="always"
+    # in its own .aelix/settings.json and SELF-ELEVATE to trusted, defeating the
+    # gate. The getter reads GLOBAL scope only, unlike every other (merged) getter.
+    write_settings(
+        settings_dirs["project_path"], {"defaultProjectTrust": "always"}
+    )
+    manager = _make_manager(settings_dirs)  # global empty, project = "always"
+    # Getter ignores the project value → returns the "ask" default.
+    assert manager.get_default_project_trust() == "ask"
+    # ...but the project setting WAS loaded (proving the getter deliberately
+    # bypasses the merged/project read, not that the value was simply absent).
+    assert manager.get_project_settings().default_project_trust == "always"
+
+
 async def test_set_compaction_enabled_isolates_nested(
     manager: SettingsManager,
     settings_dirs: dict[str, Path],
