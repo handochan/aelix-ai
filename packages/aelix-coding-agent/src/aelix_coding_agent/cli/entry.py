@@ -82,6 +82,7 @@ from .project_trust import (
 from .runtime_bootstrap import load_dotenv, register_providers, resolve_model
 
 if TYPE_CHECKING:
+    from aelix_ai.settings import SettingsManager
     from aelix_ai.streaming import Model
 
     from ..model_registry import ModelRegistry
@@ -404,6 +405,7 @@ async def _build_harness_options(
     project_trusted: bool = True,
     permission_ext: PermissionExtension | None = None,
     captured_extensions: list[Any] | None = None,
+    settings_manager: SettingsManager | None = None,
 ) -> AgentHarnessOptions:
     """Assemble :class:`AgentHarnessOptions` from parsed CLI args.
 
@@ -500,6 +502,19 @@ async def _build_harness_options(
         # Issue #5 (Lane C): surface the resolved trust state to extensions via
         # ``ctx.is_project_trusted()``.
         project_trusted=project_trusted,
+        # Issue #44 — thread the ONE startup ``SettingsManager`` (built at
+        # ``_async_main`` and shared with the TUI) into the harness so
+        # ``harness.settings_manager`` is non-None and ``harness.reload()`` stops
+        # raising ``invalid_state`` (core.py guard). The aelix-agent-core seam
+        # (field/threading/property/reload) already exists (commit 4659a99); this
+        # is the dormant coding-agent glue mirroring pi ``main.ts`` constructing
+        # the AgentSession with its ``settingsManager``. Pure threading: no
+        # production caller invokes ``reload()`` yet (TUI/CLI ``/reload`` calls
+        # ``reload_resources()``), so this changes no observable behavior until
+        # the moat-chain reload (#24) consumes it. Same hold-the-ref pattern as
+        # ``permission_ext`` / ``model_registry`` — one shared instance reaches
+        # every rebuild so reload survives ``/new`` / ``/fork`` / ``/resume``.
+        settings_manager=settings_manager,
     )
 
     # Auto-discovered AGENTS.md project context (Pi ``--no-context-files`` gate),
@@ -961,6 +976,11 @@ async def _async_main(argv: list[str]) -> int:
             project_trusted=project_trusted,
             permission_ext=permission_ext,
             captured_extensions=discovered_extensions,
+            # Issue #44 — forward the shared startup SettingsManager (the
+            # ``_async_main`` closure var built above) into every (re)built
+            # harness so ``harness.reload()`` is functional across /new, /fork,
+            # /resume.
+            settings_manager=settings_manager,
         )
         harness = AgentHarness(opts)
         # Issue #22 — replay pending provider registrations into the LIVE

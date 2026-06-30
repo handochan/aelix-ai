@@ -204,3 +204,27 @@ async def test_build_harness_options_no_warning_without_on_disk(
     err = capsys.readouterr().err
     assert "full system permissions" not in err
     assert len(opts.extensions) == 2
+
+
+# --- issue #44: settings_manager harness seam wiring -------------------------
+
+
+async def test_build_harness_options_threads_settings_manager() -> None:
+    """Issue #44: a passed SettingsManager reaches AgentHarnessOptions.settings_manager
+    — the dormant enabler that makes harness.reload() stop raising invalid_state in
+    production. The aelix-agent-core seam (field/property/reload) already exists; this
+    asserts the coding-agent glue forwards the instance."""
+    from aelix_ai.settings import SettingsManager
+
+    sm = SettingsManager.in_memory()
+    opts = await _build_harness_options(
+        Args(), Session(MemorySessionStorage()), settings_manager=sm
+    )
+    assert opts.settings_manager is sm
+
+
+async def test_build_harness_options_settings_manager_defaults_none() -> None:
+    """Issue #44: omitting settings_manager preserves the pre-#44 default (None),
+    so no caller is forced to thread it and existing behavior is unchanged."""
+    opts = await _build_harness_options(Args(), Session(MemorySessionStorage()))
+    assert opts.settings_manager is None
