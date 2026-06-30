@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from aelix_ai.messages import (
     AssistantMessage,
@@ -22,6 +22,12 @@ from aelix_ai.messages import (
 )
 from aelix_ai.streaming import AssistantMessageEvent, Model
 from aelix_ai.tools import Tool, ToolResult
+
+if TYPE_CHECKING:
+    # Issue #4 (FU3): CompactionEndEvent.result carries the compaction outcome.
+    # TYPE_CHECKING-only import (with ``from __future__ import annotations``) keeps
+    # the annotation a lazy string and avoids a session/compaction <-> types cycle.
+    from aelix_agent_core.session.compaction import CompactResult
 
 # Custom message types extend this union in later phases.
 AgentMessage = Message
@@ -245,6 +251,27 @@ class AutoRetryEndEvent:
     type: Literal["auto_retry_end"] = "auto_retry_end"
 
 
+# pi parity: ``agent-session.ts`` ``compaction_start`` / ``compaction_end``
+# (issue #4 FU3). Listener-only UI events (NOT hook-bus lifecycle events) so a
+# subscriber — the TUI, /stats, or an embedder — can show a "Compacting context…"
+# indicator on the manual, threshold, AND overflow paths (which today have zero
+# UI surface for auto/overflow compaction). Mirrors the AutoRetry* pair.
+@dataclass(frozen=True)
+class CompactionStartEvent:
+    reason: Literal["manual", "threshold", "overflow"]
+    type: Literal["compaction_start"] = "compaction_start"
+
+
+@dataclass(frozen=True)
+class CompactionEndEvent:
+    reason: Literal["manual", "threshold", "overflow"]
+    result: CompactResult | None  # None on the error/aborted path
+    aborted: bool
+    will_retry: bool
+    error_message: str | None = None  # populated only on the error path
+    type: Literal["compaction_end"] = "compaction_end"
+
+
 AgentEvent = (
     AgentStartEvent
     | TurnStartEvent
@@ -258,6 +285,8 @@ AgentEvent = (
     | AgentEndEvent
     | AutoRetryStartEvent
     | AutoRetryEndEvent
+    | CompactionStartEvent
+    | CompactionEndEvent
 )
 
 

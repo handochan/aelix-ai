@@ -16,10 +16,15 @@ events.
 
 from __future__ import annotations
 
+import contextlib
 from types import SimpleNamespace
 from typing import Any
 
-from aelix_agent_core.harness.core import AgentHarness, AgentHarnessOptions
+from aelix_agent_core.harness.core import (
+    AgentHarness,
+    AgentHarnessError,
+    AgentHarnessOptions,
+)
 from aelix_agent_core.harness.hooks import (
     SessionBeforeCompactHookEvent,
     SessionCompactHookEvent,
@@ -30,6 +35,8 @@ from aelix_agent_core.session import (
     MemorySessionStorage,
     Session,
 )
+from aelix_agent_core.session.compaction import get_latest_compaction_boundary_ms
+from aelix_agent_core.session.context import build_session_context
 from aelix_ai.messages import AssistantMessage, TextContent, UserMessage
 
 _OVERFLOW_MSG = "prompt is too long: 213462 tokens > 200000 maximum"
@@ -55,6 +62,16 @@ def _overflow_err() -> AssistantMessage:
         content=[TextContent(text="")],
         stop_reason="error",
         error_message=_OVERFLOW_MSG,
+    )
+
+
+def _length_overflow() -> AssistantMessage:
+    # is_context_overflow Case 3 (overflow.py): stop_reason="length" + output == 0
+    # + input >= 99% of the 200k window (a server-truncated oversized input).
+    return AssistantMessage(
+        content=[TextContent(text="")],
+        stop_reason="length",
+        usage={"input": 199_000, "output": 0},
     )
 
 
@@ -302,3 +319,208 @@ async def test_real_compact_emits_overflow_reason_and_will_retry() -> None:
     overflow_after = [e for e in after if e.reason == "overflow"]
     assert overflow_before and overflow_before[0].will_retry is True
     assert overflow_after and overflow_after[0].will_retry is True
+
+
+# ── FU1: trailing overflow-error excluded from the rebuilt re-run context ────
+
+
+async def test_real_compact_excludes_trailing_overflow_error_from_rerun_context() -> None:
+    # pi ``agent-session.ts:1988-1994`` — ``compact()`` rebuilds ``_state.messages``
+    # from the session branch, which RE-ADDS the persisted trailing overflow error
+    # (the first pop only cleared the LIVE list). The SECOND pop must drop it from
+    # the re-run context while history keeps it. The existing pop test stubs
+    # ``compact()`` so it never exercises this rebuild.
+    session = Session(MemorySessionStorage())
+    await _seed_compactable(session)
+    await session.append_message(_overflow_err())  # persisted trailing error
+    h = _build_harness(session=session, _summarizer_override=_override())
+    # Live context as the failed overflow turn leaves it (error is the last msg).
+    h._state.messages = build_session_context(await session.get_branch()).messages
+    assert isinstance(h._state.messages[-1], AssistantMessage)
+    assert h._state.messages[-1].stop_reason == "error"
+
+    did_retry = await h._try_overflow_recovery("sys")
+    assert did_retry is True
+    # History still ends with the error (the rebuild re-adds it — proving the
+    # second pop is necessary)...
+    rebuilt = build_session_context(await session.get_branch()).messages
+    assert isinstance(rebuilt[-1], AssistantMessage)
+    assert rebuilt[-1].stop_reason == "error"
+    # ...but FU1 removed it from the LIVE re-run context.
+    assert not (
+        h._state.messages
+        and isinstance(h._state.messages[-1], AssistantMessage)
+        and h._state.messages[-1].stop_reason == "error"
+    )
+
+
+async def test_real_compact_excludes_trailing_length_overflow_from_rerun_context() -> None:
+    # FU1 refinement (review #5): aelix's ``is_context_overflow`` Case 3 detects a
+    # ``stop_reason == "length"`` overflow, which also reaches the will_retry path.
+    # The second pop guards on ``is_context_overflow`` (not pi's narrow "error"),
+    # so a length-overflow is excluded from the re-run context too.
+    session = Session(MemorySessionStorage())
+    await _seed_compactable(session)
+    await session.append_message(_length_overflow())
+    h = _build_harness(session=session, _summarizer_override=_override())
+    h._state.messages = build_session_context(await session.get_branch()).messages
+    assert isinstance(h._state.messages[-1], AssistantMessage)
+    assert h._state.messages[-1].stop_reason == "length"
+
+    did_retry = await h._try_overflow_recovery("sys")
+    assert did_retry is True
+    # The length-overflow was popped from the LIVE re-run context (a "stop_reason
+    # == 'error'" guard would have left it).
+    assert not (
+        h._state.messages
+        and isinstance(h._state.messages[-1], AssistantMessage)
+        and h._state.messages[-1].stop_reason == "length"
+    )
+
+
+# ── FU2: compaction-boundary staleness guards ───────────────────────────────
+
+
+async def test_threshold_guard_a_skips_stale_pre_compaction_assistant() -> None:
+    # Guard A (pi :1781-1789): a kept-tail assistant whose timestamp predates the
+    # latest compaction is stale — its usage reflects pre-compaction context and
+    # must not re-trigger threshold compaction.
+    session = Session(MemorySessionStorage())
+    await session.append_compaction("summary", "", 0)
+    boundary = get_latest_compaction_boundary_ms(await session.get_branch())
+    assert boundary is not None
+    h = _build_harness(session=session)
+    compact_calls = _capture_compact(h)
+    h._state.messages = [
+        AssistantMessage(
+            content=[TextContent(text="stale")],
+            stop_reason="end_turn",
+            usage={"input": 500_000},  # well over the threshold
+            timestamp=boundary - 1000.0,  # BEFORE the compaction boundary
+        )
+    ]
+    await h._check_auto_compaction()
+    assert compact_calls == []  # skipped despite the over-threshold usage
+
+
+async def test_threshold_fires_for_fresh_assistant_after_compaction() -> None:
+    # Contrast: a freshly-generated assistant (timestamp None = current) with the
+    # same over-threshold usage IS compacted — Guard A only skips stale messages.
+    session = Session(MemorySessionStorage())
+    await session.append_compaction("summary", "", 0)
+    h = _build_harness(session=session)
+    compact_calls = _capture_compact(h)
+    h._state.messages = [
+        AssistantMessage(
+            content=[TextContent(text="fresh")],
+            stop_reason="end_turn",
+            usage={"input": 500_000},
+            timestamp=None,  # live message — never stale
+        )
+    ]
+    await h._check_auto_compaction()
+    assert compact_calls == [("threshold", False)]
+
+
+async def test_threshold_guard_b_skips_stale_usage_source() -> None:
+    # Guard B (pi :1827-1835): on the error/aborted estimate path the usage source
+    # is an EARLIER assistant; skip if THAT message predates the compaction
+    # boundary (its usage is stale).
+    session = Session(MemorySessionStorage())
+    await session.append_compaction("summary", "", 0)
+    boundary = get_latest_compaction_boundary_ms(await session.get_branch())
+    assert boundary is not None
+    h = _build_harness(session=session)
+    compact_calls = _capture_compact(h)
+    h._state.messages = [
+        AssistantMessage(
+            content=[TextContent(text="usage-src")],
+            stop_reason="end_turn",
+            usage={"input": 500_000},
+            timestamp=boundary - 1000.0,  # stale usage source
+        ),
+        AssistantMessage(
+            content=[TextContent(text="")],
+            stop_reason="error",  # most-recent error → forces the estimate path
+            error_message="boom",
+            timestamp=None,
+        ),
+    ]
+    await h._check_auto_compaction()
+    assert compact_calls == []  # Guard B skipped (usage source is pre-compaction)
+
+
+async def test_threshold_error_branch_fires_when_usage_source_is_fresh() -> None:
+    # Contrast: when the estimate's usage source is post-compaction (fresh, no
+    # timestamp), the error-branch threshold compaction still fires.
+    session = Session(MemorySessionStorage())
+    await session.append_compaction("summary", "", 0)
+    h = _build_harness(session=session)
+    compact_calls = _capture_compact(h)
+    h._state.messages = [
+        AssistantMessage(
+            content=[TextContent(text="usage-src")],
+            stop_reason="end_turn",
+            usage={"input": 500_000},
+            timestamp=None,  # fresh usage source
+        ),
+        AssistantMessage(
+            content=[TextContent(text="")],
+            stop_reason="error",
+            error_message="boom",
+            timestamp=None,
+        ),
+    ]
+    await h._check_auto_compaction()
+    assert compact_calls == [("threshold", False)]
+
+
+# ── FU3: compaction_start / compaction_end subscriber events ─────────────────
+
+
+async def test_compaction_emits_start_and_end_on_success() -> None:
+    session = Session(MemorySessionStorage())
+    await _seed_compactable(session)
+    h = _build_harness(session=session, _summarizer_override=_override())
+    events: list[Any] = []
+    h.subscribe(lambda e: events.append(e))
+    await h.compact(reason="manual")
+    kinds = [getattr(e, "type", None) for e in events]
+    assert kinds == ["compaction_start", "compaction_end"]
+    start, end = events[0], events[1]
+    assert start.reason == "manual"
+    assert end.reason == "manual"
+    assert end.aborted is False
+    assert end.will_retry is False
+    assert end.result is not None
+    assert end.error_message is None
+
+
+async def test_compaction_emits_end_event_on_nothing_to_compact() -> None:
+    # pi emits compaction_end even on the swallowed "Nothing to compact" raise so
+    # a subscriber always sees a matched start/end pair.
+    h = _build_harness()  # empty session → "Nothing to compact"
+    events: list[Any] = []
+    h.subscribe(lambda e: events.append(e))
+    with contextlib.suppress(AgentHarnessError):
+        await h.compact(reason="threshold")
+    kinds = [getattr(e, "type", None) for e in events]
+    assert kinds == ["compaction_start", "compaction_end"]
+    end = events[1]
+    assert end.reason == "threshold"
+    assert end.result is None
+    assert end.error_message is not None
+    assert "Nothing to compact" in end.error_message
+
+
+async def test_compaction_end_carries_will_retry_on_overflow() -> None:
+    session = Session(MemorySessionStorage())
+    await _seed_compactable(session)
+    h = _build_harness(session=session, _summarizer_override=_override())
+    events: list[Any] = []
+    h.subscribe(lambda e: events.append(e))
+    await h.compact(reason="overflow", will_retry=True)
+    end = next(e for e in events if getattr(e, "type", None) == "compaction_end")
+    assert end.reason == "overflow"
+    assert end.will_retry is True
+    assert end.aborted is False

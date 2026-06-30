@@ -48,7 +48,12 @@ def test_to_hook_event_handles_every_agent_event_variant() -> None:
     those events ever reach it (they're skipped at the caller).
     """
 
-    from aelix_agent_core.types import AutoRetryEndEvent, AutoRetryStartEvent
+    from aelix_agent_core.types import (
+        AutoRetryEndEvent,
+        AutoRetryStartEvent,
+        CompactionEndEvent,
+        CompactionStartEvent,
+    )
 
     am = _stub_assistant_message()
     # Variants projected to HookEvent (every AgentEvent except the listener-only
@@ -72,12 +77,17 @@ def test_to_hook_event_handles_every_agent_event_variant() -> None:
         AgentEndEvent(messages=[]),
     ]
     # Listener-only variants — must not reach ``_to_hook_event``; documented by
-    # an explicit raise inside the match.
+    # an explicit raise inside the match. auto_retry (ADR-0128) + compaction
+    # (issue #4 FU3) are UI-only subscriber events, not extension lifecycle hooks.
     listener_only_samples: list[AgentEvent] = [
         AutoRetryStartEvent(
             attempt=1, max_attempts=3, delay_ms=2000, error_message="overloaded"
         ),
         AutoRetryEndEvent(success=False, attempt=1, final_error="x"),
+        CompactionStartEvent(reason="manual"),
+        CompactionEndEvent(
+            reason="manual", result=None, aborted=False, will_retry=False
+        ),
     ]
     # Sanity: the union has no other variants beyond these two buckets.
     variant_count = len(get_args(AgentEvent))
@@ -95,7 +105,7 @@ def test_to_hook_event_handles_every_agent_event_variant() -> None:
         # ``_to_hook_event`` is a contract violation.
         import pytest as _pytest
 
-        with _pytest.raises(RuntimeError, match=r"auto_retry event"):
+        with _pytest.raises(RuntimeError, match=r"(auto_retry|compaction) event"):
             _to_hook_event(ev)
 
 

@@ -1092,6 +1092,11 @@ class _EstimateResult:
     """Pi parity: :func:`estimate_context_tokens` return shape."""
 
     tokens: int
+    # Issue #4 (FU2 Guard-B): the index of the message whose usage seeded the
+    # estimate (pi ``lastUsageIndex``), so a caller can verify that source
+    # message is post-compaction before re-triggering compaction. ``None`` when
+    # no valid-usage assistant was found (the all-heuristic estimate).
+    last_usage_index: int | None = None
 
 
 def _valid_assistant_usage(msg: Any) -> dict[str, Any] | None:
@@ -1151,7 +1156,7 @@ def estimate_context_tokens(messages: list[Any]) -> _EstimateResult:
         return _EstimateResult(tokens=sum(estimate_tokens(m) for m in messages))
     usage_tokens = calculate_context_tokens(last_usage)
     trailing = sum(estimate_tokens(m) for m in messages[last_idx + 1 :])
-    return _EstimateResult(tokens=usage_tokens + trailing)
+    return _EstimateResult(tokens=usage_tokens + trailing, last_usage_index=last_idx)
 
 
 def get_latest_compaction_entry(branch_entries: list[Any]) -> Any | None:
@@ -1168,6 +1173,25 @@ def get_latest_compaction_entry(branch_entries: list[Any]) -> Any | None:
         if getattr(entry, "type", None) == "compaction":
             return entry
     return None
+
+
+def get_latest_compaction_boundary_ms(branch_entries: list[Any]) -> float | None:
+    """Issue #4 (FU2): the latest compaction entry's timestamp as unix-millis.
+
+    Pi parity: ``new Date(getLatestCompactionEntry(...).timestamp).getTime()`` —
+    the staleness boundary a message's :attr:`AssistantMessage.timestamp` must be
+    AFTER to count as post-compaction. Returns ``None`` when there is no
+    compaction entry yet (no boundary to enforce) or the entry timestamp does not
+    parse. The :func:`_iso_to_unix_ms` import is function-local to avoid a
+    ``session.compaction`` <-> ``session.context`` module-load cycle.
+    """
+
+    entry = get_latest_compaction_entry(branch_entries)
+    if entry is None:
+        return None
+    from aelix_agent_core.session.context import _iso_to_unix_ms
+
+    return _iso_to_unix_ms(getattr(entry, "timestamp", "") or "")
 
 
 __all__ = [
@@ -1193,6 +1217,7 @@ __all__ = [
     "find_turn_start_index",
     "find_valid_cut_points",
     "format_file_operations",
+    "get_latest_compaction_boundary_ms",
     "get_latest_compaction_entry",
     "prepare_compaction",
 ]

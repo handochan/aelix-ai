@@ -1437,6 +1437,10 @@ class AgentHarness:
         from aelix_agent_core.session.compaction import (
             prepare_compaction,
         )
+        from aelix_agent_core.types import (
+            CompactionEndEvent,
+            CompactionStartEvent,
+        )
 
         if self._phase != "idle":
             raise AgentHarnessError(
@@ -1450,6 +1454,13 @@ class AgentHarness:
             )
         self._phase = "compaction"
         self._idle_event.clear()
+        # Issue #4 (FU3) — compaction_start to subscribers (listener-only, pi
+        # parity) on the manual / threshold / overflow paths; the matched
+        # compaction_end fires on every exit below (success, "Nothing to compact",
+        # cancelled hook, or summarizer failure). ``_emit_to_subscribers`` swallows
+        # listener errors, so neither emit can break the compaction or mask a body
+        # exception.
+        await self._emit_to_subscribers(CompactionStartEvent(reason=reason))
         try:
             branch_entries = await self._session.get_branch()
             preparation = prepare_compaction(branch_entries, custom_instructions)
@@ -1529,7 +1540,33 @@ class AgentHarness:
                         "hook",
                         f"session_compact hook handler raised: {exc}",
                     ) from exc
+            # Issue #4 (FU3) — success compaction_end (matched with the start).
+            await self._emit_to_subscribers(
+                CompactionEndEvent(
+                    reason=reason,
+                    result=result,
+                    aborted=False,
+                    will_retry=will_retry,
+                )
+            )
             return result
+        except Exception as exc:
+            # Issue #4 (FU3) — emit a compaction_end on the error path so a
+            # subscriber always sees a matched start/end pair. pi emits
+            # compaction_end on the swallowed "Nothing to compact" raise too, so
+            # callers that swallow it (threshold / overflow recovery) still see the
+            # event. CancelledError / KeyboardInterrupt (BaseException) bypass this
+            # and propagate untouched.
+            await self._emit_to_subscribers(
+                CompactionEndEvent(
+                    reason=reason,
+                    result=None,
+                    aborted=False,
+                    will_retry=False,
+                    error_message=str(exc),
+                )
+            )
+            raise
         finally:
             self._phase = "idle"
             self._idle_event.set()
@@ -1562,6 +1599,7 @@ class AgentHarness:
         from aelix_agent_core.session.compaction import (
             calculate_context_tokens,
             estimate_context_tokens,
+            get_latest_compaction_boundary_ms,
         )
 
         if not self._state.auto_compaction_enabled:
@@ -1588,13 +1626,47 @@ class AgentHarness:
             if isinstance(msg, AssistantMessage):
                 last_assistant = msg
                 break
+
+        usage_index: int | None = None
         if last_assistant is None or last_assistant.stop_reason in ("error", "aborted"):
-            context_tokens = estimate_context_tokens(self._state.messages).tokens
+            estimate = estimate_context_tokens(self._state.messages)
+            context_tokens = estimate.tokens
+            # Issue #4 (FU2 Guard B): the assistant whose usage seeded the estimate.
+            usage_index = estimate.last_usage_index
         else:
             context_tokens = calculate_context_tokens(last_assistant.usage)
 
         # pi ``compaction.ts:219-222`` ``shouldCompact``.
         if context_tokens > context_window - _AUTO_COMPACT_RESERVE_TOKENS:
+            # Issue #4 (FU2) — compaction-boundary staleness guards (pi parity),
+            # consulted ONLY once the threshold trips so a non-triggering turn pays
+            # no ``get_branch()`` boundary read. ``boundary_ms`` is the latest
+            # compaction entry's timestamp in unix-ms (``None`` = no compaction
+            # yet). aelix live messages carry no timestamp (``None`` → current /
+            # not-stale); only session-rebuilt messages have a float ms to compare
+            # (the documented aelix divergence — pi messages always have one).
+            boundary_ms = get_latest_compaction_boundary_ms(
+                await self._session.get_branch()
+            )
+            if boundary_ms is not None:
+                # Guard A (pi ``agent-session.ts:1781-1789``): a most-recent
+                # assistant that predates the latest compaction is stale — its
+                # usage reflects pre-compaction context and must not re-trigger
+                # compaction on the first prompt after a compaction.
+                if (
+                    last_assistant is not None
+                    and last_assistant.timestamp is not None
+                    and last_assistant.timestamp <= boundary_ms
+                ):
+                    return
+                # Guard B (pi ``:1827-1835``): on the error/aborted estimate path
+                # the usage source is an EARLIER assistant; skip if THAT message
+                # predates the boundary (its usage is stale).
+                if usage_index is not None:
+                    usage_msg = self._state.messages[usage_index]
+                    usage_ts = getattr(usage_msg, "timestamp", None)
+                    if usage_ts is not None and usage_ts <= boundary_ms:
+                        return
             try:
                 await self.compact(reason="threshold")
             except AgentHarnessError as exc:
@@ -1639,6 +1711,10 @@ class AgentHarness:
 
         from aelix_ai.utils.overflow import is_context_overflow
 
+        from aelix_agent_core.session.compaction import (
+            get_latest_compaction_boundary_ms,
+        )
+
         # pi ``:1812-1813`` — gated by the compaction-enabled flag. Also keeps
         # the in-memory backward-compat path (no Session → ``compact()`` raises)
         # and the model-less path a no-op, mirroring :meth:`_check_auto_compaction`.
@@ -1674,6 +1750,24 @@ class AgentHarness:
             return False
 
         if not is_context_overflow(last_assistant, context_window):
+            return False
+
+        # Issue #4 (FU2 Guard A) — pi ``agent-session.ts:1781-1789``. Skip when the
+        # most-recent assistant predates the latest compaction: a stale
+        # pre-compaction error must not re-trigger overflow recovery on the first
+        # prompt after a compaction. A freshly-generated overflow error carries no
+        # timestamp (``None`` → not stale), so a genuine new overflow still
+        # recovers; only a rebuilt pre-boundary message (float ms) is skipped.
+        # Placed AFTER the overflow check so this per-turn recovery pass pays the
+        # ``get_branch()`` boundary read ONLY when an overflow is actually present.
+        boundary_ms = get_latest_compaction_boundary_ms(
+            await self._session.get_branch()
+        )
+        if (
+            boundary_ms is not None
+            and last_assistant.timestamp is not None
+            and last_assistant.timestamp <= boundary_ms
+        ):
             return False
 
         # pi ``:1842`` — ``will_retry = stopReason !== "stop"``. Aelix's Anthropic
@@ -1719,6 +1813,24 @@ class AgentHarness:
             # pi ``:2054-2069`` — compaction itself failed: no retry.
             _log.debug("overflow compaction failed: %r", exc, exc_info=True)
             return False
+
+        # Issue #4 (FU1) — pi ``agent-session.ts:1988-1994`` (willRetry branch).
+        # ``compact()`` rebuilt ``_state.messages`` from the session branch, which
+        # RE-ADDS the trailing overflow message (still persisted in history, the
+        # FIRST pop above only removed it from the LIVE list) as the last kept-tail
+        # entry. Pop it a SECOND time AFTER the rebuild so the re-run does not
+        # replay it as its most-recent message. Guard on ``is_context_overflow``
+        # (rather than pi's narrower ``stopReason == "error"``) so it also drops a
+        # ``stop_reason == "length"`` overflow — aelix's ``is_context_overflow``
+        # Case 3 detects more than pi's "error" branch (see ``overflow.py``). A
+        # legitimate trailing assistant is never an overflow, so it is never
+        # dropped (including the case where the rebuild did NOT re-add the error).
+        if (
+            self._state.messages
+            and isinstance(self._state.messages[-1], AssistantMessage)
+            and is_context_overflow(self._state.messages[-1], context_window)
+        ):
+            self._state.messages.pop()
         return True
 
     # === Sprint 6h₂₀ (ADR-0128) — auto-retry state machine ====================
@@ -1727,8 +1839,9 @@ class AgentHarness:
         """Fan out an event to ``self._listeners`` (no hook bus emit).
 
         Mirrors the listener loop in ``_run``'s ``emit`` closure. Used for
-        UI-only events (``auto_retry_start``/``auto_retry_end``) that
-        subscribers receive but extensions don't see as lifecycle hooks.
+        UI-only events — ``auto_retry_start``/``auto_retry_end`` and the issue #4
+        ``compaction_start``/``compaction_end`` pair — that subscribers receive but
+        extensions don't see as lifecycle hooks.
         """
 
         for listener in list(self._listeners):
@@ -1737,7 +1850,7 @@ class AgentHarness:
                 if inspect.isawaitable(raw):
                     await raw
             except Exception:  # noqa: BLE001 — listener errors must not break
-                _log.debug("auto-retry listener raised", exc_info=True)
+                _log.debug("subscriber listener raised", exc_info=True)
 
     def _is_retryable_error(self, message: Any) -> bool:
         """pi parity ``agent-session.ts:2484-2488`` ``_isRetryableError``.
@@ -4245,6 +4358,15 @@ def _to_hook_event(event: AgentEvent) -> HookEvent:
             # contract. Unreachable at runtime.
             raise RuntimeError(
                 f"auto_retry event {event.type!r} reached _to_hook_event "
+                "(should have been skipped by the UI-only-events guard)"
+            )
+        case "compaction_start" | "compaction_end":
+            # Issue #4 (FU3) — listener-only UI events emitted via
+            # ``_emit_to_subscribers`` (NOT the hook bus), so like auto_retry they
+            # never reach this hook projection at runtime; the case exists only to
+            # keep the match exhaustive.
+            raise RuntimeError(
+                f"compaction event {event.type!r} reached _to_hook_event "
                 "(should have been skipped by the UI-only-events guard)"
             )
         case _ as unreachable:
