@@ -213,7 +213,7 @@ async def test_with_session_runs_after_rebind_callback(
 
     order: list[str] = []
 
-    async def rebind_cb(h: AgentHarness) -> None:
+    async def rebind_cb(h: AgentHarness, reason: str = "resume") -> None:
         order.append("rebind")
 
     async def with_session_cb(ctx: ReplacedSessionContext) -> None:

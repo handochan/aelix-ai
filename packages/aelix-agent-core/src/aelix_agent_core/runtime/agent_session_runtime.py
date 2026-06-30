@@ -222,7 +222,7 @@ class AgentSessionRuntime:
         )
         self._model_fallback_message = model_fallback_message
         self._rebind_session: (
-            Callable[[AgentHarness], Awaitable[None]] | None
+            Callable[[AgentHarness, str], Awaitable[None]] | None
         ) = None
         self._before_session_invalidate: Callable[[], None] | None = None
 
@@ -273,13 +273,17 @@ class AgentSessionRuntime:
     # === The seam (Pi `:99-113`) ================================================
 
     def set_rebind_session(
-        self, cb: Callable[[AgentHarness], Awaitable[None]]
+        self, cb: Callable[[AgentHarness, str], Awaitable[None]]
     ) -> None:
         """Pi parity: ``setRebindSession`` (``agent-session-runtime.ts:99-101``).
 
         Stores the callback invoked after every successful harness
         replacement (P-305). Pi signature: ``(session: AgentSession) =>
-        Promise<void>``; Aelix passes the NEW harness instead (P-302).
+        Promise<void>``; Aelix passes the NEW harness PLUS the replace
+        ``reason`` (issue #24 — ``"new"|"resume"|"fork"|"reload"``) so a
+        surface can branch on it (e.g. the TUI preserves its visible
+        transcript + ``/stats`` lifetime on ``"reload"`` but resets them on a
+        session swap).
         """
         self._rebind_session = cb
 
@@ -478,7 +482,7 @@ class AgentSessionRuntime:
             self._harness._state.messages = list(session_ctx.messages)
 
         if self._rebind_session is not None:
-            await self._rebind_session(self._harness)
+            await self._rebind_session(self._harness, reason)
 
         # P-343 — emit session_start on the NEW harness's runner. The OLD
         # runner is disposed by step 1; reading ``_harness`` here picks up
@@ -634,6 +638,123 @@ class AgentSessionRuntime:
             setup=setup,
             with_session=with_session,
         )
+        return RuntimeReplaceResult(cancelled=False)
+
+    async def reload(self) -> RuntimeReplaceResult:
+        """Issue #24 (ADR-pending) — full hot-reload round-trip via the P-302
+        factory rebuild. The moat keystone (#53): "agent writes
+        ``.aelix/extensions/foo.py`` -> ``/reload`` -> ``/foo`` works, no restart".
+
+        pi parity: ``AgentSession.reload`` (``agent-session.ts:2382-2413``). The
+        harness CANNOT rebuild itself — it holds no ``_create_harness`` reference
+        (its ``runtime`` property is the ``_ExtensionRuntime`` bridge, not this
+        :class:`AgentSessionRuntime`). So reload is a runtime-level sibling of
+        :meth:`new_session` / :meth:`fork` that re-runs the factory over the SAME
+        :class:`Session` — :meth:`_apply` fuses pi's step 6 (``_resourceLoader.reload``
+        re-discovers on-disk extensions) and step 7 (``_buildRuntime`` rebuilds the
+        runtime + tool registry + HookBus) into one await, so a newly-written
+        extension file is picked up and its handlers/commands/tools go live with NO
+        process restart.
+
+        Order (pi ``:2382-2413``), reusing :meth:`_teardown_current` / :meth:`_apply`:
+          1. ``wait_for_idle`` — no mid-turn swap.
+          2. snapshot ``previous_flag_values`` + the shared SettingsManager from the
+             OLD runner BEFORE teardown.
+          3. ``_teardown_current("reload")`` FIRST (pi :2385) — emits
+             ``session_shutdown(reload)`` (handlers still see OLD settings),
+             invalidates the OLD runner (captured ctx goes stale), disposes the OLD
+             harness.
+          4. ``settings_manager.reload()`` AFTER the shutdown emit, BEFORE the
+             rebuild (pi :2386). aelix does NOT ``reset_api_providers()`` (clear-only
+             with no re-register would brick streaming — see the step-4 note).
+          5. ``_apply(session)`` — factory re-discovers + rebuilds (pi :2391+:2393).
+          6. FLAG ROUND-TRIP — overwrite the freshly re-seeded ``register_flag``
+             defaults with the snapshot (pi ``_buildRuntime`` ``flagValues`` loop), so
+             user-toggled extension flags survive the reload. (aelix divergence: the
+             restore lands AFTER ``_apply`` so an extension's ``setup()`` re-run reads
+             the registered DEFAULT, not the restored value, during reload; the
+             post-reload end-state is correct — see ADR-0177.)
+          7. ``_rebind_session(harness, "reload")`` — swap subscribers / UI / command
+             context onto the new harness (the TUI skips its transcript reset on reload).
+          8. emit ``session_start(reload)`` on the NEW runner (gated on handlers).
+          9. ``reload_resources()`` (= pi ``extendResourcesFromExtensions("reload")``).
+
+        Reuses the SAME ``Session`` (no ``repo.create``/``fork``), so message history
+        and lineage are preserved. Returns :class:`RuntimeReplaceResult` for symmetry
+        with the other replace APIs; reload never cancels (no before-switch veto).
+        """
+
+        from aelix_agent_core.harness.hooks import SessionStartHookEvent
+
+        session = self._harness.session
+        if session is None:
+            raise RuntimeError(
+                "reload requires the current harness to have a session"
+            )
+
+        # 1. No mid-turn swap. ``dispose`` (step 4) also aborts+drains a live
+        #    turn, but assert idle first so reload is a clean, serialized op.
+        await self._harness.wait_for_idle()
+
+        # 2. Snapshot the OLD runtime's flag values + the shared SettingsManager
+        #    BEFORE teardown. ``get_flag_values`` returns a shallow copy so it
+        #    survives the subsequent dispose. pi :2384.
+        previous_flag_values = self._harness.extension_runner.get_flag_values()
+        settings_manager = self._harness.settings_manager
+
+        # 3. Teardown FIRST (pi :2385): emit session_shutdown(reload) — so its
+        #    handlers still observe the OLD settings — then invalidate the old runner
+        #    and dispose the OLD harness.
+        await self._teardown_current("reload", None)
+
+        # 4. Reload settings AFTER the shutdown emit, BEFORE the rebuild (pi :2386),
+        #    so the fresh harness re-resolves its model against the new settings.
+        #    NOTE (adversarial-review HIGH): aelix deliberately does NOT call
+        #    ``reset_api_providers()`` here. That helper is CLEAR-ONLY — it empties
+        #    the process-global ``_PROVIDERS`` streaming-dispatch table with NO
+        #    re-register — and the factory rebuild never re-runs
+        #    ``register_providers()``, so clearing it would brick ALL model access
+        #    until a process restart (defeating the #53 moat). ``_PROVIDERS`` is a
+        #    stateless api→adapter dispatch table, unchanged across a reload, and
+        #    /new /fork /resume rebuild the harness without touching it either;
+        #    credential/setting changes are picked up via ``settings_manager.reload()``
+        #    + the rebuilt harness's per-stream ``get_api_key_and_headers`` resolve.
+        if settings_manager is not None:
+            await settings_manager.reload()
+
+        # 5. Rebuild via the factory over the SAME session — re-discovers on-disk
+        #    extensions, fresh _ExtensionRuntime + HookBus + tool registry.
+        await self._apply(session)
+
+        # 6. FLAG ROUND-TRIP (pi ``_buildRuntime`` ``flagValues`` loop). The fresh
+        #    runtime starts empty and ``register_flag`` only re-seeds DEFAULTS
+        #    (``name not in flag_values``); overwrite them with the user's prior
+        #    values, AFTER ``_apply`` and BEFORE the session_start emit so a handler
+        #    reacting to session_start/reload reads the restored state.
+        new_runner = self._harness.extension_runner
+        for name, value in previous_flag_values.items():
+            new_runner.set_flag_value(name, value)
+
+        # 7. Swap subscribers / UI / command context onto the NEW harness. The TUI
+        #    rebind skips its session-swap-only transcript + /stats resets on "reload".
+        if self._rebind_session is not None:
+            await self._rebind_session(self._harness, "reload")
+
+        # 8. session_start(reload) on the NEW runner (gated on handlers; the OLD bus
+        #    was disposed in step 4). pi :2407.
+        if new_runner.has_handlers("session_start"):
+            try:
+                await new_runner.emit(
+                    SessionStartHookEvent(type="session_start", reason="reload")
+                )
+            except Exception:
+                _log.exception(
+                    "AgentSessionRuntime.reload session_start emit raised"
+                )
+
+        # 9. resources re-discover (= pi ``extendResourcesFromExtensions("reload")``,
+        #    :2411). Re-emits the resources_discover hook on the rebuilt harness.
+        await self._harness.reload_resources()
         return RuntimeReplaceResult(cancelled=False)
 
     async def fork(

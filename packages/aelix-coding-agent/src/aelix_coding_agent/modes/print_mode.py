@@ -133,7 +133,10 @@ async def run_print_mode(
     # === Pi steps 2-3 — rebind closure + subscribe ============================
     unsubscribe_holder: dict[str, Callable[[], None] | None] = {"u": None}
 
-    async def _rebind(new_harness: Any) -> None:
+    async def _rebind(new_harness: Any, reason: str = "resume") -> None:
+        # Issue #24 — ``reason`` (``new``/``resume``/``fork``/``reload``) is part
+        # of the widened rebind-callback contract; headless print/json mode only
+        # re-subscribes the event emitter, identical for every reason.
         # Drop any prior subscription bound to the OLD harness.
         prior = unsubscribe_holder["u"]
         if prior is not None:

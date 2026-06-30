@@ -97,6 +97,26 @@ _HISTORY_MAX_RECORDS = 5000
 _RETRY_WIDGET_KEY = "__auto_retry__"
 
 
+def _reload_rebuild_enabled() -> bool:
+    """Issue #24 — dormant gate for the full factory-rebuild ``/reload``.
+
+    Default OFF: ``/reload`` keeps calling ``harness.reload_resources()`` (a cheap
+    resources-discover refresh, zero behaviour change). When ``AELIX_RELOAD_REBUILD``
+    is truthy it routes through :meth:`AgentSessionRuntime.reload` — the full
+    hot-reload that re-discovers on-disk extensions + rebuilds the runtime via the
+    P-302 factory WITHOUT a process restart (the #53 moat). The machinery ships
+    behind this toggle so the protected-core rebuild path is reviewable before it
+    becomes the observable default.
+    """
+
+    return os.environ.get("AELIX_RELOAD_REBUILD", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
 def _format_context_label(usage: object) -> str | None:
     """Format a harness ``ContextUsage`` into a footer segment.
 
@@ -1189,7 +1209,7 @@ async def run_tui(
             # (Sprint 6h₁₂e).
             context._refresh_footer()
 
-    async def _rebind(new_harness: AgentHarness) -> None:
+    async def _rebind(new_harness: AgentHarness, reason: str = "resume") -> None:
         prior = unsubscribe_holder["u"]
         if prior is not None:
             with contextlib.suppress(Exception):
@@ -1200,13 +1220,20 @@ async def run_tui(
         # TUI ui onto it (issue #9) so an extension command's ctx.ui.select /
         # confirm / notify (and hook/descriptor ui) keep driving the real surface
         # post-swap instead of hitting the headless stub. Mirrors the initial
-        # bind at run-start.
+        # bind at run-start. Issue #24: a /reload ALSO rebuilds the harness (same
+        # P-302 factory), so bind_ui + command_ctx repoint are equally required.
         with contextlib.suppress(Exception):
             new_harness.runtime.bind_ui(context)
         # A session swap (/resume, new, fork) replaces the live harness — keep
         # the command context pointed at it so /model, /compact, /cost, … act on
         # the resumed session, not the stale one (Sprint 6h₁₄b, ADR-0122).
         command_ctx.harness = new_harness
+        # Issue #24 — a "reload" reuses the SAME Session and keeps the SAME visible
+        # transcript on screen, so the session-swap-only resets below must NOT run:
+        # /expand ids still point at live transcript entries and the /stats lifetime
+        # continues. Only a real session swap (new/resume/fork) clears them.
+        if reason == "reload":
+            return
         # /expand ids are scoped to the visible transcript, which a swap clears —
         # drop the store so post-swap /expand N can't surface the prior session's
         # body (Sprint 6h₁₅ W-review MEDIUM).
@@ -1998,7 +2025,15 @@ async def _input_loop(
         if parsed.kind == "empty":
             continue
         if parsed.kind == "reload":
-            await harness.reload_resources()
+            # Issue #24 — DORMANT FLIP POINT. Default-OFF keeps the cheap
+            # resources-discover refresh; when AELIX_RELOAD_REBUILD is on, route
+            # through the full factory-rebuild reload (re-discovers on-disk
+            # extensions, no restart). runtime.reload() wait_for_idle()s and the
+            # input loop is serialized, so no extra mid-turn guard is needed.
+            if _reload_rebuild_enabled():
+                await runtime_host.reload()
+            else:
+                await harness.reload_resources()
             continue
         # Sprint 6h₁₂a (ADR-0110) — a `prompt`-kind `/`-line resolves through the
         # command core BEFORE going to the model: (1) built-in registry handler,

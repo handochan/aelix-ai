@@ -115,7 +115,7 @@ async def test_setup_runs_before_rebind(tmp_path: Path) -> None:
     async def setup_cb(sm: Any) -> None:
         order.append("setup")
 
-    async def rebind_cb(h: AgentHarness) -> None:
+    async def rebind_cb(h: AgentHarness, reason: str = "resume") -> None:
         order.append("rebind")
 
     runtime.set_rebind_session(rebind_cb)

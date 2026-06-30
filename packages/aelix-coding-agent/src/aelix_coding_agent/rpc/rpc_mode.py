@@ -1957,7 +1957,9 @@ async def run_rpc_mode(
     capture.harness = runtime_host.harness
     capture.unsubscribe = capture.harness.subscribe(_on_agent_event)
 
-    async def rebind_session(new_harness: AgentHarness) -> None:
+    async def rebind_session(
+        new_harness: AgentHarness, reason: str = "resume"
+    ) -> None:
         """Pi parity: ``rebindSession`` closure (``rpc-mode.ts:310-349``).
 
         Sprint 6h₄b — FOUNDATION subset (P-303). Reassigns the captured
@@ -1967,6 +1969,10 @@ async def run_rpc_mode(
         wired in 6h₄b — Aelix's ``_runtime.bind_core`` already ran
         during the NEW harness's ``__init__`` (P-302). Sprint 6h₄c
         wires the explicit action surface.
+
+        Issue #24 — ``reason`` (``new``/``resume``/``fork``/``reload``) is part of
+        the widened rebind-callback contract; headless RPC re-subscribes the same
+        way for every reason.
         """
         capture.harness = new_harness
         capture.unsubscribe()
