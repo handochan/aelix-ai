@@ -36,9 +36,14 @@ def create_async_client(
 
     from anthropic import AsyncAnthropic
 
+    from aelix_ai.providers._base_url import expand_base_url
+
     kwargs: dict[str, Any] = {}
     if api_key is not None:
         kwargs["api_key"] = api_key
+    # Pi parity (cloudflare-auth.ts ``resolveCloudflareBaseUrl``): expand any
+    # ``{ENV_VAR}`` placeholder from the environment before the SDK sees the URL.
+    base_url = expand_base_url(base_url)
     if base_url:
         kwargs["base_url"] = base_url
     if default_headers:

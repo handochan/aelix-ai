@@ -1,6 +1,6 @@
-# ADR-0172 — openai-responses provider adapter (#15, Workflow A: dormant build)
+# ADR-0172 — openai-responses provider adapter (#15)
 
-- **Status:** Accepted (Workflow A landed dormant/unregistered; un-hide = Workflow B)
+- **Status:** Accepted — LIVE (Workflow A: dormant build; Workflow B: un-hide + cloudflare base_url expansion landed)
 - **Date:** 2026-06-30
 - **Sprint:** Backlog Batch 2 — #15 provider adapters, importance-ordered Tier 5
 - **Pi pin:** `earendil-works/pi@734e08e`; this adapter ported faithfully from pi `main` SHA `927e98068cda276bf9188f4774fb927c89823388`.
@@ -34,9 +34,14 @@ Mirror pi's two-file split + helpers; keep the adapter **dormant** until Workflo
 
 Gate **4345 collected / 4344 passed / 0 failed / ruff clean / project-pyright 0 errors** on the 6 new files (+~100 tests). short_hash byte-perfect vs pi's JS (Node) incl. surrogate-pair emoji + >64 truncation; SDK signature confirmed to accept store/reasoning/include/prompt_cache_key/max_output_tokens (and reject prompt_cache_retention → relocated to extra_body). 4-lens adversarial review: 1 HIGH (serialization `null` injection) + 1 MEDIUM (abort) + 2 LOW, all resolved. Adapter confirmed **dormant** (no `register_all` in runtime_bootstrap; guarded by `test_importing_adapter_does_not_register_it`).
 
+## Workflow B — un-hide (LANDED)
+
+Added `openai_responses.register_all()` to `runtime_bootstrap.register_providers()` (the one line), surfacing the hidden api=`openai-responses` models. An adversarial review caught a HIGH: cloudflare-ai-gateway models carry a **templated** base_url (`…/{CLOUDFLARE_ACCOUNT_ID}/{CLOUDFLARE_GATEWAY_ID}/…`) that nothing expanded → turn-1 bad-URL crash. Fixed with (a) pi-faithful base_url `{ENV_VAR}` expansion (`providers/_base_url.py`, mirrors pi `resolveCloudflareBaseUrl`) wired into both `_openai_client`/`_anthropic_client` build paths, and (b) a `runnable_models.is_runnable` guard that **hides any model whose base_url still has an unexpanded `{…}`** — so cloudflare stays hidden until `CLOUDFLARE_ACCOUNT_ID`+`CLOUDFLARE_GATEWAY_ID` are set, then expands+surfaces. Verified surfacing: openai (42) + github-copilot (7) + opencode (16, `envApiKeyAuth` raw bearer per pi — not OAuth) surface; cloudflare (16) gated on env. Principle: never surface a model that would crash at turn-1.
+
 ## Follow-ups
 
-- **Workflow B (next):** un-hide — add `openai_responses.register_all()` to `runtime_bootstrap.register_providers()` (the one line that surfaces the hidden models), verify the counts, confirm cloudflare-ai-gateway + opencode env-key auth, and run a real 1-turn live smoke (fixtures/SDK-signature cannot catch a live-endpoint shape difference).
+- **Live smoke (USER):** fixtures/SDK-signature cannot catch a live-endpoint SSE-shape difference — run a real 1-turn against an OpenAI/Copilot Responses endpoint; 1-line revert of `register_all()` if needed.
+- cloudflare-ai-gateway **auth-enabled gateway** semantics: pi uses `cf-aig-authorization: Bearer <KEY>` (Authorization/x-api-key nulled); aelix currently passes `CLOUDFLARE_API_KEY` as a standard Authorization bearer — valid URL but may 401 on an auth-enabled gateway (auth wiring follow-up, not a crash).
 - azure-openai-responses / openai-codex-responses adapters (reuse the shared engine).
 - service-tier cost handling downstream (if a non-default-tier model enters the catalog).
 - native **gemini** adapter — the remaining half of #15 (separate batch).

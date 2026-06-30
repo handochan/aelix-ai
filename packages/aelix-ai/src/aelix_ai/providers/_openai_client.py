@@ -47,7 +47,14 @@ def create_async_client(
 
     from openai import AsyncOpenAI
 
+    from aelix_ai.providers._base_url import expand_base_url
+
     kwargs: dict[str, Any] = {"api_key": api_key or ""}
+    # Pi parity (cloudflare-auth.ts ``resolveCloudflareBaseUrl``): expand any
+    # ``{ENV_VAR}`` placeholder (e.g. cloudflare-ai-gateway's
+    # ``{CLOUDFLARE_ACCOUNT_ID}`` / ``{CLOUDFLARE_GATEWAY_ID}``) from the
+    # environment before the SDK sees the URL.
+    base_url = expand_base_url(base_url)
     if base_url:
         kwargs["base_url"] = base_url
     if default_headers:

@@ -28,6 +28,7 @@ from pathlib import Path
 
 from aelix_ai.providers import anthropic as _anthropic
 from aelix_ai.providers import openai_completions as _openai
+from aelix_ai.providers import openai_responses as _openai_responses
 from aelix_ai.providers.openai_completions import OPENAI_COMPLETIONS_API
 from aelix_ai.streaming import Model
 
@@ -61,6 +62,17 @@ def register_providers() -> None:
 
     _openai.register_all()
     _anthropic.register_all()
+    # #15 Workflow B — un-hide the OpenAI Responses adapter (openai 42 +
+    # github-copilot 7 + cloudflare-ai-gateway 16 + opencode 16). This surfaces
+    # the previously-blocked ``openai-responses`` models in the /model picker;
+    # auth resolves from env keys (OPENAI_API_KEY / COPILOT_GITHUB_TOKEN /
+    # CLOUDFLARE_API_KEY / OPENCODE_API_KEY) via ``_resolve_client_api_key``.
+    # cloudflare-ai-gateway carries a templated base_url whose
+    # ``{CLOUDFLARE_ACCOUNT_ID}`` / ``{CLOUDFLARE_GATEWAY_ID}`` tokens are
+    # expanded from the environment at client construction; until both are set
+    # those models stay hidden (``runnable_models`` placeholder guard) instead
+    # of failing at the first turn with a malformed URL.
+    _openai_responses.register_all()
 
 
 def resolve_model(model_flag: str | None, provider_flag: str | None) -> Model:

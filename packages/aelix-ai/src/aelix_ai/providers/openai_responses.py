@@ -10,10 +10,15 @@ state machine — lives in the shared engine
 client construction, header/auth quirks, param assembly, and the
 ``start`` / ``done`` / ``error`` event envelope around the engine.
 
-DORMANT (Workflow A): the adapter is built but **NOT registered**.
-:func:`register_all` exists for parity but is intentionally never called
-from ``runtime_bootstrap`` — a later one-line un-hide (Workflow B) flips it
-on. User-facing behavior is unchanged while this file lands.
+REGISTERED (Workflow B, #15): the adapter is wired on at startup via
+:func:`aelix_coding_agent.cli.runtime_bootstrap.register_providers`, which
+calls :func:`register_all`. This surfaces the previously-hidden
+``openai-responses`` models (OpenAI / GitHub Copilot / cloudflare-ai-gateway /
+opencode) in the ``/model`` picker. Cloudflare's templated base_url
+(``{CLOUDFLARE_ACCOUNT_ID}`` / ``{CLOUDFLARE_GATEWAY_ID}``) is expanded from
+the environment at client construction, and its models stay hidden until those
+env vars are set (see
+:func:`aelix_coding_agent.core.runnable_models.is_runnable`).
 
 Divergences from pi (intentional, v1 — #15 decisions):
 
@@ -568,7 +573,7 @@ def stream_simple_openai_responses(
     return stream_openai_responses(model, context, opts)
 
 
-# === Provider registration (DORMANT — register_all is never called) ===
+# === Provider registration (REGISTERED at startup via register_providers) ===
 
 
 class _OpenAIResponsesProvider:
@@ -600,8 +605,8 @@ OPENAI_RESPONSES_PROVIDER: Provider = _OpenAIResponsesProvider()
 def register_all() -> None:
     """Register the OpenAI Responses adapter on the global registry.
 
-    DORMANT (Workflow A): defined for parity but intentionally NOT called
-    from ``runtime_bootstrap`` — Workflow B adds the one-line un-hide.
+    REGISTERED (Workflow B, #15): called at startup from
+    :func:`aelix_coding_agent.cli.runtime_bootstrap.register_providers`.
     Idempotent — replaces the registry entry under ``api == "openai-responses"``.
     """
 
