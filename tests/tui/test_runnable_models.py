@@ -59,6 +59,49 @@ def test_unsupported_message_is_actionable(monkeypatch) -> None:
     assert "model-openai-responses" in msg  # the model id
 
 
+def _vertex_model() -> types.SimpleNamespace:
+    # Mirrors the catalog: a templated {location} base_url filled by the SDK.
+    return types.SimpleNamespace(
+        id="gemini-2.5-flash",
+        api="google-vertex",
+        base_url="https://{location}-aiplatform.googleapis.com",
+    )
+
+
+def test_vertex_hidden_without_gcp_config(monkeypatch) -> None:
+    monkeypatch.setattr(_REGISTRY, lambda: {"google-vertex": object()})
+    for name in (
+        "GOOGLE_CLOUD_API_KEY",
+        "GOOGLE_CLOUD_PROJECT",
+        "GCLOUD_PROJECT",
+        "GOOGLE_CLOUD_LOCATION",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    m = _vertex_model()
+    # api IS registered, but no GCP auth is resolvable -> hidden. The {location}
+    # placeholder must NOT be the (wrong) reason; the message names GCP env vars.
+    assert rm.is_runnable(m) is False
+    msg = rm.unsupported_message(m)
+    assert "GOOGLE_CLOUD_API_KEY" in msg
+    assert "GOOGLE_CLOUD_LOCATION" in msg
+
+
+def test_vertex_runnable_with_project_and_location(monkeypatch) -> None:
+    monkeypatch.setattr(_REGISTRY, lambda: {"google-vertex": object()})
+    monkeypatch.delenv("GOOGLE_CLOUD_API_KEY", raising=False)
+    monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "proj")
+    monkeypatch.setenv("GOOGLE_CLOUD_LOCATION", "us-central1")
+    assert rm.is_runnable(_vertex_model()) is True
+
+
+def test_vertex_runnable_with_api_key(monkeypatch) -> None:
+    monkeypatch.setattr(_REGISTRY, lambda: {"google-vertex": object()})
+    for name in ("GOOGLE_CLOUD_PROJECT", "GCLOUD_PROJECT", "GOOGLE_CLOUD_LOCATION"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("GOOGLE_CLOUD_API_KEY", "real-key")
+    assert rm.is_runnable(_vertex_model()) is True
+
+
 def test_introspection_failure_is_safe(monkeypatch) -> None:
     def _boom() -> dict[str, object]:
         raise RuntimeError("registry blew up")

@@ -1,6 +1,6 @@
 # ADR-0173 — native gemini adapters: google (Developer API) + google-vertex (#15)
 
-- **Status:** Accepted (Workflow A: dormant build of both adapters; un-hide = Workflow B)
+- **Status:** Accepted — LIVE (Workflow A: dormant build; Workflow B: un-hide + vertex GCP-config guard landed)
 - **Date:** 2026-06-30
 - **Sprint:** Backlog Batch 3 — #15 remaining half (native gemini), importance-ordered Tier 5
 - **Pi pin:** `earendil-works/pi@734e08e`; these adapters ported faithfully from pi `main` SHA `3d6acb37b93d2ceedfcc170b2d212c34fedbf193`.
@@ -31,8 +31,16 @@ Mirror pi's `google` + `google-vertex` over the **official `google-genai` Python
 
 Gate **4484 collected / 4483 passed / 0 failed / ruff clean / project-pyright 0 errors** on the 4 new files (+~120 tests). 4-lens adversarial review: 1 HIGH (bytes round-trip) + 3 LOW (regex `$`→`\Z`, vertex gemma4-leak, id shape) — all resolved. Both adapters confirmed **dormant** (no `register_all` in runtime_bootstrap).
 
-## Follow-ups (Workflow B)
+## Workflow B — un-hide (LANDED)
 
-- Un-hide: add `google_generative_ai.register_all()` + `google_vertex.register_all()` to `runtime_bootstrap.register_providers()`; surface the 30 + 13 models. Apply the "never surface un-runnable" guard for **google-vertex** (hide when neither GOOGLE_CLOUD_API_KEY nor ADC project/location is resolvable) and re-examine the 2 **opencode-zen** gemini models (provider=opencode, untested Gemini-protocol-behind-zen edge).
-- Live 1-turn smoke needs a real GEMINI_API_KEY (un-runnable in sandbox; 1-line `register_all()` revert if broken).
+Added `google_generative_ai.register_all()` + `google_vertex.register_all()` to `runtime_bootstrap.register_providers()`, surfacing the catalog's gemini models: **29 provider=google** (Gemini Developer API, GEMINI_API_KEY — surface unconditionally; missing key = normal auth error, not a crash) + **2 opencode-zen** (provider=opencode, concrete `opencode.ai/zen/v1`, verified to serve gemini via the native protocol — KEEP, mirrors openai-responses opencode) + **15 google-vertex** (gated).
+
+**Vertex GCP-config guard** (the cloudflare turn-1 lesson): `runnable_models._vertex_config_missing` keeps `api=='google-vertex'` models HIDDEN unless `GOOGLE_CLOUD_API_KEY` (valid, non-placeholder) OR `((GOOGLE_CLOUD_PROJECT|GCLOUD_PROJECT) AND GOOGLE_CLOUD_LOCATION)` is set (pi `resolveApiKey/resolveProject/resolveLocation` parity; `GOOGLE_APPLICATION_CREDENTIALS` alone is insufficient per pi). **Sharp catch:** the vertex catalog base_url is `https://{location}-aiplatform.googleapis.com`, so the generic `{ENV}`-placeholder guard would false-positive-hide ALL vertex models even when configured — vertex therefore BYPASSES that generic guard and uses the dedicated config check (the `{location}` token is SDK-filled from project/location). `unsupported_message` names the missing var(s).
+
+Gate **4494 collected / 4493 passed / 0 failed / ruff clean**; adversarial review **APPROVED** (no findings). Idempotent single registration (register_providers, not the per-rebuild factory).
+
+## Remaining follow-ups
+
+- Live 1-turn smoke needs a real GEMINI_API_KEY / configured Vertex (un-runnable in sandbox; 1-line `register_all()` revert if broken).
 - `SimpleStreamOptions.thinking_budgets` plumbing (custom per-effort budgets) if later required.
+- cloudflare-ai-gateway cf-aig-authorization header semantics (shared with ADR-0172) for auth-enabled gateways.

@@ -27,6 +27,8 @@ import os
 from pathlib import Path
 
 from aelix_ai.providers import anthropic as _anthropic
+from aelix_ai.providers import google_generative_ai as _google_generative_ai
+from aelix_ai.providers import google_vertex as _google_vertex
 from aelix_ai.providers import openai_completions as _openai
 from aelix_ai.providers import openai_responses as _openai_responses
 from aelix_ai.providers.openai_completions import OPENAI_COMPLETIONS_API
@@ -73,6 +75,18 @@ def register_providers() -> None:
     # those models stay hidden (``runnable_models`` placeholder guard) instead
     # of failing at the first turn with a malformed URL.
     _openai_responses.register_all()
+    # #15 Workflow B — un-hide the native Gemini adapters. ``google`` (Gemini
+    # Developer API, ``google-generative-ai``) surfaces the 29 catalog models +
+    # the 2 opencode-zen gemini models (provider=opencode, served via the
+    # google-generative-ai protocol at ``opencode.ai/zen/v1/models/{id}``,
+    # authenticating from ``OPENCODE_API_KEY``); a missing ``GEMINI_API_KEY``
+    # gives a normal "no API key" error, so they surface unconditionally.
+    # ``google-vertex`` surfaces its 15 catalog models, but ``runnable_models``
+    # keeps them HIDDEN until GCP auth is resolvable (GOOGLE_CLOUD_API_KEY, or a
+    # project + GOOGLE_CLOUD_LOCATION) — the cloudflare "never surface a model
+    # that errors at turn-1 for missing required config" precedent.
+    _google_generative_ai.register_all()
+    _google_vertex.register_all()
 
 
 def resolve_model(model_flag: str | None, provider_flag: str | None) -> Model:

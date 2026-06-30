@@ -5,9 +5,11 @@ APIs this build does NOT implement. Selecting such a model fails at the first tu
 with a cryptic ``No provider registered for api=...`` raised by the PROTECTED
 ``aelix_ai.api_registry``. At startup ``cli/runtime_bootstrap.register_providers``
 registers ``openai-completions`` + ``anthropic-messages`` + ``openai-responses``
-(the last un-hidden in #15 Workflow B, surfacing OpenAI / GitHub Copilot gpt-5.x /
-cloudflare-ai-gateway / opencode models); any remaining catalog api without an
-adapter stays blocked.
++ ``google-generative-ai`` + ``google-vertex`` (the last three un-hidden in #15
+Workflow B, surfacing OpenAI / GitHub Copilot gpt-5.x / cloudflare-ai-gateway /
+opencode / Gemini Developer API / Vertex AI models); any remaining catalog api
+without an adapter stays blocked. ``google-vertex`` models additionally stay
+hidden until GCP auth is resolvable (see :func:`_vertex_config_missing`).
 
 This helper lets the TUI **hide** unrunnable models from the ``/model`` picker and
 **guard** an explicit ``/model <id>`` / picker selection with a clear, actionable
@@ -62,6 +64,53 @@ def _base_url_unconfigured(model: Any) -> bool:
         return False
 
 
+_GOOGLE_VERTEX_API = "google-vertex"
+
+# Hint naming the env var(s) that satisfy Vertex auth (for ``unsupported_message``).
+_VERTEX_CONFIG_HINT = (
+    "set GOOGLE_CLOUD_API_KEY, or both a project "
+    "(GOOGLE_CLOUD_PROJECT / GCLOUD_PROJECT) and GOOGLE_CLOUD_LOCATION"
+)
+
+
+def _vertex_config_missing(model: Any) -> bool:
+    """True when a ``google-vertex`` model has no resolvable GCP auth.
+
+    Mirrors pi's Vertex auth resolution (``google-vertex.ts`` ``resolveApiKey``
+    / ``resolveProject`` / ``resolveLocation``): client construction succeeds
+    only with a valid ``GOOGLE_CLOUD_API_KEY`` (NOT a ``<...>`` placeholder nor
+    the ``gcp-vertex-credentials`` marker), OR Application Default Credentials
+    backed by a project (``GOOGLE_CLOUD_PROJECT`` / ``GCLOUD_PROJECT``) AND a
+    location (``GOOGLE_CLOUD_LOCATION``). When neither is satisfiable a vertex
+    model would raise at the first turn, so it is treated as not runnable (kept
+    hidden) — the cloudflare required-config precedent. Non-vertex models are
+    never gated here. Introspection-only; never raises.
+
+    NOTE: vertex catalog models carry a ``https://{location}-aiplatform…``
+    base_url whose ``{location}`` token is filled by the SDK from the resolved
+    project/location (``_resolve_vertex_custom_base_url`` ignores it), NOT from
+    an env var — so the generic ``_base_url_unconfigured`` placeholder guard
+    must be bypassed for vertex (its caller does so) and replaced by this one.
+    """
+
+    if getattr(model, "api", None) != _GOOGLE_VERTEX_API:
+        return False
+    try:
+        import os
+
+        from aelix_ai.providers.google_vertex import _resolve_vertex_api_key
+
+        if _resolve_vertex_api_key(os.environ.get("GOOGLE_CLOUD_API_KEY")):
+            return False
+        project = os.environ.get("GOOGLE_CLOUD_PROJECT") or os.environ.get(
+            "GCLOUD_PROJECT"
+        )
+        location = os.environ.get("GOOGLE_CLOUD_LOCATION")
+        return not (project and location)
+    except Exception:  # noqa: BLE001 — introspection must never break a flow
+        return False
+
+
 def is_runnable(model: Any, apis: set[str] | None = None) -> bool:
     """True if ``model.api`` has a registered adapter (or the set is unknown).
 
@@ -69,15 +118,22 @@ def is_runnable(model: Any, apis: set[str] | None = None) -> bool:
     isn't). When ``apis`` is empty we cannot tell which adapters exist, so we
     never over-filter. A model whose ``base_url`` still holds an unexpanded
     ``{ENV_VAR}`` placeholder (required config missing) is NOT runnable even
-    when its api is supported.
+    when its api is supported. A ``google-vertex`` model is NOT runnable unless
+    GCP auth is resolvable (its templated ``{location}`` base_url is filled by
+    the SDK, so it uses :func:`_vertex_config_missing` instead of the generic
+    placeholder guard).
     """
 
     apis = supported_apis() if apis is None else apis
     if not apis:
         return True
+    api = getattr(model, "api", None)
+    if api == _GOOGLE_VERTEX_API:
+        if _vertex_config_missing(model):
+            return False
+        return api in apis
     if _base_url_unconfigured(model):
         return False
-    api = getattr(model, "api", None)
     return api is None or api in apis
 
 
@@ -102,7 +158,14 @@ def unsupported_message(model: Any) -> str:
     """A one-line, actionable reason a model can't run (for a committed error)."""
 
     model_id = getattr(model, "id", None) or "?"
-    # Config-missing case first: the api IS supported, but the templated
+    # Vertex GCP-config case: the api IS supported, but no GCP auth is
+    # resolvable (no key, no project+location) — name the env var(s) to set.
+    if _vertex_config_missing(model):
+        return (
+            f"model '{model_id}' needs Google Cloud configuration before it can "
+            f"run: {_VERTEX_CONFIG_HINT}, then re-select it."
+        )
+    # Config-missing case: the api IS supported, but the templated
     # base_url has unexpanded ``{ENV_VAR}`` tokens (e.g. cloudflare-ai-gateway).
     if _base_url_unconfigured(model):
         base_url = getattr(model, "base_url", None)
