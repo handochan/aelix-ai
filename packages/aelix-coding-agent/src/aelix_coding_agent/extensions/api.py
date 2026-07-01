@@ -50,7 +50,7 @@ import asyncio
 import contextlib
 import os
 import subprocess
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Literal, Protocol, overload
 
@@ -405,6 +405,7 @@ class _ExtensionRuntime:
         *,
         event_bus: EventBus | None = None,
         model_registry: ModelRegistry | None = None,
+        flag_values: Mapping[str, bool | str] | None = None,
     ) -> None:
         self._actions: ExtensionRuntimeActions = _default_actions()
         self._stale_message: str | None = None
@@ -422,7 +423,17 @@ class _ExtensionRuntime:
         # ``getFlagValues`` / ``setFlagValue`` over a ``Map<string,
         # boolean | string>``. Aelix uses ``dict`` (Python idiom);
         # shallow-copy semantic preserved.
-        self.flag_values: dict[str, bool | str] = {}
+        #
+        # Issue #24-FU: ``flag_values`` may be PRE-SEEDED at construction (the
+        # reload ``ReloadSeed`` path threads the user's prior values through
+        # ``load_extensions``). Because ``register_flag`` only writes a default
+        # when ``name not in flag_values`` (see :meth:`ExtensionAPI.register_flag`),
+        # a pre-seeded value survives an extension's ``setup()`` re-run — mirroring
+        # pi ``_buildRuntime`` seeding ``runtime.flagValues`` before the runner is
+        # built. Copied so the seed mapping is never mutated by later toggles.
+        self.flag_values: dict[str, bool | str] = (
+            dict(flag_values) if flag_values else {}
+        )
         # Sprint 6h₉c (ADR-0100) — ExtensionUIContext binding.
         # Default: HEADLESS_UI_CONTEXT singleton (raises per method).
         # Sprint 6h₁₀b: replace via bind_ui() with concrete prompt-

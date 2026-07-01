@@ -140,8 +140,33 @@ class ExtensionCommandContext(ExtensionContext):
         )
 
     async def reload(self) -> None:
-        """Pi parity ``reload`` — re-fires the ``resources_discover`` chain."""
+        """Pi parity ``reload`` — hot-reload the harness.
 
+        When an :class:`AgentSessionRuntime` is bound (``session_runtime``),
+        delegate to :meth:`AgentSessionRuntime.reload` — the full P-302 factory
+        rebuild (re-discover extensions/resources + rebuild the harness over the
+        SAME session), matching Pi ``reload`` which re-runs ``_buildRuntime``
+        (Issue #24 / ADR-0177). This is the same runtime-delegation the sibling
+        lifecycle methods (:meth:`fork` / :meth:`new_session` /
+        :meth:`switch_session`) use. The :class:`RuntimeReplaceResult` is
+        discarded — Pi ``reload`` returns ``void``.
+
+        When no runtime is bound (e.g. the minimal REPL, or RPC/print surfaces
+        that do not yet construct a command-dispatch runtime), fall back to the
+        cheaper :meth:`AgentHarness.reload_resources` (the ``resources_discover``
+        chain only, no rebuild).
+
+        NOTE: the runtime path disposes the harness this context was created
+        from (staleness). The reload completes before this handler returns, but
+        any *further* use of this ``ctx`` (or the ``_harness`` slot) after
+        ``reload()`` hits the invalidated runtime and raises ``stale`` — this is
+        the same tear-down the other lifecycle methods incur.
+        """
+
+        session_runtime = object.__getattribute__(self, "_runtime_session")
+        if session_runtime is not None:
+            await session_runtime.reload()
+            return
         await object.__getattribute__(self, "_harness").reload_resources()
 
     async def new_session(

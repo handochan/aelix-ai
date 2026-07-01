@@ -1,8 +1,9 @@
 """Sprint 5b §D / P0 #7 item 4 — ExtensionCommandContext.
 
-4 methods always bound (wait_for_idle / fork / navigate_tree / reload);
-new_session / switch_session / fork delegate to a bound AgentSessionRuntime
-(P0 #7 item 4) and raise a clear error when no runtime is bound.
+wait_for_idle / navigate_tree always run on the harness; fork / reload delegate
+to a bound AgentSessionRuntime and fall back (repo.fork / reload_resources) when
+none is bound; new_session / switch_session require a runtime and raise a clear
+error otherwise (P0 #7 item 4; reload delegation added #24-FU / ADR-0177).
 """
 
 from __future__ import annotations
@@ -41,6 +42,11 @@ class _FakeRuntime:
         self.new_session_calls: list[dict] = []
         self.switch_session_calls: list[tuple[str, dict]] = []
         self.fork_calls: list[tuple[str, dict]] = []
+        self.reload_calls: list[dict] = []
+
+    async def reload(self) -> RuntimeReplaceResult:
+        self.reload_calls.append({})
+        return RuntimeReplaceResult(cancelled=False)
 
     async def new_session(
         self, *, parent_session=None, setup=None, with_session=None
@@ -88,10 +94,29 @@ async def test_navigate_tree_no_session_raises_invalid_state():
     assert exc_info.value.code == "invalid_state"
 
 
-async def test_reload_delegates_to_reload_resources():
+async def test_reload_falls_back_to_reload_resources_when_unbound():
+    """No runtime bound → cheap ``resources_discover`` chain (no rebuild).
+
+    #24-FU: reload delegates to the runtime when bound; the unbound path (the
+    minimal REPL / RPC surfaces) still fires only ``reload_resources()``.
+    """
     h = AgentHarness(AgentHarnessOptions(model=Model(id="m", api="anthropic")))
     ctx = _ctx(h)
-    await ctx.reload()  # no handlers → noop.
+    await ctx.reload()  # no runtime + no handlers → noop.
+
+
+async def test_reload_delegates_to_runtime():
+    """#24-FU: bound runtime → reload runs the full factory rebuild.
+
+    Mirrors fork/new_session/switch_session delegation. Pi ``reload`` returns
+    ``void`` so the :class:`RuntimeReplaceResult` is discarded (ctx.reload → None).
+    """
+    h = AgentHarness(AgentHarnessOptions(model=Model(id="m", api="anthropic")))
+    runtime = _FakeRuntime()
+    ctx = _ctx(h, session_runtime=runtime)
+    result = await ctx.reload()
+    assert result is None
+    assert runtime.reload_calls == [{}]
 
 
 # === fork ===================================================================

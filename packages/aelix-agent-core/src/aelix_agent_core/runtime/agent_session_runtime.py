@@ -84,6 +84,7 @@ from aelix_agent_core.runtime._types import (
     PI_STALENESS_MESSAGE,
     AgentSessionRuntimeDiagnostic,
     HarnessFactory,
+    ReloadSeed,
     ReplacedSessionContext,
     RuntimeReplaceResult,
     SessionImportFileNotFoundError,
@@ -414,15 +415,29 @@ class AgentSessionRuntime:
         except Exception:
             _log.exception("AgentSessionRuntime.harness.dispose raised")
 
-    async def _apply(self, new_session: Session) -> None:
+    async def _apply(
+        self, new_session: Session, *, reload_seed: ReloadSeed | None = None
+    ) -> None:
         """Pi parity: ``apply`` (``:159-164``).
 
         Pi reassigns ``this._session = newSession``; Aelix uses the
         factory to construct a NEW harness bound to ``new_session``
         (P-302/P-306). The factory is awaited so async setup (e.g.
         ``await harness.bootstrap()``) is permitted.
+
+        ``reload_seed`` (Issue #24-FU) is passed ONLY on the reload path
+        (:meth:`reload`); the /new//fork//resume/switch replace paths call the
+        factory with just ``new_session``. The keyword is forwarded to the
+        factory ONLY when a seed is present so single-positional factories
+        (tests, ``rpc_ws``, the rpc noop) are never handed an unexpected kwarg
+        — see the :data:`HarnessFactory` docstring.
         """
-        new_harness = await self._create_harness(new_session)
+        if reload_seed is not None:
+            new_harness = await self._create_harness(
+                new_session, reload_seed=reload_seed
+            )
+        else:
+            new_harness = await self._create_harness(new_session)
         self._harness = new_harness
 
     async def _finish_session_replacement(
@@ -658,8 +673,8 @@ class AgentSessionRuntime:
 
         Order (pi ``:2382-2413``), reusing :meth:`_teardown_current` / :meth:`_apply`:
           1. ``wait_for_idle`` — no mid-turn swap.
-          2. snapshot ``previous_flag_values`` + the shared SettingsManager from the
-             OLD runner BEFORE teardown.
+          2. snapshot ``previous_flag_values`` + the LIVE active-tool filter + the
+             shared SettingsManager from the OLD runner BEFORE teardown.
           3. ``_teardown_current("reload")`` FIRST (pi :2385) — emits
              ``session_shutdown(reload)`` (handlers still see OLD settings),
              invalidates the OLD runner (captured ctx goes stale), disposes the OLD
@@ -667,17 +682,21 @@ class AgentSessionRuntime:
           4. ``settings_manager.reload()`` AFTER the shutdown emit, BEFORE the
              rebuild (pi :2386). aelix does NOT ``reset_api_providers()`` (clear-only
              with no re-register would brick streaming — see the step-4 note).
-          5. ``_apply(session)`` — factory re-discovers + rebuilds (pi :2391+:2393).
-          6. FLAG ROUND-TRIP — overwrite the freshly re-seeded ``register_flag``
-             defaults with the snapshot (pi ``_buildRuntime`` ``flagValues`` loop), so
-             user-toggled extension flags survive the reload. (aelix divergence: the
-             restore lands AFTER ``_apply`` so an extension's ``setup()`` re-run reads
-             the registered DEFAULT, not the restored value, during reload; the
-             post-reload end-state is correct — see ADR-0177.)
-          7. ``_rebind_session(harness, "reload")`` — swap subscribers / UI / command
+          5. ``_apply(session, reload_seed=ReloadSeed(flag_values=...))`` — factory
+             re-discovers + rebuilds (pi :2391+:2393); the seed pre-seeds the fresh
+             runtime's ``flag_values`` BEFORE each ``setup()`` re-runs (#24-FU).
+          6. ACTIVE-TOOL ROUND-TRIP — restore the pre-teardown active-tool filter,
+             unioned with the rebuilt extension tools (pi ``reload`` passes
+             ``includeAllExtensionTools: true``), intersected with the fresh registry
+             so a removed extension's tools drop out cleanly (#24-FU).
+          7. FLAG ROUND-TRIP (belt-and-braces) — the ReloadSeed already made the
+             end-state correct (setup() read the restored value, closing the earlier
+             aelix divergence where it read the DEFAULT — ADR-0177); this overwrite is
+             kept as defense for a factory that ignores the seed.
+          8. ``_rebind_session(harness, "reload")`` — swap subscribers / UI / command
              context onto the new harness (the TUI skips its transcript reset on reload).
-          8. emit ``session_start(reload)`` on the NEW runner (gated on handlers).
-          9. ``reload_resources()`` (= pi ``extendResourcesFromExtensions("reload")``).
+          9. emit ``session_start(reload)`` on the NEW runner (gated on handlers).
+         10. ``reload_resources()`` (= pi ``extendResourcesFromExtensions("reload")``).
 
         Reuses the SAME ``Session`` (no ``repo.create``/``fork``), so message history
         and lineage are preserved. Returns :class:`RuntimeReplaceResult` for symmetry
@@ -700,6 +719,12 @@ class AgentSessionRuntime:
         #    BEFORE teardown. ``get_flag_values`` returns a shallow copy so it
         #    survives the subsequent dispose. pi :2384.
         previous_flag_values = self._harness.extension_runner.get_flag_values()
+        # Snapshot the LIVE active-tool filter BEFORE teardown so a user's runtime
+        # tool selection survives the rebuild (#24-FU). ``None`` => "all tools
+        # active"; a list => an explicit filter. Copied because ``state`` is a
+        # live reference disposed in step 3.
+        active_before = self._harness.state.active_tool_names
+        active_before = list(active_before) if active_before is not None else None
         settings_manager = self._harness.settings_manager
 
         # 3. Teardown FIRST (pi :2385): emit session_shutdown(reload) — so its
@@ -723,24 +748,71 @@ class AgentSessionRuntime:
             await settings_manager.reload()
 
         # 5. Rebuild via the factory over the SAME session — re-discovers on-disk
-        #    extensions, fresh _ExtensionRuntime + HookBus + tool registry.
-        await self._apply(session)
+        #    extensions, fresh _ExtensionRuntime + HookBus + tool registry. The
+        #    ReloadSeed (#24-FU) pre-seeds the fresh runtime's ``flag_values``
+        #    BEFORE each extension's ``setup()`` re-runs, so a ``setup()`` that
+        #    branches on a flag reads the user's restored value — mirroring pi
+        #    ``_buildRuntime`` which seeds ``runtime.flagValues`` before the new
+        #    ``ExtensionRunner`` (register_flag's ``name not in flag_values`` guard
+        #    then skips the default).
+        await self._apply(
+            session, reload_seed=ReloadSeed(flag_values=previous_flag_values)
+        )
 
-        # 6. FLAG ROUND-TRIP (pi ``_buildRuntime`` ``flagValues`` loop). The fresh
-        #    runtime starts empty and ``register_flag`` only re-seeds DEFAULTS
-        #    (``name not in flag_values``); overwrite them with the user's prior
-        #    values, AFTER ``_apply`` and BEFORE the session_start emit so a handler
+        # 6. ACTIVE-TOOL ROUND-TRIP (#24-FU). Restore the user's pre-reload active
+        #    filter over the REBUILT registry, unioned with the current extension
+        #    tools — pi ``reload`` passes ``includeAllExtensionTools: true`` so a
+        #    just-written extension's tool is usable even under an explicit
+        #    ``--tools`` filter (the #53 moat). Names are intersected with the fresh
+        #    registry so a REMOVED extension's tools drop out cleanly (aelix
+        #    ``set_active_tools`` validates names and would otherwise raise). A
+        #    ``None`` snapshot ("all tools were active") is preserved when the
+        #    rebuild is already unfiltered, else expanded to the full current set.
+        rebuilt = self._harness
+        if active_before is None:
+            if rebuilt.state.active_tool_names is not None:
+                await rebuilt.set_active_tools(
+                    [t.name for t in rebuilt.state.tools]
+                )
+        else:
+            current_set = {t.name for t in rebuilt.state.tools}
+            ext_names = [
+                name
+                for ext in rebuilt.extension_runner.extensions
+                for name in ext.tools
+            ]
+            # (active_before ∩ current) ∪ (ext ∩ current), order-preserving
+            # (kept-first, ext-second) and fully de-duplicated with ONE running
+            # ``seen`` — mirrors pi ``_refreshToolRegistry``'s
+            # ``[...activeToolNames].filter(...)`` + push-ext + ``new Set(...)``.
+            # Intersecting BOTH lists with the rebuilt registry keeps
+            # ``set_active_tools`` from raising on a name absent from ``state.tools``
+            # (a removed-ext tool in the snapshot, or an ext tool shadowed by a
+            # same-named app tool that now owns the registry entry).
+            target_active: list[str] = []
+            seen: set[str] = set()
+            for name in (*active_before, *ext_names):
+                if name in current_set and name not in seen:
+                    seen.add(name)
+                    target_active.append(name)
+            await rebuilt.set_active_tools(target_active)
+
+        # 7. FLAG ROUND-TRIP (belt-and-braces). The ReloadSeed already pre-seeded
+        #    the fresh runtime's flag_values before ``setup()`` re-ran (#24-FU), so
+        #    the end-state is already correct; this post-``_apply`` overwrite is
+        #    kept as defense for any factory that ignores ``reload_seed``. Runs
+        #    AFTER ``_apply`` and BEFORE the session_start emit so a handler
         #    reacting to session_start/reload reads the restored state.
         new_runner = self._harness.extension_runner
         for name, value in previous_flag_values.items():
             new_runner.set_flag_value(name, value)
 
-        # 7. Swap subscribers / UI / command context onto the NEW harness. The TUI
+        # 8. Swap subscribers / UI / command context onto the NEW harness. The TUI
         #    rebind skips its session-swap-only transcript + /stats resets on "reload".
         if self._rebind_session is not None:
             await self._rebind_session(self._harness, "reload")
 
-        # 8. session_start(reload) on the NEW runner (gated on handlers; the OLD bus
+        # 9. session_start(reload) on the NEW runner (gated on handlers; the OLD bus
         #    was disposed in step 4). pi :2407.
         if new_runner.has_handlers("session_start"):
             try:
@@ -752,7 +824,7 @@ class AgentSessionRuntime:
                     "AgentSessionRuntime.reload session_start emit raised"
                 )
 
-        # 9. resources re-discover (= pi ``extendResourcesFromExtensions("reload")``,
+        # 10. resources re-discover (= pi ``extendResourcesFromExtensions("reload")``,
         #    :2411). Re-emits the resources_discover hook on the rebuilt harness.
         await self._harness.reload_resources()
         return RuntimeReplaceResult(cancelled=False)

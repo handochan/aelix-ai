@@ -1722,7 +1722,11 @@ def _make_passthrough_runtime(
     """
 
     if harness_factory is None:
-        async def _noop_factory(_new_session: Any) -> AgentHarness:
+        # Issue #24-FU: accept (and ignore) ``reload_seed`` for HarnessFactory
+        # conformance — the passthrough never rebuilds, so it raises regardless.
+        async def _noop_factory(
+            _new_session: Any, *, reload_seed: object = None
+        ) -> AgentHarness:
             raise RuntimeError(
                 "Passthrough runtime cannot replace harness — caller "
                 "must pass an explicit harness_factory to run_rpc_mode"

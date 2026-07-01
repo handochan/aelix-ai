@@ -35,7 +35,7 @@ import importlib.util
 import inspect
 import logging
 import tomllib
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -86,6 +86,7 @@ async def load_extensions(
     paths: Sequence[str | Path | ExtensionFactory | _ManifestEntry],
     *,
     cwd: Path | None = None,
+    flag_values: Mapping[str, bool | str] | None = None,
 ) -> LoadExtensionsResult:
     """Load extensions from module paths, file paths, or inline factories.
 
@@ -101,7 +102,11 @@ async def load_extensions(
     the parameter list covariant so a narrower list still type-checks.
     """
 
-    runtime = _ExtensionRuntime()
+    # Issue #24-FU: pre-seed flag_values BEFORE the extension setup loop so a
+    # re-run ``setup()`` reads the user's restored value (register_flag's
+    # ``name not in flag_values`` guard then skips the default). Mirrors pi
+    # ``_buildRuntime`` seeding ``runtime.flagValues`` before the runner is built.
+    runtime = _ExtensionRuntime(flag_values=flag_values)
     result = LoadExtensionsResult(runtime=runtime)
     for entry in paths:
         try:
@@ -147,6 +152,7 @@ async def discover_and_load_extensions(
     prepend: list[ExtensionFactory] | None = None,
     no_discovery: bool = False,
     no_project_local: bool = False,
+    flag_values: Mapping[str, bool | str] | None = None,
 ) -> LoadExtensionsResult:
     """Pi-parity 3-tier discovery + Aelix-additive entry_points pass.
 
@@ -279,7 +285,7 @@ async def discover_and_load_extensions(
             if ep_entry is not None:
                 all_entries.append(ep_entry)
 
-    result = await load_extensions(all_entries, cwd=cwd)
+    result = await load_extensions(all_entries, cwd=cwd, flag_values=flag_values)
     # Splice discovery-time errors in front of loader-time errors so the
     # caller sees them in the order they happened.
     result.errors = errors + result.errors

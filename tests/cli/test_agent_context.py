@@ -134,6 +134,25 @@ async def test_build_harness_options_wires_active_tool_names() -> None:
     assert opts_none.active_tool_names == []
 
 
+async def test_build_harness_options_drops_tools_filter_on_reload() -> None:
+    """#24-FU (adversarial-review MEDIUM): on reload the factory must build
+    UNFILTERED (active_tool_names=None) instead of re-applying the launch --tools
+    filter through the harness's RAISING validator — otherwise a --tools-named
+    extension tool whose extension was since removed would raise inside _apply and
+    brick the session. reload() step-6 restores the live filter instead."""
+
+    opts_reload = await _build_harness_options(
+        Args(tools=["read"]), Session(MemorySessionStorage()), on_reload=True
+    )
+    assert opts_reload.active_tool_names is None  # filter deferred to reload step-6
+
+    # Non-reload rebuilds (/new, /fork, /resume, first build) still apply --tools.
+    opts_build = await _build_harness_options(
+        Args(tools=["read"]), Session(MemorySessionStorage()), on_reload=False
+    )
+    assert opts_build.active_tool_names == ["read"]
+
+
 async def test_build_harness_options_appends_mcp_tools() -> None:
     """MCP tools passed to _build_harness_options join the harness toolset."""
 

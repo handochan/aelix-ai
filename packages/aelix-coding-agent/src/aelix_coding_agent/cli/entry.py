@@ -28,12 +28,13 @@ import asyncio
 import contextlib
 import os
 import sys
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 from aelix_agent_core.harness.core import AgentHarness, AgentHarnessOptions
 from aelix_agent_core.harness.skills import load_skills
+from aelix_agent_core.runtime import ReloadSeed
 from aelix_agent_core.runtime.agent_session_runtime import (
     create_agent_session_runtime,
 )
@@ -408,6 +409,8 @@ async def _build_harness_options(
     permission_ext: PermissionExtension | None = None,
     captured_extensions: list[Any] | None = None,
     settings_manager: SettingsManager | None = None,
+    flag_values: Mapping[str, bool | str] | None = None,
+    on_reload: bool = False,
 ) -> AgentHarnessOptions:
     """Assemble :class:`AgentHarnessOptions` from parsed CLI args.
 
@@ -442,7 +445,21 @@ async def _build_harness_options(
     if mcp_tools:
         tools.extend(mcp_tools)
     # --tools / --no-tools gating (Pi ``main.ts:369-375``).
-    active_tool_names = _resolve_active_tools(parsed)
+    #
+    # Issue #24-FU (adversarial-review MEDIUM): on RELOAD, do NOT re-apply the raw
+    # ``--tools`` filter through the harness's RAISING active-tool validator. If
+    # ``--tools`` named an extension tool whose extension was since removed,
+    # ``_action_set_active_tools`` raises inside ``AgentHarness`` construction
+    # (core.py) — and reload() has ALREADY disposed the old harness by then, so the
+    # raise would BRICK the session (not a clean error). Pi's reload never crashes
+    # here because it re-seeds the LIVE ``getActiveToolNames()`` and
+    # ``setActiveToolsByName`` SILENTLY filters unknown names. aelix instead builds
+    # the reloaded harness UNFILTERED (all tools active) and lets
+    # ``AgentSessionRuntime.reload()`` step-6 restore the pre-reload filter,
+    # intersected with the rebuilt registry (dropping the removed name) + the
+    # extension-tool union. ``_resolve_active_tools`` still applies on first build /
+    # /new / /fork / /resume.
+    active_tool_names = None if on_reload else _resolve_active_tools(parsed)
     system_prompt = (
         parsed.system_prompt
         if parsed.system_prompt is not None
@@ -479,6 +496,11 @@ async def _build_harness_options(
         prepend=[GuardrailExtension(), permission],
         no_discovery=parsed.no_extensions,
         no_project_local=not project_trusted,
+        # Issue #24-FU — on reload, carry the user's restored extension flag
+        # values into the fresh runtime BEFORE each ``setup()`` re-runs (``None``
+        # on first build / /new / /fork / /resume, where fresh defaults are
+        # correct). See :class:`ReloadSeed`.
+        flag_values=flag_values,
     )
     for err in loaded.errors:
         print(f"Warning: extension load: {err}", file=sys.stderr)
@@ -1032,7 +1054,9 @@ async def _async_main(argv: list[str]) -> int:
             file=sys.stderr,
         )
 
-    async def _harness_factory(new_session: Session) -> AgentHarness:
+    async def _harness_factory(
+        new_session: Session, *, reload_seed: ReloadSeed | None = None
+    ) -> AgentHarness:
         opts = await _build_harness_options(
             parsed,
             new_session,
@@ -1046,6 +1070,15 @@ async def _async_main(argv: list[str]) -> int:
             # harness so ``harness.reload()`` is functional across /new, /fork,
             # /resume.
             settings_manager=settings_manager,
+            # Issue #24-FU — the reload path (AgentSessionRuntime.reload) hands a
+            # ReloadSeed carrying the user's prior flag values; pre-seed them into
+            # the rebuilt extension runtime BEFORE ``setup()`` re-runs. ``None`` on
+            # every non-reload (re)build.
+            flag_values=reload_seed.flag_values if reload_seed is not None else None,
+            # Issue #24-FU: on reload, build UNFILTERED and defer the active-tool
+            # set to reload() step-6 (avoids the raising validator bricking the
+            # session when --tools named a since-removed extension tool).
+            on_reload=reload_seed is not None,
         )
         harness = AgentHarness(opts)
         # Issue #22 — replay pending provider registrations into the LIVE

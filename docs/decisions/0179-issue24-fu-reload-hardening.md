@@ -1,0 +1,43 @@
+# ADR-0179 — #24-FU live-reload hardening (flag pre-seed + active-tool round-trip + ctx.reload delegation)
+
+- **Status:** Accepted — **LIVE**. Hardens the shipped `AgentSessionRuntime.reload()` (ADR-0177). Owner-chosen scope: **FU4 + FU1 + FU2 now; FU3 fast-follow; FU5 wont-fix.**
+- **Date:** 2026-07-01
+- **Sprint:** Moat-chain completion — v1 follow-ups on the LIVE hot-reload (real correctness on a shipped feature).
+- **Pi pin:** `earendil-works/pi@734e08e`. Ported from `agent-session.ts` `reload` (`:2382-2413`) + `_buildRuntime` + `_refreshToolRegistry`.
+- **Relates:** ADR-0177 (#24 factory-rebuild reload — the feature this hardens), ADR-0175 (#36 `/login` custom providers — must survive FU3), ADR-0178 (#5 Project-Trust). GitHub `#24`; unblocks the `--tools`-filtered slice of the `#53` moat.
+
+## Context
+
+`AgentSessionRuntime.reload()` shipped LIVE (ADR-0177) but three real-correctness gaps remained on the shipped feature (recon-verified against pi ground truth):
+
+- **FU4** — `ExtensionCommandContext.reload()` (`command_context.py`) uniquely IGNORED its bound `_runtime_session` and always fired the cheapest `harness.reload_resources()`, unlike its siblings `fork`/`new_session`/`switch_session` which delegate to the `AgentSessionRuntime`. So an extension command calling `ctx.reload()` did NOT get the full factory rebuild.
+- **FU1** — on reload the flag round-trip restored `previous_flag_values` **AFTER** `_apply`, so a rebuilt extension's `setup()` re-run read the `register_flag` **DEFAULT**, not the user's restored value. An extension whose `setup()` branches on a flag behaved wrongly during reload.
+- **FU2** — reload did NOT round-trip the active-tool filter: the rebuild reset active tools to the CLI-derived set, dropping a user's runtime tool selection, and a just-written extension's tool was not usable under an explicit `--tools` filter.
+
+**pi ground truth (pin `734e08e`, `agent-session.ts`):** `reload()` calls `_buildRuntime({ activeToolNames: getActiveToolNames(), flagValues: previousFlagValues, includeAllExtensionTools: true })`. `_buildRuntime` seeds `runtime.flagValues` **before** constructing the `ExtensionRunner` (so `setup()` reads restored values). `_refreshToolRegistry` sets `nextActiveToolNames = [...activeToolNames].filter(...)`, then when `includeAllExtensionTools` pushes ALL extension tool names, then `setActiveToolsByName(new Set(...))` — which **silently filters** unknown names. Crucially, `includeAllExtensionTools:true` is **reload-only**: the CLI constructor path passes `options.includeAllExtensionTools` (undefined) so first-build `--tools` does NOT union extension tools. → **first-build semantics are unchanged; the union is reload-scoped.**
+
+## Decision
+
+Use the careful pattern (recon → design → implement → gate → multi-lens adversarial review → fix → commit). Decisions taken:
+
+- **FU4** — `ctx.reload()` delegates to `_runtime_session.reload()` when bound (the full factory rebuild), else falls back to `harness.reload_resources()` (minimal REPL / RPC surfaces). Mirrors the sibling lifecycle methods; the `RuntimeReplaceResult` is discarded (pi `reload` returns void).
+
+- **FU1 — flag pre-seed via `ReloadSeed`.** New frozen `ReloadSeed` dataclass (`runtime/_types.py`, `flag_values` only). `HarnessFactory` is **relaxed** from `Callable[[Session], …]` to `Callable[..., Awaitable[AgentHarness]]` so the ~40 existing single-positional factories stay assignable while a factory may opt into `*, reload_seed=None`. `_apply(*, reload_seed=None)` forwards the keyword to the factory **only** when a seed is present (so non-reload paths and single-positional factories are untouched). `reload()` builds `ReloadSeed(flag_values=previous_flag_values)`; the glue (`entry.py` → `discover_and_load_extensions` → `load_extensions` → `_ExtensionRuntime(flag_values=)`) pre-seeds `flag_values` **before** the setup loop, so `register_flag`'s `name not in flag_values` guard preserves the restored value. The post-`_apply` restore loop is kept as **belt-and-braces**.
+
+- **FU2 — active-tool round-trip (runtime-level, in `reload()`).** Snapshot `active_before = harness.state.active_tool_names` **before** teardown; after `_apply`, restore `(active_before ∩ current_registry) ∪ (extension_tools ∩ current_registry)`, order-preserving and de-duplicated, via `harness.set_active_tools()`. This mirrors pi's `activeToolNames` round-trip + `includeAllExtensionTools:true` union, but **runtime-level** (not glue) because the intersect that drops a removed extension's tool names needs the fully-merged registry, which only exists after the rebuild. A `None` snapshot ("all tools active") is preserved (not needlessly materialized) unless the rebuild is filtered. aelix `set_active_tools` **raises** on unknown names (pi silently filters), hence the intersect.
+
+- **FU3 (removed-ext provider drop) = fast-follow;** **FU5 (`run_repl` reload) = wont-fix** (no production caller). Per the owner-chosen scope.
+
+## Adversarial review (4 lenses → per-finding skeptic verify: 6 findings, 3 confirmed / 3 refuted)
+
+- **MEDIUM (CONFIRMED, reproduced live) — factory re-applied the raw `--tools` filter on reload → session brick.** `_build_harness_options` unconditionally passed `active_tool_names=_resolve_active_tools(parsed)` on EVERY rebuild. On reload, if `--tools` named an extension tool whose extension was since removed, `AgentHarness` construction's raising validator (`_action_set_active_tools`) threw **inside `_apply`** — AFTER teardown disposed the old harness — bricking the session. pi never crashes (silent filter). **Fix:** `_build_harness_options(on_reload=True)` builds UNFILTERED (`active_tool_names=None`); the FU2 step-6 restore is the sole active-tool authority on reload. First-build/`/new`/`/fork`/`/resume` still apply `--tools`. Guarded by a production unit test (`_build_harness_options` gating) + a runtime regression test (TDD-verified: fails with the exact `AgentHarnessError` when the gating is removed).
+- **FU2 NIT (CONFIRMED, cosmetic) — dedup only against `kept`.** The union used a static `seen`, so cross-extension duplicate tool names (two extensions registering the same name → one registry entry, two `ext_names` entries) could store duplicates in `state.active_tool_names`. Contained today (every consumer set-ifies) but a pi-`Set`-dedup divergence. **Fix:** single running `seen` + intersect both lists with the current registry.
+- **LOW (CONFIRMED) — test false-confidence.** The removed-ext test only exercised the runtime-snapshot path, not the launch-`--tools` factory path (where the crash actually lives). **Fix:** added the launch-filter regression test above.
+- **REFUTED ×3:** (a) `HarnessFactory` relaxation "drops static safety" — the contract is documented and the conditional forward keeps non-reload paths safe; no reachable defect. (b) pre-seeded flag value not type-coerced across a re-typed flag re-registration — **matches pi's `!flagValues.has(name)`; WONTFIX-for-parity.** (c) asserting `active_tool_names is None` "over-constrains" — refuted: `None` vs a materialized full list ARE observably distinct in core, so the assertion is meaningful.
+
+## Consequences
+
+- `ctx.reload()`, flag-branching `setup()`, and active-tool selection now behave correctly across reload; a just-written extension tool is usable even under a `--tools` filter (the `#53` moat for the filtered slice). **First-build `--tools` semantics are unchanged.**
+- `HarnessFactory` is now the permissive `Callable[..., …]`; a factory reachable by `reload()` MUST accept `*, reload_seed=None` (documented on the type). The 3 production factories (`cli/entry.py`, `rpc_ws`, the rpc noop) + the reload test factory comply; `rpc_ws`/noop accept-and-ignore.
+- **Gate:** `pytest` 4539 pass / 1 skip (+7 vs the 4532 baseline) · `ruff` clean · whole-project `pyright` 8 pre-existing `scripts/pyright_spike.py` errors only (0 new).
+- **Follow-ups:** FU3 (glue-side scoped removed-ext provider drop — provenance is data-structure-airtight but the late/out-of-setup registration invariant keeps it fast-follow); FU5 wont-fix (documented).

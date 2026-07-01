@@ -76,7 +76,16 @@ async def rpc_websocket(websocket: WebSocket) -> None:
         session = await repo.create(JsonlSessionCreateOptions(cwd=config.cwd))
         model = Model(id=config.model, provider=config.provider)
 
-        async def _harness_factory(new_session: Session) -> AgentHarness:
+        async def _harness_factory(
+            new_session: Session, *, reload_seed: object = None
+        ) -> AgentHarness:
+            # Issue #24-FU: accept the reload seed for HarnessFactory conformance
+            # (AgentSessionRuntime.reload forwards it). This bare WS factory loads
+            # no extensions and registers no flags, so there is nothing to
+            # pre-seed — the seed is intentionally ignored (cli/entry.py is the
+            # reload flagship). Typed ``object`` to avoid importing ReloadSeed into
+            # the server package for a purely-ignored kwarg.
+            del reload_seed
             return AgentHarness(
                 AgentHarnessOptions(
                     model=model,

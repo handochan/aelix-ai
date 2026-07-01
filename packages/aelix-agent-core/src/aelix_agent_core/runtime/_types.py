@@ -39,10 +39,30 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     from aelix_agent_core.harness.core import AgentHarness
-    from aelix_agent_core.session.session import Session
 
 
-HarnessFactory = Callable[["Session"], Awaitable["AgentHarness"]]
+@dataclass(frozen=True)
+class ReloadSeed:
+    """State carried from a live runtime into its :data:`HarnessFactory`
+    rebuild on :meth:`AgentSessionRuntime.reload` (Issue #24-FU / ADR-0177).
+
+    pi parity: the ``flagValues`` object pi's ``reload`` threads into
+    ``_buildRuntime`` (``agent-session.ts``), which seeds
+    ``extensionsResult.runtime.flagValues`` BEFORE constructing the
+    ``ExtensionRunner`` — so a re-run extension ``setup()`` reads the user's
+    restored flag value instead of the ``register_flag`` DEFAULT.
+
+    Only :attr:`flag_values` is carried today. The active-tool round-trip is
+    handled at the runtime level (post-``_apply`` ``set_active_tools`` in
+    :meth:`AgentSessionRuntime.reload`), NOT here, because the intersect that
+    drops names a removed extension no longer provides needs the fully-merged
+    tool registry — which only exists after the rebuild.
+    """
+
+    flag_values: Mapping[str, bool | str] | None = None
+
+
+HarnessFactory = Callable[..., Awaitable["AgentHarness"]]
 """Aelix-additive: factory called by :class:`AgentSessionRuntime` to build
 a NEW :class:`AgentHarness` bound to ``new_session`` (P-302/P-306).
 Async so callers can ``await harness.bootstrap()`` inside the factory.
@@ -55,6 +75,18 @@ because :class:`AgentHarness` captures ``_state.session_id`` at
 tools / caches session_name during construction. The factory pattern
 preserves all of these invariants by reconstructing the harness for each
 new :class:`Session`.
+
+Invocation shapes (Issue #24-FU): the factory is called ``factory(session)``
+on the /new//fork//resume/switch replace paths and
+``factory(session, reload_seed=ReloadSeed(...))`` on the reload path
+(:meth:`AgentSessionRuntime._apply` passes the keyword ONLY when a seed is
+present). The type is the permissive ``Callable[..., Awaitable[AgentHarness]]``
+rather than a keyword-only :class:`typing.Protocol` on purpose: every existing
+factory — production (``cli/entry.py``, ``rpc_ws``, the rpc noop) AND the ~40
+test factories — takes a single positional ``session``, and a keyword-only
+Protocol would make all of them structurally unassignable under strict pyright.
+A factory opts into the seed by declaring ``*, reload_seed: ReloadSeed | None =
+None``; one that does not is never handed the keyword at runtime.
 """
 
 
@@ -249,6 +281,7 @@ __all__ = [
     "PI_STALENESS_MESSAGE",
     "AgentSessionRuntimeDiagnostic",
     "HarnessFactory",
+    "ReloadSeed",
     "ReplacedSessionContext",
     "RuntimeReplaceResult",
     "SessionImportFileNotFoundError",
