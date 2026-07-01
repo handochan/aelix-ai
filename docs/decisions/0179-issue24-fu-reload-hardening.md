@@ -1,6 +1,6 @@
 # ADR-0179 — #24-FU live-reload hardening (flag pre-seed + active-tool round-trip + ctx.reload delegation)
 
-- **Status:** Accepted — **LIVE**. Hardens the shipped `AgentSessionRuntime.reload()` (ADR-0177). Owner-chosen scope: **FU4 + FU1 + FU2 now; FU3 fast-follow; FU5 wont-fix.**
+- **Status:** Accepted — **LIVE**. Hardens the shipped `AgentSessionRuntime.reload()` (ADR-0177). Owner-chosen scope: **FU4 + FU1 + FU2 shipped; FU3 = WONT-FIX (pi-parity, owner-confirmed); FU5 = wont-fix.** #24-FU complete.
 - **Date:** 2026-07-01
 - **Sprint:** Moat-chain completion — v1 follow-ups on the LIVE hot-reload (real correctness on a shipped feature).
 - **Pi pin:** `earendil-works/pi@734e08e`. Ported from `agent-session.ts` `reload` (`:2382-2413`) + `_buildRuntime` + `_refreshToolRegistry`.
@@ -26,7 +26,7 @@ Use the careful pattern (recon → design → implement → gate → multi-lens 
 
 - **FU2 — active-tool round-trip (runtime-level, in `reload()`).** Snapshot `active_before = harness.state.active_tool_names` **before** teardown; after `_apply`, restore `(active_before ∩ current_registry) ∪ (extension_tools ∩ current_registry)`, order-preserving and de-duplicated, via `harness.set_active_tools()`. This mirrors pi's `activeToolNames` round-trip + `includeAllExtensionTools:true` union, but **runtime-level** (not glue) because the intersect that drops a removed extension's tool names needs the fully-merged registry, which only exists after the rebuild. A `None` snapshot ("all tools active") is preserved (not needlessly materialized) unless the rebuild is filtered. aelix `set_active_tools` **raises** on unknown names (pi silently filters), hence the intersect.
 
-- **FU3 (removed-ext provider drop) = fast-follow;** **FU5 (`run_repl` reload) = wont-fix** (no production caller). Per the owner-chosen scope.
+- **FU3 (removed-ext provider drop) = WONT-FIX (pi-parity).** Owner-confirmed after a pi-oracle investigation (pin `734e08e`): pi's `_modelRegistry` is assigned ONCE in the `AgentSession` constructor and is NEVER rebuilt, cleared, or reconciled on reload — `bindCore` only ADDS providers incrementally, and `reload()` calls `resetApiProviders()` (the streaming-adapter cache) but never touches the model registry. pi tracks `extensionPath` on `pendingProviderRegistrations` but has NO reload cleanup that uses it. So **pi accumulates a removed extension's provider exactly as aelix does — the current aelix behavior is pi-faithful.** Implementing a drop would (a) diverge from pi, and (b) risk mis-dropping a still-present extension's LATE (post-`setup()`) registration under the only feasible name-delta heuristic. The lingering entry is low-harm (a stale provider config surfaces in `/model` until a process restart; it does not brick anything). The reload command/tool cleanup vs provider non-cleanup inconsistency is likewise SHARED with pi. **FU5 (`run_repl` reload) = wont-fix** (no production caller).
 
 ## Adversarial review (4 lenses → per-finding skeptic verify: 6 findings, 3 confirmed / 3 refuted)
 
@@ -40,4 +40,4 @@ Use the careful pattern (recon → design → implement → gate → multi-lens 
 - `ctx.reload()`, flag-branching `setup()`, and active-tool selection now behave correctly across reload; a just-written extension tool is usable even under a `--tools` filter (the `#53` moat for the filtered slice). **First-build `--tools` semantics are unchanged.**
 - `HarnessFactory` is now the permissive `Callable[..., …]`; a factory reachable by `reload()` MUST accept `*, reload_seed=None` (documented on the type). The 3 production factories (`cli/entry.py`, `rpc_ws`, the rpc noop) + the reload test factory comply; `rpc_ws`/noop accept-and-ignore.
 - **Gate:** `pytest` 4539 pass / 1 skip (+7 vs the 4532 baseline) · `ruff` clean · whole-project `pyright` 8 pre-existing `scripts/pyright_spike.py` errors only (0 new).
-- **Follow-ups:** FU3 (glue-side scoped removed-ext provider drop — provenance is data-structure-airtight but the late/out-of-setup registration invariant keeps it fast-follow); FU5 wont-fix (documented).
+- **Follow-ups:** none from #24-FU. FU3 = WONT-FIX (pi-parity — pi doesn't clean up removed-ext providers on reload either; see the Decision note); FU5 = wont-fix (no production caller). #24-FU is complete. Next roadmap items are independent: #21 (declarative `contributes.*`, deferred ADR-0174), #19 (install), #32 (marketplace), #36-anthropic (thinking-block replay).
