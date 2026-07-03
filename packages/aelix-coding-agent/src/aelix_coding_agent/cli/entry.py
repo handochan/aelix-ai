@@ -27,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+import select
 import sys
 from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
@@ -124,15 +125,69 @@ def to_print_output_mode(app_mode: AppMode) -> Literal["text", "json"]:
 
 
 async def _read_piped_stdin() -> str | None:
-    """Pi parity: ``readPipedStdin``.
+    """Pi parity: ``readPipedStdin`` — plus an aelix-original hang guard.
 
     Returns :data:`None` when stdin is a TTY (interactive shell). When
     stdin is piped (file redirect, here-doc, etc.), reads the full
     payload and strips surrounding whitespace; empty content → :data:`None`.
+
+    Issue #57 (aelix-original hardening — pi DECLINED the same report,
+    pi#5571, workaround ``</dev/null``): the read-to-EOF used to block
+    forever on a non-TTY pipe whose writer never closes, and the path is
+    reachable with ZERO flags (any piped stdin promotes ``app_mode`` to
+    ``"print"`` in :func:`resolve_app_mode`). On POSIX we now wait for
+    FIRST-byte readiness under a deadline (default 30s;
+    ``AELIX_STDIN_TIMEOUT`` overrides, ``0`` waits forever); on timeout we
+    warn on stderr and proceed WITHOUT stdin input. ``select`` runs in a
+    worker thread but always returns at the deadline, so no thread leaks
+    (a bare ``wait_for`` around the blocking read would strand the reader
+    thread — the OS read is uncancellable). Once data/EOF is ready, the
+    read-to-EOF itself is unbounded: a producer that writes a byte and
+    never closes still hangs, matching pi (pathological, user-error
+    territory). Windows keeps the previous blocking read — ``select`` is
+    socket-only there. A stdin without a real fd (pytest capture,
+    embedders) skips the readiness gate and reads directly.
     """
 
     if sys.stdin.isatty():
         return None
+    if sys.platform != "win32":
+        timeout = _env_float("AELIX_STDIN_TIMEOUT")
+        if timeout is None:
+            timeout = 30.0
+        stdin_fd: int | None
+        try:
+            stdin_fd = sys.stdin.fileno()
+        except (AttributeError, ValueError, OSError):
+            stdin_fd = None  # fake/captured stdin — nothing selectable
+        if timeout > 0 and stdin_fd is not None:
+            try:
+                ready, _, _ = await asyncio.to_thread(
+                    select.select, [stdin_fd], [], [], timeout
+                )
+            except (ValueError, OverflowError, OSError):
+                # Fail OPEN to the pre-guard blocking read (adversarial-review
+                # LOW x2): ``select`` rejects fds >= FD_SETSIZE (a replaced
+                # stdin in a many-fd embedder), closed fds (EBADF), and
+                # inf/huge timeouts (time_t OverflowError). Crashing any of
+                # these would regress a path that used to work — and an
+                # unbounded wait is exactly the old behavior AND the caller's
+                # intent for an inf-like timeout.
+                ready = True
+            if not ready:
+                # suppress: a DEAD STDERR must not abort a healthy run — an
+                # unguarded warning print here raised BrokenPipeError, which
+                # main_sync would misclassify as stdout death (exit 141) and
+                # devnull the LIVE stdout (adversarial-review LOW).
+                with contextlib.suppress(OSError):
+                    print(
+                        f"aelix: no data on piped stdin after {timeout:g}s; "
+                        "proceeding without stdin input (redirect </dev/null "
+                        "if none was intended, or set AELIX_STDIN_TIMEOUT=0 "
+                        "to wait indefinitely)",
+                        file=sys.stderr,
+                    )
+                return None
     data = await asyncio.to_thread(sys.stdin.read)
     stripped = data.strip()
     return stripped or None
@@ -1208,6 +1263,21 @@ async def _async_main(argv: list[str]) -> int:
                 await mcp_manager.disconnect_all()
 
 
+def _stdout_to_devnull() -> None:
+    """Point the stdout fd at devnull (issue #57 EPIPE hygiene).
+
+    After a BrokenPipeError the text buffer may still hold undeliverable
+    bytes; the interpreter's shutdown flush would re-raise into
+    "Exception ignored in ... BrokenPipeError" noise (exit 120). Rewiring
+    the fd makes that flush a harmless no-op. Best-effort: a stdout with
+    no real fd (embedders, pytest capture) just skips.
+    """
+
+    with contextlib.suppress(Exception):
+        devnull = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(devnull, sys.stdout.fileno())
+
+
 def main_sync() -> None:
     """Sync entry for ``[project.scripts] aelix = '...:main_sync'``.
 
@@ -1219,7 +1289,37 @@ def main_sync() -> None:
 
     load_dotenv()
     register_providers()
-    exit_code = asyncio.run(_async_main(sys.argv[1:]))
+    try:
+        exit_code = asyncio.run(_async_main(sys.argv[1:]))
+        # Flush INSIDE the guard: if the stdout consumer vanished mid-run
+        # (``aelix -p ... | head -1``), buffered bytes surface here as
+        # BrokenPipeError instead of as the interpreter's noisy
+        # "Exception ignored in ... BrokenPipeError" shutdown flush (which
+        # forced exit code 120). Issue #57. suppress(ValueError): a stdout
+        # already CLOSED (not a pipe death) has nothing left to flush —
+        # exiting normally is correct (review NIT).
+        with contextlib.suppress(ValueError):
+            sys.stdout.flush()
+    except BrokenPipeError:
+        # Issue #57: stdout consumer went away. Point stdout at devnull so
+        # the interpreter's shutdown flush of any still-buffered bytes
+        # cannot raise again, then exit with the shell pipeline convention
+        # 128+SIGPIPE. (pi's analogue: dead-terminal EPIPE → quiet
+        # ``process.exit(129)``; Python pipelines conventionally use 141.)
+        _stdout_to_devnull()
+        sys.exit(141)
+    except BaseException:
+        # Ctrl+C / SystemExit / crashes keep their exact semantics — but
+        # flush NOW and devnull stdout on EPIPE so a dirty buffer + dead
+        # pipe cannot resurface as interpreter shutdown-flush noise on
+        # these exit paths either (adversarial-review LOW).
+        try:
+            sys.stdout.flush()
+        except BrokenPipeError:
+            _stdout_to_devnull()
+        except Exception:
+            pass
+        raise
     sys.exit(exit_code)
 
 

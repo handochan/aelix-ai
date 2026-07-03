@@ -1858,6 +1858,13 @@ async def run_rpc_mode(
             try:
                 real_stdout_fd.buffer.write(data)
                 real_stdout_fd.buffer.flush()
+            except BrokenPipeError:
+                # Issue #57: the JSONL consumer vanished — re-raise so the
+                # caller can shut down. The text fallback below was written
+                # for the missing-``.buffer`` pytest case; routing EPIPE
+                # through it just re-raised the same error from the fallback
+                # write, uncaught and misattributed.
+                raise
             except (AttributeError, ValueError, OSError):
                 # ``__stdout__`` may not expose ``.buffer`` in unusual
                 # environments (e.g. captured by pytest); fall back to
@@ -1926,6 +1933,11 @@ async def run_rpc_mode(
             except (TypeError, ValueError):
                 payload = {"type": getattr(event, "type", "unknown")}
             _output(payload)
+        except BrokenPipeError:
+            # Issue #57: stdout consumer went away — the JSONL transport is
+            # dead, so ask the main loop to shut down gracefully instead of
+            # silently dropping every subsequent event forever.
+            shutdown_event.set()
         except Exception:  # noqa: BLE001
             # Pi swallows listener errors; matches.
             pass
@@ -2045,7 +2057,16 @@ async def run_rpc_mode(
             response = await _handle_command(
                 capture.harness, payload, dispatch
             )
-            _output(response.to_json())
+            try:
+                _output(response.to_json())
+            except BrokenPipeError:
+                # Issue #57 (review MEDIUM): the response write is the ONLY
+                # stdout touch for event-less commands (get_state-style), so
+                # without this the EPIPE killed the fire-and-forget task
+                # unretrieved ("Task exception was never retrieved" noise)
+                # and the dead transport hung until stdin EOF. Mirror the
+                # event-pipe handling: request a graceful shutdown.
+                shutdown_event.set()
 
         task = asyncio.create_task(_dispatch())
         pending_command_tasks.add(task)

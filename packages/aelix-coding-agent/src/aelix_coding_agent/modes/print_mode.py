@@ -132,6 +132,13 @@ async def run_print_mode(
 
     # === Pi steps 2-3 — rebind closure + subscribe ============================
     unsubscribe_holder: dict[str, Callable[[], None] | None] = {"u": None}
+    # Issue #57: set by the JSON event emitter when the stdout consumer
+    # vanishes (BrokenPipeError). Subscribers must not raise — harness event
+    # dispatch swallows listener errors (pi parity) — so the emitter records
+    # the death here and the main coroutine surfaces it after the prompt
+    # loop, exiting 141 via main_sync's guard instead of running to a
+    # useless exit 0 while every event write fails.
+    stdout_dead: dict[str, bool] = {"v": False}
 
     async def _rebind(new_harness: Any, reason: str = "resume") -> None:
         # Issue #24 — ``reason`` (``new``/``resume``/``fork``/``reload``) is part
@@ -148,8 +155,14 @@ async def run_print_mode(
         # NEW harness so events keep flowing across session swaps.
         if mode == "json":
             def _emit(event: Any) -> None:
-                with contextlib.suppress(Exception):
+                if stdout_dead["v"]:
+                    return  # consumer gone — stop writing to a dead pipe
+                try:
                     _write_raw_stdout(json.dumps(_event_to_dict(event)) + "\n")
+                except BrokenPipeError:
+                    stdout_dead["v"] = True  # Issue #57 — surfaced post-loop
+                except Exception:  # noqa: BLE001 — pi swallows listener errors
+                    pass
 
             unsubscribe_holder["u"] = new_harness.subscribe(_emit)
 
@@ -161,11 +174,15 @@ async def run_print_mode(
         if mode == "json":
             session = runtime_host.harness.session
             if session is not None:
-                with contextlib.suppress(Exception):
+                try:
                     metadata = await session.get_metadata()
                     header = _metadata_to_dict(metadata)
                     if header:
                         _write_raw_stdout(json.dumps(header) + "\n")
+                except BrokenPipeError:
+                    raise  # Issue #57 — dead consumer must reach main_sync
+                except Exception:  # noqa: BLE001 — header emit is best-effort
+                    pass
 
         # === Pi step 5 — initial rebind ======================================
         await _rebind(runtime_host.harness)
@@ -179,7 +196,20 @@ async def run_print_mode(
 
         # === Pi step 7 — residual messages loop ==============================
         for message in messages:
+            if stdout_dead["v"]:
+                # Issue #57 (review MEDIUM): the consumer died during an
+                # earlier turn — don't burn full agent turns (LLM calls,
+                # tools) emitting into a dead pipe; the post-loop raise
+                # surfaces the EPIPE now.
+                break
             await runtime_host.harness.prompt(message)
+
+        # Issue #57: a consumer that vanished mid-run (JSON mode) was recorded
+        # by ``_emit``; surface it now so the process exits 141 instead of 0.
+        if stdout_dead["v"]:
+            raise BrokenPipeError(
+                "stdout consumer went away during JSON event emit"
+            )
 
         # === Pi step 8 — text-mode terminal printout =========================
         if mode == "text":
@@ -199,6 +229,12 @@ async def run_print_mode(
                             if isinstance(block, TextContent):
                                 _write_raw_stdout(f"{block.text}\n")
 
+    except BrokenPipeError:
+        # Issue #57: stdout consumer vanished — propagate to main_sync's
+        # top-level guard (quiet exit 141). The old broad catch masked this
+        # as exit 1 with a dirty buffer, which then crashed the interpreter's
+        # shutdown flush ("Exception ignored in ... BrokenPipeError", exit 120).
+        raise
     except Exception as exc:  # noqa: BLE001 — surface any failure to caller
         print(str(exc), file=sys.stderr)
         exit_code = 1
