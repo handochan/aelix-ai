@@ -72,9 +72,9 @@ Homepage = "https://github.com/handochan/aelix-ai"
 Repository = "https://github.com/handochan/aelix-ai"
 Issues = "https://github.com/handochan/aelix-ai/issues"
 
-# The real `aelix` CLI. This is the canonical owner of the `aelix`
-# console script across the workspace (the umbrella meta-package
-# intentionally does NOT define one — see the root pyproject.toml).
+# The real `aelix` CLI. The umbrella meta-package re-declares the same
+# script (same target) so `uv tool install aelix` works — see the root
+# pyproject.toml. Keep the two declarations pointing at the same function.
 [project.scripts]
 aelix = "aelix_coding_agent.cli.entry:main_sync"
 

@@ -46,11 +46,14 @@ Homepage = "https://github.com/handochan/aelix-ai"
 Repository = "https://github.com/handochan/aelix-ai"
 Issues = "https://github.com/handochan/aelix-ai/issues"
 
-# NOTE: the `aelix` console script is intentionally NOT defined here.
-# The real CLI ships from aelix-coding-agent
-# (`aelix = "aelix_coding_agent.cli.entry:main_sync"`), which owns the
-# `aelix` command. The demo entry in src/aelix/__main__.py remains
-# reachable via `python -m aelix`.
+# The `aelix` console script is re-declared here so `uv tool install aelix`
+# works: uv tool only installs executables provided by the *target* package,
+# not its dependencies. The target is the same function that
+# aelix-coding-agent's own script points at, so when both wheels land in one
+# environment the generated launcher is byte-identical either way. The demo
+# entry in src/aelix/__main__.py remains reachable via `python -m aelix`.
+[project.scripts]
+aelix = "aelix_coding_agent.cli.entry:main_sync"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/aelix"]
