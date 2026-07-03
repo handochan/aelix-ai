@@ -26,7 +26,7 @@ import subprocess
 import sys
 import tempfile
 from collections.abc import Callable
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from aelix_agent_core.session.jsonl_storage import load_jsonl_session_metadata
 from prompt_toolkit.application.run_in_terminal import in_terminal
@@ -229,6 +229,18 @@ async def run_tui(
     # /login + /logout flows.
     extensions = list(extensions) if extensions else []
 
+    def _live_extension_shortcuts() -> dict[str, Any]:
+        # Issue #20 — LIVE read through the runtime host (never the stale
+        # run_tui ``extensions`` snapshot) so a #24 reload's handler swaps
+        # reach the chrome's fire-time lookup — the same live-read idiom as
+        # CommandDispatchService (``lambda: runtime_host.harness``).
+        runner = getattr(runtime_host.harness, "extension_runner", None)
+        get = getattr(runner, "get_shortcuts", None) if runner else None
+        try:
+            return get() if callable(get) else {}
+        except Exception:  # noqa: BLE001 — a faulty extension must not break keys
+            return {}
+
     if chrome is not None:
         out_chrome = chrome
     else:
@@ -239,7 +251,10 @@ async def run_tui(
         from aelix_coding_agent.cli.config import get_agent_dir
 
         out_chrome = AelixChrome(
-            history_path=str(_Path(get_agent_dir()) / "tui_input_history")
+            history_path=str(_Path(get_agent_dir()) / "tui_input_history"),
+            # Issue #20 — extension keyboard shortcuts join the key bindings
+            # (built at chrome construction; built-ins win collisions).
+            extension_shortcuts=_live_extension_shortcuts,
         )
     footer = AelixFooterData(cwd=cwd)
 

@@ -33,9 +33,11 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
+import inspect
+import logging
 import time
 from collections.abc import Callable, Sequence
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from prompt_toolkit.application import Application
 from prompt_toolkit.application.current import get_app
@@ -46,6 +48,7 @@ from prompt_toolkit.filters import Condition, has_completions, is_done, renderer
 from prompt_toolkit.formatted_text import ANSI, to_formatted_text
 from prompt_toolkit.history import FileHistory, History, InMemoryHistory
 from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.keys import KEY_ALIASES
 from prompt_toolkit.layout import (
     ConditionalContainer,
     DynamicContainer,
@@ -75,6 +78,45 @@ if TYPE_CHECKING:
     from prompt_toolkit.input.base import Input
     from prompt_toolkit.layout.controls import GetLinePrefixCallable
     from prompt_toolkit.output.base import Output
+
+logger = logging.getLogger(__name__)
+
+
+def _translate_key_spec(spec: str) -> tuple[str, ...] | None:
+    """Issue #20 — human key spec → prompt-toolkit key sequence.
+
+    Extensions register human-readable specs (``"ctrl+t"``); prompt-toolkit
+    wants its native names (``"c-t"``). Supported: ``ctrl+<key>`` →
+    ``c-<key>``; ``shift+<key>`` → ``s-<key>``; ``alt+<key>``/``meta+<key>``
+    → the ``("escape", <key>)`` two-key sequence; a spec WITHOUT ``+`` passes
+    through as a native prompt-toolkit name (``"c-t"``, ``"f5"``,
+    ``"escape"``). Anything else → ``None`` (caller skips + warns). Final
+    validation stays with ``KeyBindings.add`` — it raises ``ValueError`` on
+    names this translator can't vet (also handled by the caller).
+    """
+
+    s = spec.strip()
+    if not s:
+        return None
+    if "+" not in s:
+        if len(s) == 1:
+            # A bare printable character ('y') would bind GLOBALLY and hijack
+            # normal typing of that letter (adversarial-review HIGH) — reject;
+            # every legitimate prompt-toolkit name is multi-char ('c-y', 'f5',
+            # 'escape', 'tab').
+            return None
+        return (s,)
+    parts = [p.strip().lower() for p in s.split("+")]
+    if len(parts) != 2 or not all(parts):
+        return None
+    modifier, key = parts
+    if modifier == "ctrl":
+        return (f"c-{key}",)
+    if modifier == "shift":
+        return (f"s-{key}",)
+    if modifier in ("alt", "meta"):
+        return ("escape", key)
+    return None
 
 _DEFAULT_SPINNER = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
 
@@ -252,10 +294,23 @@ class AelixChrome:
         pt_output: Output | None = None,
         prompt: str = "» ",
         time_fn: Callable[[], float] = time.monotonic,
+        extension_shortcuts: Callable[[], dict[str, Any]] | None = None,
     ) -> None:
         self._console = console if console is not None else Console()
         self._prompt = prompt
         self._time = time_fn  # injectable clock (spinner cadence; tests)
+        # Issue #20 — LIVE provider of extension shortcuts ({key_spec:
+        # ExtensionShortcut}). Key SPECS are enumerated once at KeyBindings
+        # build time (prompt-toolkit bindings are pre-registered), but the
+        # HANDLER is re-looked-up through this provider on every fire, so a
+        # #24 reload's handler swaps take effect immediately. Known W1
+        # limitation: a shortcut key ADDED by a reloaded extension binds on
+        # the next TUI start (the KeyBindings table is built once).
+        self._extension_shortcuts_provider = extension_shortcuts
+        # Live async shortcut-handler tasks — held so the fire-and-forget
+        # coroutines are drained via done-callback (no "Task exception was
+        # never retrieved" GC noise); see _fire_extension_shortcut.
+        self._shortcut_tasks: set[asyncio.Task[Any]] = set()
         self.on_interrupt: Callable[[], None] | None = None
         # Steer / follow-up callbacks (Sprint 6h₁₂e — queue-while-running). Fired
         # from the Enter / Alt+Enter bindings ONLY while a turn is running, so the
@@ -639,7 +694,122 @@ class AelixChrome:
             if self.on_permission_cycle is not None:
                 self.on_permission_cycle()
 
+        # Issue #20 — extension shortcuts LAST, so built-ins can never be
+        # shadowed (already-bound key sequences are skipped with a warning).
+        self._register_extension_shortcuts(kb)
+
         return kb
+
+    def _register_extension_shortcuts(self, kb: KeyBindings) -> None:
+        """Issue #20 — bind extension-registered shortcuts into the app.
+
+        Key specs come from the live provider ONCE at build time; each
+        binding's handler re-resolves the shortcut through the provider at
+        FIRE time (reload-safe for handler swaps — the same live-read idiom
+        as CommandDispatchService). Rules: built-ins win (an already-bound
+        sequence is skipped), an untranslatable/invalid key spec is skipped,
+        and every skip logs a warning naming the spec. Handlers are invoked
+        with NO arguments; an awaitable result is scheduled fire-and-forget
+        on the prompt-toolkit event loop.
+        """
+
+        provider = self._extension_shortcuts_provider
+        if provider is None:
+            return
+        try:
+            shortcuts = provider() or {}
+        except Exception:  # noqa: BLE001 — a faulty provider must not break the TUI
+            logger.warning("extension shortcut provider failed", exc_info=True)
+            return
+        # NOTE: binding keys are ``Keys`` enum members whose ``str()`` is
+        # ``'Keys.ControlT'`` — the canonical name lives in ``.value``
+        # (``'c-t'``); plain characters have no ``.value``. BOTH sides of the
+        # collision check are additionally canonicalized through
+        # ``KEY_ALIASES`` (``'enter'``≡``'c-m'``, ``'tab'``≡``'c-i'``) —
+        # without it an extension spec ``'enter'`` sailed past the guard and
+        # SHADOWED the core Enter submit (adversarial-review HIGH,
+        # live-reproduced).
+        def _canonical(seq: tuple[str, ...]) -> tuple[str, ...]:
+            return tuple(KEY_ALIASES.get(k, k) for k in seq)
+
+        bound = {
+            _canonical(tuple(getattr(k, "value", str(k)) for k in b.keys))
+            for b in kb.bindings
+        }
+        # Same gate as the built-in ``s-tab`` binding: extension shortcuts
+        # stay inert while a modal (approval dialog / picker) owns focus —
+        # arbitrary extension code must not fire over a permission prompt
+        # (adversarial-review MEDIUM).
+        ext_filter = Condition(
+            lambda: self._input_has_focus() and not self.is_modal_open()
+        )
+        for spec in shortcuts:
+            seq = _translate_key_spec(spec)
+            if seq is None:
+                logger.warning(
+                    "extension shortcut %r skipped: unsupported key spec", spec
+                )
+                continue
+            if _canonical(seq) in bound:
+                logger.warning(
+                    "extension shortcut %r skipped: key already bound "
+                    "(built-ins win)",
+                    spec,
+                )
+                continue
+
+            def _make_handler(spec_: str) -> Callable[[object], None]:
+                def _fire(event: object) -> None:
+                    self._fire_extension_shortcut(spec_)
+
+                return _fire
+
+            try:
+                kb.add(*seq, filter=ext_filter)(_make_handler(spec))
+            except ValueError:
+                logger.warning(
+                    "extension shortcut %r skipped: prompt-toolkit rejected "
+                    "key %r",
+                    spec,
+                    seq,
+                )
+                continue
+            bound.add(_canonical(seq))
+
+    def _fire_extension_shortcut(self, key_spec: str) -> None:
+        """Resolve the shortcut LIVE and run its handler (never raises)."""
+
+        provider = self._extension_shortcuts_provider
+        if provider is None:
+            return
+        try:
+            shortcut = (provider() or {}).get(key_spec)
+            handler = getattr(shortcut, "handler", None)
+            if not callable(handler):
+                return  # removed by a reload — inert until restart rebinds
+            result = handler()
+            if inspect.isawaitable(result):
+                # Hold a reference + drain via done-callback: a bare
+                # ensure_future whose coroutine raises would surface as
+                # "Task exception was never retrieved" GC noise
+                # (adversarial-review MEDIUM).
+                task = asyncio.ensure_future(result)
+                self._shortcut_tasks.add(task)
+
+                def _done(t: asyncio.Task[Any], spec_: str = key_spec) -> None:
+                    self._shortcut_tasks.discard(t)
+                    if not t.cancelled() and t.exception() is not None:
+                        logger.warning(
+                            "extension shortcut %r async handler failed",
+                            spec_,
+                            exc_info=t.exception(),
+                        )
+
+                task.add_done_callback(_done)
+        except Exception:  # noqa: BLE001 — a faulty extension must not crash the TUI
+            logger.warning(
+                "extension shortcut %r handler failed", key_spec, exc_info=True
+            )
 
     # === region renderers (ANSI strings) ===================================
 

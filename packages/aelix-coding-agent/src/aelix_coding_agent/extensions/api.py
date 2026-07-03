@@ -52,6 +52,7 @@ import os
 import subprocess
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Protocol, overload
 
 from aelix_agent_core.contracts import PluginManifest
@@ -341,6 +342,13 @@ class ExtensionRuntimeActions:
     # binds the real action. The harness rebinds it to
     # ``AgentHarness._refresh_extension_tools`` at ``bind_core`` time.
     refresh_tools: Callable[[], None]
+    # Issue #21 — HookBus re-sync after a LAZY activation (a manifest plugin's
+    # factory running post-harness-construction). Same no-op-before-bind
+    # contract as ``refresh_tools``; the harness rebinds it to
+    # ``AgentHarness._wire_extension_hooks`` at ``bind_core`` time. Without it,
+    # hooks registered by a late factory would be silently dead (the HookBus
+    # handler map is populated from ``Extension.handlers`` at construction).
+    refresh_hooks: Callable[[], None]
 
 
 def _make_throwing_stub(name: str) -> Callable[..., Any]:
@@ -381,7 +389,28 @@ def _default_actions() -> ExtensionRuntimeActions:
         # ``register_tool`` valid during extension setup before
         # :meth:`bind_core` installs the real harness implementation.
         refresh_tools=lambda: None,
+        # Issue #21 — same deliberate no-op contract for the HookBus re-sync.
+        refresh_hooks=lambda: None,
     )
+
+
+@dataclass
+class PendingActivation:
+    """Issue #21 — a manifest plugin deferred until its ``on_command`` fires.
+
+    VS Code-style lazy activation (ADR-0096 §Activation policy, "lazy load
+    is mandatory"): at discovery the loader creates the empty
+    :class:`Extension` shell (manifest attached, no code imported) and parks
+    the un-resolved loader entry here; the command-dispatch layer activates
+    it — module import + factory run + ``refresh_tools``/``refresh_hooks`` —
+    when one of ``manifest.activation.on_command`` is invoked. ``entry`` is
+    the loader's ``_ManifestEntry`` carrier, typed ``Any`` to avoid an
+    api←→loader import cycle.
+    """
+
+    extension: Extension
+    entry: Any
+    cwd: Path | None = None
 
 
 class _ExtensionRuntime:
@@ -418,6 +447,11 @@ class _ExtensionRuntime:
         # adapter (ADR-0038) replays them after binding.
         self.pending_provider_registrations: list[tuple[str, Any]] = []
         self.pending_provider_unregistrations: list[str] = []
+        # Issue #21 — manifest plugins deferred until an on_command trigger
+        # (VS Code-style lazy activation). Keyed by plugin id; the loader
+        # parks entries here, the command-dispatch layer pops + activates.
+        # A fresh runtime per (re)build means /reload re-defers naturally.
+        self.pending_activations: dict[str, PendingActivation] = {}
         # Sprint 6h₇c (Phase 5a-iii-γ, ADR-0093 §C, P-447) — flag values
         # runtime state container. Pi parity: ``runner.ts:409-411``
         # ``getFlagValues`` / ``setFlagValue`` over a ``Map<string,

@@ -31,9 +31,12 @@ extension dispatch.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
+
+_log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     # Avoid the harness↔coding-agent runtime import cycle (D.1.9).
@@ -202,6 +205,33 @@ class ExtensionRunner:
         if self._runtime is None:
             return
         self._runtime.set_flag_value(name, value)
+
+    def get_shortcuts(self) -> dict[str, Any]:
+        """Issue #20 — aggregate ``Extension.shortcuts`` across extensions.
+
+        ``{key_spec: ExtensionShortcut}``, read LIVE per call (mirroring
+        :meth:`get_registered_commands`) so a #24 reload's handler swaps are
+        visible to the TUI's fire-time lookup. FIRST registration wins a key
+        collision across extensions (load order = priority order, matching
+        the prepend-built-ins-first convention); the loser is skipped with a
+        warning. Built-in TUI keybindings are enforced elsewhere (the chrome
+        skips already-bound sequences).
+        """
+
+        out: dict[str, Any] = {}
+        for ext in self.extensions:
+            shortcuts = getattr(ext, "shortcuts", None) or {}
+            for key, shortcut in shortcuts.items():
+                if key in out:
+                    _log.warning(
+                        "extension %r shortcut %r skipped: key already "
+                        "registered by an earlier extension",
+                        getattr(ext, "name", "<unknown>"),
+                        key,
+                    )
+                    continue
+                out[key] = shortcut
+        return out
 
     def get_registered_commands(self) -> list[ResolvedCommand]:
         """Pi parity: ``ExtensionRunner.getRegisteredCommands()`` (Pi

@@ -52,6 +52,7 @@ from aelix_coding_agent.extensions.api import (
     Extension,
     ExtensionAPI,
     ExtensionFactory,
+    PendingActivation,
     _ExtensionRuntime,
 )
 
@@ -109,6 +110,26 @@ async def load_extensions(
     runtime = _ExtensionRuntime(flag_values=flag_values)
     result = LoadExtensionsResult(runtime=runtime)
     for entry in paths:
+        # Issue #21 — VS Code-style LAZY activation (ADR-0096 §Activation
+        # policy, "lazy load is mandatory"): a manifest plugin whose ONLY
+        # trigger is ``on_command`` is DEFERRED — no module import, no factory
+        # run. An empty Extension shell (manifest attached) joins the loaded
+        # set so the runner/banner/palette see it; the command-dispatch layer
+        # activates it (import + factory + refresh_tools/refresh_hooks) when
+        # one of its trigger commands fires. Any eager trigger
+        # (on_startup_finished / on_session_start / on_tool_call — W1 treats
+        # on_tool_call as eager) keeps today's load-time factory run.
+        if isinstance(entry, _ManifestEntry) and _is_lazy_eligible(
+            entry.manifest
+        ):
+            shell = Extension(
+                name=entry.manifest.plugin.id, manifest=entry.manifest
+            )
+            runtime.pending_activations[entry.manifest.plugin.id] = (
+                PendingActivation(extension=shell, entry=entry, cwd=cwd)
+            )
+            result.extensions.append(shell)
+            continue
         try:
             factory, name, manifest = await _resolve_factory(entry, cwd=cwd)
         except Exception as exc:  # noqa: BLE001 — surface as load error
@@ -127,6 +148,107 @@ async def load_extensions(
             continue
         result.extensions.append(extension)
     return result
+
+
+def _is_lazy_eligible(manifest: PluginManifest) -> bool:
+    """Issue #21 (W1): defer ONLY pure ``on_command`` plugins.
+
+    Any eager trigger (``on_startup_finished`` / ``on_session_start`` /
+    ``on_tool_call`` — W1 keeps ``on_tool_call`` eager because lazy tool
+    stubs would need schema-carrying ToolContribs) forces the load-time
+    factory run, preserving today's behavior for those plugins.
+    """
+
+    activation = manifest.activation
+    return (
+        bool(activation.on_command)
+        and not (
+            activation.on_startup_finished
+            or activation.on_session_start
+            or activation.on_tool_call
+        )
+        # Declared tools must be VISIBLE TO THE MODEL from startup — a
+        # deferred plugin's tools would silently vanish until first command
+        # use (adversarial-review MEDIUM) — so contributes.tools forces eager.
+        and not manifest.contributes.tools
+        # Declared subprocess hooks likewise: deferral would leave them inert
+        # until first command AND move their shell_exec trust-gate error from
+        # a visible load-time failure to a mid-session dispatch error.
+        and not manifest.contributes.hooks
+    )
+
+
+async def activate_pending_extension(
+    runtime: _ExtensionRuntime, name: str
+) -> Extension | None:
+    """Issue #21 — run a deferred manifest plugin's factory NOW (on_command).
+
+    First code execution for the plugin: resolves ``[plugin.entry] python``
+    (module import), runs the factory against the SAME shared runtime and the
+    PRE-CREATED Extension shell (identity matters — the ExtensionRunner and
+    the harness already hold that object), wires declarative subprocess
+    hooks, then fires ``refresh_tools`` + ``refresh_hooks`` so the live
+    harness registries see the late registrations. One-shot: the pending
+    record is popped up front, so a FAILED activation does not retry on every
+    keystroke — the error surfaces via the dispatch layer and the plugin
+    stays inert until the next (re)build re-defers it.
+
+    Returns the activated Extension, or ``None`` when nothing is pending
+    under ``name``.
+    """
+
+    pending = runtime.pending_activations.pop(name, None)
+    if pending is None:
+        return None
+    shell = pending.extension
+    try:
+        factory, _display, manifest = await _resolve_factory(
+            pending.entry, cwd=pending.cwd
+        )
+        await _invoke_factory(
+            factory,
+            runtime,
+            name=shell.name,
+            manifest=manifest,
+            extension=shell,
+        )
+    except BaseException:
+        # ROLLBACK (adversarial-review HIGH): a factory that registered SOME
+        # surfaces before raising must not leave a half-activated plugin —
+        # its partial commands would execute on the next keystroke and its
+        # partial hooks would arm on the next refresh. Clear every
+        # registration surface on the SHARED shell (the runner/harness hold
+        # this object), then re-run the refreshes to PURGE anything
+        # register_tool's immediate refresh already pushed into the live
+        # registries. The plugin ends fully inert (pending was popped —
+        # one-shot); the error propagates to the dispatch layer.
+        shell.handlers.clear()
+        shell.handler_error_modes.clear()
+        shell.tools.clear()
+        shell.flags.clear()
+        shell.cleanups.clear()
+        shell.commands.clear()
+        shell.shortcuts.clear()
+        shell.message_renderers.clear()
+        runtime.actions.refresh_tools()
+        runtime.actions.refresh_hooks()
+        raise
+    # Late registrations reach the constructed harness through the two
+    # refresh actions (no-ops when no harness is bound yet — tests/embedders).
+    runtime.actions.refresh_tools()
+    runtime.actions.refresh_hooks()
+    if shell.shortcuts:
+        # W1 limitation (adversarial-review MEDIUM): the TUI enumerates
+        # shortcut KEYS once at chrome build, so keys from a lazily-activated
+        # factory cannot bind until the next TUI start. Say so loudly.
+        logger.warning(
+            "plugin %r registered %d shortcut(s) during lazy activation; "
+            "they will bind on the next TUI start (key bindings are built "
+            "once at startup)",
+            shell.name,
+            len(shell.shortcuts),
+        )
+    return shell
 
 
 async def load_extension_from_factory(
@@ -193,6 +315,43 @@ async def discover_and_load_extensions(
     This is a FINER gate than ``no_discovery`` (which disables tiers 1, 2, AND
     4): the trust gate must suppress untrusted project-local code WITHOUT
     breaking user-chosen global/explicit/installed extensions.
+    """
+
+    all_entries, errors = _discover_entries(
+        configured_paths,
+        cwd=cwd,
+        agent_dir=agent_dir,
+        prepend=prepend,
+        no_discovery=no_discovery,
+        no_project_local=no_project_local,
+    )
+    result = await load_extensions(all_entries, cwd=cwd, flag_values=flag_values)
+    # Splice discovery-time errors in front of loader-time errors so the
+    # caller sees them in the order they happened.
+    result.errors = errors + result.errors
+    return result
+
+
+def _discover_entries(
+    configured_paths: list[str | Path | ExtensionFactory],
+    *,
+    cwd: Path,
+    agent_dir: Path | None = None,
+    prepend: list[ExtensionFactory] | None = None,
+    no_discovery: bool = False,
+    no_project_local: bool = False,
+    include_entry_points: bool = True,
+) -> tuple[
+    list[str | Path | ExtensionFactory | _ManifestEntry],
+    list[ExtensionLoadError],
+]:
+    """The 4-tier discovery pass of :func:`discover_and_load_extensions`.
+
+    Pure metadata: walks the tiers, parses ``aelix-plugin.toml`` manifests
+    into ``_ManifestEntry`` carriers, and NEVER imports or executes plugin
+    code (factory invocation happens later in :func:`load_extensions`).
+    Extracted (issue #21) so :func:`scan_extension_manifests` can reuse the
+    identical discovery + trust gating without the execution half.
     """
 
     all_entries: list[str | Path | ExtensionFactory | _ManifestEntry] = []
@@ -277,7 +436,11 @@ async def discover_and_load_extensions(
             )
 
     # 4. Aelix-additive: entry_points loaded LAST (skipped under no_discovery).
-    if not no_discovery:
+    # ``include_entry_points=False`` (the manifest SCAN): ``ep.load()`` below
+    # IMPORTS the endpoint module — running it would violate the scan's
+    # metadata-only contract (adversarial-review finding), and entry_points
+    # yield factories, never manifests, so the scan loses nothing by skipping.
+    if not no_discovery and include_entry_points:
         for ep_entry, ep_error in _discover_via_entry_points(seen_ep):
             if ep_error is not None:
                 errors.append(ep_error)
@@ -285,11 +448,47 @@ async def discover_and_load_extensions(
             if ep_entry is not None:
                 all_entries.append(ep_entry)
 
-    result = await load_extensions(all_entries, cwd=cwd, flag_values=flag_values)
-    # Splice discovery-time errors in front of loader-time errors so the
-    # caller sees them in the order they happened.
-    result.errors = errors + result.errors
-    return result
+    return all_entries, errors
+
+
+def scan_extension_manifests(
+    configured_paths: list[str | Path | ExtensionFactory],
+    *,
+    cwd: Path,
+    agent_dir: Path | None = None,
+    no_discovery: bool = False,
+    no_project_local: bool = False,
+) -> list[PluginManifest]:
+    """Issue #21 — metadata-ONLY manifest scan (no plugin code execution).
+
+    Runs the SAME 4-tier discovery + Project-Trust gating as
+    :func:`discover_and_load_extensions` but stops at manifest parsing:
+    plugin modules are never imported and factories never run, so it is
+    safe to call before trust-sensitive wiring. Used by the CLI to merge
+    ``contributes.mcp_servers`` into the MCP connect list, which happens
+    BEFORE the first harness build (where the full extension load runs).
+
+    Entries without a manifest (bare ``.py`` extensions, inline factories)
+    contribute nothing here — only ``aelix-plugin.toml`` carriers are
+    surfaced. The entry_points tier is EXCLUDED entirely: resolving an
+    endpoint (``ep.load()``) is a module import, which would break the
+    metadata-only contract — and endpoints yield factories, never manifests.
+    Discovery errors (e.g. a malformed manifest) are logged as warnings so a
+    plugin whose declared MCP servers were silently skipped is diagnosable;
+    the full loader re-reports them properly at load time.
+    """
+
+    entries, errors = _discover_entries(
+        configured_paths,
+        cwd=cwd,
+        agent_dir=agent_dir,
+        no_discovery=no_discovery,
+        no_project_local=no_project_local,
+        include_entry_points=False,
+    )
+    for err in errors:
+        logger.warning("manifest scan: %s: %s", err.path, err.error)
+    return [e.manifest for e in entries if isinstance(e, _ManifestEntry)]
 
 
 def _discover_in_dir(
@@ -711,6 +910,7 @@ async def _invoke_factory(
     *,
     name: str,
     manifest: PluginManifest | None = None,
+    extension: Extension | None = None,
 ) -> Extension:
     """Sprint 6h₉b §C: propagate ``manifest`` to the loaded :class:`Extension`.
 
@@ -720,9 +920,15 @@ async def _invoke_factory(
     get their parsed :class:`PluginManifest` attached so Sprint 6h₉c/d/
     e/f consumers can read declared capabilities / activation /
     contributes.
+
+    ``extension`` (issue #21): a LAZY activation passes the pre-created
+    shell so the factory populates the SAME object the runner/harness
+    already hold; eager paths leave it ``None`` and a fresh Extension is
+    built here as before.
     """
 
-    extension = Extension(name=name, manifest=manifest)
+    if extension is None:
+        extension = Extension(name=name, manifest=manifest)
     api = ExtensionAPI(extension, runtime)
     result: Any = factory(api)
     if inspect.iscoroutine(result):

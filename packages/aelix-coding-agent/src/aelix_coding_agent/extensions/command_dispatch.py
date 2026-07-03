@@ -126,7 +126,91 @@ class CommandDispatchService:
             if not name:
                 continue
             out.append((name, getattr(cmd, "description", "") or ""))
+        # Issue #21 — pending (not-yet-activated) manifest plugins surface
+        # their on_command triggers as STUBS so autocomplete/palette show
+        # them; invoking one activates the plugin (see try_execute). The
+        # description comes from the matching [[contributes.commands]] entry
+        # when declared.
+        try:
+            registered = {n for n, _ in out}
+            for record in self._pending_activations().values():
+                manifest = getattr(record.extension, "manifest", None)
+                if manifest is None:
+                    continue
+                declared = {
+                    c.id: c.description for c in manifest.contributes.commands
+                }
+                for trigger in manifest.activation.on_command:
+                    if trigger in registered:
+                        continue
+                    registered.add(trigger)  # dedupe repeats + cross-manifest
+                    out.append((trigger, declared.get(trigger, "") or ""))
+        except Exception:  # noqa: BLE001 — a faulty manifest must not break input
+            pass
         return out
+
+    def _pending_activations(self) -> dict[str, Any]:
+        """Issue #21 — the live runtime's pending lazy activations ({} when
+        no harness / no runtime is bound, or on pre-#21 runtimes)."""
+
+        harness = self._harness_provider()
+        runtime = getattr(harness, "runtime", None) if harness else None
+        pending = getattr(runtime, "pending_activations", None)
+        return pending if isinstance(pending, dict) else {}
+
+    async def _activate_for_command(
+        self, name: str, bindings: CommandSurfaceBindings
+    ) -> tuple[Any | None, DispatchResult | None]:
+        """Issue #21 — activate the pending plugin that declared ``name``.
+
+        Returns ``(resolved_command, None)`` on success, ``(None, None)``
+        when no pending plugin lists ``name`` in ``activation.on_command``
+        (caller falls through to NOT_A_COMMAND), and
+        ``(None, DispatchResult(ERROR))`` when activation was attempted and
+        failed OR the activated plugin never registered the trigger it
+        declared — both are plugin defects the user must see, not silent
+        fall-throughs to the model.
+        """
+
+        target: str | None = None
+        for plugin_id, record in self._pending_activations().items():
+            manifest = getattr(record.extension, "manifest", None)
+            if manifest is not None and name in manifest.activation.on_command:
+                target = plugin_id
+                break
+        if target is None:
+            return None, None
+
+        try:
+            # Function-local import: command_dispatch is imported by surfaces
+            # that must not pay the loader import (and it avoids any future
+            # loader↔dispatch cycle).
+            from aelix_coding_agent.extensions.loader import (
+                activate_pending_extension,
+            )
+
+            harness = self._harness_provider()
+            await activate_pending_extension(harness.runtime, target)
+        except Exception as exc:  # noqa: BLE001 — never crash the surface
+            bindings.emit_error(
+                f"/{name}: activating plugin {target!r} failed: {exc}"
+            )
+            return None, DispatchResult(DispatchOutcome.ERROR, command=name)
+
+        try:
+            runner = self._runner()
+            get_command = getattr(runner, "get_command", None) if runner else None
+            resolved = get_command(name) if callable(get_command) else None
+        except Exception as exc:  # noqa: BLE001
+            bindings.emit_error(f"/{name}: command lookup failed: {exc}")
+            return None, DispatchResult(DispatchOutcome.ERROR, command=name)
+        if resolved is None:
+            bindings.emit_error(
+                f"/{name}: plugin {target!r} declared this activation "
+                "trigger but did not register the command"
+            )
+            return None, DispatchResult(DispatchOutcome.ERROR, command=name)
+        return resolved, None
 
     def _runner(self) -> Any | None:
         harness = self._harness_provider()
@@ -159,7 +243,20 @@ class CommandDispatchService:
             bindings.emit_error(f"/{name}: command lookup failed: {exc}")
             return DispatchResult(DispatchOutcome.ERROR, command=name)
         if resolved is None:
-            return DispatchResult(DispatchOutcome.NOT_A_COMMAND, command=name)
+            # Issue #21 — VS Code-style on_command activation: a PENDING
+            # manifest plugin whose activation.on_command lists this name is
+            # activated now (module import + factory run + registry
+            # refreshes), then the command re-resolves against the live
+            # runner. No pending match → genuine NOT_A_COMMAND as before.
+            resolved, activation_error = await self._activate_for_command(
+                name, bindings
+            )
+            if activation_error is not None:
+                return activation_error
+            if resolved is None:
+                return DispatchResult(
+                    DispatchOutcome.NOT_A_COMMAND, command=name
+                )
 
         handler = getattr(getattr(resolved, "command", None), "handler", None)
         if not callable(handler):

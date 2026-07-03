@@ -567,6 +567,13 @@ async def test_manifest_activation_capabilities_contributes_roundtrip(
         result = await discover_and_load_extensions([], cwd=tmp_path)
         assert result.errors == []
         assert len(result.extensions) == 1
+        # Issue #21 (W1): this fixture declares on_command as its ONLY trigger
+        # (and no contributes.tools/hooks), so the plugin is now DEFERRED —
+        # the round-trip below reads the manifest off the un-activated SHELL.
+        # Assert the deferral explicitly so this test can't silently weaken:
+        # the factory has NOT run and a pending activation is parked.
+        assert "rt-plugin" in result.runtime.pending_activations
+        assert result.extensions[0].commands == {}  # factory deferred
         manifest = result.extensions[0].manifest
         assert manifest is not None
         assert manifest.activation.on_command == ["my-cmd"]

@@ -644,6 +644,11 @@ class AgentHarness:
                 # P0 #7 Wave 2 (item 3) — register_tool refresh. Pi:
                 # agent-session.ts:2192 ``refreshTools: () => this._refreshToolRegistry()``.
                 refresh_tools=self._refresh_extension_tools,
+                # Issue #21 — HookBus re-sync after a LAZY manifest-plugin
+                # activation (its factory runs post-construction; without this
+                # the late ``api.on`` handlers would be silently dead — the
+                # symmetric counterpart of ``refresh_tools``).
+                refresh_hooks=self._wire_extension_hooks,
             )
         )
 
@@ -660,29 +665,14 @@ class AgentHarness:
         # which preserves Pi shipped behavior for any extension that didn't
         # opt into ``"continue"``.
         self._hooks = HookBus(ctx_factory=self._make_context)
-        for extension in self._extensions:
-            for event_name, handler_list in extension.handlers.items():
-                for handler in handler_list:
-                    mode = extension.handler_error_modes.get(
-                        (event_name, id(handler)), "throw"
-                    )
-                    # The ``HookBus.on`` overloads narrow handler-by-event; this
-                    # generic registration loop feeds the union ``HookEventName``
-                    # / ``HookHandler`` straight from ``extension.handlers``, so
-                    # no single narrowed overload matches (the impl carries the
-                    # dual ``reportInconsistentOverload`` suppression). The call
-                    # is correct at runtime — ``event_name``/``handler`` are the
-                    # paired key/value of the same map. (Adding the #5
-                    # ``project_trust`` overload tipped pyright's union-expansion
-                    # threshold and surfaced this pre-existing imprecision.)
-                    self._hooks.on(  # pyright: ignore[reportCallIssue]
-                        event_name,  # pyright: ignore[reportArgumentType]
-                        handler,
-                        source=extension.name,
-                        error_mode=mode,
-                    )
-            for cleanup in extension.cleanups:
-                self._hooks.add_cleanup(cleanup)
+        # Issue #21 — the wiring loop lives in ``_wire_extension_hooks`` and is
+        # RE-RUNNABLE: the seen-sets below make it idempotent so a LAZY
+        # manifest-plugin activation can re-sync late-registered handlers into
+        # the SAME bus (the ExtensionRunner bridges capture bound methods of
+        # THIS bus instance, so the bus must never be recreated).
+        self._wired_hook_handlers: set[tuple[str, int]] = set()
+        self._wired_hook_cleanups: set[int] = set()
+        self._wire_extension_hooks()
 
         self._steering_queue = _MessageQueue(options.steering_mode)
         self._follow_up_queue = _MessageQueue(options.follow_up_mode)
@@ -795,6 +785,64 @@ class AgentHarness:
         for tool in self._options.tools:
             merged[tool.name] = tool
         return list(merged.values())
+
+    def _wire_extension_hooks(self) -> None:
+        """Wire ``Extension.handlers`` / ``.cleanups`` into the live HookBus.
+
+        Runs at construction (the original bind_core wiring loop) AND as the
+        ``refresh_hooks`` runtime action after a LAZY manifest-plugin
+        activation (issue #21) — a factory that runs post-construction
+        registers via ``api.on`` into ``Extension.handlers``, which the bus
+        snapshot never saw. Idempotent via the ``(event, id(handler))`` /
+        ``id(cleanup)`` seen-sets, and always targets the SAME
+        ``self._hooks`` instance (the ExtensionRunner bridges hold bound
+        methods of it — recreating the bus would strand them).
+
+        ADR-0019 v3: per-handler ``error_mode`` is carried on
+        ``Extension.handler_error_modes`` (keyed by ``(event, id(handler))``)
+        and threaded into ``HookBus.on(...)``. Default is ``"throw"`` which
+        preserves Pi shipped behavior for any extension that didn't opt into
+        ``"continue"``.
+
+        Why ``id()``-keyed dedup is safe here: within one harness lifetime
+        ``self._extensions`` is FIXED (lazy activation only fills pre-existing
+        shells; nothing is removed), so every wired handler object stays
+        referenced and its ``id`` cannot be recycled while the seen-set holds
+        it. Extension removal only happens via the #24 reload, which rebuilds
+        the harness — fresh bus, fresh seen-sets. Deliberate divergence:
+        registering the SAME handler object twice on the SAME event now wires
+        it once (previously it fired twice) — an exact-duplicate registration
+        is treated as author error.
+        """
+
+        for extension in self._extensions:
+            for event_name, handler_list in extension.handlers.items():
+                for handler in handler_list:
+                    key = (event_name, id(handler))
+                    if key in self._wired_hook_handlers:
+                        continue
+                    self._wired_hook_handlers.add(key)
+                    mode = extension.handler_error_modes.get(key, "throw")
+                    # The ``HookBus.on`` overloads narrow handler-by-event; this
+                    # generic registration loop feeds the union ``HookEventName``
+                    # / ``HookHandler`` straight from ``extension.handlers``, so
+                    # no single narrowed overload matches (the impl carries the
+                    # dual ``reportInconsistentOverload`` suppression). The call
+                    # is correct at runtime — ``event_name``/``handler`` are the
+                    # paired key/value of the same map. (Adding the #5
+                    # ``project_trust`` overload tipped pyright's union-expansion
+                    # threshold and surfaced this pre-existing imprecision.)
+                    self._hooks.on(  # pyright: ignore[reportCallIssue]
+                        event_name,  # pyright: ignore[reportArgumentType]
+                        handler,
+                        source=extension.name,
+                        error_mode=mode,
+                    )
+            for cleanup in extension.cleanups:
+                if id(cleanup) in self._wired_hook_cleanups:
+                    continue
+                self._wired_hook_cleanups.add(id(cleanup))
+                self._hooks.add_cleanup(cleanup)
 
     def _refresh_extension_tools(self) -> None:
         """P0 #7 Wave 2 (item 3): recompute the live tool registry + active set.

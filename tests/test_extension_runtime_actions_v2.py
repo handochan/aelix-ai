@@ -4,7 +4,9 @@ Pi parity (``types.ts:1471-1488``): ``ExtensionActions`` defines 15 action
 handlers. Sprint 5a extended the dataclass from 3 fields to 15 and made
 :meth:`_ExtensionRuntime.bind_core` accept the wider table. P0 #7 Wave 2
 (item 3) adds a 16th action, ``refresh_tools`` (pi ``loader.ts:220``), whose
-pre-bind default is a NO-OP rather than a throwing stub.
+pre-bind default is a NO-OP rather than a throwing stub. Issue #21 adds the
+17th, ``refresh_hooks`` (HookBus re-sync after a lazy manifest-plugin
+activation), with the same no-op pre-bind contract.
 """
 
 from __future__ import annotations
@@ -19,7 +21,7 @@ from aelix_coding_agent.extensions.api import (
 )
 
 
-def test_extension_runtime_actions_has_16_fields() -> None:
+def test_extension_runtime_actions_has_17_fields() -> None:
     names = {f.name for f in fields(ExtensionRuntimeActions)}
     expected = {
         # Sprint 3a originals.
@@ -41,9 +43,11 @@ def test_extension_runtime_actions_has_16_fields() -> None:
         "exec",
         # P0 #7 Wave 2 (item 3) — register_tool refresh.
         "refresh_tools",
+        # Issue #21 — HookBus re-sync after a lazy manifest-plugin activation.
+        "refresh_hooks",
     }
     assert names == expected
-    assert len(names) == 16
+    assert len(names) == 17
 
 
 def test_default_refresh_tools_is_noop_not_throwing_stub() -> None:
@@ -54,6 +58,8 @@ def test_default_refresh_tools_is_noop_not_throwing_stub() -> None:
     actions = _default_actions()
     # Calling the default refresh_tools must return None without raising.
     assert actions.refresh_tools() is None
+    # Issue #21: refresh_hooks shares the same no-op pre-bind contract.
+    assert actions.refresh_hooks() is None
 
 
 def test_default_actions_returns_all_throwing_stubs() -> None:
@@ -95,6 +101,7 @@ def test_bind_core_replaces_full_action_table() -> None:
         set_thinking_level=lambda level: None,
         exec=_make_throwing_stub("exec"),
         refresh_tools=lambda: None,
+        refresh_hooks=lambda: None,
     )
     rt.bind_core(fresh)
     assert rt.actions is fresh

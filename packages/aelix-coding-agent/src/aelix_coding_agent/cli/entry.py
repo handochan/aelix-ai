@@ -54,7 +54,10 @@ from aelix_agent_core.types import AgentTool
 from aelix_coding_agent.builtin.guardrail import GuardrailExtension
 from aelix_coding_agent.builtin.permission import PermissionExtension
 from aelix_coding_agent.builtin.permission_mode import PermissionPosture
-from aelix_coding_agent.extensions.loader import discover_and_load_extensions
+from aelix_coding_agent.extensions.loader import (
+    discover_and_load_extensions,
+    scan_extension_manifests,
+)
 from aelix_coding_agent.mcp import McpClientManager
 from aelix_coding_agent.tools import create_all_tools
 
@@ -1070,6 +1073,39 @@ async def _async_main(argv: list[str]) -> int:
             file=sys.stderr,
         )
         mcp_contribs = []
+    # Issue #21 (W1) — manifest-declared MCP servers (``contributes.mcp_servers``).
+    # A metadata-ONLY scan (no plugin code executes — parses aelix-plugin.toml
+    # through the same 4-tier discovery) because MCP connects HERE, before the
+    # first harness build where the full extension load runs. Trust is inherited:
+    # untrusted project-local plugin dirs are skipped via ``no_project_local``,
+    # mirroring the mcp.json project gate above. Ordering: manifest contribs go
+    # FIRST so an explicit .aelix/mcp.json entry WINS a server-name collision
+    # (McpClientManager keys connections by name, last-wins). W1 limitation
+    # (documented, ADR-0181): MCP connects once at startup — a manifest written
+    # later takes effect on the next process start, not on /reload.
+    try:
+        _scanned_manifests = scan_extension_manifests(
+            [str(p) for p in parsed.extensions],
+            cwd=Path.cwd(),
+            agent_dir=Path(get_agent_dir()),
+            no_discovery=parsed.no_extensions,
+            no_project_local=not project_trusted,
+        )
+    except Exception as exc:  # noqa: BLE001 — scan is additive, never fatal
+        print(f"Warning: manifest scan: {exc}", file=sys.stderr)
+        _scanned_manifests = []
+    # REVERSED tier order among manifests (adversarial-review LOW): the scan
+    # yields project → global → explicit, but McpClientManager is LAST-wins —
+    # reversing makes the HIGHER-priority tier (project-local) win a
+    # manifest-vs-manifest name collision, while .aelix/mcp.json (appended
+    # after) still beats every manifest.
+    _manifest_mcp = [
+        contrib
+        for manifest in reversed(_scanned_manifests)
+        for contrib in manifest.contributes.mcp_servers
+    ]
+    if _manifest_mcp:
+        mcp_contribs = _manifest_mcp + mcp_contribs
     mcp_manager: McpClientManager | None = None
     mcp_tools: list[AgentTool] = []
     if mcp_contribs:
