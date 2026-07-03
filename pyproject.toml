@@ -104,6 +104,9 @@ quote-style = "double"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+# Repo root on sys.path so cross-module test imports (`from tests.tui...`)
+# resolve under the bare `pytest` script (CI) as well as `python -m pytest`.
+pythonpath = ["."]
 
 [tool.pyright]
 include = ["src", "packages/*/src", "scripts"]
