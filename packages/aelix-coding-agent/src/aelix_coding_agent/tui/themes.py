@@ -12,10 +12,26 @@ Registry helpers mirror the Pi ``ExtensionUIContext`` theme API surface:
 
 from __future__ import annotations
 
+import logging
+
 from rich.style import Style
 
 from aelix_coding_agent.extensions.ext_ui import ThemeInfo
 from aelix_coding_agent.extensions.widget_protocols import EditorTheme, Theme
+
+logger = logging.getLogger(__name__)
+
+# The semantic roles a theme file may color (issue #21 themes, ADR-0184). Only
+# these keys are honored by ``_make_fg``; unknown keys are inert. Kept as the
+# single source so the file loader and the built-ins agree.
+THEME_ROLES: tuple[str, ...] = (
+    "assistant",
+    "tool",
+    "error",
+    "dim",
+    "accent",
+    "thinking",
+)
 
 # ---------------------------------------------------------------------------
 # Helper factories
@@ -148,24 +164,119 @@ THEMES: dict[str, Theme] = {
 
 DEFAULT_THEME: Theme = default
 
+# Issue #21 themes (ADR-0184) — manifest/extension-contributed themes, kept
+# SEPARATE from the built-in ``THEMES`` so built-ins always win a name
+# collision and the registered set can be replaced wholesale (pi
+# ``setRegisteredThemes``, theme.ts) on each ``_rebind`` reconcile without
+# touching the built-ins. ``_REGISTERED_PATHS`` mirrors it for ``ThemeInfo``.
+_REGISTERED: dict[str, Theme] = {}
+_REGISTERED_PATHS: dict[str, str | None] = {}
+
+
+def build_theme_from_data(
+    name: str, roles: dict[str, str]
+) -> Theme:
+    """Build a :class:`Theme` from a name + a ``{role: color}`` map.
+
+    Only :data:`THEME_ROLES` keys are honored; a color that Rich cannot parse
+    is dropped (with a warning) so it can never raise mid-transcript-render —
+    the role then falls through to the identity branch of ``_make_fg``. Unknown
+    role keys are ignored (forward-compat). Reuses the built-in style factories
+    so a file theme is byte-for-byte the same shape as ``default``/``dark``.
+    """
+
+    clean: dict[str, str] = {}
+    for role, color in roles.items():
+        if role not in THEME_ROLES:
+            logger.warning(
+                "theme %r: unknown role %r ignored (known: %s)",
+                name,
+                role,
+                "/".join(THEME_ROLES),
+            )
+            continue
+        if not isinstance(color, str):
+            logger.warning("theme %r: role %r color is not a string; ignored", name, role)
+            continue
+        try:
+            Style(color=color).render("x")  # validate: bad color raises HERE, not at render
+        except Exception:  # noqa: BLE001 — a bad color must not brick the theme
+            logger.warning("theme %r: role %r has invalid color %r; ignored", name, role, color)
+            continue
+        clean[role] = color
+    return Theme(
+        name=name,
+        fg=_make_fg(clean),
+        bg=_make_bg(),
+        bold=_make_bold(),
+        italic=_make_italic(),
+    )
+
+
+def register_themes(themes: list[tuple[Theme, str | None]]) -> None:
+    """Replace the registered (non-built-in) theme set (pi ``setRegisteredThemes``).
+
+    Called by the manifest adapter on every ``_rebind`` with the FULL current
+    list, so a removed plugin's themes vanish (wholesale replace = reconcile).
+    Built-ins always win a name collision (skipped with a warning); among
+    registered themes, FIRST registration wins (load order = priority, the
+    ``get_shortcuts`` convention). Each item is ``(theme, source_path)``.
+    """
+
+    _REGISTERED.clear()
+    _REGISTERED_PATHS.clear()
+    for theme, path in themes:
+        name = theme.name
+        if name in THEMES:
+            logger.warning(
+                "extension theme %r skipped: shadows a built-in theme", name
+            )
+            continue
+        if name in _REGISTERED:
+            logger.warning(
+                "extension theme %r skipped: already registered by an earlier extension",
+                name,
+            )
+            continue
+        _REGISTERED[name] = theme
+        _REGISTERED_PATHS[name] = path
+
 
 def get_theme(name: str) -> Theme | None:
     """Return the :class:`~aelix_coding_agent.extensions.widget_protocols.Theme`
-    registered under *name*, or ``None`` if not found.
+    under *name* — built-ins first, then registered — or ``None`` if not found.
     """
-    return THEMES.get(name)
+    return THEMES.get(name) or _REGISTERED.get(name)
+
+
+def all_theme_names() -> list[str]:
+    """Built-in + registered theme names (built-ins first, deduped) — the
+    source the ``/settings`` theme picker enumerates so manifest themes appear.
+    """
+    names = list(THEMES)
+    names.extend(n for n in _REGISTERED if n not in THEMES)
+    return names
 
 
 def list_theme_infos() -> list[ThemeInfo]:
-    """Return a :class:`~aelix_coding_agent.extensions.ext_ui.ThemeInfo` entry
-    for each registered theme (``path=None`` for built-ins).
+    """A :class:`~aelix_coding_agent.extensions.ext_ui.ThemeInfo` per theme
+    (``path`` = the theme file for registered themes, ``None`` for built-ins).
     """
-    return [ThemeInfo(name=name) for name in THEMES]
+    infos = [ThemeInfo(name=name) for name in THEMES]
+    infos.extend(
+        ThemeInfo(name=name, path=_REGISTERED_PATHS.get(name))
+        for name in _REGISTERED
+        if name not in THEMES
+    )
+    return infos
 
 
 __all__ = [
     "DEFAULT_THEME",
     "THEMES",
+    "THEME_ROLES",
+    "all_theme_names",
+    "build_theme_from_data",
     "dark",
     "dark_editor",
     "default",
@@ -174,4 +285,5 @@ __all__ = [
     "light",
     "light_editor",
     "list_theme_infos",
+    "register_themes",
 ]

@@ -110,6 +110,20 @@ async def load_extensions(
     runtime = _ExtensionRuntime(flag_values=flag_values)
     result = LoadExtensionsResult(runtime=runtime)
     for entry in paths:
+        # Issue #21 descriptors (ADR-0184) — warn REGARDLESS of lazy/eager: the
+        # [[contributes.descriptors]] slot is reserved/inert (a descriptor's
+        # renderable payload is runtime data a static {kind,id} cannot carry),
+        # so descriptors are emitted at runtime via the ui:list-modules probe
+        # (ADR-0095). Emitted here — before the lazy ``continue`` below — so a
+        # pure-``on_command`` plugin that also declares descriptors still sees
+        # the guidance (the deferred branch would otherwise skip the warning).
+        if isinstance(entry, _ManifestEntry) and entry.manifest.contributes.descriptors:
+            logger.warning(
+                "plugin %r declares [[contributes.descriptors]] which is "
+                "reserved and inert; emit descriptors at runtime by "
+                "subscribing to the ui:list-modules probe (ADR-0095/0184)",
+                entry.manifest.plugin.id,
+            )
         # Issue #21 — VS Code-style LAZY activation (ADR-0096 §Activation
         # policy, "lazy load is mandatory"): a manifest plugin whose ONLY
         # trigger is ``on_command`` is DEFERRED — no module import, no factory
@@ -146,6 +160,14 @@ async def load_extensions(
                 ExtensionLoadError(path=name, error=str(exc))
             )
             continue
+        # Issue #21 themes (ADR-0184) — record the plugin directory so the
+        # manifest theme adapter can resolve a ``ThemeContrib.path`` (a
+        # plugin-root-relative file) against it. ``resolved_path`` was a
+        # declared-but-unset Pi-parity field (api.py) until now.
+        if isinstance(entry, _ManifestEntry):
+            extension.resolved_path = str(entry.pkg_dir)
+        # (descriptors inert-warning now emitted at the top of the loop, before
+        # the lazy continue, so pure-on_command plugins are covered too.)
         result.extensions.append(extension)
     return result
 
@@ -180,6 +202,11 @@ def _is_lazy_eligible(manifest: PluginManifest) -> bool:
         # deferral would leave them invisible until first command use with no
         # re-apply seam (the same silent-vanish class as contributes.tools).
         and not manifest.contributes.tui_widgets
+        # Declared themes (ADR-0184) register at TUI start via the manifest
+        # adapter (tui/ext_themes.py), which reads LOADED extensions' pkg_dir —
+        # deferral would keep a plugin theme out of the /settings picker until
+        # first command use (same silent-vanish class).
+        and not manifest.contributes.themes
     )
 
 

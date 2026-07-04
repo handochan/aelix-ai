@@ -334,6 +334,20 @@ async def run_tui(
                 runner, context, applied_widgets, pending=pending
             )
 
+    def _apply_ext_themes(harness: AgentHarness) -> None:
+        # Issue #21 themes (ADR-0184) — reconcile manifest-contributed themes
+        # into the registry so the /settings picker sees them. Registers only
+        # (never auto-selects — the user's persisted theme is untouched);
+        # wholesale-replaces the registered set so a removed plugin's themes
+        # vanish. Never raises (a faulty theme must not break the TUI).
+        from aelix_coding_agent.tui.ext_themes import apply_manifest_themes
+
+        runner = getattr(harness, "extension_runner", None)
+        runtime = getattr(harness, "runtime", None)
+        pending = tuple(getattr(runtime, "pending_activations", None) or ())
+        with contextlib.suppress(Exception):
+            apply_manifest_themes(runner, pending=pending)
+
     # WP-2 (ADR-0160) — seed the live theme from the persisted setting so the
     # /settings → Theme choice actually applies on the NEXT launch (not only the
     # session that set it). Without this the context starts on DEFAULT_THEME and
@@ -729,7 +743,9 @@ async def run_tui(
             return
         from aelix_coding_agent.tui import themes as theme_registry
 
-        names = list(theme_registry.THEMES.keys())
+        # Issue #21 themes (ADR-0184) — include manifest-contributed themes,
+        # not only the built-in THEMES dict, so a plugin theme is selectable.
+        names = theme_registry.all_theme_names()
         if not names:
             return
         current = settings_manager.get_theme() or "default"
@@ -1321,6 +1337,8 @@ async def run_tui(
         # extensions; a removed plugin's widgets must un-paint, a new one's must
         # paint). Runs before the reload early-return below on purpose.
         _apply_ext_widgets(new_harness)
+        # Issue #21 themes (ADR-0184) — same reconcile for manifest themes.
+        _apply_ext_themes(new_harness)
         # A session swap (/resume, new, fork) replaces the live harness — keep
         # the command context pointed at it so /model, /compact, /cost, … act on
         # the resumed session, not the stale one (Sprint 6h₁₄b, ADR-0122).
@@ -1645,6 +1663,19 @@ async def run_tui(
         # id (read via model_provider) shows from the first frame (Sprint 6h₁₂b).
         context._refresh_footer()
         await _rebind(runtime_host.harness)
+        # Issue #21 themes (ADR-0184) — the WP-2 persisted-theme seed (~line 356)
+        # runs BEFORE this initial _rebind registers manifest themes, so a
+        # persisted PLUGIN theme (the /settings picker persists plugin names too)
+        # was missed at seed time and the context fell back to DEFAULT_THEME on
+        # every launch. Re-apply it now that _apply_ext_themes has populated the
+        # registry — guarded on a name mismatch so a correctly-seeded built-in
+        # theme isn't needlessly re-invalidated, and set_theme still no-ops on a
+        # since-removed (unknown) name.
+        if settings_manager is not None:
+            with contextlib.suppress(Exception):
+                persisted_theme = settings_manager.get_theme()
+                if persisted_theme and context.theme.name != persisted_theme:
+                    context.set_theme(persisted_theme)
         # Tier-2 descriptor probe (ADR-0095 / Sprint 6h₁₀c §C): build the keyed
         # registry + per-kind renderer, subscribe to the ui:list-modules channel,
         # then emit one synchronous probe so loaded extensions append descriptors.

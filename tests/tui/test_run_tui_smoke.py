@@ -931,6 +931,73 @@ async def test_run_tui_unknown_persisted_theme_falls_back_to_default() -> None:
         await asyncio.wait_for(task, timeout=5)
 
 
+async def test_run_tui_restores_persisted_manifest_theme(tmp_path: Path) -> None:
+    # Issue #21 (ADR-0184) review HIGH regression: a persisted PLUGIN theme must
+    # survive relaunch. The WP-2 seed runs BEFORE the startup _rebind registers
+    # manifest themes, so WITHOUT the post-_rebind re-seed the context would fall
+    # back to DEFAULT_THEME every launch even though the plugin theme is present.
+    import textwrap
+    from types import SimpleNamespace
+
+    from aelix_agent_core.contracts import parse_manifest_toml
+    from aelix_ai.settings import SettingsManager
+    from aelix_coding_agent.extensions.api import Extension
+    from aelix_coding_agent.tui import themes as _themes
+
+    (tmp_path / "themes").mkdir()
+    (tmp_path / "themes" / "solar.toml").write_text(
+        'name = "solarized"\n[roles]\naccent = "green"\n', encoding="utf-8"
+    )
+    manifest = parse_manifest_toml(
+        textwrap.dedent("""
+            [plugin]
+            id = "theme-plug"
+            name = "Theme Plugin"
+            version = "0.1.0"
+            description = "Ships a theme"
+            authors = ["Test <test@example.com>"]
+            repository = "https://github.com/example/theme-plug"
+            license = "MIT"
+
+            [plugin.api]
+            level = 1
+            min_level = 1
+
+            [plugin.entry]
+            python = "theme_plug_mod:setup"
+
+            [activation]
+            on_startup_finished = true
+
+            [contributes]
+            themes = [{ path = "themes/solar.toml" }]
+        """).strip()
+    )
+    ext = Extension(name="theme-plug", manifest=manifest)
+    ext.resolved_path = str(tmp_path)
+    harness = FakeHarness()
+    harness.extension_runner = SimpleNamespace(  # type: ignore[attr-defined]
+        extensions=[ext]
+    )
+    sm = SettingsManager.in_memory({"theme": "solarized"})
+    try:
+        async with _harness_chrome(harness=harness) as (runtime, chrome, pipe):
+            task = _launch(runtime, chrome, settings_manager=sm)
+            await _wait(lambda: chrome.app.is_running)
+            await _wait(lambda: bool(runtime.harness.runtime.bound))
+            context = runtime.harness.runtime.bound[0]
+            # The plugin theme is registered by _apply_ext_themes AND re-applied
+            # (not left on default) — this is what the re-seed fixes.
+            await _wait(
+                lambda: getattr(context._theme, "name", None) == "solarized"
+            )
+            pipe.send_text("/quit\n")
+            await asyncio.wait_for(task, timeout=5)
+        assert getattr(context._theme, "name", None) == "solarized"
+    finally:
+        _themes.register_themes([])  # keep the process-global registry clean
+
+
 # === Issue #50 — startup seed of persisted thinking settings ================
 
 
@@ -2001,3 +2068,65 @@ async def test_run_tui_fork_replays_custom_via_renderer_second_callsite() -> Non
         await _wait(lambda: calls == ["status"])  # renderer dispatched on replay
         pipe.send_text("/quit\n")
         await asyncio.wait_for(task, timeout=5)
+
+
+async def test_run_tui_registers_manifest_theme_on_startup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #21 themes (ADR-0184) — the startup _rebind runs _apply_ext_themes,
+    registering a loaded extension's manifest theme so /settings can pick it;
+    a rebind onto a harness WITHOUT the plugin un-registers it (reconcile)."""
+    import textwrap
+
+    from aelix_agent_core.contracts import parse_manifest_toml
+    from aelix_agent_core.harness._extension_runner import ExtensionRunner
+    from aelix_coding_agent.extensions.api import Extension
+    from aelix_coding_agent.tui import themes as theme_registry
+
+    pkg = tmp_path / "pkg"
+    (pkg / "themes").mkdir(parents=True)
+    (pkg / "themes" / "solar.toml").write_text(
+        'name = "smoke-solar"\n[roles]\naccent = "green"\n', encoding="utf-8"
+    )
+    manifest = parse_manifest_toml(
+        textwrap.dedent("""
+            [plugin]
+            id = "smoke-theme-plug"
+            name = "Smoke Theme Plugin"
+            version = "0.1.0"
+            description = "Ships a theme"
+            authors = ["Test <test@example.com>"]
+            repository = "https://github.com/example/smoke-theme-plug"
+            license = "MIT"
+
+            [plugin.api]
+            level = 1
+            min_level = 1
+
+            [plugin.entry]
+            python = "x:setup"
+
+            [activation]
+            on_startup_finished = true
+
+            [contributes]
+            themes = [{ path = "themes/solar.toml" }]
+        """).strip()
+    )
+    ext = Extension(name="smoke-theme-plug", manifest=manifest)
+    ext.resolved_path = str(pkg)
+    harness = FakeHarness()
+    harness.extension_runner = ExtensionRunner(extensions=[ext])  # type: ignore[attr-defined]
+    try:
+        async with _harness_chrome(harness=harness) as (runtime, chrome, pipe):
+            task = _launch(runtime, chrome)
+            await _wait(lambda: theme_registry.get_theme("smoke-solar") is not None)
+            assert "smoke-solar" in theme_registry.all_theme_names()
+            # Reconcile: rebind onto a plugin-less harness un-registers it.
+            assert runtime.rebind_cb is not None
+            await runtime.rebind_cb(FakeHarness(), "reload")
+            assert theme_registry.get_theme("smoke-solar") is None
+            pipe.send_text("/quit\n")
+            await asyncio.wait_for(task, timeout=5)
+    finally:
+        theme_registry.register_themes([])  # module-global cleanup

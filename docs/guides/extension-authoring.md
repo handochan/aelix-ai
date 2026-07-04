@@ -169,3 +169,58 @@ aelix --no-extensions      # disable auto-discovery (project-local + global + en
 
 `--no-extensions` (`-ne`) turns off the three auto-discovery channels;
 extensions you pass explicitly with `-e` still load.
+
+## Manifest contributions
+
+A manifest plugin (`aelix-plugin.toml`) can declare capabilities the host
+activates without imperative registration. Two of the declarative families:
+
+### Themes
+
+Bundle a color theme as a plugin-relative TOML file and declare it:
+
+```toml
+# aelix-plugin.toml
+[capabilities]
+# (no ui_tui_trusted needed — a theme is data, not code)
+
+[contributes]
+themes = [{ path = "themes/solarized.toml" }]
+```
+
+```toml
+# themes/solarized.toml — only these six roles are styled; unknown keys are ignored
+name = "solarized"
+
+[roles]
+assistant = "cyan"
+tool      = "yellow"
+error      = "red"
+dim        = "bright_black"
+accent     = "blue"
+thinking   = "magenta"
+```
+
+The theme is registered on TUI start (and re-reconciled on `/resume` · `/fork` ·
+`/reload`) and appears in `/settings → Theme`. It is only made *available* — the
+user's selected theme is never changed for them. A color Rich cannot parse is
+dropped (that role renders unstyled); the file must live inside the plugin
+directory. Colors are Rich color names or hex (`#89b4fa`). See ADR-0184.
+
+### Descriptors (runtime-emitted, not manifest)
+
+`[[contributes.descriptors]]` is **reserved and inert** — a descriptor's content
+is runtime data a static declaration cannot carry. Emit descriptors at runtime by
+appending to the `ui:list-modules` probe:
+
+```python
+def setup(aelix: ExtensionAPI) -> None:
+    def _on_list_modules(probe) -> None:
+        probe.modules.append(
+            {"kind": "status-item", "namespace": "myplug", "id": "stat",
+             "payload": {"kind": "status-item", "text": "ready"}}
+        )
+    aelix.events.on("ui:list-modules", _on_list_modules)
+```
+
+See ADR-0095 for the descriptor protocol and the full slot taxonomy.
