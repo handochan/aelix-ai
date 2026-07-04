@@ -2130,3 +2130,77 @@ async def test_run_tui_registers_manifest_theme_on_startup(
             await asyncio.wait_for(task, timeout=5)
     finally:
         theme_registry.register_themes([])  # module-global cleanup
+
+
+async def test_run_tui_settings_theme_picker_selects_manifest_theme(
+    tmp_path: Path,
+) -> None:
+    """Issue #21 (ADR-0184) review MEDIUM: the /settings → Theme picker READS
+    theme_registry.all_theme_names() (shell.py) — a revert to THEMES.keys()
+    would silently drop manifest themes yet pass every unit test. Drive the
+    real picker and select a plugin theme: it can only be chosen if the picker
+    actually enumerated it."""
+    import textwrap
+    from types import SimpleNamespace
+
+    from aelix_agent_core.contracts import parse_manifest_toml
+    from aelix_ai.settings import SettingsManager
+    from aelix_coding_agent.extensions.api import Extension
+    from aelix_coding_agent.tui import themes as _themes
+
+    (tmp_path / "themes").mkdir()
+    (tmp_path / "themes" / "solar.toml").write_text(
+        'name = "solarized"\n[roles]\naccent = "green"\n', encoding="utf-8"
+    )
+    manifest = parse_manifest_toml(
+        textwrap.dedent("""
+            [plugin]
+            id = "theme-plug"
+            name = "Theme Plugin"
+            version = "0.1.0"
+            description = "Ships a theme"
+            authors = ["Test <test@example.com>"]
+            repository = "https://github.com/example/theme-plug"
+            license = "MIT"
+
+            [plugin.api]
+            level = 1
+            min_level = 1
+
+            [plugin.entry]
+            python = "theme_plug_mod:setup"
+
+            [activation]
+            on_startup_finished = true
+
+            [contributes]
+            themes = [{ path = "themes/solar.toml" }]
+        """).strip()
+    )
+    ext = Extension(name="theme-plug", manifest=manifest)
+    ext.resolved_path = str(tmp_path)
+    harness = _SettingsHarness()
+    harness.extension_runner = SimpleNamespace(  # type: ignore[attr-defined]
+        extensions=[ext]
+    )
+    sm = SettingsManager.in_memory({"theme": "default"})
+    try:
+        async with _harness_chrome(harness=harness) as (runtime, chrome, pipe):
+            task = _launch(runtime, chrome, settings_manager=sm)
+            await _wait(lambda: chrome.app.is_running)
+            # Wait until the plugin theme has been registered (startup _rebind).
+            await _wait(lambda: _themes.get_theme("solarized") is not None)
+            pipe.send_text("/settings\n")
+            await _wait(lambda: chrome.is_modal_open())
+            pipe.send_text("Theme\n")  # filter+select the Theme row → sub-picker
+            await asyncio.sleep(0.1)  # let the theme sub-picker mount
+            pipe.send_text("solarized\n")  # filter to the plugin theme + Enter
+            # It can only be persisted if the picker's list included it.
+            await _wait(lambda: sm.get_theme() == "solarized")
+            await _esc_until_settings_closed(chrome, pipe)
+            chrome.request_eof()
+            chrome.exit()
+            await asyncio.wait_for(task, timeout=5)
+        assert sm.get_theme() == "solarized"  # picker enumerated the manifest theme
+    finally:
+        _themes.register_themes([])  # module-global cleanup

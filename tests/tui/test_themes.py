@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 from aelix_coding_agent.extensions.ext_ui import ThemeInfo
+from aelix_coding_agent.tui import themes as _themes
 from aelix_coding_agent.tui.themes import (
     DEFAULT_THEME,
     THEMES,
@@ -15,6 +16,18 @@ from aelix_coding_agent.tui.themes import (
 )
 
 _ANSI = "\x1b["
+
+
+@pytest.fixture(autouse=True)
+def _clear_registered_themes() -> object:
+    # The manifest theme registry (_REGISTERED) is a process-global (pi
+    # ``registeredThemes`` parity, ADR-0184). These tests assert the built-in
+    # count (3) via list_theme_infos(), which now ALSO surfaces registered
+    # themes — so clear the registry around each test to stay hermetic
+    # regardless of order or a leaking registrant (issue #21 review LOW).
+    _themes.register_themes([])
+    yield
+    _themes.register_themes([])
 
 
 class TestFgKnownRoles:
