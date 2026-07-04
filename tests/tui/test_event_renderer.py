@@ -877,3 +877,33 @@ def test_replay_custom_hook_returns_non_component_falls_back() -> None:
     r.render_custom_message = _raises
     r.replay([_display_custom()])
     assert "[status]" in _committed_text(commits)  # default fallback rendered
+
+
+def test_component_to_text_snapshots_multiline_ansi() -> None:
+    # Issue #62 review (MEDIUM): the Component→render(width)→Text.from_ansi
+    # conversion used by the shell closure was never asserted. Lock it: a
+    # two-line component yields both lines joined in the Rich Text.
+    from aelix_coding_agent.tui.render import component_to_text
+
+    class _Comp:
+        def render(self, width: int) -> list[str]:
+            assert width == 80
+            return ["line-a", "line-b"]
+
+    text = component_to_text(_Comp(), 80)
+    assert text.plain == "line-a\nline-b"
+
+
+def test_replay_custom_wire_dict_content_renders() -> None:
+    # Issue #62 review (LOW, live-reproduced): custom content off the JSONL
+    # wire is raw dicts (entry_from_json stores it verbatim), so the default
+    # render must read dict blocks — not only TextContent objects.
+    from aelix_agent_core.session.context import create_display_custom_message
+
+    msg = create_display_custom_message(
+        "status", [{"type": "text", "text": "wire-dict-line"}], True, None,
+        "2026-07-04T00:00:00Z",
+    )
+    r, commits, _t = _renderer()
+    r.replay([msg])
+    assert "wire-dict-line" in _committed_text(commits)

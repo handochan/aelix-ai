@@ -216,3 +216,11 @@ def test_get_message_renderer_first_wins_across_extensions() -> None:
     assert runner.get_message_renderer("status") is _r1
     assert runner.get_message_renderer("other") is _r2
     assert runner.get_message_renderer("missing") is None
+
+
+def test_get_message_renderer_skips_attrless_extension() -> None:
+    # Issue #62 review (LOW): the duck-typed lookup must tolerate an extension
+    # with no message_renderers attribute (getattr default), returning None
+    # rather than crashing.
+    runner = ExtensionRunner(extensions=[object()])
+    assert runner.get_message_renderer("status") is None

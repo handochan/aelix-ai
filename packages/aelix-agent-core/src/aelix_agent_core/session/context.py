@@ -17,7 +17,7 @@ divergences".
 
 Issue #62 (ADR-0183) refines that split with a DISPLAY tier: pi renders its
 TUI from the rich built context (``role:"custom"`` first-class, customType
-preserved — interactive-mode.ts:3123/3029) and flattens only at the LLM
+preserved — interactive-mode.ts:3109-3116) and flattens only at the LLM
 boundary (``convertToLlm``, messages.ts:148-195; ``custom`` → ``user`` with
 content passed through — byte-identical to what
 :func:`create_custom_message` produces eagerly). Aelix keeps the eager
@@ -315,7 +315,7 @@ def build_display_messages(path_entries: list[SessionTreeEntry]) -> list[Any]:
     same :func:`select_display_entries` boundary, except ``custom_message``
     entries stay RICH (:class:`CustomMessage`) so the TUI can dispatch
     extension message renderers by ``custom_type`` and honor ``display``
-    (pi renders from its rich built context — interactive-mode.ts:3123/3029).
+    (pi renders from its rich built context — interactive-mode.ts:3109-3116).
     Compaction/branch summaries stay ``UserMessage``-wrapped exactly like the
     LLM tier (pixel-identical replay; pi's separate summary roles remain the
     ADR-0022 documented divergence). The result is for rendering ONLY — it

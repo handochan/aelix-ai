@@ -58,20 +58,56 @@ def _result_text(result: Any) -> str:
     return str(content)
 
 
+def _block_type(block: Any) -> Any:
+    """Type discriminator tolerant of both dataclass blocks and raw dicts.
+
+    ``TextContent``/``ImageContent`` objects expose ``.type`` as an attribute,
+    but a ``custom_message`` entry's ``content`` is stored VERBATIM off the
+    JSONL wire as ``[{"type": "text", "text": ...}]`` plain dicts
+    (``entry_from_json``, no re-materialisation) — where ``type`` is a KEY,
+    not an attribute (issue #62 review). Read both.
+    """
+
+    if isinstance(block, dict):
+        return block.get("type")
+    return getattr(block, "type", None)
+
+
+def _block_text(block: Any) -> str:
+    if isinstance(block, dict):
+        return block.get("text", "") or ""
+    return getattr(block, "text", "") or ""
+
+
 def _join_text(content: Any) -> str:
     """Join the ``TextContent`` blocks of a message body into one string.
 
-    Non-text blocks (images) are skipped. Defensive: a non-iterable / odd
-    payload yields ``""`` rather than raising during transcript replay.
+    Non-text blocks (images) are skipped. Blocks may be dataclass content
+    objects OR raw wire dicts (custom messages — see :func:`_block_type`).
+    Defensive: a non-iterable / odd payload yields ``""`` rather than raising
+    during transcript replay.
     """
 
     if not isinstance(content, (list, tuple)):
         return ""
     return "\n".join(
-        getattr(b, "text", "") or ""
-        for b in content
-        if getattr(b, "type", None) == "text"
+        _block_text(b) for b in content if _block_type(b) == "text"
     )
+
+
+def component_to_text(component: Any, width: int) -> Text:
+    """Snapshot a pi-tui ``Component`` (``render(width) -> list[str]`` of raw
+    ANSI lines) into a Rich ``Text`` for the scrollback (issue #62, ADR-0183).
+
+    The extension custom-message renderer returns a ``Component``; the shell
+    closure converts it here so the (multi-line, ANSI) result is committed
+    identically to a live-streamed block. Extracted module-level so the
+    conversion is unit-testable (review MEDIUM: it was previously buried in a
+    ``run_tui`` closure and never asserted).
+    """
+
+    lines = component.render(width)
+    return Text.from_ansi("\n".join(str(line) for line in lines))
 
 
 def _compact_args(args: dict[str, Any]) -> str:
@@ -568,7 +604,7 @@ class EventRenderer:
                 # Issue #62 (ADR-0183) — DISPLAY-tier custom message (rich
                 # ``CustomMessage`` from build_display_messages). The display
                 # gate fires BEFORE any renderer lookup (pi
-                # interactive-mode.ts:3029-3037): display=False stays in the
+                # interactive-mode.ts:3109-3116): display=False stays in the
                 # LLM context but never renders.
                 if getattr(msg, "display", False):
                     self._render_custom(msg)
@@ -626,6 +662,7 @@ class EventRenderer:
 
 __all__ = [
     "EventRenderer",
+    "component_to_text",
     "render_tool_call_line",
     "render_user_message",
     "_tool_header",

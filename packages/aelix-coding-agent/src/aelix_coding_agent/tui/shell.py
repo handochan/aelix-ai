@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import os
 import signal
 import subprocess
@@ -72,6 +73,7 @@ from aelix_coding_agent.tui.overlay import show_modal
 from aelix_coding_agent.tui.render import (
     EventRenderer,
     _render_diff,
+    component_to_text,
     render_user_message,
 )
 from aelix_coding_agent.tui.thinking_picker import run_thinking_picker
@@ -89,6 +91,8 @@ if TYPE_CHECKING:
     from aelix_coding_agent.extensions.api import Extension
     from aelix_coding_agent.mcp import McpClientManager
     from aelix_coding_agent.model_registry import ModelRegistry
+
+_log = logging.getLogger(__name__)
 
 _RENDER_WIDTH = 80
 # Sprint 6h₃₃ (ADR-0168, WP-8 D3) — cap on retained /stats history rows. Pruned
@@ -376,20 +380,34 @@ async def run_tui(
             component = renderer_fn(msg, options, context.theme)
             if component is None:
                 return None
-            lines = component.render(_RENDER_WIDTH)
-            return Text.from_ansi("\n".join(str(line) for line in lines))
+            return component_to_text(component, _RENDER_WIDTH)
         except Exception:  # noqa: BLE001 — a faulty extension renderer must not
-            # break replay; fall through to the default rendering.
+            # break replay; fall through to the default rendering. This is
+            # where the REAL extension exception is caught (the EventRenderer
+            # hook then just sees None), so the ADR-0181 log-on-skip diagnostic
+            # must fire HERE at DEBUG, not in render.py's dead except (issue #62
+            # review: the render-layer log never runs for the wired path).
+            _log.debug(
+                "custom-message renderer failed for %r; using default rendering",
+                getattr(msg, "custom_type", None),
+                exc_info=True,
+            )
             return None
 
     renderer.render_custom_message = _render_custom_message
 
     async def _display_messages(session: Any) -> list[Any]:
         # Issue #62 (ADR-0183) — replay reads the DISPLAY tier (rich custom
-        # messages, custom_type intact) when the session exposes get_branch;
-        # degrades to the LLM-tier build_context().messages for session
-        # fakes/backends without it (identical rendering minus the
-        # custom-renderer dispatch).
+        # messages, custom_type intact) when the session exposes get_branch.
+        # The real ``Session`` ALWAYS defines get_branch (session.py), so every
+        # production resume/fork/reload takes this branch; the degrade below
+        # only fires for the test-fake sessions that stub build_context alone.
+        # Degrade caveat (issue #62 review): build_context has already
+        # flattened custom_message entries to UserMessages, so the degrade path
+        # loses BOTH the custom-renderer dispatch AND the display gate — a
+        # display=False custom would re-echo as a user line. This cannot happen
+        # for a real session (always the display tier) and the fakes carry no
+        # custom messages, so it is a latent-only gap, documented not guarded.
         get_branch = getattr(session, "get_branch", None)
         if callable(get_branch):
             return list(build_display_messages(await get_branch()))

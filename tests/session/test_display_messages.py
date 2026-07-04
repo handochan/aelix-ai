@@ -259,8 +259,37 @@ def test_build_session_context_byte_identical_to_pre_refactor() -> None:
             _msg("2", "post"),
         ],
     ]
+    from aelix_agent_core.session.context import build_display_messages
+
     for entries in scenarios:
         got = build_session_context(entries).messages
         want = _old_build_messages(entries)
         assert _texts(got) == _texts(want), f"mismatch for {entries!r}"
         assert [type(m).__name__ for m in got] == [type(m).__name__ for m in want]
+        # Issue #62 review (NIT): pin the DISPLAY tier to the SAME boundary
+        # across every edge — same text, differing only in type at custom
+        # entries (CustomMessage vs the LLM tier's UserMessage).
+        assert _texts(build_display_messages(entries)) == _texts(want), (
+            f"display-tier boundary mismatch for {entries!r}"
+        )
+
+
+def test_display_custom_message_excluded_from_llm_conversion() -> None:
+    """Tripwire (issue #62 review): the display tier must NEVER feed the LLM.
+
+    The 'display messages never feed the LLM' invariant is enforced by
+    ``default_convert_to_llm``'s isinstance filter (code, not just docs) — a
+    ``CustomMessage`` is dropped. If a later refactor makes CustomMessage a
+    UserMessage subclass or widens the filter, this test fails loudly.
+    """
+    from aelix_agent_core.default_convert import default_convert_to_llm
+
+    cm = CustomMessage(
+        custom_type="status", content="x", display=True, details=None, timestamp=None
+    )
+    assert default_convert_to_llm([cm]) == []
+    # And a full display-tier list carrying a custom message drops only it.
+    msgs = build_display_messages([_msg("1", "hi"), _custom("2")])
+    converted = default_convert_to_llm(msgs)
+    assert all(not isinstance(m, CustomMessage) for m in converted)
+    assert len(converted) == 1  # the UserMessage survives, the custom is gone

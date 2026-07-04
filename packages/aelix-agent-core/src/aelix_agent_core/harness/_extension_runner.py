@@ -234,7 +234,7 @@ class ExtensionRunner:
         return out
 
     def get_message_renderer(self, custom_type: str) -> Any | None:
-        """Issue #62 — Pi ``getMessageRenderer`` (``runner.ts:502-510``).
+        """Issue #62 — Pi ``getMessageRenderer`` (``runner.ts:546-554``).
 
         First-wins lookup of ``Extension.message_renderers`` by
         ``custom_type`` across extensions in load order, read LIVE per call

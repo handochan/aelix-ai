@@ -1939,3 +1939,65 @@ async def test_run_tui_resume_replays_custom_message_via_extension_renderer() ->
         await asyncio.wait_for(task, timeout=5)
     assert target.get_branch_calls == 1  # DISPLAY tier taken, not build_context
     assert calls == [("status", False)]  # display=False custom never dispatched
+
+
+async def test_run_tui_fork_replays_custom_via_renderer_second_callsite() -> None:
+    """Issue #62 review (NIT): the display-tier renderer dispatch is wired on
+    the SECOND replay callsite too (_replay_after_swap: /fork·/clone·/import),
+    not only /resume. /fork picks the recent user message, forks, then
+    _replay_after_swap → _display_messages → get_branch → renderer."""
+    from aelix_agent_core.harness._extension_runner import ExtensionRunner
+    from aelix_agent_core.session.entries import CustomMessageEntry, MessageEntry
+    from aelix_ai.messages import TextContent, UserMessage
+    from aelix_coding_agent.extensions.api import Extension
+
+    calls: list[str] = []
+
+    class _Comp:
+        def render(self, width: int) -> list[str]:
+            return ["FORK-CUSTOM-RENDERED"]
+
+        def handle_input(self, data: str) -> None:
+            pass
+
+        def invalidate(self) -> None:
+            pass
+
+    def _ext_renderer(msg: object, options: object, theme: object) -> object:
+        calls.append(getattr(msg, "custom_type", ""))
+        return _Comp()
+
+    ext = Extension(name="fplug")
+    ext.message_renderers["status"] = _ext_renderer
+
+    ts = "2026-07-04T00:00:00Z"
+    branch: list[object] = [
+        MessageEntry(id="u1", parent_id=None, timestamp=ts,
+                     message=UserMessage(content=[TextContent(text="hi")])),
+        CustomMessageEntry(id="c1", parent_id="u1", timestamp=ts,
+                           custom_type="status", content="deploy green", display=True),
+    ]
+
+    class _ForkBranchSession(_FakeForkSession):
+        async def get_branch(self, from_id: str | None = None) -> list[object]:
+            return list(branch)
+
+    class _ForkBranchRuntime(_ForkRuntime):
+        def __init__(self, harness: FakeHarness, entries: list[_FakeEntry]) -> None:
+            super().__init__(harness, entries)
+            self._session = _ForkBranchSession(entries)  # type: ignore[assignment]
+
+    entries = [_FakeEntry("u1", "message", role="user")]
+    harness = FakeHarness()
+    harness.extension_runner = ExtensionRunner(extensions=[ext])  # type: ignore[attr-defined]
+    async with _harness_chrome(harness=harness) as (_r, chrome, pipe):
+        runtime = _ForkBranchRuntime(harness, entries)
+        task = asyncio.ensure_future(
+            run_tui(runtime, cwd=".", chrome=chrome, install_signal_handlers=False)  # type: ignore[arg-type]
+        )
+        await _wait(lambda: chrome.app.is_running)
+        pipe.send_text("/fork\n")
+        await _wait(lambda: runtime.fork_calls == [("u1", "before")])
+        await _wait(lambda: calls == ["status"])  # renderer dispatched on replay
+        pipe.send_text("/quit\n")
+        await asyncio.wait_for(task, timeout=5)
