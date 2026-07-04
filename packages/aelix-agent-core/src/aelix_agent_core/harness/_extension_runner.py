@@ -233,6 +233,24 @@ class ExtensionRunner:
                 out[key] = shortcut
         return out
 
+    def get_message_renderer(self, custom_type: str) -> Any | None:
+        """Issue #62 — Pi ``getMessageRenderer`` (``runner.ts:502-510``).
+
+        First-wins lookup of ``Extension.message_renderers`` by
+        ``custom_type`` across extensions in load order, read LIVE per call
+        (the :meth:`get_shortcuts` idiom) so #24 reloads and the loader
+        error-path clear stay visible. Pi has no collision warning here —
+        the loser is simply shadowed — so neither does Aelix. Duck-typed
+        (``getattr``) to keep agent-core free of coding-agent imports.
+        """
+
+        for ext in self.extensions:
+            renderers = getattr(ext, "message_renderers", None) or {}
+            renderer = renderers.get(custom_type)
+            if renderer is not None:
+                return renderer
+        return None
+
     def get_registered_commands(self) -> list[ResolvedCommand]:
         """Pi parity: ``ExtensionRunner.getRegisteredCommands()`` (Pi
         ``runner.ts:512-551`` ``resolveRegisteredCommands``).

@@ -791,3 +791,89 @@ def test_render_tool_call_line_no_summary_omits_parens() -> None:
 
     line = render_tool_call_line("noop", "")
     assert line.plain == "● noop"
+
+
+# === Issue #62 (ADR-0183) — custom-message replay ==========================
+
+
+def _display_custom(*, display: bool = True, content: object = "deploy green") -> Any:
+    from aelix_agent_core.session.context import create_display_custom_message
+
+    return create_display_custom_message(
+        "status", content, display, None, "2026-07-04T00:00:00Z"
+    )
+
+
+def test_replay_custom_default_renders_label_and_content() -> None:
+    r, commits, _t = _renderer()
+    r.replay([_display_custom()])
+    out = _committed_text(commits)
+    assert "[status]" in out  # bold custom_type label (default rendering)
+    assert "deploy green" in out
+    assert "»" not in out  # NOT a user echo (the pre-#62 flattened behavior)
+
+
+def test_replay_custom_display_false_renders_nothing() -> None:
+    # pi interactive-mode.ts:3029-3037 — the display gate fires BEFORE any
+    # renderer lookup; the message stays in the LLM context but never renders.
+    r, commits, _t = _renderer()
+    r.replay([_display_custom(display=False)])
+    assert commits == []
+
+
+def test_replay_custom_hook_renderable_wins() -> None:
+    from rich.text import Text as _Text
+
+    r, commits, _t = _renderer()
+    r.render_custom_message = lambda msg: _Text("HOOKED:" + msg.custom_type)
+    r.replay([_display_custom()])
+    out = _committed_text(commits)
+    assert "HOOKED:status" in out
+    assert "[status]" not in out  # default rendering suppressed
+
+
+def test_replay_custom_hook_none_falls_back_to_default() -> None:
+    r, commits, _t = _renderer()
+    r.render_custom_message = lambda msg: None
+    r.replay([_display_custom()])
+    assert "[status]" in _committed_text(commits)
+
+
+def test_replay_custom_hook_raise_falls_back_silently() -> None:
+    # pi custom-message.ts:68-70 — renderer exceptions are swallowed and the
+    # default rendering is used; replay must never break on a bad extension.
+    def _boom(msg: Any) -> Any:
+        raise RuntimeError("bad renderer")
+
+    r, commits, _t = _renderer()
+    r.render_custom_message = _boom
+    r.replay([_display_custom()])
+    assert "[status]" in _committed_text(commits)
+
+
+def test_replay_custom_list_content_flattened() -> None:
+    from aelix_ai.messages import TextContent as _TC
+
+    r, commits, _t = _renderer()
+    r.replay([_display_custom(content=[_TC(text="part one")])])
+    assert "part one" in _committed_text(commits)
+
+
+def test_replay_custom_hook_returns_non_component_falls_back() -> None:
+    # A renderer whose return has no .render() would AttributeError in the
+    # shell closure; the render-layer hook contract is object|None, so a bad
+    # shape must degrade to default rendering, never crash replay.
+    r, commits, _t = _renderer()
+
+    def _bad(msg: Any) -> Any:
+        return object()  # not a Rich renderable; committing it must be safe
+
+    # The shell closure is what converts a Component→renderable; at the render
+    # layer the hook returns a renderable-or-None. Simulate the closure raising
+    # on a bad shape by having the hook itself raise (closure catches → None).
+    def _raises(msg: Any) -> Any:
+        raise AttributeError("'object' has no attribute 'render'")
+
+    r.render_custom_message = _raises
+    r.replay([_display_custom()])
+    assert "[status]" in _committed_text(commits)  # default fallback rendered

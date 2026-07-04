@@ -625,8 +625,31 @@ class ExtensionShortcut:
     description: str | None = None
 
 
+@dataclass(frozen=True)
+class MessageRenderOptions:
+    """Pi ``MessageRenderOptions`` (``types.ts:1047-1049``)."""
+
+    expanded: bool = False
+
+
 MessageRenderer = Callable[..., Any]
-"""Pi ``MessageRenderer`` — Sprint 5a registers, Phase 5 renders."""
+"""Pi ``MessageRenderer`` (``types.ts:1051-1055``) — issue #62 (ADR-0183).
+
+Call convention (pi-faithful): ``renderer(message, options, theme)`` where
+``message`` is the rich display-tier custom message
+(:class:`aelix_agent_core.session.context.CustomMessage` — ``custom_type`` /
+``content`` / ``display`` / ``details`` / ``timestamp``), ``options`` is a
+:class:`MessageRenderOptions`, and ``theme`` is the live TUI
+:class:`~aelix_coding_agent.extensions.widget_protocols.Theme`. Return a
+:class:`~aelix_coding_agent.extensions.widget_protocols.Component`
+(``render(width) -> list[str]`` raw-ANSI lines) or ``None`` to decline —
+``None`` and a raised exception both fall through silently to the default
+rendering (pi ``custom-message.ts:58-97``). Consulted during TUI replay via
+``ExtensionRunner.get_message_renderer`` (first extension in load order
+wins; last ``register_message_renderer`` call wins within one extension).
+Kept ``Callable[..., Any]`` at runtime — duck-typed like the rest of the
+extension surface.
+"""
 
 
 @dataclass(frozen=True)
@@ -1790,6 +1813,7 @@ __all__ = [
     "ExtensionRuntimeActions",
     "ExtensionShortcut",
     "ExtensionSourceInfo",
+    "MessageRenderOptions",
     "MessageRenderer",
     "ModelRegistry",
     "ReadonlySessionManager",

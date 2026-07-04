@@ -21,6 +21,7 @@ first so they never interleave with the live tail.
 
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
@@ -31,6 +32,8 @@ from rich.console import Group
 from rich.text import Text
 
 from .stream import StreamRenderer
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from aelix_agent_core.contracts.descriptor import DescriptorEnvelope
@@ -301,6 +304,13 @@ class EventRenderer:
         # custom view. Both unset → default Text-dump rendering (unchanged).
         self.get_tool_renderer_desc: Callable[[str], DescriptorEnvelope | None] | None = None
         self.descriptor_renderer: DescriptorRenderer | None = None
+        # Issue #62 (ADR-0183) — extension custom-message rendering hook.
+        # Late-bound by run_tui: given a DISPLAY-tier custom message (rich
+        # ``CustomMessage`` with custom_type/content/details), returns a Rich
+        # renderable from the extension's registered MessageRenderer, or None
+        # to fall through to the default rendering (the get_tool_renderer_desc
+        # idiom). Unset (headless/tests) → default rendering.
+        self.render_custom_message: Callable[[Any], object | None] | None = None
 
     def on_agent_event(self, event: AgentEvent) -> None:
         if event.type == "message_start":
@@ -554,6 +564,49 @@ class EventRenderer:
                     msg,
                     bool(getattr(msg, "is_error", False)),
                 )
+            elif role == "custom":
+                # Issue #62 (ADR-0183) — DISPLAY-tier custom message (rich
+                # ``CustomMessage`` from build_display_messages). The display
+                # gate fires BEFORE any renderer lookup (pi
+                # interactive-mode.ts:3029-3037): display=False stays in the
+                # LLM context but never renders.
+                if getattr(msg, "display", False):
+                    self._render_custom(msg)
+
+    def _render_custom(self, msg: Any) -> None:
+        """Render one custom message: extension hook, else default.
+
+        Pi ``CustomMessageComponent.rebuild()`` parity
+        (``custom-message.ts:58-97``): a hook failure or ``None`` falls
+        through SILENTLY to the default rendering — a bold ``[custom_type]``
+        label + the plain content text (pi draws a themed box + markdown;
+        Aelix scrollback is plain-text-first, divergence noted in ADR-0183).
+        """
+
+        hook = self.render_custom_message
+        if hook is not None:
+            try:
+                renderable = hook(msg)
+                if renderable is not None:
+                    self._commit(renderable)
+                    return
+            except Exception:  # noqa: BLE001 — pi swallows renderer errors and
+                # falls back (custom-message.ts:68-70). Aelix keeps the silent
+                # FALLBACK (a bad renderer must not break replay) but, per the
+                # "every skip/failure logs" convention (ADR-0181), records it at
+                # DEBUG so a plugin dev can diagnose — no per-message warning spam.
+                logger.debug(
+                    "custom-message renderer failed for %r; using default rendering",
+                    getattr(msg, "custom_type", None),
+                    exc_info=True,
+                )
+        content = getattr(msg, "content", None)
+        text = content if isinstance(content, str) else _join_text(content or [])
+        label = Text(f"[{getattr(msg, 'custom_type', '') or 'custom'}]", style="bold magenta")
+        if text.strip():
+            self._commit(Group(label, Text(text)))
+        else:
+            self._commit(label)
 
     def _render_with_descriptor(self, tool_name: str, text: str) -> bool:
         lookup = self.get_tool_renderer_desc

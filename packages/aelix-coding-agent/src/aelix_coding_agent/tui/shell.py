@@ -28,6 +28,7 @@ import tempfile
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
+from aelix_agent_core.session.context import build_display_messages
 from aelix_agent_core.session.jsonl_storage import load_jsonl_session_metadata
 from prompt_toolkit.application.run_in_terminal import in_terminal
 from rich.box import ROUNDED
@@ -37,6 +38,7 @@ from rich.text import Text
 
 from aelix_coding_agent.cli.repl import handle_user_bash
 from aelix_coding_agent.extensions import HEADLESS_UI_CONTEXT
+from aelix_coding_agent.extensions.api import MessageRenderOptions
 from aelix_coding_agent.extensions.command_dispatch import (
     CommandDispatchService,
     CommandSurfaceBindings,
@@ -354,6 +356,45 @@ async def run_tui(
 
     renderer = EventRenderer(commit=_commit, set_tail=_set_tail, width=_RENDER_WIDTH)
 
+    def _render_custom_message(msg: Any) -> object | None:
+        # Issue #62 (ADR-0183) — pi CustomMessageComponent parity: look up the
+        # first-wins extension renderer by custom_type LIVE through the
+        # runtime host (reload-safe, the get_shortcuts idiom), call it
+        # ``(message, MessageRenderOptions, theme)``, and snapshot the
+        # returned Component to lines. None / a raise → None → the
+        # EventRenderer's default rendering (pi swallows renderer errors the
+        # same way, custom-message.ts:68-70).
+        try:
+            runner = getattr(runtime_host.harness, "extension_runner", None)
+            get = getattr(runner, "get_message_renderer", None) if runner else None
+            renderer_fn = (
+                get(getattr(msg, "custom_type", "") or "") if callable(get) else None
+            )
+            if renderer_fn is None:
+                return None
+            options = MessageRenderOptions(expanded=context.get_tools_expanded())
+            component = renderer_fn(msg, options, context.theme)
+            if component is None:
+                return None
+            lines = component.render(_RENDER_WIDTH)
+            return Text.from_ansi("\n".join(str(line) for line in lines))
+        except Exception:  # noqa: BLE001 — a faulty extension renderer must not
+            # break replay; fall through to the default rendering.
+            return None
+
+    renderer.render_custom_message = _render_custom_message
+
+    async def _display_messages(session: Any) -> list[Any]:
+        # Issue #62 (ADR-0183) — replay reads the DISPLAY tier (rich custom
+        # messages, custom_type intact) when the session exposes get_branch;
+        # degrades to the LLM-tier build_context().messages for session
+        # fakes/backends without it (identical rendering minus the
+        # custom-renderer dispatch).
+        get_branch = getattr(session, "get_branch", None)
+        if callable(get_branch):
+            return list(build_display_messages(await get_branch()))
+        return list((await session.build_context()).messages)
+
     # Issue #50 — seed the live thinking settings from the persisted store at
     # startup (mirror of the WP-2/ADR-0160 theme + default-model seeds above).
     # Without this the /settings → "Show thinking" + "Default thinking level"
@@ -474,7 +515,7 @@ async def run_tui(
         # on the next turn); this is the same path /compact reuses.
         out_chrome.clear()
         session = runtime_host.session
-        messages = list((await session.build_context()).messages) if session is not None else []
+        messages = await _display_messages(session) if session is not None else []
         renderer.replay(messages)
         _commit(Text(f"↻ Resumed session ({len(messages)} messages)", style="green"))
         context._refresh_footer()
@@ -506,7 +547,7 @@ async def run_tui(
 
         out_chrome.clear()
         session = runtime_host.session
-        messages = list((await session.build_context()).messages) if session is not None else []
+        messages = await _display_messages(session) if session is not None else []
         renderer.replay(messages)
         _commit(Text(banner, style="green"))
         context._refresh_footer()

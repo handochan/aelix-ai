@@ -194,3 +194,25 @@ def test_runner_get_shortcuts_first_registration_wins() -> None:
     assert set(shortcuts) == {"ctrl+y", "ctrl+u"}
     assert shortcuts["ctrl+y"].handler() == "first"  # load order = priority
     assert shortcuts["ctrl+u"].handler() == "unique"
+
+
+def test_get_message_renderer_first_wins_across_extensions() -> None:
+    # Issue #62 (ADR-0183) — pi runner.ts:502-510: first extension in load
+    # order wins a custom_type collision; no warning (pi has none); miss → None.
+    def _r1(*args: object) -> str:
+        return "first"
+
+    def _r2(*args: object) -> str:
+        return "second"
+
+    first = Extension(name="a")
+    first.message_renderers["status"] = _r1
+    second = Extension(name="b")
+    second.message_renderers["status"] = _r2
+    second.message_renderers["other"] = _r2
+
+    runner = ExtensionRunner(extensions=[first, second])
+
+    assert runner.get_message_renderer("status") is _r1
+    assert runner.get_message_renderer("other") is _r2
+    assert runner.get_message_renderer("missing") is None

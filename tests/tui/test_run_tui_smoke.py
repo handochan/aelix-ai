@@ -1841,3 +1841,101 @@ async def test_run_tui_extension_command_throw_survives() -> None:
 
     # The thrown command did not fall through to the model.
     assert runtime.harness.prompts == [("ping", "interactive")]
+
+
+async def test_run_tui_resume_replays_custom_message_via_extension_renderer() -> None:
+    """Issue #62 (ADR-0183) — /resume takes the DISPLAY tier when the session
+    exposes ``get_branch`` and dispatches the extension MessageRenderer
+    (first-wins by custom_type; display=False gated before lookup)."""
+    from aelix_agent_core.harness._extension_runner import ExtensionRunner
+    from aelix_agent_core.session.entries import CustomMessageEntry, MessageEntry
+    from aelix_ai.messages import TextContent, UserMessage
+    from aelix_coding_agent.extensions.api import Extension
+
+    calls: list[tuple[str, bool]] = []
+
+    class _Comp:
+        def render(self, width: int) -> list[str]:
+            return ["CUSTOM-RENDERED"]
+
+        def handle_input(self, data: str) -> None:
+            pass
+
+        def invalidate(self) -> None:
+            pass
+
+    def _ext_renderer(msg: object, options: object, theme: object) -> object:
+        assert theme is not None  # the live TUI theme is threaded through
+        calls.append(
+            (getattr(msg, "custom_type", ""), bool(getattr(options, "expanded", False)))
+        )
+        return _Comp()
+
+    ext = Extension(name="rplug")
+    ext.message_renderers["status"] = _ext_renderer
+
+    class _BranchSession(_ResumeSession):
+        """A resume target that ALSO exposes get_branch (display tier)."""
+
+        def __init__(self, session_file: str, entries: list[object]) -> None:
+            super().__init__(session_file, [])
+            self._entries = entries
+            self.get_branch_calls = 0
+
+        async def get_branch(self) -> list[object]:
+            self.get_branch_calls += 1
+            return list(self._entries)
+
+    ts = "2026-07-04T00:00:00Z"
+    entries: list[object] = [
+        MessageEntry(
+            id="1",
+            parent_id=None,
+            timestamp=ts,
+            message=UserMessage(content=[TextContent(text="hi there")]),
+        ),
+        CustomMessageEntry(
+            id="2",
+            parent_id="1",
+            timestamp=ts,
+            custom_type="status",
+            content="deploy green",
+            display=True,
+        ),
+        CustomMessageEntry(
+            id="3",
+            parent_id="2",
+            timestamp=ts,
+            custom_type="status",
+            content="hidden",
+            display=False,
+        ),
+    ]
+    metas = [
+        _ResumeMeta("aaaaaaaa", "/s/active.jsonl", "2026-05-27T15:00"),
+        _ResumeMeta("bbbbbbbb", "/s/new.jsonl", "2026-05-27T14:00"),
+    ]
+    repo = _ResumeRepo(metas)
+    active = _ResumeSession("/s/active.jsonl", [])
+    target = _BranchSession("/s/new.jsonl", entries)
+    harness = FakeHarness()
+    harness.extension_runner = ExtensionRunner(  # type: ignore[attr-defined]
+        extensions=[ext]
+    )
+    runtime = _ResumeRuntime(harness, repo, active, target=target)
+    with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
+        chrome = AelixChrome()
+        task = asyncio.ensure_future(
+            run_tui(runtime, cwd=".", chrome=chrome, install_signal_handlers=False)  # type: ignore[arg-type]
+        )
+        await _wait(lambda: chrome.app.is_running)
+        pipe.send_text("/resume\n")
+        await _wait(lambda: bool(repo.list_cwds))
+        await asyncio.sleep(0.1)  # let the picker modal render + focus
+        pipe.send_text("\r")
+        await _wait(lambda: bool(runtime.switch_calls))
+        await _wait(lambda: bool(calls))  # renderer dispatched during replay
+        pipe.send_text("/quit\n")
+        await asyncio.wait_for(task, timeout=5)
+    assert target.get_branch_calls == 1  # DISPLAY tier taken, not build_context
+    assert calls == [("status", False)]  # display=False custom never dispatched

@@ -14,11 +14,24 @@ custom message ``role`` variants (``branchSummary`` / ``compactionSummary`` /
 :func:`aelix_agent_core.default_convert.default_convert_to_llm` pipeline
 handles them without divergence. See ADR-0022 §"Aelix-additive
 divergences".
+
+Issue #62 (ADR-0183) refines that split with a DISPLAY tier: pi renders its
+TUI from the rich built context (``role:"custom"`` first-class, customType
+preserved — interactive-mode.ts:3123/3029) and flattens only at the LLM
+boundary (``convertToLlm``, messages.ts:148-195; ``custom`` → ``user`` with
+content passed through — byte-identical to what
+:func:`create_custom_message` produces eagerly). Aelix keeps the eager
+LLM-tier flattening for every existing consumer and adds
+:func:`build_display_messages` — the same
+:func:`select_display_entries` boundary, but ``custom_message`` entries stay
+rich (:class:`CustomMessage`) so the TUI can dispatch extension message
+renderers. Observably equivalent to pi on both tiers.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Literal
 
 from aelix_ai.messages import ImageContent, TextContent, UserMessage
 
@@ -111,6 +124,48 @@ def create_custom_message(
     )
 
 
+@dataclass(frozen=True)
+class CustomMessage:
+    """Pi ``CustomMessage<T>`` (``messages.ts:46-53``) — the DISPLAY-tier shape.
+
+    Issue #62 (ADR-0183): the TUI needs ``custom_type``/``display``/``details``
+    to dispatch extension message renderers; the LLM-tier flattening
+    (:func:`create_custom_message` → ``UserMessage``) discards them by design
+    (module docstring). Produced ONLY by :func:`build_display_messages` —
+    instances must never reach the LLM pipeline.
+    """
+
+    custom_type: str
+    content: Any
+    display: bool
+    details: Any | None
+    timestamp: float | None
+    role: Literal["custom"] = "custom"
+
+
+def create_display_custom_message(
+    custom_type: str,
+    content: object,
+    display: bool,
+    details: object,
+    timestamp: str,
+) -> CustomMessage:
+    """Pi ``createCustomMessage`` (``messages.ts:123-138``), faithful rich form.
+
+    Pi carries ``customType``/``display``/``details`` through verbatim and
+    flattens only later in ``convertToLlm``; :func:`create_custom_message`
+    above is the fused eager-flatten used by the LLM tier.
+    """
+
+    return CustomMessage(
+        custom_type=custom_type,
+        content=content,
+        display=display,
+        details=details,
+        timestamp=_iso_to_unix_ms(timestamp),
+    )
+
+
 def _iso_to_unix_ms(timestamp: str) -> float | None:
     """Convert an ISO 8601 timestamp to unix millis (Pi semantics).
 
@@ -145,7 +200,6 @@ def build_session_context(path_entries: list[SessionTreeEntry]) -> SessionContex
 
     thinking_level = "off"
     model: dict[str, str] | None = None
-    compaction: CompactionEntry | None = None
 
     for entry in path_entries:
         if entry.type == "thinking_level_change":
@@ -163,8 +217,9 @@ def build_session_context(path_entries: list[SessionTreeEntry]) -> SessionContex
                 # leave ``model`` resolved by ``model_change`` entries only.
                 # This is a known Aelix-additive narrowing (see ADR-0022).
                 pass
-        elif entry.type == "compaction":
-            compaction = entry  # type: ignore[assignment]
+        # Compaction tracking lives in ``select_display_entries`` (issue #62
+        # extraction) — the state fold above intentionally reads the FULL
+        # path, boundary included, exactly as before.
 
     messages: list = []
 
@@ -190,33 +245,16 @@ def build_session_context(path_entries: list[SessionTreeEntry]) -> SessionContex
                 )
             )
 
-    if compaction is not None:
-        messages.append(
-            create_compaction_summary_message(
-                compaction.summary,
-                compaction.tokens_before,
-                compaction.timestamp,
+    for entry in select_display_entries(path_entries):
+        if entry.type == "compaction":
+            messages.append(
+                create_compaction_summary_message(
+                    entry.summary,  # type: ignore[union-attr]
+                    entry.tokens_before,  # type: ignore[union-attr]
+                    entry.timestamp,
+                )
             )
-        )
-        compaction_idx = next(
-            (
-                i
-                for i, e in enumerate(path_entries)
-                if e.type == "compaction" and e.id == compaction.id
-            ),
-            -1,
-        )
-        found_first_kept = False
-        for i in range(compaction_idx):
-            entry = path_entries[i]
-            if entry.id == compaction.first_kept_entry_id:
-                found_first_kept = True
-            if found_first_kept:
-                _append_message(entry)
-        for i in range(compaction_idx + 1, len(path_entries)):
-            _append_message(path_entries[i])
-    else:
-        for entry in path_entries:
+        else:
             _append_message(entry)
 
     return SessionContext(
@@ -224,13 +262,110 @@ def build_session_context(path_entries: list[SessionTreeEntry]) -> SessionContex
     )
 
 
+def select_display_entries(
+    path_entries: list[SessionTreeEntry],
+) -> list[SessionTreeEntry]:
+    """The compaction-boundary survivor selection (issue #62, ADR-0183).
+
+    Shared by :func:`build_session_context` and
+    :func:`build_display_messages` so the boundary logic stays single-source.
+    Returns the entries that contribute messages, in message order: when a
+    compaction exists, the CHOSEN (last) compaction entry leads the result as
+    the synthesized-summary marker, entries before ``first_kept_entry_id``
+    are dropped, and no OTHER compaction entry ever appears (mirroring the
+    pre-refactor ``_append_message`` silence on the type). Entry types that
+    contribute nothing (``thinking_level_change`` / ``model_change`` /
+    ``custom`` / ``label`` / ``session_info`` / ``leaf``) pass through — the
+    consumers' dispatch skips them.
+    """
+
+    compaction: CompactionEntry | None = None
+    for entry in path_entries:
+        if entry.type == "compaction":
+            compaction = entry  # type: ignore[assignment]
+    if compaction is None:
+        return list(path_entries)
+
+    out: list[SessionTreeEntry] = [compaction]
+    compaction_idx = next(
+        (
+            i
+            for i, e in enumerate(path_entries)
+            if e.type == "compaction" and e.id == compaction.id
+        ),
+        -1,
+    )
+    found_first_kept = False
+    for i in range(compaction_idx):
+        entry = path_entries[i]
+        if entry.id == compaction.first_kept_entry_id:
+            found_first_kept = True
+        if found_first_kept and entry.type != "compaction":
+            out.append(entry)
+    for i in range(compaction_idx + 1, len(path_entries)):
+        if path_entries[i].type != "compaction":
+            out.append(path_entries[i])
+    return out
+
+
+def build_display_messages(path_entries: list[SessionTreeEntry]) -> list[Any]:
+    """Issue #62 (ADR-0183) — the DISPLAY-tier message list for TUI replay.
+
+    Identical to :func:`build_session_context`'s message assembly over the
+    same :func:`select_display_entries` boundary, except ``custom_message``
+    entries stay RICH (:class:`CustomMessage`) so the TUI can dispatch
+    extension message renderers by ``custom_type`` and honor ``display``
+    (pi renders from its rich built context — interactive-mode.ts:3123/3029).
+    Compaction/branch summaries stay ``UserMessage``-wrapped exactly like the
+    LLM tier (pixel-identical replay; pi's separate summary roles remain the
+    ADR-0022 documented divergence). The result is for rendering ONLY — it
+    must never feed the LLM pipeline.
+    """
+
+    messages: list[Any] = []
+    for entry in select_display_entries(path_entries):
+        if entry.type == "compaction":
+            messages.append(
+                create_compaction_summary_message(
+                    entry.summary,  # type: ignore[union-attr]
+                    entry.tokens_before,  # type: ignore[union-attr]
+                    entry.timestamp,
+                )
+            )
+        elif entry.type == "message":
+            messages.append(entry.message)  # type: ignore[union-attr]
+        elif entry.type == "custom_message":
+            messages.append(
+                create_display_custom_message(
+                    entry.custom_type,  # type: ignore[union-attr]
+                    entry.content,  # type: ignore[union-attr]
+                    entry.display,  # type: ignore[union-attr]
+                    entry.details,  # type: ignore[union-attr]
+                    entry.timestamp,
+                )
+            )
+        elif entry.type == "branch_summary" and entry.summary:  # type: ignore[union-attr]
+            messages.append(
+                create_branch_summary_message(
+                    entry.summary,  # type: ignore[union-attr]
+                    entry.from_id,  # type: ignore[union-attr]
+                    entry.timestamp,
+                )
+            )
+    return messages
+
+
 __all__ = [
     "BRANCH_SUMMARY_PREFIX",
     "BRANCH_SUMMARY_SUFFIX",
     "COMPACTION_SUMMARY_PREFIX",
     "COMPACTION_SUMMARY_SUFFIX",
+    "CustomMessage",
+    "build_display_messages",
     "build_session_context",
     "create_branch_summary_message",
     "create_compaction_summary_message",
     "create_custom_message",
+    "create_display_custom_message",
+    "select_display_entries",
 ]
