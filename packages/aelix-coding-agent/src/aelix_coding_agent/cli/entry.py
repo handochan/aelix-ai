@@ -734,6 +734,15 @@ async def _resolve_project_trust(
 async def _async_main(argv: list[str]) -> int:
     """Pi parity: ``main()`` body (``main.ts:423-716`` reduced for scope)."""
 
+    # Issue #19 (ADR-0185) — ``aelix extension <subcommand>`` verb dispatch,
+    # BEFORE parse_args: the hand-rolled flat flag parser would swallow
+    # ``extension``/``install`` as chat-prompt positionals. A do-a-thing-and-exit
+    # action, in the spirit of the ``--list-models`` / ``--export`` early exits.
+    if argv and argv[0] == "extension":
+        from aelix_coding_agent.cli.extension_install import run_extension_command
+
+        return run_extension_command(argv[1:])
+
     parsed = parse_args(argv)
 
     # === Diagnostics flush ====================================================

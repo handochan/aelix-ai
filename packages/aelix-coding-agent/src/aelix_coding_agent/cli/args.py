@@ -467,6 +467,10 @@ Misc:
   --help, -h                      Show this help
   --version, -v                   Show version ({VERSION})
 
+Subcommands:
+  extension install <target>      Install an extension via pip (path | git-url |
+                                  package[==version]); --yes --index-url --offline
+
 File arguments:
   @<path>                         Inline file content into the first message
 """
