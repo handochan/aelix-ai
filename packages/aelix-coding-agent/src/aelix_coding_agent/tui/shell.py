@@ -61,6 +61,7 @@ from aelix_coding_agent.tui.descriptors import (
     DescriptorRenderer,
     ListModulesProbe,
 )
+from aelix_coding_agent.tui.ext_widgets import apply_manifest_widgets
 from aelix_coding_agent.tui.footer_data import AelixFooterData
 from aelix_coding_agent.tui.input import parse_input_line
 from aelix_coding_agent.tui.mcp_viewer import run_mcp_viewer
@@ -308,6 +309,24 @@ async def run_tui(
         mode="default",
         statusline_store=statusline_store,
     )
+
+    # Issue #21 tui_widgets (ADR-0182) — paint manifest-declared widgets through
+    # the same ctx.ui path imperative extensions use. Re-applied on every
+    # ``_rebind`` (startup, /resume·/fork swaps, #24 /reload — each rebuilds the
+    # extension set); ``applied_widgets`` tracks painted keys → placement so a
+    # removed plugin's widgets un-paint. Reads the PASSED harness (not
+    # ``runtime_host.harness``) so a rebind mid-swap can't read the stale one;
+    # never raises — a faulty widget contrib must not break the TUI.
+    applied_widgets: dict[str, str] = {}
+
+    def _apply_ext_widgets(harness: AgentHarness) -> None:
+        runner = getattr(harness, "extension_runner", None)
+        runtime = getattr(harness, "runtime", None)
+        pending = tuple(getattr(runtime, "pending_activations", None) or ())
+        with contextlib.suppress(Exception):
+            apply_manifest_widgets(
+                runner, context, applied_widgets, pending=pending
+            )
 
     # WP-2 (ADR-0160) — seed the live theme from the persisted setting so the
     # /settings → Theme choice actually applies on the NEXT launch (not only the
@@ -1238,6 +1257,11 @@ async def run_tui(
         # P-302 factory), so bind_ui + command_ctx repoint are equally required.
         with contextlib.suppress(Exception):
             new_harness.runtime.bind_ui(context)
+        # Issue #21 tui_widgets (ADR-0182) — reconcile manifest-declared widgets
+        # against the NEW harness's extension set (swap AND reload rebuild the
+        # extensions; a removed plugin's widgets must un-paint, a new one's must
+        # paint). Runs before the reload early-return below on purpose.
+        _apply_ext_widgets(new_harness)
         # A session swap (/resume, new, fork) replaces the live harness — keep
         # the command context pointed at it so /model, /compact, /cost, … act on
         # the resumed session, not the stale one (Sprint 6h₁₄b, ADR-0122).

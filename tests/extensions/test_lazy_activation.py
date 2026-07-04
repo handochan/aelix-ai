@@ -329,3 +329,30 @@ async def test_declared_tools_force_eager_load(
     assert import_marker.exists() and setup_marker.exists()  # ran at load
     assert runtime.pending_activations == {}
     assert "lazy_tool" in {t.name for t in harness.state.tools}  # model-visible
+
+
+async def test_tui_widgets_contrib_forces_eager_load(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """contributes.tui_widgets forces EAGER load (issue #21, ADR-0182): the
+    manifest-widget adapter only reads LOADED extensions, so a deferred
+    plugin's declared widgets would silently never paint — the same
+    silent-vanish class as contributes.tools above."""
+    import_marker = tmp_path / "imported.marker"
+    setup_marker = tmp_path / "setup.marker"
+    harness, runtime = await _build(
+        tmp_path,
+        monkeypatch,
+        module_name="lazy_mod_widgets_eager_case",
+        module_src=_module_src(import_marker, setup_marker),
+        contributes_extra=(
+            'tui_widgets = [{ slot = "above_editor", '
+            'factory = "lazy_mod_widgets_eager_case:setup" }]\n'
+            "\n"
+            "[capabilities]\n"
+            "ui_tui_trusted = true"
+        ),
+    )
+    _ = harness
+    assert import_marker.exists() and setup_marker.exists()  # ran at load
+    assert runtime.pending_activations == {}

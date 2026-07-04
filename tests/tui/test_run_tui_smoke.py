@@ -11,6 +11,7 @@ import asyncio
 import contextlib
 from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import pytest
 from aelix_coding_agent.extensions import HEADLESS_UI_CONTEXT
@@ -201,6 +202,85 @@ async def test_run_tui_reload_command() -> None:
     assert runtime.reloads == 1
     assert runtime.harness.reloads == 0  # the kill-switch path was NOT taken
     assert runtime.harness.prompts == []
+
+
+async def test_run_tui_paints_manifest_widgets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #21 (ADR-0182) — the startup ``_rebind`` paints a loaded
+    extension's manifest-declared ``contributes.tui_widgets`` through the
+    real run_tui wiring, and a rebind onto a harness WITHOUT the plugin
+    un-paints them (reconcile)."""
+    import textwrap
+    from types import SimpleNamespace
+
+    from aelix_agent_core.contracts import parse_manifest_toml
+    from aelix_coding_agent.extensions.api import Extension
+
+    (tmp_path / "smoke_widget_mod.py").write_text(
+        textwrap.dedent("""
+            class _W:
+                def render(self, width):
+                    return ["manifest-widget-line"]
+
+                def handle_input(self, data):
+                    pass
+
+                def invalidate(self):
+                    pass
+
+
+            def make(tui, theme):
+                return _W()
+        """),
+        encoding="utf-8",
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+    manifest = parse_manifest_toml(
+        textwrap.dedent("""
+            [plugin]
+            id = "smoke-plug"
+            name = "Smoke Plugin"
+            version = "0.1.0"
+            description = "Declares a TUI widget"
+            authors = ["Test <test@example.com>"]
+            repository = "https://github.com/example/smoke-plug"
+            license = "MIT"
+
+            [plugin.api]
+            level = 1
+            min_level = 1
+
+            [plugin.entry]
+            python = "smoke_widget_mod:make"
+
+            [capabilities]
+            ui_tui_trusted = true
+
+            [activation]
+            on_startup_finished = true
+
+            [contributes]
+            tui_widgets = [{ slot = "above_editor", factory = "smoke_widget_mod:make" }]
+        """).strip()
+    )
+    harness = FakeHarness()
+    harness.extension_runner = SimpleNamespace(  # type: ignore[attr-defined]
+        extensions=[Extension(name="smoke-plug", manifest=manifest)]
+    )
+    async with _harness_chrome(harness=harness) as (runtime, chrome, pipe):
+        task = _launch(runtime, chrome)
+        await _wait(
+            lambda: "manifest-widget-line" in str(chrome._render_widgets_above())
+        )
+        # A reason=="reload" rebind onto a harness without the plugin still
+        # reconciles (un-paints): _apply_ext_widgets runs BEFORE _rebind's
+        # reload early-return — this pins that ordering (review MEDIUM).
+        assert runtime.rebind_cb is not None
+        await runtime.rebind_cb(FakeHarness(), "reload")
+        assert "manifest-widget-line" not in str(chrome._render_widgets_above())
+        pipe.send_text("/quit\n")
+        await asyncio.wait_for(task, timeout=5)
 
 
 async def test_run_tui_eof_exits() -> None:

@@ -175,6 +175,11 @@ def _is_lazy_eligible(manifest: PluginManifest) -> bool:
         # until first command AND move their shell_exec trust-gate error from
         # a visible load-time failure to a mid-session dispatch error.
         and not manifest.contributes.hooks
+        # Declared TUI widgets (ADR-0182) paint at TUI start via the manifest
+        # adapter (tui/ext_widgets.py), which only reads LOADED extensions —
+        # deferral would leave them invisible until first command use with no
+        # re-apply seam (the same silent-vanish class as contributes.tools).
+        and not manifest.contributes.tui_widgets
     )
 
 
@@ -813,6 +818,22 @@ async def _resolve_factory(
                 f"any of capabilities.ui_tui_trusted / .ui_descriptor / "
                 f".mcp_serve is True — see Sprint 6h₉a fold-in §A)"
             )
+        # Issue #21 tui_widgets (ADR-0182) — trust gate (v1 declarative),
+        # mirroring the Tier-4b hooks/shell_exec gate: a declared widget's
+        # ``factory`` is plugin code executed in the user's terminal, so
+        # ``capabilities.ui_tui_trusted`` MUST be true. Fires HERE, before
+        # ``_factory_from_module`` imports the entry module, so a denied
+        # plugin executes NO code at all (data before code — review MEDIUM:
+        # the gate originally sat in _invoke_factory, after the import).
+        if (
+            entry.manifest.contributes.tui_widgets
+            and not entry.manifest.capabilities.ui_tui_trusted
+        ):
+            raise ExtensionManifestError(
+                f"plugin {entry.manifest.plugin.id!r} declares "
+                f"[[contributes.tui_widgets]] but capabilities.ui_tui_trusted "
+                f"is false; declarative TUI widgets require ui_tui_trusted=true"
+            )
         factory = _factory_from_module(py_entry)
         return factory, entry.manifest.plugin.id, entry.manifest
 
@@ -929,6 +950,23 @@ async def _invoke_factory(
 
     if extension is None:
         extension = Extension(name=name, manifest=manifest)
+
+    # Issue #21 tui_widgets (ADR-0182) — defensive second fence for the
+    # ui_tui_trusted trust gate. The PRIMARY gate lives in _resolve_factory
+    # (before the entry-module import — data before code); this one covers
+    # direct-factory callers that thread a manifest without going through
+    # entry resolution (load_extension_from_factory-style paths).
+    if (
+        manifest is not None
+        and manifest.contributes.tui_widgets
+        and not manifest.capabilities.ui_tui_trusted
+    ):
+        raise ExtensionManifestError(
+            f"plugin {manifest.plugin.id!r} declares [[contributes.tui_widgets]] "
+            f"but capabilities.ui_tui_trusted is false; declarative TUI widgets "
+            f"require ui_tui_trusted=true"
+        )
+
     api = ExtensionAPI(extension, runtime)
     result: Any = factory(api)
     if inspect.iscoroutine(result):
