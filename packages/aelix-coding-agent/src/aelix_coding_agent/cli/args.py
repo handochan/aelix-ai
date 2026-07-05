@@ -476,6 +476,10 @@ Subcommands:
   extension list                  List installed extensions (entry-point ledger)
   extension update [<name>]       Reinstall recorded source(s) with --upgrade
   extension remove <name>         Uninstall the extension's distribution
+  extension keygen                Generate a publisher Ed25519 signing key (#67)
+  extension sign <artifact>       Write a detached .aelixsig signature (--key <id>)
+  extension trust add|list|       Manage trusted verification keys
+    remove|revoke                 (install --require-signature to enforce provenance)
 
 File arguments:
   @<path>                         Inline file content into the first message

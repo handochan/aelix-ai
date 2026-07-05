@@ -40,6 +40,11 @@ dependencies = [
   # platform → sdist build skipped), so the other four postures are unaffected.
   "tree-sitter>=0.25,<0.26",
   "tree-sitter-bash>=0.25,<0.26",
+  # #67 (ADR-0189) — Ed25519 detached-signature provenance for extension packs.
+  # Promoted from an incidental transitive dep (via google-auth) to a DIRECT dep:
+  # the extension signing/verification path imports it, so a clean install must
+  # carry it. In-env at 48.0.0; floor at 42 for the stable Ed25519 API surface.
+  "cryptography>=42,<49",
 ]
 
 # Sprint 6h₁₀a (ADR-0088 Q1, ADR-0104): the interactive TUI shell is an

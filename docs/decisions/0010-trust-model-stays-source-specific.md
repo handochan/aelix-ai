@@ -1,6 +1,11 @@
 # 0010. Trust Model Stays Source-Specific; No Unified Schema in 1st Cut
 
-Status: Accepted
+Status: Accepted — **the "Aelix가 자체 signature/hash format을 정의하지 않습니다"
+clause (Consequences ¶1, below) is AMENDED by ADR-0189** (#67), which introduces the
+`.aelixsig` Ed25519 detached-signature provenance format. This is the NARROW amendment
+the "별도 ADR" trigger anticipated. The broader **no unified cross-source trust-verdict
+schema** decision (Decision ¶1) REMAINS IN FORCE — ADR-0189 defines a single-format
+provenance signature, not a cross-source verdict-comparison schema.
 
 ## Context
 

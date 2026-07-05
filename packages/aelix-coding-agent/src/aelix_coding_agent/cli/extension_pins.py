@@ -74,7 +74,13 @@ class Pin:
     ``sha256`` anchors path/pypi artifacts; ``git_sha`` anchors git sources (a
     pinned 40-hex commit — tree immutability, not build bytes). ``version`` is the
     pypi version the ``sha256`` belongs to (so a version bump is a re-pin, not a
-    same-version tamper). ``key_id`` / ``sig`` are the inert Approach-B seam.
+    same-version tamper). ``key_id`` / ``sig`` / ``sha256_statement`` are the
+    Approach-B provenance fields (#67/ADR-0189): when an install is authenticated by a
+    trusted Ed25519 signature the recorded pin carries the signer keyId, the base64
+    detached signature, and the literal canonical statement that was signed (a durable
+    post-install audit record, since the ``.aelixsig`` sits next to a temp/downloaded
+    artifact that is cleaned up). They stay :data:`None` for an unsigned (integrity-only)
+    pin — the #64 default path is unchanged.
     """
 
     identity: str
@@ -85,8 +91,9 @@ class Pin:
     sha256: str | None = None
     git_sha: str | None = None
     pinned_at: str | None = None
-    key_id: str | None = None  # forward-compat seam (Approach B) — unused in v1
-    sig: str | None = None  # forward-compat seam (Approach B) — unused in v1
+    key_id: str | None = None  # Approach-B provenance (#67) — signer keyId when signed
+    sig: str | None = None  # Approach-B provenance (#67) — base64 detached signature
+    sha256_statement: str | None = None  # Approach-B (#67) — the canonical signed statement
     #: Unknown keys from a newer schema, preserved verbatim on rewrite so a
     #: downgrade round-trips instead of dropping fields it does not understand.
     extra: dict[str, object] = field(default_factory=dict)
@@ -107,6 +114,8 @@ class Pin:
             out["keyId"] = self.key_id
         if self.sig is not None:
             out["sig"] = self.sig
+        if self.sha256_statement is not None:
+            out["sha256Statement"] = self.sha256_statement
         out.update(self.extra)
         return out
 
@@ -122,6 +131,7 @@ class Pin:
             "pinnedAt",
             "keyId",
             "sig",
+            "sha256Statement",
         }
         extra = {k: v for k, v in raw.items() if k not in known}
 
@@ -144,6 +154,7 @@ class Pin:
             pinned_at=_s("pinnedAt"),
             key_id=_s("keyId"),
             sig=_s("sig"),
+            sha256_statement=_s("sha256Statement"),
             extra=extra,
         )
 
@@ -325,9 +336,21 @@ class Decision:
     notice: str
 
 
-def _first_acquisition(label: str, mode: str, repin: bool) -> Decision:
-    """Shared first-acquisition outcome: record under tofi; refuse under strict."""
+def _first_acquisition(
+    label: str, mode: str, repin: bool, authenticated: bool = False
+) -> Decision:
+    """Shared first-acquisition outcome: record under tofi; refuse under strict.
 
+    A valid trusted Ed25519 signature (``authenticated``, #67/ADR-0189) VOUCHES for the
+    source, so it satisfies strict mode's "must be pre-provisioned" requirement — the
+    signer's trusted key is the pre-provisioning, in place of a pinned digest. This
+    closes the first-install-TOFU gap for a signed source WITHOUT a blind first trust.
+    """
+
+    if authenticated:
+        return Decision(
+            True, f"authenticated first acquisition of {label} by trusted signature — recording pin"
+        )
     if mode == "strict" and not repin:
         raise VerifyRefusal(
             f"strict mode: no pre-provisioned pin for {label} "
@@ -355,17 +378,21 @@ def decide_generic(
     repin: bool,
     label: str,
     field_name: str = "sha256",
+    authenticated: bool = False,
 ) -> Decision:
     """tofi/strict decision for a single-digest kind (path artifact / git SHA).
 
     * no existing pin → record (tofi first-acquisition), UNLESS ``strict`` without
-      ``--repin`` (which refuses a source that has no pre-provisioned pin).
+      ``--repin`` (which refuses a source that has no pre-provisioned pin) — an
+      ``authenticated`` trusted signature (#67) overrides that refusal (it vouches).
     * existing matches → no re-record (verified).
-    * existing differs → REFUSE, unless ``--repin`` accepts the change.
+    * existing differs → REFUSE, unless ``--repin`` accepts the change (an
+      authenticated signature does NOT bypass a same-identity byte change — that is
+      exactly the drift/tamper signal, so ``--repin`` is still required).
     """
 
     if existing is None:
-        return _first_acquisition(label, mode, repin)
+        return _first_acquisition(label, mode, repin, authenticated)
     prev = getattr(existing, field_name)
     if prev == observed:
         return Decision(False, f"integrity verified for {label} against recorded pin")
@@ -380,18 +407,21 @@ def decide_pypi(
     mode: str,
     repin: bool,
     label: str,
+    authenticated: bool = False,
 ) -> Decision:
     """tofi/strict decision for pypi (version-aware).
 
     Same-version different-bytes is the tamper signal → REFUSE. A version change
     is a legitimate re-pin under tofi (record the new version), but ``strict``
-    still requires ``--repin`` to move. When the version cannot be determined
-    (unparseable filename), fall back to a straight byte comparison — a mismatch
-    is refused, never silently re-pinned (parity with :func:`decide_generic`).
+    still requires ``--repin`` to move — UNLESS the new version is ``authenticated``
+    by a trusted signature (#67), which vouches for the upgrade without ``--repin``.
+    When the version cannot be determined (unparseable filename), fall back to a
+    straight byte comparison — a mismatch is refused, never silently re-pinned
+    (parity with :func:`decide_generic`).
     """
 
     if existing is None:
-        return _first_acquisition(label, mode, repin)
+        return _first_acquisition(label, mode, repin, authenticated)
     version_known = existing.version is not None and observed_version is not None
     if not version_known:
         if existing.sha256 == observed_sha:
@@ -403,8 +433,9 @@ def decide_pypi(
         return _mismatch(
             existing.sha256, observed_sha, label, repin, ctx=f" at the SAME version {observed_version}"
         )
-    # Version changed — a legitimate upgrade under tofi.
-    if mode == "strict" and not repin:
+    # Version changed — a legitimate upgrade under tofi, or a signature-vouched
+    # upgrade under strict (#67: a trusted signature replaces the --repin gesture).
+    if mode == "strict" and not repin and not authenticated:
         raise VerifyRefusal(
             f"strict mode: version change for {label} "
             f"({existing.version}→{observed_version}) needs --repin"

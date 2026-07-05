@@ -70,7 +70,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
-from . import extension_catalog, extension_pins
+from . import extension_catalog, extension_pins, extension_signing
 from .config import get_agent_dir
 
 if TYPE_CHECKING:
@@ -79,7 +79,8 @@ if TYPE_CHECKING:
 _USAGE = (
     "usage: aelix extension <command>\n"
     "  install <path | git-url | package[==version]>  [--yes] [--index-url URL] "
-    "[--offline] [--no-verify] [--strict] [--repin] [--verify-pypi]\n"
+    "[--offline] [--no-verify] [--strict] [--repin] [--verify-pypi] "
+    "[--require-signature] [--trusted-key ID] [--signature PATH]\n"
     "  source add <path | git-url | index-url>        [--yes]\n"
     "  source add --catalog <url | file | git>\n"
     "  source list\n"
@@ -87,10 +88,18 @@ _USAGE = (
     "  list\n"
     "  discover [<query>]                             [--refresh]\n"
     "  discover install <name>                        [--catalog CAT] [--yes] "
-    "[--index-url URL] [--offline] [--no-verify] [--strict] [--repin] [--verify-pypi]\n"
+    "[--index-url URL] [--offline] [--no-verify] [--strict] [--repin] [--verify-pypi] "
+    "[--require-signature] [--trusted-key ID] [--signature PATH]\n"
     "  update [<name>]                                [--yes] [--offline] "
-    "[--no-verify] [--strict] [--repin] [--verify-pypi]\n"
-    "  remove <name>                                  [--yes]"
+    "[--no-verify] [--strict] [--repin] [--verify-pypi] [--require-signature] "
+    "[--trusted-key ID] [--signature PATH]\n"
+    "  remove <name>                                  [--yes]\n"
+    "  keygen                                         [--label L] [--passphrase] "
+    "[--force] [--out DIR]\n"
+    "  sign <artifact> --key <keyId|pem>              [--name N] [--version V] "
+    "[--kind path|pypi] [--out FILE]\n"
+    "  trust add <keyId> --public-key <b64>           [--label L] [--source S] [--yes]\n"
+    "  trust list | remove <keyId> | revoke <keyId>"
 )
 
 # Exit codes: 0 = success; the pip returncode (usually 1) = pip ran and failed;
@@ -297,6 +306,9 @@ def install_extension(
     strict: bool = False,
     repin: bool = False,
     verify_pypi: bool = False,
+    require_signature: bool = False,
+    trusted_key: str | None = None,
+    signature_path: str | None = None,
     agent_dir: str | None = None,
     input_fn: Callable[[str], str] = input,
     runner: PipRunner | None = None,
@@ -305,7 +317,8 @@ def install_extension(
 
     ``0`` on success; the pip returncode when pip ran and failed; ``2`` when pip
     did NOT run (usage/guard error, user abort, a #64 verify refusal, or missing
-    pip). ``runner`` and ``input_fn`` are injectable for tests.
+    pip). ``require_signature`` / ``trusted_key`` / ``signature_path`` drive the #67
+    Ed25519 provenance branch. ``runner`` and ``input_fn`` are injectable for tests.
     """
 
     if not target.strip():
@@ -323,6 +336,18 @@ def install_extension(
 
     if not _pip_available(runner):
         print(_pip_missing_message(), file=sys.stderr)
+        return _EXIT_DIDNT_RUN
+
+    # #67 (ADR-0189): --no-verify skips the WHOLE gate, so it cannot honor a REQUIRED
+    # signature — that is a hard usage error (refuse before prompting), NOT the
+    # warn-and-continue treatment --no-verify + --strict gets (that combo still runs
+    # consent; here a required signature would be silently dropped).
+    if no_verify and require_signature:
+        print(
+            "Error: --no-verify cannot be combined with --require-signature "
+            "(a required signature would be skipped).",
+            file=sys.stderr,
+        )
         return _EXIT_DIDNT_RUN
 
     pip_args = build_pip_args(
@@ -374,6 +399,9 @@ def install_extension(
                 strict=strict,
                 repin=repin,
                 verify_pypi=verify_pypi,
+                require_signature=require_signature,
+                trusted_key=trusted_key,
+                signature_path=signature_path,
                 index_url=index_url,
                 extra_index_urls=extra_index_urls,
                 runner=run,
@@ -386,9 +414,15 @@ def install_extension(
             print(f"Verification refused — pip not run: {exc}", file=sys.stderr)
             return _EXIT_DIDNT_RUN
         except Exception as exc:  # noqa: BLE001 — an internal verify error
-            if strict:
+            # Fail CLOSED whenever verification was REQUIRED — strict (#64) OR a required
+            # signature (#67). An internal error (mkdtemp/copy/hash/download failure, or a
+            # maliciously deep .aelixsig) must never silently drop a demanded check and
+            # install unverified. Only the unenforced default path degrades to a pin-less
+            # install (the shipped #64 tofi behavior).
+            if strict or require_signature:
+                gate = "required-signature" if require_signature else "strict"
                 print(
-                    f"Verification error (strict) — pip not run: {exc}",
+                    f"Verification error ({gate}) — pip not run: {exc}",
                     file=sys.stderr,
                 )
                 return _EXIT_DIDNT_RUN
@@ -522,23 +556,34 @@ def verify_and_pin(
     strict: bool,
     repin: bool,
     verify_pypi: bool,
+    require_signature: bool = False,
+    trusted_key: str | None = None,
+    signature_path: str | None = None,
     index_url: str | None,
     extra_index_urls: Iterable[str] | None,
     runner: PipRunner,
     agent_dir: str | None,
 ) -> _VerifyResult:
-    """The pre-pip integrity gate (ADR-0187). Runs AFTER consent, BEFORE pip.
+    """The pre-pip integrity gate (ADR-0187) + Ed25519 provenance (#67/ADR-0189).
 
-    Returns the argv to execute (rewritten to a local ``--no-index`` install for a
-    verified pypi target) plus a :class:`~extension_pins.Pin` to record IFF the
-    install succeeds. Raises :class:`~extension_pins.VerifyRefusal` to block the
-    install (the caller maps that to exit-code 2, "pip never ran").
+    Runs AFTER consent, BEFORE pip. Returns the argv to execute (rewritten to a local
+    ``--no-index`` install for a verified pypi target) plus a
+    :class:`~extension_pins.Pin` to record IFF the install succeeds. Raises
+    :class:`~extension_pins.VerifyRefusal` to block the install (the caller maps that to
+    exit-code 2, "pip never ran").
 
     Default ``tofi`` verifies path artifacts + pinned git SHAs (recording on first
     acquisition); ``strict`` additionally refuses unpinned sources, mutable git
     refs, and directory/editable paths. pypi two-phase download-verify is opt-in
-    (``verify_pypi`` / ``strict``) in v1 — see ADR-0187 (needs real-index
-    integration testing, #61, before it becomes default-on).
+    (``verify_pypi`` / ``strict`` / ``require_signature``) in v1 — see ADR-0187 (needs
+    real-index integration testing, #61, before it becomes default-on).
+
+    #67: when a ``.aelixsig`` from a TRUSTED key is present and valid, the recorded pin
+    is stamped with the signer keyId/sig/statement and the source is treated as
+    vouched-for (no blind first-acquisition/re-TOFI). A present-but-invalid signature
+    from a trusted key refuses ALWAYS; ``require_signature`` refuses anything lacking a
+    valid trusted signature. Git provenance is not wired in v1 (path + pypi only) —
+    ``require_signature`` on a git target refuses.
     """
 
     mode = "strict" if strict else "tofi"
@@ -559,9 +604,25 @@ def verify_and_pin(
                 staged = Path(dest) / resolved.name
                 shutil.copy2(resolved, staged)
                 observed = extension_pins.sha256_file(staged)
+                # #67: the .aelixsig sits next to the ORIGINAL artifact (its sha256
+                # equals the staged copy's, so the binding is exact). --signature
+                # overrides the sibling location for an out-of-band sidecar.
+                sig = extension_signing.gate_signature(
+                    kind="path", identity=identity,
+                    sidecar_path=(
+                        Path(signature_path) if signature_path
+                        else extension_signing.aelixsig_path_for(resolved)
+                    ),
+                    observed_sha256=observed, canonical_name=None, version=None,
+                    git_sha=None, require_signature=require_signature,
+                    trusted_key=trusted_key, agent_dir=resolved_dir,
+                )
+                if sig.notice:
+                    _print_verify(sig.notice)
                 decision = extension_pins.decide_generic(
                     existing, observed, mode=mode, repin=repin,
                     label=f"path {resolved.name}", field_name="sha256",
+                    authenticated=sig.authenticated,
                 )
                 _print_verify(decision.notice)
                 new_args = [*pip_args[:-1], str(staged)]
@@ -569,6 +630,8 @@ def verify_and_pin(
                     extension_pins.Pin(
                         identity=identity, kind="path", mode=mode,
                         sha256=observed, pinned_at=extension_pins.now_iso(),
+                        key_id=sig.key_id, sig=sig.sig,
+                        sha256_statement=sig.statement_json,
                     )
                     if decision.record
                     else None
@@ -577,7 +640,13 @@ def verify_and_pin(
             except BaseException:
                 shutil.rmtree(dest, ignore_errors=True)
                 raise
-        # A directory / editable source has no single stable artifact.
+        # A directory / editable source has no single stable artifact — and no artifact
+        # to sign, so a required signature cannot be honored either.
+        if require_signature:
+            raise extension_pins.VerifyRefusal(
+                "--require-signature: a directory/editable path has no artifact to "
+                "sign/verify — install a signed built .whl/.tar.gz"
+            )
         if strict:
             raise extension_pins.VerifyRefusal(
                 "strict mode: a directory/editable path has no stable artifact to "
@@ -590,6 +659,15 @@ def verify_and_pin(
         return _VerifyResult(pip_args, None)
 
     if kind == "git":
+        # #67: git provenance is not wired in v1 (path + pypi only) — a git commit SHA
+        # already gives tree immutability. Honor fail-closed: refuse a REQUIRED signature
+        # rather than silently ignoring it.
+        if require_signature:
+            raise extension_pins.VerifyRefusal(
+                "--require-signature: git provenance is not supported in this release "
+                "(sign the built artifact and install it via path/pypi; a git+URL@<sha> "
+                "already pins the commit tree)"
+            )
         git_sha = _extract_git_sha(pip_args[-1])
         if git_sha is None:
             if strict:
@@ -626,8 +704,9 @@ def verify_and_pin(
             ),
         )
 
-    # pypi — two-phase download-verify (opt-in in v1; see ADR-0187).
-    if not (verify_pypi or strict):
+    # pypi — two-phase download-verify (opt-in in v1; see ADR-0187). --require-signature
+    # also forces the download so the signed bytes can be verified before install.
+    if not (verify_pypi or strict or require_signature):
         _print_verify(
             "pypi integrity verification is opt-in this release "
             "(enable with --verify-pypi or --strict) — consent is the gate"
@@ -649,7 +728,7 @@ def verify_and_pin(
             )
         artifact = extension_pins.find_top_level_artifact(Path(dest), canonical)
         if artifact is None:
-            if strict:
+            if strict or require_signature:
                 raise extension_pins.VerifyRefusal(
                     f"could not uniquely locate a downloaded artifact for {target!r} to verify"
                 )
@@ -661,8 +740,21 @@ def verify_and_pin(
             return _VerifyResult(pip_args, None)
         observed = extension_pins.sha256_file(artifact)
         version = extension_pins.version_from_artifact(artifact.name, canonical)
+        # #67: a pypi .aelixsig cannot ride `pip download`, so it is supplied out-of-band
+        # via --signature, bound to the DOWNLOADED artifact's sha256 (air-gap: the
+        # verifier never fetches the sidecar itself).
+        sig = extension_signing.gate_signature(
+            kind="pypi", identity=identity,
+            sidecar_path=Path(signature_path) if signature_path else None,
+            observed_sha256=observed, canonical_name=canonical, version=version,
+            git_sha=None, require_signature=require_signature, trusted_key=trusted_key,
+            agent_dir=resolved_dir,
+        )
+        if sig.notice:
+            _print_verify(sig.notice)
         decision = extension_pins.decide_pypi(
             existing, observed, version, mode=mode, repin=repin, label=f"pypi {bare}",
+            authenticated=sig.authenticated,
         )
         _print_verify(decision.notice)
         new_args = _rewrite_pypi_local(dest, target, upgrade="--upgrade" in pip_args)
@@ -671,6 +763,7 @@ def verify_and_pin(
                 identity=identity, kind="pypi", mode=mode,
                 name=bare, version=version,
                 sha256=observed, pinned_at=extension_pins.now_iso(),
+                key_id=sig.key_id, sig=sig.sig, sha256_statement=sig.statement_json,
             )
             if decision.record
             else None
@@ -700,6 +793,9 @@ class _VerifyOpts:
     strict: bool = False
     repin: bool = False
     verify_pypi: bool = False
+    require_signature: bool = False
+    trusted_key: str | None = None
+    signature_path: str | None = None
 
 
 # =====================================================================
@@ -1121,6 +1217,9 @@ async def _cmd_install(
         strict=parsed.strict,
         repin=parsed.repin,
         verify_pypi=parsed.verify_pypi,
+        require_signature=parsed.require_signature,
+        trusted_key=parsed.trusted_key,
+        signature_path=parsed.signature_path,
         input_fn=input_fn,
         runner=runner,
     )
@@ -1181,7 +1280,12 @@ async def _cmd_update(
     strict = False
     repin = False
     verify_pypi = False
-    for a in args:
+    require_signature = False
+    trusted_key: str | None = None
+    signature_path: str | None = None
+    i = 0
+    while i < len(args):
+        a = args[i]
         if a in ("-y", "--yes"):
             yes = True
         elif a == "--offline":
@@ -1194,6 +1298,26 @@ async def _cmd_update(
             repin = True
         elif a == "--verify-pypi":
             verify_pypi = True
+        elif a == "--require-signature":
+            require_signature = True
+        elif a == "--trusted-key" or a == "--signature":
+            i += 1
+            if i >= len(args) or not args[i].strip():
+                print(f"Error: {a} requires a value.", file=sys.stderr)
+                return _EXIT_DIDNT_RUN
+            if a == "--trusted-key":
+                trusted_key = args[i]
+            else:
+                signature_path = args[i]
+        elif a.startswith("--trusted-key=") or a.startswith("--signature="):
+            flag, value = a.split("=", 1)
+            if not value.strip():
+                print(f"Error: {flag} requires a value.", file=sys.stderr)
+                return _EXIT_DIDNT_RUN
+            if flag == "--trusted-key":
+                trusted_key = value
+            else:
+                signature_path = value
         elif a.startswith("-"):
             print(f"Error: unknown flag {a!r}.\n{_USAGE}", file=sys.stderr)
             return _EXIT_DIDNT_RUN
@@ -1202,9 +1326,12 @@ async def _cmd_update(
         else:
             print(f"Error: unexpected argument {a!r}.\n{_USAGE}", file=sys.stderr)
             return _EXIT_DIDNT_RUN
+        i += 1
 
     verify = _VerifyOpts(
-        no_verify=no_verify, strict=strict, repin=repin, verify_pypi=verify_pypi
+        no_verify=no_verify, strict=strict, repin=repin, verify_pypi=verify_pypi,
+        require_signature=require_signature, trusted_key=trusted_key,
+        signature_path=signature_path,
     )
     sources = settings.get_extension_sources()
     index_urls = _index_urls(sources)
@@ -1287,6 +1414,9 @@ def _upgrade_source(
         strict=verify.strict,
         repin=verify.repin,
         verify_pypi=verify.verify_pypi,
+        require_signature=verify.require_signature,
+        trusted_key=verify.trusted_key,
+        signature_path=verify.signature_path,
         input_fn=input_fn,
         runner=runner,
     )
@@ -1317,6 +1447,9 @@ def _upgrade_pypi_name(
         strict=verify.strict,
         repin=verify.repin,
         verify_pypi=verify.verify_pypi,
+        require_signature=verify.require_signature,
+        trusted_key=verify.trusted_key,
+        signature_path=verify.signature_path,
         input_fn=input_fn,
         runner=runner,
     )
@@ -1539,18 +1672,19 @@ async def _cmd_discover_install(
             if not catalog_name.strip():
                 print("Error: --catalog requires a catalog name.", file=sys.stderr)
                 return _EXIT_DIDNT_RUN
-        elif a == "--index-url":
-            # A value-taking install flag — pass BOTH tokens through untouched.
+        elif a in ("--index-url", "--trusted-key", "--signature"):
+            # A value-taking install flag — pass BOTH tokens through untouched so the
+            # value is never mistaken for the <name> positional.
             install_flags.append(a)
             i += 1
             if i >= len(rest):
-                print("Error: --index-url requires a URL.", file=sys.stderr)
+                print(f"Error: {a} requires a value.", file=sys.stderr)
                 return _EXIT_DIDNT_RUN
             install_flags.append(rest[i])
         elif a.startswith("-"):
             # Any other flag (--yes/--offline/--no-verify/--strict/--repin/
-            # --verify-pypi/--index-url=…) rides straight into _cmd_install, which
-            # validates it and rejects unknowns.
+            # --verify-pypi/--require-signature/--index-url=…/--trusted-key=…) rides
+            # straight into _cmd_install, which validates it and rejects unknowns.
             install_flags.append(a)
         elif name is None:
             name = a
@@ -1615,6 +1749,371 @@ async def _cmd_discover_install(
 
 
 # =====================================================================
+# === #67 (ADR-0189): Ed25519 provenance verbs — keygen / sign / trust =
+# =====================================================================
+
+
+def _cmd_keygen(args: list[str]) -> int:
+    """``extension keygen`` — generate a publisher Ed25519 signing key (local, no pip).
+
+    Writes the PRIVATE key to ``<agent_dir>/keys/<keyId>.pem`` at 0600 and prints ONLY
+    the keyId + base64 public key (for out-of-band ``trust add`` distribution). No pip,
+    no consent prompt — it only creates a key in the user's own key dir.
+    """
+
+    label: str | None = None
+    force = False
+    use_passphrase = False
+    out_dir: str | None = None
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a in ("-h", "--help"):
+            print("usage: aelix extension keygen [--label L] [--passphrase] [--force] [--out DIR]")
+            return 0
+        if a == "--force":
+            force = True
+        elif a == "--passphrase":
+            use_passphrase = True
+        elif a in ("--label", "--out"):
+            i += 1
+            if i >= len(args) or not args[i].strip():
+                print(f"Error: {a} requires a value.", file=sys.stderr)
+                return _EXIT_DIDNT_RUN
+            if a == "--label":
+                label = args[i]
+            else:
+                out_dir = args[i]
+        elif a.startswith("--label="):
+            label = a.split("=", 1)[1]
+        elif a.startswith("--out="):
+            out_dir = a.split("=", 1)[1]
+        else:
+            print(f"Error: unknown flag {a!r}.", file=sys.stderr)
+            return _EXIT_DIDNT_RUN
+        i += 1
+
+    passphrase: bytes | None = None
+    if use_passphrase:
+        import getpass
+
+        pw = getpass.getpass("Passphrase for the new key (blank = none): ")
+        passphrase = pw.encode("utf-8") if pw else None
+
+    try:
+        key_id, public_b64, path = extension_signing.keygen(
+            get_agent_dir(), label=label, passphrase=passphrase, force=force, out_dir=out_dir
+        )
+    except extension_signing.CryptoUnavailable as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return _EXIT_DIDNT_RUN
+    except (FileExistsError, OSError) as exc:
+        print(f"Error: could not write the key ({exc}).", file=sys.stderr)
+        return _EXIT_DIDNT_RUN
+
+    print(f"Generated Ed25519 signing key {key_id}")
+    print(f"  private key : {path}  (keep secret — 0600, never commit)")
+    print(f"  public key  : {public_b64}")
+    hint = f"aelix extension trust add {key_id} --public-key {public_b64}"
+    if label:
+        hint += f" --label {label!r}"
+    print(f"  distribute  : {hint}")
+    return 0
+
+
+def _cmd_sign(args: list[str]) -> int:
+    """``extension sign <artifact> --key <keyId|pem> …`` — write a ``.aelixsig`` (local)."""
+
+    artifact: str | None = None
+    key_ref: str | None = None
+    name: str | None = None
+    version: str | None = None
+    kind = "path"
+    out: str | None = None
+    use_passphrase = False
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a in ("-h", "--help"):
+            print(
+                "usage: aelix extension sign <artifact> --key <keyId|pem-path> "
+                "[--name N] [--version V] [--kind path|pypi] [--passphrase] [--out FILE]"
+            )
+            return 0
+        if a == "--passphrase":
+            use_passphrase = True
+        elif a in ("--key", "--name", "--version", "--kind", "--out"):
+            i += 1
+            if i >= len(args) or not args[i].strip():
+                print(f"Error: {a} requires a value.", file=sys.stderr)
+                return _EXIT_DIDNT_RUN
+            value = args[i]
+            key_ref, name, version, kind, out = _assign_sign_flag(
+                a, value, key_ref, name, version, kind, out
+            )
+        elif a.startswith(("--key=", "--name=", "--version=", "--kind=", "--out=")):
+            flag, value = a.split("=", 1)
+            if not value.strip():
+                print(f"Error: {flag} requires a value.", file=sys.stderr)
+                return _EXIT_DIDNT_RUN
+            key_ref, name, version, kind, out = _assign_sign_flag(
+                flag, value, key_ref, name, version, kind, out
+            )
+        elif a.startswith("-"):
+            print(f"Error: unknown flag {a!r}.", file=sys.stderr)
+            return _EXIT_DIDNT_RUN
+        elif artifact is None:
+            artifact = a
+        else:
+            print(f"Error: unexpected argument {a!r}.", file=sys.stderr)
+            return _EXIT_DIDNT_RUN
+        i += 1
+
+    if artifact is None:
+        print("Error: sign requires an <artifact> path.", file=sys.stderr)
+        return _EXIT_DIDNT_RUN
+    art = Path(artifact).expanduser()
+    if not art.is_file():
+        print(f"Error: artifact {artifact!r} is not a file.", file=sys.stderr)
+        return _EXIT_DIDNT_RUN
+    if key_ref is None:
+        print("Error: sign requires --key <keyId|pem-path>.", file=sys.stderr)
+        return _EXIT_DIDNT_RUN
+    if kind not in ("path", "pypi"):
+        print("Error: --kind must be 'path' or 'pypi'.", file=sys.stderr)
+        return _EXIT_DIDNT_RUN
+
+    key_path = _resolve_key_path(key_ref)
+    if not key_path.is_file():
+        print(f"Error: no private key at {key_path}.", file=sys.stderr)
+        return _EXIT_DIDNT_RUN
+
+    passphrase: bytes | None = None
+    if use_passphrase:
+        import getpass
+
+        pw = getpass.getpass("Key passphrase: ")
+        passphrase = pw.encode("utf-8") if pw else None
+
+    try:
+        priv = extension_signing.load_private_key(key_path, passphrase=passphrase)
+        sidecar, key_id = extension_signing.sign_artifact(
+            art, priv, kind=kind, name=name, version=version,
+            out=Path(out).expanduser() if out else None,
+        )
+    except extension_signing.CryptoUnavailable as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return _EXIT_DIDNT_RUN
+    except Exception as exc:  # noqa: BLE001 — bad passphrase / unreadable key / bad PEM
+        print(f"Error: could not sign ({exc}).", file=sys.stderr)
+        return _EXIT_DIDNT_RUN
+
+    print(f"Signed {art.name} → {sidecar}  (keyId {key_id})")
+    return 0
+
+
+def _assign_sign_flag(
+    flag: str,
+    value: str,
+    key_ref: str | None,
+    name: str | None,
+    version: str | None,
+    kind: str,
+    out: str | None,
+) -> tuple[str | None, str | None, str | None, str, str | None]:
+    """Route one ``sign`` value flag onto its variable (keeps the parse loop flat)."""
+
+    if flag == "--key":
+        key_ref = value
+    elif flag == "--name":
+        name = value
+    elif flag == "--version":
+        version = value
+    elif flag == "--kind":
+        kind = value
+    elif flag == "--out":
+        out = value
+    return key_ref, name, version, kind, out
+
+
+def _resolve_key_path(key_ref: str) -> Path:
+    """A ``--key`` value → a PEM path: a keyId maps to ``<agent_dir>/keys/<id>.pem``."""
+
+    kp = Path(key_ref).expanduser()
+    if kp.suffix == ".pem" or "/" in key_ref or kp.exists():
+        return kp
+    return Path(get_agent_dir()) / "keys" / f"{key_ref}.pem"
+
+
+def _cmd_trust(rest: list[str], *, input_fn: Callable[[str], str]) -> int:
+    """``extension trust add|list|remove|revoke`` — manage the Ed25519 trust store.
+
+    Verification-key trust lives in ``<agent_dir>/trusted_keys.json`` (a sync sidecar,
+    NOT ``SettingsManager`` — no async-flush landmine). ``add`` is an explicit trust
+    decision, so it is consent-gated (y/N, deny-by-default) like ``source add`` / install.
+    """
+
+    if not rest:
+        print(
+            "Error: trust requires a subcommand (add | list | remove | revoke).",
+            file=sys.stderr,
+        )
+        return _EXIT_DIDNT_RUN
+    action, args = rest[0], rest[1:]
+    path = extension_signing.trusted_keys_path(get_agent_dir())
+    store = extension_signing.load_trusted_keys(path)
+
+    if action == "list":
+        if not extension_signing.FIRST_PARTY_KEYS and not store.keys and not store.revoked:
+            print("No trusted keys. Add one with: aelix extension trust add <keyId> --public-key <b64>")
+            return 0
+        print("Trusted verification keys:")
+        for kid in sorted(extension_signing.FIRST_PARTY_KEYS):
+            marker = " (REVOKED)" if kid in store.revoked else ""
+            print(f"  {kid}  [first-party]{marker}")
+        for kid in sorted(store.keys):
+            tk = store.keys[kid]
+            label = f" — {tk.label}" if tk.label else ""
+            marker = " (REVOKED)" if kid in store.revoked else ""
+            print(f"  {kid}{label}{marker}")
+        for kid in sorted(store.revoked):
+            if kid not in extension_signing.FIRST_PARTY_KEYS and kid not in store.keys:
+                print(f"  {kid}  (REVOKED)")
+        return 0
+
+    if action == "add":
+        return _trust_add(args, store=store, path=path, input_fn=input_fn)
+
+    if action in ("remove", "revoke"):
+        key_id = next((a for a in args if not a.startswith("-")), None)
+        if key_id is None or not key_id.strip():
+            print(f"Error: trust {action} requires a <keyId>.", file=sys.stderr)
+            return _EXIT_DIDNT_RUN
+        if action == "remove":
+            if key_id not in store.keys:
+                extra = (
+                    " (it is a first-party key — use `trust revoke` to disable it)"
+                    if key_id in extension_signing.FIRST_PARTY_KEYS
+                    else ""
+                )
+                print(f"Error: no user-added trusted key {key_id!r}{extra}.", file=sys.stderr)
+                return _EXIT_DIDNT_RUN
+            new_keys = {k: v for k, v in store.keys.items() if k != key_id}
+            extension_signing.save_trusted_keys(
+                extension_signing.TrustStore(keys=new_keys, revoked=store.revoked), path
+            )
+            print(f"Removed trusted key {key_id}.")
+            return 0
+        # revoke — append to the local revoked list (wins even over first-party).
+        if key_id in store.revoked:
+            print(f"Key {key_id} is already revoked.")
+            return 0
+        extension_signing.save_trusted_keys(
+            extension_signing.TrustStore(keys=store.keys, revoked=(*store.revoked, key_id)), path
+        )
+        print(f"Revoked key {key_id} (it can no longer authenticate installs).")
+        return 0
+
+    print(
+        f"Error: unknown trust subcommand {action!r} (add | list | remove | revoke).",
+        file=sys.stderr,
+    )
+    return _EXIT_DIDNT_RUN
+
+
+def _trust_add(
+    args: list[str],
+    *,
+    store: extension_signing.TrustStore,
+    path: Path,
+    input_fn: Callable[[str], str],
+) -> int:
+    """``trust add <keyId> --public-key <b64> [--label L] [--source S] [--yes]``."""
+
+    key_id: str | None = None
+    public_b64: str | None = None
+    label: str | None = None
+    source: str | None = None
+    yes = False
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a in ("-y", "--yes"):
+            yes = True
+        elif a in ("--public-key", "--label", "--source"):
+            i += 1
+            if i >= len(args) or not args[i].strip():
+                print(f"Error: {a} requires a value.", file=sys.stderr)
+                return _EXIT_DIDNT_RUN
+            if a == "--public-key":
+                public_b64 = args[i]
+            elif a == "--label":
+                label = args[i]
+            else:
+                source = args[i]
+        elif a.startswith(("--public-key=", "--label=", "--source=")):
+            flag, value = a.split("=", 1)
+            if flag == "--public-key":
+                public_b64 = value
+            elif flag == "--label":
+                label = value
+            else:
+                source = value
+        elif a.startswith("-"):
+            print(f"Error: unknown flag {a!r}.", file=sys.stderr)
+            return _EXIT_DIDNT_RUN
+        elif key_id is None:
+            key_id = a
+        else:
+            print(f"Error: unexpected argument {a!r}.", file=sys.stderr)
+            return _EXIT_DIDNT_RUN
+        i += 1
+
+    if key_id is None or not key_id.strip():
+        print("Error: trust add requires a <keyId>.", file=sys.stderr)
+        return _EXIT_DIDNT_RUN
+    if public_b64 is None or not public_b64.strip():
+        print("Error: trust add requires --public-key <base64>.", file=sys.stderr)
+        return _EXIT_DIDNT_RUN
+
+    # The supplied keyId MUST match the public key bytes (keyId = sha256(pub)[:16]) —
+    # so a typo can never trust a key under the wrong identity.
+    try:
+        derived = extension_signing.public_key_id(public_b64)
+    except ValueError as exc:
+        print(f"Error: invalid public key ({exc}).", file=sys.stderr)
+        return _EXIT_DIDNT_RUN
+    if derived != key_id:
+        print(
+            f"Error: keyId {key_id!r} does not match the public key (its keyId is {derived!r}).",
+            file=sys.stderr,
+        )
+        return _EXIT_DIDNT_RUN
+
+    print(f"Trust Ed25519 key {key_id}" + (f" ({label})" if label else ""))
+    print("  A trusted key authenticates any extension it signs. Only trust keys you vouch for.")
+    if not yes:
+        try:
+            reply = input_fn("Proceed? [y/N] ").strip().lower()
+        except EOFError:
+            reply = ""
+        if reply not in ("y", "yes"):
+            print("Aborted.")
+            return _EXIT_DIDNT_RUN
+
+    new_keys = dict(store.keys)
+    new_keys[key_id] = extension_signing.TrustedKey(
+        key_id=key_id, public_key=public_b64.strip(), label=label,
+        added_at=extension_pins.now_iso(), source=source,
+    )
+    extension_signing.save_trusted_keys(
+        extension_signing.TrustStore(keys=new_keys, revoked=store.revoked), path
+    )
+    print(f"Trusted key {key_id}.")
+    return 0
+
+
+# =====================================================================
 # === Flag parsing for `install` (shared by sync + async entries) ======
 # =====================================================================
 
@@ -1631,6 +2130,9 @@ class _InstallFlags:
     strict: bool
     repin: bool
     verify_pypi: bool
+    require_signature: bool = False
+    trusted_key: str | None = None
+    signature_path: str | None = None
 
 
 def _parse_install_flags(rest: list[str]) -> _InstallFlags | int:
@@ -1644,6 +2146,9 @@ def _parse_install_flags(rest: list[str]) -> _InstallFlags | int:
     strict = False
     repin = False
     verify_pypi = False
+    require_signature = False
+    trusted_key: str | None = None
+    signature_path: str | None = None
     only_positional = False  # set once a bare ``--`` is seen
     i = 0
     while i < len(rest):
@@ -1668,6 +2173,8 @@ def _parse_install_flags(rest: list[str]) -> _InstallFlags | int:
             repin = True
         elif a == "--verify-pypi":
             verify_pypi = True
+        elif a == "--require-signature":
+            require_signature = True
         elif a == "--index-url":
             i += 1
             if i >= len(rest) or not rest[i]:
@@ -1680,6 +2187,30 @@ def _parse_install_flags(rest: list[str]) -> _InstallFlags | int:
                 print("Error: --index-url requires a URL.", file=sys.stderr)
                 return _EXIT_DIDNT_RUN
             index_url = value
+        elif a == "--trusted-key":
+            i += 1
+            if i >= len(rest) or not rest[i].strip():
+                print("Error: --trusted-key requires a keyId.", file=sys.stderr)
+                return _EXIT_DIDNT_RUN
+            trusted_key = rest[i]
+        elif a.startswith("--trusted-key="):
+            value = a.split("=", 1)[1]
+            if not value.strip():
+                print("Error: --trusted-key requires a keyId.", file=sys.stderr)
+                return _EXIT_DIDNT_RUN
+            trusted_key = value
+        elif a == "--signature":
+            i += 1
+            if i >= len(rest) or not rest[i].strip():
+                print("Error: --signature requires a path.", file=sys.stderr)
+                return _EXIT_DIDNT_RUN
+            signature_path = rest[i]
+        elif a.startswith("--signature="):
+            value = a.split("=", 1)[1]
+            if not value.strip():
+                print("Error: --signature requires a path.", file=sys.stderr)
+                return _EXIT_DIDNT_RUN
+            signature_path = value
         elif a in ("-h", "--help"):
             print(_USAGE)
             return 0
@@ -1700,6 +2231,9 @@ def _parse_install_flags(rest: list[str]) -> _InstallFlags | int:
         strict=strict,
         repin=repin,
         verify_pypi=verify_pypi,
+        require_signature=require_signature,
+        trusted_key=trusted_key,
+        signature_path=signature_path,
     )
 
 
@@ -1728,9 +2262,17 @@ async def run_extension_command_async(
         return 0 if args else _EXIT_DIDNT_RUN
     sub, rest = args[0], args[1:]
 
-    # ``list`` needs no settings — answer it before any settings construction.
+    # ``list`` + the #67 provenance verbs need no settings/source-list — answer them
+    # before any settings construction (keygen/sign/trust use the trust-store sidecar
+    # and the key dir under agent_dir, not the SettingsManager-backed source list).
     if sub == "list":
         return _cmd_list()
+    if sub == "keygen":
+        return _cmd_keygen(rest)
+    if sub == "sign":
+        return _cmd_sign(rest)
+    if sub == "trust":
+        return _cmd_trust(rest, input_fn=input_fn)
 
     if settings is None:
         settings = _load_settings()
@@ -1758,7 +2300,7 @@ async def run_extension_command_async(
 
     print(
         f"Error: unknown extension subcommand {sub!r} "
-        "(install | source | list | discover | update | remove).\n"
+        "(install | source | list | discover | update | remove | keygen | sign | trust).\n"
         f"{_USAGE}",
         file=sys.stderr,
     )

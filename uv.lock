@@ -112,6 +112,7 @@ source = { editable = "packages/aelix-coding-agent" }
 dependencies = [
     { name = "aelix-agent-core" },
     { name = "aelix-ai" },
+    { name = "cryptography" },
     { name = "markdown-it-py" },
     { name = "mcp" },
     { name = "pillow" },
@@ -133,6 +134,7 @@ tui = [
 requires-dist = [
     { name = "aelix-agent-core", editable = "packages/aelix-agent-core" },
     { name = "aelix-ai", editable = "packages/aelix-ai" },
+    { name = "cryptography", specifier = ">=42,<49" },
     { name = "markdown-it-py", specifier = ">=3.0" },
     { name = "mcp", specifier = ">=1.27,<2" },
     { name = "pillow", specifier = ">=11.0,<12.0" },
