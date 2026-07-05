@@ -152,6 +152,31 @@ class PackageSourceObject:
     themes: list[str] | None = None
 
 
+@dataclass
+class ExtensionSourceObject:
+    """Aelix-original (#32-A, ADR-0186): a registered extension install source.
+
+    ``spec`` is the exact string a later ``pip install`` consumes — a git URL
+    (``git+https://…``), a pip index URL (``https://pypi.example/simple``), or a
+    local path. ``kind`` is one of ``"index"`` / ``"git"`` / ``"path"``. ``name``
+    is the best-effort distribution / entry-point name captured after a
+    successful install (``None`` until known), so ``extension update <name>`` can
+    locate the source that produced ``<name>`` and reinstall it with
+    ``--upgrade``.
+
+    Deliberately DISTINCT from :class:`PackageSourceObject`: pi's ``packages`` is
+    an npm-package model that bundles sub-resources
+    (extensions/skills/prompts/themes) from one installed package; an aelix
+    extension source describes only WHERE to install FROM. The two never merge —
+    conflating them would put a ``kind`` on the npm shape and a sub-resource
+    filter on the pip-source shape, both nonsensical.
+    """
+
+    spec: str = ""
+    kind: str = ""
+    name: str | None = None
+
+
 #: Pi parity: ``settings-manager.ts:66-74`` ``PackageSource`` union.
 PackageSource = str | PackageSourceObject
 
@@ -189,6 +214,11 @@ class Settings:
     collapse_changelog: bool | None = None
     enable_install_telemetry: bool | None = None
     packages: list[PackageSource] | None = None
+    # Aelix-original (#32-A, ADR-0186): registered extension install sources
+    # (pip index / git repo / local path). Distinct from ``packages`` (pi's
+    # npm-package model). GLOBAL-scope only in practice (user-level install
+    # sources), mirroring ``enabled_models``.
+    extension_sources: list[ExtensionSourceObject] | None = None
     extensions: list[str] | None = None
     skills: list[str] | None = None
     prompts: list[str] | None = None
@@ -255,6 +285,7 @@ SETTINGS_PY_TO_JSON: Final[dict[str, str]] = {
     "collapse_changelog": "collapseChangelog",
     "enable_install_telemetry": "enableInstallTelemetry",
     "packages": "packages",
+    "extension_sources": "extensionSources",
     "extensions": "extensions",
     "skills": "skills",
     "prompts": "prompts",
@@ -333,6 +364,11 @@ NESTED_PY_TO_JSON: Final[dict[str, dict[str, str]]] = {
         "prompts": "prompts",
         "themes": "themes",
     },
+    "ExtensionSourceObject": {
+        "spec": "spec",
+        "kind": "kind",
+        "name": "name",
+    },
 }
 
 
@@ -368,6 +404,7 @@ __all__ = [
     "CompactionSettings",
     "DefaultProjectTrust",
     "DoubleEscapeAction",
+    "ExtensionSourceObject",
     "FollowUpMode",
     "ImageSettings",
     "MarkdownSettings",

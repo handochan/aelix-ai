@@ -65,6 +65,7 @@ from aelix_ai.settings.types import (
     CompactionSettings,
     DefaultProjectTrust,
     DoubleEscapeAction,
+    ExtensionSourceObject,
     FollowUpMode,
     ImageSettings,
     PackageSource,
@@ -110,6 +111,8 @@ def _json_dict_to_settings(raw: dict[str, Any]) -> Settings:
             kwargs[py_field] = _json_dict_to_nested(nested_cls, value)
         elif py_field == "packages" and isinstance(value, list):
             kwargs[py_field] = _json_list_to_packages(value)
+        elif py_field == "extension_sources" and isinstance(value, list):
+            kwargs[py_field] = _json_list_to_ext_sources(value)
         else:
             kwargs[py_field] = value
     return Settings(**kwargs)
@@ -160,6 +163,34 @@ def _json_list_to_packages(raw: list[Any]) -> list[PackageSource]:
     return out
 
 
+def _json_list_to_ext_sources(raw: list[Any]) -> list[ExtensionSourceObject]:
+    """Convert a JSON ``extensionSources`` list to :class:`ExtensionSourceObject`.
+
+    Aelix-original (#32-A). Each entry is an object ``{spec, kind, name?}``; a
+    malformed entry (missing ``spec``, wrong type) is dropped silently, matching
+    the ``packages`` decoder's Pi-parity leniency (a bad settings file must not
+    abort load).
+    """
+
+    out: list[ExtensionSourceObject] = []
+    json_to_py = NESTED_JSON_TO_PY.get("ExtensionSourceObject", {})
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        kwargs: dict[str, Any] = {}
+        for json_key, value in item.items():
+            py_field = json_to_py.get(json_key)
+            if py_field is None:
+                continue
+            kwargs[py_field] = value
+        # A source with no spec is meaningless — drop it (never resolves an
+        # install, and would render as a blank Sources-tab row).
+        if not kwargs.get("spec"):
+            continue
+        out.append(ExtensionSourceObject(**kwargs))
+    return out
+
+
 def _settings_to_json_dict(settings: Settings) -> dict[str, Any]:
     """Convert a :class:`Settings` to a Pi-shape JSON dict (camelCase).
 
@@ -175,6 +206,8 @@ def _settings_to_json_dict(settings: Settings) -> dict[str, Any]:
             continue
         if py_field == "packages":
             out[json_key] = [_package_to_json(p) for p in value]
+        elif py_field == "extension_sources":
+            out[json_key] = [_ext_source_to_json(s) for s in value]
         elif _nested_class_for_field(py_field) is not None:
             out[json_key] = _nested_to_json_dict(value)
         else:
@@ -205,6 +238,16 @@ def _package_to_json(p: PackageSource) -> Any:
     if isinstance(p, str):
         return p
     return _nested_to_json_dict(p)
+
+
+def _ext_source_to_json(s: ExtensionSourceObject) -> dict[str, Any]:
+    """Serialize an :class:`ExtensionSourceObject` to its JSON object form.
+
+    ``name`` is omitted when :data:`None` (Pi-style optional → missing key),
+    mirroring :func:`_nested_to_json_dict`'s None-skip.
+    """
+
+    return _nested_to_json_dict(s)
 
 
 def _scalar_or_list_to_json(value: Any) -> Any:
@@ -774,6 +817,10 @@ class SettingsManager:
                         merged[json_key] = [
                             _package_to_json(p) for p in value
                         ]
+                    elif py_field == "extension_sources":
+                        merged[json_key] = [
+                            _ext_source_to_json(s) for s in value
+                        ]
                     elif is_dataclass(value):
                         merged[json_key] = _nested_to_json_dict(value)
                     elif isinstance(value, list):
@@ -1198,6 +1245,32 @@ class SettingsManager:
         project_settings.packages = list(packages)
         self._mark_project_modified("packages")
         self._save_project_settings(project_settings)
+
+    # --- extensionSources (Aelix-original, #32-A / ADR-0186) ---
+    # GLOBAL-scope only (user-level install sources), mirroring the
+    # ``enabled_models`` get/set shape — no Pi oracle (pi has no such field;
+    # its ``packages`` is a different npm model). The domain logic (classify,
+    # dedupe, name-resolution) lives in the coding-agent CLI; this manager just
+    # persists the raw list, keeping the aelix-ai settings layer thin.
+    def get_extension_sources(self) -> list[ExtensionSourceObject]:
+        """Return the registered extension install sources (defensive copy)."""
+
+        return list(self._settings.extension_sources or [])
+
+    def set_extension_sources(
+        self, sources: list[ExtensionSourceObject]
+    ) -> None:
+        """Replace the registered extension install sources (GLOBAL scope).
+
+        Copies the ``enabled_models`` setter shape: assign the global slot,
+        mark the field modified, enqueue a write. A caller in a do-and-exit
+        context (the CLI) MUST ``await manager.flush()`` afterward — the write
+        is scheduled on the event loop, not committed synchronously.
+        """
+
+        self._global_settings.extension_sources = list(sources)
+        self._mark_modified("extension_sources")
+        self._save()
 
     # --- extensions (Pi `:824-839`) ---
     def get_extension_paths(self) -> list[str]:

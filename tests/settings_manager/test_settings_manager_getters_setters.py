@@ -590,6 +590,58 @@ async def test_set_enabled_models_persists(
     assert saved["enabledModels"] == ["claude-opus-*"]
 
 
+async def test_get_extension_sources_default(manager: SettingsManager) -> None:
+    # #32-A (ADR-0186): unset → empty list (never None; a defensive copy).
+    assert manager.get_extension_sources() == []
+
+
+async def test_set_extension_sources_persists(
+    manager: SettingsManager,
+    settings_dirs: dict[str, Path],
+    read_settings: Any,
+) -> None:
+    from aelix_ai.settings import ExtensionSourceObject
+
+    manager.set_extension_sources(
+        [
+            ExtensionSourceObject(spec="https://idx/simple", kind="index"),
+            ExtensionSourceObject(spec="git+https://h/r.git", kind="git", name="r"),
+        ]
+    )
+    await manager.flush()
+    saved = read_settings(settings_dirs["global_path"])
+    # camelCase JSON key; `name` omitted when None (Pi-style optional).
+    assert saved["extensionSources"] == [
+        {"spec": "https://idx/simple", "kind": "index"},
+        {"spec": "git+https://h/r.git", "kind": "git", "name": "r"},
+    ]
+    # Round-trips back through a fresh manager over the same on-disk file.
+    reloaded = _make_manager(settings_dirs)
+    got = reloaded.get_extension_sources()
+    assert [(s.spec, s.kind, s.name) for s in got] == [
+        ("https://idx/simple", "index", None),
+        ("git+https://h/r.git", "git", "r"),
+    ]
+
+
+def test_extension_sources_decode_drops_malformed() -> None:
+    # #32-A: a hostile/legacy extensionSources list with junk entries (non-dict,
+    # or a dict with no spec) must degrade to only the well-formed entries — a
+    # blank-spec source would render a blank Sources row + a no-op resolution.
+    mgr = SettingsManager.in_memory(
+        {
+            "extensionSources": [
+                "oops",  # not a dict
+                {"kind": "index"},  # spec-less
+                {"spec": "", "kind": "path"},  # empty spec
+                {"spec": "https://x/simple", "kind": "index"},  # the only valid one
+            ]
+        }
+    )
+    got = mgr.get_extension_sources()
+    assert [(s.spec, s.kind) for s in got] == [("https://x/simple", "index")]
+
+
 async def test_set_double_escape_action_persists(
     manager: SettingsManager,
     settings_dirs: dict[str, Path],

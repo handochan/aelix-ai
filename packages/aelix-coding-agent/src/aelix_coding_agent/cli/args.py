@@ -470,6 +470,12 @@ Misc:
 Subcommands:
   extension install <target>      Install an extension via pip (path | git-url |
                                   package[==version]); --yes --index-url --offline
+  extension source add <src>      Register an install source (path | git-url |
+                                  index-url); register-only (add ≠ install)
+  extension source list|remove    List / remove registered sources
+  extension list                  List installed extensions (entry-point ledger)
+  extension update [<name>]       Reinstall recorded source(s) with --upgrade
+  extension remove <name>         Uninstall the extension's distribution
 
 File arguments:
   @<path>                         Inline file content into the first message

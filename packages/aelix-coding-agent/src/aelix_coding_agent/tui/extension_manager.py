@@ -10,9 +10,12 @@ builders are unit-testable without standing up the prompt-toolkit app.
 
 Aelix-additive read-only VIEWER. Runtime enable/disable is NOT supported
 (extensions load once at startup, MCP servers connect at startup) so the
-"Installed" tab is a point-in-time inventory with an honest note. There is no
-extension registry / marketplace, so "Discover" and "Sources" are honest static
-text (no fabricated catalog).
+"Installed" tab is a point-in-time inventory with an honest note. The "Sources"
+tab renders the LIVE persisted ``extension_sources`` list (#32-A, ADR-0186) —
+managed from the CLI (``aelix extension source add|list|remove``); the viewer
+stays read-only (no in-TUI mutation). "Discover" remains honest static text —
+there is no discover-catalog yet (a deferred follow-up), so no fabricated
+listing.
 
 Every failure path (no ``tabbed`` viewer, the viewer raising) surfaces a
 committed message and returns — never crashes the REPL, mirroring the existing
@@ -162,19 +165,40 @@ def build_discover_lines() -> list[str]:
     ]
 
 
-def build_sources_lines() -> list[str]:
-    """Render the "Sources" tab — honest static text (no remote sources).
+def build_sources_lines(sources: Any) -> list[str]:
+    """Render the "Sources" tab from the persisted ``extension_sources`` list.
 
-    There is no configurable remote source list; extensions are discovered
-    from local plugin directories at startup.
+    ``sources`` is an iterable of ``ExtensionSourceObject``-shaped items (#32-A,
+    ADR-0186) — each with ``spec`` / ``kind`` / optional ``name``. Fully
+    getattr-guarded so an odd shape degrades to ``"?"`` rather than raising.
+
+    Empty list → an honest empty-state that points at the CLI (the TUI viewer is
+    read-only; sources are managed via ``aelix extension source …``).
     """
 
-    return [
-        "No extension sources configured.",
-        "",
-        "Plugins are discovered locally (project + global plugin directories) at",
-        "startup. There are no remote sources to add or manage.",
-    ]
+    items = list(sources or [])
+    if not items:
+        return [
+            "No extension sources registered.",
+            "",
+            "Register install sources from the CLI:",
+            "  aelix extension source add <path | git-url | index-url>",
+            "  aelix extension source list / remove",
+            "",
+            "An index source resolves bare-name installs; a git / path source is",
+            "itself an installable extension.",
+        ]
+
+    lines: list[str] = ["Registered sources:"]
+    for src in items:
+        kind = str(getattr(src, "kind", None) or "?")
+        spec = str(getattr(src, "spec", None) or "?")
+        name = getattr(src, "name", None)
+        suffix = f" (installed as {name})" if name else ""
+        lines.append(f"  [{kind}] {spec}{suffix}")
+    lines.append("")
+    lines.append("Read-only: manage sources via `aelix extension source …`.")
+    return lines
 
 
 async def run_extension_manager(
@@ -183,13 +207,21 @@ async def run_extension_manager(
     mcp_manager: Any,
     tabbed: Callable[..., Awaitable[None]] | None,
     commit: Callable[[object], None],
+    sources_getter: Callable[[], Any] | None = None,
 ) -> None:
     """Drive the ``/extension`` read-only tabbed viewer (Sprint WP-8, Feature 3).
 
     Module-level + dependency-injected (duck-typed ``extensions`` list +
-    ``mcp_manager`` + the ``tabbed`` viewer + ``commit``) so the formatting is
-    unit-testable without the prompt-toolkit app. ``shell.py`` wires the live
-    discovered extensions + MCP manager + :meth:`AelixTUIContext.tabbed` into it.
+    ``mcp_manager`` + the ``tabbed`` viewer + ``commit`` + a
+    ``sources_getter``) so the formatting is unit-testable without the
+    prompt-toolkit app. ``shell.py`` wires the live discovered extensions + MCP
+    manager + :meth:`AelixTUIContext.tabbed` + a ``SettingsManager``-backed
+    source reader into it.
+
+    ``sources_getter`` (#32-A) is read INSIDE the Sources render closure so each
+    open reflects the current persisted list (a source added from the CLI while
+    the TUI runs shows up on the next ``/extension``). :data:`None` (or a getter
+    that raises) degrades to the empty-state — never crashes.
 
     Degrades to a committed message when no ``tabbed`` viewer is available
     (headless / not wired) and surfaces any viewer exception as a red line —
@@ -212,13 +244,23 @@ async def run_extension_manager(
         conns = list(getattr(mcp_manager, "connections", {}).values())
         return build_installed_lines(exts, conns)
 
+    def _sources() -> list[str]:
+        # Read the persisted list live at render time so a CLI-added source
+        # appears on the next open. A getter that raises degrades to empty.
+        if sources_getter is None:
+            return build_sources_lines([])
+        try:
+            return build_sources_lines(sources_getter())
+        except Exception:  # noqa: BLE001 — never crash the tab render
+            return build_sources_lines([])
+
     try:
         await tabbed(
             "Extensions",
             [
                 ("Installed", _installed),
                 ("Discover", build_discover_lines),
-                ("Sources", build_sources_lines),
+                ("Sources", _sources),
             ],
         )
     except Exception as exc:  # noqa: BLE001 — surface, never crash the REPL

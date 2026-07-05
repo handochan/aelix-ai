@@ -175,10 +175,35 @@ def test_discover_lines_honest_static() -> None:
     assert any("No registry configured." in line for line in lines)
 
 
-def test_sources_lines_honest_static() -> None:
-    lines = build_sources_lines()
+def test_sources_lines_empty_state() -> None:
+    lines = build_sources_lines([])
     assert lines
-    assert any("No extension sources configured." in line for line in lines)
+    assert any("No extension sources registered." in line for line in lines)
+    # Points the user at the CLI (the viewer is read-only).
+    assert any("aelix extension source add" in line for line in lines)
+
+
+def test_sources_lines_render_persisted() -> None:
+    from aelix_ai.settings import ExtensionSourceObject
+
+    lines = build_sources_lines(
+        [
+            ExtensionSourceObject(spec="https://idx/simple", kind="index"),
+            ExtensionSourceObject(spec="git+https://h/r.git", kind="git", name="r"),
+        ]
+    )
+    body = "\n".join(lines)
+    assert "[index] https://idx/simple" in body
+    assert "[git] git+https://h/r.git (installed as r)" in body
+
+
+def test_sources_lines_getattr_guarded() -> None:
+    # A duck-typed odd shape (missing fields) degrades to "?" rather than raising.
+    class _Odd:
+        kind = "path"
+
+    lines = build_sources_lines([_Odd()])
+    assert any("[path] ?" in line for line in lines)
 
 
 # === run_extension_manager ===
@@ -221,6 +246,51 @@ async def test_run_invokes_tabbed_with_three_tabs() -> None:
     assert "srv — http — connected" in body
     # No degrade message committed on the happy path.
     assert committed == []
+
+
+async def test_run_sources_tab_reads_getter_live() -> None:
+    from aelix_ai.settings import ExtensionSourceObject
+
+    captured: dict[str, Any] = {}
+
+    async def fake_tabbed(title: str, tabs: list[Any]) -> None:
+        captured["tabs"] = tabs
+
+    live: list[Any] = []
+
+    await run_extension_manager(
+        extensions=[],
+        mcp_manager=None,
+        tabbed=fake_tabbed,
+        commit=[].append,
+        sources_getter=lambda: live,  # read live at render time
+    )
+    render = dict(captured["tabs"])["Sources"]
+    assert any("No extension sources registered." in ln for ln in render())
+    # Mutate AFTER open — the closure re-reads, so the new source appears.
+    live.append(ExtensionSourceObject(spec="https://idx/simple", kind="index"))
+    assert any("[index] https://idx/simple" in ln for ln in render())
+
+
+async def test_run_sources_getter_raising_degrades() -> None:
+    captured: dict[str, Any] = {}
+
+    async def fake_tabbed(title: str, tabs: list[Any]) -> None:
+        captured["tabs"] = tabs
+
+    def _boom() -> Any:
+        raise RuntimeError("settings unavailable")
+
+    await run_extension_manager(
+        extensions=[],
+        mcp_manager=None,
+        tabbed=fake_tabbed,
+        commit=[].append,
+        sources_getter=_boom,
+    )
+    render = dict(captured["tabs"])["Sources"]
+    # A raising getter degrades to the empty-state, never crashes the tab.
+    assert any("No extension sources registered." in ln for ln in render())
 
 
 async def test_run_surfaces_tabbed_exception() -> None:

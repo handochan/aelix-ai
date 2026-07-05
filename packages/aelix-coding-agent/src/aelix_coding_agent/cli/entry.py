@@ -734,14 +734,20 @@ async def _resolve_project_trust(
 async def _async_main(argv: list[str]) -> int:
     """Pi parity: ``main()`` body (``main.ts:423-716`` reduced for scope)."""
 
-    # Issue #19 (ADR-0185) — ``aelix extension <subcommand>`` verb dispatch,
-    # BEFORE parse_args: the hand-rolled flat flag parser would swallow
-    # ``extension``/``install`` as chat-prompt positionals. A do-a-thing-and-exit
-    # action, in the spirit of the ``--list-models`` / ``--export`` early exits.
+    # Issue #19 (ADR-0185) / #32-A (ADR-0186) — ``aelix extension <subcommand>``
+    # verb dispatch, BEFORE parse_args: the hand-rolled flat flag parser would
+    # swallow ``extension``/``install`` as chat-prompt positionals. A
+    # do-a-thing-and-exit action, in the spirit of the ``--list-models`` /
+    # ``--export`` early exits. Awaits the ASYNC dispatch directly (we are
+    # already inside the ``asyncio.run`` loop — a nested ``asyncio.run`` shim
+    # would raise) so the marketplace subcommands can ``await`` the async
+    # settings-write flush that persists ``extension_sources``.
     if argv and argv[0] == "extension":
-        from aelix_coding_agent.cli.extension_install import run_extension_command
+        from aelix_coding_agent.cli.extension_install import (
+            run_extension_command_async,
+        )
 
-        return run_extension_command(argv[1:])
+        return await run_extension_command_async(argv[1:])
 
     parsed = parse_args(argv)
 

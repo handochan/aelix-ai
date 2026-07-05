@@ -1077,6 +1077,14 @@ async def run_tui(
             mcp_manager=mcp_manager,
             tabbed=context.tabbed,
             commit=_commit,
+            # #32-A (ADR-0186) — the Sources tab renders the persisted
+            # ``extension_sources`` list live. Bound method (or None when no
+            # SettingsManager is wired) so each open re-reads the current list.
+            sources_getter=(
+                settings_manager.get_extension_sources
+                if settings_manager is not None
+                else None
+            ),
         )
 
     command_ctx = CommandContext(
