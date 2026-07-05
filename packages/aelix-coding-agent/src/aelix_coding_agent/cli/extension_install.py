@@ -39,8 +39,18 @@ pi parity: this is the Python-ecosystem swap of pi's package model
 ``entry_points`` replaces the ``PiManifest`` package root, ``--index-url``
 replaces ``.npmrc``, and ``extension_sources`` mirrors pi's ``packages``
 ``PackageSource[]`` (a DISTINCT field — pi's is an npm-package-with-sub-resources
-model; an aelix source only records WHERE to install FROM). Signing / a
-discover-catalog are OUT of scope for A (separate follow-up ADRs).
+model; an aelix source only records WHERE to install FROM). A discover-catalog is
+OUT of scope (follow-up #65).
+
+Issue #64 (ADR-0187) adds the **pre-pip integrity gate** (:func:`verify_and_pin`,
+:mod:`aelix_coding_agent.cli.extension_pins`): a SHA-256 hash-pin with
+Trust-On-First-Install that runs AFTER the consent prompt and BEFORE pip, refusing
+an install whose bytes no longer match the recorded pin. It adds INTEGRITY only —
+pip still runs the pack's build/setup code after a verify passes, so the
+source-level ``y/N`` consent REMAINS the sole execution-trust boundary. Default
+``tofi`` covers path artifacts + pinned git SHAs; pypi two-phase download-verify is
+opt-in (``--verify-pypi`` / ``--strict``) in v1 pending real-index integration
+testing (#61). Ed25519 provenance is a deferred, forward-compatible seam.
 """
 
 from __future__ import annotations
@@ -50,12 +60,18 @@ import importlib
 import importlib.metadata
 import importlib.util
 import os
+import re
+import shutil
 import subprocess
 import sys
+import tempfile
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
+
+from . import extension_pins
+from .config import get_agent_dir
 
 if TYPE_CHECKING:
     from aelix_ai.settings import ExtensionSourceObject, SettingsManager
@@ -63,12 +79,13 @@ if TYPE_CHECKING:
 _USAGE = (
     "usage: aelix extension <command>\n"
     "  install <path | git-url | package[==version]>  [--yes] [--index-url URL] "
-    "[--offline]\n"
+    "[--offline] [--no-verify] [--strict] [--repin] [--verify-pypi]\n"
     "  source add <path | git-url | index-url>        [--yes]\n"
     "  source list\n"
     "  source remove <path | git-url | index-url>\n"
     "  list\n"
-    "  update [<name>]                                [--yes] [--offline]\n"
+    "  update [<name>]                                [--yes] [--offline] "
+    "[--no-verify] [--strict] [--repin] [--verify-pypi]\n"
     "  remove <name>                                  [--yes]"
 )
 
@@ -96,6 +113,7 @@ __all__ = [
     "PipRunner",
     "SourceKind",
     "TargetKind",
+    "build_download_args",
     "build_pip_args",
     "classify_source",
     "classify_target",
@@ -103,6 +121,7 @@ __all__ = [
     "list_installed_extensions",
     "run_extension_command",
     "run_extension_command_async",
+    "verify_and_pin",
 ]
 
 
@@ -267,13 +286,19 @@ def install_extension(
     extra_index_urls: Iterable[str] | None = None,
     offline: bool = False,
     upgrade: bool = False,
+    no_verify: bool = False,
+    strict: bool = False,
+    repin: bool = False,
+    verify_pypi: bool = False,
+    agent_dir: str | None = None,
     input_fn: Callable[[str], str] = input,
     runner: PipRunner | None = None,
 ) -> int:
     """Install one extension via ``pip``; return a process-style exit code.
 
-    ``0`` on success, ``1`` on user-abort / pip failure, ``2`` on a usage/guard
-    error. ``runner`` and ``input_fn`` are injectable for tests.
+    ``0`` on success; the pip returncode when pip ran and failed; ``2`` when pip
+    did NOT run (usage/guard error, user abort, a #64 verify refusal, or missing
+    pip). ``runner`` and ``input_fn`` are injectable for tests.
     """
 
     if not target.strip():
@@ -321,21 +346,353 @@ def install_extension(
             return _EXIT_DIDNT_RUN  # distinct from pip's own failure code
 
     run = runner if runner is not None else _default_runner
-    result = run(pip_args)
-    code = int(getattr(result, "returncode", 1))
-    if code == 0:
+
+    # #64 (ADR-0187): pre-pip integrity gate — runs AFTER consent, BEFORE pip.
+    # A refusal returns _EXIT_DIDNT_RUN (pip never ran); a rewritten argv (verified
+    # pypi) and/or a pending pin (recorded only on install success) flow back here.
+    if no_verify and strict:
         print(
-            "Installed. Restart aelix (or /reload in the TUI) so the loader "
-            "discovers it via entry_points."
+            "Warning: --no-verify disables the requested --strict verification; "
+            "installing with NO integrity check.",
+            file=sys.stderr,
         )
-    else:
-        print(f"pip install failed (exit {code}).", file=sys.stderr)
-    return code
+    pending_pin: extension_pins.Pin | None = None
+    cleanup_dir: str | None = None
+    if not no_verify:
+        try:
+            verified = verify_and_pin(
+                target,
+                kind,
+                pip_args,
+                strict=strict,
+                repin=repin,
+                verify_pypi=verify_pypi,
+                index_url=index_url,
+                extra_index_urls=extra_index_urls,
+                runner=run,
+                agent_dir=agent_dir,
+            )
+            pip_args = verified.pip_args
+            pending_pin = verified.pin
+            cleanup_dir = verified.cleanup_dir
+        except extension_pins.VerifyRefusal as exc:
+            print(f"Verification refused — pip not run: {exc}", file=sys.stderr)
+            return _EXIT_DIDNT_RUN
+        except Exception as exc:  # noqa: BLE001 — an internal verify error
+            if strict:
+                print(
+                    f"Verification error (strict) — pip not run: {exc}",
+                    file=sys.stderr,
+                )
+                return _EXIT_DIDNT_RUN
+            print(
+                f"Warning: integrity verification skipped ({exc}); "
+                "installing without a pin.",
+                file=sys.stderr,
+            )
+            pending_pin = None
+
+    try:
+        result = run(pip_args)
+        code = int(getattr(result, "returncode", 1))
+        if code == 0:
+            if pending_pin is not None:
+                try:
+                    _record_pin(pending_pin, agent_dir)
+                except Exception as exc:  # noqa: BLE001 — pinning is best-effort
+                    print(
+                        f"Warning: could not record integrity pin: {exc}",
+                        file=sys.stderr,
+                    )
+            print(
+                "Installed. Restart aelix (or /reload in the TUI) so the loader "
+                "discovers it via entry_points."
+            )
+        else:
+            print(f"pip install failed (exit {code}).", file=sys.stderr)
+        return code
+    finally:
+        if cleanup_dir is not None:
+            shutil.rmtree(cleanup_dir, ignore_errors=True)
 
 
 def _default_runner(pip_args: list[str]) -> subprocess.CompletedProcess[bytes]:
     # Inherit stdio so the user sees pip's live progress; never shell=True.
     return subprocess.run(pip_args, check=False)  # noqa: S603 — argv list, no shell
+
+
+# =====================================================================
+# === #64 (ADR-0187): pre-pip integrity verification gate ==============
+# =====================================================================
+
+#: A pinned commit SHA embedded in a git spec: ``…@<40-hex>`` at end-or-``#frag``.
+_GIT_SHA_RE = re.compile(r"@([0-9a-fA-F]{40})(?=$|#)")
+
+
+def _git_repo_identity(git_spec: str) -> str:
+    """A git spec's repo identity — the normalized spec minus any ``@<sha>``.
+
+    So ``git+https://h/r.git@<sha>`` and a later ``…@<other-sha>`` map onto the
+    SAME pin identity (a ref move is a re-pin event, not a new blind trust).
+    """
+
+    return _GIT_SHA_RE.sub("", git_spec)
+
+
+def _extract_git_sha(git_spec: str) -> str | None:
+    """The pinned 40-hex commit SHA in a git spec, or None for a mutable ref."""
+
+    m = _GIT_SHA_RE.search(git_spec)
+    return m.group(1).lower() if m else None
+
+
+def _pin_identity(target: str, kind: TargetKind) -> str:
+    """The canonical pin-store key for a target (path→abs, git→repo, pypi→name)."""
+
+    if kind == "path":
+        return str(Path(target).expanduser().resolve())
+    if kind == "git":
+        return _git_repo_identity(_normalize_git_spec(target))
+    # pypi: PEP 503 canonical name so 'some-pkg' / 'some_pkg' / 'Some.Pkg' — one
+    # PyPI project — key ONE pin (a variant spelling must not TOFI a fresh trust).
+    return extension_pins.canonicalize_name(_bare_package_name(target))
+
+
+def build_download_args(
+    spec: str,
+    *,
+    index_url: str | None,
+    extra_index_urls: Iterable[str] | None,
+    dest: str,
+) -> list[str]:
+    """``python -m pip download <spec> --dest <dest>`` (+ index flags).
+
+    Fetches the FULL dependency closure into ``dest`` (no ``--no-deps``) so the
+    subsequent ``pip install --no-index --find-links <dest>`` can resolve the
+    pack's dependencies locally; the integrity pin still covers ONLY the
+    top-level artifact (transitive deps stay unverified — the documented gap).
+    """
+
+    args = [sys.executable, "-m", "pip", "download", spec, "--dest", dest]
+    if index_url:
+        args += ["--index-url", index_url]
+    for extra in extra_index_urls or ():
+        args += ["--extra-index-url", extra]
+    return args
+
+
+def _rewrite_pypi_local(dest: str, spec: str, *, upgrade: bool) -> list[str]:
+    """Install argv that installs the VERIFIED bytes from the local download dir."""
+
+    base = [sys.executable, "-m", "pip", "install"]
+    if upgrade:
+        base.append("--upgrade")
+    return [*base, "--no-index", "--find-links", dest, spec]
+
+
+def _print_verify(notice: str) -> None:
+    print(f"  ⓘ verify: {notice}")
+
+
+@dataclass(frozen=True)
+class _VerifyResult:
+    """The gate's output: the argv to run + an optional pin to record on success.
+
+    ``cleanup_dir`` is a temp download dir (pypi two-phase) the caller must remove
+    AFTER the install reads from it — the pin is only recorded on install success.
+    """
+
+    pip_args: list[str]
+    pin: extension_pins.Pin | None
+    cleanup_dir: str | None = None
+
+
+def verify_and_pin(
+    target: str,
+    kind: TargetKind,
+    pip_args: list[str],
+    *,
+    strict: bool,
+    repin: bool,
+    verify_pypi: bool,
+    index_url: str | None,
+    extra_index_urls: Iterable[str] | None,
+    runner: PipRunner,
+    agent_dir: str | None,
+) -> _VerifyResult:
+    """The pre-pip integrity gate (ADR-0187). Runs AFTER consent, BEFORE pip.
+
+    Returns the argv to execute (rewritten to a local ``--no-index`` install for a
+    verified pypi target) plus a :class:`~extension_pins.Pin` to record IFF the
+    install succeeds. Raises :class:`~extension_pins.VerifyRefusal` to block the
+    install (the caller maps that to exit-code 2, "pip never ran").
+
+    Default ``tofi`` verifies path artifacts + pinned git SHAs (recording on first
+    acquisition); ``strict`` additionally refuses unpinned sources, mutable git
+    refs, and directory/editable paths. pypi two-phase download-verify is opt-in
+    (``verify_pypi`` / ``strict``) in v1 — see ADR-0187 (needs real-index
+    integration testing, #61, before it becomes default-on).
+    """
+
+    mode = "strict" if strict else "tofi"
+    identity = _pin_identity(target, kind)
+    resolved_dir = agent_dir or get_agent_dir()
+    pins_path = extension_pins.pins_file_path(resolved_dir)
+    pins = extension_pins.load_pins(pins_path)
+    existing = pins.get(identity)
+
+    if kind == "path":
+        resolved = Path(target).expanduser().resolve()
+        if resolved.is_file():
+            # Stage a copy, then hash + install THAT copy so the bytes pip installs
+            # are exactly the bytes verified — closes a check-vs-use TOCTOU on the
+            # original path (mirrors the pypi --find-links flow).
+            dest = tempfile.mkdtemp(prefix="aelix-verify-")
+            try:
+                staged = Path(dest) / resolved.name
+                shutil.copy2(resolved, staged)
+                observed = extension_pins.sha256_file(staged)
+                decision = extension_pins.decide_generic(
+                    existing, observed, mode=mode, repin=repin,
+                    label=f"path {resolved.name}", field_name="sha256",
+                )
+                _print_verify(decision.notice)
+                new_args = [*pip_args[:-1], str(staged)]
+                pin = (
+                    extension_pins.Pin(
+                        identity=identity, kind="path", mode=mode,
+                        sha256=observed, pinned_at=extension_pins.now_iso(),
+                    )
+                    if decision.record
+                    else None
+                )
+                return _VerifyResult(new_args, pin, cleanup_dir=dest)
+            except BaseException:
+                shutil.rmtree(dest, ignore_errors=True)
+                raise
+        # A directory / editable source has no single stable artifact.
+        if strict:
+            raise extension_pins.VerifyRefusal(
+                "strict mode: a directory/editable path has no stable artifact to "
+                "pin — install a built .whl/.tar.gz, or pass --no-verify"
+            )
+        _print_verify(
+            "directory/editable source tree is unverifiable — NOT pinned "
+            "(consent remains the only gate)"
+        )
+        return _VerifyResult(pip_args, None)
+
+    if kind == "git":
+        git_sha = _extract_git_sha(pip_args[-1])
+        if git_sha is None:
+            if strict:
+                raise extension_pins.VerifyRefusal(
+                    "strict mode: a git target must pin a full 40-hex commit SHA "
+                    "(git+URL@<sha>); a mutable branch/tag is refused"
+                )
+            if existing is not None and existing.git_sha:
+                # A pin-stripping downgrade: this repo was pinned to a commit but
+                # is now being installed at a mutable ref. tofi proceeds (strict
+                # would have refused above) but the recorded pin is NOT enforced.
+                _print_verify(
+                    f"⚠ previously pinned to commit {existing.git_sha[:12]}… but this "
+                    "install uses a MUTABLE ref — pin NOT enforced (use git+URL@<sha>)"
+                )
+            else:
+                _print_verify(
+                    "git ref is not pinned to a commit SHA — NOT pinned "
+                    "(pin with git+URL@<40-hex-sha>)"
+                )
+            return _VerifyResult(pip_args, None)
+        decision = extension_pins.decide_generic(
+            existing, git_sha, mode=mode, repin=repin,
+            label=f"git {identity}", field_name="git_sha",
+        )
+        _print_verify(decision.notice)
+        if not decision.record:
+            return _VerifyResult(pip_args, None)
+        return _VerifyResult(
+            pip_args,
+            extension_pins.Pin(
+                identity=identity, kind="git", mode=mode,
+                git_sha=git_sha, pinned_at=extension_pins.now_iso(),
+            ),
+        )
+
+    # pypi — two-phase download-verify (opt-in in v1; see ADR-0187).
+    if not (verify_pypi or strict):
+        _print_verify(
+            "pypi integrity verification is opt-in this release "
+            "(enable with --verify-pypi or --strict) — consent is the gate"
+        )
+        return _VerifyResult(pip_args, None)
+
+    bare = _bare_package_name(target)
+    canonical = extension_pins.canonicalize_name(bare)
+    dest = tempfile.mkdtemp(prefix="aelix-verify-")
+    try:
+        dl_args = build_download_args(
+            target, index_url=index_url, extra_index_urls=extra_index_urls, dest=dest
+        )
+        print(f"  → verify (download): {' '.join(dl_args)}")
+        dl_result = runner(dl_args)
+        if int(getattr(dl_result, "returncode", 1)) != 0:
+            raise extension_pins.VerifyRefusal(
+                "pip download failed during verification — not installing"
+            )
+        artifact = extension_pins.find_top_level_artifact(Path(dest), canonical)
+        if artifact is None:
+            if strict:
+                raise extension_pins.VerifyRefusal(
+                    f"could not uniquely locate a downloaded artifact for {target!r} to verify"
+                )
+            _print_verify(
+                "could not uniquely locate the downloaded artifact — NOT pinned; "
+                "installing normally"
+            )
+            shutil.rmtree(dest, ignore_errors=True)
+            return _VerifyResult(pip_args, None)
+        observed = extension_pins.sha256_file(artifact)
+        version = extension_pins.version_from_artifact(artifact.name, canonical)
+        decision = extension_pins.decide_pypi(
+            existing, observed, version, mode=mode, repin=repin, label=f"pypi {bare}",
+        )
+        _print_verify(decision.notice)
+        new_args = _rewrite_pypi_local(dest, target, upgrade="--upgrade" in pip_args)
+        pin = (
+            extension_pins.Pin(
+                identity=identity, kind="pypi", mode=mode,
+                name=bare, version=version,
+                sha256=observed, pinned_at=extension_pins.now_iso(),
+            )
+            if decision.record
+            else None
+        )
+        # The install reads the verified bytes from ``dest``; the caller removes
+        # it AFTER run() (a pin is only recorded on install success).
+        return _VerifyResult(new_args, pin, cleanup_dir=dest)
+    except BaseException:
+        shutil.rmtree(dest, ignore_errors=True)
+        raise
+
+
+def _record_pin(pin: extension_pins.Pin, agent_dir: str | None) -> None:
+    """Persist ``pin`` into the sidecar (re-reads first to avoid clobbering)."""
+
+    pins_path = extension_pins.pins_file_path(agent_dir or get_agent_dir())
+    pins = extension_pins.load_pins(pins_path)
+    pins[pin.identity] = pin
+    extension_pins.save_pins(pins, pins_path)
+
+
+@dataclass(frozen=True)
+class _VerifyOpts:
+    """The verify-gate flags, bundled so ``update`` can thread them uniformly."""
+
+    no_verify: bool = False
+    strict: bool = False
+    repin: bool = False
+    verify_pypi: bool = False
 
 
 # =====================================================================
@@ -652,7 +1009,8 @@ async def _cmd_install(
     parsed = _parse_install_flags(args)
     if isinstance(parsed, int):
         return parsed
-    target, yes, offline, index_url = parsed
+    target = parsed.target
+    index_url = parsed.index_url
 
     kind = classify_target(target)
     # Bare-name resolution: with no explicit --index-url, fold the registered
@@ -667,10 +1025,14 @@ async def _cmd_install(
     before = _installed_dist_names()
     code = install_extension(
         target,
-        yes=yes,
+        yes=parsed.yes,
         index_url=index_url,
         extra_index_urls=extra_index_urls,
-        offline=offline,
+        offline=parsed.offline,
+        no_verify=parsed.no_verify,
+        strict=parsed.strict,
+        repin=parsed.repin,
+        verify_pypi=parsed.verify_pypi,
         input_fn=input_fn,
         runner=runner,
     )
@@ -727,11 +1089,23 @@ async def _cmd_update(
     name_filter: str | None = None
     yes = False
     offline = False
+    no_verify = False
+    strict = False
+    repin = False
+    verify_pypi = False
     for a in args:
         if a in ("-y", "--yes"):
             yes = True
         elif a == "--offline":
             offline = True
+        elif a == "--no-verify":
+            no_verify = True
+        elif a == "--strict":
+            strict = True
+        elif a == "--repin":
+            repin = True
+        elif a == "--verify-pypi":
+            verify_pypi = True
         elif a.startswith("-"):
             print(f"Error: unknown flag {a!r}.\n{_USAGE}", file=sys.stderr)
             return _EXIT_DIDNT_RUN
@@ -741,6 +1115,9 @@ async def _cmd_update(
             print(f"Error: unexpected argument {a!r}.\n{_USAGE}", file=sys.stderr)
             return _EXIT_DIDNT_RUN
 
+    verify = _VerifyOpts(
+        no_verify=no_verify, strict=strict, repin=repin, verify_pypi=verify_pypi
+    )
     sources = settings.get_extension_sources()
     index_urls = _index_urls(sources)
     # Installable records only — an ``index`` source is a resolution hint, not a
@@ -763,6 +1140,7 @@ async def _cmd_update(
                 index_urls,
                 yes=yes,
                 offline=offline,
+                verify=verify,
                 input_fn=input_fn,
                 runner=runner,
             )
@@ -776,7 +1154,13 @@ async def _cmd_update(
     worst = 0
     for s in targets:
         code = _upgrade_source(
-            s, index_urls, yes=yes, offline=offline, input_fn=input_fn, runner=runner
+            s,
+            index_urls,
+            yes=yes,
+            offline=offline,
+            verify=verify,
+            input_fn=input_fn,
+            runner=runner,
         )
         worst = worst or code  # first nonzero wins (report the earliest failure)
     return worst
@@ -788,6 +1172,7 @@ def _upgrade_source(
     *,
     yes: bool,
     offline: bool,
+    verify: _VerifyOpts,
     input_fn: Callable[[str], str],
     runner: PipRunner | None,
 ) -> int:
@@ -796,7 +1181,13 @@ def _upgrade_source(
     if source.kind == "pypi":
         target = source.name or _bare_package_name(source.spec)
         return _upgrade_pypi_name(
-            target, index_urls, yes=yes, offline=offline, input_fn=input_fn, runner=runner
+            target,
+            index_urls,
+            yes=yes,
+            offline=offline,
+            verify=verify,
+            input_fn=input_fn,
+            runner=runner,
         )
     # git / path: the spec is directly installable.
     return install_extension(
@@ -804,6 +1195,10 @@ def _upgrade_source(
         yes=yes,
         offline=offline,
         upgrade=True,
+        no_verify=verify.no_verify,
+        strict=verify.strict,
+        repin=verify.repin,
+        verify_pypi=verify.verify_pypi,
         input_fn=input_fn,
         runner=runner,
     )
@@ -815,6 +1210,7 @@ def _upgrade_pypi_name(
     *,
     yes: bool,
     offline: bool,
+    verify: _VerifyOpts,
     input_fn: Callable[[str], str],
     runner: PipRunner | None,
 ) -> int:
@@ -829,6 +1225,10 @@ def _upgrade_pypi_name(
         extra_index_urls=extra,
         offline=offline,
         upgrade=True,
+        no_verify=verify.no_verify,
+        strict=verify.strict,
+        repin=verify.repin,
+        verify_pypi=verify.verify_pypi,
         input_fn=input_fn,
         runner=runner,
     )
@@ -911,15 +1311,31 @@ async def _cmd_remove(
 # =====================================================================
 
 
-def _parse_install_flags(
-    rest: list[str],
-) -> tuple[str, bool, bool, str | None] | int:
-    """Parse ``install`` args → ``(target, yes, offline, index_url)`` or a code."""
+@dataclass(frozen=True)
+class _InstallFlags:
+    """Parsed ``install`` arguments (also carried into ``verify_and_pin``)."""
+
+    target: str
+    yes: bool
+    offline: bool
+    index_url: str | None
+    no_verify: bool
+    strict: bool
+    repin: bool
+    verify_pypi: bool
+
+
+def _parse_install_flags(rest: list[str]) -> _InstallFlags | int:
+    """Parse ``install`` args → :class:`_InstallFlags`, a help code, or an error."""
 
     target: str | None = None
     yes = False
     offline = False
     index_url: str | None = None
+    no_verify = False
+    strict = False
+    repin = False
+    verify_pypi = False
     only_positional = False  # set once a bare ``--`` is seen
     i = 0
     while i < len(rest):
@@ -936,6 +1352,14 @@ def _parse_install_flags(
             yes = True
         elif a == "--offline":
             offline = True
+        elif a == "--no-verify":
+            no_verify = True
+        elif a == "--strict":
+            strict = True
+        elif a == "--repin":
+            repin = True
+        elif a == "--verify-pypi":
+            verify_pypi = True
         elif a == "--index-url":
             i += 1
             if i >= len(rest) or not rest[i]:
@@ -959,7 +1383,16 @@ def _parse_install_flags(
     if target is None or not target.strip():
         print(f"Error: install requires a non-empty target.\n{_USAGE}", file=sys.stderr)
         return _EXIT_DIDNT_RUN
-    return target, yes, offline, index_url
+    return _InstallFlags(
+        target=target,
+        yes=yes,
+        offline=offline,
+        index_url=index_url,
+        no_verify=no_verify,
+        strict=strict,
+        repin=repin,
+        verify_pypi=verify_pypi,
+    )
 
 
 # =====================================================================
