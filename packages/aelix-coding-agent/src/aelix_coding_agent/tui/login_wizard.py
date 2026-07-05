@@ -462,6 +462,49 @@ def _model_list_headers(api: str | None, api_key: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {api_key}"}
 
 
+# The Gemini Developer API paginates ListModels via a ``nextPageToken`` — follow
+# it, but cap the follow so a misbehaving / adversarial endpoint can never spin
+# the login flow forever. 20 pages × Gemini's default page size covers every
+# real model list with room to spare (each page is de-duped into ``ids`` anyway).
+_MAX_MODEL_LIST_PAGES = 20
+
+
+def _model_list_items(data: Any) -> Any:
+    """Pull the model array out of the common ListModels response shapes.
+
+    ``{"data": [...]}`` (OpenAI), ``{"models": [...]}`` (Gemini ListModels), or a
+    bare list. ``None`` when the shape is unrecognized (the caller treats it as
+    empty).
+    """
+
+    if isinstance(data, dict):
+        items = data.get("data")
+        if items is None:
+            items = data.get("models")
+        return items
+    if isinstance(data, list):
+        return data
+    return None
+
+
+def _gemini_supports_generate_content(item: dict[str, Any]) -> bool:
+    """``True`` iff a Gemini ListModels item can serve ``generateContent``.
+
+    Gemini stamps each model with ``supportedGenerationMethods`` (e.g.
+    ``["generateContent", "countTokens"]``); embedding / imagen / aqa-only models
+    omit ``generateContent`` and are unusable as chat models, so they are dropped.
+    Conservative when the field is ABSENT (or not a list) — KEEP the item rather
+    than risk over-filtering a valid endpoint whose ListModels omits the
+    capability array; only a present list that lacks ``generateContent`` is
+    dropped. Applied for ``google-*`` apis ONLY (see :func:`_fetch_openai_model_ids`).
+    """
+
+    methods = item.get("supportedGenerationMethods")
+    if isinstance(methods, list):
+        return "generateContent" in methods
+    return True
+
+
 async def _fetch_openai_model_ids(
     base_url: str, api_key: str, *, api: str | None = None, timeout: float = 10.0
 ) -> list[str]:
@@ -473,44 +516,70 @@ async def _fetch_openai_model_ids(
     ``api``: an Anthropic-compatible endpoint gets ``x-api-key`` +
     ``anthropic-version``, the Gemini Developer API gets ``x-goog-api-key``, and
     everything else sends the key as a Bearer token (see
-    :func:`_model_list_headers`). For ``google-*`` apis the ``models/`` prefix
-    Gemini returns on each ``name`` is stripped so ids match the catalog.
+    :func:`_model_list_headers`).
+
+    For ``google-*`` apis two Gemini-only refinements apply (ADR-0190, the
+    optional polish deferred in ADR-0175 §Remaining); the OpenAI / Anthropic
+    paths are untouched — exactly one GET, no capability filter:
+
+    - The ``models/`` prefix Gemini returns on each ``name`` is stripped so ids
+      match the catalog id (``gemini-2.0-flash``).
+    - Only items whose ``supportedGenerationMethods`` includes ``generateContent``
+      are kept (drops embedding / imagen / aqa-only models); items MISSING the
+      field are kept — see :func:`_gemini_supports_generate_content`.
+    - ``nextPageToken`` is followed (``?pageToken=<token>`` appended to the same
+      ``/models`` URL, key + base preserved) and ids accumulate across pages
+      until the token is absent/empty, repeats, or ``_MAX_MODEL_LIST_PAGES`` is
+      reached — a guard against an infinite pagination loop.
     """
+
+    from urllib.parse import quote
 
     import httpx
 
+    is_google = api is not None and api.startswith("google")
     url = base_url.rstrip("/") + "/models"
     headers = _model_list_headers(api, api_key)
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        resp = await client.get(url, headers=headers)
-        resp.raise_for_status()
-        data = resp.json()
-
-    items: Any = None
-    if isinstance(data, dict):
-        items = data.get("data")
-        if items is None:
-            items = data.get("models")
-    elif isinstance(data, list):
-        items = data
     ids: set[str] = set()
-    for item in items or []:
-        if isinstance(item, str):
-            ids.add(item)
-        elif isinstance(item, dict):
-            mid = item.get("id") or item.get("name")
-            if mid:
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        page_url = url
+        seen_tokens: set[str] = set()
+        for _ in range(_MAX_MODEL_LIST_PAGES):
+            resp = await client.get(page_url, headers=headers)
+            resp.raise_for_status()
+            data = resp.json()
+
+            for item in _model_list_items(data) or []:
+                if isinstance(item, str):
+                    ids.add(item)
+                    continue
+                if not isinstance(item, dict):
+                    continue
+                # generateContent capability filter — google-* apis ONLY.
+                if is_google and not _gemini_supports_generate_content(item):
+                    continue
+                mid = item.get("id") or item.get("name")
+                if not mid:
+                    continue
                 mid = str(mid)
                 # Gemini ListModels returns ``name: "models/gemini-2.0-flash"``;
                 # strip the ``models/`` prefix so the registered id matches the
                 # catalog id (``gemini-2.0-flash``) and reads cleanly in /model.
-                if (
-                    api is not None
-                    and api.startswith("google")
-                    and mid.startswith("models/")
-                ):
+                if is_google and mid.startswith("models/"):
                     mid = mid[len("models/") :]
                 ids.add(mid)
+
+            # Only the Gemini Developer API paginates; OpenAI / Anthropic do a
+            # single GET (this breaks on the first pass for them). Stop when the
+            # token is absent/empty (last page) or repeats (endpoint looping).
+            next_token = ""
+            if is_google and isinstance(data, dict):
+                next_token = str(data.get("nextPageToken") or "")
+            if not is_google or not next_token or next_token in seen_tokens:
+                break
+            seen_tokens.add(next_token)
+            sep = "&" if "?" in url else "?"
+            page_url = f"{url}{sep}pageToken={quote(next_token, safe='')}"
     return sorted(ids)
 
 

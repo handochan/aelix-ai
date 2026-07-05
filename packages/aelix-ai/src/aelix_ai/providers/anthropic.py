@@ -36,9 +36,11 @@ from aelix_ai.api_registry import register_provider_object
 from aelix_ai.messages import (
     AssistantMessage,
     TextContent,
+    ThinkingContent,
     ToolCallContent,
 )
 from aelix_ai.providers._anthropic_client import create_async_client
+from aelix_ai.providers._anthropic_compat import get_compat
 from aelix_ai.providers._anthropic_transforms import (
     INTERLEAVED_THINKING_BETA,
     build_params,
@@ -285,13 +287,26 @@ async def stream_anthropic(
                 max_retries=opts.max_retries,
             )
         else:
+            default_headers = _with_interleaved_beta(
+                opts.headers, needs_interleaved
+            )
+            # ADR-0190 (B-lite): inject the session-affinity header on the
+            # API-key branch when a ``session_id`` is present and the model's
+            # compat opts in (fireworks / cloudflare-ai-gateway anthropic).
+            # Mirrors pi anthropic.ts:862-863. ``x-session-affinity`` is a
+            # plain header — NOT an ``anthropic-beta`` value — so it never
+            # touches the delicate beta CSV. Deliberately omitted on the OAuth
+            # branch (pi omits it there too — ADR-0190 divergence #1).
+            if (
+                opts.session_id
+                and get_compat(model).send_session_affinity_headers
+            ):
+                default_headers = dict(default_headers or {})
+                default_headers["x-session-affinity"] = opts.session_id
             client = create_async_client(
                 api_key=opts.api_key,
                 base_url=model.base_url or None,
-                default_headers=_with_interleaved_beta(
-                    opts.headers, needs_interleaved
-                )
-                or None,
+                default_headers=default_headers or None,
                 timeout_ms=opts.timeout_ms,
                 max_retries=opts.max_retries,
             )
@@ -366,12 +381,21 @@ async def stream_anthropic(
             usage_dict = _anthropic_usage_to_dict(
                 getattr(final_message, "usage", None)
             )
+            # ADR-0190: stamp the provenance trio so
+            # ``_transform_messages._is_same_model`` can recognise a prior
+            # anthropic turn as same-model and preserve its signed thinking
+            # blocks on replay. Without this the shared transform always
+            # treats prior thinking as cross-model → downgrades to text →
+            # signatures never travel back. Mirrors openai_completions.py:1300-1308.
             output = replace(
                 output,
                 content=list(output_content),
                 stop_reason=stop_reason,
                 error_message=refusal_message or output.error_message,
                 usage=usage_dict if usage_dict is not None else output.usage,
+                api=model.api,
+                provider=model.provider,
+                model=model.id,
             )
 
         # Abort detection — check after the stream context exits.
@@ -424,6 +448,12 @@ async def stream_anthropic(
             content=list(output_content),
             stop_reason=reason,
             error_message=error_msg,
+            # ADR-0190: stamp provenance on the error path too so a partial
+            # turn surfaced to observers still carries the same-model markers
+            # (mirrors the success build). openai_completions.py:1300-1308.
+            api=model.api,
+            provider=model.provider,
+            model=model.id,
         )
         yield AssistantErrorEvent(
             reason=reason, error=error_output, error_message=error_msg
@@ -468,12 +498,48 @@ async def _translate_event(
             partial = AssistantMessage(content=list(output_content))
             yield TextStartEvent(content_index=index, partial=partial)
         elif bt == "thinking":
-            # ThinkingContent isn't yet part of the Aelix `ContentBlock`
-            # union (Sprint 6b extension); for Sprint 6a we surface the
-            # event family but do NOT append a content block — observers
-            # see ``thinking_*`` events for telemetry.
+            # ADR-0190: append a ThinkingContent at start (alongside the
+            # buffer + ThinkingStartEvent) so EVERY block type adds exactly
+            # one ``output_content`` entry. This keeps the Anthropic
+            # ``index`` aligned with the list position so the text/tool
+            # write-back guards (``index < len(output_content)``) fire for
+            # any block *after* a thinking block — otherwise a following
+            # ``tool_use`` persists with empty ``input={}`` (the latent
+            # off-by-one data-loss bug). Mirrors anthropic.ts:527-535.
             buffer = {"type": "thinking", "thinking": ""}
             block_buffers[index] = buffer
+            output_content.append(
+                ThinkingContent(
+                    thinking="", thinking_signature="", redacted=False
+                )
+            )
+            partial = AssistantMessage(content=list(output_content))
+            from aelix_ai.streaming import ThinkingStartEvent
+
+            yield ThinkingStartEvent(content_index=index, partial=partial)
+        elif bt == "redacted_thinking":
+            # ADR-0190: redacted thinking arrives as a single opaque block
+            # (no deltas). Capture its ``data`` payload into
+            # ``thinking_signature`` (with ``redacted=True``) so replay can
+            # echo it back as ``{type:redacted_thinking, data}``. Appending
+            # here is mandatory too — the append-at-start invariant must hold
+            # for BOTH thinking flavors or the off-by-one persists on
+            # redacted turns. Mirrors anthropic.ts:536-545.
+            redacted_data = getattr(block, "data", "") or ""
+            buffer = {
+                "type": "thinking",
+                "thinking": "[Reasoning redacted]",
+                "thinking_signature": redacted_data,
+                "redacted": True,
+            }
+            block_buffers[index] = buffer
+            output_content.append(
+                ThinkingContent(
+                    thinking="[Reasoning redacted]",
+                    thinking_signature=redacted_data,
+                    redacted=True,
+                )
+            )
             partial = AssistantMessage(content=list(output_content))
             from aelix_ai.streaming import ThinkingStartEvent
 
@@ -520,12 +586,42 @@ async def _translate_event(
         elif dt == "thinking_delta":
             thinking_piece = getattr(delta, "thinking", "")
             buffer["thinking"] = buffer.get("thinking", "") + thinking_piece
+            # ADR-0190: rebuild the ThinkingContent at ``output_content[index]``
+            # (same positional guard as ``text_delta``) so the accumulated
+            # thinking text survives into ``AssistantDoneEvent.message`` —
+            # preserving any signature/redacted already on the buffer.
+            # Mirrors anthropic.ts:573-584.
+            if index < len(output_content) and isinstance(
+                output_content[index], ThinkingContent
+            ):
+                output_content[index] = ThinkingContent(
+                    thinking=buffer["thinking"],
+                    thinking_signature=buffer.get("thinking_signature", ""),
+                    redacted=buffer.get("redacted", False),
+                )
             partial = AssistantMessage(content=list(output_content))
             from aelix_ai.streaming import ThinkingDeltaEvent
 
             yield ThinkingDeltaEvent(
                 delta=thinking_piece, content_index=index, partial=partial
             )
+        elif dt == "signature_delta":
+            # ADR-0190: accumulate the thinking signature and rebuild the
+            # ThinkingContent preserving thinking+redacted. Pi emits NO public
+            # event for signature deltas (anthropic.ts:598-604), so this arm
+            # yields nothing — it only mutates the captured block.
+            sig_piece = getattr(delta, "signature", "")
+            buffer["thinking_signature"] = (
+                buffer.get("thinking_signature", "") + sig_piece
+            )
+            if index < len(output_content) and isinstance(
+                output_content[index], ThinkingContent
+            ):
+                output_content[index] = ThinkingContent(
+                    thinking=buffer.get("thinking", ""),
+                    thinking_signature=buffer["thinking_signature"],
+                    redacted=buffer.get("redacted", False),
+                )
         elif dt == "input_json_delta":
             json_piece = getattr(delta, "partial_json", "")
             buffer["input_json"] = buffer.get("input_json", "") + json_piece
@@ -550,12 +646,25 @@ async def _translate_event(
                 content_index=index, content=buffer.get("text", ""), partial=partial
             )
         elif bt == "thinking":
+            # ADR-0190: lock the final ThinkingContent (thinking + signature
+            # + redacted) into ``output_content[index]`` before emitting the
+            # end event, so the persisted block matches the buffer even when
+            # the signature arrived after the last thinking delta. Mirrors
+            # anthropic.ts:618-624.
+            if index < len(output_content) and isinstance(
+                output_content[index], ThinkingContent
+            ):
+                output_content[index] = ThinkingContent(
+                    thinking=buffer.get("thinking", ""),
+                    thinking_signature=buffer.get("thinking_signature", ""),
+                    redacted=buffer.get("redacted", False),
+                )
             from aelix_ai.streaming import ThinkingEndEvent
 
             yield ThinkingEndEvent(
                 content_index=index,
                 content=buffer.get("thinking", ""),
-                partial=partial,
+                partial=AssistantMessage(content=list(output_content)),
             )
         elif bt == "tool_use":
             # Parse the accumulated input_json into a dict.

@@ -16,6 +16,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any
 
+from aelix_ai.messages import TextContent, ThinkingContent, ToolCallContent
 from aelix_ai.providers.anthropic import _AuthError, stream_anthropic
 from aelix_ai.streaming import (
     AssistantDoneEvent,
@@ -56,6 +57,12 @@ class _MockThinkingBlock:
 
 
 @dataclass
+class _MockRedactedThinkingBlock:
+    data: str = ""
+    type: str = "redacted_thinking"
+
+
+@dataclass
 class _MockContentBlockStart:
     index: int = 0
     content_block: Any = None
@@ -78,6 +85,12 @@ class _MockInputJsonDelta:
 class _MockThinkingDelta:
     thinking: str = ""
     type: str = "thinking_delta"
+
+
+@dataclass
+class _MockSignatureDelta:
+    signature: str = ""
+    type: str = "signature_delta"
 
 
 @dataclass
@@ -442,3 +455,121 @@ async def test_toolcall_start_carries_index() -> None:
     )
     starts = [ev for ev in out if isinstance(ev, ToolCallStartEvent)]
     assert starts and starts[0].content_index == 2
+
+
+# === ADR-0190 — thinking capture + index-invariant regression ===
+
+
+async def test_thinking_then_tool_use_captures_signature_and_args() -> None:
+    """ADR-0190 (A): interleaved ``thinking(idx0) → tool_use(idx1)`` capture.
+
+    Proves three coupled fixes at once:
+
+    * the ``thinking`` block now appends a ``ThinkingContent`` at start, so
+      the Anthropic ``index`` stays aligned with the ``output_content``
+      list position;
+    * because of that alignment the ``tool_use`` write-back guard fires
+      again — its parsed ``input`` is no longer silently dropped (the
+      latent off-by-one data-loss bug);
+    * ``signature_delta`` is captured into ``thinking_signature``.
+
+    The persisted ``AssistantDoneEvent.message`` (what the loop replays) is
+    asserted exactly, plus the provenance stamp.
+    """
+
+    events = [
+        _MockContentBlockStart(index=0, content_block=_MockThinkingBlock()),
+        _MockContentBlockDelta(
+            index=0, delta=_MockThinkingDelta(thinking="let me think")
+        ),
+        _MockContentBlockDelta(
+            index=0, delta=_MockSignatureDelta(signature="SIG123")
+        ),
+        _MockContentBlockStop(index=0),
+        _MockContentBlockStart(
+            index=1,
+            content_block=_MockToolUseBlock(id="t1", name="echo", input={}),
+        ),
+        _MockContentBlockDelta(
+            index=1, delta=_MockInputJsonDelta(partial_json='{"x":1}')
+        ),
+        _MockContentBlockStop(index=1),
+    ]
+    stream = _MockStream(
+        events=events, response=_MockResponse(), final_stop_reason="tool_use"
+    )
+    out = await _collect(
+        stream_anthropic(_model(), Context(), _make_options(stream))
+    )
+    done = next(ev for ev in out if isinstance(ev, AssistantDoneEvent))
+    msg = done.message
+    assert msg.content == [
+        ThinkingContent(thinking="let me think", thinking_signature="SIG123"),
+        ToolCallContent(tool_call_id="t1", tool_name="echo", input={"x": 1}),
+    ]
+    # Provenance stamped so ``_is_same_model`` can preserve the signature.
+    assert msg.api == "anthropic-messages"
+    assert msg.provider == "anthropic"
+    assert msg.model == "claude-3-test"
+
+
+async def test_signature_delta_without_thinking_delta_captured() -> None:
+    """ADR-0190 (item 3): a lone ``signature_delta`` (no preceding
+    ``thinking_delta``) still lands in ``ThinkingContent.thinking_signature``.
+
+    The full ``content_block_start(thinking) → content_block_delta(
+    signature_delta) → content_block_stop`` sequence runs with NO thinking
+    delta. The persisted ``AssistantDoneEvent.message`` must still carry the
+    signature on the thinking block at that index.
+    """
+
+    events = [
+        _MockContentBlockStart(index=0, content_block=_MockThinkingBlock()),
+        _MockContentBlockDelta(
+            index=0, delta=_MockSignatureDelta(signature="SIG123")
+        ),
+        _MockContentBlockStop(index=0),
+    ]
+    stream = _MockStream(events=events, response=_MockResponse())
+    out = await _collect(
+        stream_anthropic(_model(), Context(), _make_options(stream))
+    )
+    done = next(ev for ev in out if isinstance(ev, AssistantDoneEvent))
+    block = done.message.content[0]
+    assert isinstance(block, ThinkingContent)
+    assert block.thinking_signature == "SIG123"
+
+
+async def test_redacted_thinking_then_text_captures_payload() -> None:
+    """ADR-0190 (B): ``redacted_thinking(idx0) → text(idx1)`` capture.
+
+    The redacted block's opaque ``data`` payload lands in
+    ``thinking_signature`` (with ``redacted=True``) and the append-at-start
+    invariant keeps the following text block's write-back intact.
+    """
+
+    events = [
+        _MockContentBlockStart(
+            index=0,
+            content_block=_MockRedactedThinkingBlock(data="REDACTED_PAYLOAD"),
+        ),
+        _MockContentBlockStop(index=0),
+        _MockContentBlockStart(index=1, content_block=_MockTextBlock()),
+        _MockContentBlockDelta(
+            index=1, delta=_MockTextDelta(text="visible answer")
+        ),
+        _MockContentBlockStop(index=1),
+    ]
+    stream = _MockStream(events=events, response=_MockResponse())
+    out = await _collect(
+        stream_anthropic(_model(), Context(), _make_options(stream))
+    )
+    done = next(ev for ev in out if isinstance(ev, AssistantDoneEvent))
+    assert done.message.content == [
+        ThinkingContent(
+            thinking="[Reasoning redacted]",
+            thinking_signature="REDACTED_PAYLOAD",
+            redacted=True,
+        ),
+        TextContent(text="visible answer"),
+    ]

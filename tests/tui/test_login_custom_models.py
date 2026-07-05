@@ -52,6 +52,42 @@ def _patch_httpx(monkeypatch, payload: object) -> None:
     monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **k: _FakeClient(payload))
 
 
+class _SeqClient:
+    """An ``AsyncClient`` stub returning a scripted payload per GET.
+
+    Records ``(url, headers)`` for every GET into a shared ``calls`` list so a
+    test can assert both the exact number of GETs and the pagination URLs. The
+    last payload is repeated if more GETs happen than payloads supplied.
+    """
+
+    def __init__(self, payloads: list, calls: list) -> None:
+        self._payloads = payloads
+        self._calls = calls
+
+    async def __aenter__(self) -> _SeqClient:
+        return self
+
+    async def __aexit__(self, *_a: object) -> bool:
+        return False
+
+    async def get(self, url: str, headers: dict | None = None) -> _FakeResp:
+        i = len(self._calls)
+        self._calls.append((url, headers))
+        return _FakeResp(self._payloads[min(i, len(self._payloads) - 1)])
+
+
+def _patch_httpx_seq(monkeypatch, payloads: list) -> list:
+    """Patch ``httpx.AsyncClient`` to a :class:`_SeqClient`; return the calls log."""
+
+    import httpx
+
+    calls: list = []
+    monkeypatch.setattr(
+        httpx, "AsyncClient", lambda *a, **k: _SeqClient(payloads, calls)
+    )
+    return calls
+
+
 def _aret(value: object):
     async def _f(*_a: object, **_k: object) -> object:
         return value
@@ -123,6 +159,102 @@ async def test_fetch_gemini_compatible_headers_and_prefix(monkeypatch) -> None:
         == "https://generativelanguage.googleapis.com/v1beta/models"
     )
     assert _FakeClient.last_headers == {"x-goog-api-key": "gkey"}
+
+
+async def test_fetch_gemini_filters_generate_content(monkeypatch) -> None:
+    # ADR-0190 polish: for google-* apis, keep only models whose
+    # ``supportedGenerationMethods`` includes ``generateContent`` (drops
+    # embedding / imagen / aqa-only models). A model MISSING the field is kept
+    # (conservative KEEP-if-absent — do not over-filter a sparse endpoint).
+    _patch_httpx(
+        monkeypatch,
+        {
+            "models": [
+                {
+                    "name": "models/gemini-2.0-flash",
+                    "supportedGenerationMethods": ["generateContent", "countTokens"],
+                },
+                {
+                    "name": "models/text-embedding-004",
+                    "supportedGenerationMethods": ["embedContent"],
+                },
+                {"name": "models/gemini-legacy"},  # no field → conservative KEEP
+            ]
+        },
+    )
+    ids = await lw._fetch_openai_model_ids(
+        "https://generativelanguage.googleapis.com/v1beta",
+        "gkey",
+        api="google-generative-ai",
+    )
+    # The embedding-only model is dropped; the chat model and the field-less
+    # model both register.
+    assert ids == ["gemini-2.0-flash", "gemini-legacy"]
+
+
+async def test_fetch_gemini_follows_next_page_token(monkeypatch) -> None:
+    # ADR-0190 polish: for google-* apis, follow ``nextPageToken`` and accumulate
+    # generateContent models across pages. Page 1 carries a token, page 2 does
+    # not → exactly two GETs, both pages' chat models register (page 2's
+    # embedding-only model is still filtered out).
+    page1 = {
+        "models": [
+            {
+                "name": "models/gemini-a",
+                "supportedGenerationMethods": ["generateContent"],
+            }
+        ],
+        "nextPageToken": "TOK2",
+    }
+    page2 = {
+        "models": [
+            {
+                "name": "models/gemini-b",
+                "supportedGenerationMethods": ["generateContent"],
+            },
+            {
+                "name": "models/embed-only",
+                "supportedGenerationMethods": ["embedContent"],
+            },
+        ]
+    }
+    calls = _patch_httpx_seq(monkeypatch, [page1, page2])
+    ids = await lw._fetch_openai_model_ids(
+        "https://generativelanguage.googleapis.com/v1beta",
+        "gkey",
+        api="google-generative-ai",
+    )
+    assert ids == ["gemini-a", "gemini-b"]  # both pages, embedding filtered
+    assert len(calls) == 2  # exactly two GETs (page 1 + page 2)
+    assert calls[0][0] == "https://generativelanguage.googleapis.com/v1beta/models"
+    # page 2 re-requests the SAME /models URL with ?pageToken appended, key/base
+    # preserved (the key rides the header, not the query).
+    assert calls[1][0] == (
+        "https://generativelanguage.googleapis.com/v1beta/models?pageToken=TOK2"
+    )
+    assert calls[1][1] == {"x-goog-api-key": "gkey"}
+
+
+async def test_fetch_openai_single_get_unfiltered(monkeypatch) -> None:
+    # Regression: a plain OpenAI-compatible fetch does exactly ONE GET and is
+    # UNFILTERED — the generateContent capability filter and nextPageToken
+    # pagination are google-* only. A stray ``supportedGenerationMethods`` /
+    # ``nextPageToken`` in an OpenAI-shaped response must be ignored.
+    payload = {
+        "data": [
+            {"id": "gpt-x", "supportedGenerationMethods": ["embedContent"]},
+            {"id": "gpt-y"},
+        ],
+        "nextPageToken": "SHOULD-BE-IGNORED",
+    }
+    calls = _patch_httpx_seq(monkeypatch, [payload, {"data": [{"id": "gpt-z"}]}])
+    ids = await lw._fetch_openai_model_ids(
+        "https://h/v1", "k", api="openai-completions"
+    )
+    # ``gpt-x`` survives despite an embedding-only method list (no filter), and
+    # the second page is never fetched (no pagination).
+    assert ids == ["gpt-x", "gpt-y"]
+    assert len(calls) == 1  # single GET, nextPageToken NOT followed
 
 
 # ── _write_custom_models_json ──────────────────────────────────────────

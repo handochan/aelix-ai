@@ -16,6 +16,7 @@ The function shapes mirror Pi's helpers:
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from aelix_ai.messages import (
@@ -23,9 +24,13 @@ from aelix_ai.messages import (
     ImageContent,
     Message,
     TextContent,
+    ThinkingContent,
     ToolCallContent,
     ToolResultMessage,
     UserMessage,
+)
+from aelix_ai.providers._transform_messages import (
+    transform_messages as shared_transform_messages,
 )
 from aelix_ai.streaming import Model
 
@@ -115,6 +120,38 @@ def _content_blocks_to_anthropic(
     for block in blocks:
         if isinstance(block, TextContent):
             out.append({"type": "text", "text": block.text})
+        elif isinstance(block, ThinkingContent):
+            # ADR-0190: replay thinking blocks in pi's exact 4-way order
+            # (anthropic.ts:1056-1080). Thinking blocks were captured first,
+            # so they serialize ahead of text/tool blocks in natural order.
+            if block.redacted:
+                # Redacted: echo the opaque payload back as redacted_thinking.
+                out.append(
+                    {
+                        "type": "redacted_thinking",
+                        "data": block.thinking_signature,
+                    }
+                )
+            elif not block.thinking.strip():
+                # Empty thinking (e.g. a start-only block) — skip entirely.
+                continue
+            elif not (block.thinking_signature or "").strip():
+                # Missing/empty signature (e.g. aborted stream): downgrade to
+                # a plain text block so the API doesn't reject an unsigned
+                # thinking block (and Claude doesn't mimic <thinking> tags).
+                # UNCONDITIONAL (pi's inline "allowEmptySignature" behavior,
+                # anthropic.ts:1069) — NOT compat-gated. Still reachable after
+                # the shared transform, which KEEPS a same-model non-empty
+                # unsigned thinking block (_transform_messages.py:182-185).
+                out.append({"type": "text", "text": block.thinking})
+            else:
+                out.append(
+                    {
+                        "type": "thinking",
+                        "thinking": block.thinking,
+                        "signature": block.thinking_signature,
+                    }
+                )
         elif isinstance(block, ImageContent):
             # Anthropic expects {type:image, source:{type, media_type, data}}.
             # Sprint 6b (P-61): prefer the new ``mime_type`` + ``data``
@@ -145,16 +182,49 @@ def _content_blocks_to_anthropic(
     return out
 
 
-def transform_messages(messages: list[Message]) -> list[dict[str, Any]]:
+def _normalize_anthropic_tool_call_id(
+    tool_call_id: str,
+    model: Model,
+    assistant: AssistantMessage,
+) -> str:
+    """Pi parity ``normalizeToolCallId`` (anthropic.ts:990-991).
+
+    Coerce a tool-call id to Anthropic's allowed charset (``[a-zA-Z0-9_-]``)
+    and 64-char cap. pi applies this unconditionally; native ``toolu_…`` ids
+    are no-ops, so only cross-model ids (rewritten on the not-same-model path
+    by the shared transform) actually change.
+    """
+
+    return re.sub(r"[^a-zA-Z0-9_-]", "_", tool_call_id)[:64]
+
+
+def transform_messages(
+    messages: list[Message], model: Model
+) -> list[dict[str, Any]]:
     """Convert Aelix ``Message`` list → Anthropic SDK ``MessageParam`` list.
 
     Pi parity: ``providers/transform-messages.ts``. Tool results are
     grouped into the most recent ``user`` message (Anthropic requires
     tool_result blocks inside a user message) per Pi's behavior.
+
+    ADR-0190: route through the shared cross-provider transform FIRST
+    (same-model thinking preservation, cross-model drop/convert, orphan
+    tool-call synthesis, errored/aborted turn drop, and tool-call-id
+    normalization via :func:`_normalize_anthropic_tool_call_id`), then run
+    the local per-shape map + tool_result coalescing over its **output** —
+    which may have inserted synthetic :class:`ToolResultMessage`\\ s and
+    dropped errored turns. Mirrors ``openai_completions.py:325`` /
+    ``_google_shared.py:57``.
     """
 
+    normalized = shared_transform_messages(
+        messages,
+        model,
+        normalize_tool_call_id=_normalize_anthropic_tool_call_id,
+    )
+
     out: list[dict[str, Any]] = []
-    for msg in messages:
+    for msg in normalized:
         if isinstance(msg, UserMessage):
             out.append(
                 {
@@ -219,7 +289,7 @@ def build_params(
     params: dict[str, Any] = {
         "model": model.id or model.name,
         "max_tokens": max_tokens,
-        "messages": transform_messages(messages),
+        "messages": transform_messages(messages, model),
     }
     if system_prompt:
         params["system"] = system_prompt
