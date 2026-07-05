@@ -149,20 +149,88 @@ def build_installed_lines(extensions: Any, mcp_conns: Any) -> list[str]:
     return lines
 
 
-def build_discover_lines() -> list[str]:
-    """Render the "Discover" tab — honest static text (no marketplace).
+def _catalog_label(cat: Any) -> str:
+    """Best-effort display label for a cached ``Catalog`` (getattr-guarded)."""
 
-    Aelix has no extension registry / marketplace, so there is nothing to
-    fetch. The text says so plainly rather than fabricating a catalog.
+    label_fn = getattr(cat, "label", None)
+    if callable(label_fn):
+        try:
+            label = label_fn()
+        except Exception:  # noqa: BLE001 — degrade, never raise in a render path
+            label = None
+        if label:
+            return str(label)
+    name = getattr(cat, "name", None)
+    if name:
+        return str(name)
+    location = getattr(cat, "location", None)
+    return str(location) if location else "?"
+
+
+def _entry_version(entry: Any) -> str | None:
+    """Best-effort display version for a ``CatalogEntry`` (getattr-guarded)."""
+
+    dv = getattr(entry, "display_version", None)
+    if callable(dv):
+        try:
+            version = dv()
+        except Exception:  # noqa: BLE001 — degrade, never raise in a render path
+            return None
+        return str(version) if version else None
+    return None
+
+
+def build_discover_lines(catalogs: Any) -> list[str]:
+    """Render the "Discover" tab from the cached catalogs (Issue #65, ADR-0188).
+
+    ``catalogs`` is the cached ``list[Catalog]`` (each with ``label()`` /
+    ``entries`` / optional ``error``) read live by ``run_extension_manager`` via
+    the injected ``catalog_getter`` — the TUI reads the on-disk cache only (no
+    network I/O in this render path; ``discover --refresh`` is the sole fetcher).
+    Fully getattr-guarded (like :func:`build_sources_lines`) so an odd shape
+    degrades rather than raising.
+
+    Entries group under each catalog label, rendered
+    ``  <name>  <version?>  — <description?>``; a fetch failure surfaces a
+    ``⚠ <error>`` row for that catalog. Empty (no catalog registered) → an honest
+    pointer at the CLI ``source add --catalog`` command. The catalog is ADVISORY
+    (search/install go through ``aelix extension discover …``); the tab itself is
+    read-only.
     """
 
-    return [
-        "No registry configured.",
-        "",
-        "Aelix has no extension marketplace yet. Install plugins by adding an",
-        "aelix-plugin.toml under a discovered plugin directory (project or",
-        "global), then restart so they load at startup.",
-    ]
+    cats = list(catalogs or [])
+    if not cats:
+        return [
+            "No catalog registered — register one with:",
+            "  aelix extension source add --catalog <url|file|git>",
+            "",
+            "A catalog is advisory: it only lists installable extensions. Search",
+            "and install via `aelix extension discover …`.",
+        ]
+
+    lines: list[str] = []
+    for cat in cats:
+        lines.append(f"{_catalog_label(cat)}:")
+        error = getattr(cat, "error", None)
+        entries = list(getattr(cat, "entries", ()) or [])
+        if error:
+            lines.append(f"  ⚠ {error}")
+        elif not entries:
+            lines.append("  (no extensions listed)")
+        for entry in entries:
+            name = str(getattr(entry, "name", None) or "?")
+            version = _entry_version(entry)
+            description = getattr(entry, "description", None)
+            row = f"  {name}"
+            if version:
+                row += f"  {version}"
+            if description:
+                row += f"  — {description}"
+            lines.append(row)
+        lines.append("")
+
+    lines.append("Read-only: search/install via `aelix extension discover …`.")
+    return lines
 
 
 def build_sources_lines(sources: Any) -> list[str]:
@@ -208,6 +276,7 @@ async def run_extension_manager(
     tabbed: Callable[..., Awaitable[None]] | None,
     commit: Callable[[object], None],
     sources_getter: Callable[[], Any] | None = None,
+    catalog_getter: Callable[[], Any] | None = None,
 ) -> None:
     """Drive the ``/extension`` read-only tabbed viewer (Sprint WP-8, Feature 3).
 
@@ -222,6 +291,12 @@ async def run_extension_manager(
     open reflects the current persisted list (a source added from the CLI while
     the TUI runs shows up on the next ``/extension``). :data:`None` (or a getter
     that raises) degrades to the empty-state — never crashes.
+
+    ``catalog_getter`` (Issue #65, ADR-0188) is read INSIDE the Discover render
+    closure — it returns the cached ``list[Catalog]`` (``load_cached_catalog``, a
+    SYNC on-disk read, NO network) so the filterable Discover tab reflects the
+    last ``discover --refresh``. :data:`None` (or a getter that raises) degrades
+    to the empty-state.
 
     Degrades to a committed message when no ``tabbed`` viewer is available
     (headless / not wired) and surfaces any viewer exception as a red line —
@@ -254,15 +329,29 @@ async def run_extension_manager(
         except Exception:  # noqa: BLE001 — never crash the tab render
             return build_sources_lines([])
 
+    def _discover() -> list[str]:
+        # Read the cached catalogs live at render time (SYNC disk read — no
+        # network in the render closure; ADR-0188). A getter that raises degrades
+        # to the empty-state. Re-invoked on every keypress by the filterable tab.
+        if catalog_getter is None:
+            return build_discover_lines([])
+        try:
+            return build_discover_lines(catalog_getter())
+        except Exception:  # noqa: BLE001 — never crash the tab render
+            return build_discover_lines([])
+
+    # The Discover tab is the ONLY filterable tab — its cached catalog can be
+    # long, so type-to-filter narrows it in place (Installed / Sources stay
+    # read-only). Compute its index so the filter set never drifts from the order.
+    tabs: list[tuple[str, Callable[[], list[str]]]] = [
+        ("Installed", _installed),
+        ("Discover", _discover),
+        ("Sources", _sources),
+    ]
+    discover_idx = next((i for i, (name, _) in enumerate(tabs) if name == "Discover"), 1)
+
     try:
-        await tabbed(
-            "Extensions",
-            [
-                ("Installed", _installed),
-                ("Discover", build_discover_lines),
-                ("Sources", _sources),
-            ],
-        )
+        await tabbed("Extensions", tabs, filter_tabs={discover_idx})
     except Exception as exc:  # noqa: BLE001 — surface, never crash the REPL
         commit(Text(f"✖ extension manager failed: {exc}", style="bold red"))
 

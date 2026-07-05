@@ -818,3 +818,98 @@ async def test_footer_multiline_toggle_applies_live() -> None:
         cfg.multiline = False
         ctx._refresh_footer()
         assert chrome.footer_line_count() == 1  # collapsed live
+
+
+# === Issue #65 (ADR-0188) — tabbed() in-tab type-to-filter keybinding path ===
+
+
+async def test_tabbed_q_yields_to_filter_on_filterable_tab() -> None:
+    # On a FILTERABLE tab 'q' is a printable filter char, NOT a close key: after
+    # typing, the future stays pending (q was absorbed). Only Esc / Ctrl-C close.
+    async with _ctx(run_app=True) as (ctx, chrome, pipe):
+        fut = asyncio.ensure_future(
+            ctx.tabbed("T", [("Discover", lambda: ["fmt", "lint"])], filter_tabs={0})
+        )
+        await _wait_float(chrome)
+        pipe.send_text("ab")  # printable → into the live filter
+        pipe.send_text("q")  # 'q' yields to the filter here (does NOT close)
+        await asyncio.sleep(0.15)
+        assert not fut.done()  # still open — 'q' was absorbed, not a close
+        pipe.send_text("\x1b")  # Esc closes on a filterable tab
+        assert await asyncio.wait_for(fut, timeout=5) is None
+
+
+async def test_tabbed_q_closes_on_non_filterable_tab() -> None:
+    # A tab NOT in filter_tabs keeps 'q' as its historical close binding: here
+    # filter_tabs={5} means tab 0 is read-only, so 'q' resolves the future.
+    async with _ctx(run_app=True) as (ctx, chrome, pipe):
+        fut = asyncio.ensure_future(
+            ctx.tabbed("T", [("Discover", lambda: ["fmt", "lint"])], filter_tabs={5})
+        )
+        await _wait_float(chrome)
+        pipe.send_text("q")  # tab 0 not filterable → 'q' closes
+        assert await asyncio.wait_for(fut, timeout=5) is None
+
+
+async def test_tabbed_printable_absorbed_on_filterable_tab() -> None:
+    # A generic printable char on a filterable tab appends to the filter and must
+    # not close the modal; Esc still closes cleanly afterward.
+    async with _ctx(run_app=True) as (ctx, chrome, pipe):
+        fut = asyncio.ensure_future(
+            ctx.tabbed("T", [("Discover", lambda: ["fmt", "lint"])], filter_tabs={0})
+        )
+        await _wait_float(chrome)
+        pipe.send_text("z")  # printable → into the filter (absorbed, not a close)
+        await asyncio.sleep(0.15)
+        assert not fut.done()
+        pipe.send_text("\x1b")  # Esc closes
+        assert await asyncio.wait_for(fut, timeout=5) is None
+
+
+async def test_tabbed_backspace_on_filterable_tab_then_escape_closes() -> None:
+    # Backspace edits the live filter on a filterable tab; it must not crash and
+    # must not close. "\x7f" is the DEL byte prompt_toolkit maps to Keys.ControlH,
+    # which the "backspace" alias binds to — the same sequence a terminal sends.
+    async with _ctx(run_app=True) as (ctx, chrome, pipe):
+        fut = asyncio.ensure_future(
+            ctx.tabbed("T", [("Discover", lambda: ["fmt", "lint"])], filter_tabs={0})
+        )
+        await _wait_float(chrome)
+        pipe.send_text("a")  # seed the filter
+        pipe.send_text("\x7f")  # backspace → pops the filter (no crash, no close)
+        await asyncio.sleep(0.15)
+        assert chrome.is_modal_open()  # survived the backspace edit
+        assert not fut.done()
+        pipe.send_text("\x1b")  # Esc closes
+        assert await asyncio.wait_for(fut, timeout=5) is None
+
+
+async def test_tabbed_tab_switch_works_while_filter_active() -> None:
+    # With an active filter on a filterable tab, Tab still advances the active tab
+    # (the filter resets on switch): the second tab's render fires. Verify via the
+    # render-closure side-effect list, then Esc closes.
+    rendered: list[str] = []
+
+    def _render(name: str) -> list[str]:
+        rendered.append(name)
+        return [f"body-{name}"]
+
+    async with _ctx(run_app=True) as (ctx, chrome, pipe):
+        fut = asyncio.ensure_future(
+            ctx.tabbed(
+                "T",
+                [("A", lambda: _render("A")), ("B", lambda: _render("B"))],
+                filter_tabs={0, 1},
+            )
+        )
+        await _wait_float(chrome)
+        await asyncio.sleep(0.1)  # let the first paint fire
+        assert "A" in rendered  # tab A rendered first
+        pipe.send_text("fmt")  # type into tab 0's live filter
+        await asyncio.sleep(0.1)
+        rendered.clear()
+        pipe.send_text("\t")  # Tab → advance to B despite the active filter
+        await asyncio.sleep(0.15)
+        assert "B" in rendered  # the second tab's render fired
+        pipe.send_text("\x1b")  # Esc closes
+        assert await asyncio.wait_for(fut, timeout=5) is None

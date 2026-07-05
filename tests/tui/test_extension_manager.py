@@ -169,10 +169,12 @@ def test_builtin_named_user_plugin_with_manifest_is_not_hidden() -> None:
 # === build_discover_lines / build_sources_lines ===
 
 
-def test_discover_lines_honest_static() -> None:
-    lines = build_discover_lines()
+def test_discover_lines_empty_state() -> None:
+    # #65 (ADR-0188): no catalog registered → an honest pointer at the CLI.
+    lines = build_discover_lines([])
     assert lines
-    assert any("No registry configured." in line for line in lines)
+    assert any("No catalog registered" in line for line in lines)
+    assert any("aelix extension source add --catalog" in line for line in lines)
 
 
 def test_sources_lines_empty_state() -> None:
@@ -223,7 +225,9 @@ async def test_run_no_tabbed_viewer_degrades() -> None:
 async def test_run_invokes_tabbed_with_three_tabs() -> None:
     captured: dict[str, Any] = {}
 
-    async def fake_tabbed(title: str, tabs: list[Any]) -> None:
+    async def fake_tabbed(
+        title: str, tabs: list[Any], *, initial: int = 0, filter_tabs: set[int] | None = None
+    ) -> None:
         captured["title"] = title
         captured["tabs"] = tabs
 
@@ -253,7 +257,9 @@ async def test_run_sources_tab_reads_getter_live() -> None:
 
     captured: dict[str, Any] = {}
 
-    async def fake_tabbed(title: str, tabs: list[Any]) -> None:
+    async def fake_tabbed(
+        title: str, tabs: list[Any], *, initial: int = 0, filter_tabs: set[int] | None = None
+    ) -> None:
         captured["tabs"] = tabs
 
     live: list[Any] = []
@@ -275,7 +281,9 @@ async def test_run_sources_tab_reads_getter_live() -> None:
 async def test_run_sources_getter_raising_degrades() -> None:
     captured: dict[str, Any] = {}
 
-    async def fake_tabbed(title: str, tabs: list[Any]) -> None:
+    async def fake_tabbed(
+        title: str, tabs: list[Any], *, initial: int = 0, filter_tabs: set[int] | None = None
+    ) -> None:
         captured["tabs"] = tabs
 
     def _boom() -> Any:
@@ -294,7 +302,9 @@ async def test_run_sources_getter_raising_degrades() -> None:
 
 
 async def test_run_surfaces_tabbed_exception() -> None:
-    async def boom_tabbed(title: str, tabs: list[Any]) -> None:
+    async def boom_tabbed(
+        title: str, tabs: list[Any], *, initial: int = 0, filter_tabs: set[int] | None = None
+    ) -> None:
         raise RuntimeError("viewer boom")
 
     committed: list[object] = []

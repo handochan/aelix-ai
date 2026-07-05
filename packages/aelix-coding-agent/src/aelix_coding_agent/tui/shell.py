@@ -1070,6 +1070,8 @@ async def run_tui(
         # context.tabbed + commit into it. The extensions list is threaded from
         # entry.py (the first harness build's discovery); the MCP manager is the
         # SAME object /mcp consults.
+        from aelix_coding_agent.cli import extension_catalog
+        from aelix_coding_agent.cli.config import get_agent_dir
         from aelix_coding_agent.tui.extension_manager import run_extension_manager
 
         await run_extension_manager(
@@ -1082,6 +1084,15 @@ async def run_tui(
             # SettingsManager is wired) so each open re-reads the current list.
             sources_getter=(
                 settings_manager.get_extension_sources
+                if settings_manager is not None
+                else None
+            ),
+            # Issue #65 (ADR-0188) — the filterable Discover tab renders the
+            # CACHED catalogs (SYNC disk read via load_cached_catalog — no network
+            # in the render closure; ``discover --refresh`` is the sole fetcher).
+            # Gated like sources_getter so headless / no-settings runs pass None.
+            catalog_getter=(
+                (lambda: extension_catalog.load_cached_catalog(get_agent_dir()))
                 if settings_manager is not None
                 else None
             ),

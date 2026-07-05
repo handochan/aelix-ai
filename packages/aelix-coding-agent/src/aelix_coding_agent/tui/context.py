@@ -393,30 +393,48 @@ class AelixTUIContext:
         tabs: list[tuple[str, Callable[[], list[str]]]],
         *,
         initial: int = 0,
+        filter_tabs: set[int] | None = None,
     ) -> None:
-        """A framed read-only tabbed viewer (WP-8, the /stats + /extension shell).
+        """A framed tabbed viewer (WP-8, the /stats + /extension shell).
 
         Built like :meth:`select` (``show_modal`` + a local ``KeyBindings``), NOT
         ``custom()`` — ``custom``'s Window has no key bindings and cannot handle
         Tab/arrows. Renders a tab header row (the active tab ``_PICK_SEL``), the
         active tab's rendered lines, and a dim hint. Keys: ``Tab`` / ``→`` next
-        tab, ``Shift-Tab`` / ``←`` prev tab (both wrap); ``Esc`` / ``Ctrl-C`` /
-        ``q`` close. Each ``render()`` is guarded — a raising tab shows an error
-        line instead of breaking the modal. Empty ``tabs`` returns immediately.
+        tab, ``Shift-Tab`` / ``←`` prev tab (both wrap); ``Esc`` / ``Ctrl-C``
+        close (and ``q`` on a NON-filterable tab). Each ``render()`` is guarded —
+        a raising tab shows an error line instead of breaking the modal. Empty
+        ``tabs`` returns immediately.
 
         :param tabs: ``(tab_name, render)`` pairs; ``render`` is a no-arg callable
             returning the active tab's body lines.
         :param initial: the tab index shown first (clamped into range).
+        :param filter_tabs: (Issue #65, ADR-0188) the OPTIONAL set of tab indices
+            that accept an in-tab type-to-filter. On a filterable tab printable
+            single-char keys append to a live filter string (``state["filter"]``),
+            Backspace pops it, and the tab's body lines are filtered
+            case-insensitively (substring, on the VISIBLE text) before render; a
+            dim ``Filter: <x>`` affordance + a "type to filter" hint show. CRITICAL
+            behavior branches (read live per keypress on ``state["idx"]``): on a
+            filterable tab ``q`` YIELDS to the filter (you can type 'q'), so
+            closing is Esc / Ctrl-C only; on a NON-filterable tab behavior is
+            byte-identical to before (``q`` closes, every other key is a no-op).
+            The filter RESETS to empty whenever the active tab changes.
+            :data:`None` (the default) keeps every tab read-only.
         """
 
         if not tabs:
             return None
 
-        state: dict[str, Any] = {"idx": max(0, min(initial, len(tabs) - 1))}
+        state: dict[str, Any] = {"idx": max(0, min(initial, len(tabs) - 1)), "filter": ""}
+
+        def _is_filterable(idx: int) -> bool:
+            return filter_tabs is not None and idx in filter_tabs
 
         def render() -> ANSI:
             idx = max(0, min(state["idx"], len(tabs) - 1))
             state["idx"] = idx
+            filterable = _is_filterable(idx)
             # Header row: each tab name, the active one bold-cyan, the rest plain.
             header_cells: list[str] = []
             for i, (name, _render) in enumerate(tabs):
@@ -431,7 +449,22 @@ class AelixTUIContext:
                 body_lines = list(tabs[idx][1]())
             except Exception as exc:  # noqa: BLE001 — degrade, never crash
                 body_lines = [f"{_PICK_DIM}(this tab failed to render: {exc}){_PICK_RST}"]
-            hint = "Tab/←→ switch · Esc close"
+            extra_lines: list[str] = []
+            if filterable:
+                # Filter on the VISIBLE text (strip a line's own ANSI first) so a
+                # dim/styled body line still matches by its plain content.
+                needle = state["filter"].lower()
+                if needle:
+                    body_lines = [
+                        line for line in body_lines if needle in _ANSI_RE.sub("", line).lower()
+                    ]
+                    if not body_lines:
+                        body_lines = [f"{_PICK_DIM}(no matches){_PICK_RST}"]
+                shown = state["filter"] or "(type to filter)"
+                extra_lines = [f"{_PICK_DIM}Filter: {shown}{_PICK_RST}"]
+                hint = "Tab/←→ switch · type to filter · Esc close"
+            else:
+                hint = "Tab/←→ switch · Esc close"
             # Plain (un-styled) widths for the divider span: measure the raw tab
             # names for the header, and the VISIBLE length of each body line
             # (a tab body may carry its own ANSI — counting the escape bytes
@@ -439,9 +472,9 @@ class AelixTUIContext:
             plain_header_len = len("  ".join(name for name, _ in tabs))
             width = max(
                 [len(title), plain_header_len, len(hint)]
-                + [_visible_len(line) for line in body_lines]
+                + [_visible_len(line) for line in (*extra_lines, *body_lines)]
             )
-            body = [header, *body_lines]
+            body = [header, *extra_lines, *body_lines]
             return _picker_frame(title, body, hint, width)
 
         def build(result: asyncio.Future[Any]) -> Window:
@@ -449,10 +482,12 @@ class AelixTUIContext:
 
             def _next(_e: object) -> None:
                 state["idx"] = (state["idx"] + 1) % len(tabs)
+                state["filter"] = ""  # a fresh tab starts unfiltered
                 self.chrome.invalidate()
 
             def _prev(_e: object) -> None:
                 state["idx"] = (state["idx"] - 1) % len(tabs)
+                state["filter"] = ""  # a fresh tab starts unfiltered
                 self.chrome.invalidate()
 
             kb.add("tab")(_next)
@@ -461,19 +496,52 @@ class AelixTUIContext:
             kb.add("left")(_prev)
             kb.add("escape")(lambda _e: _resolve(result, None))
             kb.add("c-c")(lambda _e: _resolve(result, None))
-            kb.add("q")(lambda _e: _resolve(result, None))
+
+            @kb.add("q")
+            def _q(_e: object) -> None:
+                # On a filterable tab 'q' is a printable char that must reach the
+                # filter (closing is Esc / Ctrl-C there); on a read-only tab it
+                # keeps its historical close binding. Branch live on the tab idx.
+                if _is_filterable(state["idx"]):
+                    state["filter"] += "q"
+                    self.chrome.invalidate()
+                else:
+                    _resolve(result, None)
+
             # Consume Enter (CR + LF) so it can't leak past the focused viewer to
             # the chrome's global accept (submit / steer) — Enter dismisses this
-            # read-only viewer (matches q / Esc). Same leak-guard the other modals
-            # apply (ADR-0121 W-review M1/M2: select/confirm/input/editor all bind
-            # enter + c-j at control level).
+            # viewer (matches Esc). Same leak-guard the other modals apply
+            # (ADR-0121 W-review M1/M2: select/confirm/input/editor bind enter +
+            # c-j at control level).
             kb.add("enter")(lambda _e: _resolve(result, None))
             kb.add("c-j")(lambda _e: _resolve(result, None))
-            # Catch every other (unbound) key as a no-op so a stray keystroke
-            # never bubbles past the focused viewer into the hidden input buffer.
-            # ``<any>`` runs only when no more-specific binding matched, so the
-            # tab-switch / close keys above are unaffected.
-            kb.add("<any>")(lambda _e: None)
+
+            @kb.add("backspace")
+            def _backspace(_e: object) -> None:
+                # Filter edit on a filterable tab; a no-op elsewhere (matches the
+                # prior <any> catch-all, so read-only tabs are unchanged).
+                if _is_filterable(state["idx"]) and state["filter"]:
+                    state["filter"] = state["filter"][:-1]
+                    self.chrome.invalidate()
+
+            # Catch every other (unbound) key. On a filterable tab a printable
+            # single char appends to the filter (mirrors select()'s <any>); on a
+            # read-only tab it stays a no-op so a stray keystroke never bubbles
+            # past the focused viewer into the hidden input buffer. ``<any>`` runs
+            # only when no more-specific binding matched, so the tab-switch / close
+            # keys above are unaffected.
+            @kb.add("<any>")
+            def _any(event: Any) -> None:
+                if not _is_filterable(state["idx"]):
+                    return
+                # Accept the printable chars of ``data`` — a single keystroke OR a
+                # bracketed paste / IME commit (multi-char) — dropping any control
+                # chars so an escape sequence never lands in the filter.
+                data = getattr(event, "data", None) or ""
+                printable = "".join(ch for ch in data if ch.isprintable())
+                if printable:
+                    state["filter"] += printable
+                    self.chrome.invalidate()
 
             return Window(
                 FormattedTextControl(render, focusable=True, key_bindings=kb),

@@ -1736,7 +1736,7 @@ async def test_run_tui_extension_command_renders_populated_installed_tab() -> No
     # empty-state path the other smoke test covers).
     captured: dict[str, object] = {}
 
-    async def _spy_tabbed(self, title, tabs, *, initial=0):  # type: ignore[no-untyped-def]
+    async def _spy_tabbed(self, title, tabs, *, initial=0, filter_tabs=None):  # type: ignore[no-untyped-def]
         captured["title"] = title
         captured["tabs"] = list(tabs)
         # Do not actually mount a modal — just record the wiring + return.

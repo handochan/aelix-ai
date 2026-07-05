@@ -70,7 +70,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
-from . import extension_pins
+from . import extension_catalog, extension_pins
 from .config import get_agent_dir
 
 if TYPE_CHECKING:
@@ -81,9 +81,13 @@ _USAGE = (
     "  install <path | git-url | package[==version]>  [--yes] [--index-url URL] "
     "[--offline] [--no-verify] [--strict] [--repin] [--verify-pypi]\n"
     "  source add <path | git-url | index-url>        [--yes]\n"
+    "  source add --catalog <url | file | git>\n"
     "  source list\n"
     "  source remove <path | git-url | index-url>\n"
     "  list\n"
+    "  discover [<query>]                             [--refresh]\n"
+    "  discover install <name>                        [--catalog CAT] [--yes] "
+    "[--index-url URL] [--offline] [--no-verify] [--strict] [--repin] [--verify-pypi]\n"
     "  update [<name>]                                [--yes] [--offline] "
     "[--no-verify] [--strict] [--repin] [--verify-pypi]\n"
     "  remove <name>                                  [--yes]"
@@ -101,8 +105,11 @@ TargetKind = Literal["path", "git", "pypi"]
 #: The kinds a registered *source* can take. ``index`` = a pip index URL used
 #: only to RESOLVE a bare-name install (never installed directly); ``git`` /
 #: ``path`` = a directly-installable extension; ``pypi`` = an install RECORD of
-#: a bare-name install (spec = the package, kept so ``update`` can reinstall it).
-SourceKind = Literal["index", "git", "path", "pypi"]
+#: a bare-name install (spec = the package, kept so ``update`` can reinstall it);
+#: ``catalog`` = an ADVISORY discover-catalog document (#65/ADR-0188 — a
+#: ``file`` / ``https`` / ``git`` location browsed by ``extension discover``,
+#: never installed or upgraded directly; ``update``'s installable filter skips it).
+SourceKind = Literal["index", "git", "path", "pypi", "catalog"]
 
 # A subprocess runner injectable for tests (default = the real pip call).
 PipRunner = Callable[[list[str]], "subprocess.CompletedProcess[bytes]"]
@@ -817,6 +824,46 @@ def _index_urls(sources: list[ExtensionSourceObject]) -> list[str]:
     return [s.spec for s in sources if s.kind == "index" and s.spec]
 
 
+def _catalog_locations(sources: list[ExtensionSourceObject]) -> list[str]:
+    """The registered discover-catalog locations, in registration order (#65)."""
+
+    return [s.spec for s in sources if s.kind == "catalog" and s.spec]
+
+
+def _normalize_catalog_spec(target: str) -> str:
+    """Normalize a ``source add --catalog`` location, or ``""`` if it is not one.
+
+    A git target → :func:`_normalize_git_spec`; an ``https`` / ``file://`` URL →
+    verbatim; an existing or path-shaped token → an absolute path. Returns ``""``
+    (the caller reports "not a valid catalog location") for a bare bareword — a
+    package-name-looking token is an install TARGET, not a catalog — and for any
+    plaintext-``http`` transport (TLS is required; refused here AND at fetch time,
+    no bypass). The stored spec is what ``discover --refresh`` feeds to
+    :func:`extension_catalog.fetch_all`.
+    """
+
+    raw = target.strip()
+    if not raw:
+        return ""
+    low = raw.lower()
+    kind = classify_target(raw)
+    if kind == "git":
+        spec = _normalize_git_spec(raw)
+        # Refuse a plaintext-http git transport (git+http:// or http://…​.git).
+        return "" if spec.lower().startswith(("git+http://", "http://")) else spec
+    if kind == "path":
+        return str(Path(raw).expanduser().resolve())
+    # classify_target's "pypi" catch-all: a real URL, a path-shaped token, or a
+    # bare name. Only https/file URLs and path-shaped tokens are catalog locations.
+    if low.startswith("http://"):
+        return ""  # plaintext refused (TLS required)
+    if low.startswith(("https://", "file://")):
+        return raw
+    if "/" in raw or raw.startswith(("~", ".")) or raw.endswith(".json"):
+        return str(Path(raw).expanduser().resolve())
+    return ""  # a bare bareword is not a catalog location
+
+
 def _upsert_source(
     sources: list[ExtensionSourceObject],
     spec: str,
@@ -890,6 +937,42 @@ async def _persist(settings: SettingsManager, sources: list[ExtensionSourceObjec
     await settings.flush()
 
 
+async def _add_catalog_source(target: str, *, settings: SettingsManager) -> int:
+    """Register ``target`` as a ``kind="catalog"`` discover-catalog source (#65).
+
+    Register-only (add ≠ browse): the location is normalized + persisted; nothing
+    is fetched here. ``discover --refresh`` fetches it later. The spec is stored
+    normalized (git → ``git+…``, path → absolute, url → verbatim) so it dedupes +
+    displays consistently with what ``fetch_all`` will read.
+    """
+
+    low = target.strip().lower()
+    if low.startswith("http://") or low.startswith("git+http://"):
+        print(
+            "Error: refusing a plain-HTTP catalog location (TLS required). "
+            "Use https://, a file:// path, or a git+ssh source.",
+            file=sys.stderr,
+        )
+        return _EXIT_DIDNT_RUN
+    spec = _normalize_catalog_spec(target)
+    if not spec:
+        print(
+            f"Error: {target!r} is not a valid catalog location "
+            "(expected a path, a git URL, or an https/file URL).",
+            file=sys.stderr,
+        )
+        return _EXIT_DIDNT_RUN
+    sources = settings.get_extension_sources()
+    new_sources, changed = _upsert_source(sources, spec, "catalog")
+    if not changed:
+        print(f"Source already registered: [catalog] {spec}")
+        return 0
+    await _persist(settings, new_sources)
+    print(f"Registered source: [catalog] {spec}")
+    print("  Browse it with: aelix extension discover")
+    return 0
+
+
 async def _cmd_source(
     rest: list[str],
     *,
@@ -918,7 +1001,10 @@ async def _cmd_source(
         return 0
 
     if action == "add":
-        # Only a positional target (+ ignore a stray --yes for symmetry).
+        # Only a positional target (+ ignore a stray --yes for symmetry). The
+        # --catalog flag selects kind="catalog" explicitly (classify_source cannot
+        # infer catalog vs index — both are plain http URLs).
+        as_catalog = "--catalog" in args
         positional = [a for a in args if not a.startswith("-")]
         if len(positional) != 1:
             print(
@@ -927,6 +1013,8 @@ async def _cmd_source(
             )
             return _EXIT_DIDNT_RUN
         target = positional[0]
+        if as_catalog:
+            return await _add_catalog_source(target, settings=settings)
         kind = classify_source(target)
         if kind is None:
             print(
@@ -1307,6 +1395,226 @@ async def _cmd_remove(
 
 
 # =====================================================================
+# === `discover` — browse/search an advisory catalog (#65) =============
+# =====================================================================
+
+
+def _print_entry_row(entry: extension_catalog.CatalogEntry) -> None:
+    """One ``discover`` result row: ``  <name> <version?>  — <desc?>  (catalog: …)``."""
+
+    ver = entry.display_version()
+    ver_part = f" {ver}" if ver else ""
+    desc_part = f"  — {entry.description}" if entry.description else ""
+    catalog = entry.catalog_name or "?"
+    print(f"  {entry.name}{ver_part}{desc_part}   (catalog: {catalog})")
+
+
+async def _cmd_discover(
+    rest: list[str],
+    *,
+    settings: SettingsManager,
+    input_fn: Callable[[str], str],
+    runner: PipRunner | None,
+) -> int:
+    """``extension discover [<query>] [--refresh]`` / ``discover install <name>``.
+
+    Browse or search the registered advisory catalogs (#65/ADR-0188), or resolve a
+    name and DELEGATE to the unchanged gated install. The catalog is advisory: it
+    only picks WHAT to install; consent + ``verify_and_pin`` (#64) + pip run
+    unchanged, always on the RESOLVED ``entry.source`` — never the friendly name.
+    """
+
+    if rest and rest[0] == "install":
+        return await _cmd_discover_install(
+            rest[1:], settings=settings, input_fn=input_fn, runner=runner
+        )
+
+    # Browse: optional <query> positional + --refresh.
+    query: str | None = None
+    refresh = False
+    for a in rest:
+        if a == "--refresh":
+            refresh = True
+        elif a in ("-h", "--help"):
+            print(_USAGE)
+            return 0
+        elif a.startswith("-"):
+            print(f"Error: unknown flag {a!r}.\n{_USAGE}", file=sys.stderr)
+            return _EXIT_DIDNT_RUN
+        elif query is None:
+            query = a
+        else:
+            print(f"Error: unexpected argument {a!r}.\n{_USAGE}", file=sys.stderr)
+            return _EXIT_DIDNT_RUN
+
+    locations = _catalog_locations(settings.get_extension_sources())
+    if not locations:
+        print(
+            "No catalog registered. Register one with: "
+            "aelix extension source add --catalog <url|file|git>"
+        )
+        return 0
+
+    agent_dir = get_agent_dir()
+    if refresh:
+        # The ONLY fetch/writer path — never let one bad source abort the rest.
+        catalogs = extension_catalog.fetch_all(locations)
+        extension_catalog.save_catalogs(
+            catalogs, extension_catalog.cache_file_path(agent_dir)
+        )
+    else:
+        catalogs = extension_catalog.load_cached_catalog(agent_dir)
+
+    # Surface a per-catalog fetch/parse failure without hiding the healthy ones.
+    for cat in catalogs:
+        if cat.error:
+            print(f"  ⚠ {cat.label()}: {cat.error}", file=sys.stderr)
+
+    # A refresh where EVERY registered catalog failed is a hard error (scriptable),
+    # distinct from a successful-but-empty catalog (exit 0).
+    if refresh and catalogs and all(cat.error for cat in catalogs):
+        print(
+            "Error: every registered catalog failed to fetch (see warnings above).",
+            file=sys.stderr,
+        )
+        return _EXIT_DIDNT_RUN
+
+    if not refresh and not catalogs:
+        print(
+            "No cached catalog data. Fetch it with: aelix extension discover --refresh"
+        )
+        return 0
+
+    entries = extension_catalog.search_entries(catalogs, query)
+    if not entries:
+        if query:
+            print(f"No extensions match {query!r}.")
+        else:
+            print("No extensions found in the registered catalog(s).")
+        return 0
+
+    print(f"Discover ({len(entries)} match{'' if len(entries) == 1 else 'es'}):")
+    for entry in entries:
+        _print_entry_row(entry)
+    if not refresh:
+        stamps = [c.fetched_at for c in catalogs if c.fetched_at]
+        if stamps:
+            print(
+                f"  (cached snapshot; oldest fetch {min(stamps)} — "
+                "update with: aelix extension discover --refresh)"
+            )
+    return 0
+
+
+async def _cmd_discover_install(
+    rest: list[str],
+    *,
+    settings: SettingsManager,
+    input_fn: Callable[[str], str],
+    runner: PipRunner | None,
+) -> int:
+    """``discover install <name> [--catalog CAT] [install flags]`` — resolve + delegate.
+
+    Reads the CACHED catalogs (no implicit network refresh), resolves ``<name>`` to
+    a single entry (REFUSING an ambiguous name with a candidate list), then hands
+    the RESOLVED ``entry.source`` — never the friendly name — to the unchanged
+    :func:`_cmd_install`, so consent + ``verify_and_pin`` + pip + ``_record_install``
+    all run exactly as for a direct install.
+    """
+
+    name: str | None = None
+    catalog_name: str | None = None
+    install_flags: list[str] = []
+    i = 0
+    while i < len(rest):
+        a = rest[i]
+        if a == "--catalog":
+            i += 1
+            if i >= len(rest) or not rest[i].strip():
+                print("Error: --catalog requires a catalog name.", file=sys.stderr)
+                return _EXIT_DIDNT_RUN
+            catalog_name = rest[i]
+        elif a.startswith("--catalog="):
+            catalog_name = a.split("=", 1)[1]
+            if not catalog_name.strip():
+                print("Error: --catalog requires a catalog name.", file=sys.stderr)
+                return _EXIT_DIDNT_RUN
+        elif a == "--index-url":
+            # A value-taking install flag — pass BOTH tokens through untouched.
+            install_flags.append(a)
+            i += 1
+            if i >= len(rest):
+                print("Error: --index-url requires a URL.", file=sys.stderr)
+                return _EXIT_DIDNT_RUN
+            install_flags.append(rest[i])
+        elif a.startswith("-"):
+            # Any other flag (--yes/--offline/--no-verify/--strict/--repin/
+            # --verify-pypi/--index-url=…) rides straight into _cmd_install, which
+            # validates it and rejects unknowns.
+            install_flags.append(a)
+        elif name is None:
+            name = a
+        else:
+            print(f"Error: unexpected argument {a!r}.\n{_USAGE}", file=sys.stderr)
+            return _EXIT_DIDNT_RUN
+        i += 1
+
+    if name is None or not name.strip():
+        print(
+            f"Error: discover install requires an extension <name>.\n{_USAGE}",
+            file=sys.stderr,
+        )
+        return _EXIT_DIDNT_RUN
+
+    catalogs = extension_catalog.load_cached_catalog(get_agent_dir())
+    resolved, candidates = extension_catalog.resolve_entry(
+        catalogs, name, catalog=catalog_name
+    )
+    if resolved is None:
+        if len(candidates) > 1:
+            # If every candidate is in the SAME catalog, --catalog cannot
+            # disambiguate — the catalog itself lists the name twice.
+            labels = {c.catalog_name for c in candidates}
+            if len(labels) == 1:
+                only = next(iter(labels)) or "?"
+                print(
+                    f"Error: catalog {only!r} lists {name!r} more than once — "
+                    "fix the catalog (a name must be unique within a catalog):",
+                    file=sys.stderr,
+                )
+            else:
+                print(
+                    f"Error: {name!r} is ambiguous across catalogs — "
+                    "pass --catalog <name> to choose one of:",
+                    file=sys.stderr,
+                )
+            for cand in candidates:
+                label = cand.catalog_name or "?"
+                print(f"  {cand.name}  →  {cand.source}   (catalog: {label})", file=sys.stderr)
+            return _EXIT_DIDNT_RUN
+        print(
+            f"Error: no catalog entry named {name!r} "
+            "(try: aelix extension discover --refresh).",
+            file=sys.stderr,
+        )
+        return _EXIT_DIDNT_RUN
+
+    print(
+        f"Resolved {name} -> {resolved.source} (from catalog {resolved.catalog_name or '?'})"
+    )
+    # Delegate to the UNCHANGED install path with the RESOLVED spec (never the
+    # friendly name), so a name→spec redirection is visible at consent. Flags come
+    # first, then ``--``, then the source as the sole positional — so a resolved
+    # spec that legitimately begins with ``-`` is never misparsed as a flag.
+    return await _cmd_install(
+        [*install_flags, "--", resolved.source],
+        settings=settings,
+        input_fn=input_fn,
+        runner=runner,
+    )
+
+
+# =====================================================================
 # === Flag parsing for `install` (shared by sync + async entries) ======
 # =====================================================================
 
@@ -1435,6 +1743,10 @@ async def run_extension_command_async(
         )
     if sub == "source":
         return await _cmd_source(rest, settings=settings)
+    if sub in ("discover", "search"):
+        return await _cmd_discover(
+            rest, settings=settings, input_fn=input_fn, runner=runner
+        )
     if sub == "update":
         return await _cmd_update(
             rest, settings=settings, input_fn=input_fn, runner=runner
@@ -1446,7 +1758,7 @@ async def run_extension_command_async(
 
     print(
         f"Error: unknown extension subcommand {sub!r} "
-        "(install | source | list | update | remove).\n"
+        "(install | source | list | discover | update | remove).\n"
         f"{_USAGE}",
         file=sys.stderr,
     )
