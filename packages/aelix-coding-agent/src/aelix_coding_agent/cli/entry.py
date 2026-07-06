@@ -969,16 +969,12 @@ async def _async_main(argv: list[str]) -> int:
         # RUNTIME OVERRIDE layer (highest cascade precedence) on top of the
         # always-wired callback above.
         model = resolve_model(parsed.model, parsed.provider)
-        # NOTE: this ``not model.provider`` guard is STRICTER than pi only
-        # because ``resolve_model`` does not yet parse the ``<provider>/<pattern>``
-        # shorthand (it returns ``Model(provider="")`` for a bare
-        # ``--model openrouter/gpt-4`` with no separate ``--provider``). Pi's
-        # ``resolveModelFromCli`` (main.ts:303-304) splits that form so its
-        # ``model.provider`` is always populated, and its guard fires only when
-        # NO model resolves at all. When the SettingsManager / resolveModelFromCli
-        # port lands, add the ``provider/pattern`` split here so this guard stops
-        # rejecting pi-valid invocations. The OpenRouter-from-env path already
-        # populates ``provider``, so the common case works.
+        # ``resolve_model`` now parses the ``<provider>/<model>`` slash shorthand
+        # (Pi ``resolveModelFromCli`` main.ts:303-304) and enriches from the
+        # catalog, so ``model.provider`` is populated for every pi-valid
+        # invocation (``--provider x --model y``, ``--model x/y``, or the
+        # OpenRouter-from-env path). This guard now fires only when NO model
+        # resolves at all — an empty/unknown provider — matching pi.
         if not model.provider:
             print(
                 "Error: --api-key requires a model to be specified via "
