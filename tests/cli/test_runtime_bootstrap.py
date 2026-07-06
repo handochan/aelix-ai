@@ -51,6 +51,68 @@ def test_resolve_model_key_without_model_is_bare(monkeypatch: pytest.MonkeyPatch
     assert m.provider == ""
 
 
+# --- Explicit --provider/--model path: catalog enrichment + slash shorthand ---
+# (regression: the bare return left api="unknown", so the documented
+# ``aelix --provider anthropic --model claude-sonnet-4-6 -p hi`` raised the
+# internal "No provider registered for api='unknown'. Sprint 6a ..." error.)
+
+
+def test_resolve_model_explicit_provider_model_enriched_from_catalog(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from aelix_ai.models import get_model
+
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_DEFAULT_MODEL", raising=False)
+    m = resolve_model("claude-sonnet-4-6", "anthropic")
+    assert m == get_model("anthropic", "claude-sonnet-4-6")
+    assert m.api == "anthropic-messages"  # NOT the bare "unknown"
+
+
+def test_resolve_model_slash_shorthand_splits_and_enriches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from aelix_ai.models import get_model
+
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_DEFAULT_MODEL", raising=False)
+    m = resolve_model("openai/gpt-4o-mini", None)  # <provider>/<model>, no --provider
+    assert m.provider == "openai" and m.id == "gpt-4o-mini"
+    assert m.api == get_model("openai", "gpt-4o-mini").api  # type: ignore[union-attr]
+
+
+def test_resolve_model_openrouter_key_keeps_slash_form_as_openrouter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # With an OpenRouter key, ``openai/gpt-4o-mini`` is a valid OpenRouter model
+    # id and must NOT be split into the ``openai`` provider.
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-test")
+    monkeypatch.delenv("OPENROUTER_DEFAULT_MODEL", raising=False)
+    m = resolve_model("openai/gpt-4o-mini", None)
+    assert m.provider == "openrouter"
+
+
+def test_resolve_model_unknown_id_known_provider_backfills_api(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from aelix_ai.models import get_models
+
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_DEFAULT_MODEL", raising=False)
+    m = resolve_model("my-unreleased-model", "anthropic")  # id absent from catalog
+    assert m.provider == "anthropic" and m.id == "my-unreleased-model"
+    assert m.api == get_models("anthropic")[0].api and m.api != "unknown"
+
+
+def test_resolve_model_unknown_provider_is_bare(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Truly-unknown provider → bare model. The entry-point guard turns this into
+    # a graceful "No API key" message rather than the internal adapter error.
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_DEFAULT_MODEL", raising=False)
+    m = resolve_model("some-model", "no-such-provider")
+    assert m.provider == "no-such-provider" and m.api == "unknown"
+
+
 def test_load_dotenv_sets_new_keys(tmp_path) -> None:
     envfile = tmp_path / ".env"
     envfile.write_text('AELIX_TEST_K=hello\n# comment\nAELIX_TEST_Q="quoted"\n\nbadline\n')

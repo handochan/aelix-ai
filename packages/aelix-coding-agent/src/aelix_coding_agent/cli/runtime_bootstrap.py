@@ -90,7 +90,15 @@ def register_providers() -> None:
 
 
 def resolve_model(model_flag: str | None, provider_flag: str | None) -> Model:
-    """Resolve the turn :class:`Model` from flags + env (OpenRouter-aware)."""
+    """Resolve the turn :class:`Model` from flags + env.
+
+    Three paths: (1) OpenRouter-from-env (``OPENROUTER_API_KEY`` + a model id,
+    no conflicting ``--provider``); (2) explicit ``--provider``/``--model`` or
+    the ``<provider>/<model>`` slash shorthand, enriched from the Pi catalog so
+    the resolved model carries its real ``api`` (never the bare ``"unknown"``);
+    (3) a bare fallback model for an empty/unknown provider, which the caller's
+    guard turns into a graceful "No model selected" message.
+    """
 
     openrouter_key = os.environ.get("OPENROUTER_API_KEY")
     model_id = model_flag or os.environ.get("OPENROUTER_DEFAULT_MODEL")
@@ -116,9 +124,45 @@ def resolve_model(model_flag: str | None, provider_flag: str | None) -> Model:
             api=OPENAI_COMPLETIONS_API,
             base_url=env_base_url or _DEFAULT_OPENROUTER_BASE_URL,
         )
-    # Existing behavior: a bare model from explicit flags (the adapter resolves
-    # the per-provider key from env when the api is registered).
-    return Model(id=model_flag or "", provider=provider_flag or "")
+    # Explicit --provider/--model path. Two enrichments over the old bare
+    # ``Model(id, provider)`` return, which left ``api="unknown"`` (streaming.py
+    # Model default) and so made the stream loop raise the internal
+    # ``No provider registered for api='unknown'. Sprint 6a ... register_all()``
+    # error for the documented flagship commands (e.g.
+    # ``aelix --provider anthropic --model claude-sonnet-4-6 -p hi``):
+    #
+    #  1. ``<provider>/<model>`` slash shorthand — split it when no separate
+    #     ``--provider`` was given (Pi ``resolveModelFromCli`` main.ts:303-304),
+    #     so ``aelix --model openai/gpt-4o-mini`` resolves ``provider=openai``
+    #     instead of falling through with an empty provider ("No model selected").
+    #     Guarded by the OpenRouter branch above: with an ``OPENROUTER_API_KEY``
+    #     set, ``openai/gpt-4o-mini`` is (correctly) an OpenRouter model id and
+    #     never reaches here.
+    #  2. Catalog enrichment — resolve the full Pi catalog entry (carrying the
+    #     real ``api``, context window, cost, thinking map). For an id absent
+    #     from the catalog but under a known provider, backfill just ``api`` from
+    #     a sibling catalog model so a custom / newly-released id still resolves
+    #     an adapter instead of raising the "unknown" error. Providers whose
+    #     models span multiple apis (e.g. github-copilot) get the first sibling's
+    #     api — best-effort for the uncatalogued-id case; catalogued ids are
+    #     always exact.
+    provider = provider_flag or ""
+    resolved_id = model_flag or ""
+    if not provider and "/" in resolved_id:
+        provider, _, resolved_id = resolved_id.partition("/")
+    if provider and resolved_id:
+        from aelix_ai.models import get_model, get_models
+
+        catalog = get_model(provider, resolved_id)
+        if catalog is not None:
+            return catalog
+        siblings = get_models(provider)
+        if siblings:
+            return Model(id=resolved_id, provider=provider, api=siblings[0].api)
+    # Unknown provider (or empty flags): a bare model. The entry-point guard
+    # (``not model.provider`` / ``has_configured_auth``) turns this into a
+    # graceful "No model selected" / "No API key" message rather than a turn.
+    return Model(id=resolved_id, provider=provider)
 
 
 __all__ = ["load_dotenv", "register_providers", "resolve_model"]
