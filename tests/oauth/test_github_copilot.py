@@ -27,6 +27,8 @@ from aelix_ai.oauth.github_copilot import (
     _modify_copilot_models,
     _poll_for_github_access_token,
     _start_device_flow,
+    enable_all_github_copilot_models,
+    enable_github_copilot_model,
     get_github_copilot_base_url,
     login_github_copilot,
     normalize_domain,
@@ -493,16 +495,31 @@ async def test_login_github_copilot_default_domain() -> None:
 
     callbacks = OAuthLoginCallbacks(on_auth=on_auth, on_prompt=on_prompt)
 
+    # Isolate the login flow from the post-login model-enable step (its own
+    # unit tests cover it); record that it is invoked with the access token.
+    enable_calls: list[tuple[str, str | None]] = []
+
+    async def _fake_enable_all(
+        token: str, enterprise_domain: str | None = None
+    ) -> None:
+        enable_calls.append((token, enterprise_domain))
+
     with patch(
         "aelix_ai.oauth.github_copilot.httpx.AsyncClient", new=client
     ), patch(
         "aelix_ai.oauth.github_copilot.asyncio.sleep", side_effect=_instant
+    ), patch(
+        "aelix_ai.oauth.github_copilot.enable_all_github_copilot_models",
+        side_effect=_fake_enable_all,
     ):
         creds = await login_github_copilot(callbacks)
 
     assert "proxy-ep" in creds.access
     assert auth_seen and auth_seen[0].url == "https://github.com/login/device"
     assert "Enter code: UC" in (auth_seen[0].instructions or "")
+    # Pi parity: models are enabled after login, with the resolved access
+    # token and the normalized enterprise domain (None for github.com).
+    assert enable_calls == [(creds.access, None)]
 
 
 async def test_login_github_copilot_invalid_enterprise_raises() -> None:
@@ -610,3 +627,103 @@ def test_module_imports_clean() -> None:
     # failed at collection.
     assert isinstance(CLIENT_ID, str)
     assert asyncio.iscoroutinefunction(login_github_copilot)
+
+
+# === enable_github_copilot_model / enable_all_github_copilot_models ===
+
+
+_TOKEN_WITH_PROXY = "tid=abc;exp=1;proxy-ep=proxy.foo.example"
+
+
+async def test_enable_model_posts_policy_and_returns_true() -> None:
+    """POSTs ``/models/{id}/policy`` with the chat-policy headers + body."""
+
+    fake = _FakeAsyncClient()
+    fake._next_response = _FakeResponse(200, {})  # type: ignore[attr-defined]
+    with patch(
+        "aelix_ai.oauth.github_copilot.httpx.AsyncClient", return_value=fake
+    ):
+        ok = await enable_github_copilot_model(_TOKEN_WITH_PROXY, "gpt-4o")
+
+    assert ok is True
+    assert len(fake.calls) == 1
+    call = fake.calls[0]
+    # base_url derives from the token's proxy-ep (proxy. -> api.).
+    assert call["url"] == "https://api.foo.example/models/gpt-4o/policy"
+    assert call["json"] == {"state": "enabled"}
+    headers = call["headers"] or {}
+    assert headers["Authorization"] == f"Bearer {_TOKEN_WITH_PROXY}"
+    assert headers["openai-intent"] == "chat-policy"
+    assert headers["x-interaction-type"] == "chat-policy"
+    # The static Copilot headers ride along (User-Agent, Editor-Version, …).
+    for key, value in COPILOT_HEADERS.items():
+        assert headers[key] == value
+
+
+async def test_enable_model_returns_false_on_non_2xx() -> None:
+    """A policy rejection (e.g. account without access) is best-effort False."""
+
+    fake = _FakeAsyncClient()
+    fake._next_response = _FakeResponse(400, {"error": "nope"})  # type: ignore[attr-defined]
+    with patch(
+        "aelix_ai.oauth.github_copilot.httpx.AsyncClient", return_value=fake
+    ):
+        ok = await enable_github_copilot_model(_TOKEN_WITH_PROXY, "grok-code")
+    assert ok is False
+
+
+async def test_enable_model_returns_false_on_exception() -> None:
+    """A transport error never raises out of the enable call."""
+
+    with patch(
+        "aelix_ai.oauth.github_copilot.httpx.AsyncClient",
+        side_effect=RuntimeError("boom"),
+    ):
+        ok = await enable_github_copilot_model(_TOKEN_WITH_PROXY, "gpt-4o")
+    assert ok is False
+
+
+async def test_enable_all_enumerates_catalog_and_reports_progress() -> None:
+    """Enables one policy per catalog Copilot model; reports each result."""
+
+    class _M:
+        def __init__(self, mid: str) -> None:
+            self.id = mid
+
+    fake = _FakeAsyncClient()
+    fake._next_response = _FakeResponse(200, {})  # type: ignore[attr-defined]
+    seen: list[tuple[str, bool]] = []
+
+    with patch(
+        "aelix_ai.models.get_models",
+        return_value=[_M("gpt-4o"), _M("claude-opus-4.6"), _M("grok-code-fast-1")],
+    ), patch(
+        "aelix_ai.oauth.github_copilot.httpx.AsyncClient", return_value=fake
+    ):
+        await enable_all_github_copilot_models(
+            _TOKEN_WITH_PROXY, None, on_model=lambda mid, ok: seen.append((mid, ok))
+        )
+
+    assert len(fake.calls) == 3
+    posted = {c["url"] for c in fake.calls}
+    assert posted == {
+        "https://api.foo.example/models/gpt-4o/policy",
+        "https://api.foo.example/models/claude-opus-4.6/policy",
+        "https://api.foo.example/models/grok-code-fast-1/policy",
+    }
+    assert sorted(seen) == [
+        ("claude-opus-4.6", True),
+        ("gpt-4o", True),
+        ("grok-code-fast-1", True),
+    ]
+
+
+def test_catalog_has_github_copilot_models() -> None:
+    """Regression guard: the catalog must carry Copilot models, else
+    :func:`enable_all_github_copilot_models` silently no-ops."""
+
+    from aelix_ai.models import get_models
+
+    ids = {m.id for m in get_models(GITHUB_COPILOT_OAUTH_ID)}
+    assert ids, "catalog lost all github-copilot models"
+    assert "gpt-4o" in ids

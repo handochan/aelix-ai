@@ -22,6 +22,7 @@ import base64
 import math
 import re
 import time
+from collections.abc import Callable
 from typing import Any
 from urllib.parse import urlparse
 
@@ -348,6 +349,76 @@ async def refresh_github_copilot_token(
     )
 
 
+async def enable_github_copilot_model(
+    token: str, model_id: str, enterprise_domain: str | None = None
+) -> bool:
+    """Pi parity: ``github-copilot.ts:279-300`` ``enableGitHubCopilotModel``.
+
+    Enable a model for the user's GitHub Copilot account by POSTing
+    ``{base_url}/models/{model_id}/policy`` with ``{"state": "enabled"}``.
+    Some Copilot models (Claude, Grok, newer GPT previews) require this
+    per-account policy acceptance before they can be used — an un-enabled
+    model is rejected by the completions endpoint with HTTP 400
+    ``model_not_supported``.
+
+    Best-effort: any transport/HTTP error resolves to ``False`` and never
+    raises, so a single un-enablable model (e.g. one the account has no
+    access to) cannot fail the whole login. Returns ``True`` on a 2xx.
+    """
+
+    base_url = get_github_copilot_base_url(token, enterprise_domain)
+    url = f"{base_url}/models/{model_id}/policy"
+    try:
+        async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT_SECONDS) as client:
+            response = await client.post(
+                url,
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {token}",
+                    **COPILOT_HEADERS,
+                    "openai-intent": "chat-policy",
+                    "x-interaction-type": "chat-policy",
+                },
+                json={"state": "enabled"},
+            )
+        return 200 <= response.status_code < 300
+    except Exception:  # noqa: BLE001
+        return False
+
+
+async def enable_all_github_copilot_models(
+    token: str,
+    enterprise_domain: str | None = None,
+    on_model: Callable[[str, bool], None] | None = None,
+) -> None:
+    """Pi parity: ``github-copilot.ts:302-320`` ``enableAllGitHubCopilotModels``.
+
+    Enable every catalog model whose provider is ``github-copilot`` (the same
+    set pi enumerates via ``getModels("github-copilot")``) so policy-gated
+    models are usable without a manual GitHub-settings toggle. Called after a
+    successful login. The per-model policy POSTs run concurrently and are each
+    best-effort (see :func:`enable_github_copilot_model`); ``on_model`` is
+    invoked with ``(model_id, success)`` as each completes.
+
+    The catalog import is local to keep the OAuth module free of an
+    import-time dependency on :mod:`aelix_ai.models` (mirrors pi's runtime
+    ``getModels`` call rather than a top-level import).
+    """
+
+    from aelix_ai.models import get_models
+
+    models = get_models(GITHUB_COPILOT_OAUTH_ID)
+
+    async def _enable_one(model_id: str) -> None:
+        success = await enable_github_copilot_model(
+            token, model_id, enterprise_domain
+        )
+        if on_model is not None:
+            on_model(model_id, success)
+
+    await asyncio.gather(*(_enable_one(model.id) for model in models))
+
+
 async def login_github_copilot(callbacks: OAuthLoginCallbacks) -> OAuthCredentials:
     """Pi parity: ``github-copilot.ts:327-366`` ``loginGitHubCopilot``.
 
@@ -360,9 +431,10 @@ async def login_github_copilot(callbacks: OAuthLoginCallbacks) -> OAuthCredentia
     5. Exchange GitHub access token for Copilot-flavored bearer via
        :func:`refresh_github_copilot_token`.
 
-    NOTE: ``enableAllGitHubCopilotModels`` (Pi github-copilot.ts:362-364)
-    is deferred to Sprint 6f per spec §J — Aelix doesn't have the
-    ModelRegistry yet to enumerate Copilot-routed models.
+    6. Enable every catalog Copilot model on the account via
+       :func:`enable_all_github_copilot_models` (Pi github-copilot.ts:362-364)
+       so policy-gated models are usable without a manual GitHub-settings
+       toggle. Best-effort — a failed enable never breaks the login.
     """
 
     # Sprint 6e W6 (P-157): use the shared single-owner helper.
@@ -413,6 +485,18 @@ async def login_github_copilot(callbacks: OAuthLoginCallbacks) -> OAuthCredentia
     credentials = await refresh_github_copilot_token(
         github_access_token, trimmed if trimmed else None
     )
+
+    # Pi parity (github-copilot.ts:362-364): enable every catalog Copilot
+    # model on the account after login. Without this, policy-gated models
+    # (Claude, Grok, newer GPT previews) are rejected by the completions
+    # endpoint with HTTP 400 ``model_not_supported``. Best-effort — a failed
+    # enable never breaks the login. ``normalized`` is the hostname form
+    # (matches :func:`_modify_copilot_models`); the token's ``proxy-ep`` wins
+    # for base-URL resolution in the common case.
+    if callbacks.on_progress is not None:
+        await _maybe_await_helper(callbacks.on_progress("Enabling models..."))
+    await enable_all_github_copilot_models(credentials.access, normalized)
+
     return credentials
 
 
@@ -509,6 +593,8 @@ __all__ = [
     "DEFAULT_DOMAIN",
     "GITHUB_COPILOT_OAUTH_ID",
     "GITHUB_COPILOT_OAUTH_PROVIDER",
+    "enable_all_github_copilot_models",
+    "enable_github_copilot_model",
     "INITIAL_POLL_INTERVAL_MULTIPLIER",
     "SLOW_DOWN_POLL_INTERVAL_MULTIPLIER",
     "_modify_copilot_models",
