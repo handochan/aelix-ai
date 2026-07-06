@@ -232,6 +232,10 @@ class Settings:
     thinking_budgets: ThinkingBudgetsSettings | None = None
     editor_padding_x: int | None = None
     autocomplete_max_visible: int | None = None
+    # Issue #66 (TUI polish) — aelix-original: configurable cap on the NORMAL
+    # tool-card output body (the separate 40-line diff/error cap is unaffected).
+    # Clamped to ``[3, 40]`` in the setter; default 12 applied in the getter.
+    tool_card_max_lines: int | None = None
     show_hardware_cursor: bool | None = None
     markdown: MarkdownSettings | None = None
     warnings: WarningSettings | None = None
@@ -299,6 +303,7 @@ SETTINGS_PY_TO_JSON: Final[dict[str, str]] = {
     "thinking_budgets": "thinkingBudgets",
     "editor_padding_x": "editorPaddingX",
     "autocomplete_max_visible": "autocompleteMaxVisible",
+    "tool_card_max_lines": "toolCardMaxLines",
     "show_hardware_cursor": "showHardwareCursor",
     "markdown": "markdown",
     "warnings": "warnings",

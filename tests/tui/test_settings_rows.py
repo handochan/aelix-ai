@@ -27,9 +27,11 @@ async def test_build_rows_count_and_keys() -> None:
     sm = SettingsManager.in_memory({})
     rows = build_settings_rows(sm)
     keys = [r.key for r in rows]
-    # The planned ~16 settable rows (code-block-indent SKIPPED — no setter).
+    # The planned settable rows (code-block-indent SKIPPED — no setter); +1 for
+    # the Issue #66 ``tool_card_max_lines`` row.
     assert "code_block_indent" not in keys
-    assert len(rows) == 17
+    assert "tool_card_max_lines" in keys
+    assert len(rows) == 18
     # Live-effect rows come first (roadmap appendix O ordering).
     assert keys[:6] == [
         "theme",
@@ -126,6 +128,25 @@ async def test_int_clamps_high_and_low() -> None:
     assert sm.get_editor_padding_x() == 3  # clamped to [0, 3]
 
 
+async def test_tool_card_max_lines_row_and_clamp() -> None:
+    # Issue #66 — the row is present, reads its default (12), and the setter
+    # clamps to [3, 40] via the apply path.
+    sm = SettingsManager.in_memory({})
+    rows = _rows(sm)
+    row = rows["tool_card_max_lines"]
+    assert row.kind == "int" and row.int_range == (3, 40)
+    assert row.read(sm) == "12"  # default when unset
+    res = apply_setting(row, sm, int_value=99)
+    assert res.kind == "ok"
+    assert sm.get_tool_card_max_lines() == 40  # clamped high
+    assert "40" in res.message
+    apply_setting(_rows(sm)["tool_card_max_lines"], sm, int_value=1)
+    assert sm.get_tool_card_max_lines() == 3  # clamped low
+    # A valid in-range value round-trips.
+    apply_setting(_rows(sm)["tool_card_max_lines"], sm, int_value=20)
+    assert sm.get_tool_card_max_lines() == 20
+
+
 async def test_int_without_value_is_error() -> None:
     sm = SettingsManager.in_memory({})
     res = apply_setting(_rows(sm)["autocomplete_max_visible"], sm, int_value=None)
@@ -164,6 +185,7 @@ async def test_every_persist_only_row_has_a_live_none() -> None:
     sm = SettingsManager.in_memory({})
     persist_only = {
         "autocomplete_max_visible",
+        "tool_card_max_lines",
         "show_hardware_cursor",
         "editor_padding_x",
         "quiet_startup",

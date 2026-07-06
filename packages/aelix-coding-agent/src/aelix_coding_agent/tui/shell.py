@@ -145,6 +145,52 @@ def _format_context_label(usage: object) -> str | None:
     return f"◔ {' · '.join(parts)}" if parts else None
 
 
+# #66 item 6 — the permission mode drives BOTH the footer badge colour and the
+# ❯ prompt colour, from ONE source (``MODE_META[...].badge_style``). Extracted to
+# module level (not run_tui closures) so both are unit-testable with a plain
+# ``PermissionPosture``.
+_DEFAULT_PROMPT_STYLE = "class:aelix.prompt bold fg:cyan"
+
+
+def _mode_badge_ansi(posture: PermissionPosture | None) -> str | None:
+    """The footer permission badge, SGR-coloured by the mode's ``badge_style``.
+
+    #66 item 6a. ``None`` on DEFAULT / no posture — the footer producer then
+    substitutes the neutral (uncoloured) ``DEFAULT_BADGE``. Reads the SAME
+    posture object shift+tab mutates.
+    """
+
+    if posture is None:
+        return None
+    from aelix_coding_agent.builtin.permission_mode import MODE_META
+    from aelix_coding_agent.tui.footer_segments import sgr_wrap
+
+    meta = MODE_META[posture.get()]
+    if not meta.badge_text:
+        return None
+    return sgr_wrap(meta.badge_text, meta.badge_style)
+
+
+def _mode_prompt_style(posture: PermissionPosture | None) -> str:
+    """The ❯ input-prefix style following the mode (single source: ``badge_style``).
+
+    #66 item 6b. DEFAULT / no posture / an empty style → the neutral bold cyan.
+    """
+
+    if posture is None:
+        return _DEFAULT_PROMPT_STYLE
+    from aelix_coding_agent.builtin.permission_mode import MODE_META, PermissionMode
+
+    mode = posture.get()
+    style = MODE_META[mode].badge_style
+    if mode == PermissionMode.DEFAULT or not style:
+        return _DEFAULT_PROMPT_STYLE
+    # The ❯ prompt is always bold; fold in the badge_style colour token(s)
+    # without duplicating a "bold" already present in it (e.g. yolo="bold red").
+    colour = " ".join(t for t in style.split() if t.lower() != "bold")
+    return f"class:aelix.prompt bold {colour}".rstrip()
+
+
 def _format_session_choice(meta: object) -> str:
     """A one-line picker label for a session (``/resume``).
 
@@ -283,13 +329,15 @@ async def run_tui(
 
     def _permission_badge() -> str | None:
         # Live permission posture badge (WP-0, ADR-0157): the held posture's
-        # distinct glyph (✎/⏸/⚠/🤖) via MODE_META, or None on DEFAULT so the
-        # segment is omitted. Reads the SAME object shift+tab mutates.
-        if permission_posture is None:
-            return None
-        from aelix_coding_agent.builtin.permission_mode import MODE_META
+        # distinct glyph (✎/⏸/⚠/🤖), SGR-coloured by the mode's badge_style
+        # (#66 item 6a), or None on DEFAULT so the footer substitutes the neutral
+        # ● default. Reads the SAME object shift+tab mutates.
+        return _mode_badge_ansi(permission_posture)
 
-        return MODE_META[permission_posture.get()].badge_text or None
+    # #66 item 6b — the ❯ prompt colour follows the same posture (single source:
+    # MODE_META badge_style; DEFAULT → neutral bold cyan). Wired onto the chrome
+    # so ``_ModePrompt`` re-reads it live on every render + shift+tab repaint.
+    out_chrome.prompt_style_provider = lambda: _mode_prompt_style(permission_posture)
 
     # WP-2 (ADR-0160) — the coding-agent-owned statusline store gates which footer
     # segments render. Its defaults are the registry default-enabled ids, so a
@@ -440,6 +488,13 @@ async def run_tui(
         # render.py's hardcoded default, so headless / no-settings stays sane.
         with contextlib.suppress(Exception):
             renderer.hide_thinking = settings_manager.get_hide_thinking_block()
+        # (a2) tool-card NORMAL-output line cap → the renderer (Issue #66). Without
+        # this seed the persisted ``tool_card_max_lines`` never reaches the
+        # renderer, leaving the setting inert. Guarded like the sibling above.
+        with contextlib.suppress(Exception):
+            renderer.tool_card_max_lines = (
+                settings_manager.get_tool_card_max_lines()
+            )
         # (b) default THINKING LEVEL → the live harness. SKIP when the current
         # model does not support the stored level (a reasoning-off model collapses
         # to ``["off"]``) so an unsupported level is never forced. ``None`` (unset)
@@ -2060,16 +2115,19 @@ def _build_banner(harness: AgentHarness, cwd: str) -> object:
         meta_text.append(value)
 
     # The sections block + a blank line + the hint. Verified against chrome.py key
-    # bindings (Sprint 6h₂₅): the c-c handler interrupts while running and clears
-    # the buffer when idle — there is NO double-Ctrl+C-to-exit binding, so
-    # advertise only what is TRUE.
+    # bindings: the c-c handler interrupts while running and clears the buffer when
+    # idle; an idle empty-buffer Ctrl+C twice (within 2s) exits (#66 item 2) —
+    # advertise both.
     sections_text = Text()
     for tag, value in section_rows:
         sections_text.append(f"{tag:<{label_w}} ", style="bold cyan")
         sections_text.append(value, style="dim" if value == "none" else "")
         sections_text.append("\n")
     sections_text.append("\n")
-    sections_text.append("/help for commands • Ctrl+C to interrupt", style="dim")
+    sections_text.append(
+        "/help for commands • Ctrl+C to interrupt • Ctrl+C twice to exit",
+        style="dim",
+    )
 
     panel = Panel(
         Group(meta_text, Rule(style="dim", characters="─"), sections_text),

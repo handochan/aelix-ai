@@ -33,6 +33,7 @@ Clamp ranges (Pi parity):
 
 - ``editor_padding_x`` clamped to ``[0, 3]`` (Pi `:1039`).
 - ``autocomplete_max_visible`` clamped to ``[3, 20]`` (Pi `:1049`).
+- ``tool_card_max_lines`` clamped to ``[3, 40]`` (Issue #66, aelix-original).
 - ``image_width_cells`` clamped to ``[1, ∞)`` (Pi `:924, :931`).
 """
 
@@ -1600,6 +1601,29 @@ class SettingsManager:
         clamped = max(3, min(20, math.floor(max_visible)))
         self._global_settings.autocomplete_max_visible = clamped
         self._mark_modified("autocomplete_max_visible")
+        self._save()
+
+    # --- toolCardMaxLines (Issue #66, aelix-original) ---
+    def get_tool_card_max_lines(self) -> int:
+        """Cap on the NORMAL tool-card output body (Issue #66). Default: 12.
+
+        Aelix-original (no Pi analogue). Governs ONLY the normal-output card cap
+        in the TUI renderer; the separate 40-line diff/error cap is unaffected.
+        """
+
+        v = self._settings.tool_card_max_lines
+        if not isinstance(v, (int, float)):
+            return 12
+        # Clamp on read too: a hand-edited settings.json can bypass the
+        # setter's [3, 40] clamp, and the renderer field has no clamp of its own.
+        return max(3, min(40, math.floor(v)))
+
+    def set_tool_card_max_lines(self, max_lines: int) -> None:
+        """Set the normal tool-card line cap (Issue #66). Clamps to ``[3, 40]``."""
+
+        clamped = max(3, min(40, math.floor(max_lines)))
+        self._global_settings.tool_card_max_lines = clamped
+        self._mark_modified("tool_card_max_lines")
         self._save()
 
     # --- markdown.codeBlockIndent (Pi `:1054-1056`) ---

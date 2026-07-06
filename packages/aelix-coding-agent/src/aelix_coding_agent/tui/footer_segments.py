@@ -31,6 +31,52 @@ if TYPE_CHECKING:
     from aelix_coding_agent.tui.context import AelixTUIContext
 
 
+# #66 item 6a — the footer renders raw ANSI (``chrome.py`` wraps ``_footer_line``
+# in ``ANSI(...)``), so a prompt-toolkit style string (the permission-mode
+# ``badge_style``: "yellow" / "cyan" / "bold red" / "green") must be mapped to an
+# SGR escape to colour the permission badge. Only the tiny badge_style palette is
+# handled (named colours + a leading ``bold``); unknown tokens (e.g. ``fg:...``)
+# are ignored, so an unmapped style yields no colour rather than raising.
+_SGR_RESET = "\x1b[0m"
+_SGR_COLORS: dict[str, int] = {
+    "black": 30,
+    "red": 31,
+    "green": 32,
+    "yellow": 33,
+    "blue": 34,
+    "magenta": 35,
+    "cyan": 36,
+    "white": 37,
+}
+
+
+def style_to_sgr(style: str) -> str:
+    """Map a prompt-toolkit style string to an SGR prefix (``""`` if unmapped).
+
+    Handles the permission ``badge_style`` palette: a foreground colour name plus
+    an optional leading ``bold`` (e.g. ``"bold red"`` → ``"\\x1b[1;31m"``). Tokens
+    outside the palette are ignored; an empty / fully-unmapped style → ``""``.
+    """
+
+    codes: list[int] = []
+    for token in style.split():
+        low = token.lower()
+        if low == "bold":
+            codes.append(1)
+        elif low in _SGR_COLORS:
+            codes.append(_SGR_COLORS[low])
+    if not codes:
+        return ""
+    return "\x1b[" + ";".join(str(c) for c in codes) + "m"
+
+
+def sgr_wrap(text: str, style: str) -> str:
+    """Wrap ``text`` in the SGR for ``style`` (+ reset); pass through if unmapped."""
+
+    prefix = style_to_sgr(style)
+    return f"{prefix}{text}{_SGR_RESET}" if prefix else text
+
+
 @dataclass(frozen=True)
 class FooterSegment:
     """A single named footer segment.
@@ -233,4 +279,6 @@ __all__ = [
     "build_footer_registry",
     "default_enabled_ids",
     "default_enabled_ids_from_spec",
+    "sgr_wrap",
+    "style_to_sgr",
 ]

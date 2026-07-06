@@ -207,11 +207,21 @@ class _CappedContainer(Container):
     the child's own cursor-driven viewport scrolls internally (``select`` /
     approval already self-viewport). The cap is a callable so it tracks resize.
     Everything else delegates straight to the child.
+
+    ``fill`` (GitHub #66 item 3) opts a picker into FILLING the capped region:
+    ``preferred_height`` returns the full cap instead of the content-derived
+    height, so a SHORT list/tabbed picker expands to the terminal-bounded cap
+    (its child Window drops ``dont_extend_height``, so it fills the allocated
+    rows and top-aligns its content — blank space below). Default ``False``
+    keeps the grow-with-content behavior for natural-height modals.
     """
 
-    def __init__(self, child: AnyContainer, cap: Callable[[], int]) -> None:
+    def __init__(
+        self, child: AnyContainer, cap: Callable[[], int], *, fill: bool = False
+    ) -> None:
         self._child: Container = to_container(child)
         self._cap = cap
+        self._fill = fill
 
     def reset(self) -> None:
         self._child.reset()
@@ -225,7 +235,13 @@ class _CappedContainer(Container):
         cap = self._cap()
         inner = self._child.preferred_height(width, min(max_available_height, cap))
         clamped_max = min(inner.max, cap) if inner.max is not None else cap
-        preferred = min(inner.preferred, clamped_max)
+        # Fill mode (GitHub #66 item 3): report the full cap as ``preferred`` so
+        # the in-flow slot allocates the whole capped region and the child Window
+        # (its ``dont_extend_height`` dropped) fills it — short content top-aligns
+        # with blank space below. ``min`` stays the child's clamped min so the
+        # HSplit can still shrink the slot under terminal pressure (the invariant
+        # that input/status/footer are never pushed off-screen is preserved).
+        preferred = clamped_max if self._fill else min(inner.preferred, clamped_max)
         return Dimension(
             min=min(inner.min, clamped_max), max=clamped_max, preferred=preferred
         )
@@ -268,7 +284,8 @@ def _wrap_modal(
     """
 
     inner = ConditionalContainer(content, filter=Condition(lambda: not hidden["v"]))
-    return _CappedContainer(inner, lambda: _modal_cap(chrome, options))
+    fill = bool(options is not None and getattr(options, "fill_screen", False))
+    return _CappedContainer(inner, lambda: _modal_cap(chrome, options), fill=fill)
 
 
 async def show_modal(

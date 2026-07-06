@@ -12,6 +12,7 @@ import pytest
 from aelix_coding_agent.extensions.widget_protocols import OverlayHandle, OverlayOptions
 from aelix_coding_agent.tui.overlay import AelixOverlayHandle, make_float
 from prompt_toolkit.layout import Window
+from prompt_toolkit.layout.controls import FormattedTextControl
 
 
 def test_make_float_center_pins_no_edges() -> None:
@@ -150,3 +151,49 @@ def test_reserve_rows_missing_counter_falls_back_to_floor() -> None:
 
     # No footer_line_count attr → assumes a 1-row footer, floor applies.
     assert _reserve_rows(_NoCounter()) == _MODAL_RESERVE_ROWS  # type: ignore[arg-type]
+
+
+# === GitHub #66 item 3 — fill_screen: the capped wrapper expands to the cap =====
+
+
+def test_overlay_options_fill_screen_defaults_false() -> None:
+    # The new opt-in flag is OFF by default so every existing caller is unchanged.
+    assert OverlayOptions().fill_screen is False
+    assert OverlayOptions(fill_screen=True).fill_screen is True
+
+
+def _short_window() -> Window:
+    # Short content (2 lines) — a natural-height modal would report ~2 rows.
+    return Window(FormattedTextControl("a\nb"), dont_extend_height=False)
+
+
+def test_capped_container_fill_expands_preferred_to_cap() -> None:
+    # In fill mode a SHORT child reports the FULL cap as its preferred height, so
+    # the in-flow slot allocates the whole capped region (blank space below).
+    from aelix_coding_agent.tui.overlay import _CappedContainer
+
+    capped = _CappedContainer(_short_window(), lambda: 15, fill=True)
+    dim = capped.preferred_height(80, 40)
+    assert dim.preferred == 15
+    assert dim.max == 15
+
+
+def test_capped_container_no_fill_hugs_short_content() -> None:
+    # Without fill (the default), a short child keeps its natural height — well
+    # under the cap — so a short modal leaves chat visible (pre-#66 behavior).
+    from aelix_coding_agent.tui.overlay import _CappedContainer
+
+    child = Window(FormattedTextControl("a\nb"), dont_extend_height=True)
+    capped = _CappedContainer(child, lambda: 15, fill=False)
+    dim = capped.preferred_height(80, 40)
+    assert dim.preferred < 15  # short content stays short
+
+
+def test_capped_container_fill_still_bounded_by_cap() -> None:
+    # Fill mode never exceeds the cap even when the terminal is larger: the
+    # preferred equals the cap (the reserve that produced the cap protects the
+    # input/status/footer rows).
+    from aelix_coding_agent.tui.overlay import _CappedContainer
+
+    capped = _CappedContainer(_short_window(), lambda: 7, fill=True)
+    assert capped.preferred_height(80, 100).preferred == 7

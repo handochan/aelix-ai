@@ -159,6 +159,14 @@ def build_settings_rows(sm: SettingsManager) -> list[SettingsRow]:
             int_range=(3, 20),
         ),
         SettingsRow(
+            key="tool_card_max_lines",
+            label="Tool card max lines",
+            kind="int",
+            read=lambda s: str(s.get_tool_card_max_lines()),
+            help="Max lines shown in a tool-output card (3-40). Persisted; applies next render.",
+            int_range=(3, 40),
+        ),
+        SettingsRow(
             key="show_hardware_cursor",
             label="Show hardware cursor",
             kind="bool",
@@ -342,6 +350,7 @@ _ENUM_SETTERS: dict[str, str] = {
 _INT_SETTERS: dict[str, str] = {
     "autocomplete_max_visible": "set_autocomplete_max_visible",
     "editor_padding_x": "set_editor_padding_x",
+    "tool_card_max_lines": "set_tool_card_max_lines",
 }
 
 

@@ -45,11 +45,16 @@ class BuiltinCommand:
         entry exists for palette + ``/help`` listing only). The handler receives
         the live :class:`CommandContext` plus ``args`` — the text after the
         command word (``""`` when none); ``/help`` ignores it.
+    :param aliases: alternate command words that resolve to this SAME command
+        (e.g. ``/exit`` is an alias of ``/quit``). Aliases are matched by
+        :func:`match_command` but are NOT listed separately in ``/help`` or
+        autocomplete — the command appears exactly once in both.
     """
 
     name: str
     description: str
     handler: Callable[[CommandContext, str], Awaitable[None]] | None = None
+    aliases: tuple[str, ...] = ()
 
 
 @dataclass
@@ -1203,8 +1208,7 @@ BUILTIN_COMMANDS: list[BuiltinCommand] = [
     BuiltinCommand("fork", "Fork the current session at the last user message", _fork_handler),
     BuiltinCommand("clone", "Clone the current session into a new file", _clone_handler),
     BuiltinCommand("tree", "Show the parent-session lineage", _tree_handler),
-    BuiltinCommand("quit", "Exit Aelix", None),
-    BuiltinCommand("exit", "Exit Aelix", None),
+    BuiltinCommand("quit", "Exit Aelix (alias: /exit)", None, aliases=("exit",)),
     BuiltinCommand("reload", "Reload extensions + resources", None),
 ]
 
@@ -1226,15 +1230,17 @@ def slash_word(text: str) -> str:
 def match_command(text: str, commands: list[BuiltinCommand]) -> BuiltinCommand | None:
     """Resolve a ``/<word>`` line to a built-in command (PURE).
 
-    Parses the leading slash word (case-sensitive, exact name) and looks it up.
-    Returns ``None`` for a non-slash line, an empty body (bare ``/``), or no match.
+    Parses the leading slash word (case-sensitive) and looks it up by exact name
+    OR by one of the command's :attr:`~BuiltinCommand.aliases` (``/exit`` →
+    ``quit``). Returns ``None`` for a non-slash line, an empty body (bare ``/``),
+    or no match.
     """
 
     word = slash_word(text)
     if not word:
         return None
     for command in commands:
-        if command.name == word:
+        if command.name == word or word in command.aliases:
             return command
     return None
 

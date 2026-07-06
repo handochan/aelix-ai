@@ -63,13 +63,26 @@ def test_match_command_is_case_sensitive() -> None:
 
 
 def test_match_command_metadata_only_entries_resolve() -> None:
-    # quit/exit/reload are handler=None metadata entries (parse_input_line owns
-    # their behavior); match_command still resolves them for completeness.
-    for name in ("quit", "exit", "reload"):
+    # quit/reload are handler=None metadata entries (parse_input_line owns their
+    # behavior); match_command still resolves them for completeness.
+    for name in ("quit", "reload"):
         cmd = match_command(f"/{name}", BUILTIN_COMMANDS)
         assert cmd is not None
         assert cmd.name == name
         assert cmd.handler is None
+
+
+def test_match_command_resolves_exit_alias_to_quit() -> None:
+    # #66 item 1 — /exit is now an ALIAS of /quit (unified listing), so it
+    # resolves to the single "quit" command rather than a separate "exit" entry.
+    cmd = match_command("/exit", BUILTIN_COMMANDS)
+    assert cmd is not None
+    assert cmd.name == "quit"
+    assert cmd.aliases == ("exit",)
+    assert cmd.handler is None
+    # The registry lists it exactly ONCE — there is no standalone "exit" entry.
+    assert [c.name for c in BUILTIN_COMMANDS].count("exit") == 0
+    assert [c.name for c in BUILTIN_COMMANDS].count("quit") == 1
 
 
 # === build_help_renderable ==================================================
@@ -181,8 +194,9 @@ def test_banner_shows_version_and_all_sections() -> None:
     assert "[Hooks]" in out
     assert "[Extensions]" in out
     assert "guardrail" in out and "permission" in out  # active extension names
-    # Hint advertises only the binding that EXISTS (no double-Ctrl+C exit).
+    # #66 item 2 — the hint advertises interrupt AND the idle double-Ctrl+C exit.
     assert "Ctrl+C to interrupt" in out
+    assert "Ctrl+C twice to exit" in out
 
 
 def test_banner_hides_base_url_when_empty() -> None:
@@ -297,7 +311,6 @@ def test_sprint_a_registry_set() -> None:
         "clone",
         "tree",
         "quit",
-        "exit",
         "reload",
     ]
     by_name: dict[str, Any] = {c.name: c for c in BUILTIN_COMMANDS}
@@ -309,8 +322,10 @@ def test_sprint_a_registry_set() -> None:
     ):
         assert by_name[required].handler is not None
     assert by_name["quit"].handler is None
-    assert by_name["exit"].handler is None
     assert by_name["reload"].handler is None
+    # #66 item 1 — /exit is an ALIAS of /quit, not a standalone registry entry.
+    assert "exit" not in by_name
+    assert by_name["quit"].aliases == ("exit",)
 
 
 # === Sprint 6h₁₂d — model / context command handlers ========================

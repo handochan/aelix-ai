@@ -533,6 +533,59 @@ def test_tool_end_long_result_truncated_with_footer() -> None:
     assert r.get_expanded(1) == body
 
 
+def test_tool_end_normal_cap_defaults_to_twelve() -> None:
+    # Issue #66 — a fresh renderer caps normal output at 12 lines (default).
+    r, commits, _t = _renderer()
+    assert r.tool_card_max_lines == 12
+    body = "\n".join(f"line {i}" for i in range(20))
+    r.on_agent_event(
+        ToolExecutionEndEvent(
+            tool_call_id="t1",
+            result=ToolResult(content=[TextContent(text=body)]),
+            tool_name="read",
+        )
+    )
+    out = _committed_text(commits)
+    assert "line 11" in out and "line 12" not in out
+    assert "(+8 more lines" in out
+
+
+def test_tool_end_normal_cap_honours_configured_value() -> None:
+    # Issue #66 — the configurable cap governs ONLY the normal-output card path.
+    r, commits, _t = _renderer()
+    r.tool_card_max_lines = 5
+    body = "\n".join(f"line {i}" for i in range(20))
+    r.on_agent_event(
+        ToolExecutionEndEvent(
+            tool_call_id="t1",
+            result=ToolResult(content=[TextContent(text=body)]),
+            tool_name="read",
+        )
+    )
+    out = _committed_text(commits)
+    assert "line 4" in out and "line 5" not in out
+    assert "(+15 more lines" in out
+
+
+def test_tool_end_error_cap_unaffected_by_configured_normal_cap() -> None:
+    # Issue #66 owner decision — the separate 40-line error/diff cap stays 40
+    # regardless of the configured NORMAL cap.
+    r, commits, _t = _renderer()
+    r.tool_card_max_lines = 5
+    body = "\n".join(f"line {i}" for i in range(30))  # >5 but <40
+    r.on_agent_event(
+        ToolExecutionEndEvent(
+            tool_call_id="t1",
+            result=ToolResult(content=[TextContent(text=body)]),
+            tool_name="bash",
+            is_error=True,
+        )
+    )
+    out = _committed_text(commits)
+    assert "line 29" in out  # full 30 lines kept under the untouched error cap
+    assert "more lines" not in out
+
+
 def test_tool_end_error_uses_higher_cap_to_preserve_traceback() -> None:
     # Errors get a 40-line cap (vs 12) so a traceback's diagnostic tail survives.
     r, commits, _t = _renderer()

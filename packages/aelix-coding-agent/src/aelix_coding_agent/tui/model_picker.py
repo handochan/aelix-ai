@@ -193,8 +193,13 @@ async def run_model_picker(
         models, getattr(current, "id", None), getattr(current, "provider", None)
     )
     # ``detail`` gets the ORIGINAL option index; labels and models share order.
+    # ``fill_screen`` (GitHub #66 item 3) opts the big /model list into the
+    # full-screen picker so a short catalog still fills the terminal-bounded modal.
     choice = await select(
-        "Select Model", labels, detail=lambda i: model_detail_lines(models[i])
+        "Select Model",
+        labels,
+        detail=lambda i: model_detail_lines(models[i]),
+        fill_screen=True,
     )
     if not choice:
         return

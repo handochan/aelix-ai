@@ -314,6 +314,12 @@ class EventRenderer:
         self._expand_store: dict[int, str] = {}
         self._expand_seq: int = 0
         self._expand_max: int = 100
+        # Issue #66 (TUI polish) — configurable cap on the NORMAL tool-card output
+        # body. Default 12 (unchanged behaviour); run_tui seeds this from the
+        # persisted ``get_tool_card_max_lines()`` setting (clamped [3, 40]). Governs
+        # ONLY the normal-output card path in _render_tool_end — the separate
+        # 40-line diff/error cap is a distinct literal and stays 40.
+        self.tool_card_max_lines: int = 12
         # Thinking is buffered during ``thinking_delta`` and flushed (dim
         # italic) BEFORE the text/tool block that follows it — not at the
         # ``thinking_end`` event, which the adapter emits at end-of-stream
@@ -503,7 +509,9 @@ class EventRenderer:
         # Error output is head-truncated too, but a Python traceback's diagnostic
         # tail (the exception type/message) lives at the bottom — so give errors a
         # higher cap to keep that visible (full detail still via a future /expand).
-        kept, hidden = _truncate_lines(text, max_lines=40 if is_error else 12)
+        kept, hidden = _truncate_lines(
+            text, max_lines=40 if is_error else self.tool_card_max_lines
+        )
         body_style = "red" if is_error else "dim"
         rows: list[Text] = [Text(f"│ {line}", style=body_style) for line in kept]
         if hidden > 0:

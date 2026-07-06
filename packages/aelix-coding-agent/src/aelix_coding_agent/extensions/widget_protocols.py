@@ -231,6 +231,16 @@ class OverlayOptions:
     """Called per-frame: ``visible(term_width, term_height) -> bool``."""
     non_capturing: bool = False
     """If True, overlay does not auto-focus on show."""
+    fill_screen: bool = False
+    """If True (opt-in), the captured modal wrapper EXPANDS to the terminal-bounded
+    cap so a SHORT list/tabbed picker fills the screen — content top-aligned, blank
+    space below — instead of leaving chat visible beneath it (GitHub #66 item 3).
+
+    Aelix-additive (not a Pi field): the inline non-fullscreen app grows the chrome
+    upward for a captured modal, so a tall picker already fills the terminal; this
+    flag makes a short one do the same for a consistent full-screen picker feel.
+    Default False preserves the natural-height behavior for the approval dialog,
+    the compact Yes/No confirm, and single-line text inputs."""
 
 
 @runtime_checkable

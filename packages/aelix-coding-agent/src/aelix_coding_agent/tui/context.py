@@ -45,7 +45,11 @@ from aelix_coding_agent.extensions.ext_ui import (
     WidgetFactory,
     WorkingIndicatorOptions,
 )
-from aelix_coding_agent.extensions.widget_protocols import Component, Theme
+from aelix_coding_agent.extensions.widget_protocols import (
+    Component,
+    OverlayOptions,
+    Theme,
+)
 from aelix_coding_agent.tui import themes as theme_registry
 from aelix_coding_agent.tui.overlay import show_modal
 
@@ -73,8 +77,42 @@ _PICK_SEL = "\x1b[1;36m"  # bold cyan — the highlighted row
 _PICK_DIM = "\x1b[2m"  # dim — dividers, counter, detail/help, hint
 _PICK_BOLD = "\x1b[1m"  # bold — the title
 _PICK_RST = "\x1b[0m"
+# GitHub #66 item 4 — the typed filter VALUE renders bold cyan (echoing the ❯ /
+# highlighted-row color) while the "Filter:" label + surrounding chrome stay dim,
+# so the eye lands on what the user is typing. Same raw-ANSI / theme-agnostic
+# convention as the other picker constants.
+_PICK_FILTER = "\x1b[1;36m"  # bold cyan — the live filter value
 _PICK_MIN_WIDTH = 28
 _PICK_MAX_WIDTH = 78
+
+
+def _filter_line(value: str, placeholder: str | None = None) -> str:
+    """A standalone filter affordance: dim ``Filter:`` label + bright typed VALUE.
+
+    GitHub #66 item 4 (owner decision): brighten ONLY the typed value (bold cyan),
+    keeping the ``Filter:`` label + chrome dim. When ``value`` is empty and a
+    ``placeholder`` is given (e.g. ``(type to filter)``) the whole line renders dim
+    — a hint is not typed input. Used by the no-match views + the tabbed filter
+    row; the counter suffix (already wrapped in a dim line) brightens the value
+    inline via :data:`_PICK_FILTER`.
+    """
+
+    if not value:
+        shown = placeholder if placeholder is not None else ""
+        return f"{_PICK_DIM}Filter: {shown}{_PICK_RST}"
+    return f"{_PICK_DIM}Filter: {_PICK_RST}{_PICK_FILTER}{value}{_PICK_RST}"
+
+
+def _filter_counter_suffix(value: str) -> str:
+    """The ``  ·  Filter: <value>`` suffix appended to a picker's counter line.
+
+    GitHub #66 item 4: the "  ·  Filter:" label inherits the DIM of the counter
+    line it is embedded in (the caller wraps the whole counter in :data:`_PICK_DIM`)
+    while the typed VALUE renders bold cyan via :data:`_PICK_FILTER`. The trailing
+    reset closes the bright run; the outer line's own reset closes the dim run.
+    """
+
+    return f"  ·  Filter: {_PICK_RST}{_PICK_FILTER}{value}{_PICK_RST}"
 
 
 def _picker_frame(title: str, body: list[str], hint: str, content_width: int) -> ANSI:
@@ -225,6 +263,8 @@ class AelixTUIContext:
         opts: ExtensionUIDialogOptions | None = None,
         detail: Callable[[int], list[str]] | None = None,
         initial_index: int = 0,
+        *,
+        fill_screen: bool = False,
     ) -> str | None:
         """Pi-parity arrow-key select with type-to-filter (Sprint 6h₂₄).
 
@@ -247,6 +287,11 @@ class AelixTUIContext:
         deliberately NOT part of the ``ExtensionUIContext`` protocol (extensions
         calling ``ctx.ui.select`` have no need for it). Callers that pass it must
         be typed against the concrete ``AelixTUIContext``, not the protocol.
+
+        ``fill_screen`` (GitHub #66 item 3) opts a big-list picker into FILLING the
+        terminal-bounded modal region (short content top-aligns, blank space below)
+        instead of leaving chat visible beneath a short list. Default ``False``
+        keeps the natural (grow-with-content) height. Also ``AelixTUIContext``-only.
 
         Empty ``options`` resolves to ``None`` immediately (no dialog).
         """
@@ -285,7 +330,7 @@ class AelixTUIContext:
                     title,
                     [
                         f"{_PICK_DIM}(no matches){_PICK_RST}",
-                        f"{_PICK_DIM}Filter: {state['filter']}{_PICK_RST}",
+                        _filter_line(state["filter"]),
                     ],
                     "Backspace to clear · Esc to cancel",
                     max(len(title), 40),
@@ -306,10 +351,12 @@ class AelixTUIContext:
                     detail_lines = list(detail(items[idx][0]))
             counter = f"({idx + 1}/{len(items)})"
             if state["filter"]:
-                counter += f"  ·  Filter: {state['filter']}"
+                # #66 item 4: brighten the typed VALUE (bold cyan); the "  ·  Filter:"
+                # label + counter stay dim (inherited from the dim-wrapped line).
+                counter += _filter_counter_suffix(state["filter"])
             hint = "↑/↓ move · type to filter · Enter select · Esc cancel"
             width = max(
-                [len(title), len(counter), len(hint)]
+                [len(title), _visible_len(counter), len(hint)]
                 + [len(items[i][1]) + 2 for i in range(start, end)]
                 + [len(d) for d in detail_lines]
             )
@@ -380,12 +427,17 @@ class AelixTUIContext:
                     state["idx"] = 0
                     self.chrome.invalidate()
 
+            # #66 item 3: in fill mode drop dont_extend_height so the Window fills
+            # the capped region (top-aligned) instead of hugging its content.
             return Window(
                 FormattedTextControl(render, focusable=True, key_bindings=kb),
-                dont_extend_height=True,
+                dont_extend_height=not fill_screen,
             )
 
-        return await show_modal(self.chrome, build)
+        # NB: name this ``modal_options`` — NOT ``options`` — so it does not rebind
+        # the ``options`` LIST parameter that the render/filtered closures capture.
+        modal_options = OverlayOptions(fill_screen=True) if fill_screen else None
+        return await show_modal(self.chrome, build, options=modal_options)
 
     async def tabbed(
         self,
@@ -394,6 +446,7 @@ class AelixTUIContext:
         *,
         initial: int = 0,
         filter_tabs: set[int] | None = None,
+        fill_screen: bool = False,
     ) -> None:
         """A framed tabbed viewer (WP-8, the /stats + /extension shell).
 
@@ -421,6 +474,9 @@ class AelixTUIContext:
             byte-identical to before (``q`` closes, every other key is a no-op).
             The filter RESETS to empty whenever the active tab changes.
             :data:`None` (the default) keeps every tab read-only.
+        :param fill_screen: (GitHub #66 item 3) when True the viewer FILLS the
+            terminal-bounded modal region (content top-aligned, blank space below)
+            instead of hugging its content. Default False keeps natural height.
         """
 
         if not tabs:
@@ -460,8 +516,9 @@ class AelixTUIContext:
                     ]
                     if not body_lines:
                         body_lines = [f"{_PICK_DIM}(no matches){_PICK_RST}"]
-                shown = state["filter"] or "(type to filter)"
-                extra_lines = [f"{_PICK_DIM}Filter: {shown}{_PICK_RST}"]
+                # #66 item 4: dim "Filter:" label, bright-cyan typed value; the
+                # "(type to filter)" placeholder stays dim (it isn't typed input).
+                extra_lines = [_filter_line(state["filter"], "(type to filter)")]
                 hint = "Tab/←→ switch · type to filter · Esc close"
             else:
                 hint = "Tab/←→ switch · Esc close"
@@ -543,12 +600,15 @@ class AelixTUIContext:
                     state["filter"] += printable
                     self.chrome.invalidate()
 
+            # #66 item 3: fill mode drops dont_extend_height so the viewer fills
+            # the capped region (top-aligned) rather than hugging its content.
             return Window(
                 FormattedTextControl(render, focusable=True, key_bindings=kb),
-                dont_extend_height=True,
+                dont_extend_height=not fill_screen,
             )
 
-        await show_modal(self.chrome, build)
+        modal_options = OverlayOptions(fill_screen=True) if fill_screen else None
+        await show_modal(self.chrome, build, options=modal_options)
         return None
 
     async def multiselect(
@@ -559,6 +619,7 @@ class AelixTUIContext:
         selected: set[str],
         extra_toggles: list[tuple[str, str]] | list[tuple[str, str, bool]] | None = None,
         preview: Callable[[set[str], dict[str, bool]], list[str]] | None = None,
+        fill_screen: bool = False,
     ) -> tuple[set[str], dict[str, bool]] | None:
         """WP-2 (ADR-0160) — a multi-checkbox picker (sibling to :meth:`select`).
 
@@ -581,6 +642,9 @@ class AelixTUIContext:
         :param preview: optional ``(selected, toggles) -> lines`` callback for a
             live preview block (e.g. a sample footer). Guarded — a raising
             preview never breaks the modal.
+        :param fill_screen: (GitHub #66 item 3) when True the picker FILLS the
+            terminal-bounded modal region (content top-aligned, blank space below)
+            instead of hugging its content. Default False keeps natural height.
         :returns: ``(selected_ids, toggle_states)`` on Enter, or ``None`` on
             Esc / Ctrl+C (caller treats None as "no change").
 
@@ -633,7 +697,7 @@ class AelixTUIContext:
                     title,
                     [
                         f"{_PICK_DIM}(no matches){_PICK_RST}",
-                        f"{_PICK_DIM}Filter: {state['filter']}{_PICK_RST}",
+                        _filter_line(state["filter"]),
                     ],
                     "Backspace to clear · Esc to cancel",
                     max(len(title), 40),
@@ -668,7 +732,8 @@ class AelixTUIContext:
                 body.append(_row(n_opts + ti == cursor, f"[{box}] {label}"))
             counter = f"({min(cursor + 1, n_total)}/{n_total})"
             if state["filter"]:
-                counter += f"  ·  Filter: {state['filter']}"
+                # #66 item 4: brighten the typed VALUE; label/counter stay dim.
+                counter += _filter_counter_suffix(state["filter"])
             body.append(f"{_PICK_DIM}  {counter}{_PICK_RST}")
             preview_lines: list[str] = []
             if preview is not None:
@@ -680,7 +745,7 @@ class AelixTUIContext:
                 body.append(f"{_PICK_DIM}{p}{_PICK_RST}")
             hint = "↑/↓ move · Space toggle · Enter confirm · Esc cancel"
             width = max(
-                [len(title), len(counter), len(hint)]
+                [len(title), _visible_len(counter), len(hint)]
                 + [len(r) + 2 for r in plain_rows]
                 + [len(p) for p in preview_lines]
             )
@@ -744,12 +809,17 @@ class AelixTUIContext:
                     state["cursor"] = 0
                     self.chrome.invalidate()
 
+            # #66 item 3: fill mode drops dont_extend_height so the picker fills
+            # the capped region (top-aligned) rather than hugging its content.
             return Window(
                 FormattedTextControl(render, focusable=True, key_bindings=kb),
-                dont_extend_height=True,
+                dont_extend_height=not fill_screen,
             )
 
-        return await show_modal(self.chrome, build)
+        # NB: ``modal_options`` — NOT ``options`` — to avoid rebinding the
+        # ``options`` LIST parameter captured by the render/filtered closures.
+        modal_options = OverlayOptions(fill_screen=True) if fill_screen else None
+        return await show_modal(self.chrome, build, options=modal_options)
 
     async def confirm(
         self, title: str, message: str, opts: ExtensionUIDialogOptions | None = None

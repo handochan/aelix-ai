@@ -146,6 +146,17 @@ _EOF = _Eof()
 # Sprint 6h₂₅ (ADR-0153, WP-3) — live input affordances.
 _INPUT_PREFIX = "❯ "
 _INPUT_PLACEHOLDER = "Type your message or @path/to/file"
+# #66 item 6b — the neutral (DEFAULT-mode) style for the ``❯ `` input prefix.
+# Non-default permission modes recolor it via ``prompt_style_provider`` (single
+# source: ``permission_mode.MODE_META[...].badge_style``); DEFAULT keeps this.
+_DEFAULT_PROMPT_STYLE = "class:aelix.prompt bold fg:cyan"
+
+# #66 item 2 — idle Ctrl+C exit affordance. An empty-buffer Ctrl+C arms a short
+# window; a second Ctrl+C within it requests EOF (the exact Ctrl+D teardown). A
+# running-turn Ctrl+C stays abort-only, and a non-empty buffer just clears the
+# line (neither arms the timer).
+_CTRL_C_EXIT_WINDOW = 2.0
+_CTRL_C_EXIT_HINT = "Press Ctrl+C again to exit"
 
 
 class _PlaceholderProcessor(Processor):
@@ -172,6 +183,39 @@ class _PlaceholderProcessor(Processor):
             # together: ``❯ Type your message or @path/to/file``.
             return Transformation(ti.fragments + [(self._style, self._text)])
         return Transformation(ti.fragments)
+
+
+class _ModePrompt(BeforeInput):
+    """A ``BeforeInput`` ``❯ `` prefix whose STYLE follows the permission mode.
+
+    #66 item 6b. ``BeforeInput`` re-reads ``self.style`` on every
+    ``apply_transformation`` (see prompt-toolkit ``processors.py``), so exposing
+    ``style`` as a property that resolves the chrome's live
+    ``prompt_style_provider`` makes the ❯ recolor per mode with no rebuild. The
+    ``text`` stays the plain ``❯ `` string (so the placeholder processor + the
+    prefix-wiring tests see it unchanged); only the color is dynamic. DEFAULT
+    mode / no provider → the neutral :data:`_DEFAULT_PROMPT_STYLE` (bold cyan).
+    """
+
+    def __init__(self, chrome: AelixChrome, text: str) -> None:
+        self._chrome = chrome
+        super().__init__(text)  # sets self.text=text, self.style="" (ignored)
+
+    @property
+    def style(self) -> str:  # type: ignore[override]
+        provider = self._chrome.prompt_style_provider
+        if provider is not None:
+            try:
+                return provider()
+            except Exception:  # noqa: BLE001 — a faulty provider must not break input
+                pass
+        return _DEFAULT_PROMPT_STYLE
+
+    @style.setter
+    def style(self, value: str) -> None:
+        # ``BeforeInput.__init__`` assigns ``self.style = ""``; swallowed — the
+        # property computes the live per-mode style on every render.
+        pass
 
 
 class _MarkedCompletionsMenuControl(CompletionsMenuControl):
@@ -339,9 +383,18 @@ class AelixChrome:
         # mid-turn (it only flips a field + repaints; the gate reads the posture
         # on the next tool_call under its lock). None in headless tests.
         self.on_permission_cycle: Callable[[], None] | None = None
+        # #66 item 6b — a host-wired provider returning the prompt-toolkit style
+        # for the ``❯ `` input prefix, following the permission mode (single
+        # source: ``MODE_META[...].badge_style``). ``None`` (headless / no
+        # posture) → the neutral bold-cyan default (:data:`_DEFAULT_PROMPT_STYLE`).
+        self.prompt_style_provider: Callable[[], str] | None = None
 
         # === state the live regions read ===
         self._status: dict[str, str] = {}
+        # #66 item 2 — monotonic timestamp of the last idle empty-buffer Ctrl+C
+        # (via ``self._time``); a second press within ``_CTRL_C_EXIT_WINDOW``
+        # requests EOF. ``None`` = not armed. Reset on line-clear / exit / expiry.
+        self._last_ctrl_c: float | None = None
         self._footer_line: str = ""
         self._header_line: str = ""
         self._breadcrumb_line: str = ""
@@ -488,7 +541,9 @@ class AelixChrome:
             BufferControl(
                 self.buffer,
                 input_processors=[
-                    BeforeInput(_INPUT_PREFIX, style="class:aelix.prompt bold fg:cyan"),
+                    # #66 item 6b — the ❯ prefix color follows the permission mode
+                    # (``_ModePrompt`` reads ``self.prompt_style_provider`` live).
+                    _ModePrompt(self, _INPUT_PREFIX),
                     _PlaceholderProcessor(_INPUT_PLACEHOLDER),
                 ],
             ),
@@ -510,9 +565,12 @@ class AelixChrome:
                 breadcrumb,
                 Window(FormattedTextControl(self._render_widgets_above), dont_extend_height=True),
                 modal_slot,
+                # #66 item 5 — the "Working…" row sits ABOVE the input (was below).
+                # gate_visible keeps it at 0 rows when idle (no blank gap), and it
+                # renders below any open modal_slot (no collision).
+                _ansi_row(self._render_working, gate_visible=True),
                 input_window,
                 Window(FormattedTextControl(self._render_widgets_below), dont_extend_height=True),
-                _ansi_row(self._render_working, gate_visible=True),
                 _ansi_row(self._render_status),
                 _footer_row(),
             ]
@@ -658,11 +716,32 @@ class AelixChrome:
 
         @kb.add("c-c")
         def _interrupt(event: object) -> None:
+            # #66 item 2 — Ctrl+C behaviour by state:
+            #  · running turn → abort (unchanged); never arms the exit timer.
+            #  · idle, NON-empty buffer → clear the line (conventional REPL);
+            #    never arms the exit timer.
+            #  · idle, EMPTY buffer → first press arms a short window + shows a
+            #    transient status hint; a second press within the window requests
+            #    EOF (the exact Ctrl+D teardown), never exit() directly.
             if self._running:
                 if self.on_interrupt is not None:
                     self.on_interrupt()
-            else:
-                self.buffer.reset()  # clear the current line (conventional REPL)
+                return
+            if self.buffer.text:
+                self.buffer.reset()
+                self._last_ctrl_c = None
+                return
+            now = self._time()
+            if (
+                self._last_ctrl_c is not None
+                and now - self._last_ctrl_c <= _CTRL_C_EXIT_WINDOW
+            ):
+                self._last_ctrl_c = None
+                self.request_eof()
+                return
+            # First press (or a press after the window elapsed) → (re-)arm.
+            self._last_ctrl_c = now
+            self.invalidate()
 
         @kb.add("escape", filter=Condition(lambda: self._running))
         def _escape_interrupt(event: object) -> None:
@@ -693,6 +772,9 @@ class AelixChrome:
         def _cycle_permission(event: object) -> None:
             if self.on_permission_cycle is not None:
                 self.on_permission_cycle()
+            # #66 item 6b — repaint so the ❯ prompt color tracks the new mode
+            # (the footer badge is repainted by the host's cycle callback).
+            self.invalidate()
 
         # Issue #20 — extension shortcuts LAST, so built-ins can never be
         # shadowed (already-bound key sequences are skipped with a warning).
@@ -814,10 +896,32 @@ class AelixChrome:
     # === region renderers (ANSI strings) ===================================
 
     def _render_status(self) -> str:
-        if not self._status:
-            return ""
         # Strip newlines: this is a fixed height=1 chrome row.
-        return "  ".join(v.replace("\n", " ") for v in self._status.values())
+        parts = [v.replace("\n", " ") for v in self._status.values()]
+        # #66 item 2 — the transient "Press Ctrl+C again to exit" hint. Rendered
+        # (not stored in ``_status``) so it self-clears once the arm window
+        # elapses — the app's ``refresh_interval`` repaints drop it with no timer.
+        hint = self._ctrl_c_exit_hint()
+        if hint:
+            parts.append(hint)
+        if not parts:
+            return ""
+        return "  ".join(parts)
+
+    def _ctrl_c_exit_hint(self) -> str:
+        """The idle-exit hint while a Ctrl+C exit window is armed, else ``""``.
+
+        Pure read (no state mutation): the arm timestamp lives in
+        ``_last_ctrl_c`` and is (re-)set / cleared by the ``c-c`` binding. Once
+        ``_CTRL_C_EXIT_WINDOW`` has elapsed the hint simply stops rendering; the
+        next idle empty-buffer Ctrl+C re-arms with a fresh timestamp.
+        """
+
+        if self._last_ctrl_c is None:
+            return ""
+        if self._time() - self._last_ctrl_c > _CTRL_C_EXIT_WINDOW:
+            return ""
+        return _CTRL_C_EXIT_HINT
 
     def _render_working(self) -> str:
         if not (self._working_visible or self._running):
@@ -1023,6 +1127,10 @@ class AelixChrome:
         # Sprint 6h₂₅ (ADR-0153, WP-3) — stamp the turn-start on rising edge so
         # _render_working can show elapsed seconds; clear on falling edge.
         self._run_started = self._time() if running else None
+        # #66 item 2 — a turn starting disarms any pending idle Ctrl+C-exit window
+        # so a fast turn can't let a stale first-press count as the "second press".
+        if running:
+            self._last_ctrl_c = None
         self.invalidate()
 
     def set_footer_line(self, text: str) -> None:

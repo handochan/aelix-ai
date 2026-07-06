@@ -884,6 +884,50 @@ async def test_tabbed_backspace_on_filterable_tab_then_escape_closes() -> None:
         assert await asyncio.wait_for(fut, timeout=5) is None
 
 
+# === GitHub #66 item 4 — the typed filter VALUE renders bright (label dim) ======
+
+
+def test_filter_line_value_is_bright_cyan_label_stays_dim() -> None:
+    from aelix_coding_agent.tui.context import (
+        _PICK_DIM,
+        _PICK_FILTER,
+        _PICK_RST,
+        _filter_line,
+    )
+
+    line = _filter_line("gpt-4")
+    # The "Filter:" label is dim; the typed value is a bright-cyan run.
+    assert line.startswith(f"{_PICK_DIM}Filter: {_PICK_RST}")
+    assert f"{_PICK_FILTER}gpt-4{_PICK_RST}" in line
+    # The bright value is NOT wrapped in the faint (dim) SGR.
+    assert f"{_PICK_DIM}gpt-4" not in line
+
+
+def test_filter_line_empty_placeholder_stays_fully_dim() -> None:
+    from aelix_coding_agent.tui.context import _PICK_FILTER, _filter_line
+
+    line = _filter_line("", "(type to filter)")
+    # A placeholder is a hint, not typed input → no bright run at all.
+    assert _PICK_FILTER not in line
+    assert "(type to filter)" in line
+
+
+def test_filter_counter_suffix_brightens_only_the_value() -> None:
+    from aelix_coding_agent.tui.context import (
+        _PICK_DIM,
+        _PICK_FILTER,
+        _PICK_RST,
+        _filter_counter_suffix,
+    )
+
+    suffix = _filter_counter_suffix("qwen")
+    # The "Filter:" label carries no explicit style (it inherits the counter's
+    # dim wrap); the value RESETS that inherited dim first (else it renders
+    # bold+cyan+faint) and then applies the bright-cyan SGR (#66 review fix).
+    assert suffix == f"  ·  Filter: {_PICK_RST}{_PICK_FILTER}qwen{_PICK_RST}"
+    assert _PICK_DIM not in suffix  # never self-dims — the caller's line does
+
+
 async def test_tabbed_tab_switch_works_while_filter_active() -> None:
     # With an active filter on a filterable tab, Tab still advances the active tab
     # (the filter resets on switch): the second tab's render fires. Verify via the
@@ -913,3 +957,71 @@ async def test_tabbed_tab_switch_works_while_filter_active() -> None:
         assert "B" in rendered  # the second tab's render fired
         pipe.send_text("\x1b")  # Esc closes
         assert await asyncio.wait_for(fut, timeout=5) is None
+
+
+# === GitHub #66 item 3 — fill_screen pickers fill the terminal-bounded modal ===
+
+
+async def test_select_fill_screen_expands_modal_slot_to_cap() -> None:
+    # With fill_screen a SHORT select fills the capped region: the modal slot's
+    # preferred height equals the terminal-bounded cap (blank space below).
+    from aelix_coding_agent.tui.overlay import _modal_cap
+
+    async with _ctx(run_app=True) as (ctx, chrome, pipe):
+        fut = asyncio.ensure_future(
+            ctx.select("Pick", ["red", "green"], fill_screen=True)
+        )
+        await _wait_float(chrome)
+        rows = chrome.app.output.get_size().rows
+        cap = _modal_cap(chrome, None)
+        filled = chrome._render_modal_slot().preferred_height(80, rows).preferred
+        assert filled == cap
+        pipe.send_text("\r")  # Enter still resolves the highlighted row
+        assert await asyncio.wait_for(fut, timeout=5) == "red"
+
+
+async def test_select_without_fill_hugs_short_content_below_cap() -> None:
+    # The default (fill_screen=False) keeps the natural height — a short list
+    # reports fewer rows than the cap, so chat stays visible beneath it.
+    from aelix_coding_agent.tui.overlay import _modal_cap
+
+    async with _ctx(run_app=True) as (ctx, chrome, pipe):
+        fut = asyncio.ensure_future(ctx.select("Pick", ["red", "green"]))
+        await _wait_float(chrome)
+        rows = chrome.app.output.get_size().rows
+        cap = _modal_cap(chrome, None)
+        natural = chrome._render_modal_slot().preferred_height(80, rows).preferred
+        assert 0 < natural < cap  # short modal, well under the cap
+        pipe.send_text("\x1b")
+        await asyncio.wait_for(fut, timeout=5)
+
+
+async def test_tabbed_fill_screen_still_resolves() -> None:
+    # Threading fill_screen through tabbed() must not change key handling.
+    async with _ctx(run_app=True) as (ctx, chrome, pipe):
+        fut = asyncio.ensure_future(
+            ctx.tabbed("T", [("A", lambda: ["a"])], fill_screen=True)
+        )
+        await _wait_float(chrome)
+        pipe.send_text("\x1b")  # Esc closes
+        assert await asyncio.wait_for(fut, timeout=5) is None
+
+
+async def test_multiselect_fill_screen_still_resolves() -> None:
+    # fill_screen threaded through multiselect() leaves toggle/confirm intact.
+    async with _ctx(run_app=True) as (ctx, chrome, pipe):
+        fut = asyncio.ensure_future(
+            ctx.multiselect(
+                "Pick",
+                [("a", "A", "desc-a"), ("b", "B", "desc-b")],
+                selected=set(),
+                fill_screen=True,
+            )
+        )
+        await _wait_float(chrome)
+        pipe.send_text(" ")  # Space toggles the highlighted row ("a")
+        pipe.send_text("\n")  # Enter confirms the selection
+        result = await asyncio.wait_for(fut, timeout=5)
+        assert result is not None
+        chosen, _toggles = result
+        assert chosen == {"a"}
