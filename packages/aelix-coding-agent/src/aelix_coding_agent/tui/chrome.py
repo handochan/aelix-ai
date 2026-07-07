@@ -559,17 +559,46 @@ class AelixChrome:
         # modal renders in the same in-flow zone as widgets_above / the stream
         # tail / the autocomplete menu — "below the chat, above the prompt".
         modal_slot = DynamicContainer(self._render_modal_slot)
+        # #66 item 3 (corrected) — while an in-flow modal (picker / settings) is
+        # open the user types INTO the modal, so the chat input row ("❯ Type your
+        # message…") is unused and confusing. HIDE ONLY the input row; the chat
+        # scrollback keeps its natural height, exactly as before (this is NOT the
+        # reverted full-screen picker behaviour). ``self._input_window`` still points at
+        # the RAW Window (set above) so focus() / focus_input() target the live
+        # control and ``focused_element`` below stays valid; the
+        # ConditionalContainer only toggles VISIBILITY. Non-capturing floats
+        # (autocomplete / toasts) use add_float — is_modal_open() stays False for
+        # them — so the input stays visible while a completion menu is open.
+        input_conditional = ConditionalContainer(
+            input_window, filter=Condition(lambda: not self.is_modal_open())
+        )
+        # #66 item 5 — the "Working…" row sits ABOVE the input (was below).
+        # gate_visible keeps it at 0 rows when idle (no blank gap), and it
+        # renders below any open modal_slot (no collision).
+        working_row = _ansi_row(self._render_working, gate_visible=True)
+        # A 1-row breathing gap between the "Working…" row and the input. Gated on
+        # the SAME working-visible condition as the working row so the gap only
+        # appears while a turn runs (no permanent blank line when idle) — AND on
+        # ``not is_modal_open()`` so it collapses with the input row it separates
+        # (a modal opening mid-turn hides the input, so the gap has nothing to
+        # separate and would otherwise leave a stray blank row above the modal).
+        working_spacer = ConditionalContainer(
+            Window(height=1),
+            filter=renderer_height_is_known
+            & Condition(
+                lambda: (self._working_visible or self._running)
+                and not self.is_modal_open()
+            ),
+        )
         body = HSplit(
             [
                 header,
                 breadcrumb,
                 Window(FormattedTextControl(self._render_widgets_above), dont_extend_height=True),
                 modal_slot,
-                # #66 item 5 — the "Working…" row sits ABOVE the input (was below).
-                # gate_visible keeps it at 0 rows when idle (no blank gap), and it
-                # renders below any open modal_slot (no collision).
-                _ansi_row(self._render_working, gate_visible=True),
-                input_window,
+                working_row,
+                working_spacer,
+                input_conditional,
                 Window(FormattedTextControl(self._render_widgets_below), dont_extend_height=True),
                 _ansi_row(self._render_status),
                 _footer_row(),

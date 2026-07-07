@@ -122,10 +122,9 @@ async def test_run_model_picker_switches_to_selected_model() -> None:
     captured: dict[str, Any] = {}
 
     async def select(
-        title: str, options: list[str], detail: Any = None, fill_screen: bool = False
+        title: str, options: list[str], detail: Any = None
     ) -> str | None:
         captured["options"] = options
-        captured["fill_screen"] = fill_screen
         if detail is not None:
             captured["detail1"] = detail(1)  # exercise the per-highlight callback
         return options[1]  # choose the 2nd row
@@ -142,8 +141,6 @@ async def test_run_model_picker_switches_to_selected_model() -> None:
     assert refreshed == [1]
     # detail(1) returned the SECOND model's lines (index maps to models order).
     assert any("Modality" in line for line in captured["detail1"])
-    # GitHub #66 item 3: /model opts the big list into the full-screen picker.
-    assert captured["fill_screen"] is True
 
 
 async def test_run_model_picker_no_registry_is_unavailable() -> None:
@@ -171,7 +168,7 @@ async def test_run_model_picker_cancel_does_not_switch() -> None:
     committed: list[object] = []
 
     async def select(
-        title: str, options: list[str], detail: Any = None, fill_screen: bool = False
+        title: str, options: list[str], detail: Any = None
     ) -> str | None:
         return None  # user pressed Esc
 
@@ -198,7 +195,7 @@ async def test_run_model_picker_switch_failure_is_surfaced() -> None:
     committed: list[object] = []
 
     async def select(
-        title: str, options: list[str], detail: Any = None, fill_screen: bool = False
+        title: str, options: list[str], detail: Any = None
     ) -> str | None:
         return options[0]
 
@@ -216,7 +213,7 @@ async def test_run_model_picker_selecting_current_model_round_trips() -> None:
     committed: list[object] = []
 
     async def select(
-        title: str, options: list[str], detail: Any = None, fill_screen: bool = False
+        title: str, options: list[str], detail: Any = None
     ) -> str | None:
         assert options[1].startswith("✱ ")  # current model is marked
         return options[1]  # re-select the (marked) current row
@@ -253,7 +250,7 @@ async def test_run_model_picker_scopes_to_enabled_allow_list() -> None:
     seen: dict[str, Any] = {}
 
     async def select(
-        title: str, options: list[str], detail: Any = None, fill_screen: bool = False
+        title: str, options: list[str], detail: Any = None
     ) -> str | None:
         seen["options"] = options
         return options[0]  # pick the first offered (scoped) row
@@ -283,7 +280,7 @@ async def test_run_model_picker_empty_match_degrades_to_all_with_warning() -> No
     seen: dict[str, Any] = {}
 
     async def select(
-        title: str, options: list[str], detail: Any = None, fill_screen: bool = False
+        title: str, options: list[str], detail: Any = None
     ) -> str | None:
         seen["options"] = options
         return None  # Esc after seeing the full list
@@ -306,7 +303,7 @@ async def test_run_model_picker_none_settings_shows_full_list() -> None:
     seen: dict[str, Any] = {}
 
     async def select(
-        title: str, options: list[str], detail: Any = None, fill_screen: bool = False
+        title: str, options: list[str], detail: Any = None
     ) -> str | None:
         seen["options"] = options
         return None

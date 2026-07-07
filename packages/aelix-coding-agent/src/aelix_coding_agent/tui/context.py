@@ -45,11 +45,7 @@ from aelix_coding_agent.extensions.ext_ui import (
     WidgetFactory,
     WorkingIndicatorOptions,
 )
-from aelix_coding_agent.extensions.widget_protocols import (
-    Component,
-    OverlayOptions,
-    Theme,
-)
+from aelix_coding_agent.extensions.widget_protocols import Component, Theme
 from aelix_coding_agent.tui import themes as theme_registry
 from aelix_coding_agent.tui.overlay import show_modal
 
@@ -263,8 +259,6 @@ class AelixTUIContext:
         opts: ExtensionUIDialogOptions | None = None,
         detail: Callable[[int], list[str]] | None = None,
         initial_index: int = 0,
-        *,
-        fill_screen: bool = False,
     ) -> str | None:
         """Pi-parity arrow-key select with type-to-filter (Sprint 6h₂₄).
 
@@ -287,11 +281,6 @@ class AelixTUIContext:
         deliberately NOT part of the ``ExtensionUIContext`` protocol (extensions
         calling ``ctx.ui.select`` have no need for it). Callers that pass it must
         be typed against the concrete ``AelixTUIContext``, not the protocol.
-
-        ``fill_screen`` (GitHub #66 item 3) opts a big-list picker into FILLING the
-        terminal-bounded modal region (short content top-aligns, blank space below)
-        instead of leaving chat visible beneath a short list. Default ``False``
-        keeps the natural (grow-with-content) height. Also ``AelixTUIContext``-only.
 
         Empty ``options`` resolves to ``None`` immediately (no dialog).
         """
@@ -427,17 +416,12 @@ class AelixTUIContext:
                     state["idx"] = 0
                     self.chrome.invalidate()
 
-            # #66 item 3: in fill mode drop dont_extend_height so the Window fills
-            # the capped region (top-aligned) instead of hugging its content.
             return Window(
                 FormattedTextControl(render, focusable=True, key_bindings=kb),
-                dont_extend_height=not fill_screen,
+                dont_extend_height=True,
             )
 
-        # NB: name this ``modal_options`` — NOT ``options`` — so it does not rebind
-        # the ``options`` LIST parameter that the render/filtered closures capture.
-        modal_options = OverlayOptions(fill_screen=True) if fill_screen else None
-        return await show_modal(self.chrome, build, options=modal_options)
+        return await show_modal(self.chrome, build)
 
     async def tabbed(
         self,
@@ -446,7 +430,6 @@ class AelixTUIContext:
         *,
         initial: int = 0,
         filter_tabs: set[int] | None = None,
-        fill_screen: bool = False,
     ) -> None:
         """A framed tabbed viewer (WP-8, the /stats + /extension shell).
 
@@ -474,9 +457,6 @@ class AelixTUIContext:
             byte-identical to before (``q`` closes, every other key is a no-op).
             The filter RESETS to empty whenever the active tab changes.
             :data:`None` (the default) keeps every tab read-only.
-        :param fill_screen: (GitHub #66 item 3) when True the viewer FILLS the
-            terminal-bounded modal region (content top-aligned, blank space below)
-            instead of hugging its content. Default False keeps natural height.
         """
 
         if not tabs:
@@ -600,15 +580,12 @@ class AelixTUIContext:
                     state["filter"] += printable
                     self.chrome.invalidate()
 
-            # #66 item 3: fill mode drops dont_extend_height so the viewer fills
-            # the capped region (top-aligned) rather than hugging its content.
             return Window(
                 FormattedTextControl(render, focusable=True, key_bindings=kb),
-                dont_extend_height=not fill_screen,
+                dont_extend_height=True,
             )
 
-        modal_options = OverlayOptions(fill_screen=True) if fill_screen else None
-        await show_modal(self.chrome, build, options=modal_options)
+        await show_modal(self.chrome, build)
         return None
 
     async def multiselect(
@@ -619,7 +596,6 @@ class AelixTUIContext:
         selected: set[str],
         extra_toggles: list[tuple[str, str]] | list[tuple[str, str, bool]] | None = None,
         preview: Callable[[set[str], dict[str, bool]], list[str]] | None = None,
-        fill_screen: bool = False,
     ) -> tuple[set[str], dict[str, bool]] | None:
         """WP-2 (ADR-0160) — a multi-checkbox picker (sibling to :meth:`select`).
 
@@ -642,9 +618,6 @@ class AelixTUIContext:
         :param preview: optional ``(selected, toggles) -> lines`` callback for a
             live preview block (e.g. a sample footer). Guarded — a raising
             preview never breaks the modal.
-        :param fill_screen: (GitHub #66 item 3) when True the picker FILLS the
-            terminal-bounded modal region (content top-aligned, blank space below)
-            instead of hugging its content. Default False keeps natural height.
         :returns: ``(selected_ids, toggle_states)`` on Enter, or ``None`` on
             Esc / Ctrl+C (caller treats None as "no change").
 
@@ -809,17 +782,12 @@ class AelixTUIContext:
                     state["cursor"] = 0
                     self.chrome.invalidate()
 
-            # #66 item 3: fill mode drops dont_extend_height so the picker fills
-            # the capped region (top-aligned) rather than hugging its content.
             return Window(
                 FormattedTextControl(render, focusable=True, key_bindings=kb),
-                dont_extend_height=not fill_screen,
+                dont_extend_height=True,
             )
 
-        # NB: ``modal_options`` — NOT ``options`` — to avoid rebinding the
-        # ``options`` LIST parameter captured by the render/filtered closures.
-        modal_options = OverlayOptions(fill_screen=True) if fill_screen else None
-        return await show_modal(self.chrome, build, options=modal_options)
+        return await show_modal(self.chrome, build)
 
     async def confirm(
         self, title: str, message: str, opts: ExtensionUIDialogOptions | None = None
