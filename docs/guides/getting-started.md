@@ -83,7 +83,8 @@ equivalent.
 
 ```bash
 aelix --continue                 # continue the most recent session (-c)
-aelix --resume                   # resume a session via an interactive picker (-r)
+aelix --resume                   # pick a previous session interactively (-r)
+aelix --resume <id>              # resume a specific session by id/prefix
 aelix --no-session               # in-memory session, not persisted
 aelix --thinking medium          # off | minimal | low | medium | high | xhigh
 aelix --append-system-prompt "Be terse."

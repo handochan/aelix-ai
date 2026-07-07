@@ -107,17 +107,6 @@ async def test_continue_plus_fork_exits_1(
     assert "--fork" in captured.err
 
 
-async def test_resume_raises_not_implemented(
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    """``--resume`` is Phase 5b deferred — raises NotImplementedError."""
-
-    with pytest.raises(NotImplementedError):
-        await _async_main(["--resume"])
-    captured = capsys.readouterr()
-    assert "Phase 5b" in captured.err
-
-
 async def test_continue_empty_cwd_silent_fallback(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

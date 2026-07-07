@@ -66,6 +66,10 @@ class Args:
     resume: bool = False
     """Pi parity: ``--resume`` / ``-r``."""
 
+    resume_id: str | None = None
+    """Optional ``--resume <id>`` session id/prefix. ``None`` = interactive
+    picker (Pi ``--resume`` takes an optional value)."""
+
     no_session: bool = False
     """Pi parity: ``--no-session``."""
 
@@ -247,6 +251,15 @@ def parse_args(argv: list[str]) -> Args:
             parsed.continue_session = True
         elif arg in ("--resume", "-r"):
             parsed.resume = True
+            # Optional session id/prefix: opportunistically swallow the next
+            # token as the id UNLESS it is a flag (``-``) or a ``@file``
+            # positional (mirrors the ``--print`` peek). ``-r`` with no id →
+            # interactive picker.
+            if i + 1 < n:
+                next_tok = argv[i + 1]
+                if next_tok and not next_tok.startswith(("-", "@")):
+                    parsed.resume_id = next_tok
+                    i += 1
         elif arg == "--provider":
             if i + 1 < n:
                 parsed.provider = argv[i + 1]
@@ -426,7 +439,7 @@ Modes:
 
 Session:
   --continue, -c        Continue the most recent session
-  --resume, -r          Resume a session (interactive picker)
+  --resume, -r [<id>]   Resume a session by id/prefix, or pick interactively
   --no-session          Run with an in-memory session (not persisted)
   --session <path>      Open a specific session file
   --fork <entry_id>     Fork a session at the given entry

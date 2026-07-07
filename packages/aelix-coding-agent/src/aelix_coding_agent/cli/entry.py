@@ -323,6 +323,120 @@ def _validate_continue_flag(parsed: Args) -> str | None:
     return None
 
 
+def _validate_resume_flag(parsed: Args) -> str | None:
+    """``--resume`` argument-compatibility validation (mirrors --continue).
+
+    ``--resume`` is a session SOURCE, so it is mutually exclusive with the
+    other source flags. Returns a Pi-shape error message, or :data:`None`
+    when the combination is OK.
+    """
+
+    if not parsed.resume:
+        return None
+    if parsed.no_session:
+        return "--resume is incompatible with --no-session"
+    if parsed.session is not None:
+        return "--resume is incompatible with --session"
+    if parsed.fork is not None:
+        return "--resume is incompatible with --fork"
+    if parsed.continue_session:
+        return "--resume is incompatible with --continue"
+    return None
+
+
+def _resume_choice_label(meta: object) -> str:
+    """A one-line picker label for the startup ``--resume`` menu.
+
+    ``JsonlSessionMetadata`` carries id + created_at (no title / message
+    count), so the label is ``{created} · {short-id}`` — same shape as the
+    in-session ``/resume`` picker (``tui/shell.py`` ``_format_session_choice``).
+    Defensive getattr — never raises on an odd metadata shape.
+    """
+
+    short_id = (getattr(meta, "id", "") or "")[:8]
+    created = (getattr(meta, "created_at", "") or "").replace("T", " ")[:16]
+    if created and short_id:
+        return f"{created} · {short_id}"
+    return created or short_id or "session"
+
+
+def _read_resume_line() -> str:
+    """Read one line of picker input from stdin (indirection for tests)."""
+
+    return input()
+
+
+async def _prompt_resume_choice(
+    sessions: list[JsonlSessionMetadata],
+) -> JsonlSessionMetadata | None:
+    """Render the startup ``--resume`` picker and return the chosen session.
+
+    The menu + prompt go to STDERR (stdout stays clean); the selection is read
+    from stdin off the event loop. An empty line, EOF (Ctrl-D), a non-number,
+    or an out-of-range choice all return :data:`None` — the caller then starts
+    a fresh session. ``sessions`` is newest-first (``repo.list`` order).
+    """
+
+    lines = ["Resume which session? (newest first)"]
+    for idx, meta in enumerate(sessions, start=1):
+        lines.append(f"  [{idx}] {_resume_choice_label(meta)}")
+    lines.append("Enter a number, or press Enter to start a new session: ")
+    print("\n".join(lines), file=sys.stderr)
+
+    try:
+        loop = asyncio.get_running_loop()
+        raw = (await loop.run_in_executor(None, _read_resume_line)).strip()
+    except (EOFError, KeyboardInterrupt):
+        print("", file=sys.stderr)
+        return None
+    if not raw:
+        return None
+    try:
+        choice = int(raw)
+    except ValueError:
+        print(f"'{raw}' is not a number; starting a new session.", file=sys.stderr)
+        return None
+    if 1 <= choice <= len(sessions):
+        return sessions[choice - 1]
+    print(f"{choice} is out of range; starting a new session.", file=sys.stderr)
+    return None
+
+
+async def _resume_session_startup(
+    parsed: Args, repo: JsonlSessionRepo, fs: LocalFileSystem, cwd: str
+) -> Session:
+    """Resolve the ``--resume`` session at startup (Issue #28).
+
+    - ``--resume <id>`` → resolve the id/prefix (reusing the ``--session``
+      resolver) and open it; a miss raises :class:`SessionError` (``not_found``)
+      which the caller surfaces as a clean startup diagnostic.
+    - ``--resume`` (no id) → an interactive picker over the cwd's sessions.
+      The caller guarantees this branch is only reached in interactive mode
+      (a picker needs a TTY). No sessions, or a cancelled/invalid pick, starts
+      a fresh session.
+    """
+
+    if parsed.resume_id is not None:
+        meta = await _resolve_session_metadata(repo, fs, parsed.resume_id, cwd)
+        if meta is None:
+            raise SessionError(
+                "not_found", f"No session matching --resume {parsed.resume_id!r}"
+            )
+        return await repo.open(meta, cwd_override=cwd)
+
+    sessions = await repo.list(JsonlSessionListOptions(cwd=cwd))
+    if not sessions:
+        print(
+            "No previous sessions in this folder; starting a new one.",
+            file=sys.stderr,
+        )
+        return await repo.create(JsonlSessionCreateOptions(cwd=cwd))
+    chosen = await _prompt_resume_choice(sessions)
+    if chosen is None:
+        return await repo.create(JsonlSessionCreateOptions(cwd=cwd))
+    return await repo.open(chosen, cwd_override=cwd)
+
+
 def _resolve_active_tools(parsed: Args) -> list[str] | None:
     """Pi ``main.ts:369-375`` tool gating → harness ``active_tool_names``.
 
@@ -783,6 +897,11 @@ async def _async_main(argv: list[str]) -> int:
         print(f"Error: {continue_error}", file=sys.stderr)
         return 1
 
+    resume_error = _validate_resume_flag(parsed)
+    if resume_error is not None:
+        print(f"Error: {resume_error}", file=sys.stderr)
+        return 1
+
     # === --list-models — Sprint 6h₇a (ADR-0090) wired =======================
     if parsed.list_models is not None:
         # Lazy imports — defer ``ModelRegistry`` + ``AuthStorage``
@@ -823,17 +942,6 @@ async def _async_main(argv: list[str]) -> int:
             print(f"Error: {exc}", file=sys.stderr)
             return 1
 
-    # Sprint 6h₈ §D: --resume picker is deferred to Phase 5b TUI work.
-    if parsed.resume:
-        print(
-            "Error: --resume (interactive picker) deferred to Phase 5b — "
-            "TUI work (ADR-0088).",
-            file=sys.stderr,
-        )
-        raise NotImplementedError(
-            "--resume picker deferred to Phase 5b (ADR-0088)."
-        )
-
     # === Mode resolution =====================================================
     stdin_is_tty = sys.stdin.isatty()
     app_mode = resolve_app_mode(parsed, stdin_is_tty)
@@ -842,6 +950,18 @@ async def _async_main(argv: list[str]) -> int:
     if app_mode == "rpc" and parsed.file_args:
         print(
             "Error: --mode rpc cannot be combined with @file arguments",
+            file=sys.stderr,
+        )
+        return 1
+
+    # Issue #28 — a no-id ``--resume`` is an interactive picker, which needs a
+    # TTY. In print/json/rpc it is a clean argument error (never a traceback,
+    # and NOT a silent most-recent open — that is ``--continue``). Checked here,
+    # BEFORE any stdin is read, so it fails fast.
+    if parsed.resume and parsed.resume_id is None and app_mode != "interactive":
+        print(
+            "Error: --resume without a session id needs an interactive "
+            "terminal; pass --resume <id>, or use --continue.",
             file=sys.stderr,
         )
         return 1
@@ -1000,7 +1120,12 @@ async def _async_main(argv: list[str]) -> int:
     # ``--session`` / ``--fork`` resolution failures surface as a startup
     # diagnostic rather than a traceback.
     try:
-        if parsed.continue_session:
+        if parsed.resume:
+            # Issue #28 — startup ``--resume`` (id-open, or interactive picker
+            # for the no-id case). The no-id-in-non-interactive guard already
+            # ran above, before any stdin was read.
+            session = await _resume_session_startup(parsed, repo, fs, cwd)
+        elif parsed.continue_session:
             most_recent = await repo.find_most_recent(cwd)
             if most_recent is not None:
                 session = await repo.open(most_recent)
