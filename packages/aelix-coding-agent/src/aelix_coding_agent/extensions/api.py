@@ -447,6 +447,11 @@ class _ExtensionRuntime:
         # adapter (ADR-0038) replays them after binding.
         self.pending_provider_registrations: list[tuple[str, Any]] = []
         self.pending_provider_unregistrations: list[str] = []
+        # Issue #77 — login providers queued during extension setup, replayed
+        # onto the process-global login registry by :meth:`bind_login_registries`
+        # on every harness (re)build (mirrors the provider-registration queues).
+        self.pending_login_provider_registrations: list[Any] = []
+        self.pending_login_provider_unregistrations: list[str] = []
         # Issue #21 — manifest plugins deferred until an on_command trigger
         # (VS Code-style lazy activation). Keyed by plugin id; the loader
         # parks entries here, the command-dispatch layer pops + activates.
@@ -541,6 +546,27 @@ class _ExtensionRuntime:
             with contextlib.suppress(Exception):
                 registry.unregister_provider(name)
         self.pending_provider_unregistrations.clear()
+
+    def bind_login_registries(self) -> None:
+        """Replay queued login-provider registrations (Issue #77).
+
+        Drains :attr:`pending_login_provider_registrations` /
+        ``…_unregistrations`` onto the process-global login registry — mirrors
+        :meth:`bind_model_registry` but the sink is a module-level function, so
+        it takes no argument. Idempotent (last-write-wins by id); invoked on every
+        harness (re)build so a fresh runtime re-applies its registrations.
+        """
+
+        from aelix_coding_agent import login_registry
+
+        for provider in self.pending_login_provider_registrations:
+            with contextlib.suppress(Exception):
+                login_registry.register_login_provider(provider)
+        self.pending_login_provider_registrations.clear()
+        for provider_id in self.pending_login_provider_unregistrations:
+            with contextlib.suppress(Exception):
+                login_registry.unregister_login_provider(provider_id)
+        self.pending_login_provider_unregistrations.clear()
 
     def invalidate(self, message: str | None = None) -> None:
         """Pi parity: ``_ExtensionRuntime.invalidate`` default-msg align.
@@ -1597,6 +1623,42 @@ class ExtensionAPI:
         ]
         with contextlib.suppress(Exception):
             self._runtime.model_registry.unregister_provider(name)
+
+    def register_login_provider(self, provider: Any) -> None:
+        """Add an extension login provider to the ``/login`` method list (#77).
+
+        ``provider`` is a :class:`aelix_coding_agent.login_registry.LoginProvider`
+        (duck-typed: ``id`` / ``name`` / ``authenticate``). When the user picks it
+        in ``/login``, its async ``authenticate`` handler runs a custom credential
+        flow (e.g. a corporate 'telnaut' prompting for an employee number) and the
+        wizard persists the returned credential under ``id``. Pair with
+        :meth:`register_provider` so the same id resolves an adapter for turns.
+
+        Queued for replay on every harness (re)build AND best-effort fanned out to
+        the process-global registry now, so it is visible to a ``/login`` opened
+        before the next rebuild (mirrors :meth:`register_provider`).
+        """
+
+        self._runtime.pending_login_provider_registrations.append(provider)
+        with contextlib.suppress(Exception):
+            from aelix_coding_agent.login_registry import register_login_provider
+
+            register_login_provider(provider)
+
+    def unregister_login_provider(self, provider_id: str) -> None:
+        """Remove a previously-registered login provider by id (#77)."""
+
+        self._runtime.pending_login_provider_unregistrations.append(provider_id)
+        # Drop any matching pending registration so order is preserved.
+        self._runtime.pending_login_provider_registrations = [
+            p
+            for p in self._runtime.pending_login_provider_registrations
+            if getattr(p, "id", None) != provider_id
+        ]
+        with contextlib.suppress(Exception):
+            from aelix_coding_agent.login_registry import unregister_login_provider
+
+            unregister_login_provider(provider_id)
 
     # --- Sprint 5a actions — delegate to ExtensionRuntimeActions stubs (P-22) ---
 

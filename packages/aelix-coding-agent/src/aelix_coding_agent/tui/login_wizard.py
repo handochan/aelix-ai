@@ -36,7 +36,7 @@ from __future__ import annotations
 
 import contextlib
 import webbrowser
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -89,9 +89,14 @@ async def run_login(
         commit(Text("Login unavailable (no auth storage).", style="bold red"))
         return
 
+    # Issue #77 — extension-contributed login providers appear in the method
+    # list AFTER the three built-ins; picking one runs its custom auth handler
+    # (e.g. a corporate 'telnaut' whose sign-in prompts for an employee number).
+    ext_login_labels, ext_login_by_label = _collect_login_providers()
+
     method = await select(
         "Add a provider",
-        [_METHOD_OAUTH, _METHOD_API_KEY, _METHOD_CUSTOM],
+        [_METHOD_OAUTH, _METHOD_API_KEY, _METHOD_CUSTOM, *ext_login_labels],
     )
     if not method:
         return
@@ -113,6 +118,7 @@ async def run_login(
             prompt_input=prompt_input,
             commit=commit,
             Text=Text,
+            model_registry=model_registry,
         )
     elif method == _METHOD_CUSTOM:
         await _run_custom(
@@ -124,8 +130,107 @@ async def run_login(
             multiselect=multiselect,
             model_registry=model_registry,
         )
+    elif method in ext_login_by_label:
+        await _run_login_provider(
+            ext_login_by_label[method],
+            auth_storage=auth_storage,
+            select=select,
+            prompt_input=prompt_input,
+            confirm=confirm,
+            notify=notify,
+            commit=commit,
+            Text=Text,
+        )
     else:  # pragma: no cover — select only returns one of the offered labels
         commit(Text(f"✖ login: unknown method {method!r}", style="bold red"))
+
+
+def _collect_login_providers() -> tuple[list[str], dict[str, Any]]:
+    """Build the (labels, label->provider) pair for extension login providers.
+
+    Labels are the providers' display names, de-duplicated against each other
+    and the three built-in method strings so ``select`` can round-trip the pick.
+    A broken registry never breaks ``/login`` — any failure yields empties.
+    """
+
+    labels: list[str] = []
+    by_label: dict[str, Any] = {}
+    try:
+        from aelix_coding_agent.login_registry import get_login_providers
+
+        providers = list(get_login_providers())
+    except Exception:  # noqa: BLE001 — a bad registry must never break /login
+        return [], {}
+    builtins = (_METHOD_OAUTH, _METHOD_API_KEY, _METHOD_CUSTOM)
+    for provider in providers:
+        base = str(getattr(provider, "name", "") or getattr(provider, "id", "") or "").strip()
+        if not base:
+            continue
+        label, n = base, 2
+        while label in by_label or label in builtins:
+            label = f"{base} ({n})"
+            n += 1
+        labels.append(label)
+        by_label[label] = provider
+    return labels, by_label
+
+
+async def _run_login_provider(
+    provider: Any,
+    *,
+    auth_storage: Any,
+    select: Callable[..., Awaitable[str | None]],
+    prompt_input: Callable[..., Awaitable[str | None]],
+    confirm: Callable[..., Awaitable[bool]],
+    notify: Callable[..., None],
+    commit: Callable[[object], None],
+    Text: Any,
+) -> None:
+    """Run an extension-registered login provider's custom auth flow (Issue #77).
+
+    Hands the extension's ``authenticate`` handler a :class:`LoginContext` (the
+    same masked ``select`` / ``prompt`` / ``confirm`` / ``notify`` dialogs the
+    built-in sub-flows use) so it can collect whatever credentials it needs — a
+    corporate 'telnaut' asks for an employee number here — then persists the
+    returned credential under the provider id via ``auth_storage`` (the extension
+    never touches the protected auth store itself). A ``None`` return is a clean
+    cancel; any handler exception degrades to a red line, never crashing the REPL.
+    """
+
+    from aelix_coding_agent.login_registry import LoginAuthenticate, LoginContext
+
+    provider_id = getattr(provider, "id", None)
+    name = str(getattr(provider, "name", None) or provider_id or "?")
+    authenticate = getattr(provider, "authenticate", None)
+    if not provider_id or not callable(authenticate):
+        commit(Text(f"✖ login: '{name}' has no valid authenticate handler.", style="bold red"))
+        return
+
+    ctx = LoginContext(
+        select=select, prompt=prompt_input, confirm=confirm, notify=notify
+    )
+    try:
+        credential = await cast(LoginAuthenticate, authenticate)(ctx)
+    except Exception as exc:  # noqa: BLE001 — an extension handler must not crash the REPL
+        commit(Text(f"✖ {name} login failed: {exc}", style="bold red"))
+        return
+
+    if credential is None:
+        return  # explicit cancel — nothing stored
+    if not isinstance(credential, str) or not credential.strip():
+        commit(Text(f"✖ {name} login returned no credential — nothing stored.", style="bold red"))
+        return
+
+    try:
+        await auth_storage.set_api_key(str(provider_id), credential.strip())
+    except Exception as exc:  # noqa: BLE001 — persistence failure must degrade
+        commit(Text(f"✖ failed to store credential: {exc}", style="bold red"))
+        return
+
+    commit(Text(f"signed in to {name}", style="green"))
+    await _commit_status(
+        auth_storage=auth_storage, provider=str(provider_id), commit=commit, Text=Text
+    )
 
 
 async def _run_oauth(
@@ -281,16 +386,30 @@ async def _run_api_key(
     prompt_input: Callable[..., Awaitable[str | None]],
     commit: Callable[[object], None],
     Text: Any,
+    model_registry: Any = None,
 ) -> None:
-    """API-key sub-flow: pick a built-in provider, store a non-empty key."""
+    """API-key sub-flow: pick a provider, store a non-empty key.
+
+    The picker lists the built-in providers (``ENV_API_KEYS``) UNIONED with any
+    extension-registered providers (``model_registry.get_registered_providers``,
+    Issue #77) so a provider an extension added via ``register_provider`` can take
+    a plain API key here. The raw provider id is the selectable label so
+    ``set_api_key(id, key)`` stores under the correct id.
+    """
 
     try:
         from aelix_ai.providers._env_api_keys import ENV_API_KEYS
 
-        providers = sorted(ENV_API_KEYS.keys())
+        provider_ids = set(ENV_API_KEYS.keys())
     except Exception as exc:  # noqa: BLE001 — surface, never crash the REPL
         commit(Text(f"✖ provider list failed: {exc}", style="bold red"))
         return
+    # Union in extension-registered provider ids (best-effort — a missing/odd
+    # registry must not break the built-in list).
+    with contextlib.suppress(Exception):
+        if model_registry is not None:
+            provider_ids |= set(model_registry.get_registered_providers())
+    providers = sorted(provider_ids)
     if not providers:
         commit(Text("No built-in providers available.", style="yellow"))
         return

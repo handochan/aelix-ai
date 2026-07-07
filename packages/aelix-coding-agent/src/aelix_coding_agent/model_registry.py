@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import asyncio
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -466,6 +466,17 @@ class ModelRegistry:
         self._registered_providers.pop(name, None)
         self._load_models()
 
+    def get_registered_providers(self) -> dict[str, ProviderConfigInput]:
+        """Dynamically-registered provider configs, keyed by name (a copy).
+
+        The public enumeration accessor over :attr:`_registered_providers` (Issue
+        #77) — lets the ``/login`` wizard list extension-registered providers in
+        its API-key sub-flow. Returns a shallow copy so callers cannot mutate the
+        live registry.
+        """
+
+        return dict(self._registered_providers)
+
     # ── Display ────────────────────────────────────────────────────
     def get_provider_display_name(self, provider: str) -> str:
         """Pi parity: ``model-registry.ts::getProviderDisplayName``.
@@ -611,6 +622,27 @@ class ModelRegistry:
                 headers=config.headers,
                 auth_header=config.auth_header,
             )
+
+        # Step 3b (Issue #77 Gap B): merge dynamically-registered providers'
+        # catalog models so ``register_provider(ProviderConfigInput(models=...))``
+        # actually contributes ``/model`` rows — not just auth wiring. A model
+        # left at the default provider (``"unknown"``) is stamped with the
+        # registration name so (provider, id) dedup + auth resolution line up.
+        # ``merge_custom_models`` dedups on (provider, id) with the registered
+        # entry winning, so re-running this on every ``register_provider`` +
+        # ``modify_models`` pass is idempotent. Placed before Step 4 so the OAuth
+        # ``modify_models`` callbacks see these rows too.
+        registered_models: list[Model] = []
+        for name, config in self._registered_providers.items():
+            for model in (config.models or {}).values():
+                provider = getattr(model, "provider", "") or ""
+                registered_models.append(
+                    model
+                    if provider and provider != "unknown"
+                    else replace(model, provider=name)
+                )
+        if registered_models:
+            loaded = merge_custom_models(loaded, registered_models)
 
         # Step 4: OAuth modify_models callbacks (Pi P-132 wire-up).
         # Consult every registered OAuth provider; if AuthStorage has a

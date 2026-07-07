@@ -102,7 +102,8 @@ The handle exposes more than tools and commands. The most useful members:
 | ----------------------------------- | -------------------------------------------------------- |
 | `register_tool(tool)`               | Register an `AgentTool`.                                 |
 | `register_command(name, *, handler, description=None)` | Register a slash command.             |
-| `register_provider(name, config)` / `unregister_provider(name)` | Register / drop a model provider.  |
+| `register_provider(name, config)` / `unregister_provider(name)` | Register / drop a model provider. A `config.models` map now surfaces in `/model` (once a credential is stored). |
+| `register_login_provider(provider)` / `unregister_login_provider(id)` | Add / drop a custom `/login` method with your own credential flow (see below). |
 | `register_flag(...)` / `get_flag(name)` | Declare a flag / read its value (bool, str, or `None`). |
 | `on(...)`                           | Subscribe to a typed hook event (e.g. the tool-call lifecycle). |
 | `get_active_tools()` / `get_system_prompt()` | Inspect the running agent.                      |
@@ -120,6 +121,64 @@ A hook handler registered through `on(...)` receives a read-only
 
 The full surface is defined in
 `packages/aelix-coding-agent/src/aelix_coding_agent/extensions/api.py`.
+
+## Custom providers with their own `/login` method
+
+An extension can add a private provider — say a corporate `telnaut` — and give it
+its **own entry in the `/login` method list** with a custom credential flow (e.g.
+"enter your employee number"). Two calls, sharing one id:
+
+- `register_provider(id, ProviderConfigInput(...))` wires the provider for turns:
+  which wire protocol it speaks (`api`), its `base_url`, and its `models` (which
+  appear in `/model` once a credential is stored).
+- `register_login_provider(LoginProvider(id, name, authenticate))` adds `name`
+  to the `/login` method list. When the user picks it, your async `authenticate`
+  handler runs a custom flow through a `LoginContext` (the same masked
+  `select` / `prompt` / `confirm` / `notify` dialogs the built-in methods use) and
+  returns the credential string. The wizard persists it under `id` — you never
+  touch the auth store yourself.
+
+```python
+from aelix_coding_agent.login_registry import LoginContext, LoginProvider
+from aelix_coding_agent.model_registry import ProviderConfigInput
+from aelix_ai.streaming import Model
+
+async def _authenticate(ctx: LoginContext) -> str | None:
+    employee_no = await ctx.prompt("사번을 입력하세요")     # employee number
+    if not employee_no:
+        return None                                          # None = cancel
+    passcode = await ctx.prompt("passcode", password=True)   # masked
+    if not passcode:
+        return None
+    return exchange_for_token(employee_no, passcode)         # your corporate auth
+
+def setup(aelix):
+    aelix.register_provider("telnaut", ProviderConfigInput(
+        name="Telnaut",
+        models={"telnaut-large": Model(
+            id="telnaut-large", provider="telnaut",
+            api="openai-completions", base_url="https://llm.telnaut.internal/v1")},
+    ))
+    aelix.register_login_provider(LoginProvider(
+        id="telnaut", name="Telnaut (사내)", authenticate=_authenticate))
+```
+
+Notes and limits:
+
+- The credential your handler returns is stored under the provider `id`, so the
+  same id must be used for both calls for turns to authenticate.
+- `api` must be a built-in adapter id (`openai-completions`, `anthropic-messages`,
+  `google-generative-ai`, …); an extension cannot register a brand-new wire
+  protocol. A model on an unknown `api` is hidden from `/model`.
+- The `/login` picker is interactive-only (a TTY). In `--print` / `--json` /
+  `--mode rpc` there is no wizard, so a custom login flow does not run there.
+- The login registry is process-global: an extension removed on `/reload` should
+  call `unregister_login_provider(id)` in its teardown.
+
+A complete worked example ships at
+`aelix_coding_agent/examples/telnaut/telnaut.py`. Load it like any extension —
+point `--extension` at the file, drop it in a project-local `.aelix/extensions/`,
+or install it as a package (see [Loading an extension](#loading-an-extension)).
 
 ## Loading an extension
 

@@ -1328,6 +1328,12 @@ async def _async_main(argv: list[str]) -> int:
         # ``getAvailable``), so the bind is correct at runtime even though the
         # concrete registry does not structurally satisfy the stub protocol.
         harness.runtime.bind_model_registry(model_registry)  # pyright: ignore[reportArgumentType]
+        # Issue #77 — replay queued extension login providers onto the
+        # process-global login registry so they appear in the /login method list
+        # (guarded: alternate runtimes without the method are a no-op).
+        _bind_login = getattr(harness.runtime, "bind_login_registries", None)
+        if callable(_bind_login):
+            _bind_login()
         # Re-apply the loaded skills on every (re)build (issue #12).
         harness.set_skills(skills_result.skills)
         return harness
