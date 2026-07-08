@@ -104,6 +104,7 @@ The handle exposes more than tools and commands. The most useful members:
 | `register_command(name, *, handler, description=None)` | Register a slash command.             |
 | `register_provider(name, config)` / `unregister_provider(name)` | Register / drop a model provider. A `config.models` map now surfaces in `/model` (once a credential is stored). |
 | `register_login_provider(provider)` / `unregister_login_provider(id)` | Add / drop a custom `/login` method with your own credential flow (see below). |
+| `register_api_adapter(api, stream_fn)` / `unregister_api_adapter(api)` | Register a custom wire-protocol adapter for an endpoint config can't express (see below). |
 | `register_flag(...)` / `get_flag(name)` | Declare a flag / read its value (bool, str, or `None`). |
 | `on(...)`                           | Subscribe to a typed hook event (e.g. the tool-call lifecycle). |
 | `get_active_tools()` / `get_system_prompt()` | Inspect the running agent.                      |
@@ -167,13 +168,60 @@ Notes and limits:
 
 - The credential your handler returns is stored under the provider `id`, so the
   same id must be used for both calls for turns to authenticate.
-- `api` must be a built-in adapter id (`openai-completions`, `anthropic-messages`,
-  `google-generative-ai`, …); an extension cannot register a brand-new wire
-  protocol. A model on an unknown `api` is hidden from `/model`.
+- `api` is normally a built-in adapter id (`openai-completions`,
+  `anthropic-messages`, `google-generative-ai`, …). For an endpoint those can't
+  express, register your own with `register_api_adapter` (below). A model on an
+  unregistered `api` is hidden from `/model`.
 - The `/login` picker is interactive-only (a TTY). In `--print` / `--json` /
   `--mode rpc` there is no wizard, so a custom login flow does not run there.
 - The login registry is process-global: an extension removed on `/reload` should
   call `unregister_login_provider(id)` in its teardown.
+
+### When config isn't enough — a custom wire adapter
+
+If the endpoint deviates from what `ProviderConfigInput` can express — the model
+in the URL path, non-OpenAI request fields, or a custom `httpx` client (e.g.
+`verify=False` for a self-signed internal CA) — register a custom **StreamFn**
+`(Model, Context, SimpleStreamOptions) -> AsyncIterator[event]` under your own
+`api` id with `register_api_adapter(api, stream_fn)`. A `Model` whose `api` equals
+that id then routes to your function.
+
+The easiest StreamFn builds its own `openai.AsyncOpenAI` (with whatever
+`http_client` / `base_url` it needs) and **delegates** to the built-in adapter via
+`replace(opts, client=...)`, reusing all of aelix's SSE parsing and event mapping:
+
+```python
+from dataclasses import replace
+import httpx
+from openai import AsyncOpenAI
+from aelix_ai.providers.openai_completions import OPENAI_COMPLETIONS_PROVIDER
+
+async def telnaut_stream(model, context, opts):
+    client = AsyncOpenAI(
+        http_client=httpx.AsyncClient(verify=False),      # custom TLS
+        base_url=getattr(model, "base_url", "") or None,  # model baked into the URL
+        api_key=opts.api_key or "",
+    )
+    def payload(params, _m):
+        params["user"] = opts.api_key      # e.g. an employee number in a standard field
+        return params
+    async for ev in OPENAI_COMPLETIONS_PROVIDER.stream_simple(
+        model, context, replace(opts, client=client, on_payload=payload)
+    ):
+        yield ev
+
+def setup(aelix):
+    aelix.register_api_adapter("telnaut-openai", telnaut_stream)
+    aelix.register_provider("telnaut", ProviderConfigInput(models={"gpt5mini": Model(
+        id="gpt5mini", api="telnaut-openai", base_url="https://host/v1/gpt5mini")}))
+```
+
+`register_api_adapter` re-applies your adapter across `/reload` (the api registry
+is reset on reload; the harness rebuild replays your registration). Unlike the
+built-in adapters, custom body keys must be OpenAI-valid or go inside
+`extra_body` — the OpenAI SDK rejects unknown top-level kwargs. This is a real,
+supported extension surface (no fork), but it does run your networking code:
+`verify=False` disables certificate checks, so scope it to trusted internal hosts.
 
 A complete worked example ships at
 `aelix_coding_agent/examples/telnaut/telnaut.py`. Load it like any extension —

@@ -1334,6 +1334,11 @@ async def _async_main(argv: list[str]) -> int:
         _bind_login = getattr(harness.runtime, "bind_login_registries", None)
         if callable(_bind_login):
             _bind_login()
+        # Issue #77 follow-up — replay custom wire-protocol adapters onto the
+        # api registry (re-applies after reset_api_providers() on /reload).
+        _bind_adapters = getattr(harness.runtime, "bind_api_adapters", None)
+        if callable(_bind_adapters):
+            _bind_adapters()
         # Re-apply the loaded skills on every (re)build (issue #12).
         harness.set_skills(skills_result.skills)
         return harness

@@ -100,7 +100,7 @@ from aelix_agent_core.harness.hooks import (
     UserBashHandler,
 )
 from aelix_agent_core.types import AgentTool
-from aelix_ai.streaming import Model
+from aelix_ai.streaming import Model, StreamFn
 
 from .ext_ui import ExtensionUIContext
 from .headless_ui import HEADLESS_UI_CONTEXT
@@ -413,6 +413,12 @@ class PendingActivation:
     cwd: Path | None = None
 
 
+# Shared source_id for every extension-registered custom api adapter (Issue #77
+# follow-up) — lets ``unregister_providers_by_source`` sweep them without
+# touching the built-in adapters (which use their own BUILTIN_SOURCE_ID).
+_EXTENSION_API_ADAPTER_SOURCE = "aelix-ext-api-adapter"
+
+
 class _ExtensionRuntime:
     """Tracks liveness and holds the rebindable action table.
 
@@ -452,6 +458,13 @@ class _ExtensionRuntime:
         # on every harness (re)build (mirrors the provider-registration queues).
         self.pending_login_provider_registrations: list[Any] = []
         self.pending_login_provider_unregistrations: list[str] = []
+        # Custom wire-protocol adapters (StreamFn keyed by a custom ``api`` id),
+        # queued during setup + replayed onto the process-global api_registry on
+        # every harness (re)build via :meth:`bind_api_adapters` — this is what
+        # survives ``reset_api_providers()`` on /reload (the registry is wiped;
+        # the rebuild re-applies).
+        self.pending_api_adapters: list[tuple[str, StreamFn]] = []
+        self.pending_api_adapter_unregistrations: list[str] = []
         # Issue #21 — manifest plugins deferred until an on_command trigger
         # (VS Code-style lazy activation). Keyed by plugin id; the loader
         # parks entries here, the command-dispatch layer pops + activates.
@@ -567,6 +580,31 @@ class _ExtensionRuntime:
             with contextlib.suppress(Exception):
                 login_registry.unregister_login_provider(provider_id)
         self.pending_login_provider_unregistrations.clear()
+
+    def bind_api_adapters(self) -> None:
+        """Replay queued custom wire-protocol adapters onto the api registry.
+
+        Registers each queued ``(api, stream_fn)`` into the process-global
+        :mod:`aelix_ai.api_registry` under a shared ``source_id`` so it is
+        distinguishable from built-ins. Runs on every harness (re)build (invoked
+        right after :meth:`bind_login_registries`), which is what re-applies the
+        adapter after ``reset_api_providers()`` wipes the registry on /reload —
+        the mechanism ``register_provider`` relies on. Idempotent (register
+        overwrites by api key).
+        """
+
+        from aelix_ai import api_registry
+
+        for api, stream_fn in self.pending_api_adapters:
+            with contextlib.suppress(Exception):
+                api_registry.register_provider(
+                    api, stream_fn, source_id=_EXTENSION_API_ADAPTER_SOURCE
+                )
+        self.pending_api_adapters.clear()
+        for api in self.pending_api_adapter_unregistrations:
+            with contextlib.suppress(Exception):
+                api_registry.unregister_provider(api)
+        self.pending_api_adapter_unregistrations.clear()
 
     def invalidate(self, message: str | None = None) -> None:
         """Pi parity: ``_ExtensionRuntime.invalidate`` default-msg align.
@@ -1659,6 +1697,45 @@ class ExtensionAPI:
             from aelix_coding_agent.login_registry import unregister_login_provider
 
             unregister_login_provider(provider_id)
+
+    def register_api_adapter(self, api: str, stream_fn: StreamFn) -> None:
+        """Register a CUSTOM wire-protocol adapter under a custom ``api`` id (#77).
+
+        For an endpoint the built-in ``openai-completions`` config can't express —
+        e.g. a corporate 'telnaut' that needs ``verify=False``, the model baked
+        into the URL, or non-OpenAI fields — supply a :data:`StreamFn`
+        ``(Model, Context, SimpleStreamOptions) -> AsyncIterator[event]``. A
+        ``Model`` whose ``api`` equals this id then routes to your stream_fn.
+        The easiest stream_fn builds a custom ``openai.AsyncOpenAI`` (with its own
+        ``http_client``) and delegates to ``OPENAI_COMPLETIONS_PROVIDER.stream_simple``
+        via ``replace(opts, client=...)``, reusing all the SSE/event logic.
+
+        Queued + fanned out to the process-global api registry now, and REPLAYED
+        on every harness (re)build via :meth:`_ExtensionRuntime.bind_api_adapters`
+        — that replay is what re-applies the adapter after ``reset_api_providers()``
+        wipes the registry on /reload. Pair with :meth:`register_provider` (a
+        ``Model`` carrying this ``api``) and, if needed, :meth:`register_login_provider`.
+        """
+
+        self._runtime.pending_api_adapters.append((api, stream_fn))
+        with contextlib.suppress(Exception):
+            from aelix_ai import api_registry
+
+            api_registry.register_provider(
+                api, stream_fn, source_id=_EXTENSION_API_ADAPTER_SOURCE
+            )
+
+    def unregister_api_adapter(self, api: str) -> None:
+        """Remove a previously-registered custom api adapter by id (#77)."""
+
+        self._runtime.pending_api_adapter_unregistrations.append(api)
+        self._runtime.pending_api_adapters = [
+            (a, fn) for a, fn in self._runtime.pending_api_adapters if a != api
+        ]
+        with contextlib.suppress(Exception):
+            from aelix_ai import api_registry
+
+            api_registry.unregister_provider(api)
 
     # --- Sprint 5a actions — delegate to ExtensionRuntimeActions stubs (P-22) ---
 
