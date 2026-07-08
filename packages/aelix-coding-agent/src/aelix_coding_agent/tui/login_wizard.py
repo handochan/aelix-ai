@@ -915,5 +915,25 @@ async def run_logout(
 
     commit(Text(f"Removed stored credentials for {provider}", style="green"))
 
+    # /logout clears the stored + runtime credentials, but an API key in the
+    # ENVIRONMENT / .env is a separate auth source it cannot delete — the
+    # provider's models stay available (still resolve via the env var). Warn so
+    # the user isn't confused when the models don't disappear from /model.
+    try:
+        from aelix_ai.providers._env_api_keys import find_env_keys
+
+        env_names = find_env_keys(provider)
+    except Exception:  # noqa: BLE001 — a diagnostic must never break logout
+        env_names = None
+    if env_names:
+        commit(
+            Text(
+                f"Note: {provider} still has an API key in your environment "
+                f"({', '.join(env_names)}) — its models remain available. "
+                "Unset it (or edit your .env) to fully disable.",
+                style="yellow",
+            )
+        )
+
 
 __all__ = ["run_login", "run_logout"]

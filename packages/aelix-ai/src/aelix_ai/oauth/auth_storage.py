@@ -555,12 +555,29 @@ class AuthStorage:
         await self.set_oauth(provider_id, credentials)
 
     async def logout(self, provider: str) -> None:
-        """Pi parity: ``auth-storage.ts:392-394`` ``logout``.
+        """Remove ALL of a provider's auth that this instance controls.
 
-        Alias for :meth:`remove`.
+        Drops the persisted ``auth.json`` entry (:meth:`remove`) AND the
+        in-memory **runtime override** (:meth:`remove_runtime_api_key`). The
+        runtime override is checked FIRST by :meth:`get_api_key_cascade` /
+        ``has_configured_auth``, so leaving it behind kept a logged-out
+        provider's models available for the rest of the session (they never
+        disappeared from ``/model`` / ``/scoped-models``) — clearing it makes a
+        user-driven ``/logout`` fully de-authorize the provider now.
+
+        Out of scope (``logout`` cannot delete these): an API key in the
+        **environment** / ``.env`` (:mod:`aelix_ai.providers._env_api_keys`)
+        and a ``models.json`` / dynamically-registered provider config are
+        separate auth sources — the ``/logout`` flow warns when an env key
+        survives. Pi parity: ``auth-storage.ts:392-394`` ``logout`` removes only
+        the persisted entry; also clearing the runtime override (the layer the
+        cascade checks first) is an additive correctness fix — the runtime
+        override mechanism itself is pi-parity, only clearing it on logout
+        diverges. :meth:`remove` stays a pure persisted-drop.
         """
 
         await self.remove(provider)
+        self.remove_runtime_api_key(provider)
 
     # ── Layered cascade ────────────────────────────────────────────────
     async def get_api_key_cascade(

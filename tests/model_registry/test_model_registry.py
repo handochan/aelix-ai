@@ -183,6 +183,34 @@ async def test_has_configured_auth_true_via_runtime_override(tmp_path: Path) -> 
     assert r.has_configured_auth(m) is True
 
 
+async def test_logout_fully_deauthorizes_and_drops_from_available(
+    tmp_path: Path,
+) -> None:
+    # End-to-end regression for the "/logout didn't remove" report: a provider
+    # authed via BOTH a stored key AND a runtime override must be fully
+    # de-authorized by logout, so its models leave get_available() / the picker.
+    s = await _ready_storage(tmp_path)
+    await s.set_api_key("anthropic", "sk-stored")
+    s.set_runtime_api_key("anthropic", "sk-runtime")
+    r = ModelRegistry.in_memory(s)
+    m = r.find("anthropic", "claude-sonnet-4-5")
+    assert m is not None
+    # Clear env keys so the env layer doesn't independently keep it configured
+    # (the test runner sources .env, which may hold ANTHROPIC_API_KEY).
+    keys = ["ANTHROPIC_API_KEY", "ANTHROPIC_OAUTH_TOKEN"]
+    saved = {k: os.environ.pop(k, None) for k in keys}
+    try:
+        assert r.has_configured_auth(m) is True  # authed before logout
+        assert m in r.get_available()
+        await s.logout("anthropic")
+        assert r.has_configured_auth(m) is False  # fully de-authorized
+        assert m not in r.get_available()  # models leave the picker
+    finally:
+        for k, v in saved.items():
+            if v is not None:
+                os.environ[k] = v
+
+
 async def test_get_api_key_and_headers_returns_ok_true(tmp_path: Path) -> None:
     s = await _ready_storage(tmp_path)
     await s.set_api_key("anthropic", "sk-test-123")

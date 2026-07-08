@@ -141,6 +141,37 @@ async def test_remove_drops_entry(auth_path: Path) -> None:
     assert await storage.get_api_key("openai") == "sk-openai"
 
 
+async def test_logout_clears_runtime_override(auth_path: Path) -> None:
+    """``logout`` clears the in-memory runtime override too — not just the
+    persisted entry. ``has_configured_auth`` checks the runtime override FIRST,
+    so leaving it behind kept a logged-out provider authorized (its models never
+    left ``/model``). Regression for the "/logout didn't remove" report."""
+
+    storage = AuthStorage(auth_path)
+    await storage.set_api_key("anthropic", "sk-stored")
+    storage.set_runtime_api_key("anthropic", "sk-runtime")
+
+    await storage.logout("anthropic")
+
+    assert not storage.has("anthropic")  # persisted entry gone
+    assert "anthropic" not in storage._runtime_overrides  # runtime override cleared
+
+
+async def test_remove_keeps_runtime_override(auth_path: Path) -> None:
+    """``remove`` is the low-level persisted-drop primitive ``logout`` builds
+    on; it stays pure (persisted entry only) so clearing the runtime override is
+    a ``logout``-only concern."""
+
+    storage = AuthStorage(auth_path)
+    await storage.set_api_key("openai", "sk-stored")
+    storage.set_runtime_api_key("openai", "sk-runtime")
+
+    await storage.remove("openai")
+
+    assert not storage.has("openai")  # persisted entry gone
+    assert "openai" in storage._runtime_overrides  # runtime override untouched
+
+
 async def test_get_api_key_with_oauth_entry_returns_none(auth_path: Path) -> None:
     """``get_api_key`` only returns api_key entries (Pi parity discriminator)."""
 

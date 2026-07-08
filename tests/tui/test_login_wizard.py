@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
 from aelix_ai.oauth.types import (
     AuthSource,
     AuthStatus,
@@ -600,6 +601,46 @@ async def test_logout_removes_selected_after_confirm() -> None:
     assert any("Removed stored credentials for anthropic" in _plain(c) for c in committed)
     # The picker offered the stored ids, sorted.
     assert select.options_seen[0] == ["anthropic", "openai"]
+
+
+async def test_logout_warns_when_env_key_survives(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # After removing the stored cred, /logout WARNS when the provider still has
+    # an API key in the environment (a source it can't delete) so the user knows
+    # why its models stay available.
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-xxx")
+    storage = FakeAuthStorage(stored=["anthropic"])
+    committed: list[object] = []
+    await run_logout(
+        auth_storage=storage,
+        select=_ScriptedSelect(["anthropic"]),
+        confirm=_confirm_yes,
+        commit=committed.append,
+    )
+    assert storage.logout_calls == ["anthropic"]
+    text = " ".join(_plain(c) for c in committed)
+    assert "still has an API key in your environment" in text
+    assert "ANTHROPIC_API_KEY" in text
+
+
+async def test_logout_no_env_key_no_warning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # No surviving env key → clean removal, no env warning.
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_OAUTH_TOKEN", raising=False)
+    storage = FakeAuthStorage(stored=["anthropic"])
+    committed: list[object] = []
+    await run_logout(
+        auth_storage=storage,
+        select=_ScriptedSelect(["anthropic"]),
+        confirm=_confirm_yes,
+        commit=committed.append,
+    )
+    text = " ".join(_plain(c) for c in committed)
+    assert "Removed stored credentials for anthropic" in text
+    assert "environment" not in text
 
 
 async def test_logout_cancel_at_select_does_not_remove() -> None:
