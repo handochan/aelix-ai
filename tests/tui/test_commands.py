@@ -498,6 +498,77 @@ def test_model_switch_refreshes_footer() -> None:
     assert refreshed == [1]
 
 
+def test_model_with_id_persists_default(monkeypatch: Any) -> None:
+    # pi parity (setModel → setDefaultModelAndProvider): an explicit /model <id>
+    # persists default_model + default_provider so the switch survives restart /
+    # /new — previously only /settings → Default model persisted.
+    import aelix_coding_agent.cli.runtime_bootstrap as rb
+    import aelix_coding_agent.core.runnable_models as rm
+
+    resolved = _FakeModel("gpt-4o")
+    resolved.provider = "openai"  # type: ignore[attr-defined]
+    monkeypatch.setattr(rb, "resolve_model", lambda _a, _p: resolved)
+    monkeypatch.setattr(rm, "is_runnable", lambda _m: True)
+
+    class _PersistSM:
+        def __init__(self) -> None:
+            self.persisted: list[tuple[str, str]] = []
+            self.flushes = 0
+
+        def set_default_model_and_provider(self, provider: str, model_id: str) -> None:
+            self.persisted.append((provider, model_id))
+
+        async def flush(self) -> None:
+            self.flushes += 1
+
+    sm = _PersistSM()
+    harness = _SwitchHarness()
+    committed: list[object] = []
+    ctx = CommandContext(
+        chrome=_FakeChrome(),  # type: ignore[arg-type]
+        harness=harness,  # type: ignore[arg-type]
+        commit=committed.append,
+        cwd="/work",
+        commands=list(BUILTIN_COMMANDS),
+        settings_manager=sm,  # type: ignore[arg-type]
+    )
+    _run("model", ctx, "gpt-4o")
+    assert sm.persisted == [("openai", "gpt-4o")]  # provider-qualified identity
+    assert sm.flushes == 1
+    assert any("model → gpt-4o" in _render(c) for c in committed)
+
+
+def test_model_empty_provider_does_not_persist(monkeypatch: Any) -> None:
+    # A bare, providerless model (no adapter resolvable) is a soft-fail we must
+    # NOT pin as the default — persisting it would make turns fail on next launch.
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_DEFAULT_MODEL", raising=False)
+
+    class _PersistSM:
+        def __init__(self) -> None:
+            self.persisted: list[tuple[str, str]] = []
+
+        def set_default_model_and_provider(self, provider: str, model_id: str) -> None:
+            self.persisted.append((provider, model_id))
+
+        async def flush(self) -> None:
+            pass
+
+    sm = _PersistSM()
+    committed: list[object] = []
+    ctx = CommandContext(
+        chrome=_FakeChrome(),  # type: ignore[arg-type]
+        harness=_SwitchHarness(),  # type: ignore[arg-type]
+        commit=committed.append,
+        cwd="/work",
+        commands=list(BUILTIN_COMMANDS),
+        settings_manager=sm,  # type: ignore[arg-type]
+    )
+    _run("model", ctx, "gpt-4o")
+    assert sm.persisted == []  # providerless → never pinned
+    assert any("no provider resolved" in _render(c) for c in committed)
+
+
 def test_model_empty_provider_warns(monkeypatch: Any) -> None:
     # No OpenRouter env → resolve_model yields a bare empty-provider model; the
     # switch "succeeds" but turns would fail, so caution (not green success).

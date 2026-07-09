@@ -268,7 +268,16 @@ async def _model_handler(ctx: CommandContext, args: str) -> None:
         ctx.commit(Text(f"✖ model switch failed: {exc}", style="bold red"))
         return
     model_id = getattr(model, "id", args)
-    if getattr(model, "provider", ""):
+    provider = getattr(model, "provider", "")
+    if provider:
+        # Persist as the default (pi parity: setModel → setDefaultModelAndProvider,
+        # agent-session.ts:1416-1425) so the switch SURVIVES restart / /new — the
+        # same behaviour as /settings → Default model. Only when a provider is
+        # resolved (a bare, providerless model is a soft-fail we never pin).
+        if ctx.settings_manager is not None:
+            with contextlib.suppress(Exception):
+                ctx.settings_manager.set_default_model_and_provider(provider, model_id)
+                await ctx.settings_manager.flush()
         ctx.commit(Text(f"model → {model_id}", style="green"))
     else:
         # resolve_model returns a bare Model (empty provider) when no adapter is
@@ -328,6 +337,20 @@ async def _compact_handler(ctx: CommandContext, args: str) -> None:
         return
     tokens_before = getattr(result, "tokens_before", None)
     summary = getattr(result, "summary", "") or ""
+    # Optional DISPLAY gate (aelix-original): when ``hide_compaction_summary`` is
+    # on, show only a terse confirmation instead of the full summary panel. The
+    # summary always stays in the LLM context — this gates the transcript only.
+    # Guarded: a missing settings manager (headless tests) shows the full panel.
+    hide_summary = False
+    if ctx.settings_manager is not None:
+        with contextlib.suppress(Exception):
+            hide_summary = ctx.settings_manager.get_hide_compaction_summary()
+    if hide_summary:
+        line = Text("✓ Compacted context.", style="green")
+        if tokens_before is not None:
+            line.append(f"  (was ~{tokens_before} tokens)", style="dim")
+        ctx.commit(line)
+        return
     body = Text()
     body.append("Compacted context.\n", style="green")
     if tokens_before is not None:

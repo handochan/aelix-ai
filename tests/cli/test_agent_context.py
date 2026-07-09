@@ -247,3 +247,37 @@ async def test_build_harness_options_settings_manager_defaults_none() -> None:
     so no caller is forced to thread it and existing behavior is unchanged."""
     opts = await _build_harness_options(Args(), Session(MemorySessionStorage()))
     assert opts.settings_manager is None
+
+
+# --- steering / follow-up mode seed from persisted settings ------------------
+
+
+async def test_build_harness_options_seeds_steering_and_follow_up() -> None:
+    """A persisted /settings steering / follow-up change must SURVIVE restart:
+    the harness options are seeded from the SettingsManager (they had get/set
+    pairs but no startup consumer, so the harness always booted the default and
+    the persisted value silently reverted on every relaunch / /new / /fork)."""
+    from aelix_ai.settings import SettingsManager
+
+    sm = SettingsManager.in_memory({"steeringMode": "all", "followUpMode": "all"})
+    opts = await _build_harness_options(
+        Args(), Session(MemorySessionStorage()), settings_manager=sm
+    )
+    assert opts.steering_mode == "all"
+    assert opts.follow_up_mode == "all"
+
+
+async def test_build_harness_options_steering_defaults_one_at_a_time() -> None:
+    """No SettingsManager (or unset) → the pi-parity default "one-at-a-time",
+    matching the AgentHarnessOptions dataclass default (no behaviour change)."""
+    from aelix_ai.settings import SettingsManager
+
+    opts_none = await _build_harness_options(Args(), Session(MemorySessionStorage()))
+    assert opts_none.steering_mode == "one-at-a-time"
+    assert opts_none.follow_up_mode == "one-at-a-time"
+
+    opts_unset = await _build_harness_options(
+        Args(), Session(MemorySessionStorage()), settings_manager=SettingsManager.in_memory({})
+    )
+    assert opts_unset.steering_mode == "one-at-a-time"
+    assert opts_unset.follow_up_mode == "one-at-a-time"

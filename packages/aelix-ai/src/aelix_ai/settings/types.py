@@ -182,17 +182,21 @@ PackageSource = str | PackageSourceObject
 
 
 # === Top-level `Settings` dataclass (Pi `:76-113`) ===
-# 33 optional fields — every field defaults to ``None`` so unset →
-# ``None`` and getters apply per-method defaults (Pi pattern).
+# 40 optional fields — every field defaults to ``None`` so unset →
+# ``None`` and getters apply per-method defaults (Pi pattern). Pi's original
+# interface has 33; aelix adds a handful more (e.g. extension_sources,
+# tool_card_max_lines, session_dir, default_project_trust,
+# hide_compaction_summary) — all 40 are covered by SETTINGS_PY_TO_JSON.
 
 
 @dataclass
 class Settings:
     """Pi parity: ``settings-manager.ts:76-113`` ``Settings`` interface.
 
-    33 optional top-level fields. Defaults are applied in the per-getter
-    methods on :class:`SettingsManager` (NOT here) — this dataclass is
-    the structural shape only.
+    39 optional top-level fields (Pi's original 33 + aelix-original
+    additions). Defaults are applied in the per-getter methods on
+    :class:`SettingsManager` (NOT here) — this dataclass is the
+    structural shape only.
     """
 
     last_changelog_version: str | None = None
@@ -244,6 +248,13 @@ class Settings:
     # setting only; read GLOBAL-scope, never merged — a project must not be able
     # to self-elevate via its own settings.json). Default applied in the getter.
     default_project_trust: DefaultProjectTrust | None = None
+    # Aelix-original (TUI): hide the post-compaction summary from the transcript.
+    # When True, ``/compact`` shows only a terse confirmation line instead of the
+    # full summary panel, and the persisted compaction-summary message is
+    # collapsed to a one-line marker on transcript replay. The summary ALWAYS
+    # stays in the LLM context (this only gates DISPLAY). Default applied in the
+    # getter (False = visible, matching prior behavior).
+    hide_compaction_summary: bool | None = None
 
 
 SettingsScope = Literal["global", "project"]
@@ -309,6 +320,7 @@ SETTINGS_PY_TO_JSON: Final[dict[str, str]] = {
     "warnings": "warnings",
     "session_dir": "sessionDir",
     "default_project_trust": "defaultProjectTrust",
+    "hide_compaction_summary": "hideCompactionSummary",
 }
 
 

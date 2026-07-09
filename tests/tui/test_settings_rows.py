@@ -28,18 +28,19 @@ async def test_build_rows_count_and_keys() -> None:
     rows = build_settings_rows(sm)
     keys = [r.key for r in rows]
     # The planned settable rows (code-block-indent SKIPPED — no setter); +1 for
-    # the Issue #66 ``tool_card_max_lines`` row.
+    # the Issue #66 ``tool_card_max_lines`` row + the hide_compaction_summary row.
     assert "code_block_indent" not in keys
     assert "tool_card_max_lines" in keys
-    assert len(rows) == 18
+    assert len(rows) == 19
     # Live-effect rows come first (roadmap appendix O ordering).
-    assert keys[:6] == [
+    assert keys[:7] == [
         "theme",
         "default_model",
         "steering_mode",
         "follow_up_mode",
         "thinking_level",
         "hide_thinking_block",
+        "hide_compaction_summary",
     ]
 
 
@@ -80,6 +81,19 @@ async def test_bool_hide_thinking_is_live() -> None:
     res = apply_setting(rows["hide_thinking_block"], sm)
     assert sm.get_hide_thinking_block() == (not before)
     assert res.live == ("hide_thinking_block", not before)
+
+
+async def test_bool_hide_compaction_summary_is_live() -> None:
+    # Aelix-original DISPLAY gate: the row is live (the shell mirrors the flag onto
+    # renderer.hide_compaction_summary, which render.py reads per commit).
+    sm = SettingsManager.in_memory({})
+    rows = _rows(sm)
+    row = rows["hide_compaction_summary"]
+    assert row.live is True
+    before = sm.get_hide_compaction_summary()
+    res = apply_setting(row, sm)
+    assert sm.get_hide_compaction_summary() == (not before)
+    assert res.live == ("hide_compaction_summary", not before)
 
 
 async def test_enum_steering_cycles_and_wraps_and_is_live() -> None:
@@ -179,13 +193,27 @@ async def test_apply_never_raises_on_setter_failure() -> None:
     assert "disk full" in res.message
 
 
+async def test_tool_card_max_lines_is_live() -> None:
+    # Issue: the row is now LIVE (render.py reads renderer.tool_card_max_lines
+    # per card, so the shell mirrors the persisted value onto the renderer and the
+    # new cap takes effect on the next render — not only next launch). The apply
+    # result must carry the (key, clamped-value) mirror payload the shell consumes.
+    sm = SettingsManager.in_memory({})
+    row = _rows(sm)["tool_card_max_lines"]
+    assert row.live is True
+    res = apply_setting(row, sm, int_value=30)
+    assert res.kind == "ok"
+    assert res.live == ("tool_card_max_lines", "30")  # clamped value, re-read as str
+
+
 async def test_every_persist_only_row_has_a_live_none() -> None:
     # Honesty guard: the persist-only rows must NOT carry a live mirror payload
     # (their commit message says "applies next launch / when a consumer is wired").
+    # ``tool_card_max_lines`` is deliberately EXCLUDED — it is a live row (see
+    # test_tool_card_max_lines_is_live).
     sm = SettingsManager.in_memory({})
     persist_only = {
         "autocomplete_max_visible",
-        "tool_card_max_lines",
         "show_hardware_cursor",
         "editor_padding_x",
         "quiet_startup",

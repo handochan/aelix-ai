@@ -333,6 +333,127 @@ async def test_register_happy_path(tmp_path, monkeypatch) -> None:
     assert [m["id"] for m in cfg["providers"]["myco"]["models"]] == ["m1"]
 
 
+class _ScopeSettings:
+    """Settings double exposing only ``get_enabled_models`` (the scope read)."""
+
+    def __init__(self, patterns: list[str] | None) -> None:
+        self._patterns = patterns
+
+    def get_enabled_models(self) -> list[str] | None:
+        return None if self._patterns is None else list(self._patterns)
+
+
+def _plain(renderable: object) -> str:
+    return getattr(renderable, "plain", str(renderable))
+
+
+def _cat(*pairs: tuple[str, str]) -> list[object]:
+    """A fake auth catalog: objects with .provider/.id for _pattern_matches."""
+
+    return [types.SimpleNamespace(provider=p, id=i) for p, i in pairs]
+
+
+async def _register_myco(
+    tmp_path, monkeypatch, settings_manager, catalog=None
+) -> list[object]:
+    """Register 2 models ('m1','m2') for 'myco'; return the committed lines.
+
+    ``catalog`` (list of ``(provider, id)``) is attached to the registry as
+    ``get_available()`` so the scope-aware message exercises the real empty-match
+    lockout guard; omit it to test the best-effort fallback (no registry catalog).
+    """
+
+    monkeypatch.setattr(lw, "_fetch_openai_model_ids", _aret(["m1", "m2"]))
+    reg = types.SimpleNamespace(
+        _models_json_path=str(tmp_path / "models.json"),
+        _load_models=lambda: None,
+    )
+    if catalog is not None:
+        reg.get_available = lambda: _cat(*catalog)
+
+    async def fake_multiselect(_title, _options, *, selected):
+        return ({"m1", "m2"}, {})
+
+    commits: list[object] = []
+    ok = await lw._register_custom_models(
+        provider_id="myco",
+        base_url="https://h/v1",
+        api="openai-completions",
+        api_key="k",
+        model_registry=reg,
+        multiselect=fake_multiselect,
+        commit=commits.append,
+        Text=Text,
+        settings_manager=settings_manager,
+    )
+    assert ok is True
+    return commits
+
+
+async def test_register_message_no_scope_is_green(tmp_path, monkeypatch) -> None:
+    # No /scoped-models allow-list (None sentinel) → the plain "they now appear
+    # in /model" confirmation, unchanged from the pre-scope behaviour.
+    commits = await _register_myco(tmp_path, monkeypatch, _ScopeSettings(None))
+    assert any("they now appear in /model" in _plain(c) for c in commits)
+    assert not any("hidden" in _plain(c) for c in commits)
+
+
+async def test_register_message_all_hidden_warns(tmp_path, monkeypatch) -> None:
+    # An ACTIVE allow-list (it matches a catalog model 'other/keep') that matches
+    # NEITHER new model → warn the whole batch is hidden (not the false "appear").
+    commits = await _register_myco(
+        tmp_path,
+        monkeypatch,
+        _ScopeSettings(["other/keep"]),
+        catalog=[("other", "keep"), ("myco", "m1"), ("myco", "m2")],
+    )
+    msg = " ".join(_plain(c) for c in commits)
+    assert "hides them from /model" in msg
+    assert "run /scoped-models" in msg
+    assert "they now appear in /model" not in msg
+
+
+async def test_register_message_partial_hidden_warns_count(tmp_path, monkeypatch) -> None:
+    # Allow-list includes exactly one of the two new models → the message reports
+    # 1 shown / 1 hidden (canonical provider/id identity via _pattern_matches).
+    commits = await _register_myco(
+        tmp_path,
+        monkeypatch,
+        _ScopeSettings(["myco/m1"]),
+        catalog=[("myco", "m1"), ("myco", "m2")],
+    )
+    msg = " ".join(_plain(c) for c in commits)
+    assert "1 now appear in /model" in msg
+    assert "1 are hidden by your /scoped-models allow-list" in msg
+
+
+async def test_register_message_all_visible_is_green(tmp_path, monkeypatch) -> None:
+    # Allow-list covers both new models (glob) → green "they now appear".
+    commits = await _register_myco(
+        tmp_path,
+        monkeypatch,
+        _ScopeSettings(["myco/*"]),
+        catalog=[("myco", "m1"), ("myco", "m2")],
+    )
+    assert any("they now appear in /model" in _plain(c) for c in commits)
+    assert not any("hidden" in _plain(c) for c in commits)
+
+
+async def test_register_message_stale_scope_shows_all_green(tmp_path, monkeypatch) -> None:
+    # Corner case (review LOW): a fully-STALE allow-list matching NOTHING in the
+    # catalog → scoped_available's empty-match lockout guard shows the FULL list,
+    # so the new models are NOT hidden. The message must be green, not a false
+    # "hidden" warning.
+    commits = await _register_myco(
+        tmp_path,
+        monkeypatch,
+        _ScopeSettings(["ghost/missing"]),
+        catalog=[("myco", "m1"), ("myco", "m2")],
+    )
+    assert any("they now appear in /model" in _plain(c) for c in commits)
+    assert not any("hidden" in _plain(c) for c in commits)
+
+
 async def test_register_degrades_on_fetch_error(monkeypatch) -> None:
     async def boom(*_a: object, **_k: object) -> list[str]:
         raise RuntimeError("dns")

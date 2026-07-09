@@ -142,6 +142,11 @@ def test_get_hide_thinking_block_default(manager: SettingsManager) -> None:
     assert manager.get_hide_thinking_block() is False
 
 
+def test_get_hide_compaction_summary_default(manager: SettingsManager) -> None:
+    # Aelix-original DISPLAY gate — default visible (prior behavior).
+    assert manager.get_hide_compaction_summary() is False
+
+
 def test_get_shell_path_default(manager: SettingsManager) -> None:
     assert manager.get_shell_path() is None
 
@@ -356,6 +361,19 @@ async def test_set_follow_up_mode_persists(
     await manager.flush()
     assert (
         read_settings(settings_dirs["global_path"])["followUpMode"] == "all"
+    )
+
+
+async def test_set_hide_compaction_summary_persists(
+    manager: SettingsManager,
+    settings_dirs: dict[str, Path],
+    read_settings: Any,
+) -> None:
+    manager.set_hide_compaction_summary(True)
+    await manager.flush()
+    assert (
+        read_settings(settings_dirs["global_path"])["hideCompactionSummary"]
+        is True
     )
 
 

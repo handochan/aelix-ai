@@ -718,7 +718,19 @@ class SettingsManager:
                 for k, v in self._modified_project_nested_fields.items()
             }
 
-        task = asyncio.ensure_future(
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # No running event loop (a synchronous caller / unit test): _save()
+            # has ALREADY refreshed the in-memory merged view, and async disk I/O
+            # needs a running loop + ``flush()`` to complete — so there is nothing
+            # to schedule. Returning here keeps setters SAFE to call synchronously;
+            # otherwise ``asyncio.ensure_future`` falls back to the deprecated
+            # ``get_event_loop()`` and raises "Event loop is closed" when a prior
+            # task closed the thread's loop. Production setters always run inside
+            # the TUI event loop, so this path is test-only.
+            return
+        task = loop.create_task(
             self._write_task(
                 scope, snapshot_settings, modified_fields, modified_nested
             )
@@ -1140,6 +1152,24 @@ class SettingsManager:
 
         self._global_settings.hide_thinking_block = hide
         self._mark_modified("hide_thinking_block")
+        self._save()
+
+    # --- hideCompactionSummary (Aelix-original, TUI display gate) ---
+    def get_hide_compaction_summary(self) -> bool:
+        """Aelix-original: hide the post-compaction summary from the transcript.
+
+        Default: ``False`` (summary visible — prior behavior). Gates DISPLAY
+        only; the summary always remains in the LLM context.
+        """
+
+        v = self._settings.hide_compaction_summary
+        return False if v is None else v
+
+    def set_hide_compaction_summary(self, hide: bool) -> None:
+        """Aelix-original: persist the compaction-summary DISPLAY gate (GLOBAL)."""
+
+        self._global_settings.hide_compaction_summary = hide
+        self._mark_modified("hide_compaction_summary")
         self._save()
 
     # --- shellPath (Pi `:747-755`) ---

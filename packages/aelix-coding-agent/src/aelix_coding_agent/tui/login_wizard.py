@@ -66,6 +66,7 @@ async def run_login(
     commit: Callable[[object], None],
     multiselect: Callable[..., Awaitable[Any]] | None = None,
     model_registry: Any = None,
+    settings_manager: Any = None,
 ) -> None:
     """Drive the ``/login`` wizard end-to-end (Sprint WP-8, Feature 1).
 
@@ -129,6 +130,7 @@ async def run_login(
             Text=Text,
             multiselect=multiselect,
             model_registry=model_registry,
+            settings_manager=settings_manager,
         )
     elif method in ext_login_by_label:
         await _run_login_provider(
@@ -461,6 +463,7 @@ async def _run_custom(
     Text: Any,
     multiselect: Callable[..., Awaitable[Any]] | None = None,
     model_registry: Any = None,
+    settings_manager: Any = None,
 ) -> None:
     """Custom-provider sub-flow: pick a protocol, gather id/url/key, store key.
 
@@ -531,6 +534,7 @@ async def _run_custom(
             multiselect=multiselect,
             commit=commit,
             Text=Text,
+            settings_manager=settings_manager,
         )
         if registered:
             return  # success message already committed
@@ -843,6 +847,58 @@ def _deauthorize_provider_in_models_json(path: str, provider_id: str) -> bool:
     return True
 
 
+def _scoped_hidden_ids(
+    settings_manager: Any,
+    provider_id: str,
+    model_ids: list[str],
+    model_registry: Any = None,
+) -> list[str]:
+    """Subset of ``model_ids`` a concrete ``enabled_models`` allow-list HIDES from /model.
+
+    Returns ``[]`` when no scope is active (``enabled_models`` is the ``None``/``[]``
+    "all enabled" sentinel), when every id already matches, OR when the allow-list
+    matches ZERO models in the available catalog — because :func:`scoped_available`
+    then triggers its empty-match LOCKOUT GUARD and shows the FULL list, so nothing
+    is actually hidden. Reuses the ``/scoped-models`` identity matcher
+    (:func:`_pattern_matches`) so the verdict tracks what :func:`scoped_available`
+    actually shows. Never raises.
+    """
+
+    if settings_manager is None:
+        return []
+    try:
+        patterns = settings_manager.get_enabled_models()
+    except Exception:  # noqa: BLE001 — a settings read must never break /login
+        return []
+    if not patterns:  # None (sentinel) or [] → all enabled, nothing hidden
+        return []
+    from types import SimpleNamespace
+
+    from aelix_coding_agent.core.scoped_models_filter import _pattern_matches
+
+    # Mirror scoped_available's empty-match lockout guard: if the allow-list
+    # matches NOTHING in the available catalog, /model degrades to the FULL list
+    # (no lockout), so the just-added models are NOT hidden. Best-effort — a
+    # registry without get_available() (or a read failure) falls through to the
+    # pattern-only check below.
+    if model_registry is not None:
+        try:
+            catalog = list(model_registry.get_available())
+        except Exception:  # noqa: BLE001 — never break /login on a registry read
+            catalog = None
+        if catalog is not None and not any(
+            any(_pattern_matches(p, m) for p in patterns) for m in catalog
+        ):
+            return []
+
+    hidden: list[str] = []
+    for mid in model_ids:
+        model = SimpleNamespace(provider=provider_id, id=mid)
+        if not any(_pattern_matches(p, model) for p in patterns):
+            hidden.append(mid)
+    return hidden
+
+
 async def _register_custom_models(
     *,
     provider_id: str,
@@ -853,6 +909,7 @@ async def _register_custom_models(
     multiselect: Callable[..., Awaitable[Any]],
     commit: Callable[[object], None],
     Text: Any,
+    settings_manager: Any = None,
 ) -> bool:
     """Fetch the endpoint's models, let the user pick, persist + reload.
 
@@ -913,13 +970,40 @@ async def _register_custom_models(
     with contextlib.suppress(Exception):
         model_registry._load_models()
 
-    commit(
-        Text(
-            f"Added {len(chosen)} model(s) for '{provider_id}' → they now appear "
-            "in /model.",
-            style="green",
-        )
+    # Scope-aware confirmation: a concrete /scoped-models allow-list can HIDE the
+    # just-added models from /model (scoped_available intersects the auth catalog
+    # with enabled_models). Warning honestly beats the old unconditional "they now
+    # appear in /model", which was false whenever a restrictive scope was active.
+    hidden = _scoped_hidden_ids(
+        settings_manager, provider_id, sorted(chosen), model_registry=model_registry
     )
+    if not hidden:
+        commit(
+            Text(
+                f"Added {len(chosen)} model(s) for '{provider_id}' → they now "
+                "appear in /model.",
+                style="green",
+            )
+        )
+    elif len(hidden) == len(chosen):
+        commit(
+            Text(
+                f"Added {len(chosen)} model(s) for '{provider_id}', but your active "
+                "/scoped-models allow-list hides them from /model — run "
+                "/scoped-models to enable them.",
+                style="yellow",
+            )
+        )
+    else:
+        shown = len(chosen) - len(hidden)
+        commit(
+            Text(
+                f"Added {len(chosen)} model(s) for '{provider_id}' → {shown} now "
+                f"appear in /model; {len(hidden)} are hidden by your /scoped-models "
+                "allow-list (run /scoped-models to enable).",
+                style="yellow",
+            )
+        )
     return True
 
 

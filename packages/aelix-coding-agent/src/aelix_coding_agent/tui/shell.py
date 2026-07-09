@@ -223,6 +223,39 @@ def _message_text(message: object) -> str:
     )
 
 
+def _drive_compaction_indicator(
+    chrome: AelixChrome, state: dict[str, Any], etype: object
+) -> None:
+    """Toggle the working-row "Compacting context…" indicator on compaction.
+
+    A manual ``/compact`` dispatches OUTSIDE the ``set_running`` turn wrapper, so
+    its multi-second summarizer LLM call would otherwise leave the prompt looking
+    frozen. Driven from the harness ``compaction_start`` / ``compaction_end``
+    subscriber events (manual + threshold + overflow), this shows a live spinner
+    with a "Compacting context…" label in the same row as "Working…".
+
+    ``state`` persists across calls (a closure dict in ``run_tui``). On the rising
+    edge it captures the prior working row (message + visibility) so the matched
+    end restores it — an auto-compaction fires mid-turn where the row is already
+    visible via ``set_running`` and must be left intact. ``core`` emits a matched
+    ``compaction_end`` on EVERY exit (success, "Nothing to compact", cancelled
+    hook, summarizer failure), so the transient indicator always clears.
+    """
+
+    if etype == "compaction_start":
+        if not state.get("active"):
+            state["prev_msg"] = chrome.get_working_message()
+            state["prev_visible"] = chrome.get_working_visible()
+            state["active"] = True
+        chrome.set_working_message("Compacting context…")
+        chrome.set_working_visible(True)
+    elif etype == "compaction_end":
+        if state.get("active"):
+            chrome.set_working_message(state.get("prev_msg"))
+            chrome.set_working_visible(bool(state.get("prev_visible")))
+            state["active"] = False
+
+
 async def run_tui(
     runtime_host: AgentSessionRuntime,
     *,
@@ -488,6 +521,13 @@ async def run_tui(
         # render.py's hardcoded default, so headless / no-settings stays sane.
         with contextlib.suppress(Exception):
             renderer.hide_thinking = settings_manager.get_hide_thinking_block()
+        # (a1) compaction-summary DISPLAY gate → the renderer flag (aelix-original,
+        # mirrors hide_thinking). Gates the /compact summary panel + the replayed
+        # compaction-summary message; the summary stays in the LLM context.
+        with contextlib.suppress(Exception):
+            renderer.hide_compaction_summary = (
+                settings_manager.get_hide_compaction_summary()
+            )
         # (a2) tool-card NORMAL-output line cap → the renderer (Issue #66). Without
         # this seed the persisted ``tool_card_max_lines`` never reaches the
         # renderer, leaving the setting inert. Guarded like the sibling above.
@@ -842,8 +882,11 @@ async def run_tui(
             return
         if (provider, model_id) == before_key:
             return  # picker cancelled / same model — nothing to persist
-        settings_manager.set_default_model_and_provider(provider, model_id)
-        await settings_manager.flush()
+        # ``run_model_picker`` (reached via ``_open_model_picker`` above, which
+        # threads ``settings_manager``) ALREADY persisted (provider, model_id) +
+        # flushed as the default — so do NOT write/flush a second time here. Just
+        # confirm it in the /settings context (the picker's own "model → X" line
+        # doesn't say it was pinned as the default).
         _commit(Text(f"default model → {model_id} (persisted)", style="green"))
 
     async def _settings_thinking_action() -> None:
@@ -879,6 +922,14 @@ async def run_tui(
                 harness.set_follow_up_mode(str(value))
             elif key == "hide_thinking_block":
                 renderer.hide_thinking = bool(value)
+            elif key == "hide_compaction_summary":
+                renderer.hide_compaction_summary = bool(value)
+            elif key == "tool_card_max_lines":
+                # render.py reads ``renderer.tool_card_max_lines`` fresh on every
+                # card, so mirroring the persisted value here makes the new cap
+                # take effect on the NEXT tool card this session (not only next
+                # launch). ``value`` is the clamped string apply_setting re-read.
+                renderer.tool_card_max_lines = int(str(value))
 
     async def _open_settings() -> None:
         # ImplConsumers (ADR-0161) — /settings: an expanded select over the
@@ -1080,6 +1131,9 @@ async def run_tui(
             # user pick, and persist them to models.json (→ appear in /model).
             multiselect=context.multiselect,
             model_registry=model_registry,
+            # So the "they now appear in /model" confirmation is scope-aware: a
+            # concrete /scoped-models allow-list can hide the just-added models.
+            settings_manager=settings_manager,
         )
 
     async def _open_logout() -> None:
@@ -1370,6 +1424,18 @@ async def run_tui(
             }
         )
 
+    # Compaction has no turn-level spinner: a manual ``/compact`` dispatches
+    # outside the ``set_running`` wrapper, so its multi-second summarizer LLM
+    # call would leave the prompt looking frozen. Drive the "Working…" row from
+    # the harness compaction events (manual + threshold + overflow) so the user
+    # sees a live "Compacting context…" indicator. The prior working state is
+    # saved/restored so an in-flight turn (auto-compaction) keeps its own row.
+    _compaction_working_state: dict[str, Any] = {
+        "active": False,
+        "prev_msg": None,
+        "prev_visible": False,
+    }
+
     def _on_agent_event(event: object) -> None:
         # WP-8 (Feature 2) — feed the activity tracker FIRST (before the renderer)
         # so /stats reflects every event. on_event is internally guarded (a
@@ -1381,6 +1447,19 @@ async def run_tui(
             _start_retry_countdown(event)
         elif etype == "auto_retry_end":
             _end_retry_countdown(event)
+        elif etype in ("compaction_start", "compaction_end"):
+            _drive_compaction_indicator(
+                out_chrome, _compaction_working_state, etype
+            )
+        elif etype == "turn_start":
+            # Self-heal: a compaction cancelled via BaseException (Ctrl+C) never
+            # emits ``compaction_end`` (core re-raises before the emit), which
+            # would strand the indicator. A new turn means any compaction is long
+            # done, so restore the working row from any stale-active state.
+            if _compaction_working_state.get("active"):
+                _drive_compaction_indicator(
+                    out_chrome, _compaction_working_state, "compaction_end"
+                )
         elif etype == "turn_end":
             # Keep a strong reference so the task isn't GC'd before it runs.
             task = loop.create_task(_refresh_context_usage())

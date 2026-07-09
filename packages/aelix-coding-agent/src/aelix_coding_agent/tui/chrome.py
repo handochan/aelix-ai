@@ -1141,6 +1141,14 @@ class AelixChrome:
         self._working_visible = visible
         self.invalidate()
 
+    def get_working_message(self) -> str | None:
+        """The current working-row message (``None`` = the default ``Working…``)."""
+        return self._working_message
+
+    def get_working_visible(self) -> bool:
+        """Whether the working row is force-visible independent of ``set_running``."""
+        return self._working_visible
+
     def set_working_indicator(
         self, frames: list[str] | None, interval_ms: int | None = None
     ) -> None:

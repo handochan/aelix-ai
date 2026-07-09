@@ -223,6 +223,17 @@ async def run_model_picker(
     except Exception as exc:  # noqa: BLE001 — surface, never crash the REPL
         commit(Text(f"✖ model switch failed: {exc}", style="bold red"))
         return
+    # Persist as the default (pi parity: setModel → setDefaultModelAndProvider) so
+    # the pick SURVIVES restart / /new — the same behaviour as /settings → Default
+    # model. Only a real (provider, id) is pinned; the ESC path returned above, so
+    # this runs only on an actual switch. Guarded so a settings failure never
+    # aborts the (already-applied) live switch.
+    chosen_provider = getattr(chosen, "provider", "")
+    chosen_id = getattr(chosen, "id", "")
+    if settings_manager is not None and chosen_provider and chosen_id:
+        with contextlib.suppress(Exception):
+            settings_manager.set_default_model_and_provider(chosen_provider, chosen_id)
+            await settings_manager.flush()
     commit(Text(f"model → {getattr(chosen, 'id', '?')}", style="green"))
     # The footer ✱ segment is a cached string — refresh so it reflects the new
     # model immediately (not only on the next unrelated repaint).

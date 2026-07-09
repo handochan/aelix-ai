@@ -781,6 +781,48 @@ def test_replay_empty_is_noop() -> None:
     assert commits == []
 
 
+# === Aelix-original — compaction-summary DISPLAY gate ======================
+
+
+def test_replay_hides_compaction_summary_when_gated() -> None:
+    # When the gate is on, a persisted compaction-summary user message collapses
+    # to a one-line marker; the summary body is NOT rendered (it stays in context).
+    from aelix_agent_core.session.context import COMPACTION_SUMMARY_PREFIX
+    from aelix_ai.messages import TextContent, UserMessage
+
+    r, commits, _t = _renderer()
+    r.hide_compaction_summary = True
+    r.replay(
+        [
+            UserMessage(
+                content=[TextContent(text=COMPACTION_SUMMARY_PREFIX + "SECRET_SUMMARY_BODY")]
+            )
+        ]
+    )
+    out = _committed_text(commits)
+    assert "summary hidden" in out  # collapsed marker
+    assert "SECRET_SUMMARY_BODY" not in out  # body suppressed from the transcript
+
+
+def test_replay_shows_compaction_summary_by_default() -> None:
+    # Default (gate off) — the summary renders normally (prior behavior).
+    from aelix_agent_core.session.context import COMPACTION_SUMMARY_PREFIX
+    from aelix_ai.messages import TextContent, UserMessage
+
+    r, commits, _t = _renderer()
+    assert r.hide_compaction_summary is False  # default visible
+    r.replay(
+        [
+            UserMessage(
+                content=[TextContent(text=COMPACTION_SUMMARY_PREFIX + "SECRET_SUMMARY_BODY")]
+            )
+        ]
+    )
+    out = _committed_text(commits)
+    assert "SECRET_SUMMARY_BODY" in out  # body rendered
+    assert "summary hidden" not in out
+
+
 # === Sprint 6h₂₅ (ADR-0153, WP-6) — shared user-echo helper ================
 
 

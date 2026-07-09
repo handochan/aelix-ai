@@ -316,3 +316,68 @@ async def test_run_model_picker_none_settings_shows_full_list() -> None:
         settings_manager=None,
     )
     assert len(seen["options"]) == 2
+
+
+# ── /model persistence (pi parity: setModel → setDefaultModelAndProvider) ───────
+
+
+class _PersistSettings(_FakeSettings):
+    """Settings double that also records the default-model persist + flush."""
+
+    def __init__(self, patterns: list[str] | None = None) -> None:
+        super().__init__(patterns)
+        self.persisted: list[tuple[str, str]] = []
+        self.flushes = 0
+
+    def set_default_model_and_provider(self, provider: str, model_id: str) -> None:
+        self.persisted.append((provider, model_id))
+
+    async def flush(self) -> None:
+        self.flushes += 1
+
+
+async def test_run_model_picker_persists_default_on_switch() -> None:
+    # Selecting a model persists it as the default (provider, id) + flushes, so
+    # the pick survives restart / /new — matching /settings → Default model.
+    models = [Model(id="a", provider="p"), Model(id="b", provider="q")]
+    harness = _FakeHarness()
+    settings = _PersistSettings()
+
+    async def select(
+        title: str, options: list[str], detail: Any = None
+    ) -> str | None:
+        return options[1]  # choose "b" under provider "q"
+
+    await run_model_picker(
+        registry=_FakeRegistry(models),
+        harness=harness,
+        select=select,
+        commit=lambda _c: None,
+        settings_manager=settings,
+    )
+    assert harness.set_calls == [models[1]]
+    assert settings.persisted == [("q", "b")]  # provider-qualified identity
+    assert settings.flushes == 1
+
+
+async def test_run_model_picker_cancel_does_not_persist() -> None:
+    # Esc → no switch AND no persist (the picker returns before set_model).
+    models = [Model(id="a", provider="p")]
+    harness = _FakeHarness()
+    settings = _PersistSettings()
+
+    async def select(
+        title: str, options: list[str], detail: Any = None
+    ) -> str | None:
+        return None
+
+    await run_model_picker(
+        registry=_FakeRegistry(models),
+        harness=harness,
+        select=select,
+        commit=lambda _c: None,
+        settings_manager=settings,
+    )
+    assert harness.set_calls == []
+    assert settings.persisted == []
+    assert settings.flushes == 0

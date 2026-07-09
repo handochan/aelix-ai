@@ -340,6 +340,12 @@ class EventRenderer:
         # store so its full reasoning stays recoverable (``💭 Thinking… (/expand N)``).
         self.hide_thinking: bool = False
         self._hidden_thinking_label: str = "Thinking…"
+        # Aelix-original DISPLAY gate: when True, the persisted compaction-summary
+        # message (a ``UserMessage`` carrying ``COMPACTION_SUMMARY_PREFIX``) is
+        # collapsed to a one-line marker on transcript replay. Seeded by run_tui
+        # from ``SettingsManager.get_hide_compaction_summary()`` (live-applied via
+        # /settings). The summary stays in the LLM context — this gates DISPLAY.
+        self.hide_compaction_summary: bool = False
         # §B — live tool-result interception. Late-bound by run_tui to read the
         # descriptor registry by reference (returns a matching tool-renderer-desc
         # envelope for a tool_name, or None). ``descriptor_renderer`` builds the
@@ -578,9 +584,26 @@ class EventRenderer:
             if role == "user":
                 text = _join_text(getattr(msg, "content", []))
                 if text.strip():
-                    # Sprint 6h₂₅ (ADR-0153) — shared user-echo vocabulary so a
-                    # replayed transcript echoes input identically to a live turn.
-                    self._commit(render_user_message(text))
+                    # Aelix-original: collapse the compaction-summary message to a
+                    # one-line marker when the display gate is on (the summary
+                    # stays in context; only its transcript render is suppressed).
+                    from aelix_agent_core.session.context import (
+                        COMPACTION_SUMMARY_PREFIX,
+                    )
+
+                    if self.hide_compaction_summary and text.startswith(
+                        COMPACTION_SUMMARY_PREFIX
+                    ):
+                        self._commit(
+                            Text(
+                                "⋯ (context compacted — summary hidden)",
+                                style="dim",
+                            )
+                        )
+                    else:
+                        # Sprint 6h₂₅ (ADR-0153) — shared user-echo vocabulary so a
+                        # replayed transcript echoes input identically to a live turn.
+                        self._commit(render_user_message(text))
             elif role == "assistant":
                 for block in getattr(msg, "content", []) or []:
                     btype = getattr(block, "type", None)

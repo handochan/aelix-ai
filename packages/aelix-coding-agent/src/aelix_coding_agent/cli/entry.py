@@ -685,6 +685,19 @@ async def _build_harness_options(
     if captured_extensions is not None:
         captured_extensions.clear()
         captured_extensions.extend(loaded.extensions)
+    # Seed the message-queue modes from persisted settings so a ``/settings``
+    # steering / follow-up change SURVIVES restart (and reaches /new / /fork /
+    # /resume). Both had get/set pairs on SettingsManager but no startup
+    # consumer, so the harness always booted the AgentHarnessOptions default
+    # ("one-at-a-time") and every persisted change silently reverted on relaunch
+    # — unlike theme / thinking-level / default-model, which are all seeded.
+    # The getter returns "one-at-a-time" when unset, matching the dataclass
+    # default, so no-SettingsManager / unset stays behaviourally unchanged.
+    steering_mode = "one-at-a-time"
+    follow_up_mode = "one-at-a-time"
+    if settings_manager is not None:
+        steering_mode = settings_manager.get_steering_mode()
+        follow_up_mode = settings_manager.get_follow_up_mode()
     options = AgentHarnessOptions(
         model=model,
         session=session,
@@ -694,6 +707,8 @@ async def _build_harness_options(
         extensions=loaded.extensions,
         runtime=loaded.runtime,
         active_tool_names=active_tool_names,
+        steering_mode=steering_mode,
+        follow_up_mode=follow_up_mode,
         get_api_key_and_headers=get_api_key_and_headers,
         # Issue #5 (Lane C): surface the resolved trust state to extensions via
         # ``ctx.is_project_trusted()``.

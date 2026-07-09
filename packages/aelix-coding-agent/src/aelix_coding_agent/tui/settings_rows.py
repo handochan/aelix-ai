@@ -20,13 +20,14 @@ Two row kinds:
   thinking-level cycle); :func:`apply_setting` returns a sentinel so the shell
   runs the delegated coroutine.
 
-The five LIVE-effect rows (steering / follow-up / thinking-blocks / thinking-level
-/ theme / default-model) DUAL-WRITE: persist via the SettingsManager AND apply to
-the live session (harness / renderer / context). The shell owns the live half (it
-holds the harness/renderer/context); these helpers own the persist half + the
-canonical cycle orderings + the human-readable labels. The honest "persist-only"
-rows say so in their commit message (grep confirms 11 fields have ZERO
-coding-agent consumers) — they apply next launch / when a consumer is wired.
+The LIVE-effect rows (theme / default-model / steering / follow-up /
+thinking-level / thinking-blocks / tool-card-max-lines) DUAL-WRITE: persist via
+the SettingsManager AND apply to the live session (harness / renderer / context).
+The shell owns the live half (it holds the harness/renderer/context); these
+helpers own the persist half + the canonical cycle orderings + the human-readable
+labels. The honest "persist-only" rows say so in their commit message (grep
+confirms 11 fields have ZERO coding-agent consumers — tracked for wiring) — they
+apply next launch / when a consumer is wired.
 
 SKIPPED: ``markdown.code_block_indent`` — :class:`SettingsManager` exposes
 ``get_code_block_indent`` but NO setter, so a row would be dead/unsettable UI.
@@ -149,6 +150,14 @@ def build_settings_rows(sm: SettingsManager) -> list[SettingsRow]:
             help="Hide or show the model's thinking blocks in the transcript (applies live).",
             live=True,
         ),
+        SettingsRow(
+            key="hide_compaction_summary",
+            label="Compaction summary",
+            kind="bool",
+            read=lambda s: "hidden" if s.get_hide_compaction_summary() else "visible",
+            help="Hide or show the /compact summary in the transcript (applies live).",
+            live=True,
+        ),
         # --- PERSIST-ONLY rows (no live coding-agent consumer) ---------------
         SettingsRow(
             key="autocomplete_max_visible",
@@ -163,7 +172,8 @@ def build_settings_rows(sm: SettingsManager) -> list[SettingsRow]:
             label="Tool card max lines",
             kind="int",
             read=lambda s: str(s.get_tool_card_max_lines()),
-            help="Max lines shown in a tool-output card (3-40). Persisted; applies next render.",
+            help="Max lines shown in a tool-output card (3-40). Persisted; applies live (next render).",
+            live=True,
             int_range=(3, 40),
         ),
         SettingsRow(
@@ -323,6 +333,7 @@ def apply_setting(
 
 _BOOL_GETTERS: dict[str, str] = {
     "hide_thinking_block": "get_hide_thinking_block",
+    "hide_compaction_summary": "get_hide_compaction_summary",
     "show_hardware_cursor": "get_show_hardware_cursor",
     "quiet_startup": "get_quiet_startup",
     "enable_skill_commands": "get_enable_skill_commands",
@@ -333,6 +344,7 @@ _BOOL_GETTERS: dict[str, str] = {
 }
 _BOOL_SETTERS: dict[str, str] = {
     "hide_thinking_block": "set_hide_thinking_block",
+    "hide_compaction_summary": "set_hide_compaction_summary",
     "show_hardware_cursor": "set_show_hardware_cursor",
     "quiet_startup": "set_quiet_startup",
     "enable_skill_commands": "set_enable_skill_commands",
@@ -371,8 +383,8 @@ def _set_int(key: str, sm: SettingsManager, value: int) -> None:
 
 
 def _bool_label(row: SettingsRow, value: bool) -> str:
-    # ``hide_thinking_block`` reads as hidden/visible; the rest as on/off.
-    if row.key == "hide_thinking_block":
+    # ``hide_*`` rows read as hidden/visible; the rest as on/off.
+    if row.key in ("hide_thinking_block", "hide_compaction_summary"):
         return "hidden" if value else "visible"
     return _on_off(value)
 
