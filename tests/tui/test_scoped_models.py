@@ -43,9 +43,11 @@ async def _select_unreachable(*_a: Any, **_k: Any) -> Any:
     raise AssertionError("multiselect must not be called on this path")
 
 
-def test_scoped_model_rows_uses_model_id_as_stable_key() -> None:
+def test_scoped_model_rows_use_canonical_provider_id_key() -> None:
     rows = scoped_model_rows(_MODELS)
-    assert [oid for oid, _, _ in rows] == ["a", "b", "c"]
+    # The stable key is the CANONICAL ``provider/id`` (not the bare id) so models
+    # sharing a bare id across providers stay distinct rows.
+    assert [oid for oid, _, _ in rows] == ["p/a", "p/b", "p/c"]
     # The label is the clean ``[provider] id`` form.
     assert all("[p]" in label for _, label, _ in rows)
     assert all("provider: p" in desc for _, _, desc in rows)
@@ -65,7 +67,7 @@ async def test_all_checked_writes_none_sentinel() -> None:
     committed: list[object] = []
 
     async def ms(title, options, *, selected, extra_toggles=None, preview=None):  # noqa: ANN001
-        return ({"a", "b", "c"}, {})
+        return ({"p/a", "p/b", "p/c"}, {})
 
     await run_scoped_models(
         registry=_FakeRegistry(_MODELS),
@@ -82,7 +84,7 @@ async def test_subset_writes_sorted_ids() -> None:
     committed: list[object] = []
 
     async def ms(title, options, *, selected, extra_toggles=None, preview=None):  # noqa: ANN001
-        return ({"c", "a"}, {})  # unsorted on purpose
+        return ({"p/c", "p/a"}, {})  # unsorted on purpose
 
     await run_scoped_models(
         registry=_FakeRegistry(_MODELS),
@@ -90,7 +92,7 @@ async def test_subset_writes_sorted_ids() -> None:
         multiselect=ms,
         commit=committed.append,
     )
-    assert sm.get_enabled_models() == ["a", "c"]  # sorted
+    assert sm.get_enabled_models() == ["p/a", "p/c"]  # sorted canonical keys
     assert any("2 model" in _plain(c) for c in committed)
     # ENFORCED (ADR-0162): the confirmation now states the active effect — the
     # allow-list restricts /model. The old "enforcement pending" phrasing is gone.
@@ -103,6 +105,8 @@ async def test_seed_is_not_scoped_disabled_model_stays_visible() -> None:
     # auth-filtered catalog (NOT scoped_available), so a model that is currently
     # DISABLED via the allow-list is still listed + re-checkable. Scoping the seed
     # would make a disabled model invisible and permanently un-re-enableable.
+    # ``["a"]`` is a LEGACY bare-id allow-list (pre provider-qualification); it must
+    # still pre-check the matching canonical row.
     sm = SettingsManager.in_memory({"enabledModels": ["a"]})  # only "a" enabled
     captured: dict[str, Any] = {}
 
@@ -118,9 +122,9 @@ async def test_seed_is_not_scoped_disabled_model_stays_visible() -> None:
         commit=lambda c: None,
     )
     # ALL catalog ids are offered (the disabled "b"/"c" are still visible).
-    assert captured["option_ids"] == ["a", "b", "c"]
-    # Only the enabled model is pre-checked.
-    assert captured["selected"] == {"a"}
+    assert captured["option_ids"] == ["p/a", "p/b", "p/c"]
+    # Only the enabled model is pre-checked (legacy bare "a" → canonical "p/a").
+    assert captured["selected"] == {"p/a"}
 
 
 async def test_seed_prunes_stale_ids() -> None:
@@ -141,7 +145,7 @@ async def test_seed_prunes_stale_ids() -> None:
         multiselect=ms,
         commit=lambda c: None,
     )
-    assert captured["selected"] == {"a"}  # "gone" pruned
+    assert captured["selected"] == {"p/a"}  # legacy "a" → "p/a"; "gone" pruned
 
 
 async def test_cancel_does_not_write() -> None:
@@ -201,3 +205,77 @@ async def test_list_failure_is_surfaced() -> None:
         commit=committed.append,
     )
     assert any("model list failed" in _plain(c) for c in committed)
+
+
+_SHARED_ID = [
+    Model(id="gpt-4o", provider="openai"),
+    Model(id="gpt-4o", provider="copilot"),
+    Model(id="o1", provider="openai"),
+]
+
+
+async def test_same_id_across_providers_are_distinct_and_persist_qualified() -> None:
+    # S3 regression: two providers expose the SAME bare id. They must be distinct,
+    # independently-checkable rows, and enabling ONLY one must persist just that
+    # provider's canonical key (not the bare id that would also enable the other).
+    sm = SettingsManager.in_memory({})
+    captured: dict[str, Any] = {}
+
+    async def ms(title, options, *, selected, extra_toggles=None, preview=None):  # noqa: ANN001
+        captured["option_ids"] = [oid for oid, _, _ in options]
+        return ({"openai/gpt-4o"}, {})  # enable only OpenAI's gpt-4o
+
+    await run_scoped_models(
+        registry=_FakeRegistry(_SHARED_ID),
+        settings_manager=sm,
+        multiselect=ms,
+        commit=lambda c: None,
+    )
+    assert captured["option_ids"] == ["openai/gpt-4o", "copilot/gpt-4o", "openai/o1"]
+    assert sm.get_enabled_models() == ["openai/gpt-4o"]  # copilot's gpt-4o NOT enabled
+
+
+async def test_legacy_bare_id_seed_prechecks_all_providers_then_migrates() -> None:
+    # A legacy bare-id entry pre-checks EVERY provider row exposing that id, and a
+    # confirm re-persists in canonical ``provider/id`` form (auto-migration).
+    sm = SettingsManager.in_memory({"enabledModels": ["gpt-4o"]})  # legacy bare id
+    captured: dict[str, Any] = {}
+
+    async def ms(title, options, *, selected, extra_toggles=None, preview=None):  # noqa: ANN001
+        captured["selected"] = set(selected)
+        return (set(selected), {})  # confirm the seeded selection as-is
+
+    await run_scoped_models(
+        registry=_FakeRegistry(_SHARED_ID),
+        settings_manager=sm,
+        multiselect=ms,
+        commit=lambda c: None,
+    )
+    # Both providers' gpt-4o pre-checked; "o1" not.
+    assert captured["selected"] == {"openai/gpt-4o", "copilot/gpt-4o"}
+    # Re-persisted canonically (subset of the 3-model catalog → not the None sentinel).
+    assert sm.get_enabled_models() == ["copilot/gpt-4o", "openai/gpt-4o"]
+
+
+async def test_seed_canonical_entry_does_not_precheck_slash_id_sibling() -> None:
+    # A canonical enabled entry "openai/gpt-4o" must pre-check ONLY the native openai
+    # row — NOT openrouter's model whose bare id literally is "openai/gpt-4o"
+    # (a slashed entry is canonical-only; the bare fallback is slash-free entries only).
+    models = [
+        Model(id="gpt-4o", provider="openai"),
+        Model(id="openai/gpt-4o", provider="openrouter"),
+    ]
+    sm = SettingsManager.in_memory({"enabledModels": ["openai/gpt-4o"]})
+    captured: dict[str, Any] = {}
+
+    async def ms(title, options, *, selected, extra_toggles=None, preview=None):  # noqa: ANN001
+        captured["selected"] = set(selected)
+        return None  # Esc — just inspect the seed
+
+    await run_scoped_models(
+        registry=_FakeRegistry(models),
+        settings_manager=sm,
+        multiselect=ms,
+        commit=lambda c: None,
+    )
+    assert captured["selected"] == {"openai/gpt-4o"}  # openrouter row NOT pre-checked

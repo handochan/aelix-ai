@@ -119,6 +119,60 @@ async def test_settings_read_exception_degrades_to_full() -> None:
     assert [m.id for m in out] == [m.id for m in _catalog()]
 
 
+def _shared_id_catalog() -> list[Model]:
+    # Two providers expose the SAME bare id ("gpt-4o") — the S3 collision case.
+    return [
+        Model(id="gpt-4o", provider="openai"),
+        Model(id="gpt-4o", provider="copilot"),
+        Model(id="o1", provider="openai"),
+    ]
+
+
+async def test_canonical_pattern_scopes_to_single_provider() -> None:
+    # A canonical ``provider/id`` allow-list entry must select ONLY that provider's
+    # model, even when a sibling provider exposes the same bare id.
+    reg = _FakeRegistry(_shared_id_catalog())
+    out = await scoped_available(reg, _LiveSettings(["openai/gpt-4o"]))
+    assert [(m.provider, m.id) for m in out] == [("openai", "gpt-4o")]
+
+
+async def test_legacy_bare_id_matches_every_provider() -> None:
+    # A LEGACY bare-id entry (pre provider-qualification) stays back-compatible: it
+    # matches every provider exposing that id (never collapses to one, unlike the
+    # old resolve_model_scope path).
+    reg = _FakeRegistry(_shared_id_catalog())
+    out = await scoped_available(reg, _LiveSettings(["gpt-4o"]))
+    assert [(m.provider, m.id) for m in out] == [
+        ("openai", "gpt-4o"),
+        ("copilot", "gpt-4o"),
+    ]
+
+
+async def test_canonical_key_does_not_leak_into_slash_id_sibling() -> None:
+    # A canonical "openai/gpt-4o" must NOT match openrouter's model whose bare id is
+    # literally "openai/gpt-4o" (canonical "openrouter/openai/gpt-4o"). A slash in the
+    # pattern means canonical-only matching — the bare-id fallback would re-open S3.
+    reg = _FakeRegistry(
+        [
+            Model(id="gpt-4o", provider="openai"),
+            Model(id="openai/gpt-4o", provider="openrouter"),
+        ]
+    )
+    out = await scoped_available(reg, _LiveSettings(["openai/gpt-4o"]))
+    assert [(m.provider, m.id) for m in out] == [("openai", "gpt-4o")]
+
+
+async def test_trailing_thinking_level_suffix_is_stripped_before_match() -> None:
+    # A hand-edited "provider/id:high" (pi thinking-level suffix) must still scope to
+    # that model, not fall through the empty-match guard and widen to the full list.
+    reg = _FakeRegistry(_catalog())
+    out = await scoped_available(reg, _LiveSettings(["openai/gpt-4o:high"]))
+    assert [(m.provider, m.id) for m in out] == [("openai", "gpt-4o")]
+    # The glob form with a suffix scopes too.
+    out2 = await scoped_available(reg, _LiveSettings(["openai/*:high"]))
+    assert {m.provider for m in out2} == {"openai"}
+
+
 async def test_liveness_reflects_runtime_change_without_rebuild() -> None:
     reg = _FakeRegistry(_catalog())
     settings = _LiveSettings(None)

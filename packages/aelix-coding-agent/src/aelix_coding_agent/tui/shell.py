@@ -1093,6 +1093,11 @@ async def run_tui(
             select=context.select,
             confirm=context.confirm,
             commit=_commit,
+            # S1 — thread the live registry + settings so /logout cascades the
+            # de-authorization to models.json (stored apiKey) + settings.json
+            # (scoped-models allow-list), not just auth.json.
+            model_registry=model_registry,
+            settings_manager=settings_manager,
         )
 
     async def _open_stats() -> None:

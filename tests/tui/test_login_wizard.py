@@ -21,6 +21,7 @@ from aelix_ai.oauth.types import (
     OAuthSelectOption,
     OAuthSelectPrompt,
 )
+from aelix_ai.streaming import Model
 from aelix_coding_agent.tui.login_wizard import run_login, run_logout
 
 # ── Test doubles ────────────────────────────────────────────────────────────
@@ -691,3 +692,186 @@ async def test_logout_no_auth_storage_degrades() -> None:
         commit=committed.append,
     )
     assert any("unavailable" in _plain(c) for c in committed)
+
+
+class _FakeRegistryForLogout:
+    """Registry double for the logout cascade: exposes ``_models_json_path``, a
+    ``get_all()`` catalog (consulted by the registry-aware allow-list prune), and
+    records ``_load_models()`` calls (the reload that flips has_configured_auth)."""
+
+    def __init__(self, path: str, models: list[Model] | None = None) -> None:
+        self._models_json_path = path
+        self._models = list(models or [])
+        self.load_models_calls = 0
+
+    def _load_models(self) -> None:
+        self.load_models_calls += 1
+
+    def get_all(self) -> list[Model]:
+        return list(self._models)
+
+
+async def test_logout_cascades_to_models_json_and_settings(tmp_path: Any) -> None:
+    # S1: /logout must de-authorize across all three files. A custom provider
+    # persisted by /login has its apiKey in models.json (which keeps
+    # has_configured_auth True). Logout must STRIP that apiKey (keeping the model
+    # defs), reload the registry, and prune the provider's canonical scoped-models
+    # entries — while leaving OTHER providers' blocks/secrets and allow-list entries
+    # intact.
+    import json
+
+    from aelix_ai.settings import SettingsManager
+
+    models_json = tmp_path / "models.json"
+    models_json.write_text(
+        json.dumps(
+            {
+                "providers": {
+                    "myco": {
+                        "name": "myco",
+                        "baseUrl": "https://h/v1",
+                        "api": "openai-completions",
+                        "apiKey": "sk-secret",
+                        "models": [{"id": "m1"}],
+                    },
+                    "other": {
+                        "name": "other",
+                        "baseUrl": "https://o/v1",
+                        "api": "openai-completions",
+                        "apiKey": "sk-keep",
+                        "models": [{"id": "x"}],
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    storage = FakeAuthStorage(stored=["myco"])
+    registry = _FakeRegistryForLogout(
+        str(models_json),
+        models=[
+            Model(id="m1", provider="myco"),
+            Model(id="x", provider="other"),
+            Model(id="gpt-4o", provider="openai"),
+        ],
+    )
+    sm = SettingsManager.in_memory(
+        {"enabledModels": ["myco/m1", "other/x", "openai/gpt-4o"]}
+    )
+    committed: list[object] = []
+
+    await run_logout(
+        auth_storage=storage,
+        select=_ScriptedSelect(["myco"]),
+        confirm=_confirm_yes,
+        commit=committed.append,
+        model_registry=registry,
+        settings_manager=sm,
+    )
+
+    # auth.json removal happened.
+    assert storage.logout_calls == ["myco"]
+    data = json.loads(models_json.read_text(encoding="utf-8"))
+    # myco block KEPT (model defs preserved) but its plaintext apiKey stripped.
+    assert "myco" in data["providers"]
+    assert "apiKey" not in data["providers"]["myco"]
+    assert data["providers"]["myco"]["models"] == [{"id": "m1"}]
+    # other provider's block + secret untouched.
+    assert data["providers"]["other"]["apiKey"] == "sk-keep"
+    # Registry reloaded so has_configured_auth reflects the removal in-session.
+    assert registry.load_models_calls == 1
+    # settings.json scoped allow-list pruned of myco/*; others kept.
+    assert sm.get_enabled_models() == ["other/x", "openai/gpt-4o"]
+    text = " ".join(_plain(c) for c in committed)
+    assert "cleared" in text and "myco" in text
+
+
+async def test_logout_preserves_hand_authored_override_block_without_apikey(
+    tmp_path: Any,
+) -> None:
+    # A built-in provider logged in via API key stores ONLY in auth.json. Its
+    # models.json block (if any) is purely hand-authored (modelOverrides, no apiKey)
+    # — logout must NOT touch it (no whole-block deletion, no reload/message).
+    import json
+
+    from aelix_ai.settings import SettingsManager
+
+    original = {
+        "providers": {
+            "openai": {
+                "name": "openai",
+                "modelOverrides": {"gpt-4o": {"contextWindow": 999}},
+            }
+        }
+    }
+    models_json = tmp_path / "models.json"
+    models_json.write_text(json.dumps(original), encoding="utf-8")
+
+    storage = FakeAuthStorage(stored=["openai"])
+    registry = _FakeRegistryForLogout(str(models_json))
+    committed: list[object] = []
+
+    await run_logout(
+        auth_storage=storage,
+        select=_ScriptedSelect(["openai"]),
+        confirm=_confirm_yes,
+        commit=committed.append,
+        model_registry=registry,
+        settings_manager=SettingsManager.in_memory({}),
+    )
+
+    assert storage.logout_calls == ["openai"]
+    # Hand-authored block is byte-for-byte preserved; no reload; no "cleared" note.
+    assert json.loads(models_json.read_text(encoding="utf-8")) == original
+    assert registry.load_models_calls == 0
+    assert "cleared" not in " ".join(_plain(c) for c in committed)
+
+
+async def test_logout_removes_pure_credential_block_entirely(tmp_path: Any) -> None:
+    # A block whose ONLY substantive content was the apiKey (no models/baseUrl/etc)
+    # is a pure credential holder → stripping the key leaves nothing, so the whole
+    # block is dropped rather than left as an invalid empty entry.
+    import json
+
+    from aelix_ai.settings import SettingsManager
+
+    models_json = tmp_path / "models.json"
+    models_json.write_text(
+        json.dumps(
+            {"providers": {"acme": {"name": "acme", "api": "openai-completions",
+                                     "apiKey": "sk-x"}}}
+        ),
+        encoding="utf-8",
+    )
+    storage = FakeAuthStorage(stored=["acme"])
+    registry = _FakeRegistryForLogout(str(models_json))
+    committed: list[object] = []
+
+    await run_logout(
+        auth_storage=storage,
+        select=_ScriptedSelect(["acme"]),
+        confirm=_confirm_yes,
+        commit=committed.append,
+        model_registry=registry,
+        settings_manager=SettingsManager.in_memory({}),
+    )
+
+    data = json.loads(models_json.read_text(encoding="utf-8"))
+    assert "acme" not in data["providers"]
+    assert registry.load_models_calls == 1
+
+
+async def test_logout_without_registry_or_settings_touches_only_auth() -> None:
+    # Back-compat: omitting model_registry/settings_manager keeps the pre-cascade
+    # behavior (auth.json only) and never raises.
+    storage = FakeAuthStorage(stored=["openai"])
+    committed: list[object] = []
+    await run_logout(
+        auth_storage=storage,
+        select=_ScriptedSelect(["openai"]),
+        confirm=_confirm_yes,
+        commit=committed.append,
+    )
+    assert storage.logout_calls == ["openai"]
+    assert any("Removed stored credentials for openai" in _plain(c) for c in committed)

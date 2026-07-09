@@ -768,6 +768,81 @@ def _write_custom_models_json(
         os.chmod(p, 0o600)
 
 
+def _deauthorize_provider_in_models_json(path: str, provider_id: str) -> bool:
+    """De-authorize ``provider_id`` in the models.json at ``path`` WITHOUT losing
+    user-authored config.
+
+    A custom-provider ``/login`` writes the provider's ``apiKey`` into models.json
+    (:func:`_write_custom_models_json`); that copy keeps ``has_configured_auth``
+    :data:`True` even after ``auth.json`` is cleared. This strips ONLY the ``apiKey``
+    field — preserving the block's model definitions / ``modelOverrides`` /
+    ``baseUrl`` (which may be HAND-AUTHORED: the /login fallback explicitly tells
+    users to add models via models.json) — so the provider drops out of
+    ``get_available`` while its configuration survives a re-login. The block itself
+    is deleted only when stripping the key leaves it with no substantive content (a
+    pure credential holder).
+
+    Returns :data:`True` iff the file was changed. A missing / empty / unparseable
+    file, an absent provider block, or a block carrying NO ``apiKey`` (e.g. a
+    built-in provider's hand-authored override-only block, or one whose auth lives
+    entirely in ``auth.json``) is a no-op → :data:`False`, leaving that config
+    untouched. Rewrites atomically as owner-only ``0o600`` — the file may hold OTHER
+    providers' secrets. NOTE: like :func:`_write_custom_models_json`, the rewrite
+    reformats and drops any JSONC ``//`` comments.
+    """
+
+    import json
+    import os
+    from pathlib import Path
+
+    p = Path(path)
+    if not p.exists():
+        return False
+    try:
+        text = p.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    if not text.strip():
+        return False
+
+    from aelix_coding_agent.models_json import strip_json_comments
+
+    try:
+        loaded = json.loads(strip_json_comments(text))
+    except ValueError:
+        return False  # malformed JSON — never clobber a file we cannot parse
+    if not isinstance(loaded, dict):
+        return False
+    providers = loaded.get("providers")
+    if not isinstance(providers, dict):
+        return False
+    entry = providers.get(provider_id)
+    # No block, or a block with no apiKey to remove → nothing to de-authorize.
+    # (Crucially, this leaves hand-authored override-only blocks fully intact.)
+    if not isinstance(entry, dict) or "apiKey" not in entry:
+        return False
+
+    del entry["apiKey"]
+    # Keep the block if it still carries substantive config (model defs / overrides /
+    # connection settings); drop it only when it was a pure credential holder.
+    has_substance = any(
+        entry.get(k)
+        for k in ("models", "baseUrl", "headers", "compat", "modelOverrides")
+    )
+    if not has_substance:
+        del providers[provider_id]
+
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_suffix(p.suffix + ".tmp")
+    tmp.write_text(json.dumps(loaded, indent=2), encoding="utf-8")
+    # chmod the tmp BEFORE the atomic replace so the live file is never briefly
+    # world-readable while it still holds other providers' secrets.
+    with contextlib.suppress(OSError):
+        os.chmod(tmp, 0o600)
+    tmp.replace(p)
+    return True
+
+
 async def _register_custom_models(
     *,
     provider_id: str,
@@ -872,6 +947,8 @@ async def run_logout(
     select: Callable[..., Awaitable[str | None]],
     confirm: Callable[..., Awaitable[bool]],
     commit: Callable[[object], None],
+    model_registry: Any = None,
+    settings_manager: Any = None,
 ) -> None:
     """Drive the ``/logout`` flow end-to-end (Sprint WP-8, Feature 1).
 
@@ -880,6 +957,18 @@ async def run_logout(
     the user pick one, confirms, then removes it via :meth:`AuthStorage.logout`.
     An empty store, an Esc at the picker, or a declined confirmation all return
     without removing anything. Every exception is surfaced as a red line.
+
+    Cross-file de-authorization (S1): :meth:`AuthStorage.logout` clears only
+    ``auth.json`` + the runtime override. When ``model_registry`` /
+    ``settings_manager`` are supplied, this ALSO (a) removes the provider's block
+    from ``models.json`` — a custom-provider ``/login`` persists its ``apiKey``
+    there too, and that copy keeps ``has_configured_auth`` :data:`True` (so the
+    "logged-out" provider's models kept resolving and a plaintext secret survived
+    on disk) — and reloads the registry so the change takes effect in-session; and
+    (b) prunes the provider's canonical ``provider/id`` entries from the
+    ``settings.json`` scoped-models allow-list. An environment/``.env`` key is a
+    separate auth source ``/logout`` cannot delete — it is still only warned about.
+    Both cleanups are best-effort and never abort the logout.
     """
 
     from rich.text import Text  # local import keeps this module import-light
@@ -914,6 +1003,68 @@ async def run_logout(
         return
 
     commit(Text(f"Removed stored credentials for {provider}", style="green"))
+
+    # S1 cross-file de-authorization: reconcile models.json + settings.json so a
+    # logout actually de-authorizes (historically it touched only auth.json).
+    if model_registry is not None:
+        models_json_path = getattr(model_registry, "_models_json_path", None)
+        if models_json_path:
+            try:
+                cleared = _deauthorize_provider_in_models_json(
+                    models_json_path, provider
+                )
+            except Exception as exc:  # noqa: BLE001 — cleanup must not abort logout
+                commit(
+                    Text(
+                        f"Note: could not update models.json for {provider}: {exc}",
+                        style="yellow",
+                    )
+                )
+            else:
+                if cleared:
+                    # Re-read models.json so has_configured_auth flips to False and
+                    # the provider's models drop out of /model + /scoped-models now.
+                    with contextlib.suppress(Exception):
+                        model_registry._load_models()
+                    commit(
+                        Text(
+                            f"Also cleared {provider}'s API key from models.json "
+                            "(model definitions kept).",
+                            style="green",
+                        )
+                    )
+
+    if settings_manager is not None:
+        # Prune scoped-models allow-list entries that refer ONLY to the logged-out
+        # provider. Registry-aware (NOT a string prefix test): an entry is kept if it
+        # still matches any model of a DIFFERENT provider — so a legacy bare id, or an
+        # openrouter model whose id literally begins "openai/", is never dropped when
+        # a same-named native provider logs out. An emptied list collapses to None.
+        with contextlib.suppress(Exception):
+            enabled = settings_manager.get_enabled_models()
+            if enabled:
+                from ..core.scoped_models_filter import _pattern_matches
+
+                catalog = (
+                    list(model_registry.get_all())
+                    if model_registry is not None
+                    else []
+                )
+
+                def _refers_only_to_logged_out(
+                    entry: str, _catalog: Any = catalog, _provider: str = provider
+                ) -> bool:
+                    matched = [m for m in _catalog if _pattern_matches(entry, m)]
+                    return bool(matched) and all(
+                        m.provider == _provider for m in matched
+                    )
+
+                kept = [
+                    e for e in enabled if not _refers_only_to_logged_out(e)
+                ]
+                if len(kept) != len(enabled):
+                    settings_manager.set_enabled_models(kept or None)
+                    await settings_manager.flush()
 
     # /logout clears the stored + runtime credentials, but an API key in the
     # ENVIRONMENT / .env is a separate auth source it cannot delete — the

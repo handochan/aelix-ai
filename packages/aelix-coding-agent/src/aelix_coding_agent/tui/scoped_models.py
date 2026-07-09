@@ -12,7 +12,9 @@ allow-list, backed by ``Settings.enabled_models``). On confirm:
 
 * every model checked → ``set_enabled_models(None)`` (the canonical "all enabled"
   sentinel, so the catalog isn't pinned to today's id list);
-* a subset → ``set_enabled_models(sorted(ids))``;
+* a subset → ``set_enabled_models(sorted(keys))`` where each key is the canonical
+  ``provider/id`` (so two providers sharing a bare id stay distinct, and a legacy
+  bare-id allow-list is transparently re-persisted in canonical form here);
 
 then ``flush()`` lands the write and the flow re-reads ``get_enabled_models()`` to
 commit a round-trip confirmation line. The setter mutates the merged view
@@ -62,19 +64,22 @@ def scoped_model_rows(
 ) -> list[tuple[str, str, str]]:
     """Build ``(id, label, description)`` multiselect rows for ``models``.
 
-    The stable ``id`` is the model id (the value stored in ``enabled_models``);
-    the label is the provider-tagged ``[provider] id`` form. We do NOT reuse
-    ``model_picker_labels`` here: it prefixes a numeric ``N.`` counter meant for
-    the single-choice /model picker, which is meaningless in this checkbox list
-    (there is no numeric selection) and would read as ``[✓] 1. [openai] gpt-4o``
-    (W-review nit). The description is the provider.
+    The stable ``id`` is the CANONICAL ``provider/id`` key — the value stored in
+    ``enabled_models`` and the identity every consumer uses. Keying on the bare
+    model id instead would collapse models that share an id across providers (181
+    such ids in the catalog; ``gpt-4o`` spans 4 providers): they'd render one
+    shared checkbox, toggle together, and persist provider-agnostically so
+    enabling one provider's model silently enabled every other's. The label stays
+    the human ``[provider] id`` form (we do NOT reuse ``model_picker_labels``: its
+    numeric ``N.`` prefix is meaningless in a checkbox list). Description = provider.
     """
 
     rows: list[tuple[str, str, str]] = []
     for model in models:
         model_id = getattr(model, "id", None) or "?"
         provider = getattr(model, "provider", None) or "?"
-        rows.append((model_id, f"[{provider}] {model_id}", f"provider: {provider}"))
+        key = f"{provider}/{model_id}"
+        rows.append((key, f"[{provider}] {model_id}", f"provider: {provider}"))
     return rows
 
 
@@ -116,7 +121,7 @@ async def run_scoped_models(
         return
 
     options = scoped_model_rows(models)
-    all_ids = {oid for oid, _, _ in options}
+    all_ids = {oid for oid, _, _ in options}  # canonical ``provider/id`` keys
     # ``get_enabled_models() is None`` is the "all enabled" sentinel → start with
     # everything checked. A concrete list is the persisted allow-list; intersect
     # with the live catalog so a stale id (model no longer available) doesn't ghost
@@ -126,11 +131,24 @@ async def run_scoped_models(
     except Exception as exc:  # noqa: BLE001 — surface, never crash the REPL
         commit(Text(f"✖ could not read enabled models: {exc}", style="bold red"))
         return
-    selected = (
-        set(all_ids)
-        if enabled is None
-        else {mid for mid in enabled if mid in all_ids}
-    )
+    if enabled is None:
+        selected = set(all_ids)
+    else:
+        # A persisted entry is either the CANONICAL ``provider/id`` (new form) or a
+        # LEGACY bare ``id`` (written before provider-qualification). Pre-check a row
+        # when the allow-list contains its canonical key OR — only for SLASH-FREE
+        # legacy entries — its bare id (which pre-checks every provider row exposing
+        # that id). A slashed entry is treated as canonical only: matching it as a
+        # bare id would leak into a different provider whose model id itself contains
+        # a slash (openrouter's "openai/gpt-4o"). Building only from live option keys
+        # drops stale entries automatically (no phantom checkbox).
+        enabled_lower = {e.strip().lower() for e in enabled if e and e.strip()}
+        enabled_bare = {e for e in enabled_lower if "/" not in e}
+        selected = set()
+        for oid, _, _ in options:
+            _, _, bare_id = oid.partition("/")
+            if oid.lower() in enabled_lower or bare_id.lower() in enabled_bare:
+                selected.add(oid)
 
     def _preview(chosen: set[str], _toggles: dict[str, bool]) -> list[str]:
         if chosen >= all_ids:
