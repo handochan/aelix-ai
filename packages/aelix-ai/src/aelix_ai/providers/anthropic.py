@@ -49,6 +49,10 @@ from aelix_ai.providers._anthropic_transforms import (
     resolve_anthropic_thinking,
 )
 from aelix_ai.providers._base import Provider
+from aelix_ai.providers._github_copilot_headers import (
+    build_copilot_dynamic_headers,
+    has_copilot_vision_input,
+)
 from aelix_ai.streaming import (
     AssistantDoneEvent,
     AssistantErrorEvent,
@@ -271,6 +275,48 @@ async def stream_anthropic(
         # 1) Build / use SDK client.
         if opts.client is not None:
             client = opts.client
+        elif model.provider == "github-copilot":
+            # Pi parity ``providers/anthropic.ts`` github-copilot branch:
+            # ``new Anthropic({ apiKey: null, authToken: apiKey, ... })``. The
+            # GitHub Copilot proxy authenticates via ``Authorization: Bearer
+            # <token>`` — NOT ``x-api-key`` (the SDK default whenever ``api_key``
+            # is set) — so a Copilot Claude model (``api="anthropic-messages"``)
+            # that fell through to the plain-api-key ``else`` branch below was
+            # rejected by the proxy with 401. ``is_oauth_token`` only matches
+            # Anthropic ``sk-ant-oat…`` tokens, so this branch MUST key off
+            # ``model.provider`` (mirroring the OpenAI adapters), not the token
+            # shape. We reuse the OAuth branch's ``api_key="" + manual
+            # Authorization`` technique so no SDK ``authToken`` param is needed.
+            # Pi sets ``isOAuthToken:false`` here → NO ``oauth-2025-04-20`` /
+            # claude-code identity betas, but the interleaved-thinking beta
+            # still applies. Header order mirrors
+            # ``openai_responses._build_client_headers``: static
+            # ``model.headers`` (Copilot-Integration-Id / Editor-Version / …) →
+            # dynamic copilot headers (X-Initiator / Openai-Intent /
+            # Copilot-Vision-Request) → ``options.headers`` → forced Bearer.
+            copilot_headers: dict[str, str] = dict(
+                getattr(model, "headers", None) or {}
+            )
+            copilot_headers.update(
+                build_copilot_dynamic_headers(
+                    context.messages,
+                    has_copilot_vision_input(context.messages),
+                )
+            )
+            if opts.headers:
+                copilot_headers.update(opts.headers)
+            copilot_headers["Authorization"] = f"Bearer {opts.api_key}"
+            copilot_headers = dict(
+                _with_interleaved_beta(copilot_headers, needs_interleaved) or {}
+            )
+            client = create_async_client(
+                # Blank api_key — auth lives in the Authorization header.
+                api_key="",
+                base_url=model.base_url or None,
+                default_headers=copilot_headers,
+                timeout_ms=opts.timeout_ms,
+                max_retries=opts.max_retries,
+            )
         elif oauth_mode:
             oauth_headers: dict[str, str] = dict(opts.headers or {})
             oauth_headers["Authorization"] = f"Bearer {opts.api_key}"

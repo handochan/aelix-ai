@@ -41,6 +41,10 @@ from aelix_ai.messages import (
 )
 from aelix_ai.models import clamp_thinking_level
 from aelix_ai.providers._env_api_keys import get_env_api_key
+from aelix_ai.providers._github_copilot_headers import (
+    build_copilot_dynamic_headers,
+    has_copilot_vision_input,
+)
 from aelix_ai.providers._openai_client import create_async_client
 from aelix_ai.providers._openai_compat import (
     OpenAICompletionsCompat,
@@ -1008,6 +1012,20 @@ async def stream_openai_completions(
         # name — the resolved ``compat`` already prefers ``model.compat`` over the
         # substring heuristics (#36, get_compat).
         default_headers: dict[str, str] = dict(getattr(model, "headers", None) or {})
+        # Pi parity (openai-completions.ts:532-545): stamp the per-request
+        # github-copilot dynamic headers (X-Initiator / Openai-Intent /
+        # Copilot-Vision-Request) after the static ``model.headers`` and before
+        # ``options.headers`` (so a caller override still wins). Without this
+        # the Copilot backend never sees the vision flag — image requests to a
+        # Copilot completions model (gemini / gpt-4.1 / gpt-4o / grok) are
+        # server-rejected — or the user-vs-agent initiator hint.
+        if model.provider == "github-copilot":
+            default_headers.update(
+                build_copilot_dynamic_headers(
+                    context.messages,
+                    has_copilot_vision_input(context.messages),
+                )
+            )
         cache_session_id = (
             None if cache_retention == "none" else opts.session_id
         )
