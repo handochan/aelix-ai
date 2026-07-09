@@ -240,6 +240,14 @@ def _drive_compaction_indicator(
     visible via ``set_running`` and must be left intact. ``core`` emits a matched
     ``compaction_end`` on EVERY exit (success, "Nothing to compact", cancelled
     hook, summarizer failure), so the transient indicator always clears.
+
+    ``turn_start`` is a SELF-HEAL trigger, handled identically to
+    ``compaction_end``: a compaction cancelled via BaseException (Ctrl+C /
+    CancelledError) never emits ``compaction_end`` (core re-raises before the
+    emit), which would strand the indicator; the next turn means any compaction
+    is long done, so the stale row is restored. It is a no-op when no indicator
+    is active (the ``state["active"]`` guard), so it is safe to call on EVERY
+    ``turn_start``.
     """
 
     if etype == "compaction_start":
@@ -249,7 +257,7 @@ def _drive_compaction_indicator(
             state["active"] = True
         chrome.set_working_message("Compacting context…")
         chrome.set_working_visible(True)
-    elif etype == "compaction_end":
+    elif etype in ("compaction_end", "turn_start"):
         if state.get("active"):
             chrome.set_working_message(state.get("prev_msg"))
             chrome.set_working_visible(bool(state.get("prev_visible")))
@@ -1447,19 +1455,14 @@ async def run_tui(
             _start_retry_countdown(event)
         elif etype == "auto_retry_end":
             _end_retry_countdown(event)
-        elif etype in ("compaction_start", "compaction_end"):
+        elif etype in ("compaction_start", "compaction_end", "turn_start"):
+            # compaction_start/end drive the indicator; turn_start self-heals a
+            # stranded indicator (a BaseException-cancelled compaction never emits
+            # compaction_end). All three route through the one tested helper, so
+            # there is no untested dispatch glue.
             _drive_compaction_indicator(
                 out_chrome, _compaction_working_state, etype
             )
-        elif etype == "turn_start":
-            # Self-heal: a compaction cancelled via BaseException (Ctrl+C) never
-            # emits ``compaction_end`` (core re-raises before the emit), which
-            # would strand the indicator. A new turn means any compaction is long
-            # done, so restore the working row from any stale-active state.
-            if _compaction_working_state.get("active"):
-                _drive_compaction_indicator(
-                    out_chrome, _compaction_working_state, "compaction_end"
-                )
         elif etype == "turn_end":
             # Keep a strong reference so the task isn't GC'd before it runs.
             task = loop.create_task(_refresh_context_usage())

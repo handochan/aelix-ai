@@ -106,6 +106,44 @@ def test_compaction_indicator_double_start_is_idempotent() -> None:
         assert chrome.get_working_visible() is True
 
 
+def test_compaction_indicator_turn_start_heals_stranded() -> None:
+    """SELF-HEAL: a compaction cancelled via BaseException (Ctrl+C) never emits
+    compaction_end, stranding active=True. The next turn_start must restore the
+    prior working row and clear the active flag (else "Compacting context…"
+    sticks on screen). Locks the "turn_start" literal + the restore path."""
+
+    with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
+        chrome = _headless_chrome()
+        state: dict[str, Any] = {"active": False, "prev_msg": None, "prev_visible": False}
+
+        # Compaction started but end never arrived (BaseException-cancelled).
+        _drive_compaction_indicator(chrome, state, "compaction_start")
+        assert state["active"] is True
+        assert chrome.get_working_visible() is True
+
+        # The next turn self-heals the stranded row.
+        _drive_compaction_indicator(chrome, state, "turn_start")
+        assert state["active"] is False
+        assert chrome.get_working_visible() is False
+        assert chrome.get_working_message() is None
+
+
+def test_compaction_indicator_turn_start_noop_when_inactive() -> None:
+    """turn_start fires on EVERY turn; with no active indicator it must NOT touch
+    the working row (guards against clobbering a normal turn's 'Working…')."""
+
+    with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
+        chrome = _headless_chrome()
+        chrome.set_working_message("Working on a real turn")
+        chrome.set_working_visible(True)
+        state: dict[str, Any] = {"active": False, "prev_msg": None, "prev_visible": False}
+
+        _drive_compaction_indicator(chrome, state, "turn_start")
+        assert chrome.get_working_message() == "Working on a real turn"
+        assert chrome.get_working_visible() is True
+        assert state["active"] is False
+
+
 def test_compaction_indicator_end_without_start_is_noop() -> None:
     """An unmatched end (no active indicator) must not touch the working row."""
 
