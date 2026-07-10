@@ -2,15 +2,10 @@
 
 Asserts that after :func:`register_providers` the live API registry exposes
 ``openai-responses`` and that the previously-blocked ``openai-responses`` models
-(OpenAI Responses, opencode, cloudflare) move from *blocked* to *runnable* in
-:func:`partition_runnable`. Auth resolution for the hidden providers is covered
-separately by the adapter + env-key tests; here we only prove the surfacing wiring.
-
-NB: github-copilot is deliberately NOT exercised as a Responses model here.
-Copilot's API proxy has no Responses API (verified live: ``/responses`` returns
-``unsupported_api_for_model`` for every model), so :mod:`aelix_ai.models` coerces
-every github-copilot ``openai-responses`` entry to ``openai-completions`` at
-catalog load — they route via ``/chat/completions``, the endpoint Copilot serves.
+(OpenAI Responses + GitHub Copilot gpt-5.x) move from *blocked* to *runnable* in
+:func:`partition_runnable`. Auth resolution for the four hidden providers (openai
+/ github-copilot / cloudflare-ai-gateway / opencode) is covered separately by the
+adapter + env-key tests; here we only prove the surfacing wiring.
 
 The API registry is process-global, so each test snapshots and restores it to
 avoid leaking provider registrations into sibling tests.
@@ -69,27 +64,26 @@ def test_register_providers_surfaces_openai_responses_api(
 def test_partition_surfaces_previously_hidden_responses_models(
     _isolated_registry: None,
 ) -> None:
-    # Two genuine OpenAI Responses models (github-copilot is intentionally
-    # excluded — Copilot has no Responses API, so its models are coerced to
-    # openai-completions at catalog load; see the module docstring).
-    openai_resps = [m for m in get_models("openai") if m.api == "openai-responses"]
-    assert len(openai_resps) >= 2, "catalog must declare >=2 openai-responses models"
-    a, b = openai_resps[0], openai_resps[1]
-    ids = {a.id, b.id}
+    # Representative models: an OpenAI Responses model + a GitHub Copilot
+    # gpt-5.x model (the exact case that used to fail at the first turn).
+    openai_resp = get_model("openai", "gpt-4.1")
+    copilot_g5 = get_model("github-copilot", "gpt-5.2")
+    assert openai_resp is not None and openai_resp.api == "openai-responses"
+    assert copilot_g5 is not None and copilot_g5.api == "openai-responses"
 
     # Blocked while the adapter is hidden (only completions registered).
     api_registry.clear_providers()
     from aelix_ai.providers import openai_completions as _openai
 
     _openai.register_all()
-    runnable, blocked = partition_runnable([a, b])
+    runnable, blocked = partition_runnable([openai_resp, copilot_g5])
     assert runnable == []
-    assert {m.id for m in blocked} == ids
+    assert {m.id for m in blocked} == {"gpt-4.1", "gpt-5.2"}
 
     # Un-hide: both move blocked -> runnable.
     register_providers()
-    runnable, blocked = partition_runnable([a, b])
-    assert {m.id for m in runnable} == ids
+    runnable, blocked = partition_runnable([openai_resp, copilot_g5])
+    assert {m.id for m in runnable} == {"gpt-4.1", "gpt-5.2"}
     assert blocked == []
 
 
@@ -102,16 +96,14 @@ def _responses_models(provider: str) -> list:
 def test_concrete_base_url_providers_always_surface(
     _isolated_registry: None,
 ) -> None:
-    # openai / opencode carry CONCRETE base_urls (api.openai.com,
-    # opencode.ai/zen/v1) and authenticate from a raw env key (opencode uses
-    # pi's envApiKeyAuth ["OPENCODE_API_KEY"], a plain bearer — no OAuth
-    # required), so they are runnable with no extra base-URL config.
-    # github-copilot is excluded: it has no Responses models anymore (coerced
-    # to openai-completions), so ``_responses_models("github-copilot")`` would
-    # find none.
+    # openai / github-copilot / opencode carry CONCRETE base_urls
+    # (api.openai.com, api.individual.githubcopilot.com, opencode.ai/zen/v1)
+    # and authenticate from a raw env key (opencode uses pi's envApiKeyAuth
+    # ["OPENCODE_API_KEY"], a plain bearer — no OAuth required), so they are
+    # runnable with no extra base-URL config.
     register_providers()
     assert "openai-responses" in supported_apis()
-    for provider in ("openai", "opencode"):
+    for provider in ("openai", "github-copilot", "opencode"):
         models = _responses_models(provider)
         runnable, blocked = partition_runnable(models)
         assert blocked == [], f"{provider} responses models should surface"

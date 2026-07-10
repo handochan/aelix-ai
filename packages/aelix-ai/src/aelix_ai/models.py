@@ -22,33 +22,10 @@ Public surface (Pi parity):
 
 from __future__ import annotations
 
-from dataclasses import replace as _replace
 from typing import Literal
 
 from aelix_ai.models_generated import MODELS
 from aelix_ai.streaming import Model, Usage, UsageCost
-
-# aelix correction over the pi catalog (``models.generated.ts`` @734e08e):
-# GitHub Copilot's API proxy is a **chat/completions gateway** — it does NOT
-# serve the OpenAI Responses API. Verified live against the real endpoint:
-# ``POST {copilot-proxy}/responses`` returns HTTP 400 ``unsupported_api_for_model``
-# ("model X is not supported via Responses API") for EVERY model, including
-# ones that return 200 on ``/chat/completions`` (gpt-4o, gpt-4.1). The pi
-# catalog nonetheless marks 7 github-copilot models (gpt-5-mini, gpt-5.2,
-# gpt-5.2-codex, gpt-5.3-codex, gpt-5.4, gpt-5.4-mini, gpt-5.5) as
-# ``openai-responses``; routing them through the Responses adapter POSTs to
-# ``/responses`` and fails — individual proxy hosts surface the 400 above,
-# enterprise proxy hosts (which lack the route entirely) surface an httpx-level
-# "Connection error". #15 un-hid these models, flipping a previously-working
-# completions path into a broken responses one — a regression for Copilot
-# users whose plan includes gpt-5.x. Coerce every github-copilot
-# ``openai-responses`` model to ``openai-completions`` so it dispatches to the
-# endpoint Copilot actually serves. Copilot's ``/chat/completions`` supports
-# ``reasoning_effort`` (per its ``GET /models``), so the completions adapter's
-# reasoning path is correct for these models.
-_GITHUB_COPILOT_PROVIDER = "github-copilot"
-_OPENAI_RESPONSES_API = "openai-responses"
-_OPENAI_COMPLETIONS_API = "openai-completions"
 
 # Pi parity: ``models.ts:11-18`` — at module load Pi builds
 # ``modelRegistry: Map<string, Map<string, Model>>`` from ``MODELS``.
@@ -58,11 +35,6 @@ _PROVIDER_MODELS: dict[str, dict[str, Model]] = {}
 for _provider_name, _models_dict in MODELS.items():
     _PROVIDER_MODELS[_provider_name] = {}
     for _model_id, _model in _models_dict.items():
-        if (
-            _provider_name == _GITHUB_COPILOT_PROVIDER
-            and _model.api == _OPENAI_RESPONSES_API
-        ):
-            _model = _replace(_model, api=_OPENAI_COMPLETIONS_API)
         _PROVIDER_MODELS[_provider_name][_model_id] = _model
 
 
