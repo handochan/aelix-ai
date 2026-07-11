@@ -24,6 +24,7 @@ from aelix_ai.settings import ExtensionSourceObject, SettingsManager
 from aelix_coding_agent.cli import extension_pins as ep
 from aelix_coding_agent.cli import extension_signing as es
 from aelix_coding_agent.cli.extension_install import (
+    _cmd_sign,
     install_extension,
     run_extension_command,
     run_extension_command_async,
@@ -917,3 +918,93 @@ def test_verify_document_first_party_and_revoked(
     )
     with pytest.raises(ep.VerifyRefusal):
         _verify_doc(tmp_path, _DOC, sidecar, require_signature=True)
+
+
+# === Issue #88: `sign --kind catalog` ↔ catalog verifier round-trip ==========
+#
+# The catalog verifier (`_make_catalog_verifier` → verify_signed_document, kind='catalog')
+# demands a kind='catalog' statement. Before #88 the `sign` verb only did path|pypi, so a
+# catalog signed as kind='path' was REFUSED on a statement mismatch. These drive the new
+# `_cmd_sign` catalog branch straight through the real catalog verifier via `_verify_doc`.
+
+_CATALOG = _DOC  # a catalog.json document (`{"catalog":[…]}`) reused as the signed bytes
+
+
+def test_cmd_sign_catalog_round_trip_authenticates(tmp_path: Path) -> None:
+    # e2e: `sign --kind catalog` writes a kind='catalog' envelope over the RAW catalog
+    # bytes that the catalog verifier accepts once the signer is trusted.
+    key_id, pub_b64, pem = _make_key(tmp_path)
+    catalog = tmp_path / "catalog.json"
+    catalog.write_bytes(_CATALOG)
+    rc = _cmd_sign([str(catalog), "--key", str(pem), "--kind", "catalog"])
+    assert rc == 0
+    sidecar_path = catalog.with_name(catalog.name + es.AELIXSIG_SUFFIX)
+    assert sidecar_path.is_file()  # sibling catalog.json.aelixsig
+    _trust(tmp_path, key_id, pub_b64)
+    out = _verify_doc(tmp_path, catalog.read_bytes(), sidecar_path.read_bytes())
+    assert out.authenticated and out.key_id == key_id and out.sig and out.statement_json
+    st = json.loads(out.statement_json)
+    assert st["kind"] == "catalog"
+    assert st["sha256"] == hashlib.sha256(catalog.read_bytes()).hexdigest()
+
+
+def test_cmd_sign_catalog_tamper_refuses(tmp_path: Path) -> None:
+    # Appending a byte to the catalog after signing → the digest no longer matches the
+    # signed statement → the (trusted-key) verify refuses even on the default path.
+    key_id, pub_b64, pem = _make_key(tmp_path)
+    _trust(tmp_path, key_id, pub_b64)
+    catalog = tmp_path / "catalog.json"
+    catalog.write_bytes(_CATALOG)
+    assert _cmd_sign([str(catalog), "--key", str(pem), "--kind", "catalog"]) == 0
+    sidecar = catalog.with_name(catalog.name + es.AELIXSIG_SUFFIX).read_bytes()
+    tampered = _CATALOG + b" "  # one appended byte → a different sha256
+    with pytest.raises(ep.VerifyRefusal, match="statement mismatch"):
+        _verify_doc(tmp_path, tampered, sidecar)
+
+
+def test_cmd_sign_kind_path_catalog_verify_refuses(tmp_path: Path) -> None:
+    # REGRESSION guard — documents exactly why kind='catalog' is required. Signing the
+    # SAME catalog with `--kind path` routes to sign_artifact, which stamps kind='path';
+    # catalog-verifying it (kind='catalog') is refused on the kind cross-check. This is the
+    # statement mismatch #88 closes by adding the kind='catalog' sign path.
+    key_id, pub_b64, pem = _make_key(tmp_path)
+    _trust(tmp_path, key_id, pub_b64)
+    catalog = tmp_path / "catalog.json"
+    catalog.write_bytes(_CATALOG)
+    rc = _cmd_sign([str(catalog), "--key", str(pem), "--kind", "path"])
+    assert rc == 0
+    sidecar = catalog.with_name(catalog.name + es.AELIXSIG_SUFFIX).read_bytes()
+    with pytest.raises(ep.VerifyRefusal, match="statement mismatch"):
+        _verify_doc(tmp_path, catalog.read_bytes(), sidecar)  # default kind='catalog'
+
+
+def test_cmd_sign_catalog_out_path_honored(tmp_path: Path) -> None:
+    # A custom --out path receives the envelope (no sibling sidecar is written), and it
+    # verifies just like the default location.
+    key_id, pub_b64, pem = _make_key(tmp_path)
+    _trust(tmp_path, key_id, pub_b64)
+    catalog = tmp_path / "catalog.json"
+    catalog.write_bytes(_CATALOG)
+    out = tmp_path / "detached" / "catalog.aelixsig"
+    out.parent.mkdir()
+    rc = _cmd_sign(
+        [str(catalog), "--key", str(pem), "--kind", "catalog", "--out", str(out)]
+    )
+    assert rc == 0
+    assert out.is_file()
+    assert not catalog.with_name(catalog.name + es.AELIXSIG_SUFFIX).exists()  # no sibling
+    result = _verify_doc(tmp_path, catalog.read_bytes(), out.read_bytes())
+    assert result.authenticated and result.key_id == key_id
+
+
+def test_cmd_sign_rejects_unknown_kind(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The kind validation now names 'catalog' too: an unknown kind is rejected (exit 2)
+    # with the updated message.
+    _, _, pem = _make_key(tmp_path)
+    catalog = tmp_path / "catalog.json"
+    catalog.write_bytes(_CATALOG)
+    rc = _cmd_sign([str(catalog), "--key", str(pem), "--kind", "bogus"])
+    assert rc == 2
+    assert "must be 'path', 'pypi', or 'catalog'" in capsys.readouterr().err

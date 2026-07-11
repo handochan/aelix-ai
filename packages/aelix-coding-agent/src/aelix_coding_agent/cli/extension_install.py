@@ -2053,7 +2053,7 @@ def _cmd_sign(args: list[str]) -> int:
         if a in ("-h", "--help"):
             print(
                 "usage: aelix extension sign <artifact> --key <keyId|pem-path> "
-                "[--name N] [--version V] [--kind path|pypi] [--passphrase] [--out FILE]"
+                "[--name N] [--version V] [--kind path|pypi|catalog] [--passphrase] [--out FILE]"
             )
             return 0
         if a == "--passphrase":
@@ -2095,8 +2095,8 @@ def _cmd_sign(args: list[str]) -> int:
     if key_ref is None:
         print("Error: sign requires --key <keyId|pem-path>.", file=sys.stderr)
         return _EXIT_DIDNT_RUN
-    if kind not in ("path", "pypi"):
-        print("Error: --kind must be 'path' or 'pypi'.", file=sys.stderr)
+    if kind not in ("path", "pypi", "catalog"):
+        print("Error: --kind must be 'path', 'pypi', or 'catalog'.", file=sys.stderr)
         return _EXIT_DIDNT_RUN
 
     key_path = _resolve_key_path(key_ref)
@@ -2113,10 +2113,28 @@ def _cmd_sign(args: list[str]) -> int:
 
     try:
         priv = extension_signing.load_private_key(key_path, passphrase=passphrase)
-        sidecar, key_id = extension_signing.sign_artifact(
-            art, priv, kind=kind, name=name, version=version,
-            out=Path(out).expanduser() if out else None,
-        )
+        if kind == "catalog":
+            # A catalog document (catalog.json) is signed over its RAW bytes with a
+            # kind="catalog" statement — the exact form verify_signed_document expects
+            # (sign_artifact would stamp kind="path" and the catalog verifier would
+            # reject it on a statement mismatch).
+            import json
+
+            sidecar_bytes = extension_signing.sign_document(
+                art.read_bytes(), priv, kind="catalog", name=name, version=version
+            )
+            sidecar = (
+                Path(out).expanduser()
+                if out
+                else art.with_name(art.name + extension_signing.AELIXSIG_SUFFIX)
+            )
+            sidecar.write_bytes(sidecar_bytes)
+            key_id = str(json.loads(sidecar_bytes.decode("utf-8")).get("keyId", "?"))
+        else:
+            sidecar, key_id = extension_signing.sign_artifact(
+                art, priv, kind=kind, name=name, version=version,
+                out=Path(out).expanduser() if out else None,
+            )
     except extension_signing.CryptoUnavailable as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return _EXIT_DIDNT_RUN
