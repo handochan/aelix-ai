@@ -88,6 +88,14 @@ jobs:
           echo "Artifacts to publish:"
           ls -1 dist
 
+      - name: Generate SHA256SUMS over the publish set
+        working-directory: dist
+        run: |
+          # aelix-server was dropped above → this manifest lists ONLY the
+          # 4 published wheels + 4 sdists that github-release/install.sh consume.
+          sha256sum *.whl *.tar.gz > SHA256SUMS
+          echo 'Release checksums:'; cat SHA256SUMS
+
       - name: Upload distributions artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -98,6 +106,10 @@ jobs:
   publish:
     name: Publish to PyPI (Trusted Publishing)
     needs: build
+    # Skip PyPI for pre-release tags (any tag containing a hyphen, e.g.
+    # v0.1.0-beta.1). The job never starts → no OIDC token is minted → nothing
+    # reaches pypi.org. GA tags (v0.1.0) have no hyphen and publish normally.
+    if: ${{ !contains(github.ref_name, '-') }}
     runs-on: ubuntu-latest
     # GitHub Environment adds an approval/protection gate around the
     # publish step. The maintainer references this same environment name
@@ -116,6 +128,11 @@ jobs:
           name: dist
           path: dist/
 
+      - name: Drop non-distribution files before upload
+        run: rm -f dist/SHA256SUMS
+        # twine check/upload rejects SHA256SUMS ('Unknown distribution format');
+        # it belongs only on the GitHub Release, never on PyPI.
+
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # v1.14.0
         with:
@@ -129,3 +146,29 @@ jobs:
           # silently skipping.
           skip-existing: false
           print-hash: true
+
+  github-release:
+    name: Publish GitHub Release (wheels + SHA256SUMS)
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # create the Release + upload assets (ONLY elevation here)
+    steps:
+      - name: Download distributions artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: dist
+          path: dist/
+      - name: Create GitHub Release and attach assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag='${{ github.ref_name }}'
+          prerelease=""
+          case "$tag" in *-*) prerelease='--prerelease';; esac
+          gh release create "$tag" \
+            dist/*.whl dist/*.tar.gz dist/SHA256SUMS \
+            --repo '${{ github.repository }}' \
+            --title "$tag" \
+            --generate-notes \
+            $prerelease

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "aelix-ai"
-version = "0.1.0"
+version = "0.1.0b1"
 description = "Aelix AI primitives — messages, tools, streaming types. Pi-ai parity."
 readme = "README.md"
 requires-python = ">=3.11"

@@ -118,3 +118,88 @@ is needed for subsequent releases.
 > The tag is the single source of truth for triggering a publish. The version in
 > the tag (`vX.Y.Z`) should match the `version` in the published pyproject files.
 > The workflow does not auto-bump versions — step 1 is manual and deliberate.
+
+---
+
+## Beta / pre-release track
+
+Aelix ships pre-releases (beta, rc, alpha) as **GitHub Releases only** — the
+package body is distributed as checksum-verified wheels attached to the Release
+and installed via the [`install.sh`](install.sh) one-liner. Pre-releases are
+**not** published to PyPI.
+
+### The hyphen convention
+
+A single signal drives everything: **a tag that contains a hyphen is a
+pre-release.** `release.yml` uses it in two independent places:
+
+- **`publish` (PyPI) job** — gated by `if: ${{ !contains(github.ref_name, '-') }}`.
+  A hyphenated tag makes the job never start, so no OIDC token is minted and
+  nothing reaches pypi.org.
+- **`github-release` job** — passes `--prerelease` to `gh release create` when
+  the tag contains a hyphen, so GitHub marks it as a pre-release.
+
+So `v0.1.0-beta.1` (has `-`) → PyPI skipped, GitHub pre-release. `v0.1.0` (no
+`-`) → PyPI published, full GitHub release. Both jobs read the same signal but
+stay independent, so they can never disagree.
+
+> The `build` and `github-release` jobs run for **every** release tag (beta and
+> GA); only `publish` is suppressed for pre-releases. The `github-release` job
+> attaches the four wheels + four sdists + the `SHA256SUMS` manifest — that
+> Release is exactly what `install.sh` consumes.
+
+### No #73 pending-publisher needed for beta
+
+Because the `publish` job never starts for a hyphenated tag, **PyPI Trusted
+Publishing is never exercised** by a beta cut. The one-time PyPI
+pending-publisher setup (issue #73) is therefore **not** a prerequisite for the
+beta — it only becomes required for the first GA tag (`v0.1.0`).
+
+### Cutting the first beta
+
+1. **Bump the version to the PEP 440 beta form** `0.1.0b1` in every published
+   package and its inter-package pins (same files as step 1 above; the normalized
+   form of the tag `v0.1.0-beta.1` is `0.1.0b1`):
+
+   - `pyproject.toml` (meta) — `version`, the `aelix-ai==` / `aelix-agent-core==`
+     / `aelix-coding-agent==` pins, **and** the `[tui]` / `[images]` extra pins.
+   - `packages/aelix-ai/pyproject.toml` — `version`.
+   - `packages/aelix-agent-core/pyproject.toml` — `version` + `aelix-ai==` pin.
+   - `packages/aelix-coding-agent/pyproject.toml` — `version` + `aelix-ai==` /
+     `aelix-agent-core==` pins.
+   - `packages/aelix-server/pyproject.toml` — `version` (workspace coherence).
+
+2. **Verify locally** (same commands as the GA flow):
+
+   ```bash
+   uv sync --all-packages
+   uv run ruff check .
+   uv run pytest -p no:cacheprovider -q
+   uv build --all-packages
+   ```
+
+3. **Commit** on the default branch (via PR; CI green).
+
+4. **Tag with the hyphenated pre-release form and push**:
+
+   ```bash
+   git tag v0.1.0-beta.1
+   git push origin v0.1.0-beta.1
+   ```
+
+5. **Verify the Release + installer**:
+
+   - `release.yml` ran `build` + `github-release`, and **skipped** `publish`.
+   - The GitHub Release `v0.1.0-beta.1` is marked **Pre-release** and carries
+     the four `aelix*` wheels, the four sdists, and `SHA256SUMS`.
+   - The one-liner installs and smoke-tests:
+
+     ```bash
+     AELIX_VERSION=v0.1.0-beta.1 \
+       curl -fsSL https://raw.githubusercontent.com/handochan/aelix-ai/main/install.sh | sh
+     aelix --version
+     ```
+
+Subsequent betas bump the suffix (`0.1.0b2` / `v0.1.0-beta.2`, etc.). The GA cut
+uses the un-hyphenated tag (`v0.1.0`) and follows the **Cutting a release** flow
+above, which additionally publishes to PyPI.

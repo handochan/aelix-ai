@@ -182,18 +182,18 @@ PackageSource = str | PackageSourceObject
 
 
 # === Top-level `Settings` dataclass (Pi `:76-113`) ===
-# 40 optional fields — every field defaults to ``None`` so unset →
+# 41 optional fields — every field defaults to ``None`` so unset →
 # ``None`` and getters apply per-method defaults (Pi pattern). Pi's original
 # interface has 33; aelix adds a handful more (e.g. extension_sources,
 # tool_card_max_lines, session_dir, default_project_trust,
-# hide_compaction_summary) — all 40 are covered by SETTINGS_PY_TO_JSON.
+# hide_compaction_summary) — all 41 are covered by SETTINGS_PY_TO_JSON.
 
 
 @dataclass
 class Settings:
     """Pi parity: ``settings-manager.ts:76-113`` ``Settings`` interface.
 
-    39 optional top-level fields (Pi's original 33 + aelix-original
+    40 optional top-level fields (Pi's original 33 + aelix-original
     additions). Defaults are applied in the per-getter methods on
     :class:`SettingsManager` (NOT here) — this dataclass is the
     structural shape only.
@@ -255,6 +255,12 @@ class Settings:
     # stays in the LLM context (this only gates DISPLAY). Default applied in the
     # getter (False = visible, matching prior behavior).
     hide_compaction_summary: bool | None = None
+    # Aelix-original (#76, ADR-0192): default-catalog opt-out tombstone — the
+    # list of normalized default-catalog URL identities the user has suppressed
+    # via ``source remove``. GLOBAL-only (a project must not silently opt a user
+    # out of the built-in catalog). Identity-scoped so an env repoint escapes a
+    # stale tombstone. Default applied in the getter (empty list = none opted out).
+    suppressed_default_catalogs: list[str] | None = None
 
 
 SettingsScope = Literal["global", "project"]
@@ -321,6 +327,7 @@ SETTINGS_PY_TO_JSON: Final[dict[str, str]] = {
     "session_dir": "sessionDir",
     "default_project_trust": "defaultProjectTrust",
     "hide_compaction_summary": "hideCompactionSummary",
+    "suppressed_default_catalogs": "suppressedDefaultCatalogs",
 }
 
 

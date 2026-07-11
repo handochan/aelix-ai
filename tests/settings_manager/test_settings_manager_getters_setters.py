@@ -660,6 +660,41 @@ def test_extension_sources_decode_drops_malformed() -> None:
     assert [(s.spec, s.kind) for s in got] == [("https://x/simple", "index")]
 
 
+async def test_get_suppressed_default_catalogs_default(
+    manager: SettingsManager,
+) -> None:
+    # #76 (ADR-0192): unset → empty list (never None; a defensive copy).
+    assert manager.get_suppressed_default_catalogs() == []
+
+
+async def test_set_suppressed_default_catalogs_persists(
+    manager: SettingsManager,
+    settings_dirs: dict[str, Path],
+    read_settings: Any,
+) -> None:
+    manager.set_suppressed_default_catalogs(
+        ["https://catalog.aelix.dev/index.json"]
+    )
+    await manager.flush()
+    saved = read_settings(settings_dirs["global_path"])
+    # camelCase JSON key.
+    assert saved["suppressedDefaultCatalogs"] == [
+        "https://catalog.aelix.dev/index.json"
+    ]
+    # Round-trips back through a fresh manager over the same on-disk file.
+    reloaded = _make_manager(settings_dirs)
+    assert reloaded.get_suppressed_default_catalogs() == [
+        "https://catalog.aelix.dev/index.json"
+    ]
+
+
+def test_suppressed_default_catalogs_legacy_absent_loads_empty() -> None:
+    # #76: a legacy settings.json written before this field existed must load as
+    # an empty list (never None / KeyError) — the plain-list decode default path.
+    mgr = SettingsManager.in_memory({"theme": "midnight"})
+    assert mgr.get_suppressed_default_catalogs() == []
+
+
 async def test_set_double_escape_action_persists(
     manager: SettingsManager,
     settings_dirs: dict[str, Path],

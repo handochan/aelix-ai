@@ -53,13 +53,17 @@ from urllib.parse import unquote, urlparse
 
 __all__ = [
     "CATALOG_CACHE_FILENAME",
+    "DEFAULT_CATALOG_ENV",
     "DEFAULT_CATALOG_FILENAME",
+    "DEFAULT_CATALOG_URL",
     "MAX_CATALOG_BYTES",
     "MAX_CATALOG_ENTRIES",
     "SCHEMA_VERSION",
+    "SIDECAR_SUFFIX",
     "Catalog",
     "CatalogEntry",
     "CatalogError",
+    "DocumentVerifier",
     "GitRunner",
     "Opener",
     "cache_file_path",
@@ -67,6 +71,7 @@ __all__ = [
     "load_cached_catalog",
     "now_iso",
     "parse_catalog",
+    "resolve_default_catalog_url",
     "resolve_entry",
     "save_catalogs",
     "search_entries",
@@ -86,6 +91,19 @@ MAX_CATALOG_ENTRIES = 5000
 #: stall ``discover --refresh`` indefinitely (the https path is bounded by its own
 #: socket ``timeout``). Honored by :func:`_default_git_runner`.
 GIT_CLONE_TIMEOUT = 60.0
+
+#: Env var that OVERRIDES / repoints the built-in default catalog URL for one run.
+DEFAULT_CATALOG_ENV = "AELIX_DEFAULT_CATALOG"
+#: The built-in default catalog URL. EMPTY in beta = **dormant** (no first-party
+#: catalog infra ships yet — mirrors the empty ``FIRST_PARTY_KEYS`` "mechanism-only"
+#: posture). This is the lowest-priority fallback of the ``AELIX_DEFAULT_CATALOG``
+#: override chain, NOT a hardcoded literal — an enterprise repoints it via the env
+#: var and an empty value keeps the default absent (guard ②). Resolved by
+#: :func:`resolve_default_catalog_url`.
+DEFAULT_CATALOG_URL = ""
+#: Suffix of the detached-signature sidecar fetched beside a catalog document
+#: (``<location>.aelixsig``) and handed to an injected :data:`DocumentVerifier`.
+SIDECAR_SUFFIX = ".aelixsig"
 
 #: C0 controls + DEL + C1 controls — stripped from untrusted catalog DISPLAY
 #: strings (a catalog is unauthenticated network/file data; a raw ``\n`` would
@@ -108,11 +126,53 @@ def _clean_display(value: str | None) -> str | None:
     cleaned = _CONTROL_RE.sub(" ", value).strip()
     return cleaned or None
 
+
+def _clean_error(text: str) -> str:
+    """Strip control/escape chars from a catalog ``error`` before it becomes a
+    display field (ADR-0192).
+
+    Unlike :func:`_clean_display` this never collapses to ``None`` (an error row must
+    always render). A FETCHED ``.aelixsig`` ``keyId`` reaches this one channel via a
+    signature-verification refusal → :class:`CatalogError` → :attr:`Catalog.error`,
+    which both the CLI and the TUI render RAW; scrubbing here keeps ``Catalog.error``
+    injection-safe by construction so neither render site can emit raw ANSI/control
+    bytes from attacker-controlled sidecar content.
+    """
+
+    return _CONTROL_RE.sub(" ", text).strip()
+
 #: An injectable HTTP(S) fetcher (``(url, timeout) -> bytes``) — the default uses
 #: ``urllib.request``; tests inject a stub so no network is touched.
 Opener = Callable[[str, float], bytes]
 #: An injectable git-clone runner (argv → CompletedProcess) — default subprocess.
 GitRunner = Callable[[list[str]], "subprocess.CompletedProcess[bytes]"]
+#: An injected catalog-document verifier — ``(document_bytes, sidecar_bytes|None,
+#: location) -> None``. Called AFTER the raw bytes are fetched and BEFORE the parse;
+#: it verifies the document against its ``.aelixsig`` sidecar and RAISES to reject a
+#: catalog (surfaced as :class:`CatalogError`, so the source degrades to an error
+#: row). ``None`` (the default) skips verification. It is INJECTED — never imported —
+#: so this pure module stays decoupled from the signing / pin code (AST-purity,
+#: ADR-0188 §4a); the concrete verifier lives in ``extension_install``. Its return
+#: value is ignored; only a raise gates admission.
+DocumentVerifier = Callable[[bytes, "bytes | None", str], object]
+
+
+def resolve_default_catalog_url() -> str | None:
+    """The built-in default catalog URL, or :data:`None` when disabled / dormant.
+
+    Priority: the ``AELIX_DEFAULT_CATALOG`` env var overrides :data:`DEFAULT_CATALOG_URL`
+    — an enterprise repoints the default, or kills it for this run with an empty
+    value. A blank / whitespace result → :data:`None`. In beta the placeholder is
+    empty, so with no env override this returns :data:`None` (dormant — mechanism
+    only). The returned string is RAW; the caller (``extension_install``) normalizes
+    it via ``_normalize_catalog_spec`` before use.
+    """
+
+    raw = os.environ.get(DEFAULT_CATALOG_ENV)
+    if raw is None:
+        raw = DEFAULT_CATALOG_URL
+    raw = raw.strip()
+    return raw or None
 
 
 class CatalogError(Exception):
@@ -284,7 +344,7 @@ class Catalog:
             updated=_s("updated"),
             entries=tuple(entries),
             fetched_at=_s("fetchedAt"),
-            error=_s("error"),
+            error=(_clean_error(cached_error) if (cached_error := _s("error")) is not None else None),
         )
 
 
@@ -414,10 +474,35 @@ def _read_local(path: Path, location: str) -> bytes:
         raise CatalogError(f"cannot read catalog {location!r}: {exc}") from exc
 
 
-def _git_clone_bytes(location: str, *, git_runner: GitRunner) -> bytes:
+def _read_sidecar_local(path: Path) -> bytes | None:
+    """Best-effort read of a detached-signature sidecar → its bytes, else ``None``.
+
+    A missing sidecar (the catalog is unsigned), a SYMLINK (a malicious repo must
+    not exfiltrate an arbitrary host file into the verifier), an oversized blob, or
+    any read error all degrade to ``None`` — the verifier then treats the catalog as
+    unsigned. The envelope is tiny, so it shares the document byte cap as a DoS guard.
+    """
+
+    try:
+        if path.is_symlink() or not path.is_file():
+            return None
+        if path.stat().st_size > MAX_CATALOG_BYTES:
+            return None
+        return path.read_bytes()
+    except OSError:
+        return None
+
+
+def _git_clone_bytes(
+    location: str, *, git_runner: GitRunner
+) -> tuple[bytes, bytes | None]:
     """Shallow-clone a git catalog source and read its root ``catalog.json``.
 
-    The clone is discarded immediately; only the catalog document survives. A
+    Returns ``(document_bytes, sidecar_bytes|None)`` — the sibling root
+    ``catalog.json.aelixsig`` is read from the SAME clone when present (best-effort,
+    ``None`` when absent) so an injected verifier sees the detached signature over
+    the same transport. The clone is discarded immediately; only the catalog
+    document (and its sidecar) survives. A
     ``git+`` prefix is stripped for the actual clone URL. Clones are expected to
     target trusted intranet remotes (the source is admin-registered), but the
     transport is still guarded: a plaintext ``http`` clone URL is REFUSED (TLS,
@@ -456,7 +541,13 @@ def _git_clone_bytes(location: str, *, git_runner: GitRunner) -> bytes:
             raise CatalogError(
                 f"catalog git repo {location!r} has no {DEFAULT_CATALOG_FILENAME} at its root"
             )
-        return _read_local(catalog_path, location)
+        document = _read_local(catalog_path, location)
+        # Sibling detached signature (best-effort) read from the SAME clone, before
+        # it is discarded below — the verifier sees it over the same transport.
+        sidecar = _read_sidecar_local(
+            dest_real / (DEFAULT_CATALOG_FILENAME + SIDECAR_SUFFIX)
+        )
+        return document, sidecar
     finally:
         shutil.rmtree(dest, ignore_errors=True)
 
@@ -479,12 +570,55 @@ def _file_url_to_path(location: str) -> Path:
     return Path(unquote(parsed.path))
 
 
+def _fetch_sidecar_https(location: str, opener: Opener, timeout: float) -> bytes | None:
+    """Best-effort fetch of ``<location>.aelixsig`` over the SAME https opener.
+
+    A 404 / missing sidecar (unsigned catalog) or any transport error → ``None`` (the
+    verifier then treats the catalog as unsigned). An oversized blob is discarded.
+    """
+
+    try:
+        data = opener(location + SIDECAR_SUFFIX, timeout)
+    except Exception:  # noqa: BLE001 — any fetch failure means "no sidecar present"
+        return None
+    return data if len(data) <= MAX_CATALOG_BYTES else None
+
+
+def _run_document_verifier(
+    verifier: DocumentVerifier | None,
+    document: bytes,
+    sidecar: bytes | None,
+    location: str,
+) -> None:
+    """Run an injected verifier over the RAW fetched bytes; a raise → CatalogError.
+
+    A ``None`` verifier is a no-op (verification disabled). Otherwise the verifier
+    verifies ``document`` against its ``.aelixsig`` ``sidecar`` and RAISES to reject
+    the catalog; the injected verifier is expected to raise :class:`CatalogError`
+    (its adapter translates a signing refusal), but ANY exception is surfaced as
+    :class:`CatalogError` so :func:`fetch_all` degrades THIS one catalog to an
+    error-row (``entries=()``) — attacker bytes never reach the parse or the cache.
+    """
+
+    if verifier is None:
+        return
+    try:
+        verifier(document, sidecar, location)
+    except CatalogError:
+        raise
+    except Exception as exc:  # noqa: BLE001 — any verifier refusal rejects the catalog
+        raise CatalogError(
+            f"catalog {location!r} failed signature verification: {exc}"
+        ) from exc
+
+
 def fetch_catalog(
     location: str,
     *,
     opener: Opener = _default_opener,
     git_runner: GitRunner = _default_git_runner,
     timeout: float = 30.0,
+    verifier: DocumentVerifier | None = None,
 ) -> Catalog:
     """Fetch + parse the catalog at ``location`` over an air-gap-native transport.
 
@@ -492,6 +626,12 @@ def fetch_catalog(
     ``https://`` → TLS fetch; ``http://`` → REFUSED (TLS required, ADR-0188);
     ``file://`` or a bare local path → read the file. Raises :class:`CatalogError`
     on any transport/parse failure (the CLI degrades that source to a warning).
+
+    When a ``verifier`` is injected, the sibling ``<location>.aelixsig`` sidecar is
+    fetched over the SAME transport (best-effort → ``None`` when absent) and the
+    verifier runs over the RAW fetched bytes BEFORE the parse; a verifier raise is
+    surfaced as :class:`CatalogError` (that one source degrades to an error-row, so
+    no unverified entries reach the parse or the cache).
     """
 
     loc = location.strip()
@@ -500,7 +640,9 @@ def fetch_catalog(
     low = loc.lower()
 
     if loc.startswith("git+") or low.startswith(("git://", "ssh://", "git@")) or low.endswith(".git"):
-        data = _git_clone_bytes(loc, git_runner=git_runner)
+        # The sidecar rides along on the one clone, so it is read unconditionally.
+        data, sidecar = _git_clone_bytes(loc, git_runner=git_runner)
+        _run_document_verifier(verifier, data, sidecar, location)
         return parse_catalog(data, location=location)
 
     if low.startswith("http://"):
@@ -519,11 +661,20 @@ def fetch_catalog(
             raise CatalogError(
                 f"catalog {location!r} exceeds the {MAX_CATALOG_BYTES} byte cap"
             )
+        # Only spend the extra network round-trip for the sidecar when verifying.
+        sidecar = _fetch_sidecar_https(loc, opener, timeout) if verifier is not None else None
+        _run_document_verifier(verifier, data, sidecar, location)
         return parse_catalog(data, location=location)
 
     # file:// URL or a bare local path.
     path = _file_url_to_path(loc) if low.startswith("file://") else Path(loc).expanduser()
     data = _read_local(path, location)
+    sidecar = (
+        _read_sidecar_local(path.with_name(path.name + SIDECAR_SUFFIX))
+        if verifier is not None
+        else None
+    )
+    _run_document_verifier(verifier, data, sidecar, location)
     return parse_catalog(data, location=location)
 
 
@@ -533,20 +684,29 @@ def fetch_all(
     opener: Opener = _default_opener,
     git_runner: GitRunner = _default_git_runner,
     timeout: float = 30.0,
+    verifier: DocumentVerifier | None = None,
 ) -> list[Catalog]:
     """Fetch every registered catalog location; a failure becomes an ``error`` row.
 
-    Never raises for a single bad source — a failed fetch yields a
-    :class:`Catalog` with ``error`` set and ``entries=()`` so ``--refresh`` records
-    the failure in the cache (the TUI shows it) instead of dropping the location.
+    Never raises for a single bad source — a failed fetch (or a verifier refusal)
+    yields a :class:`Catalog` with ``error`` set and ``entries=()`` so ``--refresh``
+    records the failure in the cache (the TUI shows it) instead of dropping the
+    location. An injected ``verifier`` gates each catalog's raw bytes; a refusal
+    degrades ONLY that catalog (its entries are never cached).
     """
 
     out: list[Catalog] = []
     for loc in locations:
         try:
-            out.append(fetch_catalog(loc, opener=opener, git_runner=git_runner, timeout=timeout))
+            out.append(
+                fetch_catalog(
+                    loc, opener=opener, git_runner=git_runner, timeout=timeout, verifier=verifier
+                )
+            )
         except CatalogError as exc:
-            out.append(Catalog(location=loc, entries=(), fetched_at=now_iso(), error=str(exc)))
+            out.append(
+                Catalog(location=loc, entries=(), fetched_at=now_iso(), error=_clean_error(str(exc)))
+            )
     return out
 
 

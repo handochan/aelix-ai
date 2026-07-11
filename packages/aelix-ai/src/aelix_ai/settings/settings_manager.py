@@ -1303,6 +1303,30 @@ class SettingsManager:
         self._mark_modified("extension_sources")
         self._save()
 
+    # --- suppressedDefaultCatalogs (Aelix-original, #76 / ADR-0192) ---
+    # GLOBAL-scope only (a project must not opt a user out of the built-in
+    # default catalog), mirroring the ``enabled_models`` / ``extension_sources``
+    # get/set shape — no Pi oracle. Stores the normalized default-catalog URL
+    # identities the user has suppressed via ``source remove``; the coding-agent
+    # CLI owns the identity/tombstone logic, this manager just persists the list.
+    def get_suppressed_default_catalogs(self) -> list[str]:
+        """Return the suppressed default-catalog identities (defensive copy)."""
+
+        return list(self._settings.suppressed_default_catalogs or [])
+
+    def set_suppressed_default_catalogs(self, identities: list[str]) -> None:
+        """Replace the suppressed default-catalog identities (GLOBAL scope).
+
+        Copies the ``enabled_models`` setter shape: assign the global slot, mark
+        the field modified, enqueue a write. A caller in a do-and-exit context
+        (the CLI) MUST ``await manager.flush()`` afterward — the write is
+        scheduled on the event loop, not committed synchronously.
+        """
+
+        self._global_settings.suppressed_default_catalogs = list(identities)
+        self._mark_modified("suppressed_default_catalogs")
+        self._save()
+
     # --- extensions (Pi `:824-839`) ---
     def get_extension_paths(self) -> list[str]:
         """Pi parity: ``settings-manager.ts::getExtensionPaths`` (line 824-826). Returns defensive copy."""

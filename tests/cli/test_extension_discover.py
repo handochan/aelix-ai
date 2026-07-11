@@ -23,6 +23,10 @@ from aelix_ai.settings import ExtensionSourceObject, SettingsManager
 from aelix_coding_agent.cli import extension_catalog
 from aelix_coding_agent.cli import extension_pins as ep
 from aelix_coding_agent.cli.extension_install import (
+    _catalog_identity,
+    _effective_catalog_locations,
+    _effective_default_identity,
+    _make_catalog_verifier,
     run_extension_command,
     run_extension_command_async,
 )
@@ -744,3 +748,384 @@ async def test_discover_cached_snapshot_staleness_hint(
     code = await run_extension_command_async(["discover", "--refresh"], settings=mem)
     assert code == 0
     assert "cached snapshot" not in capsys.readouterr().out
+
+
+# === Track D (ADR-0192): built-in default catalog merge + opt-out tombstone =
+
+_OFFICIAL = "https://official/catalog.json"
+
+
+def test_catalog_identity_normalizes_git_forms() -> None:
+    # A stored git catalog and a raw ``.git`` URL of the SAME repo share an identity
+    # (so a default and a stored dup compare EQUAL for dedupe/tombstone matching).
+    assert _catalog_identity("https://h/r.git") == _catalog_identity("git+https://h/r.git")
+    assert _catalog_identity("git+https://h/r.git") == "git+https://h/r.git"
+
+
+def test_effective_locations_no_default_when_dormant(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Beta placeholder empty + env unset → no built-in default (dormant): the
+    # effective list is exactly the stored catalogs.
+    monkeypatch.delenv("AELIX_DEFAULT_CATALOG", raising=False)
+    assert _effective_default_identity() is None
+    mem = SettingsManager.in_memory(
+        {"extensionSources": [{"spec": "file:///corp/c.json", "kind": "catalog"}]}
+    )
+    assert _effective_catalog_locations(mem, offline=False) == ["file:///corp/c.json"]
+
+
+def test_effective_locations_default_first_when_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AELIX_DEFAULT_CATALOG", _OFFICIAL)
+    # No stored → just the default (normalized).
+    assert _effective_catalog_locations(_mem_settings(), offline=False) == [_OFFICIAL]
+    # With a stored catalog the built-in default leads, stored follows.
+    mem = SettingsManager.in_memory(
+        {"extensionSources": [{"spec": "file:///corp/c.json", "kind": "catalog"}]}
+    )
+    assert _effective_catalog_locations(mem, offline=False) == [
+        _OFFICIAL,
+        "file:///corp/c.json",
+    ]
+
+
+def test_effective_locations_dedupes_stored_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A stored catalog carrying the default's identity wins → shown exactly once.
+    monkeypatch.setenv("AELIX_DEFAULT_CATALOG", _OFFICIAL)
+    mem = SettingsManager.in_memory(
+        {"extensionSources": [{"spec": _OFFICIAL, "kind": "catalog"}]}
+    )
+    assert _effective_catalog_locations(mem, offline=False) == [_OFFICIAL]
+
+
+def test_effective_locations_tombstone_drops_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AELIX_DEFAULT_CATALOG", _OFFICIAL)
+    mem = SettingsManager.in_memory({"suppressedDefaultCatalogs": [_OFFICIAL]})
+    assert _effective_catalog_locations(mem, offline=False) == []
+
+
+def test_effective_locations_offline_drops_https_default_keeps_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("AELIX_DEFAULT_CATALOG", _OFFICIAL)
+    mem = _mem_settings()
+    # An https default is unreachable offline → dropped silently.
+    assert _effective_catalog_locations(mem, offline=True) == []
+    assert _effective_catalog_locations(mem, offline=False) == [_OFFICIAL]
+    # A file:// default is air-gap reachable → kept even offline.
+    file_default = (tmp_path / "d.json").as_uri()
+    monkeypatch.setenv("AELIX_DEFAULT_CATALOG", file_default)
+    assert _effective_catalog_locations(mem, offline=True) == [file_default]
+
+
+def test_env_repoint_escapes_stale_tombstone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # tombstone{URL-A} + env=URL-B → URL-B is present (identity-scoped opt-out, so
+    # an enterprise repoint is never blocked by a stale opt-out of a different URL).
+    url_b = "https://b/catalog.json"
+    monkeypatch.setenv("AELIX_DEFAULT_CATALOG", url_b)
+    mem = SettingsManager.in_memory(
+        {"suppressedDefaultCatalogs": ["https://a/catalog.json"]}
+    )
+    assert _effective_catalog_locations(mem, offline=False) == [url_b]
+
+
+async def test_source_remove_default_writes_tombstone(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("AELIX_DEFAULT_CATALOG", _OFFICIAL)
+    mem = _mem_settings()
+    code = await run_extension_command_async(["source", "remove", _OFFICIAL], settings=mem)
+    assert code == 0
+    # The identity is tombstoned (persisted opt-out) and the default disappears.
+    assert mem.get_suppressed_default_catalogs() == [_OFFICIAL]
+    assert "built-in default opted out" in capsys.readouterr().out
+    assert _effective_catalog_locations(mem, offline=False) == []
+    # source list shows the built-in row marked suppressed (guard ③).
+    assert await run_extension_command_async(["source", "list"], settings=mem) == 0
+    listed = capsys.readouterr().out
+    assert "built-in default" in listed and "suppressed" in listed
+    # discover now reports no registered catalog (only the tombstoned default existed).
+    assert await run_extension_command_async(["discover"], settings=mem) == 0
+    assert "No catalog registered" in capsys.readouterr().out
+
+
+async def test_source_remove_default_second_time_is_no_match(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Once tombstoned, a repeat remove writes no new tombstone and removes no stored
+    # source → the standard no-match error (exit 2), per the spec.
+    monkeypatch.setenv("AELIX_DEFAULT_CATALOG", _OFFICIAL)
+    mem = SettingsManager.in_memory({"suppressedDefaultCatalogs": [_OFFICIAL]})
+    code = await run_extension_command_async(["source", "remove", _OFFICIAL], settings=mem)
+    assert code == 2
+    assert mem.get_suppressed_default_catalogs() == [_OFFICIAL]
+
+
+async def test_source_add_default_clears_tombstone_reappears_once(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("AELIX_DEFAULT_CATALOG", _OFFICIAL)
+    mem = SettingsManager.in_memory({"suppressedDefaultCatalogs": [_OFFICIAL]})
+    code = await run_extension_command_async(
+        ["source", "add", "--catalog", _OFFICIAL], settings=mem
+    )
+    assert code == 0
+    assert capsys.readouterr().out  # a registration/re-activation line printed
+    # The opt-out is cleared and the location is registered as a stored source.
+    assert mem.get_suppressed_default_catalogs() == []
+    assert [s.spec for s in mem.get_extension_sources()] == [_OFFICIAL]
+    # Dedupe: the built-in default + the stored copy collapse to a single row.
+    assert _effective_catalog_locations(mem, offline=False) == [_OFFICIAL]
+
+
+async def test_non_default_catalog_remove_add_unaffected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A non-default catalog's remove/add never touches the tombstone list.
+    monkeypatch.setenv("AELIX_DEFAULT_CATALOG", _OFFICIAL)
+    other = (tmp_path / "other.json").as_uri()
+    mem = SettingsManager.in_memory(
+        {"extensionSources": [{"spec": other, "kind": "catalog"}]}
+    )
+    code = await run_extension_command_async(["source", "remove", other], settings=mem)
+    assert code == 0
+    assert mem.get_extension_sources() == []
+    assert mem.get_suppressed_default_catalogs() == []  # no tombstone for a non-default
+    code = await run_extension_command_async(
+        ["source", "add", "--catalog", other], settings=mem
+    )
+    assert code == 0
+    assert mem.get_suppressed_default_catalogs() == []
+
+
+async def test_discover_refresh_offline_skips_https_keeps_file(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # --offline skips https/git+https catalogs with a per-source notice and still
+    # fetches file:// / path catalogs (air-gap transports).
+    file_uri = _write_catalog(
+        tmp_path / "catalog.json",
+        [{"name": "local-ext", "source": "local-pkg"}],
+        name="local",
+    )
+    https_spec = "https://corp/catalog.json"
+    mem = SettingsManager.in_memory(
+        {
+            "extensionSources": [
+                {"spec": https_spec, "kind": "catalog"},
+                {"spec": file_uri, "kind": "catalog"},
+            ]
+        }
+    )
+    code = await run_extension_command_async(
+        ["discover", "--refresh", "--offline"], settings=mem
+    )
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "local-ext" in out
+    assert "skipped" in out and https_spec in out
+    # The https catalog was never fetched → absent from the cache; only file cached.
+    locs = {c.location for c in extension_catalog.load_cached_catalog(_agent_dir(tmp_path))}
+    assert file_uri in locs
+    assert https_spec not in locs
+
+
+async def test_discover_refresh_offline_via_env(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # AELIX_OFFLINE=1 gates transport identically to the --offline flag.
+    monkeypatch.setenv("AELIX_OFFLINE", "1")
+    file_uri = _write_catalog(
+        tmp_path / "catalog.json",
+        [{"name": "local-ext", "source": "local-pkg"}],
+        name="local",
+    )
+    https_spec = "https://corp/catalog.json"
+    mem = SettingsManager.in_memory(
+        {
+            "extensionSources": [
+                {"spec": https_spec, "kind": "catalog"},
+                {"spec": file_uri, "kind": "catalog"},
+            ]
+        }
+    )
+    code = await run_extension_command_async(["discover", "--refresh"], settings=mem)
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "local-ext" in out
+    assert "skipped" in out and https_spec in out
+
+
+def test_is_offline_fetchable_allowlist() -> None:
+    # Guard ④ (ADR-0192) is an ALLOWLIST, not a 2-item blocklist: only file / git+ssh
+    # / git+file / bare local paths are fetched offline; EVERY remote transport is
+    # skipped — including the unencrypted git-daemon git+git:// / git:// egress the
+    # old (https, git+https) blocklist let through.
+    from aelix_coding_agent.cli.extension_install import _is_offline_fetchable
+
+    assert _is_offline_fetchable("file:///corp/c.json")
+    assert _is_offline_fetchable("git+ssh://git@intranet/repo.git")
+    assert _is_offline_fetchable("git+file:///srv/repo.git")
+    assert _is_offline_fetchable("/abs/local/catalog.json")
+    assert not _is_offline_fetchable("https://corp/catalog.json")
+    assert not _is_offline_fetchable("git+https://corp/repo.git")
+    assert not _is_offline_fetchable("git+git://corp/repo.git")  # the closed leak
+    assert not _is_offline_fetchable("git://corp/repo.git")
+    assert not _is_offline_fetchable("ssh://git@corp/repo.git")
+
+
+async def test_discover_refresh_offline_skips_git_daemon(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # A git+git:// (unencrypted git-daemon, remote) source must NOT be cloned while
+    # --offline — it is skipped with a notice and never reaches the cache (no egress).
+    file_uri = _write_catalog(
+        tmp_path / "catalog.json",
+        [{"name": "local-ext", "source": "local-pkg"}],
+        name="local",
+    )
+    git_spec = "git+git://corp/catalog.git"
+    mem = SettingsManager.in_memory(
+        {
+            "extensionSources": [
+                {"spec": git_spec, "kind": "catalog"},
+                {"spec": file_uri, "kind": "catalog"},
+            ]
+        }
+    )
+    code = await run_extension_command_async(
+        ["discover", "--refresh", "--offline"], settings=mem
+    )
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "local-ext" in out
+    assert "skipped" in out and git_spec in out
+    locs = {c.location for c in extension_catalog.load_cached_catalog(_agent_dir(tmp_path))}
+    assert file_uri in locs
+    assert git_spec not in locs
+
+
+async def test_discover_refresh_offline_all_network_preserves_cache(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Data-loss guard (ADR-0192): an offline refresh whose registered sources are ALL
+    # network transports skips every source and must NOT overwrite a previously-cached
+    # (online) catalog with an empty set — the save is a no-op, the prior cache lives.
+    file_uri = _write_catalog(
+        tmp_path / "catalog.json",
+        [{"name": "local-ext", "source": "local-pkg"}],
+        name="local",
+    )
+    seed_mem = SettingsManager.in_memory(
+        {"extensionSources": [{"spec": file_uri, "kind": "catalog"}]}
+    )
+    assert (
+        await run_extension_command_async(
+            ["discover", "--refresh", "--offline"], settings=seed_mem
+        )
+        == 0
+    )
+    capsys.readouterr()
+    # Now only an https source is registered → offline skips it; the seeded cache must
+    # remain intact (never blown away to empty).
+    net_mem = SettingsManager.in_memory(
+        {"extensionSources": [{"spec": "https://corp/catalog.json", "kind": "catalog"}]}
+    )
+    code = await run_extension_command_async(
+        ["discover", "--refresh", "--offline"], settings=net_mem
+    )
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "cache unchanged" in out
+    cached = extension_catalog.load_cached_catalog(_agent_dir(tmp_path))
+    assert any(
+        getattr(e, "name", None) == "local-ext"
+        for c in cached
+        for e in getattr(c, "entries", ())
+    )
+
+
+def test_catalog_error_scrubs_control_chars(tmp_path: Path) -> None:
+    # ADR-0192 security: a fetched .aelixsig keyId flows into a verification refusal →
+    # CatalogError → Catalog.error, which the CLI/TUI render RAW. The error channel is
+    # scrubbed of ANSI/control bytes by construction so attacker sidecar content cannot
+    # paint a forged "authenticated" badge or clear the screen.
+    file_uri = _write_catalog(
+        tmp_path / "catalog.json", [{"name": "x", "source": "x"}], name="c"
+    )
+
+    def _evil_verifier(document: bytes, sidecar: bytes | None, location: str) -> None:
+        raise ep.VerifyRefusal("untrusted key \x1b[2J\x1b[32m✓ trusted — " + location)
+
+    cats = extension_catalog.fetch_all([file_uri], verifier=_evil_verifier)
+    assert len(cats) == 1
+    err = cats[0].error or ""
+    assert err  # the refusal degraded this catalog to an error row (with a message)
+    assert "\x1b" not in err
+    assert not any(ord(ch) < 0x20 or 0x7f <= ord(ch) <= 0x9f for ch in err)
+
+
+def test_catalog_verifier_requires_signature_only_for_default(tmp_path: Path) -> None:
+    # Guard ⑤: the adapter demands a signature for the default identity (an unsigned
+    # default → CatalogError) but verifies other catalogs best-effort (unsigned
+    # admitted while first-party keys are empty). It also translates a fail-closed
+    # refusal into a CatalogError so fetch_all degrades only that source.
+    verifier = _make_catalog_verifier(
+        str(_agent_dir(tmp_path)), signature_required=frozenset({_OFFICIAL})
+    )
+    with pytest.raises(extension_catalog.CatalogError):
+        verifier(b'{"extensions": []}', None, _OFFICIAL)
+    # A non-required catalog with no signature is admitted (no raise).
+    verifier(b'{"extensions": []}', None, "https://corp/other.json")
+
+
+async def test_default_catalog_is_signature_required_end_to_end(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Guard ⑤ live end-to-end: with a default configured (a file:// URL so no network
+    # is touched), an UNSIGNED default catalog degrades to an error row and a
+    # refresh where it is the only catalog exits 2. Dormant in beta ONLY because the
+    # shipped default URL is empty — the mechanism itself is wired.
+    file_default = _write_catalog(
+        tmp_path / "official.json",
+        [{"name": "o", "source": "o-pkg"}],
+        name="official",
+    )
+    monkeypatch.setenv("AELIX_DEFAULT_CATALOG", file_default)
+    mem = _mem_settings()
+    code = await run_extension_command_async(["discover", "--refresh"], settings=mem)
+    assert code == 2
+    assert "signature" in capsys.readouterr().err.lower()
+
+
+async def test_discover_no_default_catalog_flag_is_ephemeral(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # --no-default-catalog drops the built-in default for THIS run only, writing NO
+    # tombstone: a stored catalog still lists, the default is absent, and the
+    # suppressed list is untouched afterward.
+    monkeypatch.setenv("AELIX_DEFAULT_CATALOG", _OFFICIAL)
+    file_uri = _write_catalog(
+        tmp_path / "catalog.json",
+        [{"name": "stored-ext", "source": "stored-pkg"}],
+        name="stored",
+    )
+    mem = SettingsManager.in_memory(
+        {"extensionSources": [{"spec": file_uri, "kind": "catalog"}]}
+    )
+    code = await run_extension_command_async(
+        ["discover", "--refresh", "--no-default-catalog"], settings=mem
+    )
+    assert code == 0
+    locs = {c.location for c in extension_catalog.load_cached_catalog(_agent_dir(tmp_path))}
+    assert file_uri in locs
+    assert _OFFICIAL not in locs  # the built-in default was skipped this run
+    assert mem.get_suppressed_default_catalogs() == []  # ephemeral — no tombstone

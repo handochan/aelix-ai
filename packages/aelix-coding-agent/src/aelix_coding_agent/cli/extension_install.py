@@ -86,7 +86,8 @@ _USAGE = (
     "  source list\n"
     "  source remove <path | git-url | index-url>\n"
     "  list\n"
-    "  discover [<query>]                             [--refresh]\n"
+    "  discover [<query>]                             [--refresh] [--offline] "
+    "[--no-default-catalog]\n"
     "  discover install <name>                        [--catalog CAT] [--yes] "
     "[--index-url URL] [--offline] [--no-verify] [--strict] [--repin] [--verify-pypi] "
     "[--require-signature] [--trusted-key ID] [--signature PATH]\n"
@@ -271,6 +272,28 @@ def _is_offline(explicit: bool) -> bool:
     # Mirror the CLI's --offline / PI_OFFLINE contract (entry.py) + an aelix
     # alias. Strict truthiness so PI_OFFLINE=0 reads as OFF (review NIT).
     return explicit or _env_truthy("PI_OFFLINE") or _env_truthy("AELIX_OFFLINE")
+
+
+def _is_offline_fetchable(loc: str) -> bool:
+    """True when a catalog location may be fetched while ``--offline`` (guard ④).
+
+    An ALLOWLIST of no-egress / air-gap transports — the documented offline-fetch set
+    (ADR-0192): ``file://``, ``git+file://``, ``git+ssh://`` (an intranet SSH remote),
+    and a bare local filesystem path (stored specs are normalized to an absolute path).
+    EVERY other transport is a remote fetch and is skipped offline: ``https://`` /
+    ``git+https://`` and, critically, the unencrypted git-daemon transports
+    ``git://`` / ``git+git://`` (which a 2-item ``https`` blocklist let egress while
+    ``--offline`` — the leak this allowlist closes). A stored git target is always
+    normalized to ``git+<transport>://`` (:func:`_normalize_git_spec`), so a
+    scheme-bearing non-allowlisted location is treated as remote.
+    """
+
+    low = loc.strip().lower()
+    if low.startswith(("file://", "git+ssh://", "git+file://")):
+        return True  # an explicit air-gap URL scheme
+    # No scheme → a bare local filesystem path (allowed); any OTHER scheme-bearing
+    # location is a remote transport (https / git+https / git+git / ssh / …) → skip.
+    return not ("://" in low or low.startswith(("git+", "git@", "ssh://")))
 
 
 def _pip_available(runner: PipRunner | None) -> bool:
@@ -960,6 +983,69 @@ def _normalize_catalog_spec(target: str) -> str:
     return ""  # a bare bareword is not a catalog location
 
 
+def _catalog_identity(spec: str) -> str:
+    """A comparable identity for a catalog location (Track D — merge/tombstone).
+
+    Runs the SAME normalization ``source add --catalog`` applies before storing
+    (:func:`_normalize_catalog_spec`), so the built-in default and a user-stored
+    duplicate of the same location compare EQUAL (dedupe) and a tombstone written
+    for one form matches the other. Falls back to the stripped raw string for a
+    token :func:`_normalize_catalog_spec` rejects (so an identity is always total).
+    """
+
+    return _normalize_catalog_spec(spec) or spec.strip()
+
+
+def _effective_default_identity() -> str | None:
+    """The normalized identity of the built-in default catalog, or ``None``.
+
+    Resolves :func:`extension_catalog.resolve_default_catalog_url` (env override →
+    placeholder; empty = dormant) and normalizes it. ``None`` when the default is
+    disabled/dormant (beta placeholder empty) OR the configured value is not a valid
+    catalog location. Offline is NOT considered here — this is the persistent
+    identity a tombstone / ``source remove <default>`` keys off (ADR-0192).
+    """
+
+    raw = extension_catalog.resolve_default_catalog_url()
+    if raw is None:
+        return None
+    return _normalize_catalog_spec(raw) or None
+
+
+def _effective_catalog_locations(
+    settings: SettingsManager, *, offline: bool
+) -> list[str]:
+    """Compose the built-in default catalog with the stored locations (Track D).
+
+    Merge order (ADR-0192): the built-in default (normalized) goes FIRST, then the
+    stored catalog sources in registration order — UNLESS the default is dropped:
+
+    * dormant/invalid default (beta empty placeholder) → stored only;
+    * ``offline`` and the default is a network transport (not in the air-gap
+      allowlist — see :func:`_is_offline_fetchable`) → dropped (guard ④: an
+      internet-reachable default is meaningless off-network, dropped SILENTLY here —
+      no notice row);
+    * the default identity is in ``suppressed_default_catalogs`` (a persisted
+      opt-out tombstone) → dropped;
+    * a stored source already carries the default's identity → the STORED entry
+      wins (deduped to one row, so it appears exactly once).
+
+    Pure + fetch-free — it only augments the location LIST (guard ①).
+    """
+
+    stored = _catalog_locations(settings.get_extension_sources())
+    default = _effective_default_identity()
+    if default is None:
+        return stored
+    if offline and not _is_offline_fetchable(default):
+        return stored
+    if default in settings.get_suppressed_default_catalogs():
+        return stored
+    if default in {_catalog_identity(s) for s in stored}:
+        return stored
+    return [default, *stored]
+
+
 def _upsert_source(
     sources: list[ExtensionSourceObject],
     spec: str,
@@ -1058,13 +1144,28 @@ async def _add_catalog_source(target: str, *, settings: SettingsManager) -> int:
             file=sys.stderr,
         )
         return _EXIT_DIDNT_RUN
+    # Re-activation (ADR-0192): adding a location whose identity was opted out via
+    # ``source remove <default>`` CLEARS that tombstone, so ``source add --catalog
+    # <default>`` is the undo of the opt-out. The dedupe in
+    # :func:`_effective_catalog_locations` then shows it exactly once.
+    identity = _catalog_identity(spec)
+    suppressed = settings.get_suppressed_default_catalogs()
+    reactivated = identity in suppressed
+    if reactivated:
+        settings.set_suppressed_default_catalogs([s for s in suppressed if s != identity])
+        await settings.flush()
     sources = settings.get_extension_sources()
     new_sources, changed = _upsert_source(sources, spec, "catalog")
     if not changed:
+        if reactivated:
+            print(f"Re-activated the opted-out catalog: [catalog] {spec}")
+            return 0
         print(f"Source already registered: [catalog] {spec}")
         return 0
     await _persist(settings, new_sources)
     print(f"Registered source: [catalog] {spec}")
+    if reactivated:
+        print("  (cleared a prior opt-out of this catalog)")
     print("  Browse it with: aelix extension discover")
     return 0
 
@@ -1087,10 +1188,25 @@ async def _cmd_source(
 
     if action == "list":
         sources = settings.get_extension_sources()
-        if not sources:
+        # Guard ③ (ADR-0192): show the built-in default catalog as its own row
+        # (present / suppressed) so an opt-out is visible. Dormant in beta (the
+        # placeholder URL is empty), so this stays absent unless a default is
+        # configured (env repoint) — then it renders here.
+        default_id = _effective_default_identity()
+        default_row: str | None = None
+        if default_id is not None:
+            state = (
+                "suppressed"
+                if default_id in settings.get_suppressed_default_catalogs()
+                else "present"
+            )
+            default_row = f"  [catalog] {default_id}  (built-in default — {state})"
+        if not sources and default_row is None:
             print("No extension sources registered.")
             return 0
         print("Extension sources:")
+        if default_row is not None:
+            print(default_row)
         for s in sources:
             suffix = f" (installed as {s.name})" if s.name else ""
             print(f"  [{s.kind}] {s.spec}{suffix}")
@@ -1150,13 +1266,32 @@ async def _cmd_source(
                 file=sys.stderr,
             )
             return _EXIT_DIDNT_RUN
+        target = positional[0]
         sources = settings.get_extension_sources()
-        new_sources, removed = _remove_source(sources, positional[0])
-        if removed == 0:
-            print(f"No registered source matched {positional[0]!r}.", file=sys.stderr)
+        new_sources, removed = _remove_source(sources, target)
+        # Tombstone (ADR-0192): removing the built-in default catalog is a PERSISTED
+        # opt-out — its identity is appended to ``suppressed_default_catalogs`` so it
+        # stays absent across runs (identity-scoped, so an env repoint escapes it).
+        # ``source add --catalog <default>`` clears it again.
+        tombstoned = False
+        default_id = _effective_default_identity()
+        if default_id is not None and _catalog_identity(target) == default_id:
+            suppressed = settings.get_suppressed_default_catalogs()
+            if default_id not in suppressed:
+                settings.set_suppressed_default_catalogs([*suppressed, default_id])
+                await settings.flush()
+                tombstoned = True
+        if removed == 0 and not tombstoned:
+            print(f"No registered source matched {target!r}.", file=sys.stderr)
             return _EXIT_DIDNT_RUN
-        await _persist(settings, new_sources)
-        print(f"Removed {removed} source(s).")
+        if removed:
+            await _persist(settings, new_sources)
+        parts: list[str] = []
+        if removed:
+            parts.append(f"Removed {removed} source(s).")
+        if tombstoned:
+            parts.append("(built-in default opted out)")
+        print(" ".join(parts))
         return 0
 
     print(
@@ -1542,6 +1677,43 @@ def _print_entry_row(entry: extension_catalog.CatalogEntry) -> None:
     print(f"  {entry.name}{ver_part}{desc_part}   (catalog: {catalog})")
 
 
+def _make_catalog_verifier(
+    agent_dir: str, *, signature_required: frozenset[str]
+) -> extension_catalog.DocumentVerifier:
+    """Adapt :func:`extension_signing.verify_signed_document` into a document verifier.
+
+    The returned callable matches :data:`extension_catalog.DocumentVerifier`
+    (``(document, sidecar, location) -> None``): it verifies the fetched catalog
+    bytes against their ``.aelixsig`` sidecar, translating a fail-closed
+    :class:`extension_pins.VerifyRefusal` into a :class:`extension_catalog.CatalogError`
+    (so :func:`extension_catalog.fetch_all` degrades ONLY that catalog to an error row,
+    never admitting unverified entries). ``signature_required`` is the set of location
+    identities that MUST carry a valid trusted signature (guard ⑤ — the official /
+    default catalog; dormant in beta while its URL + ``FIRST_PARTY_KEYS`` are empty). A
+    location outside that set verifies best-effort (an unsigned intranet catalog is
+    admitted while first-party keys are empty; a present-but-INVALID trusted signature
+    still refuses).
+    """
+
+    def verify(document: bytes, sidecar: bytes | None, location: str) -> None:
+        require = _catalog_identity(location) in signature_required
+        try:
+            extension_signing.verify_signed_document(
+                document,
+                sidecar,
+                kind="catalog",
+                agent_dir=agent_dir,
+                require_signature=require,
+                identity=location,
+            )
+        except extension_pins.VerifyRefusal as exc:
+            raise extension_catalog.CatalogError(
+                f"catalog signature verification refused for {location}: {exc}"
+            ) from exc
+
+    return verify
+
+
 async def _cmd_discover(
     rest: list[str],
     *,
@@ -1562,12 +1734,19 @@ async def _cmd_discover(
             rest[1:], settings=settings, input_fn=input_fn, runner=runner
         )
 
-    # Browse: optional <query> positional + --refresh.
+    # Browse: optional <query> positional + --refresh + Track-D --offline /
+    # --no-default-catalog (both ephemeral — this-run-only, no tombstone write).
     query: str | None = None
     refresh = False
+    offline_flag = False
+    no_default_catalog = False
     for a in rest:
         if a == "--refresh":
             refresh = True
+        elif a == "--offline":
+            offline_flag = True
+        elif a == "--no-default-catalog":
+            no_default_catalog = True
         elif a in ("-h", "--help"):
             print(_USAGE)
             return 0
@@ -1580,7 +1759,14 @@ async def _cmd_discover(
             print(f"Error: unexpected argument {a!r}.\n{_USAGE}", file=sys.stderr)
             return _EXIT_DIDNT_RUN
 
-    locations = _catalog_locations(settings.get_extension_sources())
+    offline = _is_offline(offline_flag)
+    # --no-default-catalog drops the built-in default for THIS run only (no tombstone)
+    # → stored catalogs only; otherwise merge the built-in default in (guard ④ drops an
+    # https default when offline, silently, inside the effective-locations helper).
+    if no_default_catalog:
+        locations = _catalog_locations(settings.get_extension_sources())
+    else:
+        locations = _effective_catalog_locations(settings, offline=offline)
     if not locations:
         print(
             "No catalog registered. Register one with: "
@@ -1591,10 +1777,40 @@ async def _cmd_discover(
     agent_dir = get_agent_dir()
     if refresh:
         # The ONLY fetch/writer path — never let one bad source abort the rest.
-        catalogs = extension_catalog.fetch_all(locations)
-        extension_catalog.save_catalogs(
-            catalogs, extension_catalog.cache_file_path(agent_dir)
+        # Guard ④: offline fetches ONLY the air-gap allowlist (file:// / path /
+        # git+ssh / git+file, see _is_offline_fetchable); every other transport
+        # (https / git+https / git:// / git+git / ssh) is skipped with a per-source
+        # notice. The built-in network default was already dropped upstream.
+        fetch_locations = locations
+        if offline:
+            fetch_locations = []
+            for loc in locations:
+                if _is_offline_fetchable(loc):
+                    fetch_locations.append(loc)
+                else:
+                    print(f"  ⓘ skipped {loc}: offline (network transport)")
+        # Guard ⑤: the official / default catalog is signature-required (dormant in
+        # beta — the default URL + FIRST_PARTY_KEYS are both empty). The verifier
+        # gates each catalog's raw bytes before parse/cache; a refusal degrades only
+        # that catalog to an error row.
+        default_id = _effective_default_identity()
+        signature_required = (
+            frozenset({default_id}) if default_id is not None else frozenset()
         )
+        verifier = _make_catalog_verifier(
+            agent_dir, signature_required=signature_required
+        )
+        catalogs = extension_catalog.fetch_all(fetch_locations, verifier=verifier)
+        if fetch_locations:
+            extension_catalog.save_catalogs(
+                catalogs, extension_catalog.cache_file_path(agent_dir)
+            )
+        else:
+            # Offline skipped EVERY registered location (all network transports) →
+            # never overwrite a previously-cached (online) catalog with an empty set.
+            # A no-op refresh preserves the cache; the per-source "skipped" notices
+            # above already explain why nothing was fetched.
+            print("  ⓘ offline: no air-gap-reachable catalog to refresh; cache unchanged.")
     else:
         catalogs = extension_catalog.load_cached_catalog(agent_dir)
 

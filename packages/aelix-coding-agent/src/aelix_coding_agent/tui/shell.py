@@ -1192,9 +1192,25 @@ async def run_tui(
         # context.tabbed + commit into it. The extensions list is threaded from
         # entry.py (the first harness build's discovery); the MCP manager is the
         # SAME object /mcp consults.
-        from aelix_coding_agent.cli import extension_catalog
+        from aelix_coding_agent.cli import extension_catalog, extension_install
         from aelix_coding_agent.cli.config import get_agent_dir
         from aelix_coding_agent.tui.extension_manager import run_extension_manager
+
+        def _default_catalog() -> tuple[str, bool] | None:
+            # Track D (guard ③ / ADR-0192) — surface the built-in default catalog
+            # as a marked Sources row. Compute the effective default identity (env
+            # repoint → placeholder → normalized) + its persisted opt-out state,
+            # mirroring the CLI ``source list``. Dormant in beta (empty placeholder
+            # → None → no row). Computed live so a repoint / CLI opt-out during the
+            # session shows on the next open. Injected as a value so the leaf viewer
+            # never imports the install/merge machinery.
+            if settings_manager is None:
+                return None
+            default_id = extension_install._effective_default_identity()
+            if default_id is None:
+                return None
+            suppressed = default_id in settings_manager.get_suppressed_default_catalogs()
+            return (default_id, suppressed)
 
         await run_extension_manager(
             extensions=extensions,
@@ -1217,6 +1233,12 @@ async def run_tui(
                 (lambda: extension_catalog.load_cached_catalog(get_agent_dir()))
                 if settings_manager is not None
                 else None
+            ),
+            # Track D (guard ③, ADR-0192) — the injected built-in default catalog
+            # value (url + persisted opt-out state), rendered as a marked Sources
+            # row. None when no SettingsManager / dormant beta placeholder.
+            default_catalog_getter=(
+                _default_catalog if settings_manager is not None else None
             ),
         )
 

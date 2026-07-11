@@ -81,7 +81,9 @@ __all__ = [
     "resolve_public_key",
     "save_trusted_keys",
     "sign_artifact",
+    "sign_document",
     "trusted_keys_path",
+    "verify_signed_document",
     "write_aelixsig",
 ]
 
@@ -244,18 +246,14 @@ def aelixsig_path_for(artifact: str | os.PathLike[str]) -> Path:
     return Path(str(artifact) + AELIXSIG_SUFFIX)
 
 
-def write_aelixsig(
-    path: str | os.PathLike[str],
-    *,
-    key_id: str,
-    statement: dict[str, object],
-    sig_b64: str,
-) -> None:
-    """Write a self-describing detached-signature sidecar (atomic).
+def _aelixsig_bytes(*, key_id: str, statement: dict[str, object], sig_b64: str) -> bytes:
+    """Serialize a detached-signature envelope to its exact ``.aelixsig`` bytes.
 
-    The sidecar carries the literal signed ``statement`` + the base64 signature + the
-    keyId, but NEVER a public key (a key shipped with the artifact is not a trust source
-    — the keyId must resolve in the local trust set at verify time).
+    The single source of truth for the envelope shape, shared by the path writer
+    (:func:`write_aelixsig`) and the bytes publisher (:func:`sign_document`). Carries the
+    literal signed ``statement`` + the base64 signature + the keyId, but NEVER a public
+    key (a key shipped with the artifact is not a trust source — the keyId must resolve in
+    the local trust set at verify time).
     """
 
     payload = {
@@ -264,8 +262,21 @@ def write_aelixsig(
         "statement": statement,
         "sig": sig_b64,
     }
-    body = json.dumps(payload, indent=2, sort_keys=False) + "\n"
-    _atomic_write_text(Path(path), body)
+    return (json.dumps(payload, indent=2, sort_keys=False) + "\n").encode("utf-8")
+
+
+def write_aelixsig(
+    path: str | os.PathLike[str],
+    *,
+    key_id: str,
+    statement: dict[str, object],
+    sig_b64: str,
+) -> None:
+    """Write a self-describing detached-signature sidecar (atomic)."""
+
+    _atomic_write_bytes(
+        Path(path), _aelixsig_bytes(key_id=key_id, statement=statement, sig_b64=sig_b64)
+    )
 
 
 def read_aelixsig(path: str | os.PathLike[str]) -> dict[str, object] | None:
@@ -286,6 +297,24 @@ def read_aelixsig(path: str | os.PathLike[str]) -> dict[str, object] | None:
         # --require-signature (fail-closed), unsigned/TOFI on the default path.
         return None
     return raw if isinstance(raw, dict) else None
+
+
+def _parse_aelixsig_bytes(raw: bytes) -> dict[str, object] | None:
+    """Parse a ``.aelixsig`` envelope from BYTES → its dict, or :data:`None` if bad.
+
+    The bytes-input sibling of :func:`read_aelixsig` for a sidecar that was FETCHED (a
+    catalog's ``<location>.aelixsig``) rather than read from a path. Reuses the same
+    leniency — a decode/JSON error, a non-object, or a :class:`RecursionError` (a
+    maliciously DEEP JSON envelope, which json's C parser raises and which is NOT a
+    :class:`ValueError`) all degrade to :data:`None` so a hostile document sidecar reads
+    as "no signature" rather than an escaping traceback (mirrors :281-287).
+    """
+
+    try:
+        obj = json.loads(raw)
+    except (ValueError, RecursionError):
+        return None
+    return obj if isinstance(obj, dict) else None
 
 
 # =====================================================================
@@ -522,6 +551,35 @@ def sign_artifact(
     return sidecar, key_id
 
 
+def sign_document(
+    document: bytes,
+    private_key: Ed25519PrivateKey,
+    *,
+    kind: str = "catalog",
+    name: str | None = None,
+    version: str | None = None,
+) -> bytes:
+    """Sign an in-memory ``document`` → the ``.aelixsig`` envelope BYTES.
+
+    The bytes-in/bytes-out publisher sibling of :func:`sign_artifact` for a document (e.g.
+    a catalog's ``catalog.json``). Computes the SHA-256 over the RAW document bytes, builds
+    the canonical statement binding it to ``kind`` (default ``"catalog"``)/keyId, signs the
+    canonical statement bytes, and returns the serialized detached-signature envelope for
+    the publisher to write beside the document (``catalog.json.aelixsig``). The digest is
+    the exact same independent one :func:`verify_signed_document` recomputes, so the two
+    round-trip.
+    """
+
+    raw_pub = _public_raw(private_key)
+    key_id = key_id_for(raw_pub)
+    sha256 = hashlib.sha256(document).hexdigest()
+    statement = build_statement(
+        kind=kind, key_id=key_id, name=name, version=version, sha256=sha256
+    )
+    sig = _sign(private_key, canonical_bytes(statement))
+    return _aelixsig_bytes(key_id=key_id, statement=statement, sig_b64=_b64e(sig))
+
+
 # =====================================================================
 # === The verify gate (called from verify_and_pin, fail-closed) ========
 # =====================================================================
@@ -625,6 +683,43 @@ def gate_signature(
             else None
         )
 
+    return _verify_statement(
+        sidecar,
+        kind=kind,
+        observed_sha256=observed_sha256,
+        canonical_name=canonical_name,
+        version=version,
+        git_sha=git_sha,
+        trusted_key=trusted_key,
+        agent_dir=agent_dir,
+        identity=identity,
+        require_signature=require_signature,
+    )
+
+
+def _verify_statement(
+    sidecar: dict[str, object],
+    *,
+    kind: str,
+    observed_sha256: str | None,
+    canonical_name: str | None,
+    version: str | None,
+    git_sha: str | None,
+    trusted_key: str | None,
+    agent_dir: str,
+    identity: str,
+    require_signature: bool,
+) -> SignatureOutcome:
+    """Shared verify core: the malformed → untrusted → verify → cross-check matrix.
+
+    Extracted from :func:`gate_signature` so it and :func:`verify_signed_document` apply
+    an identical decision matrix to a PARSED ``.aelixsig`` dict. The upstream None/absent/
+    corrupt distinction stays with each caller (a path artifact vs. a fetched document
+    differ in how "the sidecar is missing"); everything from the malformed-fields check
+    onward is this function. All refusals raise :class:`~.extension_pins.VerifyRefusal`;
+    a degrade returns a non-authenticated :class:`SignatureOutcome`.
+    """
+
     key_id = sidecar.get("keyId")
     statement = sidecar.get("statement")
     sig_b64 = sidecar.get("sig")
@@ -686,6 +781,69 @@ def gate_signature(
         sig=sig_b64,
         statement_json=canonical_bytes(statement).decode("utf-8"),
         notice=f"authenticated by trusted key {key_id}",
+    )
+
+
+def verify_signed_document(
+    document: bytes,
+    sidecar: bytes | None,
+    *,
+    kind: str = "catalog",
+    agent_dir: str,
+    require_signature: bool,
+    trusted_key: str | None = None,
+    identity: str | None = None,
+) -> SignatureOutcome:
+    """Verify a fetched ``document`` against an in-memory ``.aelixsig`` (fail-closed).
+
+    The bytes-in analog of :func:`gate_signature` for a document (a catalog's fetched
+    ``catalog.json`` + its sibling ``<location>.aelixsig`` bytes) rather than a path
+    artifact. Mirrors the gate 1:1 (via the shared :func:`_verify_statement` core), with
+    two differences:
+
+    * ``observed_sha256`` is computed INDEPENDENTLY over the RAW ``document`` bytes here
+      (``hashlib.sha256(document).hexdigest()``) — NEVER read from any catalog field — and
+      is the ONLY binding cross-checked (``canonical_name``/``version``/``git_sha`` are
+      :data:`None`; the ``kind`` cross-check keeps a pack signature from being replayed as
+      a catalog one, and vice-versa).
+    * "no sidecar" is ``sidecar is None`` (absent → silent unsigned) vs. present-but-
+      unparseable bytes (corrupt → a visible notice); a truly-absent sidecar must not
+      brick an air-gap/intranet catalog while :data:`FIRST_PARTY_KEYS` is empty.
+
+    Fail-closed cases RAISE :class:`~.extension_pins.VerifyRefusal` (a trusted key whose
+    signature is INVALID / whose digest mismatches / whose statement disagrees — ALWAYS,
+    even in beta warn-default; plus absent/malformed/untrusted under ``require_signature``).
+    Degrade cases RETURN a non-authenticated outcome on the default path (absent = silent,
+    corrupt/malformed = notice, untrusted keyId = warning).
+    """
+
+    label = identity or kind
+    parsed = _parse_aelixsig_bytes(sidecar) if sidecar is not None else None
+    if parsed is None:
+        if require_signature:
+            raise extension_pins.VerifyRefusal(
+                f"--require-signature: no valid .aelixsig signature found for {label}"
+            )
+        # Bytes were fetched but do not parse → a visible corrupt signal (mirrors the
+        # gate's present-but-unreadable notice); a truly-absent sidecar stays silent.
+        return SignatureOutcome(
+            notice="ignoring an unreadable/corrupt .aelixsig — treated as unsigned"
+            if sidecar is not None
+            else None
+        )
+
+    observed_sha256 = hashlib.sha256(document).hexdigest()
+    return _verify_statement(
+        parsed,
+        kind=kind,
+        observed_sha256=observed_sha256,
+        canonical_name=None,
+        version=None,
+        git_sha=None,
+        trusted_key=trusted_key,
+        agent_dir=agent_dir,
+        identity=label,
+        require_signature=require_signature,
     )
 
 
