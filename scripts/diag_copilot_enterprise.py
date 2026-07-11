@@ -36,7 +36,8 @@ async def main() -> None:
 
     path = _auth_path()
     print(f"auth.json: {path}")
-    gc = json.load(open(path)).get("github-copilot")
+    with open(path) as f:
+        gc = json.load(f).get("github-copilot")
     if not gc:
         raise SystemExit("no github-copilot credential in auth.json — /login first")
 
