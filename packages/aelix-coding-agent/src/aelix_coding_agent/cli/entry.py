@@ -86,7 +86,12 @@ from .project_trust import (
     project_trust_options,
     resolve_project_trusted,
 )
-from .runtime_bootstrap import load_dotenv, register_providers, resolve_model
+from .runtime_bootstrap import (
+    enrich_copilot_base_url,
+    load_dotenv,
+    register_providers,
+    resolve_model,
+)
 
 if TYPE_CHECKING:
     from aelix_ai.settings import SettingsManager
@@ -583,6 +588,7 @@ async def _build_harness_options(
     settings_manager: SettingsManager | None = None,
     flag_values: Mapping[str, bool | str] | None = None,
     on_reload: bool = False,
+    model_registry: Any | None = None,
 ) -> AgentHarnessOptions:
     """Assemble :class:`AgentHarnessOptions` from parsed CLI args.
 
@@ -601,7 +607,12 @@ async def _build_harness_options(
 
     # Resolve the turn model (OpenRouter-from-env aware; falls back to a bare
     # model from --model/--provider). Providers are registered in main_sync.
-    model = resolve_model(parsed.model, parsed.provider)
+    # ``enrich_copilot_base_url`` adopts the registry's modify_models-injected
+    # proxy-ep base_url for github-copilot (the enterprise/business host), which
+    # ``resolve_model``/``get_model`` leaves at the static individual default.
+    model = enrich_copilot_base_url(
+        resolve_model(parsed.model, parsed.provider), model_registry
+    )
     # Resolve to an absolute path so the tool sandbox root + AGENTS.md anchor are
     # stable even if something later chdir's the process (e.g. a bash-tool ``cd``).
     cwd = str(Path.cwd())
@@ -1307,6 +1318,7 @@ async def _async_main(argv: list[str]) -> int:
             project_trusted=project_trusted,
             permission_ext=permission_ext,
             captured_extensions=discovered_extensions,
+            model_registry=model_registry,
             # Issue #44 — forward the shared startup SettingsManager (the
             # ``_async_main`` closure var built above) into every (re)built
             # harness so ``harness.reload()`` is functional across /new, /fork,

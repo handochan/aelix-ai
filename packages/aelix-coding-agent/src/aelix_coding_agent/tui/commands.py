@@ -89,6 +89,11 @@ class CommandContext:
     no-arg ``/model`` handler awaits it; ``None`` in headless tests / when no model
     registry is attached, in which case ``/model`` falls back to a status print
     (Sprint 6h₂₆, ADR-0154)."""
+    model_registry: Any | None = None
+    """``run_tui`` wires the live :class:`ModelRegistry` here so ``/model <id>``
+    can adopt the modify_models-injected proxy-ep ``base_url`` (github-copilot
+    Business/Enterprise host) instead of the static catalog default that
+    ``resolve_model`` returns. ``None`` in headless tests."""
     expand_lookup: Callable[[int], str | None] | None = None
     """``run_tui`` wires this to the live ``EventRenderer.get_expanded`` so
     ``/expand N`` can recover the full, untruncated body of a tool-result card
@@ -250,13 +255,18 @@ async def _model_handler(ctx: CommandContext, args: str) -> None:
         ctx.commit(Text("Model switching is unavailable.", style="yellow"))
         return
     try:
-        from aelix_coding_agent.cli.runtime_bootstrap import resolve_model
+        from aelix_coding_agent.cli.runtime_bootstrap import (
+            enrich_copilot_base_url,
+            resolve_model,
+        )
         from aelix_coding_agent.core.runnable_models import (
             is_runnable,
             unsupported_message,
         )
 
-        model = resolve_model(args, None)
+        # Adopt the registry's proxy-ep base_url for github-copilot (enterprise/
+        # business host); resolve_model alone returns the static individual host.
+        model = enrich_copilot_base_url(resolve_model(args, None), ctx.model_registry)
         # WP-8 follow-up — guard an explicit id whose api has no adapter (e.g.
         # ``/model gpt-5.x`` → openai-responses): surface the actionable reason,
         # not the cryptic ``No provider registered for api=...`` the loop raises.

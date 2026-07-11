@@ -1229,6 +1229,7 @@ async def run_tui(
         set_mode=_set_mode,
         refresh_footer=context._refresh_footer,
         model_picker=_open_model_picker,
+        model_registry=model_registry,
         thinking_picker=_open_thinking_picker,
         mcp_status=_open_mcp_status,
         expand_lookup=renderer.get_expanded,

@@ -24,7 +24,9 @@ side-effect-free behavior.
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 from pathlib import Path
+from typing import Any
 
 from aelix_ai.providers import anthropic as _anthropic
 from aelix_ai.providers import google_generative_ai as _google_generative_ai
@@ -165,4 +167,40 @@ def resolve_model(model_flag: str | None, provider_flag: str | None) -> Model:
     return Model(id=resolved_id, provider=provider)
 
 
-__all__ = ["load_dotenv", "register_providers", "resolve_model"]
+def enrich_copilot_base_url(model: Model, registry: Any) -> Model:
+    """Adopt the registry's proxy-ep ``base_url`` for a github-copilot turn model.
+
+    :func:`resolve_model` (→ :func:`aelix_ai.models.get_model`) returns the RAW
+    catalog entry whose ``base_url`` is the STATIC default host
+    ``https://api.individual.githubcopilot.com``. The token-derived proxy-ep host
+    (which DIFFERS for GitHub Copilot Business/Enterprise seats) is injected only
+    by ``OAuthProvider.modify_models`` inside :meth:`ModelRegistry._load_models`,
+    so it reaches only the interactive ``/model`` picker — every non-picker path
+    (CLI ``--print``, TUI startup/default, ``/model <id>``) dispatches to the
+    static individual host. On an individual account that host coincidentally
+    equals the proxy-ep so the bug is invisible; on an enterprise/business seat
+    whose ``proxy-ep=`` names a different host, the request hits the WRONG host →
+    httpx "Connection error".
+
+    This adopts the registry copy's ``base_url`` (already modify_models-injected,
+    because the registry is built AFTER ``auth_storage.load()``) for
+    github-copilot models only, leaving every other provider — including
+    OpenRouter's env ``OPENROUTER_BASE_URL`` override baked into ``model`` — intact.
+    A ``registry`` miss (uncatalogued id) or a missing registry falls back to the
+    input model unchanged.
+    """
+
+    if registry is None or getattr(model, "provider", None) != "github-copilot":
+        return model
+    found = registry.find(model.provider, model.id)
+    if found is not None and found.base_url and found.base_url != model.base_url:
+        return replace(model, base_url=found.base_url)
+    return model
+
+
+__all__ = [
+    "enrich_copilot_base_url",
+    "load_dotenv",
+    "register_providers",
+    "resolve_model",
+]
