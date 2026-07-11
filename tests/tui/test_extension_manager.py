@@ -208,6 +208,47 @@ def test_sources_lines_getattr_guarded() -> None:
     assert any("[path] ?" in line for line in lines)
 
 
+def test_sources_lines_builtin_default_present_row() -> None:
+    # Track D (guard ③, ADR-0192): the injected built-in default renders FIRST as
+    # a marked "present" row, ahead of the stored sources.
+    from aelix_ai.settings import ExtensionSourceObject
+
+    lines = build_sources_lines(
+        [ExtensionSourceObject(spec="https://idx/simple", kind="index")],
+        default_catalog=("https://catalog.aelix.dev/index.json", False),
+    )
+    body = "\n".join(lines)
+    assert "[catalog] https://catalog.aelix.dev/index.json  (built-in default — present)" in body
+    assert "[index] https://idx/simple" in body
+    # The built-in default row precedes the stored source.
+    default_i = next(i for i, ln in enumerate(lines) if "built-in default" in ln)
+    stored_i = next(i for i, ln in enumerate(lines) if "https://idx/simple" in ln)
+    assert default_i < stored_i
+
+
+def test_sources_lines_builtin_default_suppressed_row() -> None:
+    # An opted-out (tombstoned) default renders the SAME row marked "suppressed".
+    lines = build_sources_lines(
+        [],
+        default_catalog=("https://catalog.aelix.dev/index.json", True),
+    )
+    body = "\n".join(lines)
+    assert "[catalog] https://catalog.aelix.dev/index.json  (built-in default — suppressed)" in body
+    # Even with NO stored sources the built-in row shows (not the empty-state).
+    assert "No extension sources registered." not in body
+    assert body.startswith("Registered sources:")
+
+
+def test_sources_lines_no_default_keeps_empty_state() -> None:
+    # No stored sources AND no injected default (beta dormant) → the empty-state,
+    # unchanged from before this feature.
+    assert build_sources_lines([], default_catalog=None) == build_sources_lines([])
+    assert any(
+        "No extension sources registered." in ln
+        for ln in build_sources_lines([], default_catalog=None)
+    )
+
+
 # === run_extension_manager ===
 
 
@@ -276,6 +317,61 @@ async def test_run_sources_tab_reads_getter_live() -> None:
     # Mutate AFTER open — the closure re-reads, so the new source appears.
     live.append(ExtensionSourceObject(spec="https://idx/simple", kind="index"))
     assert any("[index] https://idx/simple" in ln for ln in render())
+
+
+async def test_run_sources_tab_renders_injected_default_catalog() -> None:
+    # Track D (guard ③): the Sources render reads default_catalog_getter live and
+    # renders the marked built-in row alongside the stored sources.
+    captured: dict[str, Any] = {}
+
+    async def fake_tabbed(
+        title: str, tabs: list[Any], *, initial: int = 0, filter_tabs: set[int] | None = None
+    ) -> None:
+        captured["tabs"] = tabs
+
+    default: tuple[str, bool] | None = ("https://catalog.aelix.dev/index.json", False)
+
+    await run_extension_manager(
+        extensions=[],
+        mcp_manager=None,
+        tabbed=fake_tabbed,
+        commit=[].append,
+        default_catalog_getter=lambda: default,
+    )
+    render = dict(captured["tabs"])["Sources"]
+    assert any("(built-in default — present)" in ln for ln in render())
+    # Read live: flip to suppressed AFTER open — the closure re-reads.
+    default = ("https://catalog.aelix.dev/index.json", True)
+    assert any("(built-in default — suppressed)" in ln for ln in render())
+
+
+async def test_run_default_catalog_getter_raising_degrades() -> None:
+    # A raising default_catalog_getter omits the built-in row but keeps the stored
+    # sources — never crashes the tab render.
+    from aelix_ai.settings import ExtensionSourceObject
+
+    captured: dict[str, Any] = {}
+
+    async def fake_tabbed(
+        title: str, tabs: list[Any], *, initial: int = 0, filter_tabs: set[int] | None = None
+    ) -> None:
+        captured["tabs"] = tabs
+
+    def _boom() -> Any:
+        raise RuntimeError("default resolve failed")
+
+    await run_extension_manager(
+        extensions=[],
+        mcp_manager=None,
+        tabbed=fake_tabbed,
+        commit=[].append,
+        sources_getter=lambda: [ExtensionSourceObject(spec="https://idx/simple", kind="index")],
+        default_catalog_getter=_boom,
+    )
+    render = dict(captured["tabs"])["Sources"]
+    body = "\n".join(render())
+    assert "built-in default" not in body  # the raising getter is swallowed
+    assert "[index] https://idx/simple" in body  # stored sources still render
 
 
 async def test_run_sources_getter_raising_degrades() -> None:

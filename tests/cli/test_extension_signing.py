@@ -12,6 +12,7 @@ Two surfaces, mirroring #64:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -758,3 +759,161 @@ def test_cli_trust_list_first_party_and_revoked_and_eq_forms(
     run_extension_command(["trust", "list"])
     out = capsys.readouterr().out
     assert "[first-party]" in out and "(REVOKED)" in out and key_id in out
+
+
+# === Track D: verify_signed_document (catalog document verification) ========
+
+_DOC = b'{"catalog":[{"name":"acme","version":"1.0"}]}'
+
+
+def _sign_doc(tmp_path: Path, document: bytes = _DOC, *, kind: str = "catalog") -> bytes:
+    """Produce a `.aelixsig` envelope over `document` using an isolated fresh key."""
+
+    _, _, pem = _make_key(tmp_path)
+    return es.sign_document(document, es.load_private_key(pem), kind=kind)
+
+
+def _trusted_sign_doc(
+    tmp_path: Path, document: bytes = _DOC, *, kind: str = "catalog"
+) -> tuple[str, bytes]:
+    """Sign `document` with a key that is also ADDED to the trust store; return (keyId, sidecar)."""
+
+    key_id, pub_b64, pem = _make_key(tmp_path)
+    _trust(tmp_path, key_id, pub_b64)
+    return key_id, es.sign_document(document, es.load_private_key(pem), kind=kind)
+
+
+def _verify_doc(
+    tmp_path: Path,
+    document: bytes,
+    sidecar: bytes | None,
+    *,
+    require_signature: bool = False,
+    kind: str = "catalog",
+    trusted_key: str | None = None,
+) -> es.SignatureOutcome:
+    return es.verify_signed_document(
+        document, sidecar, kind=kind, agent_dir=_agent_dir(tmp_path),
+        require_signature=require_signature, trusted_key=trusted_key, identity="https://ex/catalog.json",
+    )
+
+
+def test_parse_aelixsig_bytes_leniency() -> None:
+    # A well-formed object parses; every hostile/malformed shape degrades to None (never
+    # raises), reusing read_aelixsig leniency INCLUDING the RecursionError deep-JSON guard.
+    assert es._parse_aelixsig_bytes(b'{"a": 1}') == {"a": 1}
+    assert es._parse_aelixsig_bytes(b"[1, 2, 3]") is None  # non-object
+    assert es._parse_aelixsig_bytes(b"{ not json") is None  # bad JSON
+    deep = (b"[" * 60000) + (b"]" * 60000)  # maliciously deep → json raises RecursionError
+    assert es._parse_aelixsig_bytes(deep) is None
+
+
+def test_sign_document_binds_kind_and_document_digest(tmp_path: Path) -> None:
+    # The publisher path stamps kind='catalog' by default and binds sha256 over the RAW
+    # document bytes (independent of any catalog field).
+    _, _, pem = _make_key(tmp_path)
+    sidecar = es.sign_document(_DOC, es.load_private_key(pem))
+    env = json.loads(sidecar)
+    st = env["statement"]
+    assert st["kind"] == "catalog"
+    assert st["sha256"] == hashlib.sha256(_DOC).hexdigest()
+
+
+def test_verify_document_round_trip_authenticates(tmp_path: Path) -> None:
+    key_id, sidecar = _trusted_sign_doc(tmp_path)
+    out = _verify_doc(tmp_path, _DOC, sidecar)
+    assert out.authenticated and out.key_id == key_id and out.sig and out.statement_json
+    st = json.loads(out.statement_json)
+    assert st["kind"] == "catalog" and st["sha256"] == hashlib.sha256(_DOC).hexdigest()
+
+
+def test_verify_document_one_byte_tamper_refuses_even_default(tmp_path: Path) -> None:
+    # Affirmative tampering evidence: a signature by a TRUSTED key whose digest no longer
+    # matches the presented bytes refuses ALWAYS — even on the beta default path.
+    _key_id, sidecar = _trusted_sign_doc(tmp_path)
+    tampered = _DOC + b" "  # one appended byte → different sha256
+    with pytest.raises(ep.VerifyRefusal, match="statement mismatch"):
+        _verify_doc(tmp_path, tampered, sidecar, require_signature=False)
+
+
+def test_verify_document_kind_mismatch_refuses(tmp_path: Path) -> None:
+    # A pack signature (kind='pack') presented as a catalog is rejected by the kind
+    # cross-check — a valid signature over the WRONG kind cannot be replayed.
+    key_id, pub_b64, pem = _make_key(tmp_path)
+    _trust(tmp_path, key_id, pub_b64)
+    sidecar = es.sign_document(_DOC, es.load_private_key(pem), kind="pack")
+    with pytest.raises(ep.VerifyRefusal, match="statement mismatch"):
+        _verify_doc(tmp_path, _DOC, sidecar)  # verified with default kind='catalog'
+
+
+def test_verify_document_trusted_invalid_sig_refuses(tmp_path: Path) -> None:
+    # A trusted keyId whose signature does not verify → refuse ALWAYS (tampering evidence).
+    _key_id, sidecar = _trusted_sign_doc(tmp_path)
+    env = json.loads(sidecar)
+    env["sig"] = es._b64e(b"\x00" * 64)  # a wrong (but well-formed) signature
+    with pytest.raises(ep.VerifyRefusal, match="FAILED to verify"):
+        _verify_doc(tmp_path, _DOC, json.dumps(env).encode("utf-8"))
+
+
+def test_verify_document_untrusted_key_notice_default_raise_require(tmp_path: Path) -> None:
+    sidecar = _sign_doc(tmp_path)  # signer NOT added to the trust store
+    out = _verify_doc(tmp_path, _DOC, sidecar)
+    assert not out.authenticated and out.notice and "untrusted key" in out.notice
+    with pytest.raises(ep.VerifyRefusal, match="untrusted key"):
+        _verify_doc(tmp_path, _DOC, sidecar, require_signature=True)
+
+
+def test_verify_document_trusted_key_restriction(tmp_path: Path) -> None:
+    key_id, sidecar = _trusted_sign_doc(tmp_path)
+    # A non-matching required keyId → the (otherwise trusted) signature is refused.
+    with pytest.raises(ep.VerifyRefusal, match="untrusted key"):
+        _verify_doc(tmp_path, _DOC, sidecar, require_signature=True, trusted_key="0" * 16)
+    # The matching keyId → authenticates.
+    assert _verify_doc(tmp_path, _DOC, sidecar, trusted_key=key_id).authenticated
+
+
+def test_verify_document_absent_sidecar_silent_vs_require(tmp_path: Path) -> None:
+    # sidecar is None = truly absent → silent unsigned on default; refuse under require.
+    out = _verify_doc(tmp_path, _DOC, None)
+    assert not out.authenticated and out.notice is None
+    with pytest.raises(ep.VerifyRefusal, match="no valid .aelixsig"):
+        _verify_doc(tmp_path, _DOC, None, require_signature=True)
+
+
+def test_verify_document_malformed_fields_sidecar(tmp_path: Path) -> None:
+    # Valid JSON object but missing statement/sig → malformed: notice on default, refuse
+    # under require.
+    bad = json.dumps({"aelixsig": 1, "keyId": "abc"}).encode("utf-8")
+    out = _verify_doc(tmp_path, _DOC, bad)
+    assert not out.authenticated and out.notice and "malformed" in out.notice
+    with pytest.raises(ep.VerifyRefusal, match="malformed"):
+        _verify_doc(tmp_path, _DOC, bad, require_signature=True)
+
+
+def test_verify_document_corrupt_and_deep_json_sidecar_degrade(tmp_path: Path) -> None:
+    # Present-but-unparseable bytes (bad JSON OR maliciously deep JSON) degrade to a
+    # visible "corrupt" notice on default (never an escaping traceback); refuse under
+    # require. This is the hostile-sidecar leniency, bytes edition.
+    out = _verify_doc(tmp_path, _DOC, b"{ not valid json")
+    assert not out.authenticated and out.notice and "corrupt" in out.notice
+    deep = (b"[" * 60000) + (b"]" * 60000)
+    out2 = _verify_doc(tmp_path, _DOC, deep)
+    assert not out2.authenticated and out2.notice and "corrupt" in out2.notice
+    with pytest.raises(ep.VerifyRefusal, match="no valid .aelixsig"):
+        _verify_doc(tmp_path, _DOC, deep, require_signature=True)
+
+
+def test_verify_document_first_party_and_revoked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    key_id, pub_b64, pem = _make_key(tmp_path)
+    monkeypatch.setattr(es, "FIRST_PARTY_KEYS", {key_id: pub_b64})
+    sidecar = es.sign_document(_DOC, es.load_private_key(pem))
+    # First-party → authenticates out of the box (empty user trust store).
+    assert _verify_doc(tmp_path, _DOC, sidecar).authenticated
+    # Revoke → revocation wins even over first-party, so require now refuses.
+    es.save_trusted_keys(
+        es.TrustStore(revoked=(key_id,)), es.trusted_keys_path(_agent_dir(tmp_path))
+    )
+    with pytest.raises(ep.VerifyRefusal):
+        _verify_doc(tmp_path, _DOC, sidecar, require_signature=True)

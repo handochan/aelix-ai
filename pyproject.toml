@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "aelix"
-version = "0.1.0"
+version = "0.1.0b1"
 description = "Aelix — a pi-faithful Python agent runtime (providers, tools, compaction, extensions, TUI)."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -28,9 +28,9 @@ classifiers = [
 # `[tool.uv.sources] workspace = true` entries below are dev-only and are
 # stripped from the built metadata — the published wheel uses these pins.
 dependencies = [
-  "aelix-ai==0.1.0",
-  "aelix-agent-core==0.1.0",
-  "aelix-coding-agent==0.1.0",
+  "aelix-ai==0.1.0b1",
+  "aelix-agent-core==0.1.0b1",
+  "aelix-coding-agent==0.1.0b1",
 ]
 
 [project.optional-dependencies]
@@ -38,8 +38,8 @@ dependencies = [
 # interactive TUI deps through the coding-agent extra; `[images]` adds inline
 # image rendering on top. The bare `aelix` install provides the `aelix` CLI +
 # the non-interactive (print/json/rpc) modes.
-tui = ["aelix-coding-agent[tui]==0.1.0"]
-images = ["aelix-coding-agent[tui,images]==0.1.0"]
+tui = ["aelix-coding-agent[tui]==0.1.0b1"]
+images = ["aelix-coding-agent[tui,images]==0.1.0b1"]
 
 [project.urls]
 Homepage = "https://github.com/handochan/aelix-ai"

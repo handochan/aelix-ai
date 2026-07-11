@@ -233,19 +233,41 @@ def build_discover_lines(catalogs: Any) -> list[str]:
     return lines
 
 
-def build_sources_lines(sources: Any) -> list[str]:
+def build_sources_lines(
+    sources: Any,
+    default_catalog: tuple[str, bool] | None = None,
+) -> list[str]:
     """Render the "Sources" tab from the persisted ``extension_sources`` list.
 
     ``sources`` is an iterable of ``ExtensionSourceObject``-shaped items (#32-A,
     ADR-0186) — each with ``spec`` / ``kind`` / optional ``name``. Fully
     getattr-guarded so an odd shape degrades to ``"?"`` rather than raising.
 
-    Empty list → an honest empty-state that points at the CLI (the TUI viewer is
-    read-only; sources are managed via ``aelix extension source …``).
+    ``default_catalog`` (Track D, guard ③ / ADR-0192) is the injected built-in
+    default catalog value — an ``(url, suppressed)`` pair, or :data:`None` when the
+    default is dormant/disabled (the beta placeholder is empty → ``None`` → no row).
+    When present it renders FIRST as a marked ``[catalog] <url>  (built-in default —
+    present|suppressed)`` row so an opt-out is visible in the viewer. The value is
+    INJECTED (mirroring the CLI ``source list``) so this leaf never imports
+    ``extension_install`` / the merge+tombstone machinery.
+
+    Empty list AND no built-in default → an honest empty-state that points at the
+    CLI (the TUI viewer is read-only; sources are managed via ``aelix extension
+    source …``).
     """
 
     items = list(sources or [])
-    if not items:
+
+    # Guard ③ (ADR-0192): the built-in default catalog is its own marked row
+    # (present / suppressed). Dormant in beta (empty placeholder URL → injected
+    # None → no row); an env repoint surfaces it here.
+    default_row: str | None = None
+    if default_catalog is not None:
+        url, suppressed = default_catalog
+        state = "suppressed" if suppressed else "present"
+        default_row = f"  [catalog] {url}  (built-in default — {state})"
+
+    if not items and default_row is None:
         return [
             "No extension sources registered.",
             "",
@@ -258,6 +280,8 @@ def build_sources_lines(sources: Any) -> list[str]:
         ]
 
     lines: list[str] = ["Registered sources:"]
+    if default_row is not None:
+        lines.append(default_row)
     for src in items:
         kind = str(getattr(src, "kind", None) or "?")
         spec = str(getattr(src, "spec", None) or "?")
@@ -277,6 +301,7 @@ async def run_extension_manager(
     commit: Callable[[object], None],
     sources_getter: Callable[[], Any] | None = None,
     catalog_getter: Callable[[], Any] | None = None,
+    default_catalog_getter: Callable[[], tuple[str, bool] | None] | None = None,
 ) -> None:
     """Drive the ``/extension`` read-only tabbed viewer (Sprint WP-8, Feature 3).
 
@@ -297,6 +322,13 @@ async def run_extension_manager(
     SYNC on-disk read, NO network) so the filterable Discover tab reflects the
     last ``discover --refresh``. :data:`None` (or a getter that raises) degrades
     to the empty-state.
+
+    ``default_catalog_getter`` (Track D, guard ③ / ADR-0192) is read INSIDE the
+    Sources render closure — it returns the injected built-in default catalog
+    ``(url, suppressed)`` pair (or :data:`None` when dormant/disabled) so the marked
+    built-in row reflects an env repoint / a CLI opt-out live on the next open.
+    :data:`None` (or a getter that raises) simply omits the built-in row — the
+    stored sources still render.
 
     Degrades to a committed message when no ``tabbed`` viewer is available
     (headless / not wired) and surfaces any viewer exception as a red line —
@@ -319,15 +351,29 @@ async def run_extension_manager(
         conns = list(getattr(mcp_manager, "connections", {}).values())
         return build_installed_lines(exts, conns)
 
+    def _default_catalog() -> tuple[str, bool] | None:
+        # Guard ③ (ADR-0192): read the injected built-in default value live so an
+        # env repoint / a CLI opt-out during the session shows on the next open. A
+        # getter that raises simply omits the built-in row (stored sources unaffected).
+        if default_catalog_getter is None:
+            return None
+        try:
+            return default_catalog_getter()
+        except Exception:  # noqa: BLE001 — never crash the tab render
+            return None
+
     def _sources() -> list[str]:
         # Read the persisted list live at render time so a CLI-added source
-        # appears on the next open. A getter that raises degrades to empty.
+        # appears on the next open. A getter that raises degrades to empty. The
+        # built-in default row (guard ③) is injected alongside so it renders even
+        # when the stored list is empty or its getter degraded.
+        default_catalog = _default_catalog()
         if sources_getter is None:
-            return build_sources_lines([])
+            return build_sources_lines([], default_catalog=default_catalog)
         try:
-            return build_sources_lines(sources_getter())
+            return build_sources_lines(sources_getter(), default_catalog=default_catalog)
         except Exception:  # noqa: BLE001 — never crash the tab render
-            return build_sources_lines([])
+            return build_sources_lines([], default_catalog=default_catalog)
 
     def _discover() -> list[str]:
         # Read the cached catalogs live at render time (SYNC disk read — no

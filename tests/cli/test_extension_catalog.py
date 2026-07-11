@@ -645,3 +645,273 @@ def test_fetch_git_symlink_catalog_refused(tmp_path: Path) -> None:
 
     with pytest.raises(ec.CatalogError, match="symlink"):
         ec.fetch_catalog("git+ssh://h/r.git", git_runner=git_runner)
+
+
+# =====================================================================
+# === resolve_default_catalog_url (Track D — built-in default) =========
+# =====================================================================
+
+
+def test_resolve_default_catalog_env_unset_is_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Beta: env unset + empty ``DEFAULT_CATALOG_URL`` placeholder → dormant (None)."""
+
+    monkeypatch.delenv(ec.DEFAULT_CATALOG_ENV, raising=False)
+    assert ec.DEFAULT_CATALOG_URL == ""  # placeholder ships empty in beta
+    assert ec.resolve_default_catalog_url() is None
+
+
+def test_resolve_default_catalog_env_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A non-empty ``AELIX_DEFAULT_CATALOG`` repoints the default to that raw URL."""
+
+    monkeypatch.setenv(ec.DEFAULT_CATALOG_ENV, "https://corp/catalog.json")
+    assert ec.resolve_default_catalog_url() == "https://corp/catalog.json"
+
+
+def test_resolve_default_catalog_env_empty_is_ephemeral_kill(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An explicitly-empty env value kills the default for this run (→ None)."""
+
+    monkeypatch.setenv(ec.DEFAULT_CATALOG_ENV, "")
+    assert ec.resolve_default_catalog_url() is None
+
+
+def test_resolve_default_catalog_env_whitespace_stripped(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A padded env value is stripped; an all-whitespace value collapses to None."""
+
+    monkeypatch.setenv(ec.DEFAULT_CATALOG_ENV, "  https://corp/c.json  ")
+    assert ec.resolve_default_catalog_url() == "https://corp/c.json"
+    monkeypatch.setenv(ec.DEFAULT_CATALOG_ENV, "   ")
+    assert ec.resolve_default_catalog_url() is None
+
+
+def test_resolve_default_catalog_placeholder_used_when_env_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A future release fills the placeholder; env-unset then returns it (guard ②)."""
+
+    monkeypatch.delenv(ec.DEFAULT_CATALOG_ENV, raising=False)
+    monkeypatch.setattr(ec, "DEFAULT_CATALOG_URL", "https://official/catalog.json")
+    assert ec.resolve_default_catalog_url() == "https://official/catalog.json"
+
+
+# =====================================================================
+# === Injected DocumentVerifier hook (Track D — signature seam) ========
+# =====================================================================
+
+
+def test_fetch_https_sidecar_fetched_over_same_opener() -> None:
+    """A verifier triggers a sibling ``<url>.aelixsig`` GET over the SAME opener; the
+    verifier receives the raw document bytes AND the sidecar bytes; entries pass."""
+
+    body = _catalog_doc({"name": "signed", "source": "pypi-signed"}).encode("utf-8")
+    sidecar_bytes = b'{"aelixsig": 1, "keyId": "k", "sig": "s"}'
+    seen: list[str] = []
+    received: list[tuple[bytes, bytes | None, str]] = []
+
+    def opener(url: str, timeout: float) -> bytes:
+        seen.append(url)
+        return sidecar_bytes if url.endswith(ec.SIDECAR_SUFFIX) else body
+
+    def verifier(doc: bytes, sidecar: bytes | None, loc: str) -> None:
+        received.append((doc, sidecar, loc))
+
+    cat = ec.fetch_catalog("https://intranet/catalog.json", opener=opener, verifier=verifier)
+    assert [e.name for e in cat.entries] == ["signed"]
+    assert "https://intranet/catalog.json" in seen
+    assert "https://intranet/catalog.json.aelixsig" in seen
+    assert received == [(body, sidecar_bytes, "https://intranet/catalog.json")]
+
+
+def test_fetch_https_no_verifier_skips_sidecar_fetch() -> None:
+    """No verifier ⇒ no extra sidecar round-trip (the ``.aelixsig`` URL is never hit)."""
+
+    body = _catalog_doc({"name": "plain", "source": "pypi-plain"}).encode("utf-8")
+    seen: list[str] = []
+
+    def opener(url: str, timeout: float) -> bytes:
+        seen.append(url)
+        return body
+
+    cat = ec.fetch_catalog("https://intranet/catalog.json", opener=opener)
+    assert [e.name for e in cat.entries] == ["plain"]
+    assert seen == ["https://intranet/catalog.json"]  # sidecar NOT fetched
+
+
+def test_fetch_https_sidecar_404_degrades_to_unsigned() -> None:
+    """A missing sidecar (opener raises on the ``.aelixsig`` GET) → verifier sees None,
+    and the catalog still parses (unsigned degrade, best-effort)."""
+
+    body = _catalog_doc({"name": "unsigned", "source": "pypi-unsigned"}).encode("utf-8")
+    received: list[bytes | None] = []
+
+    def opener(url: str, timeout: float) -> bytes:
+        if url.endswith(ec.SIDECAR_SUFFIX):
+            raise FileNotFoundError("404")
+        return body
+
+    def verifier(doc: bytes, sidecar: bytes | None, loc: str) -> None:
+        received.append(sidecar)
+
+    cat = ec.fetch_catalog("https://intranet/catalog.json", opener=opener, verifier=verifier)
+    assert [e.name for e in cat.entries] == ["unsigned"]
+    assert received == [None]
+
+
+def test_fetch_verifier_raise_becomes_catalog_error() -> None:
+    """A verifier raising :class:`CatalogError` propagates verbatim (fail-closed)."""
+
+    body = _catalog_doc({"name": "evil", "source": "pypi-evil"}).encode("utf-8")
+
+    def opener(url: str, timeout: float) -> bytes:
+        if url.endswith(ec.SIDECAR_SUFFIX):
+            raise FileNotFoundError
+        return body
+
+    def verifier(doc: bytes, sidecar: bytes | None, loc: str) -> None:
+        raise ec.CatalogError("bad signature")
+
+    with pytest.raises(ec.CatalogError, match="bad signature"):
+        ec.fetch_catalog("https://intranet/catalog.json", opener=opener, verifier=verifier)
+
+
+def test_fetch_verifier_non_catalog_error_wrapped(tmp_path: Path) -> None:
+    """Any non-CatalogError raise from the verifier is wrapped as a CatalogError."""
+
+    f = tmp_path / "catalog.json"
+    f.write_text(_catalog_doc({"name": "e", "source": "pypi-e"}), encoding="utf-8")
+
+    def verifier(doc: bytes, sidecar: bytes | None, loc: str) -> None:
+        raise ValueError("boom")
+
+    with pytest.raises(ec.CatalogError, match="failed signature verification"):
+        ec.fetch_catalog(str(f), verifier=verifier)
+
+
+def test_fetch_all_verifier_refusal_degrades_no_entries_cached(tmp_path: Path) -> None:
+    """A verifier refusal degrades ONLY that catalog to an error-row with no entries —
+    unverified entries must never reach the cache."""
+
+    f = tmp_path / "catalog.json"
+    f.write_text(_catalog_doc({"name": "e", "source": "pypi-e"}), encoding="utf-8")
+
+    def verifier(doc: bytes, sidecar: bytes | None, loc: str) -> None:
+        raise ec.CatalogError("tampered")
+
+    cats = ec.fetch_all([str(f)], verifier=verifier)
+    assert len(cats) == 1
+    assert cats[0].error is not None
+    assert cats[0].entries == ()
+
+
+def test_fetch_file_sidecar_read_beside_document(tmp_path: Path) -> None:
+    """The ``file://`` / local-path transport reads the sibling ``<file>.aelixsig``
+    beside the document and hands its bytes to the verifier; a valid verifier passes."""
+
+    f = tmp_path / "catalog.json"
+    f.write_text(_catalog_doc({"name": "fsig", "source": "pypi-fsig"}), encoding="utf-8")
+    (tmp_path / "catalog.json.aelixsig").write_bytes(b"SIGN-BYTES")
+    received: list[bytes | None] = []
+
+    def verifier(doc: bytes, sidecar: bytes | None, loc: str) -> None:
+        received.append(sidecar)
+
+    cat = ec.fetch_catalog(str(f), verifier=verifier)
+    assert [e.name for e in cat.entries] == ["fsig"]
+    assert received == [b"SIGN-BYTES"]
+
+
+def test_fetch_file_sidecar_absent_is_none(tmp_path: Path) -> None:
+    """No sibling ``.aelixsig`` on disk → the verifier receives None (unsigned)."""
+
+    f = tmp_path / "catalog.json"
+    f.write_text(_catalog_doc({"name": "ns", "source": "pypi-ns"}), encoding="utf-8")
+    received: list[bytes | None] = []
+
+    def verifier(doc: bytes, sidecar: bytes | None, loc: str) -> None:
+        received.append(sidecar)
+
+    ec.fetch_catalog(str(f), verifier=verifier)
+    assert received == [None]
+
+
+def test_fetch_git_sidecar_read_from_same_clone() -> None:
+    """The git transport reads ``catalog.json.aelixsig`` from the SAME clone as the
+    document and hands its bytes to the verifier."""
+
+    received: list[bytes | None] = []
+
+    def git_runner(argv: list[str]) -> subprocess.CompletedProcess[bytes]:
+        dest = Path(argv[-1])
+        (dest / ec.DEFAULT_CATALOG_FILENAME).write_text(
+            _catalog_doc({"name": "gsig", "source": "git+ssh://h/g.git"}), encoding="utf-8"
+        )
+        (dest / (ec.DEFAULT_CATALOG_FILENAME + ec.SIDECAR_SUFFIX)).write_bytes(b"GIT-SIG")
+        return subprocess.CompletedProcess(argv, 0, stdout=b"", stderr=b"")
+
+    def verifier(doc: bytes, sidecar: bytes | None, loc: str) -> None:
+        received.append(sidecar)
+
+    cat = ec.fetch_catalog("git+ssh://h/repo.git", git_runner=git_runner, verifier=verifier)
+    assert [e.name for e in cat.entries] == ["gsig"]
+    assert received == [b"GIT-SIG"]
+
+
+def test_fetch_git_sidecar_symlink_degrades_to_none(tmp_path: Path) -> None:
+    """A cloned ``catalog.json.aelixsig`` that is a symlink (to an outside file) is
+    refused → the verifier receives None, never the pointed-at secret bytes."""
+
+    import os
+
+    secret = tmp_path / "outside.txt"
+    secret.write_bytes(b"TOP-SECRET")
+    received: list[bytes | None] = []
+
+    def git_runner(argv: list[str]) -> subprocess.CompletedProcess[bytes]:
+        dest = Path(argv[-1])
+        (dest / ec.DEFAULT_CATALOG_FILENAME).write_text(
+            _catalog_doc({"name": "g", "source": "pypi-g"}), encoding="utf-8"
+        )
+        os.symlink(secret, dest / (ec.DEFAULT_CATALOG_FILENAME + ec.SIDECAR_SUFFIX))
+        return subprocess.CompletedProcess(argv, 0, stdout=b"", stderr=b"")
+
+    def verifier(doc: bytes, sidecar: bytes | None, loc: str) -> None:
+        received.append(sidecar)
+
+    cat = ec.fetch_catalog("git+ssh://h/r.git", git_runner=git_runner, verifier=verifier)
+    assert [e.name for e in cat.entries] == ["g"]
+    assert received == [None]
+
+
+def test_module_imports_no_sibling_extension_modules() -> None:
+    """AST-purity REGRESSION (Track D): the injected-verifier design must keep this
+    pure module from importing ANY sibling extension module — ``extension_pins`` (the
+    pin-store decoupling of ADR-0188 §4a) AND ``extension_signing`` /
+    ``extension_install`` (the verifier is passed in as a Callable, never imported)."""
+
+    import ast
+
+    tree = ast.parse(Path(ec.__file__).read_text(encoding="utf-8"))
+    imported: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                imported.add(alias.name)
+        elif isinstance(node, ast.ImportFrom):
+            if node.module:
+                imported.add(node.module)
+            for alias in node.names:
+                imported.add(alias.name)
+
+    for forbidden in ("extension_pins", "extension_signing", "extension_install"):
+        assert not any(forbidden in name for name in imported), forbidden
+
+
+def test_clean_error_scrubs_control_and_escape_chars() -> None:
+    # ADR-0192 security: a fetched .aelixsig keyId reaches Catalog.error (rendered
+    # RAW by CLI + TUI). _clean_error strips C0/C1/DEL + ANSI escapes so attacker
+    # sidecar content can never emit raw terminal control sequences.
+    evil = "untrusted key \x1b[2J\x1b[32m\x00\x7f\x9b forged"
+    cleaned = ec._clean_error(evil)
+    assert "\x1b" not in cleaned
+    assert not any(ord(ch) < 0x20 or 0x7f <= ord(ch) <= 0x9f for ch in cleaned)
+    # It never collapses to None (unlike _clean_display) — an error row must render.
+    assert isinstance(cleaned, str) and "forged" in cleaned
+    # An all-control error still yields a (possibly empty) string, never None.
+    assert ec._clean_error("\x1b\x00\x07") == ""

@@ -171,6 +171,26 @@ sole trust boundary.
      MITM-rewritable); `file://` and `git+file`/`ssh` unconditional for the
      air-gap. No hardcoded/auto-discovered default catalog — deny-by-default
      operator config, exactly like `extension_sources`.
+
+     > **Amendment (2026-07-10, ADR-0192 — partial supersession).** This §4(c)
+     > sentence bundles THREE distinct prohibitions; ADR-0192 (#76 default
+     > marketplace catalog) reverses exactly ONE. Clause **(iii) registration
+     > deny-by-default** — the "No hardcoded/auto-discovered default catalog —
+     > deny-by-default operator config, exactly like `extension_sources`" default
+     > (i.e. "nothing is registered until the operator adds it") — is **PARTIALLY
+     > SUPERSEDED**: a single first-party OFFICIAL catalog is now registered **by
+     > default, opt-out** (durably via a persisted identity tombstone
+     > `suppressed_default_catalogs` that `source remove` writes and `source add
+     > --catalog` clears; per-run via `--no-default-catalog`). The other two clauses
+     > of this sentence remain **BINDING**: **(i) no-hardcoded-URL** — the default URL
+     > is a settings default resolved from `AELIX_DEFAULT_CATALOG`, never a literal
+     > baked into code — and **(ii) no-auto-fetch / no-auto-discovery** — the default
+     > catalog is refresh-only and `--offline`-inert. ADR-0192 further adds fail-closed
+     > Ed25519 document verification for the OFFICIAL catalog, so a "default" catalog is
+     > never unauthenticated. §4(a) (display-only `sha256`; `extension_catalog.py` never
+     > touches the pin store), §4(b) (resolved-spec-at-consent), and §4(d) (deferred
+     > #68 cross-check) are UNTOUCHED. See ADR-0192 "The six binding guardrails" for the
+     > conditions of this reinterpretation. (Text above intentionally left intact.)
    - (d) No unified cross-source verdict (ADR-0010). An authenticated-catalog
      fail-closed hash cross-check is deferred to #67 over the inert
      `Pin.key_id`/`sig` seam — meaningful only once the catalog itself is

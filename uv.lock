@@ -13,7 +13,7 @@ members = [
 
 [[package]]
 name = "aelix"
-version = "0.1.0"
+version = "0.1.0b1"
 source = { editable = "." }
 dependencies = [
     { name = "aelix-agent-core" },
@@ -67,7 +67,7 @@ dev = [
 
 [[package]]
 name = "aelix-agent-core"
-version = "0.1.0"
+version = "0.1.0b1"
 source = { editable = "packages/aelix-agent-core" }
 dependencies = [
     { name = "aelix-ai" },
@@ -86,7 +86,7 @@ requires-dist = [
 
 [[package]]
 name = "aelix-ai"
-version = "0.1.0"
+version = "0.1.0b1"
 source = { editable = "packages/aelix-ai" }
 dependencies = [
     { name = "anthropic" },
@@ -107,7 +107,7 @@ requires-dist = [
 
 [[package]]
 name = "aelix-coding-agent"
-version = "0.1.0"
+version = "0.1.0b1"
 source = { editable = "packages/aelix-coding-agent" }
 dependencies = [
     { name = "aelix-agent-core" },
@@ -149,7 +149,7 @@ provides-extras = ["tui", "images"]
 
 [[package]]
 name = "aelix-server"
-version = "0.1.0"
+version = "0.1.0b1"
 source = { editable = "packages/aelix-server" }
 dependencies = [
     { name = "aelix-agent-core" },

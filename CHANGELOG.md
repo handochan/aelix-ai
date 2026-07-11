@@ -12,7 +12,15 @@ later release and is not part of this publish set.)
 
 ## [Unreleased]
 
-_No unreleased changes yet._
+### Added
+
+- **Beta / pre-release track** — pre-releases (beta/rc/alpha) are cut as
+  **GitHub Releases only** and installed via a checksum-verified `install.sh`
+  one-liner (`uv`-based, wheels verified against a published `SHA256SUMS`
+  manifest); PyPI publishing is reserved for GA. The `release.yml` workflow now
+  attaches a `SHA256SUMS` manifest to each Release and skips the PyPI `publish`
+  job for hyphenated (pre-release) tags. First beta version: `0.1.0b1`
+  (tag `v0.1.0-beta.1`). See `RELEASING.md` → *Beta / pre-release track*.
 
 ## [0.1.0] - 2026-06-20
 

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "aelix-agent-core"
-version = "0.1.0"
+version = "0.1.0b1"
 description = "Aelix agent loop + harness + hook bus. Pi-agent-core parity."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -25,7 +25,7 @@ classifiers = [
 dependencies = [
   # Pinned to the shared release version; the workspace source below is
   # dev-only and stripped from the built metadata.
-  "aelix-ai==0.1.0",
+  "aelix-ai==0.1.0b1",
   # Sprint 6h₁ (ADR-0069, P-216/P-217): prompt-templates frontmatter
   # parsing + skills .gitignore-style ignore matching.
   "PyYAML>=6.0",
