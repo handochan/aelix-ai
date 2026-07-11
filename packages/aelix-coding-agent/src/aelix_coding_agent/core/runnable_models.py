@@ -5,10 +5,12 @@ APIs this build does NOT implement. Selecting such a model fails at the first tu
 with a cryptic ``No provider registered for api=...`` raised by the PROTECTED
 ``aelix_ai.api_registry``. At startup ``cli/runtime_bootstrap.register_providers``
 registers ``openai-completions`` + ``anthropic-messages`` + ``openai-responses``
-+ ``google-generative-ai`` + ``google-vertex`` (the last three un-hidden in #15
-Workflow B, surfacing OpenAI / GitHub Copilot gpt-5.x / cloudflare-ai-gateway /
-opencode / Gemini Developer API / Vertex AI models); any remaining catalog api
-without an adapter stays blocked. ``google-vertex`` models additionally stay
++ ``google-generative-ai`` + ``google-vertex`` + ``openai-codex-responses``
+(the middle three un-hidden in #15 Workflow B, surfacing OpenAI / GitHub Copilot
+gpt-5.x / cloudflare-ai-gateway / opencode / Gemini Developer API / Vertex AI
+models; ``openai-codex-responses`` surfaces the ChatGPT Plus/Pro Codex models —
+before it was registered they showed in ``/scoped-models`` but were hidden here);
+any remaining catalog api without an adapter stays blocked. ``google-vertex`` models additionally stay
 hidden until GCP auth is resolvable (see :func:`_vertex_config_missing`).
 
 This helper lets the TUI **hide** unrunnable models from the ``/model`` picker and

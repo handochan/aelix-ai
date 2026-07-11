@@ -31,6 +31,7 @@ from typing import Any
 from aelix_ai.providers import anthropic as _anthropic
 from aelix_ai.providers import google_generative_ai as _google_generative_ai
 from aelix_ai.providers import google_vertex as _google_vertex
+from aelix_ai.providers import openai_codex_responses as _openai_codex_responses
 from aelix_ai.providers import openai_completions as _openai
 from aelix_ai.providers import openai_responses as _openai_responses
 from aelix_ai.providers.openai_completions import OPENAI_COMPLETIONS_API
@@ -77,6 +78,13 @@ def register_providers() -> None:
     # those models stay hidden (``runnable_models`` placeholder guard) instead
     # of failing at the first turn with a malformed URL.
     _openai_responses.register_all()
+    # #15 / Phase B §4.1 item #6 — register the OpenAI **Codex** Responses
+    # adapter (``openai-codex-responses``). Without it, the 10 ``openai-codex``
+    # catalog models resolve auth via ChatGPT Plus/Pro OAuth (so they appear in
+    # ``/scoped-models``) but ``partition_runnable`` HIDES them from the
+    # ``/model`` picker because their ``api`` had no registered provider. This
+    # is the fix for that split-visibility bug.
+    _openai_codex_responses.register_all()
     # #15 Workflow B — un-hide the native Gemini adapters. ``google`` (Gemini
     # Developer API, ``google-generative-ai``) surfaces the 29 catalog models +
     # the 2 opencode-zen gemini models (provider=opencode, served via the
