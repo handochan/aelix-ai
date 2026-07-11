@@ -611,3 +611,72 @@ async def test_run_custom_gemini_auto_registers(tmp_path, monkeypatch) -> None:
     assert prov["baseUrl"] == "https://generativelanguage.googleapis.com/v1beta"
     assert [m["id"] for m in prov["models"]] == ["gemini-2.0-flash"]
     assert validate_models_config(cfg) == []
+
+
+# ── _run_custom: OpenAI Responses-API protocol ─────────────────────────
+def test_responses_protocol_registered() -> None:
+    # The Responses-API protocol is offered in the wizard and maps to the
+    # openai-responses adapter, so a custom OpenAI endpoint can run against
+    # /v1/responses — not only chat/completions.
+    assert "OpenAI-compatible (Responses API)" in lw._CUSTOM_PROTOCOLS
+    assert lw._PROTOCOL_API["OpenAI-compatible (Responses API)"] == "openai-responses"
+    # The plain OpenAI-compatible label still means chat/completions (unchanged).
+    assert lw._PROTOCOL_API["OpenAI-compatible"] == "openai-completions"
+
+
+async def test_fetch_openai_responses_stays_bearer(monkeypatch) -> None:
+    # The Responses API shares OpenAI's /v1/models catalog probe → Bearer auth and
+    # a single UNFILTERED GET (the google-only capability filter / pagination must
+    # not fire; ``openai-responses`` is not a google-* api).
+    _patch_httpx(monkeypatch, {"data": [{"id": "gpt-5.4"}, {"id": "o4-mini"}]})
+    ids = await lw._fetch_openai_model_ids(
+        "https://api.openai.com/v1", "sk-openai", api="openai-responses"
+    )
+    assert ids == ["gpt-5.4", "o4-mini"]  # sorted, unfiltered
+    assert _FakeClient.last_url == "https://api.openai.com/v1/models"
+    assert _FakeClient.last_headers == {"Authorization": "Bearer sk-openai"}
+
+
+async def test_run_custom_openai_responses_auto_registers(tmp_path, monkeypatch) -> None:
+    # New protocol: picking "OpenAI-compatible (Responses API)" registers the
+    # fetched models under the openai-responses adapter (turns hit /v1/responses),
+    # rather than the completions-only default. The model-list probe is the same
+    # OpenAI-shaped Bearer /v1/models call.
+    monkeypatch.setattr(lw, "_fetch_openai_model_ids", _aret(["gpt-5.4", "o4-mini"]))
+    stored: dict[str, str] = {}
+    reloaded: list[bool] = []
+
+    class _Auth:
+        async def set_api_key(self, provider: str, key: str) -> None:
+            stored[provider] = key
+
+    reg = types.SimpleNamespace(
+        _models_json_path=str(tmp_path / "models.json"),
+        _load_models=lambda: reloaded.append(True),
+    )
+
+    async def fake_select(_title: str, _options: object) -> str:
+        return "OpenAI-compatible (Responses API)"
+
+    async def fake_multiselect(_title, _options, *, selected):
+        return (set(selected), {})
+
+    await lw._run_custom(
+        auth_storage=_Auth(),
+        select=fake_select,
+        prompt_input=_prompt_seq("myopenai", "https://api.openai.com/v1", "sk-openai"),
+        commit=lambda _x: None,
+        Text=Text,
+        multiselect=fake_multiselect,
+        model_registry=reg,
+    )
+
+    # Key stored AND models registered under the openai-responses adapter.
+    assert stored == {"myopenai": "sk-openai"}
+    assert reloaded == [True]
+    cfg = json.loads((tmp_path / "models.json").read_text())
+    prov = cfg["providers"]["myopenai"]
+    assert prov["api"] == "openai-responses"
+    assert prov["baseUrl"] == "https://api.openai.com/v1"
+    assert [m["id"] for m in prov["models"]] == ["gpt-5.4", "o4-mini"]
+    assert validate_models_config(cfg) == []

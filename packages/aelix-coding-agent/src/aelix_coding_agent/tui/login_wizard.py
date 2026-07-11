@@ -41,12 +41,18 @@ from typing import TYPE_CHECKING, Any, cast
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
-# The three custom-provider protocol shapes (label -> protocol id). Pi exposes
-# OpenAI / Anthropic / Gemini-compatible endpoints; the protocol choice is purely
-# informational here (auth storage is protocol-agnostic — it stores the key under
-# the user-chosen provider id), so we surface it in the honest note.
+# The custom-provider protocol shapes (label -> protocol id). Pi exposes
+# OpenAI / Anthropic / Gemini-compatible endpoints; we additionally split the
+# OpenAI shape into its two wire APIs — chat/completions (``openai-completions``,
+# what most OpenAI-compatible gateways speak) and the Responses API
+# (``openai-responses``, e.g. OpenAI's own gpt-5.x / o-series endpoint). The
+# protocol choice DRIVES the registered model's ``api`` field (see
+# :data:`_PROTOCOL_API`); auth storage itself is protocol-agnostic (it stores the
+# key under the user-chosen provider id, so the choice is also surfaced in the
+# honest fallback note).
 _CUSTOM_PROTOCOLS: list[str] = [
     "OpenAI-compatible",
+    "OpenAI-compatible (Responses API)",
     "Anthropic-compatible",
     "Gemini-compatible",
 ]
@@ -439,16 +445,20 @@ async def _run_api_key(
     )
 
 
-# Custom-provider protocol → the registered adapter ``api`` id. All three now
-# have a native adapter, so their models can be auto-fetched + registered:
-# OpenAI-compatible (``openai-completions``), Anthropic-compatible
-# (``anthropic-messages``, OpenAI-shaped ``/v1/models``), and Gemini-compatible
-# (``google-generative-ai``, the Gemini Developer API ListModels — #15/ADR-0173
-# un-hid the adapter, #36 wires it here). ``google-vertex`` is intentionally NOT
-# offered (OAuth/ADC + a ``{location}`` base-url, no API-key /models list) — a
-# Vertex custom endpoint stays on the honest manual-note fallback.
+# Custom-provider protocol → the registered adapter ``api`` id. All now have a
+# native adapter, so their models can be auto-fetched + registered:
+# OpenAI-compatible (``openai-completions``), OpenAI-compatible Responses API
+# (``openai-responses`` — same OpenAI-shaped ``/v1/models`` catalog probe with
+# Bearer auth, but turns run against ``/v1/responses``; adapter un-hidden in #15
+# Workflow B / ADR-0172), Anthropic-compatible (``anthropic-messages``,
+# OpenAI-shaped ``/v1/models``), and Gemini-compatible (``google-generative-ai``,
+# the Gemini Developer API ListModels — #15/ADR-0173 un-hid the adapter, #36
+# wires it here). ``google-vertex`` is intentionally NOT offered (OAuth/ADC + a
+# ``{location}`` base-url, no API-key /models list) — a Vertex custom endpoint
+# stays on the honest manual-note fallback.
 _PROTOCOL_API: dict[str, str | None] = {
     "OpenAI-compatible": "openai-completions",
+    "OpenAI-compatible (Responses API)": "openai-responses",
     "Anthropic-compatible": "anthropic-messages",
     "Gemini-compatible": "google-generative-ai",
 }
@@ -513,11 +523,12 @@ async def _run_custom(
 
     # Try to fetch + register models so the user doesn't have to hand-edit
     # models.json. This covers every protocol with a registered adapter that
-    # exposes a model-list endpoint: OpenAI-compatible (``openai-completions``),
-    # Anthropic-compatible (``anthropic-messages``, OpenAI-shaped ``/v1/models``),
-    # and Gemini-compatible (``google-generative-ai``, Gemini ListModels with
-    # ``x-goog-api-key`` — #36/#15). Issue #49: an Anthropic-compatible custom
-    # provider used to show "no model registered".
+    # exposes a model-list endpoint: OpenAI-compatible (``openai-completions``)
+    # and its Responses-API variant (``openai-responses`` — the same OpenAI-shaped
+    # ``/v1/models`` Bearer probe), Anthropic-compatible (``anthropic-messages``,
+    # OpenAI-shaped ``/v1/models``), and Gemini-compatible (``google-generative-ai``,
+    # Gemini ListModels with ``x-goog-api-key`` — #36/#15). Issue #49: an
+    # Anthropic-compatible custom provider used to show "no model registered".
     api = _PROTOCOL_API.get(protocol)
     if (
         api is not None
