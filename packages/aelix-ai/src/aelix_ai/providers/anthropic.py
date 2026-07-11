@@ -49,6 +49,7 @@ from aelix_ai.providers._anthropic_transforms import (
     resolve_anthropic_thinking,
 )
 from aelix_ai.providers._base import Provider
+from aelix_ai.providers._error_hints import describe_provider_error
 from aelix_ai.providers._github_copilot_headers import (
     build_copilot_dynamic_headers,
     has_copilot_vision_input,
@@ -486,7 +487,9 @@ async def stream_anthropic(
             opts.signal is not None and getattr(opts.signal, "aborted", False)
         )
         reason: Any = "aborted" if aborted else "error"
-        error_msg = str(exc)
+        # Append an actionable hint when the failure is a corporate-proxy TLS
+        # trust error (self-signed CA in the chain) rather than a plain outage.
+        error_msg = describe_provider_error(exc)
         # Snapshot whatever we managed to assemble so observers can see
         # partial content alongside the failure.
         error_output = replace(

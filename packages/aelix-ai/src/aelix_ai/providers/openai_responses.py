@@ -63,6 +63,7 @@ from aelix_ai.api_registry import register_provider_object
 from aelix_ai.messages import AssistantMessage
 from aelix_ai.models import clamp_thinking_level
 from aelix_ai.providers._env_api_keys import get_env_api_key
+from aelix_ai.providers._error_hints import describe_provider_error
 from aelix_ai.providers._github_copilot_headers import (
     build_copilot_dynamic_headers,
     has_copilot_vision_input,
@@ -531,7 +532,9 @@ async def stream_openai_responses(
             opts.signal is not None and getattr(opts.signal, "aborted", False)
         )
         reason: Literal["aborted", "error"] = "aborted" if aborted else "error"
-        err_msg = str(exc) if str(exc) else type(exc).__name__
+        # Append an actionable hint when the opaque "Connection error." is really
+        # a corporate-proxy TLS trust failure (buried in the __cause__ chain).
+        err_msg = describe_provider_error(exc)
         error_output = AssistantMessage(
             content=list(state.content),
             stop_reason=reason,
