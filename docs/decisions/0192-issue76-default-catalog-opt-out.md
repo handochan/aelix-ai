@@ -2,7 +2,22 @@
 
 - **Status:** Accepted (2026-07-10) — scheme owner-confirmed (Run 2). Design record;
   lands with the #76 beta implementation, precedes the code and seeds it (same pattern
-  as ADR-0186/0187/0188/0189).
+  as ADR-0186/0187/0188/0189). **Amended 2026-07-12 (#89) — see Amendment below.**
+- **Amendment (2026-07-12, #89) — progressive hardening + default catalog activated:**
+  guard ⑤ originally made the official/default catalog signature-required the moment
+  `DEFAULT_CATALOG_URL` became non-empty (fail-closed on any set URL). That was *stricter*
+  than #67 per-extension signing (opt-in, warn-default until a trusted key is present) and,
+  because the catalog is strictly **advisory** (the real execution-trust boundary is the
+  install-time consent prompt + `verify_and_pin` — re-confirmed against upstream pi, which
+  has **zero** signing/pinning of any kind), the fail-closed-on-set-URL rule blocked
+  activating the marketplace at all until a first-party key was provisioned. **Refinement:**
+  the default catalog is signature-required **only once a first-party trust anchor exists**
+  (`FIRST_PARTY_KEYS` non-empty); until then it is admitted best-effort over TLS (a
+  present-but-**invalid** trusted signature still refuses), auto-upgrading to fail-closed
+  the moment the maintainer commits the key. This harmonizes the catalog layer with #67.
+  `DEFAULT_CATALOG_URL` is now set to the GitHub Pages catalog
+  (`https://handochan.github.io/aelix-marketplace/catalog.json`) and stays opt-out
+  (`AELIX_DEFAULT_CATALOG=""` / `--no-default-catalog` / `source remove`).
 - **Date:** 2026-07-10
 - **Sprint:** #76 first public release = **beta**. Run 1 was recon; this is Run 2
   (design). Two coupled tracks: **(A)** a `curl | sh` + GitHub Releases beta channel

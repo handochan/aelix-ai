@@ -178,8 +178,12 @@ def test_discover_refresh_fetches_and_writes_cache(
 
 
 def test_discover_no_catalog_registered_empty_state(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    # The built-in default is ACTIVE by default now, so the genuine "no catalog" state is
+    # reached by OPTING OUT (AELIX_DEFAULT_CATALOG="") with no stored sources → the
+    # effective catalog list is empty → the honest "No catalog registered" message.
+    monkeypatch.setenv("AELIX_DEFAULT_CATALOG", "")
     code = run_extension_command(["discover"], settings=_mem_settings())
     assert code == 0
     assert "No catalog registered" in capsys.readouterr().out
@@ -261,8 +265,12 @@ def test_discover_query_no_match(
 
 
 def test_search_is_discover_alias(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    # ``search`` dispatches to the discover handler → the SAME empty-state message. Opt
+    # out of the now-active built-in default (AELIX_DEFAULT_CATALOG="") so the
+    # no-catalog branch is reached deterministically for the alias check.
+    monkeypatch.setenv("AELIX_DEFAULT_CATALOG", "")
     code = run_extension_command(["search"], settings=_mem_settings())
     assert code == 0
     assert "No catalog registered" in capsys.readouterr().out
@@ -762,12 +770,13 @@ def test_catalog_identity_normalizes_git_forms() -> None:
     assert _catalog_identity("git+https://h/r.git") == "git+https://h/r.git"
 
 
-def test_effective_locations_no_default_when_dormant(
+def test_effective_locations_no_default_when_opted_out(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Beta placeholder empty + env unset → no built-in default (dormant): the
+    # The built-in default is ACTIVE by default, so "no built-in default" is the OPT-OUT
+    # path: an explicitly-empty AELIX_DEFAULT_CATALOG kills it for this run → the
     # effective list is exactly the stored catalogs.
-    monkeypatch.delenv("AELIX_DEFAULT_CATALOG", raising=False)
+    monkeypatch.setenv("AELIX_DEFAULT_CATALOG", "")
     assert _effective_default_identity() is None
     mem = SettingsManager.in_memory(
         {"extensionSources": [{"spec": "file:///corp/c.json", "kind": "catalog"}]}
@@ -1090,20 +1099,117 @@ def test_catalog_verifier_requires_signature_only_for_default(tmp_path: Path) ->
 async def test_default_catalog_is_signature_required_end_to_end(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    # Guard ⑤ live end-to-end: with a default configured (a file:// URL so no network
-    # is touched), an UNSIGNED default catalog degrades to an error row and a
-    # refresh where it is the only catalog exits 2. Dormant in beta ONLY because the
-    # shipped default URL is empty — the mechanism itself is wired.
+    # Guard ⑤ PROGRESSIVE HARDENING (ADR-0192 §amendment) live end-to-end. A file:// default
+    # (no network) is UNSIGNED; whether it MUST carry a signature is gated on a first-party
+    # trust anchor existing to verify it:
+    #   (a) FIRST_PARTY_KEYS EMPTY (beta ship state) → admitted best-effort over TLS/transport;
+    #   (b) FIRST_PARTY_KEYS NON-EMPTY (a key is provisioned) → fail-closed: the unsigned
+    #       default degrades to an error row and, being the only catalog, the refresh exits 2.
+    from aelix_coding_agent.cli import extension_signing as es
+
     file_default = _write_catalog(
         tmp_path / "official.json",
         [{"name": "o", "source": "o-pkg"}],
         name="official",
     )
     monkeypatch.setenv("AELIX_DEFAULT_CATALOG", file_default)
-    mem = _mem_settings()
-    code = await run_extension_command_async(["discover", "--refresh"], settings=mem)
+
+    # (a) No first-party anchor yet → the unsigned default is ADMITTED (discover succeeds,
+    # the entry lists, and NOTHING refuses on the signature channel).
+    assert not es.FIRST_PARTY_KEYS  # beta ships with no first-party catalog key
+    code = await run_extension_command_async(
+        ["discover", "--refresh"], settings=_mem_settings()
+    )
+    assert code == 0
+    admitted = capsys.readouterr()
+    assert "catalog: official" in admitted.out  # the unsigned default's entry rendered
+    assert "signature" not in admitted.err.lower()
+
+    # (b) Provision a first-party trust anchor → the SAME unsigned default is now REFUSED
+    # (fail-closed): a refresh where it is the only catalog exits 2 with a signature error.
+    monkeypatch.setattr(es, "FIRST_PARTY_KEYS", {"fake": es._b64e(b"\x00" * 32)})
+    code = await run_extension_command_async(
+        ["discover", "--refresh"], settings=_mem_settings()
+    )
     assert code == 2
     assert "signature" in capsys.readouterr().err.lower()
+
+
+async def test_default_catalog_invalid_trusted_signature_refuses_regardless(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Guard ⑤ fail-closed FLOOR (preserved under progressive hardening): a default catalog
+    # carrying a signature by a TRUSTED key whose signature does NOT verify is REFUSED
+    # ALWAYS — even in beta with FIRST_PARTY_KEYS EMPTY (the best-effort path). Tampering
+    # evidence never degrades to "admitted". file:// default → deterministic, no network.
+    from aelix_coding_agent.cli import extension_signing as es
+
+    agent_dir = str(_agent_dir(tmp_path))
+    official = tmp_path / "official.json"
+    file_default = _write_catalog(
+        official, [{"name": "o", "source": "o-pkg"}], name="official"
+    )
+    monkeypatch.setenv("AELIX_DEFAULT_CATALOG", file_default)
+
+    # Sign the EXACT on-disk bytes with a TRUSTED key, then corrupt the signature so the
+    # trusted key's signature FAILS to verify (well-formed but wrong).
+    key_id, pub_b64, pem = es.keygen(agent_dir)
+    keys_path = es.trusted_keys_path(agent_dir)
+    store = es.load_trusted_keys(keys_path)
+    keys = dict(store.keys)
+    keys[key_id] = es.TrustedKey(
+        key_id=key_id, public_key=pub_b64, label=None, added_at=ep.now_iso()
+    )
+    es.save_trusted_keys(es.TrustStore(keys=keys, revoked=store.revoked), keys_path)
+    sidecar = es.sign_document(
+        official.read_bytes(), es.load_private_key(pem), kind="catalog"
+    )
+    env = json.loads(sidecar)
+    env["sig"] = es._b64e(b"\x00" * 64)  # a wrong (but well-formed) signature
+    (tmp_path / "official.json.aelixsig").write_bytes(json.dumps(env).encode("utf-8"))
+
+    # FIRST_PARTY_KEYS empty (beta) → the progressive gate does NOT require a signature;
+    # yet a trusted-key signature that fails verification refuses REGARDLESS (exit 2).
+    assert not es.FIRST_PARTY_KEYS
+    code = await run_extension_command_async(
+        ["discover", "--refresh"], settings=_mem_settings()
+    )
+    assert code == 2
+    assert "signature" in capsys.readouterr().err.lower()
+
+
+async def test_default_catalog_valid_first_party_signature_admitted_under_required(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Positive fail-closed path: once a first-party anchor exists (require ON for the
+    # default), a default catalog carrying a VALID signature by that first-party key
+    # AUTHENTICATES and is admitted (exit 0). Proves the hardened gate is a signature
+    # CHECK, not a blanket block on the default.
+    from aelix_coding_agent.cli import extension_signing as es
+
+    agent_dir = str(_agent_dir(tmp_path))
+    official = tmp_path / "official.json"
+    file_default = _write_catalog(
+        official, [{"name": "o", "source": "o-pkg"}], name="official"
+    )
+    monkeypatch.setenv("AELIX_DEFAULT_CATALOG", file_default)
+
+    key_id, pub_b64, pem = es.keygen(agent_dir)
+    sidecar = es.sign_document(
+        official.read_bytes(), es.load_private_key(pem), kind="catalog"
+    )
+    (tmp_path / "official.json.aelixsig").write_bytes(sidecar)
+    # The signer IS the first-party anchor → require is ON for the default AND the key is
+    # trusted, so the valid signature authenticates.
+    monkeypatch.setattr(es, "FIRST_PARTY_KEYS", {key_id: pub_b64})
+
+    code = await run_extension_command_async(
+        ["discover", "--refresh"], settings=_mem_settings()
+    )
+    assert code == 0
+    out = capsys.readouterr()
+    assert "catalog: official" in out.out
+    assert "signature" not in out.err.lower()
 
 
 async def test_discover_no_default_catalog_flag_is_ephemeral(

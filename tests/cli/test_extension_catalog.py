@@ -652,11 +652,25 @@ def test_fetch_git_symlink_catalog_refused(tmp_path: Path) -> None:
 # =====================================================================
 
 
-def test_resolve_default_catalog_env_unset_is_none(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Beta: env unset + empty ``DEFAULT_CATALOG_URL`` placeholder → dormant (None)."""
+def test_resolve_default_catalog_env_unset_is_pages_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Beta ACTIVATION: the built-in default now ships as the official GitHub Pages
+    marketplace catalog (no longer the dormant empty placeholder), so env-unset resolves
+    to it. The explicit opt-out is an EMPTY env value, which restores the dormant
+    ``None`` (guard ②).
+    """
 
+    # The shipped placeholder is activated: a non-empty HTTPS default URL.
+    assert ec.DEFAULT_CATALOG_URL  # non-empty: the official default is ACTIVE in beta
+    assert ec.DEFAULT_CATALOG_URL.startswith("https://")
+
+    # env unset → the activated Pages default (NOT None).
     monkeypatch.delenv(ec.DEFAULT_CATALOG_ENV, raising=False)
-    assert ec.DEFAULT_CATALOG_URL == ""  # placeholder ships empty in beta
+    assert ec.resolve_default_catalog_url() == ec.DEFAULT_CATALOG_URL
+
+    # env="" → explicit opt-out → back to dormant None (the env-driven kill switch).
+    monkeypatch.setenv(ec.DEFAULT_CATALOG_ENV, "")
     assert ec.resolve_default_catalog_url() is None
 
 
