@@ -1789,13 +1789,20 @@ async def _cmd_discover(
                     fetch_locations.append(loc)
                 else:
                     print(f"  ⓘ skipped {loc}: offline (network transport)")
-        # Guard ⑤: the official / default catalog is signature-required (dormant in
-        # beta — the default URL + FIRST_PARTY_KEYS are both empty). The verifier
-        # gates each catalog's raw bytes before parse/cache; a refusal degrades only
-        # that catalog to an error row.
+        # Guard ⑤ (progressive hardening, ADR-0192 §amendment): the official / default
+        # catalog is signature-required ONLY once a first-party trust anchor exists to
+        # verify it (FIRST_PARTY_KEYS non-empty) — consistent with #67 per-extension
+        # signing, which is warn-default until a trusted key is present. Before the
+        # maintainer provisions the first-party catalog key the default stays
+        # advisory-over-TLS (best-effort: an unsigned/untrusted default is admitted, a
+        # present-but-INVALID trusted signature still refuses); committing the key
+        # auto-upgrades it to fail-closed. The verifier gates each catalog's raw bytes
+        # before parse/cache; a refusal degrades only that catalog to an error row.
         default_id = _effective_default_identity()
         signature_required = (
-            frozenset({default_id}) if default_id is not None else frozenset()
+            frozenset({default_id})
+            if (default_id is not None and extension_signing.FIRST_PARTY_KEYS)
+            else frozenset()
         )
         verifier = _make_catalog_verifier(
             agent_dir, signature_required=signature_required

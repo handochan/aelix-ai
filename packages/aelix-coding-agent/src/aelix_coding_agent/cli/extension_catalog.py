@@ -94,13 +94,17 @@ GIT_CLONE_TIMEOUT = 60.0
 
 #: Env var that OVERRIDES / repoints the built-in default catalog URL for one run.
 DEFAULT_CATALOG_ENV = "AELIX_DEFAULT_CATALOG"
-#: The built-in default catalog URL. EMPTY in beta = **dormant** (no first-party
-#: catalog infra ships yet — mirrors the empty ``FIRST_PARTY_KEYS`` "mechanism-only"
-#: posture). This is the lowest-priority fallback of the ``AELIX_DEFAULT_CATALOG``
-#: override chain, NOT a hardcoded literal — an enterprise repoints it via the env
-#: var and an empty value keeps the default absent (guard ②). Resolved by
+#: The built-in default catalog URL — the official aelix marketplace catalog on
+#: GitHub Pages. ADVISORY (chooses only WHAT to browse; every install still gates on
+#: consent + verify_and_pin). Signature enforcement is PROGRESSIVE (guard ⑤,
+#: ADR-0192 §amendment): while ``FIRST_PARTY_KEYS`` is empty this catalog is admitted
+#: best-effort over TLS (a present-but-INVALID trusted signature still refuses); once
+#: the maintainer provisions the first-party catalog key it auto-upgrades to
+#: fail-closed. This is the lowest-priority fallback of the ``AELIX_DEFAULT_CATALOG``
+#: override chain, NOT a frozen literal — an enterprise repoints it via the env var and
+#: an empty value keeps the default absent (guard ②). Resolved by
 #: :func:`resolve_default_catalog_url`.
-DEFAULT_CATALOG_URL = ""
+DEFAULT_CATALOG_URL = "https://handochan.github.io/aelix-marketplace/catalog.json"
 #: Suffix of the detached-signature sidecar fetched beside a catalog document
 #: (``<location>.aelixsig``) and handed to an injected :data:`DocumentVerifier`.
 SIDECAR_SUFFIX = ".aelixsig"
