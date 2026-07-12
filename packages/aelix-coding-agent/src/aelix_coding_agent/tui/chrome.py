@@ -35,6 +35,7 @@ import base64
 import contextlib
 import inspect
 import logging
+import re
 import time
 from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any
@@ -48,7 +49,7 @@ from prompt_toolkit.filters import Condition, has_completions, is_done, renderer
 from prompt_toolkit.formatted_text import ANSI, to_formatted_text
 from prompt_toolkit.history import FileHistory, History, InMemoryHistory
 from prompt_toolkit.key_binding import KeyBindings
-from prompt_toolkit.keys import KEY_ALIASES
+from prompt_toolkit.keys import KEY_ALIASES, Keys
 from prompt_toolkit.layout import (
     ConditionalContainer,
     DynamicContainer,
@@ -157,6 +158,45 @@ _DEFAULT_PROMPT_STYLE = "class:aelix.prompt bold fg:cyan"
 # line (neither arms the timer).
 _CTRL_C_EXIT_WINDOW = 2.0
 _CTRL_C_EXIT_HINT = "Press Ctrl+C again to exit"
+
+# Issue #81 — large bracketed-paste collapse (Claude-Code-inspired, Aelix-native).
+# A paste with at least ``_PASTE_COLLAPSE_MIN_LINES`` lines OR ``_PASTE_COLLAPSE_MIN_CHARS``
+# characters is replaced in the *editor* by a ``[Pasted text #N +M lines]``
+# placeholder; the original is held in a per-session registry and re-expanded at
+# submit so the model always receives the full text (only the input box is
+# compressed — the transcript echo and the model prompt both get the original).
+# A second, immediately-consecutive paste of the IDENTICAL content inserts the
+# raw text instead of collapsing again ("paste again to reveal", per the issue).
+# The registry is bounded so a long editing session can't grow it without limit.
+_PASTE_COLLAPSE_MIN_LINES = 6
+_PASTE_COLLAPSE_MIN_CHARS = 1000
+_PASTE_REGISTRY_MAX = 100
+
+
+def _paste_line_count(data: str) -> int:
+    """Number of lines in ``data`` (``splitlines`` drops one trailing newline)."""
+
+    return len(data.splitlines()) or (1 if data else 0)
+
+
+def _should_collapse_paste(data: str) -> bool:
+    """True when a bracketed paste is large enough to collapse to a placeholder.
+
+    Collapses on line count OR raw length so both a many-line paste and a single
+    very long line (e.g. minified JSON) are compressed in the editor."""
+
+    if not data:
+        return False
+    return (
+        _paste_line_count(data) >= _PASTE_COLLAPSE_MIN_LINES
+        or len(data) >= _PASTE_COLLAPSE_MIN_CHARS
+    )
+
+
+def _paste_placeholder(counter: int, data: str) -> str:
+    """The ``[Pasted text #N +M lines]`` token the editor shows for a collapse."""
+
+    return f"[Pasted text #{counter} +{_paste_line_count(data)} lines]"
 
 
 class _PlaceholderProcessor(Processor):
@@ -428,6 +468,21 @@ class AelixChrome:
         # Submitted lines flow through a queue (loop-agnostic at construction;
         # robust to input arriving before/after a get_input() call).
         self._input_queue: asyncio.Queue[str | _Eof] = asyncio.Queue()
+        # Issue #81 — pasted-text collapse. ``_paste_registry`` maps a live
+        # ``[Pasted text #N +M lines]`` placeholder → its original text; the
+        # placeholder is what the editor shows, and ``_expand_pastes`` substitutes
+        # the original back in at submit so the model gets the full content.
+        # ``_paste_counter`` is monotonic across the session (the #N never resets,
+        # like Claude Code). ``_last_pasted_raw`` remembers the most recent
+        # collapsed paste so an immediately-repeated identical paste reveals the
+        # raw text instead of collapsing a second time.
+        self._paste_registry: dict[str, str] = {}
+        self._paste_counter: int = 0
+        self._last_pasted_raw: str | None = None
+        # The placeholder inserted for ``_last_pasted_raw`` — so an immediately
+        # repeated identical paste REPLACES that placeholder with the raw text
+        # (a true "reveal") instead of appending a second, still-expandable copy.
+        self._last_placeholder: str | None = None
 
         # Modal overlays (dialogs / custom components) live as Floats over the
         # main content; the overlay manager appends/removes from this list. The
@@ -676,22 +731,30 @@ class AelixChrome:
                 self.buffer.delete_before_cursor(1)
                 self.buffer.insert_text("\n")
                 return
+            # Issue #81 — expand any collapsed-paste placeholders back to their
+            # original text so the model receives the full content (the editor
+            # only ever displayed the compact ``[Pasted text …]`` placeholder).
+            # History stores the EXPANDED text so an Up-arrow recall is
+            # self-contained even after the registry is cleared on submit.
+            submit_text = self._expand_pastes(text)
             # Mid-turn Enter steers (injects into the running turn) instead of
             # feeding the serialized input queue — bypasses _input_loop, which is
             # blocked awaiting harness.prompt(). Idle / no-callback → normal submit.
-            if self._running and text.strip() and self.on_steer is not None:
+            if self._running and submit_text.strip() and self.on_steer is not None:
                 self.buffer.reset()
                 with contextlib.suppress(Exception):
-                    self.buffer.history.append_string(text)
-                self.on_steer(text)
+                    self.buffer.history.append_string(submit_text)
+                self._reset_paste_state()
+                self.on_steer(submit_text)
                 return
             self.buffer.reset()
             # The queue accept path bypasses prompt-toolkit's normal handler, so
             # record history explicitly.
-            if text.strip():
+            if submit_text.strip():
                 with contextlib.suppress(Exception):
-                    self.buffer.history.append_string(text)
-            self._input_queue.put_nowait(text)
+                    self.buffer.history.append_string(submit_text)
+            self._reset_paste_state()
+            self._input_queue.put_nowait(submit_text)
 
         @kb.add("escape", "enter")
         def _follow_up(event: object) -> None:
@@ -699,12 +762,14 @@ class AelixChrome:
             # queues the line for AFTER the turn (harness.follow_up). It is only
             # meaningful mid-turn — idle Alt+Enter is a no-op (does NOT submit; the
             # input editor is single-line so there is no newline-insert to shadow).
-            text = self.buffer.text
-            if self._running and text.strip() and self.on_follow_up is not None:
+            # Issue #81 — expand collapsed-paste placeholders (see _accept).
+            submit_text = self._expand_pastes(self.buffer.text)
+            if self._running and submit_text.strip() and self.on_follow_up is not None:
                 self.buffer.reset()
                 with contextlib.suppress(Exception):
-                    self.buffer.history.append_string(text)
-                self.on_follow_up(text)
+                    self.buffer.history.append_string(submit_text)
+                self._reset_paste_state()
+                self.on_follow_up(submit_text)
                 return
 
         @kb.add("c-t")  # Toggle thinking-block visibility (Sprint 6h₁₅).
@@ -721,6 +786,46 @@ class AelixChrome:
         def _paste_image(event: object) -> None:
             if self.on_image_paste is not None:
                 self.on_image_paste()
+
+        @kb.add(Keys.BracketedPaste)  # Issue #81: collapse large text pastes.
+        def _bracketed_paste(event: Any) -> None:
+            # Overrides prompt-toolkit's default bracketed-paste handler (which
+            # inserts the raw data). Normalize line endings the same way the
+            # default does (iTerm2 & friends send \r\n / \r in a paste).
+            data = event.data.replace("\r\n", "\n").replace("\r", "\n")
+            buf = event.current_buffer
+            # Small pastes insert as-is (no placeholder — the collapse is only a
+            # win for large content that would otherwise flood the editor).
+            if not _should_collapse_paste(data):
+                buf.insert_text(data)
+                self._last_pasted_raw = data
+                self._last_placeholder = None
+                return
+            # "Paste again to reveal": an immediately-repeated identical paste
+            # REPLACES the placeholder the first paste inserted with the raw text
+            # and pops its registry entry, then disarms. Replacing (not appending)
+            # is critical: leaving the placeholder in the buffer would let
+            # _expand_pastes re-expand it at submit and send the content TWICE
+            # (Issue #81 review, HIGH). Falls back to a plain insert if the
+            # placeholder is no longer in the buffer (the user edited it away).
+            if data == self._last_pasted_raw:
+                placeholder = self._last_placeholder
+                if placeholder is not None and placeholder in buf.text:
+                    idx = buf.text.index(placeholder)
+                    buf.text = (
+                        buf.text[:idx] + data + buf.text[idx + len(placeholder) :]
+                    )
+                    buf.cursor_position = idx + len(data)
+                    self._paste_registry.pop(placeholder, None)
+                else:
+                    buf.insert_text(data)
+                self._last_pasted_raw = None
+                self._last_placeholder = None
+                return
+            placeholder = self._register_paste(data)
+            buf.insert_text(placeholder)
+            self._last_pasted_raw = data
+            self._last_placeholder = placeholder
 
         @kb.add("c-g")  # Ctrl+G: open the current input in $EDITOR (pi parity).
         def _external_editor(event: object) -> None:
@@ -758,6 +863,7 @@ class AelixChrome:
                 return
             if self.buffer.text:
                 self.buffer.reset()
+                self._reset_paste_state()  # Issue #81 — drop dangling paste entries.
                 self._last_ctrl_c = None
                 return
             now = self._time()
@@ -1254,14 +1360,77 @@ class AelixChrome:
     # === editor remote-control seam ========================================
 
     def get_editor_text(self) -> str:
-        return self.buffer.text
+        # Issue #81 — expand collapsed-paste placeholders so consumers that
+        # snapshot the editor (Ctrl+G external editor, Alt+Up dequeue) see and
+        # can edit the REAL content, never an opaque ``[Pasted text …]`` token
+        # (editing/deleting which would otherwise silently drop the paste). The
+        # registry is left intact; it is reconciled at submit / on set_editor_text.
+        return self._expand_pastes(self.buffer.text)
 
     def set_editor_text(self, text: str) -> None:
+        # Replaces the whole buffer (external-editor result, dequeue restore),
+        # which already carries expanded text (see get_editor_text), so any
+        # previously-registered placeholders are gone from the buffer — drop the
+        # now-orphaned registry so a stale entry can't re-expand at submit.
+        self._reset_paste_state()
         self.buffer.text = text
         self.buffer.cursor_position = len(text)  # cursor to end, so paste appends
 
     def paste_to_editor(self, text: str) -> None:
         self.buffer.insert_text(text)
+
+    # === pasted-text collapse (Issue #81) ==================================
+
+    def _register_paste(self, data: str) -> str:
+        """Store a collapsed paste under a fresh ``[Pasted text #N +M lines]``
+        placeholder and return it. The registry is bounded (:data:`_PASTE_REGISTRY_MAX`)
+        so a long editing session without a submit can't grow it without limit —
+        but eviction only drops entries whose placeholder is NO LONGER in the live
+        buffer, so a still-visible token can never be stranded (which would leak
+        the literal placeholder to the model and lose its content — Issue #81
+        review). If every entry is still live the bound is briefly exceeded rather
+        than corrupt the buffer."""
+
+        self._paste_counter += 1
+        placeholder = _paste_placeholder(self._paste_counter, data)
+        self._paste_registry[placeholder] = data
+        if len(self._paste_registry) > _PASTE_REGISTRY_MAX:
+            live = self.buffer.text
+            for key in list(self._paste_registry):
+                if len(self._paste_registry) <= _PASTE_REGISTRY_MAX:
+                    break
+                if key != placeholder and key not in live:
+                    del self._paste_registry[key]
+        return placeholder
+
+    def _expand_pastes(self, text: str) -> str:
+        """Substitute every registered paste placeholder in ``text`` with its
+        original content so the model receives the full text (the editor only
+        ever showed the compact placeholder). Returns ``text`` unchanged when
+        nothing is registered.
+
+        A single left-to-right regex pass (alternation of the registered
+        placeholders, longest first so a shorter ``#N`` id can't shadow a longer
+        one) maps each match through the registry — so original text spliced in
+        by an earlier substitution is never re-scanned and cannot be
+        double-expanded even if a pasted blob happens to contain another live
+        placeholder token."""
+
+        if not self._paste_registry:
+            return text
+        placeholders = sorted(self._paste_registry, key=len, reverse=True)
+        pattern = re.compile("|".join(re.escape(p) for p in placeholders))
+        return pattern.sub(lambda m: self._paste_registry[m.group(0)], text)
+
+    def _reset_paste_state(self) -> None:
+        """Drop the paste registry + re-paste memory. Called when a line is
+        consumed (submit) or discarded (Ctrl+C clear). ``_paste_counter`` is
+        deliberately NOT reset — ``#N`` stays monotonic across the session (like
+        Claude Code) so a placeholder never collides with an earlier one."""
+
+        self._paste_registry.clear()
+        self._last_pasted_raw = None
+        self._last_placeholder = None
 
     # === overlay support ===================================================
 

@@ -1969,7 +1969,7 @@ def _build_input_completer(
     sub-completer is inert outside its own trigger (``/`` vs ``@``), so merging
     them is safe."""
 
-    from prompt_toolkit.completion import merge_completers
+    from prompt_toolkit.completion import ThreadedCompleter, merge_completers
 
     return merge_completers(
         [
@@ -1978,7 +1978,13 @@ def _build_input_completer(
                 builtins=builtins,
                 get_ext_commands=get_ext_commands,
             ),
-            FileMentionCompleter(cwd),
+            # Issue #39: the @file completer does fuzzy whole-tree enumeration
+            # (fd subprocess or an os.walk of up to 20k entries) on a cache miss.
+            # Wrap it in ThreadedCompleter so that runs OFF the prompt-toolkit
+            # event-loop thread — a large monorepo or a stalled fd can no longer
+            # freeze the UI / token stream while completing. The cheap slash
+            # completer stays synchronous (instant).
+            ThreadedCompleter(FileMentionCompleter(cwd)),
         ]
     )
 
