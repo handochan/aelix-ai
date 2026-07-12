@@ -268,9 +268,12 @@ async def test_footer_shows_real_mode_and_context_label() -> None:
             mode_provider=lambda: "all",
             mode="default",
         )
-        # mode_provider ("all") wins over the local "default" placeholder
+        # mode_provider ("all") wins over the local "default" placeholder.
+        # Assert on the mode SEGMENT (rendered "⏵⏵ <mode>"), not the whole footer
+        # line, which also carries the live git branch (⎇ <branch>) — a bare
+        # "default" substring check false-fails on any branch named "…default…".
         assert "⏵⏵ all" in chrome._footer_line
-        assert "default" not in chrome._footer_line
+        assert "⏵⏵ default" not in chrome._footer_line
         # live context meter segment appears after a turn
         ctx.set_context_label("◔ 5%")
         assert "◔ 5%" in chrome._footer_line
