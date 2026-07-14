@@ -2260,11 +2260,24 @@ async def _output_pump(queue: asyncio.Queue[tuple[str, object]], chrome: AelixCh
     """Apply tagged output commands in order: commit → scrollback, tail → widget.
 
     Sprint 6h₂₄ — flicker fix. The pump drains every item the queue can offer
-    without blocking after the first ``await queue.get()`` and groups consecutive
-    ``commit`` items into ONE ``print_above_many`` call (one ``in_terminal()``
-    suspend per batch, regardless of how many committed lines arrived together).
-    A ``tail`` item interleaved between commits flushes the pending commits
-    first, then applies the tail, so visible ordering is unchanged.
+    without blocking after the first ``await queue.get()`` and groups the
+    drain's ``commit`` items into ONE ``print_above_many`` call (one
+    ``in_terminal()`` suspend per drain, regardless of how many committed
+    lines arrived together).
+
+    Flicker fix round 3 — atomic tail handoff. A ``tail`` item is a
+    full-window REPLACEMENT (never appended content), and nothing paints
+    mid-drain (the chrome repaints after the batch flush), so only the LAST
+    tail of a drain can ever become visible — intermediate tails are dead
+    states, and commits may safely coalesce ACROSS them (commit order is
+    preserved; the old flush-per-tail split just cost extra suspends). The
+    last tail is applied INSIDE the batch's suspend via ``apply_before_redraw``
+    so the exit repaint already shows the new window: stable lines leave the
+    live window in the same painted frame that lands them in scrollback, and
+    the final commit+clear stops flashing the answer twice (scrollback + the
+    still-populated window) before the collapse. The queue-ordering guarantee
+    (tail-clear never paints before its text reaches scrollback — see the
+    output-queue seam comment) now holds by construction: they are one frame.
     """
 
     while True:
@@ -2279,24 +2292,39 @@ async def _output_pump(queue: asyncio.Queue[tuple[str, object]], chrome: AelixCh
             except asyncio.QueueEmpty:
                 break
 
-        # Coalesce consecutive commits while preserving order against tails.
         pending: list[object] = []
+        tail_seen = False
+        tail_ansi = ""
         for kind, payload in items:
             if kind == "commit":
                 pending.append(payload)
-            else:
-                if pending:
-                    with contextlib.suppress(Exception):
-                        await chrome.print_above_many(pending)
-                    pending = []
-                if kind == "tail":
-                    ansi = payload if isinstance(payload, str) else ""
-                    chrome.set_widget(
-                        "__stream__", ansi.split("\n") if ansi else None, above=True
-                    )
+            elif kind == "tail":
+                tail_seen = True
+                tail_ansi = payload if isinstance(payload, str) else ""
+
+        def _apply_tail(ansi: str = tail_ansi) -> None:
+            # Default-arg binding: freezes THIS drain's tail for the callback
+            # (a bare closure over the loop variable would be a B023 hazard).
+            chrome.set_widget(
+                "__stream__", ansi.split("\n") if ansi else None, above=True
+            )
+
         if pending:
-            with contextlib.suppress(Exception):
-                await chrome.print_above_many(pending)
+            try:
+                await chrome.print_above_many(
+                    pending,
+                    apply_before_redraw=_apply_tail if tail_seen else None,
+                )
+            except Exception:  # noqa: BLE001 — the pump must never die, and a
+                # failed flush must not strand a stale live window: the hook
+                # runs AFTER the prints inside print_above_many, so an error
+                # there means the tail was not applied. Re-apply it here —
+                # set_widget is an idempotent full replacement, so even a
+                # double apply is harmless.
+                if tail_seen:
+                    _apply_tail()
+        elif tail_seen:
+            _apply_tail()
 
 
 async def _input_loop(

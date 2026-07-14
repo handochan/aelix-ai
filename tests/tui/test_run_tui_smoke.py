@@ -542,10 +542,14 @@ def _spy_commits(chrome: AelixChrome) -> list[str]:
         _record(renderable)
         await orig_single(renderable)
 
-    async def _capture_many(renderables: list[object]) -> None:
+    async def _capture_many(renderables: list[object], **kwargs: object) -> None:
+        # Flicker fix round 3: the pump may pass ``apply_before_redraw`` —
+        # forward it so the spy stays signature-transparent (a TypeError here
+        # would be swallowed by the pump's never-die handler and the commits
+        # would silently vanish from the assertions).
         for r in renderables:
             _record(r)
-        await orig_many(renderables)
+        await orig_many(renderables, **kwargs)  # type: ignore[arg-type]
 
     chrome.print_above = _capture_single  # type: ignore[method-assign]
     chrome.print_above_many = _capture_many  # type: ignore[method-assign]

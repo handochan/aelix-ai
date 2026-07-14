@@ -383,6 +383,9 @@ class AelixChrome:
         self._console = console if console is not None else Console()
         self._prompt = prompt
         self._time = time_fn  # injectable clock (spinner cadence; tests)
+        # CSI 2026 bracket depth (ADR-0194) — merges overlapping brackets from
+        # concurrent print_above callers; see _sync_update.
+        self._sync_depth = 0
         # Issue #20 — LIVE provider of extension shortcuts ({key_spec:
         # ExtensionShortcut}). Key SPECS are enumerated once at KeyBindings
         # build time (prompt-toolkit bindings are pre-registered), but the
@@ -1114,8 +1117,30 @@ class AelixChrome:
         brackets the Rich ``print`` atomically. Best-effort + exception-
         suppressed: terminals without support ignore the unknown private CSI, and
         a non-writable file (DummyOutput path in tests) is a harmless no-op.
+
+        Depth-counted (flicker fix round 3, ADR-0194): the bracket now opens
+        BEFORE ``in_terminal()`` — i.e. before joining prompt_toolkit's
+        run-in-terminal serialization chain — so two concurrent callers (the
+        output pump + a descriptor's fire-and-forget ``print_above``,
+        descriptors.py) can overlap brackets. DEC 2026 is a boolean MODE, not
+        a nesting counter: the first caller's ``l`` would strip the waiter's
+        bracket and its suspend would paint unsynchronized. Counting depth
+        merges overlapping brackets into one (``h`` only on 0→1, ``l`` only on
+        1→0); terminals auto-release a stale bracket on a short timeout, so
+        the merged span stays bounded. The counter mutates OUTSIDE the
+        suppress so a failed write can never unbalance it.
         """
 
+        if on:
+            self._sync_depth += 1
+            if self._sync_depth != 1:
+                return
+        else:
+            if self._sync_depth == 0:
+                return  # unbalanced close: never emit a stray l
+            self._sync_depth -= 1
+            if self._sync_depth != 0:
+                return
         with contextlib.suppress(Exception):
             self._console.file.write("\x1b[?2026h" if on else "\x1b[?2026l")
             self._console.file.flush()
@@ -1123,17 +1148,34 @@ class AelixChrome:
     async def print_above(self, renderable: object) -> None:
         """Render ``renderable`` to scrollback ABOVE the pinned chrome."""
 
-        async with in_terminal():
-            # CSI 2026 synchronized output (WP-9): bracket the scrollback write so
-            # supporting terminals paint it + the chrome repaint in one frame.
-            self._sync_update(True)
-            try:
+        # CSI 2026 synchronized output (WP-9, re-scoped — flicker fix round 3):
+        # the bracket must wrap the WHOLE suspend cycle, not just the Rich
+        # write. ``in_terminal`` erases the chrome on ENTRY and repaints it on
+        # EXIT (prompt_toolkit run_in_terminal.py — ``renderer.erase()`` in
+        # ``__aenter__``, ``app._redraw()`` in the ``__aexit__`` finally), so a
+        # bracket INSIDE the block left both frames unsynchronized: supporting
+        # terminals painted "chrome gone" and "chrome back" as separate frames
+        # and the chrome visibly blinked once per commit batch. Outside the
+        # block, erase → scrollback write → chrome repaint collapse into ONE
+        # painted frame. Safe: the exit redraw is synchronous
+        # (``Application._redraw`` calls ``renderer.render`` directly, so its
+        # bytes are flushed before ``__aexit__`` returns), and terminals
+        # auto-release a stale 2026 bracket on a short timeout, so an
+        # exception inside cannot wedge the screen (belt: the finally below).
+        self._sync_update(True)
+        try:
+            async with in_terminal():
                 self._console.print(renderable)
-            finally:
-                self._sync_update(False)
+        finally:
+            self._sync_update(False)
         self.app.invalidate()
 
-    async def print_above_many(self, renderables: Sequence[object]) -> None:
+    async def print_above_many(
+        self,
+        renderables: Sequence[object],
+        *,
+        apply_before_redraw: Callable[[], None] | None = None,
+    ) -> None:
         """Batch-render ``renderables`` to scrollback in ONE ``in_terminal`` block.
 
         Sprint 6h₂₄ — flicker fix. Each ``in_terminal()`` suspends the renderer,
@@ -1143,24 +1185,35 @@ class AelixChrome:
         number of full-chrome repaints to one per batch (down from one per
         committed line), without changing visible ordering.
 
-        Empty ``renderables`` is a no-op (no suspend, no invalidate).
+        Empty ``renderables`` skips the suspend entirely (``apply_before_redraw``
+        still runs, synchronously, if given — it must not be silently dropped).
 
-        Sprint 6h₂₅ (ADR-0153, WP-9): the whole batch is bracketed by CSI 2026
-        Begin/End Synchronized Update so a supporting terminal paints the entire
-        scrollback write + the chrome repaint in ONE frame (no tearing). The
-        sync sequences live INSIDE the ``in_terminal`` block so the bracket is
-        atomic with the suspend; ordering of the renderables is unchanged.
+        Flicker fix round 3 (supersedes the 6h₂₅ INSIDE-the-block placement):
+        the CSI 2026 bracket now wraps the WHOLE suspend — ``in_terminal``
+        erases the chrome on entry and repaints it on exit, both previously
+        OUTSIDE the bracket, so the chrome still blinked per batch on
+        supporting terminals. See :meth:`print_above` for the full rationale.
+
+        ``apply_before_redraw`` runs INSIDE the suspend, after the scrollback
+        writes and before the exit repaint — chrome state it mutates (e.g. the
+        ``__stream__`` tail widget) is painted in the SAME frame as the batch.
+        This is the atomic stable-line/final handoff: committed text lands in
+        scrollback and leaves the live window in one paint, never two.
         """
 
         if not renderables:
+            if apply_before_redraw is not None:
+                apply_before_redraw()
             return
-        async with in_terminal():
-            self._sync_update(True)
-            try:
+        self._sync_update(True)
+        try:
+            async with in_terminal():
                 for renderable in renderables:
                     self._console.print(renderable)
-            finally:
-                self._sync_update(False)
+                if apply_before_redraw is not None:
+                    apply_before_redraw()
+        finally:
+            self._sync_update(False)
         self.app.invalidate()
 
     def clear(self) -> None:

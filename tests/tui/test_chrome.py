@@ -379,6 +379,190 @@ async def test_print_above_emits_csi_2026_synchronized_update() -> None:
         assert begin < body < end, f"sync bracket does not wrap the write: {out!r}"
 
 
+@asynccontextmanager
+async def _recording_in_terminal(
+    buf: io.StringIO,
+) -> AsyncGenerator[None]:
+    # Stand-in for prompt_toolkit's ``in_terminal`` that writes sentinel
+    # markers where the REAL one erases (entry) and repaints (exit finally)
+    # the chrome — into the SAME buffer the Rich console and the CSI 2026
+    # writes go to, so byte order in the buffer IS the frame order.
+    #
+    # The real ``in_terminal`` AWAITS before erasing (the run-in-terminal
+    # future chain + pending CPR responses) — yield here too so the tests
+    # exercise the bracket being HELD across a suspension point, not just a
+    # straight-line call.
+    await asyncio.sleep(0)
+    buf.write("<ERASE>")
+    try:
+        yield
+    finally:
+        buf.write("<REDRAW>")
+
+
+async def test_print_above_sync_bracket_wraps_the_whole_suspend(monkeypatch) -> None:
+    # Flicker fix round 3: the CSI 2026 bracket must OPEN before the
+    # in_terminal suspend erases the chrome and CLOSE after its exit repaints
+    # it — a bracket inside the block (the 6h₂₅ placement) leaves both frames
+    # unsynchronized and the chrome blinks once per commit batch.
+    import aelix_coding_agent.tui.chrome as chrome_mod
+
+    async with _chrome(run_app=True) as (chrome, _pipe, buf):
+        await asyncio.sleep(0.02)
+        monkeypatch.setattr(
+            chrome_mod, "in_terminal", lambda: _recording_in_terminal(buf)
+        )
+        await asyncio.wait_for(chrome.print_above(Text("BRACKET-BODY")), timeout=5)
+        out = buf.getvalue()
+        marks = [
+            out.find("\x1b[?2026h"),
+            out.find("<ERASE>"),
+            out.find("BRACKET-BODY"),
+            out.find("<REDRAW>"),
+            out.find("\x1b[?2026l"),
+        ]
+        assert all(m >= 0 for m in marks), f"missing frame marker: {out!r}"
+        assert marks == sorted(marks), (
+            f"2026 bracket does not wrap erase→write→redraw: {out!r}"
+        )
+
+
+async def test_print_above_many_bracket_and_apply_inside_suspend(monkeypatch) -> None:
+    # Batch variant of the round-3 bracket scope, plus the atomic tail
+    # handoff: ``apply_before_redraw`` must run INSIDE the suspend — after the
+    # scrollback writes, before the exit repaint — so widget state it mutates
+    # paints in the same frame as the batch.
+    import aelix_coding_agent.tui.chrome as chrome_mod
+
+    async with _chrome(run_app=True) as (chrome, _pipe, buf):
+        await asyncio.sleep(0.02)
+        monkeypatch.setattr(
+            chrome_mod, "in_terminal", lambda: _recording_in_terminal(buf)
+        )
+        def _apply() -> None:
+            buf.write("<APPLY>")
+
+        await asyncio.wait_for(
+            chrome.print_above_many(
+                [Text("BATCH-ONE"), Text("BATCH-TWO")],
+                apply_before_redraw=_apply,
+            ),
+            timeout=5,
+        )
+        out = buf.getvalue()
+        marks = [
+            out.find("\x1b[?2026h"),
+            out.find("<ERASE>"),
+            out.find("BATCH-ONE"),
+            out.find("BATCH-TWO"),
+            out.find("<APPLY>"),
+            out.find("<REDRAW>"),
+            out.find("\x1b[?2026l"),
+        ]
+        assert all(m >= 0 for m in marks), f"missing frame marker: {out!r}"
+        assert marks == sorted(marks), (
+            f"batch frame order broken (want h<erase<writes<apply<redraw<l): {out!r}"
+        )
+
+
+async def test_print_above_many_empty_with_apply_still_applies() -> None:
+    # An empty batch skips the suspend but must NOT silently drop the hook —
+    # the pump relies on the tail always applying.
+    async with _chrome(run_app=True) as (chrome, _pipe, _buf):
+        await asyncio.sleep(0.02)
+        ran: list[bool] = []
+        await asyncio.wait_for(
+            chrome.print_above_many([], apply_before_redraw=lambda: ran.append(True)),
+            timeout=1,
+        )
+        assert ran == [True]
+
+
+async def test_print_above_many_closes_bracket_when_print_raises(monkeypatch) -> None:
+    # The re-scoped bracket's finally: a console failure mid-batch must still
+    # emit ?2026l (a leaked open bracket freezes painting until the terminal's
+    # auto-release timeout — up to ~1 s of dead screen).
+    async with _chrome(run_app=True) as (chrome, _pipe, buf):
+        await asyncio.sleep(0.02)
+
+        def _boom(*_args: object, **_kwargs: object) -> None:
+            raise RuntimeError("console failure mid-batch")
+
+        monkeypatch.setattr(chrome._console, "print", _boom)
+        with pytest.raises(RuntimeError):
+            await asyncio.wait_for(chrome.print_above_many([Text("X")]), timeout=5)
+        out = buf.getvalue()
+        assert out.count("\x1b[?2026h") == 1
+        assert out.count("\x1b[?2026l") == 1
+
+
+async def test_print_above_many_closes_bracket_when_hook_raises() -> None:
+    # Same finally guarantee for a faulty apply_before_redraw hook.
+    async with _chrome(run_app=True) as (chrome, _pipe, buf):
+        await asyncio.sleep(0.02)
+
+        def _bad_hook() -> None:
+            raise RuntimeError("hook failure")
+
+        with pytest.raises(RuntimeError):
+            await asyncio.wait_for(
+                chrome.print_above_many([Text("Y")], apply_before_redraw=_bad_hook),
+                timeout=5,
+            )
+        out = buf.getvalue()
+        assert out.count("\x1b[?2026h") == 1
+        assert out.count("\x1b[?2026l") == 1
+
+
+async def test_sync_update_depth_merges_overlapping_brackets() -> None:
+    # ADR-0194: DEC 2026 is a boolean MODE, not a nesting counter — with the
+    # bracket now opening BEFORE the in_terminal serialization chain, two
+    # concurrent print_above callers can overlap brackets, and the first
+    # closer would strip the waiter's bracket mid-suspend. _sync_update is
+    # depth-counted so overlapping brackets merge: h only on 0→1, l only on
+    # 1→0, and underflow never emits a stray l.
+    async with _chrome(run_app=False) as (chrome, _pipe, buf):
+        chrome._sync_update(True)
+        chrome._sync_update(True)  # second opener: no duplicate h
+        chrome._sync_update(False)  # first closer: mode must STAY on
+        assert buf.getvalue().count("\x1b[?2026h") == 1
+        assert "\x1b[?2026l" not in buf.getvalue()
+        chrome._sync_update(False)  # last closer releases the merged bracket
+        assert buf.getvalue().count("\x1b[?2026l") == 1
+        chrome._sync_update(False)  # underflow guard: no stray l
+        assert buf.getvalue().count("\x1b[?2026l") == 1
+
+
+async def test_concurrent_print_above_brackets_merge(monkeypatch) -> None:
+    # Integration shape of the depth counter: two print_above tasks overlap
+    # (both parked inside a gated in_terminal stand-in). The terminal must see
+    # exactly ONE merged bracket, closing only after BOTH bodies were written.
+    import aelix_coding_agent.tui.chrome as chrome_mod
+
+    async with _chrome(run_app=True) as (chrome, _pipe, buf):
+        await asyncio.sleep(0.02)
+        release = asyncio.Event()
+
+        @asynccontextmanager
+        async def _gated_in_terminal() -> AsyncGenerator[None]:
+            await release.wait()
+            yield
+
+        monkeypatch.setattr(chrome_mod, "in_terminal", _gated_in_terminal)
+        t1 = asyncio.create_task(chrome.print_above(Text("FIRST-BODY")))
+        t2 = asyncio.create_task(chrome.print_above(Text("SECOND-BODY")))
+        for _ in range(3):  # let both open their brackets and park at the gate
+            await asyncio.sleep(0)
+        release.set()
+        await asyncio.wait_for(asyncio.gather(t1, t2), timeout=5)
+        out = buf.getvalue()
+        assert out.count("\x1b[?2026h") == 1, f"brackets did not merge: {out!r}"
+        assert out.count("\x1b[?2026l") == 1, f"brackets did not merge: {out!r}"
+        close = out.find("\x1b[?2026l")
+        assert close > out.find("FIRST-BODY") >= 0
+        assert close > out.find("SECOND-BODY") >= 0
+
+
 # === Sprint 6h₁₂e — steer / follow-up (queue-while-running) =============
 
 
