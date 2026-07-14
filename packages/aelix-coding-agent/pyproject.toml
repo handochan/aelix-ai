@@ -45,6 +45,16 @@ dependencies = [
   # the extension signing/verification path imports it, so a clean install must
   # carry it. In-env at 48.0.0; floor at 42 for the stable Ed25519 API surface.
   "cryptography>=42,<49",
+  # #99 — verify TLS against the OS certificate store, not just certifi's
+  # public-root bundle. A corporate root CA is installed system-wide, so certifi
+  # never sees it and every provider request dies as an opaque "Connection
+  # error." while VS Code / Copilot (Node, OS trust store) keep working. Owned by
+  # THIS package because ``cli/entry.py`` (the ``aelix`` console script below) is
+  # the only importer: the injection rebinds ``ssl.SSLContext`` process-wide, so
+  # it belongs to the application entry point and must never be a side effect of
+  # importing the aelix-ai provider library. Floor at 0.9 for the
+  # ``inject_into_ssl`` API; the CLI degrades to certifi if the import fails.
+  "truststore>=0.9",
 ]
 
 # Sprint 6h₁₀a (ADR-0088 Q1, ADR-0104): the interactive TUI shell is an

@@ -635,6 +635,13 @@ def test_module_imports_clean() -> None:
 _TOKEN_WITH_PROXY = "tid=abc;exp=1;proxy-ep=proxy.foo.example"
 
 
+class _M:
+    """Minimal catalog-model stand-in — ``enable_all`` reads only ``.id``."""
+
+    def __init__(self, mid: str) -> None:
+        self.id = mid
+
+
 async def test_enable_model_posts_policy_and_returns_true() -> None:
     """POSTs ``/models/{id}/policy`` with the chat-policy headers + body."""
 
@@ -686,10 +693,6 @@ async def test_enable_model_returns_false_on_exception() -> None:
 async def test_enable_all_enumerates_catalog_and_reports_progress() -> None:
     """Enables one policy per catalog Copilot model; reports each result."""
 
-    class _M:
-        def __init__(self, mid: str) -> None:
-            self.id = mid
-
     fake = _FakeAsyncClient()
     fake._next_response = _FakeResponse(200, {})  # type: ignore[attr-defined]
     seen: list[tuple[str, bool]] = []
@@ -716,6 +719,152 @@ async def test_enable_all_enumerates_catalog_and_reports_progress() -> None:
         ("gpt-4o", True),
         ("grok-code-fast-1", True),
     ]
+
+
+# === reachability vs. policy answers (issue #99) ===
+
+
+async def test_enable_model_403_stays_a_soft_no() -> None:
+    """A seat that may not use a model is a POLICY answer, not a broken network:
+    it must stay best-effort so one un-enablable model cannot fail the login."""
+
+    fake = _FakeAsyncClient()
+    fake._next_response = _FakeResponse(403, {"error": "forbidden"})  # type: ignore[attr-defined]
+    with patch(
+        "aelix_ai.oauth.github_copilot.httpx.AsyncClient", return_value=fake
+    ):
+        ok = await enable_github_copilot_model(_TOKEN_WITH_PROXY, "claude-opus-4.6")
+    assert ok is False
+
+
+async def test_enable_model_raises_on_transport_error() -> None:
+    """Swallowing this is what let /login report success on a TLS-broken network
+    (#99): the policy POST is the first call to touch the Copilot API host, so a
+    ConnectError here is the earliest honest signal the host is unreachable."""
+
+    import httpx
+
+    tls_failure = httpx.ConnectError("[SSL: CERTIFICATE_VERIFY_FAILED] ...")
+    with patch(
+        "aelix_ai.oauth.github_copilot.httpx.AsyncClient", side_effect=tls_failure
+    ), pytest.raises(httpx.ConnectError):
+        await enable_github_copilot_model(_TOKEN_WITH_PROXY, "gpt-4o")
+
+
+async def test_enable_model_absorbs_a_timeout_rather_than_raising() -> None:
+    """A timeout is transient, so a retry may succeed — failing /login over one
+    would discard a completed device flow the user must then redo by hand. Only
+    a retry-proof reachability failure (TLS/DNS/connect) is worth that price."""
+
+    import httpx
+
+    with patch(
+        "aelix_ai.oauth.github_copilot.httpx.AsyncClient",
+        side_effect=httpx.ReadTimeout("slow network"),
+    ):
+        assert await enable_github_copilot_model(_TOKEN_WITH_PROXY, "gpt-4o") is False
+
+
+async def test_enable_all_survives_every_model_timing_out() -> None:
+    """An all-timeout run is a login that enabled nothing, NOT a failed login —
+    the guard fires only on deterministic unreachability.
+
+    Drives the REAL ``enable_github_copilot_model`` (patching it out would bypass
+    the timeout carve-out under test) by failing the transport itself.
+    """
+
+    import httpx
+
+    seen: list[tuple[str, bool]] = []
+    with patch(
+        "aelix_ai.models.get_models", return_value=[_M("gpt-4o"), _M("claude-opus-4.6")]
+    ), patch(
+        "aelix_ai.oauth.github_copilot.httpx.AsyncClient",
+        side_effect=httpx.ConnectTimeout("slow network"),
+    ):
+        # Must NOT raise: httpx.TimeoutException is a TransportError subclass, so
+        # a naive `except httpx.TransportError: raise` would cost the token here.
+        await enable_all_github_copilot_models(
+            _TOKEN_WITH_PROXY, None, on_model=lambda mid, ok: seen.append((mid, ok))
+        )
+
+    assert sorted(seen) == [("claude-opus-4.6", False), ("gpt-4o", False)]
+
+
+async def test_enable_all_tolerates_a_partial_transport_failure() -> None:
+    """One flaky POST among many must not cost the user a completed device flow."""
+
+    import httpx
+
+    calls: list[str] = []
+
+    async def _one(_token: str, model_id: str, _domain: str | None = None) -> bool:
+        calls.append(model_id)
+        if model_id == "grok-code-fast-1":
+            raise httpx.ConnectError("transient")
+        return True
+
+    seen: list[tuple[str, bool]] = []
+    with patch(
+        "aelix_ai.models.get_models",
+        return_value=[_M("gpt-4o"), _M("claude-opus-4.6"), _M("grok-code-fast-1")],
+    ), patch(
+        "aelix_ai.oauth.github_copilot.enable_github_copilot_model", side_effect=_one
+    ):
+        await enable_all_github_copilot_models(
+            _TOKEN_WITH_PROXY, None, on_model=lambda mid, ok: seen.append((mid, ok))
+        )
+
+    assert len(calls) == 3
+    # The unreachable model is still REPORTED (as failed), never dropped silently.
+    assert sorted(seen) == [
+        ("claude-opus-4.6", True),
+        ("gpt-4o", True),
+        ("grok-code-fast-1", False),
+    ]
+
+
+async def test_enable_all_raises_when_every_model_is_unreachable() -> None:
+    """Nothing was reached at all — that is the network, not a policy answer, so
+    /login must fail with the real reason instead of at message 1."""
+
+    import httpx
+
+    async def _all_fail(*_a: Any, **_k: Any) -> bool:
+        raise httpx.ConnectError("[SSL: CERTIFICATE_VERIFY_FAILED] ...")
+
+    with patch(
+        "aelix_ai.models.get_models",
+        return_value=[_M("gpt-4o"), _M("claude-opus-4.6")],
+    ), patch(
+        "aelix_ai.oauth.github_copilot.enable_github_copilot_model",
+        side_effect=_all_fail,
+    ), pytest.raises(httpx.ConnectError):
+        await enable_all_github_copilot_models(_TOKEN_WITH_PROXY, None)
+
+
+async def test_enable_all_non_2xx_for_every_model_does_not_raise() -> None:
+    """All-False is a policy outcome (a seat with no access to anything), NOT
+    unreachability — it must stay best-effort."""
+
+    fake = _FakeAsyncClient()
+    fake._next_response = _FakeResponse(403, {"error": "forbidden"})  # type: ignore[attr-defined]
+    seen: list[tuple[str, bool]] = []
+    with patch(
+        "aelix_ai.models.get_models", return_value=[_M("gpt-4o"), _M("claude-opus-4.6")]
+    ), patch("aelix_ai.oauth.github_copilot.httpx.AsyncClient", return_value=fake):
+        await enable_all_github_copilot_models(
+            _TOKEN_WITH_PROXY, None, on_model=lambda mid, ok: seen.append((mid, ok))
+        )
+    assert sorted(seen) == [("claude-opus-4.6", False), ("gpt-4o", False)]
+
+
+async def test_enable_all_empty_catalog_does_not_raise() -> None:
+    """``len([]) == len([])`` must not read as "every model failed" and turn a
+    no-op into a login failure."""
+
+    with patch("aelix_ai.models.get_models", return_value=[]):
+        await enable_all_github_copilot_models(_TOKEN_WITH_PROXY, None)
 
 
 def test_catalog_has_github_copilot_models() -> None:

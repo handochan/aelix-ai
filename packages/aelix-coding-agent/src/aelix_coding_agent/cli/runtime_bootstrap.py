@@ -6,14 +6,20 @@ Wires real LLM turns for the interactive / print / rpc CLI. Three pieces:
   ``setdefault`` semantics so real environment variables always win).
 - :func:`register_providers` — registers the built-in provider adapters on the
   global API registry (idempotent).
-- :func:`resolve_model` — resolves the :class:`Model` to drive a turn. OpenRouter
-  (OpenAI-compatible) is configured purely from env: when ``OPENROUTER_API_KEY``
-  + a model id are present (and no conflicting ``--provider``), a model with
-  ``provider="openrouter"``, ``api="openai-completions"`` and the OpenRouter
-  ``base_url`` is built. The ``openai_completions`` adapter reads
-  ``OPENROUTER_API_KEY`` from the environment itself, so no auth callback wiring
-  is required. Falls back to the prior bare ``Model`` (from ``--model`` /
-  ``--provider``) otherwise.
+- :func:`resolve_model` — resolves the :class:`Model` to drive a turn, from the
+  flags, the env, the static catalog and (optionally) the live ``ModelRegistry``.
+  OpenRouter (OpenAI-compatible) is configured purely from env: when
+  ``OPENROUTER_API_KEY`` + a model id are present (and no conflicting
+  ``--provider``), a model with ``provider="openrouter"``,
+  ``api="openai-completions"`` and the OpenRouter ``base_url`` is built. The
+  ``openai_completions`` adapter reads ``OPENROUTER_API_KEY`` from the
+  environment itself, so no auth callback wiring is required. Falls back to a
+  bare ``Model`` (from ``--model`` / ``--provider``) otherwise — which CANNOT
+  drive a turn, so callers gate on ``core.runnable_models.is_runnable`` (#98).
+  This function owns the ENTIRE provider-precedence ladder (explicit flag →
+  in-id prefix → OpenRouter env → settings default); callers pass each source in
+  its own parameter and must never pre-merge them, because the earlier rungs are
+  gated on the later ones being absent.
 
 Provider registration + ``.env`` load run from the real console entry
 (:func:`aelix_coding_agent.cli.entry.main_sync`), NOT from ``_async_main`` — so
@@ -99,15 +105,116 @@ def register_providers() -> None:
     _google_vertex.register_all()
 
 
-def resolve_model(model_flag: str | None, provider_flag: str | None) -> Model:
-    """Resolve the turn :class:`Model` from flags + env.
+def _registry_lookup(registry: Any, provider: str, model_id: str) -> Model | None:
+    """Resolve ``model_id`` against the LIVE :class:`ModelRegistry`.
 
-    Three paths: (1) OpenRouter-from-env (``OPENROUTER_API_KEY`` + a model id,
-    no conflicting ``--provider``); (2) explicit ``--provider``/``--model`` or
-    the ``<provider>/<model>`` slash shorthand, enriched from the Pi catalog so
-    the resolved model carries its real ``api`` (never the bare ``"unknown"``);
-    (3) a bare fallback model for an empty/unknown provider, which the caller's
-    guard turns into a graceful "No model selected" message.
+    The static catalog is a build-time snapshot. The registry additionally holds
+    ``models.json`` custom providers and — once ``bind_model_registry`` has
+    replayed them — extension ``register_provider`` models. Neither is knowable
+    from the catalog, so without this lookup they resolve to ``api="unknown"``
+    and raise the internal "No provider registered for api='unknown'" at the
+    first turn (#98).
+
+    An EMPTY ``provider`` is resolved across providers and accepted ONLY when
+    exactly one provider serves ``model_id``. An owner guess would dispatch the
+    turn — and the credentials with it — to whichever vendor sorted first: the
+    bundled catalog alone serves ``gpt-5.4`` from six providers (openai,
+    azure-openai-responses, github-copilot, opencode, openai-codex,
+    cloudflare-ai-gateway). Ambiguity therefore stays unresolved on purpose and
+    the caller's ``is_runnable`` gate points the user at ``/model``.
+
+    A hit is returned VERBATIM, including one whose ``base_url`` is empty (an
+    extension ``register_provider`` model can omit it; step 3b of
+    ``ModelRegistry._load_models`` merges it without injecting a host). Such a
+    model must NOT be dropped to "no match" here: :func:`_sibling_backfill` would
+    then stamp the catalog's unanimous api over the api this provider's own
+    registration declared, misrouting the turn on a second axis. It is instead
+    caught downstream by ``core.runnable_models.is_runnable``, which refuses a
+    hostless model precisely because the adapter would resolve it to its SDK's
+    first-party vendor host (#98) — the same gate covers the ``/model`` picker,
+    which hands registry models straight to ``set_model``.
+
+    Introspection-only: an alternate registry lacking ``find`` / ``get_all``
+    degrades to "no match" and must never break launch.
+    """
+
+    if registry is None or not model_id:
+        return None
+    try:
+        if provider:
+            return registry.find(provider, model_id)
+        matches = [m for m in registry.get_all() if m.id == model_id]
+        if len({m.provider for m in matches}) == 1:
+            return matches[0]
+    except Exception:  # noqa: BLE001 — resolution must never break launch
+        return None
+    return None
+
+
+def _sibling_backfill(provider: str, model_id: str) -> Model | None:
+    """Backfill ``api``/``base_url`` for an uncatalogued id under a KNOWN provider.
+
+    Lets a custom / newly-released id under a catalogued provider still reach an
+    adapter. Only an UNANIMOUS sibling ``api`` is adopted: five catalog providers
+    span several apis (github-copilot, opencode, cloudflare-ai-gateway,
+    fireworks, opencode-go) and every one of them includes ``anthropic-messages``,
+    so the previous ``siblings[0].api`` guess routed a github-copilot id to the
+    ANTHROPIC adapter (its first sibling is claude-haiku-4.5). That adapter does
+    ``base_url=model.base_url or None`` (``providers/anthropic.py``), collapsing
+    the omitted base_url to the AsyncAnthropic default host — so a GitHub Copilot
+    OAuth bearer left the process for ``api.anthropic.com`` (#98).
+
+    A unanimous ``api`` means every sibling agrees this provider speaks that
+    protocol, so the adapter choice cannot cross vendors. ``base_url`` is carried
+    only when it too is unanimous, pinning the host explicitly rather than
+    relying on an SDK default (amazon-bedrock is the one single-api provider with
+    several base_urls — same vendor, different regions).
+    """
+
+    from aelix_ai.models import get_models
+
+    siblings = get_models(provider)
+    if not siblings:
+        return None
+    apis = {m.api for m in siblings}
+    if len(apis) != 1:
+        return None
+    base_urls = {m.base_url for m in siblings}
+    return Model(
+        id=model_id,
+        provider=provider,
+        api=next(iter(apis)),
+        base_url=siblings[0].base_url if len(base_urls) == 1 else "",
+    )
+
+
+def resolve_model(
+    model_flag: str | None,
+    provider_flag: str | None,
+    registry: Any = None,
+    default_provider: str | None = None,
+) -> Model:
+    """Resolve the turn :class:`Model` from flags + env + the live registry.
+
+    Resolution order: (1) OpenRouter-from-env (``OPENROUTER_API_KEY`` + a model
+    id, no conflicting ``--provider``); (2) an exact static-catalog hit for
+    ``--provider``/``--model``, the ``<provider>/<model>`` slash shorthand, or
+    ``default_provider``; (3) ``registry`` — the models.json custom +
+    extension-registered providers the build-time catalog cannot know
+    (:func:`_registry_lookup`); (4) an uncatalogued id under a catalogued
+    provider, backfilled from unanimous siblings (:func:`_sibling_backfill`);
+    (5) a bare model whose ``api`` stays the ``Model`` default ``"unknown"``.
+
+    ``provider_flag`` means "the user EXPLICITLY named this provider" (``--provider``)
+    and NOTHING else — the OpenRouter-env branch and the slash shorthand are both
+    gated on its emptiness, so anything weaker must not be passed through it.
+    ``default_provider`` (settings.json ``defaultProvider``) is that weaker
+    signal and has its own, lowest-precedence slot below (#98).
+
+    ``registry`` is optional (:data:`None` = catalog-only) because callers resolve
+    at points where no registry exists yet. Outcome (5) CANNOT drive a turn, so
+    callers MUST gate on ``core.runnable_models.is_runnable`` (#98) — see the
+    note at the bare return.
     """
 
     openrouter_key = os.environ.get("OPENROUTER_API_KEY")
@@ -134,7 +241,7 @@ def resolve_model(model_flag: str | None, provider_flag: str | None) -> Model:
             api=OPENAI_COMPLETIONS_API,
             base_url=env_base_url or _DEFAULT_OPENROUTER_BASE_URL,
         )
-    # Explicit --provider/--model path. Two enrichments over the old bare
+    # Explicit --provider/--model path. Three enrichments over the old bare
     # ``Model(id, provider)`` return, which left ``api="unknown"`` (streaming.py
     # Model default) and so made the stream loop raise the internal
     # ``No provider registered for api='unknown'. Sprint 6a ... register_all()``
@@ -148,30 +255,53 @@ def resolve_model(model_flag: str | None, provider_flag: str | None) -> Model:
     #     Guarded by the OpenRouter branch above: with an ``OPENROUTER_API_KEY``
     #     set, ``openai/gpt-4o-mini`` is (correctly) an OpenRouter model id and
     #     never reaches here.
-    #  2. Catalog enrichment — resolve the full Pi catalog entry (carrying the
-    #     real ``api``, context window, cost, thinking map). For an id absent
-    #     from the catalog but under a known provider, backfill just ``api`` from
-    #     a sibling catalog model so a custom / newly-released id still resolves
-    #     an adapter instead of raising the "unknown" error. Providers whose
-    #     models span multiple apis (e.g. github-copilot) get the first sibling's
-    #     api — best-effort for the uncatalogued-id case; catalogued ids are
-    #     always exact.
+    #  2. ``default_provider`` — see below; strictly weaker than both 1 and the
+    #     OpenRouter branch, so it is applied only after they decline.
+    #  3. Catalog enrichment — resolve the full Pi catalog entry (carrying the
+    #     real ``api``, context window, cost, thinking map), then the live
+    #     registry, then unanimous siblings. Catalogued ids are always exact; the
+    #     later steps are the best-effort tail for ids the catalog never saw.
     provider = provider_flag or ""
     resolved_id = model_flag or ""
     if not provider and "/" in resolved_id:
         provider, _, resolved_id = resolved_id.partition("/")
-    if provider and resolved_id:
-        from aelix_ai.models import get_model, get_models
+    # (2) settings.json ``defaultProvider`` — the LOWEST-precedence provider
+    # source, applied only once every stronger signal has declined. It is a
+    # SEPARATE parameter, never folded into ``provider_flag``, because the
+    # OpenRouter branch and the slash split are both gated on that flag being
+    # empty: a persisted default routed through it silently disables them —
+    # ``--model openai/gpt-4o-mini`` ignores its own ``openai/`` prefix and an
+    # ``OPENROUTER_API_KEY`` user is locked out of OpenRouter. Both then land on
+    # a DIFFERENT vendor holding an id it never heard of, and both still satisfy
+    # ``is_runnable`` (the default provider's own api backfills cleanly), so no
+    # downstream gate can catch it (#98).
+    if not provider:
+        provider = default_provider or ""
+    if resolved_id:
+        from aelix_ai.models import get_model
 
-        catalog = get_model(provider, resolved_id)
-        if catalog is not None:
-            return catalog
-        siblings = get_models(provider)
-        if siblings:
-            return Model(id=resolved_id, provider=provider, api=siblings[0].api)
-    # Unknown provider (or empty flags): a bare model. The entry-point guard
-    # (``not model.provider`` / ``has_configured_auth``) turns this into a
-    # graceful "No model selected" / "No API key" message rather than a turn.
+        if provider:
+            catalog = get_model(provider, resolved_id)
+            if catalog is not None:
+                return catalog
+        found = _registry_lookup(registry, provider, resolved_id)
+        if found is not None:
+            return found
+        if provider:
+            backfilled = _sibling_backfill(provider, resolved_id)
+            if backfilled is not None:
+                return backfilled
+    # Bare model — ``api`` stays the ``Model`` default "unknown": no catalog
+    # entry, no registry entry, and no unanimous sibling api to adopt. Driving a
+    # turn with it raises the internal "No provider registered for api='unknown'"
+    # from the PROTECTED ``aelix_ai.api_registry``, so every caller must first
+    # gate on ``core.runnable_models.is_runnable``: print/json refuses the run,
+    # the TUI warns at startup and points at ``/model``.
+    #
+    # That gate CANNOT be a ``not model.provider`` emptiness check: an
+    # uncatalogued provider (a models.json custom, an extension
+    # ``register_provider``, or a plain typo) is non-empty and sails straight
+    # past it into the raw adapter error (#98).
     return Model(id=resolved_id, provider=provider)
 
 

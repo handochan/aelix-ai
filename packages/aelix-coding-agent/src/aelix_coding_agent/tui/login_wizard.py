@@ -38,6 +38,8 @@ import contextlib
 import webbrowser
 from typing import TYPE_CHECKING, Any, cast
 
+from aelix_ai.providers._error_hints import describe_provider_error
+
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
@@ -220,7 +222,10 @@ async def _run_login_provider(
     try:
         credential = await cast(LoginAuthenticate, authenticate)(ctx)
     except Exception as exc:  # noqa: BLE001 — an extension handler must not crash the REPL
-        commit(Text(f"✖ {name} login failed: {exc}", style="bold red"))
+        # describe_provider_error (issue #99): an extension's authenticate
+        # handler typically calls its own endpoint, so it hits the same
+        # intercepting proxy as the built-in flows and deserves the same remedy.
+        commit(Text(f"✖ {name} login failed: {describe_provider_error(exc)}", style="bold red"))
         return
 
     if credential is None:
@@ -299,7 +304,13 @@ async def _run_oauth(
         commit(Text(f"✖ {exc}", style="bold red"))
         return
     except Exception as exc:  # noqa: BLE001 — any login failure must degrade
-        commit(Text(f"✖ OAuth login failed: {exc}", style="bold red"))
+        # describe_provider_error, not str(exc) (issue #99): the device flow
+        # reaches github.com but the Copilot policy POST reaches the API host,
+        # which a proxy may intercept — so /login is the FIRST place a TLS wall
+        # shows up, and where the reporter read it as an auth problem. Bare
+        # OpenSSL jargon here names no remedy. Safe drop-in: a non-TLS failure
+        # keeps its own message.
+        commit(Text(f"✖ OAuth login failed: {describe_provider_error(exc)}", style="bold red"))
         return
 
     commit(Text(f"signed in to {provider_name}", style="green"))

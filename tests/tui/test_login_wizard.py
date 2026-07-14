@@ -480,6 +480,58 @@ async def test_login_oauth_generic_failure_degrades() -> None:
     assert any("network down" in _plain(c) for c in committed)
 
 
+async def test_login_oauth_tls_failure_carries_the_remedy() -> None:
+    """Issue #99: /login is the FIRST surface a corporate TLS wall reaches.
+
+    The Copilot device flow talks to github.com — which a proxy may leave alone —
+    while the post-login policy POST talks to the Copilot API host, which it
+    intercepts. That POST now propagates its transport error instead of being
+    swallowed, so /login fails loudly; failing loudly with raw OpenSSL jargon and
+    no remedy is only half a fix, which is why this asserts the hint and not just
+    the error text.
+    """
+
+    import ssl
+
+    import httpx
+
+    inner = ssl.SSLCertVerificationError(
+        1,
+        "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to "
+        "get local issuer certificate (_ssl.c:1000)",
+    )
+    try:
+        raise inner
+    except ssl.SSLCertVerificationError as exc:
+        # httpx's map_exceptions shape: ``raise mapped from exc``.
+        transport_error = httpx.ConnectError(str(exc))
+        transport_error.__cause__ = exc
+
+    storage = FakeAuthStorage(login_raises=transport_error)
+    committed: list[object] = []
+
+    async def select(title: str, options: list[str], *_a: Any, **_k: Any) -> str | None:
+        if title == "Add a provider":
+            return "Using OAuth (sign in to a subscription / account)"
+        return options[0]
+
+    await run_login(
+        auth_storage=storage,
+        select=select,
+        prompt_input=_ScriptedInput([]),
+        confirm=_confirm_yes,
+        notify=_notify_sink([]),
+        commit=committed.append,
+    )
+    out = "\n".join(_plain(c) for c in committed)
+    assert "OAuth login failed" in out
+    # the real reason, not just "Connection error."
+    assert "unable to get local issuer certificate" in out
+    # and something the user can actually DO about it
+    assert "SSL_CERT_FILE" in out
+    assert "certificate" in out.lower()
+
+
 # ── run_login: custom provider path ───────────────────────────────────────────
 
 

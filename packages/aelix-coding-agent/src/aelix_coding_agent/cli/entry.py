@@ -54,6 +54,7 @@ from aelix_agent_core.types import AgentTool
 from aelix_coding_agent.builtin.guardrail import GuardrailExtension
 from aelix_coding_agent.builtin.permission import PermissionExtension
 from aelix_coding_agent.builtin.permission_mode import PermissionPosture
+from aelix_coding_agent.core.runnable_models import is_runnable, unsupported_message
 from aelix_coding_agent.extensions.loader import (
     discover_and_load_extensions,
     scan_extension_manifests,
@@ -589,6 +590,7 @@ async def _build_harness_options(
     flag_values: Mapping[str, bool | str] | None = None,
     on_reload: bool = False,
     model_registry: Any | None = None,
+    default_provider: str | None = None,
 ) -> AgentHarnessOptions:
     """Assemble :class:`AgentHarnessOptions` from parsed CLI args.
 
@@ -607,11 +609,24 @@ async def _build_harness_options(
 
     # Resolve the turn model (OpenRouter-from-env aware; falls back to a bare
     # model from --model/--provider). Providers are registered in main_sync.
+    # ``model_registry`` is threaded so a models.json custom provider — invisible
+    # to the build-time catalog — resolves its real ``api`` instead of the
+    # ``"unknown"`` that raises at the first turn (#98). Extension
+    # ``register_provider`` models are NOT yet visible here: they only land on
+    # the registry at ``bind_model_registry``, after the harness is built, so the
+    # post-build ``is_runnable`` gate is what reports those.
+    # ``default_provider`` carries settings.json ``defaultProvider`` as a VALUE
+    # rather than being read from ``settings_manager`` here: a per-call read is
+    # free to drift between the three resolve sites, and it must reach
+    # ``resolve_model`` as its own argument (never merged into ``parsed.provider``)
+    # or it impersonates an explicit ``--provider`` and hijacks the
+    # ``<provider>/<model>`` shorthand + the OpenRouter-env path (#98).
     # ``enrich_copilot_base_url`` adopts the registry's modify_models-injected
     # proxy-ep base_url for github-copilot (the enterprise/business host), which
     # ``resolve_model``/``get_model`` leaves at the static individual default.
     model = enrich_copilot_base_url(
-        resolve_model(parsed.model, parsed.provider), model_registry
+        resolve_model(parsed.model, parsed.provider, model_registry, default_provider),
+        model_registry,
     )
     # Resolve to an absolute path so the tool sandbox root + AGENTS.md anchor are
     # stable even if something later chdir's the process (e.g. a bash-tool ``cd``).
@@ -1077,14 +1092,46 @@ async def _async_main(argv: list[str]) -> int:
     # build + the --api-key guard + the print/json no-model guard) inherits the
     # default uniformly — no per-call seeding to drift. Guarded so a malformed
     # settings file never blocks launch.
-    if parsed.model is None and parsed.provider is None:
-        with contextlib.suppress(Exception):
-            default_model = settings_manager.get_default_model()
-            default_provider = settings_manager.get_default_provider()
+    #
+    # ``defaultModel`` + ``defaultProvider`` are ONE PAIR, written together by
+    # /model and /settings (pi parity: setModel → setDefaultModelAndProvider) to
+    # name a single chosen model. They are therefore seeded as a UNIT, under the
+    # both-flags-absent condition: the pair describes a model the user really
+    # picked, so its provider half rightly behaves like an explicit choice (it
+    # outranks the OpenRouter-from-env path, whose id would otherwise replace the
+    # persisted model).
+    #
+    # #98 is what happens when that pair is SPLIT — ``--model <id>`` supplied with
+    # no ``--provider``. The condition above then suppresses the provider half
+    # entirely, leaving an empty provider that resolves to api="unknown" and
+    # raises at the first turn. But the persisted provider ALSO cannot simply be
+    # written into ``parsed.provider``: it is now a leftover from a DIFFERENT
+    # model than the one being requested, and ``resolve_model`` reads
+    # ``provider_flag`` as "the user explicitly named this provider" — gating both
+    # the ``<provider>/<model>`` shorthand and the OpenRouter-env path on its
+    # absence. Impersonating the flag hijacks both and silently reroutes the turn
+    # to the persisted vendor. So the split case hands the value to
+    # ``resolve_model`` as its own lowest-precedence argument instead.
+    #
+    # The MIRROR split (``--provider`` with no ``--model``) deliberately does NOT
+    # inherit ``defaultModel``: seeding ``parsed.model`` unconditionally would
+    # override ``OPENROUTER_DEFAULT_MODEL`` for anyone running
+    # ``--provider openrouter``, sending the persisted id of some other vendor's
+    # model to OpenRouter. Filling that gap needs a ``default_model`` rung on
+    # ``resolve_model`` (the OpenRouter branch picks the id BEFORE any settings
+    # value is consultable); until then it stays unfilled and the is_runnable
+    # gate below reports it.
+    default_provider: str | None = None
+    with contextlib.suppress(Exception):
+        default_model = settings_manager.get_default_model()
+        persisted_provider = settings_manager.get_default_provider()
+        if parsed.model is None and parsed.provider is None:
             if default_model:
                 parsed.model = default_model
-            if default_provider:
-                parsed.provider = default_provider
+            if persisted_provider:
+                parsed.provider = persisted_provider
+        elif parsed.provider is None and persisted_provider:
+            default_provider = persisted_provider
 
     # === Permission posture (WP-0, ADR-0157) — built ONCE, held by reference ===
     # The shift+tab-cycled posture + the PermissionExtension are constructed here
@@ -1114,13 +1161,19 @@ async def _async_main(argv: list[str]) -> int:
         # model whose provider we can attach the runtime key to. It adds a
         # RUNTIME OVERRIDE layer (highest cascade precedence) on top of the
         # always-wired callback above.
-        model = resolve_model(parsed.model, parsed.provider)
+        model = resolve_model(
+            parsed.model, parsed.provider, model_registry, default_provider
+        )
         # ``resolve_model`` now parses the ``<provider>/<model>`` slash shorthand
         # (Pi ``resolveModelFromCli`` main.ts:303-304) and enriches from the
         # catalog, so ``model.provider`` is populated for every pi-valid
         # invocation (``--provider x --model y``, ``--model x/y``, or the
         # OpenRouter-from-env path). This guard now fires only when NO model
         # resolves at all — an empty/unknown provider — matching pi.
+        # The registry + settings default are passed so the provider this run
+        # will REALLY use is the one the runtime key gets attached to: without
+        # them a registry-only provider or a persisted default resolved empty
+        # here and rejected an ``--api-key`` the run could have used (#98).
         if not model.provider:
             print(
                 "Error: --api-key requires a model to be specified via "
@@ -1319,6 +1372,10 @@ async def _async_main(argv: list[str]) -> int:
             permission_ext=permission_ext,
             captured_extensions=discovered_extensions,
             model_registry=model_registry,
+            # #98 — settings.json ``defaultProvider``, resolved ONCE above and
+            # passed as a value so every (re)built harness resolves the turn model
+            # from the identical provider ladder.
+            default_provider=default_provider,
             # Issue #44 — forward the shared startup SettingsManager (the
             # ``_async_main`` closure var built above) into every (re)built
             # harness so ``harness.reload()`` is functional across /new, /fork,
@@ -1375,6 +1432,34 @@ async def _async_main(argv: list[str]) -> int:
         harness, _harness_factory, repo=repo, fs=fs
     )
 
+    # === Unrunnable-startup-model gate (#98) ===
+    # Placed AFTER the harness build so ``bind_model_registry`` has replayed the
+    # extension-registered providers onto ``model_registry``: a provider only an
+    # extension knows is invisible to the resolve in ``_build_harness_options``,
+    # so this is the FIRST point at which every provider source can be judged.
+    # Gating on the harness's live ``current_model`` (not a re-resolve) means the
+    # verdict is about the model that will really drive turns.
+    #
+    # Interactive deliberately does NOT refuse to launch: ``/model`` is the
+    # in-session cure (it hands the picker's live registry Model straight to
+    # ``set_model``), so a loud warning beats a dead end. print/json has no such
+    # cure and is refused at its dispatch below.
+    #
+    # ``is_runnable`` fails OPEN when no api adapter is registered — embedders and
+    # tests reach ``_async_main`` without ``register_providers`` (that runs in
+    # ``main_sync``), so this stays silent for them rather than warning falsely.
+    startup_model = harness.current_model
+    if (
+        app_mode == "interactive"
+        and startup_model is not None
+        and not is_runnable(startup_model)
+    ):
+        print(
+            f"Warning: {unsupported_message(startup_model)}\n"
+            "         Run /model to select a working model.",
+            file=sys.stderr,
+        )
+
     try:
         if app_mode == "interactive":
             try:
@@ -1427,9 +1512,11 @@ async def _async_main(argv: list[str]) -> int:
         #
         # ``resolve_model`` is TOTAL (always returns a Model), so the real
         # "unusable" conditions are:
-        #   (a) provider empty/unknown — a bare ``--model`` with no ``--provider``
+        #   (a) provider empty — a bare ``--model`` with no ``--provider``
         #       and no OpenRouter env: nothing to authenticate against → emit
         #       ``formatNoModelSelectedMessage``; OR
+        #   (a·2) provider NON-empty but unresolvable to an ``api`` (#98) → emit
+        #       the ``unsupported_message`` reason; OR
         #   (b) provider set but NO API key resolvable for it via the auth cascade
         #       (runtime override / stored / OAuth / env / models.json), checked
         #       sync via ``ModelRegistry.has_configured_auth`` (P0 #7 Wave 1
@@ -1438,9 +1525,21 @@ async def _async_main(argv: list[str]) -> int:
         # (so has_configured_auth is True) AND owns the empty-provider diagnostic,
         # so condition (a) cannot wrongly fire for it.
         if app_mode in ("print", "json"):
-            turn_model = resolve_model(parsed.model, parsed.provider)
+            turn_model = resolve_model(
+                parsed.model, parsed.provider, model_registry, default_provider
+            )
             if not turn_model.provider:
                 print(format_no_model_selected_message(), file=sys.stderr)
+                return 1
+            # (a·2) #98 — provider set but nothing could name an ``api`` for it
+            # (an uncatalogued models.json custom, an extension-registered
+            # provider, or a plain typo). Such a provider is NON-EMPTY, so the
+            # emptiness check above cannot see it and the run reached the raw
+            # "No provider registered for api='unknown'" at the first turn.
+            # Checked before auth: no key fixes a missing adapter. Fails OPEN
+            # when no adapter is registered, so embedders keep their behaviour.
+            if not is_runnable(turn_model):
+                print(f"Error: {unsupported_message(turn_model)}", file=sys.stderr)
                 return 1
             if not model_registry.has_configured_auth(turn_model):
                 provider_display = model_registry.get_provider_display_name(
@@ -1488,15 +1587,49 @@ def _stdout_to_devnull() -> None:
         os.dup2(devnull, sys.stdout.fileno())
 
 
+def _inject_truststore() -> None:
+    """Trust the OS certificate store for every TLS connection (issue #99).
+
+    Python verifies against certifi's bundle, which by construction holds only
+    public root CAs. A corporate root CA — installed system-wide, and the reason
+    VS Code / Copilot (Node, OS trust store) keep working on the same network —
+    is therefore invisible to aelix, and every provider request dies as an
+    opaque ``APIConnectionError("Connection error.")``. ``truststore`` rebinds
+    ``ssl.SSLContext``, so it must run BEFORE the first SSL context is built.
+
+    Process-wide by design: httpx builds its context from ``ssl.create_default_
+    context()``, so this ONE call covers all ~10 client construction sites (both
+    SDKs, the OAuth flows, the bespoke Codex adapter) without a ``verify=``
+    argument on any of them, and covers any client an extension opens too.
+
+    CLI-entry ONLY: rebinding a stdlib class is a process-global side effect
+    that a library import must never impose on an embedder — hence here beside
+    :func:`register_providers` rather than at any module scope.
+
+    Best-effort: a missing wheel, an unsupported platform, or a truststore
+    backend that cannot reach the platform store must degrade to certifi (the
+    previous behavior), never block launch.
+    """
+
+    try:
+        import truststore
+
+        truststore.inject_into_ssl()
+    except Exception:  # noqa: BLE001 - launch must survive any trust-store defect
+        pass
+
+
 def main_sync() -> None:
     """Sync entry for ``[project.scripts] aelix = '...:main_sync'``.
 
-    Loads a cwd ``.env`` + registers provider adapters (real-turn enablement;
-    done here rather than in :func:`_async_main` so tests/embedders that call
-    ``_async_main`` directly stay side-effect-free), then wraps
-    :func:`_async_main` in :func:`asyncio.run` and forwards the exit code.
+    Trusts the OS certificate store, loads a cwd ``.env`` + registers provider
+    adapters (real-turn enablement; done here rather than in :func:`_async_main`
+    so tests/embedders that call ``_async_main`` directly stay side-effect-free),
+    then wraps :func:`_async_main` in :func:`asyncio.run` and forwards the exit
+    code.
     """
 
+    _inject_truststore()
     load_dotenv()
     register_providers()
     try:
@@ -1536,6 +1669,7 @@ def main_sync() -> None:
 __all__ = [
     "AppMode",
     "_async_main",
+    "_inject_truststore",
     "main_sync",
     "resolve_app_mode",
     "to_print_output_mode",

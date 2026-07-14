@@ -361,9 +361,23 @@ async def enable_github_copilot_model(
     model is rejected by the completions endpoint with HTTP 400
     ``model_not_supported``.
 
-    Best-effort: any transport/HTTP error resolves to ``False`` and never
-    raises, so a single un-enablable model (e.g. one the account has no
-    access to) cannot fail the whole login. Returns ``True`` on a 2xx.
+    Best-effort about the ANSWER, not about reachability (issue #99). Any
+    non-2xx resolves to ``False`` — a model the seat cannot use is a soft no and
+    must not fail the whole login. But a DETERMINISTIC
+    :class:`httpx.TransportError` (TLS, DNS, connect, proxy) means the Copilot
+    API host was never reached, and this policy POST is the FIRST thing in
+    /login to touch that host: the device flow talks to github.com, which a
+    proxy may well leave alone while intercepting the Copilot host. Swallowing
+    it here is what let /login report success on a network where every
+    subsequent turn dies at message 1, which is why the #99 reporter read a TLS
+    failure as an auth problem. Reachability therefore propagates;
+    :func:`enable_all_github_copilot_models` decides what to do with it.
+
+    A :class:`httpx.TimeoutException` is deliberately NOT propagated even though
+    it is a ``TransportError``: it is transient, so retrying may well succeed,
+    and failing /login over one discards a completed device flow the user would
+    have to redo by hand. Only a failure that a retry cannot fix — the user must
+    trust the CA or mend DNS — is worth that price. Returns ``True`` on a 2xx.
     """
 
     base_url = get_github_copilot_base_url(token, enterprise_domain)
@@ -381,9 +395,13 @@ async def enable_github_copilot_model(
                 },
                 json={"state": "enabled"},
             )
-        return 200 <= response.status_code < 300
+    except httpx.TimeoutException:
+        return False
+    except httpx.TransportError:
+        raise
     except Exception:  # noqa: BLE001
         return False
+    return 200 <= response.status_code < 300
 
 
 async def enable_all_github_copilot_models(
@@ -403,20 +421,51 @@ async def enable_all_github_copilot_models(
     The catalog import is local to keep the OAuth module free of an
     import-time dependency on :mod:`aelix_ai.models` (mirrors pi's runtime
     ``getModels`` call rather than a top-level import).
+
+    Reachability (issue #99): a per-model :class:`httpx.TransportError` is
+    tolerated and reported as a failed model — one flaky POST among ~19 must not
+    cost the user a completed device flow. But when EVERY model fails that way,
+    nothing was reached at all: that is the Copilot API host being unreachable
+    (typically a proxy intercepting HTTPS with a private root CA), not a policy
+    answer, so the first error is re-raised and /login fails with the real
+    reason. The caller obtains credentials BEFORE this runs and returns them
+    AFTER, so raising does discard a valid token — deliberate: those credentials
+    cannot complete a single turn on such a network, and an honest TLS error
+    beats a "logged in" that dies at message 1. Re-run /login once the CA is
+    trusted.
+
+    Timeouts never reach here: :func:`enable_github_copilot_model` absorbs them
+    as a soft ``False``, so an all-timeout run is a login that enabled nothing
+    rather than a login that failed. Only a retry-proof reachability failure can
+    cost the token.
     """
 
     from aelix_ai.models import get_models
 
     models = get_models(GITHUB_COPILOT_OAUTH_ID)
 
-    async def _enable_one(model_id: str) -> None:
-        success = await enable_github_copilot_model(
-            token, model_id, enterprise_domain
-        )
+    async def _enable_one(model_id: str) -> BaseException | None:
+        """Never raises: returns the transport error so the caller can weigh it
+        against the others (a partial failure stays best-effort)."""
+
+        try:
+            success = await enable_github_copilot_model(
+                token, model_id, enterprise_domain
+            )
+        except httpx.TransportError as exc:
+            if on_model is not None:
+                on_model(model_id, False)
+            return exc
         if on_model is not None:
             on_model(model_id, success)
+        return None
 
-    await asyncio.gather(*(_enable_one(model.id) for model in models))
+    outcomes = await asyncio.gather(*(_enable_one(model.id) for model in models))
+    unreachable = [exc for exc in outcomes if exc is not None]
+    # ``unreachable`` first: an EMPTY catalog must not read as "all failed"
+    # (``len([]) == len([])``) and turn a no-op into a login failure.
+    if unreachable and len(unreachable) == len(outcomes):
+        raise unreachable[0]
 
 
 async def login_github_copilot(callbacks: OAuthLoginCallbacks) -> OAuthCredentials:

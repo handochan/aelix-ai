@@ -362,6 +362,182 @@ async def test_interactive_seeds_model_from_persisted_default(
     assert model is not None
     assert getattr(model, "provider", None) == "anthropic"
     assert getattr(model, "id", None) == "claude-3"
+    # #98 — the seeded model must reach the harness with a REAL api. Asserting
+    # only provider/id cannot catch an ``api="unknown"`` model: it looks correct
+    # here and at the banner (which prints id + base_url, never api), then raises
+    # "No provider registered for api='unknown'" on the first user message.
+    assert getattr(model, "api", None) == "anthropic-messages"
+
+
+async def test_interactive_seeds_provider_when_only_model_flag_given(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """#98 (C): ``--model`` WITHOUT ``--provider`` still inherits defaultProvider.
+
+    The seed guard required BOTH flags to be absent, so an explicit ``--model``
+    permanently suppressed the persisted ``defaultProvider`` — contradicting the
+    block's own "CLI > settings; we only fill the gap" contract. The provider
+    stayed empty, no catalog lookup was possible, and the session raised
+    "No provider registered for api='unknown'" at the first message. Each field
+    is now seeded independently.
+    """
+
+    monkeypatch.setattr(sys, "stdin", _FakeTTYStdin())
+    agent_dir = tmp_path / "agent"
+    agent_dir.mkdir()
+    (agent_dir / "settings.json").write_text(
+        '{"defaultProvider": "anthropic", "defaultModel": "claude-3"}'
+    )
+    monkeypatch.setenv("AELIX_CODING_AGENT_DIR", str(agent_dir))
+
+    seen: dict[str, object] = {}
+
+    async def _stub_run_tui(runtime: object, **_k: object) -> int:
+        harness = getattr(runtime, "harness", None)
+        seen["model"] = getattr(harness, "current_model", None)
+        return 0
+
+    import aelix_coding_agent.tui as tui_pkg
+
+    monkeypatch.setattr(tui_pkg, "run_tui", _stub_run_tui)
+
+    # --model only: the id wins over defaultModel, the provider is inherited.
+    code = await _async_main(["--no-session", "--model", "claude-sonnet-4-6"])
+    assert code == 0
+    model = seen["model"]
+    assert model is not None
+    assert getattr(model, "provider", None) == "anthropic"  # NOT "" — inherited
+    assert getattr(model, "id", None) == "claude-sonnet-4-6"  # the flag won
+    assert getattr(model, "api", None) == "anthropic-messages"  # NOT "unknown"
+
+
+async def test_interactive_slash_shorthand_beats_persisted_default_provider(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """#98: a ``<provider>/<model>`` id keeps its OWN provider, not the persisted one.
+
+    The persisted ``defaultProvider`` must never reach ``resolve_model`` as
+    ``provider_flag``: the slash split (pi ``resolveModelFromCli`` main.ts:303-304)
+    is gated on that flag being empty, so a seeded default silently discards the
+    ``openai/`` the user typed and routes the turn to anthropic — carrying an id
+    anthropic never heard of. The ``is_runnable`` gate CANNOT catch it (anthropic's
+    own api backfills cleanly), so only this test can.
+    """
+
+    monkeypatch.setattr(sys, "stdin", _FakeTTYStdin())
+    agent_dir = tmp_path / "agent"
+    agent_dir.mkdir()
+    (agent_dir / "settings.json").write_text(
+        '{"defaultProvider": "anthropic", "defaultModel": "claude-3"}'
+    )
+    monkeypatch.setenv("AELIX_CODING_AGENT_DIR", str(agent_dir))
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_DEFAULT_MODEL", raising=False)
+
+    seen: dict[str, object] = {}
+
+    async def _stub_run_tui(runtime: object, **_k: object) -> int:
+        harness = getattr(runtime, "harness", None)
+        seen["model"] = getattr(harness, "current_model", None)
+        return 0
+
+    import aelix_coding_agent.tui as tui_pkg
+
+    monkeypatch.setattr(tui_pkg, "run_tui", _stub_run_tui)
+
+    code = await _async_main(["--no-session", "--model", "openai/gpt-4o-mini"])
+    assert code == 0
+    model = seen["model"]
+    assert getattr(model, "provider", None) == "openai"  # NOT the persisted default
+    assert getattr(model, "id", None) == "gpt-4o-mini"  # prefix consumed by the split
+    assert "api.openai.com" in getattr(model, "base_url", "")
+
+
+async def test_interactive_openrouter_env_beats_persisted_default_provider(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """#98: an OPENROUTER_API_KEY user keeps OpenRouter despite a persisted default.
+
+    The OpenRouter-from-env branch requires ``provider_flag in (None, "",
+    "openrouter")``, so a persisted default written into ``parsed.provider`` reads
+    as a "conflicting --provider" the user never passed and locks them out of the
+    key they configured. Note a ``"/" not in model`` guard would ALSO pass this
+    case by accident — hence the bare-id variant below.
+    """
+
+    monkeypatch.setattr(sys, "stdin", _FakeTTYStdin())
+    agent_dir = tmp_path / "agent"
+    agent_dir.mkdir()
+    (agent_dir / "settings.json").write_text(
+        '{"defaultProvider": "anthropic", "defaultModel": "claude-3"}'
+    )
+    monkeypatch.setenv("AELIX_CODING_AGENT_DIR", str(agent_dir))
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+    monkeypatch.delenv("OPENROUTER_DEFAULT_MODEL", raising=False)
+
+    seen: dict[str, object] = {}
+
+    async def _stub_run_tui(runtime: object, **_k: object) -> int:
+        harness = getattr(runtime, "harness", None)
+        seen["model"] = getattr(harness, "current_model", None)
+        return 0
+
+    import aelix_coding_agent.tui as tui_pkg
+
+    monkeypatch.setattr(tui_pkg, "run_tui", _stub_run_tui)
+
+    # A BARE id (no slash): the OpenRouter branch owns it purely on the env key,
+    # so only a real precedence fix — not a slash special-case — keeps this green.
+    code = await _async_main(["--no-session", "--model", "some-or-model"])
+    assert code == 0
+    model = seen["model"]
+    assert getattr(model, "provider", None) == "openrouter"
+    assert "openrouter.ai" in getattr(model, "base_url", "")
+
+
+async def test_interactive_persisted_pair_outranks_openrouter_env(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """The flip side (#98): with NO flags, the persisted PAIR wins over the env.
+
+    ``defaultModel`` + ``defaultProvider`` are written together (pi parity:
+    setModel → setDefaultModelAndProvider) and name ONE chosen model, so with no
+    flags to split them the provider half rightly behaves like an explicit choice
+    and suppresses the OpenRouter-from-env id. Demoting the persisted provider to
+    a pure last-resort fallback would silently hand this user's session to
+    OpenRouter instead — the regression this test exists to catch.
+    """
+
+    monkeypatch.setattr(sys, "stdin", _FakeTTYStdin())
+    agent_dir = tmp_path / "agent"
+    agent_dir.mkdir()
+    (agent_dir / "settings.json").write_text(
+        '{"defaultProvider": "anthropic", "defaultModel": "claude-3"}'
+    )
+    monkeypatch.setenv("AELIX_CODING_AGENT_DIR", str(agent_dir))
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+    monkeypatch.setenv("OPENROUTER_DEFAULT_MODEL", "qwen/qwen3-max")
+
+    seen: dict[str, object] = {}
+
+    async def _stub_run_tui(runtime: object, **_k: object) -> int:
+        harness = getattr(runtime, "harness", None)
+        seen["model"] = getattr(harness, "current_model", None)
+        return 0
+
+    import aelix_coding_agent.tui as tui_pkg
+
+    monkeypatch.setattr(tui_pkg, "run_tui", _stub_run_tui)
+
+    code = await _async_main(["--no-session"])
+    assert code == 0
+    model = seen["model"]
+    assert getattr(model, "provider", None) == "anthropic"
+    assert getattr(model, "id", None) == "claude-3"
 
 
 async def test_interactive_explicit_model_flag_overrides_persisted_default(
@@ -499,6 +675,123 @@ async def test_no_provider_print_emits_guidance_and_exits_1(
     assert "/login" not in err
     assert "/model" in err
     assert "_API_KEY" in err
+
+
+# === #98: the unrunnable-startup-model gate ==================================
+# ``resolve_model`` is total, so an unresolvable model reached the FIRST user
+# message before raising "No provider registered for api='unknown'" from the
+# protected api_registry — behind a banner that looked healthy (it prints id +
+# base_url, never api). Both dispatches now gate on ``is_runnable``.
+
+
+def _force_supported_apis(monkeypatch: pytest.MonkeyPatch, *apis: str) -> None:
+    """Pin the registered-adapter set that ``is_runnable`` reads.
+
+    ``_async_main`` never registers adapters (``main_sync`` does), so
+    ``is_runnable`` fails OPEN here and the gate would stay silent. Patching the
+    module-level ``supported_apis`` — which ``is_runnable`` looks up in its own
+    module globals at call time — pins the set WITHOUT touching the
+    process-global api registry that ``test_api_registry_reset`` asserts on.
+    """
+
+    from aelix_coding_agent.core import runnable_models
+
+    monkeypatch.setattr(runnable_models, "supported_apis", lambda: set(apis))
+
+
+async def test_interactive_warns_but_still_launches_on_unrunnable_model(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Interactive REPORTS an unrunnable startup model but does not refuse to run.
+
+    ``/model`` is the in-session cure (it hands the picker's live registry Model
+    straight to ``set_model``), so launching with a loud warning beats a dead end.
+    """
+
+    _force_supported_apis(monkeypatch, "anthropic-messages")
+    monkeypatch.setattr(sys, "stdin", _FakeTTYStdin())
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    agent_dir = tmp_path / "agent"
+    agent_dir.mkdir()
+    monkeypatch.setenv("AELIX_CODING_AGENT_DIR", str(agent_dir))
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_DEFAULT_MODEL", raising=False)
+
+    async def _stub_run_tui(_runtime: object, **_k: object) -> int:
+        return 0
+
+    import aelix_coding_agent.tui as tui_pkg
+
+    monkeypatch.setattr(tui_pkg, "run_tui", _stub_run_tui)
+
+    # A NON-EMPTY, uncatalogued provider → api="unknown". A ``not model.provider``
+    # emptiness check is blind to this, which is why the gate uses is_runnable.
+    code = await _async_main(
+        ["--no-session", "--provider", "telnaut", "--model", "tn-1"]
+    )
+    assert code == 0  # launched anyway
+    err = capsys.readouterr().err
+    assert "tn-1" in err  # names the offending model
+    assert "/model" in err  # names the cure
+
+
+async def test_interactive_stays_silent_for_a_runnable_model(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The gate must not cry wolf on a perfectly good model."""
+
+    _force_supported_apis(monkeypatch, "anthropic-messages")
+    monkeypatch.setattr(sys, "stdin", _FakeTTYStdin())
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    agent_dir = tmp_path / "agent"
+    agent_dir.mkdir()
+    monkeypatch.setenv("AELIX_CODING_AGENT_DIR", str(agent_dir))
+
+    async def _stub_run_tui(_runtime: object, **_k: object) -> int:
+        return 0
+
+    import aelix_coding_agent.tui as tui_pkg
+
+    monkeypatch.setattr(tui_pkg, "run_tui", _stub_run_tui)
+
+    code = await _async_main(
+        ["--no-session", "--provider", "anthropic", "--model", "claude-sonnet-4-6"]
+    )
+    assert code == 0
+    assert "Run /model" not in capsys.readouterr().err
+
+
+async def test_print_mode_refuses_unrunnable_uncatalogued_provider(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """print/json has NO ``/model`` cure → refuse before the turn (#98).
+
+    The pre-existing guard checked only ``not turn_model.provider``, which is
+    False for a non-empty uncatalogued provider — so print mode reached the raw
+    adapter error too. Ordered before the auth check: no API key fixes a missing
+    adapter.
+    """
+
+    _force_supported_apis(monkeypatch, "anthropic-messages")
+    monkeypatch.setattr(sys, "stdin", _FakePipedStdin())
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_DEFAULT_MODEL", raising=False)
+
+    code = await _async_main(
+        ["--no-session", "--print", "--provider", "telnaut", "--model", "tn-1"]
+    )
+    assert code == 1
+    err = capsys.readouterr().err
+    assert "tn-1" in err
+    # Not the cryptic internal error the run used to die on mid-turn.
+    assert "No provider registered for api=" not in err
     assert "providers.md" not in err
     assert "models.md" not in err
 
