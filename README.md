@@ -11,9 +11,9 @@ model budgets you already pay for.
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/)
 
 <p align="center">
-  <img src="docs/assets/demo.gif" width="100%" alt="aelix demo — a 20-line pandas extension profiles a Parquet file in-process, then /model switches from OpenRouter to Anthropic mid-session">
+  <img src="docs/assets/demo.gif" width="100%" alt="aelix demo — the agent writes its own pandas extension into my_ext.py, /reload hot-loads it without restarting, and the next prompt runs it in-process">
 </p>
-<p align="center"><em>A 20-line pandas extension (<code>aelix -e ./my_ext.py</code>) profiles a Parquet file in-process, then <code>/model</code> hops from OpenRouter to Anthropic mid-session.</em></p>
+<p align="center"><em>The agent extends itself: it authors a pandas <code>describe_dataset</code> tool into <code>my_ext.py</code>, <code>/reload</code> hot-loads it without restarting, and the very next prompt runs it in-process. Waits are fast-forwarded.</em></p>
 
 Aelix is an open-source coding agent written in pure Python. Read every line it runs, keep it
 entirely inside your own perimeter, and extend it with plain Python functions that import your

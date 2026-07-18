@@ -11,9 +11,9 @@
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/)
 
 <p align="center">
-  <img src="docs/assets/demo.gif" width="100%" alt="aelix 데모 — 20줄짜리 pandas 확장이 Parquet 파일을 in-process로 프로파일링하고, /model로 세션 중 OpenRouter에서 Anthropic으로 전환">
+  <img src="docs/assets/demo.gif" width="100%" alt="aelix 데모 — 에이전트가 pandas 확장을 my_ext.py에 직접 작성하고, /reload로 재시작 없이 핫리로드한 뒤, 바로 다음 프롬프트에서 in-process로 실행">
 </p>
-<p align="center"><em>20줄짜리 pandas 확장(<code>aelix -e ./my_ext.py</code>)이 Parquet 파일을 in-process로 프로파일링하고, <code>/model</code>로 세션 중에 OpenRouter에서 Anthropic으로 갈아탑니다.</em></p>
+<p align="center"><em>에이전트가 스스로를 확장합니다: pandas <code>describe_dataset</code> 툴을 <code>my_ext.py</code>에 직접 작성하고, <code>/reload</code>로 재시작 없이 핫리로드한 뒤, 바로 다음 프롬프트에서 in-process로 실행합니다. 대기 구간은 빨리감기 처리했습니다.</em></p>
 
 Aelix는 순수 파이썬으로 작성된 오픈소스 코딩 에이전트입니다. 실행되는 모든 코드를 직접 읽을
 수 있고, 에이전트 전체를 사내 경계 안에 두고 운영하며, 평범한 파이썬 함수로 확장합니다.
