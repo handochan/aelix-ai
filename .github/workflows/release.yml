@@ -148,12 +148,14 @@ jobs:
           print-hash: true
 
   github-release:
-    name: Publish GitHub Release (wheels + SHA256SUMS)
+    name: Publish GitHub Release (wheels + SHA256SUMS + SBOM)
     needs: build
     runs-on: ubuntu-latest
     permissions:
       contents: write   # create the Release + upload assets (ONLY elevation here)
     steps:
+      - name: Checkout (for the committed SBOM)
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
       - name: Download distributions artifact
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
@@ -168,6 +170,7 @@ jobs:
           case "$tag" in *-*) prerelease='--prerelease';; esac
           gh release create "$tag" \
             dist/*.whl dist/*.tar.gz dist/SHA256SUMS \
+            sbom/aelix-*.cdx.json \
             --repo '${{ github.repository }}' \
             --title "$tag" \
             --generate-notes \

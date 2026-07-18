@@ -88,31 +88,48 @@ is needed for subsequent releases.
    `## [X.Y.Z] - YYYY-MM-DD` section, and refresh the compare/links at the
    bottom.
 
-3. **Verify locally**:
+3. **Refresh compliance artifacts** — the SBOM is versioned, so regenerate it
+   after the version bump and commit it with the release:
+
+   ```bash
+   uv run python scripts/generate_sbom.py   # writes sbom/aelix-X.Y.Z.cdx.json
+   ```
+
+   `tests/test_license_sync.py` (part of the normal pytest run below) guards the
+   rest: `LICENSE` / `NOTICE` / `THIRD-PARTY-NOTICES.md` present and identical in
+   every package dir, and PEP 639 `license-files` wired in every pyproject. If
+   you touched any of those files at the repo root, re-copy them into
+   `packages/*/` before committing.
+
+4. **Verify locally**:
 
    ```bash
    uv sync --all-packages
    uv run ruff check .
    uv run pytest -p no:cacheprovider -q
    uv build --all-packages   # confirms all wheels + sdists build
+   # spot-check the license bundle in every wheel (stdlib only — no unzip dependency):
+   for w in dist/*.whl; do for f in LICENSE NOTICE THIRD-PARTY-NOTICES.md; do
+     python -m zipfile -l "$w" | grep -q "licenses/$f" || echo "MISSING $f: $w"
+   done; done
    ```
 
-4. **Commit** the version bump + changelog on the default branch (via PR; CI
+5. **Commit** the version bump + changelog on the default branch (via PR; CI
    must be green).
 
-5. **Tag and push**:
+6. **Tag and push**:
 
    ```bash
    git tag vX.Y.Z
    git push origin vX.Y.Z
    ```
 
-6. The **`release.yml`** workflow runs automatically on the `vX.Y.Z` tag:
+7. The **`release.yml`** workflow runs automatically on the `vX.Y.Z` tag:
    it builds all workspace packages, drops the `aelix-server` artifacts, and —
    after the `pypi` environment gate — publishes the four-package set to PyPI
    via Trusted Publishing.
 
-7. **Verify** the new versions appear on PyPI and that
+8. **Verify** the new versions appear on PyPI and that
    `pip install aelix==X.Y.Z` resolves the full lock-step set.
 
 > The tag is the single source of truth for triggering a publish. The version in

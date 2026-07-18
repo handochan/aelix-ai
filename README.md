@@ -200,7 +200,19 @@ framework commitments. Full rationale in [`docs/`](docs/README.md).
 [Writing an extension](docs/guides/extension-authoring.md) ·
 [Releasing](RELEASING.md)
 
-## License
+## License & attribution
 
 [Apache-2.0](LICENSE) — permissive with an explicit patent grant, which matters for the
 enterprise / self-hosted buyers this positioning targets.
+
+Substantial portions of Aelix are a TypeScript-to-Python port of
+[pi](https://github.com/earendil-works/pi) (reference commit `734e08e`),
+Copyright © 2025 [Mario Zechner](https://github.com/badlogic), MIT licensed. The bundled
+model catalog derives from data published by [models.dev](https://models.dev) (MIT).
+Full third-party license texts are preserved in [NOTICE](NOTICE) and
+[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md), which ship in every wheel and sdist;
+the dependency inventory is recorded as a CycloneDX SBOM under [`sbom/`](sbom/).
+
+Anthropic, OpenAI, Google Gemini, GitHub Copilot, OpenRouter, and Cloudflare are
+trademarks of their respective owners; Aelix is an independent project, and names are
+used only to identify the services it can connect to.

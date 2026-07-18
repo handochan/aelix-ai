@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [project]
@@ -8,7 +8,8 @@ version = "0.1.0b1"
 description = "Aelix server — FastAPI + uvicorn daemon (WS /rpc over run_rpc_mode, /healthz, /schemas). Aelix-additive (ADR-0097 / ADR-0103)."
 readme = "README.md"
 requires-python = ">=3.11"
-license = { text = "Apache-2.0" }
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE", "THIRD-PARTY-NOTICES.md"]
 authors = [{ name = "Aelix Contributors" }]
 dependencies = [
   "aelix-ai",

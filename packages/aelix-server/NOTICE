@@ -1,0 +1,15 @@
+Aelix
+Copyright 2026 Aelix Contributors
+
+This product includes software derived from pi
+(https://github.com/earendil-works/pi), Copyright (c) 2025 Mario Zechner,
+licensed under the MIT License. Substantial portions of Aelix are a
+TypeScript-to-Python port of pi (reference commit earendil-works/pi@734e08e).
+The full MIT license text and copyright notice are reproduced in
+THIRD-PARTY-NOTICES.md, which accompanies this file in all source and
+binary distributions of Aelix.
+
+The bundled model catalog (aelix_ai/models_generated.json) is derived from
+pi's generated catalog, which is in turn generated from data published by
+models.dev (https://github.com/sst/models.dev), Copyright (c) 2025
+models.dev, licensed under the MIT License.
