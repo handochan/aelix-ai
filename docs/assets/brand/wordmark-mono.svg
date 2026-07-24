@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 256" role="img" aria-label="Aelix">
+  <g fill="currentColor">
+    <path d="M87 32 L129 32 L70 192 L28 192 Z"/>
+    <path d="M87 32 L129 32 L188 192 L146 192 Z"/>
+    <path d="M81 140 L135 140 L145 168 L71 168 Z"/>
+    <path fill-rule="evenodd" d="M224 64 L320 64 L332 76 L332 116 L320 140 L256 140 L256 164 L332 164 L318 192 L224 192 L212 180 L212 76 Z M256 92 L288 92 L288 116 L256 116 Z"/>
+    <path d="M360 32 L404 32 L404 164 L428 164 L428 192 L360 192 Z"/>
+    <path d="M456 64 L500 64 L500 192 L456 192 Z"/>
+    <path d="M524 64 L572 64 L652 192 L604 192 Z M604 64 L652 64 L572 192 L524 192 Z"/>
+  </g>
+  <path fill="currentColor" d="M462 12 L494 12 L494 44 L462 44 Z"/>
+</svg>

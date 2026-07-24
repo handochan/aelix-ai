@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 952 272" role="img" aria-label="Aelix">
+  <defs>
+    <linearGradient id="aelix-strand" gradientUnits="userSpaceOnUse" x1="52" y1="224" x2="172" y2="32">
+      <stop offset="0" stop-color="#06B6D4"/>
+      <stop offset="1" stop-color="#22D3EE"/>
+    </linearGradient>
+  </defs>
+  <g transform="translate(4,0)">
+    <path fill="#0E7490" d="M188 224h40L108 32H68Z"/>
+  <path fill="url(#aelix-strand)" d="M28 224h40L188 32h-40Z"/>
+  <path fill="#0E7490" d="M68 160h120l20 32H48Z"/>
+  </g>
+  <g transform="translate(268,32)">
+  <g fill="#0B1220">
+    <path d="M87 32 L129 32 L70 192 L28 192 Z"/>
+    <path d="M87 32 L129 32 L188 192 L146 192 Z"/>
+    <path d="M81 140 L135 140 L145 168 L71 168 Z"/>
+    <path fill-rule="evenodd" d="M224 64 L320 64 L332 76 L332 116 L320 140 L256 140 L256 164 L332 164 L318 192 L224 192 L212 180 L212 76 Z M256 92 L288 92 L288 116 L256 116 Z"/>
+    <path d="M360 32 L404 32 L404 164 L428 164 L428 192 L360 192 Z"/>
+    <path d="M456 64 L500 64 L500 192 L456 192 Z"/>
+    <path d="M524 64 L572 64 L652 192 L604 192 Z M604 64 L652 64 L572 192 L524 192 Z"/>
+  </g>
+  <path fill="#06B6D4" d="M462 12 L494 12 L494 44 L462 44 Z"/>
+</g>
+</svg>
