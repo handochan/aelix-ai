@@ -1,9 +1,14 @@
-# Aelix
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/brand/lockup-dark.svg">
+    <img src="docs/assets/brand/lockup-light.svg" width="440" alt="Aelix — the A×X mark and wordmark">
+  </picture>
+</p>
 
-**Own your coding agent — in pure Python.**
+**Your own agent world — built on the Python ecosystem.**
 
-Self-hosted, auditable, and extensible in the language your team already writes — on the
-model budgets you already pay for.
+An agent runtime and extension platform in pure Python — self-hosted, auditable, and
+extensible in the language your team already writes, on the model budgets you already pay for.
 
 [한국어 README →](README.ko.md)
 
@@ -15,10 +20,11 @@ model budgets you already pay for.
 </p>
 <p align="center"><em>The agent extends itself: it authors a pandas <code>describe_dataset</code> tool into <code>my_ext.py</code>, <code>/reload</code> hot-loads it without restarting, and the very next prompt runs it in-process. Waits are fast-forwarded.</em></p>
 
-Aelix is an open-source coding agent written in pure Python. Read every line it runs, keep it
-entirely inside your own perimeter, and extend it with plain Python functions that import your
-existing stack — pandas, an internal SDK, a warehouse client — directly, in-process: the
-reason data and ML teams reach for it first. And it never phones home.
+Aelix ships today as a terminal agent built on that runtime — its first workload, not its
+boundary. Read every line it runs, keep it entirely inside your own perimeter, and extend it
+with plain Python functions that import your existing stack — pandas, an internal SDK, a
+warehouse client — directly, in-process: the reason data and ML teams reach for it first.
+And it never phones home.
 
 ---
 
@@ -34,7 +40,7 @@ reason data and ML teams reach for it first. And it never phones home.
   metered ACUs, no new vendor.
 - 🔏 **Signed supply chain.** Extensions are verified with Ed25519 provenance and SHA-256
   pinning (`extension keygen | sign | trust`, fail-closed `--require-signature`), installable
-  from an offline catalog. Uncommon in coding agents; native here.
+  from an offline catalog. Uncommon in agent tooling; native here.
 - 🔍 **Auditable & self-hosted.** Fully open source, no telemetry, air-gap-ready `--offline`
   mode. Trust lives in code you can read — the answer to *"why run an agent I didn't write?"*
 - 🧩 **Extensible to the core.** A small kernel where even policy, permissions, and guardrails
@@ -83,15 +89,15 @@ adapter), so provider-specific details (Anthropic thinking-block replay, per-mod
 `/responses` vs `/chat/completions` routing, Copilot enterprise host resolution) are
 preserved rather than flattened.
 
-| Provider | Status |
-|---|---|
-| Anthropic (Messages) | ✅ supported |
-| OpenAI (chat completions) | ✅ supported |
-| OpenRouter | ✅ supported |
-| GitHub Copilot (individual / Business / Enterprise) | ✅ supported |
-| OpenAI Responses API | 🧪 experimental |
-| Google Gemini / Vertex | 🧪 experimental |
-| Cloudflare Workers AI | 🧪 experimental |
+| Provider                                            | Status          |
+| --------------------------------------------------- | --------------- |
+| Anthropic (Messages)                                | ✅ supported    |
+| OpenAI (chat completions)                           | ✅ supported    |
+| OpenRouter                                          | ✅ supported    |
+| GitHub Copilot (individual / Business / Enterprise) | ✅ supported    |
+| OpenAI Responses API                                | 🧪 experimental |
+| Google Gemini / Vertex                              | 🧪 experimental |
+| Cloudflare Workers AI                               | 🧪 experimental |
 
 ## Extensions are just Python — call your data stack in-process
 

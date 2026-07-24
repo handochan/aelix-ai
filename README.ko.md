@@ -1,9 +1,14 @@
-# Aelix
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/brand/lockup-dark.svg">
+    <img src="docs/assets/brand/lockup-light.svg" width="440" alt="Aelix — A×X 마크와 워드마크">
+  </picture>
+</p>
 
-**당신만의 코딩 에이전트를, 순수 파이썬으로.**
+**당신만의 에이전트 세계를, 파이썬 생태계 위에.**
 
-직접 호스팅하고, 모든 코드를 감사하고, 팀이 이미 쓰는 언어로 확장하세요 — 이미 지불하고
-있는 모델 예산 위에서.
+순수 파이썬으로 만든 에이전트 런타임이자 확장 플랫폼입니다 — 직접 호스팅하고, 모든 코드를
+감사하고, 팀이 이미 쓰는 언어로 확장하세요. 이미 지불하고 있는 모델 예산 위에서.
 
 [English README →](README.md)
 
@@ -15,7 +20,8 @@
 </p>
 <p align="center"><em>에이전트가 스스로를 확장합니다: pandas <code>describe_dataset</code> 툴을 <code>my_ext.py</code>에 직접 작성하고, <code>/reload</code>로 재시작 없이 핫리로드한 뒤, 바로 다음 프롬프트에서 in-process로 실행합니다. 대기 구간은 빨리감기 처리했습니다.</em></p>
 
-Aelix는 순수 파이썬으로 작성된 오픈소스 코딩 에이전트입니다. 실행되는 모든 코드를 직접 읽을
+Aelix는 오늘 이 런타임 위의 터미널 에이전트로 먼저 제공됩니다 — 첫 워크로드일 뿐, 경계가
+아닙니다. 실행되는 모든 코드를 직접 읽을
 수 있고, 에이전트 전체를 사내 경계 안에 두고 운영하며, 평범한 파이썬 함수로 확장합니다.
 확장은 in-process로 동작하므로 pandas·내부 SDK·웨어하우스 클라이언트 같은 기존 스택을
 그대로 import해 쓸 수 있습니다 — 데이터·ML 팀이 가장 먼저 찾는 이유입니다. 그리고 어떤
@@ -35,7 +41,7 @@ Aelix는 순수 파이썬으로 작성된 오픈소스 코딩 에이전트입니
   없습니다.
 - 🔏 **서명된 공급망.** 확장은 Ed25519 서명과 SHA-256 핀으로 검증됩니다(`extension keygen |
   sign | trust`, fail-closed `--require-signature`). 오프라인 카탈로그에서 설치할 수
-  있습니다. 코딩 에이전트에서 보기 드문 기능이지만, aelix에서는 기본입니다.
+  있습니다. 에이전트 도구에서 보기 드문 기능이지만, aelix에서는 기본입니다.
 - 🔍 **감사 가능한 자체 호스팅.** 완전한 오픈소스, 텔레메트리 없음, 폐쇄망을 위한
   `--offline` 모드. 신뢰는 직접 읽을 수 있는 코드에서 나옵니다 — *"내가 만들지 않은
   에이전트를 왜 돌리는가?"* 에 대한 답입니다.
