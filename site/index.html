@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Aelix — your own agent world</title>
+<meta name="description" content="Aelix is an agent runtime and extension platform in pure Python — self-hosted, auditable, signed, air-gap ready.">
+<meta property="og:title" content="Aelix — your own agent world">
+<meta property="og:description" content="An agent runtime and extension platform in pure Python. Self-hosted, auditable, extensible in the language your team already writes.">
+<meta property="og:image" content="https://raw.githubusercontent.com/handochan/aelix-ai/main/docs/assets/brand/social-card.png">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" type="image/svg+xml" href="favicon.svg">
+<style>
+  :root {
+    --ground: #0B0F14;
+    --card: #10161E;
+    --line: #1E2A34;
+    --paper: #F6FAFB;
+    --tx: #C6D6DC;
+    --tx-dim: #7E97A1;
+    --glow: #22D3EE;
+    --current: #06B6D4;
+    --deep: #0E7490;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html { color-scheme: dark; }
+  body {
+    margin: 0; background: var(--ground); color: var(--tx);
+    font: 16px/1.65 system-ui, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  }
+  .wrap { max-width: 1060px; margin: 0 auto; padding: 0 24px; }
+
+  header.hero { padding: 96px 0 72px; text-align: center; }
+  .lockup { width: min(620px, 88vw); height: auto; margin: 0 auto 40px; display: block;
+    animation: rise .9s ease-out both; }
+  @keyframes rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+  h1 {
+    font-family: var(--mono); color: var(--paper);
+    font-size: clamp(22px, 3.6vw, 34px); line-height: 1.3; letter-spacing: -0.02em;
+    margin: 0 0 14px; text-wrap: balance;
+  }
+  .sub { max-width: 62ch; margin: 0 auto 36px; color: var(--tx); font-size: 17px; }
+  .sub b { color: var(--paper); font-weight: 600; }
+
+  .install {
+    display: inline-flex; align-items: center; gap: 14px; flex-wrap: wrap; justify-content: center;
+    background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+    padding: 14px 20px; font-family: var(--mono); font-size: 14px; color: var(--paper);
+    overflow-x: auto; max-width: 100%;
+  }
+  .install .p { color: var(--glow); user-select: none; }
+  .btns { margin-top: 26px; display: flex; gap: 14px; justify-content: center; flex-wrap: wrap; }
+  .btn {
+    font-family: var(--mono); font-size: 14px; letter-spacing: .04em; text-decoration: none;
+    padding: 11px 22px; border-radius: 8px; border: 1px solid var(--line); color: var(--tx);
+  }
+  .btn.primary { background: var(--deep); border-color: var(--deep); color: var(--paper); }
+  .btn:hover { border-color: var(--current); color: var(--paper); }
+  .btn.primary:hover { background: var(--current); border-color: var(--current); }
+
+  section { padding: 56px 0; }
+  h2 {
+    font-family: var(--mono); font-size: 13px; letter-spacing: .18em; text-transform: uppercase;
+    color: var(--tx-dim); border-bottom: 1px solid var(--line); padding-bottom: 10px; margin: 0 0 28px;
+  }
+  .feats { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 20px; }
+  .feat { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 24px 26px; }
+  .feat h3 { margin: 0 0 10px; font-size: 17px; color: var(--paper); }
+  .feat p { margin: 0; font-size: 14.5px; color: var(--tx); }
+  .feat code { font-family: var(--mono); font-size: 13px; color: var(--glow); }
+
+  .term { background: #05080C; border: 1px solid var(--line); border-radius: 12px; overflow-x: auto; }
+  .term .bar { display: flex; gap: 7px; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+  .term .dot { width: 11px; height: 11px; border-radius: 50%; background: #22303A; }
+  .term pre { margin: 0; padding: 24px 28px; font-family: var(--mono); font-size: 13px; line-height: 1.35; }
+  .t1 { color: #c8ffff; } .t2 { color: #64f2fe; } .t3 { color: #00dcf0; }
+  .t4 { color: #00b4d8; } .t5 { color: #0082c8; } .t6 { color: #005faf; }
+  .tt { color: var(--paper); font-weight: 700; } .td { color: var(--tx-dim); } .tp { color: var(--glow); }
+
+  .ax-stage { position: relative; height: 190px; background: var(--card); border: 1px solid var(--line);
+    border-radius: 12px; overflow: hidden; }
+  .ax-stage svg { position: absolute; width: 460px; height: 173px; left: calc(50% - 230px); top: 8px; }
+  .ax-stage svg.ax-mark { width: 150px; height: 150px; left: calc(50% - 75px); top: 10px; }
+  .ax-rest { animation: axRest 9s ease-in-out infinite; }
+  .ax-a    { animation: axA 9s ease-in-out infinite; transform-origin: center; }
+  .ax-x    { animation: axX 9s ease-in-out infinite; transform-origin: center; }
+  .ax-mark { animation: axM 9s ease-in-out infinite; opacity: 0; }
+  @keyframes axRest { 0%,20%{opacity:1} 32%,86%{opacity:0} 94%,100%{opacity:1} }
+  @keyframes axA { 0%,22%{transform:none;opacity:1} 52%,60%{transform:translate(157px,1px) scale(1.05);opacity:1} 70%,86%{transform:translate(157px,1px) scale(1.05);opacity:0} 88%{transform:none;opacity:0} 94%,100%{transform:none;opacity:1} }
+  @keyframes axX { 0%,22%{transform:none;opacity:1} 52%,60%{transform:translate(-168px,-28px) scale(1.05);opacity:1} 70%,86%{transform:translate(-168px,-28px) scale(1.05);opacity:0} 88%{transform:none;opacity:0} 94%,100%{transform:none;opacity:1} }
+  @keyframes axM { 0%,56%{opacity:0} 68%,86%{opacity:1} 94%,100%{opacity:0} }
+  .cap { font-family: var(--mono); font-size: 11.5px; color: var(--tx-dim); letter-spacing: .05em; margin-top: 10px; }
+
+  footer { border-top: 1px solid var(--line); padding: 32px 0 56px; margin-top: 40px;
+    font-size: 13px; color: var(--tx-dim); }
+  footer a { color: var(--current); text-decoration: none; }
+  @media (prefers-reduced-motion: reduce) {
+    * { animation: none !important; }
+    .ax-stage .ax-mark { opacity: 0; }
+  }
+</style>
+</head>
+<body>
+
+<header class="hero wrap">
+  <svg class="lockup" viewBox="0 0 952 272" role="img" aria-label="Aelix">
+    <defs>
+      <linearGradient id="strand" gradientUnits="userSpaceOnUse" x1="52" y1="224" x2="172" y2="32">
+        <stop offset="0" stop-color="#06B6D4"/><stop offset="1" stop-color="#22D3EE"/>
+      </linearGradient>
+    </defs>
+    <g transform="translate(4,0)">
+      <path fill="#0E7490" d="M188 224h40L108 32H68Z"/>
+      <path fill="url(#strand)" d="M28 224h40L188 32h-40Z"/>
+      <path fill="#0E7490" d="M68 160h120l20 32H48Z"/>
+    </g>
+    <g transform="translate(268,32)">
+      <g fill="#F6FAFB">
+        <path d="M87 32 L129 32 L70 192 L28 192 Z"/>
+        <path d="M87 32 L129 32 L188 192 L146 192 Z"/>
+        <path d="M81 140 L135 140 L145 168 L71 168 Z"/>
+        <path fill-rule="evenodd" d="M224 64 L320 64 L332 76 L332 116 L320 140 L256 140 L256 164 L332 164 L318 192 L224 192 L212 180 L212 76 Z M256 92 L288 92 L288 116 L256 116 Z"/>
+        <path d="M360 32 L404 32 L404 164 L428 164 L428 192 L360 192 Z"/>
+        <path d="M456 64 L500 64 L500 192 L456 192 Z"/>
+        <path d="M524 64 L572 64 L652 192 L604 192 Z M604 64 L652 64 L572 192 L524 192 Z"/>
+      </g>
+      <path fill="#22D3EE" d="M462 12 L494 12 L494 44 L462 44 Z"/>
+    </g>
+  </svg>
+  <h1>Your own agent world —<br>built on the Python ecosystem.</h1>
+  <p class="sub">Aelix is an <b>agent runtime and extension platform</b> in pure Python.
+  Self-hosted and auditable, extensible in the language your team already writes,
+  on the model budgets you already pay for. It never phones home.</p>
+  <div class="install"><span class="p">$</span>curl -fsSL https://raw.githubusercontent.com/handochan/aelix-ai/main/install.sh | sh</div>
+  <div class="btns">
+    <a class="btn primary" href="https://github.com/handochan/aelix-ai">GitHub</a>
+    <a class="btn" href="https://github.com/handochan/aelix-ai/blob/main/docs/guides/getting-started.md">Get started</a>
+    <a class="btn" href="https://github.com/handochan/aelix-ai/blob/main/docs/guides/extension-authoring.md">Write an extension</a>
+  </div>
+</header>
+
+<section class="wrap">
+  <h2>Why Aelix</h2>
+  <div class="feats">
+    <div class="feat">
+      <h3>Extensions are just Python</h3>
+      <p>A tool is a plain function — no plugin language, no out-of-process bridge. Import
+      pandas, an internal SDK, or a warehouse client and hand results straight back to the
+      model, in-process. Hot-reload with <code>/reload</code>, no restart.</p>
+    </div>
+    <div class="feat">
+      <h3>Runs on budgets you already own</h3>
+      <p>Hand-written native adapters for Anthropic, OpenAI, Gemini/Vertex, OpenRouter,
+      Cloudflare, and GitHub Copilot — including the seat you already sign in with. Route
+      cheap work and hard reasoning to different models from one session.</p>
+    </div>
+    <div class="feat">
+      <h3>Signed, air-gap-ready trust</h3>
+      <p>Ed25519 provenance and SHA-256 pinning on extensions (<code>keygen | sign | trust</code>,
+      fail-closed <code>--require-signature</code>), an offline catalog, and an
+      <code>--offline</code> mode built for closed networks. Policy and guardrails are
+      auditable built-in extensions.</p>
+    </div>
+  </div>
+</section>
+
+<section class="wrap">
+  <h2>Terminal-native</h2>
+  <div class="term">
+    <div class="bar"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>
+    <pre><span class="t1">   ╲ ╱     █████╗ ███████╗██╗     ██╗██╗  ██╗</span>
+<span class="t2">    ╳     ██╔══██╗██╔════╝██║     ██║╚██╗██╔╝</span>
+<span class="t3">   ╱ ╲    ███████║█████╗  ██║     ██║ ╚███╔╝</span>
+<span class="t4">  ╱   ╲   ██╔══██║██╔══╝  ██║     ██║ ██╔██╗</span>
+<span class="t5"> ╱▁▁▁▁▁╲  ██║  ██║███████╗███████╗██║██╔╝ ██╗</span>
+<span class="t6">╱       ╲ ╚═╝  ╚═╝╚══════╝╚══════╝╚═╝╚═╝  ╚═╝</span>
+<span class="tt"> Aelix Agent Runtime</span>
+<span class="td"> small kernel | extension platform | policy-first execution</span>
+
+<span class="tp">❯</span> <span class="td">aelix</span></pre>
+  </div>
+</section>
+
+<section class="wrap">
+  <h2>The name is the mark</h2>
+  <div class="ax-stage" aria-label="Animation: the word's A and x converge into the Aelix mark">
+    <svg class="ax-rest" viewBox="0 0 680 256" aria-hidden="true">
+      <g fill="#F6FAFB">
+        <path fill-rule="evenodd" d="M224 64 L320 64 L332 76 L332 116 L320 140 L256 140 L256 164 L332 164 L318 192 L224 192 L212 180 L212 76 Z M256 92 L288 92 L288 116 L256 116 Z"/>
+        <path d="M360 32 L404 32 L404 164 L428 164 L428 192 L360 192 Z"/>
+        <path d="M456 64 L500 64 L500 192 L456 192 Z"/>
+      </g>
+      <path fill="#22D3EE" d="M462 12 L494 12 L494 44 L462 44 Z"/>
+    </svg>
+    <svg class="ax-a" viewBox="0 0 680 256" aria-hidden="true">
+      <g fill="#F6FAFB">
+        <path d="M87 32 L129 32 L70 192 L28 192 Z"/>
+        <path d="M87 32 L129 32 L188 192 L146 192 Z"/>
+        <path d="M81 140 L135 140 L145 168 L71 168 Z"/>
+      </g>
+    </svg>
+    <svg class="ax-x" viewBox="0 0 680 256" aria-hidden="true">
+      <g fill="#F6FAFB">
+        <path d="M524 64 L572 64 L652 192 L604 192 Z M604 64 L652 64 L572 192 L524 192 Z"/>
+      </g>
+    </svg>
+    <svg class="ax-mark" viewBox="0 0 256 256" aria-hidden="true">
+      <defs>
+        <linearGradient id="strand2" gradientUnits="userSpaceOnUse" x1="52" y1="224" x2="172" y2="32">
+          <stop offset="0" stop-color="#06B6D4"/><stop offset="1" stop-color="#22D3EE"/>
+        </linearGradient>
+      </defs>
+      <path fill="#0E7490" d="M188 224h40L108 32H68Z"/>
+      <path fill="url(#strand2)" d="M28 224h40L188 32h-40Z"/>
+      <path fill="#0E7490" d="M68 160h120l20 32H48Z"/>
+    </svg>
+  </div>
+  <p class="cap">Aelix opens with A and closes with x — first and last letters, and the two
+  strands of the mark. Watch them meet.</p>
+</section>
+
+<footer>
+  <div class="wrap">
+    <p>Apache-2.0 · substantial portions ported from
+    <a href="https://github.com/earendil-works/pi">pi</a> (MIT, © 2025 Mario Zechner) ·
+    model catalog data from <a href="https://models.dev">models.dev</a> (MIT)</p>
+    <p><a href="https://github.com/handochan/aelix-ai">github.com/handochan/aelix-ai</a></p>
+  </div>
+</footer>
+
+</body>
+</html>

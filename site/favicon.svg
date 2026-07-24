@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="Aelix mark">
+  <defs>
+    <linearGradient id="aelix-strand" gradientUnits="userSpaceOnUse" x1="52" y1="224" x2="172" y2="32">
+      <stop offset="0" stop-color="#06B6D4"/>
+      <stop offset="1" stop-color="#22D3EE"/>
+    </linearGradient>
+  </defs>
+  <path fill="#0E7490" d="M188 224h40L108 32H68Z"/>
+  <path fill="url(#aelix-strand)" d="M28 224h40L188 32h-40Z"/>
+  <path fill="#0E7490" d="M68 160h120l20 32H48Z"/>
+</svg>
