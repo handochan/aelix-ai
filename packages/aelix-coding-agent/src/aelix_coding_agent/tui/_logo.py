@@ -1,25 +1,46 @@
 """Aelix terminal logo — the block-art header shown at TUI startup.
 
-Only this text/Unicode block art is part of the runtime; the brand image logo
-(JPG/SVG) is intentionally NOT shipped or referenced here (it is undecided).
-The art is embedded as a module string constant — not a packaged data file —
-so it lands in the built wheel with no ``package-data`` / ``MANIFEST.in``
-configuration. The TUI styles it with Rich, so it degrades cleanly on
-no-color terminals.
+Only this text/Unicode art is part of the runtime; the brand vector assets
+live in ``docs/assets/brand/`` (canonical SVG, see ``BRAND.md`` there) and
+are intentionally NOT shipped or referenced here. The art is embedded as a
+module string constant — not a packaged data file — so it lands in the built
+wheel with no ``package-data`` / ``MANIFEST.in`` configuration. The TUI
+styles it with Rich, so it degrades cleanly on no-color terminals.
 """
 
 from __future__ import annotations
 
+# Sigil column — the "Forged Planes" brand mark (A×X: two legs crossing at
+# the apex, low crossbar) reduced to diagonal glyph art. One column-per-row
+# slope; the crossing sits on row 2, the crossbar on row 5, matching the
+# mark's proportions. Each row is padded to a fixed 9-cell width so the
+# AELIX block art joins at a stable column.
+_SIGIL_LINES = (
+    "   ╲ ╱   ",
+    "    ╳    ",
+    "   ╱ ╲   ",
+    "  ╱   ╲  ",
+    " ╱▁▁▁▁▁╲ ",
+    "╱       ╲",
+)
+
 # Block-art "AELIX" (UTF-8 box-drawing). Trailing whitespace is stripped per
 # line (right-side padding is invisible) so the source stays ruff-clean; the
 # leading spaces are significant (they center the glyphs).
-_LOGO_LINES = (
+_WORDMARK_LINES = (
     "  █████╗ ███████╗██╗     ██╗██╗  ██╗",
     " ██╔══██╗██╔════╝██║     ██║╚██╗██╔╝",
     " ███████║█████╗  ██║     ██║ ╚███╔╝",
     " ██╔══██║██╔══╝  ██║     ██║ ██╔██╗",
     " ██║  ██║███████╗███████╗██║██╔╝ ██╗",
     " ╚═╝  ╚═╝╚══════╝╚══════╝╚═╝╚═╝  ╚═╝",
+)
+
+# Sigil + wordmark, joined per row. ``rstrip`` keeps lines ruff-clean where
+# the wordmark row is shorter than the padded sigil column.
+_LOGO_LINES = tuple(
+    (sigil + wordmark).rstrip()
+    for sigil, wordmark in zip(_SIGIL_LINES, _WORDMARK_LINES, strict=True)
 )
 
 LOGO_ART = "\n".join(_LOGO_LINES)
