@@ -22,6 +22,7 @@ import asyncio
 import contextlib
 import logging
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -2150,7 +2151,13 @@ def _build_banner(harness: AgentHarness, cwd: str) -> object:
     from rich.console import Group
     from rich.panel import Panel
 
-    from aelix_coding_agent.tui._logo import LOGO_ANSI, LOGO_TAGLINE, LOGO_TITLE
+    from aelix_coding_agent.tui._logo import (
+        LOGO_ANSI,
+        LOGO_ANSI_NARROW,
+        LOGO_TAGLINE,
+        LOGO_TAGLINE_NARROW,
+        LOGO_WIDTH,
+    )
 
     model = getattr(harness, "current_model", None)
     model_id = getattr(model, "id", None) or "unknown"
@@ -2166,12 +2173,17 @@ def _build_banner(harness: AgentHarness, cwd: str) -> object:
     except Exception:  # noqa: BLE001 — banner must never raise
         version = "unknown"
 
-    # Gradient block-art (ADR-0164): Text.from_ansi renders the embedded 24-bit
-    # truecolor SGR escapes (cyan → blue → purple) — no style= override so the
-    # gradient shows; degrades cleanly on no-color terminals.
-    logo = Text.from_ansi(LOGO_ANSI)
-    logo.append(f"\n {LOGO_TITLE}\n", style="bold")
-    logo.append(f" {LOGO_TAGLINE}", style="dim")
+    # Brand block-art, generated from docs/assets/brand/*.svg by
+    # scripts/generate_logo_art.py. Text.from_ansi renders the embedded 24-bit
+    # truecolor SGR escapes — no style= override, so the strand gradient shows.
+    # Every cell carries a foreground colour only, so a no-color terminal still
+    # prints the exact silhouette rather than solid blocks. The art itself
+    # spells "Aelix", so the positioning tagline follows it without repeating
+    # the name. Terminals too narrow for the lockup get the mark alone.
+    columns = shutil.get_terminal_size(fallback=(80, 24)).columns
+    wide = columns >= LOGO_WIDTH
+    logo = Text.from_ansi(LOGO_ANSI if wide else LOGO_ANSI_NARROW)
+    logo.append(f"\n {LOGO_TAGLINE if wide else LOGO_TAGLINE_NARROW}", style="dim")
 
     # === runtime summary =================================================
     # The body is assembled AFTER the section labels are computed (below) so the

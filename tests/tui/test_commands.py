@@ -171,7 +171,9 @@ def test_banner_contains_model_id_cwd_and_help_hint() -> None:
     assert "anthropic/claude-opus-4-7" in out
     assert "/home/me/project" in out
     assert "/help" in out
-    assert "Aelix" in out
+    # The brand name is drawn as block art rather than written out (the art is
+    # generated from the brand SVGs), so the identifying TEXT is the tagline.
+    assert "Agent Runtime" in out
 
 
 def test_banner_shows_version_and_all_sections() -> None:
@@ -243,16 +245,17 @@ def test_banner_degrades_when_no_model() -> None:
 
 
 def test_banner_includes_terminal_logo_header() -> None:
-    """The startup banner renders the Aelix terminal logo as a header — the
-    block art, the title, and the tagline (B: TUI logo header)."""
+    """The startup banner renders the brand block art as a header, followed by
+    the positioning tagline. The art itself spells the brand name, so no title
+    line repeats it (B: TUI logo header)."""
 
     from aelix_coding_agent.tui._logo import LOGO_TAGLINE
     from aelix_coding_agent.tui.shell import _build_banner
 
     out = _render(_build_banner(_BannerHarness(), "/home/me/project"))  # type: ignore[arg-type]
     assert "█" in out  # block-art glyph rendered
-    assert "Aelix Agent Runtime" in out  # title
     assert LOGO_TAGLINE in out  # positioning tagline
+    assert "Aelix Agent Runtime" not in out  # the name is art, never written twice
 
 
 # === registry shape =========================================================
