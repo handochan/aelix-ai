@@ -1,6 +1,10 @@
 # 0008. Agent Loop in Core, Orchestration in Extensions
 
-Status: Accepted
+Status: Accepted — **Decision ¶2의 "runtime core에는 multi-agent 개념을 두지
+않습니다" 문장은 ADR-0196 (P1 agent-profile identity)에 의해 AMEND 되었습니다**
+(아래 `## Amendment (2026-07-19)` 참조). L1/L2 분리 자체는 **그대로
+유효**합니다 — amendment는 "single-agent profile **identity**"가 어느 밴드에
+속하는지를 명시할 뿐, L2 orchestration을 core로 옮기지 않습니다.
 
 ## Context
 
@@ -49,4 +53,70 @@ extension을 호출하거나 병렬 실행을 구성할 수 있습니다.
 - `02-initial-requirements.md` Runtime 절의 "장기적으로 orchestration,
   multi-agent coordination 포함"이라는 표현은 "extension layer에서"라는
   맥락으로 해석합니다. 필요 시 문서를 후속 갱신합니다.
+
+## Amendment (2026-07-19)
+
+**Amended by:** ADR-0196 (agent-profile format & single-agent invoke, P1).
+**Trigger:** `.omc/specs/multiagent-profiles-teams-architecture-spec.md` §9
+(owner-ratified 2026-07-19) — "ADR-0008 — AMEND (not overturn)".
+
+원 Decision은 **overturn되지 않습니다.** 이 amendment는 위 Decision ¶2가 아무런
+구분 없이 쓰고 있던 "multi-agent 개념"이라는 표현을 두 갈래로 쪼개서, 어느 쪽이
+어느 밴드에 속하는지만 명시합니다.
+
+### (a) Single-agent profile **identity** — product-core resource concern
+
+명명된 단일 agent 정체성(`<name>.md` 프로필)의 **format · discovery ·
+resolution**은 *한 번의 실행을 형태짓는 선언적 resource*이며, 이미 product-core에
+있는 skill 로딩과 **동형(isomorphic)**입니다. 이것은 kernel이 금지하는 multi-agent
+orchestration이 아니라 **L1-adjacent**한 관심사이므로 **product-core**
+(`packages/aelix-coding-agent`)에 둡니다.
+
+세 가지를 함께 못박습니다.
+
+1. **프로필 하나는 프로세스 하나입니다.** 정체성은 그 세션의 system prompt ·
+   model/provider · tool allow-list · skill 경로를 정할 뿐, 두 번째 agent를
+   만들지 않습니다. 스폰(spawn)이 없으면 조정(coordination)도 없고, 따라서
+   L2가 아닙니다.
+2. **동형성 논거는 *shape*에 대한 것이지 *package*에 대한 것이 아닙니다.**
+   (spec §1 line 35가 skill 파서를 product-core에 있다고 적은 것은 오기 —
+   실제로는 kernel `packages/aelix-agent-core/harness/skills.py`이고, 배선은
+   `entry.py:1355-1356` + `:1427`입니다. ADR-0196 §"Known limitations"에서
+   정정.) 프로필 파서가 product-core에 놓이는 근거는 "skill 파서가 거기 있어서"가
+   아니라 **바로 이 amendment 조항**입니다.
+3. **kernel은 문자 그대로 0줄 변경입니다.** ADR-0002 경계도, 아래 Decision ¶2도
+   kernel에 대해서는 여전히 글자 그대로 참입니다.
+
+### (b) Multi-agent spawn / teams / routing — 여전히 extension layer
+
+subagent 스폰, 병렬·체인 위임, 팀 구성, 라우팅, 대시보드는 **변경 없이 L2 =
+extension layer**입니다. 원 Decision ¶2가 그대로 지배합니다.
+
+### Decision ¶2 문장의 scope 확정
+
+"runtime core에는 multi-agent 개념을 두지 않습니다"는 다음 두 축 모두에서
+**여전히 참**이며, 그 범위를 아래와 같이 명시합니다.
+
+- **kernel 축** — `packages/aelix-agent-core`에는 profile 개념도, spawn 개념도,
+  multi-agent event type도 없습니다 (untouched).
+- **orchestration 축** — 스폰/팀/라우팅 *구현*은 extension에 있습니다.
+
+즉 이 문장은 "product-core가 agent 정체성을 *선언적 resource로서* 읽는 것"까지
+금지하지는 않습니다.
+
+### 리뷰 게이트 — mechanism/policy rejection criterion (spec §9, verbatim)
+
+아래 문장을 **원문 그대로** 심사 기준으로 등록합니다. 이후 이 경계를 넘는 PR은
+설계 토론 없이 이 조항만으로 반려됩니다.
+
+> *"Product-core owns the profile format/resolver and a subagent-runtime
+> CONTRACT (types + binding slot) only. The spawn IMPLEMENTATION, caps,
+> registry, and all topology/task-list/goal/dashboard decisions are extension
+> policy. A PR adding spawn behavior, a supervisor, or a subagent lifecycle
+> event TYPE to product-core or the kernel is rejected on sight."*
+
+P1 시점의 적용 결과: product-core는 위 인용문의 **앞쪽 절반(format/resolver)만**
+가집니다. subagent-runtime CONTRACT(`subagent_contract.py`, `bind_subagents`)는
+P2에 착륙하며, 그 배치는 별도 ADR("subagent-runtime seam & `aelix-agents`
+extension", spec §9)이 소유합니다.
 

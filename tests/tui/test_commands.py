@@ -275,7 +275,9 @@ def test_sprint_a_registry_set() -> None:
     # + /clone + /tree; 6h₂₇ (ADR-0155) /hooks + /mcp + /context; WP-0 (ADR-0157)
     # /permissions; WP-2 (ADR-0160) /statusline; ImplConsumers (ADR-0161)
     # /scoped-models; WP-8 /login + /logout (after model), /stats (after cost),
-    # /extension (after mcp); issue #12 /skills (after tools).
+    # /extension (after mcp); issue #12 /skills (after tools); ADR-0196 /agents
+    # (after skills — the same shape of markdown resource, carrying identity
+    # rather than a capability).
     names = [c.name for c in BUILTIN_COMMANDS]
     assert names == [
         "help",
@@ -292,6 +294,7 @@ def test_sprint_a_registry_set() -> None:
         "thinking",
         "tools",
         "skills",
+        "agents",
         "hooks",
         "mcp",
         "extension",

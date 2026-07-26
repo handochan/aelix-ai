@@ -105,6 +105,37 @@ class Args:
     append_system_prompt: list[str] = field(default_factory=list)
     """Pi parity: ``--append-system-prompt <text>`` (repeatable)."""
 
+    system_prompt_file: str | None = None
+    """Aelix-original (ADR-0196): ``--system-prompt-file <path>`` — replace
+    semantics. ``--system-prompt`` takes a LITERAL string (the parser branch
+    below), which overflows ``ARG_MAX`` and leaks in ``ps`` for a long body —
+    and an agent profile's body routinely IS a long body.
+
+    Normalized into :attr:`system_prompt` by ``entry._apply_prompt_files``;
+    the literal ``--system-prompt`` always wins when both are supplied."""
+
+    append_system_prompt_files: list[str] = field(default_factory=list)
+    """Aelix-original (ADR-0196): ``--append-system-prompt-file <path>``
+    (repeatable). Normalized into :attr:`append_system_prompt` by
+    ``entry._apply_prompt_files``, landing AFTER the string-appends."""
+
+    # Agent profile (aelix-original, ADR-0196)
+    agent: str | None = None
+    """Aelix-original (ADR-0196): ``--agent <name>`` — whole-session identity.
+
+    Resolved against ``~/.aelix/agent/agents/`` then ``<cwd>/.aelix/agents/``
+    (the latter only when the project is trusted). Mutually exclusive with
+    :attr:`agent_file`; an unresolvable name is fatal, never a warning —
+    running under an identity other than the one requested is a safety
+    problem."""
+
+    agent_file: str | None = None
+    """Aelix-original (ADR-0196): ``--agent-file <path>``.
+
+    Scope is decided by resolved-path containment, NOT by this flag, so a
+    path under ``<cwd>`` is still a *project* profile and still faces the
+    trust gate + confirmation prompt."""
+
     # Tools / Extensions
     no_tools: bool = False
     """Pi parity: ``--no-tools`` / ``-nt``."""
@@ -132,7 +163,16 @@ class Args:
     persistence)."""
 
     skills: list[str] = field(default_factory=list)
-    """Pi parity: ``--skill <name>`` (repeatable)."""
+    """Pi parity: ``--skill <path>`` (repeatable).
+
+    Aelix divergence (ADR-0196): entries are **paths**, not installable
+    names. ``entry._resolve_skill_dirs`` (``cli/entry.py:547-577``) resolves
+    each entry against ``cwd`` when relative and scans it as a skill
+    directory (or the parent of a ``SKILL.md``); Aelix has no skill package
+    manager, so a bare *name* silently resolves to a non-existent directory
+    that :func:`load_skills` skips without a diagnostic. The help text said
+    ``<name>`` until ADR-0196 and that lie is what produced the agent-profile
+    spec's ``skills: [python-recon]`` example."""
 
     no_skills: bool = False
     """Pi parity: ``--no-skills`` / ``-ns``."""
@@ -189,6 +229,26 @@ class Args:
     unknown_flags: dict[str, str | bool] = field(default_factory=dict)
     """Pi parity: unknown ``--ext-flag`` passthrough (Pi
     ``unknownFlags: Map<string, boolean | string>``)."""
+
+    provided: set[str] = field(default_factory=set)
+    """Aelix-original (ADR-0196): names of :class:`Args` fields the user
+    EXPLICITLY set on the command line.
+
+    Required because every other field is a plain default with no "unset"
+    sentinel (``--tools ''`` yields ``[]``, indistinguishable from "not
+    supplied"; ``--no-tools`` yields ``False``, ditto), so the rule "an
+    explicit CLI flag always wins over an agent profile" is otherwise
+    unenforceable — the overlay cannot tell a user's choice from a default.
+
+    Only branches an agent profile can overlay are recorded, plus the two
+    prompt-file flags and ``--agent`` / ``--agent-file`` themselves.
+    ``--thinking`` is recorded ONLY when the level validates, matching the
+    parser's warn-and-drop behaviour: a rejected level leaves the field at
+    its default, so claiming the user "provided" it would let a bad flag
+    veto the profile's valid one.
+
+    NOT part of the parsed-value surface — provenance, not a value. Exclude
+    it from whole-``Args`` comparisons."""
 
     diagnostics: list[dict[str, str]] = field(default_factory=list)
     """Pi parity: ``diagnostics: Array<{type, message}>``.
@@ -263,10 +323,12 @@ def parse_args(argv: list[str]) -> Args:
         elif arg == "--provider":
             if i + 1 < n:
                 parsed.provider = argv[i + 1]
+                parsed.provided.add("provider")
                 i += 1
         elif arg == "--model":
             if i + 1 < n:
                 parsed.model = argv[i + 1]
+                parsed.provided.add("model")
                 i += 1
         elif arg == "--models":
             if i + 1 < n:
@@ -281,10 +343,42 @@ def parse_args(argv: list[str]) -> Args:
         elif arg == "--system-prompt":
             if i + 1 < n:
                 parsed.system_prompt = argv[i + 1]
+                parsed.provided.add("system_prompt")
                 i += 1
         elif arg == "--append-system-prompt":
             if i + 1 < n:
                 parsed.append_system_prompt.append(argv[i + 1])
+                parsed.provided.add("append_system_prompt")
+                i += 1
+        elif arg == "--system-prompt-file":
+            # Aelix-original (ADR-0196). Sibling of ``--system-prompt``: the
+            # file's TEXT is normalized into ``system_prompt`` downstream
+            # (``entry._apply_prompt_files``), not here, because parse_args
+            # must stay pure — it has no cwd, no stderr contract and no way
+            # to fail a run.
+            if i + 1 < n:
+                parsed.system_prompt_file = argv[i + 1]
+                parsed.provided.add("system_prompt_file")
+                i += 1
+        elif arg == "--append-system-prompt-file":
+            # Aelix-original (ADR-0196), repeatable like its string twin.
+            if i + 1 < n:
+                parsed.append_system_prompt_files.append(argv[i + 1])
+                parsed.provided.add("append_system_prompt_files")
+                i += 1
+        elif arg == "--agent":
+            # Aelix-original (ADR-0196) — named agent profile. Resolution,
+            # the trust gate and the confirmation prompt all live in
+            # ``cli/entry.py``; the parser only records the request.
+            if i + 1 < n:
+                parsed.agent = argv[i + 1]
+                parsed.provided.add("agent")
+                i += 1
+        elif arg == "--agent-file":
+            # Aelix-original (ADR-0196) — profile at an explicit path.
+            if i + 1 < n:
+                parsed.agent_file = argv[i + 1]
+                parsed.provided.add("agent_file")
                 i += 1
         elif arg == "--no-session":
             parsed.no_session = True
@@ -302,19 +396,30 @@ def parse_args(argv: list[str]) -> Args:
                 i += 1
         elif arg in ("--no-tools", "-nt"):
             parsed.no_tools = True
+            parsed.provided.add("no_tools")
         elif arg in ("--no-builtin-tools", "-nbt"):
             parsed.no_builtin_tools = True
+            parsed.provided.add("no_builtin_tools")
         elif arg in ("--tools", "-t"):
             if i + 1 < n:
                 parsed.tools = [
                     s.strip() for s in argv[i + 1].split(",") if s.strip()
                 ]
+                # Recorded even when the CSV is empty (``--tools ''`` → []):
+                # provenance is about the FLAG, not the value, and that empty
+                # case is precisely the one a plain default cannot express.
+                parsed.provided.add("tools")
                 i += 1
         elif arg == "--thinking":
             if i + 1 < n:
                 level = argv[i + 1]
                 if level in VALID_THINKING_LEVELS:
                     parsed.thinking = level
+                    # Only a VALID level counts as provided (ADR-0196) — the
+                    # invalid branch below warns and drops, leaving the field
+                    # at its default, so recording it would let a typo veto an
+                    # agent profile's valid ``thinking:``.
+                    parsed.provided.add("thinking")
                 else:
                     parsed.diagnostics.append(
                         {
@@ -326,9 +431,11 @@ def parse_args(argv: list[str]) -> Args:
         elif arg in ("--extension", "-e"):
             if i + 1 < n:
                 parsed.extensions.append(argv[i + 1])
+                parsed.provided.add("extensions")
                 i += 1
         elif arg in ("--no-extensions", "-ne"):
             parsed.no_extensions = True
+            parsed.provided.add("no_extensions")
         elif arg in ("--approve", "-a"):
             # Pi parity: ``args.ts:180`` — trust project-local files this run.
             parsed.project_trust_override = True
@@ -338,9 +445,11 @@ def parse_args(argv: list[str]) -> Args:
         elif arg == "--skill":
             if i + 1 < n:
                 parsed.skills.append(argv[i + 1])
+                parsed.provided.add("skills")
                 i += 1
         elif arg in ("--no-skills", "-ns"):
             parsed.no_skills = True
+            parsed.provided.add("no_skills")
         elif arg == "--prompt-template":
             if i + 1 < n:
                 parsed.prompt_templates.append(argv[i + 1])
@@ -355,6 +464,7 @@ def parse_args(argv: list[str]) -> Args:
             parsed.no_themes = True
         elif arg in ("--no-context-files", "-nc"):
             parsed.no_context_files = True
+            parsed.provided.add("no_context_files")
         elif arg == "--export":
             if i + 1 < n:
                 parsed.export = argv[i + 1]
@@ -455,16 +565,23 @@ Model:
 Prompt:
   --system-prompt <text>          Replace the default system prompt
   --append-system-prompt <text>   Append to the system prompt (repeatable)
+  --system-prompt-file <path>     Replace the system prompt from a file
+  --append-system-prompt-file <path>
+                                  Append to the system prompt from a file (repeatable)
+
+Agent profiles:
+  --agent <name>                  Run under a named agent profile
+  --agent-file <path>             Run under a profile at an explicit path
 
 Tools / Extensions:
   --no-tools, -nt                 Disable all tools
   --no-builtin-tools, -nbt        Disable built-in tools only
   --tools, -t <csv>               Restrict tools to this comma-separated list
-  --extension, -e <name>          Load extension (repeatable)
+  --extension, -e <path>          Load extension (repeatable)
   --no-extensions, -ne            Disable all extensions
   --approve, -a                   Trust project-local files for this run
   --no-approve, -na               Ignore project-local files for this run
-  --skill <name>                  Enable skill (repeatable)
+  --skill <path>                  Enable skill (repeatable)
   --no-skills, -ns                Disable all skills
   --prompt-template <name>        Enable prompt template (repeatable)
   --no-prompt-templates, -np      Disable all prompt templates

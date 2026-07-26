@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import io
 
+import pytest
 from aelix_coding_agent.cli.args import (
     VALID_THINKING_LEVELS,
     Args,
@@ -462,3 +463,172 @@ def test_unknown_flag_does_not_eat_file_arg() -> None:
     assert parsed.unknown_flags == {"my-ext": True}
     assert parsed.file_args == ["input.txt"]
     assert parsed.messages == ["msg"]
+
+
+# === Agent profiles (aelix-original, ADR-0196) ==============================
+
+
+def test_agent_flags_parse() -> None:
+    """``--agent`` / ``--agent-file`` are first-class, not unknown-flag
+    passthrough (which is where every unrecognized ``--foo`` lands)."""
+    parsed = parse_args(["--agent", "scout"])
+    assert parsed.agent == "scout"
+    assert parsed.agent_file is None
+    assert parsed.unknown_flags == {}
+
+    parsed = parse_args(["--agent-file", "./profiles/scout.md"])
+    assert parsed.agent_file == "./profiles/scout.md"
+    assert parsed.agent is None
+    assert parsed.unknown_flags == {}
+
+    # Mutual exclusion is enforced in ``cli/entry.py`` (it needs stderr and an
+    # exit code); the parser records BOTH so entry can diagnose it.
+    parsed = parse_args(["--agent", "scout", "--agent-file", "x.md"])
+    assert (parsed.agent, parsed.agent_file) == ("scout", "x.md")
+
+
+def test_agent_flag_missing_value_is_inert() -> None:
+    """Trailing ``--agent`` with no value follows the house lookahead
+    contract: no crash, no consumption, field left at its default."""
+    parsed = parse_args(["--agent"])
+    assert parsed.agent is None
+    assert parsed.unknown_flags == {}
+
+
+def test_prompt_file_flags_parse() -> None:
+    parsed = parse_args(["--system-prompt-file", "/tmp/base.md"])
+    assert parsed.system_prompt_file == "/tmp/base.md"
+    # The parser does NOT read the file — normalization into the string twin
+    # happens in ``entry._apply_prompt_files``.
+    assert parsed.system_prompt is None
+
+    parsed = parse_args(
+        [
+            "--append-system-prompt-file",
+            "/tmp/a.md",
+            "--append-system-prompt-file",
+            "/tmp/b.md",
+        ]
+    )
+    assert parsed.append_system_prompt_files == ["/tmp/a.md", "/tmp/b.md"]
+    assert parsed.append_system_prompt == []
+
+
+def test_prompt_file_flags_do_not_shadow_their_string_twins() -> None:
+    """The linear loop matches on equality, so ``--system-prompt-file`` can
+    never be swallowed by the ``--system-prompt`` branch (or vice versa)."""
+    parsed = parse_args(
+        ["--system-prompt", "literal", "--system-prompt-file", "/tmp/x.md"]
+    )
+    assert parsed.system_prompt == "literal"
+    assert parsed.system_prompt_file == "/tmp/x.md"
+    assert parsed.messages == []
+
+
+# === Args.provided — explicit-CLI provenance (ADR-0196) =====================
+#
+# Every row is a field an agent profile may overlay (plus the profile flags
+# themselves). A MISSING row means the profile would silently beat an
+# explicit CLI flag, so the table is exhaustive by construction.
+
+_PROVENANCE_CASES: list[tuple[list[str], str]] = [
+    (["--provider", "anthropic"], "provider"),
+    (["--model", "claude-x"], "model"),
+    (["--thinking", "high"], "thinking"),
+    (["--system-prompt", "be brief"], "system_prompt"),
+    (["--append-system-prompt", "extra"], "append_system_prompt"),
+    (["--system-prompt-file", "/tmp/x.md"], "system_prompt_file"),
+    (["--append-system-prompt-file", "/tmp/x.md"], "append_system_prompt_files"),
+    (["--agent", "scout"], "agent"),
+    (["--agent-file", "/tmp/scout.md"], "agent_file"),
+    (["--no-tools"], "no_tools"),
+    (["-nt"], "no_tools"),
+    (["--no-builtin-tools"], "no_builtin_tools"),
+    (["-nbt"], "no_builtin_tools"),
+    (["--tools", "read,grep"], "tools"),
+    (["-t", "read"], "tools"),
+    (["--extension", "/tmp/ext.py"], "extensions"),
+    (["-e", "/tmp/ext.py"], "extensions"),
+    (["--no-extensions"], "no_extensions"),
+    (["-ne"], "no_extensions"),
+    (["--skill", "/tmp/skills/recon"], "skills"),
+    (["--no-skills"], "no_skills"),
+    (["-ns"], "no_skills"),
+    (["--no-context-files"], "no_context_files"),
+    (["-nc"], "no_context_files"),
+]
+
+
+@pytest.mark.parametrize(("argv", "field_name"), _PROVENANCE_CASES)
+def test_provided_records_explicit_flags(argv: list[str], field_name: str) -> None:
+    parsed = parse_args(argv)
+    assert field_name in parsed.provided
+    # The recorded name must be a real field — a typo would be a silent
+    # no-op in the overlay's ``name not in provided`` check.
+    assert hasattr(parsed, field_name)
+
+
+def test_provided_is_empty_when_nothing_supplied() -> None:
+    assert parse_args([]).provided == set()
+    # Flags no profile can overlay stay out of the provenance set.
+    assert parse_args(["--verbose", "--print", "hi"]).provided == set()
+
+
+def test_provided_accumulates_across_flags() -> None:
+    parsed = parse_args(["--model", "m", "--provider", "p", "--no-tools"])
+    assert parsed.provided == {"model", "provider", "no_tools"}
+
+
+def test_provided_records_empty_tools_csv() -> None:
+    """The whole reason ``provided`` exists: ``--tools ''`` parses to ``[]``,
+    which is byte-identical to the "never supplied" default."""
+    parsed = parse_args(["--tools", ""])
+    assert parsed.tools == []
+    assert parse_args([]).tools == []
+    assert "tools" in parsed.provided
+    assert "tools" not in parse_args([]).provided
+
+
+def test_invalid_thinking_not_recorded_as_provided() -> None:
+    """``--thinking bogus`` warns and drops (the level never lands on
+    ``Args``), so recording it would let a typo veto a profile's valid
+    ``thinking:`` and leave the session at ``off``."""
+    parsed = parse_args(["--thinking", "bogus"])
+    assert parsed.thinking is None
+    assert "thinking" not in parsed.provided
+    assert parse_args(["--thinking", "high"]).provided == {"thinking"}
+
+
+def test_provided_survives_unknown_flag_passthrough() -> None:
+    """An extension flag between two known flags must not break provenance."""
+    parsed = parse_args(["--model", "m", "--ext-flag", "value", "--no-skills"])
+    assert parsed.unknown_flags == {"ext-flag": "value"}
+    assert parsed.provided == {"model", "no_skills"}
+
+
+# === print_help — new groups + the two corrected lines ======================
+
+
+def test_print_help_lists_agent_and_prompt_file_flags() -> None:
+    buf = io.StringIO()
+    print_help(buf)
+    text = buf.getvalue()
+    assert "Agent profiles:" in text
+    assert "--agent <name>" in text
+    assert "--agent-file <path>" in text
+    assert "--system-prompt-file <path>" in text
+    assert "--append-system-prompt-file <path>" in text
+
+
+def test_print_help_says_path_for_skill_and_extension() -> None:
+    """ADR-0196 — both lines said ``<name>`` while the implementation
+    resolved a PATH (``entry.py:547-577`` for ``--skill``,
+    ``extensions/loader.py:444-464`` for ``-e``). Aelix has no name resolver
+    for either, so the old wording sent users to a silently-ignored flag."""
+    buf = io.StringIO()
+    print_help(buf)
+    text = buf.getvalue()
+    assert "--skill <path>" in text
+    assert "--extension, -e <path>" in text
+    assert "--skill <name>" not in text
+    assert "--extension, -e <name>" not in text

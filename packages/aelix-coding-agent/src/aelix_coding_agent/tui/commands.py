@@ -31,6 +31,7 @@ if TYPE_CHECKING:
     from aelix_ai.settings import SettingsManager
     from rich.console import RenderableType
 
+    from aelix_coding_agent.agents import AgentProfile, ProfileDiscoveryResult
     from aelix_coding_agent.tui.chrome import AelixChrome
 
 
@@ -203,6 +204,23 @@ class CommandContext:
     tabbed viewer over the discovered extensions + the live MCP manager —
     Installed / Discover / Sources tabs). The ``/extension`` handler awaits it;
     ``None`` in headless tests (WP-8, Feature 3)."""
+    agent_profiles: Callable[[], ProfileDiscoveryResult] | None = None
+    """``run_tui`` wires this to ``AgentProfileService.list`` — the discovered
+    agent profiles plus the scan diagnostics — so ``/agents list`` and
+    ``/agents show`` can render WITHOUT importing the service (headless tests
+    pass ``None`` and both degrade to a committed message). ADR-0196.
+
+    ``/agents show`` reads the same result as ``/agents list`` deliberately: a
+    profile the user can SEE listed must always be inspectable, including the
+    broken one they are trying to debug — which the fatal
+    ``AgentProfileService.show`` resolve would refuse."""
+    use_agent: Callable[[str | None], Awaitable[str]] | None = None
+    """``run_tui`` wires this to ``AgentProfileService.use`` over the LIVE
+    harness: swap the whole agent identity (system prompt, skills, tools, model,
+    thinking level) in place — no reload, no lost history. ``None`` clears back
+    to the CLI baseline. Returns the status line the handler commits; raises
+    ``ProfileError`` for anything it refuses. ``None`` in headless tests / when
+    entry.py built no service (ADR-0196)."""
 
 
 def build_help_renderable(commands: list[BuiltinCommand]) -> RenderableType:
@@ -450,6 +468,257 @@ async def _skills_handler(ctx: CommandContext, args: str) -> None:
             desc = f"{desc} (model-invocation disabled)".strip()
         table.add_row(name, desc)
     ctx.commit(Panel(table, title="Skills", box=ROUNDED, border_style="cyan"))
+
+
+# === /agents (ADR-0196) =====================================================
+# Kept beside /skills: an agent profile is the same shape of resource (a
+# markdown file with YAML frontmatter, discovered from a user tier plus a
+# trust-gated project tier), it just carries the agent's IDENTITY rather than a
+# capability the model may reach for.
+
+_AGENTS_USAGE = "Usage: /agents [list | show <name> | use <name> | use --none]"
+"""One source for the usage text, shared by every error path below so the help
+the user is shown can never drift from what the dispatch actually accepts."""
+
+_AGENTS_BODY_PREVIEW_LINES = 12
+"""How much of a profile's markdown body ``/agents show`` previews. The body IS
+the system prompt and is routinely hundreds of lines; the panel exists to
+IDENTIFY a profile, not to reproduce it."""
+
+
+def _profile_cell(value: object) -> str:
+    """Render one profile field as a table cell — ``—`` when unset, never ``None``.
+
+    A literal ``None`` in a table is the classic "is that the string or the
+    absence?" ambiguity. :attr:`AgentProfile.tools` gets its own renderer
+    (:func:`_profile_tools_cell`) because for that ONE field the two readings
+    mean opposite things.
+    """
+
+    if value is None:
+        return "—"
+    text = str(value)
+    return text if text.strip() else "—"
+
+
+def _profile_tools_cell(profile: AgentProfile) -> str:
+    """``tools`` is THREE-valued and the render must not flatten it.
+
+    ``None`` (key absent) = inherit the ambient tool set; ``()`` (``tools: []``)
+    = NO tools at all; a list = an allowlist. Showing the first two identically
+    would display opposite intents as the same thing — the same collapse that
+    made ``--tools ''`` enable everything (``entry.py:453-475``).
+    """
+
+    if profile.tools is None:
+        return "—"
+    if not profile.tools:
+        return "(none)"
+    return ", ".join(profile.tools)
+
+
+def _render_agents_table(result: ProfileDiscoveryResult) -> RenderableType:
+    """``/agents list`` — name / scope / model / tools / description."""
+
+    table = Table.grid(padding=(0, 2))
+    table.add_column(style="bold cyan", no_wrap=True)
+    table.add_column(style="magenta", no_wrap=True)
+    table.add_column(style="white", no_wrap=True)
+    # TOOLS and DESCRIPTION wrap — an allowlist or a one-liner can be long, and
+    # pushing the remaining columns off the terminal is worse than two rows.
+    table.add_column(style="white")
+    table.add_column(style="white")
+    table.add_row("NAME", "SCOPE", "MODEL", "TOOLS", "DESCRIPTION", style="dim")
+    for profile in sorted(result.profiles, key=lambda p: p.name):
+        table.add_row(
+            profile.name,
+            profile.scope,
+            _profile_cell(profile.model),
+            _profile_tools_cell(profile),
+            _profile_cell(profile.description),
+        )
+    return Panel(table, title="Agent profiles", box=ROUNDED, border_style="cyan")
+
+
+def _render_agents_diagnostics(result: ProfileDiscoveryResult) -> RenderableType | None:
+    """The scan diagnostics, or ``None`` when the scan was clean.
+
+    Rendered rather than dropped because two of them are load-bearing and this
+    is their ONLY surface: a project profile that overrides a user profile of
+    the same name (project wins — the warning naming both absolute paths is half
+    of the ratified mitigation, the startup confirmation prompt is the other
+    half), and a profile that failed to parse, which by definition is absent
+    from the table above.
+    """
+
+    if not result.diagnostics:
+        return None
+    body = Text()
+    for diag in result.diagnostics:
+        error = diag.type == "error"
+        body.append(
+            f"{'✖' if error else '!'} {diag.message}\n",
+            style="bold red" if error else "yellow",
+        )
+        body.append(f"  {diag.path}\n", style="dim")
+    # ``Text.rstrip`` mutates IN PLACE and returns ``None`` — it cannot be
+    # inlined into the Panel call.
+    body.rstrip()
+    return Panel(
+        body,
+        title="Agent profile diagnostics",
+        box=ROUNDED,
+        border_style="yellow",
+    )
+
+
+def _render_agent_profile(profile: AgentProfile) -> list[RenderableType]:
+    """``/agents show <name>`` — the parsed fields, then the DRY RUN.
+
+    The second panel is the auditable half: the exact flags
+    ``resolver.profile_to_flags`` would emit (shell-quoted, so a path with a
+    space is unambiguous) plus the head of the body that becomes the system
+    prompt. "What will this identity actually do" is answerable before running
+    it, not after.
+    """
+
+    import shlex
+
+    from aelix_coding_agent.agents import profile_to_flags
+
+    fields = Table.grid(padding=(0, 2))
+    fields.add_column(style="bold cyan", no_wrap=True)
+    fields.add_column(style="white")
+    fields.add_row("name", profile.name)
+    fields.add_row("description", profile.description)
+    fields.add_row("scope", profile.scope)
+    fields.add_row("file", profile.file_path)
+    # Unset optionals are OMITTED here rather than dashed: this panel is a dry
+    # run of what the profile DOES, and a row saying "nothing" is noise. (The
+    # list table above cannot omit — its columns have to line up.)
+    if profile.model is not None:
+        fields.add_row("model", profile.model)
+    if profile.provider is not None:
+        fields.add_row("provider", profile.provider)
+    if profile.thinking is not None:
+        fields.add_row("thinking", profile.thinking)
+    fields.add_row("tools", _profile_tools_cell(profile))
+    fields.add_row("builtin tools", "yes" if profile.builtin_tools else "no")
+    fields.add_row("system prompt", profile.system_prompt)
+    fields.add_row("context files", "yes" if profile.context_files else "no")
+    fields.add_row("inherit skills", "yes" if profile.inherit_skills else "no")
+    if profile.skills:
+        fields.add_row("skills", "\n".join(profile.skills))
+    fields.add_row("inherit extensions", "yes" if profile.inherit_extensions else "no")
+    if profile.extensions:
+        fields.add_row("extensions", "\n".join(profile.extensions))
+
+    dry_run = Text()
+    dry_run.append("flags  ", style="bold cyan")
+    dry_run.append(
+        shlex.join(profile_to_flags(profile, prompt_path=profile.file_path))
+    )
+    lines = profile.body.strip().splitlines()
+    if lines:
+        dry_run.append("\n\nsystem prompt\n", style="bold cyan")
+        dry_run.append("\n".join(lines[:_AGENTS_BODY_PREVIEW_LINES]))
+        hidden = len(lines) - _AGENTS_BODY_PREVIEW_LINES
+        if hidden > 0:
+            dry_run.append(f"\n… (+{hidden} more lines)", style="dim")
+
+    return [
+        Panel(
+            fields,
+            title=f"Agent profile: {profile.name}",
+            box=ROUNDED,
+            border_style="cyan",
+        ),
+        Panel(dry_run, title="Dry run", box=ROUNDED, border_style="cyan"),
+    ]
+
+
+async def _agents_handler(ctx: CommandContext, args: str) -> None:
+    """``/agents [list | show <name> | use <name> | use --none]`` (ADR-0196).
+
+    - no arg / ``list`` — every discoverable profile + the scan diagnostics.
+    - ``show <name>`` — the parsed fields and the dry-run flags/prompt.
+    - ``use <name>`` — swap the LIVE identity (prompt, skills, tools, model,
+      thinking) with no reload and no lost history.
+    - ``use --none`` — restore the identity the process was launched with.
+
+    Both callbacks are optional: headless tests and any host that built no
+    service leave them ``None``, and every branch degrades to a committed
+    message rather than raising. Nothing here spawns — P1 has exactly one agent.
+    """
+
+    parts = args.split(maxsplit=1)
+    sub = parts[0] if parts else "list"
+    rest = parts[1].strip() if len(parts) > 1 else ""
+
+    if sub in ("list", "show"):
+        if ctx.agent_profiles is None:
+            ctx.commit(Text("Agent profiles are unavailable.", style="yellow"))
+            return
+        try:
+            result = ctx.agent_profiles()
+        except Exception as exc:  # noqa: BLE001 — surface, never kill the REPL
+            ctx.commit(Text(f"✖ agents failed: {exc}", style="bold red"))
+            return
+        if sub == "list":
+            if not result.profiles and not result.diagnostics:
+                ctx.commit(Text("No agent profiles found.", style="yellow"))
+                return
+            if result.profiles:
+                ctx.commit(_render_agents_table(result))
+            diagnostics = _render_agents_diagnostics(result)
+            if diagnostics is not None:
+                ctx.commit(diagnostics)
+            return
+        if not rest:
+            ctx.commit(
+                Text(f"/agents show needs a profile name. {_AGENTS_USAGE}", style="yellow")
+            )
+            return
+        # Resolved against the LISTED profiles (not the fatal
+        # ``AgentProfileService.show``) so anything visible in /agents list is
+        # always inspectable — including the broken profile being debugged.
+        match = next((p for p in result.profiles if p.name == rest), None)
+        if match is None:
+            known = ", ".join(sorted(p.name for p in result.profiles)) or "(none)"
+            ctx.commit(
+                Text(
+                    f"✖ unknown agent profile {rest!r}; available: {known}",
+                    style="bold red",
+                )
+            )
+            return
+        for renderable in _render_agent_profile(match):
+            ctx.commit(renderable)
+        return
+
+    if sub == "use":
+        if ctx.use_agent is None:
+            ctx.commit(Text("Agent profile switching is unavailable.", style="yellow"))
+            return
+        if not rest:
+            # Deliberately NOT "clear on a bare /agents use": clearing the
+            # identity is a real change and has to be asked for by name.
+            ctx.commit(
+                Text(
+                    f"/agents use needs a profile name (or --none). {_AGENTS_USAGE}",
+                    style="yellow",
+                )
+            )
+            return
+        try:
+            status = await ctx.use_agent(None if rest == "--none" else rest)
+        except Exception as exc:  # noqa: BLE001 — surface, never kill the REPL
+            ctx.commit(Text(f"✖ agents use failed: {exc}", style="bold red"))
+            return
+        ctx.commit(Text(status, style="green"))
+        return
+
+    ctx.commit(Text(f"Unknown /agents subcommand {sub!r}. {_AGENTS_USAGE}", style="yellow"))
 
 
 async def _mode_handler(ctx: CommandContext, args: str) -> None:
@@ -1219,6 +1488,7 @@ BUILTIN_COMMANDS: list[BuiltinCommand] = [
     BuiltinCommand("thinking", "Show, pick, or set the reasoning level", _thinking_handler),
     BuiltinCommand("tools", "List registered tools", _tools_handler),
     BuiltinCommand("skills", "List loaded skills", _skills_handler),
+    BuiltinCommand("agents", "List, show, or switch agent profiles", _agents_handler),
     BuiltinCommand("hooks", "List registered hook handlers (read-only)", _hooks_handler),
     BuiltinCommand("mcp", "Show MCP server status (servers, state, tool counts)", _mcp_handler),
     BuiltinCommand("extension", "Manage installed extensions + MCP servers", _extension_handler),

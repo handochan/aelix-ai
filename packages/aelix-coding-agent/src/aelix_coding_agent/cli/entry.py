@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import copy
 import os
 import select
 import sys
@@ -33,6 +34,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
+from aelix_agent_core.harness._frontmatter import parse_frontmatter
 from aelix_agent_core.harness.core import AgentHarness, AgentHarnessOptions
 from aelix_agent_core.harness.skills import load_skills
 from aelix_agent_core.runtime import ReloadSeed
@@ -51,6 +53,12 @@ from aelix_agent_core.session.session import Session
 from aelix_agent_core.session.storage import JsonlSessionMetadata, SessionError
 from aelix_agent_core.types import AgentTool
 
+from aelix_coding_agent.agents import (
+    AgentProfile,
+    ProfileError,
+    apply_profile_to_args,
+    resolve_profile,
+)
 from aelix_coding_agent.builtin.guardrail import GuardrailExtension
 from aelix_coding_agent.builtin.permission import PermissionExtension
 from aelix_coding_agent.builtin.permission_mode import PermissionPosture
@@ -60,7 +68,7 @@ from aelix_coding_agent.extensions.loader import (
     scan_extension_manifests,
 )
 from aelix_coding_agent.mcp import McpClientManager
-from aelix_coding_agent.tools import create_all_tools
+from aelix_coding_agent.tools import ALL_TOOL_NAMES, create_all_tools
 
 from .agent_context import build_system_prompt, discover_context_files
 from .args import Args, parse_args, print_help
@@ -451,17 +459,153 @@ def _resolve_active_tools(parsed: Args) -> list[str] | None:
       validator rejects unknown names after full tool registration).
     - else → ``None`` (all tools active — the Aelix default).
 
-    ``--no-builtin-tools`` (built-ins off, extension/MCP tools on) is NOT wired
-    here: ``active_tool_names`` is seeded before extensions register their
-    tools, so expressing it faithfully needs post-load tool knowledge. Deferred
-    (tracked) rather than shipped as a divergent approximation that would also
-    disable extension tools.
+    ``--no-builtin-tools`` (built-ins off, extension/MCP tools on) is
+    deliberately NOT expressed here: ``active_tool_names`` is seeded BEFORE
+    extensions register their tools, so any filter written at this point would
+    also disable every extension + MCP tool. ADR-0196 wires it as the only
+    faithful alternative — a POST-registration ``set_active_tools`` inside
+    ``_harness_factory``, right after ``AgentHarness(opts)`` — guarded on
+    ``not parsed.no_tools`` so it can never re-open the kill switch this
+    function returns ``[]`` for.
     """
 
     if parsed.no_tools:
         return []
     if parsed.tools:
         return list(parsed.tools)
+    return None
+
+
+_MAX_PROMPT_FILE_BYTES = 1 << 20
+"""1 MiB ceiling for ``--system-prompt-file`` / ``--append-system-prompt-file``.
+
+A system prompt past this size exceeds every shipping model's context window, so
+the failure is better raised HERE — naming the offending path — than as an
+opaque provider-side 400 on the first turn.
+"""
+
+
+class _PromptFileError(Exception):
+    """Internal carrier for a prompt-file read failure (ADR-0196).
+
+    Private to :func:`_apply_prompt_files`, which converts it back into the
+    ``str | None`` error channel its caller expects. It exists only so the read
+    pass can bail from a comprehension without ``(text, error)`` tuple plumbing.
+    """
+
+
+def _read_prompt_file(flag: str, raw_path: str) -> str:
+    """Read one ``--*-system-prompt-file`` path, or raise :class:`_PromptFileError`.
+
+    Three refusals, each a distinct failure the naive ``read_text`` would report
+    badly or not at all:
+
+    - not a regular file — catches a directory AND the ``/dev/stdin``-style
+      character device that would otherwise BLOCK the whole startup on a read
+      that never returns;
+    - larger than :data:`_MAX_PROMPT_FILE_BYTES`;
+    - unreadable / not UTF-8 (``OSError`` — which subsumes
+      :class:`IsADirectoryError` — or :class:`UnicodeDecodeError`).
+    """
+
+    path = Path(raw_path)
+    if not path.is_file():
+        raise _PromptFileError(f"cannot read {flag} {raw_path}: not a regular file")
+    try:
+        size = path.stat().st_size
+    except OSError as exc:
+        raise _PromptFileError(f"cannot read {flag} {raw_path}: {exc}") from exc
+    if size > _MAX_PROMPT_FILE_BYTES:
+        raise _PromptFileError(
+            f"cannot read {flag} {raw_path}: {size} bytes exceeds the "
+            f"{_MAX_PROMPT_FILE_BYTES}-byte system-prompt limit"
+        )
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise _PromptFileError(f"cannot read {flag} {raw_path}: {exc}") from exc
+    return _strip_prompt_frontmatter(text)
+
+
+def _strip_prompt_frontmatter(text: str) -> str:
+    """Drop a leading YAML frontmatter block from a prompt file (ADR-0196).
+
+    A prompt file may BE an agent profile: ``resolver.profile_to_flags`` renders
+    ``--append-system-prompt-file <profile>.md`` and ``/agents show`` prints that
+    exact line for the user to copy and run. Reading such a file whole shipped the
+    profile's own YAML header into the model's system prompt — a CONTENT
+    divergence between the two channels a profile reaches the runtime through
+    (the argv, and ``resolver.apply_profile_to_args``, whose body is the
+    frontmatter-STRIPPED ``AgentProfile.body``). The anti-drift contract in
+    ``agents/resolver.py`` exists precisely to forbid that.
+
+    Deliberately narrow: the block is dropped only when it parses into a NON-EMPTY
+    mapping, so an ordinary prompt that merely opens with ``---`` (a horizontal
+    rule, a bare YAML document separator, an unclosed block) is returned
+    byte-for-byte. The stripped result is ``parse_frontmatter``'s own body, which
+    is what ``agents.profile.parse_profile`` stores — so the two channels now
+    agree by construction rather than by coincidence.
+    """
+
+    frontmatter, body, error = parse_frontmatter(text)
+    if error is not None or not frontmatter:
+        return text
+    return body
+
+
+def _apply_prompt_files(parsed: Args) -> str | None:
+    """ADR-0196 — normalize the two file-taking prompt flags into their string
+    twins. Returns a user-facing error message, or :data:`None` on success.
+
+    ``--system-prompt`` (a LITERAL string) always WINS over
+    ``--system-prompt-file`` — hence the ``parsed.provided`` consult rather than
+    an ``is None`` test: the seed/overlay machinery downstream also writes
+    ``parsed.system_prompt``, so "did the user type it?" is the only honest
+    question. The file-appends land AFTER the string-appends, preserving the
+    flag channel's order semantics.
+
+    Runs exactly ONCE: ``parse_args`` has a single call site (the top of
+    :func:`_async_main`) and ``_build_harness_options`` re-reads
+    ``parsed.append_system_prompt`` fresh on every build via
+    :func:`_resolve_append_chunks` WITHOUT mutating it, so a once-only
+    normalization cannot double-append across /new, /fork, /resume or reload.
+
+    Reads everything BEFORE mutating anything, so a failure on the second of two
+    files leaves ``parsed`` exactly as it was (same discipline as
+    ``agents.resolver.apply_profile_to_args``).
+    """
+
+    try:
+        replacement: str | None = None
+        if parsed.system_prompt_file is not None:
+            replacement = _read_prompt_file(
+                "--system-prompt-file", parsed.system_prompt_file
+            )
+        appended = [
+            _read_prompt_file("--append-system-prompt-file", raw)
+            for raw in parsed.append_system_prompt_files
+        ]
+    except _PromptFileError as exc:
+        return str(exc)
+
+    if replacement is not None and "system_prompt" not in parsed.provided:
+        parsed.system_prompt = replacement
+        # ADR-0196 (review fix) — the file twin carries the SAME provenance as
+        # its literal twin. ``apply_profile_to_args`` gates on the FIELD name
+        # ``system_prompt`` (``agents/resolver.py``), so without this line a
+        # ``system_prompt: replace`` profile silently overwrote a file the user
+        # named on the command line — while ``--system-prompt`` correctly won.
+        # ``--system-prompt-file`` is the flag a LONG prompt reaches for (that is
+        # the whole reason it exists), so the asymmetry broke exactly the case it
+        # was added to serve, and it broke D1.3's stated invariant "an explicit
+        # CLI flag always wins over the profile".
+        #
+        # The APPEND twin deliberately gets no such line: ``append_system_prompt``
+        # is an ungated accumulator on both channels (see the long comment in
+        # ``apply_profile_to_args``), so marking it provided would make the
+        # profile's identity vanish rather than make the user's chunk win.
+        parsed.provided.add("system_prompt")
+    parsed.append_system_prompt.extend(appended)
     return None
 
 
@@ -577,6 +721,45 @@ def _resolve_skill_dirs(
     return dirs
 
 
+def _resolve_system_prompt(parsed: Args, cwd: str) -> str:
+    """The BASE system prompt for one harness build (ADR-0196).
+
+    Lifted verbatim out of :func:`_build_harness_options` — which now calls it —
+    so ``/agents use`` can recompute a LIVE identity from the *identical* inputs
+    the factory would use. The join itself is mirrored exactly once, in
+    ``agents.prompt.compose_system_prompt`` (pinned against a real
+    ``AgentHarness``); this extraction is what makes drift on the *inputs*
+    structurally impossible too.
+    """
+
+    return (
+        parsed.system_prompt
+        if parsed.system_prompt is not None
+        else build_system_prompt(cwd)
+    )
+
+
+def _resolve_append_chunks(parsed: Args, cwd: str) -> list[str]:
+    """The APPEND chunks for one harness build (ADR-0196).
+
+    Companion to :func:`_resolve_system_prompt`, lifted from the same function
+    for the same reason. Returns a FRESH list every call and never mutates
+    ``parsed.append_system_prompt`` — which is what lets ``_apply_prompt_files``
+    normalize the file flags exactly once without any rebuild double-appending.
+    """
+
+    # Auto-discovered AGENTS.md project context (Pi ``--no-context-files`` gate),
+    # then the explicit ``--append-system-prompt`` chunks. The harness joins all
+    # of these onto the base system prompt with ``"\n\n"`` at ``__init__`` time.
+    append: list[str] = []
+    if not parsed.no_context_files:
+        context = discover_context_files(cwd)
+        if context:
+            append.append(context)
+    append.extend(parsed.append_system_prompt)
+    return append
+
+
 async def _build_harness_options(
     parsed: Args,
     session: Session,
@@ -658,11 +841,7 @@ async def _build_harness_options(
     # extension-tool union. ``_resolve_active_tools`` still applies on first build /
     # /new / /fork / /resume.
     active_tool_names = None if on_reload else _resolve_active_tools(parsed)
-    system_prompt = (
-        parsed.system_prompt
-        if parsed.system_prompt is not None
-        else build_system_prompt(cwd)
-    )
+    system_prompt = _resolve_system_prompt(parsed, cwd)
     # Extensions: built-in safety (Guardrail FIRST so hard-deny patterns like
     # ``rm -rf`` short-circuit via first-block-wins BEFORE the permission
     # prompt) PREPENDED ahead of on-disk + explicit ``--extension`` paths.
@@ -733,6 +912,16 @@ async def _build_harness_options(
         extensions=loaded.extensions,
         runtime=loaded.runtime,
         active_tool_names=active_tool_names,
+        # ADR-0196 — ``--thinking <level>`` (and therefore an agent profile's
+        # ``thinking:``) was PARSED BUT UNCONSUMED: ``args.py`` was the only
+        # writer of ``parsed.thinking`` and nothing in the product core ever
+        # read it, so the flag silently did nothing on every launch. The kernel
+        # seam already existed (``AgentHarnessOptions.thinking_level`` →
+        # ``AgentState.thinking_level``, core.py:238 / :603-604), so wiring it
+        # is this one kwarg. ``None`` leaves the ``"off"`` state default
+        # (types.py:84) untouched, which is the pre-fix behaviour for everyone
+        # who never passed the flag.
+        thinking_level=parsed.thinking,
         steering_mode=steering_mode,
         follow_up_mode=follow_up_mode,
         get_api_key_and_headers=get_api_key_and_headers,
@@ -754,36 +943,30 @@ async def _build_harness_options(
         settings_manager=settings_manager,
     )
 
-    # Auto-discovered AGENTS.md project context (Pi ``--no-context-files`` gate),
-    # then the explicit ``--append-system-prompt`` chunks. The harness joins all
-    # of these onto the base system prompt with ``"\n\n"`` at ``__init__`` time.
-    append: list[str] = []
-    if not parsed.no_context_files:
-        context = discover_context_files(cwd)
-        if context:
-            append.append(context)
-    append.extend(parsed.append_system_prompt)
-    options.append_system_prompt = append
+    options.append_system_prompt = _resolve_append_chunks(parsed, cwd)
     return options
 
 
-async def _prompt_project_trust_interactive(
-    cwd: Path,
-) -> ProjectTrustPromptResult | None:
-    """A1 seam (Sprint P0 #10) — one-shot pre-``run_tui`` trust selector.
+async def _prompt_one_shot_select(body: str, options: list[str]) -> str | None:
+    """A1 seam (Sprint P0 #10) — the one-shot pre-``run_tui`` selector.
 
     The bootstrap-order tension (spec §2.6): extensions load inside the
     harness factory and MCP connects BEFORE ``run_tui`` builds its chrome, so
-    the trust decision must be made before any project-local code runs — but
+    a security decision must be made before any project-local code runs — but
     the persistent TUI's ``ctx.ui.select`` is not yet bound. A1 resolves this
     with a tiny DEDICATED ``prompt_toolkit.Application`` (a one-shot full-screen
     selector) that runs to completion and returns BEFORE the harness factory /
     MCP connect, so the gate strictly precedes execution.
 
-    Returns the user's :class:`ProjectTrustPromptResult`, or :data:`None` on
-    Esc / Ctrl+C (→ deny). Returns :data:`None` if the ``[tui]`` extra is
-    missing (prompt-toolkit unavailable) — the caller then denies by default,
-    which is the safe direction.
+    Returns the CHOSEN LABEL, or :data:`None` on Esc / Ctrl+C. Returns
+    :data:`None` too when the ``[tui]`` extra is missing (prompt-toolkit
+    unavailable). Both are the same signal on purpose: every caller is a
+    consent gate, and "no answer" must mean DENY, never "assume yes".
+
+    ADR-0196 extracted this out of :func:`_prompt_project_trust_interactive`
+    verbatim so :func:`_confirm_project_agent` reuses the exact same widget —
+    and, more to the point, the exact same fail-closed paths — rather than
+    growing a second hand-rolled consent dialog that could drift from it.
     """
 
     try:
@@ -795,10 +978,7 @@ async def _prompt_project_trust_interactive(
         # No TUI extra → cannot prompt; caller denies by default.
         return None
 
-    options = project_trust_options(cwd)
     state = {"idx": 0}
-
-    body = format_project_trust_prompt(cwd)
 
     def _render() -> str:
         rows = [body, ""]
@@ -840,10 +1020,52 @@ async def _prompt_project_trust_interactive(
     )
     await app.run_async()
 
-    label = chosen["label"]
+    return chosen["label"]
+
+
+async def _prompt_project_trust_interactive(
+    cwd: Path,
+) -> ProjectTrustPromptResult | None:
+    """A1 seam (Sprint P0 #10) — the project-trust one-shot selector.
+
+    A thin caller of :func:`_prompt_one_shot_select` (ADR-0196 extraction).
+    Returns the user's :class:`ProjectTrustPromptResult`, or :data:`None` on
+    Esc / Ctrl+C **and** when the ``[tui]`` extra is missing — the caller then
+    denies by default, which is the safe direction.
+    """
+
+    label = await _prompt_one_shot_select(
+        format_project_trust_prompt(cwd), project_trust_options(cwd)
+    )
     if label is None:
         return None
     return interpret_trust_option(label, cwd)
+
+
+async def _confirm_project_agent(profile: AgentProfile) -> bool:
+    """pi ``confirmProjectAgents`` (spec §2.2 line 80) — ADR-0196.
+
+    Project trust is a DIRECTORY-level, yes-once decision that ancestors
+    inherit (``project_trust.py``'s nearest-ancestor walk); it is emphatically
+    NOT consent to a specific identity file that showed up in the repo later.
+    Since a project profile also WINS a ``name`` collision against the user's
+    own ``~/.aelix/agent/agents/<name>.md``, that combination is an escalation
+    primitive on its own — so the second, per-identity confirmation ships in
+    the same change as the collision rule it mitigates.
+
+    Fail-closed in every direction: no ``[tui]`` extra, Esc, or Ctrl+C all
+    surface as :data:`None` from the selector and therefore ``False`` here,
+    mirroring ``project_trust.py``'s own step-6 deny-by-default.
+    """
+
+    label = await _prompt_one_shot_select(
+        f"Run project agent profile {profile.name!r}?\n"
+        f"{profile.file_path}\n\n"
+        "This replaces or extends the agent's system prompt and may change "
+        "its model and tools.",
+        ["Run this profile", "Cancel"],
+    )
+    return label == "Run this profile"
 
 
 async def _resolve_project_trust(
@@ -983,6 +1205,27 @@ async def _async_main(argv: list[str]) -> int:
             print(f"Error: {exc}", file=sys.stderr)
             return 1
 
+    # === Prompt files → their string twins (ADR-0196) ========================
+    # Deliberately placed HERE and not "right after arg validation": the nearest
+    # validation boundary is ``_validate_resume_flag`` above, which precedes both
+    # the ``--list-models`` short-circuit and the ``--export`` exit — so an
+    # unreadable prompt file would hard-fail two do-a-thing-and-exit actions that
+    # never consult a system prompt at all. Everything below this line does.
+    prompt_file_error = _apply_prompt_files(parsed)
+    if prompt_file_error is not None:
+        print(f"Error: {prompt_file_error}", file=sys.stderr)
+        return 1
+
+    # ADR-0196 — the pristine baseline ``/agents use`` resets to. Taken here,
+    # after the prompt files are normalized (so the baseline carries the user's
+    # real CLI intent in its final string form) but BEFORE every mutator that
+    # follows: the profile overlay, the settings default-model seed, and
+    # ``build_initial_message``'s documented side effect on ``parsed.messages``.
+    # ``use`` overlays a profile onto a deepcopy of THIS, never onto whatever the
+    # previously-active profile left behind, so switching identities twice is not
+    # cumulative (``apply_profile_to_args`` is accretive and latching by design).
+    profile_baseline = copy.deepcopy(parsed)
+
     # === Mode resolution =====================================================
     stdin_is_tty = sys.stdin.isatty()
     app_mode = resolve_app_mode(parsed, stdin_is_tty)
@@ -1083,55 +1326,11 @@ async def _async_main(argv: list[str]) -> int:
             file=sys.stderr,
         )
 
-    # WP-2 (ADR-0160) — seed the startup model from the PERSISTED default when the
-    # user passed NO ``--model``/``--provider`` flag. This is what makes the
-    # /settings → "Default model" choice actually apply on the next launch (not
-    # only the session that set it). The explicit flags always win (pi parity:
-    # CLI > settings); we only fill the gap. Mutating ``parsed`` here means EVERY
-    # downstream ``resolve_model(parsed.model, parsed.provider)`` (the harness
-    # build + the --api-key guard + the print/json no-model guard) inherits the
-    # default uniformly — no per-call seeding to drift. Guarded so a malformed
-    # settings file never blocks launch.
-    #
-    # ``defaultModel`` + ``defaultProvider`` are ONE PAIR, written together by
-    # /model and /settings (pi parity: setModel → setDefaultModelAndProvider) to
-    # name a single chosen model. They are therefore seeded as a UNIT, under the
-    # both-flags-absent condition: the pair describes a model the user really
-    # picked, so its provider half rightly behaves like an explicit choice (it
-    # outranks the OpenRouter-from-env path, whose id would otherwise replace the
-    # persisted model).
-    #
-    # #98 is what happens when that pair is SPLIT — ``--model <id>`` supplied with
-    # no ``--provider``. The condition above then suppresses the provider half
-    # entirely, leaving an empty provider that resolves to api="unknown" and
-    # raises at the first turn. But the persisted provider ALSO cannot simply be
-    # written into ``parsed.provider``: it is now a leftover from a DIFFERENT
-    # model than the one being requested, and ``resolve_model`` reads
-    # ``provider_flag`` as "the user explicitly named this provider" — gating both
-    # the ``<provider>/<model>`` shorthand and the OpenRouter-env path on its
-    # absence. Impersonating the flag hijacks both and silently reroutes the turn
-    # to the persisted vendor. So the split case hands the value to
-    # ``resolve_model`` as its own lowest-precedence argument instead.
-    #
-    # The MIRROR split (``--provider`` with no ``--model``) deliberately does NOT
-    # inherit ``defaultModel``: seeding ``parsed.model`` unconditionally would
-    # override ``OPENROUTER_DEFAULT_MODEL`` for anyone running
-    # ``--provider openrouter``, sending the persisted id of some other vendor's
-    # model to OpenRouter. Filling that gap needs a ``default_model`` rung on
-    # ``resolve_model`` (the OpenRouter branch picks the id BEFORE any settings
-    # value is consultable); until then it stays unfilled and the is_runnable
-    # gate below reports it.
-    default_provider: str | None = None
-    with contextlib.suppress(Exception):
-        default_model = settings_manager.get_default_model()
-        persisted_provider = settings_manager.get_default_provider()
-        if parsed.model is None and parsed.provider is None:
-            if default_model:
-                parsed.model = default_model
-            if persisted_provider:
-                parsed.provider = persisted_provider
-        elif parsed.provider is None and persisted_provider:
-            default_provider = persisted_provider
+    # (ADR-0196) The WP-2 settings default-model seed USED to sit here. It now
+    # runs AFTER the agent-profile overlay further down — see the relocated block
+    # — because a profile's ``model:`` has to occupy ``parsed.model`` before the
+    # seed decides whether the gap needs filling. Nothing between here and there
+    # reads ``parsed.model`` / ``parsed.provider`` / ``default_provider``.
 
     # === Permission posture (WP-0, ADR-0157) — built ONCE, held by reference ===
     # The shift+tab-cycled posture + the PermissionExtension are constructed here
@@ -1156,34 +1355,14 @@ async def _async_main(argv: list[str]) -> int:
     get_api_key_and_headers: Callable[..., Any] | None = _make_auth_callback(
         model_registry
     )
-    if parsed.api_key is not None:
-        # Pi parity (main.ts:574-582): ``--api-key`` is meaningless without a
-        # model whose provider we can attach the runtime key to. It adds a
-        # RUNTIME OVERRIDE layer (highest cascade precedence) on top of the
-        # always-wired callback above.
-        model = resolve_model(
-            parsed.model, parsed.provider, model_registry, default_provider
-        )
-        # ``resolve_model`` now parses the ``<provider>/<model>`` slash shorthand
-        # (Pi ``resolveModelFromCli`` main.ts:303-304) and enriches from the
-        # catalog, so ``model.provider`` is populated for every pi-valid
-        # invocation (``--provider x --model y``, ``--model x/y``, or the
-        # OpenRouter-from-env path). This guard now fires only when NO model
-        # resolves at all — an empty/unknown provider — matching pi.
-        # The registry + settings default are passed so the provider this run
-        # will REALLY use is the one the runtime key gets attached to: without
-        # them a registry-only provider or a persisted default resolved empty
-        # here and rejected an ``--api-key`` the run could have used (#98).
-        if not model.provider:
-            print(
-                "Error: --api-key requires a model to be specified via "
-                "--model, --provider/--model, or --models",
-                file=sys.stderr,
-            )
-            return 1
-        auth_storage.set_runtime_api_key(model.provider, parsed.api_key)
-        # (the auth callback is already wired above — the runtime override now
-        # takes precedence in the cascade.)
+    # (ADR-0196) The ``--api-key`` runtime-override block USED to sit here, right
+    # after the callback above. It now runs AFTER the profile overlay + the
+    # relocated seed, because it RESOLVES the model to decide which provider the
+    # key is pinned to: run at this point, ``--agent scout --api-key K`` would
+    # resolve against a ``parsed.model`` the profile had not filled in yet and
+    # either refuse the key outright or pin it to the WRONG provider (a live,
+    # process-wide override on a vendor this run never talks to). Only the
+    # ``_make_auth_callback`` wiring stays here — it takes no model.
 
     if parsed.models:
         print(
@@ -1267,6 +1446,226 @@ async def _async_main(argv: list[str]) -> int:
         default_project_trust=settings_manager.get_default_project_trust(),
     )
 
+    # === Agent profile identity (ADR-0196) ===================================
+    # Placed AFTER the trust gate — project profiles are inert until the
+    # directory is trusted, and the trust predicate now knows about
+    # ``.aelix/agents`` — and BEFORE ``scan_extension_manifests`` /
+    # ``_resolve_skill_dirs`` / the harness factory, so the overlay is visible to
+    # all three. Everything the profile can set (model, provider, tools, skills,
+    # extensions, context files, thinking, system prompt) lands on ``parsed``,
+    # which is the ONE object the factory closes over.
+    #
+    # Known ordering caveat, deliberate: the throwaway project-trust VOTE
+    # extension load above runs before this, so a profile's ``--no-extensions``
+    # cannot suppress it. That load is bounded (user/global tiers only, never
+    # project-local), its runtime is bound to nothing, and it only happens at all
+    # when trust is still unresolved.
+    active_profile: AgentProfile | None = None
+    if parsed.agent is not None and parsed.agent_file is not None:
+        print(
+            "Error: --agent and --agent-file are mutually exclusive",
+            file=sys.stderr,
+        )
+        return 1
+    profile_ref = parsed.agent_file if parsed.agent_file is not None else parsed.agent
+    if profile_ref is not None:
+        try:
+            active_profile = resolve_profile(
+                profile_ref,
+                cwd=cwd,
+                project_trusted=project_trusted,
+                is_file=parsed.agent_file is not None,
+            )
+        except ProfileError as exc:
+            # Fatal, never a warning: running under an identity OTHER than the
+            # one the user named is a safety problem, not a degraded mode.
+            print(f"Error: {exc}", file=sys.stderr)
+            return 1
+        # pi ``confirmProjectAgents``. Directory trust is a yes-once decision
+        # that ancestors inherit; it is not consent to a project-local identity
+        # file, which additionally WINS a name collision against the user's own
+        # profile of the same name. ``--approve`` is the pre-existing "trust
+        # project-local files for this run" escape hatch — no new flag.
+        if (
+            active_profile.scope == "project"
+            and parsed.project_trust_override is not True
+        ):
+            if app_mode != "interactive":
+                print(
+                    f"Error: project-scoped agent profile {active_profile.name!r} "
+                    f"({active_profile.file_path}) requires confirmation; re-run "
+                    "interactively, pass --approve, or move the profile to "
+                    f"{Path(get_agent_dir()) / 'agents'}.",
+                    file=sys.stderr,
+                )
+                return 1
+            if not await _confirm_project_agent(active_profile):
+                print("Error: project agent profile declined.", file=sys.stderr)
+                return 1
+        try:
+            application = apply_profile_to_args(
+                parsed, active_profile, provided=parsed.provided
+            )
+        except ProfileError as exc:
+            # Raised only when the profile would silently WIDEN a kill switch the
+            # user set explicitly (``--no-extensions`` vs ``extensions:``).
+            # ``parsed`` is untouched on this path.
+            print(f"Error: {exc}", file=sys.stderr)
+            return 1
+        # Audit line on stderr (never stdout — ``--mode json`` / ``--print``
+        # stdout is a machine-readable channel). Which identity a run assumed is
+        # exactly the thing a transcript must be able to answer later.
+        print(
+            f"Agent profile: {active_profile.name} "
+            f"({active_profile.scope}: {active_profile.file_path})",
+            file=sys.stderr,
+        )
+        for notice in application.notices:
+            # ``recompute-default-provider`` is consumed structurally by the
+            # relocated seed block below (its ``elif`` hands the persisted
+            # provider to ``resolve_model``'s lowest-precedence slot), so it is
+            # machinery rather than something to tell the user about.
+            if notice != "recompute-default-provider":
+                print(f"Notice: agent profile: {notice}", file=sys.stderr)
+        if application.skipped:
+            # ADR-0196 (review fix) — ``skipped`` used to be computed and never
+            # read anywhere in production, so a HALF-applied identity printed the
+            # banner above and nothing else. A partially-applied identity is the
+            # same class of problem as the wrong identity, which is why ``--agent``
+            # is fatal-on-error; reporting it as a clean success is not an option.
+            # It is a NOTICE rather than a refusal because the precedence itself is
+            # correct and intended — the user's own flag won.
+            print(
+                "Notice: agent profile: CLI flags override "
+                f"{', '.join(application.skipped)}",
+                file=sys.stderr,
+            )
+
+    # WP-2 (ADR-0160) — seed the startup model from the PERSISTED default when the
+    # user passed NO ``--model``/``--provider`` flag. This is what makes the
+    # /settings → "Default model" choice actually apply on the next launch (not
+    # only the session that set it). The explicit flags always win (pi parity:
+    # CLI > settings); we only fill the gap. Mutating ``parsed`` here means EVERY
+    # downstream ``resolve_model(parsed.model, parsed.provider)`` (the harness
+    # build + the --api-key guard + the print/json no-model guard) inherits the
+    # default uniformly — no per-call seeding to drift. Guarded so a malformed
+    # settings file never blocks launch.
+    #
+    # ``defaultModel`` + ``defaultProvider`` are ONE PAIR, written together by
+    # /model and /settings (pi parity: setModel → setDefaultModelAndProvider) to
+    # name a single chosen model. They are therefore seeded as a UNIT, under the
+    # both-flags-absent condition: the pair describes a model the user really
+    # picked, so its provider half rightly behaves like an explicit choice (it
+    # outranks the OpenRouter-from-env path, whose id would otherwise replace the
+    # persisted model).
+    #
+    # #98 is what happens when that pair is SPLIT — ``--model <id>`` supplied with
+    # no ``--provider``. The condition above then suppresses the provider half
+    # entirely, leaving an empty provider that resolves to api="unknown" and
+    # raises at the first turn. But the persisted provider ALSO cannot simply be
+    # written into ``parsed.provider``: it is now a leftover from a DIFFERENT
+    # model than the one being requested, and ``resolve_model`` reads
+    # ``provider_flag`` as "the user explicitly named this provider" — gating both
+    # the ``<provider>/<model>`` shorthand and the OpenRouter-env path on its
+    # absence. Impersonating the flag hijacks both and silently reroutes the turn
+    # to the persisted vendor. So the split case hands the value to
+    # ``resolve_model`` as its own lowest-precedence argument instead.
+    #
+    # The MIRROR split (``--provider`` with no ``--model``) deliberately does NOT
+    # inherit ``defaultModel``: seeding ``parsed.model`` unconditionally would
+    # override ``OPENROUTER_DEFAULT_MODEL`` for anyone running
+    # ``--provider openrouter``, sending the persisted id of some other vendor's
+    # model to OpenRouter. Filling that gap needs a ``default_model`` rung on
+    # ``resolve_model`` (the OpenRouter branch picks the id BEFORE any settings
+    # value is consultable); until then it stays unfilled and the is_runnable
+    # gate below reports it.
+    #
+    # ADR-0196 RELOCATION: this block used to run immediately after the
+    # SettingsManager was constructed, i.e. UPSTREAM of the profile overlay —
+    # which made a profile's ``model:`` inert for anyone who had ever run /model,
+    # because ``parsed.model`` was already occupied by the persisted default and
+    # the overlay's explicit-CLI precedence had no way to tell the two apart.
+    # Moving it here is what makes profile > settings true. The two
+    # ``parsed.provided`` membership tests are the belt to that braces: they say
+    # "the USER typed it", where the ``is None`` tests only say "something has
+    # already filled it in". Note the split-pair case now arrives here by a
+    # second route — a profile that names a model but no provider, which
+    # ``apply_profile_to_args`` deliberately clears ``parsed.provider`` for — and
+    # falls into the same ``elif``, which is exactly the #98 discipline the
+    # paragraph above describes.
+    default_provider: str | None = None
+    with contextlib.suppress(Exception):
+        default_model = settings_manager.get_default_model()
+        persisted_provider = settings_manager.get_default_provider()
+        user_named_a_model = (
+            "model" in parsed.provided or "provider" in parsed.provided
+        )
+        if not user_named_a_model:
+            # ADR-0196 (review fix) — BACK-FILL THE ``/agents use`` BASELINE.
+            # ``profile_baseline`` was snapshotted far above (before the profile
+            # overlay, deliberately: a second ``use`` must overlay the ORIGINAL
+            # CLI intent), which is upstream of this relocated seed — so without
+            # these two lines the baseline says "no model at all". ``use`` resets
+            # ``parsed`` from it, its step-4 model block is gated on
+            # ``parsed.model is not None or parsed.provider is not None`` and
+            # therefore never fires, and the next /new, /fork or /resume rebuilds
+            # ``resolve_model(None, None, …)`` → ``api="unknown"``: the exact #98
+            # unrunnable state, reached from a plain ``/agents use <name>`` by
+            # anyone who has ever run /model. Proven by driving ``_async_main``.
+            #
+            # When the user typed NEITHER flag, the persisted default IS the
+            # ambient no-profile identity, so it belongs in the baseline. The
+            # values are NOT added to ``parsed.provided``: a persisted default is
+            # not an explicit flag and must still LOSE to a profile's ``model:``.
+            # The CLI-explicit case is excluded by the guard (the baseline already
+            # carries the flag), and the split-pair case needs nothing — the
+            # persisted provider reaches every rebuild through the factory's
+            # ``default_provider`` closure kwarg instead.
+            if default_model:
+                profile_baseline.model = default_model
+            if persisted_provider:
+                profile_baseline.provider = persisted_provider
+        if (
+            not user_named_a_model
+            and parsed.model is None
+            and parsed.provider is None
+        ):
+            if default_model:
+                parsed.model = default_model
+            if persisted_provider:
+                parsed.provider = persisted_provider
+        elif parsed.provider is None and persisted_provider:
+            default_provider = persisted_provider
+
+    if parsed.api_key is not None:
+        # Pi parity (main.ts:574-582): ``--api-key`` is meaningless without a
+        # model whose provider we can attach the runtime key to. It adds a
+        # RUNTIME OVERRIDE layer (highest cascade precedence) on top of the
+        # always-wired callback above.
+        model = resolve_model(
+            parsed.model, parsed.provider, model_registry, default_provider
+        )
+        # ``resolve_model`` now parses the ``<provider>/<model>`` slash shorthand
+        # (Pi ``resolveModelFromCli`` main.ts:303-304) and enriches from the
+        # catalog, so ``model.provider`` is populated for every pi-valid
+        # invocation (``--provider x --model y``, ``--model x/y``, or the
+        # OpenRouter-from-env path). This guard now fires only when NO model
+        # resolves at all — an empty/unknown provider — matching pi.
+        # The registry + settings default are passed so the provider this run
+        # will REALLY use is the one the runtime key gets attached to: without
+        # them a registry-only provider or a persisted default resolved empty
+        # here and rejected an ``--api-key`` the run could have used (#98).
+        if not model.provider:
+            print(
+                "Error: --api-key requires a model to be specified via "
+                "--model, --provider/--model, or --models",
+                file=sys.stderr,
+            )
+            return 1
+        auth_storage.set_runtime_api_key(model.provider, parsed.api_key)
+        # (the auth callback is already wired above — the runtime override now
+        # takes precedence in the cascade.)
+
     # MCP servers (Tier 4): connect ONCE here, share the connected tools across
     # every harness rebuild (the tool closures hold live connections, so they
     # survive rebuilds), and dispose ONCE in the finally block. A failed server
@@ -1329,17 +1728,27 @@ async def _async_main(argv: list[str]) -> int:
             print(f"Warning: MCP server failed: {conn_err}", file=sys.stderr)
         mcp_tools = await mcp_manager.collect_agent_tools()
 
-    # Non-interactive untrusted notice for the EXTENSION surface (the gate
-    # itself happens inside the factory via ``no_project_local``). Interactive
-    # users already saw/answered the A1 prompt, so only warn for headless runs.
+    # Non-interactive untrusted notice for the surfaces the gate suppresses
+    # SILENTLY — extensions (inside the factory via ``no_project_local``), skills
+    # (``_resolve_skill_dirs``) and, since ADR-0196, agent profiles
+    # (``discover_profiles``). Interactive users already saw/answered the A1
+    # prompt, so only warn for headless runs.
+    #
+    # The wording is deliberately generic: this fires on the SAME predicate that
+    # ``has_trust_requiring_project_resources`` widened to include
+    # ``.aelix/agents``, so naming only ``.aelix/extensions`` here would report
+    # the wrong resource for an agents-only project. (``.aelix/mcp.json`` keeps
+    # its own targeted notice above, which is emitted only when contribs were
+    # actually dropped.)
     if (
         not project_trusted
         and app_mode != "interactive"
         and has_trust_requiring_project_resources(Path(cwd))
     ):
         print(
-            "Notice: project-local .aelix/extensions skipped in an "
-            "untrusted directory; pass --approve to trust.",
+            "Notice: project-local .aelix resources (extensions, skills, agent "
+            "profiles) skipped in an untrusted directory; pass --approve to "
+            "trust.",
             file=sys.stderr,
         )
 
@@ -1352,9 +1761,16 @@ async def _async_main(argv: list[str]) -> int:
     # re-apply them on every harness build below, so ``harness.skills`` is never
     # empty after a /resume, /new, or /fork rebuild. Diagnostics are emitted
     # here (once) rather than per-rebuild.
+    #
+    # ADR-0196 — held in a MUTABLE holder rather than a plain local. The dirs are
+    # stable for the process only until ``/agents use`` swaps identity: a profile
+    # can add ``skills:`` paths or set ``inherit_skills: false``, so the service
+    # reloads and REPLACES ``skills_holder["result"]`` in place. The factory below
+    # reads the holder on every (re)build, so the new set survives /new, /fork,
+    # /resume and reload — which a captured local provably would not.
     skill_dirs = _resolve_skill_dirs(parsed, cwd, project_trusted)
-    skills_result = load_skills(skill_dirs)
-    for diag in skills_result.diagnostics:
+    skills_holder: dict[str, Any] = {"result": load_skills(skill_dirs)}
+    for diag in skills_holder["result"].diagnostics:
         print(
             f"Warning: skill load: {diag.message} ({diag.path})",
             file=sys.stderr,
@@ -1392,6 +1808,39 @@ async def _async_main(argv: list[str]) -> int:
             on_reload=reload_seed is not None,
         )
         harness = AgentHarness(opts)
+        # ADR-0196 — honor ``--no-builtin-tools`` (built-ins off, extension + MCP
+        # tools on). ``active_tool_names`` is seeded BEFORE extensions register
+        # their tools, so the only faithful expression is a POST-registration
+        # filter, and this is the first point where it can be written: the
+        # harness's ``__init__`` has already rebuilt the tool registry, so
+        # ``state.tools`` holds app tools ∪ extension tools, and the MCP tools
+        # arrived through ``opts.tools`` above.
+        #
+        # ``and not parsed.no_tools`` is MANDATORY, not defensive.
+        # ``_resolve_active_tools`` returns ``[]`` for ``--no-tools``, and
+        # ``_action_set_active_tools`` is explicitly NON-destructive (it records
+        # the active filter, it does not drop tools), so ``state.tools`` still
+        # holds the full registry — without this guard the filter below would
+        # re-enable every extension and ``<server>__<tool>`` MCP tool the user
+        # just killed.
+        #
+        # Names come from LIVE ``state.tools``, so the harness's raising
+        # active-tool validator can never fire here (unlike the raw ``--tools``
+        # path the issue #24-FU comment above warns about). Reload-safe too: the
+        # reloaded build passes ``on_reload=True`` → unfiltered, this filter
+        # re-applies, and ``AgentSessionRuntime.reload()`` step 6 then intersects
+        # the pre-teardown active set (already built-in-free) with the rebuilt
+        # registry plus the extension-tool union — built-ins are *app* tools
+        # passed via ``options.tools``, never extension tools, so none can
+        # reappear.
+        if parsed.no_builtin_tools and not parsed.no_tools:
+            names = [t.name for t in harness.state.tools if t.name not in ALL_TOOL_NAMES]
+            if parsed.tools:
+                # ``--no-builtin-tools --tools a,b`` is an INTERSECTION: the
+                # allowlist still applies, it just cannot readmit a built-in.
+                allow = set(parsed.tools)
+                names = [n for n in names if n in allow]
+            await harness.set_active_tools(names)
         # Issue #22 — replay pending provider registrations into the LIVE
         # ModelRegistry. Extensions that call ``ctx.api.register_provider``
         # during setup queue onto ``runtime.pending_provider_registrations``;
@@ -1423,9 +1872,69 @@ async def _async_main(argv: list[str]) -> int:
         _bind_adapters = getattr(harness.runtime, "bind_api_adapters", None)
         if callable(_bind_adapters):
             _bind_adapters()
-        # Re-apply the loaded skills on every (re)build (issue #12).
-        harness.set_skills(skills_result.skills)
+        # Re-apply the loaded skills on every (re)build (issue #12). Read through
+        # the holder (ADR-0196) so a ``/agents use`` skill swap reaches rebuilds.
+        harness.set_skills(skills_holder["result"].skills)
         return harness
+
+    # ADR-0196 — the ``/agents list|show|use`` service. Built BEFORE the first
+    # harness so it shares the SAME ``parsed`` object the factory closes over: a
+    # live ``use`` overlays a profile onto that object in place, and every later
+    # /new, /fork, /resume rebuild therefore inherits the switched identity. It
+    # also holds the pristine ``profile_baseline`` (so a second ``use`` overlays
+    # the ORIGINAL CLI intent, never the previous profile) and the mutable
+    # ``skills_holder``.
+    #
+    # ``agents.service`` is the sibling deliverable of this wiring and may not
+    # have landed yet; a missing module degrades to "/agents unavailable" rather
+    # than a dead startup, matching how the ``[tui]`` extra is handled below.
+    # Construction errors are NOT swallowed — only the import is guarded.
+    async def _confirm_project_agent_in_session(profile: AgentProfile) -> bool:
+        """Consent gate for a project-scoped ``/agents use`` (ADR-0196 review fix).
+
+        The startup path prompts per identity (``_confirm_project_agent`` above)
+        because directory trust is a yes-once decision ancestors inherit, and a
+        project profile additionally WINS a ``name`` collision against the user's
+        own. ``/agents use`` resolves through the very same tiers, so without this
+        seam the in-session switch was the unguarded twin of a guarded flag: in a
+        trusted directory, ``/agents use reviewer`` silently picked the repo's
+        ``reviewer`` over ``~/.aelix/agent/agents/reviewer.md``.
+
+        P1 answers only from ``--approve``, never by prompting.
+        :func:`_prompt_one_shot_select` is a DEDICATED one-shot
+        ``prompt_toolkit.Application`` built for the pre-``run_tui`` window; driving
+        it while the REPL's own Application is running is not something P1 has a
+        seam for. So this fails CLOSED and :meth:`AgentProfileService.use` raises
+        with a message naming ``--agent`` (which does prompt) — the callback stays
+        on the service so the TUI-native modal can replace it without touching the
+        service's contract.
+        """
+
+        return parsed.project_trust_override is True
+
+    agent_service: Any = None
+    try:
+        from aelix_coding_agent.agents.service import AgentProfileService
+    except ImportError:
+        pass
+    else:
+        agent_service = AgentProfileService(
+            cwd=cwd,
+            project_trusted=project_trusted,
+            parsed=parsed,
+            baseline=profile_baseline,
+            skills_holder=skills_holder,
+            model_registry=model_registry,
+            active=active_profile,
+            confirm_project=_confirm_project_agent_in_session,
+        )
+    # Forwarded to ``run_tui`` as a kwarg only when it exists: the TUI half of
+    # ADR-0196 (the ``agent_service`` parameter + the ``/agents`` command) lands
+    # with ``agents/service.py``, and passing an unknown keyword to the current
+    # signature would TypeError. Collapses to a plain kwarg once both are in.
+    agent_service_kwarg: dict[str, Any] = (
+        {"agent_service": agent_service} if agent_service is not None else {}
+    )
 
     harness = await _harness_factory(session)
     runtime = await create_agent_session_runtime(
@@ -1489,6 +1998,9 @@ async def _async_main(argv: list[str]) -> int:
                 # WP-8 (Feature 3) — the extensions discovered on the first
                 # harness build (empty when none loaded), for /extension.
                 extensions=discovered_extensions,
+                # ADR-0196 — the /agents service (see its construction above for
+                # why this is conditional rather than a plain kwarg).
+                **agent_service_kwarg,
             )
 
         if app_mode == "rpc":

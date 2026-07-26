@@ -209,6 +209,7 @@ async def test_interactive_mode_dispatches_to_run_tui(
         settings_manager: object = None,
         auth_storage: object = None,
         extensions: object = None,
+        agent_service: object = None,
     ) -> int:
         # Sprint 6h₂₆ (ADR-0154): the real model_registry must be threaded so
         # /model can list get_available() — the harness does not expose it.
@@ -219,11 +220,15 @@ async def test_interactive_mode_dispatches_to_run_tui(
         # /scoped-models + /statusline.
         # WP-8 (Features 1 + 3): the held auth_storage (for /login + /logout) +
         # the discovered extensions list (for /extension) are threaded.
+        # ADR-0196: the held AgentProfileService is threaded for /agents. Only
+        # ACCEPTED here (not asserted) — this test is the router smoke; the
+        # service's own behaviour is pinned elsewhere.
         calls.append((runtime, cwd, model_registry, mcp_manager))
         tui_permission["ext"] = permission_ext
         tui_permission["posture"] = permission_posture
         tui_permission["auth_storage"] = auth_storage
         tui_permission["extensions"] = extensions
+        tui_permission["agent_service"] = agent_service
         return 0
 
     # WP-0 nit: capture the held permission objects entry.py constructs so we can

@@ -86,6 +86,7 @@ if TYPE_CHECKING:
     from aelix_ai.settings import SettingsManager
     from prompt_toolkit.completion import Completer
 
+    from aelix_coding_agent.agents.service import AgentProfileService
     from aelix_coding_agent.builtin.permission import PermissionExtension
     from aelix_coding_agent.builtin.permission_mode import PermissionPosture
     from aelix_coding_agent.extensions.api import Extension
@@ -275,6 +276,7 @@ async def run_tui(
     settings_manager: SettingsManager | None = None,
     auth_storage: AuthStorage | None = None,
     extensions: list[Extension] | None = None,
+    agent_service: AgentProfileService | None = None,
     chrome: AelixChrome | None = None,
     install_signal_handlers: bool = True,
 ) -> int:
@@ -312,6 +314,14 @@ async def run_tui(
         Extension` objects discovered on the first harness build (entry.py
         threads it; empty when nothing loaded) so WP-8 ``/extension`` can list
         them. ``None`` → an empty list. WP-8 (Feature 3).
+    :param agent_service: the held
+        :class:`~aelix_coding_agent.agents.service.AgentProfileService` (entry.py
+        constructs it over the SAME ``Args`` the harness factory closes over) so
+        ``/agents`` can list, render and hot-swap the agent identity. ``None``
+        (tests / a host that built no service) leaves ``/agents`` on its
+        degraded committed message. Threaded explicitly for the same reason as
+        ``model_registry``: the harness does not — and must not — hold it.
+        ADR-0196.
     :param chrome: injectable for tests (headless pipe input + DummyOutput).
     :param install_signal_handlers: pass ``False`` when embedding (tests / a host
         that owns process signals) — mirrors ``run_rpc_mode``.
@@ -548,9 +558,28 @@ async def run_tui(
         # to ``["off"]``) so an unsupported level is never forced. ``None`` (unset)
         # preserves the default ``off`` — nothing to apply. Runs pre-bootstrap;
         # ``bootstrap`` only discovers resources, it never resets thinking_level.
+        #
+        # ADR-0196 — and SKIP entirely when the level is already set. This seed
+        # runs AFTER the harness is built, so before the guard below a persisted
+        # ``defaultThinkingLevel`` silently overrode an explicit ``--thinking``
+        # (now wired into ``AgentHarnessOptions.thinking_level``) or a profile's
+        # ``thinking:``. CLI/profile wins; the settings default still fills the
+        # untouched case, which is the whole point of a *default*. ``"off"`` is
+        # the kernel's unset sentinel (``types.py:84``); ``None``/``""`` cover
+        # the test doubles that model "unset" differently.
         with contextlib.suppress(Exception):
             seed_level = settings_manager.get_default_thinking_level()
-            if seed_level:
+            # ``state`` is the public property on a real harness; the TUI's
+            # FakeHarness doubles expose only ``_state`` (the same fallback
+            # ``_thinking_handler`` uses), so read through both.
+            seed_state = getattr(runtime_host.harness, "state", None)
+            if seed_state is None:
+                seed_state = getattr(runtime_host.harness, "_state", None)
+            if seed_level and getattr(seed_state, "thinking_level", None) in (
+                None,
+                "",
+                "off",
+            ):
                 from aelix_ai.models import get_supported_thinking_levels
 
                 seed_model = getattr(runtime_host.harness, "current_model", None)
@@ -1242,6 +1271,19 @@ async def run_tui(
             ),
         )
 
+    async def _use_agent(name: str | None) -> str:
+        # ADR-0196 — the /agents use bridge. Reads ``runtime_host.harness`` at
+        # FIRE time (never a captured snapshot) for the same reason
+        # CommandDispatchService does: a /new, /fork, /resume or /reload swaps
+        # the harness object, and the identity must land on the live one.
+        # ``agent_service`` is non-None by construction (this callback is wired
+        # onto the context only when it is); the re-check is a type narrowing,
+        # not a real branch. Its ``ProfileError`` propagates to the handler,
+        # which commits it in red.
+        if agent_service is None:
+            return "Agent profile switching is unavailable."
+        return await agent_service.use(name, harness=runtime_host.harness)
+
     command_ctx = CommandContext(
         chrome=out_chrome,
         harness=runtime_host.harness,
@@ -1270,6 +1312,10 @@ async def run_tui(
         tree_action=_tree_action,
         is_editor_open=lambda: editor_open_ref["open"],
         settings_manager=settings_manager,
+        # ADR-0196 — both stay ``None`` when entry.py built no service, and
+        # ``/agents`` degrades to a committed message rather than raising.
+        agent_profiles=agent_service.list if agent_service is not None else None,
+        use_agent=_use_agent if agent_service is not None else None,
     )
 
     loop = asyncio.get_running_loop()

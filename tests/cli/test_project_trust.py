@@ -39,6 +39,7 @@ from aelix_coding_agent.cli.args import parse_args
 from aelix_coding_agent.cli.project_trust import (
     ProjectTrustPromptResult,
     ProjectTrustStore,
+    format_project_trust_prompt,
     has_trust_requiring_project_resources,
     project_trust_options,
     resolve_project_trusted,
@@ -119,6 +120,96 @@ def test_resources_mcp_json_as_dir_is_not_file(tmp_path: Path) -> None:
     # mcp.json must be a FILE; a directory named mcp.json doesn't count.
     (tmp_path / ".aelix" / "mcp.json").mkdir(parents=True)
     assert has_trust_requiring_project_resources(tmp_path) is False
+
+
+# === 2b. Agent-profile directory (ADR-0196) ==================================
+#
+# ``.aelix/agents/*.md`` is the third gated family. A project-scoped profile
+# rewrites the agent's IDENTITY (system prompt, model/provider, tool allow-list,
+# skill dirs), so it must engage the same yes-once gate as ``extensions/`` and
+# ``mcp.json``.
+#
+# These tests pin a REAL, measured defect rather than a hypothetical: before the
+# ``agents/`` clause the predicate returned ``False`` for an agents-only
+# ``.aelix/``, which made ``resolve_project_trusted`` short-circuit to ``True``
+# at step 2 in EVERY mode — including headless, where the deny-by-default rule
+# is supposed to apply. Delete the clause and both arms below fail.
+
+
+def _agents_only_dir(tmp_path: Path) -> Path:
+    """A cwd whose ONLY ``.aelix`` resource is an agent profile.
+
+    Deliberately no ``extensions/`` and no ``mcp.json``: if either were present
+    the pre-existing clauses would carry the assertions and the ``agents/``
+    clause would be untested.
+    """
+
+    agents = tmp_path / ".aelix" / "agents"
+    agents.mkdir(parents=True)
+    (agents / "x.md").write_text(
+        "---\nname: x\ndescription: probe\n---\nYou are a probe.\n"
+    )
+    return tmp_path
+
+
+def test_resources_empty_agents_dir_false(tmp_path: Path) -> None:
+    # An empty .aelix/agents dir discovers no profile → nothing to gate.
+    # Mirrors ``test_resources_empty_extensions_dir_false``; pins the
+    # ``any(iterdir())`` half of the clause, not just ``is_dir()``.
+    (tmp_path / ".aelix" / "agents").mkdir(parents=True)
+    assert has_trust_requiring_project_resources(tmp_path) is False
+
+
+async def test_agents_only_dir_requires_trust(tmp_path: Path) -> None:
+    """An agents-only ``.aelix`` engages the gate and denies when headless."""
+
+    cwd = _agents_only_dir(tmp_path)
+
+    # Arm 1 — the predicate sees the profile directory...
+    assert has_trust_requiring_project_resources(cwd) is True
+
+    # Arm 2 — ...so step 2 no longer short-circuits and the non-interactive
+    # deny-by-default rule (step 6, pi ``project-trust.ts:86-88``) applies.
+    # This is the assertion that was returning ``True`` before the fix.
+    out = await resolve_project_trusted(
+        cwd,
+        override=None,
+        has_ui=False,
+        prompt=None,
+        store=ProjectTrustStore(tmp_path / "agent"),
+    )
+    assert out is False
+
+    # Arm 3 — disclosure. A "Trust" answer is consent to exactly what the
+    # prompt names, so gating a family the wording omits would have the user
+    # approving a surface they were never shown.
+    assert "agent profiles" in format_project_trust_prompt(cwd)
+
+
+async def test_agents_only_dir_prompts_when_interactive(tmp_path: Path) -> None:
+    """The interactive arm: an agents-only dir PROMPTS, never auto-trusts.
+
+    Headless deny alone would still pass if the gate merely failed closed for
+    lack of a UI. This pins the other half — with a UI the user is actually
+    asked — so the fix is proven in both modes the defect spanned.
+    """
+
+    cwd = _agents_only_dir(tmp_path)
+    asked: dict[str, object] = {"cwd": None}
+
+    async def _prompt(c: Path) -> ProjectTrustPromptResult | None:
+        asked["cwd"] = c
+        return ProjectTrustPromptResult(trusted=False, remember=False)
+
+    out = await resolve_project_trusted(
+        cwd,
+        override=None,
+        has_ui=True,
+        prompt=_prompt,
+        store=ProjectTrustStore(tmp_path / "agent"),
+    )
+    assert asked["cwd"] == cwd  # the prompt fired at all
+    assert out is False
 
 
 # === 3. resolve_project_trusted order ========================================
