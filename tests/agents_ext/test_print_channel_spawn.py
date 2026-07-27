@@ -726,6 +726,36 @@ async def test_a_wedged_child_that_closed_its_stdio_still_times_out(
     assert elapsed < 20, "the floor is a grace, not an unbounded wait"
 
 
+def _await_zombie(pid: int, *, timeout: float = 10.0) -> None:
+    """Block until ``pid`` has exited, WITHOUT reaping it.
+
+    ``waitid(WEXITED | WNOWAIT)`` returns as soon as the child is a zombie and
+    leaves the status queued for whoever waits next — here, the event loop's
+    child watcher. That is precisely the state the caller needs to set up, and
+    unlike a fixed sleep it does not assume how long a fresh interpreter takes
+    to start and exit on a loaded machine.
+
+    Falls back to a short sleep where ``waitid``/``WNOWAIT`` is unavailable
+    (Windows); the assertion there degrades to the old timing assumption rather
+    than failing outright.
+    """
+
+    waitid = getattr(os, "waitid", None)
+    if waitid is None or not hasattr(os, "WNOWAIT"):  # pragma: no cover - POSIX only
+        time.sleep(0.05)
+        return
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            info = waitid(os.P_PID, pid, os.WEXITED | os.WNOWAIT | os.WNOHANG)
+        except ChildProcessError:  # pragma: no cover - already collected
+            return
+        if info is not None:
+            return
+        time.sleep(0.005)
+    raise AssertionError(f"child {pid} did not exit within {timeout}s")
+
+
 async def test_reaping_an_already_exited_child_reports_its_real_exit_code(
     tmp_path: Path,
 ) -> None:
@@ -759,7 +789,16 @@ async def test_reaping_an_already_exited_child_reports_its_real_exit_code(
         )
         # BLOCKING, on purpose: it lets the child exit while denying the loop
         # the chance to collect the status, which is the exact race.
-        time.sleep(0.05)
+        #
+        # ``waitid(WNOWAIT)`` returns the moment the child becomes a zombie and
+        # deliberately LEAVES the status unreaped, so the loop's watcher still
+        # has not collected it — the precondition this test needs. A fixed sleep
+        # cannot express that: on a loaded machine a fresh interpreter needs
+        # more than the timeout to start and exit, the child is still RUNNING
+        # when ``reap`` fires, and the assertion sees ``-SIGTERM`` instead of a
+        # lost status. That is a false failure about the test's own timing, not
+        # about the behaviour under test (observed once at ``-15``).
+        _await_zombie(proc.pid)
         codes.append(await reap(proc, grace=2.0))
 
     assert codes == [0] * 12, f"exit statuses lost to a behind-the-back reap: {codes}"
