@@ -15,6 +15,9 @@ pair obeys). Supersedes-in-part the #16 "extension-first" placement decision.
 Source spec: `.omc/specs/multiagent-profiles-teams-architecture-spec.md` §2/§5/§7,
 §8 **Phase 1**, §9.
 Pi pin: `earendil-works/pi@734e08e`.
+Followed by: **ADR-0197** (subagent-runtime seam & the bundled `aelix-agents`
+extension, P2) — see `## Note (2026-07-26)` at the end of this record for the
+disposition of every item under "Deferred deliberately".
 
 Top-level principle (binding): **"pi agent를 완전 동일하게 완벽하게 구현이 1차적
 목표입니다."** — this feature is **AELIX-ORIGINAL**, not a port. pi has an
@@ -477,3 +480,44 @@ Two honest limitations, surfaced to the user rather than hidden:
   unaffected and is what §D1 builds on — but it is an argument about *shape*,
   not about *package*, and the P1 package placement rests on ADR-0008's amended
   clause instead.
+
+## Note (2026-07-26) — P2 disposition of the deferrals
+
+**Added by:** ADR-0197 (subagent-runtime seam & the bundled `aelix-agents`
+extension, P2). Nothing above is changed or withdrawn; this note records what
+happened to each item under "Deferred deliberately (recorded so they are not read
+as gaps)" now that P2 has landed.
+
+| Deferral | Disposition |
+|---|---|
+| **The 0600 temp-prompt writer** | **Fulfilled in P2 (ADR-0197 §(h)).** `tempfile.mkdtemp(prefix="aelix-subagent-")` at 0700 + `os.open(…, O_CREAT\|O_WRONLY\|O_EXCL, 0o600)`, content = `profile.body`, unlinked in one `try/finally` inside the reaper's shielded scope and also from the child-registry record so `stop` / `stop_all` / `add_cleanup` cannot leak it. As predicted here, P2 added a *writer*, not a protocol — `--system-prompt-file` / `--append-system-prompt-file` shipped in P1 unchanged. |
+| **The `confirm_project_agents` SETTINGS KEY** | **Behavioural half fulfilled; the settings key itself STILL DEFERRED.** ADR-0197 ships two consent gates: §(f) for *identity* (a model-driven `agent` call always passes `allow_project=False` and is fail-closed with no prompt; `/agents run` reuses this ADR's own `AgentProfileService.confirm_project` callback) and §(i) for *authority* (a spawn-time dialog in the parent). What remains deferred is only the **persisted opt-out** — and P2 deliberately ships **no** persisted consent at all: a grant is per-spawn, never written to disk and not even memoized for the session (ADR-0197 §(i)). A memo, if it ever lands, must key on `(profile, source_path, granted mode)`. |
+| **The `[features] agents` default-off flag** | **Fulfilled in P2 (ADR-0197 §(m)).** Default `False`, read through a **global-scope-only** getter shaped like `get_default_project_trust` so a cloned repo's `.aelix/settings.json` cannot switch delegation on, with run-scoped `--agents` / `--no-agents` on top. It gates exactly what it was designed to gate: this record's argument — that identity has no token multiplication and no child processes to stabilize — is unchanged, and P1's own Phase-1 acceptance test (`aelix --agent scout -p "recon X"`) still passes with the flag off. |
+| **The parent-grant tool/extension intersection** (spec §2.5 / §10) | **Fulfilled in P2 (ADR-0197 §(h)).** `requested ∩ parent_grant ∩ ALL_TOOL_NAMES − {"agent"}`, computed from the live `api.runtime.actions.get_active_tools()`. §D1's `tools: []` → `--no-tools` fix is load-bearing for it: an empty intersection must render `--no-tools`, never `--tools ''`, or the child gets **every** tool. |
+
+Two further P1 statements are settled by P2 and are worth reading together with
+the sections above:
+
+- **"`profile_to_argv` has no runtime consumer in P1"** (Known limitations) — it
+  has one now. ADR-0197 §(h)'s spawner builds its argv as
+  `[sys.executable, "-m", "aelix_coding_agent", *profile_to_argv(...),
+  "--permission-mode", <mode>, *child_trust_argv(...), "--no-agents"]`, and a test
+  pins that `/agents show`'s dry-run string is built from the *same* calls, so the
+  auditable dry run cannot drift from what actually runs. The `"Task: "` prefix at
+  `agents/resolver.py:204-205` turned out to be load-bearing rather than cosmetic:
+  a bare task beginning with `--` is swallowed into `parsed.unknown_flags` with no
+  diagnostic at all (`cli/args.py:504`/`:510`/`:513`).
+- **"`role`, `output_cap`, `timeout_ms`, `approval_mode` are validated but
+  unconsumed"** — `output_cap`, `timeout_ms` and `approval_mode` are consumed in
+  P2 (§(k), §(k), §(e) respectively). **`role` is not.** It is wired into the
+  child's `AELIX_SUBAGENT_DEPTH` but is **arithmetically inert** at the shipped
+  `MAX_SUBAGENT_DEPTH = 1`, where both `leaf` and `orchestrator` yield `1` — and
+  `profile.py:208` defaults every profile to `leaf` regardless. `/agents show`
+  must continue not to imply otherwise until P3 raises the cap.
+
+One P1 *decision* is also worth re-reading in the P2 light, unchanged: **§D2's
+project-scope `extensions:` hard error (THE RCE CUT, `agents/profile.py:342-351`)
+is what bounds ADR-0197 §(g)'s accepted cost.** A profile's explicit
+`extensions:` list loads via loader tier 3, outside both discovery guards, so it
+still works under the child's `--no-approve` — and that bypass is user-scope-only
+precisely because this ADR forbade the field at project scope.

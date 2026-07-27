@@ -86,3 +86,54 @@ exist yet. Each is to be (re)implemented once its dependency is in place — non
 
 Known minor (refinement, not blocked): the /stats Efficiency cache-hit % is provider-inconsistent
 (understates for OpenAI, whose `input` already includes cached tokens) — left as a labelled estimate.
+
+## Note (2026-07-26) — D1 is fulfilled, at the extension layer, from a different data source
+
+**Added by:** ADR-0197 (subagent-runtime seam & the bundled `aelix-agents`
+extension, P2). Nothing above is changed; this note records how row **D1**
+("Per-subagent activity line") of the deferral table is discharged, because the
+blocking dependency it named was resolved differently from the resume plan it
+proposed.
+
+**D1's stated blocker no longer applies, and is no longer the plan.** The table
+above blocked D1 on *"the subagent-lifecycle subsystem — agent lifecycle events
+(`agent_start`/`agent_progress`/`agent_end`) carry **empty payloads** today
+(`tui/types.py`)"*, with a resume plan of *"when events carry
+`{name,status,tool,elapsed,tokens}`, add a chrome widget row"*. P2 does **not**
+enrich those kernel events, and deliberately so — ADR-0008's review gate (as
+amended 2026-07-26) rejects a subagent lifecycle event *type* in the kernel or in
+product-core on sight, and ADR-0197's first non-negotiable is that the kernel
+stays byte-unchanged. **Kernel `AgentStart`/`AgentEndEvent` payloads stay empty
+and `tui/types.py` is not touched.**
+
+Instead the data comes from **the child's own `--mode json` event stream**
+(ADR-0198), reduced in the parent by the bundled extension, and is published two
+ways:
+
+- on the extension event bus as a frozen `SubagentProgress`
+  (`subagent_start` / `subagent_tool` / `subagent_end`), and
+- onto the statusline via `runtime.ui.set_status(f"subagent:{id}", text)`.
+
+Two constraints from *this* ADR's own subsystems shape what ships, and they are
+the reason D1 lands as a **single segment** rather than the mockup's grouped rows:
+
+1. `set_status` (`tui/chrome.py:1288-1293`) feeds `_render_status`
+   (`chrome.py:1036-1047`), which is **one height-1 row with `\n` stripped**. The
+   multi-line footer this ADR introduced is a *composer* concern; a status
+   segment is not multi-line. One segment per child, cleared with
+   `set_status(key, None)` in a `finally`, and guarded on
+   `runtime.ui is not HEADLESS_UI_CONTEXT` because in print/json/rpc `bind_ui` is
+   never called and every `ctx.ui.*` raises `NotImplementedError`.
+2. The event bus swallows subscriber errors silently
+   (`extensions/api.py:272-278` — `contextlib.suppress(Exception)`, no logging,
+   and the return value discarded, so an `async def` subscriber's body never
+   runs). A broken statusline subscriber therefore produces zero rows **and zero
+   diagnostics**; ADR-0197 pins this with a test rather than treating it as a bug.
+
+**Still deferred, now to P4:** the mockup's grouped multi-row panel
+(`○ Explore: … ▶ Ns · Nk tokens` plus an "N local agents" header). That needs
+`set_widget`, not `set_status`, and it needs more than one concurrent child to be
+worth building — P2 ships single-mode delegation only, so at most one child
+exists at a time.
+
+Rows D2–D8 are untouched by P2.

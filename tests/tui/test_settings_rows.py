@@ -28,10 +28,12 @@ async def test_build_rows_count_and_keys() -> None:
     rows = build_settings_rows(sm)
     keys = [r.key for r in rows]
     # The planned settable rows (code-block-indent SKIPPED — no setter); +1 for
-    # the Issue #66 ``tool_card_max_lines`` row + the hide_compaction_summary row.
+    # the Issue #66 ``tool_card_max_lines`` row + the hide_compaction_summary row
+    # + the ADR-0197 (P2) ``features_agents`` delegation row.
     assert "code_block_indent" not in keys
     assert "tool_card_max_lines" in keys
-    assert len(rows) == 19
+    assert "features_agents" in keys
+    assert len(rows) == 20
     # Live-effect rows come first (roadmap appendix O ordering).
     assert keys[:7] == [
         "theme",

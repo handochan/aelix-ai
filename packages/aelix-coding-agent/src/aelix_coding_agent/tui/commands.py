@@ -32,6 +32,7 @@ if TYPE_CHECKING:
     from rich.console import RenderableType
 
     from aelix_coding_agent.agents import AgentProfile, ProfileDiscoveryResult
+    from aelix_coding_agent.subagent_contract import SubagentResult
     from aelix_coding_agent.tui.chrome import AelixChrome
 
 
@@ -476,7 +477,10 @@ async def _skills_handler(ctx: CommandContext, args: str) -> None:
 # trust-gated project tier), it just carries the agent's IDENTITY rather than a
 # capability the model may reach for.
 
-_AGENTS_USAGE = "Usage: /agents [list | show <name> | use <name> | use --none]"
+_AGENTS_USAGE = (
+    "Usage: /agents [list | show <name> | use <name> | use --none | "
+    "run <name> <task>]"
+)
 """One source for the usage text, shared by every error path below so the help
 the user is shown can never drift from what the dispatch actually accepts."""
 
@@ -637,6 +641,243 @@ def _render_agent_profile(profile: AgentProfile) -> list[RenderableType]:
     ]
 
 
+# === /agents run (ADR-0197 §(c)/§(f), P2) ====================================
+# A product-core BUILT-IN, and it has to be: ``shell.py:2452-2470`` runs
+# ``match_command`` (built-ins) first and only falls through to
+# ``dispatch.try_execute`` when no built-in claims the word, while
+# ``extensions/command_dispatch.py:76-85`` splits an extension command on the
+# FIRST SPACE — so an extension command name can never contain one. ``/agents``
+# is already a built-in, therefore ``/agents run`` can only be served here.
+# Spec §6.3's ``register_command("run", …)`` under ``/agents`` is not
+# implementable as written.
+#
+# Everything below is INTERFACE ONLY (ADR-0008 as amended by ADR-0197): it calls
+# a bound Protocol (``harness.runtime.subagents``), and it never spawns, never
+# builds child argv, never parses a child stream and never authors consent
+# policy. ``spawn()`` takes its own spawn-time consent internally (§(i)); the
+# grant type is deliberately unreachable from here.
+
+_DELEGATION_UNAVAILABLE = (
+    "Delegation is unavailable. Enable it with [features] agents (/settings) "
+    "or relaunch with --agents."
+)
+
+_PROJECT_SCOPE_MARKER = "per-identity confirmation"
+"""BACK-COMPAT FALLBACK ONLY. The typed refusal is
+:class:`~aelix_coding_agent.subagent_contract.ProjectScopeRefused`.
+
+This substring used to be the WHOLE test (P2 review, MEDIUM #8), and the phrase
+is produced by exactly one implementation — ``aelix_agents/runtime.py``. A
+second runtime implementing ``resolve_profile`` exactly as the Protocol
+docstring instructed, raising e.g. ``ProfileError("profile 'x' is project-local
+and requires confirmation")``, fell straight through to
+``✖ agents run failed:``; there was then NO path in the product to run a
+project-scoped profile under it, because the confirmation dialog was never
+offered and the user could not cure it. The contract now DECLARES the refusal
+type, so a second implementer has something to raise.
+
+Kept as a fallback because a runtime built against an older contract cannot
+raise a class that did not exist yet. A miss is FAIL-CLOSED either way: an
+unrecognised refusal is surfaced verbatim and no confirmation is offered, so the
+worst case is a user being told to re-run rather than a profile running
+unconfirmed.
+
+Deliberately NARROWER than ``"project-local"``: ``agents/discovery.py:315-321``
+raises a different project-local refusal — the DIRECTORY is untrusted — that no
+per-identity answer can cure (it needs ``--approve`` at launch, and the second
+resolve would raise it again). Prompting for a decision that changes nothing is
+how users learn to click through consent dialogs. The typed class carries the
+same distinction: it names the IDENTITY gate, never the directory gate.
+"""
+
+
+def _subagent_runtime(ctx: CommandContext) -> Any | None:
+    """The bound :class:`SubagentRuntime`, or ``None`` when delegation is off.
+
+    ``None`` is the ORDINARY state in P2 — ``[features] agents`` defaults to
+    False and a delegated child never binds a runtime at all — so every caller
+    degrades with a committed message rather than raising. Read through the LIVE
+    ``ctx.harness`` on every call: ``shell.py`` re-points the command context at
+    the new harness on /new, /fork, /resume and /reload, and each of those builds
+    a fresh ``_ExtensionRuntime`` whose seam the extension re-binds.
+    """
+
+    return getattr(getattr(ctx.harness, "runtime", None), "subagents", None)
+
+
+def _is_project_scope_refusal(exc: Exception) -> bool:
+    """Did ``resolve_profile`` refuse because the profile is project-scoped?
+
+    TYPE FIRST, substring second (P2 review, MEDIUM #8). The typed check is what
+    lets a second orchestration runtime serve this confirmation path at all; the
+    substring is the documented back-compat fallback for a runtime built against
+    a contract that predates the class. See :data:`_PROJECT_SCOPE_MARKER`.
+
+    Function-local import so the contract stays a leaf module and this file does
+    not pay for it on every startup — the same rule ``extensions/api.py`` follows.
+    """
+
+    from aelix_coding_agent.subagent_contract import ProjectScopeRefused
+
+    if isinstance(exc, ProjectScopeRefused):
+        return True
+    return _PROJECT_SCOPE_MARKER in str(exc)
+
+
+def _project_agent_source_path(ctx: CommandContext, name: str) -> str | None:
+    """Best-effort absolute path of the project-scoped profile ``name``.
+
+    Shown in the confirmation dialog because the PATH is the part a human can go
+    and read; a bare name is exactly what a name collision weaponises (a project
+    profile WINS against the user's own of the same name — ``agents/service.py:99-100``).
+    Resolved through the same listing ``/agents show`` uses, and ``None`` when no
+    listing is wired, in which case the dialog says so rather than inventing one.
+    """
+
+    lookup = ctx.agent_profiles
+    if lookup is None:
+        return None
+    try:
+        result = lookup()
+    except Exception:  # noqa: BLE001 — a broken listing must not block the gate
+        return None
+    match = next(
+        (p for p in result.profiles if p.name == name and p.scope == "project"),
+        None,
+    )
+    return None if match is None else match.file_path
+
+
+async def _confirm_project_agent_for_run(
+    ctx: CommandContext, name: str, source_path: str | None
+) -> bool:
+    """The per-identity gate for a project-scoped ``/agents run`` (finding B5).
+
+    SECURITY. Directory trust is a yes-once decision ancestors inherit
+    (``cli/project_trust.py:60-61``); it is NOT consent to a project-local
+    IDENTITY that showed up in the repo later. ``/agents run`` is user-typed, so
+    it MAY take that consent — the model-driven ``agent`` tool never can, and
+    fail-closes with no prompt (``aelix_agents/runtime.py``'s
+    ``allow_project=False`` default). That asymmetry is the point: there the
+    model chose the name.
+
+    The copy is ``cli/entry.py``'s, shared rather than duplicated. The TRANSPORT
+    is not: ``_confirm_project_agent`` drives a dedicated one-shot
+    ``prompt_toolkit.Application`` built for the pre-``run_tui`` window, which
+    cannot run while the REPL's own Application is live. This uses the extension
+    UI seam instead — ``shell.py:1892`` binds the real TUI context onto
+    ``harness.runtime`` and re-binds it on every rebuild (``:1565``), so the
+    modal here is the same surface the permission dialog uses.
+
+    FAIL-CLOSED in every direction: no seam, a headless binding (whose ``select``
+    raises), a dialog that blows up, Esc (``None``) and any answer that is not
+    the affirmative option all return False. ``BaseException`` is deliberately
+    NOT caught — a ``CancelledError`` means the REPL is tearing down, and the
+    right response is to propagate rather than synthesise a decision the human
+    never made.
+    """
+
+    # The three ``getattr`` hops are deliberate — a missing or mid-rebuild runtime
+    # must degrade to a decline, never raise — but they cost the static type:
+    # ``AgentHarness.runtime`` is the KERNEL's ``_ExtensionRuntime | None``
+    # (``harness/core.py:222``), so the chain widens to ``object`` and ``callable()``
+    # then narrows THAT to ``(...) -> object``, which makes the guarded ``await``
+    # below a type error. The annotation states the seam's real shape
+    # (``extensions/ext_ui.py:186-193``) so the narrowing lands on it instead;
+    # ``callable()`` remains the only runtime gate.
+    select: Callable[..., Awaitable[Any]] | None = getattr(
+        getattr(getattr(ctx.harness, "runtime", None), "ui", None), "select", None
+    )
+    if not callable(select):
+        return False
+    from aelix_coding_agent.cli.entry import (
+        PROJECT_AGENT_CONFIRM_OPTIONS,
+        project_agent_confirm_body,
+    )
+
+    body = project_agent_confirm_body(name, source_path or "(path unavailable)")
+    try:
+        answer = await select(body, list(PROJECT_AGENT_CONFIRM_OPTIONS))
+    except Exception:  # noqa: BLE001 — a broken dialog is a decline, never a yes
+        return False
+    # Matched by IDENTITY against the rendered affirmative, never by substring:
+    # a profile is free to name itself "Run this profile".
+    return answer == PROJECT_AGENT_CONFIRM_OPTIONS[0]
+
+
+def _render_subagent_result(result: SubagentResult) -> list[RenderableType]:
+    """Render one :class:`SubagentResult` for scrollback (ADR-0197 §(l)).
+
+    A DECLINE gets its own one-line yellow rendering rather than a red failure
+    panel: nothing ran, nothing failed, and a scary panel would train users to
+    stop reading them.
+
+    ``permission_mode`` is on its own row and is never elided. It is the posture
+    the child ACTUALLY ran under — the clamp (§(e)), possibly raised by one
+    explicit human answer at the consent dialog (§(i)) — and it is the only place
+    the user can see after the fact what authority they granted.
+    """
+
+    from rich.console import Group
+
+    if result.status == "declined":
+        return [
+            Text(
+                f"Delegation to {result.profile!r} declined — nothing was started.",
+                style="yellow",
+            )
+        ]
+
+    summary = (result.summary or "").strip()
+    body = Text(summary or "(no output)")
+    if result.truncated:
+        body.append("\n\n… output truncated to the profile's cap.", style="dim")
+    if result.error:
+        body.append(f"\n\n{result.error}", style="red")
+
+    usage = result.usage
+    grid = Table.grid(padding=(0, 2))
+    grid.add_column(style="bold cyan", no_wrap=True)
+    grid.add_column(style="white")
+    grid.add_row("status", result.status)
+    # ``—`` rather than an omitted row: "which posture did that child get" must
+    # be answerable even when a runtime declined to say.
+    grid.add_row("permission", result.permission_mode or "—")
+    grid.add_row("turns", str(usage.turns))
+    grid.add_row(
+        "tokens",
+        f"in {usage.input} · out {usage.output} · cache-read {usage.cache_read}",
+    )
+    grid.add_row("cost", f"${usage.cost:.4f}")
+    grid.add_row("elapsed", f"{result.elapsed_ms / 1000:.1f}s")
+    if result.dropped_tools:
+        # The child's tool set is the INTERSECTION with the parent's live grant,
+        # so a profile asking for more silently gets less — say so, or a
+        # half-equipped agent looks like a bad model.
+        grid.add_row("dropped tools", ", ".join(result.dropped_tools))
+    if result.dropped_lines:
+        grid.add_row("dropped lines", str(result.dropped_lines))
+
+    parts: list[RenderableType] = [body, grid]
+    details = result.details
+    if details and len(details) > len(summary):
+        parts.append(
+            Text(
+                f"Full output: {len(details.encode('utf-8'))} bytes "
+                "(the summary above is capped).",
+                style="dim",
+            )
+        )
+    return [
+        Panel(
+            Group(*parts),
+            title=f"Subagent: {result.profile}",
+            box=ROUNDED,
+            border_style="green" if result.ok else "red",
+        )
+    ]
+
+
 async def _agents_handler(ctx: CommandContext, args: str) -> None:
     """``/agents [list | show <name> | use <name> | use --none]`` (ADR-0196).
 
@@ -645,10 +886,13 @@ async def _agents_handler(ctx: CommandContext, args: str) -> None:
     - ``use <name>`` — swap the LIVE identity (prompt, skills, tools, model,
       thinking) with no reload and no lost history.
     - ``use --none`` — restore the identity the process was launched with.
+    - ``run <name> <task>`` — delegate one task to a subagent (ADR-0197, P2).
 
     Both callbacks are optional: headless tests and any host that built no
     service leave them ``None``, and every branch degrades to a committed
-    message rather than raising. Nothing here spawns — P1 has exactly one agent.
+    message rather than raising. Nothing here spawns: ``run`` calls a bound
+    Protocol and the spawn itself lives entirely in the ``aelix-agents``
+    extension.
     """
 
     parts = args.split(maxsplit=1)
@@ -716,6 +960,50 @@ async def _agents_handler(ctx: CommandContext, args: str) -> None:
             ctx.commit(Text(f"✖ agents use failed: {exc}", style="bold red"))
             return
         ctx.commit(Text(status, style="green"))
+        return
+
+    if sub == "run":
+        runtime = _subagent_runtime(ctx)
+        if runtime is None:
+            ctx.commit(Text(_DELEGATION_UNAVAILABLE, style="yellow"))
+            return
+        name, _, task = rest.partition(" ")
+        task = task.strip()
+        if not name or not task:
+            ctx.commit(
+                Text(f"/agents run needs a name and a task. {_AGENTS_USAGE}", style="yellow")
+            )
+            return
+        # ``allow_project`` starts FALSE and is only ever raised by the explicit
+        # per-identity confirmation below (ADR-0197 §(f)) — the identity door is
+        # deliberately STRICTER than the authority door, and it fails closed.
+        try:
+            resolved = runtime.resolve_profile(name)
+        except Exception as exc:  # noqa: BLE001 — surface, never kill the REPL
+            if not _is_project_scope_refusal(exc):
+                ctx.commit(Text(f"✖ agents run failed: {exc}", style="bold red"))
+                return
+            path = _project_agent_source_path(ctx, name)
+            if not await _confirm_project_agent_for_run(ctx, name, path):
+                ctx.commit(Text("Project agent profile declined.", style="yellow"))
+                return
+            try:
+                resolved = runtime.resolve_profile(name, allow_project=True)
+            except Exception as confirmed_exc:  # noqa: BLE001
+                ctx.commit(
+                    Text(f"✖ agents run failed: {confirmed_exc}", style="bold red")
+                )
+                return
+        try:
+            # ``spawn`` takes its OWN spawn-time consent (§(i)) and returns a
+            # ``status="declined"`` result rather than raising when the human
+            # says no — so an exception here is a real failure, not a refusal.
+            result = await runtime.spawn(resolved, task)
+        except Exception as exc:  # noqa: BLE001 — surface, never kill the REPL
+            ctx.commit(Text(f"✖ agents run failed: {exc}", style="bold red"))
+            return
+        for renderable in _render_subagent_result(result):
+            ctx.commit(renderable)
         return
 
     ctx.commit(Text(f"Unknown /agents subcommand {sub!r}. {_AGENTS_USAGE}", style="yellow"))
@@ -1488,7 +1776,11 @@ BUILTIN_COMMANDS: list[BuiltinCommand] = [
     BuiltinCommand("thinking", "Show, pick, or set the reasoning level", _thinking_handler),
     BuiltinCommand("tools", "List registered tools", _tools_handler),
     BuiltinCommand("skills", "List loaded skills", _skills_handler),
-    BuiltinCommand("agents", "List, show, or switch agent profiles", _agents_handler),
+    BuiltinCommand(
+        "agents",
+        "List, show, switch, or delegate to agent profiles",
+        _agents_handler,
+    ),
     BuiltinCommand("hooks", "List registered hook handlers (read-only)", _hooks_handler),
     BuiltinCommand("mcp", "Show MCP server status (servers, state, tool counts)", _mcp_handler),
     BuiltinCommand("extension", "Manage installed extensions + MCP servers", _extension_handler),

@@ -160,6 +160,20 @@ def build_settings_rows(sm: SettingsManager) -> list[SettingsRow]:
         ),
         # --- PERSIST-ONLY rows (no live coding-agent consumer) ---------------
         SettingsRow(
+            key="features_agents",
+            label="Agent delegation",
+            kind="bool",
+            read=lambda s: _on_off(s.get_features_agents()),
+            help="Allow this agent to delegate work to a subagent. Persisted; applies next launch.",
+            # DELIBERATELY NOT live (ADR-0197 §5.6): the flag is consumed once,
+            # by ``cli/entry.py::_build_harness_options``, when the harness is
+            # built — the ``agent`` tool and the delegation extension are either
+            # loaded for this process or they are not. A ``live=True`` here would
+            # promise a mid-session effect that nothing delivers, i.e. exactly the
+            # inert-row failure #84 shipped 11 of.
+            live=False,
+        ),
+        SettingsRow(
             key="autocomplete_max_visible",
             label="Autocomplete max items",
             kind="int",
@@ -341,6 +355,10 @@ _BOOL_GETTERS: dict[str, str] = {
     "block_images": "get_block_images",
     "show_terminal_progress": "get_show_terminal_progress",
     "clear_on_shrink": "get_clear_on_shrink",
+    # ADR-0197 (P2) — agent delegation. A bool row whose key is missing from
+    # THIS table raises ``KeyError`` inside ``_row_bool`` on the first toggle,
+    # which ``apply_setting`` swallows into a red line: a silently dead row.
+    "features_agents": "get_features_agents",
 }
 _BOOL_SETTERS: dict[str, str] = {
     "hide_thinking_block": "set_hide_thinking_block",
@@ -352,6 +370,9 @@ _BOOL_SETTERS: dict[str, str] = {
     "block_images": "set_block_images",
     "show_terminal_progress": "set_show_terminal_progress",
     "clear_on_shrink": "set_clear_on_shrink",
+    # ADR-0197 (P2) — see the getter note above; the setter half fails the same
+    # way, one keystroke later.
+    "features_agents": "set_features_agents",
 }
 _ENUM_SETTERS: dict[str, str] = {
     "steering_mode": "set_steering_mode",

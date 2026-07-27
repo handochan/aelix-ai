@@ -21,6 +21,8 @@ import sys
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
 
+from aelix_coding_agent.builtin.permission_mode import PermissionMode
+
 from .config import APP_NAME, VERSION
 
 if TYPE_CHECKING:
@@ -40,6 +42,15 @@ VALID_THINKING_LEVELS: tuple[str, ...] = (
 """Pi parity: ``cli/args.ts`` ``VALID_THINKING_LEVELS``."""
 
 VALID_MODES: tuple[str, ...] = ("text", "json", "rpc")
+
+VALID_PERMISSION_MODES: tuple[str, ...] = tuple(m.value for m in PermissionMode)
+"""Aelix-original (ADR-0197 §(e)) — accepted ``--permission-mode`` values.
+
+DERIVED from :class:`PermissionMode` instead of re-spelled, so the parser can
+never accept a posture the gate does not know (or reject one it does): a new
+cycle entry lands in both places at once. Mirrors the
+:data:`VALID_THINKING_LEVELS` / :data:`VALID_MODES` house pattern.
+"""
 
 
 @dataclass
@@ -151,6 +162,33 @@ class Args:
 
     no_extensions: bool = False
     """Pi parity: ``--no-extensions`` / ``-ne``."""
+
+    permission_mode: str | None = None
+    """Aelix-original (ADR-0197 §(e)) — seeds :class:`PermissionPosture` at
+    startup. :data:`None` keeps the DEFAULT posture. A bogus value WARNS via
+    :attr:`diagnostics` and drops (mirrors ``--thinking``, ``args.py:413-430``)
+    — a typo must not abort a session already launching.
+
+    SECURITY: a delegated child receives this from the spawner, which computes
+    it with ``aelix_agents.posture.child_permission_mode`` — a CLAMP against the
+    parent's live posture — optionally raised by ONE explicit human answer at
+    the spawn-time consent dialog, never above ``auto-accept-edits`` and never
+    for a project-scoped profile (ADR-0197 §(e)/§(i)). The whole child-authority
+    guarantee is therefore argv-shaped, which is why
+    ``tests/cli/test_permission_mode_flag.py`` pins that this exact spelling
+    PARSES: the unknown-``--``-flag branch below swallows a typo into
+    :attr:`unknown_flags` with NO diagnostic (contrast the ``Unknown short
+    flag`` error), so a renamed flag would silently hand the child an
+    auto-approving DEFAULT posture (review finding B10)."""
+
+    agents_override: bool | None = None
+    """Aelix-original (ADR-0197 §(b)) — ``--agents`` → :data:`True`,
+    ``--no-agents`` → :data:`False`, absent → :data:`None`.
+
+    :data:`None` falls through to the global ``[features] agents`` setting
+    (default :data:`False` in P2). The spawner passes ``--no-agents`` to every
+    child so a delegated agent cannot itself delegate even if the user's global
+    flag is on — belt to the ``MAX_SUBAGENT_DEPTH`` guard, not a replacement."""
 
     project_trust_override: bool | None = None
     """Pi parity: ``--approve`` / ``-a`` (True), ``--no-approve`` / ``-na``
@@ -428,6 +466,49 @@ def parse_args(argv: list[str]) -> Args:
                         }
                     )
                 i += 1
+        elif arg == "--permission-mode":
+            # Aelix-original (ADR-0197 §(e)). Seeds the startup posture. The
+            # spawner ALWAYS passes this explicitly to a delegated child, so
+            # this branch is the enforcement point for the child-authority
+            # clamp — see the SECURITY note on ``Args.permission_mode``.
+            if i + 1 < n:
+                value = argv[i + 1]
+                if value in VALID_PERMISSION_MODES:
+                    parsed.permission_mode = value
+                    parsed.provided.add("permission_mode")
+                else:
+                    # Mirrors --thinking (args.py:423-429): warn + drop, never
+                    # abort. A typo must not kill a session already launching,
+                    # and must NOT record as "provided" — a rejected value
+                    # leaves the field at its default, so claiming the user
+                    # supplied it would let a bad flag veto a valid overlay.
+                    parsed.diagnostics.append(
+                        {
+                            "type": "warning",
+                            "message": f"Invalid --permission-mode: {value}",
+                        }
+                    )
+                i += 1
+        elif arg == "--agents":
+            # Aelix-original (ADR-0197 §(b)) — run-scoped delegation override.
+            # Precedence (applied in ``cli/entry.py``): ``--no-agents`` >
+            # ``--agents`` > the global ``[features] agents`` setting.
+            #
+            # ``--no-agents`` IS STICKY, and this guard is what makes that
+            # documented precedence true (P2 review, MEDIUM #11). The loop used
+            # to assign in both branches, so the real rule was last-flag-wins:
+            # measured, ``['--no-agents', '--agents']`` with the global setting
+            # ON yielded ``enabled=True`` where both this comment and
+            # ``entry.py::_agents_delegation_enabled`` promise ``False``. Not
+            # reachable through the spawner — ``build_child_argv`` appends
+            # ``--no-agents`` last and no profile field can emit ``--agents`` —
+            # but a wrapper script or shell alias pinning ``--no-agents`` could
+            # be silently re-opened by a later ``--agents``, and OFF is the
+            # direction that must win a contradiction.
+            if parsed.agents_override is not False:
+                parsed.agents_override = True
+        elif arg == "--no-agents":
+            parsed.agents_override = False
         elif arg in ("--extension", "-e"):
             if i + 1 < n:
                 parsed.extensions.append(argv[i + 1])
@@ -581,6 +662,8 @@ Tools / Extensions:
   --no-extensions, -ne            Disable all extensions
   --approve, -a                   Trust project-local files for this run
   --no-approve, -na               Ignore project-local files for this run
+  --permission-mode <mode>        default | auto-accept-edits | plan | yolo | auto
+  --agents / --no-agents          Enable/disable agent delegation for this run
   --skill <path>                  Enable skill (repeatable)
   --no-skills, -ns                Disable all skills
   --prompt-template <name>        Enable prompt template (repeatable)
@@ -621,6 +704,7 @@ __all__ = [
     "Args",
     "ModeLiteral",
     "VALID_MODES",
+    "VALID_PERMISSION_MODES",
     "VALID_THINKING_LEVELS",
     "parse_args",
     "print_help",

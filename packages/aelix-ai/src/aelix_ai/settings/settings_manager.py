@@ -67,6 +67,7 @@ from aelix_ai.settings.types import (
     DefaultProjectTrust,
     DoubleEscapeAction,
     ExtensionSourceObject,
+    FeaturesSettings,
     FollowUpMode,
     ImageSettings,
     PackageSource,
@@ -1027,6 +1028,44 @@ class SettingsManager:
 
         self._global_settings.default_project_trust = value
         self._mark_modified("default_project_trust")
+        self._save()
+
+    # --- features.agents (aelix-original, ADR-0197) ---
+    def get_features_agents(self) -> bool:
+        """Agent-delegation kill switch. Default: ``False`` through Phase 3.
+
+        Gates the ``agent`` tool and ``/agents run`` — i.e. whether this process
+        is willing to spawn a second aelix process at all.
+
+        SECURITY: reads the GLOBAL scope ONLY (``self._global_settings``), never
+        the merged ``self._settings`` that every other getter uses. Project
+        settings are loaded UNGATED, so a merged read would let any cloned repo
+        switch delegation ON by shipping ``.aelix/settings.json`` — the same
+        self-elevation defeat, and the same fix, as
+        :meth:`get_default_project_trust` (``:1008``).
+        """
+
+        features = self._global_settings.features
+        if features is None or features.agents is None:
+            return False
+        return bool(features.agents)
+
+    def set_features_agents(self, enabled: bool) -> None:
+        """Persist the agent-delegation kill switch to the GLOBAL scope.
+
+        Global-scope only, mirroring :meth:`set_default_project_trust`: a
+        setting the getter refuses to read from the project scope must never be
+        written there either.
+
+        NOTE: :meth:`_save` only ENQUEUES the write (``:689`` ``_enqueue_write``
+        returns silently with no running loop), so a caller that sets and then
+        exits MUST ``await`` :meth:`flush`.
+        """
+
+        if self._global_settings.features is None:
+            self._global_settings.features = FeaturesSettings()
+        self._global_settings.features.agents = enabled
+        self._mark_modified("features", "agents")
         self._save()
 
     # --- compaction (Pi `:668-695`) ---

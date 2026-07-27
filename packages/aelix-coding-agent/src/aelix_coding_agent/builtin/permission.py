@@ -37,7 +37,7 @@ import os.path
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from fnmatch import fnmatch
-from typing import Any
+from typing import Any, Literal
 
 from aelix_agent_core.harness.hooks import (
     SessionShutdownHookEvent,
@@ -61,7 +61,23 @@ _SHELL_SEPARATORS = (";", "&&", "||", "|", "&", "`", "$(", "${", "\n", ">", "<")
 
 # Mutating tools gated by the permission prompt — the union of the bash-family
 # and write-family sets the guardrail uses.
+#
+# DO NOT add ``"agent"`` here (ADR-0197 §(i)). It looks like the delegation
+# consent gate and is not one: ``_rule_key`` falls through to an ARGS-BLIND
+# ``f"tool:{tool_name}"`` at ``:116``, so a single "Yes, for this session" would
+# approve every profile against every task for the rest of the run. Delegation
+# consent lives in ``aelix_agents/consent.py``, keyed on what actually varies
+# (profile + source_path + posture) and never persisted.
 _MUTATING = _BASH_TOOLS | _WRITE_TOOLS
+
+# The block reason a DELEGATED CHILD returns instead of the headless ALLOW
+# (ADR-0197 §(e)). Phrased FOR THE MODEL: the child has no approval channel
+# (the child→parent back-channel is deferred to P3), so the only useful thing it
+# can do is report the intended change back to the parent, whose human can act.
+_HEADLESS_BLOCK_REASON = (
+    "This delegated agent has no approval channel, so mutating tools are "
+    "blocked. Report what you would have changed and let the parent decide."
+)
 
 # Dialog option labels (pi-permission-system parity).
 _YES = "Yes"
@@ -216,29 +232,37 @@ _SENSITIVE_BASENAMES = frozenset(
     }
 )
 # Path components that are always sensitive (an .ssh dir, cron spool, etc.).
-_SENSITIVE_DIR_COMPONENTS = frozenset({".ssh", ".gnupg", "cron.d", "cron.daily"})
+#
+# ``.aelix`` (ADR-0197 §(i), P2): ``.aelix/extensions/*.py``, ``.aelix/mcp.json``
+# and ``.aelix/agents/*.md`` are EXACTLY the three resources the Project Trust
+# gate exists to guard (``cli/project_trust.py:112-177``), and
+# ``.aelix/settings.json`` is the user's own configuration. Before this entry an
+# auto-accepting agent could WRITE the project identity / project extension that
+# a LATER run then EXECUTES under an ancestor ``trust.json: true``
+# (``project_trust.py:550-557``, transitivity documented at ``:60-61``) — a
+# write-to-exec escalation that ``--no-approve`` cannot touch, because
+# ``--no-approve`` only stops LOADING such a file, never writing one. Delegation
+# (ADR-0197) makes this reachable by a process nobody is watching and is a HARD
+# PREREQUISITE for §(i)'s bounded widening, so it is a blocker, not a polish
+# item: without it a measured ``auto-accept-edits`` child is a self-perpetuating
+# escalation path.
+#
+# BEHAVIOUR CHANGE (CHANGELOG + ADR-0197): an INTERACTIVE AUTO_ACCEPT user
+# editing their own ``.aelix/agents/*.md`` now sees the 4-option prompt instead
+# of a silent write. That is the intended trade.
+_SENSITIVE_DIR_COMPONENTS = frozenset(
+    {".aelix", ".ssh", ".gnupg", "cron.d", "cron.daily"}
+)
 
 
-def _is_auto_allowable_write(path: str, cwd: str) -> bool:
-    """Whether a write to ``path`` may be auto-allowed without a prompt.
+def _write_guard_passes(abs_path: str, abs_cwd: str) -> bool:
+    """Containment + sensitivity, for ONE already-absolute spelling of a target.
 
-    SECURITY (finding WP-0 #4): an AUTO_ACCEPT / AUTO write is auto-allowed ONLY
-    when it resolves INSIDE the project root (``cwd``) AND is not a
-    security-sensitive file (SSH keys, shell rc, cron). Everything else falls
-    through to the prompt — writes to ``~/.ssh/authorized_keys`` / ``~/.bashrc``
-    / ``/etc/crontab`` / ``../../etc/passwd`` are NOT silently accepted.
-
-    Pure string / ``os.path`` reasoning (``expanduser`` + ``realpath``-free
-    ``abspath`` + ``normpath``) — no filesystem access, so it is deterministic
-    and unit-testable. A ``~`` is expanded so a home-relative path is judged
-    against its real location (almost always OUTSIDE cwd → prompt).
+    Split out of :func:`_is_auto_allowable_write` so the same two rules can be
+    applied to both the lexical and the symlink-resolved form of the same
+    write — see that function for why one form is not enough.
     """
 
-    if not path:
-        return False
-    raw = os.path.expanduser(path)
-    abs_cwd = os.path.abspath(cwd) if cwd else os.path.abspath(".")
-    abs_path = os.path.normpath(os.path.join(abs_cwd, raw))
     # Must be inside the project root (or be the root itself).
     if abs_path != abs_cwd and not abs_path.startswith(abs_cwd + os.sep):
         return False
@@ -250,6 +274,65 @@ def _is_auto_allowable_write(path: str, cwd: str) -> bool:
     if basename == ".env" or basename.startswith(".env."):
         return False
     return not any(comp in _SENSITIVE_DIR_COMPONENTS for comp in components)
+
+
+def _is_auto_allowable_write(path: str, cwd: str) -> bool:
+    """Whether a write to ``path`` may be auto-allowed without a prompt.
+
+    SECURITY (finding WP-0 #4): an AUTO_ACCEPT / AUTO write is auto-allowed ONLY
+    when it resolves INSIDE the project root (``cwd``) AND is not a
+    security-sensitive file (SSH keys, shell rc, cron). Everything else falls
+    through to the prompt — writes to ``~/.ssh/authorized_keys`` / ``~/.bashrc``
+    / ``/etc/crontab`` / ``../../etc/passwd`` are NOT silently accepted.
+
+    SYMLINKS ARE RESOLVED, AND THAT IS THE WHOLE POINT (P2 review, HIGH #1).
+    An earlier form reasoned on ``normpath`` alone and never called
+    ``realpath``, so BOTH rules above were decided on a name rather than on a
+    target. Measured against this gate at ``auto-accept-edits`` in a repo
+    holding a CHECKED-IN ``docs -> .aelix`` symlink (git stores symlinks as
+    mode 120000, so a repo can ship one)::
+
+        .aelix/agents/evil.md     BLOCKED
+        docs/agents/evil.md       >>> ALLOWED <<<   -> <repo>/.aelix/agents/evil.md
+        keys/authorized_keys2     >>> ALLOWED <<<   -> <home>/.ssh/authorized_keys2
+        h/.bashrc_evil            >>> ALLOWED <<<   -> <home>/.bashrc_evil
+
+    With ADR-0197's delegation that gate is reachable by an UNATTENDED process,
+    and ADR-0197 §(i) names the ``.aelix`` entry in
+    :data:`_SENSITIVE_DIR_COMPONENTS` as the HARD PREREQUISITE for bounded
+    widening — a widened child that can write ``.aelix/agents/*.md`` authors the
+    parent's NEXT identity and self-perpetuates. That prerequisite is only true
+    if the check sees the real target.
+
+    BOTH SPELLINGS MUST PASS, not just the resolved one. Judging only the
+    resolved form would open a TOCTOU: the target usually does not exist yet, so
+    ``realpath`` returns the lexical path, and a child holding ``bash`` could
+    plant the symlink between this check and the write. Requiring the lexical
+    form to pass as well means a name that is *already* sensitive is refused
+    whatever the filesystem says, and requiring the resolved form to pass means
+    a name that is innocent but POINTS somewhere sensitive is refused too.
+
+    This now touches the filesystem (``realpath`` is a ``lstat`` walk). That is
+    a deliberate trade against the previous docstring's "no filesystem access":
+    a purely lexical answer to "where does this write land" is not an answer.
+    A ``~`` is still expanded first so a home-relative path is judged against
+    its real location.
+    """
+
+    if not path:
+        return False
+    raw = os.path.expanduser(path)
+    abs_cwd = os.path.abspath(cwd) if cwd else os.path.abspath(".")
+    lexical = os.path.normpath(os.path.join(abs_cwd, raw))
+    try:
+        real_cwd = os.path.realpath(abs_cwd)
+        real_path = os.path.realpath(lexical)
+    except OSError:
+        # No evidence about where the write lands is not a licence to allow it.
+        return False
+    return _write_guard_passes(lexical, abs_cwd) and _write_guard_passes(
+        real_path, real_cwd
+    )
 
 
 @dataclass
@@ -276,6 +359,22 @@ class PermissionExtension:
     # fallback (headless / tests), preserving prior behaviour. The callback maps
     # an :class:`ApprovalRequest` to an :class:`ApprovalDecision`.
     approval_runner: Callable[[Any], Awaitable[Any]] | None = None
+    # The headless (``not ctx.has_ui``) verdict for a mutating tool that reached
+    # branch (d) — see the field docstring below.
+    headless_default: Literal["allow", "block"] = "allow"
+    """ADR-0197 §(e). ``"allow"`` preserves the shipped non-interactive
+    behaviour for every ``-p`` / ``--mode json`` / ``--mode rpc`` user.
+    ``cli/entry.py`` flips this to ``"block"`` for a DELEGATED CHILD only
+    (``subagent_depth() > 0``), because such a child has no approval channel
+    and nobody is watching its stdout.
+
+    SCOPE (P2 review finding B4): this floor sits at branch (d), BELOW the
+    AUTO_ACCEPT write short-circuit at branch (f) (``:348-353`` pre-P2
+    numbering), which ``return None``s before control ever reaches here. It
+    therefore does NOT bound a child running under AUTO_ACCEPT / AUTO. The
+    posture the child runs under is the actual guarantee, and the spawner
+    CLAMPS it (``aelix_agents.posture.child_permission_mode``). Do not mistake
+    this belt for the braces."""
 
     def __call__(self, aelix: ExtensionAPI) -> None:
         """Setup: register the ``tool_call`` + ``session_shutdown`` handlers."""
@@ -379,7 +478,14 @@ class PermissionExtension:
         # (d) Headless / print / RPC default = ALLOW for DEFAULT / AUTO_ACCEPT /
         # YOLO / AUTO-ask (preserve non-interactive behaviour; the guardrail
         # still hard-blocks separately). PLAN already denied above.
+        #
+        # ADR-0197 §(e): a DELEGATED CHILD flips this to block-with-reason via
+        # ``headless_default``, leaving every existing ``-p`` / json / rpc user
+        # untouched. NOT the child-authority guarantee on its own — branch (f)
+        # above returns before this line — see the field docstring.
         if not ctx.has_ui:
+            if self.headless_default == "block":
+                return ToolCallResult(block=True, reason=_HEADLESS_BLOCK_REASON)
             return None
 
         # (h) DEFAULT (and AUTO_ACCEPT bash / AUTO-ask bash) → the 4-option prompt.

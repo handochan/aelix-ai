@@ -106,7 +106,13 @@ from .ext_ui import ExtensionUIContext
 from .headless_ui import HEADLESS_UI_CONTEXT
 
 if TYPE_CHECKING:
-    pass
+    # ADR-0197 (P2) — the subagent-runtime CONTRACT. TYPE_CHECKING-only on
+    # purpose: ``subagent_contract`` is interface-only and must stay importable
+    # without this module, and this module must not gain a runtime dependency
+    # on a seam that is empty (``self._subagents is None``) in every default
+    # build. ``api.py:47`` already has ``from __future__ import annotations``,
+    # so the annotations below never evaluate the name at runtime.
+    from aelix_coding_agent.subagent_contract import SubagentRuntime
 
 
 # === Errors ===
@@ -120,11 +126,13 @@ class ExtensionError(Exception):
     - ``"unbound"`` — an action stub was invoked before ``bind_core``.
     - ``"invalid_state"`` — an extension API call is illegal in the current
       harness phase.
+    - ``"contract_mismatch"`` — a bound runtime declares a ``contract_version``
+      outside this build's supported range (ADR-0197).
     """
 
     def __init__(
         self,
-        code: Literal["stale", "unbound", "invalid_state"],
+        code: Literal["stale", "unbound", "invalid_state", "contract_mismatch"],
         message: str,
         *,
         cause: BaseException | None = None,
@@ -491,6 +499,10 @@ class _ExtensionRuntime:
         # Sprint 6h₁₀b: replace via bind_ui() with concrete prompt-
         # toolkit + Rich + Aelix widget layer impl.
         self._ui: ExtensionUIContext = HEADLESS_UI_CONTEXT
+        # ADR-0197 (P2) — subagent-runtime binding slot. Default ``None``:
+        # product-core ships the CONTRACT, the bundled ``aelix-agents``
+        # extension binds the implementation at setup().
+        self._subagents: SubagentRuntime | None = None
 
     @property
     def actions(self) -> ExtensionRuntimeActions:
@@ -533,6 +545,161 @@ class _ExtensionRuntime:
         """
 
         self._ui = ui
+
+    # ── ADR-0197 (P2) — subagent runtime ──────────────────────────
+    @property
+    def subagents(self) -> SubagentRuntime | None:
+        """The bound spawn implementation, or ``None`` when unloaded.
+
+        ``None`` is the NORMAL state: delegation is default-off in P2
+        (``[features] agents``), and a child at ``MAX_SUBAGENT_DEPTH``
+        never binds one at all. Every caller must degrade.
+        """
+
+        return self._subagents
+
+    def bind_subagents(
+        self, runtime: SubagentRuntime | None, *, replace: bool = False
+    ) -> None:
+        """Install the spawn implementation.
+
+        ``runtime=None`` CLEARS the slot, and clearing obeys the SAME
+        double-bind rule filling it does: emptying a slot the caller did not
+        fill needs an explicit ``replace=True``. For teardown call
+        :meth:`unbind_subagents`, which is identity-scoped and needs no flag.
+
+        An earlier form put every refusal below inside ``if runtime is not
+        None:`` and then assigned unconditionally, so ``bind_subagents(None)``
+        evicted whichever runtime happened to hold the seam while this very
+        docstring promised it could not (P2 review, HIGH #6). That is the exact
+        spelling this docstring advertises to a second implementer: a P4
+        ``aelix-team`` extension calling it from its own teardown or ``/reload``
+        path would leave ``/agents run`` reporting "delegation unavailable" for
+        the rest of the session while ``AgentsExtension`` was still loaded,
+        still holding live children, and its ``agent`` tool still spawning —
+        the split-brain the double-bind refusal exists to prevent.
+
+        Deliberately NOT modelled on :meth:`bind_ui` (``api.py:527-535``),
+        which is a bare one-line assignment: there is only ever one UI, while
+        the subagent slot is a public seam a third party can reach. Four
+        refusals, all deliberate:
+
+        1. VERSION RANGE (finding B9). A runtime outside
+           ``[MIN_SUPPORTED_CONTRACT_VERSION, CONTRACT_VERSION]`` is refused.
+           The seam is public, so a third-party runtime built against an
+           unsupported contract must fail loudly rather than silently
+           mis-parse. Purely ADDITIVE dataclass fields do not bump the
+           version, which is what gives third parties a compat window.
+        2. DOUBLE BIND (finding B7). An occupied slot does not silently change
+           hands — extension LOAD ORDER is not a contract, and a silent swap
+           makes the ``agent`` tool and ``/agents run`` drive two different
+           child registries. A second orchestration engine must opt in with
+           ``replace=True``. This applies to ``runtime=None`` too: emptying a
+           slot is a change of hands like any other.
+        3. DEPTH (finding I4). Product-core will not HOLD a runtime inside a
+           delegated child, regardless of which extension tier produced it.
+           This is the fork-bomb invariant living in the seam rather than in
+           one extension's constructor — ``extensions/loader.py:470`` drops
+           tier-4 entry points under ``--no-extensions`` and
+           ``agents/profile.py:346-351`` bans ``extensions:`` at project
+           scope, but a user-scope tier-1 extension still loads in a child
+           with ``inherit_extensions: true``. It does NOT gate ``None``:
+           releasing a slot must keep working inside a child.
+        4. SHAPE (P2 review, MEDIUM #7). ``contract_version`` is SELF-DECLARED,
+           so on its own it proved only that the object had one attribute.
+           ``SubagentRuntime`` is ``runtime_checkable`` and was never used;
+           now it is, and a partial implementation is refused at BIND time
+           rather than at the first ``runtime.list()`` a P4 dashboard makes.
+        """
+
+        # Refusal 2 first and OUTSIDE the ``runtime is not None`` guard: an
+        # occupied slot is protected against every caller that did not fill it,
+        # whatever they are trying to put there — including nothing.
+        if self._subagents is not None and not replace:
+            raise ExtensionError(
+                "invalid_state",
+                "a subagent runtime is already bound; pass replace=True to "
+                "take it over, or call unbind_subagents(runtime) to release "
+                "your own (extension load order is not a contract).",
+            )
+        if runtime is not None:
+            # Function-local import: the contract must stay a leaf module and
+            # this file is imported on every startup path.
+            from aelix_coding_agent.subagent_contract import (
+                CONTRACT_VERSION,
+                MAX_SUBAGENT_DEPTH,
+                MIN_SUPPORTED_CONTRACT_VERSION,
+                SubagentRuntime,
+                subagent_depth,
+            )
+
+            if subagent_depth() >= MAX_SUBAGENT_DEPTH:
+                raise ExtensionError(
+                    "invalid_state",
+                    "subagent runtimes cannot be bound inside a delegated "
+                    f"child (depth={subagent_depth()}, max={MAX_SUBAGENT_DEPTH}).",
+                )
+            version = getattr(runtime, "contract_version", None)
+            if (
+                not isinstance(version, int)
+                or not MIN_SUPPORTED_CONTRACT_VERSION <= version <= CONTRACT_VERSION
+            ):
+                raise ExtensionError(
+                    "contract_mismatch",
+                    f"subagent runtime declares contract_version={version!r}; "
+                    f"this build supports "
+                    f"{MIN_SUPPORTED_CONTRACT_VERSION}..{CONTRACT_VERSION}.",
+                )
+            # 4. SHAPE (P2 review, MEDIUM #7). The version above is
+            #    SELF-DECLARED — an ``int`` the runtime sets on itself — so
+            #    before this check it was the seam's ONLY conformance gate, and
+            #    it says nothing about whether the object has the members the
+            #    Protocol names. Measured: ``bind_subagents`` accepted
+            #    ``class _Foreign: contract_version = 1`` (one attribute, no
+            #    methods), and a consumer calling ``runtime.list()`` got
+            #    ``AttributeError: 'Partial' object has no attribute 'list'``,
+            #    which ``/agents run``'s ``except Exception`` renders as a
+            #    generic red line with no hint that the runtime is malformed.
+            #    ``SubagentRuntime`` is ``runtime_checkable``, so this is a
+            #    hasattr sweep over all seven members and costs nothing.
+            #
+            #    It is deliberately AFTER the version check, so a runtime built
+            #    against a future contract is told about the version rather than
+            #    about whichever member that version renamed.
+            if not isinstance(runtime, SubagentRuntime):
+                missing = sorted(
+                    name
+                    for name in (
+                        "contract_version",
+                        "resolve_profile",
+                        "spawn",
+                        "list",
+                        "status",
+                        "stop",
+                        "stop_all",
+                    )
+                    if not hasattr(runtime, name)
+                )
+                raise ExtensionError(
+                    "contract_mismatch",
+                    "subagent runtime does not implement SubagentRuntime; "
+                    f"missing: {', '.join(missing) or '(signature mismatch)'}.",
+                )
+        self._subagents = runtime
+
+    def unbind_subagents(self, runtime: SubagentRuntime) -> None:
+        """Identity-scoped teardown (finding B7).
+
+        An extension's ``api.add_cleanup`` must call THIS, never
+        ``bind_subagents(None)`` — otherwise whichever extension tears down
+        first nulls the slot for a runtime it does not own. ``bind_subagents``
+        now refuses that spelling on an occupied slot rather than obeying it,
+        but a refusal inside a cleanup is still a worse outcome than calling
+        the right method.
+        """
+
+        if self._subagents is runtime:
+            self._subagents = None
 
     def bind_core(self, actions: ExtensionRuntimeActions) -> None:
         """Install real action implementations (called by AgentHarness)."""

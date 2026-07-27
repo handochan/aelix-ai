@@ -61,13 +61,14 @@ from aelix_coding_agent.agents import (
 )
 from aelix_coding_agent.builtin.guardrail import GuardrailExtension
 from aelix_coding_agent.builtin.permission import PermissionExtension
-from aelix_coding_agent.builtin.permission_mode import PermissionPosture
+from aelix_coding_agent.builtin.permission_mode import PermissionMode, PermissionPosture
 from aelix_coding_agent.core.runnable_models import is_runnable, unsupported_message
 from aelix_coding_agent.extensions.loader import (
     discover_and_load_extensions,
     scan_extension_manifests,
 )
 from aelix_coding_agent.mcp import McpClientManager
+from aelix_coding_agent.subagent_contract import MAX_SUBAGENT_DEPTH, subagent_depth
 from aelix_coding_agent.tools import ALL_TOOL_NAMES, create_all_tools
 
 from .agent_context import build_system_prompt, discover_context_files
@@ -476,6 +477,35 @@ def _resolve_active_tools(parsed: Args) -> list[str] | None:
     return None
 
 
+def _agents_delegation_enabled(
+    parsed: Args, settings_manager: SettingsManager | None
+) -> bool:
+    """Is agent delegation ON for this run? — ADR-0197 §(a)/§(b), P2.
+
+    Precedence: ``--no-agents`` > ``--agents`` > the global ``[features] agents``
+    setting (default **False**). ``parsed.agents_override`` is TRI-state
+    (``args.py`` sets ``True``/``False``/leaves ``None``), so a run-scoped flag —
+    in either direction — always beats the persisted value, and only the absent
+    flag falls through.
+
+    The settings read is GLOBAL-scope-only INSIDE the getter
+    (``settings_manager.py``'s ``get_features_agents``, which reads
+    ``_global_settings`` and never the merged view). That is a security property,
+    not an implementation detail: a merged read would let any cloned repo switch
+    delegation on from its own ``.aelix/settings.json`` — the same self-elevation
+    defeat ``get_default_project_trust`` exists to prevent.
+
+    No manager (embedders, tests) → ``False``: the conservative direction, and
+    the same answer an unset setting gives.
+    """
+
+    if parsed.agents_override is not None:
+        return parsed.agents_override
+    if settings_manager is None:
+        return False
+    return settings_manager.get_features_agents()
+
+
 _MAX_PROMPT_FILE_BYTES = 1 << 20
 """1 MiB ceiling for ``--system-prompt-file`` / ``--append-system-prompt-file``.
 
@@ -768,6 +798,7 @@ async def _build_harness_options(
     get_api_key_and_headers: Callable[..., Any] | None = None,
     project_trusted: bool = True,
     permission_ext: PermissionExtension | None = None,
+    agents_ext: Any | None = None,
     captured_extensions: list[Any] | None = None,
     settings_manager: SettingsManager | None = None,
     flag_values: Mapping[str, bool | str] | None = None,
@@ -788,6 +819,11 @@ async def _build_harness_options(
     override → stored → OAuth → env) reaches ``_make_stream_fn``. It is
     :data:`None` on the env-only path (no ``--api-key``), preserving the
     adapter's direct ``get_env_api_key`` resolution (no regression).
+
+    ``agents_ext`` (ADR-0197, P2) is the bundled ``aelix-agents`` delegation
+    extension, or :data:`None` when delegation is off — which is the P2 default.
+    Typed ``Any`` deliberately: product-core must not import band 3 to name it.
+    See the prepend site below for the ordering + depth invariants.
     """
 
     # Resolve the turn model (OpenRouter-from-env aware; falls back to a bare
@@ -866,11 +902,28 @@ async def _build_harness_options(
     # patterns short-circuit BEFORE the permission gate (first-block-wins); DO
     # NOT reorder — YOLO posture relies on Guardrail running first.
     permission = permission_ext if permission_ext is not None else PermissionExtension()
+    # ADR-0197 (P2) — the bundled ``aelix-agents`` delegation extension.
+    # APPENDED, never inserted: Guardrail stays FIRST (first-block-wins, see the
+    # DO NOT REORDER note above) and the permission gate second, so OUR
+    # ``tool_call`` handler — which carries the spawn-time consent gate (§(i)) —
+    # runs LAST. A guardrail hard-deny and a permission denial therefore both
+    # win over delegation, and neither can be softened by it.
+    #
+    # The DEPTH GATE lives here as well as in the seam (``bind_subagents``,
+    # finding I4) and in the tool itself: a process already at
+    # ``MAX_SUBAGENT_DEPTH`` must not even LOAD the extension, so a nested child
+    # physically has no ``agent`` tool regardless of ``inherit_extensions:`` or
+    # an explicit ``-e``. ``agents_ext is None`` is the ordinary state — P2 is
+    # default-off (``[features] agents``), and ``_agents_delegation_enabled``
+    # decides that once, in ``_async_main``.
+    prepend_extensions: list[Any] = [GuardrailExtension(), permission]
+    if agents_ext is not None and subagent_depth() < MAX_SUBAGENT_DEPTH:
+        prepend_extensions.append(agents_ext)
     loaded = await discover_and_load_extensions(
         [str(p) for p in parsed.extensions],
         cwd=Path(cwd),
         agent_dir=Path(get_agent_dir()),
-        prepend=[GuardrailExtension(), permission],
+        prepend=prepend_extensions,
         no_discovery=parsed.no_extensions,
         no_project_local=not project_trusted,
         # Issue #24-FU — on reload, carry the user's restored extension flag
@@ -1042,6 +1095,36 @@ async def _prompt_project_trust_interactive(
     return interpret_trust_option(label, cwd)
 
 
+PROJECT_AGENT_CONFIRM_OPTIONS: tuple[str, str] = ("Run this profile", "Cancel")
+"""The two answers to the per-identity project-agent confirmation (ADR-0196).
+
+Public (no leading underscore) because ADR-0197 §(f) gives that confirmation a
+SECOND consumer — ``tui/commands.py``'s ``/agents run`` — and the two must offer
+the same words. The affirmative is index 0 and is matched by IDENTITY against the
+rendered option, never by substring: a profile is free to be named ``Cancel``.
+"""
+
+
+def project_agent_confirm_body(name: str, file_path: str) -> str:
+    """The body text of the project-agent confirmation prompt (ADR-0196).
+
+    Extracted from :func:`_confirm_project_agent` so ``/agents run`` (ADR-0197
+    §(f)) can drive the SAME copy through a different transport. The two
+    transports are not interchangeable and that is why only the copy is shared:
+    :func:`_prompt_one_shot_select` builds a dedicated one-shot
+    ``prompt_toolkit.Application`` for the pre-``run_tui`` window and cannot be
+    driven while the REPL's own Application is running, so the in-session caller
+    uses the extension UI seam (``harness.runtime.ui``) instead.
+    """
+
+    return (
+        f"Run project agent profile {name!r}?\n"
+        f"{file_path}\n\n"
+        "This replaces or extends the agent's system prompt and may change "
+        "its model and tools."
+    )
+
+
 async def _confirm_project_agent(profile: AgentProfile) -> bool:
     """pi ``confirmProjectAgents`` (spec §2.2 line 80) — ADR-0196.
 
@@ -1059,13 +1142,10 @@ async def _confirm_project_agent(profile: AgentProfile) -> bool:
     """
 
     label = await _prompt_one_shot_select(
-        f"Run project agent profile {profile.name!r}?\n"
-        f"{profile.file_path}\n\n"
-        "This replaces or extends the agent's system prompt and may change "
-        "its model and tools.",
-        ["Run this profile", "Cancel"],
+        project_agent_confirm_body(profile.name, profile.file_path),
+        list(PROJECT_AGENT_CONFIRM_OPTIONS),
     )
-    return label == "Run this profile"
+    return label == PROJECT_AGENT_CONFIRM_OPTIONS[0]
 
 
 async def _resolve_project_trust(
@@ -1343,6 +1423,29 @@ async def _async_main(argv: list[str]) -> int:
     permission_posture = PermissionPosture()
     permission_ext = PermissionExtension(posture=permission_posture)
 
+    # ADR-0197 §(e) — CHILD-ONLY headless floor. A delegated child has no TUI, so
+    # ``builtin/permission.py``'s ``not ctx.has_ui`` branch auto-ALLOWS every
+    # mutating tool. Flipping it to block-with-reason ONLY when this process is
+    # itself a subagent leaves every existing ``-p`` / ``--mode json`` /
+    # ``--mode rpc`` user untouched.
+    #
+    # NOTE (finding B4): this floor is NOT sufficient on its own — the
+    # AUTO_ACCEPT in-cwd write branch ``return None``s ABOVE it. The real
+    # guarantee is the spawner-side posture CLAMP (``aelix_agents/posture.py``),
+    # optionally raised by ONE explicit human answer at §(i)'s consent dialog.
+    # Do not mistake this belt for the braces.
+    if subagent_depth() > 0:
+        permission_ext.headless_default = "block"
+    # ``--permission-mode`` seeds the SAME held posture shift+tab cycles, so the
+    # spawner's clamp output is what the child actually launches under. Applied
+    # here, before any harness is built, because the posture object is threaded
+    # by reference into every rebuild (ADR-0157). An invalid value never reaches
+    # this line: ``args.py`` leaves the field ``None`` and files a diagnostic
+    # instead, so a typo'd flag degrades to the default posture rather than to a
+    # ``ValueError`` at startup.
+    if parsed.permission_mode is not None:
+        permission_posture.set(PermissionMode(parsed.permission_mode))
+
     # ALWAYS wire the auth callback so credentials stored in auth.json (via
     # ``/login``) AND models.json provider ``apiKey`` entries resolve at runtime —
     # NOT only when ``--api-key`` is passed. (Previously this was gated behind
@@ -1445,6 +1548,49 @@ async def _async_main(argv: list[str]) -> int:
         extensions=trust_vote_extensions,
         default_project_trust=settings_manager.get_default_project_trust(),
     )
+
+    # === Agent delegation (ADR-0197 §(a)/§(b), P2) ============================
+    # The bundled ``aelix-agents`` extension. Constructed ONCE and threaded by
+    # held reference into every harness rebuild (the mirror of ``permission_ext``)
+    # so the child registry, the session consent memo and ``stop_all`` survive
+    # /new, /fork, /resume — a delegation left running across a session swap that
+    # nothing could stop would be a leak, not a feature.
+    #
+    # The import is FUNCTION-LOCAL and this is the ONLY site in product-core that
+    # names ``aelix_agents`` (the import-direction rule of §(a), pinned by
+    # ``tests/cli/test_p2_import_direction.py``): band 2 declares the contract,
+    # band 3 owns every line of spawn behaviour, and the dependency may only
+    # point that way. It is also guarded so a broken or absent extension package
+    # degrades to "no delegation" rather than bricking startup for the user.
+    #
+    # Placed AFTER the trust gate rather than beside ``permission_ext``: three of
+    # the four constructor arguments are not knowable earlier. Nothing between
+    # the two points touches ``agents_ext``, and ``_harness_factory`` (defined
+    # below) reads this closure variable at CALL time.
+    agents_ext: Any = None
+    if _agents_delegation_enabled(parsed, settings_manager):
+        try:
+            from aelix_agents import AgentsExtension
+        except Exception as exc:  # noqa: BLE001 — never fatal
+            print(f"Warning: aelix-agents unavailable: {exc}", file=sys.stderr)
+        else:
+            agents_ext = AgentsExtension(
+                # SECURITY: the SAME ``PermissionPosture`` object the gate reads,
+                # not a copy. shift+tab mutates that one holder, and the child
+                # posture CLAMP (§(e)) has to see the change — a copy would clamp
+                # against a stale parent posture forever. Omitting it is safe but
+                # inert: the clamp would read DEFAULT, whose child mode is
+                # ``plan``, so every delegation would be silently read-only.
+                posture=permission_posture,
+                # The remaining three are PRE-HOOK fallbacks only: an
+                # ``ExtensionContext`` reaches the extension via HOOKS, and
+                # ``/agents run`` can be the very first thing a user types. A live
+                # context always wins, so these can only ever answer the window
+                # before the first hook has fired.
+                agent_dir=get_agent_dir(),
+                cwd=cwd,
+                project_trusted=project_trusted,
+            )
 
     # === Agent profile identity (ADR-0196) ===================================
     # Placed AFTER the trust gate — project profiles are inert until the
@@ -1786,6 +1932,11 @@ async def _async_main(argv: list[str]) -> int:
             get_api_key_and_headers=get_api_key_and_headers,
             project_trusted=project_trusted,
             permission_ext=permission_ext,
+            # ADR-0197 — same hold-the-ref rule as ``permission_ext``: ONE
+            # instance reaches every (re)build, so the live child registry and
+            # the session consent memo survive /new, /fork, /resume and /reload.
+            # ``None`` when delegation is off, which is the P2 default.
+            agents_ext=agents_ext,
             captured_extensions=discovered_extensions,
             model_registry=model_registry,
             # #98 — settings.json ``defaultProvider``, resolved ONCE above and
