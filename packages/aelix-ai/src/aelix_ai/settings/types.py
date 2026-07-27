@@ -137,6 +137,24 @@ class WarningSettings:
 
 
 @dataclass
+class FeaturesSettings:
+    """Aelix-original (ADR-0197, P2): per-feature kill switches.
+
+    GLOBAL scope only in practice — every field here gates a capability that a
+    repo must not be able to switch ON for a user who never asked for it, so the
+    matching getter reads ``_global_settings`` directly instead of the merged
+    view. Same rule, same reason, as ``default_project_trust`` (issue #5). See
+    :meth:`aelix_ai.settings.settings_manager.SettingsManager.get_features_agents`.
+
+    ``agents`` gates agent delegation (the ``agent`` tool + ``/agents run``,
+    which spawn a second aelix process). Default ``False`` through Phase 3 of
+    the multi-agent spec; the getter — not this dataclass — applies it.
+    """
+
+    agents: bool | None = None
+
+
+@dataclass
 class PackageSourceObject:
     """Pi parity: ``settings-manager.ts:66-74`` ``PackageSource`` object form.
 
@@ -182,18 +200,18 @@ PackageSource = str | PackageSourceObject
 
 
 # === Top-level `Settings` dataclass (Pi `:76-113`) ===
-# 41 optional fields — every field defaults to ``None`` so unset →
+# 42 optional fields — every field defaults to ``None`` so unset →
 # ``None`` and getters apply per-method defaults (Pi pattern). Pi's original
 # interface has 33; aelix adds a handful more (e.g. extension_sources,
 # tool_card_max_lines, session_dir, default_project_trust,
-# hide_compaction_summary) — all 41 are covered by SETTINGS_PY_TO_JSON.
+# hide_compaction_summary, features) — all 42 are covered by SETTINGS_PY_TO_JSON.
 
 
 @dataclass
 class Settings:
     """Pi parity: ``settings-manager.ts:76-113`` ``Settings`` interface.
 
-    40 optional top-level fields (Pi's original 33 + aelix-original
+    42 optional top-level fields (Pi's original 33 + aelix-original
     additions). Defaults are applied in the per-getter methods on
     :class:`SettingsManager` (NOT here) — this dataclass is the
     structural shape only.
@@ -261,6 +279,12 @@ class Settings:
     # out of the built-in catalog). Identity-scoped so an env repoint escapes a
     # stale tombstone. Default applied in the getter (empty list = none opted out).
     suppressed_default_catalogs: list[str] | None = None
+    # Aelix-original (ADR-0197, P2): per-feature kill switches. Read GLOBAL-scope
+    # only (never merged) for the same self-elevation reason as
+    # ``default_project_trust`` above — a cloned repo shipping its own
+    # ``.aelix/settings.json`` must not be able to switch a gated capability ON.
+    # Defaults applied in the getters.
+    features: FeaturesSettings | None = None
 
 
 SettingsScope = Literal["global", "project"]
@@ -328,6 +352,11 @@ SETTINGS_PY_TO_JSON: Final[dict[str, str]] = {
     "default_project_trust": "defaultProjectTrust",
     "hide_compaction_summary": "hideCompactionSummary",
     "suppressed_default_catalogs": "suppressedDefaultCatalogs",
+    # Aelix-original (ADR-0197): already a single lowercase word, so the
+    # camelCase boundary is an identity mapping — it still MUST be listed here,
+    # because ``_json_dict_to_settings`` (settings_manager.py:107) drops any JSON
+    # key absent from this table SILENTLY.
+    "features": "features",
 }
 
 
@@ -381,6 +410,9 @@ NESTED_PY_TO_JSON: Final[dict[str, dict[str, str]]] = {
     "WarningSettings": {
         "anthropic_extra_usage": "anthropicExtraUsage",
     },
+    "FeaturesSettings": {
+        "agents": "agents",
+    },
     "PackageSourceObject": {
         "source": "source",
         "extensions": "extensions",
@@ -414,6 +446,10 @@ SETTINGS_NESTED_CLASSES: Final[dict[str, type]] = {
     "thinking_budgets": ThinkingBudgetsSettings,
     "markdown": MarkdownSettings,
     "warnings": WarningSettings,
+    # Aelix-original (ADR-0197): without this row ``features`` would hydrate as a
+    # raw ``dict`` and ``SettingsManager.get_features_agents``'s attribute read
+    # would raise on load.
+    "features": FeaturesSettings,
 }
 
 
@@ -429,6 +465,7 @@ __all__ = [
     "DefaultProjectTrust",
     "DoubleEscapeAction",
     "ExtensionSourceObject",
+    "FeaturesSettings",
     "FollowUpMode",
     "ImageSettings",
     "MarkdownSettings",

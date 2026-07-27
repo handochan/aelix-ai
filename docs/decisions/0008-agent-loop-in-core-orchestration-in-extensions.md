@@ -5,6 +5,9 @@ Status: Accepted — **Decision ¶2의 "runtime core에는 multi-agent 개념을
 (아래 `## Amendment (2026-07-19)` 참조). L1/L2 분리 자체는 **그대로
 유효**합니다 — amendment는 "single-agent profile **identity**"가 어느 밴드에
 속하는지를 명시할 뿐, L2 orchestration을 core로 옮기지 않습니다.
+**추가로 ADR-0197 (P2 subagent-runtime seam)이 아래 `## Amendment (2026-07-26)`
+로 리뷰 게이트 인용문의 두 조항(`caps` 범위 · consent policy)을 조정합니다.**
+원 Decision과 2026-07-19 amendment는 둘 다 **그대로 유효**합니다.
 
 ## Context
 
@@ -119,4 +122,65 @@ P1 시점의 적용 결과: product-core는 위 인용문의 **앞쪽 절반(for
 가집니다. subagent-runtime CONTRACT(`subagent_contract.py`, `bind_subagents`)는
 P2에 착륙하며, 그 배치는 별도 ADR("subagent-runtime seam & `aelix-agents`
 extension", spec §9)이 소유합니다.
+
+## Amendment (2026-07-26)
+
+**Amended by:** ADR-0197 (subagent-runtime seam & the bundled `aelix-agents`
+extension, P2).
+**Trigger:** P2 착륙으로 위 리뷰 게이트 인용문의 **뒤쪽 절반**(CONTRACT + spawn
+implementation)이 실제 코드가 되었고, 그 과정에서 인용문의 두 낱말 —
+`caps`, 그리고 (인용문에 아예 없던) *consent* — 이 어느 밴드에 속하는지가
+실무에서 갈렸습니다.
+
+원 Decision도, 2026-07-19 amendment도 **overturn되지 않습니다.** 이 amendment는
+리뷰 게이트를 두 조항으로 **정밀화**할 뿐입니다.
+
+### (c) `caps` 조항의 scope 확정 — tunable vs seam invariant
+
+리뷰 게이트 인용문은 *"The spawn IMPLEMENTATION, **caps**, registry, and all
+topology/task-list/goal/dashboard decisions are extension policy"* 라고 씁니다.
+문자 그대로 읽으면 ADR-0197이 product-core `subagent_contract.py`에 두는
+`MAX_SUBAGENT_DEPTH = 1`이 위반처럼 보입니다. 아닙니다. 다음과 같이 확정합니다.
+
+> **Output caps, concurrency limits, topology, task lists, goals, and dashboards
+> are extension policy. The only limits product-core may declare are seam
+> invariants that exist to keep the seam SAFE (delegation depth) — never
+> tunables.**
+
+판별 기준은 한 줄입니다: **사용자나 프로필이 값을 고를 수 있으면 tunable이고,
+따라서 extension policy입니다.** `MAX_SUBAGENT_DEPTH`는 하드코딩 상수이고,
+`max_depth` 프로필 필드도 설정 키도 CLI 플래그도 없으며, 그 유일한 목적은
+fork bomb 방지입니다 (ADR-0197 §(c)). 반대로 `output_cap` / `timeout_ms`는
+프로필이 고르는 값이므로 extension(`aelix_agents`)이 소비합니다.
+
+### (d) consent policy도 extension policy — product-core는 거절을 *전달*만 한다
+
+리뷰 게이트 인용문에는 consent라는 낱말이 없었습니다. P2가 spawn-time consent
+게이트(ADR-0197 §(i))를 도입하면서 필요해졌으므로, 다음 조항을 **추가**합니다.
+
+> **Consent policy is likewise extension policy — product-core may SURFACE a
+> refusal, never AUTHOR one.**
+
+적용 결과(ADR-0197 §(i)/§(f)):
+
+- consent 다이얼로그, 위임(widening) 상한, grant 수명, 프로젝트-스코프 금지는
+  전부 `aelix_agents/consent.py`에 있습니다.
+- product-core `tui/commands.py`의 `/agents run`은 bound Protocol을 호출하고
+  돌아온 `SubagentResult(status="declined")`를 **렌더링만** 합니다. grant 타입은
+  Protocol에 **의도적으로 없습니다.**
+- 이 조항은 테스트로 강제됩니다: `aelix_coding_agent/**`에서 `SpawnGrant` /
+  `request_spawn_consent` grep → 0 hits.
+
+### Decision ¶2 문장의 scope — P2에서도 그대로 참
+
+- **kernel 축** — `packages/aelix-agent-core`에는 여전히 profile 개념도, spawn
+  개념도, subagent event type도 없습니다. 실측: 위 5개 심볼 grep → **0 hits**
+  (ADR-0197 §Consequences, CI content gate로 상시 검증).
+- **orchestration 축** — 스폰 *구현*은 번들 extension `aelix_agents`에 있고,
+  product-core는 CONTRACT(타입 · Protocol · 바인딩 슬롯 · 버전 범위 · depth
+  invariant)만 가집니다.
+
+즉 P2 시점에 product-core는 리뷰 게이트 인용문의 **"and a subagent-runtime
+CONTRACT (types + binding slot) only"** 절까지 가지며, 그 이상은 가지지
+않습니다.
 

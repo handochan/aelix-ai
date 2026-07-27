@@ -86,3 +86,48 @@ headless/RPC path is no more permissive than before (PLAN is strictly stricter).
 TUI/CLI consumers + the one builtin gate; protected core is untouched. Tests: posture engine,
 per-mode gate matrix (incl. headless), YOLO-still-guarded regression, hold-the-ref preservation,
 the approval-dialog builders + DI runner, and the s-tab binding.
+
+## Note (2026-07-26) — the posture ladder gains a SECOND consumer
+
+**Added by:** ADR-0197 (subagent-runtime seam & the bundled `aelix-agents`
+extension, P2). Nothing above is changed; this note records a new consumer of the
+posture engine and one property of it that must not be misread.
+
+Until P2 the ladder had exactly one consumer: the human at this TUI, cycling with
+shift+tab. P2 adds a second — **a child process whose posture is COMPUTED by the
+parent** (`aelix_agents/posture.py::child_permission_mode`) and handed to it as
+`--permission-mode <value>` at spawn time. The rule is a clamp over the same
+total order this ADR established (`plan < default < auto-accept-edits < auto <
+yolo`): a child is never given a mode looser than the parent's, and a `default`
+result is tightened to `plan`, because "DEFAULT" in a child means *prompt* and a
+child has no prompt.
+
+Three consequences worth stating here rather than only in ADR-0197:
+
+1. **A widened per-spawn grant is NOT a posture change on the parent.** The
+   spawn-time consent dialog (ADR-0197 §(i)) may raise one child's posture to at
+   most `auto-accept-edits`; the parent's own `PermissionPosture` object is never
+   mutated by it, the footer badge never changes, and nothing is persisted. The
+   ceiling is deliberate: `auto` and `yolo` are never offered by any spawn dialog,
+   so **bash in a child is still gated by the child's own ladder.**
+2. **This ADR's "Headless ALLOW for DEFAULT preserved (no regression)" still
+   holds for every existing user.** P2 adds a `headless_default` field to
+   `PermissionExtension` that flips the `not ctx.has_ui` branch to
+   block-with-reason — but *only* when `subagent_depth() > 0`, i.e. only inside a
+   delegated child. Flipping it for all headless runs would be a behaviour change
+   for every `-p` user and needs its own ADR.
+3. **That floor is NOT the guarantee, and the code comment says so.** The
+   AUTO_ACCEPT write short-circuit at `builtin/permission.py:348-353` returns
+   ~30 lines *above* the `not ctx.has_ui` branch at `:382-383`, so a child running
+   under AUTO_ACCEPT never reaches the floor. The guarantee is the clamped posture
+   the child is launched with. A regression test in P2 documents this ordering
+   explicitly so the floor is never again mistaken for the boundary.
+
+One security-relevant change lands inside this ADR's own gate: **`.aelix` joins
+`_SENSITIVE_DIR_COMPONENTS`** (`permission.py:219`). Measured before the change,
+`_is_auto_allowable_write` returned `True` for `.aelix/agents/*.md`,
+`.aelix/extensions/*.py`, `.aelix/mcp.json` and `.aelix/settings.json` — the exact
+files a later run executes. Under AUTO_ACCEPT and AUTO those writes now fall
+through to this ADR's 4-option prompt instead of being silently accepted. It is a
+user-visible behaviour change for interactive AUTO_ACCEPT users (CHANGELOG'd), and
+it is a hard prerequisite for allowing any spawn-time widening at all.

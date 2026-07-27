@@ -39,6 +39,14 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          # ADR-0197 (P2): the kernel-untouched gate resolves
+          # `git merge-base origin/main HEAD` to diff the branch against its
+          # merge base. The action's default is a depth-1 shallow clone with no
+          # other refs, so that command errors and the test can only skip. Full
+          # history keeps the git-range adjunct meaningful; the primary gate is
+          # the content grep, which needs no history at all.
+          fetch-depth: 0
 
       - name: Install uv
         uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0

@@ -22,6 +22,69 @@ later release and is not part of this publish set.)
   job for hyphenated (pre-release) tags. First beta version: `0.1.0b1`
   (tag `v0.1.0-beta.1`). See `RELEASING.md` → *Beta / pre-release track*.
 
+### Changed
+
+- **`auto-accept-edits` / `auto` no longer auto-approve writes under `.aelix/`** —
+  editing an agent profile (`.aelix/agents/*.md`), a project extension
+  (`.aelix/extensions/*.py`), the project MCP config (`.aelix/mcp.json`) or
+  project settings (`.aelix/settings.json`) now shows the usual approval prompt
+  instead of being written silently. Those files **execute on a later run**, so an
+  unattended agent that could write them could author what the next session runs.
+  Ordinary in-project writes are unaffected. See ADR-0197 §(i).
+- **`auto-accept-edits` / `auto` now resolve symlinks before deciding whether a
+  write may be auto-approved.** Both of that gate's rules — "inside the project
+  root" and "not a security-sensitive path" — were previously decided on the
+  path as written, so a symlink checked into the repository (git stores them as
+  mode 120000) could land an auto-approved write in `.aelix/`, `~/.ssh/` or the
+  home directory. Such writes now show the usual approval prompt. A symlinked
+  project root still works, and a symlink that stays inside the tree is still
+  auto-approved.
+- **`--no-agents` now beats `--agents` wherever the two appear on one command
+  line**, which is what both flags have always been documented to do. The parse
+  loop was really last-flag-wins, so a wrapper script or shell alias pinning
+  `--no-agents` could be silently re-opened by a later `--agents`. A lone
+  `--agents` is unaffected.
+- **The delegation consent dialog now appears only when write authority is
+  actually at stake** — when the subagent would run with a permission mode that
+  can change files without asking, or when the agent profile itself declares it
+  needs one (`approval_mode: auto` or `ask`) and you can therefore grant it at
+  the dialog. An ordinary read-only delegation — a profile with no
+  `approval_mode:` line, under an ordinary permission posture — now starts
+  without a prompt: the dialog there could only offer "Run read-only (plan)" or
+  "Cancel", and a confirmation with no real answer teaches you to dismiss the one
+  that matters. Nothing gains authority — the subagent runs at exactly the mode
+  that dialog would have granted, still cannot mutate anything, and is still
+  bounded by the per-prompt and per-session delegation caps and shown in the
+  status line. Running a *project-local* agent profile still takes its own
+  explicit confirmation, which is unchanged. See ADR-0197 §(i) and residual R7.
+- **A profile's `approval_mode:` now decides whether a delegation may be widened
+  at the dialog.** `auto` and `ask` declare that the agent needs write authority,
+  so their dialog offers "Allow file edits for this run (auto-accept-edits)";
+  `inherit` (the default) and `deny` declare nothing and are never offered it —
+  which is why a plain read-only delegation no longer prompts at all. Authority
+  follows what the profile *declares*: the way to let an agent write is to edit
+  its profile, a file you can review and sign, rather than to upgrade it from a
+  modal in the middle of a turn. `deny` can never be widened, and a project-local
+  profile can never be widened whatever it says. See ADR-0197 §(i).
+- **A delegation dialog answer that matches none of the offered options is now a
+  decline.** Previously only `Esc` and `Cancel` declined and any other string
+  granted the delegation at the inherited posture. Not reachable from the shipped
+  TUI, which can only return an offered option or `None`, but `ctx.ui` is a public
+  extension seam. See ADR-0197 §(i).
+- **Delegation is now capped per prompt and per session** — at most 12 subagents
+  started by the model in one user prompt, and at most 4 live at once. Both
+  return a readable refusal to the model rather than an error. `/agents run` is
+  not rate-limited. See ADR-0197 §(i) residual R1.
+- **A delegated child that finishes right at its timeout is no longer reported as
+  a timeout.** The gap between the child closing its output and the OS reporting
+  its exit status was being charged to the caller's budget, so a completed run
+  with the correct answer could come back as `status=timeout, ok=False`.
+- **The temporary file holding a delegated agent's system prompt is now reclaimed
+  after a crash.** It was already deleted on every normal, error, timeout, kill
+  and cancellation path, but a parent killed outright (SIGKILL, OOM) left it in
+  the system temp directory permanently — one per delegation, mode 0600. Aelix
+  now sweeps prompt files belonging to processes that are gone, at startup.
+
 ## [0.1.0] - 2026-06-20
 
 Initial public release of the Aelix agent runtime — a pi-faithful, Python-native

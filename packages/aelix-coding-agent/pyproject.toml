@@ -98,4 +98,13 @@ aelix-ai = { workspace = true }
 aelix-agent-core = { workspace = true }
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/aelix_coding_agent"]
+# ADR-0197 (P2): `aelix_agents` is a SECOND top-level import package shipped
+# inside this one wheel. It is not a separate distribution on purpose — a new
+# dist would have to be threaded through tests/test_license_sync.py,
+# tests/test_release_version_consistency.py, scripts/generate_sbom.py,
+# RELEASING.md, a new PyPI pending publisher and install.sh, all to enforce a
+# boundary tests/agents/test_p2_band_boundaries.py already enforces in code.
+# WITHOUT THIS SECOND ENTRY THE EXTENSION IS ABSENT FROM THE WHEEL and
+# `from aelix_agents import AgentsExtension` fails for every installed user
+# while passing in every source checkout.
+packages = ["src/aelix_coding_agent", "src/aelix_agents"]
