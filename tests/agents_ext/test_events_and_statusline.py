@@ -269,11 +269,26 @@ class _Api:
 
 
 class _Ui:
+    """The two ``ExtensionUIContext`` methods the bridge can reach.
+
+    ``set_widget`` is here rather than in the P2 shape because ADR-0199's S10
+    surface 3 writes a batch panel through the same guard; the batch tests in
+    ``test_batch_surfaces.py`` import this class, so a UI fake missing the method
+    would make a widget write indistinguishable from a suppressed
+    ``AttributeError``.
+    """
+
     def __init__(self) -> None:
         self.writes: list[tuple[str, str | None]] = []
+        self.widgets: list[tuple[str, list[str] | None]] = []
 
     def set_status(self, key: str, text: str | None) -> None:
         self.writes.append((key, text))
+
+    def set_widget(
+        self, key: str, content: list[str] | None, options: object = None
+    ) -> None:
+        self.widgets.append((key, content))
 
 
 def _progress(**kwargs: Any) -> SubagentProgress:

@@ -22,7 +22,60 @@ later release and is not part of this publish set.)
   job for hyphenated (pre-release) tags. First beta version: `0.1.0b1`
   (tag `v0.1.0-beta.1`). See `RELEASING.md` → *Beta / pre-release track*.
 
+- **One delegation can now carry several tasks** — the `agent` tool gains
+  `mode: "parallel"` (run up to 8 tasks at once, at most 4 at a time) and
+  `mode: "chain"` (run them in order, where a later task can write `{previous}`
+  to insert the previous one's summary). Every task in one call runs under one
+  agent profile in one working directory, results come back in the order you
+  listed them, and a chain stops at the first failure and names the steps that
+  never ran. Asking for more tasks than the limit is **refused** — the list is
+  never quietly trimmed to fit. A single-task delegation is unchanged in every
+  respect. See ADR-0199.
+
+- **A multi-task delegation asks once, showing every task** — one consent
+  prompt for the whole call, listing each task and the one directory they share,
+  rather than one prompt per subagent or one prompt standing in for tasks you
+  never saw. If that prompt would be taller than your terminal, the whole call
+  is refused with an explanation of how many tasks would fit, instead of being
+  drawn with its `Cancel` option pushed off the bottom of the screen. An
+  ordinary read-only delegation still shows no prompt at all. A chain is never
+  offered the "allow file edits for this run" option: its later steps are fed
+  text written by an earlier subagent, which no one has read, so the dialog says
+  so and declines to grant write authority for it. See ADR-0199.
+
+- **A running batch is visible while it runs** — one status-line row for the
+  whole batch (`agent scout ×4 · 2 running · 1 done · 1 queued · 33s`), one line
+  per subagent in the tool card that stays in the transcript afterwards, and a
+  small panel above the input box while two or more subagents are live. A single
+  delegation keeps exactly the display it had. See ADR-0199.
+
 ### Changed
+
+- **The per-prompt delegation cap now counts subagents, not `agent()` calls, and
+  a call that does not fit what is left is refused whole.** The limit of 12 has
+  not moved, but one call can now start up to 8 subagents, so the two readings
+  are no longer the same thing — counting calls would have allowed 96 subagents
+  from a single prompt. A call asking for more subagents than the prompt has
+  left is refused before anything is shown or started, and the refusal tells the
+  model how many it may still ask for; nothing is trimmed and no subagent is
+  started only for its siblings to come back as refusals. `/agents run` is still
+  not rate-limited. See ADR-0199.
+
+- **`timeout_ms` now has a maximum, and one `agent()` call is capped in total.**
+  A task may ask for at most 30 minutes, and one call — however many tasks it
+  carries — is bounded by the same 30 minutes, so an eight-step chain at the
+  default per-task timeout can no longer occupy the session for 80 minutes.
+  Previously only a *minimum* was checked, so a model could ask for a timeout of
+  any size. A task that runs out of the call's remaining time returns a readable
+  refusal instead of being silently dropped, and every task that already
+  finished still reports its result. See ADR-0199.
+
+- **Tightening the permission posture with shift+tab during a delegation now
+  applies to the subagents that have not started yet.** In a batch of eight,
+  subagents five to eight begin only after the first four finish, which can be
+  much later; until now they would have launched at the posture that was in
+  effect when the call began. Tightening always applies; loosening never raises
+  a subagent above what was approved at the prompt. See ADR-0199.
 
 - **`auto-accept-edits` / `auto` no longer auto-approve writes under `.aelix/`** —
   editing an agent profile (`.aelix/agents/*.md`), a project extension

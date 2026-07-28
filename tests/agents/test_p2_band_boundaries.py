@@ -4,7 +4,12 @@ P2's whole architecture is a placement claim: ``aelix-agent-core`` (kernel) gets
 **zero** delegation surface, ``aelix_coding_agent`` (product-core) gets the
 CONTRACT and nothing that spawns or consents, and every process-creating and
 consent-taking line lives in the bundled ``aelix_agents`` extension. Reviews
-cannot hold that line across six workstreams; these four tests can.
+cannot hold that line across six workstreams; these tests can.
+
+P3 (ADR-0199) adds the two cap assertions S9 asks for. Fan-out multiplies the
+number of numbers involved — concurrency, wall clock, task size, per-prompt
+budget — and every one of them is a bound the EXTENSION chose, so every one of
+them is a fresh chance to put policy one band too low.
 
 Deliberately structural, not behavioural — they read the source tree, so they
 stay meaningful in any checkout and after the branch merges (finding I6, which
@@ -16,6 +21,7 @@ vacuous once merged).
 from __future__ import annotations
 
 import ast
+import re
 import subprocess
 from pathlib import Path
 
@@ -70,6 +76,97 @@ _SPAWN_CALL_EXACT = frozenset({"create_subprocess_exec", "Popen", "fork"})
 # ADR-0197 §(i): consent is EXTENSION policy. Product-core may surface a refusal
 # the extension already made; it may never author one.
 _CONSENT_TOKENS = ("SpawnGrant", "request_spawn_consent")
+
+# === S9 — the cap allowlist ==================================================
+#
+# ADR-0197 verbatim: "Explicitly NOT done ... any spawn behaviour, CAP, registry
+# or consent policy in product-core". Nothing gated that until P3, and
+# ``MAX_SUBAGENT_DEPTH`` sits in ``subagent_contract.py`` as the precedent a
+# future author would cite for putting ``MAX_CONCURRENCY`` beside it. This is
+# the largest un-gated drift path in the phase, so it is an EXACT-SET assertion
+# rather than a prefix rule: adding a cap to product-core has to be a deliberate
+# edit to this list, made while reading the reason below.
+#
+# Measured against the whole package: these thirteen and nothing else.
+_PRODUCT_CORE_CAP_ALLOWLIST = frozenset(
+    {
+        "MAX_SUBAGENT_DEPTH",  # subagent_contract.py — the P2 depth guard
+        "MIN_SUPPORTED_CONTRACT_VERSION",  # subagent_contract.py — a version, not a cap
+        "MAX_CATALOG_BYTES",  # cli/extension_catalog.py — pre-P2, unrelated
+        "MAX_CATALOG_ENTRIES",  # cli/extension_catalog.py — pre-P2, unrelated
+        "GIT_CLONE_TIMEOUT",  # cli/extension_catalog.py — pre-P2, unrelated
+        "DEFAULT_MAX_BYTES",  # tools/_truncate.py — pre-P2, tool output
+        "DEFAULT_MAX_LINES",  # tools/_truncate.py — pre-P2, tool output
+        "GREP_MAX_LINE_LENGTH",  # tools/_truncate.py — pre-P2, tool output
+        "STDERR_MAX_BYTES",  # rpc/rpc_client.py — pre-P2, rpc plumbing
+        "DEFAULT_SEND_TIMEOUT_MS",  # rpc/rpc_client.py — pre-P2, rpc plumbing
+        "DEFAULT_WAIT_FOR_IDLE_MS",  # rpc/rpc_client.py — pre-P2, rpc plumbing
+        "SHUTDOWN_SIGTERM_TIMEOUT_MS",  # rpc/rpc_client.py — pre-P2, rpc plumbing
+        "STARTUP_GRACE_MS",  # rpc/rpc_client.py — pre-P2, rpc plumbing
+    }
+)
+
+# What counts as "cap-like": the NAME, not the value. ``= 2 * 2``,
+# ``= int(os.environ[...])`` and ``= MAX_LIVE_CHILDREN`` are all caps, and
+# ``MAX_CATALOG_BYTES`` in the shipped tree is already a non-literal, so a
+# literal-only rule would be wrong against today's code, never mind tomorrow's.
+#
+# WIDENED after a review demonstrated the holes in the first spelling
+# (``^(MAX|MIN)_|_(CAP|LIMIT|BUDGET|CEILING)$``), which let
+# ``PARALLEL_TASKS = 8`` into ``subagent_contract.py`` with this file still
+# green — a public, importable, cap-shaped name, and exactly the spelling a P4
+# author reaching for "the number of tasks" picks. Two changes:
+#
+#   * ``(^|_)(MAX|MIN)_`` instead of ``^(MAX|MIN)_``, because the infix form is
+#     not exotic — ``DEFAULT_MAX_BYTES`` and ``DEFAULT_MAX_LINES`` are already
+#     in the tree, so ``DEFAULT_MAX_CONCURRENCY`` would have sailed through;
+#   * the units and nouns a delegation bound is actually spelled in. Every one
+#     of ``_TIMEOUT``, ``_MS``, ``_BYTES``, ``_TASKS``, ``_CHILDREN`` and
+#     ``_CONCURRENCY`` is a suffix P3's own nine caps use.
+#
+# STILL A HEURISTIC, and a bare ``FANOUT = 8`` defeats it. That is why the seam
+# file — the one place a delegation cap would plausibly land, because
+# ``MAX_SUBAGENT_DEPTH`` is already there as the precedent — gets an exact-set
+# rule below instead of a name pattern.
+_CAP_NAME_RE = re.compile(
+    r"(^|_)(MAX|MIN)_|_(CAP|LIMIT|BUDGET|CEILING|TIMEOUT|MS|BYTES|TASKS|CHILDREN|CONCURRENCY)$"
+)
+
+# Every public module-level constant ``subagent_contract.py`` declares today.
+# NOT a cap rule: the seam is the CONTRACT, so the set of names it exports is
+# small, deliberate and reviewable, and holding it exact catches a cap under any
+# name at all — including the ones no pattern anticipates. Adding a genuine new
+# contract constant is a one-line edit here, made while reading this paragraph.
+_SEAM_CONSTANTS = frozenset(
+    {
+        "CONTRACT_VERSION",
+        "MIN_SUPPORTED_CONTRACT_VERSION",
+        "MAX_SUBAGENT_DEPTH",
+        "DEPTH_ENV_VAR",
+        "SUBAGENT_START",
+        "SUBAGENT_TOOL",
+        "SUBAGENT_END",
+    }
+)
+
+# The nine caps P3 introduces, every one of which belongs to ``aelix_agents``.
+# (a) above catches a NEW cap invented in product-core; this catches one of OURS
+# being moved there — the likelier accident, because ADR-0199 tells the reader
+# these numbers exist and ``subagent_contract.py`` looks like where constants go.
+# All nine were verified absent from product-core before this gate was written.
+_P3_CAP_NAMES = frozenset(
+    {
+        "MAX_CONCURRENCY",
+        "MAX_PARALLEL_TASKS",
+        "MAX_BATCH_WALL_MS",
+        "MAX_TIMEOUT_MS",
+        "MAX_TASK_BYTES",
+        "MAX_DELEGATIONS_PER_PROMPT",
+        "MAX_LIVE_CHILDREN",
+        "PARTIAL_MIN_INTERVAL_MS",
+        "BATCH_TASK_PREVIEW_CHARS",
+    }
+)
 
 
 def _python_files(root: Path) -> list[Path]:
@@ -222,4 +319,181 @@ def test_product_core_never_prompts_for_spawn_consent() -> None:
     assert hits == [], (
         "spawn consent is extension policy, not product-core policy "
         f"(ADR-0197 §(i), ADR-0008 as amended): {hits}"
+    )
+
+
+def _importable_assignments(tree: ast.Module) -> list[ast.Assign | ast.AnnAssign]:
+    """Every assignment reachable from the MODULE namespace.
+
+    Descends through ``if`` / ``try`` / ``with`` and into class bodies — a cap
+    can be conditional (``if sys.platform == "linux": MAX_X = 4``) or a class
+    attribute and still be importable, and a body-only scan of ``tree.body``
+    would miss both. Stops at function boundaries, for the same principled
+    reason the rule skips ``_``-prefixed names: a function-local UPPER_SNAKE is
+    unreachable from outside the module, so it cannot be a policy surface the
+    extension band reads.
+    """
+
+    found: list[ast.Assign | ast.AnnAssign] = []
+    stack: list[ast.AST] = list(tree.body)
+    while stack:
+        node = stack.pop()
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.Lambda):
+            continue
+        if isinstance(node, ast.Assign | ast.AnnAssign):
+            found.append(node)
+            continue
+        stack.extend(ast.iter_child_nodes(node))
+    return found
+
+
+def test_product_core_declares_only_the_allowlisted_caps() -> None:
+    """S9 — the exact set of cap-like constants product-core may declare.
+
+    ADR-0197 verbatim: "Explicitly **NOT** done ... any spawn behaviour, **cap**,
+    registry or consent policy in product-core." Until this test, nothing
+    enforced it — and ``MAX_SUBAGENT_DEPTH`` living in ``subagent_contract.py``
+    is precisely the precedent a P4 author would cite for dropping
+    ``MAX_CONCURRENCY`` beside it. P3's caps (concurrency, wall clock, task
+    bytes, per-prompt budget) are the extension's policy: they exist because
+    ``aelix_agents`` chose them and a different runtime may choose others.
+
+    Matched on the NAME, not the value: ``= 2 * 2`` and
+    ``= int(os.environ[...])`` are caps too, and both ``ast.Assign`` and
+    ``ast.AnnAssign`` count — ``MAX_CONCURRENCY: Final[int] = 4`` is the
+    idiomatic modern spelling and an ``Assign``-only rule would pass vacuously
+    against it.
+    """
+
+    declared: dict[str, list[str]] = {}
+    for path in _python_files(PRODUCT_CORE_SRC):
+        rel = path.relative_to(PRODUCT_CORE_SRC).as_posix()
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in _importable_assignments(tree):
+            targets = (
+                [t for t in node.targets if isinstance(t, ast.Name)]
+                if isinstance(node, ast.Assign)
+                else ([node.target] if isinstance(node.target, ast.Name) else [])
+            )
+            for target in targets:
+                name = target.id
+                # PUBLIC UPPER_SNAKE only, and the reason is principled rather
+                # than convenient: a constant that governs the extension band
+                # has to be importable to BE a policy surface, and a
+                # module-private ``_STDOUT_CAP`` cannot be read by
+                # ``aelix_agents`` at all.
+                if name.startswith("_") or name != name.upper():
+                    continue
+                if _CAP_NAME_RE.search(name):
+                    declared.setdefault(name, []).append(f"{rel}:{node.lineno}")
+
+    unexpected = {n: locs for n, locs in declared.items() if n not in _PRODUCT_CORE_CAP_ALLOWLIST}
+    missing = sorted(_PRODUCT_CORE_CAP_ALLOWLIST - declared.keys())
+
+    assert not unexpected, (
+        "product-core declared a cap-like constant that is not on the "
+        "allowlist. ADR-0197: 'Explicitly NOT done ... any spawn behaviour, "
+        "CAP, registry or consent policy in product-core' — the caps that "
+        "bound delegation (concurrency, wall clock, task size, per-prompt "
+        "budget) are aelix_agents' policy, and a different subagent runtime "
+        "gets to choose different ones. Put it in the extension, or amend "
+        f"_PRODUCT_CORE_CAP_ALLOWLIST deliberately: {unexpected}"
+    )
+    # The other direction, so the allowlist cannot quietly rot into a list of
+    # names nothing declares any more and stop discriminating.
+    assert missing == [], (
+        f"_PRODUCT_CORE_CAP_ALLOWLIST names constants that no longer exist: {missing}"
+    )
+
+
+def _public_module_constants(path: Path) -> dict[str, str]:
+    """Every public UPPER_SNAKE name a module binds at import time."""
+
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    found: dict[str, str] = {}
+    for node in _importable_assignments(tree):
+        targets = (
+            [t for t in node.targets if isinstance(t, ast.Name)]
+            if isinstance(node, ast.Assign)
+            else ([node.target] if isinstance(node.target, ast.Name) else [])
+        )
+        for target in targets:
+            name = target.id
+            if name.startswith("_") or name != name.upper():
+                continue
+            found[name] = f"{path.name}:{node.lineno}"
+    return found
+
+
+def test_the_seam_declares_exactly_its_contract_constants_and_nothing_more() -> None:
+    """S9, closed at the one file a delegation cap would actually land in.
+
+    :data:`_CAP_NAME_RE` is a heuristic and a review demonstrated its holes:
+    appending ``PARALLEL_TASKS = 8`` to ``subagent_contract.py`` left this file
+    green, and ``FANOUT = 8`` still evades the widened pattern. A pattern cannot
+    be finished, because the drift is a NAME someone has not thought of yet.
+
+    So the seam is held to an exact set instead. It can afford one: it is the
+    CONTRACT — types, a Protocol, a version and three event names — and its own
+    docstring already forbids it machinery (``test_product_core_never_spawns``
+    asserts it imports neither ``subprocess`` nor ``asyncio``). Any new public
+    constant here is a deliberate edit to :data:`_SEAM_CONSTANTS`, and a cap
+    lands as a red test whatever it is called.
+    """
+
+    declared = _public_module_constants(PRODUCT_CORE_SRC / "subagent_contract.py")
+
+    unexpected = {n: loc for n, loc in declared.items() if n not in _SEAM_CONSTANTS}
+    assert not unexpected, (
+        "subagent_contract.py declared a new public constant. The seam carries "
+        "the CONTRACT and no policy of its own (ADR-0197 §1.2): the caps that "
+        "bound delegation are aelix_agents' (ADR-0199 §2), and MAX_SUBAGENT_DEPTH "
+        "sitting here is the precedent a future author would cite for putting "
+        "one beside it. Add it to _SEAM_CONSTANTS deliberately, or put it in the "
+        f"extension: {unexpected}"
+    )
+    missing = sorted(_SEAM_CONSTANTS - declared.keys())
+    assert missing == [], (
+        f"_SEAM_CONSTANTS names constants subagent_contract.py no longer has: {missing}"
+    )
+
+
+def test_the_p3_cap_names_never_appear_in_product_core() -> None:
+    """S9's other half — none of OUR caps migrates across the band.
+
+    An AST scan for the name in a BINDING position (an assignment target, a
+    function parameter, an imported alias, or a load), deliberately NOT a raw
+    substring scan the way ``SpawnGrant`` is scanned above. Naming the grant
+    type *is* how consent policy leaks; naming a cap is not.
+    ``subagent_contract.py`` narrates what the extension does — its
+    ``MAX_SUBAGENT_DEPTH`` docstring is exactly that — so a future sentence like
+    "the extension bounds fan-out with ``MAX_CONCURRENCY``" would go red for
+    documentation that is correct and desirable, and the cheapest fix would be
+    to delete the signpost ADR-0199 wanted.
+    """
+
+    hits: list[str] = []
+    for path in _python_files(PRODUCT_CORE_SRC):
+        rel = path.relative_to(PRODUCT_CORE_SRC).as_posix()
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            # ``ast.Name`` covers Store (an ``Assign``/``AnnAssign`` target) and
+            # Load (a use) in one; ``ast.arg`` covers a parameter; ``ast.alias``
+            # covers ``from aelix_agents.batch import MAX_CONCURRENCY``, which
+            # binds the name here even though no ``Name`` node mentions it.
+            if isinstance(node, ast.Name):
+                bound = node.id
+            elif isinstance(node, ast.arg):
+                bound = node.arg
+            elif isinstance(node, ast.alias):
+                bound = (node.asname or node.name).rsplit(".", 1)[-1]
+            else:
+                continue
+            if bound in _P3_CAP_NAMES:
+                hits.append(f"{rel}:{node.lineno}: {bound}")
+
+    assert hits == [], (
+        "a P3 delegation cap has moved into product-core. These nine numbers "
+        "are aelix_agents' policy (ADR-0199); product-core carries the "
+        f"CONTRACT and no bounds of its own (ADR-0197 §1.2): {hits}"
     )

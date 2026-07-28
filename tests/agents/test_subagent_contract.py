@@ -15,12 +15,16 @@ from __future__ import annotations
 import ast
 import dataclasses
 import inspect
+import typing
 from pathlib import Path
 from typing import Any
 
 import pytest
 from aelix_coding_agent.agents.profile import AgentProfile
 from aelix_coding_agent.extensions.api import ExtensionError, _ExtensionRuntime
+from aelix_coding_agent.extensions.api import (
+    __file__ as API_FILE,
+)
 from aelix_coding_agent.subagent_contract import (
     CONTRACT_VERSION,
     DEPTH_ENV_VAR,
@@ -528,3 +532,111 @@ def test_result_has_permission_mode() -> None:
 
 def test_version_range_is_coherent() -> None:
     assert MIN_SUPPORTED_CONTRACT_VERSION <= CONTRACT_VERSION
+
+
+# === The member set (ADR-0199 decision 1) ====================================
+
+# ``SubagentRuntime``'s complete surface at ``CONTRACT_VERSION == 1``. P3 adds
+# fan-out and adds NOTHING here: parallel and chain are composed by the
+# extension's batch executor calling ``spawn_granted`` once per member, and
+# ``spawn_granted`` is impl-private precisely because it carries the grant.
+_PROTOCOL_MEMBERS = frozenset(
+    {
+        "contract_version",
+        "resolve_profile",
+        "spawn",
+        "list",
+        "status",
+        "stop",
+        "stop_all",
+    }
+)
+
+
+def _protocol_members(protocol: type) -> frozenset[str]:
+    """The Protocol's own non-dunder members.
+
+    ``typing.get_protocol_members`` only exists from 3.13; ``__protocol_attrs__``
+    is what it reads and is present on every ``Protocol`` subclass back to 3.8.
+    Preferring the public function where it exists keeps this from breaking on
+    the interpreter that finally makes the private name go away.
+    """
+
+    public = getattr(typing, "get_protocol_members", None)
+    if public is not None:  # pragma: no cover - 3.13+
+        return frozenset(public(protocol))
+    return frozenset(protocol.__protocol_attrs__)  # type: ignore[attr-defined]
+
+
+def _bind_subagents_member_tuple() -> frozenset[str]:
+    """The hardcoded member tuple inside ``_ExtensionRuntime.bind_subagents``.
+
+    Read from the SOURCE rather than exercised, because the tuple is only
+    reachable on the failure path (``api.py:669-685`` builds it to name what a
+    malformed runtime is missing) and a stale entry there is invisible to every
+    green run.
+    """
+
+    tree = ast.parse(Path(API_FILE).read_text(encoding="utf-8"))
+    func = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == "bind_subagents"
+    )
+    literals = [
+        frozenset(str(element.value) for element in generator.iter.elts)
+        for node in ast.walk(func)
+        if isinstance(node, ast.GeneratorExp)
+        for generator in node.generators
+        if isinstance(generator.iter, ast.Tuple)
+        and generator.iter.elts
+        and all(
+            isinstance(element, ast.Constant) and isinstance(element.value, str)
+            for element in generator.iter.elts
+        )
+    ]
+    assert len(literals) == 1, (
+        "expected exactly one hardcoded member tuple in bind_subagents; the "
+        f"diagnostic has been restructured and this test must follow: {literals}"
+    )
+    return literals[0]
+
+
+def test_the_protocol_member_set_is_frozen() -> None:
+    """ADR-0199 decision 1 — P3 adds NO member to ``SubagentRuntime``.
+
+    This is the phase's most load-bearing decision and, until this test, its
+    only enforcement was two ``git diff --stat`` verification gates: branch
+    local, and gone the moment P3 merges — the same reasoning
+    ``test_p2_band_boundaries.py`` records for retiring its own ``main...HEAD``
+    range gate. Nothing that survives the merge pins the member set:
+    ``test_runtime_checkable_protocol_accepts_minimal_impl`` is a negative
+    ``isinstance`` on a partial stub, and ``test_protocol_has_no_consent_``
+    ``parameter`` scans PARAMETER names.
+
+    So a P4 author who adds ``spawn_granted`` to the Protocol — precisely
+    because ADR-0199 says fan-out runs through it, and hoisting it looks like
+    tidying — gets a fully green suite while ``bind_subagents`` starts
+    demanding an eighth attribute and every third-party v1 runtime that was
+    valid yesterday fails ``isinstance`` at bind time. The failure lands in
+    someone else's extension, at startup, with a ``contract_mismatch``.
+
+    Both halves are asserted. The Protocol is the contract; the tuple in
+    ``bind_subagents`` is the error message. If only the first were pinned, the
+    tuple could silently stop naming the real missing member and the refusal
+    would read ``missing: (signature mismatch)``.
+    """
+
+    assert _protocol_members(SubagentRuntime) == _PROTOCOL_MEMBERS, (
+        "SubagentRuntime's member set is frozen at CONTRACT_VERSION == 1. A new "
+        "member is a BREAKING change for every runtime already bound against "
+        "it (api.py's isinstance check is a hasattr sweep over exactly these "
+        "names). Delegation topology belongs in the extension: the batch "
+        "executor calls spawn_granted once per member with mode='single'."
+    )
+    assert _bind_subagents_member_tuple() == _PROTOCOL_MEMBERS, (
+        "the member tuple in _ExtensionRuntime.bind_subagents has drifted from "
+        "the Protocol, so a malformed runtime will be told the wrong thing is "
+        "missing (or, if the tuple is short, will bind and fail later at the "
+        "call site with a bare AttributeError)."
+    )

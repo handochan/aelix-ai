@@ -38,6 +38,7 @@ import asyncio
 import contextlib
 import json
 import os
+import shlex
 import signal
 import stat
 import subprocess
@@ -50,6 +51,7 @@ from typing import Any
 
 import pytest
 from aelix_agents import print_channel as pc
+from aelix_agents.consent import SpawnGrant
 from aelix_agents.print_channel import (
     PrintChannel,
     RunningChild,
@@ -59,6 +61,7 @@ from aelix_agents.print_channel import (
     resolve_child_cwd,
 )
 from aelix_agents.reaper import descendant_pids, kill_tree, pdeathsig, reap
+from aelix_agents.runtime import _TERMINAL_STATES as _RUNTIME_TERMINAL
 from aelix_agents.runtime import SubagentHost, _SubagentRuntimeImpl
 from aelix_coding_agent.agents.profile import AgentProfile
 from aelix_coding_agent.builtin.permission_mode import PermissionMode
@@ -693,6 +696,83 @@ async def test_a_child_that_finishes_at_the_deadline_is_not_a_timeout(
     assert result.exit_code == 0
 
 
+def _wedged_stub(ready: Path) -> str:
+    """Emit, close both pipes, ANNOUNCE READINESS, then wedge.
+
+    The SIGTERM disposition is deliberately NOT set here. It is set by the shell
+    in :func:`_wedged_argv` before this interpreter exists — see there for why.
+    """
+
+    return _stub(
+        f"""
+        start()
+        say("closing my pipes now")
+        done()
+        os.close(1)
+        os.close(2)
+        # THE LAST set-up action, and every earlier line is part of the state it
+        # attests to: the disposition is already inherited, the answer is
+        # flushed into the pipe, and both pipes are at EOF. So the file
+        # appearing means the parent's whole precondition holds — it is the
+        # observation that replaces "assume a fresh interpreter got here in
+        # 300 ms" (S13, the same move as ``_await_zombie``'s ``waitid``).
+        # ``os.close``d at once: fd 1 is free, so this open() lands on it, and a
+        # lingering fd 1 would make a stray write go somewhere surprising.
+        _ready_fd = os.open({str(ready)!r}, os.O_WRONLY | os.O_CREAT, 0o600)
+        os.close(_ready_fd)
+        time.sleep(120)
+        """
+    )
+
+
+def _wedged_argv(script: str) -> list[str]:
+    """Launch the stub with SIGTERM already ignored, BEFORE Python exists.
+
+    POSIX: a signal set to *ignore* survives ``exec`` (a HANDLER is reset, an
+    ignore is not), so ``trap '' TERM`` in the shell is the child's disposition
+    from its very first instruction. That deletes CPython start-up — ~40 ms,
+    the dominant term — from the window in which a SIGTERM could still take its
+    default action. It is the belt; :func:`_await_readiness` is the braces.
+
+    ``exec`` REPLACES the shell, so there is still exactly ONE process: the
+    process group, ``pdeathsig`` and ``descendant_pids`` behave exactly as they
+    do for every other stub in this file.
+    """
+
+    inner = f"{shlex.quote(sys.executable)} -c {shlex.quote(script)}"
+    return ["/bin/sh", "-c", f"trap '' TERM; exec {inner}"]
+
+
+async def _await_readiness(
+    marker: Path, run: asyncio.Future[Any], *, timeout: float = 10.0
+) -> None:
+    """Block until the wedged child says it is wedged, or fail LEGIBLY.
+
+    The bound (10 s) is deliberately larger than the run's own 5 s deadline: if
+    a machine really is too loaded to start an interpreter in ten seconds, the
+    test must say *that*, not ``-15 != -SIGKILL``. Also fails fast if the run
+    finishes first, which is the other way the precondition can be false.
+    """
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if marker.exists():
+            return
+        if run.done():
+            outcome = run.exception() or run.result()
+            raise AssertionError(
+                "the run finished before the child signalled readiness, so the "
+                f"wedged state was never reached: {outcome!r}"
+            )
+        await asyncio.sleep(0.01)
+    raise AssertionError(
+        f"the child never wrote {marker} within {timeout}s: it never reached "
+        "the state under test (SIGTERM ignored, answer emitted, pipes at EOF, "
+        "process wedged). This is a machine/environment failure, not a "
+        "regression in the timeout path."
+    )
+
+
 async def test_a_wedged_child_that_closed_its_stdio_still_times_out(
     tmp_path: Path,
 ) -> None:
@@ -701,29 +781,57 @@ async def test_a_wedged_child_that_closed_its_stdio_still_times_out(
     ``POST_EOF_EXIT_GRACE_SECONDS`` must not turn "the pipes closed" into "wait
     forever". A child that closes stdout/stderr and then refuses to exit is
     still killed, just two seconds after the deadline rather than at it.
+
+    DETERMINISM (S13). This test used to assume a fresh CPython reached
+    ``signal.signal(SIGTERM, SIG_IGN)`` inside a 300 ms budget; under load it
+    did not, SIGTERM took its default action, and the test failed with
+    ``assert -15 == -SIGKILL`` and ``summary='(no output)'``. It no longer makes
+    any assumption about interpreter start-up: the disposition is set
+    pre-``exec`` (:func:`_wedged_argv`) and the run's deadline is not allowed to
+    matter until the child has been OBSERVED to be wedged
+    (:func:`_await_readiness`).
     """
 
-    wedged = _stub(
-        """
-        signal.signal(signal.SIGTERM, signal.SIG_IGN)
-        start()
-        say("closing my pipes now")
-        done()
-        os.close(1)
-        os.close(2)
-        time.sleep(120)
-        """
-    )
+    ready = tmp_path / "wedged.ready"
+    # The script rides in via ``argv`` (wrapped in the shell), so the positional
+    # ``script`` argument is unused — ``_stub_channel`` ignores it when ``argv``
+    # is given.
+    channel = _stub_channel("", grace=0.5, argv=_wedged_argv(_wedged_stub(ready)))
     started = time.monotonic()
-    result = await asyncio.wait_for(
-        _stub_channel(wedged, grace=0.5).run(_plan(tmp_path, timeout_ms=300)), 40
+    # ``timeout_ms`` is 5 000, not 300, and that is SAFE here only because the
+    # readiness gate below observes the precondition first: raising the budget
+    # on its own would move the race rather than remove it (S13). What the pair
+    # buys is that the deadline is not allowed to fire until the state under
+    # test — SIGTERM ignored, answer emitted, pipes at EOF, process wedged — has
+    # been OBSERVED to exist, on any machine at any load.
+    run = asyncio.ensure_future(
+        channel.run(_plan(tmp_path, timeout_ms=5_000)),
     )
+    try:
+        await _await_readiness(ready, run)
+    except BaseException:
+        # A failed precondition must not leak the child: cancel the run, which
+        # takes ``run``'s ``except asyncio.CancelledError`` abort leg
+        # (print_channel.py:944-946) and kills the tree.
+        run.cancel()
+        with contextlib.suppress(BaseException):
+            await run
+        raise
+
+    result = await asyncio.wait_for(run, 40)
     elapsed = time.monotonic() - started
 
     assert result.status == "timeout"
     assert result.ok is False
     assert result.exit_code == -signal.SIGKILL
-    assert elapsed < 20, "the floor is a grace, not an unbounded wait"
+    # Safe ONLY because readiness was observed: the emit demonstrably happened
+    # before the deadline, so this is an assertion about the reducer and not a
+    # second bet on interpreter start-up latency (the bet that produced the
+    # observed ``summary='(no output)'``).
+    assert result.summary == "closing my pipes now"
+    # 5 s deadline + 0.5 s SIGTERM grace + reap, with headroom for a loaded box;
+    # the outer ``wait_for(..., 40)`` is the real hang detector.
+    assert elapsed < 30, "the floor is a grace, not an unbounded wait"
 
 
 def _await_zombie(pid: int, *, timeout: float = 10.0) -> None:
@@ -1217,6 +1325,183 @@ async def test_stop_all_kills_every_child(tmp_path: Path) -> None:
     assert runtime.list() == []
 
 
+def _consented_grant() -> SpawnGrant:
+    """What the extension's ``tool_call`` hook hands the model-driven door."""
+
+    return SpawnGrant(
+        profile="scout",
+        source_path="/home/u/.aelix/agent/agents/scout.md",
+        scope="user",
+        mode=PermissionMode.PLAN,
+        widened=False,
+        consented=True,
+    )
+
+
+async def test_stop_all_shuts_the_delegation_door_and_the_session_reopens_it(
+    tmp_path: Path,
+) -> None:
+    """``stop_all`` is a teardown, so it must not race its own aborts (ADR-0197).
+
+    A batch's queued members are released by exactly the aborts ``stop_all``
+    performs, and a member's permit is freed when its ``PrintChannel.run``
+    returns — measurably AFTER ``stop_all``'s last ``await``. A flag scoped to
+    the drain therefore still lets a child start on the far side of a completed
+    teardown, which is the orphan ADR-0197 forbids. So the door stays shut.
+
+    It cannot stay shut forever either: the SAME runtime instance survives
+    ``/new`` / ``/fork`` / ``/resume`` (``extension.py:171``) and every one of
+    those emits ``session_shutdown`` first, so a permanently-shut door would
+    silently kill delegation for the rest of the process. Both reopen doors are
+    pinned here, because they are the two things a live session can do next: send
+    a prompt, or type ``/agents run``.
+    """
+
+    runtime = _runtime(tmp_path, _HAPPY)
+    grant = _consented_grant()
+
+    await runtime.stop_all()
+
+    refused = await runtime.spawn_granted(grant, _resolved(), "go")
+    assert refused.ok is False
+    assert "stop_all" in (refused.error or "")
+    assert runtime.list() == []
+
+    # Door 1 — the next user prompt.
+    runtime.reset_delegation_budget()
+    allowed = await runtime.spawn_granted(grant, _resolved(), "go")
+    assert allowed.ok is True
+
+    # Door 2 — a human typing ``/agents run``, with no prompt in between.
+    await runtime.stop_all()
+    typed = await runtime.spawn(_resolved(), "go")
+    assert typed.ok is True
+
+
+async def test_stop_all_aborts_a_row_that_appears_while_it_is_draining(
+    tmp_path: Path,
+) -> None:
+    """Nothing may leave the registry un-aborted — including a late arrival.
+
+    A batch member that got through admission just before the door shut
+    registers its row DURING the drain, and the thing that releases it is one of
+    the aborts ``stop_all`` is performing. ``self._children.clear()`` — the P2
+    shape, and the tempting simplification of the loop below it — drops that row
+    without ever signalling the child, which is exactly how a delegation ends up
+    with no owner and no registry entry.
+
+    The reaper join is used as the injection point because it IS the suspension
+    point that releases a queued member in production: ``abort_child`` awaits
+    ``asyncio.shield(reaper_task)`` (``print_channel.py:695-699``).
+    """
+
+    runtime = _SubagentRuntimeImpl(
+        host=SubagentHost(cwd=lambda: str(tmp_path)),
+        channel=_stub_channel(_HAPPY),
+    )
+    first = RunningChild(id="first", profile="scout")
+    late = RunningChild(id="late", profile="scout")
+
+    async def _releases_a_queued_member() -> int:
+        runtime._children["late"] = late
+        return 0
+
+    first.reaper_task = asyncio.ensure_future(_releases_a_queued_member())
+    runtime._children["first"] = first
+
+    await runtime.stop_all()
+
+    assert late.stopped is True, "stop_all dropped a row it had never aborted"
+    assert runtime._children == {}
+
+
+async def test_a_reopen_cannot_race_a_teardown_that_is_still_running(
+    tmp_path: Path,
+) -> None:
+    """The reopen doors decline while a ``stop_all`` is mid-flight.
+
+    A ``/agents run`` or a prompt arriving DURING the drain is not evidence that
+    a new child is wanted — the members that teardown is racing are exactly the
+    ones it exists to stop. The guard is one line and the only way to observe it
+    is from inside, so this test reaches in.
+    """
+
+    runtime = _runtime(tmp_path, _HAPPY)
+    runtime._draining = True
+    runtime._closed = True
+
+    runtime.reset_delegation_budget()
+
+    assert runtime._closed is True, "a reopen escaped a teardown in flight"
+    refused = await runtime.spawn_granted(_consented_grant(), _resolved(), "go")
+    assert refused.ok is False
+    assert "stop_all" in (refused.error or "")
+
+
+async def test_the_last_snapshot_of_a_delegation_is_always_terminal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A statusline row that outlives its delegation is undismissable.
+
+    ``PrintChannel.run`` writes the prompt file OUTSIDE its own ``try``
+    (``print_channel.py:799``) and ``write_prompt_file`` does ``mkdtemp`` +
+    ``os.open``, so a full ``/tmp``, an ``EMFILE`` or a yanked ``TMPDIR`` raises
+    straight out of a method that otherwise never raises — before
+    ``RunningChild.state`` has moved off its ``"starting"`` default
+    (``print_channel.py:179``). P3 multiplies the trigger by eight: eight
+    concurrent members each writing a prompt directory is exactly the load that
+    fires it.
+
+    Published non-terminal, that last snapshot makes
+    ``SubagentProgressBridge.__call__`` take its LIVE branch — it WRITES a
+    per-child row nothing will ever clear and leaks the id in ``_tools``
+    (``progress.py:273-277``). The registry row is already gone by then, so
+    ``stop`` / ``status`` cannot clear it either.
+
+    The real ``write_prompt_file`` is what is patched, rather than a fake channel
+    substituted, because the whole point is that this call sits OUTSIDE ``run``'s
+    own guard — a fake would not have that shape.
+    """
+
+    def _boom(*_args: Any, **_kwargs: Any) -> Any:
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(pc, "write_prompt_file", _boom)
+    seen: list[str] = []
+    runtime = _SubagentRuntimeImpl(
+        host=SubagentHost(
+            cwd=lambda: str(tmp_path),
+            on_progress=lambda p: seen.append(p.state),
+        ),
+        channel=_stub_channel(_HAPPY),
+    )
+
+    with pytest.raises(OSError, match="No space left"):
+        await runtime.spawn(_resolved(), "go")
+
+    assert seen, "the delegation published nothing at all"
+    assert seen[-1] in _RUNTIME_TERMINAL, (
+        f"the delegation's last word was {seen[-1]!r}; the bridge writes a "
+        "statusline row for that and nothing will ever clear it"
+    )
+    assert runtime.list() == []
+
+
+def test_the_runtime_and_the_renderer_agree_on_what_terminal_means() -> None:
+    """Two copies of the same three-element set, pinned equal.
+
+    ``runtime`` owns the row lifecycle and ``progress`` owns the surfaces, and
+    neither may import the other's private name — but a runtime that promotes a
+    state the RENDERER does not consider terminal publishes a row the renderer
+    will happily write and never clear, which is the exact failure the test above
+    exists to prevent. Equality is the cheapest way to say so.
+    """
+
+    from aelix_agents.progress import _TERMINAL_STATES as rendered
+
+    assert rendered == _RUNTIME_TERMINAL
+
+
 async def test_stop_of_an_unknown_id_is_silent(tmp_path: Path) -> None:
     """``stop`` races a run that just finished; that race is not an error."""
 
@@ -1708,8 +1993,17 @@ def test_the_runtime_returns_an_error_envelope_for_a_bad_cwd(
 
 @pytest.mark.parametrize("mode", ["parallel", "chain"])
 async def test_parallel_and_chain_modes_are_rejected(tmp_path: Path, mode: str) -> None:
+    """Still a raise after P3 — but for a different reason (§3.8).
+
+    P3 ships parallel and chain, so "mode is P3" is no longer true. The seam
+    keeps refusing them because a topology is not a per-spawn property: the
+    extension's batch executor composes them by calling this method once per
+    member with ``mode="single"``. Passing ``mode="parallel"`` here is a
+    programming error in a runtime author's code, and it must stay loud.
+    """
+
     runtime = _runtime(tmp_path, _HAPPY)
-    with pytest.raises(ValueError, match="P3"):
+    with pytest.raises(ValueError, match="one spawn is one child"):
         await runtime.spawn(_resolved(), "go", mode=mode)  # pyright: ignore[reportArgumentType]
 
 
