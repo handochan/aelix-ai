@@ -16,6 +16,14 @@ forged or bypassed:
   tool receives, so the approved profile, task and directory are carried in the
   grant record rather than re-read at execution time.
 
+ADR-0199 (P3) makes every one of those a BATCH property as well, and the second
+half of this file is that: ONE grant and ONE identity re-check for a call that
+starts up to eight children, an ``args`` dict whose ``mode`` and ``tasks`` a
+later handler may rewrite without changing which topology runs, a per-prompt
+budget that refuses the whole CALL rather than half of it, and the group whose
+open/close pair is what gives all three S10 surfaces their grouping without a
+correlation field in product-core (§3.6).
+
 The scaffolding is imported from ``test_tool_and_security`` so both files drive
 one bench: a real :class:`_ExtensionRuntime` / :class:`ExtensionContext` pair
 whose ``has_ui`` is the genuine ``runtime.ui is not HEADLESS_UI_CONTEXT``
@@ -32,7 +40,10 @@ from typing import Any
 import pytest
 from aelix_agent_core.harness.hooks import SessionShutdownHookEvent, ToolCallHookEvent
 from aelix_agents.consent import CANCEL_OPTION, build_options
-from aelix_ai.tools import ToolExecutionContext
+from aelix_agents.panel import PANEL_WIDGET_KEY
+from aelix_agents.progress import group_status_key, status_key
+from aelix_agents.runtime import MAX_DELEGATIONS_PER_PROMPT
+from aelix_ai.tools import ToolExecutionContext, ToolResult
 from aelix_coding_agent.builtin.permission_mode import PermissionMode
 
 from tests.agents_ext.test_tool_and_security import (
@@ -40,6 +51,7 @@ from tests.agents_ext.test_tool_and_security import (
     _Bench,
     _bench,
     _call,
+    _RecordingChannel,
     _text,
     _write_profile,
 )
@@ -615,6 +627,15 @@ async def test_the_dialog_shows_the_contained_cwd_not_the_requested_one(
     an out-of-tree request has to be refused without ever rendering a dialog —
     otherwise the modal would be teaching the user to approve a path that was
     about to be silently changed.
+
+    ASSERTED ON THE TAIL, and that is the contract rather than a weakening. The
+    ``Directory:`` row elides its MIDDLE at ``DIALOG_FIELD_CHARS`` and
+    guarantees the tail (``consent.py:386-399``: "WHERE inside is the question
+    this row exists to answer, and it is answered by the TAIL"). Asserting the
+    whole absolute path made this test pass or fail on how long
+    ``/tmp/pytest-of-<user>/pytest-<N>/...`` happened to be on the day — it goes
+    red once the counter reaches three digits, which is a property of the
+    machine and not of the code.
     """
 
     _ask_profile(tmp_path)
@@ -622,4 +643,607 @@ async def test_the_dialog_shows_the_contained_cwd_not_the_requested_one(
     (bench.cwd / "sub").mkdir()
 
     await _call(bench, {"profile": "scout", "task": "go", "cwd": "sub"})
-    assert str((bench.cwd / "sub").resolve()) in bench.ui.calls[0][0]
+
+    contained = str((bench.cwd / "sub").resolve())
+    title = bench.ui.calls[0][0]
+    shown = f"{bench.cwd.name}/sub"
+    # The parent component proves the RESOLUTION happened: the model asked for
+    # the relative ``"sub"`` and the human is shown where that landed.
+    assert contained.endswith(shown)
+    assert shown in title
+    # Nothing was dropped SILENTLY: either the whole path is there, or the
+    # elision marker says out loud that it is not.
+    assert contained in title or "…" in title
+
+
+# === P3: the batch travels the same wire ======================================
+#
+# Everything below is ADR-0199. The single-task tests above are the control
+# group: not one of them changes, which is the claim that the fan-out door was
+# BUILT ON the P2 gate rather than beside it.
+
+
+class _CancellingChannel(_RecordingChannel):
+    """A channel whose children die of an EXTERNAL cancellation.
+
+    ``batch._member`` converts every ``BaseException`` into an envelope except
+    ``CancelledError``, which it re-raises (§3.5.1) — so this is the one shape
+    that can make ``run_batch`` raise out of ``_execute`` at all, and therefore
+    the only way to exercise the failure path of the group's ``finally``.
+    """
+
+    async def run(self, plan: Any, *, child: Any = None, on_stream: Any = None) -> Any:
+        self.plans.append(plan)
+        raise asyncio.CancelledError
+
+
+def _tall_terminal(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin ``consent._terminal_rows`` so the §3.7 height budget is deterministic.
+
+    ``shutil.get_terminal_size`` reads ``$LINES`` before it asks the OS, so this
+    is the supported spelling rather than a patch of the function. 40 rows is a
+    normal terminal, where the fit check admits eight members with room to spare
+    — the height REFUSAL is ``test_batch_consent.py``'s subject, and a test of
+    the wiring that flaked on the height of the CI terminal would be measuring
+    the wrong thing.
+    """
+
+    monkeypatch.setenv("LINES", "40")
+    monkeypatch.setenv("COLUMNS", "120")
+
+
+def _record_ui(bench: _Bench) -> tuple[
+    list[tuple[str, str | None]], list[tuple[str, list[str] | None]]
+]:
+    """Record the ORDER of statusline and widget writes, not just the last one.
+
+    ``_FakeUI`` keeps a ``dict`` of the current row text, which cannot answer
+    "was this key written twice" or "was it cleared afterwards" — the two
+    questions the group's open/close pair is about. ``set_widget`` is added
+    here rather than to the shared bench because ``test_tool_and_security``
+    owns that file exclusively (§5.9).
+    """
+
+    writes: list[tuple[str, str | None]] = []
+    widgets: list[tuple[str, list[str] | None]] = []
+    original = bench.ui.set_status
+
+    def _set_status(key: str, text: str | None) -> None:
+        writes.append((key, text))
+        original(key, text)
+
+    def _set_widget(key: str, content: list[str] | None, options: Any = None) -> None:
+        widgets.append((key, content))
+
+    bench.ui.set_status = _set_status  # type: ignore[method-assign]
+    bench.ui.set_widget = _set_widget  # type: ignore[attr-defined]
+    return writes, widgets
+
+
+# === one call, one grant ======================================================
+
+
+async def test_a_batch_takes_exactly_one_grant(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """DECISION S4, on the wire: N children, ONE dialog, ONE human answer.
+
+    The count is the assertion that matters. A hook that took a grant per task
+    would still spawn four children and still return a clean aggregate — and it
+    would have asked the user four times for one tool call, which is both the
+    modal-collision hazard ``tool.py``'s docstring enumerates and the "train them
+    to click through" failure the pre-filter exists to avoid.
+
+    Every task is on screen in that one dialog, because a grant covering text the
+    human never saw is not consent (S4, §3.7's content assertion).
+    """
+
+    _tall_terminal(monkeypatch)
+    _ask_profile(tmp_path)
+    bench = _bench(tmp_path, has_ui=True, answers=(_BASELINE_PLAN,))
+
+    result = await _call(
+        bench,
+        {
+            "profile": "scout",
+            "mode": "parallel",
+            "tasks": ["count the files", "read the README", "list the tests"],
+        },
+    )
+
+    assert result.is_error is False
+    assert len(bench.ui.calls) == 1
+    title = bench.ui.calls[0][0]
+    for task in ("count the files", "read the README", "list the tests"):
+        assert task in title
+    assert [plan.task for plan in bench.channel.plans] == [
+        "count the files",
+        "read the README",
+        "list the tests",
+    ]
+    # ONE grant, spent on every member: one mode, one profile, one source path.
+    assert {plan.permission_mode for plan in bench.channel.plans} == {
+        PermissionMode.PLAN
+    }
+    assert {plan.resolved.name for plan in bench.channel.plans} == {"scout"}
+
+
+async def test_declining_a_batch_starts_no_member_at_all(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One "no" refuses the CALL, never a prefix of it.
+
+    The refusal is taken in the hook, before ``PendingSpawn`` exists, so there is
+    nothing for ``execute()`` to find and nothing partially started to unwind.
+    """
+
+    _tall_terminal(monkeypatch)
+    _ask_profile(tmp_path)
+    bench = _bench(tmp_path, has_ui=True, answers=(CANCEL_OPTION,))
+
+    result = await _call(
+        bench, {"profile": "scout", "mode": "parallel", "tasks": ["a", "b", "c", "d"]}
+    )
+
+    assert result.is_error is True
+    assert "declined" in _text(result)
+    assert bench.channel.plans == []
+    assert bench.ext._pending == {}
+
+
+async def test_a_batch_refused_for_height_reads_as_split_it_not_as_declined(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``SpawnGrant.reason`` must survive the hook, and it must WIN over ``_DECLINED``.
+
+    ``_DECLINED`` says "do not retry it", which is true of a human answer and
+    false of a dialog that was never shown (``consent.py:256-270``). A model told
+    "the user declined" when the user was never asked stops delegating for the
+    rest of the prompt; a model told the terminal is too short splits the call
+    and gets its work done.
+    """
+
+    monkeypatch.setenv("LINES", "24")
+    monkeypatch.setenv("COLUMNS", "80")
+    _ask_profile(tmp_path)
+    bench = _bench(tmp_path, has_ui=True, answers=(_BASELINE_PLAN,))
+
+    result = await _call(
+        bench,
+        {
+            "profile": "scout",
+            "mode": "parallel",
+            "tasks": [f"task {index}" for index in range(8)],
+        },
+    )
+
+    assert result.is_error is True
+    text = _text(result)
+    assert "declined" not in text
+    assert "agent" in text and "8" in text
+    # No dialog was opened at all: there was nothing that could be drawn in full.
+    assert bench.ui.calls == []
+    assert bench.channel.plans == []
+    assert bench.ext._pending == {}
+
+
+async def test_a_read_only_batch_runs_with_no_dialog_at_all(tmp_path: Path) -> None:
+    """THE COMMON CASE, and it costs nothing — no dialog, so no height either.
+
+    A ``default`` parent clamps every child to ``plan``; a profile that declared
+    nothing cannot be widened; so ``consent_is_required`` is False and an
+    eight-way read-only fan-out never renders a modal. Asserted with a LIVE UI,
+    because with no UI nothing would prompt anyway and the test could not tell
+    the fast path from the dialog path.
+    """
+
+    _write_profile(tmp_path / "agent" / "agents" / "scout.md", "scout")
+    bench = _bench(tmp_path, has_ui=True)
+
+    result = await _call(
+        bench,
+        {
+            "profile": "scout",
+            "mode": "parallel",
+            "tasks": [f"task {index}" for index in range(8)],
+        },
+    )
+
+    assert result.is_error is False
+    assert bench.ui.calls == []
+    assert len(bench.channel.plans) == 8
+
+
+# === the anti-bypass invariant, at batch size =================================
+
+
+async def test_a_batch_that_skipped_the_hook_starts_nothing(tmp_path: Path) -> None:
+    """``pop(tool_call_id, None)`` FAILS CLOSED for eight children as for one.
+
+    Calling ``execute()`` directly with a fully-formed ``mode="parallel"``
+    argument dict is exactly what a caller that skipped the gate looks like, and
+    it is the shape that would be worth the most to an attacker: one unguarded
+    call, eight children.
+    """
+
+    _write_profile(tmp_path / "agent" / "agents" / "scout.md", "scout")
+    bench = _bench(tmp_path, posture=PermissionMode.YOLO, has_ui=True)
+
+    execute = bench.tool.execute
+    assert execute is not None
+    result = await execute(
+        {"profile": "scout", "mode": "parallel", "tasks": ["a", "b", "c", "d"]},
+        ToolExecutionContext(tool_call_id="never-armed"),
+    )
+
+    assert result.is_error is True
+    assert "not approved" in _text(result)
+    assert bench.channel.plans == []
+    assert bench.ui.calls == []
+
+
+async def test_a_profile_swapped_between_hook_and_execute_refuses_the_whole_batch(
+    tmp_path: Path,
+) -> None:
+    """ONE identity re-check, and it covers all N — because a batch is ONE profile.
+
+    The window is real: the hook and ``execute()`` are separated by the kernel's
+    parallel execute phase and the profile search path is a directory the model's
+    own tools can write. Deleting the file is the honest way to exercise it —
+    ``resolve_profile`` raises, ``still_the_same`` is False, and ANY failure to
+    re-establish the identity is a refusal.
+
+    The assertion that earns the test is ``plans == []``: a re-check placed after
+    the fan-out, or per member, would let members 1..k start before member k+1
+    noticed.
+    """
+
+    profile = _write_profile(tmp_path / "agent" / "agents" / "scout.md", "scout")
+    bench = _bench(tmp_path, has_ui=True)
+
+    await _hook(
+        bench,
+        {"profile": "scout", "mode": "parallel", "tasks": ["a", "b", "c", "d"]},
+        tool_call_id="tc-swap-batch",
+    )
+    assert bench.ext._pending["tc-swap-batch"].call.mode == "parallel"
+    profile.unlink()
+
+    execute = bench.tool.execute
+    assert execute is not None
+    result = await execute(
+        {"profile": "scout", "mode": "parallel", "tasks": ["a", "b", "c", "d"]},
+        ToolExecutionContext(tool_call_id="tc-swap-batch"),
+    )
+
+    assert result.is_error is True
+    assert "do not match" in _text(result)
+    assert bench.channel.plans == []
+
+
+@pytest.mark.parametrize(
+    ("approved", "mutation"),
+    [
+        pytest.param(
+            {"profile": "scout", "mode": "parallel", "tasks": ["keep a", "keep b"]},
+            {"mode": "single", "task": "rm -rf everything", "tasks": ["evil"]},
+            id="batch-downgraded-to-single",
+        ),
+        pytest.param(
+            {"profile": "scout", "task": "keep a"},
+            {"mode": "parallel", "tasks": [f"evil {i}" for i in range(8)]},
+            id="single-upgraded-to-batch",
+        ),
+    ],
+)
+async def test_a_later_handler_cannot_change_the_topology_that_runs(
+    tmp_path: Path, approved: dict[str, Any], mutation: dict[str, Any]
+) -> None:
+    """THE ``args``-BY-REFERENCE HOLE, closed in both directions (§5, WP-6).
+
+    ``harness/core.py:3722-3726`` states verbatim that the kernel passes
+    ``ctx.args`` by reference with no defensive copy, precisely so a later
+    ``tool_call`` handler may mutate the dict and have the mutation reach
+    ``tool.execute``. ``AgentsExtension`` is APPENDED to the extension list
+    (``entry.py:860-873``), so a handler registered after it is not hypothetical.
+
+    An ``_execute`` that read ``args.get("mode", "single")`` would let that
+    handler pick a different execution TOPOLOGY from the one the human approved —
+    downgrading a consented batch to one child of its choosing, or upgrading a
+    consented single call into an eight-way fan-out of tasks nobody saw. Both
+    directions are asserted, because the two are different defects: one drops
+    work the model believes it delegated, the other starts work no human ever
+    approved.
+    """
+
+    _write_profile(tmp_path / "agent" / "agents" / "scout.md", "scout")
+    _write_profile(tmp_path / "agent" / "agents" / "other.md", "other")
+    bench = _bench(tmp_path, has_ui=True)
+
+    args: dict[str, Any] = dict(approved)
+    event = ToolCallHookEvent(
+        tool_call_id="tc-mutate", tool_name=AGENT_TOOL_NAME, args=args
+    )
+    assert await bench.hook(event) is None
+
+    # Whatever ran between the hook and execute() rewrote the call — the SAME
+    # dict object the tool is about to receive.
+    args.update(mutation)
+    args["profile"] = "other"
+
+    execute = bench.tool.execute
+    assert execute is not None
+    await execute(args, ToolExecutionContext(tool_call_id="tc-mutate"))
+
+    expected = approved.get("tasks") or [approved["task"]]
+    assert [plan.task for plan in bench.channel.plans] == expected
+    assert {plan.resolved.name for plan in bench.channel.plans} == {"scout"}
+
+
+# === §3.5.2.1 the per-prompt budget refuses the CALL ==========================
+
+
+async def test_a_batch_over_the_remaining_budget_is_blocked_at_the_hook(
+    tmp_path: Path,
+) -> None:
+    """S6 meets S7: the budget refuses the whole CALL, never half of it.
+
+    The budget is charged per CHILD, inside ``runtime._run`` — i.e. AFTER a
+    dialog would already have shown the human all N. Without the hook-time check
+    a second eight-task call in one prompt would start four children and return
+    four budget-exhausted envelopes for the rest: a partial-success envelope set
+    arriving after a human said yes to eight, which is the exact shape S5 made
+    unreachable for the live-child cap.
+
+    Three assertions, and each one is a different failure it excludes: no plan
+    (nothing ran), no dialog (nobody was asked), no ``PendingSpawn`` (nothing is
+    left armed for a later ``execute()`` to spend).
+    """
+
+    _write_profile(tmp_path / "agent" / "agents" / "scout.md", "scout")
+    bench = _bench(tmp_path, has_ui=True)
+
+    first = await _call(
+        bench,
+        {
+            "profile": "scout",
+            "mode": "parallel",
+            "tasks": [f"first {index}" for index in range(8)],
+        },
+        tool_call_id="tc-budget-1",
+    )
+    assert first.is_error is False
+    assert len(bench.channel.plans) == 8
+
+    blocked = await _hook(
+        bench,
+        {
+            "profile": "scout",
+            "mode": "parallel",
+            "tasks": [f"second {index}" for index in range(8)],
+        },
+        tool_call_id="tc-budget-2",
+    )
+
+    assert blocked is not None and blocked.block is True
+    remaining = MAX_DELEGATIONS_PER_PROMPT - 8
+    # BOTH numbers, because the model's only useful next action is a smaller
+    # call and it cannot compute the size from "budget exhausted".
+    assert "8" in blocked.reason and str(remaining) in blocked.reason
+    assert len(bench.channel.plans) == 8
+    assert bench.ui.calls == []
+    assert "tc-budget-2" not in bench.ext._pending
+
+
+async def test_a_batch_that_exactly_fits_the_remaining_budget_is_allowed(
+    tmp_path: Path,
+) -> None:
+    """The boundary, in the direction that must NOT be refused.
+
+    ``>`` and not ``>=``: a call for exactly the remaining budget is legal, and a
+    check off by one here would refuse work the per-child charge would have
+    admitted — silently making the advertised ceiling smaller than it says.
+    """
+
+    _write_profile(tmp_path / "agent" / "agents" / "scout.md", "scout")
+    bench = _bench(tmp_path, has_ui=True)
+
+    await _call(
+        bench,
+        {
+            "profile": "scout",
+            "mode": "parallel",
+            "tasks": [f"first {index}" for index in range(8)],
+        },
+        tool_call_id="tc-fit-1",
+    )
+    result = await _call(
+        bench,
+        {
+            "profile": "scout",
+            "mode": "parallel",
+            "tasks": [
+                f"second {index}"
+                for index in range(MAX_DELEGATIONS_PER_PROMPT - 8)
+            ],
+        },
+        tool_call_id="tc-fit-2",
+    )
+
+    assert result.is_error is False
+    assert len(bench.channel.plans) == MAX_DELEGATIONS_PER_PROMPT
+
+
+# === §3.6 the group: one open, one close, per call ============================
+
+
+async def test_a_batch_writes_one_grouped_status_row_and_no_per_child_rows(
+    tmp_path: Path,
+) -> None:
+    """THE END-TO-END PROOF ``test_batch_surfaces.py`` says it cannot give (§S10).
+
+    That file drives ``begin_group`` / ``adopt`` / ``__call__`` by hand over
+    synthetic snapshots. If the extension's per-call closure never called
+    ``adopt`` — the one thing only this layer can get wrong — the bridge would
+    write four ``subagent:<id>`` rows, ``chrome._render_status`` would
+    ``"  ".join`` them into a height-1 row, and every assertion in that file
+    would still pass.
+
+    So: four real members, through the real runtime, and the only key the UI is
+    ever asked to write is the group's.
+    """
+
+    _write_profile(tmp_path / "agent" / "agents" / "scout.md", "scout")
+    bench = _bench(tmp_path, has_ui=True)
+    writes, widgets = _record_ui(bench)
+
+    result = await _call(
+        bench,
+        {"profile": "scout", "mode": "parallel", "tasks": ["a", "b", "c", "d"]},
+        tool_call_id="tc-group",
+    )
+
+    assert result.is_error is False
+    keys = {key for key, _ in writes}
+    assert keys == {group_status_key("tc-group")}
+    for plan in bench.channel.plans:
+        assert status_key(plan.id) not in keys
+    assert {key for key, _ in widgets} == {PANEL_WIDGET_KEY}
+
+
+async def test_the_group_is_opened_once_and_closed_once_per_call(
+    tmp_path: Path,
+) -> None:
+    """Symmetry, asserted on the bridge's own table rather than on a row.
+
+    An aggregate row or a widget panel that outlives its delegation is a lie the
+    user cannot dismiss, and ``set_status`` has no "clear all" verb — so the
+    close has to happen on the call's own path. The final write for the group key
+    is ``None`` (the row cleared) and the final widget write is ``None`` (the
+    panel blanked).
+    """
+
+    _write_profile(tmp_path / "agent" / "agents" / "scout.md", "scout")
+    bench = _bench(tmp_path, has_ui=True)
+    writes, widgets = _record_ui(bench)
+
+    await _call(
+        bench,
+        {"profile": "scout", "mode": "parallel", "tasks": ["a", "b", "c", "d"]},
+        tool_call_id="tc-close",
+    )
+
+    bridge = bench.ext._progress
+    assert bridge is not None
+    assert bridge._groups == {}
+    assert bridge._members == {}
+    assert writes[-1] == (group_status_key("tc-close"), None)
+    assert widgets[-1] == (PANEL_WIDGET_KEY, None)
+
+
+async def test_a_cancelled_batch_still_closes_its_group(tmp_path: Path) -> None:
+    """THE FAILURE PATH, which is the one a ``finally`` exists for.
+
+    ``run_batch`` re-raises ``CancelledError`` (§3.5.1) — it is the one exception
+    a member does not turn into an envelope — so a turn aborted mid-batch unwinds
+    straight through ``_execute``. Without the ``finally`` the group would stay
+    open, its row would stay on the statusline, and the next batch under the same
+    ``tool_call_id`` would be the only thing that could ever clear it.
+    """
+
+    _write_profile(tmp_path / "agent" / "agents" / "scout.md", "scout")
+    bench = _bench(tmp_path, has_ui=True, channel=_CancellingChannel())
+    writes, _ = _record_ui(bench)
+
+    await _hook(
+        bench,
+        {"profile": "scout", "mode": "parallel", "tasks": ["a", "b", "c", "d"]},
+        tool_call_id="tc-cancel",
+    )
+    execute = bench.tool.execute
+    assert execute is not None
+    with pytest.raises(asyncio.CancelledError):
+        await execute(
+            {"profile": "scout", "mode": "parallel", "tasks": ["a", "b", "c", "d"]},
+            ToolExecutionContext(tool_call_id="tc-cancel"),
+        )
+
+    bridge = bench.ext._progress
+    assert bridge is not None
+    assert bridge._groups == {}
+    assert writes[-1] == (group_status_key("tc-cancel"), None)
+
+
+async def test_a_single_delegation_keeps_its_own_per_child_row(
+    tmp_path: Path,
+) -> None:
+    """S10's floor: at N == 1 every surface stays byte-identical to P2.
+
+    NO GROUP IS OPENED AT ALL below ``PANEL_MIN_CHILDREN``, and that is stricter
+    than "the group is inactive". An inactive group renders nothing, but
+    ``end_group`` clears the aggregate row unconditionally
+    (``progress.py:341``) — one ``set_status(subagent:group:<id>, None)`` for a
+    row that was never written, which is a UI write P2 never made. The shipped
+    ``test_events_and_statusline.py::test_statusline_row_set_and_cleared``
+    counts the keys the UI is asked for and would go red on it.
+
+    So: exactly one key, the child's own, and no widget.
+    """
+
+    _write_profile(tmp_path / "agent" / "agents" / "scout.md", "scout")
+    bench = _bench(tmp_path, has_ui=True)
+    writes, widgets = _record_ui(bench)
+
+    await _call(bench, {"profile": "scout", "task": "go"}, tool_call_id="tc-solo")
+
+    plan = bench.channel.plans[0]
+    assert {key for key, _ in writes} == {status_key(plan.id)}
+    assert widgets == []
+    bridge = bench.ext._progress
+    assert bridge is not None
+    assert bridge._groups == {}
+
+
+async def test_the_tool_card_carries_every_member_in_submitted_order(
+    tmp_path: Path,
+) -> None:
+    """Surface 2, end to end — the INDEX is what makes it possible.
+
+    The index is bound at member creation by the executor and arrives with every
+    snapshot, which is why no ``batch_id`` field was added to
+    ``SubagentProgress`` (§3.6). ``spawn_id`` is minted inside ``runtime._run``
+    and for a later wave does not exist for minutes, so a card that tried to
+    infer position from the id could not render a queued member at all.
+    """
+
+    _write_profile(tmp_path / "agent" / "agents" / "scout.md", "scout")
+    bench = _bench(tmp_path, has_ui=True)
+
+    frames: list[str] = []
+
+    def _on_partial(partial: ToolResult) -> None:
+        frames.append(_text(partial))
+
+    await _hook(
+        bench,
+        {"profile": "scout", "mode": "parallel", "tasks": ["a", "b", "c"]},
+        tool_call_id="tc-card",
+    )
+    execute = bench.tool.execute
+    assert execute is not None
+    result = await execute(
+        {"profile": "scout", "mode": "parallel", "tasks": ["a", "b", "c"]},
+        ToolExecutionContext(tool_call_id="tc-card", on_partial=_on_partial),
+    )
+
+    assert frames, "a batch must publish a tool card"
+    assert all(frame.count("\n") == 2 for frame in frames), (
+        "every frame renders all three members, queued ones included — a card "
+        "that shows 2 of 3 rows reads as 'one task was dropped'"
+    )
+    assert frames[-1].startswith("[1/3] ")
+    # And the aggregate the model reads keeps the same submitted order — never
+    # completion order (§3.4), because the model addressed the tasks by position.
+    assert result.is_error is False
+    text = _text(result)
+    assert text.index("[1/3 ") < text.index("[2/3 ") < text.index("[3/3 ")

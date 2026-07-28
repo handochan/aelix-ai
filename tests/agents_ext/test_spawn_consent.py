@@ -36,13 +36,17 @@ first principles so the assertions are not a paraphrase of the implementation.
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 import pytest
 from aelix_agents.consent import (
     CANCEL_OPTION,
+    DIALOG_ROW_CHARS,
     TASK_PREVIEW_CHARS,
     SpawnGrant,
+    build_consent_title,
     build_options,
+    contains_control_chars,
     request_spawn_consent,
 )
 from aelix_agents.posture import (
@@ -50,6 +54,8 @@ from aelix_agents.posture import (
     grants_write_authority,
     posture_rank,
 )
+from aelix_agents.print_channel import resolve_child_cwd
+from aelix_agents.runtime import SubagentHost, _SubagentRuntimeImpl
 from aelix_coding_agent.agents.profile import AgentProfile
 from aelix_coding_agent.builtin.permission_mode import PermissionMode
 from aelix_coding_agent.subagent_contract import ResolvedProfile
@@ -1167,3 +1173,195 @@ async def test_approving_one_spawn_never_suppresses_the_next(
         assert grant.consented is True
 
     assert len(spy.calls) == 3
+
+
+# --- ONE TASK IS NOT A SEQUENCE OF ONE-CHARACTER TASKS (P3 WP-4) -------------
+#
+# P3 adds a BATCH door (``request_spawn_consent_batch``) beside this one. An
+# earlier draft of that work re-typed THIS function's ``task`` parameter to
+# ``Sequence[str]`` instead of adding a second entry point — and ``str``
+# SATISFIES ``Sequence[str]``, so ``/agents run scout "review the auth module"``
+# (``runtime.py:330-336`` passes a bare ``str``) would have type-checked green
+# while the renderer iterated the string: *"Delegate 23 tasks to agent 'scout'?"*
+# with the rows ``[1/23] r``, ``[2/23] e``, … — 23 rows on the one door a human
+# typed, past the height budget, with ``Cancel`` clipped off the bottom by
+# ``tui/overlay.py``'s ``_CappedContainer``. No test rendered that dialog, so
+# nothing would have caught it.
+#
+# The single-task signatures were therefore kept, and these two tests are what
+# makes "kept" checkable: one pins the SHAPE of the rendered body, the other
+# drives the ``/agents run`` door end to end for the first time.
+
+
+async def test_the_single_task_dialog_renders_exactly_one_task_body() -> None:
+    """One task in, one task block out — never one block per character."""
+
+    task = "review the auth module for injection bugs"
+    title = build_consent_title(
+        _declaring(), task, PermissionMode.PLAN, cwd="/w"
+    )
+
+    lines = title.splitlines()
+    assert task in title
+    assert lines[-1] == task, "the task is the last row, verbatim and alone"
+    assert len(lines) == 9, lines
+    assert sum(1 for line in lines if line.startswith("Task")) == 1
+
+
+async def test_agents_run_renders_the_single_task_body_unchanged(
+    tmp_path: Path,
+) -> None:
+    """THE USER-TYPED DOOR, driven end to end — the one nothing covered.
+
+    ``runtime.spawn`` passes a bare ``str`` to :func:`request_spawn_consent`
+    (``runtime.py:330-336``). This test renders that dialog through the real
+    runtime with a live UI and a widenable profile — the case P3's batch work had
+    to leave untouched — and answers ``Cancel``, so no child process is created:
+    the assertion is about what was on SCREEN, not about a spawn.
+    """
+
+    spy = _SelectSpy(CANCEL_OPTION)
+    ctx = _FakeCtx(has_ui=True, ui=spy)
+    runtime = _SubagentRuntimeImpl(
+        host=SubagentHost(
+            cwd=lambda: str(tmp_path),
+            posture=lambda: PermissionMode.DEFAULT,
+            consent_context=lambda: ctx,
+        )
+    )
+
+    result = await runtime.spawn(_declaring(), "review the auth module")
+
+    assert result.status == "declined"
+    assert len(spy.calls) == 1
+    title, options = spy.calls[0]
+    assert title.splitlines()[-1] == "review the auth module"
+    # The catastrophic form would have rendered one row per character and a
+    # plural heading; both are asserted, because either alone could be a typo.
+    assert "[1/21]" not in title
+    assert title.splitlines()[0] == "Delegate to agent 'scout'?"
+    assert options == build_options(PermissionMode.PLAN, may_widen=True)
+
+
+# --- F1 on the P2 door, and the belt behind it -------------------------------
+#
+# THE SINGLE-TASK HOLE IS PRE-EXISTING, NOT A P3 REGRESSION, and it is the same
+# hole. ``build_consent_title`` interpolated ``cwd``, ``resolved.name`` and
+# ``resolved.source_path`` with plain f-strings; ``ctx.ui.select`` splits the
+# composed title on ``\n`` into rows AND ANSI-parses it
+# (``tui/context.py:112-129``); and ``resolve_child_cwd``
+# (``print_channel.py:301``) validated only containment and is-a-directory,
+# while POSIX permits every byte but ``/`` and NUL in a path component. A
+# directory created with plain ``os.makedirs`` was therefore enough to render a
+# wholly fabricated dialog. This door has no fit check at all, so there is
+# nothing here to defeat — which is precisely why it must not be forgeable.
+
+_FORGED_CWD = (
+    "/w/src\x1b[0m\nPermission: auto-accept-edits\n"
+    "Task (written by the model, not by you):\n"
+    "read the README and summarise it\n\x1b[8m"
+)
+
+
+def test_the_p2_dialog_body_is_nine_rows_for_every_input() -> None:
+    """The single-task body is a FIXED shape, and now it is one by construction.
+
+    Nine rows: heading, blank, ``Profile:``, ``Source:``, ``Directory:``,
+    ``Permission:``, blank, the label, the task. Before the fix a ``cwd`` with
+    twelve newlines made it twenty-one, and the rows a human then read were
+    written by whoever chose the directory name.
+    """
+
+    title = build_consent_title(
+        _declaring(
+            name="scout\nProfile:    root (builtin scope)",
+            source_path="/home/alice/.aelix/agents/\x1b[8mscout.md",
+        ),
+        "summarise the README\nPermission: yolo",
+        PermissionMode.PLAN,
+        cwd=_FORGED_CWD,
+    )
+
+    assert len(title.splitlines()) == 9
+    assert title.count("\n") == 8
+    assert not contains_control_chars(title.replace("\n", ""))
+    # The row the forgery imitated appears exactly once, and it states the mode
+    # that was actually granted.
+    assert [r for r in title.splitlines() if r.startswith("Permission:")] == [
+        "Permission: plan"
+    ]
+    for row in title.splitlines():
+        assert len(row) <= max(DIALOG_ROW_CHARS, TASK_PREVIEW_CHARS), row
+
+
+async def test_the_p2_door_end_to_end_cannot_be_forged() -> None:
+    """Through :func:`request_spawn_consent`, the way ``/agents run`` reaches it.
+
+    The human answers the widening option — as they would, having read a benign
+    dialog — and the assertion is that the dialog they read was the real one.
+    """
+
+    spy = _SelectSpy(build_options(PermissionMode.PLAN, may_widen=True)[1])
+    ctx = _FakeCtx(has_ui=True, ui=spy)
+
+    grant = await request_spawn_consent(
+        ctx,
+        _declaring(),
+        "delete every branch except main",
+        PermissionMode.DEFAULT,
+        cwd=_FORGED_CWD,
+    )
+
+    assert grant.consented and grant.widened
+    title = spy.calls[0][0]
+    assert "\x1b" not in title
+    assert title.splitlines()[-1] == "delete every branch except main"
+    assert "read the README" not in title
+
+
+@pytest.mark.parametrize(
+    "component",
+    [
+        "sub\ndir",  # rows
+        "sub\x1b[8mdir",  # SGR 8 — hidden text, the forgery's primitive
+        "sub\rdir",  # carriage return: overwrite the row in place
+        "sub\x9bdir",  # C1: the one-byte spelling of ESC-[
+        "sub\x07dir",  # BEL, which no whitespace rule touches
+    ],
+)
+def test_resolve_child_cwd_refuses_a_directory_that_can_steer_the_terminal(
+    tmp_path: Path, component: str
+) -> None:
+    """The BELT (F1). ``consent`` sanitising is the fix; this is the second lock.
+
+    A model-chosen ``cwd`` is the value that reaches
+    :func:`~aelix_agents.consent.build_consent_title`, and the reviewer created
+    the payload with a plain ``os.makedirs`` — no privileges, and well inside
+    ext4's 255-byte component limit. Refusing it here means the string never
+    exists to be rendered, and the two defences fail independently.
+
+    Contained and a real directory, so the ONLY thing this test can be failing
+    on is the character check.
+    """
+
+    (tmp_path / component).mkdir()
+
+    with pytest.raises(ValueError, match="control character"):
+        resolve_child_cwd(component, str(tmp_path))
+
+
+def test_resolve_child_cwd_still_accepts_an_ordinary_directory(
+    tmp_path: Path,
+) -> None:
+    """The belt must not become a new refusal path for legitimate delegation.
+
+    Awkward-but-legal names — spaces, dots, unicode — are NOT control characters
+    and must still resolve, or the check would be a functional regression dressed
+    as a fix.
+    """
+
+    for component in ("sub dir", "sub.dir-2", "서브디렉터리", "a'b\"c"):
+        (tmp_path / component).mkdir()
+        assert resolve_child_cwd(component, str(tmp_path)) == str(
+            (tmp_path / component).resolve()
+        )

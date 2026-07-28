@@ -87,7 +87,9 @@ These are the security properties P2 exists to provide; any P3 change touching t
 re-prove them (each already has tests):
 
 1. A child never runs with a posture looser than its parent's, and a **project-scoped profile can
-   never widen** — `child_permission_mode` takes a rank-**min**, verified across all 30 cells.
+   never widen** — `child_permission_mode` takes a rank-**min**, verified across all **80** cells
+   (5 parent postures x 4 `approval_mode` values x 2 scopes x 2 `has_ui` values, pinned literally by
+   `tests/agents_ext/test_posture_clamp.py:157` and `:173`; the earlier "30" was wrong).
 2. A headless child **blocks** where it would otherwise need approval (`headless_default="block"`) —
    it never silently auto-approves.
 3. `.aelix/**` is never auto-writable, and the auto-approve gate **resolves symlinks** — together

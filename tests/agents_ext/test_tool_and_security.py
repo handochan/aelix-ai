@@ -23,6 +23,7 @@ error result — so a refusal from either half is observed identically.
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import sys
 import textwrap
@@ -36,6 +37,7 @@ from aelix_agent_core.harness.hooks import (
     ToolCallHookEvent,
 )
 from aelix_agent_core.types import AgentTool
+from aelix_agents.chain import MAX_TASK_BYTES
 from aelix_agents.extension import AgentsExtension
 from aelix_agents.print_channel import (
     AGENT_TOOL_NAME,
@@ -46,11 +48,20 @@ from aelix_agents.print_channel import (
     narrow_tools,
 )
 from aelix_agents.tool import (
+    _DESCRIPTION_HEAD,
+    AGENT_TOOL_PARAMETERS,
+    DESCRIPTION_HEAD_MAX_BYTES,
+    MAX_PARALLEL_TASKS,
     MAX_ROSTER,
+    MAX_TIMEOUT_MS,
+    MIN_TIMEOUT_MS,
     ROSTER_DESCRIPTION_CHARS,
     ROSTER_MAX_BYTES,
+    AgentCallError,
+    build_description,
     build_roster,
     create_agent_tool,
+    parse_agent_call,
     render_subagent_result,
 )
 from aelix_ai.messages import TextContent
@@ -123,6 +134,116 @@ class _RecordingChannel:
             summary="the child says hello",
             permission_mode=plan.permission_mode.value,
         )
+
+
+class _AdmissionBarrier:
+    """Opens once EVERY member of a batch has been past the admission door.
+
+    THE INSTRUMENT THIS REPLACES WAS BROKEN, and its shape is worth recording,
+    because it is the shape any "park until enough of them are here" scaffolding
+    falls into. It counted a QUORUM of members inside the channel and set an
+    :class:`asyncio.Event` once the count was reached. The event was never
+    cleared, and ``Event.wait()`` on an already-set event returns WITHOUT
+    yielding — so the first quorum retired the gate permanently. Members 1 and 2
+    parked, member 2's arrival opened the gate, both then ran to completion, and
+    ``_run``'s ``finally`` popped their registry rows BEFORE members 3 and 4
+    ever reached ``_admit_live``. All four were admitted against a ceiling of
+    four. The instrument, not the runtime, produced the two extra children.
+
+    The fix is to park on the RIGHT event. What a live-cap test needs is not "N
+    members are inside the channel" — the members the cap REFUSES never get
+    inside, so the channel cannot see the ones that matter — but "every member
+    has had its admission decision taken", which is exactly the moment the
+    registry is at its high-water mark. So this barrier wraps
+    :meth:`_SubagentRuntimeImpl._admit_live`: the first statement of ``_run``,
+    reached by every member exactly once and above every early return that could
+    skip it. It counts the decisions and opens on the last one. An ADMITTED
+    member parks in the channel until then, so no row can leave the registry
+    while a later member is still deciding.
+
+    DETERMINISTIC BY CONSTRUCTION rather than by luck. What it pins is a
+    happens-before between two points in the runtime's own control flow, and it
+    holds under any order asyncio chooses to run the members in and under any
+    amount of delay anywhere. Nothing here sleeps, polls, or reads a clock, and
+    no assertion downstream of it depends on an interleaving.
+    """
+
+    def __init__(self) -> None:
+        self.opened = asyncio.Event()
+        self.decisions: list[str | None] = []
+        self.armed = False
+        self._pending = 0
+
+    def arm(self, runtime: Any, *, members: int) -> None:
+        """Wrap ``runtime._admit_live``; open after ``members`` decisions.
+
+        Armed AFTER the bench is built, because the channel has to exist before
+        the runtime that owns it does. The wrapper is an instance attribute
+        shadowing the bound method, and it changes no behaviour: the inner
+        refusal — or ``None`` for an admission — is returned verbatim.
+
+        THE ONE PRECONDITION: every one of ``members`` must actually reach
+        ``_run``. That holds for the live-cap shape this exists for — the batch
+        executor calls ``spawn_granted`` once per member and the only refusals
+        above ``_admit_live`` are consent and a spent batch deadline, neither of
+        which is in play here — but a future caller that can refuse a member
+        earlier would leave the admitted ones parked. ``_BlockingChannel``
+        rejects an UNARMED barrier outright so the common mistake is a red test;
+        a partially-armed one would hang, which is why the count is passed in
+        explicitly rather than inferred.
+        """
+
+        self.armed = True
+        self._pending = members
+        inner = runtime._admit_live
+
+        def _admit_live() -> str | None:
+            refusal = inner()
+            self.decisions.append(refusal)
+            self._pending -= 1
+            if self._pending <= 0:
+                self.opened.set()
+            return refusal
+
+        runtime._admit_live = _admit_live
+
+    @property
+    def refusals(self) -> int:
+        return sum(1 for decision in self.decisions if decision is not None)
+
+    async def wait(self) -> None:
+        await self.opened.wait()
+
+
+class _BlockingChannel(_RecordingChannel):
+    """A recording channel whose children STAY ALIVE until the barrier opens.
+
+    The registry cap and the batch semaphore are both bounds on how many
+    children are live AT ONCE, and a channel that returns immediately cannot
+    exhibit either: every member would find a registry the previous member had
+    already vacated. So ``run`` parks — but on an :class:`_AdmissionBarrier`,
+    never on a count of its own arrivals, for the reason that class documents.
+    """
+
+    def __init__(self, barrier: _AdmissionBarrier) -> None:
+        super().__init__()
+        self._barrier = barrier
+        self.in_flight = 0
+        self.max_in_flight = 0
+
+    async def run(
+        self,
+        plan: SpawnPlan,
+        *,
+        child: RunningChild | None = None,
+        on_stream: Any = None,
+    ) -> SubagentResult:
+        assert self._barrier.armed, "arm the barrier before the batch is launched"
+        self.in_flight += 1
+        self.max_in_flight = max(self.max_in_flight, self.in_flight)
+        await self._barrier.wait()
+        self.in_flight -= 1
+        return await super().run(plan, child=child, on_stream=on_stream)
 
 
 @dataclass
@@ -598,6 +719,104 @@ async def test_one_prompt_cannot_start_unbounded_delegations(tmp_path: Path) -> 
     assert "untrusted" in _text(refused[0])
 
 
+async def test_the_prompt_budget_is_charged_PER_CHILD_not_per_call(
+    tmp_path: Path,
+) -> None:
+    """S6 — fan-out must not multiply the ceiling by :data:`MAX_PARALLEL_TASKS`.
+
+    ``self._delegations_this_prompt += 1`` fires once per ``spawn_granted``
+    (``runtime.py:392``), i.e. once per CHILD. Charging per CALL instead would
+    turn twelve delegations per prompt into 12 × 8 = **96 child processes**, each
+    a full ``-m aelix_coding_agent`` holding the parent's API keys — which is the
+    measured failure the budget exists to stop (0 dialogs / 200 processes) with a
+    fan-out multiplier bolted on.
+
+    THE SHAPE IS THE DISCRIMINATOR, and the sibling above cannot supply it: it
+    issues ``MAX_DELEGATIONS_PER_PROMPT + 8`` single calls, so one call is one
+    child and both readings pass. Here one 8-task call plus four singles is
+    twelve children from FIVE calls. Under per-call charging the budget would
+    have five of twelve spent and the thirteenth child would run; under per-child
+    charging it is exhausted exactly at twelve.
+    """
+
+    from aelix_agents.runtime import MAX_DELEGATIONS_PER_PROMPT
+
+    _write_profile(tmp_path / "agent" / "agents" / "scout.md", "scout")
+    bench = _bench(tmp_path)
+
+    batch = await _call(
+        bench,
+        {
+            "profile": "scout",
+            "mode": "parallel",
+            "tasks": [f"task {i}" for i in range(MAX_PARALLEL_TASKS)],
+        },
+        tool_call_id="tc-batch",
+    )
+    assert batch.is_error is False
+    assert len(bench.channel.plans) == MAX_PARALLEL_TASKS
+
+    singles = MAX_DELEGATIONS_PER_PROMPT - MAX_PARALLEL_TASKS
+    for i in range(singles):
+        assert (
+            await _call(bench, {"profile": "scout", "task": "go"}, tool_call_id=f"s-{i}")
+        ).is_error is False
+    assert len(bench.channel.plans) == MAX_DELEGATIONS_PER_PROMPT
+
+    # The thirteenth child. Per-call charging would have spent 5 of 12 and let
+    # this through; per-child charging has spent all 12.
+    over = await _call(bench, {"profile": "scout", "task": "go"}, tool_call_id="s-x")
+    assert over.is_error is True
+    assert len(bench.channel.plans) == MAX_DELEGATIONS_PER_PROMPT
+
+
+async def test_a_batch_that_does_not_fit_the_budget_is_refused_whole(
+    tmp_path: Path,
+) -> None:
+    """§3.5.2.1 — the CALL is refused, never partially run.
+
+    The budget is charged per member INSIDE ``spawn_granted``, i.e. after the
+    consent dialog has already shown all N. Left alone, a second 8-task batch in
+    one prompt would produce four children and four ``_BUDGET_EXHAUSTED``
+    envelopes — a partial-success set arriving after a human said yes to eight,
+    which is precisely the shape S5 went to real trouble to make unreachable for
+    the live cap and which S7 clause 1 forbids.
+
+    So the check moves BEFORE the grant: no dialog, no ``PendingSpawn``, no
+    process, nothing trimmed, and the model reads the count and the remainder so
+    it can re-issue a batch that fits instead of retrying the same one.
+    """
+
+    from aelix_agents.runtime import MAX_DELEGATIONS_PER_PROMPT
+
+    _write_profile(tmp_path / "agent" / "agents" / "scout.md", "scout")
+    bench = _bench(tmp_path, has_ui=True)
+    tasks = [f"task {i}" for i in range(MAX_PARALLEL_TASKS)]
+
+    first = await _call(
+        bench,
+        {"profile": "scout", "mode": "parallel", "tasks": tasks},
+        tool_call_id="tc-1",
+    )
+    assert first.is_error is False
+    assert len(bench.channel.plans) == MAX_PARALLEL_TASKS
+
+    second = await _call(
+        bench,
+        {"profile": "scout", "mode": "parallel", "tasks": tasks},
+        tool_call_id="tc-2",
+    )
+    assert second.is_error is True
+    assert len(bench.channel.plans) == MAX_PARALLEL_TASKS, "nothing ran"
+    assert bench.ext._pending == {}, "blocked at the hook, so nothing is pending"
+    assert bench.ui.calls == [], "refused before any dialog was opened"
+
+    text = _text(second)
+    remaining = MAX_DELEGATIONS_PER_PROMPT - MAX_PARALLEL_TASKS
+    assert str(MAX_PARALLEL_TASKS) in text
+    assert str(remaining) in text
+
+
 async def test_the_next_prompt_gets_a_fresh_budget(tmp_path: Path) -> None:
     """A CEILING per prompt, not a quota per session (MEDIUM #2).
 
@@ -662,6 +881,80 @@ async def test_the_live_child_cap_applies_to_both_doors(tmp_path: Path) -> None:
     assert bench.channel.plans == []
 
 
+async def test_a_batch_shares_the_live_cap_with_everything_else(tmp_path: Path) -> None:
+    """S5 — the registry ceiling is a WHOLE-SESSION bound, not a per-batch one.
+
+    The sibling above pre-loads ``MAX_LIVE_CHILDREN`` rows and asserts one
+    refusal, which cannot tell a per-batch semaphore from the registry cap: both
+    readings refuse. Here two FOREIGN rows are held — a ``/agents run``, a second
+    host turn — and a four-task batch is launched against them. A batch-scoped
+    bound would let all four run; the session-scoped one leaves room for exactly
+    two.
+
+    Three separate facts, and each is a different decision:
+
+    * ``max_in_flight == 2`` — the cap is what actually bounded concurrency, not
+      the batch's own ``MAX_CONCURRENCY`` semaphore, which is larger here;
+    * all four members still return an ENVELOPE — ``envelope.py:8-12``'s "always
+      returns, never raises" holds member-by-member, so the model is told which
+      two were refused rather than reading a batch that silently shrank;
+    * the per-prompt budget grew by **2, not 4** — a refusal for a child that
+      never existed must not cost budget, or a session that is merely BUSY would
+      burn the ceiling that exists to bound how many children one turn STARTS.
+
+    THE BENCH IS THE DELICATE PART, and the barrier is where the delicacy lives.
+    A cap on how many children are live AT ONCE says nothing about a batch whose
+    members run one after another — four sequential members against two foreign
+    rows is four legal children and no refusal — so the state under test has to
+    be built, not waited for. :class:`_AdmissionBarrier` builds it by ordering
+    two points in the runtime's own control flow: no admitted member may leave
+    the registry until every member has been through ``_admit_live``. Read its
+    docstring before touching any of this; the previous instrument counted
+    arrivals at the CHANNEL instead, which the refused members never reach, and
+    it silently measured a runtime that had already vacated two rows.
+    """
+
+    from aelix_agents.print_channel import RunningChild
+    from aelix_agents.runtime import MAX_LIVE_CHILDREN
+
+    _write_profile(tmp_path / "agent" / "agents" / "scout.md", "scout")
+    foreign = 2
+    tasks = 4
+    room = MAX_LIVE_CHILDREN - foreign
+    barrier = _AdmissionBarrier()
+    channel = _BlockingChannel(barrier)
+    bench = _bench(tmp_path, channel=channel)
+    runtime = bench.ext.runtime
+    assert runtime is not None
+    barrier.arm(runtime, members=tasks)
+
+    for i in range(foreign):
+        runtime._children[f"live-{i}"] = RunningChild(id=f"live-{i}", profile="scout")
+
+    result = await _call(
+        bench,
+        {
+            "profile": "scout",
+            "mode": "parallel",
+            "tasks": [f"task {i}" for i in range(tasks)],
+        },
+    )
+
+    # The bench did what it claims to: every member reached the admission door,
+    # and it is the DOOR that turned two of them away. Asserted before anything
+    # else, because a barrier that opened early would make the rest of this test
+    # pass for the wrong reason — which is exactly how it used to fail.
+    assert len(barrier.decisions) == tasks
+    assert barrier.refusals == tasks - room
+
+    assert channel.max_in_flight == room
+    assert len(channel.plans) == room
+    assert result.is_error is True, "two members were refused, so the batch is not ok"
+    text = _text(result)
+    assert text.count("live delegated agents") == tasks - room
+    assert runtime._delegations_this_prompt == room
+
+
 async def test_a_human_typed_run_is_not_rate_limited_per_prompt(tmp_path: Path) -> None:
     """The budget is scoped to the MODEL door only (MEDIUM #2).
 
@@ -682,11 +975,16 @@ async def test_a_human_typed_run_is_not_rate_limited_per_prompt(tmp_path: Path) 
     assert len(bench.channel.plans) == MAX_DELEGATIONS_PER_PROMPT + 5
 
 
-# === P2 scope refusals ========================================================
+# === scope refusals ===========================================================
 
 
-async def test_background_true_is_rejected_in_p2(tmp_path: Path) -> None:
+async def test_background_true_is_rejected_always(tmp_path: Path) -> None:
     """A background child has no owner to reap it and no channel to report on.
+
+    RENAMED from ``…_in_p2`` (P3): the ``_in_p2`` suffix read as "until P3", and
+    P3 has now landed with background still refused. The reason was never the
+    phase — it is ADR-0197's ban on a task that outlives the session — so the
+    name may not imply an expiry date the design does not have.
 
     Rejected LOUDLY rather than ignored: silently dropping ``background: true``
     would let a model believe it had started something it had not, and then
@@ -704,20 +1002,39 @@ async def test_background_true_is_rejected_in_p2(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("mode", ["parallel", "chain"])
-async def test_parallel_and_chain_modes_rejected(tmp_path: Path, mode: str) -> None:
-    """P2 ships single-mode delegation only; topology is P3/P4 extension policy."""
+async def test_parallel_and_chain_modes_fan_out(tmp_path: Path, mode: str) -> None:
+    """INVERTED in P3 — the topology is now composed, and it is composed ABOVE the seam.
+
+    This test used to assert that ``mode`` was refused outright ("P2 ships
+    single-mode delegation only"). Both halves change meaning rather than
+    disappearing, and the pair is the point:
+
+    * the TOOL half fans out — one call with N tasks starts N children;
+    * the RUNTIME half still raises, because ``spawn``/``spawn_granted`` are a
+      PER-SPAWN seam and one spawn is one child. The batch executor calls
+      ``spawn_granted`` once per member with ``mode="single"``, so passing
+      ``mode="parallel"`` to the seam is a programming error in a future runtime
+      author, not a request, and it must keep failing loudly. Only the MESSAGE
+      changed: "…is P3…" became false the moment this phase landed.
+    """
 
     _write_profile(tmp_path / "agent" / "agents" / "scout.md", "scout")
     bench = _bench(tmp_path)
-    result = await _call(bench, {"profile": "scout", "task": "go", "mode": mode})
-    assert result.is_error is True
-    assert bench.channel.plans == []
 
-    # And the runtime refuses independently, so the tool's message is a better
-    # error rather than the only guard.
+    result = await _call(
+        bench,
+        {"profile": "scout", "mode": mode, "tasks": ["one", "two", "three"]},
+    )
+    assert result.is_error is False
+    # SORTED, not positional: ``plans`` is in the order the channel was REACHED,
+    # which for parallel is scheduling order and is not a contract. The
+    # submitted-order guarantee is about the rendered result and is pinned in
+    # ``test_aggregate.py``; what matters here is that every task got a child.
+    assert sorted(plan.task for plan in bench.channel.plans) == ["one", "three", "two"]
+
     runtime = bench.ext.runtime
     assert runtime is not None
-    with pytest.raises(ValueError, match="P3"):
+    with pytest.raises(ValueError, match="one spawn is one child"):
         await runtime.spawn(
             ResolvedProfile(
                 name="scout",
@@ -728,6 +1045,459 @@ async def test_parallel_and_chain_modes_rejected(tmp_path: Path, mode: str) -> N
             "go",
             mode=mode,  # type: ignore[arg-type]
         )
+
+
+async def test_the_p2_argument_shape_is_unchanged(tmp_path: Path) -> None:
+    """THE BACKWARD-COMPATIBILITY PIN — ``{"profile": …, "task": …}`` is untouched.
+
+    ``required`` dropped to ``["profile"]`` and ``AgentCall`` grew a ``tasks``
+    tuple and a ``mode``, so the single-task call is now a normalized special
+    case of a batch rather than the only shape there is. That normalization is
+    invisible from outside or it is a regression: every existing caller, every
+    existing test and every model that learned the P2 schema sends this.
+
+    Byte-identical, not merely "still works": one plan whose ``task`` is the
+    string as written, and a ``ToolResult`` rendered by
+    ``render_subagent_result`` — NOT by the batch renderer, whose header
+    ("agent scout · single · 1 tasks · 1 ok …") would be a new, larger and
+    entirely pointless thing for the model to read on the common path.
+    """
+
+    _write_profile(tmp_path / "agent" / "agents" / "scout.md", "scout")
+    bench = _bench(tmp_path)
+
+    result = await _call(bench, {"profile": "scout", "task": "go"})
+
+    assert len(bench.channel.plans) == 1
+    assert bench.channel.plans[0].task == "go"
+    assert result.is_error is False
+    assert result.details is None
+    assert _text(result) == "the child says hello\n\n[agent scout · ok · plan · 0.0s]"
+
+
+# === §4.3 — the parse rules, every one of which refuses BEFORE a process =======
+#
+# Each of these asserts ``bench.channel.plans == []``. That is the whole claim:
+# ``parse_agent_call`` runs inside the ``tool_call`` HOOK, so its refusal reaches
+# the model as a blocked call (``extension.py:447-450``) rendered by the kernel
+# as an immediate error result (``loop.py:518-531``) — no consent dialog, no
+# ``PendingSpawn``, no ``create_subprocess_exec``. A refusal that came back from
+# ``execute()`` instead would already have cost a process.
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        {"task": "go"},
+        {"profile": "", "task": "go"},
+        {"profile": "   ", "task": "go"},
+        {"profile": 7, "task": "go"},
+    ],
+)
+async def test_rule_1_profile_is_required(tmp_path: Path, args: dict[str, Any]) -> None:
+    bench = _bench(tmp_path)
+    result = await _call(bench, args)
+    assert result.is_error is True
+    assert bench.channel.plans == []
+
+
+@pytest.mark.parametrize("mode", ["swarm", "SINGLE", "parallel ", 3, ["parallel"]])
+async def test_rule_2_an_unknown_mode_is_refused(tmp_path: Path, mode: Any) -> None:
+    """The mode set is closed, and it is NOT case- or whitespace-forgiving.
+
+    A model that guessed ``"SINGLE"`` has guessed, and the refusal names the
+    three legal spellings — which is the actionable answer. Silently coercing
+    would teach it a spelling the schema does not declare.
+    """
+
+    _write_profile(tmp_path / "agent" / "agents" / "scout.md", "scout")
+    bench = _bench(tmp_path)
+    result = await _call(bench, {"profile": "scout", "task": "go", "mode": mode})
+    assert result.is_error is True
+    assert bench.channel.plans == []
+
+
+async def test_rule_2_an_explicit_null_mode_is_single(tmp_path: Path) -> None:
+    """A provider that materialises every declared property sends ``null``.
+
+    Treating that as a bad value would refuse the single most common
+    well-formed call there is, so absence and ``null`` mean the same thing.
+    """
+
+    assert parse_agent_call({"profile": "scout", "task": "go", "mode": None}).mode == (
+        "single"
+    )
+    assert parse_agent_call({"profile": "scout", "task": "go", "tasks": None}).tasks == (
+        ("go",)
+    )
+
+
+@pytest.mark.parametrize(
+    ("args", "expected_mode", "expected_tasks"),
+    [
+        # The one that produces an UNACTIONABLE refusal without the fix: the
+        # call is well formed, the model wrote 'tasks', and the empty 'task' it
+        # never wrote is what the exclusion check fires on.
+        (
+            {"profile": "scout", "mode": "parallel", "tasks": ["a", "b"], "task": ""},
+            "parallel",
+            ("a", "b"),
+        ),
+        # The mirror image, on the single-mode side of the exclusion.
+        ({"profile": "scout", "task": "go", "tasks": []}, "single", ("go",)),
+        ({"profile": "scout", "task": "go", "tasks": ""}, "single", ("go",)),
+    ],
+)
+def test_a_materialised_empty_argument_is_absence_not_presence(
+    args: dict[str, Any], expected_mode: str, expected_tasks: tuple[str, ...]
+) -> None:
+    """``""`` and ``[]`` are ``null`` in another spelling (finding F7).
+
+    ``_parse_mode`` already argues that a provider materialising every declared
+    property of the schema sends ``null`` for the ones the model omitted — but
+    ``null`` is only its most common spelling, and providers that fill in
+    type-appropriate zero values send ``""`` for a string and ``[]`` for an
+    array. Read as PRESENCE, those turn a well-formed call into
+    "mode='parallel' takes 'tasks', not 'task'" — a refusal naming a key the
+    model did not write, so it re-issues the identical call and the loop does
+    not converge.
+    """
+
+    call = parse_agent_call(args)
+
+    assert call.mode == expected_mode
+    assert call.tasks == expected_tasks
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        {"profile": "scout", "task": ""},
+        {"profile": "scout", "task": "   "},
+        {"profile": "scout", "mode": "parallel", "tasks": []},
+        {"profile": "scout", "mode": "chain", "tasks": ""},
+        {"profile": "scout", "task": "go", "cwd": ""},
+        {"profile": "scout", "task": "go", "mode": ""},
+    ],
+)
+def test_an_empty_value_is_still_a_bad_value_where_it_is_the_argument(
+    args: dict[str, Any]
+) -> None:
+    """The boundary of the rule above, stated so nobody widens it by accident.
+
+    ``_absent`` governs PRESENCE only — the ``task``/``tasks`` pair that drives
+    the mutual exclusion. Everywhere the empty value IS the argument it stays a
+    refusal: an empty ``task`` is not a job, an empty ``tasks`` is not a batch,
+    ``cwd=""`` names no directory and ``mode=""`` names no mode. Treating those
+    as absence would substitute a default for a value the model chose, silently.
+    """
+
+    with pytest.raises(AgentCallError):
+        parse_agent_call(args)
+
+
+async def test_rule_3_single_mode_refuses_tasks(tmp_path: Path) -> None:
+    """The mutual exclusion, in the direction a model actually gets wrong.
+
+    Writing ``tasks`` and forgetting ``mode`` is the common mistake, so the
+    refusal names the fix ("set 'mode'") rather than answering with "'task' is
+    required", which is true and useless.
+    """
+
+    _write_profile(tmp_path / "agent" / "agents" / "scout.md", "scout")
+    bench = _bench(tmp_path)
+    result = await _call(bench, {"profile": "scout", "tasks": ["one", "two"]})
+    assert result.is_error is True
+    assert "mode" in _text(result)
+    assert bench.channel.plans == []
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        {"mode": "parallel"},
+        {"mode": "chain"},
+        {"mode": "parallel", "tasks": []},
+        {"mode": "parallel", "tasks": "one"},
+        {"mode": "parallel", "tasks": ["one", ""]},
+        {"mode": "parallel", "tasks": ["one", "   "]},
+        {"mode": "parallel", "tasks": ["one", None]},
+        {"mode": "chain", "tasks": ["one", 2]},
+        {"mode": "parallel", "task": "go", "tasks": ["one"]},
+        {"mode": "chain", "task": "go"},
+    ],
+)
+async def test_rule_4_the_tasks_list_must_be_a_list_of_real_tasks(
+    tmp_path: Path, args: dict[str, Any]
+) -> None:
+    _write_profile(tmp_path / "agent" / "agents" / "scout.md", "scout")
+    bench = _bench(tmp_path)
+    result = await _call(bench, {"profile": "scout", **args})
+    assert result.is_error is True
+    assert bench.channel.plans == []
+
+
+@pytest.mark.parametrize("mode", ["parallel", "chain"])
+async def test_rule_4_an_oversize_batch_is_refused_whole_not_trimmed(
+    tmp_path: Path, mode: str
+) -> None:
+    """S7 CLAUSE 1, and it is the clause the whole governance section is about.
+
+    Trimming to the first :data:`MAX_PARALLEL_TASKS` would leave the model
+    believing it had delegated all of them: it would go on to reason about
+    results that were never going to arrive, and nothing in the transcript would
+    say otherwise. So the CALL is malformed, the hook blocks it, and the count
+    and the limit are both in the message so the model can re-issue something
+    that fits.
+    """
+
+    _write_profile(tmp_path / "agent" / "agents" / "scout.md", "scout")
+    bench = _bench(tmp_path)
+    over = MAX_PARALLEL_TASKS + 1
+
+    result = await _call(
+        bench,
+        {
+            "profile": "scout",
+            "mode": mode,
+            "tasks": [f"task {i}" for i in range(over)],
+        },
+    )
+    assert result.is_error is True
+    assert bench.channel.plans == [], "NOT the first eight — nothing at all"
+    text = _text(result)
+    assert str(over) in text
+    assert str(MAX_PARALLEL_TASKS) in text
+
+
+async def test_rule_4_exactly_the_limit_is_accepted(tmp_path: Path) -> None:
+    """The boundary from the legal side — an off-by-one here refuses honest work."""
+
+    call = parse_agent_call(
+        {
+            "profile": "scout",
+            "mode": "parallel",
+            "tasks": [f"task {i}" for i in range(MAX_PARALLEL_TASKS)],
+        }
+    )
+    assert len(call.tasks) == MAX_PARALLEL_TASKS
+
+
+@pytest.mark.parametrize("mode", ["single", "parallel"])
+async def test_rule_5_an_oversize_task_string_is_refused(
+    tmp_path: Path, mode: str
+) -> None:
+    """Closes a P2 latent defect: today this reaches ``create_subprocess_exec``.
+
+    A single argv element above ``MAX_ARG_STRLEN`` fails with
+    ``OSError: [Errno 7] Argument list too long``, which the model reads as an
+    unexplained spawn failure with no hint that the task string was the cause.
+    """
+
+    _write_profile(tmp_path / "agent" / "agents" / "scout.md", "scout")
+    bench = _bench(tmp_path)
+    huge = "x" * (MAX_TASK_BYTES + 1)
+    args: dict[str, Any] = (
+        {"profile": "scout", "task": huge}
+        if mode == "single"
+        else {"profile": "scout", "mode": "parallel", "tasks": ["ok", huge]}
+    )
+
+    result = await _call(bench, args)
+    assert result.is_error is True
+    assert str(MAX_TASK_BYTES) in _text(result)
+    assert bench.channel.plans == []
+
+
+def test_rule_5_the_boundary_is_bytes_not_characters() -> None:
+    """A CJK task carries three bytes per character, and the OS limit is bytes."""
+
+    assert parse_agent_call(
+        {"profile": "scout", "task": "x" * MAX_TASK_BYTES}
+    ).task == "x" * MAX_TASK_BYTES
+    with pytest.raises(AgentCallError):
+        parse_agent_call({"profile": "scout", "task": "가" * (MAX_TASK_BYTES // 3 + 1)})
+
+
+async def test_rule_6_step_1_may_not_use_previous(tmp_path: Path) -> None:
+    """There is no previous step, so an empty substitution would silently lie.
+
+    The task would still run — it would just run with the placeholder replaced
+    by nothing, changing what the instruction says in a way no one sees. An
+    error the model reads is the only outcome that cannot be missed.
+    """
+
+    _write_profile(tmp_path / "agent" / "agents" / "scout.md", "scout")
+    bench = _bench(tmp_path)
+
+    result = await _call(
+        bench,
+        {
+            "profile": "scout",
+            "mode": "chain",
+            "tasks": ["summarize {previous}", "then write it up"],
+        },
+    )
+    assert result.is_error is True
+    assert bench.channel.plans == []
+
+
+def test_rule_6_the_escape_is_legal_in_step_1_and_parallel_is_unaffected() -> None:
+    """Two negatives that keep the rule from being over-broad.
+
+    ``{{previous}}`` in step 1 is a task talking ABOUT the token — the one way to
+    ask a child to author chain steps — and parallel members have no previous
+    step by definition, so the placeholder is simply not a placeholder there.
+    """
+
+    assert parse_agent_call(
+        {"profile": "scout", "mode": "chain", "tasks": ["write {{previous}}", "b"]}
+    ).tasks[0] == "write {{previous}}"
+    assert parse_agent_call(
+        {"profile": "scout", "mode": "parallel", "tasks": ["a {previous}", "b"]}
+    ).mode == "parallel"
+
+
+@pytest.mark.parametrize("cwd", ["", "   ", 7])
+async def test_rule_7_a_blank_cwd_is_refused(tmp_path: Path, cwd: Any) -> None:
+    _write_profile(tmp_path / "agent" / "agents" / "scout.md", "scout")
+    bench = _bench(tmp_path)
+    result = await _call(bench, {"profile": "scout", "task": "go", "cwd": cwd})
+    assert result.is_error is True
+    assert bench.channel.plans == []
+
+
+@pytest.mark.parametrize(
+    ("timeout_ms", "because"),
+    [
+        (MIN_TIMEOUT_MS - 1, "at least"),
+        (MAX_TIMEOUT_MS + 1, "at most"),
+        ("1000", "integer number of ms"),
+        (1000.5, "integer number of ms"),
+        (True, "integer number of ms"),
+    ],
+)
+async def test_rule_8_timeout_ms_is_bounded_at_both_ends(
+    tmp_path: Path, timeout_ms: Any, because: str
+) -> None:
+    """Both bounds, both type refusals — AND WHICH REFUSAL FIRED.
+
+    The message is asserted because ``is_error`` alone cannot tell two refusals
+    apart, and for ``True`` that is the whole test. ``isinstance(True, int)`` is
+    True, so ``timeout_ms: true`` reaches the range check as the integer ``1``
+    and today's ``MIN_TIMEOUT_MS`` of 1000 refuses it anyway — dropping
+    ``isinstance(timeout_ms, bool) or`` from ``tool.py:448`` therefore changes
+    nothing an ``is_error`` assertion can see. (An earlier version of this
+    docstring claimed a bare ``true`` would "become a 1 ms deadline". It would
+    not, and a reader who believed it would conclude the guard was load-bearing
+    for a reason it is not.)
+
+    What the guard actually buys, and what this pins: a bad TYPE is answered as
+    a bad type. ``'timeout_ms' must be at least 1000`` invites the model to
+    re-send ``timeout_ms: true`` alongside a bigger number it has no way to
+    express; ``must be an integer number of ms`` names the real fault. It is
+    also the belt if ``MIN_TIMEOUT_MS`` is ever lowered to 0 or 1, at which point
+    it becomes the ONLY thing standing between a JSON ``true`` and a 1 ms
+    deadline on every child.
+    """
+
+    _write_profile(tmp_path / "agent" / "agents" / "scout.md", "scout")
+    bench = _bench(tmp_path)
+    result = await _call(
+        bench, {"profile": "scout", "task": "go", "timeout_ms": timeout_ms}
+    )
+    assert result.is_error is True
+    assert because in _text(result)
+    assert bench.channel.plans == []
+
+
+def test_rule_8_the_timeout_ceiling_matches_the_schema() -> None:
+    """The schema is advice to the provider; the parse is the gate.
+
+    ``validate_tool_arguments`` is "additive, never strips", so a provider that
+    ignores ``maximum`` delivers the value here regardless — the two numbers must
+    therefore be one number, not two that can drift.
+    """
+
+    timeout = AGENT_TOOL_PARAMETERS["properties"]["timeout_ms"]
+    assert timeout["minimum"] == MIN_TIMEOUT_MS
+    assert timeout["maximum"] == MAX_TIMEOUT_MS
+    assert parse_agent_call(
+        {"profile": "scout", "task": "go", "timeout_ms": MAX_TIMEOUT_MS}
+    ).timeout_ms == MAX_TIMEOUT_MS
+
+
+def test_the_schema_and_the_parser_agree_on_the_mode_set() -> None:
+    """Two hand-maintained copies is how a schema advertises a mode nothing runs."""
+
+    for mode in AGENT_TOOL_PARAMETERS["properties"]["mode"]["enum"]:
+        assert parse_agent_call(
+            {"profile": "scout", "task": "go", "mode": mode}
+            if mode == "single"
+            else {"profile": "scout", "mode": mode, "tasks": ["a", "b"]}
+        ).mode == mode
+    assert AGENT_TOOL_PARAMETERS["required"] == ["profile"]
+    assert AGENT_TOOL_PARAMETERS["properties"]["tasks"]["maxItems"] == MAX_PARALLEL_TASKS
+
+
+def test_reading_task_off_a_batch_raises_rather_than_dropping_members() -> None:
+    """``AgentCall.task`` is the single-task spelling and it FAILS LOUDLY.
+
+    Returning ``tasks[0]`` would spawn member 1 and silently drop the rest: the
+    model would be told its eight tasks were delegated and one child would
+    exist. ``TypeError`` and not ``AgentCallError`` because this is a caller that
+    has not been taught about batches — a bug to surface, not a refusal for the
+    model to read and work around.
+    """
+
+    call = parse_agent_call(
+        {"profile": "scout", "mode": "parallel", "tasks": ["a", "b"]}
+    )
+    with pytest.raises(TypeError, match="tasks"):
+        _ = call.task
+
+
+def test_an_error_already_inside_the_summary_is_not_repeated_on_the_single_path() -> None:
+    """The mirror of ``test_an_error_already_inside_the_summary_is_not_repeated``.
+
+    The batch half of this rule (``test_aggregate.py``) was pinned and the
+    ORIGINAL was not, so ``and result.error not in body`` could be dropped from
+    ``tool.py:602`` with the whole suite still green. ``summary == error`` is
+    not a contrived shape: it is what every refusal envelope carries
+    (``batch._refusal_envelope``, ``runtime._error_result``) and what the
+    envelope's own fallback chain produces, so the duplicate would appear on the
+    most common failure there is — and the model would narrate two distinct
+    failures where one happened.
+    """
+
+    result = SubagentResult(
+        id="s1",
+        profile="scout",
+        ok=False,
+        status="error",
+        summary="model not found",
+        error="model not found",
+    )
+
+    text = _text(render_subagent_result(result))
+
+    assert text.count("model not found") == 1
+    assert text == "model not found\n\n[agent scout · error · 0.0s]"
+
+
+def test_a_different_error_is_still_surfaced_on_the_single_path() -> None:
+    """The negative half: dedup must not swallow an error the summary lacks."""
+
+    result = SubagentResult(
+        id="s1",
+        profile="scout",
+        ok=False,
+        status="error",
+        summary="partial work",
+        error="exit 1",
+    )
+
+    assert "Error: exit 1" in _text(render_subagent_result(result))
 
 
 async def test_cwd_outside_parent_rejected(tmp_path: Path) -> None:
@@ -1004,6 +1774,39 @@ def test_a_roster_of_maximal_descriptions_stays_under_the_byte_cap() -> None:
 async def test_no_profiles_still_produces_a_usable_description(tmp_path: Path) -> None:
     bench = _bench(tmp_path)
     assert "No agent profiles" in bench.tool.description
+
+
+def test_the_contract_text_stays_inside_its_own_budget() -> None:
+    """§4.4 — the head grew for P3, and a cap is the only thing that stops it again.
+
+    This string is prompt text on EVERY request of the parent session, so its
+    cost is paid per request, forever: head + roster ≈ 6.2 KiB ≈ 1 550 tokens,
+    which a 40-turn session pays ~62 000 tokens for in description alone. P2's
+    head was 530 bytes and P3's is ~1.1 KiB — the growth is real, it bought three
+    modes, and the next person who wants to explain something here has a number
+    to argue against rather than a blank cheque.
+    """
+
+    assert len(_DESCRIPTION_HEAD.encode("utf-8")) <= DESCRIPTION_HEAD_MAX_BYTES
+    # Every declared mode is DOCUMENTED, not merely accepted. A mode the schema
+    # advertises and the head never explains is one the model will use wrongly.
+    for mode in AGENT_TOOL_PARAMETERS["properties"]["mode"]["enum"]:
+        assert f'mode="{mode}"' in _DESCRIPTION_HEAD
+
+
+def test_the_whole_description_stays_inside_head_plus_roster() -> None:
+    """The two budgets compose — the worst case is a full roster of maximal entries."""
+
+    profiles = [
+        _profile(name=f"agent{i:02d}", description="y" * 400) for i in range(MAX_ROSTER)
+    ]
+    whole = build_description(build_roster(profiles))
+    # The slack is the "Available profiles:" heading and the blank lines between
+    # the two halves; anything larger would mean one of the two caps is not
+    # actually being applied.
+    assert len(whole.encode("utf-8")) <= (
+        DESCRIPTION_HEAD_MAX_BYTES + ROSTER_MAX_BYTES + 64
+    )
 
 
 # === the tool object ==========================================================

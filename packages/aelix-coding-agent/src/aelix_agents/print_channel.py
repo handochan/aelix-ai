@@ -74,6 +74,7 @@ from aelix_coding_agent.subagent_contract import (
 )
 from aelix_coding_agent.tools import ALL_TOOL_NAMES
 
+from aelix_agents.consent import contains_control_chars
 from aelix_agents.envelope import DEFAULT_OUTPUT_CAP, build_result
 from aelix_agents.prompt_file import PromptFile, remove_prompt_dir, write_prompt_file
 from aelix_agents.reaper import (
@@ -309,15 +310,38 @@ def resolve_child_cwd(cwd: str | None, parent_cwd: str) -> str:
     Composes with, and does not replace,
     :func:`~aelix_agents.trust.child_trust_argv`: this bounds WHERE a child may
     run, that bounds WHAT may execute once it gets there.
+
+    IT ALSO REFUSES A CONTROL CHARACTER, AND THAT IS A SECOND, INDEPENDENT
+    DEFENCE (F1 belt). POSIX permits every byte but ``/`` and NUL in a path
+    component, so a model-chosen ``cwd`` may contain ``\\n`` and ``\\x1b`` — and
+    the value this function returns is interpolated verbatim into the consent
+    dialog, which ``ctx.ui.select`` both newline-splits into rows and ANSI-parses
+    (``tui/context.py:112-129``). A 150-byte directory name was demonstrated to
+    render a wholly forged, benign-looking dialog while the real permission row
+    and the real tasks sat hidden behind SGR 8. ``consent.py``'s
+    :func:`~aelix_agents.consent._sanitize_field` is the fix and is sufficient on
+    its own; this is the belt, and it is also correct in its own right — a
+    directory whose NAME is an escape sequence is not somewhere a delegated
+    agent should be asked to run, whoever is going to render it later.
     """
 
     parent = Path(parent_cwd).resolve()
     if cwd is None:
+        # The parent's OWN cwd, not a model-supplied string: nothing to validate
+        # that the process is not already living with.
         return str(parent)
     candidate = Path(cwd)
     if not candidate.is_absolute():
         candidate = Path(parent_cwd) / candidate
     resolved = candidate.resolve()
+    # Checked on the RESOLVED path rather than on ``cwd``: a relative request is
+    # joined to the parent's cwd above, and it is the resolved string that is
+    # returned, stored on ``PendingSpawn`` and rendered.
+    if contains_control_chars(str(resolved)):
+        raise ValueError(
+            f"cwd {cwd!r} contains a control character; a delegated agent may "
+            "not be run in a directory whose name can steer the terminal."
+        )
     if not resolved.is_relative_to(parent):
         raise ValueError(
             f"cwd {cwd!r} resolves outside the parent's working directory "
