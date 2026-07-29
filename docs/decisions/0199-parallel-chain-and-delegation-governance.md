@@ -64,11 +64,19 @@ false.** Four measured facts, re-verified in this worktree:
 | 3 | `RpcClient.start()` has **none** of P2's containment: no `start_new_session`, no `pdeathsig`, no reaper, no bounded stderr — a bare `create_subprocess_exec` with three pipes | `rpc/rpc_client.py:111-128` |
 | 4 | The client's three wait paths all resolve on **`agent_end`**, which is not emitted on abort, on a failed prompt, or on a busy rejection — `rpc_mode.py` has no emit site at all, only a comment noting the absence | `rpc/rpc_client.py:395`, `:415`, `:441`; `rpc/rpc_mode.py:319` |
 
-**That sprint's kickoff material is
-`/tmp/…/scratchpad/p3-recon/lane3-rpc.md`.** It is named here so the sprint is
-*deferred, not forgotten* — and because that file lived in a session scratchpad
-that no longer exists, the four findings above are reproduced in this ADR as the
-checklist to re-confirm. **The rpc sprint must begin by re-running that recon.**
+**That sprint's kickoff material is `.omc/specs/rpc-sprint-kickoff-handoff.md`,
+`.omc/specs/rpc-sprint-recon-transport.md` and
+`.omc/specs/rpc-sprint-recon-envelope.md`** — all tracked. It is named here so
+the sprint is *deferred, not forgotten*.
+
+The recon originally lived in a session scratchpad, which was then wiped before
+it could be committed — the exact landmine `p3-kickoff-handoff.md` warns about,
+demonstrated on itself. The two notes were **recovered from the recon workflow's
+journal** (`~/.claude/projects/<proj>/subagents/workflows/<runId>/journal.jsonl`,
+which retains every agent's full return value under `result`) and committed. The
+four findings above are reproduced in this ADR as well, so the checklist survives
+even if those files do not. Their `path:line` anchors were taken against `6d7ec9a`
+and must be re-verified before use.
 
 Also explicitly not in scope; each is named so nobody reads it as a gap:
 heterogeneous batches, raising `MAX_SUBAGENT_DEPTH`, a mid-turn stop overlay, a
@@ -1071,7 +1079,8 @@ asserted to be.
   Phase 3 items 3–4) — its own sprint.** The four measured findings that make
   the spec's premise false are reproduced in *Scope* above, and they are the
   checklist that sprint must re-confirm; its kickoff material is
-  `p3-recon/lane3-rpc.md`.
+  `.omc/specs/rpc-sprint-kickoff-handoff.md` plus the two recovered recon notes
+  beside it.
 * **A mid-turn stop overlay reaching `stop(id)` — P4, with the dashboard.** The
   measured consequence is recorded in §(m): during a delegation `chrome.py:746`
   routes any Enter to `steer()` as a **message**, including text starting with

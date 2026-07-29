@@ -9,7 +9,11 @@ anything. Every `file:line` in it was opened in the tree at `6d7ec9a`.
 
 > **Provenance note, stated rather than hidden.** The P3 recon dossier
 > (`p3-recon/dossier.md`), the baseline notes and `p3-recon/lane3-rpc.md` were written to a session
-> scratchpad that no longer exists on this machine — only `p3-decisions.md` survived. Every claim
+> scratchpad that no longer exists on this machine — only `p3-decisions.md` survived at the time of
+> writing. (Afterwards the two rpc-relevant lanes WERE recovered from the recon workflow's journal
+> and committed as `.omc/specs/rpc-sprint-recon-transport.md` and
+> `.omc/specs/rpc-sprint-recon-envelope.md`; the dossier itself was not, having already been folded
+> into this plan.) Every claim
 > below was therefore re-verified against the source tree directly, and every anchor is a line this
 > author opened. Where `p3-decisions.md` pins a dossier hazard by content (H2, H6, H8, H10, H12, H13,
 > H15) that content is reproduced and re-verified. Where a hazard ID is named in the brief but its
@@ -45,9 +49,9 @@ rather than partially. The scope split is coherent because items 1 and 2 do not 
 envelope, so ADR-0198's gate ("nothing depends on the rpc envelope until the parity test lands")
 does not bind them.
 
-**The deferred sprint's kickoff material is `p3-recon/lane3-rpc.md`.** It is named here so the sprint
-is *deferred, not forgotten*. Per `p3-decisions.md` S1 it already measured that the spec's premise for
-that phase is false:
+**The deferred sprint's kickoff material is `.omc/specs/rpc-sprint-kickoff-handoff.md`** and the two
+recon notes recovered beside it. It is named here so the sprint is *deferred, not forgotten*. The
+recon already measured that the spec's premise for that phase is false:
 
 * there is no real `--mode rpc`-child test bed today;
 * `rpc/rpc_client.py:466` launches `-m aelix` — the umbrella meta-package demo, not the agent;
@@ -55,9 +59,14 @@ that phase is false:
   no bounded stderr);
 * `agent_end` is not emitted on abort, on a failed prompt, or on a busy rejection.
 
-That file was in the same lost scratchpad. **The rpc sprint must begin by re-running that recon**;
-the four findings above are the checklist to re-confirm, and ADR-0199's *Deferred deliberately*
-section (§8) records them so they survive even if the file does not.
+That file was in the same lost scratchpad — but it was afterwards **recovered from the recon
+workflow's journal** (`~/.claude/projects/<proj>/subagents/workflows/<runId>/journal.jsonl` retains
+every agent's full return value under `result`) and committed as
+`.omc/specs/rpc-sprint-recon-transport.md`, alongside
+`.omc/specs/rpc-sprint-recon-envelope.md` and `.omc/specs/rpc-sprint-kickoff-handoff.md`. The four
+findings above remain the checklist to re-confirm — their anchors were taken against `6d7ec9a` —
+and ADR-0199's *Deferred deliberately* section (§8) records them so they survive even if the files
+do not.
 
 Also explicitly not in scope, and each is named in ADR-0199 so nobody reads it as a gap:
 
@@ -1829,8 +1838,8 @@ draft, which was itself a finding):
 **Deferred deliberately** (so none of it reads as a gap):
 
 * The long-lived `RpcChannel` and the cross-channel parity test — **its own sprint**; kickoff material
-  is `p3-recon/lane3-rpc.md`, whose four findings are reproduced in §1.2 of the plan because the file
-  itself was lost with a scratchpad.
+  is `.omc/specs/rpc-sprint-kickoff-handoff.md` plus the two recon notes recovered beside it, and the
+  four findings are reproduced in §1.2 of this plan as well.
 * Heterogeneous batches (`tasks: [{profile, task}]`) — P4 `aelix-team`.
 * The `SubagentProgress` correlation field — P4, exact shape in §3.6.
 * A mid-turn stop overlay reaching `stop(id)` — P4, with the dashboard.
