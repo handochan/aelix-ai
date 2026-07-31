@@ -445,6 +445,36 @@ def reduce_line(state: _StreamState, line: str) -> _StreamState:
         return state
     if not isinstance(event, dict):
         return state
+    return reduce_event(state, event)
+
+
+def reduce_event(state: _StreamState, event: dict[str, Any]) -> _StreamState:
+    """Fold one ALREADY-PARSED event into ``state``; return the same instance.
+
+    The same reducer as :func:`reduce_line` with the framing removed, and it
+    exists because the two channels hand their events over in different shapes:
+    the print channel reads raw stdout bytes and has a ``str`` per line, while
+    :class:`~aelix_coding_agent.rpc.rpc_client.RpcClient` has already called
+    ``json.loads`` and hands its listeners a ``dict``.
+
+    WITHOUT THIS SPLIT THE RPC PATH FAILS SILENTLY, which is why it is a
+    refactor and not a convenience. ``reduce_line``'s first statement is
+    ``line.strip()``, so a dict raises ``AttributeError`` immediately — and
+    ``RpcClient`` wraps every listener in ``contextlib.suppress(Exception)``.
+    The result would be that EVERY event is dropped, ``state`` stays empty, and
+    ``build_result`` reports the delegation as ``ok`` with the summary
+    ``"(no output)"``. A wrong answer, delivered confidently, with no error
+    anywhere. Re-serialising the dict just to re-parse it would have worked, but
+    it is wasteful and it hides the same trap one refactor away.
+
+    No field mapping is needed in either direction: both modes serialise the
+    same kernel dataclasses through ``dataclasses.asdict``, so the wire shapes
+    are identical (``rpc/rpc_mode.py``'s ``_event_to_dict`` and
+    ``modes/print_mode.py``'s namesake).
+
+    Same "NEVER raises" contract as :func:`reduce_line` — see its docstring for
+    what that cost to learn.
+    """
 
     kind = event.get("type")
     if kind == _AGENT_START:
@@ -472,5 +502,6 @@ __all__ = [
     "LineAssembler",
     "MAX_LINE_BYTES",
     "_StreamState",
+    "reduce_event",
     "reduce_line",
 ]

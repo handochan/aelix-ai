@@ -65,6 +65,7 @@ from aelix_agents.print_channel import (
     PrintChannel,
     RunningChild,
     SpawnPlan,
+    SubagentChannel,
     abort_child,
     resolve_child_cwd,
 )
@@ -295,7 +296,7 @@ class _SubagentRuntimeImpl:
     """
 
     host: SubagentHost
-    channel: PrintChannel = field(default_factory=PrintChannel)
+    channel: SubagentChannel = field(default_factory=PrintChannel)
     contract_version: int = CONTRACT_VERSION
 
     _children: dict[str, RunningChild] = field(default_factory=dict, init=False)

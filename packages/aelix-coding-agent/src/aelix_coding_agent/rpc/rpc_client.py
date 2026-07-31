@@ -81,6 +81,7 @@ import json
 import os
 import signal as _signal
 import sys
+import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
@@ -199,6 +200,36 @@ class RpcClientOptions:
     :class:`~aelix_coding_agent.rpc._jsonl.JsonlLineReader`.
     """
 
+    raise_on_command_error: bool = False
+    """Raise :class:`RpcClientError` when the server answers ``success: false``.
+
+    OFF by default because off IS pi. Measured at the pin: pi's ``send``
+    (``rpc-client.ts:474``) returns the raw response, and the throw lives in the
+    separate ``getData`` (``:506-508``) — so ``prompt`` / ``steer`` / ``abort``
+    and every other void-returning command call ``send`` alone and DISCARD a
+    server-side refusal. aelix ports that asymmetry faithfully.
+
+    It is faithful and it is a trap for an automated caller. The rpc server's
+    busy preflight refuses a second ``prompt`` with exactly this shape, and a
+    caller that discards it then waits for a terminator that will never come —
+    turning an immediate, correlated "no" into a full-budget timeout with a
+    misleading verdict. Unlike the ``agent_end`` terminator, this answer is
+    correlated by request id, so it PROVABLY belongs to the caller.
+
+    Anything driving a child unattended should turn this on.
+    """
+
+    send_timeout_ms: int | None = None
+    """Override :attr:`RpcClient.DEFAULT_SEND_TIMEOUT_MS` for this client.
+
+    The 30 s default is pi's, and it is dangerously close to a REAL child's
+    startup cost: a cold ``--mode rpc`` child measured ~25 s, of which ~18.6 s
+    is import time alone. The first command's ack cannot arrive until the child
+    reaches its read loop, so a caller spawning a real child is one slow disk
+    away from a spurious send timeout. Anything driving a real child should
+    raise this to its own budget.
+    """
+
     reader_limit: int | None = None
     """``StreamReader`` buffer ceiling passed to ``create_subprocess_exec``.
 
@@ -299,6 +330,52 @@ class RpcClient:
     def _stderr_cap(self) -> int:
         override = self._options.stderr_max_bytes
         return override if override is not None else self.STDERR_MAX_BYTES
+
+    def _send_timeout_s(self) -> float:
+        override = self._options.send_timeout_ms
+        ms = override if override is not None else self.DEFAULT_SEND_TIMEOUT_MS
+        return ms / 1000.0
+
+    async def wait_for_exit(self, timeout: float | None = None) -> int | None:
+        """Block until the child is gone. Returns its status, ``None`` on timeout.
+
+        Self-sufficient by design — it polls ``returncode`` itself rather than
+        leaning on :meth:`_watch_for_exit`'s event, so it still answers after
+        :meth:`stop` has torn the watcher down.
+
+        NOT ``proc.wait()``: that resolves only once every pipe is disconnected,
+        so a descendant holding the child's stdio keeps it pending long after
+        the process is gone. ``returncode`` is the independent signal.
+        """
+
+        proc = self._proc
+        if proc is None:
+            return None
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while proc.returncode is None:
+            if deadline is not None and time.monotonic() >= deadline:
+                return None
+            await asyncio.sleep(self.EXIT_POLL_SECONDS)
+        return proc.returncode
+
+    async def drain(self, timeout: float) -> None:
+        """Give the pumps a bounded chance to reach EOF. Never raises.
+
+        For the caller that kills a child mid-turn: the dying child's last
+        bytes are still in the pipe, and they are the partial answer worth
+        reporting. Bounded because a pump blocked on a pipe some survivor still
+        holds must not convert a finished delegation into a hang.
+        """
+
+        tasks = [
+            task
+            for task in (self._stdout_reader_task, self._stderr_reader_task)
+            if task is not None
+        ]
+        if not tasks:
+            return
+        with contextlib.suppress(Exception):
+            await asyncio.wait(tasks, timeout=timeout)
 
     # === Lifecycle =============================================================
 
@@ -425,7 +502,10 @@ class RpcClient:
                 transport.close()
 
         self._proc = None
-        self._stdout_reader = None
+        # The reader is deliberately NOT dropped: ``dropped_lines`` has to
+        # survive teardown or the delegation envelope, which is built after the
+        # child is gone, always reports zero. ``get_stderr()`` already outlives
+        # ``stop`` for the same reason, and the two should not disagree.
 
     async def close_stdin(self) -> None:
         """Send EOF on the command channel — the GRACEFUL shutdown.
@@ -971,13 +1051,18 @@ class RpcClient:
         try:
             await self._await_terminator(
                 future,
-                self.DEFAULT_SEND_TIMEOUT_MS / 1000.0,
+                self._send_timeout_s(),
                 f"response to {command.get('type')!r}",
             )
         except BaseException:
             self._pending_requests.pop(request_id, None)
             raise
-        return future.result()
+        response = future.result()
+        if self._options.raise_on_command_error and isinstance(
+            response, RpcErrorResponse
+        ):
+            raise RpcClientError(response.command, response.error)
+        return response
 
     def _unwrap(
         self, response: RpcSuccessResponse | RpcErrorResponse

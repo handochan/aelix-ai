@@ -67,7 +67,12 @@ from aelix_agents.consent import (
 )
 from aelix_agents.panel import PANEL_MIN_CHILDREN, PartialThrottle
 from aelix_agents.posture import child_permission_mode
-from aelix_agents.print_channel import AGENT_TOOL_NAME, PrintChannel, resolve_child_cwd
+from aelix_agents.print_channel import (
+    AGENT_TOOL_NAME,
+    PrintChannel,
+    SubagentChannel,
+    resolve_child_cwd,
+)
 from aelix_agents.progress import SubagentProgressBridge
 from aelix_agents.prompt_file import sweep_stale_prompt_dirs
 from aelix_agents.runtime import (
@@ -202,7 +207,7 @@ class AgentsExtension:
     VISIBLE, not usable (``resolve_profile`` still refuses them for the model
     door), but the conservative direction is still the right default."""
 
-    channel: PrintChannel = field(default_factory=PrintChannel)
+    channel: SubagentChannel = field(default_factory=PrintChannel)
 
     _pending: dict[str, PendingSpawn] = field(default_factory=dict, init=False)
     """``tool_call_id`` → the approved spawn. Popped with a ``None`` default in
