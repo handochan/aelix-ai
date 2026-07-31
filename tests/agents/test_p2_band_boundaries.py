@@ -103,7 +103,7 @@ _PRODUCT_CORE_CAP_ALLOWLIST = frozenset(
         "DEFAULT_WAIT_FOR_IDLE_MS",  # rpc/rpc_client.py — pre-P2, rpc plumbing
         "SHUTDOWN_SIGTERM_TIMEOUT_MS",  # rpc/rpc_client.py — pre-P2, rpc plumbing
         "STARTUP_GRACE_MS",  # rpc/rpc_client.py — pre-P2, rpc plumbing
-        # ADR-0200 added NO entry here, deliberately. The RPC sprint needed a
+        # ADR-0201 added NO entry here, deliberately. The RPC sprint needed a
         # per-line framing budget and a reader limit, and every idiomatic name
         # for either trips ``_CAP_NAME_RE``. Both workarounds are wrong: a name
         # that hides what the constant is defeats the gate that exists to catch
@@ -228,7 +228,7 @@ def test_kernel_has_no_subagent_surface() -> None:
 # weakening: the gate below still fires on every kernel file that is not on
 # this list, which is the unreviewed edit it exists to catch.
 #
-# ``harness/core.py`` — RPC sprint, ADR-0200 §D3. The turn terminator: an
+# ``harness/core.py`` — RPC sprint, ADR-0201 §D3. The turn terminator: an
 # aborted turn emitted
 # NO terminal event, so every ``agent_end``-waiting parent (``RpcClient.
 # prompt_and_wait``) hung for its full 60 s, and any exception that was not an

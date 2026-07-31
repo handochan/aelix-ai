@@ -162,14 +162,21 @@ DocumentVerifier = Callable[[bytes, "bytes | None", str], object]
 
 
 def resolve_default_catalog_url() -> str | None:
-    """The built-in default catalog URL, or :data:`None` when disabled / dormant.
+    """The built-in default catalog URL, or :data:`None` when disabled.
 
     Priority: the ``AELIX_DEFAULT_CATALOG`` env var overrides :data:`DEFAULT_CATALOG_URL`
     — an enterprise repoints the default, or kills it for this run with an empty
-    value. A blank / whitespace result → :data:`None`. In beta the placeholder is
-    empty, so with no env override this returns :data:`None` (dormant — mechanism
-    only). The returned string is RAW; the caller (``extension_install``) normalizes
-    it via ``_normalize_catalog_spec`` before use.
+    value. A blank / whitespace result → :data:`None`.
+
+    :data:`DEFAULT_CATALOG_URL` is a LIVE https location (the official marketplace
+    catalog on GitHub Pages), not an empty placeholder, so with no env override
+    this returns that URL and the built-in default is ACTIVE — ``discover`` fetches
+    it unless the user opted out (``source remove <default>`` tombstone) or is
+    ``--offline``. The catalog itself may legitimately be empty
+    (``{"extensions": []}``); that is a successful fetch, not a dormant mechanism.
+
+    The returned string is RAW; the caller (``extension_install``) normalizes it via
+    ``_normalize_catalog_spec`` before use.
     """
 
     raw = os.environ.get(DEFAULT_CATALOG_ENV)

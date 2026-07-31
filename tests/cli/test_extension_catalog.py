@@ -19,6 +19,7 @@ from pathlib import Path
 
 import pytest
 from aelix_coding_agent.cli import extension_catalog as ec
+from aelix_coding_agent.cli import extension_install as ei
 
 
 @pytest.fixture(autouse=True)
@@ -929,3 +930,143 @@ def test_clean_error_scrubs_control_and_escape_chars() -> None:
     assert isinstance(cleaned, str) and "forged" in cleaned
     # An all-control error still yields a (possibly empty) string, never None.
     assert ec._clean_error("\x1b\x00\x07") == ""
+
+
+# =====================================================================
+# === #111 A-1 — the built-in default catalog must CLASSIFY as a catalog
+# =====================================================================
+#
+# ``classify_target`` used to test ``".git" in url`` as a bare SUBSTRING over the
+# WHOLE url, so the HOST ``handochan.``**``git``**``hub.io`` matched and the built-in
+# default catalog was rewritten to ``git+https://…/catalog.json``: ``discover
+# --refresh`` git-cloned a JSON document and exited 2. The default catalog is the only
+# registered source and is default-on, so marketplace discover was 100% dead out of
+# the box. These tests pin the repaired PATH-anchored rule against the REAL constant.
+
+
+def test_default_catalog_url_classifies_as_a_plain_url_not_git() -> None:
+    # Imported, never retyped: if the constant later moves to another host shape this
+    # test must move with it (a hand-typed github.io literal would keep passing while
+    # the shipped default broke again).
+    assert ei.classify_target(ec.DEFAULT_CATALOG_URL) == "pypi"
+    assert ei.classify_source(ec.DEFAULT_CATALOG_URL) == "index"
+    # And the host really is the trap: it contains ".git" as a substring.
+    assert ".git" in ec.DEFAULT_CATALOG_URL
+
+
+def test_default_catalog_url_normalizes_verbatim_with_no_git_prefix() -> None:
+    # End-to-end: the stored catalog spec is the URL byte-for-byte — no ``git+``.
+    spec = ei._normalize_catalog_spec(ec.DEFAULT_CATALOG_URL)
+    assert spec == ec.DEFAULT_CATALOG_URL
+    assert not spec.startswith("git+")
+    # …and the identity (tombstone / dedupe key) is that same stable string.
+    identity = ei._catalog_identity(ec.DEFAULT_CATALOG_URL)
+    assert identity == ec.DEFAULT_CATALOG_URL
+    assert ei._catalog_identity(identity) == identity  # idempotent
+
+
+def test_effective_default_identity_is_the_live_default_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # With no env override the built-in default is ACTIVE and carries the clean https
+    # identity (the suite-wide conftest guard empties the env var; delenv restores the
+    # shipped value).
+    monkeypatch.delenv(ec.DEFAULT_CATALOG_ENV, raising=False)
+    assert ei._effective_default_identity() == ec.DEFAULT_CATALOG_URL
+
+
+@pytest.mark.parametrize(
+    ("target", "expected"),
+    [
+        # http(s) URLs whose PATH does not end in ``.git`` → a plain URL.
+        ("https://raw.githubusercontent.com/o/r/main/catalog.json", "pypi"),
+        ("https://foo.github.io/x.json", "pypi"),
+        ("https://github.io/catalog.json", "pypi"),
+        ("https://git.example.com/catalog.json", "pypi"),
+        ("https://host/a.github.io/b.json", "pypi"),
+        # http(s) URLs whose PATH ends in ``.git`` → git, incl. the forms plain
+        # ``endswith`` misses (that is why the clause is repaired, not deleted).
+        ("https://github.com/o/r.git", "git"),
+        ("https://github.com/o/r.git/", "git"),
+        ("https://github.com/o/r.git?ref=main", "git"),
+        ("https://github.com/o/r.git#egg=x", "git"),
+        ("https://github.com/o/r.git@" + "a" * 40, "git"),
+        ("HTTPS://GitHub.com/o/R.GIT", "git"),
+        # Non-http git shapes are untouched by the repair.
+        ("git+https://github.com/o/r.git", "git"),
+        ("git+https://github.com/o/r", "git"),
+        ("ssh://git@host/o/r.git", "git"),
+        ("git@host:o/r.git", "git"),
+        ("git://host/o/r.git", "git"),
+        ("host/o/r.git", "git"),
+        # Ordinary pypi specs.
+        ("pkg", "pypi"),
+        ("pkg==1.2", "pypi"),
+        ("pkg[extra]", "pypi"),
+    ],
+)
+def test_classify_target_acceptance_table(target: str, expected: str) -> None:
+    assert ei.classify_target(target) == expected
+
+
+# --- regression: the ``@<rev>`` strip must be TRAILING-ONLY ---------------
+#
+# The repair stripped pip's revision pin with ``path.split("@", 1)[0]``, which cuts at
+# the FIRST ``@`` ANYWHERE in the path. Any ordinary git URL whose path merely CONTAINS
+# one — a ``team@eu`` org segment, a ``~user@dept`` home, a ``r@1.git`` version tag —
+# lost its ``.git`` suffix and was misrouted to ``pypi``: ``pip install <the raw url>``
+# instead of ``git+…``, and on the catalog side an https GET instead of a clone.
+# Measured against main, these rows were git BEFORE the repair and pypi after it.
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        # the four confirmed rows
+        "https://gitea.corp/team@eu/ext.git/",
+        "https://gitea.corp/team@eu/ext.git?ref=main",
+        "https://gitea.corp/team@eu/ext.git",
+        "https://h/o/r.git@abc123",
+        # the rest of the differential's regression bucket
+        "https://git.corp/o/r@1.git/",
+        "https://git.corp/o/r@1.git?ref=main",
+        "https://git.corp/o/r@1.git#egg=x",
+        "https://git.corp/o/r@1.git@" + "b" * 40,
+        "https://git.corp/~alice@dept/r.git/",
+        "https://git.corp/t@e/a@b/ext.git/",
+        "https://host/x.git/@",
+    ],
+)
+def test_an_at_sign_inside_the_path_never_truncates_the_git_suffix(url: str) -> None:
+    assert ei.classify_target(url) == "git"
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        # ``.git`` only in the NETLOC — the #111 A-1 fix itself.
+        "https://handochan.github.io/aelix-marketplace/catalog.json",
+        "https://x.github.io/team@eu/catalog.json",
+        # ``.git`` in a non-final path segment / a non-suffix position.
+        "https://h/a.git/b",
+        "https://h/.git/config",
+        "https://h/x.gitignore",
+        "https://h/foo.git.json",
+        # ``@`` present but the strip does NOT expose a ``.git`` suffix.
+        "https://h/o/pkg@1.2.3",
+        "https://h/team@eu/catalog.json",
+    ],
+)
+def test_a_trailing_at_strip_is_only_accepted_when_it_exposes_dot_git(url: str) -> None:
+    assert ei.classify_target(url) == "pypi"
+
+
+def test_bare_git_url_with_revision_still_pins_its_sha() -> None:
+    # The ``@<rev>`` strip must not cost the revision: a bare (no ``git+``)
+    # ``…/r.git@<sha>`` still normalizes to a pip VCS spec that keeps the sha.
+    sha = "a" * 40
+    target = f"https://github.com/o/r.git@{sha}"
+    assert ei.classify_target(target) == "git"
+    spec = ei._normalize_git_spec(target)
+    assert spec == f"git+https://github.com/o/r.git@{sha}"
+    assert ei._extract_git_sha(spec) == sha

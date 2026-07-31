@@ -22,7 +22,6 @@ import asyncio
 import contextlib
 import logging
 import os
-import shutil
 import signal
 import subprocess
 import sys
@@ -1229,11 +1228,14 @@ async def run_tui(
         def _default_catalog() -> tuple[str, bool] | None:
             # Track D (guard ③ / ADR-0192) — surface the built-in default catalog
             # as a marked Sources row. Compute the effective default identity (env
-            # repoint → placeholder → normalized) + its persisted opt-out state,
-            # mirroring the CLI ``source list``. Dormant in beta (empty placeholder
-            # → None → no row). Computed live so a repoint / CLI opt-out during the
-            # session shows on the next open. Injected as a value so the leaf viewer
-            # never imports the install/merge machinery.
+            # repoint → built-in DEFAULT_CATALOG_URL → normalized) + its persisted
+            # opt-out state, mirroring the CLI ``source list``. The built-in default
+            # is WIRED (extension_catalog.DEFAULT_CATALOG_URL points at the aelix
+            # marketplace catalog.json), so this normally yields a row; it is None
+            # only when the user opts out via an empty AELIX_DEFAULT_CATALOG or the
+            # value fails to normalize. Computed live so a repoint / CLI opt-out
+            # during the session shows on the next open. Injected as a value so the
+            # leaf viewer never imports the install/merge machinery.
             if settings_manager is None:
                 return None
             default_id = extension_install._effective_default_identity()
@@ -1266,7 +1268,8 @@ async def run_tui(
             ),
             # Track D (guard ③, ADR-0192) — the injected built-in default catalog
             # value (url + persisted opt-out state), rendered as a marked Sources
-            # row. None when no SettingsManager / dormant beta placeholder.
+            # row. None when no SettingsManager, or when the user disabled the
+            # built-in default via an empty AELIX_DEFAULT_CATALOG.
             default_catalog_getter=(
                 _default_catalog if settings_manager is not None else None
             ),
@@ -2151,13 +2154,7 @@ def _build_banner(harness: AgentHarness, cwd: str) -> object:
     from rich.console import Group
     from rich.panel import Panel
 
-    from aelix_coding_agent.tui._logo import (
-        LOGO_ANSI,
-        LOGO_ANSI_NARROW,
-        LOGO_TAGLINE,
-        LOGO_TAGLINE_NARROW,
-        LOGO_WIDTH,
-    )
+    from aelix_coding_agent.tui._logo import LOGO_ANSI, LOGO_TAGLINE, LOGO_TITLE
 
     model = getattr(harness, "current_model", None)
     model_id = getattr(model, "id", None) or "unknown"
@@ -2173,17 +2170,12 @@ def _build_banner(harness: AgentHarness, cwd: str) -> object:
     except Exception:  # noqa: BLE001 — banner must never raise
         version = "unknown"
 
-    # Brand block-art, generated from docs/assets/brand/*.svg by
-    # scripts/generate_logo_art.py. Text.from_ansi renders the embedded 24-bit
-    # truecolor SGR escapes — no style= override, so the strand gradient shows.
-    # Every cell carries a foreground colour only, so a no-color terminal still
-    # prints the exact silhouette rather than solid blocks. The art itself
-    # spells "Aelix", so the positioning tagline follows it without repeating
-    # the name. Terminals too narrow for the lockup get the mark alone.
-    columns = shutil.get_terminal_size(fallback=(80, 24)).columns
-    wide = columns >= LOGO_WIDTH
-    logo = Text.from_ansi(LOGO_ANSI if wide else LOGO_ANSI_NARROW)
-    logo.append(f"\n {LOGO_TAGLINE if wide else LOGO_TAGLINE_NARROW}", style="dim")
+    # Gradient block-art (ADR-0164): Text.from_ansi renders the embedded 24-bit
+    # truecolor SGR escapes (cyan → blue → purple) — no style= override so the
+    # gradient shows; degrades cleanly on no-color terminals.
+    logo = Text.from_ansi(LOGO_ANSI)
+    logo.append(f"\n {LOGO_TITLE}\n", style="bold")
+    logo.append(f" {LOGO_TAGLINE}", style="dim")
 
     # === runtime summary =================================================
     # The body is assembled AFTER the section labels are computed (below) so the
@@ -2432,11 +2424,15 @@ async def _input_loop(
         if parsed.kind == "empty":
             continue
         if parsed.kind == "reload":
-            # Issue #24 — DORMANT FLIP POINT. Default-OFF keeps the cheap
-            # resources-discover refresh; when AELIX_RELOAD_REBUILD is on, route
-            # through the full factory-rebuild reload (re-discovers on-disk
-            # extensions, no restart). runtime.reload() wait_for_idle()s and the
-            # input loop is serialized, so no extra mid-turn guard is needed.
+            # Issue #24 / #53 — LIVE BY DEFAULT (go-live, ADR-0177). With
+            # AELIX_RELOAD_REBUILD unset, `_reload_rebuild_enabled()` is True, so
+            # /reload routes through the full factory-rebuild reload: it
+            # re-discovers on-disk extensions, meaning an agent-written extension
+            # goes live WITHOUT a process restart (the #53 moat). Setting
+            # AELIX_RELOAD_REBUILD to a falsy value (0/false/no/off) is the
+            # kill-switch that falls back to the cheap resources-discover
+            # refresh. runtime.reload() wait_for_idle()s and the input loop is
+            # serialized, so no extra mid-turn guard is needed.
             if _reload_rebuild_enabled():
                 await runtime_host.reload()
             else:

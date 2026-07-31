@@ -632,3 +632,19 @@ def test_print_help_says_path_for_skill_and_extension() -> None:
     assert "--extension, -e <path>" in text
     assert "--skill <name>" not in text
     assert "--extension, -e <name>" not in text
+
+
+def test_print_help_lists_extension_discover_subcommands() -> None:
+    """Issue #116 narrative 3 — ``extension discover`` and its ``install``
+    subcommand were listed by ``aelix extension --help``
+    (``cli/extension_install.py`` ``_USAGE``) but MISSING from the top-level
+    ``--help`` Subcommands block, so the catalog-browsing entry point was
+    invisible to anyone reading the main help."""
+    buf = io.StringIO()
+    print_help(buf)
+    text = buf.getvalue()
+    subcommands = text.split("Subcommands:")[1].split("File arguments:")[0]
+    assert "extension discover [<query>]" in subcommands
+    assert "extension discover install" in subcommands
+    # The flags the discover subcommand actually accepts are advertised too.
+    assert "--no-default-catalog" in subcommands

@@ -51,6 +51,22 @@ source-level ``y/N`` consent REMAINS the sole execution-trust boundary. Default
 ``tofi`` covers path artifacts + pinned git SHAs; pypi two-phase download-verify is
 opt-in (``--verify-pypi`` / ``--strict``) in v1 pending real-index integration
 testing (#61). Ed25519 provenance is a deferred, forward-compatible seam.
+
+Issue #113 replaces the hardcoded ``sys.executable -m pip`` assumption with an
+:class:`InstallBackend` (:func:`resolve_install_backend`). The official install path
+is ``uv tool install``, whose venv ships **without pip**, so every install/update/
+remove aborted before the consent prompt for anyone who followed the README. pip is
+still preferred (it alone can ``download``, hence verify); ``uv pip … --python
+<interp>`` is the install/uninstall-only fallback, and a pypi verification request
+that the uv backend cannot execute REFUSES rather than installing unverified.
+
+Two hardening rules ride along with that fallback, because the uv backend is the
+DEFAULT on the official install path and must therefore meet pip's security bar:
+the ``uv`` executable is only ever accepted as an ABSOLUTE path (a relative
+``shutil.which`` hit would let a cwd binary run as the installer), and pip's
+ambient index configuration — which uv does not read — is translated into explicit
+``--index-url`` / ``--extra-index-url`` flags so an org's mirror pin survives the
+switch instead of silently falling back to public PyPI.
 """
 
 from __future__ import annotations
@@ -61,14 +77,17 @@ import importlib.metadata
 import importlib.util
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
 import tempfile
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
+from urllib.parse import urlparse, urlsplit, urlunsplit
 
 from . import extension_catalog, extension_pins, extension_signing
 from .config import get_agent_dir
@@ -126,6 +145,8 @@ PipRunner = Callable[[list[str]], "subprocess.CompletedProcess[bytes]"]
 
 __all__ = [
     "ENTRY_POINT_GROUP",
+    "AmbientIndexConfig",
+    "InstallBackend",
     "InstalledExtension",
     "PipRunner",
     "SourceKind",
@@ -134,10 +155,15 @@ __all__ = [
     "build_pip_args",
     "classify_source",
     "classify_target",
+    "display_argv",
     "install_extension",
     "list_installed_extensions",
+    "read_pip_index_config",
+    "resolve_install_backend",
     "run_extension_command",
     "run_extension_command_async",
+    "uv_ambient_index_config",
+    "uv_ambient_index_env",
     "verify_and_pin",
 ]
 
@@ -152,9 +178,23 @@ def classify_target(target: str) -> TargetKind:
     """Classify an install target as a local path, a git URL, or a pypi spec.
 
     A local path WINS if it exists on disk (so ``./my-ext`` beats any URL
-    heuristic); otherwise git-URL shapes (``git+…`` / ``ssh://`` / ``git@`` /
-    ``.git`` / an http(s) URL containing ``.git``) classify as git; everything
-    else is a pypi package spec (``name`` / ``name==1.2`` / ``name[extra]``).
+    heuristic); otherwise git-URL shapes classify as git:
+
+    * a ``git+…`` VCS spec, or a ``git://`` / ``ssh://`` / ``git@`` transport;
+    * anything ending in ``.git`` (the common ``https://host/o/r.git`` form);
+    * an http(s) URL whose **PATH** ends in ``.git`` once pip's ``@<rev>`` suffix
+      and any trailing slash are stripped — so ``…/r.git/`` (trailing slash),
+      ``…/r.git?ref=main`` (query), ``…/r.git@<sha>`` (pinned revision) and
+      ``…/r.git#egg=x`` (fragment) are all git.
+
+    Everything else is a pypi package spec (``name`` / ``name==1.2`` /
+    ``name[extra]``).
+
+    The http(s) test is anchored to the parsed PATH and never sees the netloc.
+    A bare ``".git" in url`` substring test used to match the HOST too, so every
+    catalog served from a ``*.github.io`` host — including
+    :data:`extension_catalog.DEFAULT_CATALOG_URL` — was misrouted to ``git`` and
+    the built-in marketplace catalog was 100% unfetchable (#111 A-1).
     """
 
     if target.strip() and Path(target).expanduser().exists():
@@ -164,18 +204,49 @@ def classify_target(target: str) -> TargetKind:
         target.startswith("git+")
         or low.startswith(("git://", "ssh://", "git@"))
         or low.endswith(".git")
-        or (low.startswith(("http://", "https://")) and ".git" in low)
+        or _http_url_path_is_git(low)
     ):
         return "git"
     return "pypi"
+
+
+def _http_url_path_is_git(low: str) -> bool:
+    """True when ``low`` is an http(s) URL whose PATH (not host) ends in ``.git``.
+
+    Anchoring on the parsed path is the whole point: a bare ``".git" in url``
+    substring test also matched the HOST, misrouting every ``*.github.io`` catalog —
+    the built-in default among them — to a git clone (#111 A-1). ``urlparse`` drops
+    the query string and the ``#egg=…`` fragment for us; the trailing slash and pip's
+    ``@<rev>`` suffix are stripped here so ``…/r.git/``, ``…/r.git?ref=main`` and
+    ``…/r.git@<sha>`` all still read as git.
+
+    The ``@<rev>`` strip is deliberately a TRAILING-only one: a ``path.split("@", 1)``
+    truncates at the FIRST ``@`` anywhere in the path, so a perfectly ordinary git URL
+    whose path merely CONTAINS one — ``https://gitea.corp/team@eu/ext.git/``, a
+    ``~user@dept`` path, a ``…/r@1.git`` version-tagged segment — lost its ``.git``
+    suffix and was misrouted to ``pypi`` (``pip install <the raw url>`` instead of
+    ``git+…``, and on the catalog side an https GET instead of a clone). Splitting off
+    the LAST ``@`` and accepting the strip ONLY when it exposes ``.git`` keeps the
+    revision-pin case working without touching any other ``@``.
+    """
+
+    if not low.startswith(("http://", "https://")):
+        return False
+    path = urlparse(low).path.rstrip("/")
+    if path.endswith(".git"):
+        return True
+    head, sep, _rev = path.rpartition("@")
+    return bool(sep) and head.rstrip("/").endswith(".git")
 
 
 def classify_source(target: str) -> SourceKind | None:
     """Classify a ``source add`` target as ``path`` / ``git`` / ``index``.
 
     Reuses :func:`classify_target`'s path + git heuristics, then maps a *plain*
-    http(s) URL (one :func:`classify_target` would call ``pypi`` because it has
-    no ``.git``) to ``index`` — a pip package index. Returns :data:`None` for a
+    http(s) URL (one :func:`classify_target` would call ``pypi`` because its
+    PATH does not end in ``.git``) to ``index`` — a pip package index. That is
+    the branch a catalog URL such as :data:`extension_catalog.DEFAULT_CATALOG_URL`
+    takes. Returns :data:`None` for a
     bare token / empty string: a *source* must be a path, a git URL, or an index
     URL — a bare package name is an install TARGET, not a source to register.
     """
@@ -243,16 +314,31 @@ def build_pip_args(
     index_url: str | None = None,
     extra_index_urls: Iterable[str] | None = None,
     upgrade: bool = False,
+    backend: InstallBackend | None = None,
 ) -> list[str]:
-    """Build the ``python -m pip install …`` argv for a classified target.
+    """Build the install argv for a classified target, in ``backend``'s dialect.
 
     ``index_url`` / ``extra_index_urls`` apply to a ``pypi`` target only (a
     bare-name install resolved against registered index sources — the first
     index becomes ``--index-url``, the rest ``--extra-index-url``). ``upgrade``
     adds ``--upgrade`` (used by ``extension update``).
+
+    ``backend`` defaults to :data:`PIP_BACKEND` (``python -m pip install …``);
+    the ``uv`` backend swaps only the PREFIX (``uv pip install --python <interp>``)
+    — every *flag* after it is spelled identically by both, which is what makes one
+    builder serve both (#113).
+
+    The flags match, but the ambient CONFIGURATION each tool reads does not: pip
+    honors ``PIP_INDEX_URL`` / ``PIP_EXTRA_INDEX_URL`` / ``pip.conf``, uv honors none
+    of them. That translation is real but it does NOT happen here: an ambient index
+    URL routinely carries a basic-auth password (the standard Nexus/Artifactory form)
+    and argv is world-readable, so the uv backend receives it through the ENVIRONMENT
+    instead (:func:`uv_ambient_index_env`). This builder's output therefore contains
+    only values the user typed — and is byte-identical to the pre-#113 pip argv for
+    the pip backend.
     """
 
-    base = [sys.executable, "-m", "pip", "install"]
+    base = (backend or PIP_BACKEND).install_prefix()
     if upgrade:
         base.append("--upgrade")
     if kind == "path":
@@ -260,10 +346,11 @@ def build_pip_args(
     if kind == "git":
         return [*base, _normalize_git_spec(target)]
     # pypi
+    extras = list(extra_index_urls or ())
     args = [*base, target]
     if index_url:
         args += ["--index-url", index_url]
-    for extra in extra_index_urls or ():
+    for extra in extras:
         args += ["--extra-index-url", extra]
     return args
 
@@ -296,24 +383,659 @@ def _is_offline_fetchable(loc: str) -> bool:
     return not ("://" in low or low.startswith(("git+", "git@", "ssh://")))
 
 
-def _pip_available(runner: PipRunner | None) -> bool:
-    """True when the DEFAULT runner can invoke pip on this interpreter.
+# =====================================================================
+# === #113: the installer BACKEND (pip preferred, uv fallback) =========
+# =====================================================================
 
-    A missing pip makes ``python -m pip`` exit nonzero WITHOUT raising, so a
-    returncode check would mislabel it as an install failure (review LOW).
-    Skipped when a custom runner is injected (tests / an alt package manager).
-    uv-managed venvs often ship without pip — hence the actionable hint at the
-    call site.
+#: The package managers that can install into the RUNNING interpreter's env.
+BackendName = Literal["pip", "uv"]
+
+
+@dataclass(frozen=True)
+class InstallBackend:
+    """How aelix drives a package manager against ``sys.executable``'s environment.
+
+    The official install path is ``uv tool install`` (``install.sh``), and a **uv
+    tool venv ships WITHOUT pip** — so ``python -m pip`` is simply absent for
+    everyone who followed the README, and every ``extension install`` / ``update``
+    / ``discover install`` aborted before the consent prompt (#113).
+
+    Two implementations, selected by :func:`resolve_install_backend`:
+
+    * ``pip`` — FULL capability: install, uninstall, and the ``pip download``
+      half of the #64 two-phase pypi verify gate. Preferred whenever
+      ``importlib.util.find_spec("pip")`` resolves.
+    * ``uv`` — install + uninstall ONLY, via ``uv pip … --python <interp>``.
+      Selected when pip is absent and a ``uv`` executable is on PATH.
+
+    The asymmetry is real, not conservatism: ``uv pip`` offers
+    compile/sync/install/uninstall/freeze/list/show/tree/check and has **no
+    ``download`` subcommand** (verified against the shipped uv 0.11.14), so the
+    "fetch the closure → hash it → install the verified bytes" flow that
+    :func:`build_download_args` implements cannot be reproduced. A verification
+    that cannot run must FAIL CLOSED — see :func:`uv_pypi_verify_unsupported`.
+
+    ``uv_path`` is REQUIRED and must be ABSOLUTE for the ``uv`` backend. The pip
+    backend shells out to ``sys.executable``, which is always absolute; a uv
+    backend carrying a bare name (or a relative hit from a ``.``/empty/relative
+    ``PATH`` entry, which ``shutil.which`` happily returns) would let a file in the
+    current working directory be executed as the installer — CWE-426, untrusted
+    search path, triggered merely by ``cd``-ing into a cloned repo. The invariant is
+    enforced here so no code path can construct a PATH-searched backend.
     """
 
-    return runner is not None or importlib.util.find_spec("pip") is not None
+    name: BackendName
+    #: Absolute path to the ``uv`` executable — REQUIRED for the ``uv`` backend.
+    uv_path: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.name != "uv":
+            return
+        if not self.uv_path or not os.path.isabs(self.uv_path):
+            raise ValueError(
+                "InstallBackend(name='uv') requires an ABSOLUTE uv_path; got "
+                f"{self.uv_path!r}. A bare or relative program name would be "
+                "resolved against PATH (and therefore against the current working "
+                "directory for a `.`/empty/relative PATH entry) at exec time."
+            )
+
+    @property
+    def supports_download(self) -> bool:
+        """True when this backend can fetch a dependency closure into a directory.
+
+        ``pip download`` only. Gates the pypi half of :func:`verify_and_pin`.
+        """
+
+        return self.name == "pip"
+
+    @property
+    def label(self) -> str:
+        """A short human name for messages (``pip`` / ``uv``)."""
+
+        return self.name
+
+    def install_prefix(self) -> list[str]:
+        """The argv prefix that installs into this interpreter's environment."""
+
+        if self.name == "uv":
+            # __post_init__ guarantees an absolute uv_path — never a PATH lookup.
+            return [str(self.uv_path), "pip", "install", "--python", sys.executable]
+        return [sys.executable, "-m", "pip", "install"]
+
+    def uninstall_args(self, dist: str) -> list[str]:
+        """The argv that uninstalls ``dist`` from this interpreter's environment.
+
+        ``uv pip uninstall`` never prompts, so it takes no ``-y`` (passing one
+        would be an unknown-flag error); pip's ``-y`` stays required.
+        """
+
+        if self.name == "uv":
+            return [
+                str(self.uv_path),
+                "pip",
+                "uninstall",
+                "--python",
+                sys.executable,
+                dist,
+            ]
+        return [sys.executable, "-m", "pip", "uninstall", "-y", dist]
 
 
-def _pip_missing_message() -> str:
+#: The canonical full-capability backend (also what an injected runner implies).
+PIP_BACKEND = InstallBackend(name="pip")
+
+
+# ---------------------------------------------------------------------
+# --- ambient index configuration: pip reads it, uv does not ----------
+# ---------------------------------------------------------------------
+
+#: uv's OWN index environment. When any of these is set the user has configured
+#: uv deliberately, so aelix does not overlay pip's ambient config on top of it.
+#: ``UV_CONFIG_FILE`` / ``UV_NO_INDEX`` / ``UV_FIND_LINKS`` count too: each one is a
+#: deliberate uv resolution decision that a translated pip value would override.
+_UV_INDEX_ENV = (
+    "UV_INDEX",
+    "UV_INDEX_URL",
+    "UV_DEFAULT_INDEX",
+    "UV_EXTRA_INDEX_URL",
+    "UV_CONFIG_FILE",
+    "UV_NO_INDEX",
+    "UV_FIND_LINKS",
+)
+
+#: Keys in a ``uv.toml`` / ``[tool.uv]`` table that constitute uv's own index config.
+_UV_CONFIG_INDEX_KEYS = (
+    "index",
+    "index-url",
+    "extra-index-url",
+    "default-index",
+    "find-links",
+    "no-index",
+)
+
+#: The uv env vars aelix SETS on the child so a translated pip index never has to be
+#: spelled on argv (``/proc/<pid>/cmdline`` is world-readable; an environment block is
+#: not). They are the exact env equivalents of ``--index-url`` / ``--extra-index-url``.
+_UV_TRANSLATED_INDEX_ENV = "UV_INDEX_URL"
+_UV_TRANSLATED_EXTRA_INDEX_ENV = "UV_EXTRA_INDEX_URL"
+
+#: pip config keys that select an index, normalized (``_`` → ``-``, ``--`` stripped).
+_PIP_INDEX_KEY = "index-url"
+_PIP_EXTRA_INDEX_KEY = "extra-index-url"
+
+#: pip resolves config in SECTION order — ``[global]``, then the command's own
+#: section, then the environment — over the already-merged cross-file dictionary.
+#: ``"env"`` is a synthetic section standing in for ``PIP_*`` (highest).
+_PIP_CONFIG_SECTIONS = ("global", "install")
+_PIP_ENV_SECTION = "env"
+
+
+@dataclass(frozen=True)
+class AmbientIndexConfig:
+    """pip's ambient index settings, as configuration the uv backend can be given.
+
+    ``origin`` names where the winning ``index_url`` came from (an env var or a
+    config file path) so a refusal/notice can be specific.
+    """
+
+    index_url: str | None = None
+    extra_index_urls: tuple[str, ...] = ()
+    origin: str | None = None
+
+    def __bool__(self) -> bool:
+        return self.index_url is not None or bool(self.extra_index_urls)
+
+
+def _is_index_url(value: str) -> bool:
+    """True when ``value`` is a usable index URL — the ONLY shape allowed to escape.
+
+    An ambient index value is attacker-influenced input (anything that can write a
+    ``pip.conf`` on a candidate path, or export ``XDG_CONFIG_HOME``, chooses it), and
+    it reaches both a subprocess environment and the consent block — the module's sole
+    trust boundary. ``configparser`` joins indented continuation lines with ``\\n``, so
+    an unvalidated value could inject whole extra LINES into the consent block: a
+    forged ``Proceed? [y/N] y`` plus a decoy argv line naming an innocuous index. A
+    strict "printable, and parses as an http(s)/file URL with a host" test drops that
+    class outright instead of trying to escape it after the fact.
+    """
+
+    v = value.strip()
+    if not v or not v.isprintable():
+        return False
+    parsed = urlparse(v)
+    if parsed.scheme in ("http", "https"):
+        return bool(parsed.netloc)
+    return parsed.scheme == "file" and bool(parsed.path)
+
+
+def _redact_auth(value: str) -> str:
+    """``https://user:pw@host/x`` → ``https://user:****@host/x`` (pip's own rule).
+
+    A port of ``pip._internal.utils.misc.redact_auth_from_url``: a password becomes
+    ``****`` and a bare username becomes ``****`` outright. Non-URL argv elements pass
+    through untouched. Corporate Nexus/Artifactory mirrors carry basic-auth IN the
+    URL, so any index value that reaches the screen must go through here first.
+    """
+
+    try:
+        split = urlsplit(value)
+    except ValueError:
+        return value
+    if not split.netloc or "@" not in split.netloc:
+        return value
+    userinfo, _, host = split.netloc.rpartition("@")
+    if not userinfo:
+        return value
+    user, sep, _password = userinfo.partition(":")
+    redacted = f"{user}:****@{host}" if sep else f"****@{host}"
+    return urlunsplit(split._replace(netloc=redacted))
+
+
+def _printable(value: str) -> str:
+    """Escape control characters so an argv element cannot PAINT extra lines.
+
+    ``shlex.quote`` stops a shell breakout but a raw ``\\n`` still moves the cursor:
+    the consent block would show a forged ``Proceed? [y/N] y`` on its own line. ``\\x1b``
+    is worse — it can repaint the whole screen. Only non-printables are touched, so
+    ordinary non-ASCII text survives intact.
+    """
+
+    if value.isprintable():
+        return value
+    return "".join(
+        c if c.isprintable() else c.encode("unicode_escape").decode("ascii")
+        for c in value
+    )
+
+
+def display_argv(args: Iterable[str]) -> str:
+    """Render an argv for the consent block: credentials redacted, elements quoted.
+
+    :func:`_redact_auth` keeps a basic-auth password out of terminal scrollback, the
+    TUI transcript and CI job logs; :func:`_printable` plus ``shlex.quote`` keep every
+    element on exactly one line, so no value can forge a ``Proceed? [y/N] y``.
+    """
+
+    return shlex.join(_printable(_redact_auth(a)) for a in args)
+
+
+def _pip_config_candidates(env: Mapping[str, str] | None = None) -> list[str]:
+    """pip's config-file search path, LOW → HIGH precedence.
+
+    Mirrors ``pip._internal.configuration.Configuration.iter_config_files``: the
+    GLOBAL (system) files, then the USER files (legacy ``~/.pip`` first, then the XDG
+    location), then the environment's own ``sys.prefix`` SITE config, then
+    ``PIP_CONFIG_FILE``.
+
+    Two ``PIP_CONFIG_FILE`` rules, both pip's:
+
+    * set to ``os.devnull`` → NO config file is read at all (pip's ``_load_config_files``
+      returns early);
+    * set to a path that EXISTS → the per-user files are skipped entirely
+      (``should_load_user_config``). Keeping them in the list let a stale
+      ``~/.config/pip/pip.conf`` win the index for a CI job that had deliberately
+      pinned one explicit config — an index the operator had taken out of the picture.
+      GLOBAL and SITE are unaffected; they load either way.
+    """
+
+    env = os.environ if env is None else env
+    explicit = env.get("PIP_CONFIG_FILE")
+    if explicit == os.devnull:
+        return []
+    load_user = not (explicit and os.path.exists(explicit))
+
+    basename = "pip.ini" if sys.platform == "win32" else "pip.conf"
+    out: list[str] = []
+    user: list[str] = []
+    if sys.platform == "win32":
+        # pip's USER kind is [legacy ~/pip/pip.ini, %APPDATA%/pip/pip.ini], in that order.
+        user.append(os.path.join(os.path.expanduser("~"), "pip", basename))
+        appdata = env.get("APPDATA")
+        if appdata:
+            user.append(os.path.join(appdata, "pip", basename))
+    else:
+        xdg_dirs = env.get("XDG_CONFIG_DIRS") or "/etc/xdg"
+        out += [
+            os.path.join(d, "pip", basename) for d in xdg_dirs.split(os.pathsep) if d
+        ]
+        out.append(os.path.join("/etc", basename))
+        if sys.platform == "darwin":
+            out.append(f"/Library/Application Support/pip/{basename}")
+        user.append(os.path.join(os.path.expanduser("~"), ".pip", basename))
+        xdg_home = env.get("XDG_CONFIG_HOME") or os.path.join(
+            os.path.expanduser("~"), ".config"
+        )
+        user.append(os.path.join(xdg_home, "pip", basename))
+    if load_user:
+        out += user
+    out.append(os.path.join(sys.prefix, basename))
+    if explicit:
+        out.append(explicit)
+    return out
+
+
+def _read_pip_config_items(path: str) -> dict[str, str]:
+    """One pip config file's index items as ``{"<section>.<key>": raw_value}``.
+
+    RAW and per-section on purpose: pip merges FILES into a single
+    ``{section}.{key}`` dictionary first (a later file REPLACES a key outright) and
+    only then resolves section precedence over the merged result. Returning a
+    pre-merged ``(index, extras)`` pair per file made both of those impossible to
+    express — see :func:`read_pip_index_config`.
+    """
+
+    import configparser
+
+    parser = configparser.RawConfigParser()
+    try:
+        if not parser.read(path, encoding="utf-8"):
+            return {}
+    except (OSError, UnicodeDecodeError, configparser.Error):
+        # A malformed or unreadable pip.conf must never break `extension install`.
+        return {}
+
+    items: dict[str, str] = {}
+    for section in _PIP_CONFIG_SECTIONS:
+        if not parser.has_section(section):
+            continue
+        for raw_key, raw_val in parser.items(section):
+            key = raw_key.strip().lower().replace("_", "-").lstrip("-")
+            if key in (_PIP_INDEX_KEY, _PIP_EXTRA_INDEX_KEY):
+                items[f"{section}.{key}"] = raw_val
+    return items
+
+
+def read_pip_index_config(env: Mapping[str, str] | None = None) -> AmbientIndexConfig:
+    """The index configuration **pip** would honor, resolved in pip's precedence.
+
+    Two stages, exactly as pip does it:
+
+    1. Merge the config FILES low → high (:func:`_pip_config_candidates`) into one
+       ``{section}.{key}`` dictionary — a later file REPLACES a key
+       (``Configuration._dictionary``), it never appends to it.
+    2. Resolve in pip's option order ``[global]`` → ``[install]`` → ``PIP_*`` env,
+       last writer wins for BOTH keys (``ConfigOptionParser._update_defaults`` does
+       ``defaults[dest] = val``), splitting ``extra-index-url`` on whitespace only at
+       that final step.
+
+    The single accumulating pass this replaces got both directions wrong: it let
+    ``extra-index-url`` PILE UP across files (so a decommissioned org mirror pip had
+    discarded re-entered the resolution set — a dependency-confusion vector the pip
+    backend does not have), and it let a low-precedence ``[install]`` pin lose to a
+    high-precedence ``[global]`` one (pip resolves sections LAST, over the merged
+    dict, so ``install`` beats ``global`` no matter which file each came from) —
+    silently inverting the org-pin-survives-the-switch guarantee this exists for.
+
+    Values that are not printable http(s)/file URLs are dropped (:func:`_is_index_url`).
+    """
+
+    env = os.environ if env is None else env
+    # Stage 1 — cross-file merge, later file replaces the key.
+    merged: dict[str, tuple[str, str]] = {}
+    for path in _pip_config_candidates(env):
+        for key, value in _read_pip_config_items(path).items():
+            merged[key] = (value, path)
+    for key, name in (
+        (_PIP_INDEX_KEY, "PIP_INDEX_URL"),
+        (_PIP_EXTRA_INDEX_KEY, "PIP_EXTRA_INDEX_URL"),
+    ):
+        raw = env.get(name) or ""
+        if raw.strip():
+            merged[f"{_PIP_ENV_SECTION}.{key}"] = (raw, name)
+
+    # Stage 2 — section precedence over the merged dict, last writer wins.
+    index: str | None = None
+    origin: str | None = None
+    extras: tuple[str, ...] = ()
+    for section in (*_PIP_CONFIG_SECTIONS, _PIP_ENV_SECTION):
+        hit = merged.get(f"{section}.{_PIP_INDEX_KEY}")
+        if hit is not None and _is_index_url(hit[0]):
+            index, origin = hit[0].strip(), hit[1]
+        hit = merged.get(f"{section}.{_PIP_EXTRA_INDEX_KEY}")
+        if hit is not None:
+            # pip splits a config/env list on whitespace; each token stands alone, so
+            # an unusable token is dropped without discarding its healthy neighbours.
+            extras = tuple(t for t in hit[0].split() if _is_index_url(t))
+    return AmbientIndexConfig(
+        index_url=index, extra_index_urls=extras, origin=origin
+    )
+
+
+def _read_uv_config_table(path: str) -> dict[str, object]:
+    """uv's settings table from ``uv.toml`` / a ``pyproject.toml`` ``[tool.uv]``."""
+
+    import tomllib
+
+    try:
+        with open(path, "rb") as fh:
+            data = tomllib.load(fh)
+    except (OSError, ValueError, tomllib.TOMLDecodeError):
+        # Same swallow-everything contract as _read_pip_config_items: a broken config
+        # file must never break `extension install`.
+        return {}
+    if os.path.basename(path) == "pyproject.toml":
+        tool = data.get("tool")
+        uv = tool.get("uv") if isinstance(tool, dict) else None
+        return uv if isinstance(uv, dict) else {}
+    return data
+
+
+def _uv_config_files(env: Mapping[str, str] | None = None, cwd: str | None = None) -> list[str]:
+    """uv's own config files, in the order uv consults them.
+
+    ``UV_CONFIG_FILE`` if set; otherwise the nearest project ``uv.toml`` /
+    ``pyproject.toml`` walking up from ``cwd``, then the user-level
+    ``$XDG_CONFIG_HOME/uv/uv.toml``.
+    """
+
+    env = os.environ if env is None else env
+    explicit = env.get("UV_CONFIG_FILE")
+    if explicit:
+        return [explicit]
+    out: list[str] = []
+    try:
+        here = Path(cwd) if cwd is not None else Path.cwd()
+        here = here.resolve()
+    except (OSError, RuntimeError, ValueError):
+        here = None  # type: ignore[assignment]
+    if here is not None:
+        for parent in (here, *here.parents):
+            for name in ("uv.toml", "pyproject.toml"):
+                candidate = parent / name
+                if candidate.is_file():
+                    out.append(str(candidate))
+    xdg_home = env.get("XDG_CONFIG_HOME") or os.path.join(
+        os.path.expanduser("~"), ".config"
+    )
+    out.append(os.path.join(xdg_home, "uv", "uv.toml"))
+    return out
+
+
+def _uv_has_own_index_config(env: Mapping[str, str] | None = None) -> bool:
+    """True when uv already has index configuration of its own (env OR a config file).
+
+    An env-var-only test missed uv's PRIMARY configuration mechanism: a ``uv.toml`` /
+    ``[tool.uv]`` / ``UV_CONFIG_FILE`` index pin sets no ``UV_INDEX*`` variable, so a
+    stale ``pip.conf`` was translated on top of it — and since uv's precedence is
+    CLI > env > file, the translation WON. That is the exact silent index switch this
+    machinery exists to prevent, just in the other direction.
+    """
+
+    env = os.environ if env is None else env
+    if any(env.get(name) for name in _UV_INDEX_ENV):
+        return True
+    return any(
+        any(key in _read_uv_config_table(path) for key in _UV_CONFIG_INDEX_KEYS)
+        for path in _uv_config_files(env)
+    )
+
+
+def uv_ambient_index_config(env: Mapping[str, str] | None = None) -> AmbientIndexConfig:
+    """The pip index configuration the **uv** backend must be told about explicitly.
+
+    pip reads ``PIP_INDEX_URL`` / ``PIP_EXTRA_INDEX_URL`` and ``pip.conf``; uv reads
+    NONE of them (verified: ``uv pip install`` with ``PIP_INDEX_URL`` and
+    ``PIP_CONFIG_FILE`` both pointed at a dead index still resolved from PyPI, while
+    the same command under ``UV_INDEX_URL`` refused to connect). Without this
+    translation an org that pins pip to an internal mirror would SILENTLY resolve
+    from public PyPI the moment aelix fell back to uv — which is the DEFAULT on the
+    official ``uv tool install`` path — turning every private extension name into a
+    dependency-confusion target whose build code runs at install time.
+
+    Returns an empty config when uv is already configured itself
+    (:func:`_uv_has_own_index_config`): explicit uv configuration is theirs to own.
+    """
+
+    env = os.environ if env is None else env
+    if _uv_has_own_index_config(env):
+        return AmbientIndexConfig()
+    return read_pip_index_config(env)
+
+
+def uv_ambient_index_env(
+    backend: InstallBackend | None, kind: TargetKind, *, index_url: str | None = None
+) -> dict[str, str]:
+    """The env the uv child needs so a translated pip index NEVER touches argv.
+
+    ``--index-url <value>`` on argv publishes the value to every other user on the
+    host: ``/proc/<pid>/cmdline`` is mode 0444 and ``ps -eo args`` prints it. A
+    corporate ``pip.conf`` is a 0600 file whose basic-auth password pip never exposes,
+    so translating it onto the uv command line CREATED a secret-disclosure path that
+    did not exist before #113. uv reads ``UV_INDEX_URL`` / ``UV_EXTRA_INDEX_URL`` as
+    the exact equivalents of those flags, and an environment block is not world-readable
+    the way ``cmdline`` is — so the translation goes through the environment instead.
+
+    Only the AMBIENT (pip.conf / ``PIP_*``) values move. An aelix ``index_url`` from a
+    registered index source is a command-line value the user typed and keeps its flag
+    (unchanged from pre-#113), and uv's CLI > env precedence keeps it winning.
+    """
+
+    if backend is None or backend.name != "uv" or kind != "pypi":
+        return {}
+    ambient = uv_ambient_index_config()
+    out: dict[str, str] = {}
+    # An explicit aelix --index-url outranks the ambient default index entirely.
+    if ambient.index_url and not index_url:
+        out[_UV_TRANSLATED_INDEX_ENV] = ambient.index_url
+    extras = [e for e in ambient.extra_index_urls if e != (index_url or ambient.index_url)]
+    if extras:
+        out[_UV_TRANSLATED_EXTRA_INDEX_ENV] = " ".join(extras)
+    return out
+
+
+@contextmanager
+def _patched_environ(overrides: Mapping[str, str]) -> Iterator[None]:
+    """Temporarily apply ``overrides`` to ``os.environ`` (the child inherits it)."""
+
+    if not overrides:
+        yield
+        return
+    saved = {k: os.environ.get(k) for k in overrides}
+    os.environ.update(overrides)
+    try:
+        yield
+    finally:
+        for key, old in saved.items():
+            if old is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = old
+
+
+def detect_install_backend() -> InstallBackend | None:
+    """Probe the environment for a usable backend; ``None`` when there is none.
+
+    pip WINS when importable — it is the only backend that can verify. A missing
+    pip makes ``python -m pip`` exit nonzero WITHOUT raising, so probing the
+    module up front avoids mislabeling "no pip" as "install failed" (review LOW).
+
+    A **non-absolute** ``shutil.which`` hit is treated as NO uv at all. ``which``
+    resolves against ``PATH`` verbatim, so a ``.`` / empty / relative ``PATH``
+    entry (routine with ``node_modules/.bin``, direnv, a stray leading ``:``)
+    yields a cwd-relative program — and the installer would then execute a file
+    out of whatever repository the user happens to be standing in, before the
+    extension is ever fetched (CWE-426). Falling through to
+    :func:`_backend_missing_message` is the safe outcome: it tells the user to
+    install uv or re-install aelix ``--with pip``, both of which land an absolute
+    executable.
+    """
+
+    if importlib.util.find_spec("pip") is not None:
+        return PIP_BACKEND
+    uv = shutil.which("uv")
+    if uv is not None and os.path.isabs(uv):
+        return InstallBackend(name="uv", uv_path=uv)
+    return None
+
+
+def resolve_install_backend(runner: PipRunner | None) -> InstallBackend | None:
+    """The backend to use, honoring the injected-runner seam.
+
+    An injected ``runner`` means **the caller owns backend availability** (tests,
+    or an alternate package manager driving the argv itself), so it resolves to
+    :data:`PIP_BACKEND` unconditionally — never probing, never failing. That
+    preserves both halves of the historical ``_pip_available`` short-circuit: an
+    injected runner is always "available", AND the argv keeps its ``python -m pip``
+    shape, which the whole injected-runner test cluster asserts on. Environment
+    detection therefore only ever runs for the DEFAULT runner (a real subprocess).
+    """
+
+    if runner is not None:
+        return PIP_BACKEND
+    return detect_install_backend()
+
+
+def _pip_available(runner: PipRunner | None) -> bool:
+    """True when SOME install backend is usable (pip, or uv as the fallback).
+
+    Kept as the named seam it has always been; the pip-specific probe now lives
+    in :func:`detect_install_backend`. Injecting a runner still short-circuits to
+    "available" (see :func:`resolve_install_backend`).
+    """
+
+    return resolve_install_backend(runner) is not None
+
+
+def _backend_missing_message(action: str, what: str) -> str:
+    """The no-backend abort — names WHAT was attempted, then the real remedies.
+
+    The old text advised ``python -m ensurepip --upgrade``, which is the wrong
+    move for a ``uv tool`` venv (the case that actually broke) and was documented
+    nowhere. It also fired BEFORE the target was ever printed, so the user could
+    not tell what had been refused.
+    """
+
     return (
-        f"Error: pip is not available on this interpreter ({sys.executable}). "
-        "Install it (e.g. `python -m ensurepip --upgrade`, or `uv pip install "
-        "pip` in a uv project) and retry."
+        f"Error: cannot {action} {what} — no usable package installer.\n"
+        f"  This interpreter ({sys.executable}) has no pip, and no `uv` "
+        "executable is on PATH.\n"
+        "  aelix installed with `uv tool install` (install.sh) runs in a tool "
+        "venv that ships WITHOUT pip.\n"
+        "  Fix — pick one:\n"
+        "    • uv tool install --force --with pip aelix   "
+        "(re-installs aelix with pip inside; restores signature verification)\n"
+        "    • install uv (https://docs.astral.sh/uv/) — aelix then installs via "
+        "`uv pip install`\n"
+        "    • run aelix from a virtualenv that has pip "
+        "(`python -m ensurepip --upgrade`)"
+    )
+
+
+def uv_pypi_verify_unsupported(
+    backend: InstallBackend,
+    kind: TargetKind,
+    *,
+    no_verify: bool,
+    strict: bool,
+    verify_pypi: bool,
+    require_signature: bool,
+) -> bool:
+    """True when the requested pypi verification cannot run on ``backend``.
+
+    The ONLY thing the uv backend cannot do is the two-phase pypi
+    download-and-verify, so the predicate is exactly the one that routes into
+    :func:`build_download_args`: ``kind == "pypi"`` AND one of ``--verify-pypi`` /
+    ``--strict`` / ``--require-signature`` — not ``--require-signature`` alone.
+
+    Deliberately NOT refused, because they never invoke the runner for a download
+    and work fully on uv:
+
+    * ``--require-signature`` / ``--strict`` on a **path** target — staged, hashed
+      and ``.aelixsig``-checked entirely locally, then installed from the staged copy;
+    * ``--strict`` on a **git** target — pin enforcement is pure argv inspection;
+    * anything under ``--no-verify`` — the gate never runs, so nothing is dropped.
+    """
+
+    if backend.supports_download or no_verify or kind != "pypi":
+        return False
+    return bool(verify_pypi or strict or require_signature)
+
+
+def _uv_verify_refusal_message(target: str, backend: InstallBackend) -> str:
+    """Fail-closed text for a pypi verify request the uv backend cannot honor."""
+
+    return (
+        f"Error: refusing to install {target!r} — pypi integrity/signature "
+        "verification was requested, but the active installer backend is "
+        f"`{backend.label}`, which cannot download a distribution for inspection "
+        "(`uv pip` has no `download` subcommand).\n"
+        "  Installing anyway would silently drop a check you explicitly asked "
+        "for, so this fails closed.\n"
+        "  Fix: give aelix a real pip — `uv tool install --force --with pip "
+        "aelix` — then retry.\n"
+        "  (path and git targets verify fine on the uv backend; this limit is "
+        "pypi-only. `--no-verify` also proceeds, unverified.)"
+    )
+
+
+def _uv_volatility_notice() -> str:
+    """Warn that a ``uv tool`` re-install wipes extensions installed this way."""
+
+    return (
+        "  note: uv backend — extensions install into this interpreter's "
+        "environment. If aelix lives in a `uv tool` venv, re-running "
+        "`uv tool install --force aelix` (or install.sh) RECREATES that venv "
+        "from its receipt and REMOVES every extension installed here."
     )
 
 
@@ -336,12 +1058,14 @@ def install_extension(
     input_fn: Callable[[str], str] = input,
     runner: PipRunner | None = None,
 ) -> int:
-    """Install one extension via ``pip``; return a process-style exit code.
+    """Install one extension via the resolved backend; return an exit code.
 
-    ``0`` on success; the pip returncode when pip ran and failed; ``2`` when pip
-    did NOT run (usage/guard error, user abort, a #64 verify refusal, or missing
-    pip). ``require_signature`` / ``trusted_key`` / ``signature_path`` drive the #67
-    Ed25519 provenance branch. ``runner`` and ``input_fn`` are injectable for tests.
+    ``0`` on success; the installer's returncode when it ran and failed; ``2`` when
+    it did NOT run (usage/guard error, user abort, a #64 verify refusal, no usable
+    backend, or a #113 fail-closed refusal). ``require_signature`` / ``trusted_key``
+    / ``signature_path`` drive the #67 Ed25519 provenance branch. ``runner`` and
+    ``input_fn`` are injectable for tests (an injected runner also pins the backend
+    to the pip dialect — see :func:`resolve_install_backend`).
     """
 
     if not target.strip():
@@ -357,10 +1081,6 @@ def install_extension(
         )
         return _EXIT_DIDNT_RUN
 
-    if not _pip_available(runner):
-        print(_pip_missing_message(), file=sys.stderr)
-        return _EXIT_DIDNT_RUN
-
     # #67 (ADR-0189): --no-verify skips the WHOLE gate, so it cannot honor a REQUIRED
     # signature — that is a hard usage error (refuse before prompting), NOT the
     # warn-and-continue treatment --no-verify + --strict gets (that combo still runs
@@ -373,24 +1093,64 @@ def install_extension(
         )
         return _EXIT_DIDNT_RUN
 
+    verb = "Upgrade" if upgrade else "Install"
+
+    # #113: pick the installer backend. The old guard aborted on "no pip" BEFORE
+    # anything named the target, so the user could not tell what had been refused —
+    # both refusals below now spell out the target and its source kind.
+    backend = resolve_install_backend(runner)
+    if backend is None:
+        print(
+            _backend_missing_message(verb.lower(), f"{target!r} (source: {kind})"),
+            file=sys.stderr,
+        )
+        return _EXIT_DIDNT_RUN
+
+    # Fail CLOSED: a pypi verify/signature request the uv backend cannot execute is
+    # refused, never downgraded to an unverified install. Scoped to the exact
+    # predicate that routes into build_download_args — path/git verification still
+    # works on uv (it is entirely local).
+    if uv_pypi_verify_unsupported(
+        backend,
+        kind,
+        no_verify=no_verify,
+        strict=strict,
+        verify_pypi=verify_pypi,
+        require_signature=require_signature,
+    ):
+        print(_uv_verify_refusal_message(target, backend), file=sys.stderr)
+        return _EXIT_DIDNT_RUN
+
     pip_args = build_pip_args(
         target,
         kind,
         index_url=index_url,
         extra_index_urls=extra_index_urls,
         upgrade=upgrade,
+        backend=backend,
     )
+
+    # #113: pip's ambient index config translated for uv. It travels in the ENV, never
+    # on argv (a credentialed mirror URL would otherwise be published to every user on
+    # the host via /proc/<pid>/cmdline) — and it is still SHOWN, redacted, so the
+    # resolved index is visible before the y/N.
+    ambient_env = uv_ambient_index_env(backend, kind, index_url=index_url)
 
     # Consent — pip runs the package's build/setup code (arbitrary at install
     # time), so the manifest capability gate cannot protect this path; the
     # source-level y/N IS the trust boundary. Deny-by-default (headless without
     # --yes, or a closed stdin, aborts).
-    verb = "Upgrade" if upgrade else "Install"
     print(f"{verb} extension from {kind}: {target}")
-    print(f"  → {' '.join(pip_args)}")
+    print(f"  → {display_argv(pip_args)}")
+    for name in (_UV_TRANSLATED_INDEX_ENV, _UV_TRANSLATED_EXTRA_INDEX_ENV):
+        if name in ambient_env:
+            shown = " ".join(_redact_auth(v) for v in ambient_env[name].split())
+            print(f"  → {name}={shown}  (from pip's ambient configuration)")
     print(
         "  pip will run the package's build/setup code. Only install sources you trust."
     )
+    if backend.name == "uv":
+        print(_uv_volatility_notice())
     if not yes:
         try:
             reply = input_fn("Proceed? [y/N] ").strip().lower()
@@ -457,7 +1217,8 @@ def install_extension(
             pending_pin = None
 
     try:
-        result = run(pip_args)
+        with _patched_environ(ambient_env):
+            result = run(pip_args)
         code = int(getattr(result, "returncode", 1))
         if code == 0:
             if pending_pin is not None:
@@ -473,7 +1234,7 @@ def install_extension(
                 "discovers it via entry_points."
             )
         else:
-            print(f"pip install failed (exit {code}).", file=sys.stderr)
+            print(f"{backend.label} install failed (exit {code}).", file=sys.stderr)
         return code
     finally:
         if cleanup_dir is not None:
@@ -535,6 +1296,11 @@ def build_download_args(
     subsequent ``pip install --no-index --find-links <dest>`` can resolve the
     pack's dependencies locally; the integrity pin still covers ONLY the
     top-level artifact (transitive deps stay unverified — the documented gap).
+
+    **pip-only** (#113): ``uv pip`` has no ``download`` subcommand, so there is no
+    uv dialect of this argv. Reaching it on the ``uv`` backend is impossible —
+    :func:`uv_pypi_verify_unsupported` refuses the install first
+    (:attr:`InstallBackend.supports_download` is the capability flag).
     """
 
     args = [sys.executable, "-m", "pip", "download", spec, "--dest", dest]
@@ -546,9 +1312,15 @@ def build_download_args(
 
 
 def _rewrite_pypi_local(dest: str, spec: str, *, upgrade: bool) -> list[str]:
-    """Install argv that installs the VERIFIED bytes from the local download dir."""
+    """Install argv that installs the VERIFIED bytes from the local download dir.
 
-    base = [sys.executable, "-m", "pip", "install"]
+    Pip-shaped by construction: it is only ever reached after
+    :func:`build_download_args` succeeded, which is the ``pip`` backend alone
+    (#113). ``--no-index`` / ``--find-links`` do exist in ``uv pip install``, so a
+    uv dialect becomes a two-line change the day a uv download route exists.
+    """
+
+    base = PIP_BACKEND.install_prefix()
     if upgrade:
         base.append("--upgrade")
     return [*base, "--no-index", "--find-links", dest, spec]
@@ -1000,16 +1772,58 @@ def _effective_default_identity() -> str | None:
     """The normalized identity of the built-in default catalog, or ``None``.
 
     Resolves :func:`extension_catalog.resolve_default_catalog_url` (env override →
-    placeholder; empty = dormant) and normalizes it. ``None`` when the default is
-    disabled/dormant (beta placeholder empty) OR the configured value is not a valid
-    catalog location. Offline is NOT considered here — this is the persistent
-    identity a tombstone / ``source remove <default>`` keys off (ADR-0192).
+    the built-in :data:`~extension_catalog.DEFAULT_CATALOG_URL`) and normalizes it.
+    The built-in default is LIVE, so this normally returns the official catalog's
+    https identity; ``None`` only when the default was explicitly disabled
+    (``AELIX_DEFAULT_CATALOG=""``) OR the configured value is not a valid catalog
+    location. Offline is NOT considered here — this is the persistent identity a
+    tombstone / ``source remove <default>`` keys off (ADR-0192).
     """
 
     raw = extension_catalog.resolve_default_catalog_url()
     if raw is None:
         return None
     return _normalize_catalog_spec(raw) or None
+
+
+def _legacy_suppression_keys(identity: str) -> tuple[str, ...]:
+    """Tombstone keys that suppress ``identity`` — current form + legacy alias.
+
+    Before the W1-A ``classify_target`` repair (#111 A-1) an https catalog URL whose
+    HOST contained ``.git`` (every ``*.github.io`` location, including the built-in
+    default) was misclassified as a git target, so its stored identity was
+    ``git+<url>``. A user who opted the default out on such a build holds a tombstone
+    under that corrupted key. Matching it here keeps the opt-out honoured instead of
+    silently re-enabling an outbound fetch the user deliberately disabled; without it
+    the repair would reverse an explicit user consent decision (ADR-0192 amendment).
+
+    The alias is emitted ONLY for an identity the old bug could actually have
+    corrupted. That predicate is exactly the pre-repair ``classify_target`` http
+    branch — ``low.startswith(("http://", "https://")) and ".git" in low`` — because a
+    catalog identity that branch called ``pypi`` was stored VERBATIM, so no
+    ``git+<identity>`` row or tombstone can exist for it. Aliasing every https
+    identity instead silently swallowed a DELIBERATE registration: with
+    ``AELIX_DEFAULT_CATALOG=https://gitea.corp/team/catalog`` (Gitea makes the ``.git``
+    suffix optional, so the same URL is also a valid clone remote) a user's
+    ``source add --catalog git+https://gitea.corp/team/catalog`` — a git CLONE, a
+    different resource from the https GET — was rewritten to the GET and its entries
+    vanished from ``discover``, and a ``git+`` tombstone the bug could never have
+    written suppressed the default outright.
+    """
+
+    if identity.startswith("git+"):
+        return (identity,)
+    low = identity.lower()
+    if not (low.startswith(("http://", "https://")) and ".git" in low):
+        return (identity,)
+    return (identity, f"git+{identity}")
+
+
+def _default_is_suppressed(settings: SettingsManager, identity: str) -> bool:
+    """True when a persisted opt-out tombstone covers the default ``identity``."""
+
+    suppressed = set(settings.get_suppressed_default_catalogs())
+    return any(key in suppressed for key in _legacy_suppression_keys(identity))
 
 
 def _effective_catalog_locations(
@@ -1020,15 +1834,31 @@ def _effective_catalog_locations(
     Merge order (ADR-0192): the built-in default (normalized) goes FIRST, then the
     stored catalog sources in registration order — UNLESS the default is dropped:
 
-    * dormant/invalid default (beta empty placeholder) → stored only;
+    * disabled (``AELIX_DEFAULT_CATALOG=""``) or invalid default → stored only;
     * ``offline`` and the default is a network transport (not in the air-gap
       allowlist — see :func:`_is_offline_fetchable`) → dropped (guard ④: an
       internet-reachable default is meaningless off-network, dropped SILENTLY here —
       no notice row);
     * the default identity is in ``suppressed_default_catalogs`` (a persisted
-      opt-out tombstone) → dropped;
+      opt-out tombstone — including the pre-W1-A ``git+`` form, see
+      :func:`_legacy_suppression_keys`) → dropped;
     * a stored source already carries the default's identity → the STORED entry
-      wins (deduped to one row, so it appears exactly once).
+      wins (deduped to one row, so it appears exactly once) — including a row
+      stored under the pre-W1-A ``git+`` identity (see
+      :func:`_legacy_suppression_keys`), which is REPAIRED to the https form in
+      place rather than merely deduped.
+
+    The legacy branch is the stored-source half of the same migration the tombstone
+    check does. ``source add --catalog <default>`` is the documented undo of
+    ``source remove <default>``, and on a pre-W1-A build it stored the default as
+    ``git+https://…/catalog.json``. Comparing only the repaired identity would stop
+    matching it, so the user would get the default TWICE: once correctly, and once as
+    a ``git+`` row that ``discover --refresh`` tries to ``git clone`` — a permanent
+    warning row, or exit 2 ("every registered catalog failed") when it is their only
+    source and the default is suppressed. Substituting the repaired identity keeps
+    exactly one working row. The stored settings are left alone on purpose: this
+    function is pure, and rewriting a user's ``extensionSources`` is a job for an
+    explicit ``source`` command, not a read path.
 
     Pure + fetch-free — it only augments the location LIST (guard ①).
     """
@@ -1039,10 +1869,29 @@ def _effective_catalog_locations(
         return stored
     if offline and not _is_offline_fetchable(default):
         return stored
-    if default in settings.get_suppressed_default_catalogs():
+    if _default_is_suppressed(settings, default):
         return stored
-    if default in {_catalog_identity(s) for s in stored}:
-        return stored
+    stored_ids = [_catalog_identity(s) for s in stored]
+    legacy = set(_legacy_suppression_keys(default)) - {default}
+    if default in stored_ids or any(sid in legacy for sid in stored_ids):
+        # ONE pass over both forms. An early ``default in stored_ids`` return would
+        # skip the legacy repair, so a user holding BOTH rows — reachable through the
+        # documented undo, since ``_upsert_source`` compares catalog identities
+        # verbatim and APPENDS a second row when ``source add --catalog <default>`` is
+        # re-run on a repaired build — kept the broken ``git+`` row in the fetch list:
+        # a permanent ``⚠ git+https://…/catalog.json`` on every ``discover --refresh``
+        # (git-cloning a JSON document), and exit 2 when it is their only source.
+        out: list[str] = []
+        emitted = False
+        for spec, sid in zip(stored, stored_ids, strict=True):
+            if sid != default and sid not in legacy:
+                out.append(spec)
+                continue
+            if emitted:
+                continue  # collapse every duplicate/legacy form to one row
+            emitted = True
+            out.append(default if sid in legacy else spec)
+        return out
     return [default, *stored]
 
 
@@ -1147,12 +1996,16 @@ async def _add_catalog_source(target: str, *, settings: SettingsManager) -> int:
     # Re-activation (ADR-0192): adding a location whose identity was opted out via
     # ``source remove <default>`` CLEARS that tombstone, so ``source add --catalog
     # <default>`` is the undo of the opt-out. The dedupe in
-    # :func:`_effective_catalog_locations` then shows it exactly once.
+    # :func:`_effective_catalog_locations` then shows it exactly once. A pre-W1-A
+    # ``git+`` tombstone for the same location is cleared too (see
+    # :func:`_legacy_suppression_keys`) — otherwise the undo would leave the built-in
+    # row still reading "suppressed".
     identity = _catalog_identity(spec)
+    keys = set(_legacy_suppression_keys(identity))
     suppressed = settings.get_suppressed_default_catalogs()
-    reactivated = identity in suppressed
+    reactivated = any(key in suppressed for key in keys)
     if reactivated:
-        settings.set_suppressed_default_catalogs([s for s in suppressed if s != identity])
+        settings.set_suppressed_default_catalogs([s for s in suppressed if s not in keys])
         await settings.flush()
     sources = settings.get_extension_sources()
     new_sources, changed = _upsert_source(sources, spec, "catalog")
@@ -1189,15 +2042,15 @@ async def _cmd_source(
     if action == "list":
         sources = settings.get_extension_sources()
         # Guard ③ (ADR-0192): show the built-in default catalog as its own row
-        # (present / suppressed) so an opt-out is visible. Dormant in beta (the
-        # placeholder URL is empty), so this stays absent unless a default is
-        # configured (env repoint) — then it renders here.
+        # (present / suppressed) so an opt-out is visible. The built-in default is
+        # LIVE, so this row normally renders; it is absent only when the default was
+        # disabled (``AELIX_DEFAULT_CATALOG=""``) or repointed at an invalid value.
         default_id = _effective_default_identity()
         default_row: str | None = None
         if default_id is not None:
             state = (
                 "suppressed"
-                if default_id in settings.get_suppressed_default_catalogs()
+                if _default_is_suppressed(settings, default_id)
                 else "present"
             )
             default_row = f"  [catalog] {default_id}  (built-in default — {state})"
@@ -1277,7 +2130,7 @@ async def _cmd_source(
         default_id = _effective_default_identity()
         if default_id is not None and _catalog_identity(target) == default_id:
             suppressed = settings.get_suppressed_default_catalogs()
-            if default_id not in suppressed:
+            if not _default_is_suppressed(settings, default_id):
                 settings.set_suppressed_default_catalogs([*suppressed, default_id])
                 await settings.flush()
                 tombstoned = True
@@ -1625,13 +2478,19 @@ async def _cmd_remove(
         )
         return _EXIT_DIDNT_RUN
 
-    if not _pip_available(runner):
-        print(_pip_missing_message(), file=sys.stderr)
+    # #113: the abort names the extension AND the distribution it resolved to, so
+    # a backend-less environment still tells the user what was being removed.
+    backend = resolve_install_backend(runner)
+    if backend is None:
+        print(
+            _backend_missing_message("remove", f"{name!r} (distribution {dist!r})"),
+            file=sys.stderr,
+        )
         return _EXIT_DIDNT_RUN
 
-    pip_args = [sys.executable, "-m", "pip", "uninstall", "-y", dist]
+    pip_args = backend.uninstall_args(dist)
     print(f"Remove extension: {name} → uninstall distribution {dist}")
-    print(f"  → {' '.join(pip_args)}")
+    print(f"  → {display_argv(pip_args)}")
     if not yes:
         try:
             reply = input_fn("Proceed? [y/N] ").strip().lower()
@@ -1645,7 +2504,7 @@ async def _cmd_remove(
     result = run(pip_args)
     code = int(getattr(result, "returncode", 1))
     if code != 0:
-        print(f"pip uninstall failed (exit {code}).", file=sys.stderr)
+        print(f"{backend.label} uninstall failed (exit {code}).", file=sys.stderr)
         return code
     # Drop any recorded source for this name/dist (best-effort — a missed
     # cleanup only leaves a stale Sources row, never fails the removal).
@@ -1689,7 +2548,9 @@ def _make_catalog_verifier(
     (so :func:`extension_catalog.fetch_all` degrades ONLY that catalog to an error row,
     never admitting unverified entries). ``signature_required`` is the set of location
     identities that MUST carry a valid trusted signature (guard ⑤ — the official /
-    default catalog; dormant in beta while its URL + ``FIRST_PARTY_KEYS`` are empty). A
+    default catalog). The default catalog URL is LIVE, but the set stays EMPTY while
+    ``FIRST_PARTY_KEYS`` is unprovisioned, so today the default is admitted
+    best-effort over TLS; committing the first-party key auto-upgrades it. A
     location outside that set verifies best-effort (an unsigned intranet catalog is
     admitted while first-party keys are empty; a present-but-INVALID trusted signature
     still refuses).

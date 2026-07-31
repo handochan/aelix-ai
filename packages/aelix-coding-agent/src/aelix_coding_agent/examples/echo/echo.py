@@ -5,14 +5,15 @@ that echoes its ``text`` argument back. The ``__main__`` demo wires this tool
 into an :class:`~aelix_agent_core.agent.Agent` with a mock ``stream_fn`` so
 the loop runs end-to-end without any LLM provider.
 
-The Extension API (Phase 1.2 / ADR-0007) is shipped; a ``setup(aelix)``
-factory can be added here to register the same tool through
-``aelix.register_tool`` (matching the pi-coding-agent extension shape).
+:func:`setup` below IS the extension entry point (Phase 1.2 / ADR-0007,
+matching the pi-coding-agent extension shape): Aelix imports this file and
+calls it, and it registers the tool through ``aelix.register_tool``. It also
+calls :meth:`ExtensionAPI.register_command` (Phase 3.1 / ADR-0041), so the
+example doubles as a smoke test for that surface.
 
-Sprint 5a (ADR-0041) demo: the optional ``setup(aelix)`` factory exercises
-one of the new Phase 3.1 :class:`ExtensionAPI` methods —
-:meth:`ExtensionAPI.register_command` — so the example doubles as a smoke
-test for the expanded surface.
+This is the worked example the self-extension signpost sends the agent to read
+first (``cli/agent_context.py``, issue #117). Keep it short and keep every
+statement in it true of the code below.
 """
 
 from __future__ import annotations
@@ -53,11 +54,10 @@ echo_tool: AgentTool = AgentTool(
 
 
 def setup(aelix: ExtensionAPI) -> None:
-    """Sprint 5a demo factory.
+    """The extension entry point — Aelix imports this file and calls this.
 
     Registers the ``echo`` tool plus a single slash command via
-    :meth:`ExtensionAPI.register_command` — one of the new Phase 3.1
-    methods landed by ADR-0041.
+    :meth:`ExtensionAPI.register_command` (Phase 3.1, ADR-0041).
     """
 
     aelix.register_tool(echo_tool)

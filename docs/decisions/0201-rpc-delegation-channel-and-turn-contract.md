@@ -1,4 +1,4 @@
-# 0200. The RPC delegation channel, and the turn contract it needs
+# 0201. The RPC delegation channel, and the turn contract it needs
 
 Status: Accepted (2026-07-31) — owner-ratified protocol fork (D2), owner-ratified
 band reading (D1), owner-ratified kernel scope (D3/D4). Design record that lands
@@ -16,6 +16,12 @@ budget below had to preserve), ADR-0057 (RPC types & envelope), ADR-0058
 Implementation: `d4a920e`, `9e3f096`, `9d960d3`, `0eb5204`.
 Working log (measurements, landmines, what was refuted): `.omc/specs/rpc-sprint-log.md`.
 Pi pin: `earendil-works/pi@734e08e`.
+
+> **Numbering note.** This record was written as ADR-0200 and renumbered to 0201 at merge
+> time: `main` had independently landed ADR-0200 (catalog fetch classification and the
+> installer backend, W1-A) while this sprint ran on its own branch. The commit messages on
+> `9d960d3` / `0eb5204` / `e54dc8b` predate the rename and still say 0200; this file, the
+> index and the band gate are the authority.
 
 Top-level principle (binding): **"pi agent를 완전 동일하게 완벽하게 구현이 1차적
 목표입니다."** This record therefore separates, for every behaviour it describes,

@@ -245,7 +245,9 @@ def build_sources_lines(
 
     ``default_catalog`` (Track D, guard ③ / ADR-0192) is the injected built-in
     default catalog value — an ``(url, suppressed)`` pair, or :data:`None` when the
-    default is dormant/disabled (the beta placeholder is empty → ``None`` → no row).
+    default is disabled. The built-in URL IS wired
+    (``extension_catalog.DEFAULT_CATALOG_URL``), so ``None`` means the caller passed
+    no value, or the user disabled it with an empty ``AELIX_DEFAULT_CATALOG``.
     When present it renders FIRST as a marked ``[catalog] <url>  (built-in default —
     present|suppressed)`` row so an opt-out is visible in the viewer. The value is
     INJECTED (mirroring the CLI ``source list``) so this leaf never imports
@@ -259,8 +261,9 @@ def build_sources_lines(
     items = list(sources or [])
 
     # Guard ③ (ADR-0192): the built-in default catalog is its own marked row
-    # (present / suppressed). Dormant in beta (empty placeholder URL → injected
-    # None → no row); an env repoint surfaces it here.
+    # (present / suppressed). The built-in URL is wired, so this row normally
+    # renders; an injected None (opt-out via empty AELIX_DEFAULT_CATALOG, or no
+    # value passed) omits it, and an env repoint changes the URL shown here.
     default_row: str | None = None
     if default_catalog is not None:
         url, suppressed = default_catalog
@@ -325,8 +328,8 @@ async def run_extension_manager(
 
     ``default_catalog_getter`` (Track D, guard ③ / ADR-0192) is read INSIDE the
     Sources render closure — it returns the injected built-in default catalog
-    ``(url, suppressed)`` pair (or :data:`None` when dormant/disabled) so the marked
-    built-in row reflects an env repoint / a CLI opt-out live on the next open.
+    ``(url, suppressed)`` pair (or :data:`None` when the default is disabled) so the
+    marked built-in row reflects an env repoint / a CLI opt-out live on the next open.
     :data:`None` (or a getter that raises) simply omits the built-in row — the
     stored sources still render.
 
