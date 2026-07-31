@@ -666,16 +666,33 @@ async def test_a_child_that_finishes_at_the_deadline_is_not_a_timeout(
     complete answer'``, 4/30 runs in the reviewer's own sweep.
 
     The race is made DETERMINISTIC here by slowing the exit-status poll rather
-    than by sweeping timeouts and hoping: a 1 s poll interval stands in for the
-    watcher latency, and a 300 ms budget guarantees the deadline lands inside the
-    gap. Before the fix that is a ``timeout``; after it, the floor covers the
-    gap and the run is what it actually was.
+    than by sweeping timeouts and hoping: the poll interval stands in for the
+    watcher latency, and the budget guarantees the deadline lands inside the gap.
+    Before the fix that is a ``timeout``; after it, the floor covers the gap and
+    the run is what it actually was.
+
+    THE TWO NUMBERS BELOW ARE A LOAD-TOLERANCE FIX, and both halves matter.
+    The budget must cover the CHILD'S BOOT, because the channel starts its clock
+    at ``run()`` and a real interpreter has to start before it can write
+    anything. At the original 300 ms this test was load-sensitive: 6/6 in
+    isolation but an intermittent failure inside a full-suite run on a 2-core
+    box, where boot alone can exceed the whole budget and the pumps never reach
+    EOF in time — a scheduler measurement wearing this test's name.
+
+    Widening it does NOT weaken the subject, because the floor stays the only
+    thing that can save the run. Two inequalities have to hold and both still
+    do: the pumps must finish before the deadline (``boot < 1.5 s``, five times
+    the old headroom), and the remaining budget at that moment must be SHORTER
+    than the exit gap (``1.5 s − boot < 1.9 s``, true for any boot at all) while
+    the gap stays under :data:`~aelix_agents.print_channel.POST_EOF_EXIT_GRACE_SECONDS`
+    so the floor can cover it (``1.9 s < 2.0 s``). Take the floor away and the
+    wait is the remaining budget alone, which expires before the status lands.
     """
 
     original = pc._wait_for_exit
 
     async def _slow_status(proc: Any, **_kwargs: Any) -> int:
-        return await original(proc, poll=1.0)
+        return await original(proc, poll=1.9)
 
     monkeypatch.setattr(pc, "_wait_for_exit", _slow_status)
 
@@ -687,7 +704,7 @@ async def test_a_child_that_finishes_at_the_deadline_is_not_a_timeout(
         """
     )
     result = await asyncio.wait_for(
-        _stub_channel(child, grace=0.5).run(_plan(tmp_path, timeout_ms=300)), 30
+        _stub_channel(child, grace=0.5).run(_plan(tmp_path, timeout_ms=1500)), 30
     )
 
     assert result.status == "ok"
