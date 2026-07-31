@@ -109,6 +109,19 @@ if TYPE_CHECKING:
     from aelix_coding_agent.builtin.permission_mode import PermissionMode
     from aelix_coding_agent.subagent_contract import SubagentOutcome, SubagentResult
 
+_TERMINAL_STATES = frozenset({"done", "error", "stopped"})
+"""The :data:`~aelix_coding_agent.subagent_contract.SubagentState` values after
+which this channel must publish no further progress snapshot.
+
+A THIRD copy beside ``runtime._TERMINAL_STATES`` (``runtime.py:142``) and
+``progress._TERMINAL_STATES`` (``progress.py:94``), for the reason runtime's own
+copy already gives: the row lifecycle is READ here — ``_eager_abort`` writes
+``row.state`` and :meth:`RpcChannel._listener` gates on it — and neither the
+renderer nor this channel may become a dependency of the module that owns it.
+``test_the_three_copies_of_the_terminal_set_agree`` asserts all three equal, so
+the copy cannot drift.
+"""
+
 STDIN_EOF_EXIT_SECONDS = 5.0
 """How long the child gets to exit on its own after its stdin is closed.
 
@@ -281,14 +294,91 @@ class RpcChannel:
             )
 
         def _listener(payload: dict[str, Any]) -> None:
+            # ONE SUBSCRIPTION, TWO CONSUMERS WITH DIFFERENT LIFETIMES, so each
+            # is gated on its own condition. Moving the single ``unsubscribe()``
+            # instead moves BOTH, and they do not want the same window: the
+            # accumulator has to keep folding through the teardown drain, while
+            # the progress tap has to stop the moment the row goes terminal.
+            #
             # BOTH halves are wrapped, and neither is paranoia. ``reduce_event``
             # documents "NEVER raises" and once did not — a line carrying
             # ``"usage": {"input": Infinity}`` reached ``int(inf)``. And a
             # broken progress subscriber must not be able to fail a delegation
             # that is otherwise succeeding.
-            with contextlib.suppress(Exception):
-                reduce_event(state, payload)
-            if on_stream is not None:
+            #
+            # THE ACCUMULATOR STOPS AT THE STREAM'S TERMINATOR. ``agent_end`` is
+            # the event ``prompt_and_wait`` itself waits on
+            # (``rpc_client.py:868-871``), so a line after it is by definition
+            # not this turn's data — and folding one in is last-write-wins on
+            # ``summary``, ``stop_reason`` and ``error_message``, plus an
+            # unconditional ``turns += 1`` and a ``tokens`` LEVEL overwrite.
+            # ``build_result``'s ``state.stop_reason in ("error", "aborted")``
+            # disjunct (``envelope.py:260-263``) is NOT gated on the caller's
+            # outcome, so one late line flips a finished, exit-0 delegation to
+            # ``ok=False``. Measured on a child that finishes cleanly and then
+            # writes one more ``message_end`` after its stdin EOF:
+            # ``ok=False summary='shutdown hook noise' turns=2 tokens=1``,
+            # against ``ok=True summary='the real answer' turns=1 tokens=10``.
+            #
+            # GATED ON THE STREAM, NOT ON THE CALLER'S OUTCOME, and the
+            # difference is the whole of fix ①: a child that timed out, was
+            # cancelled, was aborted or died mid-turn never emitted
+            # ``agent_end``, so ``saw_agent_end`` is ``False`` on every one of
+            # those paths and the teardown drain still folds everything. The
+            # caller-outcome variant — unsubscribing when ``_run_turn``
+            # returns — was measured and rejected: it still folded 1 145
+            # post-terminator lines, because ``agent_end`` resolves the waiter's
+            # future INSIDE this fan-out while the stdout pump keeps delivering.
+            #
+            # ``saw_agent_end`` WAS A DIAGNOSTIC FLAG AND IS NOW A GATE. If a
+            # future kernel change makes ``agent_end`` non-final, this
+            # accumulator goes deaf after turn 1 — but ``prompt_and_wait``
+            # breaks in the same way at the same moment (its own docstring: no
+            # correlation id, not safe for two overlapping turns), so the gate
+            # fails together with the client's wait rather than behind it. That
+            # coupling is the right one, and it did not exist before.
+            #
+            # THE ONE THING THE GATE SUBTRACTS, recorded so it is not
+            # rediscovered: if a drain ever delivered ``agent_end`` BEFORE a
+            # partial ``message_end``, that partial is now dropped and the
+            # envelope falls back to ``(no output)`` — the exact pre-fix-①
+            # symptom, on a stream that arrived in the wrong order. Measured as
+            # reachable only from a synthetic child: the harness emits
+            # ``MessageEndEvent`` and THEN ``AgentEndEvent``
+            # (``harness/core.py:4389-4391``, same at ``:4348``), so on any real
+            # child the terminator is last and the partial is always already
+            # folded. It is a property of the kernel's emission order, not of
+            # this gate, which is why the gate is still the right shape.
+            if not state.saw_agent_end:
+                with contextlib.suppress(Exception):
+                    reduce_event(state, payload)
+            # THE TAP STOPS AT A TERMINAL ROW. ``_eager_abort`` makes
+            # ``row.state`` terminal BEFORE the ``finally`` drains, and
+            # ``runtime._publish`` stamps that state onto every snapshot — so a
+            # tap left live through teardown publishes a TERMINAL snapshot per
+            # drained line, and ``SubagentProgressBridge`` pops its ``_tools``
+            # entry on each one, making the next line ``first=True`` again.
+            # Measured on one cancelled delegation: 2 325
+            # ``subagent_start``/``subagent_end`` pairs for a single child, on
+            # the channels a dashboard subscribes to. ``PrintChannel`` holds the
+            # same invariant by cancelling its pumps next to its own
+            # ``_eager_abort`` (``print_channel.py:1012-1018``); this channel
+            # cannot, because the accumulator above still has to read.
+            # ``runtime._run``'s ``finally`` publishes the ONE terminal snapshot
+            # itself, so this channel's contract is: non-terminal snapshots only.
+            #
+            # NOT gated on the terminator too, on purpose: on the timeout path
+            # ``saw_agent_end`` flips mid-drain and progress must keep flowing
+            # there — the drain IS the payload.
+            #
+            # Two consequences, both deliberate and both narrow. Progress goes
+            # QUIET through a cancelled or aborted teardown; the runtime's
+            # terminal publish lands immediately after, so the user sees "gone",
+            # not "frozen". And the tap still fires through an OK-path teardown,
+            # where ``row.state`` is still ``"running"`` — on a ``state`` the
+            # accumulator above no longer updates. Harmless: those snapshots are
+            # non-terminal and the bridge dedups by row text.
+            if on_stream is not None and row.state not in _TERMINAL_STATES:
                 with contextlib.suppress(Exception):
                     on_stream(state)
 
@@ -375,10 +465,19 @@ class RpcChannel:
                 # rpc mode, so the child dies before the transport exists and
                 # its stderr is the only diagnosis there will ever be.
                 captured["stderr"] = _stderr_of(exc, client)
-                # Now that the reducer is live through the grace, a line CAN be
-                # dropped before the spawn is declared failed. Without this the
-                # envelope reports ``dropped_lines: 0`` for a child whose very
-                # first line blew the framing budget.
+                # The counter never needed a subscriber: ``JsonlLineReader``
+                # increments ``self._dropped`` inside ``feed()``
+                # (``_jsonl.py:126-146``) before ``_emit`` is reached, so a
+                # dropped line is counted whether or not anyone is listening,
+                # and identically before this commit. What was missing is that
+                # this early return never READ it — ``captured["dropped"]`` was
+                # assigned only in ``_drive``'s ``finally``, which a failed
+                # ``start`` never reaches, so the envelope reported
+                # ``dropped_lines: 0`` for a child whose very first line blew the
+                # framing budget.
+                #
+                # THEREFORE INDEPENDENT of the subscribe ordering above: if that
+                # is ever revisited, this line does NOT go with it.
                 captured["dropped"] = client.dropped_lines
                 captured["exit_code"] = getattr(exc, "returncode", None)
                 row.state = "error"
@@ -478,6 +577,14 @@ class RpcChannel:
             # on its way out. It is everything the child had ALREADY written
             # that the parent had not yet reduced: bytes in the pipe when the
             # deadline fired, and a turn that finished inside the window.
+            #
+            # WHAT STAYS LIVE HERE IS THE ACCUMULATOR, NOT THE PROGRESS TAP.
+            # One subscription can only mean that because ``_listener`` gates
+            # its two halves separately — do not re-couple them by moving this
+            # ``unsubscribe()`` again. See its comments for the two measurements
+            # that forced the split: a post-terminator line failing a finished
+            # turn, and a terminal-state snapshot per drained line storming the
+            # progress bus.
             try:
                 with contextlib.suppress(Exception):
                     captured["exit_code"] = await self._shutdown(client, row)

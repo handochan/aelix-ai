@@ -33,6 +33,7 @@ from aelix_agents.print_channel import (
     SpawnPlan,
     build_child_env,
 )
+from aelix_agents.progress import SubagentProgressBridge
 from aelix_agents.rpc_channel import (
     RpcChannel,
     build_rpc_child_argv,
@@ -643,6 +644,141 @@ async def test_a_timed_out_delegation_reports_what_arrived_during_the_drain(
     assert result.tool_trail == "read(/etc/hosts) ok"
 
 
+# === …and what must NOT survive it ==========================================
+#
+# The other side of the drain. Keeping the reducer live through teardown is
+# what recovers a timed-out child's partial answer (above), and it is also what
+# lets a line arriving after the STREAM'S TERMINATOR overwrite a finished turn's
+# answer. ``reduce_event`` is last-write-wins on ``summary`` / ``stop_reason`` /
+# ``error_message``, ``turns`` is an unconditional increment and ``tokens`` is a
+# level, so one late ``message_end`` replaces all of them — and
+# ``build_result``'s ``stop_reason in ("error", "aborted")`` disjunct is not
+# gated on the caller's outcome, so it flips ``ok`` too.
+#
+# Both tests below pass ``on_stream``, which is the production shape: the
+# runtime always wires one (``runtime.py``'s ``_emit``), and without it the
+# listener's second half never runs at all.
+
+_POISON = (
+    '{"type": "message_end", "message": {'
+    '"role": "assistant",'
+    '"content": [{"type": "text", "text": "%s"}],'
+    '"stop_reason": "error",'
+    '"error_message": "%s",'
+    '"usage": {"input": 1, "output": 1, "total_tokens": 1},'
+    '"provider": "stub", "model": "stub-1"}}'
+)
+
+_CLEAN_TURN = textwrap.dedent(
+    """
+    def script(task):
+        start()
+        say("the real answer", input=6, output=4, total_tokens=10)
+        done()
+    """
+)
+
+# One line, strictly AFTER stdin EOF — ``serve`` returns when its loop ends, so
+# by construction this is written into the window ``_shutdown`` drains.
+_ONE_LATE_LINE = _rpc_stub(
+    _CLEAN_TURN,
+    tail=(
+        "serve(script)\n"
+        + "emit(json.loads('''"
+        + (_POISON % ("shutdown hook noise", "shutdown hook noise"))
+        + "'''))\n"
+        + "sys.exit(0)\n"
+    ),
+)
+
+# 4 000 lines, written IMMEDIATELY after the terminator and without waiting for
+# anything. This is the shape a gate on the caller's outcome does not catch:
+# ``agent_end`` resolves ``prompt_and_wait``'s future from inside the listener
+# fan-out, so ``_run_turn`` only resumes a loop iteration later while the stdout
+# pump keeps delivering. 400 lines per ``write`` so the 64 KiB pipe genuinely
+# backs up — one write per line and the parent's pump keeps pace, the backlog
+# never exceeds a line or two, and the test is green against the bug.
+_FLOOD_AFTER_THE_TERMINATOR = _rpc_stub(
+    textwrap.dedent(
+        """
+        def script(task):
+            start()
+            say("the real answer", input=6, output=4, total_tokens=10)
+            done()
+            line = %r + "\\n"
+            for _ in range(10):
+                sys.stdout.write(line * 400)
+                sys.stdout.flush()
+        """
+    )
+    % (_POISON % ("post-terminator noise", "post-terminator noise"))
+)
+
+
+async def test_output_after_the_terminator_cannot_fail_a_finished_turn(
+    tmp_path: Path,
+) -> None:
+    """``agent_end`` ends the turn's DATA, not just the turn's wait.
+
+    The drain above is kept for a child that never terminated. This one did, so
+    everything after its ``agent_end`` belongs to no turn at all — and folding
+    one such line in reports a finished, exit-0 delegation as a failure and
+    hands the parent model the noise instead of the answer. Measured before the
+    gate: ``ok=False summary='shutdown hook noise' turns=2 tokens=1``.
+
+    Every last-write-wins field is asserted, not just the one ``build_result``
+    reads: ``tokens`` is a LEVEL, so a late ``total_tokens: 1`` replaces the
+    real 10 outright and a test that only checked ``ok`` would miss it.
+    """
+
+    channel = _channel(_ONE_LATE_LINE, grace=0.5)
+    row = RunningChild(id="sub-test", profile="scout")
+    result = await channel.run(
+        _plan(tmp_path, timeout_ms=30_000), child=row, on_stream=lambda _s: None
+    )
+
+    assert result.ok is True
+    assert result.status == "ok"
+    assert result.summary == "the real answer"
+    assert result.stop_reason == "end_turn"
+    assert result.error is None
+    assert result.usage.turns == 1
+    assert result.usage.tokens == 10
+
+
+async def test_a_flood_after_the_terminator_cannot_fail_a_finished_turn(
+    tmp_path: Path,
+) -> None:
+    """The same corruption from a child that does NOT wait for its stdin EOF.
+
+    THIS IS THE TEST THAT PICKS THE BOUNDARY. Unsubscribing when ``_run_turn``
+    returns closes the one-late-line case above and leaves this one wide open:
+    measured, 1 145 of these 4 000 lines were still folded in, because the
+    terminator resolves the waiter's future inside the listener fan-out and the
+    pump keeps delivering while the coroutine is rescheduled. Gating on the
+    stream's own terminator — the same event ``prompt_and_wait`` waits on —
+    makes the window unreachable by construction.
+
+    Not a hypothetical child: ``argv_builder`` is the seam by which a
+    non-bundled rpc server is reached, which is the whole direction of the
+    rpc-as-standard-transport track.
+    """
+
+    channel = _channel(_FLOOD_AFTER_THE_TERMINATOR, grace=0.5)
+    row = RunningChild(id="sub-test", profile="scout")
+    result = await channel.run(
+        _plan(tmp_path, timeout_ms=60_000), child=row, on_stream=lambda _s: None
+    )
+
+    assert result.ok is True
+    assert result.status == "ok"
+    assert result.summary == "the real answer"
+    assert result.stop_reason == "end_turn"
+    assert result.error is None
+    assert result.usage.turns == 1
+    assert result.usage.tokens == 10
+
+
 # 5 000 deltas of 4 KB. ``message_update`` is the shape that matters: the
 # reducer ignores it (``stream.py``'s consumed set), and every one of them
 # repeats the WHOLE assistant message, so a buffer of them is the turn's length
@@ -730,8 +866,14 @@ _GRACE_EVENTS = (
         },
     },
 )
+# The leading 2 000-byte line is what makes ``dropped_lines`` observable on this
+# path (the framing budget is patched down to 1 000 in the test). It is FIRST so
+# the drop provably happens inside the grace, and the two real events behind it
+# prove the reader resynced at the next newline rather than losing the turn.
 _BOOT_AND_DIE = (
     "printf '%s\\n' "
+    + shlex.quote("Q" * 2000)
+    + " "
     + " ".join(shlex.quote(json.dumps(event)) for event in _GRACE_EVENTS)
     + "; printf 'boot traceback\\n' >&2; exit 9"
 )
@@ -756,9 +898,28 @@ async def test_the_child_that_dies_in_the_startup_grace_is_still_heard(
     ``STARTUP_GRACE_MS`` is widened rather than left at pi's 100 ms because the
     child must provably die INSIDE the window; at 100 ms a loaded box lets it
     die just outside and the run silently takes the ordinary ``_drive`` path.
+
+    ``dropped_lines`` HAS TWO PRODUCTION ASSIGNMENTS AND THIS PINS ONE OF THEM.
+    ``captured["dropped"]`` is written in this early return and, separately, in
+    ``_drive``'s ``finally``; a failed ``start`` never reaches the second, so
+    before this one existed the envelope reported ``dropped_lines: 0`` for a
+    child whose very first line blew the budget — and deleting it again leaves
+    the whole file green, which is why it needed an assertion of its own. The
+    other assignment has its own single pin,
+    ``test_an_oversize_line_is_dropped_counted_and_the_turn_survives``, which
+    reaches it on the SUCCESSFUL-turn path. Neither is redundant with the other:
+    delete either assertion and a production line stops being pinned.
+
+    ``MAX_LINE_BYTES`` is patched down rather than the child emitting a real
+    4 MiB line: at production settings the child blocks on the 64 KiB pipe until
+    the parent has read the whole thing, so the parent's pump is the bottleneck
+    and the cheapest possible drop takes 162 ms to observe against a 100 ms
+    grace. The branch is unreachable from the outside on this hardware; the
+    budget is what is being varied, not the mechanism.
     """
 
     monkeypatch.setattr(RpcClient, "STARTUP_GRACE_MS", 2_000)
+    monkeypatch.setattr("aelix_agents.rpc_channel.MAX_LINE_BYTES", 1_000)
     channel = RpcChannel(
         grace=0.5, argv_builder=lambda *a, **k: ["/bin/sh", "-c", _BOOT_AND_DIE]
     )
@@ -772,9 +933,117 @@ async def test_the_child_that_dies_in_the_startup_grace_is_still_heard(
     assert result.usage.input == 11
     assert result.usage.output == 22
     assert result.usage.tokens == 33
+    # The drop happened inside the grace AND the events behind it still arrived:
+    # the reader resynced at the next newline instead of losing the turn.
+    assert result.dropped_lines == 1
     # Nothing was traded away for it: the process-layer diagnosis is still here.
     assert result.details is not None and "boot traceback" in result.details
     assert "boot traceback" in (result.error or "")
+
+
+# === The progress tap, at the surface that consumes it ======================
+
+
+class _ProbeUi:
+    """Something ``_ui()`` will not identity-test away as the headless singleton."""
+
+    def __init__(self) -> None:
+        self.status_calls: list[tuple[str, str | None]] = []
+
+    def set_status(self, key: str, text: str | None) -> None:
+        self.status_calls.append((key, text))
+
+
+class _ProbeApi:
+    """The three attributes ``SubagentProgressBridge`` actually reaches for.
+
+    Hand-written rather than a ``MagicMock`` on purpose: ``_ui()`` compares
+    ``api.runtime.ui`` by IDENTITY against ``HEADLESS_UI_CONTEXT``, and a mock
+    satisfies that test silently — the statusline half would then be exercised
+    by the test and dead in production, or vice versa.
+    """
+
+    def __init__(self) -> None:
+        self.channels: list[str] = []
+        self.ui = _ProbeUi()
+        api = self
+
+        class _Events:
+            def emit(self, channel: str, _payload: Any) -> None:
+                api.channels.append(channel)
+
+        class _Runtime:
+            ui = api.ui
+
+        self.events = _Events()
+        self.runtime = _Runtime()
+
+
+# Streams flat out and never terminates, so the parent is still waiting when the
+# cancellation lands. 400 lines per ``write`` because the defect needs a real
+# BACKLOG: one write per line and the parent's pump keeps pace, the pipe holds
+# a line or two at abort, and the storm never forms.
+_FLOODING_CHILD = _rpc_stub(
+    textwrap.dedent(
+        """
+        def script(task):
+            start()
+            line = json.dumps({"type": "message_end", "message": {
+                "role": "assistant",
+                "content": [{"type": "text", "text": "flood"}],
+                "stop_reason": "end_turn",
+                "usage": {"input": 1, "output": 1, "total_tokens": 1},
+                "provider": "stub", "model": "stub-1"}}) + "\\n"
+            while True:
+                sys.stdout.write(line * 400)
+                sys.stdout.flush()
+        """
+    )
+)
+
+
+async def test_a_cancelled_delegation_publishes_no_phantom_delegations(
+    tmp_path: Path,
+) -> None:
+    """One delegation is one ``subagent_start`` and one ``subagent_end``. Always.
+
+    ``_eager_abort`` makes ``row.state`` terminal BEFORE ``_shutdown`` drains,
+    and ``runtime._publish`` stamps that state onto every snapshot — so a
+    progress tap left live through the teardown publishes a TERMINAL snapshot
+    per drained line. ``SubagentProgressBridge`` ends the row and pops its
+    ``_tools`` entry on each one, which makes the next line ``first=True``
+    again: measured, 2 325 ``subagent_start``/``subagent_end`` pairs for a
+    single cancelled child, 2 324 of the starts after the first end.
+
+    ASSERTED AT THE BRIDGE, NOT AT ``on_stream``. Forwarding is not delivery —
+    the channel handing the runtime a snapshot is not a defect until something
+    consumes it, and ``api.events`` is the surface ``subagent_contract``
+    documents a dashboard or a third-party extension subscribing to.
+
+    The one terminal snapshot a delegation is entitled to is published by
+    ``runtime._run``'s own ``finally``, after the row is gone from the registry.
+    That is where the single ``subagent_end`` below comes from.
+    """
+
+    api = _ProbeApi()
+    bridge = SubagentProgressBridge(api)
+    runtime = _SubagentRuntimeImpl(
+        host=SubagentHost(cwd=lambda: str(tmp_path), on_progress=bridge),
+        channel=_channel(_FLOODING_CHILD, grace=0.3),
+    )
+    task = asyncio.ensure_future(
+        runtime.spawn_granted(_grant(), _resolved(), "flood forever")
+    )
+    await asyncio.sleep(1.0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert api.channels.count("subagent_start") == 1, (
+        f"{api.channels.count('subagent_start')} starts for one delegation — "
+        "the tap published terminal snapshots through the teardown drain"
+    )
+    assert api.channels.count("subagent_end") == 1
 
 
 # === Through the REAL runtime ===============================================
@@ -991,6 +1260,26 @@ def test_the_rpc_argv_builder_narrows_tools_the_same_way() -> None:
 
 
 # === The seam ===============================================================
+
+
+def test_the_three_copies_of_the_terminal_set_agree() -> None:
+    """A third copy now exists, so the pair-agreement gate is no longer enough.
+
+    ``progress`` owns the surfaces, ``runtime`` owns the row lifecycle, and this
+    channel READS that lifecycle to decide when to stop publishing. None of the
+    three may import another's private name — but if this channel's idea of
+    terminal ever narrows, it resumes publishing snapshots the renderer treats
+    as ends, which is the storm
+    ``test_a_cancelled_delegation_publishes_no_phantom_delegations`` pins. The
+    pre-existing pair test at ``test_print_channel_spawn.py`` stays exactly as it
+    is; the third copy is THIS module's debt, so its gate lives here.
+    """
+
+    from aelix_agents.progress import _TERMINAL_STATES as rendered
+    from aelix_agents.rpc_channel import _TERMINAL_STATES as channel_gate
+    from aelix_agents.runtime import _TERMINAL_STATES as lifecycle
+
+    assert channel_gate == lifecycle == rendered
 
 
 def test_both_channels_satisfy_the_declared_protocol() -> None:
