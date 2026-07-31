@@ -127,6 +127,24 @@ class SubagentResult:
     by the ``agent`` tool (it rides ``ToolResult.details`` there)."""
     dropped_lines: int = 0
     """Child stdout lines discarded for exceeding the 4 MiB per-line budget."""
+    tool_trail: str | None = None
+    """What the child DID — a rendered, bounded, sanitised one-line-per-call
+    record of every tool it ran and whether that call failed.
+
+    ``summary`` is the child's CONCLUSION and nothing else: the last
+    text-bearing assistant message. Every tool call, every argument and every
+    tool-level failure crossed the wire and was discarded, which mattered most
+    in chain mode — step k+1 received step k's answer with no way to know what
+    ground was already covered, and a child whose every tool errored still came
+    back ``ok`` because status is derived from the exit code and the stream
+    terminator, neither of which observes a tool error.
+
+    NOT raw material: it is capped and its arguments are stripped of control
+    characters and newlines before it is built, because it is composed into the
+    next child's prompt. ``details`` remains the uncapped, unsanitised field.
+
+    Additive + defaulted: does NOT bump ``CONTRACT_VERSION``."""
+
     permission_mode: str | None = None
     """The posture the child actually ran under (ADR-0197 §(e)/§(i)). Recorded
     so ``/agents run``, a P4 dashboard and the ADR's audit story can all show

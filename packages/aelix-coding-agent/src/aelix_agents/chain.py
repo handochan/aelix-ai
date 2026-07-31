@@ -141,7 +141,33 @@ def _fence(previous: str) -> str:
     return f"{PREVIOUS_FENCE_OPEN}\n{safe}\n{PREVIOUS_FENCE_CLOSE}\n{PREVIOUS_FENCE_NOTE}"
 
 
-def render_step(task: str, previous: str | None) -> str:
+TRAIL_HEADING = "Tools the previous agent ran:"
+"""Label for the evidence block, inside the same fence as the summary.
+
+INSIDE the fence, not beside it. The trail is exactly as model-influenced as the
+summary — a tool argument is a path or a command the child's model chose, and on
+a child that read attacker-controlled content it is a value that content
+steered. Putting it outside would present it as parent-authored fact, which is
+the one thing the fence exists to prevent.
+"""
+
+
+def _with_trail(previous: str, trail: str) -> str:
+    """Summary first, evidence second, one blank line between.
+
+    Summary first because it is the answer and a truncated read should lose the
+    evidence rather than the conclusion.
+    """
+
+    return f"{previous}\n\n{TRAIL_HEADING}\n{trail}"
+
+
+def render_step(
+    task: str,
+    previous: str | None,
+    *,
+    trail: str | None = None,
+) -> str:
     """The task string child *k* actually receives.
 
     ``previous is None`` is step 1: no fence is built and nothing is substituted
@@ -177,11 +203,36 @@ def render_step(task: str, previous: str | None) -> str:
     :func:`check_task_size` to the RENDERED string, because only the caller knows
     how to turn that refusal into an envelope rather than an exception
     (``envelope.py:8-12`` — the envelope always returns, never raises).
+
+    ``trail`` IS ELASTIC, AND THAT IS THE WHOLE DESIGN. It carries what the
+    previous child DID — its tool calls and their outcomes — alongside what it
+    concluded. If including it would push the rendered step over
+    :data:`MAX_TASK_BYTES`, it is DROPPED and the step renders exactly as it
+    would have without the feature.
+
+    That asymmetry is deliberate and it is the invariant to preserve: an
+    oversize step is a REFUSAL, and a refused step stops the whole remaining
+    chain without starting a child (``batch._run_chain`` breaks on
+    :class:`TaskTooLarge`). So a size miscalculation here would not degrade a
+    chain, it would destroy one. Evidence is worth having and never worth that,
+    hence: **the trail can never turn a step that would have run into one that
+    is refused.**
+
+    Dropping is silent BY CONSTRUCTION rather than by oversight — there is no
+    honest way to announce it inside a budget that is already full, and the
+    caller can compare against ``result.tool_trail`` if it needs to know.
     """
 
+    rendered = _render(task, previous, trail)
+    if trail is not None and len(rendered.encode("utf-8")) > MAX_TASK_BYTES:
+        return _render(task, previous, None)
+    return rendered
+
+
+def _render(task: str, previous: str | None, trail: str | None) -> str:
     fragments = task.split(PREVIOUS_ESCAPE)
     if previous is not None:
-        value = _fence(previous)
+        value = _fence(previous if trail is None else _with_trail(previous, trail))
         # ALL occurrences are replaced — str.replace's default, and the honest
         # reading of "insert the previous task's summary wherever I wrote it".
         fragments = [fragment.replace(PREVIOUS_TOKEN, value) for fragment in fragments]
@@ -213,6 +264,7 @@ def check_task_size(task: str) -> None:
 
 
 __all__ = [
+    "TRAIL_HEADING",
     "MAX_TASK_BYTES",
     "PREVIOUS_FENCE_CLOSE",
     "PREVIOUS_FENCE_NOTE",

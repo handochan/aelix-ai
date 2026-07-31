@@ -146,6 +146,65 @@ def _select_summary(state: _StreamState, stderr_clean: str, *, ok: bool) -> str:
     return NO_OUTPUT
 
 
+MAX_TRAIL_BYTES = 4096
+"""How much rendered trail may travel with a result.
+
+Deliberately far below both the summary cap (51200) and the chain's rendered-step
+ceiling (65536): the trail is EVIDENCE accompanying an answer, not a second
+answer. Sized so that even a trail at its cap leaves the summary its full
+budget — measured, a full-cap summary plus a full-cap trail plus the fence still
+fits one occurrence of ``{previous}``, and the chain drops the trail rather than
+refusing a step when it would not (see ``chain.render_step``).
+
+Lives HERE and not in ``subagent_contract``: the band gate holds that module's
+public constants to an exact set, and a cap is exactly the kind of policy number
+the 3-band rule keeps out of product-core."""
+
+_TRAIL_MORE = "… {count} more"
+
+
+def render_tool_trail(state: _StreamState) -> str | None:
+    """One line per tool call, bounded and already sanitised. ``None`` if empty.
+
+    ``ok`` / ``FAILED`` / ``(no result)`` rather than a symbol vocabulary of its
+    own: ``(no result)`` is a call that started and never reported an end, which
+    is what a child killed mid-tool leaves behind and is worth seeing as
+    distinct from a success.
+
+    TRUNCATION IS VISIBLE, ALWAYS. A trail that simply stopped would read as
+    "that is everything the child did", and a reader — human or model — would
+    draw conclusions from work it cannot see. Both truncation paths (the count
+    bound in the reducer and the byte bound here) end in the same ``… N more``
+    line, following the convention ``panel.format_panel`` already established.
+
+    The arguments arrived through ``_strip_control`` at the reducer, so no entry
+    can contain a newline and the line count of this block is therefore
+    structural rather than child-controlled.
+    """
+
+    if not state.tool_trail:
+        return None
+    lines: list[str] = []
+    used = 0
+    hidden = state.trail_overflow
+    for index, call in enumerate(state.tool_trail):
+        verdict = (
+            "(no result)"
+            if call.failed is None
+            else ("FAILED" if call.failed else "ok")
+        )
+        line = f"{call.name}({call.args}) {verdict}"
+        cost = len(line.encode("utf-8")) + 1
+        if used + cost > MAX_TRAIL_BYTES:
+            hidden += len(state.tool_trail) - index
+            break
+        lines.append(line)
+        used += cost
+    if hidden:
+        lines.append(_TRAIL_MORE.format(count=hidden))
+    return "\n".join(lines) if lines else None
+
+
 def _build_details(state: _StreamState, stderr_raw: str, *, ok: bool) -> str | None:
     """The UNCAPPED material behind ``summary`` (finding B8).
 
@@ -241,6 +300,7 @@ def build_result(
         details=_build_details(state, stderr_tail, ok=ok),
         dropped_lines=state.dropped_lines,
         permission_mode=permission_mode,
+        tool_trail=render_tool_trail(state),
     )
 
 
@@ -276,6 +336,8 @@ def declined_result(
 
 
 __all__ = [
+    "MAX_TRAIL_BYTES",
+    "render_tool_trail",
     "DEFAULT_OUTPUT_CAP",
     "NO_OUTPUT",
     "build_result",

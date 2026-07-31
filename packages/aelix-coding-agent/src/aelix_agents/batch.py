@@ -371,9 +371,10 @@ async def _run_chain(batch: _Batch) -> tuple[list[MemberOutcome], int]:
     tasks = batch.call.tasks
     members: list[MemberOutcome] = []
     previous: str | None = None
+    previous_trail: str | None = None
     for index, task in enumerate(tasks):
         try:
-            rendered = render_step(task, previous)
+            rendered = render_step(task, previous, trail=previous_trail)
             check_task_size(rendered)
         except TaskTooLarge as exc:
             # NO CHILD EXISTS for this step, so it is "did not start" and not
@@ -392,6 +393,13 @@ async def _run_chain(batch: _Batch) -> tuple[list[MemberOutcome], int]:
         # ``summary``, verbatim, INCLUDING any truncation marker — never
         # ``details`` (§3.1, and the reasoning is in ``chain.py``'s docstring).
         previous = outcome.result.summary
+        # …and the EVIDENCE behind it. ``summary`` is the child's conclusion
+        # only; without this, step k+1 cannot tell what ground step k covered,
+        # or that step k's tools all failed while it still reported ``ok``.
+        # ELASTIC — ``render_step`` drops it rather than let it push the step
+        # over the ceiling, because an oversize step is refused and a refusal
+        # stops the whole remaining chain.
+        previous_trail = outcome.result.tool_trail
     return members, len(tasks) - len(members)
 
 
