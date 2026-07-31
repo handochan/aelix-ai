@@ -1,10 +1,17 @@
-"""THE ONLY FILE IN AELIX THAT SPAWNS A SUBAGENT — ADR-0197 §(j)/(k).
+"""The JSON one-shot delegation channel — ADR-0197 §(j)/(k).
 
 argv, env, cwd, stdio, both pumps, the timeout and the envelope hand-off.
 Product-core contains no line of this: the 3-band rule (ADR-0008, amended by
 ADR-0197) gives product-core the CONTRACT and this bundled extension every
 process-touching statement, and ``tests/agents/test_p2_band_boundaries.py``
 is the machine gate.
+
+This file used to open by calling itself THE ONLY FILE IN AELIX THAT SPAWNS A
+SUBAGENT. That stopped being true when :mod:`aelix_agents.rpc_channel` landed —
+it is the second implementation of :class:`SubagentChannel`, it spawns too, and
+it is in this band for the same reason. What remains true, and is the claim
+that mattered, is that BOTH spawners live in this extension and product-core
+contains no line of either.
 
 Three defects this module exists to not have. All three were reproduced by
 execution against this codebase before the design was settled; none of them is
@@ -62,7 +69,7 @@ import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 import aelix_coding_agent
 from aelix_coding_agent.agents.resolver import profile_to_argv
@@ -226,6 +233,44 @@ class ToolNarrowing:
 
     profile: AgentProfile
     dropped: tuple[str, ...]
+
+
+class SubagentChannel(Protocol):
+    """What the runtime actually requires of a channel.
+
+    Measured, not designed: an AST walk over ``runtime.py`` and ``extension.py``
+    finds exactly ONE attribute read on the channel object — ``run``. The test
+    suite already injects bare duck-typed stand-ins that satisfy it, so this
+    Protocol is a zero-behaviour-change replacement for two concrete
+    :class:`PrintChannel` annotations, not a new constraint.
+
+    It lives HERE, beside :class:`SpawnPlan` and :class:`RunningChild`, so that
+    naming the seam does not drag a particular implementation into the
+    runtime's import graph.
+
+    THE CONTRACT IS WIDER THAN THE SIGNATURE, and the rest of it was previously
+    written down nowhere:
+
+    * **``run`` must not raise except on cancellation.** The runtime's call site
+      is ``try/finally`` with no ``except``, so on the single-task door an
+      exception propagates into the harness's tool dispatcher.
+    * **``run`` must leave ``child.state`` terminal** (``done`` / ``error`` /
+      ``stopped``) before returning; the runtime only promotes a non-terminal
+      state to ``error`` as a backstop.
+    * **``run`` may mutate ``child.stream`` in place** — that is the object the
+      progress taps publish from.
+    * **``child.proc`` must hold a real process** if the channel wants ``stop``,
+      ``stop_all`` and session teardown to reach its child, because all three
+      bypass the channel entirely and hand ``child.proc`` to the reaper.
+    """
+
+    async def run(
+        self,
+        plan: SpawnPlan,
+        *,
+        child: RunningChild | None = ...,
+        on_stream: Callable[[_StreamState], None] | None = ...,
+    ) -> SubagentResult: ...
 
 
 class StderrRing:
@@ -1103,6 +1148,7 @@ __all__ = [
     "RunningChild",
     "SpawnPlan",
     "StderrRing",
+    "SubagentChannel",
     "ToolNarrowing",
     "abort_child",
     "apply_cost_fallback",

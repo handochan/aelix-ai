@@ -1,6 +1,9 @@
 # 0058. Phase 4.4 Strict Superset Closure
 
-Status: Accepted (Sprint 6d / Phase 4.4 / W6 shipped)
+Status: Accepted (Sprint 6d / Phase 4.4 / W6 shipped) — **the `P-119 / W4 m2`
+carry-forward ("synthetic terminal event emission deferred to Sprint 6f") is
+RETIRED as based on a false premise; see `## Amendment (2026-07-31)` below.**
+Everything else in this ADR stands.
 
 ## Context
 
@@ -63,7 +66,7 @@ cumulative invariant from ADR-0039 / 0040 / 0044 / 0046 / 0050 / 0055.
 | **P-116** | `is_streaming` underreports during tool execution (uses `phase == "turn"` proxy) | `is_streaming = harness.phase != "idle"` (covers turn + tool exec + compaction) |
 | **P-117** | `_handle_new_session` silently drops `parent_session` | Returns Pi-shape error envelope citing Sprint 6f deferral |
 | **P-118** | `_handle_get_state` reached into `_steering_queue._messages` / `_session` / `_cached_session_name` / `_options` | New harness public properties: `pending_message_count`, `session_file`, `session_name`, `steering_mode`, `follow_up_mode`. AST-walk closure pin asserts no `harness._foo` reads |
-| **P-119 / W4 m2** | `_handle_prompt` swallows synchronous failures with `contextlib.suppress(Exception)` | Try/except logs to stderr; synthetic terminal event emission deferred to Sprint 6f when harness exposes event bus |
+| **P-119 / W4 m2** | `_handle_prompt` swallows synchronous failures with `contextlib.suppress(Exception)` | Try/except logs to stderr (stands). ~~synthetic terminal event emission deferred to Sprint 6f when harness exposes event bus~~ — **RETIRED, false premise; see `## Amendment (2026-07-31)`** |
 | **P-120** | Parse-error envelope used user's claimed `command` instead of `"parse"` | Always `command="parse"` on JSON/type/value error (Pi parity) |
 
 #### W4 + W5 W6 must-fix MINOR (applied)
@@ -170,9 +173,12 @@ the closure pin's exhaustiveness assertion).
 - **P-125** — `wait_for_idle` standalone listener race (Pi has the same
   shape).
 - **P-126** — `rebindSession` seam for Sprint 6f switch/fork/clone.
-- **W4 m2** — `_handle_prompt` synthetic event emission so
+- ~~**W4 m2** — `_handle_prompt` synthetic event emission so
   `wait_for_idle` clients unblock on error (Sprint 6f when harness
-  exposes a public event-emit method).
+  exposes a public event-emit method).~~ **RETIRED 2026-07-31** — Pi emits no
+  synthetic terminal event and no event-emit API was ever required; the real
+  repair was in the harness and shipped in the RPC sprint. See
+  `## Amendment (2026-07-31)`.
 - **W4 m4** — bash guardrail audit (Sprint 6f hardening).
 - **W4 m7** — Closure-pin fixture path (installed-package compatibility
   — Sprint 6f as part of test-infra hardening).
@@ -226,3 +232,86 @@ the closure pin's exhaustiveness assertion).
 
 Sprint 6d / Phase 4.4 (shipped — closure pin Green; 9 of 29 RpcCommand
 variants live; 20 deferred with owning ADR-0058).
+
+## Amendment (2026-07-31) — the `P-119 / W4 m2` carry-forward is RETIRED
+
+**It was never a parity gap. Implementing it as written would have DIVERGED from
+Pi.** Retired by the RPC sprint, which measured the premise and found it false.
+
+### What this ADR deferred
+
+Two entries, both pointing at the same imagined mechanism:
+
+> **P-119 / W4 m2** — `_handle_prompt` swallows synchronous failures with
+> `contextlib.suppress(Exception)` → Try/except logs to stderr; **synthetic
+> terminal event emission deferred to Sprint 6f when harness exposes event bus**
+
+> **W4 m2** — `_handle_prompt` synthetic event emission so `wait_for_idle`
+> clients unblock on error (Sprint 6f when harness exposes a public event-emit
+> method).
+
+The in-code NOTE it came from (`rpc/rpc_mode.py`) asserted that *"Pi parity
+(`rpc-mode.ts:379-401`) also emits a synthetic terminal event so the client's
+`wait_for_idle` listener unblocks"*, and blamed a missing harness event-emit API.
+
+### What Pi actually does
+
+MEASURED against a fresh fetch of `rpc-mode.ts` at the pin `734e08e`, and
+re-confirmed at tag `v0.80.2`:
+
+```
+$ grep -nE "agent_end|synthetic|agentEnd" rpc-mode.ts
+(zero hits — 754 lines)
+```
+
+**Pi's RPC server never synthesises a terminal event, on any path.** What
+`rpc-mode.ts:379-401` — the `prompt` case — actually does is emit a *correlated
+error RESPONSE*, and only when preflight did not succeed:
+
+```ts
+382   let preflightSucceeded = false;
+388     preflightResult: (didSucceed) => {
+391       output(success(id, "prompt"));
+395   .catch((e) => {
+396     if (!preflightSucceeded) {
+397       output(error(id, "prompt", e.message));
+```
+
+**And no harness event-emit API was ever needed.** Pi terminates failed and
+aborted runs *inside the harness*: `agent-harness.ts:568` is a bare
+`catch (error)` routing everything — abort included — into `emitRunFailure`,
+which at `:512-524` emits `message_start → message_end → turn_end → agent_end`
+and ends `return [failureMessage];`. It returns; it does not rethrow.
+
+Aelix **already contained that port**, at `harness/core.py`, under a comment
+reading *"Pi parity: synthesize failure assistant message + emit closure
+events."* Two paths simply bypassed it: `except asyncio.CancelledError` returned
+`[]` before the closure block could run, and the block's filter was narrowed to
+`except AgentHarnessError` where Pi's is bare.
+
+### Consequences
+
+1. **The deferral is retired, not re-deferred.** There is nothing to build in
+   `rpc_mode.py`. A synthetic event bolted in there would be an Aelix-original
+   divergence from a server that emits none.
+2. **What was genuinely owed was a kernel repair**, and it shipped in the RPC
+   sprint: abort now emits `turn_end` + `agent_end` and returns; the closure
+   filter widened to `except Exception` (NOT `BaseException` — `CancelledError`
+   is one, and a non-abort cancellation must propagate untouched).
+3. **Abort deliberately does not reuse the four-event block.** Pi's *primary*
+   abort path is `agent-loop.ts:196-199`, which emits `turn_end` + `agent_end`
+   and returns normally; `emitRunFailure` is its fallback for a genuinely thrown
+   error. Routing abort through the failure block would stack a synthetic
+   `message_start` on the real one already in flight — a shape Pi never produces
+   — and would persist a bodiless assistant turn into the session, since
+   `message_end` is the write path.
+4. **The `contextlib.suppress` half of P-119 was real** and its fix (log to
+   stderr) stands. Only the "synthetic terminal event" half is withdrawn.
+5. **This ADR's own citation discipline is the lesson.** One unverified
+   `rpc-mode.ts:NNN` reference, written into an accepted ADR, sent a real defect
+   — automated clients hanging for a full 60 s timeout on every aborted or
+   failed turn — to the wrong layer for six sprints, where it was re-deferred
+   each time because the layer it was assigned to could not fix it. The same
+   header carried two more wrong numbers ("492 LOC"; case sites at "483-547",
+   both endpoints bare closing braces), corrected in the same sprint. **Fetch the
+   pinned file before citing it.**

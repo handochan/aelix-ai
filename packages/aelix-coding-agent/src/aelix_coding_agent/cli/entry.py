@@ -2161,8 +2161,6 @@ async def _async_main(argv: list[str]) -> int:
                 harness,
                 runtime_host=runtime,
                 harness_factory=_harness_factory,
-                repo=repo,
-                fs=fs,
             )
             return 0
 

@@ -103,6 +103,18 @@ _PRODUCT_CORE_CAP_ALLOWLIST = frozenset(
         "DEFAULT_WAIT_FOR_IDLE_MS",  # rpc/rpc_client.py — pre-P2, rpc plumbing
         "SHUTDOWN_SIGTERM_TIMEOUT_MS",  # rpc/rpc_client.py — pre-P2, rpc plumbing
         "STARTUP_GRACE_MS",  # rpc/rpc_client.py — pre-P2, rpc plumbing
+        # ADR-0201 added NO entry here, deliberately. The RPC sprint needed a
+        # per-line framing budget and a reader limit, and every idiomatic name
+        # for either trips ``_CAP_NAME_RE``. Both workarounds are wrong: a name
+        # that hides what the constant is defeats the gate that exists to catch
+        # exactly that drift, and a leading underscore exempts it silently
+        # (see the ``startswith('_')`` skip below). So both are PARAMETERS with
+        # ``None`` defaults and the numbers live in the bundled extension
+        # (``stream.MAX_LINE_BYTES``, ``print_channel.STREAM_LIMIT_BYTES``),
+        # which is where the band rule wants a policy number anyway.
+        #
+        # A FRAMING cap is not a DELEGATION cap — but this list cannot tell
+        # them apart, so the right move was to not need an entry.
     }
 )
 
@@ -211,13 +223,58 @@ def test_kernel_has_no_subagent_surface() -> None:
     )
 
 
+# The kernel is frozen EXCEPT where an accepted ADR authorises a change, and
+# each exception is listed here with the ADR that bought it. This is not a
+# weakening: the gate below still fires on every kernel file that is not on
+# this list, which is the unreviewed edit it exists to catch.
+#
+# ``harness/core.py`` — RPC sprint, ADR-0201 §D3. The turn terminator: an
+# aborted turn emitted
+# NO terminal event, so every ``agent_end``-waiting parent (``RpcClient.
+# prompt_and_wait``) hung for its full 60 s, and any exception that was not an
+# ``AgentHarnessError`` escaped the closure block the file already contained.
+# Both are Aelix regressions against pi, whose closure block is already ported
+# here and whose own comment reads "Pi parity: synthesize failure assistant
+# message + emit closure events" — so this is parity RESTORATION, and it carries
+# no delegation surface (``test_kernel_has_no_subagent_surface`` still guards
+# that, and still passes).
+_KERNEL_CHANGE_ALLOWLIST = frozenset(
+    {
+        "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py",
+    }
+)
+
+
+def _porcelain_path(line: str) -> str:
+    """Normalise one ``git status --porcelain`` / ``diff --name-only`` line.
+
+    Porcelain prefixes a two-column status code (`` M path``); renames arrive as
+    ``R  old -> new`` and we take the destination, since that is the file whose
+    content is now in the tree.
+    """
+
+    stripped = line[3:] if len(line) > 3 and line[2] == " " else line
+    stripped = stripped.strip()
+    if " -> " in stripped:
+        stripped = stripped.split(" -> ", 1)[1]
+    return stripped.strip().strip('"')
+
+
 def test_kernel_untouched_vs_merge_base() -> None:
-    """Not one line of ``packages/aelix-agent-core`` changed on this branch.
+    """No kernel file changed on this branch except those an ADR authorises.
 
     Skipped rather than failed when the ref is unavailable (shallow clone, no
     remote, detached tarball) — an unrunnable gate must announce itself, not
     pass silently. ``test_kernel_has_no_subagent_surface`` is the always-armed
     half; this one additionally catches a NON-subagent kernel edit.
+
+    Originally this asserted the kernel did not change AT ALL, which was right
+    for P2 and P3 — both were pure delegation-policy sprints whose kernel delta
+    was legitimately byte-empty. It is wrong as a permanent rule: it also forbids
+    the kernel's own maintenance, including repairing a pi-parity regression the
+    kernel itself claims in a comment to implement. The band rule isolates
+    delegation POLICY from the kernel; it does not make the kernel unmaintainable.
+    So the freeze is now by exception, and each exception names its ADR above.
     """
 
     base = _git("merge-base", "origin/main", "HEAD")
@@ -232,13 +289,24 @@ def test_kernel_untouched_vs_merge_base() -> None:
     assert committed.returncode == 0, committed.stderr
     changed = [line for line in committed.stdout.splitlines() if line.strip()]
 
-    # Uncommitted work counts too — during P2 the kernel edit that matters most
-    # is the one still sitting in the working tree.
+    # Uncommitted work counts too — the kernel edit that matters most is the one
+    # still sitting in the working tree.
     worktree = _git("status", "--porcelain", "--", kernel_path)
     assert worktree.returncode == 0, worktree.stderr
     changed.extend(line for line in worktree.stdout.splitlines() if line.strip())
 
-    assert changed == [], f"the kernel must not change in P2: {changed}"
+    unauthorised = sorted(
+        {
+            path
+            for path in (_porcelain_path(line) for line in changed)
+            if path and path not in _KERNEL_CHANGE_ALLOWLIST
+        }
+    )
+    assert unauthorised == [], (
+        "the kernel changed in a file no ADR authorises — add it to "
+        "`_KERNEL_CHANGE_ALLOWLIST` with the ADR that bought it, or revert: "
+        f"{unauthorised}"
+    )
 
 
 # === Band 2 — product-core is INTERFACE ONLY =================================
