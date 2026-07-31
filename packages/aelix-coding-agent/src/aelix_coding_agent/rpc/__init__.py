@@ -9,12 +9,14 @@ from __future__ import annotations
 from aelix_coding_agent.rpc._jsonl import (
     JsonlLineReader,
     attach_jsonl_line_reader,
+    pump_jsonl_lines,
     serialize_json_line,
 )
 from aelix_coding_agent.rpc.rpc_client import (
     RpcClient,
     RpcClientError,
     RpcClientOptions,
+    RpcServerExited,
 )
 from aelix_coding_agent.rpc.rpc_mode import (
     DEFERRED_COMMANDS,
@@ -87,6 +89,7 @@ __all__ = [
     "RpcClient",
     "RpcClientError",
     "RpcClientOptions",
+    "RpcServerExited",
     "RpcCommand",
     "RpcCommandAbort",
     "RpcCommandAbortBash",
@@ -138,6 +141,7 @@ __all__ = [
     "RpcSuccessResponse",
     "SUPPORTED_COMMANDS",
     "attach_jsonl_line_reader",
+    "pump_jsonl_lines",
     "build_dispatch_table",
     "command_to_json",
     "parse_rpc_command",

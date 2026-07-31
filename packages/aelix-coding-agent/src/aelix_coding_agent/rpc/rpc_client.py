@@ -17,6 +17,59 @@ Pi parity invariants:
 The Sprint 6d Python client ports the **full 29-method command surface** —
 deferred commands receive the server's :class:`RpcErrorResponse` and raise
 :class:`RpcClientError` so callers see Pi-shape failure semantics today.
+
+AELIX-ORIGINAL DIVERGENCES, all deliberate and all measured against the pin
+-------------------------------------------------------------------------
+
+pi's ``rpc-client.ts`` (515 lines at ``734e08e``) has **two** ``.on(`` calls in
+the whole file: stderr ``data``, and an ``exit`` handler that lives *inside*
+``stop()``. Its only liveness check is the same one-shot 100 ms grace ported
+above. Everything below is therefore hardening aelix adds, not parity aelix
+restores, and the distinction belongs in the ADR:
+
+1. **Child-death detection** (:meth:`RpcClient._watch_for_exit`). Without it a
+   child that dies at any point past the grace window costs the caller its
+   FULL budget — measured, a child exiting at 400 ms left
+   ``prompt_and_wait(timeout_ms=5000)`` blocked for 5.02 s and then raised a
+   bare ``TimeoutError()`` with empty args, while ``proc.returncode == 7`` had
+   been readable the entire time. At ``DEFAULT_WAIT_FOR_IDLE_MS`` that is 60 s,
+   and a delegation budget would make it ten minutes. The real reasons a real
+   child dies — a bad ``--tools`` name, no API key, an import error, an
+   OOM-kill — all land outside the 100 ms window.
+
+2. **Containment** (``start_new_session``, the ``preexec_fn`` seam). Without
+   ``start_new_session`` the child joins the PARENT's process group, so one
+   Ctrl+C SIGINTs every rpc child at once and nothing converts that into a
+   response. The death signal itself is a POLICY the caller injects, because
+   the implementation lives in the bundled extension and product-core may not
+   import it (ADR-0197 §(a), the import-direction gate).
+
+3. **The argv/env/stderr seams.** ``RpcClientOptions`` grew ``argv`` and
+   ``env_base`` so a caller can supply a COMPLETE command line and a COMPLETE
+   environment. ``env`` alone could not express a DELETION, which made the
+   mandatory ``AELIX_MCP_CONFIG`` pop inexpressible — every child would
+   otherwise fan out its own copy of every configured MCP server.
+
+4. **``Stderr:`` on the idle timeouts.** This one is the opposite of a
+   divergence: pi attaches it (``rpc-client.ts:405``, ``:426``) and aelix
+   already did in ``_send``, but the three ``wait_for`` calls were bare.
+
+WHAT IS **NOT** FIXED HERE, AND WHY
+-----------------------------------
+
+``agent_end`` carries no correlation id — no session event does. So two
+overlapping turns on ONE client cannot be told apart, and a stale terminator
+resolves the wrong waiter (measured: a delegation returned another's answer,
+usage and terminator with ``ok=True`` in a fifth of its own runtime). **pi has
+the identical defect** (``rpc-client.ts:429-432``, ``:458-468``); it was simply
+unreachable there because pi never ran two delegations through one client.
+
+It is not solvable on this side of the wire: the abandoned turn emits
+``agent_start`` *and* ``agent_end`` after the second waiter subscribes, so no
+client-side epoch or pairing can separate them. The two fixes that do work are
+both elsewhere and both in place — the server's busy preflight rejects the
+second ``prompt`` outright, and ``RpcChannel`` gives every task its own child.
+Do not add a client-side "fix" here that only appears to work.
 """
 
 from __future__ import annotations
@@ -28,12 +81,13 @@ import json
 import os
 import signal as _signal
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
 from aelix_coding_agent.rpc._jsonl import (
-    attach_jsonl_line_reader,
+    JsonlLineReader,
+    pump_jsonl_lines,
     serialize_json_line,
 )
 from aelix_coding_agent.rpc.rpc_types import (
@@ -58,9 +112,38 @@ class RpcClientError(RuntimeError):
         self.command = command
 
 
+class RpcServerExited(RuntimeError):
+    """The child RPC server process is gone — aelix-original (see module doc).
+
+    Raised instead of letting the caller block for its whole budget, and
+    deliberately a ``RuntimeError`` subclass so the one shape any existing
+    caller could have caught (``start``'s premature-exit raise, which was a
+    bare ``RuntimeError``) still matches.
+
+    :param returncode: the child's exit status, or ``None`` if the process is
+        gone but the status was never observed.
+    :param stderr: everything the child wrote to stderr. THIS IS THE POINT —
+        an rpc child that dies during startup writes its traceback here and
+        nothing at all to stdout, so without it the failure is undiagnosable.
+    """
+
+    def __init__(
+        self, message: str, *, returncode: int | None = None, stderr: str = ""
+    ) -> None:
+        super().__init__(message)
+        self.returncode = returncode
+        self.stderr = stderr
+
+
 @dataclass
 class RpcClientOptions:
-    """Pi parity: ``rpc-client.ts:RpcClientOptions``."""
+    """Pi parity: ``rpc-client.ts:RpcClientOptions``, plus the aelix seams.
+
+    The first six fields are pi's. The rest exist because a delegation channel
+    has to decide argv, environment and containment itself, and the ADR-0197
+    band rule puts every one of those DECISIONS in the bundled extension while
+    keeping the MECHANISM here. Each defaults to "behave exactly as before".
+    """
 
     cli_path: str | None = None
     cwd: str | None = None
@@ -68,6 +151,62 @@ class RpcClientOptions:
     provider: str | None = None
     model: str | None = None
     args: list[str] = field(default_factory=list)
+
+    argv: list[str] | None = None
+    """The COMPLETE command line, replacing :meth:`RpcClient._build_argv`.
+
+    When set, ``cli_path`` / ``provider`` / ``model`` / ``args`` are ignored —
+    a caller that renders its own argv has already decided all of them, and
+    silently appending to a fully-specified command line is how a child ends up
+    running flags nobody chose.
+
+    The default argv is ``python -m aelix --mode rpc``, which points at the
+    umbrella package's **mock-echo demo** (``src/aelix/__main__.py:143-147``),
+    not the real CLI. Any caller wanting a real child must use this field;
+    ``cli_path`` is not an escape, it splices in as a bare script path.
+    """
+
+    env_base: Mapping[str, str] | None = None
+    """What to build the child's environment FROM. ``None`` means ``os.environ``.
+
+    Exists because ``env`` can only add or overwrite. A caller that must
+    REMOVE an inherited key — ``AELIX_MCP_CONFIG`` is the one that matters, or
+    every child fans out its own copy of every configured MCP server — cannot
+    express that through ``env``: passing ``None`` as a value leaves the key
+    present with a ``None`` value, which ``create_subprocess_exec`` rejects.
+    """
+
+    preexec_fn: Callable[[], None] | None = None
+    """Run in the child between ``fork`` and ``exec``. POSIX only.
+
+    The seam exists so a caller can install a parent-death signal without
+    product-core importing the bundled extension, which the import-direction
+    gate forbids. Keep whatever goes here async-signal-safe and short.
+    """
+
+    stderr_max_bytes: int | None = None
+    """Override :attr:`RpcClient.STDERR_MAX_BYTES` for this client.
+
+    A delegation wants a far smaller window than the 10 MiB default: the
+    envelope's fallback chain only ever shows a TAIL, and it hands the raw
+    capture to an UNCAPPED details field.
+    """
+
+    stdout_line_max_bytes: int | None = None
+    """Per-line budget for the CHILD's stdout. ``None`` (default) = unbounded.
+
+    Opt-in, and only ever on this direction — see the note on
+    :class:`~aelix_coding_agent.rpc._jsonl.JsonlLineReader`.
+    """
+
+    reader_limit: int | None = None
+    """``StreamReader`` buffer ceiling passed to ``create_subprocess_exec``.
+
+    Inert for this client as written (the pump uses ``read``, which never
+    consults it — measured), so it is a guard for a future reader that reaches
+    for ``readline``, where the default 65536 raises on any longer line AND
+    leaves the oversize bytes in the buffer so every subsequent read raises too.
+    """
 
 
 class RpcClient:
@@ -92,12 +231,26 @@ class RpcClient:
     # bytes are dropped from the FRONT (FIFO) so the most-recent error
     # context is what callers see via ``get_stderr()``.
     STDERR_MAX_BYTES: int = 10 * 1024 * 1024
+    # Aelix-original. How often :meth:`_watch_for_exit` reads ``returncode``.
+    # An attribute read, not a syscall — asyncio's child watcher sets the field
+    # from its own callback — so this is 20 wakeups a second while a child is
+    # alive and none at all otherwise. Same value and same reason as the
+    # bundled extension's own exit poll.
+    #
+    # POLLING, NOT ``proc.wait()``, and that distinction is load-bearing:
+    # ``wait()`` does not resolve until every PIPE is disconnected, so anything
+    # the child leaves behind holding fd 1/2 keeps it pending long after the
+    # process is gone (CPython ``asyncio/base_subprocess.py``, ``_try_finish``
+    # requires ``all(p.disconnected)``). ``returncode`` is the independent signal.
+    EXIT_POLL_SECONDS: float = 0.05
 
     def __init__(self, options: RpcClientOptions | None = None) -> None:
         self._options = options or RpcClientOptions()
         self._proc: asyncio.subprocess.Process | None = None
         self._stdout_reader_task: asyncio.Task[None] | None = None
         self._stderr_reader_task: asyncio.Task[None] | None = None
+        self._exit_watcher_task: asyncio.Task[None] | None = None
+        self._stdout_reader: JsonlLineReader | None = None
         self._stderr_buffer: bytearray = bytearray()
         self._event_listeners: list[Callable[[dict[str, Any]], None]] = []
         # Pi parity: requestId numeric monotonic counter, see ``rpc-client.ts:55``.
@@ -105,6 +258,47 @@ class RpcClient:
         self._pending_requests: dict[
             str, asyncio.Future[RpcSuccessResponse | RpcErrorResponse]
         ] = {}
+        # Set by :meth:`_watch_for_exit` the moment ``returncode`` appears, and
+        # never cleared while the client is started. Every wait in this class
+        # races it, which is what turns "the child died" from a timeout into an
+        # immediate, diagnosable failure.
+        self._exited: asyncio.Event = asyncio.Event()
+        self._stopping = False
+
+    # === Introspection =========================================================
+
+    @property
+    def process(self) -> asyncio.subprocess.Process | None:
+        """The child process, or ``None`` before :meth:`start` / after :meth:`stop`.
+
+        Published because a caller that owns the child's lifecycle needs the
+        real object: the process-tree reaper, the descendant walk and the
+        registry row that ``stop_all`` reaches through all take a ``Process``,
+        and none of them can be built from this class's public surface.
+        """
+
+        return self._proc
+
+    @property
+    def returncode(self) -> int | None:
+        """The child's exit status, or ``None`` while it is alive."""
+
+        return self._proc.returncode if self._proc is not None else None
+
+    @property
+    def dropped_lines(self) -> int:
+        """Oversize stdout lines discarded by the framing budget.
+
+        Always 0 unless :attr:`RpcClientOptions.stdout_line_max_bytes` was set.
+        Readable WHILE the pump runs, which is why the reader is owned here
+        rather than being a local inside it.
+        """
+
+        return self._stdout_reader.dropped_lines if self._stdout_reader else 0
+
+    def _stderr_cap(self) -> int:
+        override = self._options.stderr_max_bytes
+        return override if override is not None else self.STDERR_MAX_BYTES
 
     # === Lifecycle =============================================================
 
@@ -116,14 +310,34 @@ class RpcClient:
 
         argv = self._build_argv()
         env = self._build_env()
+        opts = self._options
 
+        spawn_kwargs: dict[str, Any] = {}
+        if opts.reader_limit is not None:
+            spawn_kwargs["limit"] = opts.reader_limit
+        if opts.preexec_fn is not None:
+            # ``noqa`` mirrors the bundled extension's own spawn: the check
+            # exists because a preexec_fn is unsafe in a THREADED parent, and
+            # the contract on this seam is that the callable is
+            # async-signal-safe.
+            spawn_kwargs["preexec_fn"] = opts.preexec_fn  # noqa: PLW1509
+
+        self._exited = asyncio.Event()
+        self._stopping = False
         self._proc = await asyncio.create_subprocess_exec(
             *argv,
-            cwd=self._options.cwd,
+            cwd=opts.cwd,
             env=env,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            # AELIX-ORIGINAL. Without it the child joins the PARENT's process
+            # group, so a single Ctrl+C SIGINTs every rpc child at once — and
+            # neither an interactive parent nor an rpc child installs a SIGINT
+            # handler, so nothing converts that into a response or an envelope.
+            # Measured safe against the whole rpc suite before it was adopted.
+            start_new_session=True,
+            **spawn_kwargs,
         )
 
         proc_stdout = self._proc.stdout
@@ -131,29 +345,41 @@ class RpcClient:
         if proc_stdout is None or proc_stderr is None:
             raise RuntimeError("Subprocess pipes are not connected")
 
+        # The reader is OWNED here, not built inside the pump, so
+        # ``dropped_lines`` is readable while the pump is still running.
+        self._stdout_reader = JsonlLineReader(
+            self._handle_stdout_line, max_line_bytes=opts.stdout_line_max_bytes
+        )
         self._stdout_reader_task = asyncio.create_task(
-            attach_jsonl_line_reader(proc_stdout, self._handle_stdout_line)
+            pump_jsonl_lines(proc_stdout, self._stdout_reader)
         )
         self._stderr_reader_task = asyncio.create_task(
             self._drain_stderr(proc_stderr)
         )
+        # Started BEFORE the grace window so the window itself is observed by
+        # the same mechanism as everything after it.
+        self._exit_watcher_task = asyncio.create_task(self._watch_for_exit())
 
-        # Pi parity: 100ms startup grace. If the child exits within
-        # ``STARTUP_GRACE_MS`` we treat it as a launch failure.
-        try:
+        # Pi parity: 100ms startup grace (``rpc-client.ts:103-108``). It catches
+        # exec-level failures only — a real child's boot is two orders of
+        # magnitude longer than this (~25 s cold, ~18.6 s of it import time), so
+        # anything that fails during startup lands OUTSIDE the window and is
+        # caught by :meth:`_watch_for_exit` instead.
+        with contextlib.suppress(TimeoutError):
             await asyncio.wait_for(
-                self._proc.wait(),
-                timeout=self.STARTUP_GRACE_MS / 1000.0,
+                self._exited.wait(), timeout=self.STARTUP_GRACE_MS / 1000.0
             )
-            # If wait returned before timeout, the process exited early.
+        if self._exited.is_set():
+            returncode = self._proc.returncode
             stderr_snapshot = self.get_stderr()
-            raise RuntimeError(
-                "RPC server exited prematurely with code "
-                f"{self._proc.returncode}. Stderr: {stderr_snapshot}"
+            await self._teardown_tasks()
+            self._proc = None
+            raise RpcServerExited(
+                f"RPC server exited prematurely with code {returncode}. "
+                f"Stderr: {stderr_snapshot}",
+                returncode=returncode,
+                stderr=stderr_snapshot,
             )
-        except TimeoutError:
-            # Expected — the server is still running past the grace window.
-            return
 
     async def stop(self) -> None:
         """Pi parity: ``rpc-client.ts:88-122`` (``stop``).
@@ -166,42 +392,132 @@ class RpcClient:
         if proc is None:
             return
 
-        # W4 M3 — surface a meaningful exception to in-flight awaiters
-        # (Pi parity: ``rpc-client.ts`` rejects pending promises with a
-        # named error). Previously we called ``future.cancel()`` which
-        # only delivered ``CancelledError`` with no command context.
-        stop_error = RpcClientError("rpc", "RPC server stopped")
-        for future in self._pending_requests.values():
-            if not future.done():
-                future.set_exception(stop_error)
-        self._pending_requests.clear()
+        self._stopping = True
+        self._fail_pending(RpcClientError("rpc", "RPC server stopped"))
 
         with contextlib.suppress(ProcessLookupError):
             proc.terminate()
-        try:
-            await asyncio.wait_for(
-                proc.wait(),
-                timeout=self.SHUTDOWN_SIGTERM_TIMEOUT_MS / 1000.0,
-            )
-        except TimeoutError:
+        # POLL ``returncode``, NEVER ``await proc.wait()``. Measured: with a
+        # descendant holding the child's stdout/stderr, ``wait()`` does not
+        # resolve until those pipes disconnect, so ``stop()`` paid the FULL
+        # 1.00 s SIGTERM grace on a child that had already died — while
+        # ``returncode`` was set the whole time. Without a holder both shapes
+        # return in 0.00 s, which is why the bug survived: only the pipe-holder
+        # case is slow, and only that case reproduces it.
+        if not await self._await_exit(self.SHUTDOWN_SIGTERM_TIMEOUT_MS / 1000.0):
             with contextlib.suppress(ProcessLookupError):
                 proc.kill()
             # W4 m9 — bound the final reap so a stuck child can't block
             # ``stop()`` forever. 5s is enough for a normal exit and
             # leaves the failure path observable via stderr capture.
-            with contextlib.suppress(TimeoutError):
-                await asyncio.wait_for(proc.wait(), timeout=5.0)
+            await self._await_exit(5.0)
 
-        for task in (self._stdout_reader_task, self._stderr_reader_task):
-            if task is None:
-                continue
-            task.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):  # noqa: BLE001
-                await task
+        await self._teardown_tasks()
+        # Closing the transport is what keeps asyncio from printing
+        # ``Exception ignored in BaseSubprocessTransport.__del__ ...
+        # RuntimeError: Event loop is closed`` at interpreter shutdown — a
+        # traceback for a teardown that went exactly as designed, which in a
+        # TUI is indistinguishable from a real one and which the user cannot
+        # act on. Best-effort: the transport is private and may already be gone.
+        with contextlib.suppress(Exception):
+            transport = getattr(proc, "_transport", None)
+            if transport is not None:
+                transport.close()
 
         self._proc = None
+        self._stdout_reader = None
+
+    async def close_stdin(self) -> None:
+        """Send EOF on the command channel — the GRACEFUL shutdown.
+
+        ``run_rpc_mode`` races a shutdown event against stdin EOF and returns
+        when either fires, so closing this pipe asks the child to finish and
+        exit on its own, with no signal and no grace window. A caller that owns
+        the child for exactly one task should prefer this to :meth:`stop` and
+        keep the signal path for the child that does not take the hint.
+
+        Idempotent and never raises: a child that already died closed this end
+        for us, which is not an error at the point we are trying to close it.
+        """
+
+        proc = self._proc
+        if proc is None or proc.stdin is None:
+            return
+        with contextlib.suppress(Exception):
+            proc.stdin.close()
+
+    async def _watch_for_exit(self) -> None:
+        """Set :attr:`_exited` the moment the child's status appears.
+
+        AELIX-ORIGINAL; pi has no equivalent (see the module docstring). This
+        is the whole child-death mechanism: everything else just races the
+        event this sets.
+
+        Pending requests are failed here rather than left to time out, because
+        the two legs otherwise disagree by a factor of 5000 — measured, a
+        command issued to an already-dead child raised ``RuntimeError`` in
+        0.00 s (broken stdin) while one issued just before it died blocked the
+        full budget and raised a bare ``TimeoutError``. Same cause, same fact
+        about the world, two unrecognisably different failures.
+        """
+
+        proc = self._proc
+        if proc is None:
+            return
+        while proc.returncode is None:
+            await asyncio.sleep(self.EXIT_POLL_SECONDS)
+        self._exited.set()
+        if self._stopping:
+            # ``stop`` already failed them with its own, more accurate reason.
+            return
+        self._fail_pending(
+            RpcServerExited(
+                f"RPC server exited with code {proc.returncode}. "
+                f"Stderr: {self.get_stderr()}",
+                returncode=proc.returncode,
+                stderr=self.get_stderr(),
+            )
+        )
+
+    def _fail_pending(self, error: BaseException) -> None:
+        """Resolve every in-flight request with ``error`` and forget them.
+
+        W4 M3 — a named exception rather than ``future.cancel()``, which
+        delivered a ``CancelledError`` with no context (Pi parity:
+        ``rpc-client.ts`` rejects pending promises with a named error).
+        """
+
+        for future in self._pending_requests.values():
+            if not future.done():
+                future.set_exception(error)
+        self._pending_requests.clear()
+
+    async def _await_exit(self, timeout: float) -> bool:
+        """Wait up to ``timeout`` for the child's status. ``True`` if it landed."""
+
+        with contextlib.suppress(TimeoutError):
+            await asyncio.wait_for(self._exited.wait(), timeout=timeout)
+        return self._exited.is_set()
+
+    async def _teardown_tasks(self) -> None:
+        """Cancel and join the three background tasks. Never raises."""
+
+        tasks = (
+            self._stdout_reader_task,
+            self._stderr_reader_task,
+            self._exit_watcher_task,
+        )
+        for task in tasks:
+            if task is not None:
+                task.cancel()
+        for task in tasks:
+            if task is None:
+                continue
+            with contextlib.suppress(BaseException):
+                await task
         self._stdout_reader_task = None
         self._stderr_reader_task = None
+        self._exit_watcher_task = None
 
     # === Event subscription ====================================================
 
@@ -397,7 +713,7 @@ class RpcClient:
 
         unsubscribe = self.on_event(_listener)
         try:
-            await asyncio.wait_for(idle, timeout=timeout_s)
+            await self._await_terminator(idle, timeout_s, "agent to become idle")
         finally:
             unsubscribe()
 
@@ -417,7 +733,7 @@ class RpcClient:
 
         unsubscribe = self.on_event(_listener)
         try:
-            await asyncio.wait_for(done, timeout=timeout_s)
+            await self._await_terminator(done, timeout_s, "events")
         finally:
             unsubscribe()
         return collected
@@ -428,7 +744,14 @@ class RpcClient:
         images: list[dict[str, Any]] | None = None,
         timeout_ms: int | None = None,
     ) -> list[dict[str, Any]]:
-        """Pi parity: ``rpc-client.ts:promptAndWait``."""
+        """Pi parity: ``rpc-client.ts:promptAndWait``.
+
+        NOT SAFE FOR TWO OVERLAPPING TURNS on one client — ``agent_end`` has no
+        correlation id, so a terminator left over from an abandoned turn
+        resolves this one. See the module docstring: the defect is pi's too,
+        and the fixes live at the server (busy preflight) and in the caller
+        (one child per task), not here.
+        """
 
         # Wire the listener BEFORE sending so we don't miss the
         # ``agent_end`` that fires synchronously in fast-stub scenarios.
@@ -444,10 +767,62 @@ class RpcClient:
         unsubscribe = self.on_event(_listener)
         try:
             await self.prompt(message, images)
-            await asyncio.wait_for(done, timeout=timeout_s)
+            await self._await_terminator(done, timeout_s, "agent to become idle")
         finally:
             unsubscribe()
         return collected
+
+    async def _await_terminator(
+        self, done: asyncio.Future[Any], timeout_s: float, what: str
+    ) -> None:
+        """Wait for ``done``, the child's death, or the deadline — first wins.
+
+        The child-death leg is the aelix-original half and the reason this
+        helper exists at all: without it, every one of the three public waits
+        answers "the child is gone" by blocking for its entire budget and then
+        raising a bare ``TimeoutError`` with EMPTY args, which tells the caller
+        neither what happened nor that anything is wrong with the child.
+
+        The ``Stderr:`` suffix on the timeout IS pi parity (``rpc-client.ts:405``
+        and ``:426`` both attach it, and aelix already did in ``_send``); these
+        three calls were simply bare. It is also the rung the delegation
+        envelope's fallback chain depends on for a child that exits having
+        written zero stdout bytes.
+        """
+
+        if self._exited.is_set():
+            raise self._exit_error()
+        death = asyncio.ensure_future(self._exited.wait())
+        try:
+            await asyncio.wait(
+                {done, death},
+                return_when=asyncio.FIRST_COMPLETED,
+                timeout=timeout_s,
+            )
+        finally:
+            death.cancel()
+            with contextlib.suppress(BaseException):
+                await death
+        if done.done():
+            # The terminator won even if the child died in the same tick; a
+            # completed turn is a completed turn.
+            done.result()
+            return
+        if self._exited.is_set():
+            raise self._exit_error()
+        raise TimeoutError(
+            f"Timeout waiting for {what}. Stderr: {self.get_stderr()}"
+        )
+
+    def _exit_error(self) -> RpcServerExited:
+        returncode = self.returncode
+        stderr_snapshot = self.get_stderr()
+        return RpcServerExited(
+            f"RPC server exited with code {returncode} while the caller was "
+            f"waiting for it. Stderr: {stderr_snapshot}",
+            returncode=returncode,
+            stderr=stderr_snapshot,
+        )
 
     # === Internals ============================================================
 
@@ -459,6 +834,10 @@ class RpcClient:
         """
 
         opts = self._options
+        if opts.argv is not None:
+            # A caller that renders its own command line has already decided
+            # provider/model/args; appending to it would run flags nobody chose.
+            return list(opts.argv)
         cli_path = opts.cli_path
         if cli_path is not None:
             argv: list[str] = [sys.executable, cli_path, "--mode", "rpc"]
@@ -472,8 +851,17 @@ class RpcClient:
         return argv
 
     def _build_env(self) -> dict[str, str]:
-        env = dict(os.environ)
-        env.update(self._options.env)
+        """The child's environment: ``env_base`` (default ``os.environ``) + ``env``.
+
+        ``env_base`` is what makes a DELETION expressible. ``env`` alone can
+        only add or overwrite, so a caller that must strip an inherited key
+        passes a base it already pruned.
+        """
+
+        opts = self._options
+        base = os.environ if opts.env_base is None else opts.env_base
+        env = dict(base)
+        env.update(opts.env)
         return env
 
     async def _drain_stderr(self, stream: asyncio.StreamReader) -> None:
@@ -484,13 +872,14 @@ class RpcClient:
         diagnostics survive for ``get_stderr()`` callers.
         """
 
+        cap = self._stderr_cap()
         while True:
             chunk = await stream.read(4096)
             if not chunk:
                 return
             self._stderr_buffer.extend(chunk)
-            if len(self._stderr_buffer) > self.STDERR_MAX_BYTES:
-                overflow = len(self._stderr_buffer) - self.STDERR_MAX_BYTES
+            if len(self._stderr_buffer) > cap:
+                overflow = len(self._stderr_buffer) - cap
                 del self._stderr_buffer[:overflow]
 
     def _handle_stdout_line(self, line: str) -> None:
@@ -560,25 +949,35 @@ class RpcClient:
         self._pending_requests[request_id] = future
 
         line = serialize_json_line(payload).encode("utf-8")
-        self._proc.stdin.write(line)
         try:
+            self._proc.stdin.write(line)
             await self._proc.stdin.drain()
         except (BrokenPipeError, ConnectionResetError) as exc:
-            self._pending_requests.pop(request_id, None)
-            raise RuntimeError(f"RPC server closed stdin: {exc}") from exc
-
-        try:
-            response = await asyncio.wait_for(
-                future, timeout=self.DEFAULT_SEND_TIMEOUT_MS / 1000.0
-            )
-        except TimeoutError:
+            # A closed command channel means the server is gone. Normalised to
+            # the SAME exception the slow leg raises: measured, this leg fired
+            # in 0.00 s as a plain ``RuntimeError`` while a command issued
+            # moments earlier blocked the full budget and raised
+            # ``TimeoutError`` — one fact about the world, two unrecognisably
+            # different failures, and callers handled only whichever they hit
+            # first in testing.
             self._pending_requests.pop(request_id, None)
             stderr_snapshot = self.get_stderr()
-            raise TimeoutError(
-                f"Timeout waiting for response to {command.get('type')!r}. "
-                f"Stderr: {stderr_snapshot}"
-            ) from None
-        return response
+            raise RpcServerExited(
+                f"RPC server closed stdin: {exc}",
+                returncode=self.returncode,
+                stderr=stderr_snapshot,
+            ) from exc
+
+        try:
+            await self._await_terminator(
+                future,
+                self.DEFAULT_SEND_TIMEOUT_MS / 1000.0,
+                f"response to {command.get('type')!r}",
+            )
+        except BaseException:
+            self._pending_requests.pop(request_id, None)
+            raise
+        return future.result()
 
     def _unwrap(
         self, response: RpcSuccessResponse | RpcErrorResponse
@@ -599,4 +998,5 @@ __all__ = [
     "RpcClient",
     "RpcClientError",
     "RpcClientOptions",
+    "RpcServerExited",
 ]
