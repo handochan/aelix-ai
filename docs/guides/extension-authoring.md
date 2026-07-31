@@ -123,6 +123,36 @@ A hook handler registered through `on(...)` receives a read-only
 The full surface is defined in
 `packages/aelix-coding-agent/src/aelix_coding_agent/extensions/api.py`.
 
+## Current support status
+
+Every imperative `register_*` surface listed above is wired end-to-end today —
+a registration made in `setup()` reaches the running agent, not just a store:
+
+| Surface | Status | How it reaches the runtime |
+| ------- | ------ | -------------------------- |
+| `register_tool` | Live | Refreshes the harness tool registry and auto-activates the tool. |
+| `register_command` | Live in **both** the TUI and RPC | The TUI resolves it through `CommandDispatchService` after built-ins; RPC exposes it via `get_registered_commands`. |
+| `register_provider` / `unregister_provider` | Live | Queued at `setup()` time, then replayed into the real `ModelRegistry` once the harness is built. `config.models` then appear in `/model` (given a stored credential). |
+| `register_login_provider` | Live (interactive TTY only) | The `/login` wizard reads the registry to build its method list. Not available under `--print` / `--json` / `--mode rpc`, which have no wizard. |
+| `register_api_adapter` | Live, and re-applied across `/reload` | Fanned out to the process-global api registry, and replayed on every harness rebuild (the reload resets that registry). |
+| `register_flag` / `get_flag` | Live | The declared default seeds the runtime flag values; CLI overrides win. |
+| `on(...)` hooks | Live | Dispatched by the harness hook bus — the built-in Guardrail / Permission extensions use the same path. |
+| `register_shortcut` | Live | Aggregated by `get_shortcuts` and read live by the TUI chrome at key-fire time, so `/reload` handler swaps take effect. First registration wins a key collision. |
+| `register_message_renderer` | Live | Looked up live per custom message by `get_message_renderer`; first extension in load order wins. A renderer that raises falls back to default rendering. |
+
+Manifest `contributes.*` families are a different story — declaring one is **not**
+the same as registering it. What each family actually does at runtime:
+
+| Family | Runtime effect |
+| ------ | -------------- |
+| `contributes.hooks` | **Activated** — each entry registers a subprocess hook. Also forces eager loading. |
+| `contributes.themes` | **Activated** — registered at TUI start and offered in `/settings → Theme` (see [Themes](#themes)). Forces eager loading. |
+| `contributes.tui_widgets` | **Activated** — painted into the chrome at TUI start. Forces eager loading. |
+| `contributes.mcp_servers` | **Activated** — consumed by the MCP client. |
+| `contributes.commands` | **Metadata only** — supplies the *description* for a lazily-activated plugin's command stub in autocomplete. The command itself must still come from `register_command`. |
+| `contributes.tools` | **Declaration only** — it forces the plugin to load eagerly so its tools are visible to the model from startup, but it does not itself create a tool. Register the tool with `register_tool`. |
+| `contributes.descriptors` | **Reserved and inert** — declaring it logs a warning. Emit descriptors at runtime instead (see [Descriptors](#descriptors-runtime-emitted-not-manifest)). |
+
 ## Custom providers with their own `/login` method
 
 An extension can add a private provider — say a corporate `telnaut` — and give it
@@ -250,7 +280,9 @@ A module is expected to expose a `setup` callable (the factory convention).
 
 Aelix also discovers extensions without `-e`, from three channels:
 
-- `~/.aelix/extensions/` — your global extensions.
+- `~/.aelix/agent/extensions/` — your global extensions. This is
+  `get_agent_dir()/extensions`; override the base with the agent-dir env var
+  (`AELIX_CODING_AGENT_DIR`).
 - `cwd/.aelix/extensions/` — project-local extensions.
 - `entry_points(group="aelix.extensions")` — extensions shipped by installed
   packages.
@@ -265,8 +297,8 @@ directory you are in, so they are **gated by Project Trust**. The first time you
 run `aelix` in a directory that has them, you are asked to approve; in
 non-interactive mode they are denied by default. Use `--approve` / `-a` to trust
 project-local resources for a run, or `--no-approve` / `-na` to ignore them.
-Global extensions (`~/.aelix/extensions/`), explicit `-e`, and `entry_points`
-are always loaded. See ADR-0149 for the trust model.
+Global extensions (`~/.aelix/agent/extensions/`), explicit `-e`, and
+`entry_points` are always loaded. See ADR-0149 for the trust model.
 
 ## Disabling extensions
 

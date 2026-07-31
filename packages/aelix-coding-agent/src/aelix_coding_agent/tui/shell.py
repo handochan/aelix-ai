@@ -1228,11 +1228,14 @@ async def run_tui(
         def _default_catalog() -> tuple[str, bool] | None:
             # Track D (guard ③ / ADR-0192) — surface the built-in default catalog
             # as a marked Sources row. Compute the effective default identity (env
-            # repoint → placeholder → normalized) + its persisted opt-out state,
-            # mirroring the CLI ``source list``. Dormant in beta (empty placeholder
-            # → None → no row). Computed live so a repoint / CLI opt-out during the
-            # session shows on the next open. Injected as a value so the leaf viewer
-            # never imports the install/merge machinery.
+            # repoint → built-in DEFAULT_CATALOG_URL → normalized) + its persisted
+            # opt-out state, mirroring the CLI ``source list``. The built-in default
+            # is WIRED (extension_catalog.DEFAULT_CATALOG_URL points at the aelix
+            # marketplace catalog.json), so this normally yields a row; it is None
+            # only when the user opts out via an empty AELIX_DEFAULT_CATALOG or the
+            # value fails to normalize. Computed live so a repoint / CLI opt-out
+            # during the session shows on the next open. Injected as a value so the
+            # leaf viewer never imports the install/merge machinery.
             if settings_manager is None:
                 return None
             default_id = extension_install._effective_default_identity()
@@ -1265,7 +1268,8 @@ async def run_tui(
             ),
             # Track D (guard ③, ADR-0192) — the injected built-in default catalog
             # value (url + persisted opt-out state), rendered as a marked Sources
-            # row. None when no SettingsManager / dormant beta placeholder.
+            # row. None when no SettingsManager, or when the user disabled the
+            # built-in default via an empty AELIX_DEFAULT_CATALOG.
             default_catalog_getter=(
                 _default_catalog if settings_manager is not None else None
             ),
@@ -2420,11 +2424,15 @@ async def _input_loop(
         if parsed.kind == "empty":
             continue
         if parsed.kind == "reload":
-            # Issue #24 — DORMANT FLIP POINT. Default-OFF keeps the cheap
-            # resources-discover refresh; when AELIX_RELOAD_REBUILD is on, route
-            # through the full factory-rebuild reload (re-discovers on-disk
-            # extensions, no restart). runtime.reload() wait_for_idle()s and the
-            # input loop is serialized, so no extra mid-turn guard is needed.
+            # Issue #24 / #53 — LIVE BY DEFAULT (go-live, ADR-0177). With
+            # AELIX_RELOAD_REBUILD unset, `_reload_rebuild_enabled()` is True, so
+            # /reload routes through the full factory-rebuild reload: it
+            # re-discovers on-disk extensions, meaning an agent-written extension
+            # goes live WITHOUT a process restart (the #53 moat). Setting
+            # AELIX_RELOAD_REBUILD to a falsy value (0/false/no/off) is the
+            # kill-switch that falls back to the cheap resources-discover
+            # refresh. runtime.reload() wait_for_idle()s and the input loop is
+            # serialized, so no extra mid-turn guard is needed.
             if _reload_rebuild_enabled():
                 await runtime_host.reload()
             else:
