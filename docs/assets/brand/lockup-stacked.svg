@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 712" width="960" height="712" role="img" aria-label="Aelix">
   <rect width="960" height="712" rx="44" fill="#0B0F14"/>
-  <g transform="translate(351.04 123.29) scale(1.24000) translate(-24 -28)">
+  <g transform="translate(351.04 138.41) scale(1.24000) translate(-24 -28)">
     <defs>
     <linearGradient id="aelix-strand" gradientUnits="userSpaceOnUse" x1="52" y1="224" x2="172" y2="32">
       <stop offset="0" stop-color="#06B6D4"/>
@@ -11,7 +11,7 @@
   <path fill="url(#aelix-strand)" d="M28 224h40L188 32h-40Z"/>
   <path fill="#0E7490" d="M68 160h120l20 32H48Z"/>
   </g>
-  <g transform="translate(200.00 419.29) scale(0.89172) translate(-26 -8)">
+  <g transform="translate(250.00 434.41) scale(0.73248) translate(-26 -8)">
     <g fill="#F6FAFB">
     <path d="M87 32 L129 32 L70 192 L28 192 Z"/>
     <path d="M87 32 L129 32 L188 192 L146 192 Z"/>
