@@ -474,8 +474,62 @@ why (both workarounds — an evasive name, a leading underscore — defeat the g
   **Correcting the numbers (option A) was refused deliberately**: it leaves the tautology, so they
   rot again at the next pin move with nothing to catch it.
 * **`dropped_lines` on the intake direction** — deliberately unbounded. Any future budget there must
-  emit an explicit over-budget error, never a silent drop (ADR-0200, binding).
-* **`steer` / `follow_up` for chain mode** — recon Q8, still dropped.
+  emit an explicit over-budget error, never a silent drop (ADR-0201, binding).
+* ~~**`steer` / `follow_up` for chain mode**~~ — **CLOSED 2026-07-31, WONT-FIX-AS-STATED.**
+  Measured (workflow `wf_acfd5c09-b3c`, six ground-truth agents). Three independent reasons:
+
+  1. **Neither verb starts a turn.** Both are fully implemented on the real server and both are
+     *pure enqueue*: sent to an IDLE child they return `success:true`, bump `pendingMessageCount`,
+     and then sit inert forever. A chain of the form "await `agent_end` for step k, then
+     `follow_up(step k+1)`" **hangs** until the parent's budget expires. They extend a RUNNING run;
+     they do not dispatch one.
+  2. **They are structurally incompatible with `{previous}`.** `{previous}` needs the parent to READ
+     step k's summary before composing step k+1 — but these verbs must be sent while step k is still
+     running, i.e. *before that summary exists*. A `follow_up` delivered mid-turn is absorbed into
+     the same turn and produces **no second terminator**, so it cannot yield a per-step envelope either.
+  3. **pi's chain is already exactly one-child-per-task** — a fresh one-shot process per step, output
+     passed by string substitution, zero rpc / steer / follow_up. ADR-0201's decision is therefore
+     **vindicated by parity**, not merely excused by aelix's 29-command gap.
+
+  Also measured, against the "shared child" the item implies: **1.41x–2.45x more input tokens** for a
+  3-step chain with **no operating point where it is cheaper** (the spawn cost it would amortise is
+  re-sent every turn anyway), and it makes ADR-0199's injection class strictly worse — the fence's own
+  label ("produced by the previous agent … DATA, not instruction") becomes literally false when the
+  previous agent *is* this agent.
+
+  **The one genuinely useful finding underneath it:** the parent already receives the child's entire
+  conversation on the wire and discards 100% of it. A richer `{previous}` (transcript digest,
+  tool-result index, file manifest) is buildable **today on `PrintChannel`** — no shared child, no
+  rpc, no ADR-0201 conflict. If chain fidelity is the real want, that is the cheap door.
+
+* ~~**`prompt(images=…)` never reached the model**~~ — **FIXED**, kernel, parity restoration. The rpc
+  layer forwards `cmd.images` (this sprint), but `harness.prompt` built its `UserMessage` from the
+  text alone. pi routes all four verbs through one `createUserMessage(text, images)`
+  (`agent-harness.ts:43-45`). **The lesson outlives the fix:** every guard on this path asserted the
+  FORWARDING and stayed green while the feature was broken — 22 of them, including this sprint's own
+  `test_rpc_prompt_contract.py`. Forwarding is not delivery; assert at the `stream_fn` boundary.
+
+### Found by the same recon, NOT actioned — for the owner
+
+* **ADR-0199's "pi has none of this" list is partly false.** pi *does* have delegation with `parallel`
+  and `chain` modes plus a `{previous}` placeholder (in `examples/`, not core), a batch cap, a
+  concurrency bound and a consent dialog. Right on the wall-clock ceiling and the per-prompt budget;
+  wrong on the other three. The load-bearing claim ("no delegation *in the kernel*") is true and
+  unaffected — but ADR-0201 cites that framing, so it wants narrowing. Same defect class as the
+  ADR-0058 citation and the `pi_file_loc` fixtures: an unverified claim about pi, written once.
+* **`build_result`'s `failed` predicate ignores `state.error_message`.** A child that reports an error
+  message with no error `stop_reason` and exit 0 comes back `status="ok"` with the ERROR TEXT as its
+  summary and `error=None` — which `_run_chain` then forwards as `{previous}`. Narrow, but it is the
+  one gap the chain's fail-fast guard does not cover.
+* **`rpc_types` defaults `steering_mode` / `follow_up_mode` to `"all"`; the harness defaults to
+  `"one-at-a-time"`.** A latent client-side mismatch.
+* **The busy-preflight window — CLAIMED BY THE RECON, NOT REPRODUCED BY ME.** The recon said
+  `agent_end` is emitted before `_phase = "idle"`, leaving a window in which a second `prompt` is
+  mishandled. Measured against the mock-echo server: `is_streaming` was already `False` immediately
+  after `agent_end`, and a second `prompt` was accepted normally. The in-process ordering is real (the
+  `finally` runs after the emit) but one wire round trip is enough for it to close. **Not asserted,
+  not actioned** — recorded so the next reader does not inherit an unverified claim, which is the
+  entire subject of this log.
 
 ### Superseded — the original plan's list, for the record
 

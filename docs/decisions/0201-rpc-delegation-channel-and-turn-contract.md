@@ -87,6 +87,21 @@ So the rpc turn contract, the missing terminators, `_handle_prompt` dropping
 **core's own unpaid debt**, and they were fixed in core. What stays in
 `aelix_agents` is unchanged: depth, `--no-agents`, consent, caps, argv/env policy.
 
+> **Correction (2026-07-31, after the fact).** The `cmd.images` half of that
+> sentence was true of the rpc layer and **false of the outcome**. `_handle_prompt`
+> does now forward `cmd.images` to `harness.prompt` — but `harness.prompt` built
+> its `UserMessage` from the text alone and dropped them, so the image still never
+> reached the model. Fixed separately in the kernel, as parity restoration: pi
+> builds every user message through one `createUserMessage(text, images)` helper
+> and uses it for `prompt`, `steer`, `followUp` and `nextTurn` alike.
+>
+> **The lesson is worth more than the fix.** The sprint's own guard asserted the
+> FORWARDING — that `prompt` was called with `images=` — and stayed green while
+> the feature was broken, which is precisely the "a test that passes under
+> mutation pins nothing" failure this record complains about elsewhere. A
+> forwarding assertion is not a delivery assertion. The replacement asserts at the
+> `stream_fn` boundary, i.e. at what the provider actually saw.
+
 The measurable consequence of D1 is the shape of every seam in *§The seams*
 below: product-core got the **mechanism** and the extension kept the **decision**.
 

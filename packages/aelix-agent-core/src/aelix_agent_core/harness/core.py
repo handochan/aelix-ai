@@ -1225,7 +1225,28 @@ class AgentHarness:
                     text = input_result.text
                     if input_result.images is not None:
                         images = input_result.images
-            user_msg = UserMessage(content=[TextContent(text=text)])
+            # ``images`` REACHES THE MODEL HERE, and until this line it did not.
+            #
+            # Pi builds every user message through one helper —
+            # ``createUserMessage(text, images)`` at ``agent-harness.ts:43-45``,
+            # whose second statement is ``if (images) content.push(...images)``
+            # — and uses it for ``prompt`` (via ``executeTurn`` at ``:532``),
+            # ``steer`` (``:654``), ``followUp`` (``:660``) and ``nextTurn``
+            # (``:665``) alike. Aelix ported the helper's BEHAVIOUR into
+            # ``steer`` / ``follow_up`` and not into ``prompt``, so an image
+            # attached to a prompt was accepted at the signature, carried
+            # through the input hook — which may even REPLACE it, just above —
+            # and then silently dropped on the floor one line later.
+            #
+            # It survived because every test on this path asserted the
+            # FORWARDING (that ``prompt`` was called with ``images=``) rather
+            # than the DELIVERY (that the provider's context contains them).
+            # ``tests/harness/test_harness_prompt_images.py`` asserts the
+            # delivery, at the ``stream_fn`` boundary, for exactly that reason.
+            content: list[Any] = [TextContent(text=text)]
+            if images:
+                content.extend(images)
+            user_msg = UserMessage(content=content)
             # Sprint 3b — drain the next_turn queue (Pi parity, executeTurn
             # L466-472): messages queued via ``next_turn()`` while idle (or
             # during the previous turn) are prepended to this turn's prompt.

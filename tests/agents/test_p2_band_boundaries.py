@@ -238,6 +238,19 @@ def test_kernel_has_no_subagent_surface() -> None:
 # message + emit closure events" — so this is parity RESTORATION, and it carries
 # no delegation surface (``test_kernel_has_no_subagent_surface`` still guards
 # that, and still passes).
+#
+# ``harness/core.py``, SECOND hunk — ``prompt(images=...)`` never reached the
+# model. Pi builds every user message through one helper,
+# ``createUserMessage(text, images)`` (``agent-harness.ts:43-45``), and uses it
+# for ``prompt``, ``steer``, ``followUp`` and ``nextTurn`` alike; aelix ported
+# its behaviour into ``steer`` / ``follow_up`` only, so a prompt's image was
+# accepted at the signature, threaded through the input hook, and dropped one
+# line later. Parity RESTORATION again, and again no delegation surface.
+#
+# LISTED SEPARATELY ON PURPOSE. This entry is path-based, so a second hunk in an
+# already-allowlisted file passes the gate silently. The list is the record of
+# WHY the kernel was opened, and a reason that is not written down is a reason
+# that stops existing — which is the failure mode the RPC sprint spent itself on.
 _KERNEL_CHANGE_ALLOWLIST = frozenset(
     {
         "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py",
