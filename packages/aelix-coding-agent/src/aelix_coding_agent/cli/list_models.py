@@ -127,8 +127,23 @@ async def list_models(
         # Aelix-additive divergence: inline fallback (Pi delegates to
         # ``formatNoModelsAvailableMessage`` in auth-guidance.ts which
         # is not yet ported).
+        #
+        # #111 B-1 — this used to say "Run 'aelix auth' to configure a
+        # provider". There is no ``aelix auth`` subcommand: the console
+        # script is ``cli.entry:main_sync``, which parses a bare word as
+        # the first user message, so the advice sent a credential-less
+        # first-time user into a turn they cannot run. (``aelix auth``
+        # exists only under ``python -m aelix``, a different entry point
+        # that is not what ``install.sh`` puts on PATH.) Both routes below
+        # are verified to exist: the env-var names are the ones the auth
+        # cascade reads, and ``/login`` is a registered TUI command —
+        # TUI-only, hence "run ``aelix`` and then", and reachable with no
+        # credentials because the no-usable-model guard in ``cli/entry.py``
+        # fires for ``print`` / ``json`` only.
         print(
-            "No models available. Run 'aelix auth' to configure a provider."
+            "No models available. Set a provider API key in the environment "
+            "(e.g. ANTHROPIC_API_KEY, OPENAI_API_KEY, OPENROUTER_API_KEY), "
+            "or run 'aelix' and use the /login command inside the TUI."
         )
         return
 

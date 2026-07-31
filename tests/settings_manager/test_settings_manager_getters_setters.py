@@ -167,10 +167,57 @@ def test_get_collapse_changelog_default(manager: SettingsManager) -> None:
     assert manager.get_collapse_changelog() is False
 
 
-def test_get_enable_install_telemetry_default(
-    manager: SettingsManager,
+# === #111 B-2: enableInstallTelemetry removed — back-compat guard ===
+#
+# The field/accessors were deleted because Aelix ships no telemetry sink and
+# the key advertised a capability that does not exist. These two tests are the
+# safety net: an existing user's settings.json carrying the key must keep
+# loading, and the stale key must not be clobbered on the next write.
+
+
+def test_settings_json_with_removed_enable_install_telemetry_still_loads(
+    settings_dirs: dict[str, Path],
+    write_settings: Any,
 ) -> None:
-    assert manager.get_enable_install_telemetry() is True
+    """A pre-existing settings.json carrying ``enableInstallTelemetry`` loads.
+
+    ``collapseChangelog`` is written alongside on purpose: ``_try_load``
+    swallows load failures and substitutes an empty ``Settings()``, so a bare
+    "did not raise" assertion cannot distinguish a clean load from a swallowed
+    crash. Reading the sibling key back proves the real dict was parsed.
+    """
+
+    write_settings(
+        settings_dirs["global_path"],
+        {"enableInstallTelemetry": False, "collapseChangelog": True},
+    )
+
+    manager = _make_manager(settings_dirs)
+
+    assert manager.get_collapse_changelog() is True
+    assert not hasattr(manager._settings, "enable_install_telemetry")
+    assert not hasattr(manager, "get_enable_install_telemetry")
+    assert not hasattr(manager, "set_enable_install_telemetry")
+
+
+async def test_removed_enable_install_telemetry_key_survives_a_later_write(
+    settings_dirs: dict[str, Path],
+    write_settings: Any,
+    read_settings: Any,
+) -> None:
+    """Persist merges into the on-disk dict, so the stale key is not dropped."""
+
+    write_settings(
+        settings_dirs["global_path"], {"enableInstallTelemetry": False}
+    )
+
+    manager = _make_manager(settings_dirs)
+    manager.set_collapse_changelog(True)
+    await manager.flush()
+
+    on_disk = read_settings(settings_dirs["global_path"])
+    assert on_disk["enableInstallTelemetry"] is False
+    assert on_disk["collapseChangelog"] is True
 
 
 def test_get_packages_default(manager: SettingsManager) -> None:

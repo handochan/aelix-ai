@@ -1,0 +1,120 @@
+name: Bug report
+description: Something in Aelix behaves incorrectly.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file this.
+
+        **If this is a security problem, stop — do not put the details here.**
+        Public issues are visible to everyone. Follow
+        [SECURITY.md](https://github.com/handochan/aelix-ai/blob/main/SECURITY.md)
+        instead; it explains how to reach the maintainer for a private channel
+        before you send anything sensitive.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What did you expect, and what did you get instead?
+      placeholder: |
+        Expected: ...
+        Actual: ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: >
+        The smallest sequence that shows the problem. Exact commands and the
+        prompt you sent, if the model was involved. If you cannot reproduce it
+        reliably, say so — an intermittent report is still worth filing.
+      placeholder: |
+        1. aelix
+        2. /login -> ...
+        3. Ask it to ...
+        4. Observe ...
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Aelix version
+      description: "Output of `aelix --version`. If you are running from a checkout, paste the commit SHA instead."
+      placeholder: "0.1.0b1"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: provider
+    attributes:
+      label: Model provider
+      description: Which provider was in use? Pick "Not applicable" if no model call was involved.
+      options:
+        - Anthropic
+        - OpenAI (Completions API)
+        - OpenAI (Responses API)
+        - OpenAI Codex (Responses)
+        - GitHub Copilot
+        - OpenRouter
+        - Google Generative AI
+        - Google Vertex AI
+        - Other / custom provider
+        - Not applicable
+    validations:
+      required: true
+
+  - type: input
+    id: model
+    attributes:
+      label: Model
+      description: The model id, if one was involved.
+      placeholder: "claude-opus-4-6"
+    validations:
+      required: false
+
+  - type: input
+    id: os
+    attributes:
+      label: OS and terminal
+      description: >
+        Operating system and version, plus the terminal emulator if this is a
+        display, input or rendering problem.
+      placeholder: "macOS 15.3, Ghostty 1.1 / Ubuntu 24.04, tmux 3.4 + Alacritty"
+    validations:
+      required: true
+
+  - type: input
+    id: python
+    attributes:
+      label: Python version
+      description: "Output of `python --version` for the interpreter running Aelix."
+      placeholder: "3.12.1"
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs, traceback or transcript
+      description: >
+        Paste any traceback in full. **Redact API keys, tokens and anything
+        private** — transcripts can contain your source code and your prompts.
+        This box is formatted as a code block automatically.
+      render: text
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues and this is not a duplicate.
+          required: true
+        - label: This is not a security vulnerability (those go to SECURITY.md).
+          required: true

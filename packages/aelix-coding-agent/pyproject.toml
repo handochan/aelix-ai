@@ -108,3 +108,52 @@ aelix-agent-core = { workspace = true }
 # `from aelix_agents import AgentsExtension` fails for every installed user
 # while passing in every source checkout.
 packages = ["src/aelix_coding_agent", "src/aelix_agents"]
+# #111 B-7 — developer-state exclusions. This is the package the leak was found
+# in: `src/aelix_coding_agent/.omc/state/agent-replay-*.jsonl` (maintainer
+# transcript content) plus three OMC state JSONs shipped inside the wheel,
+# because the old root-anchored `.omc/state/` .gitignore rule never matched a
+# nested path and hatchling had nothing else to go on.
+#
+# NARROW ON PURPOSE — DO NOT WIDEN, and never to `*.md` / `*.toml` / `*.json`.
+# This wheel is a CONTENT carrier. These four must stay in it; the #117
+# self-extension signpost cites them by ABSOLUTE PATH, so dropping one does not
+# make the product broken, it makes it unshippable — the agent confidently names
+# a file the installed tree does not have:
+#     aelix_coding_agent/examples/INDEX.md
+#     aelix_coding_agent/examples/echo/aelix-plugin.toml
+#     aelix_coding_agent/examples/echo/echo.py
+#     aelix_coding_agent/extensions/api.py
+# tests/packaging/test_build_hygiene.py builds this wheel for real and asserts
+# both directions — those four present, `.omc`/`__pycache__` absent. It builds
+# from a copy of the repo with .gitignore DELETED, because with .gitignore in
+# place the belt suppresses the planted scratch on its own and the assertion
+# would pass with this whole list gutted. Verified: gut it and 7 paths leak.
+exclude = [
+  ".omc",
+  "__pycache__",
+  "*.pyc",
+  "*.pyo",
+  ".ruff_cache",
+  ".pytest_cache",
+  "CLAUDE.md",
+  "AGENTS.md",
+  "aelix-session-*.html",
+]
+
+[tool.hatch.build.targets.sdist]
+# Same list for the sdist target: the per-package sdist leaked the identical
+# `src/aelix_coding_agent/.omc/state/**` paths. Note this sdist DOES carry the
+# repo .gitignore at its root, so "the consumer has no .gitignore" is not the
+# reason these are here — the reason is that the belt is not what the packaging
+# test enforces, and a drifted .gitignore must not be able to re-open the leak.
+exclude = [
+  ".omc",
+  "__pycache__",
+  "*.pyc",
+  "*.pyo",
+  ".ruff_cache",
+  ".pytest_cache",
+  "CLAUDE.md",
+  "AGENTS.md",
+  "aelix-session-*.html",
+]

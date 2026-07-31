@@ -164,6 +164,33 @@ aelix extension trust add <key>                                 # trust a verifi
 aelix extension install <target> --require-signature            # fail-closed provenance gate
 ```
 
+## Known limitations (beta)
+
+Two things worth knowing before you point aelix at something that matters.
+
+**A run has no spend ceiling.** There is no iteration cap, no duplicate-call
+detection, and no cumulative token or cost budget — a model that keeps calling
+tools keeps costing money until it finishes or you stop it
+([#14](https://github.com/handochan/aelix-ai/issues/14),
+[#6](https://github.com/handochan/aelix-ai/issues/6),
+[#52](https://github.com/handochan/aelix-ai/issues/52)). The backstops that do
+exist are real but none of them bound spend: `Esc` aborts the in-flight turn in
+the TUI, `GuardrailExtension` hard-denies catastrophic commands before any
+permission check, the context is compacted automatically before it overflows,
+and `bash` times out after 600 s by default (1 h ceiling on an explicit
+per-call value). Watch long unattended runs, and prefer a model whose per-token
+price you have checked.
+
+**Headless mode auto-approves mutating tools.** `--print`, `--mode json` and
+`--mode rpc` have no terminal to draw an approval dialog on, so `write`, `edit`
+and `bash` execute without asking — that is precisely what makes them
+scriptable, and it is the behaviour the embedding examples above rely on. Two
+guarantees survive: `GuardrailExtension` still hard-denies its patterns, and
+`--permission-mode plan` blocks every mutating tool on the headless path too.
+Otherwise a headless run has full write and shell access to the machine it runs
+on, with whatever credentials that machine holds. Give it a container, a
+sandbox, or a checkout you can throw away.
+
 ## Architecture
 
 Three packages make up the agent (a uv workspace), orchestrated by `Agent` and `AgentHarness`:

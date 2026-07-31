@@ -10,9 +10,59 @@ version: `aelix-ai`, `aelix-agent-core`, `aelix-coding-agent`, and the `aelix`
 umbrella meta-package. (`aelix-server`, the Web-UI daemon, is deferred to a
 later release and is not part of this publish set.)
 
+<!--
+No comparison / tag links are defined at the bottom of this file on purpose:
+the repository has no tags and no releases yet, so every `.../compare/vX...HEAD`
+and `.../releases/tag/vX` link would 404. Add them with the first pushed tag.
+-->
+
 ## [Unreleased]
 
+_Nothing yet — everything below ships in the first release._
+
+## [0.1.0-beta.1] — not yet released
+
+The first published release of Aelix, cut as the tag `v0.1.0-beta.1`
+(distribution version `0.1.0b1`).
+
+Nothing was published before it. This file previously carried a
+`## [0.1.0] - 2026-06-20` entry describing an "initial public release" — no such
+tag and no such GitHub Release ever existed, and its contents are the first
+block of *Added* below. The *Changed* entries therefore describe changes made
+during development, relative to the state of the repository rather than to any
+earlier published version.
+
 ### Added
+
+- **Agent runtime (`aelix-agent-core`)** — stateful `Agent`, hook-aware
+  `AgentHarness`, typed `HookBus`, and the low-level async agent loop.
+- **AI primitives (`aelix-ai`)** — provider-agnostic message, streaming, and
+  tool types with pi-ai parity.
+- **Providers** — Anthropic and OpenAI-compatible backends (incl. OpenRouter),
+  with reasoning/thinking wiring, custom-model loading from `models.json`, and
+  config-value auth indirection (env-var / command).
+- **Built-in tools** — bash, read, write, edit, ls, grep, and find, with
+  pi-parity schemas and behavior (including image read/resize and `rg`/`fd`
+  acquisition).
+- **Compaction** — context summarization with entry-level cut-points,
+  split-turn handling, file-op preservation, and a token cap.
+- **Extensions API (`aelix-coding-agent`)** — 4-tier extension architecture,
+  extension loader, built-in policy/guardrail extensions, runtime tool
+  registration, and example tools.
+- **Project Trust** — running in an untrusted directory gates project-local
+  extensions (`.aelix/extensions/`) and MCP servers (`.aelix/mcp.json`) behind a
+  trust prompt with on-disk persistence; deny-by-default in headless mode.
+- **Cooperative abort** — `Esc` cancels in-flight tools (bash, grep, find, read,
+  write, edit, ls) without orphaning processes, and the RPC `abort_bash` kills
+  the running shell.
+- **TUI** — an interactive terminal shell (optional `[tui]` extra) with slash
+  commands, streaming Markdown output, compact tool cards, a status footer and
+  context meter, steer/queue, session resume/fork, and an external-editor
+  binding. Inline image rendering via the optional `[images]` extra.
+- **CLI** — the real `aelix` command (session, fork, export, and model flags)
+  plus a headless RPC mode and OAuth credential management.
+- **Release engineering** — CI (ruff + pytest on Python 3.11 / 3.12) and a
+  tag-triggered PyPI publish workflow using Trusted Publishing (OIDC).
 
 - **Beta / pre-release track** — pre-releases (beta/rc/alpha) are cut as
   **GitHub Releases only** and installed via a checksum-verified `install.sh`
@@ -172,42 +222,16 @@ later release and is not part of this publish set.)
   the system temp directory permanently — one per delegation, mode 0600. Aelix
   now sweeps prompt files belonging to processes that are gone, at startup.
 
-## [0.1.0] - 2026-06-20
+### Fixed
 
-Initial public release of the Aelix agent runtime — a pi-faithful, Python-native
-agent platform.
-
-### Added
-
-- **Agent runtime (`aelix-agent-core`)** — stateful `Agent`, hook-aware
-  `AgentHarness`, typed `HookBus`, and the low-level async agent loop.
-- **AI primitives (`aelix-ai`)** — provider-agnostic message, streaming, and
-  tool types with pi-ai parity.
-- **Providers** — Anthropic and OpenAI-compatible backends (incl. OpenRouter),
-  with reasoning/thinking wiring, custom-model loading from `models.json`, and
-  config-value auth indirection (env-var / command).
-- **Built-in tools** — bash, read, write, edit, ls, grep, and find, with
-  pi-parity schemas and behavior (including image read/resize and `rg`/`fd`
-  acquisition).
-- **Compaction** — context summarization with entry-level cut-points,
-  split-turn handling, file-op preservation, and a token cap.
-- **Extensions API (`aelix-coding-agent`)** — 4-tier extension architecture,
-  extension loader, built-in policy/guardrail extensions, runtime tool
-  registration, and example tools.
-- **Project Trust** — running in an untrusted directory gates project-local
-  extensions (`.aelix/extensions/`) and MCP servers (`.aelix/mcp.json`) behind a
-  trust prompt with on-disk persistence; deny-by-default in headless mode.
-- **Cooperative abort** — `Esc` cancels in-flight tools (bash, grep, find, read,
-  write, edit, ls) without orphaning processes, and the RPC `abort_bash` kills
-  the running shell.
-- **TUI** — an interactive terminal shell (optional `[tui]` extra) with slash
-  commands, streaming Markdown output, compact tool cards, a status footer and
-  context meter, steer/queue, session resume/fork, and an external-editor
-  binding. Inline image rendering via the optional `[images]` extra.
-- **CLI** — the real `aelix` command (session, fork, export, and model flags)
-  plus a headless RPC mode and OAuth credential management.
-- **Release engineering** — CI (ruff + pytest on Python 3.11 / 3.12) and a
-  tag-triggered PyPI publish workflow using Trusted Publishing (OIDC).
-
-[Unreleased]: https://github.com/handochan/aelix-ai/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/handochan/aelix-ai/releases/tag/v0.1.0
+- **`aelix --list-models` with no credentials no longer points at a command that
+  does not exist.** It advised running `aelix auth`; the `aelix` console script
+  parses that as the first user message, so the one instruction a brand-new user
+  received could not work. It now names the provider environment variables and
+  the `/login` command inside the TUI, both of which exist.
+- **The headless "No model selected." message no longer ends with a TUI-only
+  instruction.** `--print` and `--mode json` print it when no provider can be
+  resolved, and it closed with `Then use /model to select a model.` — `/model`
+  is a TUI command, so a headless reader had no prompt to type it at. It now
+  leads with `--model <id>`, which works on the invocation that just failed, and
+  offers `/model` only as the interactive alternative.
