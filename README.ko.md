@@ -1,8 +1,5 @@
 <p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/brand/lockup-dark.svg">
-    <img src="docs/assets/brand/lockup-light.svg" width="440" alt="Aelix — A×X 마크와 워드마크">
-  </picture>
+  <img src="https://raw.githubusercontent.com/handochan/aelix-ai/main/docs/assets/brand/lockup-stacked.png" width="360" alt="Aelix — A×X 마크와 Aelix 워드마크">
 </p>
 
 **당신만의 에이전트 세계를, 파이썬 생태계 위에.**

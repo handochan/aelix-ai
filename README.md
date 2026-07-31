@@ -1,8 +1,5 @@
 <p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/brand/lockup-dark.svg">
-    <img src="docs/assets/brand/lockup-light.svg" width="440" alt="Aelix — the A×X mark and wordmark">
-  </picture>
+  <img src="https://raw.githubusercontent.com/handochan/aelix-ai/main/docs/assets/brand/lockup-stacked.png" width="360" alt="Aelix — the A×X mark above the Aelix wordmark">
 </p>
 
 **Your own agent world — built on the Python ecosystem.**
