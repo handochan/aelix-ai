@@ -49,6 +49,40 @@ later release and is not part of this publish set.)
   small panel above the input box while two or more subagents are live. A single
   delegation keeps exactly the display it had. See ADR-0199.
 
+- **The agent now knows how to extend itself** (#117) — the default system
+  prompt gained a short "Extending yourself" block, scoped to the case where you
+  ask for a tool, command or hook to be added to Aelix itself. It names the real
+  contract (one Python file with `def setup(aelix)`, imported and run
+  in-process — no manifest, no build step), gives both extension directories as
+  absolute paths, and points at two files that ship inside the wheel — a worked
+  example and the full API — so the agent reads the real API instead of guessing
+  at one. Asked in plain language to add a tool, a fresh install previously
+  failed *and* claimed success, inventing a `tools_definition.json` manifest
+  that exists nowhere in Aelix; the word "extension" did not appear anywhere in
+  the prompt it was given. The block adds about 1,200 characters of fixed text
+  to the base system prompt, plus the four absolute paths it embeds — so the
+  exact size depends on your working directory and where Aelix is installed.
+
+  The global directory (`~/.aelix/agent/extensions/`, or
+  `$AELIX_CODING_AGENT_DIR`) is offered first because it is not trust-gated; the
+  project-local one (`<project>/.aelix/extensions/`) is offered second and
+  labelled with its condition, because an untrusted project drops its
+  project-local extensions with no error and no warning. The block also says a
+  `.aelix/` write may ask for approval and that the prompt is not a refusal,
+  and that a declined *or* policy-blocked write ends the attempt — it must not
+  be retried through `bash` or written somewhere else to get around it.
+
+  Every instruction the block emits is executed as part of the test suite
+  rather than string-matched, so a command the agent is told to run cannot ship
+  broken: the API grep hint is re-run through the real bash tool, ripgrep and
+  the Python fallback, and the file it says to read is read back through the
+  real `read` tool to prove the content actually arrives.
+
+  The block is **omitted** whenever you supply your own prompt:
+  `--system-prompt` / `--system-prompt-file`, or an agent profile with
+  `system_prompt: replace`. Those remain full overrides — nothing is silently
+  appended to them.
+
 ### Changed
 
 - **The per-prompt delegation cap now counts subagents, not `agent()` calls, and

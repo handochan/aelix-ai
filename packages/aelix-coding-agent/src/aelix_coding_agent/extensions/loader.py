@@ -19,8 +19,10 @@ Path resolution:
 
 Sprint 5a (Phase 3.1, ADR-0028 Accepted / ADR-0041): adds
 :func:`discover_and_load_extensions` — a Pi-parity 3-tier directory scan
-(project-local ``cwd/.aelix/extensions/``, global ``~/.aelix/extensions/``,
-explicit configured paths) PLUS an Aelix-additive
+(project-local ``cwd/.aelix/extensions/``, global ``<agent_dir>/extensions/``
+— ``~/.aelix/agent/extensions/`` in every shipped configuration, see the
+``agent_dir`` note on that function — and explicit configured paths) PLUS an
+Aelix-additive
 ``entry_points(group="aelix.extensions")`` pass. The directory scan is the
 **primary** discovery channel (Pi parity); ``entry_points`` is layered on
 LAST so installed packages cannot shadow project-local files (P-21
@@ -323,7 +325,18 @@ async def discover_and_load_extensions(
     Discovery order (highest priority first):
 
     1. ``cwd / .aelix / extensions /`` — project-local files / packages.
-    2. ``~/.aelix/extensions/`` (or ``agent_dir`` override) — user globals.
+    2. ``<agent_dir> / extensions /`` — user globals. **In every shipped
+       configuration this is ``~/.aelix/agent/extensions/``**, not
+       ``~/.aelix/extensions/``: both production call sites
+       (``cli/entry.py:925`` and ``:1534``) pass
+       ``agent_dir=Path(get_agent_dir())``, and ``get_agent_dir``
+       (``cli/config.py:82-92``) returns ``$AELIX_CODING_AGENT_DIR`` or
+       ``~/.aelix/agent``. The ``agent_dir=None`` default below falls back to
+       ``~/.aelix/extensions``, but no shipped caller takes it — it exists for
+       tests and direct library use. Naming the fallback as if it were the
+       user-facing directory is how a "write your extension to
+       ``~/.aelix/extensions``" instruction gets written and silently loads
+       nothing.
     3. ``configured_paths`` — explicit entries provided by the caller. A
        directory entry is expanded via :func:`_discover_in_dir`; an entry
        resolving to a directory with a ``pyproject.toml [tool.aelix]
@@ -434,7 +447,11 @@ def _discover_entries(
             for discovered in _discover_in_dir(local_dir, errors=errors):
                 _push_entry(discovered)
 
-        # 2. Global: ~/.aelix/extensions/  (or override via agent_dir)
+        # 2. Global: <agent_dir>/extensions/ — i.e. ~/.aelix/agent/extensions/
+        # for both production callers, which pass agent_dir=get_agent_dir().
+        # The `agent_dir is None` branch is the library/test fallback and is
+        # the ONLY way ~/.aelix/extensions is ever scanned; do not describe it
+        # as the user's global extension directory.
         home_aelix = Path.home() / ".aelix" if agent_dir is None else agent_dir
         global_dir = (home_aelix / "extensions").resolve(strict=False)
         for discovered in _discover_in_dir(global_dir, errors=errors):

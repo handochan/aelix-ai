@@ -687,6 +687,10 @@ Subcommands:
                                   index-url); register-only (add ≠ install)
   extension source list|remove    List / remove registered sources
   extension list                  List installed extensions (entry-point ledger)
+  extension discover [<query>]    Browse / search the advisory catalogs (#65);
+                                  --refresh --offline --no-default-catalog
+  extension discover install      Install an extension advertised by a catalog
+    <name>                        (--catalog CAT; plus the `install` flags)
   extension update [<name>]       Reinstall recorded source(s) with --upgrade
   extension remove <name>         Uninstall the extension's distribution
   extension keygen                Generate a publisher Ed25519 signing key (#67)
