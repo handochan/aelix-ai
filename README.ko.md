@@ -231,6 +231,11 @@ uv run aelix --help      # 실제 CLI
 
 [Apache-2.0](LICENSE) — 명시적 특허 허여가 포함된 허용적(permissive) 라이선스입니다.
 
+**이름과 로고**는 Apache-2.0 6조가 명시한 대로 코드 라이선스와 별개입니다.
+[TRADEMARK.md](TRADEMARK.md)는 6조보다 더 넓게 허용합니다 — Aelix 기반이라거나
+호환된다거나 Aelix 확장이라고 설명하는 것, `aelix-<무엇>` 패키지명을 쓰는 것에는
+허락이 필요 없습니다.
+
 Aelix의 상당 부분은 [pi](https://github.com/earendil-works/pi)(참조 커밋 `734e08e`,
 Copyright © 2025 [Mario Zechner](https://github.com/badlogic), MIT)의 TypeScript→Python
 포팅입니다. 번들된 모델 카탈로그는 [models.dev](https://models.dev)(MIT)가 공개한

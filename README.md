@@ -234,6 +234,11 @@ Copy `.env.example` to `.env` for live-provider credentials (the credential-free
 
 [Apache-2.0](LICENSE) — permissive, with an explicit patent grant.
 
+The **name and logo** are separate from the code licence, as Apache-2.0 §6 says
+they are. [TRADEMARK.md](TRADEMARK.md) grants more than §6 does: describing your
+work as built on, compatible with, or an extension of Aelix needs no permission,
+and neither does naming your package `aelix-<something>`.
+
 Substantial portions of Aelix are a TypeScript-to-Python port of
 [pi](https://github.com/earendil-works/pi) (reference commit `734e08e`),
 Copyright © 2025 [Mario Zechner](https://github.com/badlogic), MIT licensed. The bundled
