@@ -1,4 +1,4 @@
-"""Pi parity: ``packages/coding-agent/src/modes/rpc/rpc-mode.ts`` (492 LOC).
+"""Pi parity: ``packages/coding-agent/src/modes/rpc/rpc-mode.ts`` (754 LOC).
 
 RPC mode entry point + per-command handlers + signal-aware shutdown +
 event pipe. Headless operation behind a JSONL stdin/stdout wire.
@@ -113,10 +113,29 @@ Pi line citations at SHA 734e08e per Sprint 6h₄c W0 (P-323):
   replaced via runtime_host route per P-330)
 
 Pi line citations at SHA 734e08e per Sprint 6h₂ W5/W6 audit (P-258):
-the 9 case sites in ``rpc-mode.ts`` live at lines 483-547 (NOT
-528-635 as earlier drafts suggested) and delegate to ``AgentSession``
-methods in ``coding-agent/src/core/agent-session.ts`` — each handler
-docstring below cites BOTH the case site and the session method.
+the case sites in ``rpc-mode.ts`` delegate to ``AgentSession`` methods in
+``coding-agent/src/core/agent-session.ts`` — each handler docstring below
+cites BOTH the case site and the session method.
+
+RPC sprint correction (2026-07-31), re-measured against a fresh fetch of the
+pinned file: this module header said the Pi file was **492 LOC** and that the
+case sites "live at lines 483-547 (NOT 528-635 as earlier drafts suggested)".
+Both were wrong. The file at the pin is **754 lines** and the 29 case sites
+span **:379 (``prompt``) through :622 (``get_commands``)** — lines 483 and 547
+are each a bare closing brace, so the quoted range was neither endpoint of
+anything. Trust the PER-HANDLER citations below, which were corrected
+piecemeal and spot-check clean; treat any blanket range in this header as
+unverified. See ADR-0058's Amendment (2026-07-31) for why one wrong citation
+here was expensive.
+
+**Do not "correct" the 754 above back to 492 to match
+``tests/pi_parity/fixtures/pi_rpc_mode_734e08e.json``.** That fixture is itself
+stale: measured at the pinned SHA, ``rpc-mode.ts`` is 754 raw lines (fixture
+says 492), ``rpc-client.ts`` 515 (says 343) and ``rpc-types.ts`` 264 (says 262);
+only ``jsonl.ts`` at 58 is right. ``test_fixture_loc_counts_present`` cannot
+catch this — it asserts the fixture against hardcoded constants, so neither side
+ever touches Pi. Tracked in ``.omc/specs/rpc-sprint-log.md``; 7 fixtures carry
+``pi_file_loc`` claims and all of them want the same audit.
 """
 
 from __future__ import annotations
