@@ -60,3 +60,8 @@ aelix-session-*.html
 
 # Claude Code local settings
 .claude/settings.local.json
+
+# Name-reservation build output (scripts/reserve_*_names.py) — regenerable
+/dist-reservation/
+/npm-reservation/
+/.reservation-build/
