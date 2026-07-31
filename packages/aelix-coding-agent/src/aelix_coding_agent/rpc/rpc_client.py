@@ -823,6 +823,8 @@ class RpcClient:
         message: str,
         images: list[dict[str, Any]] | None = None,
         timeout_ms: int | None = None,
+        *,
+        collect: bool = True,
     ) -> list[dict[str, Any]]:
         """Pi parity: ``rpc-client.ts:promptAndWait``.
 
@@ -831,6 +833,30 @@ class RpcClient:
         resolves this one. See the module docstring: the defect is pi's too,
         and the fixes live at the server (busy preflight) and in the caller
         (one child per task), not here.
+
+        ``collect=False`` returns an EMPTY list, never a partial one. It is the
+        caller's statement that it will not read the result, not a hint — the
+        events are still parsed, still correlated and still fanned out to every
+        subscriber, so a reducer wired through :meth:`on_event` sees exactly
+        what it saw before.
+
+        The buffer is not a micro-optimisation. It retains every event of the
+        turn, and ``message_update`` repeats the whole assistant message on
+        every delta, so its size is the turn's length times the answer's — with
+        no ceiling anywhere. Measured end to end through ``RpcChannel.run``
+        against a child emitting 5 000 updates of 4 KB: peak parent memory
+        **25.6 MB** with the buffer and **0.36 MB** without, for a list the only
+        production caller discards. The list dies with the call, so it is only
+        ever visible as a PEAK — measured after the turn it reads 0.04 MB either
+        way, which is why a test that snapshots memory at the end proves
+        nothing.
+
+        Collecting IS pi (``promptAndWait`` is literally ``collectEvents`` plus
+        ``prompt``, ``rpc-client.ts:443-447``), so the default leaves every
+        existing caller byte-identical and the opt-out follows the precedent
+        :attr:`RpcClientOptions.raise_on_command_error` set in this file: pi's
+        behaviour is the default, and the caller driving a child unattended
+        opts out of it.
         """
 
         # Wire the listener BEFORE sending so we don't miss the
@@ -840,7 +866,8 @@ class RpcClient:
         done = asyncio.get_running_loop().create_future()
 
         def _listener(event: dict[str, Any]) -> None:
-            collected.append(event)
+            if collect:
+                collected.append(event)
             if event.get("type") == "agent_end" and not done.done():
                 done.set_result(None)
 

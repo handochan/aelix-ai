@@ -280,6 +280,22 @@ class RpcChannel:
                 error=error,
             )
 
+        def _listener(payload: dict[str, Any]) -> None:
+            # BOTH halves are wrapped, and neither is paranoia. ``reduce_event``
+            # documents "NEVER raises" and once did not — a line carrying
+            # ``"usage": {"input": Infinity}`` reached ``int(inf)``. And a
+            # broken progress subscriber must not be able to fail a delegation
+            # that is otherwise succeeding.
+            with contextlib.suppress(Exception):
+                reduce_event(state, payload)
+            if on_stream is not None:
+                with contextlib.suppress(Exception):
+                    on_stream(state)
+
+        # ``None`` until there is a client to subscribe to, so the ``finally``
+        # below needs no knowledge of which paths got that far.
+        unsubscribe: Callable[[], None] | None = None
+
         row.prompt = write_prompt_file(plan.resolved.name, profile.body)
         try:
             if row.stopped:
@@ -324,6 +340,30 @@ class RpcChannel:
                 )
             )
 
+            # SUBSCRIBED BEFORE THE PROCESS EXISTS, and that ordering is the
+            # whole point. ``start`` spawns the child, creates the stdout pump
+            # and only THEN waits out its 100 ms grace, so everything the child
+            # emitted inside that window used to be broadcast to an empty
+            # listener list. Measured against a ``/bin/sh`` child that speaks
+            # and then exits 9 inside the grace: subscribed here, the envelope
+            # reports the child's own ``rate limited`` and its 33 tokens;
+            # subscribed after ``start``, the same run reports the stderr
+            # traceback and zero usage. That is what made "the child said
+            # nothing" and "we were not listening yet" the same observation,
+            # with no counter anywhere that could tell them apart.
+            #
+            # It buys what the pump managed to READ, not everything the child
+            # wrote: ``start``'s failure path cancels the pump without draining
+            # it, so bytes still in the pipe are still lost.
+            #
+            # The summary shift is a promotion, not a substitution. The stderr
+            # rung of ``_select_summary`` is gated on ``not ok`` and this path is
+            # always ``ok=False``, so a traceback can only ever be displaced by
+            # ``state.error_message`` — the child's own diagnosis of WHY the
+            # delegation failed — and the traceback still travels in ``details``
+            # and in ``error``.
+            unsubscribe = client.on_event(_listener)
+
             try:
                 await client.start()
             except asyncio.CancelledError:
@@ -335,6 +375,11 @@ class RpcChannel:
                 # rpc mode, so the child dies before the transport exists and
                 # its stderr is the only diagnosis there will ever be.
                 captured["stderr"] = _stderr_of(exc, client)
+                # Now that the reducer is live through the grace, a line CAN be
+                # dropped before the spawn is declared failed. Without this the
+                # envelope reports ``dropped_lines: 0`` for a child whose very
+                # first line blew the framing budget.
+                captured["dropped"] = client.dropped_lines
                 captured["exit_code"] = getattr(exc, "returncode", None)
                 row.state = "error"
                 return _envelope(outcome="error", error=str(exc))
@@ -351,14 +396,21 @@ class RpcChannel:
                 client,
                 plan,
                 row,
-                state=state,
-                on_stream=on_stream,
                 timeout_ms=timeout_ms,
                 started=started,
                 captured=captured,
                 envelope=_envelope,
+                unsubscribe=unsubscribe,
             )
         finally:
+            # A BACKSTOP, not the real unsubscribe: ``_drive`` still does that
+            # at the one moment that matters, after ``_shutdown`` has drained
+            # the child's last bytes. This covers the early returns above and
+            # the cancellation path without anyone having to enumerate them
+            # correctly, and it is safe to double-call because ``on_event``'s
+            # closure suppresses the ``ValueError``.
+            if unsubscribe is not None:
+                unsubscribe()
             # Synchronous, idempotent, never raises — so it always completes
             # once entered, including on the cancellation path.
             remove_prompt_dir(row.prompt)
@@ -370,28 +422,20 @@ class RpcChannel:
         plan: SpawnPlan,
         row: RunningChild,
         *,
-        state: _StreamState,
-        on_stream: Callable[[_StreamState], None] | None,
         timeout_ms: int,
         started: float,
         captured: dict[str, Any],
         envelope: Callable[..., SubagentResult],
+        unsubscribe: Callable[[], None],
     ) -> SubagentResult:
-        """Subscribe, prompt, wait for the terminator, shut the child down."""
+        """Prompt, wait for the terminator, shut the child down.
 
-        def _listener(payload: dict[str, Any]) -> None:
-            # BOTH halves are wrapped, and neither is paranoia. ``reduce_event``
-            # documents "NEVER raises" and once did not — a line carrying
-            # ``"usage": {"input": Infinity}`` reached ``int(inf)``. And a
-            # broken progress subscriber must not be able to fail a delegation
-            # that is otherwise succeeding.
-            with contextlib.suppress(Exception):
-                reduce_event(state, payload)
-            if on_stream is not None:
-                with contextlib.suppress(Exception):
-                    on_stream(state)
+        The reducer is subscribed by the caller, before the child exists. What
+        this method owns is the OTHER end of that subscription, and where it
+        goes is a correctness question rather than a cleanup detail — see the
+        ``finally``.
+        """
 
-        unsubscribe = client.on_event(_listener)
         try:
             result = await self._run_turn(
                 client, plan, row, timeout_ms=timeout_ms, started=started
@@ -409,16 +453,42 @@ class RpcChannel:
             self._eager_abort(row)
             result = _TurnOutcome(outcome="error", error=str(exc))
         finally:
-            unsubscribe()
-            captured["stderr"] = client.get_stderr()
-            captured["dropped"] = client.dropped_lines
-            with contextlib.suppress(Exception):
-                captured["exit_code"] = await self._shutdown(client, row)
-            # Re-read AFTER teardown: the dying child's last words are the
-            # partial summary a timed-out delegation is supposed to report,
-            # and the drain inside ``_shutdown`` is what recovers them.
-            captured["stderr"] = client.get_stderr()
-            captured["dropped"] = client.dropped_lines
+            # THE REDUCER STAYS LIVE THROUGH TEARDOWN, and the ordering here is
+            # the entire fix. ``_shutdown`` closes stdin, waits out the child's
+            # exit and then spends ``POST_EXIT_DRAIN_SECONDS`` letting the pumps
+            # reach EOF — and every line that arrives in that window is parsed
+            # and correlated by ``RpcClient._handle_stdout_line`` regardless of
+            # who is listening. Unsubscribing first did not stop the parsing; it
+            # only guaranteed the result was thrown away at the ``for listener
+            # in …`` line, with up to 7 s of the child's last words going into
+            # a void.
+            #
+            # THE INTERVENTION PATH IS THE KILL PATH, so this is precisely the
+            # material an orchestrator interrupted the child to collect.
+            # Measured on a timed-out delegation whose partial answer was still
+            # in flight when the parent gave up: ``summary='(no output)'`` with
+            # zero tokens and zero turns, against the child's real partial
+            # answer with its full usage block. §(j) of ADR-0197 already
+            # promises that partial, and ``_select_summary``'s docstring already
+            # explains how it is meant to arrive; this is what makes it true.
+            #
+            # A REAL ``run_rpc_mode`` CHILD WRITES NOTHING AFTER ITS STDIN EOF —
+            # measured, it drops its own event pipe before it aborts the turn —
+            # so what this recovers is not a "closing report" the child composes
+            # on its way out. It is everything the child had ALREADY written
+            # that the parent had not yet reduced: bytes in the pipe when the
+            # deadline fired, and a turn that finished inside the window.
+            try:
+                with contextlib.suppress(Exception):
+                    captured["exit_code"] = await self._shutdown(client, row)
+                captured["stderr"] = client.get_stderr()
+                captured["dropped"] = client.dropped_lines
+            finally:
+                # NESTED, because ``contextlib.suppress(Exception)`` above does
+                # not catch ``CancelledError`` — it is a ``BaseException`` — and
+                # a teardown cancelled mid-``_shutdown`` would otherwise skip
+                # this on its way out.
+                unsubscribe()
 
         if row.stopped:
             # We killed it, which is a different fact from it crashing.
@@ -455,7 +525,16 @@ class RpcChannel:
         if remaining_ms <= 0:
             return _TurnOutcome(outcome="timeout")
         try:
-            await client.prompt_and_wait(plan.task, timeout_ms=remaining_ms)
+            # ``collect=False`` because the return value is discarded, and that
+            # is the reason the flag exists rather than a use of it. This
+            # channel's own reducer is already subscribed and holds the only
+            # state anyone reads, so the client's second copy was an unbounded
+            # list nobody looked at — measured at 25.6 MB of peak parent memory
+            # for one turn of 5 000 ``message_update`` deltas of 4 KB, against
+            # 0.36 MB without it, and there is no ceiling on either factor.
+            await client.prompt_and_wait(
+                plan.task, timeout_ms=remaining_ms, collect=False
+            )
         except TimeoutError:
             return _TurnOutcome(outcome="timeout")
         except RpcServerExited as exc:

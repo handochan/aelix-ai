@@ -15,10 +15,13 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import json
 import os
+import shlex
 import sys
 import textwrap
 import time
+import tracemalloc
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +41,7 @@ from aelix_agents.rpc_channel import (
 from aelix_agents.runtime import SubagentHost, _SubagentRuntimeImpl
 from aelix_coding_agent.agents.profile import AgentProfile
 from aelix_coding_agent.builtin.permission_mode import PermissionMode
+from aelix_coding_agent.rpc.rpc_client import RpcClient
 from aelix_coding_agent.subagent_contract import DEPTH_ENV_VAR, ResolvedProfile
 
 linux_only = pytest.mark.skipif(
@@ -562,6 +566,215 @@ async def test_an_oversize_line_is_dropped_counted_and_the_turn_survives(
 
     assert result.summary == "survived", "the reader did not resync after the drop"
     assert result.dropped_lines == 1
+
+
+# === What survives the moment the parent gives up ===========================
+#
+# Three separate windows in which the child is talking and the parent used to
+# not be listening. All three assert on the ENVELOPE, because the reducer being
+# CALLED is not the same fact as the answer reaching the caller.
+
+
+# The report arrives only once the parent has closed stdin — i.e. from inside
+# ``_shutdown``'s drain. Gating on EOF rather than on a sleep is what makes the
+# window deterministic; it is NOT a claim that a real child behaves this way.
+# Measured against the real ``run_rpc_mode``, a child writes NOTHING after its
+# stdin EOF: it drops its own event pipe before it aborts the turn. What this
+# stub reproduces is the parent-side window those bytes actually arrive in —
+# lines still in the pipe when the deadline fired, and a turn that finished
+# just inside the drain — for which the parent cannot tell the two apart.
+_LATE_REPORT = _rpc_stub(
+    textwrap.dedent(
+        """
+        def script(task):
+            start()
+            emit({"type": "tool_execution_start", "tool_name": "read",
+                  "tool_call_id": "c1", "args": {"path": "/etc/hosts"}})
+            emit({"type": "tool_execution_end", "tool_call_id": "c1",
+                  "is_error": False})
+        """
+    ),
+    # No ``done()`` inside the turn, so the parent times out waiting for a
+    # terminator that only comes after it has stopped waiting.
+    tail=(
+        "serve(script)\n"
+        'emit({"type": "message_end", "message": {'
+        '"role": "assistant",'
+        '"content": [{"type": "text", "text": "half the answer"}],'
+        '"stop_reason": "aborted",'
+        '"usage": {"input": 111, "output": 22, "total_tokens": 133},'
+        '"provider": "stub", "model": "stub-1"}})\n'
+        "done()\n"
+    ),
+)
+
+
+async def test_a_timed_out_delegation_reports_what_arrived_during_the_drain(
+    tmp_path: Path,
+) -> None:
+    """The intervention path IS the kill path, so the drain is the payload.
+
+    ``_shutdown`` closes stdin, waits out the exit, then spends
+    ``POST_EXIT_DRAIN_SECONDS`` letting the pumps reach EOF — and every line in
+    that window is parsed and correlated whether or not anyone is subscribed.
+    Unsubscribing before it threw the result away at the fan-out, which is how
+    a delegation that HAD a partial answer, a stop reason and a full usage block
+    came back as ``(no output)`` with zero tokens.
+
+    ``status`` deliberately stays ``timeout``: ``build_result`` gives the
+    caller's outcome precedence over the stream's ``stop_reason``, so this
+    recovers the ANSWER, not a different verdict.
+    """
+
+    channel = _channel(_LATE_REPORT, grace=0.5)
+    row = RunningChild(id="sub-test", profile="scout")
+    result = await channel.run(_plan(tmp_path, timeout_ms=2_500), child=row)
+
+    assert result.status == "timeout"
+    assert result.summary == "half the answer"
+    assert result.stop_reason == "aborted"
+    assert result.usage.input == 111
+    assert result.usage.output == 22
+    assert result.usage.tokens == 133
+    assert result.usage.turns == 1
+    # The tool events landed BEFORE the deadline, so the trail is the control:
+    # it is green either way, and it is what proves the drain added a turn
+    # rather than the whole stream having been replayed.
+    assert result.tool_trail == "read(/etc/hosts) ok"
+
+
+# 5 000 deltas of 4 KB. ``message_update`` is the shape that matters: the
+# reducer ignores it (``stream.py``'s consumed set), and every one of them
+# repeats the WHOLE assistant message, so a buffer of them is the turn's length
+# times the answer's with no ceiling on either factor.
+_FAT_TURN = _rpc_stub(
+    textwrap.dedent(
+        """
+        def script(task):
+            start()
+            blob = "x" * 4000
+            for _ in range(5000):
+                emit({"type": "message_update", "message": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": blob}]}})
+            say("done", input=1, output=1, total_tokens=2)
+            done()
+        """
+    )
+)
+
+
+async def test_a_long_turn_is_not_buffered_for_a_caller_that_discards_it(
+    tmp_path: Path,
+) -> None:
+    """PEAK, not retained — and that distinction is the whole test.
+
+    ``prompt_and_wait`` appended every event of the turn to a list that
+    ``_run_turn`` drops on the floor. The list is unreachable the instant the
+    call returns, so a measurement taken after ``run`` reads ~0.04 MB whether or
+    not the buffer existed and would pin nothing at all. Against the peak the
+    same run measures 25.6 MB with the buffer and 0.36 MB without.
+
+    Asserting ``prompt_and_wait(..., collect=False) == []`` would be a call-site
+    assertion, and an implementation that still buffered and returned a fresh
+    empty list would satisfy it. The summary and usage assertions below are the
+    other half: the events must still be PARSED and still reach the channel's
+    own reducer, so this cannot be made green by starving the listener.
+    """
+
+    channel = _channel(_FAT_TURN)
+    tracing = tracemalloc.is_tracing()
+    if not tracing:
+        tracemalloc.start()
+    try:
+        tracemalloc.reset_peak()
+        result = await channel.run(
+            _plan(tmp_path, timeout_ms=90_000),
+            child=RunningChild(id="sub-test", profile="scout"),
+        )
+        _retained, peak = tracemalloc.get_traced_memory()
+    finally:
+        if not tracing:
+            tracemalloc.stop()
+
+    # The reducer was not starved: it saw the terminator and the one real
+    # message behind the 5 000 deltas.
+    assert result.status == "ok"
+    assert result.summary == "done"
+    assert result.usage.turns == 1
+    assert result.usage.tokens == 2
+    assert peak < 6 * 1024 * 1024, (
+        f"peak parent memory {peak / 1e6:.1f} MB for one turn — the client is "
+        "buffering events the channel discards"
+    )
+
+
+# Speaks, then dies, inside the startup grace. ``/bin/sh`` and not
+# ``sys.executable``: a Python child's ~25 ms boot is a coin flip against the
+# 100 ms window on a loaded box, which is the exact race that makes
+# ``test_start_raises_a_typed_error_when_the_child_dies_in_the_grace`` a
+# pre-existing flake. This one boots in ~2 ms and the grace is widened below,
+# so ``start`` is guaranteed to be the thing that observes the death.
+_GRACE_EVENTS = (
+    {"type": "agent_start"},
+    {
+        "type": "message_end",
+        "message": {
+            "role": "assistant",
+            "content": [{"type": "text", "text": "partial child text"}],
+            "stop_reason": "error",
+            "error_message": "rate limited",
+            "usage": {"input": 11, "output": 22, "total_tokens": 33},
+            "provider": "stub",
+            "model": "stub-1",
+        },
+    },
+)
+_BOOT_AND_DIE = (
+    "printf '%s\\n' "
+    + " ".join(shlex.quote(json.dumps(event)) for event in _GRACE_EVENTS)
+    + "; printf 'boot traceback\\n' >&2; exit 9"
+)
+
+
+async def test_the_child_that_dies_in_the_startup_grace_is_still_heard(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``start`` spawns, pumps, and only THEN waits — so subscribe first.
+
+    Everything the child emitted inside the grace used to be broadcast to an
+    empty listener list, because the reducer was wired after ``start`` returned.
+    That made "the child said nothing" and "we were not listening yet"
+    indistinguishable on the one path where the child's own words are the only
+    diagnosis there will ever be.
+
+    The summary shift is a PROMOTION, not a substitution. ``_select_summary``
+    gates its stderr rung on ``not ok`` and this path is always ``ok=False``, so
+    a traceback can only be displaced by the child's own ``error_message`` — and
+    the traceback still travels in ``details``, asserted below.
+
+    ``STARTUP_GRACE_MS`` is widened rather than left at pi's 100 ms because the
+    child must provably die INSIDE the window; at 100 ms a loaded box lets it
+    die just outside and the run silently takes the ordinary ``_drive`` path.
+    """
+
+    monkeypatch.setattr(RpcClient, "STARTUP_GRACE_MS", 2_000)
+    channel = RpcChannel(
+        grace=0.5, argv_builder=lambda *a, **k: ["/bin/sh", "-c", _BOOT_AND_DIE]
+    )
+    row = RunningChild(id="sub-test", profile="scout")
+    result = await channel.run(_plan(tmp_path, timeout_ms=10_000), child=row)
+
+    assert result.status == "error"
+    assert row.state == "error"
+    assert result.exit_code == 9
+    assert result.summary == "rate limited"
+    assert result.usage.input == 11
+    assert result.usage.output == 22
+    assert result.usage.tokens == 33
+    # Nothing was traded away for it: the process-layer diagnosis is still here.
+    assert result.details is not None and "boot traceback" in result.details
+    assert "boot traceback" in (result.error or "")
 
 
 # === Through the REAL runtime ===============================================
