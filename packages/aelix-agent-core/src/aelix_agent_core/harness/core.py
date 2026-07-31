@@ -4291,12 +4291,72 @@ class AgentHarness:
                     # abort(); just return without raising so callers (and the
                     # finally block above) restore idle state.
                     if self._abort_requested:
+                        # RPC sprint — an aborted turn MUST still produce a
+                        # terminator. Previously this returned here and emitted
+                        # nothing, so every automated parent (``RpcClient.
+                        # prompt_and_wait``, whose sole completion signal is
+                        # ``agent_end``) blocked for its full 60 s timeout.
+                        #
+                        # Pi parity, but deliberately NOT via ``emitRunFailure``:
+                        # pi's *primary* abort path is ``agent-loop.ts:196-199``,
+                        # which emits ``turn_end`` + ``agent_end`` and RETURNS
+                        # normally — it never throws and never synthesises a
+                        # ``message_start``/``message_end`` pair.
+                        # ``emitRunFailure`` is pi's fallback for a genuinely
+                        # *thrown* error, and routing abort through it would
+                        # stack a synthetic message_start on top of the real
+                        # assistant message_start already in flight — a shape pi
+                        # never produces.
+                        #
+                        # Emitting only these two also keeps abort off the
+                        # session write path: ``message_end`` is what calls
+                        # ``session.append_message`` (see :4175-4177 above), so
+                        # a resumed session does not gain a bodiless assistant
+                        # turn with no preceding user message. The message is
+                        # appended to in-memory state only, so that
+                        # ``state.messages[-1].stop_reason`` still reads
+                        # ``"aborted"`` for ``modes/print_mode.py`` — the one
+                        # consumer of that stop reason in the product.
+                        aborted_message = AssistantMessage(
+                            content=[],
+                            stop_reason="aborted",
+                        )
+                        self._state.messages.append(aborted_message)
+                        for closure_event in (
+                            TurnEndEvent(message=aborted_message, tool_results=[]),
+                            AgentEndEvent(messages=list(self._state.messages)),
+                        ):
+                            try:
+                                await emit(closure_event)
+                            except Exception as emit_exc:  # noqa: BLE001
+                                _log.debug(
+                                    "emit during abort close-out raised: %r",
+                                    emit_exc,
+                                    exc_info=True,
+                                )
                         return []
                     raise
                 finally:
                     self._current_turn_task = None
-            except AgentHarnessError as exc:
+            except Exception as exc:
                 # Pi parity: synthesize failure assistant message + emit closure events.
+                #
+                # RPC sprint — widened from ``except AgentHarnessError``. Pi's
+                # filter is a bare ``catch (error)`` (``agent-harness.ts:568``),
+                # so any exception type produced a terminator there while in
+                # Aelix anything other than ``AgentHarnessError`` escaped
+                # silently and hung every ``agent_end``-waiting parent.
+                #
+                # NOT widened to ``BaseException``/``CancelledError``: abort is
+                # handled above and returns before reaching here, and a
+                # ``CancelledError`` that is *not* an abort is an outer
+                # cancellation which must propagate untouched. (``CancelledError``
+                # derives from ``BaseException``, not ``Exception``, since 3.8 —
+                # so this clause cannot catch it by accident.)
+                #
+                # The ``raise`` at the end of this block is preserved
+                # deliberately: callers keep seeing the same exception they saw
+                # before, so the only behavioural delta is the added events.
                 failure = AssistantMessage(
                     content=[TextContent(text=f"[error] {exc}")],
                     stop_reason="error",

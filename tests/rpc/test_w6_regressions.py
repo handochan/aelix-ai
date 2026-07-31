@@ -292,7 +292,18 @@ async def test_handle_prompt_logs_failure_to_stderr(
 
     harness = _make_harness()
 
-    async def _raise(message: str, *, source: str = "interactive") -> Any:
+    # The stub must mirror the REAL ``AgentHarness.prompt`` signature
+    # (``harness/core.py:1178-1184``), which has always had ``images``. It was
+    # omitted here only because ``_handle_prompt`` used to drop ``cmd.images``
+    # on the floor; now that the handler forwards them (pi does —
+    # ``rpc-mode.ts:382-386``) a stub lacking the parameter raises ``TypeError``
+    # and masks the ``RuntimeError`` this regression is actually about.
+    async def _raise(
+        message: str,
+        *,
+        images: Any = None,
+        source: str = "interactive",
+    ) -> Any:
         raise RuntimeError("simulated failure during prompt")
 
     harness.prompt = _raise  # type: ignore[assignment]

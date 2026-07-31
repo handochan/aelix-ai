@@ -290,14 +290,63 @@ async def _handle_prompt(
     harness: AgentHarness,
     cmd: RpcCommandPrompt,
 ) -> RpcResponse:
-    """Pi parity: ``rpc-mode.ts:237-260`` (prompt handler).
+    """Pi parity: ``rpc-mode.ts:379-401`` (prompt handler).
 
-    Pi fires the prompt asynchronously and emits the response only after
-    ``preflightResult(true)``. Aelix has no preflight callback yet — we
-    schedule the prompt as a fire-and-forget task and acknowledge
-    immediately (Pi's behavior when preflight succeeds synchronously).
-    Errors during the run are emitted later via the event stream.
+    Pi fires the prompt asynchronously but emits ``success`` only from inside
+    ``preflightResult(didSucceed)`` (``:388-391``); when preflight never
+    succeeded it emits a correlated ERROR response instead (``:396-399``).
+    ``rpc.md:76`` states the contract plainly: *"``success: false`` means the
+    prompt was rejected before acceptance."*
+
+    Aelix previously acknowledged unconditionally, so a prompt the harness
+    rejected was reported to the client as ``success: true`` and then never
+    terminated — the client waited out its full 60 s ``agent_end`` timeout for
+    a turn that had never begun.
+
+    The two halves of the contract now live in the two right places:
+
+    * **Rejected before acceptance** — handled here, synchronously, below.
+    * **Accepted then failed** — handled by the harness, which since this
+      sprint emits its closure events for *any* exception rather than only
+      ``AgentHarnessError`` (``harness/core.py``). Deliberately NOT a second
+      response from this handler: this ``id`` has already been answered
+      ``success: true``, and emitting an error for it would put two responses
+      for one ``id`` on the wire.
     """
+
+    # Strict decode first: a malformed image is a rejection *before* acceptance,
+    # so it belongs on the error-response side of the contract. ``_decode_images``
+    # raises ``ValueError``, which the dispatcher renders as the Pi-shaped error
+    # envelope. Previously ``prompt`` ignored ``cmd.images`` entirely while
+    # ``steer``/``follow_up`` decoded them (pi forwards them on all three,
+    # ``rpc-mode.ts:382-386``).
+    images = _decode_images(cmd.images)
+
+    # THE PREFLIGHT. ``harness.prompt`` rejects a non-idle phase by raising
+    # ``AgentHarnessError("busy", ...)`` (``harness/core.py:1189-1194``), but it
+    # raises INSIDE the coroutine, so a fire-and-forget task swallowed it. The
+    # phase is the same public property ``get_state`` already reports, and this
+    # check is synchronous with the ``create_task`` below — there is no ``await``
+    # between them, so no other command can start a turn in the gap.
+    if harness.phase != "idle":
+        # ``streamingBehavior`` is pi's own answer to a live turn: route the
+        # message into the queue instead of rejecting it. Both queues are
+        # enqueue-only regardless of phase (``core.py:1186-1188``).
+        if cmd.streaming_behavior == "steer":
+            await harness.steer(cmd.message, images=images)
+            return RpcSuccessResponse(id=cmd.id, command="prompt")
+        if cmd.streaming_behavior == "followUp":
+            await harness.follow_up(cmd.message, images=images)
+            return RpcSuccessResponse(id=cmd.id, command="prompt")
+        return RpcErrorResponse(
+            id=cmd.id,
+            command="prompt",
+            error=(
+                f"AgentHarness is busy (phase={harness.phase!r}); send "
+                '"streamingBehavior": "steer" | "followUp" to enqueue, or use '
+                "the steer / follow_up commands."
+            ),
+        )
 
     async def _run() -> None:
         # Errors are observable via the AgentEvent stream and stderr; the
@@ -306,18 +355,28 @@ async def _handle_prompt(
         # stderr so the operator sees failures and ``wait_for_idle``
         # callers don't hang on a dropped error.
         try:
-            await harness.prompt(cmd.message, source="rpc")
+            await harness.prompt(cmd.message, images=images, source="rpc")
         except Exception as exc:  # noqa: BLE001
             print(
                 f"[rpc] prompt task failed: {exc!r}",
                 file=sys.stderr,
                 flush=True,
             )
-            # NOTE: Pi parity (`rpc-mode.ts:379-401`) also emits a synthetic
-            # terminal event so the client's `wait_for_idle` listener
-            # unblocks. The Aelix harness does not yet expose a public
-            # event-emit method to feed an `agent_end` event from outside;
-            # Sprint 6f wires that bridge per ADR-0058 carry-forward.
+            # The terminator is NOT synthesised here, and the ADR-0058
+            # carry-forward that said it should be was based on a false
+            # citation. MEASURED at the pin and at v0.80.2:
+            # `grep -nE "agent_end|synthetic" rpc-mode.ts` returns ZERO hits.
+            # Pi's rpc server never synthesises a terminal event on any path —
+            # what `rpc-mode.ts:396-399` emits is a correlated error RESPONSE,
+            # and only when preflight did not succeed (which this handler now
+            # does, above, before the task is ever created).
+            #
+            # Reaching here means the turn WAS accepted and then raised, so the
+            # terminator is the harness's job and the harness now does it: its
+            # closure block emits message_start/message_end/turn_end/agent_end
+            # for any exception (`harness/core.py`), where it previously caught
+            # only `AgentHarnessError`. This breadcrumb stays because a failure
+            # the operator can see is worth more than a silent one.
 
     task = asyncio.create_task(_run())
     # Pin the task on the harness so disposal awaits completion. W4 m3:
