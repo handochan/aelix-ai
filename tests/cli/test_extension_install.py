@@ -7,12 +7,15 @@ the consent gate, the offline guard, arg parsing, and the entry.py verb dispatch
 
 from __future__ import annotations
 
+import os
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
 import pytest
 from aelix_ai.settings import ExtensionSourceObject, SettingsManager
+from aelix_coding_agent.cli import extension_install as _ei_mod
 from aelix_coding_agent.cli.extension_install import (
     build_pip_args,
     classify_source,
@@ -43,6 +46,48 @@ def _isolate_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # the throwaway dir so a real repo-root ``.aelix/settings.json`` can never
     # merge into a ``settings=None`` test's manager (review-hardening LOW).
     monkeypatch.chdir(tmp_path)
+
+
+#: The REAL pip-config search path, captured before ``_no_ambient_pip_index``
+#: stubs it out, so the ordering test can still exercise the genuine function.
+_REAL_PIP_CONFIG_CANDIDATES = _ei_mod._pip_config_candidates
+
+#: Every ambient variable that can steer index resolution on either backend.
+_INDEX_ENV_NAMES = (
+    "PIP_INDEX_URL",
+    "PIP_EXTRA_INDEX_URL",
+    "PIP_CONFIG_FILE",
+    "UV_INDEX",
+    "UV_INDEX_URL",
+    "UV_DEFAULT_INDEX",
+    "UV_EXTRA_INDEX_URL",
+    "UV_CONFIG_FILE",
+    "UV_NO_INDEX",
+    "UV_FIND_LINKS",
+)
+
+#: The REAL uv-config search path, captured before the hermetic fixture stubs it.
+_REAL_UV_CONFIG_FILES = _ei_mod._uv_config_files
+
+
+@pytest.fixture(autouse=True)
+def _no_ambient_pip_index(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make the uv backend's index translation depend on the TEST, not the host.
+
+    The uv backend translates pip's ambient index configuration (pip honors
+    ``PIP_INDEX_URL`` / ``pip.conf``, uv honors neither), so a developer box or CI
+    image carrying ``/etc/pip.conf`` — or a ``~/.config/uv/uv.toml`` that SUPPRESSES
+    the translation — would otherwise silently change what these tests observe.
+    Clearing the env and emptying BOTH config search paths makes "no ambient index,
+    no uv config" the default; the translation tests opt back in.
+    """
+
+    for name in _INDEX_ENV_NAMES:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(_ei_mod, "_pip_config_candidates", lambda env=None: [])
+    monkeypatch.setattr(
+        _ei_mod, "_uv_config_files", lambda env=None, cwd=None: []
+    )
 
 
 def _mem_settings() -> SettingsManager:
@@ -332,14 +377,19 @@ def test_install_offline_path_not_blocked(tmp_path: Path) -> None:
 def test_missing_pip_returns_didnt_run(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # Review LOW: a missing pip module is detected up front (exit 2), not
-    # mislabeled as a pip install failure. The pre-check applies to the DEFAULT
-    # runner only, so this uses runner=None + a forced-missing find_spec — the
-    # guard returns before any real subprocess.
+    # Review LOW: a missing backend is detected up front (exit 2), not mislabeled
+    # as an install failure. The pre-check applies to the DEFAULT runner only, so
+    # this uses runner=None + a forced-missing find_spec — the guard returns
+    # before any real subprocess.
+    #
+    # #113: `uv` must be knocked out TOO. Since the uv fallback landed, a missing
+    # pip alone no longer aborts — on a machine with uv on PATH (this dev image
+    # included) leaving `which` real would drive a REAL `uv pip install` here.
     from aelix_coding_agent.cli import extension_install as ei
 
     (tmp_path / "ext").mkdir()
     monkeypatch.setattr(ei.importlib.util, "find_spec", lambda _name: None)
+    monkeypatch.setattr(ei.shutil, "which", lambda _name: None)
     code = install_extension(str(tmp_path / "ext"), yes=True)  # default runner
     assert code == 2
 
@@ -1460,3 +1510,1040 @@ def test_verify_pypi_sdist_through_gate(tmp_path: Path) -> None:
     assert pins["some-pkg"].sha256 == _sha(b"SDIST")
     assert pins["some-pkg"].version == "1.2"
     assert "--no-index" in r.calls[1]
+
+
+# =========================================================================
+# === #113: the installer BACKEND (pip preferred, uv fallback) ============
+# =========================================================================
+#
+# The official install path is ``uv tool install``, whose venv ships WITHOUT
+# pip — so before this, EVERY install/update/remove aborted (exit 2) for anyone
+# who followed the README, and it aborted before printing what was attempted.
+#
+# All of these are network-free and subprocess-free: backend RESOLUTION is
+# driven by monkeypatched ``importlib.util.find_spec`` / ``shutil.which``, argv
+# SHAPE is asserted on the pure builders, and the end-to-end rows monkeypatch
+# ``resolve_install_backend`` (an injected runner deliberately pins the backend
+# to pip, so it cannot be used to reach the uv dialect).
+
+
+def _ei() -> Any:
+    from aelix_coding_agent.cli import extension_install as ei
+
+    return ei
+
+
+def _force_env(
+    monkeypatch: pytest.MonkeyPatch, *, pip: bool, uv: str | None
+) -> None:
+    """Pin what ``detect_install_backend`` sees: pip importable? uv on PATH?"""
+
+    ei = _ei()
+    monkeypatch.setattr(
+        ei.importlib.util, "find_spec", lambda name: object() if pip else None
+    )
+    monkeypatch.setattr(ei.shutil, "which", lambda name: uv if name == "uv" else None)
+
+
+def _force_backend(monkeypatch: pytest.MonkeyPatch, backend: Any) -> None:
+    """Make every call site resolve to ``backend``, injected runner or not."""
+
+    ei = _ei()
+    monkeypatch.setattr(ei, "resolve_install_backend", lambda _runner: backend)
+
+
+def _uv_backend(path: str = "/opt/bin/uv") -> Any:
+    return _ei().InstallBackend(name="uv", uv_path=path)
+
+
+# --- resolution ----------------------------------------------------------
+
+
+def test_backend_prefers_pip_even_when_uv_is_present(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # pip WINS whenever importable: it is the only backend that can `download`,
+    # i.e. the only one that can verify. uv is a fallback, never a preference.
+    _force_env(monkeypatch, pip=True, uv="/opt/bin/uv")
+    backend = _ei().detect_install_backend()
+    assert backend is not None
+    assert backend.name == "pip"
+    assert backend.supports_download is True
+
+
+def test_backend_falls_back_to_uv_when_pip_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _force_env(monkeypatch, pip=False, uv="/opt/bin/uv")
+    backend = _ei().detect_install_backend()
+    assert backend is not None
+    assert backend.name == "uv"
+    assert backend.uv_path == "/opt/bin/uv"
+    assert backend.supports_download is False  # `uv pip` has no `download`
+
+
+def test_backend_is_none_when_neither_pip_nor_uv(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _force_env(monkeypatch, pip=False, uv=None)
+    assert _ei().detect_install_backend() is None
+
+
+def test_injected_runner_short_circuits_to_the_pip_backend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # THE load-bearing seam: an injected runner means the caller owns backend
+    # availability, so resolution never probes and always yields the pip-shaped
+    # dialect. Without this the whole injected-runner cluster would flip to `uv
+    # pip install …` argv on any machine whose interpreter lacks pip.
+    ei = _ei()
+    _force_env(monkeypatch, pip=False, uv="/opt/bin/uv")
+    backend = ei.resolve_install_backend(_FakeRunner())
+    assert backend is not None
+    assert backend.name == "pip"
+    assert ei.resolve_install_backend(None) is not None  # the env says uv
+    assert ei.resolve_install_backend(None).name == "uv"
+
+
+def test_pip_available_short_circuit_and_backend_agreement(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ei = _ei()
+    _force_env(monkeypatch, pip=False, uv=None)
+    assert ei._pip_available(None) is False  # nothing usable
+    assert ei._pip_available(_FakeRunner()) is True  # injected → always available
+    _force_env(monkeypatch, pip=False, uv="/opt/bin/uv")
+    assert ei._pip_available(None) is True  # uv alone is enough to INSTALL
+
+
+# --- argv shape per backend ----------------------------------------------
+
+
+def test_uv_backend_install_argv_shape() -> None:
+    uv = _uv_backend()
+    prefix = [uv.uv_path, "pip", "install", "--python", sys.executable]
+    assert uv.install_prefix() == prefix
+    assert build_pip_args("some-pkg", "pypi", backend=uv) == [*prefix, "some-pkg"]
+    assert build_pip_args(
+        "some-pkg", "pypi", backend=uv, upgrade=True, index_url="https://idx"
+    ) == [*prefix, "--upgrade", "some-pkg", "--index-url", "https://idx"]
+    assert build_pip_args("https://h/o/r.git", "git", backend=uv) == [
+        *prefix,
+        "git+https://h/o/r.git",
+    ]
+
+
+def test_pip_backend_install_argv_is_the_historical_shape() -> None:
+    # backend=None keeps the pre-#113 argv byte-for-byte.
+    prefix = [sys.executable, "-m", "pip", "install"]
+    assert build_pip_args("some-pkg", "pypi") == [*prefix, "some-pkg"]
+    assert build_pip_args("some-pkg", "pypi", backend=_ei().PIP_BACKEND) == [
+        *prefix,
+        "some-pkg",
+    ]
+
+
+def test_install_prefix_is_not_shared_mutable_state() -> None:
+    # build_pip_args appends --upgrade to the prefix; a cached list would leak
+    # the flag into the next call.
+    uv = _uv_backend()
+    first = build_pip_args("a", "pypi", backend=uv, upgrade=True)
+    second = build_pip_args("b", "pypi", backend=uv)
+    assert "--upgrade" in first
+    assert "--upgrade" not in second
+
+
+def test_uninstall_argv_per_backend() -> None:
+    ei = _ei()
+    uv = _uv_backend()
+    # `uv pip uninstall` never prompts and rejects an unknown -y.
+    assert uv.uninstall_args("my-dist") == [
+        uv.uv_path, "pip", "uninstall", "--python", sys.executable, "my-dist",
+    ]
+    assert "-y" not in uv.uninstall_args("my-dist")
+    assert ei.PIP_BACKEND.uninstall_args("my-dist") == [
+        sys.executable, "-m", "pip", "uninstall", "-y", "my-dist",
+    ]
+
+
+@pytest.mark.parametrize(
+    "bad", [None, "uv", "./uv", "node_modules/.bin/uv", "../uv", ""]
+)
+def test_uv_backend_refuses_a_bare_or_relative_uv_path(bad: str | None) -> None:
+    # A uv backend may ONLY carry an absolute executable. A bare name (or a relative
+    # one) is resolved against PATH at exec time — and a `.`/empty/relative PATH entry
+    # (node_modules/.bin, direnv, a stray leading `:`) makes that a file in the CURRENT
+    # WORKING DIRECTORY. Standing in a cloned repo would then run its ./uv as the
+    # installer, before the extension is ever fetched (CWE-426). The pip backend shells
+    # out to the absolute sys.executable; the uv backend must meet the same bar, so the
+    # invariant is enforced in the constructor and no call site can bypass it.
+    with pytest.raises(ValueError, match="ABSOLUTE uv_path"):
+        _ei().InstallBackend(name="uv", uv_path=bad)
+
+
+def test_pip_backend_needs_no_uv_path() -> None:
+    # The constraint is uv-only: the pip backend is still constructible bare.
+    assert _ei().InstallBackend(name="pip").uv_path is None
+
+
+@pytest.mark.parametrize("relative", ["uv", "./uv", "node_modules/.bin/uv"])
+def test_relative_uv_on_path_is_not_a_usable_backend(
+    monkeypatch: pytest.MonkeyPatch, relative: str
+) -> None:
+    # shutil.which returns a RELATIVE hit whenever a PATH entry is relative or empty.
+    # Resolution must treat that as "no uv found" and fall through to the actionable
+    # no-backend message rather than shelling out to a cwd binary.
+    _force_env(monkeypatch, pip=False, uv=relative)
+    assert _ei().detect_install_backend() is None
+
+
+def test_absolute_uv_on_path_is_still_accepted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The guard rejects relative paths ONLY — the normal absolute hit is unaffected.
+    _force_env(monkeypatch, pip=False, uv="/usr/local/bin/uv")
+    backend = _ei().detect_install_backend()
+    assert backend is not None
+    assert backend.uv_path == "/usr/local/bin/uv"
+
+
+def test_cwd_relative_uv_aborts_the_install_instead_of_executing_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # End to end with the DEFAULT runner (no injected seam, so a real subprocess would
+    # be spawned if resolution accepted the relative hit): the install must refuse.
+    (tmp_path / "ext").mkdir()
+    _force_env(monkeypatch, pip=False, uv="./uv")
+    ran: list[list[str]] = []
+    monkeypatch.setattr(_ei_mod, "_default_runner", lambda argv: ran.append(argv))
+    code = install_extension(str(tmp_path / "ext"), yes=True)
+    assert code == 2
+    assert ran == []  # nothing was executed
+    err = capsys.readouterr().err
+    assert "no usable package installer" in err
+    assert "--with pip" in err
+
+
+# --- end-to-end on the uv backend ----------------------------------------
+
+
+def test_install_on_uv_backend_runs_uv_argv(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    uv = _uv_backend()
+    _force_backend(monkeypatch, uv)
+    (tmp_path / "ext").mkdir()
+    runner = _FakeRunner()
+    code = install_extension(str(tmp_path / "ext"), yes=True, runner=runner)
+    assert code == 0
+    assert runner.calls[0][:5] == [
+        uv.uv_path, "pip", "install", "--python", sys.executable,
+    ]
+    # And the user is warned that a `uv tool install --force` wipes this.
+    assert "uv tool install --force aelix" in capsys.readouterr().out
+
+
+def test_pip_backend_install_prints_no_uv_notice(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (tmp_path / "ext").mkdir()
+    install_extension(str(tmp_path / "ext"), yes=True, runner=_FakeRunner())
+    assert "uv backend" not in capsys.readouterr().out
+
+
+def test_remove_on_uv_backend_uses_uv_uninstall(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ei = _ei()
+    monkeypatch.setattr(
+        ei,
+        "list_installed_extensions",
+        lambda: [ei.InstalledExtension("myext", "my-ext-dist", "1.0.0")],
+    )
+    uv = _uv_backend()
+    _force_backend(monkeypatch, uv)
+    mem = SettingsManager.in_memory(
+        {"extensionSources": [{"spec": "some", "kind": "pypi", "name": "myext"}]}
+    )
+    runner = _FakeRunner()
+    code = run_extension_command(
+        ["remove", "myext", "--yes"], settings=mem, runner=runner
+    )
+    assert code == 0
+    assert runner.calls[0] == [
+        uv.uv_path, "pip", "uninstall", "--python", sys.executable, "my-ext-dist",
+    ]
+    assert mem.get_extension_sources() == []
+
+
+def test_update_on_uv_backend_carries_upgrade_flag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    uv = _uv_backend()
+    _force_backend(monkeypatch, uv)
+    mem = SettingsManager.in_memory(
+        {"extensionSources": [{"spec": "some-pkg", "kind": "pypi", "name": "some-pkg"}]}
+    )
+    runner = _FakeRunner()
+    code = run_extension_command(
+        ["update", "some-pkg", "--yes"], settings=mem, runner=runner
+    )
+    assert code == 0
+    assert runner.calls[0][:6] == [
+        uv.uv_path, "pip", "install", "--python", sys.executable, "--upgrade",
+    ]
+
+
+# --- fail closed: pypi verification the uv backend cannot execute --------
+
+
+@pytest.mark.parametrize(
+    "flag", ["verify_pypi", "strict", "require_signature"]
+)
+def test_uv_backend_refuses_pypi_verification(
+    flag: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # `uv pip` has no `download`, so the two-phase verify cannot run. Refuse —
+    # never silently install a package the user asked us to verify. NOTE the
+    # predicate is all THREE flags, not --require-signature alone: --verify-pypi
+    # and --strict route into build_download_args just the same.
+    _force_backend(monkeypatch, _uv_backend())
+    runner = _FakeRunner()
+    code = install_extension(
+        "some-pkg", yes=True, index_url="https://idx", runner=runner, **{flag: True}
+    )
+    assert code == 2
+    assert runner.calls == []  # nothing ran — not even the plain install
+    err = capsys.readouterr().err
+    assert "some-pkg" in err  # names WHAT was refused
+    assert "download" in err
+    assert "--with pip" in err  # and how to fix it
+
+
+def test_uv_backend_allows_plain_pypi_install(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Verification is opt-in, so an ordinary pypi install still works on uv.
+    uv = _uv_backend()
+    _force_backend(monkeypatch, uv)
+    runner = _FakeRunner()
+    code = install_extension(
+        "some-pkg", yes=True, index_url="https://idx", runner=runner
+    )
+    assert code == 0
+    assert runner.calls[0][:5] == [
+        uv.uv_path, "pip", "install", "--python", sys.executable,
+    ]
+
+
+def test_uv_backend_allows_no_verify_pypi_install(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # --no-verify never enters the gate, so nothing is silently dropped.
+    _force_backend(monkeypatch, _uv_backend())
+    runner = _FakeRunner()
+    code = install_extension(
+        "some-pkg", yes=True, no_verify=True, verify_pypi=True,
+        index_url="https://idx", runner=runner,
+    )
+    assert code == 0
+    assert len(runner.calls) == 1
+
+
+def test_uv_backend_verifies_a_signed_path_artifact_locally(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A PATH target is staged, hashed and pinned entirely in-process — the runner
+    # is never called for a download — so --strict verification is fully honored
+    # on the uv backend. Refusing on the FLAG instead of the pypi predicate would
+    # have killed this, the workflow that actually works today.
+    uv = _uv_backend()
+    _force_backend(monkeypatch, uv)
+    whl = tmp_path / "ext-1.0.whl"
+    whl.write_bytes(b"artifact-bytes")
+    runner = _FakeRunner()
+    code = install_extension(
+        str(whl), yes=True, strict=True, repin=True, runner=runner
+    )
+    assert code == 0
+    assert len(runner.calls) == 1  # install only; no download phase
+    assert runner.calls[0][:5] == [
+        uv.uv_path, "pip", "install", "--python", sys.executable,
+    ]
+    # The STAGED copy is what gets installed (check-vs-use TOCTOU closure), and it
+    # is still the last argv element after the uv prefix swap.
+    assert runner.calls[0][-1].endswith("ext-1.0.whl")
+    assert _read_pins(tmp_path)[str(whl.resolve())].sha256 == _sha(b"artifact-bytes")
+
+
+def test_uv_backend_require_signature_on_path_reaches_the_signature_gate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # --require-signature on a PATH target must NOT hit the backend refusal — it is
+    # verified entirely locally. There is no .aelixsig here so it still exits 2, but
+    # from the SIGNATURE gate, which is the proof the backend let it through.
+    _force_backend(monkeypatch, _uv_backend())
+    whl = tmp_path / "ext-1.0.whl"
+    whl.write_bytes(b"artifact-bytes")
+    runner = _FakeRunner()
+    code = install_extension(str(whl), yes=True, require_signature=True, runner=runner)
+    assert code == 2
+    err = capsys.readouterr().err
+    assert "Verification refused" in err
+    assert "no usable package installer" not in err
+    assert "no `download` subcommand" not in err
+
+
+def test_uv_backend_git_strict_install_is_not_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A pinned git SHA is verified by inspecting the argv — no pip, no download.
+    _force_backend(monkeypatch, _uv_backend())
+    runner = _FakeRunner()
+    sha = "a" * 40
+    code = install_extension(
+        f"https://h/o/r.git@{sha}", yes=True, strict=True, repin=True, runner=runner
+    )
+    assert code == 0
+    assert len(runner.calls) == 1
+    assert runner.calls[0][-1] == f"git+https://h/o/r.git@{sha}"
+
+
+@pytest.mark.parametrize(
+    ("kind", "no_verify", "strict", "verify_pypi", "require_signature", "expected"),
+    [
+        ("pypi", False, False, False, False, False),  # verification is opt-in
+        ("pypi", False, True, False, False, True),
+        ("pypi", False, False, True, False, True),
+        ("pypi", False, False, False, True, True),
+        ("pypi", True, True, True, True, False),  # --no-verify: gate never runs
+        ("path", False, True, True, True, False),  # local: no download needed
+        ("git", False, True, True, True, False),  # argv inspection only
+    ],
+)
+def test_uv_verify_refusal_predicate_table(
+    kind: str,
+    no_verify: bool,
+    strict: bool,
+    verify_pypi: bool,
+    require_signature: bool,
+    expected: bool,
+) -> None:
+    ei = _ei()
+    assert (
+        ei.uv_pypi_verify_unsupported(
+            _uv_backend(), kind, no_verify=no_verify, strict=strict,
+            verify_pypi=verify_pypi, require_signature=require_signature,
+        )
+        is expected
+    )
+
+
+def test_pip_backend_never_triggers_the_refusal() -> None:
+    ei = _ei()
+    assert (
+        ei.uv_pypi_verify_unsupported(
+            ei.PIP_BACKEND, "pypi", no_verify=False, strict=True,
+            verify_pypi=True, require_signature=True,
+        )
+        is False
+    )
+
+
+# --- no backend at all: the abort names what was attempted ----------------
+
+
+def test_no_backend_install_abort_names_target_and_remedy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The old guard printed "pip is not available…" BEFORE anything named the
+    # target, and advised `ensurepip`, which is wrong for a uv tool venv.
+    _force_env(monkeypatch, pip=False, uv=None)
+    (tmp_path / "ext").mkdir()
+    code = install_extension(str(tmp_path / "ext"), yes=True)  # default runner
+    assert code == 2
+    err = capsys.readouterr().err
+    assert str(tmp_path / "ext") in err  # WHAT was being installed
+    assert "source: path" in err  # and how it classified
+    assert "uv tool install --force --with pip aelix" in err
+    assert "no usable package installer" in err
+
+
+def test_no_backend_remove_abort_names_extension_and_distribution(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    ei = _ei()
+    monkeypatch.setattr(
+        ei,
+        "list_installed_extensions",
+        lambda: [ei.InstalledExtension("myext", "my-ext-dist", "1.0.0")],
+    )
+    _force_env(monkeypatch, pip=False, uv=None)
+    mem = SettingsManager.in_memory(
+        {"extensionSources": [{"spec": "some", "kind": "pypi", "name": "myext"}]}
+    )
+    code = run_extension_command(["remove", "myext", "--yes"], settings=mem)
+    assert code == 2
+    err = capsys.readouterr().err
+    assert "myext" in err
+    assert "my-ext-dist" in err
+    assert "--with pip" in err
+    assert len(mem.get_extension_sources()) == 1  # nothing dropped on a refusal
+
+
+def test_no_backend_upgrade_abort_says_upgrade(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _force_env(monkeypatch, pip=False, uv=None)
+    code = install_extension("some-pkg", yes=True, upgrade=True)
+    assert code == 2
+    assert "cannot upgrade 'some-pkg'" in capsys.readouterr().err
+
+
+def test_backend_symbols_are_exported() -> None:
+    ei = _ei()
+    assert "InstallBackend" in ei.__all__
+    assert "resolve_install_backend" in ei.__all__
+    assert "PipRunner" in ei.__all__  # unchanged public seam
+    assert "AmbientIndexConfig" in ei.__all__
+    assert "read_pip_index_config" in ei.__all__
+    assert "uv_ambient_index_config" in ei.__all__
+    assert "uv_ambient_index_env" in ei.__all__
+    assert "display_argv" in ei.__all__
+
+
+# --- #113: pip's ambient index configuration, translated for uv ----------
+#
+# pip reads PIP_INDEX_URL / PIP_EXTRA_INDEX_URL / pip.conf; uv reads NONE of them
+# (verified live: `uv pip install` with PIP_INDEX_URL *and* PIP_CONFIG_FILE both
+# pointed at a dead index still resolved from public PyPI, while the same command
+# under UV_INDEX_URL refused to connect). Since the uv backend is the DEFAULT on
+# the official `uv tool install` path, an org that pins pip to an internal mirror
+# would silently resolve private extension names from PyPI — dependency confusion
+# whose payload is build/setup code running at install time, and invisible in the
+# consent block because the argv carried no index at all. So the settings are read
+# and emitted as explicit flags, which also makes them visible before the y/N.
+
+
+def _write_pip_conf(path: Path, body: str) -> None:
+    path.write_text(body, encoding="utf-8")
+
+
+def _use_pip_conf(monkeypatch: pytest.MonkeyPatch, *paths: Path) -> None:
+    monkeypatch.setattr(
+        _ei_mod, "_pip_config_candidates", lambda env=None: [str(p) for p in paths]
+    )
+
+
+def _uv_env(backend: Any = None, kind: str = "pypi", **kw: Any) -> dict[str, str]:
+    return _ei().uv_ambient_index_env(backend or _uv_backend(), kind, **kw)
+
+
+def test_uv_env_translates_pip_index_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The translation travels in the ENVIRONMENT, never on argv: an ambient index URL
+    # routinely carries a basic-auth password, and /proc/<pid>/cmdline is mode 0444.
+    monkeypatch.setenv("PIP_INDEX_URL", "https://internal.corp/simple")
+    uv = _uv_backend()
+    assert build_pip_args("internal-corp-ext", "pypi", backend=uv) == [
+        *uv.install_prefix(),
+        "internal-corp-ext",
+    ]
+    assert _uv_env(uv) == {"UV_INDEX_URL": "https://internal.corp/simple"}
+
+
+def test_uv_env_translates_pip_extra_index_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # pip splits its list settings on whitespace, so every entry survives — as the
+    # space-separated list uv reads from UV_EXTRA_INDEX_URL.
+    monkeypatch.setenv("PIP_EXTRA_INDEX_URL", "https://a/simple https://b/simple")
+    uv = _uv_backend()
+    assert build_pip_args("ext", "pypi", backend=uv) == [*uv.install_prefix(), "ext"]
+    assert _uv_env(uv) == {"UV_EXTRA_INDEX_URL": "https://a/simple https://b/simple"}
+
+
+def test_uv_env_translates_pip_conf(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    conf = tmp_path / "pip.conf"
+    _write_pip_conf(
+        conf,
+        "[global]\nindex-url = https://internal.corp/simple\n"
+        "extra-index-url = https://mirror/simple\n",
+    )
+    _use_pip_conf(monkeypatch, conf)
+    uv = _uv_backend()
+    assert build_pip_args("ext", "pypi", backend=uv) == [*uv.install_prefix(), "ext"]
+    assert _uv_env(uv) == {
+        "UV_INDEX_URL": "https://internal.corp/simple",
+        "UV_EXTRA_INDEX_URL": "https://mirror/simple",
+    }
+
+
+def test_pip_conf_install_section_beats_global_and_underscores_normalize(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    conf = tmp_path / "pip.conf"
+    _write_pip_conf(
+        conf,
+        "[global]\nindex_url = https://global/simple\n"
+        "[install]\nindex-url = https://install/simple\n",
+    )
+    _use_pip_conf(monkeypatch, conf)
+    cfg = _ei().read_pip_index_config()
+    assert cfg.index_url == "https://install/simple"
+
+
+def test_later_pip_conf_wins_and_env_beats_every_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The candidate list is LOW → HIGH precedence, and the environment beats all of
+    # them — pip's own ordering.
+    low, high = tmp_path / "low.conf", tmp_path / "high.conf"
+    _write_pip_conf(low, "[global]\nindex-url = https://low/simple\n")
+    _write_pip_conf(high, "[global]\nindex-url = https://high/simple\n")
+    _use_pip_conf(monkeypatch, low, high)
+    assert _ei().read_pip_index_config().index_url == "https://high/simple"
+    assert _ei().read_pip_index_config().origin == str(high)
+    monkeypatch.setenv("PIP_INDEX_URL", "https://env/simple")
+    cfg = _ei().read_pip_index_config()
+    assert cfg.index_url == "https://env/simple"
+    assert cfg.origin == "PIP_INDEX_URL"
+
+
+def test_pip_config_file_devnull_disables_every_config_file() -> None:
+    # pip's documented "ignore all config files" escape hatch, honored identically.
+    assert _REAL_PIP_CONFIG_CANDIDATES({"PIP_CONFIG_FILE": os.devnull}) == []
+    assert _REAL_PIP_CONFIG_CANDIDATES({}) != []
+
+
+def test_pip_config_candidate_order_is_pips_own(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The REAL search path (captured before the hermetic fixture stubs it): system
+    # dirs, then user, then this environment's sys.prefix, and PIP_CONFIG_FILE last
+    # so it outranks them all.
+    env = {
+        "XDG_CONFIG_DIRS": "/etc/xdg",
+        "XDG_CONFIG_HOME": "/home/u/.config",
+        "PIP_CONFIG_FILE": "/tmp/explicit.conf",
+    }
+    paths = _REAL_PIP_CONFIG_CANDIDATES(env)
+    assert paths[-1] == "/tmp/explicit.conf"
+    assert paths[-2] == os.path.join(sys.prefix, "pip.conf")
+    if sys.platform != "win32":
+        assert "/etc/pip.conf" in paths
+        assert "/home/u/.config/pip/pip.conf" in paths
+        assert paths.index("/etc/pip.conf") < paths.index(
+            "/home/u/.config/pip/pip.conf"
+        )
+
+
+def test_unreadable_or_malformed_pip_conf_is_ignored(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A broken pip.conf must never break `extension install`.
+    bad = tmp_path / "pip.conf"
+    _write_pip_conf(bad, "this is not ini [[[\nindex-url\n")
+    _use_pip_conf(monkeypatch, bad, tmp_path / "does-not-exist.conf")
+    assert not _ei().read_pip_index_config()
+
+
+def test_aelix_index_source_outranks_the_ambient_index(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A registered aelix index source is a COMMAND-LINE value the user typed: it keeps
+    # its flag (unchanged from pre-#113) and, since uv's precedence is CLI > env, it
+    # beats the ambient default index — which is therefore not translated at all.
+    monkeypatch.setenv("PIP_INDEX_URL", "https://ambient/simple")
+    monkeypatch.setenv("PIP_EXTRA_INDEX_URL", "https://ambient-extra/simple")
+    uv = _uv_backend()
+    assert build_pip_args(
+        "ext", "pypi", backend=uv, index_url="https://aelix/simple"
+    ) == [
+        *uv.install_prefix(),
+        "ext",
+        "--index-url",
+        "https://aelix/simple",
+    ]
+    assert _uv_env(uv, index_url="https://aelix/simple") == {
+        "UV_EXTRA_INDEX_URL": "https://ambient-extra/simple"
+    }
+
+
+def test_translation_never_duplicates_the_chosen_index(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The index that will already be the default must not ALSO be offered as an extra.
+    monkeypatch.setenv("PIP_EXTRA_INDEX_URL", "https://dup/simple https://idx/simple")
+    uv = _uv_backend()
+    argv = build_pip_args(
+        "ext", "pypi", backend=uv, index_url="https://idx/simple"
+    )
+    assert argv.count("--index-url") == 1
+    assert _uv_env(uv, index_url="https://idx/simple") == {
+        "UV_EXTRA_INDEX_URL": "https://dup/simple"
+    }
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "UV_INDEX",
+        "UV_INDEX_URL",
+        "UV_DEFAULT_INDEX",
+        "UV_EXTRA_INDEX_URL",
+        "UV_CONFIG_FILE",
+        "UV_NO_INDEX",
+        "UV_FIND_LINKS",
+    ],
+)
+def test_uv_own_index_env_suppresses_the_translation(
+    monkeypatch: pytest.MonkeyPatch, name: str
+) -> None:
+    # Someone who configured uv directly owns that decision — a translated value would
+    # silently override it. UV_CONFIG_FILE / UV_NO_INDEX / UV_FIND_LINKS count too:
+    # each is a deliberate uv resolution decision an overlay would break.
+    monkeypatch.setenv("PIP_INDEX_URL", "https://internal.corp/simple")
+    monkeypatch.setenv(name, "https://their-uv-index/simple")
+    uv = _uv_backend()
+    assert build_pip_args("ext", "pypi", backend=uv) == [*uv.install_prefix(), "ext"]
+    assert _uv_env(uv) == {}
+    # …but pip's own view of the world is unchanged (uv_ambient_* is the gated one).
+    assert _ei().read_pip_index_config().index_url == "https://internal.corp/simple"
+    assert not _ei().uv_ambient_index_config()
+
+
+# --- review: uv's PRIMARY configuration is a FILE, not an env var --------
+#
+# ~/.config/uv/uv.toml (and a project uv.toml / pyproject [tool.uv]) sets no UV_INDEX*
+# variable, so an env-var-only suppression test let a stale pip.conf be translated on
+# top of a deliberate uv pin — and uv's CLI/env > file precedence made the translation
+# WIN. Confirmed live against uv 0.11.14: the same install contacted the pip.conf host
+# instead of the uv.toml one.
+
+
+@pytest.mark.parametrize("key", ["index-url", "index", "default-index", "no-index"])
+def test_a_uv_toml_index_pin_suppresses_the_translation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, key: str
+) -> None:
+    conf = tmp_path / "pip.conf"
+    _write_pip_conf(conf, "[global]\nindex-url = https://pip-conf-pin.invalid/simple\n")
+    _use_pip_conf(monkeypatch, conf)
+    uv_toml = tmp_path / "uv.toml"
+    uv_toml.write_text(f'{key} = "https://uv-config-pin.invalid/simple"\n', "utf-8")
+    monkeypatch.setattr(
+        _ei_mod, "_uv_config_files", lambda env=None, cwd=None: [str(uv_toml)]
+    )
+    assert not _ei().uv_ambient_index_config()
+    assert _uv_env() == {}
+
+
+def test_a_pyproject_tool_uv_index_pin_suppresses_the_translation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    conf = tmp_path / "pip.conf"
+    _write_pip_conf(conf, "[global]\nindex-url = https://pip-conf-pin.invalid/simple\n")
+    _use_pip_conf(monkeypatch, conf)
+    proj = tmp_path / "pyproject.toml"
+    proj.write_text(
+        '[project]\nname = "x"\n[tool.uv]\nindex-url = "https://p.invalid/simple"\n',
+        "utf-8",
+    )
+    monkeypatch.setattr(
+        _ei_mod, "_uv_config_files", lambda env=None, cwd=None: [str(proj)]
+    )
+    assert not _ei().uv_ambient_index_config()
+
+
+def test_a_uv_config_without_index_keys_does_not_suppress(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # This very repo's pyproject has [tool.uv.workspace] / [tool.uv.sources] and no
+    # index pin — suppressing on the mere PRESENCE of a uv config would disable the
+    # translation for anyone standing in a uv workspace.
+    conf = tmp_path / "pip.conf"
+    _write_pip_conf(conf, "[global]\nindex-url = https://internal.corp/simple\n")
+    _use_pip_conf(monkeypatch, conf)
+    proj = tmp_path / "pyproject.toml"
+    proj.write_text('[tool.uv.workspace]\nmembers = ["packages/*"]\n', "utf-8")
+    monkeypatch.setattr(
+        _ei_mod, "_uv_config_files", lambda env=None, cwd=None: [str(proj)]
+    )
+    assert _ei().uv_ambient_index_config().index_url == "https://internal.corp/simple"
+
+
+def test_a_broken_uv_config_is_ignored(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    conf = tmp_path / "pip.conf"
+    _write_pip_conf(conf, "[global]\nindex-url = https://internal.corp/simple\n")
+    _use_pip_conf(monkeypatch, conf)
+    bad = tmp_path / "uv.toml"
+    bad.write_text("this is not toml [[[\n", "utf-8")
+    monkeypatch.setattr(
+        _ei_mod,
+        "_uv_config_files",
+        lambda env=None, cwd=None: [str(bad), str(tmp_path / "absent.toml")],
+    )
+    assert _ei().uv_ambient_index_config().index_url == "https://internal.corp/simple"
+
+
+def test_uv_config_search_path_is_uvs_own(tmp_path: Path) -> None:
+    # UV_CONFIG_FILE wins outright; otherwise the nearest project config walking UP
+    # from cwd, then the user-level $XDG_CONFIG_HOME/uv/uv.toml.
+    assert _REAL_UV_CONFIG_FILES({"UV_CONFIG_FILE": "/x/uv.toml"}) == ["/x/uv.toml"]
+    nested = tmp_path / "a" / "b"
+    nested.mkdir(parents=True)
+    (tmp_path / "uv.toml").write_text("", "utf-8")
+    paths = _REAL_UV_CONFIG_FILES(
+        {"XDG_CONFIG_HOME": "/home/u/.config"}, cwd=str(nested)
+    )
+    assert str(tmp_path / "uv.toml") in paths
+    assert paths[-1] == os.path.join("/home/u/.config", "uv", "uv.toml")
+
+
+def test_pip_backend_argv_is_never_index_translated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # pip reads its own configuration natively, so the argv must stay byte-for-byte
+    # what it was before #113 — no injected flags, on either the default or the
+    # explicit pip backend.
+    monkeypatch.setenv("PIP_INDEX_URL", "https://internal.corp/simple")
+    monkeypatch.setenv("PIP_EXTRA_INDEX_URL", "https://mirror/simple")
+    prefix = [sys.executable, "-m", "pip", "install"]
+    assert build_pip_args("ext", "pypi") == [*prefix, "ext"]
+    assert build_pip_args("ext", "pypi", backend=_ei().PIP_BACKEND) == [*prefix, "ext"]
+
+
+@pytest.mark.parametrize("kind", ["path", "git"])
+def test_non_pypi_targets_are_never_index_translated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    monkeypatch.setenv("PIP_INDEX_URL", "https://internal.corp/simple")
+    uv = _uv_backend()
+    target = str(tmp_path) if kind == "path" else "https://h/o/r.git"
+    assert "--index-url" not in build_pip_args(target, kind, backend=uv)
+
+
+class _EnvCapturingRunner(_FakeRunner):
+    """A runner that also records the ENVIRONMENT its child would have inherited."""
+
+    def __init__(self, returncode: int = 0) -> None:
+        super().__init__(returncode)
+        self.envs: list[dict[str, str]] = []
+
+    def __call__(self, argv: list[str]) -> subprocess.CompletedProcess[bytes]:
+        self.envs.append(dict(os.environ))
+        return super().__call__(argv)
+
+
+def test_consent_block_shows_the_translated_index(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # The substitution stays auditable BEFORE the y/N — as a named env line, since the
+    # value no longer rides on argv — and the child really does inherit it.
+    monkeypatch.setenv("PIP_INDEX_URL", "https://internal.corp/simple")
+    _force_backend(monkeypatch, _uv_backend())
+    runner = _EnvCapturingRunner()
+    code = install_extension("internal-corp-ext", yes=True, runner=runner)
+    assert code == 0
+    out = capsys.readouterr().out
+    assert "UV_INDEX_URL=https://internal.corp/simple" in out
+    assert "--index-url" not in runner.calls[0]
+    assert runner.envs[0]["UV_INDEX_URL"] == "https://internal.corp/simple"
+    # …and the parent's environment is restored afterwards.
+    assert "UV_INDEX_URL" not in os.environ
+
+
+# --- review (BLOCKING): a credentialed ambient index must never be disclosed ---
+#
+# A corporate pip.conf is a 0600 file pip never exposes, and basic-auth IN the index
+# URL is the standard Nexus/Artifactory form. Putting it on the uv argv published it
+# to every user on the host (/proc/<pid>/cmdline is 0444, `ps -eo args` prints it) and
+# into terminal scrollback / the TUI transcript / CI job logs via the consent block —
+# a disclosure path that did not exist before #113.
+
+_CREDENTIALED = "https://deployer:hunter2@nexus.corp.invalid/repository/pypi/simple"
+
+
+def test_a_credentialed_ambient_index_never_reaches_argv_or_the_screen(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    conf = tmp_path / "pip.conf"
+    _write_pip_conf(conf, f"[global]\nindex-url = {_CREDENTIALED}\n")
+    _use_pip_conf(monkeypatch, conf)
+    _force_backend(monkeypatch, _uv_backend())
+    runner = _EnvCapturingRunner()
+    assert install_extension("some-ext", yes=True, runner=runner) == 0
+    out = capsys.readouterr().out
+    assert "hunter2" not in out
+    assert "hunter2" not in " ".join(runner.calls[0])
+    # Shown, but redacted the way pip redacts it — the host is still auditable.
+    assert "https://deployer:****@nexus.corp.invalid/repository/pypi/simple" in out
+    # …and the real credential still reaches uv, through the environment.
+    assert runner.envs[0]["UV_INDEX_URL"] == _CREDENTIALED
+
+
+def test_display_argv_redacts_auth_and_quotes_every_element() -> None:
+    ei = _ei()
+    assert ei._redact_auth("https://u:p@h/x") == "https://u:****@h/x"
+    assert ei._redact_auth("https://tok@h/x") == "https://****@h/x"
+    assert ei._redact_auth("https://h/x") == "https://h/x"
+    assert ei._redact_auth("some-ext") == "some-ext"  # non-URL passes through
+    # One element can never break out of its line (no forged `Proceed? [y/N] y`),
+    # nor repaint the screen with an escape sequence.
+    shown = ei.display_argv(["pip", "install", "a\nProceed? [y/N] y", "b\x1b[2J"])
+    assert "\n" not in shown
+    assert "\x1b" not in shown
+    assert shown.count("\\n") == 1
+    # Ordinary non-ASCII text survives (shlex quotes it, but never escapes it).
+    assert "ünïcode" in ei.display_argv(["ünïcode"])
+
+
+# --- review (IMPORTANT): consent-block line injection via a pip.conf value ---
+#
+# configparser joins indented continuation lines with \n and the old code printed the
+# value raw, so a writable pip.conf could inject a forged `Proceed? [y/N] y` plus a
+# decoy argv line into the module's sole trust boundary.
+
+
+def test_a_multiline_pip_conf_index_value_is_rejected_not_printed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    conf = tmp_path / "pip.conf"
+    _write_pip_conf(
+        conf,
+        "[global]\nindex-url = https://evil.invalid/simple\n"
+        "\tProceed? [y/N] y\n"
+        "\t  -> /usr/bin/uv pip install --python /x some-ext\n",
+    )
+    _use_pip_conf(monkeypatch, conf)
+    assert not _ei().read_pip_index_config()  # not printable → not an index URL
+    _force_backend(monkeypatch, _uv_backend())
+    runner = _EnvCapturingRunner()
+    assert install_extension("some-ext", yes=True, runner=runner) == 0
+    out = capsys.readouterr().out
+    assert "Proceed? [y/N] y" not in out
+    assert "evil.invalid" not in out
+    assert "UV_INDEX_URL" not in runner.envs[0]
+
+
+def test_an_extra_index_list_keeps_only_its_usable_tokens(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # pip splits the list on whitespace and each token stands alone, so a junk token is
+    # dropped without discarding its healthy neighbours.
+    conf = tmp_path / "pip.conf"
+    _write_pip_conf(
+        conf,
+        "[global]\nextra-index-url = https://a.invalid/simple --no-verify "
+        "https://b.invalid/simple\n",
+    )
+    _use_pip_conf(monkeypatch, conf)
+    assert _ei().read_pip_index_config().extra_index_urls == (
+        "https://a.invalid/simple",
+        "https://b.invalid/simple",
+    )
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["not-a-url", "ftp://h/x", "https://", "  ", "https://h/x\x1b[2J"],
+)
+def test_only_a_real_index_url_survives(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    conf = tmp_path / "pip.conf"
+    _write_pip_conf(conf, f"[global]\nindex-url = {value}\n")
+    _use_pip_conf(monkeypatch, conf)
+    assert _ei().read_pip_index_config().index_url is None
+
+
+# --- review (IMPORTANT): pip's cross-file merge model ---------------------
+#
+# Oracle values below are pip 24.0's own `create_command("install").parse_args()`
+# resolution for the identical fixtures (pip's default index_url is
+# https://pypi.org/simple, which is "no ambient pin" — index_url is None here).
+
+
+def test_extra_index_url_does_not_accumulate_across_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # pip's Configuration dict REPLACES `global.extra-index-url` per file and
+    # _update_defaults does `defaults[dest] = val`, never `+=`. Accumulating let a
+    # decommissioned org mirror pip had discarded back into the resolution set — a
+    # dependency-confusion vector the pip backend does not have.
+    low, high = tmp_path / "org.conf", tmp_path / "user.conf"
+    _write_pip_conf(low, "[global]\nextra-index-url = https://ORG-EXTRA/simple\n")
+    _write_pip_conf(high, "[global]\nextra-index-url = https://USER-EXTRA/simple\n")
+    _use_pip_conf(monkeypatch, low, high)
+    cfg = _ei().read_pip_index_config()
+    assert cfg.extra_index_urls == ("https://USER-EXTRA/simple",)  # pip oracle
+    assert cfg.index_url is None
+
+
+def test_section_precedence_is_resolved_after_the_cross_file_merge(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # pip resolves [global] → [install] → env over the ALREADY-merged dict, so an org's
+    # low-precedence [install] pin beats a user's high-precedence [global] one. The
+    # old per-file pass inverted exactly the guarantee this feature exists for.
+    low, high = tmp_path / "org.conf", tmp_path / "user.conf"
+    _write_pip_conf(low, "[install]\nindex-url = https://ORG-INSTALL/simple\n")
+    _write_pip_conf(high, "[global]\nindex-url = https://USER-GLOBAL/simple\n")
+    _use_pip_conf(monkeypatch, low, high)
+    cfg = _ei().read_pip_index_config()
+    assert cfg.index_url == "https://ORG-INSTALL/simple"  # pip oracle
+    assert cfg.origin == str(low)
+
+
+# --- review (IMPORTANT): PIP_CONFIG_FILE disables the per-user config ------
+
+
+def test_an_existing_pip_config_file_skips_the_user_configs() -> None:
+    # pip's `should_load_user_config`: an EXISTING PIP_CONFIG_FILE means the per-user
+    # files are not loaded at all. Keeping them let a stale ~/.config/pip/pip.conf win
+    # the index for a CI job that had deliberately pinned one explicit config.
+    explicit = os.path.join(os.path.dirname(os.__file__), "os.py")  # any real file
+    env = {
+        "HOME": "/home/u",
+        "XDG_CONFIG_HOME": "/home/u/.config",
+        "XDG_CONFIG_DIRS": "/etc/xdg",
+        "PIP_CONFIG_FILE": explicit,
+    }
+    paths = _REAL_PIP_CONFIG_CANDIDATES(env)
+    assert paths[-1] == explicit
+    if sys.platform != "win32":
+        assert "/etc/pip.conf" in paths  # GLOBAL still loads
+        assert os.path.join(sys.prefix, "pip.conf") in paths  # SITE still loads
+        assert not [p for p in paths if p.endswith("/.config/pip/pip.conf")]
+        assert not [p for p in paths if p.endswith("/.pip/pip.conf")]
+    # A PIP_CONFIG_FILE that does NOT exist leaves the user configs in place.
+    missing = dict(env, PIP_CONFIG_FILE="/nonexistent/explicit.conf")
+    assert any(
+        p.endswith(os.path.join("pip", "pip.conf")) or p.endswith("pip.ini")
+        for p in _REAL_PIP_CONFIG_CANDIDATES(missing)
+    )
+
+
+def test_a_pinned_explicit_config_hides_a_stale_user_index(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "home" / ".config"
+    (home / "pip").mkdir(parents=True)
+    _write_pip_conf(
+        home / "pip" / "pip.conf",
+        "[global]\nindex-url = https://STALE-USER-PIN.invalid/simple\n"
+        "extra-index-url = https://USER-EXTRA/simple\n",
+    )
+    explicit = tmp_path / "explicit.conf"
+    _write_pip_conf(explicit, "[global]\nextra-index-url = https://EXPLICIT-EXTRA/simple\n")
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(home))
+    monkeypatch.setenv("XDG_CONFIG_DIRS", str(tmp_path / "absent"))
+    monkeypatch.setenv("PIP_CONFIG_FILE", str(explicit))
+    monkeypatch.setattr(_ei_mod, "_pip_config_candidates", _REAL_PIP_CONFIG_CANDIDATES)
+    cfg = _ei().read_pip_index_config()
+    assert cfg.index_url is None  # pip oracle: pypi.org, i.e. no ambient pin
+    assert cfg.extra_index_urls == ("https://EXPLICIT-EXTRA/simple",)  # pip oracle

@@ -21,6 +21,7 @@ from pathlib import Path
 import pytest
 from aelix_ai.settings import ExtensionSourceObject, SettingsManager
 from aelix_coding_agent.cli import extension_catalog
+from aelix_coding_agent.cli import extension_install as _ei_mod
 from aelix_coding_agent.cli import extension_pins as ep
 from aelix_coding_agent.cli.extension_install import (
     _catalog_identity,
@@ -496,11 +497,17 @@ async def test_source_add_catalog_rejects_bare_name(
 
 
 async def test_discover_refresh_all_failed_exits_2(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     # #12: a refresh where EVERY registered catalog failed is a hard error (2),
     # distinct from a successful-but-empty catalog — with a per-source ⚠ warning row
     # AND the "every registered catalog failed" summary line.
+    # The built-in default is opted out EXPLICITLY (it used to be absent only by
+    # accident of the #111 A-1 misclassification): it is a LIVE https location that
+    # would otherwise join the effective locations, fetch successfully over the real
+    # network, and make "every catalog failed" false. tests/conftest.py enforces this
+    # suite-wide; restated here so the test states its own precondition.
+    monkeypatch.setenv("AELIX_DEFAULT_CATALOG", "")
     missing = (tmp_path / "missing.json").as_uri()  # file:// to a non-existent path
     mem = SettingsManager.in_memory(
         {"extensionSources": [{"spec": missing, "kind": "catalog"}]}
@@ -844,6 +851,306 @@ def test_env_repoint_escapes_stale_tombstone(
         {"suppressedDefaultCatalogs": ["https://a/catalog.json"]}
     )
     assert _effective_catalog_locations(mem, offline=False) == [url_b]
+
+
+# --- #111 A-1: the SHIPPED default catalog, end to end ---------------------
+
+
+def test_shipped_default_catalog_leads_the_effective_locations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The REAL constant (imported, never retyped) must survive normalization as a
+    # plain https catalog and lead the effective locations. Before the classify_target
+    # repair its identity was ``git+https://…/catalog.json`` — discover git-cloned a
+    # JSON document and exited 2, so the default marketplace was 100% unfetchable.
+    monkeypatch.delenv("AELIX_DEFAULT_CATALOG", raising=False)
+    default = extension_catalog.DEFAULT_CATALOG_URL
+    assert _effective_default_identity() == default
+    assert not default.startswith("git+")
+    mem = SettingsManager.in_memory(
+        {"extensionSources": [{"spec": "file:///corp/c.json", "kind": "catalog"}]}
+    )
+    assert _effective_catalog_locations(mem, offline=False) == [
+        default,
+        "file:///corp/c.json",
+    ]
+    # Still an https transport → still dropped by the --offline air-gap allowlist.
+    assert _effective_catalog_locations(mem, offline=True) == ["file:///corp/c.json"]
+
+
+def test_legacy_git_prefixed_tombstone_still_suppresses_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # CONSENT MIGRATION: a user who opted out on a pre-repair build stored the
+    # tombstone under the CORRUPTED ``git+`` identity. The repair must not silently
+    # re-enable an outbound fetch they deliberately disabled, so the legacy key still
+    # matches the repaired identity.
+    monkeypatch.delenv("AELIX_DEFAULT_CATALOG", raising=False)
+    default = extension_catalog.DEFAULT_CATALOG_URL
+    mem = SettingsManager.in_memory({"suppressedDefaultCatalogs": [f"git+{default}"]})
+    assert _effective_catalog_locations(mem, offline=False) == []
+    # A tombstone for a DIFFERENT location is still not a match (identity-scoped).
+    other = SettingsManager.in_memory(
+        {"suppressedDefaultCatalogs": ["git+https://elsewhere/catalog.json"]}
+    )
+    assert _effective_catalog_locations(other, offline=False) == [default]
+
+
+def test_legacy_git_prefixed_stored_source_repairs_to_one_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # STORED-SOURCE MIGRATION (the other half of the legacy-identity fix). A beta user
+    # who ran the documented undo — ``source add --catalog <default>`` — on a pre-repair
+    # build has the default stored as ``git+https://…/catalog.json``. Comparing only the
+    # repaired identity stopped matching it, so the default appeared TWICE: once
+    # correctly, and once as a ``git+`` row that ``discover --refresh`` tries to
+    # ``git clone`` (a permanent ⚠ row; exit 2 when it is the only source).
+    monkeypatch.delenv("AELIX_DEFAULT_CATALOG", raising=False)
+    default = extension_catalog.DEFAULT_CATALOG_URL
+    mem = SettingsManager.in_memory(
+        {"extensionSources": [{"spec": f"git+{default}", "kind": "catalog"}]}
+    )
+    assert _effective_catalog_locations(mem, offline=False) == [default]
+
+
+def test_legacy_stored_source_is_repaired_in_place_not_moved(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The legacy row is REPAIRED where it sits (registration order is user-visible
+    # precedence), never dropped and never re-prepended, and its neighbours are
+    # untouched. A second legacy copy collapses into the first.
+    monkeypatch.delenv("AELIX_DEFAULT_CATALOG", raising=False)
+    default = extension_catalog.DEFAULT_CATALOG_URL
+    mem = SettingsManager.in_memory(
+        {
+            "extensionSources": [
+                {"spec": "file:///corp/a.json", "kind": "catalog"},
+                {"spec": f"git+{default}", "kind": "catalog"},
+                {"spec": f"git+{default}", "kind": "catalog"},
+                {"spec": "file:///corp/b.json", "kind": "catalog"},
+            ]
+        }
+    )
+    assert _effective_catalog_locations(mem, offline=False) == [
+        "file:///corp/a.json",
+        default,
+        "file:///corp/b.json",
+    ]
+    # No ``git+`` row survives into the fetch list — nothing will be git-cloned.
+    assert not any(
+        loc.startswith("git+") for loc in _effective_catalog_locations(mem, offline=False)
+    )
+
+
+def test_legacy_stored_source_still_honours_tombstone_and_offline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The repair runs AFTER the drop rules, so it can neither resurrect an opted-out
+    # default nor smuggle an https location past the --offline air-gap allowlist.
+    monkeypatch.delenv("AELIX_DEFAULT_CATALOG", raising=False)
+    default = extension_catalog.DEFAULT_CATALOG_URL
+    mem = SettingsManager.in_memory(
+        {
+            "extensionSources": [{"spec": f"git+{default}", "kind": "catalog"}],
+            "suppressedDefaultCatalogs": [default],
+        }
+    )
+    assert _effective_catalog_locations(mem, offline=False) == [f"git+{default}"]
+    live = SettingsManager.in_memory(
+        {"extensionSources": [{"spec": f"git+{default}", "kind": "catalog"}]}
+    )
+    assert _effective_catalog_locations(live, offline=True) == [f"git+{default}"]
+
+
+def test_a_genuine_git_catalog_source_is_never_rewritten(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Only a row whose identity is EXACTLY ``git+<default>`` is repaired. A real git
+    # catalog remote — and a git+ row for some other location — pass through verbatim.
+    monkeypatch.setenv("AELIX_DEFAULT_CATALOG", _OFFICIAL)
+    mem = SettingsManager.in_memory(
+        {
+            "extensionSources": [
+                {"spec": "git+https://h/o/r.git", "kind": "catalog"},
+                {"spec": "git+https://elsewhere/catalog.json", "kind": "catalog"},
+            ]
+        }
+    )
+    assert _effective_catalog_locations(mem, offline=False) == [
+        _OFFICIAL,
+        "git+https://h/o/r.git",
+        "git+https://elsewhere/catalog.json",
+    ]
+
+
+# --- review (IMPORTANT): BOTH rows stored — the repair must still fire ----
+#
+# ``_upsert_source`` compares catalog identities VERBATIM, so re-running the documented
+# undo ``source add --catalog <default>`` on a repaired build APPENDS a second row next
+# to the legacy one instead of matching it. The read path then short-circuited on
+# ``default in stored_ids`` BEFORE the legacy repair, so the broken ``git+`` row — the
+# exact state the repair exists to prevent — survived into the fetch list.
+
+
+def test_both_the_legacy_and_the_repaired_row_collapse_to_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("AELIX_DEFAULT_CATALOG", raising=False)
+    default = extension_catalog.DEFAULT_CATALOG_URL
+    mem = SettingsManager.in_memory(
+        {
+            "extensionSources": [
+                {"spec": f"git+{default}", "kind": "catalog"},
+                {"spec": default, "kind": "catalog"},
+            ]
+        }
+    )
+    assert _effective_catalog_locations(mem, offline=False) == [default]
+    # Order-independent, and neighbours keep their registration order.
+    flipped = SettingsManager.in_memory(
+        {
+            "extensionSources": [
+                {"spec": default, "kind": "catalog"},
+                {"spec": "file:///corp/a.json", "kind": "catalog"},
+                {"spec": f"git+{default}", "kind": "catalog"},
+            ]
+        }
+    )
+    assert _effective_catalog_locations(flipped, offline=False) == [
+        default,
+        "file:///corp/a.json",
+    ]
+
+
+async def test_both_rows_registered_discover_fetches_only_https(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # End to end: with both rows stored, ``discover --refresh`` must not git-clone the
+    # JSON document (a permanent ⚠ row, and exit 2 when it is the only source).
+    monkeypatch.delenv("AELIX_DEFAULT_CATALOG", raising=False)
+    default = extension_catalog.DEFAULT_CATALOG_URL
+    seen: list[str] = []
+
+    def _fake_fetch_all(locations, **kwargs):
+        seen.extend(locations)
+        return [
+            extension_catalog.Catalog(
+                location=loc, entries=(), fetched_at=extension_catalog.now_iso()
+            )
+            for loc in locations
+        ]
+
+    monkeypatch.setattr(extension_catalog, "fetch_all", _fake_fetch_all)
+    mem = SettingsManager.in_memory(
+        {
+            "extensionSources": [
+                {"spec": f"git+{default}", "kind": "catalog"},
+                {"spec": default, "kind": "catalog"},
+            ]
+        }
+    )
+    code = await run_extension_command_async(["discover", "--refresh"], settings=mem)
+    capsys.readouterr()
+    assert code == 0
+    assert seen == [default]
+
+
+# --- review (IMPORTANT): the legacy alias must not overreach --------------
+#
+# The pre-repair bug was ``low.startswith(("http://","https://")) and ".git" in low``.
+# For a default with no ``.git`` ANYWHERE, no build could ever have stored
+# ``git+<default>``, so such a row/tombstone is a DELIBERATE registration of a distinct
+# location — a ``git clone`` rather than an https GET. Aliasing it anyway rewrote the
+# clone to a GET (the catalog's entries silently vanished from ``discover``) and let a
+# tombstone the bug could never have written drop the default outright.
+
+
+def test_a_git_row_for_a_non_git_default_is_a_distinct_location(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gitea = "https://gitea.corp/team/catalog"  # Gitea makes the .git suffix optional
+    monkeypatch.setenv("AELIX_DEFAULT_CATALOG", gitea)
+    mem = SettingsManager.in_memory(
+        {"extensionSources": [{"spec": f"git+{gitea}", "kind": "catalog"}]}
+    )
+    assert _effective_catalog_locations(mem, offline=False) == [gitea, f"git+{gitea}"]
+
+
+def test_a_git_tombstone_for_a_non_git_default_does_not_suppress_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gitea = "https://gitea.corp/team/catalog"
+    monkeypatch.setenv("AELIX_DEFAULT_CATALOG", gitea)
+    mem = SettingsManager.in_memory({"suppressedDefaultCatalogs": [f"git+{gitea}"]})
+    assert _effective_catalog_locations(mem, offline=False) == [gitea]
+
+
+def test_the_alias_covers_every_shape_the_old_bug_could_corrupt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The corruption class is ``.git`` ANYWHERE in an http(s) URL, not just the netloc:
+    # a default served from a repo path (``…/repo.git/catalog.json``) was corrupted too,
+    # and a netloc-only alias would have left those users stranded.
+    keys = _ei_mod._legacy_suppression_keys
+    for corrupted in (
+        extension_catalog.DEFAULT_CATALOG_URL,  # .git in the NETLOC
+        "https://host/repo.git/catalog.json",  # .git in the PATH
+        "https://host/c.json?x=.git",  # .git in the QUERY
+    ):
+        assert keys(corrupted) == (corrupted, f"git+{corrupted}")
+    for clean in ("https://official/catalog.json", "https://gitea.corp/team/catalog"):
+        assert keys(clean) == (clean,)
+    assert keys("git+https://h/o/r.git") == ("git+https://h/o/r.git",)
+
+
+async def test_legacy_stored_source_discover_fetches_https_not_git(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # End to end: with ONLY the legacy row registered, ``discover --refresh`` must
+    # reach the https catalog. Before the repair it git-cloned the JSON document and
+    # exited 2 with "every registered catalog failed to fetch".
+    monkeypatch.delenv("AELIX_DEFAULT_CATALOG", raising=False)
+    default = extension_catalog.DEFAULT_CATALOG_URL
+    seen: list[str] = []
+
+    def _fake_fetch_all(locations, **kwargs):
+        seen.extend(locations)
+        return [
+            extension_catalog.Catalog(
+                location=loc, entries=(), fetched_at=extension_catalog.now_iso()
+            )
+            for loc in locations
+        ]
+
+    monkeypatch.setattr(extension_catalog, "fetch_all", _fake_fetch_all)
+    mem = SettingsManager.in_memory(
+        {"extensionSources": [{"spec": f"git+{default}", "kind": "catalog"}]}
+    )
+    code = await run_extension_command_async(["discover", "--refresh"], settings=mem)
+    capsys.readouterr()
+    assert code == 0
+    assert seen == [default]
+
+
+async def test_legacy_tombstone_renders_suppressed_and_add_clears_it(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    # Guard ③ must report the legacy opt-out as suppressed (not "present"), and
+    # ``source add --catalog <default>`` must clear the legacy key too — otherwise the
+    # documented undo would leave the row stuck reading "suppressed" forever.
+    monkeypatch.delenv("AELIX_DEFAULT_CATALOG", raising=False)
+    default = extension_catalog.DEFAULT_CATALOG_URL
+    mem = SettingsManager.in_memory({"suppressedDefaultCatalogs": [f"git+{default}"]})
+    assert await run_extension_command_async(["source", "list"], settings=mem) == 0
+    listed = capsys.readouterr().out
+    assert "built-in default" in listed and "suppressed" in listed
+    assert await run_extension_command_async(
+        ["source", "add", "--catalog", default], settings=mem
+    ) == 0
+    capsys.readouterr()
+    assert mem.get_suppressed_default_catalogs() == []
+    # Re-activated: the default + its stored copy dedupe to exactly one location.
+    assert _effective_catalog_locations(mem, offline=False) == [default]
 
 
 async def test_source_remove_default_writes_tombstone(

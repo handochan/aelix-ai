@@ -32,3 +32,24 @@ def _no_real_tool_downloads(tmp_path_factory, monkeypatch):
 
     monkeypatch.setattr(_tm, "_get_latest_version", _blocked)
     monkeypatch.setattr(_tm, "_download_file", _blocked)
+
+
+@pytest.fixture(autouse=True)
+def _no_default_catalog(monkeypatch):
+    """Disable the built-in default discover catalog for the whole suite.
+
+    ``extension_catalog.DEFAULT_CATALOG_URL`` is a LIVE https location (the official
+    marketplace catalog on GitHub Pages). Since the W1-A ``classify_target`` repair
+    (#111 A-1) it is correctly classified as an https catalog instead of being
+    corrupted into a ``git+…`` spec, so any test that reaches
+    ``_effective_catalog_locations`` without pinning the env would inject it into the
+    effective locations and ``discover --refresh`` would make a REAL outbound request
+    — non-hermetic, and it flips "every registered catalog failed" assertions.
+    Emptying ``AELIX_DEFAULT_CATALOG`` (guard ②) keeps the suite offline.
+
+    Tests that need a default OPT IN explicitly — ``monkeypatch.setenv`` to a
+    ``file://`` / synthetic URL, or ``monkeypatch.delenv`` to restore the built-in
+    value (both override this function-scoped fixture; last write wins).
+    """
+
+    monkeypatch.setenv("AELIX_DEFAULT_CATALOG", "")
