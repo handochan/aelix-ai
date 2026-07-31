@@ -108,7 +108,7 @@ dropped lines; the transport half saturates one core at ~58 000 events/s.
 
 | # | Risk | Size |
 |---|---|---|
-| 1 | `RpcClient.prompt_and_wait` buffers EVERY event of the turn in a local `collected` list, and `RpcChannel._run_turn` **discards the return value**. Measured **109 MiB** for one long turn. A supervised child IS a long turn. Bounded by turn length, by nothing else. | **1 line** |
+| 1 | ~~`RpcClient.prompt_and_wait` buffers EVERY event of the turn in a local `collected` list, and `RpcChannel._run_turn` **discards the return value**.~~ **CLOSED in Step 1** (`d28fe3a`) — keyword-only `collect: bool = True`, opted out at the one production call site. Re-measured on this branch: 25.6 MB → 0.36 MB peak. | ~~1 line~~ done |
 | 2 | `batch.MAX_CONCURRENCY`'s permit is released when `run()` RETURNS. If a child outlives its call the permit is held forever, and `_SEM_BY_LOOP` is module-global — **after 4, the next `agent()` call in the session parks forever.** A deadlock, not a throttle. | design |
 | 3 | No time-based throttle on statusline writes (`progress._set_row` dedups by rendered TEXT only, and the text includes `tokens`). N children share one height-1 row. | small |
 | 4 | Correlation returns the instant one client serves two turns. | wire change |
@@ -181,19 +181,58 @@ change, aelix-original (pi has the same defect).
 
 ## 4. THE WORK — in order
 
-### Step 1 — the three must-fix items (all small, all independent of the direction)
+### Step 1 — the three must-fix items — ✅ DONE (`d28fe3a`, `5f6f6fd`, `64ceb5d`)
 
-These are correctness fixes that are right regardless of whether rpc becomes standard. They should
-land **before** the smoke test, so the smoke test measures a fixed channel.
+These are correctness fixes that are right regardless of whether rpc becomes standard. They landed
+**before** the smoke test, so the smoke test measures a fixed channel.
 
-| # | Fix | Where | Why it is required |
+| # | Fix | Where | Why it was required |
 |---|---|---|---|
-| ① | Move `unsubscribe()` to AFTER `_shutdown` | `aelix_agents/rpc_channel.py::RpcChannel._drive`'s `finally` | **The intervention path IS the kill path.** Today every `stop`/timeout throws away the child's closing report — the precise artifact the orchestrator interrupted it to collect. Also makes `build_result`'s `stop_reason == "aborted"` branch reachable on rpc at all; aborted rpc delegations are currently mislabelled `timeout`/`error`. |
-| ② | Stop buffering discarded events | `rpc/rpc_client.py::prompt_and_wait` (opt-out flag, or a `wait_for_idle` that does not collect) + `rpc_channel.py::_run_turn` | 109 MiB measured for one long turn, for a list nobody reads. |
-| ③ | Subscribe the reducer BEFORE `client.start()` | `rpc_channel.py::RpcChannel.run` | Today "the child said nothing" and "we were not listening yet" are indistinguishable, with no counter. |
+| ① | Move `unsubscribe()` to AFTER `_shutdown` | `aelix_agents/rpc_channel.py::RpcChannel._drive`'s `finally` | **The intervention path IS the kill path.** Every `stop`/timeout threw away bytes the child had already written that the parent had not yet reduced. Measured on a timed-out delegation: `summary='(no output)'`, 0 tokens, 0 turns → the child's real partial answer with its full usage block. |
+| ② | Stop buffering discarded events | `rpc/rpc_client.py::prompt_and_wait` (keyword-only `collect: bool = True`) + `rpc_channel.py::_run_turn` | Measured 25.6 MB peak parent memory for one turn against 0.36 MB, for a list the only production caller discards. (The earlier 109 MiB figure was a different workload; 25.6 MB is what this branch measured end-to-end.) |
+| ③ | Subscribe the reducer BEFORE `client.start()` | `rpc_channel.py::RpcChannel.run` | "The child said nothing" and "we were not listening yet" were indistinguishable. Measured: a child that speaks and exits 9 inside the grace now reports its own `rate limited` and 33 tokens instead of a boot traceback and zeroes. |
 
-**Test shape for ①:** a stub that emits its closing events only after stdin EOF; assert the envelope
-carries them and reports `aborted`. Mutation: restore the old ordering → red.
+#### TWO CLAIMS IN THE ROW ABOVE WERE FALSE AND ARE STRUCK. Do not reinstate them.
+
+1. **There is no "closing report".** `run_rpc_mode` calls `capture.unsubscribe()` *before*
+   `runtime_host.dispose()` aborts the turn, and the abort close-out emits no `message_end` at all
+   — a real child writes **zero bytes** after its stdin EOF. What ① recovers is what the child had
+   ALREADY written and the parent had not yet read. That is real, and it is all of it.
+2. **① does NOT make `build_result`'s `stop_reason == "aborted"` branch reachable on rpc.**
+   `build_result` gives the caller's proposed outcome precedence (`envelope.py:265-266`), so a
+   timeout stays a timeout. Aborted rpc delegations were never mislabelled by this.
+
+#### What Step 1 cost, so the next reader does not repeat it
+
+The first commit (`d28fe3a`) shipped **two regressions**, both found by adversarial review and both
+independently reproduced before being accepted. Both had one cause: **one subscription fans out to
+two consumers with different lifetimes**, so moving the single `unsubscribe()` moved both.
+
+* The **progress tap** must stop at a terminal `row.state`. `_eager_abort` makes the row terminal
+  *before* the `finally` drains, so a live tap published a terminal snapshot per drained line and
+  `SubagentProgressBridge` emitted a fresh `subagent_start`/`subagent_end` pair for each: **2325
+  pairs for one cancelled delegation** on the channels a dashboard subscribes to. `PrintChannel`
+  holds this invariant by cancelling its pumps next to its own `_eager_abort`; this channel cannot,
+  because the accumulator still has to read.
+* The **accumulator** must stop at `state.saw_agent_end`. `build_result`'s
+  `stop_reason in ("error","aborted")` disjunct is *not* gated on the caller's outcome, so one late
+  `message_end` flipped a clean exit-0 delegation to `ok=False` and replaced the answer. Gating on
+  the caller's outcome instead was measured and **rejected** — it still folded 1145 post-terminator
+  lines, because `agent_end` resolves the waiter's future *inside* the fan-out while the pump keeps
+  delivering.
+* The one thing the accumulator gate subtracts, recorded in the code: a drain that delivered
+  `agent_end` *before* a partial `message_end` would now lose that partial. Reachable only from a
+  synthetic child — the harness emits `MessageEndEvent` then `AgentEndEvent`
+  (`harness/core.py:4389-4391`).
+
+Also fixed in `64ceb5d`, and **not** caused by this work: `test_start_raises_a_typed_error_when_the_child_dies_in_the_grace`
+was the suite's one red. `_watch_for_exit` POLLS `returncode` every `EXIT_POLL_SECONDS` (50 ms), so
+death detection is quantised to {50, 100, …} ms against a 100 ms grace — **a window one poll tick
+wide**, which a child dying at 51 ms already loses. Two CPU hogs on 2 cores is enough to fail it
+8/8. Only the test was moved out of the way; **the production race is untouched**, and the real fix
+is to race the exit event instead of polling it.
+
+Suite after Step 1: **7425 passed, 1 skipped, 0 failed**; both band gates green.
 
 ### Step 2 — B, the dev-only selector
 
@@ -260,8 +299,9 @@ robust one-shot path has standalone value, and `SubagentChannel` exists precisel
   unaffected, but ADR-0201 cites the framing and wants narrowing.
 * `rpc_types` defaults `steering_mode`/`follow_up_mode` to `"all"`; the harness defaults to
   `"one-at-a-time"`. Latent client-side mismatch.
-* `saw_agent_end` is read by nothing — the correct fix for PrintChannel's "died mid-turn, exit 0,
-  reported success" (§2.2).
+* ~~`saw_agent_end` is read by nothing~~ — **no longer true.** Step 1 made it the rpc accumulator's
+  gate (`5f6f6fd`). It is still unread by `build_result`, so PrintChannel's "died mid-turn, exit 0,
+  reported success" (§2.2) is still open and `saw_agent_end` is still the correct fix for it.
 * The busy-preflight window: a recon claimed `agent_end` precedes `_phase = "idle"`, leaving a
   window. **I could not reproduce it over the wire** and did not action it. Recorded so nobody
   inherits an unverified claim.
