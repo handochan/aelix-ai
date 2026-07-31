@@ -12,7 +12,9 @@ Path resolution:
 
 - ``str`` or ``Path`` ending in ``.py`` → loaded via
   ``importlib.util.spec_from_file_location``.
-- Other ``str`` → ``importlib.import_module`` (dotted module path).
+- Other ``str`` → ``importlib.import_module`` (dotted module path, either
+  bare — top-level ``setup`` — or ``module.path:callable``). Reachable from
+  the CLI's ``-e`` since issue #114; see :func:`_is_module_ref`.
 - Anything else is treated as a callable factory and invoked directly. Class
   instances with a ``__call__(self, aelix)`` (e.g. ``PolicyExtension()``) are
   valid factories per D.1.8.
@@ -31,13 +33,18 @@ reversal of the original Draft ADR-0028).
 
 from __future__ import annotations
 
+import contextlib
 import importlib
 import importlib.metadata
 import importlib.util
 import inspect
 import logging
+import os
+import re
+import sys
 import tomllib
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -337,10 +344,18 @@ async def discover_and_load_extensions(
        user-facing directory is how a "write your extension to
        ``~/.aelix/extensions``" instruction gets written and silently loads
        nothing.
-    3. ``configured_paths`` — explicit entries provided by the caller. A
-       directory entry is expanded via :func:`_discover_in_dir`; an entry
-       resolving to a directory with a ``pyproject.toml [tool.aelix]
-       extensions = [...]`` manifest uses the declared list.
+    3. ``configured_paths`` — explicit entries provided by the caller (the
+       CLI's ``-e``). A directory entry is expanded via
+       :func:`_discover_in_dir`; an entry resolving to a directory with a
+       ``pyproject.toml [tool.aelix] extensions = [...]`` manifest uses the
+       declared list. A string that is NOT path-shaped is treated as a dotted
+       module reference — ``pkg.mod`` (top-level ``setup``) or
+       ``pkg.mod:factory`` — and imported rather than opened (issue #114; see
+       :func:`_is_module_ref` for the classification, in which anything
+       present at the corresponding path beats the module reading, and the
+       ambiguity is warned about rather than resolved silently). The import
+       deliberately excludes the project directory from ``sys.path`` — see
+       :func:`_import_path_without_cwd`.
     4. ``entry_points(group="aelix.extensions")`` — Aelix-additive. Each
        endpoint is resolved by ``.load()`` and treated as an inline
        factory (or a callable class instance per D.1.8).
@@ -377,6 +392,168 @@ async def discover_and_load_extensions(
     return result
 
 
+# === Issue #114 — configured-entry classification (path vs dotted module) ===
+
+_DOTTED_MODULE_RE = re.compile(
+    r"\A[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*\Z"
+)
+"""A bare importable module reference: ``pkg``, ``pkg.sub.mod``.
+
+Anchored with ``\\Z``, not ``$``: ``$`` also matches immediately *before* a
+trailing newline, so ``"justaname\\n"`` (a config- or file-sourced entry with
+trailing whitespace) would classify as a module and get its newline spliced
+into the middle of the error message. Not reachable from a shell argv, but
+free to close.
+"""
+
+_MODULE_CALLABLE_RE = re.compile(
+    r"\A[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*"
+    r":[A-Za-z_][A-Za-z0-9_]*\Z"
+)
+"""The ``module.path:callable`` form, matching :func:`_factory_from_module`.
+
+Deliberately stricter than ``PluginEntry.python``'s ``^[\\w.]+:\\w+$`` at the
+head: a *leading* digit (``9x:setup``) is not an identifier, so it is left to
+the path branch rather than being handed to ``import_module`` to fail on.
+``\\Z`` rather than ``$`` for the same reason as :data:`_DOTTED_MODULE_RE`.
+"""
+
+_WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:[\\/]")
+"""A Windows drive-qualified path (``C:\\ext``, ``C:/ext``).
+
+Checked BEFORE the colon test so a drive letter is never mistaken for the
+``module:callable`` separator. Ordering matters and is asserted by
+``test_windows_drive_letter_is_a_path_not_module_callable``: on POSIX
+``os.sep`` is ``/`` and ``os.altsep`` is ``None``, so ``C:\\ext`` contains NO
+separator this platform recognises and clause 3 does NOT fire for it — the
+plan's "clause 3 excludes drive letters" assumption holds on Windows only.
+This explicit drive test makes the exclusion platform-independent. It requires
+a following separator, so a genuine one-letter module in colon form
+(``c:setup``) still classifies as a module.
+"""
+
+_WINDOWS_DRIVE_RELATIVE_RE = re.compile(r"^[A-Za-z]:")
+"""A bare drive qualifier (``C:ext`` — "``ext`` on drive C's current dir").
+
+Applied **only when** ``os.name == "nt"``. It overlaps the legitimate
+one-letter ``module:callable`` form (``c:setup``), so paying for it everywhere
+would cost a real input on the platform where drive-relative paths cannot
+occur. On Windows the path reading wins the overlap: drive-relative paths are
+a native (if discouraged) spelling, whereas a one-letter module is vanishingly
+rare and still reachable as ``c.mod:setup`` or via the library API. The repo
+has open Windows-portability issues; this keeps the change from adding one.
+"""
+
+_OS_NAME = os.name
+"""The platform, read through a module-level seam so tests can override it.
+
+Patching ``os.name`` itself would work, but ``loader.os is os`` — it is the
+stdlib module object, and ``pathlib`` dispatches ``Path()`` to ``WindowsPath``
+off ``os.name``. A test that flipped it process-wide would make every
+``Path`` in the interpreter a ``WindowsPath`` for the duration, including any
+built by pytest's own failure reporting if an assertion inside the window
+failed. This seam confines the override to this module.
+"""
+
+
+def _is_module_shaped(entry: str) -> bool:
+    """Does ``entry`` have the *syntax* of a module reference, ignoring disk?
+
+    :func:`_is_module_ref` answers "should this be IMPORTED", which folds in
+    the filesystem. This answers only "does it look like a module", which is
+    what the tier-3 ambiguity warning needs: an entry that is module-shaped
+    yet claimed by the on-disk clause is exactly the case where the visited
+    directory silently decides what a user-typed name means.
+    """
+
+    if not entry or entry.endswith(".py"):
+        return False
+    if _WINDOWS_DRIVE_RE.match(entry):
+        return False
+    if _OS_NAME == "nt" and _WINDOWS_DRIVE_RELATIVE_RE.match(entry):
+        return False
+    seps = {"\\", "/", os.sep}
+    if os.altsep:
+        seps.add(os.altsep)
+    if any(sep in entry for sep in seps):
+        return False
+    if ":" in entry:
+        return bool(_MODULE_CALLABLE_RE.match(entry))
+    return bool(_DOTTED_MODULE_RE.match(entry))
+
+
+def _is_module_ref(entry: str, *, cwd: Path) -> bool:
+    """Issue #114 — is this configured ``-e`` string a dotted module, not a path?
+
+    ``False`` means "treat as a filesystem path", which is what EVERY string
+    got before this function existed. The predicate therefore only ever moves
+    a string from path to module, and only when no path interpretation can
+    work — so it can add working inputs but cannot break one that worked.
+
+    Clause order (first match wins):
+
+    1. ``.py`` suffix → path, always (mirrors :func:`_resolve_factory`).
+    2. A Windows drive prefix (``C:\\…`` / ``C:/…``, plus bare ``C:…`` when
+       running ON Windows) → path (see :data:`_WINDOWS_DRIVE_RE` and
+       :data:`_WINDOWS_DRIVE_RELATIVE_RE`; must precede the colon clause).
+    3. Contains a path separator — ``\\`` on any platform, plus ``os.sep`` /
+       ``os.altsep`` — → path. A dotted module reference never contains one.
+    4. Exists on disk (absolute, or relative to ``cwd``) → path. **An existing
+       path always wins**, matching :func:`~aelix_coding_agent.cli.
+       extension_install.classify_target` ("a local path WINS if it exists").
+       Tested with ``os.path.lexists``, not ``Path.exists``: the latter
+       follows symlinks and reports ``False`` for a dangling or looping one,
+       which would hand a path the user demonstrably created to the module
+       branch and replace an accurate filesystem diagnostic ("Symlink loop
+       from …") with a misleading "no module named".
+    5. Contains ``:`` → module only when it is a well-formed
+       ``module.path:callable``; otherwise → path (clause 7).
+    6. A well-formed dotted identifier → module.
+    7. Anything else → path, preserving today's behaviour and today's error
+       message for inputs we cannot confidently classify.
+
+    **Clause 4 is not free, and it is not silent.** It hands the visited
+    directory the power to decide whether ``-e acme`` means "import the
+    user's installed extension" or "load this project's ``acme/``". That
+    ambiguity predates #114 for the path half (the coercion always expanded
+    an on-disk directory), but #114 *creates the spelling*, so the tier-3
+    loop in :func:`_discover_entries` logs a warning naming both readings
+    whenever clause 4 is the only reason a module-shaped string was called a
+    path. The clause itself stays because dropping it would regress the
+    plan's acceptance case — ``-e mypkg.ext`` with ``mypkg.ext/`` on disk
+    loaded from disk before #114 and must keep doing so.
+
+    **The one input whose ERROR changes: a dotless bare name.** ``justaname``
+    has no separator, no ``.py``, and (clause 4 having already declined) does
+    not exist on disk, so clause 6 reads it as a top-level module — which is
+    the point, since ``-e my_installed_ext`` is exactly the input #114 is
+    about. A user who meant a path now gets a "no module named" failure
+    instead of "Extension file not found". No *working* input moves: a bare
+    name that resolves on disk is claimed by clause 4, and a bare name that
+    resolves to nothing failed before and fails now. Only the message moves,
+    so :func:`_resolve_factory` names BOTH readings when a module reference
+    turns out not to be importable. The alternative — importing first and
+    falling back to the path reading on ``ModuleNotFoundError`` — was
+    rejected: a module that raises ``ModuleNotFoundError`` from *inside* its
+    own imports (a missing third-party dependency) would then be misreported
+    as a missing file, which is strictly worse diagnostics than the case it
+    fixes.
+    """
+
+    if not _is_module_shaped(entry):
+        return False
+    try:
+        candidate = Path(entry)
+        resolved = candidate if candidate.is_absolute() else (cwd / candidate)
+        if os.path.lexists(resolved):
+            return False
+    except (OSError, ValueError):
+        # Unrepresentable as a path (embedded NUL, name too long, …) — keep
+        # the historical path branch so the historical error is produced.
+        return False
+    return True
+
+
 def _discover_entries(
     configured_paths: list[str | Path | ExtensionFactory],
     *,
@@ -397,6 +574,13 @@ def _discover_entries(
     code (factory invocation happens later in :func:`load_extensions`).
     Extracted (issue #21) so :func:`scan_extension_manifests` can reuse the
     identical discovery + trust gating without the execution half.
+
+    Tier 3 entries are classified by :func:`_is_module_ref` (issue #114): a
+    dotted module reference stays a ``str`` (so :func:`_resolve_factory`
+    imports it), everything else is coerced to ``Path`` exactly as before.
+    ``str`` therefore appears in the returned list; :func:`load_extensions`
+    resolves it, and :func:`scan_extension_manifests` ignores it (a module
+    reference carries no ``aelix-plugin.toml``).
     """
 
     all_entries: list[str | Path | ExtensionFactory | _ManifestEntry] = []
@@ -458,12 +642,51 @@ def _discover_entries(
             _push_entry(discovered)
 
     # 3. Explicit configured paths.
+    seen_modules: set[str] = set()
     for entry in configured_paths:
         # Callables/factories pass through (P-21 — explicit takes precedence
         # over entry_points but loses to local/global directories).
         if callable(entry) and not isinstance(entry, (str, Path)):
             all_entries.append(entry)
             continue
+        # Issue #114: a dotted module reference ("pkg.mod", "pkg.mod:factory")
+        # passes through AS A STRING so _resolve_factory reaches
+        # _factory_from_module. Coercing it to Path here (as this loop did
+        # unconditionally) made that branch unreachable from the CLI, so
+        # `-e pkg.mod` failed with "Extension file not found: <cwd>/pkg.mod"
+        # while load_extensions(["pkg.mod"]) loaded the very same string —
+        # a CLI/library divergence, not merely a missing feature.
+        # Deduped by the literal string, mirroring the Path.resolve() dedupe
+        # below (before #114 a repeated module string deduped as a repeated
+        # cwd-relative path; keep that).
+        if isinstance(entry, str) and _is_module_ref(entry, cwd=cwd):
+            if entry in seen_modules:
+                continue
+            seen_modules.add(entry)
+            all_entries.append(entry)
+            continue
+        # Issue #114 fold-in: the entry LOOKS like a module but something on
+        # disk claimed it (clause 4). That is deliberate — a path that exists
+        # wins, so `-e mypkg.ext` with `mypkg.ext/` present keeps loading from
+        # disk exactly as it did before #114 — but it means the visited
+        # directory, not the user, decided what the name means, and the code
+        # about to run is project-local and outside the `no_project_local`
+        # trust gate. Do not let that happen silently.
+        if isinstance(entry, str) and _is_module_shaped(entry):
+            logger.warning(
+                "extension entry %r looks like a module reference, but %s "
+                "exists and takes precedence, so PROJECT-LOCAL code will be "
+                "loaded instead of the installed module. Pass './%s' to "
+                "confirm you meant the local path, or run from another "
+                "directory to load the module.",
+                entry,
+                Path(entry) if Path(entry).is_absolute() else (cwd / entry),
+                entry,
+            )
+            # NO ``continue`` — the warning is advisory and the entry falls
+            # through to the path handling below, which is what "an existing
+            # path always wins" means. Swallowing it here would regress the
+            # plan's acceptance case `-e mypkg.ext that exists on disk`.
         # String / Path: expand directories via _discover_in_dir; pass files
         # through unchanged.
         try:
@@ -893,10 +1116,194 @@ async def _resolve_factory(
     if isinstance(entry, str):
         if entry.endswith(".py"):
             return _factory_from_file(Path(entry), cwd=cwd), entry, None
-        return _factory_from_module(entry), entry, None
+        # Issue #114 security fold-in: resolve the module WITHOUT the project
+        # directory on ``sys.path``. See :func:`_import_path_without_cwd`.
+        shadow = _cwd_shadow_candidate(entry, cwd)
+        try:
+            with _import_path_without_cwd(cwd):
+                return _factory_from_module(entry), entry, None
+        except ModuleNotFoundError as exc:
+            # Issue #114: this branch became reachable from ``-e``, so a
+            # dotless bare name that used to fail as "Extension file not
+            # found" now fails as "no module named". Name BOTH readings
+            # rather than silently swapping one dead end for another.
+            if shadow is not None and _names_the_reference(entry, exc):
+                raise _cwd_shadowed_module_error(
+                    entry, exc, shadow, cwd
+                ) from exc
+            raise _unresolvable_module_ref_error(entry, exc, cwd=cwd) from exc
     raise TypeError(
         f"Unsupported extension entry type: {type(entry).__name__}"
     )
+
+
+def _import_path_without_cwd(cwd: Path | None) -> AbstractContextManager[None]:
+    """Issue #114 — take the project directory off ``sys.path`` for an import.
+
+    ``-e <module>`` became reachable in #114, and ``importlib.import_module``
+    resolves a name against the ambient ``sys.path``. Under ``python -m
+    aelix_coding_agent`` — which is not exotic here: it is verbatim the
+    command :mod:`aelix_agents.print_channel` uses to spawn EVERY subagent,
+    with the child's cwd — ``sys.path[0]`` is the current directory. Without
+    this guard, ``-e acme`` run inside a cloned repo that happens to contain
+    ``acme.py`` imports the REPO's file and executes its top-level code, while
+    the user's genuinely installed ``acme`` never loads. Nothing prevented it:
+    :func:`_is_module_ref` clause 4 tests ``<cwd>/acme`` (no ``.py``) and so
+    does not fire, tier-3 explicit entries are loaded outside the
+    ``no_project_local`` trust gate, and ``--no-approve`` is not consulted.
+
+    ``-e <module>`` means "the module this Aelix installation can import", so
+    the project directory has no business in that lookup; a project-local
+    extension has its own gated channel (``./.aelix/extensions/``) and its own
+    spelling (``-e ./file.py``). Blocking the directory rather than inspecting
+    the winning spec also closes the ``find_spec`` hole, in which resolving
+    ``a.b`` imports ``a`` — executing a hostile ``a/__init__.py`` during the
+    very check meant to detect it.
+
+    Removed entries are re-inserted at their original indices rather than by
+    assigning a saved list back, so a ``sys.path`` mutation made by the
+    extension while it imports survives. ``sys.path`` is process-global and
+    this is not thread-safe; extension loading is a sequential startup step.
+    """
+
+    blocked: set[str] = {""}
+    with contextlib.suppress(OSError):  # cwd unlinked underneath us
+        blocked.add(os.getcwd())
+    if cwd is not None:
+        blocked.add(str(cwd))
+        with contextlib.suppress(OSError):  # unresolvable cwd
+            blocked.add(str(cwd.resolve()))
+
+    removed = [(i, p) for i, p in enumerate(sys.path) if p in blocked]
+
+    @contextlib.contextmanager
+    def _guard() -> Iterator[None]:
+        if not removed:
+            yield
+            return
+        for _, value in removed:
+            sys.path.remove(value)
+        try:
+            yield
+        finally:
+            for index, value in removed:
+                sys.path.insert(index, value)
+
+    return _guard()
+
+
+def _cwd_shadow_candidate(entry: str, cwd: Path | None) -> Path | None:
+    """The project-local file ``entry`` WOULD have imported, if any.
+
+    Purely a filesystem test — it imports nothing, which is the point: it runs
+    only to explain a failure, and must not execute the very code
+    :func:`_import_path_without_cwd` just refused to run.
+    """
+
+    if cwd is None:
+        return None
+    head = entry.partition(":")[0].split(".")[0]
+    if not head:
+        return None
+    for candidate in (cwd / f"{head}.py", cwd / head / "__init__.py"):
+        try:
+            if candidate.is_file():
+                return candidate
+        except OSError:  # pragma: no cover — unreadable directory
+            return None
+    return None
+
+
+def _names_the_reference(entry: str, exc: ModuleNotFoundError) -> bool:
+    """Is ``exc`` about ``entry`` itself, not a dependency it tried to import?
+
+    Shared by both rewrites below. A module whose own ``import`` of a missing
+    third-party package fails raises ``ModuleNotFoundError`` too; blaming the
+    user's spelling for that is strictly worse diagnostics than saying
+    nothing.
+    """
+
+    head_parts = entry.partition(":")[0].split(".")
+    prefixes = {".".join(head_parts[: i + 1]) for i in range(len(head_parts))}
+    return exc.name in prefixes
+
+
+def _cwd_shadowed_module_error(
+    entry: str, exc: ModuleNotFoundError, shadow: Path, cwd: Path | None
+) -> ModuleNotFoundError:
+    """Explain a module reference that ONLY the project directory could satisfy.
+
+    Silence here would be the worst outcome: the user asked for a module, a
+    file with that name is sitting right there, and the only reason it did not
+    load is a deliberate refusal. Say so, and name the spelling that does what
+    they meant.
+    """
+
+    spelling = str(shadow)
+    if cwd is not None:
+        # shadow is always built from cwd, so this cannot miss in practice.
+        with contextlib.suppress(ValueError):
+            spelling = f"./{shadow.relative_to(cwd).as_posix()}"
+    return ModuleNotFoundError(
+        f"{exc}. {shadow} would have satisfied {entry!r}, but Aelix does not "
+        f"import extensions from the project directory: '-e <module>' "
+        f"resolves against the installed environment only, so that a "
+        f"repository cannot decide what a module reference means. Pass "
+        f"'-e {spelling}' to load that file on purpose, put it under "
+        f"'./.aelix/extensions/' to go through the Project Trust gate, or "
+        f"install the package to import it by name.",
+        name=exc.name,
+        path=exc.path,
+    )
+
+
+def _unresolvable_module_ref_error(
+    entry: str, exc: ModuleNotFoundError, *, cwd: Path | None
+) -> ModuleNotFoundError:
+    """Issue #114 — restate a failed module import as the ambiguity it is.
+
+    Returns ``exc`` UNCHANGED unless every clause of the replacement message
+    is true of this call:
+
+    * the thing Python could not find is the reference itself (``exc.name`` is
+      ``entry`` or a dotted prefix of it). A module which imports a missing
+      third-party package raises ``ModuleNotFoundError`` too, and rewriting
+      *that* into "…and no file at…" would blame the user's spelling for a
+      missing dependency.
+    * ``entry`` really is the ambiguous case — module-shaped, and with nothing
+      at the corresponding path. **This is re-checked here rather than assumed
+      from the call site**, because the public :func:`load_extensions` reaches
+      this ``str`` branch WITHOUT ever consulting :func:`_is_module_ref`:
+      ``load_extensions(["d"])`` with a real ``cwd/d`` directory would
+      otherwise be told "nothing exists at that path" about a directory that
+      does, and ``load_extensions(["d/"])`` would be told it contains "no path
+      separator" about a string that visibly does.
+
+    Only the bare form is ambiguous — ``pkg.mod:factory`` cannot be a path the
+    user meant, so it keeps the plain error.
+    """
+
+    if ":" in entry:
+        return exc
+    if not _names_the_reference(entry, exc):
+        return exc
+    if not _is_module_ref(entry, cwd=cwd or Path.cwd()):
+        # Path-shaped, or something IS on disk at that name: the rationale
+        # below would be false, so say nothing rather than say it wrongly.
+        return exc
+    attempted = Path(entry)
+    if not attempted.is_absolute():
+        attempted = (cwd or Path.cwd()) / attempted
+    rebuilt = ModuleNotFoundError(
+        f"{exc}; and no extension file at {attempted}. Aelix read "
+        f"{entry!r} as a dotted module reference because it is not "
+        f"path-shaped (no path separator, no '.py' suffix, and nothing "
+        f"exists at that path). Pass './{entry}.py' or an absolute path "
+        f"for a file, or make the module importable for a module.",
+        name=exc.name,
+        path=exc.path,
+    )
+    return rebuilt
 
 
 def _factory_from_module(module_path: str) -> ExtensionFactory:
