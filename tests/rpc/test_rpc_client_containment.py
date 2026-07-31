@@ -156,18 +156,46 @@ async def test_a_child_that_is_already_dead_fails_with_the_same_error() -> None:
         await client.stop()
 
 
-async def test_start_raises_a_typed_error_when_the_child_dies_in_the_grace() -> None:
-    """Pi's one-shot grace, now carrying the diagnosis instead of a bare string."""
+async def test_start_raises_a_typed_error_when_the_child_dies_in_the_grace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pi's one-shot grace, now carrying the diagnosis instead of a bare string.
 
+    WHAT IS UNDER TEST is that a death OBSERVED inside the window becomes a
+    typed error carrying the child's stderr — not that this particular child
+    fits inside 100 ms. The window's own size is pinned by
+    :data:`RpcClient.STARTUP_GRACE_MS`'s default and by the callers that consume
+    it, so widening it here trades away nothing.
+
+    THE RACE IS NOT GONE, it is only no longer in the test's way.
+    ``_watch_for_exit`` POLLS ``returncode`` every ``EXIT_POLL_SECONDS``
+    (50 ms), so detection is quantised to {50, 100, …} ms against a 100 ms
+    ``wait_for`` — a window exactly one poll tick wide. A child dying at 51 ms
+    is pushed to the 100 ms tick and ties the timeout. Measured on a 2-core box:
+    idle 52-55 ms (12/12 inside), 2 hogs bimodal at 55/105 ms (6/12 outside),
+    6 hogs 103-237 ms (12/12 outside) — an ordinarily busy CI runner, not a
+    contrived one. The production one-tick race survives this change untouched;
+    the root fix is to race the exit event instead of polling it, deliberately
+    out of scope for a test-hygiene repair.
+
+    The ``finally`` is the second half. On the failure path there was no
+    teardown at all, so a red run leaked this client's pump and watcher tasks
+    into every test after it in the file.
+    """
+
+    monkeypatch.setattr(RpcClient, "STARTUP_GRACE_MS", 2_000)
     client = _dying_client(code=9, delay=0.0)
-    with pytest.raises(RpcServerExited) as excinfo:
-        await client.start()
-    assert excinfo.value.returncode == 9
-    assert "stub booting" in excinfo.value.stderr
-    # ``RpcServerExited`` is a ``RuntimeError`` subclass precisely so the shape
-    # this site used to raise still matches for any existing caller.
-    assert isinstance(excinfo.value, RuntimeError)
-    assert client.process is None
+    try:
+        with pytest.raises(RpcServerExited) as excinfo:
+            await client.start()
+        assert excinfo.value.returncode == 9
+        assert "stub booting" in excinfo.value.stderr
+        # ``RpcServerExited`` is a ``RuntimeError`` subclass precisely so the
+        # shape this site used to raise still matches for any existing caller.
+        assert isinstance(excinfo.value, RuntimeError)
+        assert client.process is None
+    finally:
+        await client.stop()
 
 
 # === Containment ============================================================
