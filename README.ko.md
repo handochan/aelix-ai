@@ -13,7 +13,7 @@
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/)
 
 <p align="center">
-  <img src="docs/assets/demo.gif" width="100%" alt="aelix 데모 — 에이전트가 pandas 확장을 my_ext.py에 직접 작성하고, /reload로 재시작 없이 핫리로드한 뒤, 바로 다음 프롬프트에서 in-process로 실행">
+  <img src="docs/assets/demo.gif" width="100%" alt="Aelix 데모 — 에이전트가 pandas 확장을 my_ext.py에 직접 작성하고, /reload로 재시작 없이 핫리로드한 뒤, 바로 다음 프롬프트에서 in-process로 실행">
 </p>
 <p align="center"><em>에이전트가 스스로를 확장합니다: pandas <code>describe_dataset</code> 툴을 <code>my_ext.py</code>에 직접 작성하고, <code>/reload</code>로 재시작 없이 핫리로드한 뒤, 바로 다음 프롬프트에서 in-process로 실행합니다. 대기 구간은 빨리감기 처리했습니다.</em></p>
 
@@ -26,7 +26,7 @@ Aelix는 오늘 이 런타임 위의 터미널 에이전트로 먼저 제공됩�
 
 ---
 
-## 왜 aelix인가
+## 왜 Aelix인가
 
 - 🐍 **확장은 그냥 파이썬입니다.** 툴은 평범한 함수 하나입니다 — 플러그인 언어도, 프로세스
   밖 브리지도 없습니다. 터미널·노트북·파이프라인·CI 어디서든 에이전트를 구동하세요.
@@ -38,7 +38,7 @@ Aelix는 오늘 이 런타임 위의 터미널 에이전트로 먼저 제공됩�
   없습니다.
 - 🔏 **서명된 공급망.** 확장은 Ed25519 서명과 SHA-256 핀으로 검증됩니다(`extension keygen |
   sign | trust`, fail-closed `--require-signature`). 오프라인 카탈로그에서 설치할 수
-  있습니다. 에이전트 도구에서 보기 드문 기능이지만, aelix에서는 기본입니다.
+  있습니다. 에이전트 도구에서 보기 드문 기능이지만, Aelix에서는 기본입니다.
 - 🔍 **감사 가능한 자체 호스팅.** 완전한 오픈소스, 텔레메트리 없음, 폐쇄망을 위한
   `--offline` 모드. 신뢰는 직접 읽을 수 있는 코드에서 나옵니다 — *"내가 만들지 않은
   에이전트를 왜 돌리는가?"* 에 대한 답입니다.
@@ -53,8 +53,9 @@ Aelix는 오늘 이 런타임 위의 터미널 에이전트로 먼저 제공됩�
 ## 설치
 
 베타 기간에는 체크섬 검증 인스톨러를 통해 GitHub Releases에서 설치합니다. 필요하면
-[uv](https://docs.astral.sh/uv/)를 자동으로 설치하고, 모든 wheel을 릴리즈의 `SHA256SUMS`
-매니페스트와 대조한 뒤(불일치 시 즉시 중단), 전역 `aelix` 명령을 설치합니다:
+[uv](https://docs.astral.sh/uv/)를 자동으로 설치하고, 모든 *Aelix* wheel을 릴리즈의
+`SHA256SUMS` 매니페스트와 대조한 뒤(불일치 시 즉시 중단 — 서드파티 의존성은 평소대로
+PyPI에서 해석됩니다), 전역 `aelix` 명령을 설치합니다:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/handochan/aelix-ai/main/install.sh | sh
@@ -99,8 +100,8 @@ Cloudflare Workers AI는 공유 OpenAI-completions 어댑터 위에서 동작합
 
 ## 확장은 그냥 파이썬입니다 — 데이터 스택을 in-process로
 
-aelix 확장은 `setup(aelix)` 함수 하나입니다. 별도의 플러그인 언어도, 프로세스 밖 브리지도
-없으므로 툴이 기존 스택을 그대로 import해 결과를 모델에 바로 돌려줄 수 있습니다 — aelix가
+Aelix 확장은 `setup(aelix)` 함수 하나입니다. 별도의 플러그인 언어도, 프로세스 밖 브리지도
+없으므로 툴이 기존 스택을 그대로 import해 결과를 모델에 바로 돌려줄 수 있습니다 — Aelix가
 데이터·ML 팀을 가장 먼저 겨냥해 만들어진 이유입니다:
 
 ```python
@@ -143,7 +144,9 @@ aelix --print "profile data/train.parquet and flag columns with >5% nulls"
 aelix --mode json "run the eval suite and summarise failures"   # 라인 단위 이벤트
 ```
 
-전체 API 표면은 [확장 작성하기](docs/guides/extension-authoring.md)를 참고하세요.
+전체 API 표면은 [확장 작성하기](docs/guides/extension-authoring.md)를, 공개된 확장 목록은
+[Aelix Marketplace](https://handochan.github.io/aelix-marketplace/)를 보세요. Aelix가 기본으로
+읽는 공식 카탈로그이며, 등록 신청을 받고 있습니다.
 
 ## 신뢰와 자체 호스팅
 
@@ -166,7 +169,7 @@ aelix extension install <target> --require-signature            # fail-closed �
 
 ## 알려진 한계 (베타)
 
-중요한 작업에 aelix를 붙이기 전에 알아두어야 할 두 가지입니다.
+중요한 작업에 Aelix를 붙이기 전에 알아두어야 할 두 가지입니다.
 
 **한 번의 실행에 지출 상한이 없습니다.** 최대 반복 횟수 제한도, 중복 호출 감지도, 누적
 토큰·비용 예산도 없습니다 — 모델이 툴을 계속 호출하면 스스로 끝내거나 사용자가 중단할
@@ -207,6 +210,9 @@ aelix extension install <target> --require-signature            # fail-closed �
 [커스텀 모델](docs/guides/models-json.md) ·
 [확장 작성하기](docs/guides/extension-authoring.md) ·
 [릴리즈](RELEASING.md)
+
+[홈페이지 →](https://handochan.github.io/aelix-ai/) ·
+[확장 카탈로그 →](https://handochan.github.io/aelix-marketplace/)
 
 ## 소스에서 빌드하기 (기여자용)
 

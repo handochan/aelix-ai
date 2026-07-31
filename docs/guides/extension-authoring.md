@@ -363,3 +363,34 @@ def setup(aelix: ExtensionAPI) -> None:
 ```
 
 See ADR-0095 for the descriptor protocol and the full slot taxonomy.
+
+## Publishing
+
+An extension does not need a catalog: `-e ./my_ext.py`, a git URL, or a pip
+package all install without one. A catalog only makes an extension
+*discoverable* — it is an advisory index, and listing never means "reviewed" or
+"safe" (ADR-0188).
+
+The official index is the **[Aelix Marketplace](https://handochan.github.io/aelix-marketplace/)**,
+which is `DEFAULT_CATALOG_URL` — registered out of the box, though nothing is
+fetched until you ask. It ships empty and is open for submissions:
+
+```bash
+aelix extension discover --refresh       # fetch the default catalog (network)
+aelix extension discover                 # browse the cached snapshot
+aelix extension discover install <name>  # resolve from that snapshot + install
+```
+
+`discover` and `discover install` read the local cache; only `--refresh` goes to
+the network. Refresh once before looking for a freshly merged listing.
+
+To list yours, open a pull request against
+[handochan/aelix-marketplace](https://github.com/handochan/aelix-marketplace)
+with an entry naming your extension and its `source` spec — see that repo's
+[CONTRIBUTING.md](https://github.com/handochan/aelix-marketplace/blob/main/CONTRIBUTING.md).
+Sign the artifact first if you want users to be able to gate on provenance:
+
+```bash
+aelix extension keygen                          # publisher Ed25519 key; prints a keyId
+aelix extension sign <artifact> --key <keyId>   # detached .aelixsig sidecar
+```

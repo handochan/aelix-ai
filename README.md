@@ -13,7 +13,7 @@ extensible in the language your team already writes, on the model budgets you al
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/)
 
 <p align="center">
-  <img src="docs/assets/demo.gif" width="100%" alt="aelix demo — the agent writes its own pandas extension into my_ext.py, /reload hot-loads it without restarting, and the next prompt runs it in-process">
+  <img src="docs/assets/demo.gif" width="100%" alt="Aelix demo — the agent writes its own pandas extension into my_ext.py, /reload hot-loads it without restarting, and the next prompt runs it in-process">
 </p>
 <p align="center"><em>The agent extends itself: it authors a pandas <code>describe_dataset</code> tool into <code>my_ext.py</code>, <code>/reload</code> hot-loads it without restarting, and the very next prompt runs it in-process. Waits are fast-forwarded.</em></p>
 
@@ -25,7 +25,7 @@ And it never phones home.
 
 ---
 
-## Why aelix
+## Why Aelix
 
 - 🐍 **Extensions are just Python.** A tool is a plain function — no plugin language, no
   out-of-process bridge. Drive the agent from a terminal, a notebook, a pipeline, or CI.
@@ -45,15 +45,15 @@ And it never phones home.
   providers, message renderers, themes, and your own `/login` flow (SSO / employee-ID) — with
   live hot-reload, no restart.
 - ⚙️ **Scriptable & headless.** `--print`, line-delimited `--mode json`, and a `--mode rpc`
-  JSONL protocol make aelix embeddable in pipelines, CI, and evaluation loops — deterministic
+  JSONL protocol make Aelix embeddable in pipelines, CI, and evaluation loops — deterministic
   and machine-readable.
 
 ## Install
 
-During the beta, aelix installs from GitHub Releases through a checksum-verified installer.
-It bootstraps [uv](https://docs.astral.sh/uv/) if needed, verifies every wheel against the
-release's `SHA256SUMS` manifest (any mismatch aborts), and installs the global `aelix`
-command:
+During the beta, Aelix installs from GitHub Releases through a checksum-verified installer.
+It bootstraps [uv](https://docs.astral.sh/uv/) if needed, verifies every *Aelix* wheel
+against the release's `SHA256SUMS` manifest (any mismatch aborts — third-party
+dependencies resolve from PyPI as usual), and installs the global `aelix` command:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/handochan/aelix-ai/main/install.sh | sh
@@ -62,7 +62,7 @@ curl -fsSL https://raw.githubusercontent.com/handochan/aelix-ai/main/install.sh 
 Pin a release with `AELIX_VERSION=v0.1.0-beta.1` (recommended during the beta) and pick
 extras with `AELIX_EXTRAS` — default `tui`; `tui,images` adds inline terminal image
 rendering; empty (`AELIX_EXTRAS=`) installs the headless CLI only (print / json / rpc).
-Once aelix is published to PyPI, `uv tool install 'aelix[tui]'` — or the `pipx` / `pip`
+Once Aelix is published to PyPI, `uv tool install 'aelix[tui]'` — or the `pipx` / `pip`
 equivalent — will work as usual.
 
 ```bash
@@ -98,9 +98,9 @@ preserved rather than flattened.
 
 ## Extensions are just Python — call your data stack in-process
 
-An aelix extension is just a `setup(aelix)` function. There is no separate plugin language and
+An Aelix extension is just a `setup(aelix)` function. There is no separate plugin language and
 no out-of-process bridge, so a tool can import your existing stack and hand results straight
-back to the model — this is why aelix was built for data and ML teams first:
+back to the model — this is why Aelix was built for data and ML teams first:
 
 ```python
 # my_ext.py  —  a data tool in ~20 lines; loads with:  aelix -e ./my_ext.py
@@ -142,7 +142,10 @@ aelix --print "profile data/train.parquet and flag columns with >5% nulls"
 aelix --mode json "run the eval suite and summarise failures"   # line-delimited events
 ```
 
-See [writing an extension](docs/guides/extension-authoring.md) for the full surface.
+See [writing an extension](docs/guides/extension-authoring.md) for the full surface, and
+the [Aelix Marketplace](https://handochan.github.io/aelix-marketplace/) for what has been
+published — it is the official catalog Aelix reads by default, and it is open for
+submissions.
 
 ## Trust & self-hosting
 
@@ -166,7 +169,7 @@ aelix extension install <target> --require-signature            # fail-closed pr
 
 ## Known limitations (beta)
 
-Two things worth knowing before you point aelix at something that matters.
+Two things worth knowing before you point Aelix at something that matters.
 
 **A run has no spend ceiling.** There is no iteration cap, no duplicate-call
 detection, and no cumulative token or cost budget — a model that keeps calling
@@ -210,6 +213,9 @@ extensions, not core · explicit hook bus for auditability. Full rationale in
 [Custom models](docs/guides/models-json.md) ·
 [Writing an extension](docs/guides/extension-authoring.md) ·
 [Releasing](RELEASING.md)
+
+[Homepage →](https://handochan.github.io/aelix-ai/) ·
+[Extension catalog →](https://handochan.github.io/aelix-marketplace/)
 
 ## Building from source (contributors)
 

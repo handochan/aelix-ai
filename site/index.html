@@ -7,8 +7,13 @@
 <meta name="description" content="Aelix is an agent runtime and extension platform in pure Python — self-hosted, auditable, signed, air-gap ready.">
 <meta property="og:title" content="Aelix — your own agent world">
 <meta property="og:description" content="An agent runtime and extension platform in pure Python. Self-hosted, auditable, extensible in the language your team already writes.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://handochan.github.io/aelix-ai/">
 <meta property="og:image" content="https://raw.githubusercontent.com/handochan/aelix-ai/main/docs/assets/brand/social-card.png">
+<meta property="og:image:alt" content="Aelix — the A×X mark beside the Aelix wordmark, above the line “Your own agent world — built on the Python ecosystem”">
 <meta name="twitter:card" content="summary_large_image">
+<link rel="canonical" href="https://handochan.github.io/aelix-ai/">
+<meta name="theme-color" content="#0B0F14">
 <link rel="icon" type="image/svg+xml" href="favicon.svg">
 <style>
   :root {
@@ -16,6 +21,7 @@
     --card: #10161E;
     --line: #1E2A34;
     --paper: #F6FAFB;
+    --ink: #0B1220;
     --tx: #C6D6DC;
     --tx-dim: #7E97A1;
     --glow: #22D3EE;
@@ -57,7 +63,8 @@
   }
   .btn.primary { background: var(--deep); border-color: var(--deep); color: var(--paper); }
   .btn:hover { border-color: var(--current); color: var(--paper); }
-  .btn.primary:hover { background: var(--current); border-color: var(--current); }
+  /* glow needs the ink foreground: paper on glow measures 1.72:1, ink 10.36:1 */
+  .btn.primary:hover { background: var(--glow); border-color: var(--glow); color: var(--ink); }
 
   section { padding: 56px 0; }
   h2 {
@@ -69,6 +76,12 @@
   .feat h3 { margin: 0 0 10px; font-size: 17px; color: var(--paper); }
   .feat p { margin: 0; font-size: 14.5px; color: var(--tx); }
   .feat code { font-family: var(--mono); font-size: 13px; color: var(--glow); }
+  .feat .more { margin-top: 14px; font-size: 13.5px; }
+  /* a persistent rule, not colour alone — glow on the note's dim grey is 1.70:1 */
+  .feat .more a { color: var(--glow); text-decoration: none;
+    border-bottom: 1px solid rgba(34, 211, 238, .45); }
+  .feat .more a:hover, .feat .more a:focus-visible { border-bottom-color: var(--glow); }
+  .feat .more .note { color: var(--tx-dim); }
 
   .term { background: #05080C; border: 1px solid var(--line); border-radius: 12px; overflow-x: auto; }
   .term .bar { display: flex; gap: 7px; padding: 12px 16px; border-bottom: 1px solid var(--line); }
@@ -94,7 +107,12 @@
 
   footer { border-top: 1px solid var(--line); padding: 32px 0 56px; margin-top: 40px;
     font-size: 13px; color: var(--tx-dim); }
-  footer a { color: var(--current); text-decoration: none; }
+  footer a { color: var(--tx-dim); text-decoration: underline; }
+  footer a:hover { color: var(--glow); }
+  .foot-nav { display: flex; flex-wrap: wrap; gap: 8px 18px; margin: 0 0 18px;
+    padding-bottom: 18px; border-bottom: 1px solid var(--line); }
+  .foot-nav a { color: var(--tx); text-decoration: none; font-family: var(--mono);
+    font-size: 12.5px; letter-spacing: .04em; }
   @media (prefers-reduced-motion: reduce) {
     * { animation: none !important; }
     .ax-stage .ax-mark { opacity: 0; }
@@ -148,6 +166,9 @@
       <p>A tool is a plain function — no plugin language, no out-of-process bridge. Import
       pandas, an internal SDK, or a warehouse client and hand results straight back to the
       model, in-process. Hot-reload with <code>/reload</code>, no restart.</p>
+      <p class="more"><a href="https://handochan.github.io/aelix-marketplace/">Browse the
+      extension catalog →</a><br><span class="note">The official catalog Aelix reads by
+      default. It ships empty and open for submissions.</span></p>
     </div>
     <div class="feat">
       <h3>Runs on budgets you already own</h3>
@@ -222,6 +243,11 @@
 
 <footer>
   <div class="wrap">
+    <p class="foot-nav">
+      <a href="https://handochan.github.io/aelix-marketplace/">Extension catalog</a>
+      <a href="https://github.com/handochan/aelix-ai/blob/main/docs/guides/getting-started.md">Docs</a>
+      <a href="https://github.com/handochan/aelix-ai">GitHub</a>
+    </p>
     <p>Apache-2.0 · substantial portions ported from
     <a href="https://github.com/earendil-works/pi">pi</a> (MIT, © 2025 Mario Zechner) ·
     model catalog data from <a href="https://models.dev">models.dev</a> (MIT)</p>
