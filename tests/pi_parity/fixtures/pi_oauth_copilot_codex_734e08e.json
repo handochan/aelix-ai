@@ -6,11 +6,6 @@
     "oauth_openai_codex": "packages/ai/src/utils/oauth/openai-codex.ts",
     "auth_storage": "packages/coding-agent/src/core/auth-storage.ts"
   },
-  "pi_file_loc": {
-    "github-copilot.ts": 410,
-    "openai-codex.ts": 460,
-    "auth-storage.ts": 470
-  },
   "copilot_oauth": {
     "flow_type": "device-code (NOT PKCE-callback)",
     "client_id_base64": "SXYxLmI1MDdhMDhjODdlY2ZlOTg=",

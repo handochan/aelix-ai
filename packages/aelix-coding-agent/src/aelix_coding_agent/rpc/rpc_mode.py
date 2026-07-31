@@ -128,14 +128,15 @@ piecemeal and spot-check clean; treat any blanket range in this header as
 unverified. See ADR-0058's Amendment (2026-07-31) for why one wrong citation
 here was expensive.
 
-**Do not "correct" the 754 above back to 492 to match
-``tests/pi_parity/fixtures/pi_rpc_mode_734e08e.json``.** That fixture is itself
-stale: measured at the pinned SHA, ``rpc-mode.ts`` is 754 raw lines (fixture
-says 492), ``rpc-client.ts`` 515 (says 343) and ``rpc-types.ts`` 264 (says 262);
-only ``jsonl.ts`` at 58 is right. ``test_fixture_loc_counts_present`` cannot
-catch this — it asserts the fixture against hardcoded constants, so neither side
-ever touches Pi. Tracked in ``.omc/specs/rpc-sprint-log.md``; 7 fixtures carry
-``pi_file_loc`` claims and all of them want the same audit.
+**The 754 above is measured, and nothing in this repository contradicts it any
+more.** It used to: the pi-parity fixtures recorded ``rpc-mode.ts`` as 492 and a
+test asserted that number, so a reader had two sources and the wrong one looked
+authoritative. The whole ``pi_file_loc`` field has since been removed from all
+seven fixtures — audited by fetching every pinned file and counting, **24 of its
+27 claims were false** — together with the two tests that "guarded" it by
+comparing the fixture against hardcoded constants, i.e. by never reading Pi at
+all. ``test_no_fixture_carries_unverifiable_loc_metadata`` now asserts the
+field's ABSENCE.
 """
 
 from __future__ import annotations

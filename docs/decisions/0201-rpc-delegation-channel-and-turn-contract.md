@@ -389,14 +389,16 @@ client-side "fix" that only appears to work.**
   `.aelix/settings.json`". A merged read here would let a cloned repo choose the
   channel, which is the same self-elevation defeat onto a channel the user did not
   pick. **Owner decision; half-wiring it is worse than not wiring it.**
-- **`tests/pi_parity` fixtures pin FALSE pi facts.** `pi_rpc_mode_734e08e.json`
-  records `pi_file_loc` for four pi files; fetched at the pinned SHA, **three of
-  the four are wrong** (`rpc-mode.ts` records 492, actual 754). The guard test
-  loads the fixture and asserts it equals hardcoded constants — neither side ever
-  reads pi, so it is a tautology wearing the word *immutability*. Seven fixtures
-  carry the same field and want the same audit. Same class of defect as the
-  ADR-0058 citation this sprint retired, and worse, because it is dressed as a
-  test-enforced parity pin.
+- ~~**`tests/pi_parity` fixtures pin FALSE pi facts.**~~ **CLOSED** — audited and
+  removed. All 22 pinned files were fetched and counted: **24 of the 27 claims
+  were false**, off by as much as +5885 lines, and two fixtures contradicted each
+  other about the same file at the same SHA. Only three were right, two of which
+  were the only two anybody had ever measured. `pi_file_loc` is gone from all
+  seven fixtures along with both "guards", which compared the fixture to
+  hardcoded constants and therefore never read pi at all;
+  `test_no_fixture_carries_unverifiable_loc_metadata` now asserts its absence.
+  Line counts were never a parity property — the SHA, the command surface and
+  the wire shapes are, and those have real assertions.
 - **`steer` / `follow_up` for chain mode.** `prompt` rejects on busy; `steer` and
   `follow_up` enqueue. That is the turn-boundary design for `{previous}`
   substitution and it wants its own decision.

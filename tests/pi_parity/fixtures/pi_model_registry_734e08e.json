@@ -10,14 +10,6 @@
     "core_model_registry_ts": "packages/coding-agent/src/core/model-registry.ts",
     "core_model_resolver_ts": "packages/coding-agent/src/core/model-resolver.ts"
   },
-  "pi_file_loc": {
-    "models.ts": 92,
-    "models.generated.ts": 10500,
-    "model-registry.ts": 820,
-    "model-resolver.ts": 530,
-    "image-models.ts": 50,
-    "image-models.generated.ts": 290
-  },
   "ai_models_helpers": [
     "getModel(provider, modelId)",
     "getProviders()",

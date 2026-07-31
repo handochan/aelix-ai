@@ -326,14 +326,6 @@ def test_pi_sha_pinned_to_phase_4_6_baseline() -> None:
     assert fixture["pi_sha"] == "734e08edf82ff315bc3d96472a6ebfa69a1d8016"
 
 
-def test_fixture_loc_counts_present() -> None:
-    """LOC counts are read-only metadata; drift trips an explicit failure."""
-
-    fixture = _load_fixture()
-    locs = fixture["pi_file_loc"]
-    assert locs["models.ts"] == 92
-    assert locs["model-registry.ts"] == 820
-    assert locs["models.generated.ts"] == 10500
 
 
 # === §L — Usage + UsageCost shapes ===========================================

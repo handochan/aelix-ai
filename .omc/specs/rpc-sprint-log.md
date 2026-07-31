@@ -464,8 +464,15 @@ why (both workarounds — an evasive name, a leading underscore — defeat the g
 ### Still open
 
 * **The channel selector** — §2.11. Owner decision.
-* **The `pi_file_loc` fixture audit** — §2.8. Three of four measured false; seven fixtures carry the
-  field; the guard test is a tautology that can never catch it.
+* ~~**The `pi_file_loc` fixture audit**~~ — **CLOSED 2026-07-31, option B (delete).** All 22 pinned
+  files fetched and counted: **24 of 27 claims false**, worst off by +5885; two fixtures contradicted
+  each other about the same file at the same SHA (`model-resolver.ts` 530 vs 637 — 637 is right).
+  Only 3 correct, and 2 of those were the only ones anybody had ever measured; the rest were round
+  numbers (380/540/820/530/50/290/400/410/460/150/470) — estimates recorded once and thereafter
+  trusted. Field removed from all 7 fixtures + both tautological guards; a new
+  `test_no_fixture_carries_unverifiable_loc_metadata` asserts the ABSENCE and is mutation-proven.
+  **Correcting the numbers (option A) was refused deliberately**: it leaves the tautology, so they
+  rot again at the next pin move with nothing to catch it.
 * **`dropped_lines` on the intake direction** — deliberately unbounded. Any future budget there must
   emit an explicit over-budget error, never a silent drop (ADR-0200, binding).
 * **`steer` / `follow_up` for chain mode** — recon Q8, still dropped.

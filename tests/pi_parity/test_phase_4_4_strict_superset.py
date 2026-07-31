@@ -327,13 +327,39 @@ def test_pi_sha_pinned_to_phase_4_4_baseline() -> None:
     assert fixture["pi_sha"] == "734e08edf82ff315bc3d96472a6ebfa69a1d8016"
 
 
-def test_fixture_loc_counts_present() -> None:
-    fixture = _load_fixture()
-    locs = fixture["pi_file_loc"]
-    assert locs["jsonl.ts"] == 58
-    assert locs["rpc-types.ts"] == 262
-    assert locs["rpc-mode.ts"] == 492
-    assert locs["rpc-client.ts"] == 343
+def test_no_fixture_carries_unverifiable_loc_metadata() -> None:
+    """``pi_file_loc`` is gone from every fixture, and must stay gone.
+
+    IT WAS A TAUTOLOGY WEARING THE WORD *IMMUTABILITY*. The guard that stood
+    here loaded the fixture and asserted it equalled hardcoded constants, so
+    neither side ever read Pi; nothing could drift, and nothing did — the
+    numbers were simply wrong from the start and stayed wrong.
+
+    MEASURED at the pinned SHA before removal, by fetching all 22 files and
+    counting: **24 of the 27 claims were false**, off by as much as +5885 lines.
+    Only three were right, and two of those are the only two anybody had ever
+    actually measured (one carried a note saying so). The rest are round numbers
+    — 380, 540, 820, 530, 50, 290, 400, 410, 460, 150, 470 — i.e. estimates,
+    recorded once and thereafter trusted. Two fixtures even contradicted each
+    other about the SAME file at the SAME SHA: ``model-resolver.ts`` was 530 in
+    one and 637 in the other (637 is correct).
+
+    Line counts were never a parity property in the first place. What the
+    fixtures pin that DOES matter is the Pi SHA, the command surface and the
+    wire shapes, and those have their own assertions.
+
+    So this test asserts the ABSENCE. Re-adding the field means re-adding a
+    number nobody will re-measure, and the next reader will believe it because
+    it sits in a file called ``fixtures`` next to assertions that are real.
+    """
+
+    for path in sorted(_FIXTURES.glob("*.json")):
+        fixture = json.loads(path.read_text(encoding="utf-8"))
+        assert "pi_file_loc" not in fixture, (
+            f"{path.name} re-introduced 'pi_file_loc'. See this test's docstring: "
+            "the field was removed because 24 of its 27 claims were measurably "
+            "false and no test could ever have caught that."
+        )
 
 
 def test_fixture_rpc_command_count_matches_implementation() -> None:

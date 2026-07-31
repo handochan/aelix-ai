@@ -12,16 +12,6 @@
     "auth_storage": "packages/coding-agent/src/core/auth-storage.ts",
     "auth_path_resolver": "packages/coding-agent/src/cli/config.ts (getAuthPath)"
   },
-  "pi_file_loc": {
-    "types.ts": 60,
-    "pkce.ts": 36,
-    "oauth-page.ts": 100,
-    "anthropic.ts": 400,
-    "github-copilot.ts": 410,
-    "openai-codex.ts": 460,
-    "index.ts": 150,
-    "auth-storage.ts": 470
-  },
   "oauth_credentials_shape": {
     "refresh": "string",
     "access": "string",
