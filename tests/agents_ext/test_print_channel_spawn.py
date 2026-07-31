@@ -1213,7 +1213,18 @@ def test_child_dies_with_parent(tmp_path: Path) -> None:
     )
     parent = subprocess.Popen([sys.executable, "-c", helper])
     try:
-        deadline = time.monotonic() + 15
+        # READINESS, NOT THE SUBJECT — so the budget is generous. The helper is
+        # a cold interpreter that must import ``aelix_agents`` before it can
+        # spawn anything: measured at ~2.0 s idle, which left the old 15 s only
+        # 7.5x of headroom and made this test fail intermittently inside a
+        # full-suite run on a 2-core box while passing 8/8 in isolation. That is
+        # the third flake of this exact shape in this file's neighbourhood
+        # (see the rpc sprint log's 2.5 / 2.5b): a real subprocess, a fixed
+        # budget, and a machine that is busy precisely when the whole suite runs.
+        #
+        # The ASSERTION below stays tight, because PDEATHSIG firing IS the
+        # subject and a slow kill is a real defect.
+        deadline = time.monotonic() + 90
         while time.monotonic() < deadline and not pidfile.exists():
             time.sleep(0.05)
         assert pidfile.exists(), "the helper never started its child"
