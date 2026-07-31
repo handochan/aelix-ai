@@ -15,6 +15,7 @@ from __future__ import annotations
 import ast
 import dataclasses
 import inspect
+import sys
 import typing
 from pathlib import Path
 from typing import Any
@@ -556,16 +557,99 @@ _PROTOCOL_MEMBERS = frozenset(
 def _protocol_members(protocol: type) -> frozenset[str]:
     """The Protocol's own non-dunder members.
 
-    ``typing.get_protocol_members`` only exists from 3.13; ``__protocol_attrs__``
-    is what it reads and is present on every ``Protocol`` subclass back to 3.8.
-    Preferring the public function where it exists keeps this from breaking on
-    the interpreter that finally makes the private name go away.
+    One tier per interpreter generation, most-public first. The earlier version
+    of this docstring claimed ``__protocol_attrs__`` was "present on every
+    ``Protocol`` subclass back to 3.8"; that is false, and believing it is how
+    the 3.11 leg of CI came to be red for three days (#118). What is actually
+    true, measured:
+
+    * **3.13+** — ``typing.get_protocol_members`` exists and is public. Use it.
+    * **3.12** — no public accessor, but the PEP 544 runtime refactor that
+      landed in 3.12 stores the member set on the class as
+      ``__protocol_attrs__``. That is precisely what 3.13's public function
+      reads.
+    * **3.11** — neither exists. The members are not stored at all; they are
+      recomputed on demand by the module-private
+      ``typing._get_protocol_attrs(cls)``.
+
+    The argument must actually BE a Protocol, and that is checked before any
+    tier runs, because the tiers do not agree about it. Measured on all three
+    interpreters: handed an ordinary class (or an ``abc.ABC``) carrying the same
+    seven names, 3.13's ``typing.get_protocol_members`` raises ``TypeError: ...
+    is not a Protocol``, while ``typing._get_protocol_attrs`` on 3.11 and 3.12
+    walks the MRO and returns those seven names quite happily. Ungated, the
+    helper would therefore mean different things on different legs of the CI
+    matrix for exactly the input that matters — a P4 author who drops
+    ``Protocol`` from ``SubagentRuntime`` flips ``api.py``'s bind-time
+    ``isinstance`` from structural to nominal, breaking every third-party v1
+    runtime that does not subclass it, and would still see the frozen-member-set
+    assertion go green on 3.11 and 3.12. ``_is_protocol`` is set by
+    ``Protocol.__init_subclass__`` on 3.11, 3.12 and 3.13+ alike (verified on
+    each), so one gate serves every tier. It raises ``TypeError`` to match what
+    the most public tier already raises on its own.
+
+    Reaching for a private name is normally a smell, so the decision is
+    recorded rather than left to be re-litigated: it is ADOPTED here, narrowly.
+    The private tier is reached *only* on 3.11, and 3.11 is feature-frozen — it
+    takes security fixes only, so ``typing._get_protocol_attrs`` cannot be
+    renamed or removed underneath us there. Every interpreter that can still
+    evolve (3.12, 3.13+) is served by a non-private tier that is tried first, so
+    the private access is pinned to a version that cannot move.
+
+    The alternatives were weighed and rejected. Re-deriving the members from
+    ``__annotations__`` plus the class dict would re-implement typing's own
+    rules inside the test, which is exactly the thing this test exists to pin —
+    it could drift into agreement with a stale copy of those rules and go green
+    on a member set the interpreter does not actually see. ``dir()``-diffing
+    against a bare ``Protocol`` base has the same defect with worse fidelity.
+    Both trade a version-pinned private call for a silent-wrongness risk in the
+    assertion itself.
+
+    If no tier can answer, this RAISES, naming the interpreter and every tier it
+    tried. It must never fall through to ``return frozenset()`` — but not for
+    the reason it is tempting to give. An empty return would NOT make the caller
+    pass vacuously: ``_PROTOCOL_MEMBERS`` is a hardcoded seven-name literal, not
+    something derived from this helper, so an empty set makes
+    ``test_the_protocol_member_set_is_frozen`` fail on 3.11 and 3.12 alike
+    (measured), and the ``bind_subagents`` tuple cross-check never calls this
+    helper at all. The real objection is the diagnosis, not the verdict: that
+    failure would accuse someone of deleting SubagentRuntime's members when what
+    actually happened is that the helper met an interpreter it does not serve.
+    Fabricating an answer turns "I cannot tell you" into a false statement about
+    the Protocol, and costs the next reader the one thing the raise gives them
+    for free — the name of the tier to add.
     """
 
+    if not getattr(protocol, "_is_protocol", False):
+        raise TypeError(
+            f"{getattr(protocol, '__qualname__', protocol)!r} is not a Protocol, "
+            "so it has no Protocol member set to compare: the attributes of a "
+            "nominal base class are not the structural contract this test pins. "
+            "If SubagentRuntime stopped being a Protocol, that is itself the "
+            "breaking change — api.py's bind-time isinstance becomes nominal."
+        )
+
     public = getattr(typing, "get_protocol_members", None)
-    if public is not None:  # pragma: no cover - 3.13+
+    if public is not None:  # pragma: no cover - 3.13+, outside the CI matrix
         return frozenset(public(protocol))
-    return frozenset(protocol.__protocol_attrs__)  # type: ignore[attr-defined]
+
+    attrs = getattr(protocol, "__protocol_attrs__", None)
+    if attrs is not None:  # 3.12
+        return frozenset(attrs)
+
+    private = getattr(typing, "_get_protocol_attrs", None)
+    if private is not None:  # 3.11
+        return frozenset(private(protocol))
+
+    raise RuntimeError(
+        "cannot determine the Protocol member set of "
+        f"{getattr(protocol, '__qualname__', protocol)!r} on Python "
+        f"{sys.version.split()[0]}: none of typing.get_protocol_members "
+        "(3.13+), __protocol_attrs__ (3.12) or typing._get_protocol_attrs "
+        "(3.11) is available. Add a tier for this interpreter; returning an "
+        "empty member set instead would fail the contract test with the wrong "
+        "diagnosis, blaming the Protocol for an unserved interpreter."
+    )
 
 
 def _bind_subagents_member_tuple() -> frozenset[str]:
@@ -640,3 +724,133 @@ def test_the_protocol_member_set_is_frozen() -> None:
         "missing (or, if the tuple is short, will bind and fail later at the "
         "call site with a bare AttributeError)."
     )
+
+
+def test_protocol_members_agrees_across_every_available_tier() -> None:
+    """#118 — where the tiers coexist, they must compute the same set.
+
+    ``_protocol_members`` picks ONE tier based on the running interpreter, so a
+    tier that computed a different set than its neighbours would make the frozen
+    member set mean something different on 3.11 than on 3.12.
+
+    How much this test can actually see depends on the interpreter, which is
+    worth stating plainly rather than overselling. Measured: 3.11 offers exactly
+    one tier (``typing._get_protocol_attrs``), 3.12 two, 3.13+ three. So on
+    3.11 — the leg #118 was about — there is nothing to cross-compare and this
+    degenerates into the assertion ``test_the_protocol_member_set_is_frozen``
+    already makes. A green 3.11 run is NOT evidence of cross-tier agreement on
+    3.11. Agreement across versions is established transitively instead: each
+    leg measures whatever tiers it has against the same ``_PROTOCOL_MEMBERS``
+    constant, so two legs that both pass have both seen the same seven names.
+
+    For the record, the 3.11 leg did not rot because tiers disagreed — only one
+    tier exists there and the code never reached it. It rotted because a tier
+    was missing and nothing in this repo makes a red matrix leg block a merge
+    (plan §4): a branch-protection question for the owner, not a code one.
+    """
+
+    observed: dict[str, frozenset[str]] = {}
+
+    public = getattr(typing, "get_protocol_members", None)
+    if public is not None:
+        observed["typing.get_protocol_members (3.13+)"] = frozenset(
+            public(SubagentRuntime)
+        )
+    attrs = getattr(SubagentRuntime, "__protocol_attrs__", None)
+    if attrs is not None:
+        observed["__protocol_attrs__ (3.12+)"] = frozenset(attrs)
+    private = getattr(typing, "_get_protocol_attrs", None)
+    if private is not None:
+        observed["typing._get_protocol_attrs (3.11)"] = frozenset(
+            private(SubagentRuntime)
+        )
+
+    assert observed, (
+        "no tier of _protocol_members is available on Python "
+        f"{sys.version.split()[0]}; the helper would raise and this contract "
+        "test would have no way to run at all."
+    )
+    assert set(observed.values()) == {_PROTOCOL_MEMBERS}, (
+        "the member-set tiers disagree with each other or with the pinned set, "
+        f"so the contract means different things per interpreter: {observed}"
+    )
+
+
+def test_protocol_members_raises_loudly_when_no_tier_can_answer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#118 — the no-tier path must RAISE, never return an empty frozenset.
+
+    The bug this closes was a *missing* tier: 3.13+ and 3.12 were handled, 3.11
+    fell off the end into ``AttributeError``. The obvious over-correction is a
+    bare ``return frozenset()`` at the bottom, which answers a question the
+    helper cannot answer and reports a false fact about the Protocol instead of
+    naming the interpreter it could not serve. This pins the loud behaviour so
+    that over-correction cannot be made silently.
+
+    The input is a stand-in, not a real Protocol subclass, and deliberately so:
+    on 3.12+ ``__protocol_attrs__`` lives on ``typing.Protocol`` itself as well
+    as on each subclass (measured), so deleting it from a subclass still finds
+    the base's copy and tier 2 keeps answering. A class that sets
+    ``_is_protocol`` and stores no member set passes the Protocol gate and
+    reaches the fall-through identically on 3.11, 3.12 and 3.13+.
+    """
+
+    monkeypatch.delattr(typing, "get_protocol_members", raising=False)
+    monkeypatch.delattr(typing, "_get_protocol_attrs", raising=False)
+
+    class _ProtocolNoTierCanServe:
+        _is_protocol = True
+
+    assert not hasattr(_ProtocolNoTierCanServe, "__protocol_attrs__")
+
+    with pytest.raises(RuntimeError) as excinfo:
+        _protocol_members(_ProtocolNoTierCanServe)
+
+    message = str(excinfo.value)
+    assert sys.version.split()[0] in message, (
+        "the failure must name the interpreter it could not serve — that is the "
+        f"whole diagnostic: {message}"
+    )
+    assert "_ProtocolNoTierCanServe" in message
+    for tier in ("get_protocol_members", "__protocol_attrs__", "_get_protocol_attrs"):
+        assert tier in message, f"the message should name the tried tier {tier}"
+
+
+def test_protocol_members_refuses_a_class_that_is_not_a_protocol() -> None:
+    """#118 — the tiers disagree about non-Protocols, so the gate decides.
+
+    Measured on all three interpreters: given a class carrying exactly these
+    seven names but no ``Protocol`` base, 3.13's ``typing.get_protocol_members``
+    raises ``TypeError``, while ``typing._get_protocol_attrs`` — the only tier
+    3.11 has, and the fall-through on 3.12 — returns the seven names. Ungated,
+    ``test_the_protocol_member_set_is_frozen`` would have gone GREEN on both
+    legs of the CI matrix for a ``SubagentRuntime`` that had stopped being a
+    Protocol, which is a breaking change in its own right: ``api.py`` binds
+    runtimes with ``isinstance``, and a nominal base turns a structural check
+    into a subclass requirement that no third-party v1 runtime satisfies.
+
+    The impostor is built from ``_PROTOCOL_MEMBERS`` rather than hand-listed so
+    it cannot drift into being a weaker test than it claims to be.
+    """
+
+    impostor = type(
+        "_LooksRightButIsNotAProtocol",
+        (),
+        {name: (lambda self: None) for name in _PROTOCOL_MEMBERS},
+    )
+
+    private = getattr(typing, "_get_protocol_attrs", None)
+    if private is not None:
+        assert frozenset(private(impostor)) == _PROTOCOL_MEMBERS, (
+            "this test is only meaningful if the private tier really would "
+            "bless the impostor; if it no longer does, rebuild the impostor "
+            f"rather than deleting the test: {sorted(private(impostor))}"
+        )
+
+    with pytest.raises(TypeError) as excinfo:
+        _protocol_members(impostor)
+
+    message = str(excinfo.value)
+    assert "_LooksRightButIsNotAProtocol" in message
+    assert "not a Protocol" in message
