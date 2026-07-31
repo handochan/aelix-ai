@@ -44,7 +44,7 @@ def test_settings_default_all_none() -> None:
     assert s.shell_command_prefix is None
     assert s.npm_command is None
     assert s.collapse_changelog is None
-    assert s.enable_install_telemetry is None
+    # NOTE: no ``enable_install_telemetry`` — removed in #111 B-2 (no sink).
     assert s.packages is None
     assert s.extensions is None
     assert s.skills is None

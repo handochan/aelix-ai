@@ -247,6 +247,21 @@ def test_kernel_has_no_subagent_surface() -> None:
 # accepted at the signature, threaded through the input hook, and dropped one
 # line later. Parity RESTORATION again, and again no delegation surface.
 #
+# ``pyproject.toml`` — #111 B-7, the pre-beta packaging-hygiene batch. NOT a code
+# change and not an ADR-bearing one: it adds ``exclude`` lists (``.omc``,
+# ``__pycache__``, ``*.pyc``, ``CLAUDE.md``, ``AGENTS.md``,
+# ``aelix-session-*.html``) to this package's wheel and sdist build targets, and
+# touches nothing else in the file. The hole being closed was repo-wide — a
+# root-anchored ``.gitignore`` rule let a nested ``.omc/state/`` escape, and
+# hatchling swept maintainer ``agent-replay-*.jsonl`` session transcripts into
+# published artifacts. Every published package needs the same two stanzas or the
+# fix has a hole exactly where a package was skipped, so the kernel's own
+# distribution metadata is in scope for the same reason its own maintenance is:
+# the band rule isolates delegation POLICY, and build-file selection is not
+# policy. It adds no import, no runtime behaviour and no delegation surface —
+# ``test_kernel_has_no_subagent_surface`` is unaffected and still passes.
+# tests/packaging/test_build_hygiene.py is the standing guard.
+#
 # LISTED SEPARATELY ON PURPOSE. This entry is path-based, so a second hunk in an
 # already-allowlisted file passes the gate silently. The list is the record of
 # WHY the kernel was opened, and a reason that is not written down is a reason
@@ -254,6 +269,7 @@ def test_kernel_has_no_subagent_surface() -> None:
 _KERNEL_CHANGE_ALLOWLIST = frozenset(
     {
         "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py",
+        "packages/aelix-agent-core/pyproject.toml",
     }
 )
 

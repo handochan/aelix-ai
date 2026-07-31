@@ -1,0 +1,16 @@
+# Blank issues stay ENABLED on purpose: the bug report is the only structured
+# template, and forcing every feature request, question and doc fix through it
+# would be worse than an unstructured issue.
+blank_issues_enabled: true
+
+contact_links:
+  # NOT titled "(private)": GitHub private vulnerability reporting is currently
+  # OFF for this repo, so there is no private advisory button to send anyone to.
+  # SECURITY.md documents the route that does work, and this label must not
+  # promise more than that route delivers.
+  - name: Report a security vulnerability
+    url: https://github.com/handochan/aelix-ai/blob/main/SECURITY.md
+    about: >
+      Do not put vulnerability details in a public issue. SECURITY.md describes
+      what is in scope and how to reach the maintainer for a private channel
+      before you send anything sensitive.

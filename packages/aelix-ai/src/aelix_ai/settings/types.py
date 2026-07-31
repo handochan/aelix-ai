@@ -234,7 +234,13 @@ class Settings:
     shell_command_prefix: str | None = None
     npm_command: list[str] | None = None
     collapse_changelog: bool | None = None
-    enable_install_telemetry: bool | None = None
+    # NOTE (#111 B-2): Pi's ``enableInstallTelemetry`` is deliberately NOT
+    # ported. Aelix has no telemetry sink of any kind, so carrying the key
+    # advertised a capability that does not exist. An existing settings.json
+    # containing ``enableInstallTelemetry`` still loads unchanged: unknown JSON
+    # keys are dropped by ``_json_dict_to_settings`` (settings_manager.py:107)
+    # and left untouched on disk by the merge-based persist path
+    # (``_persist_scoped_settings``).
     packages: list[PackageSource] | None = None
     # Aelix-original (#32-A, ADR-0186): registered extension install sources
     # (pip index / git repo / local path). Distinct from ``packages`` (pi's
@@ -328,7 +334,6 @@ SETTINGS_PY_TO_JSON: Final[dict[str, str]] = {
     "shell_command_prefix": "shellCommandPrefix",
     "npm_command": "npmCommand",
     "collapse_changelog": "collapseChangelog",
-    "enable_install_telemetry": "enableInstallTelemetry",
     "packages": "packages",
     "extension_sources": "extensionSources",
     "extensions": "extensions",

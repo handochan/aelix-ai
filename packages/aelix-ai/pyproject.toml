@@ -67,5 +67,33 @@ Homepage = "https://github.com/handochan/aelix-ai"
 Repository = "https://github.com/handochan/aelix-ai"
 Issues = "https://github.com/handochan/aelix-ai/issues"
 
+# #111 B-7 — developer-state exclusions on both targets. See the root
+# pyproject.toml for the rationale. NARROW ON PURPOSE: exact directory names,
+# exact file names and one scoped glob only. Never widen to an extension glob —
+# the distributions carry content files, not only .py sources.
 [tool.hatch.build.targets.wheel]
 packages = ["src/aelix_ai"]
+exclude = [
+    ".omc",
+    "__pycache__",
+    "*.pyc",
+    "*.pyo",
+    ".ruff_cache",
+    ".pytest_cache",
+    "CLAUDE.md",
+    "AGENTS.md",
+    "aelix-session-*.html",
+]
+
+[tool.hatch.build.targets.sdist]
+exclude = [
+    ".omc",
+    "__pycache__",
+    "*.pyc",
+    "*.pyo",
+    ".ruff_cache",
+    ".pytest_cache",
+    "CLAUDE.md",
+    "AGENTS.md",
+    "aelix-session-*.html",
+]

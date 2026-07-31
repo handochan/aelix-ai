@@ -1281,19 +1281,11 @@ class SettingsManager:
         self._mark_modified("collapse_changelog")
         self._save()
 
-    # --- enableInstallTelemetry (Pi `:797-805`) ---
-    def get_enable_install_telemetry(self) -> bool:
-        """Pi parity: ``settings-manager.ts::getEnableInstallTelemetry`` (line 797-799). Default: True."""
-
-        v = self._settings.enable_install_telemetry
-        return True if v is None else v
-
-    def set_enable_install_telemetry(self, enabled: bool) -> None:
-        """Pi parity: ``settings-manager.ts::setEnableInstallTelemetry`` (line 801-805)."""
-
-        self._global_settings.enable_install_telemetry = enabled
-        self._mark_modified("enable_install_telemetry")
-        self._save()
+    # --- enableInstallTelemetry (Pi `:797-805`) — DELIBERATE NON-PARITY ---
+    # Not ported (#111 B-2). Aelix ships no telemetry sink, so the accessor
+    # pair had zero production callers and existed only to mirror Pi's schema.
+    # A settings.json carrying ``enableInstallTelemetry`` still loads: the key
+    # is an unknown key, dropped on read and preserved on disk on write.
 
     # --- packages (Pi `:807-822`) ---
     def get_packages(self) -> list[PackageSource]:

@@ -55,8 +55,64 @@ Issues = "https://github.com/handochan/aelix-ai/issues"
 [project.scripts]
 aelix = "aelix_coding_agent.cli.entry:main_sync"
 
+# #111 B-7 — developer-state exclusions, stated on EVERY target.
+#
+# WHY THIS IS NOT REDUNDANT WITH .gitignore: hatchling honours VCS ignore rules
+# only when they are there to honour. A build run from a checkout whose
+# .gitignore has drifted, or from any tree assembled without one, has no such
+# protection. These lists are the load-bearing copy; .gitignore is the belt.
+#
+# BE HONEST ABOUT WHICH ONE IS DOING THE WORK — measured, not assumed. In the
+# live worktree the belt gets there first: strip every pattern below and a
+# planted `.omc/state/agent-replay-*.jsonl` STILL does not reach the wheel,
+# because .gitignore already excluded it. That is why
+# tests/packaging/test_build_hygiene.py builds from a COPY OF THE REPO WITH
+# .gitignore DELETED — building in place would measure the belt and keep
+# reporting a clean artifact long after these lists had been mangled. Measured
+# both ways: belt-less + no excludes -> 7 planted paths leak into the wheel;
+# belt-less + these excludes -> 0 leak, all four content files intact.
+# (The per-package sdists DO ship the repo .gitignore, so "an sdist consumer has
+# no .gitignore" is NOT the justification — do not lean on it.)
+#
+# NARROW ON PURPOSE — DO NOT WIDEN. Every entry is an exact directory name, an
+# exact file name, or a tightly-scoped glob. The distributions are CONTENT
+# carriers, not just code: `examples/INDEX.md`, `examples/echo/aelix-plugin.toml`,
+# `examples/echo/echo.py` and `extensions/api.py` ship inside the
+# aelix-coding-agent wheel and are cited by ABSOLUTE PATH by the #117
+# self-extension signpost. A pattern like `*.md`, `*.toml` or `*.json` would drop
+# them silently and the installed agent would name files that are not on disk.
+# tests/packaging/test_build_hygiene.py builds for real and fails if it happens.
 [tool.hatch.build.targets.wheel]
 packages = ["src/aelix"]
+exclude = [
+  ".omc",
+  "__pycache__",
+  "*.pyc",
+  "*.pyo",
+  ".ruff_cache",
+  ".pytest_cache",
+  "CLAUDE.md",
+  "AGENTS.md",
+  "aelix-session-*.html",
+]
+
+# The sdist is the worse leak of the two: its default file set is the whole repo
+# root, so before this section a local `uv build` swept `.omc/specs/**` (51
+# internal sprint plans and review memos, including untracked ones), `.omc/wiki/`
+# session logs, `CLAUDE.md`, `AGENTS.md` and root `aelix-session-*.html` into a
+# 5.7 MB tarball that would have been attached to the GitHub release.
+[tool.hatch.build.targets.sdist]
+exclude = [
+  ".omc",
+  "__pycache__",
+  "*.pyc",
+  "*.pyo",
+  ".ruff_cache",
+  ".pytest_cache",
+  "CLAUDE.md",
+  "AGENTS.md",
+  "aelix-session-*.html",
+]
 
 [tool.uv.workspace]
 members = ["packages/*"]

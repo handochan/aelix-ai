@@ -164,6 +164,30 @@ aelix extension trust add <key>                                 # 검증 키 신
 aelix extension install <target> --require-signature            # fail-closed 서명 게이트
 ```
 
+## 알려진 한계 (베타)
+
+중요한 작업에 aelix를 붙이기 전에 알아두어야 할 두 가지입니다.
+
+**한 번의 실행에 지출 상한이 없습니다.** 최대 반복 횟수 제한도, 중복 호출 감지도, 누적
+토큰·비용 예산도 없습니다 — 모델이 툴을 계속 호출하면 스스로 끝내거나 사용자가 중단할
+때까지 비용이 계속 발생합니다([#14](https://github.com/handochan/aelix-ai/issues/14),
+[#6](https://github.com/handochan/aelix-ai/issues/6),
+[#52](https://github.com/handochan/aelix-ai/issues/52)). 존재하는 안전장치는 실제로
+동작하지만, 그중 어느 것도 지출을 제한하지는 않습니다: TUI에서 `Esc`는 진행 중인 턴을
+중단하고, `GuardrailExtension`은 권한 검사보다 먼저 파괴적인 명령을 하드 차단하며,
+컨텍스트는 넘치기 전에 자동으로 압축되고, `bash`는 기본 600초에 타임아웃됩니다(호출별로
+명시한 값은 최대 1시간). 무인 장시간 실행은 지켜보시고, 토큰 단가를 확인한 모델을
+쓰세요.
+
+**헤드리스 모드는 변경 툴을 자동 승인합니다.** `--print`, `--mode json`, `--mode rpc`는
+승인 대화상자를 그릴 터미널이 없으므로 `write`·`edit`·`bash`가 묻지 않고 실행됩니다 —
+바로 그 점이 이들을 스크립트로 쓸 수 있게 만들고, 위의 임베드 예시가 기대는 동작이기도
+합니다. 두 가지 보장은 남습니다: `GuardrailExtension`은 헤드리스에서도 자신의 패턴을
+하드 차단하고, `--permission-mode plan`은 헤드리스 경로에서도 모든 변경 툴을 차단합니다.
+그 외에는 헤드리스 실행이 해당 머신에 대한 전체 쓰기·셸 권한을, 그 머신이 보유한
+자격증명과 함께 갖습니다. 컨테이너나 샌드박스, 혹은 버려도 되는 체크아웃에서
+실행하세요.
+
 ## 아키텍처
 
 에이전트는 세 패키지로 구성되며(uv 워크스페이스), `Agent`와 `AgentHarness`가
