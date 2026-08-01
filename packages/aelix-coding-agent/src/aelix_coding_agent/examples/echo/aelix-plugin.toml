@@ -4,9 +4,10 @@
 # loader parses it, and a test asserts it stays valid. Copy this file, change
 # the values, delete what you do not contribute.
 #
-# WHEN IT IS READ: a manifest is picked up when your plugin directory is a
-# SUBDIRECTORY of a scanned extensions directory. Three spellings scan a
-# directory, and all three read this file:
+# WHEN IT IS READ: FOUR channels read this file.
+#
+# Three of them scan a DIRECTORY, and pick the manifest up when your plugin
+# directory is a subdirectory of the scanned one:
 #   * `./.aelix/extensions/echo/`      (project-local, auto — Project Trust gated)
 #   * `~/.aelix/agent/extensions/echo/` (global, auto)
 #   * `-e <parent>` where <parent> CONTAINS `echo/` — `-e` at a directory makes
@@ -15,6 +16,21 @@
 #     `pyproject.toml [tool.aelix]` / `__init__.py`.
 # There the manifest wins over the legacy `pyproject.toml` and `__init__.py`
 # forms (`_resolve_extension_entries` in extensions/loader.py).
+#
+# The FOURTH is an INSTALLED package (issue #91) — the channel the marketplace
+# uses, and the one `aelix extension install <pkg>` gives you. If your package
+# declares an `aelix.extensions` entry point, the host finds this file from the
+# distribution's installed metadata (its `RECORD`), WITHOUT importing your code:
+# the manifest must sit inside the package directory of the entry point's own
+# module, so `mypack.ext:setup` reads `mypack/aelix-plugin.toml`. A pack that
+# ships its manifest elsewhere is reported as MISPLACED and loads WITHOUT its
+# manifest — the error names the file. Remedies: move the manifest, or declare
+# the optional `aelix.manifests` entry point pointing at the directory that
+# holds it (that is also the answer for a single-module pack, which has no
+# package directory). An EDITABLE install (`pip install -e`) cannot be proved
+# from metadata, so the pack loads manifest-less with a visible reason until
+# you install it normally.
+#
 # Only `-e <file.py>` and `-e <module>` never consult a manifest — so
 # `aelix -e aelix_coding_agent.examples.echo.echo` runs `echo.py` without
 # reading a single line of this file, but `-e path/to/examples/` would load
@@ -24,6 +40,11 @@
 # STRICT (`extra="forbid"`): an unknown key is a hard validation failure, and a
 # directory whose `aelix-plugin.toml` fails to parse is treated as unloadable
 # with NO fall-through to the legacy `pyproject.toml` / `__init__.py` forms.
+# On the INSTALLED-package channel the same broken file is NOT fatal: the pack
+# loads without its manifest — so every declarative contribution below is
+# ignored — plus a load error naming the file. Different tiers, deliberately:
+# refusing there would break packs that install fine today over a file no
+# previous release read at all.
 # Every key below is a real key. Do not invent your own — check the schema.
 #
 # Reading the schema, note that the loader's entry point is

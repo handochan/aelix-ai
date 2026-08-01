@@ -121,28 +121,39 @@ def test_scan_ignores_bare_py_extensions_and_runs_no_code(
     assert not marker.exists()  # scan never imported the module
 
 
-def test_scan_never_resolves_entry_points(
+def test_scan_walks_entry_points_metadata_only(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The entry_points tier is EXCLUDED from the scan: resolving an endpoint
-    (``ep.load()``) is a module import, which would break the metadata-only
-    contract (adversarial-review finding). A spy on the tier proves the scan
-    never touches it while the full loader still does."""
+    """Was ``test_scan_never_resolves_entry_points`` — REWRITTEN for issue #91.
+
+    The old assertion (``the scan skips the tier entirely``) was correct only
+    because the tier's ONLY way to resolve an endpoint was ``ep.load()``, a
+    module import. #91 deleted that call: endpoints are now resolved from
+    installed metadata, so skipping the tier no longer buys the scan anything
+    and costs it an installed pack's ``contributes.mcp_servers`` — the exact
+    payload this scan exists to collect. So the property under test moves from
+    "does not call the tier" to "calls it in METADATA-ONLY mode", which is what
+    actually preserves the no-execution contract.
+
+    The no-import half of the contract is measured for real — with a genuine
+    installed dist, not a spy — in
+    ``tests/extensions/test_ep_wiring.py::
+    test_scan_reaches_an_endpoint_pack_mcp_servers_without_importing_it``.
+    """
+
     from aelix_coding_agent.extensions import loader as loader_mod
 
-    calls: list[str] = []
+    calls: list[bool] = []
 
-    def _spy(seen_ep: set[str]) -> list:
-        calls.append("resolved")
+    def _spy(seen_ep: set[str], *, metadata_only: bool = False) -> list:
+        calls.append(metadata_only)
         return []
 
     monkeypatch.setattr(loader_mod, "_discover_via_entry_points", _spy)
     cwd, agent_dir = _make_dirs(tmp_path)
 
     scan_extension_manifests([], cwd=cwd, agent_dir=agent_dir)
-    assert calls == []  # scan skipped the tier entirely
+    assert calls == [True]  # the scan walks the tier, metadata-only
 
-    entries, _errors = loader_mod._discover_entries(
-        [], cwd=cwd, agent_dir=agent_dir
-    )
-    assert calls == ["resolved"]  # the full-load path still resolves it
+    loader_mod._discover_entries([], cwd=cwd, agent_dir=agent_dir)
+    assert calls == [True, False]  # the full-load path takes carriers too

@@ -18,7 +18,65 @@ and `.../releases/tag/vX` link would 404. Add them with the first pushed tag.
 
 ## [Unreleased]
 
-_Nothing yet — everything below ships in the first release._
+### Added
+
+- **An installed extension's `aelix-plugin.toml` is now read** (#91, ADR-0204).
+  A package that declares an `aelix.extensions` entry point — what
+  `aelix extension install <pkg>` gives you, and how the marketplace ships
+  packs — previously had its manifest ignored entirely, so every
+  `contributes.*` family it declared (tools, commands, themes, TUI widgets,
+  MCP servers, hooks) was silently inert. The manifest is now resolved from
+  the distribution's installed metadata **without importing the package**, so
+  an installed pack's contributions reach the runtime and its capability
+  declarations are enforced before any of its code runs.
+- **Optional `aelix.manifests` entry-point group** (#91). Declare
+  `<same-name-as-your-aelix.extensions-entry> = "<dotted.package>"` to point
+  the host at the directory holding your `aelix-plugin.toml`. Needed only if
+  the manifest does not sit in the entry module's own package, or if your pack
+  is a single module and so has no package directory. Purely optional: a pack
+  that omits it behaves exactly as it does today.
+
+### Changed
+
+- **Three behaviour changes for packs installed via `aelix.extensions`** (#91).
+  All three follow from the manifest being read where it previously was not,
+  and each reports what to do:
+  - A pack declaring `[[contributes.hooks]]` without
+    `capabilities.shell_exec = true` is now **refused**, with none of its code
+    executed. Add the capability if the pack genuinely needs to run
+    subprocesses.
+  - A pack whose only `[activation]` trigger is `on_command` is now
+    **deferred**: its `setup()` runs on first use of one of those commands
+    instead of at startup. Set `on_startup_finished = true` to keep the old
+    behaviour. A warning naming the plugin and the escape hatch is logged when
+    this happens.
+  - A pack whose `[plugin.api] min_level` exceeds the host's API level is now
+    **refused** instead of loading and misbehaving later. Upgrade aelix, or
+    install a build of the plugin for this API level.
+- A pack that is refused at load time no longer has its declared MCP servers
+  started (#91). Previously the load-time refusal and the MCP gate keyed on
+  different capability flags, so a denied plugin's `[[contributes.mcp_servers]]`
+  were still spawned or dialled at every startup.
+- An extension whose `aelix-plugin.toml` fails to parse cannot be installed
+  via an entry point and silently do nothing: the pack loads **without** its
+  manifest and reports an error naming the absolute path of the file. If the
+  distribution ships a manifest the host could not attribute to the entry
+  module, the error names that file too.
+- Development installs (`pip install -e`) cannot be proved from installed
+  metadata, so a pack installed that way loads without its manifest and says
+  so on every start. Install the pack normally to exercise its manifest.
+
+### Fixed
+
+- A malformed `aelix-plugin.toml` no longer echoes the manifest's contents
+  into the error printed on startup (#91). Pydantic's validation errors
+  interpolate the whole parsed document, which for a manifest declaring MCP
+  servers includes `contributes.mcp_servers[].env` — plugin-supplied API
+  tokens. Errors now carry the failing field and message only. Affects both
+  directory-installed and package-installed extensions.
+- The same extension discovered both as an installed package and through a
+  scanned extensions directory now loads once rather than twice (#91). Its
+  `setup()` previously ran twice against the same runtime.
 
 ## [0.1.0-beta.1] — not yet released
 

@@ -29,7 +29,7 @@ Four tiers, in the loader's own priority order (highest first):
 | 2 | `~/.aelix/agent/extensions/` | Your global extensions — auto-discovered, no flag. |
 | 3 | `-e <path>` | An explicit `.py` file, or a directory to scan. Relative paths resolve against the cwd. |
 | 3 | `-e <module>` | An explicit dotted module: `pkg.mod` (calls its top-level `setup`) or `pkg.mod:factory` (calls a named callable). |
-| 4 | `entry_points(group="aelix.extensions")` | Extensions shipped by an installed package — this is what `aelix extension install <pkg>` gets you. Loaded **last**, so an installed package can never shadow a project-local file. |
+| 4 | `entry_points(group="aelix.extensions")` | Extensions shipped by an installed package — this is what `aelix extension install <pkg>` gets you. Loaded **last**, so an installed package can never shadow a project-local file. Its `aelix-plugin.toml` **is** read, from installed metadata and without importing the package, so an installed pack is gated and can be deferred exactly like a directory pack. |
 
 The two `-e` rows are one tier, not two priority levels: they are the same
 `configured_paths` list, classified per entry.
@@ -55,17 +55,45 @@ themes, TUI widgets, or subprocess hooks. The schema is
 (`extra="forbid"`) — an unknown key is a hard failure, so check the schema
 instead of inventing keys.
 
-Note the pickup rule, which surprises people: a manifest is read when your
-plugin directory is a **subdirectory of a scanned extensions directory**. Three
-spellings scan a directory — `./.aelix/extensions/<you>/`,
-`~/.aelix/agent/extensions/<you>/`, and `-e <parent>` where `<parent>` contains
-`<you>/`. `-e` at a *directory* is a scan: its own `*.py` children load
-directly **and** each subdirectory is resolved through `aelix-plugin.toml` /
-`pyproject.toml [tool.aelix]` / `__init__.py`. Only `-e <file.py>` and
-`-e <module>` never consult a manifest — which is why the `aelix -e
-aelix_coding_agent.examples.echo.echo` invocation above runs `echo.py` without
-reading a line of `echo/aelix-plugin.toml`, while `-e path/to/examples/` would
-load `echo` *through* it.
+Note the pickup rule, which surprises people. **Four** channels read a
+manifest. Three of them scan a directory and pick it up when your plugin
+directory is a **subdirectory of a scanned extensions directory** —
+`./.aelix/extensions/<you>/`, `~/.aelix/agent/extensions/<you>/`, and
+`-e <parent>` where `<parent>` contains `<you>/`. `-e` at a *directory* is a
+scan: its own `*.py` children load directly **and** each subdirectory is
+resolved through `aelix-plugin.toml` / `pyproject.toml [tool.aelix]` /
+`__init__.py`. Only `-e <file.py>` and `-e <module>` never consult a manifest —
+which is why the `aelix -e aelix_coding_agent.examples.echo.echo` invocation
+above runs `echo.py` without reading a line of `echo/aelix-plugin.toml`, while
+`-e path/to/examples/` would load `echo` *through* it.
+
+The fourth channel is **tier 4, an installed package** (issue #91), and it is
+the one the marketplace uses. It does not scan a directory at all: the host
+reads your distribution's installed metadata (`RECORD`) and binds the
+`aelix-plugin.toml` that sits inside the package directory of the entry
+point's own module — `mypack.ext:setup` reads `mypack/aelix-plugin.toml`. No
+code of yours is imported to decide this. Consequences worth knowing before
+you publish:
+
+* Put the manifest **in the entry module's package**. One shipped elsewhere is
+  reported MISPLACED and the pack loads *without* it, so every declarative
+  contribution is ignored. The error names the file. The fix is to move it, or
+  to declare the optional `aelix.manifests` entry point (`<same-ep-name> =
+  "<dotted.package>"`) pointing at the directory that holds it — which is also
+  the answer for a **single-module** pack, since `soloext.py` has no package
+  directory.
+* `pip install -e` cannot be proved from metadata (an editable `RECORD` lists
+  only the `.pth` and the `dist-info`), so while you develop, your pack loads
+  manifest-less and says so on every start. That is expected; install it
+  normally to exercise the manifest.
+* Because the manifest is now read, an installed pack is **gated** like any
+  other: `[[contributes.hooks]]` requires `capabilities.shell_exec = true` and
+  `[[contributes.tui_widgets]]` requires `capabilities.ui_tui_trusted = true`,
+  or the pack is refused before a single line of it is imported.
+* Also because the manifest is now read, an installed pack whose only
+  `[activation]` trigger is `on_command` is **deferred** — its `setup()` runs
+  on first use of one of those commands, not at startup. Set
+  `on_startup_finished = true` if you need the old eager behaviour.
 
 One trap if you do write a manifest: `[plugin.entry] python` is resolved by a
 bare `importlib.import_module`, and a plugin directory under

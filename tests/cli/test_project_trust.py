@@ -759,18 +759,6 @@ def test_config_source_global(tmp_path: Path, monkeypatch) -> None:
 # boundary; the entry-level integration tests only cover the env-MCP arm.
 
 
-class _OverGateEntryPoint:
-    """Minimal entry-point stub (mirrors the discovery test harness)."""
-
-    def __init__(self, name: str, factory: object) -> None:
-        self.name = name
-        self.value = f"fake:{name}"
-        self._factory = factory
-
-    def load(self) -> object:
-        return self._factory
-
-
 def _flag_setup(flag: str):
     def setup(aelix) -> None:  # noqa: ANN001 — ExtensionAPI
         aelix.register_flag(flag, type="bool", default=True)
@@ -827,15 +815,34 @@ async def test_no_project_local_keeps_entry_points_extension(
 
     ``no_project_local`` gates tier 1 only; entry_points is the Aelix-additive
     tier 4, loaded LAST, and is an installed/user choice — never project-local.
+
+    UPDATED for issue #91 (the guarantee is unchanged; the shape around it
+    moved). The stub used to be a fake object with a ``.load()`` method, which
+    the loader called during discovery. That call is gone — the loader now
+    reads ``ep.module`` / ``ep.attr`` and imports at LOAD time — so the stub is
+    a real ``EntryPoint`` over a real module. A bare ``EntryPoint`` has no
+    distribution, so nothing proves where its manifest would live: the pack
+    loads WITHOUT a manifest and says so. That notice is why ``result.errors``
+    is no longer empty; it is a report, not a failure, and the property this
+    test exists for — the endpoint tier survives the trust gate — still holds.
     """
+
+    from importlib.metadata import EntryPoint
 
     from aelix_coding_agent.extensions import loader as loader_mod
     from aelix_coding_agent.extensions.loader import discover_and_load_extensions
 
     cwd = tmp_path / "proj"
     cwd.mkdir()
+    installed = tmp_path / "installed"
+    installed.mkdir()
+    (installed / "overgate_ext.py").write_text(
+        "def setup(aelix):\n"
+        "    aelix.register_flag('from_ep', type='bool', default=True)\n"
+    )
+    monkeypatch.syspath_prepend(str(installed))
 
-    eps = [_OverGateEntryPoint("ext_remote", _flag_setup("from_ep"))]
+    eps = [EntryPoint("ext_remote", "overgate_ext:setup", "aelix.extensions")]
     # Patch the module OBJECT's ``importlib.metadata.entry_points`` (repo
     # convention: monkeypatch objects, not dotted strings). Restore is
     # automatic at test teardown.
@@ -852,7 +859,8 @@ async def test_no_project_local_keeps_entry_points_extension(
         no_project_local=True,
     )
 
-    assert result.errors == []
+    assert [e.path for e in result.errors] == ["entry_point:ext_remote"]
+    assert "loaded WITHOUT its manifest" in result.errors[0].error
     flags = {f for ext in result.extensions for f in ext.flags}
     assert "from_ep" in flags
 

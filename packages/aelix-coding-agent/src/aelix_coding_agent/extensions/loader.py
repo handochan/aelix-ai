@@ -46,6 +46,7 @@ import tomllib
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
+from importlib.metadata import EntryPoint
 from pathlib import Path
 from typing import Any
 
@@ -64,6 +65,15 @@ from aelix_coding_agent.extensions.api import (
     ExtensionFactory,
     PendingActivation,
     _ExtensionRuntime,
+)
+from aelix_coding_agent.extensions.ep_manifest import (
+    EXTENSIONS_GROUP,
+    MANIFEST_FILENAME,
+    EpApiLevelRefusal,
+    EpOutcome,
+    EpResolution,
+    redact_manifest_error,
+    resolve_entry_point_manifest,
 )
 
 logger = logging.getLogger(__name__)
@@ -94,7 +104,7 @@ class LoadExtensionsResult:
 
 
 async def load_extensions(
-    paths: Sequence[str | Path | ExtensionFactory | _ManifestEntry],
+    paths: Sequence[str | Path | ExtensionFactory | _ManifestEntry | _EntryPointEntry],
     *,
     cwd: Path | None = None,
     flag_values: Mapping[str, bool | str] | None = None,
@@ -107,9 +117,10 @@ async def load_extensions(
 
     Sprint 6h₉b: the ``paths`` sequence may also contain internal
     ``_ManifestEntry`` carriers produced by
-    :func:`discover_and_load_extensions`. The carrier type is NOT
-    exported; external callers continue to pass the original
-    ``str | Path | ExtensionFactory`` union — :class:`Sequence` keeps
+    :func:`discover_and_load_extensions`; issue #91 adds the sibling
+    ``_EntryPointEntry`` carrier for a manifest-LESS entry-point pack.
+    Neither carrier type is exported; external callers continue to pass the
+    original ``str | Path | ExtensionFactory`` union — :class:`Sequence` keeps
     the parameter list covariant so a narrower list still type-checks.
     """
 
@@ -153,6 +164,34 @@ async def load_extensions(
                 PendingActivation(extension=shell, entry=entry, cwd=cwd)
             )
             result.extensions.append(shell)
+            if entry.ep_ref is not None:
+                # Contract review H4 — owner decision (iii) shipped SILENTLY.
+                # An INSTALLED pure-``on_command`` pack ran its ``setup()`` at
+                # startup before issue #91 and is deferred from now on. That
+                # policy is approved; shipping it with no output was not. It
+                # was accepted on the stated basis that "the loader already
+                # warns at :281-291", and MEASURED that is false — that region
+                # is the shortcut-key limitation warning inside
+                # ``activate_pending_extension``, which fires only when
+                # ``shell.shortcuts`` is non-empty and only AFTER activation,
+                # i.e. after the deferral already happened. The author saw
+                # nothing at all.
+                #
+                # Warned only for endpoint packs: the directory tier has
+                # behaved this way since issue #21, so warning there would be
+                # noise about nothing that changed.
+                logger.warning(
+                    "plugin %r is installed via an %s entry point and its "
+                    "only activation trigger is on_command, so it is now "
+                    "deferred: its setup() runs on first use of %s instead of "
+                    "at startup. This changed in issue #91 — before it, an "
+                    "installed pack always ran at startup. Set "
+                    "'on_startup_finished = true' in [activation] to keep the "
+                    "old behaviour.",
+                    entry.manifest.plugin.id,
+                    EXTENSIONS_GROUP,
+                    ", ".join(entry.manifest.activation.on_command) or "a command",
+                )
             continue
         try:
             factory, name, manifest = await _resolve_factory(entry, cwd=cwd)
@@ -199,6 +238,17 @@ def _is_lazy_eligible(manifest: PluginManifest) -> bool:
     ``on_tool_call`` — W1 keeps ``on_tool_call`` eager because lazy tool
     stubs would need schema-carrying ToolContribs) forces the load-time
     factory run, preserving today's behavior for those plugins.
+
+    LANDMINE — co-evolution with :func:`_enforce_declarative_capability_gates`
+    (~900 lines down). Every ``contributes.*`` family that function GATES must
+    appear in the "and not manifest.contributes.<family>" chain below, or the
+    refusal moves from load time to mid-session dispatch. Pinned by
+    ``tests/extensions/test_ep_wiring.py::test_every_gated_contributes_family_is_also_eager``.
+
+    Issue #91 note: entry-point packs reach this predicate for the first time,
+    so a pure-``on_command`` installed pack that used to run its factory at
+    startup is now DEFERRED like any other manifest pack (accepted, uniform
+    policy — the escape hatch is ``on_startup_finished = true``).
     """
 
     activation = manifest.activation
@@ -367,13 +417,23 @@ async def discover_and_load_extensions(
        ambiguity is warned about rather than resolved silently). The import
        deliberately excludes the project directory from ``sys.path`` — see
        :func:`_import_path_without_cwd`.
-    4. ``entry_points(group="aelix.extensions")`` — Aelix-additive. Each
-       endpoint is resolved by ``.load()`` and treated as an inline
-       factory (or a callable class instance per D.1.8).
+    4. ``entry_points(group="aelix.extensions")`` — Aelix-additive. Issue
+       #91: each endpoint's ``aelix-plugin.toml`` is resolved from installed
+       METADATA ONLY (:func:`~aelix_coding_agent.extensions.ep_manifest.
+       resolve_entry_point_manifest`) — nothing is imported during discovery.
+       A proven manifest yields a :class:`_ManifestEntry`, so an entry-point
+       pack goes through the SAME capability gates, lazy-activation policy and
+       ``pkg_dir`` wiring as a directory-discovered pack; anything unproven
+       degrades to a manifest-less :class:`_EntryPointEntry` (plus a visible
+       error) whose module is imported later, in
+       :func:`_resolve_factory`, exactly as ``ep.load()`` used to do at
+       discovery time.
 
-    Deduplication: by ``Path.resolve()`` for filesystem paths; entry-point
-    factories are deduplicated by their ``ep.value`` string so two endpoint
-    declarations pointing at the same factory module:object load once.
+    Deduplication: by ``Path.resolve()`` for filesystem paths and for a
+    manifest-bound endpoint's ``pkg_dir`` — so a pack found BOTH as an
+    installed endpoint and by the directory scan loads once (before #91 both
+    copies loaded and ``setup()`` ran twice). Manifest-less endpoints
+    deduplicate on their ``module:attr`` target.
 
     Error containment: per-entry try/except inside each tier — a single
     bad endpoint never aborts the wave. Errors append to
@@ -573,9 +633,9 @@ def _discover_entries(
     prepend: list[ExtensionFactory] | None = None,
     no_discovery: bool = False,
     no_project_local: bool = False,
-    include_entry_points: bool = True,
+    entry_points_metadata_only: bool = False,
 ) -> tuple[
-    list[str | Path | ExtensionFactory | _ManifestEntry],
+    list[str | Path | ExtensionFactory | _ManifestEntry | _EntryPointEntry],
     list[ExtensionLoadError],
 ]:
     """The 4-tier discovery pass of :func:`discover_and_load_extensions`.
@@ -592,9 +652,18 @@ def _discover_entries(
     ``str`` therefore appears in the returned list; :func:`load_extensions`
     resolves it, and :func:`scan_extension_manifests` ignores it (a module
     reference carries no ``aelix-plugin.toml``).
+
+    ``entry_points_metadata_only`` (issue #91, used by
+    :func:`scan_extension_manifests`): still walk the entry-point tier — it is
+    import-free now — but keep ONLY the endpoints whose manifest was proved
+    (:class:`_ManifestEntry`). Manifest-less endpoints are dropped because the
+    scan has nothing to learn from them and returning them would hand a
+    metadata-only caller a carrier whose resolution imports plugin code.
     """
 
-    all_entries: list[str | Path | ExtensionFactory | _ManifestEntry] = []
+    all_entries: list[
+        str | Path | ExtensionFactory | _ManifestEntry | _EntryPointEntry
+    ] = []
     seen_paths: set[Path] = set()
     seen_ep: set[str] = set()
     errors: list[ExtensionLoadError] = []
@@ -719,16 +788,25 @@ def _discover_entries(
             )
 
     # 4. Aelix-additive: entry_points loaded LAST (skipped under no_discovery).
-    # ``include_entry_points=False`` (the manifest SCAN): ``ep.load()`` below
-    # IMPORTS the endpoint module — running it would violate the scan's
-    # metadata-only contract (adversarial-review finding), and entry_points
-    # yield factories, never manifests, so the scan loses nothing by skipping.
-    if not no_discovery and include_entry_points:
-        for ep_entry, ep_error in _discover_via_entry_points(seen_ep):
+    # Issue #91: this tier no longer imports anything — endpoints are resolved
+    # from installed metadata, so it is safe for the metadata-only scan too.
+    if not no_discovery:
+        for ep_entry, ep_error in _discover_via_entry_points(
+            seen_ep, metadata_only=entry_points_metadata_only
+        ):
+            # An error and an entry are NOT mutually exclusive: decision (i) of
+            # issue #91 degrades an unproven endpoint to manifest-less loading
+            # AND reports why, so the pack still loads and the user still sees
+            # the reason. Only a refusal (api.min_level) yields no entry.
             if ep_error is not None:
                 errors.append(ep_error)
+            if ep_entry is None:
                 continue
-            if ep_entry is not None:
+            if isinstance(ep_entry, _ManifestEntry):
+                # Cross-tier dedupe on pkg_dir: an installed pack that is ALSO
+                # visible to the directory scan now loads once.
+                _push_entry(ep_entry)
+            else:
                 all_entries.append(ep_entry)
 
     return all_entries, errors
@@ -753,18 +831,48 @@ def scan_extension_manifests(
 
     Entries without a manifest (bare ``.py`` extensions, inline factories)
     contribute nothing here — only ``aelix-plugin.toml`` carriers are
-    surfaced. The entry_points tier is EXCLUDED entirely: resolving an
-    endpoint (``ep.load()``) is a module import, which would break the
-    metadata-only contract — and endpoints yield factories, never manifests.
+    surfaced. Since issue #91 that INCLUDES the entry-point tier: an
+    endpoint's manifest is resolved from installed metadata
+    (``RECORD`` + the manifest bytes), so the scan reaches an installed pack's
+    ``contributes.mcp_servers`` without importing a single line of it. Only
+    PROVEN manifests are returned (``EpOutcome.BOUND``); an endpoint whose
+    manifest cannot be proved contributes nothing rather than being guessed at.
     Discovery errors (e.g. a malformed manifest) are logged as warnings so a
     plugin whose declared MCP servers were silently skipped is diagnosable;
     the full loader re-reports them properly at load time.
 
-    SECURITY — the returned manifests are UNGATED metadata. Do NOT feed
-    ``manifest.contributes.mcp_servers`` straight to the MCP client: a stdio
-    server is a subprocess spawn and an http/sse server is an outbound
-    connection, both attacker-chosen. Route them through
-    :func:`gate_manifest_mcp_contribs` first (issue #91).
+    HONESTY — what this does NOT buy: the scan runs ONCE at CLI startup and
+    MCP connects before the first harness build, so a newly installed pack's
+    MCP servers still need a process restart. ``/reload`` re-runs the loader
+    (themes/widgets do pick up), not this scan.
+
+    SECURITY — a manifest returned here has passed the DECLARATIVE capability
+    gates (see below) but its ``contributes.mcp_servers`` are still ungated as
+    a family. Do NOT feed them straight to the MCP client: a stdio server is a
+    subprocess spawn and an http/sse server is an outbound connection, both
+    attacker-chosen. Route them through :func:`gate_manifest_mcp_contribs`
+    first (issue #91).
+
+    Adversarial review F2 / contract review M8 — why the gate call below
+    exists. ``gate_manifest_mcp_contribs`` keys on ``shell_exec`` (stdio) and
+    ``net`` (http/sse), which are DIFFERENT flags from the ones
+    :func:`_enforce_declarative_capability_gates` refuses on, so a pack the
+    loader denies outright still had its MCP servers dialled. MEASURED before
+    the fix, one pack, one run::
+
+        ERROR refusedmcp -> declares [[contributes.hooks]] but
+                            capabilities.shell_exec is false; ...
+        scanned refusedmcp mcp_servers= [('exfil', 'http')]
+        GATE allowed: ['exfil']   GATE refusals: []
+
+    The extension was denied with zero code executed — the #91 headline held —
+    and the host dialled its URL at every startup anyway, printing a refusal
+    and an allow-notice for the same manifest on adjacent stderr lines. This
+    is pre-existing IN KIND for the directory tier, but #91 is what makes it
+    reachable for INSTALLED packs, so it is closed here rather than carried.
+    The gate is applied uniformly to both tiers: a pack that cannot load
+    contributes nothing, whichever tier found it. No new gate logic — this is
+    the same function ``_resolve_factory`` calls.
     """
 
     entries, errors = _discover_entries(
@@ -773,11 +881,30 @@ def scan_extension_manifests(
         agent_dir=agent_dir,
         no_discovery=no_discovery,
         no_project_local=no_project_local,
-        include_entry_points=False,
+        entry_points_metadata_only=True,
     )
     for err in errors:
         logger.warning("manifest scan: %s: %s", err.path, err.error)
-    return [e.manifest for e in entries if isinstance(e, _ManifestEntry)]
+
+    manifests: list[PluginManifest] = []
+    for entry in entries:
+        if not isinstance(entry, _ManifestEntry):
+            continue
+        try:
+            _enforce_declarative_capability_gates(entry.manifest)
+        except ExtensionManifestError as exc:
+            # The loader re-reports this properly at load time; here it is a
+            # warning so a plugin whose declared MCP servers were dropped is
+            # diagnosable rather than silently absent.
+            logger.warning(
+                "manifest scan: plugin %r is refused at load time, so its "
+                "declared contributions are ignored: %s",
+                entry.manifest.plugin.id,
+                exc,
+            )
+            continue
+        manifests.append(entry.manifest)
+    return manifests
 
 
 _MCP_TRANSPORT_CAPABILITY: Mapping[str, str] = {
@@ -977,11 +1104,20 @@ class _ManifestEntry:
     (API tokens). A load warning must never dump a token to stderr or into
     a pasted bug report, so the repr carries the identity only.
 
+    ``ep_ref`` (issue #91) is set ONLY for a manifest that was proved from an
+    installed ``aelix.extensions`` endpoint. It is the fallback factory
+    reference for the one shape the directory tier cannot produce: a manifest
+    with NO ``[plugin.entry] python`` shipped by a distribution whose endpoint
+    names the callable instead. Without it, routing endpoints through this
+    carrier would break packs that load today (the endpoint was the entry).
+    The manifest's own ``[plugin.entry] python`` still WINS when present.
+
     NOT exported.
     """
 
     manifest: PluginManifest
     pkg_dir: Path
+    ep_ref: _EntryPointEntry | None = None
 
     def __repr__(self) -> str:
         return (
@@ -1004,7 +1140,9 @@ def _load_manifest_from_dir(pkg_dir: Path) -> PluginManifest | None:
     Pi-additive — Pi has no manifest concept.
     """
 
-    manifest_path = pkg_dir / "aelix-plugin.toml"
+    # Contract review L10: one spelling of the filename, shared with the
+    # entry-point tier, so the two cannot drift apart.
+    manifest_path = pkg_dir / MANIFEST_FILENAME
     if not manifest_path.exists():
         return None
 
@@ -1018,8 +1156,14 @@ def _load_manifest_from_dir(pkg_dir: Path) -> PluginManifest | None:
     try:
         manifest = parse_manifest_toml(text)
     except (tomllib.TOMLDecodeError, ValidationError) as exc:
+        # Adversarial review F3: ``str(ValidationError)`` interpolates
+        # ``input_value=``, i.e. the whole parsed manifest dict including
+        # ``contributes.mcp_servers[].env`` — plugin-supplied API tokens — and
+        # this string is printed verbatim by ``cli/entry.py``. Same defect and
+        # same fix as the entry-point tier; see
+        # :func:`~aelix_coding_agent.extensions.ep_manifest.redact_manifest_error`.
         raise ExtensionManifestError(
-            f"Invalid manifest {manifest_path}: {exc}"
+            f"Invalid manifest {manifest_path}: {redact_manifest_error(exc)}"
         ) from exc
 
     # API_LEVEL gate (ADR-0096 §"API_LEVEL policy").
@@ -1121,65 +1265,275 @@ def _resolve_extension_entries(
     return None
 
 
-def _discover_via_entry_points(
-    seen_ep: set[str],
-) -> list[tuple[ExtensionFactory | None, ExtensionLoadError | None]]:
-    """Aelix-additive entry-point discovery (loaded LAST per P-21).
+@dataclass(frozen=True, repr=False)
+class _EntryPointEntry:
+    """Internal carrier for a manifest-LESS ``aelix.extensions`` endpoint (#91).
 
-    Iterates ``entry_points(group="aelix.extensions")`` and returns
-    ``(factory, None)`` for each successful load or ``(None, error)`` per
-    failure. Per-endpoint try/except so one broken installed package never
-    blocks the wave.
+    Before issue #91 the entry-point tier called ``ep.load()`` during
+    DISCOVERY, which imported (and ran the module-level code of) every
+    installed pack before a single gate had seen its manifest — the same
+    defect the manifest tiers closed one tier up. That call is gone. What
+    survives is this carrier: the endpoint's ``module`` / ``attr`` strings,
+    resolved to a factory later, in :func:`_resolve_factory`, alongside every
+    other entry type.
+
+    ``attr`` keeps the endpoint's DOTTED form (``Cls.method`` is legal in an
+    entry point) and may be empty for a value with no ``:`` at all;
+    :func:`_factory_from_entry_point` reproduces both of ``ep.load()``'s call
+    shapes, including the class carve-out (D.1.8).
+
+    ``reason`` records WHY this endpoint has no manifest (see
+    :class:`~aelix_coding_agent.extensions.ep_manifest.EpOutcome`); it is
+    carried for diagnostics only — the same text is reported as an
+    :class:`ExtensionLoadError` at discovery for every outcome except
+    ``ABSENT``, which is a pack that legitimately ships no manifest.
+
+    ``repr`` is the endpoint LABEL, deliberately: ``load_extensions`` prints
+    ``str(entry)`` on the load-error path, and this keeps the pre-#91
+    ``entry_point:<name>`` label byte-identical.
+
+    NOT exported.
     """
 
-    out: list[tuple[ExtensionFactory | None, ExtensionLoadError | None]] = []
+    name: str
+    module: str
+    attr: str
+    dist: str | None
+    reason: str
+
+    def __repr__(self) -> str:
+        return f"entry_point:{self.name}"
+
+
+def _ep_sort_key(
+    ep: EntryPoint, resolution: EpResolution | None
+) -> tuple[int, str, str]:
+    """Deterministic endpoint order: ``(RECORD-owns-head, dist, name)``.
+
+    ``entry_points()`` order is metadata-scan order — filesystem order across
+    ``sys.path`` — so without this the load order of two installed packs (and
+    therefore which one wins a name collision) depends on how the environment
+    happens to be laid out. Endpoints sort by outcome first (every outcome
+    except ``UNPROVEN`` ahead of ``UNPROVEN``), then by distribution name,
+    then by endpoint name. A refusal row (``resolution is None``) had a
+    manifest bound before it refused, so it sorts with the proven ones.
+
+    Contract review L9 — an earlier version of this docstring glossed the
+    first key as "i.e. the RECORD does account for the entry module's top
+    level". That is NOT an equivalent restatement: ``MISPLACED`` and
+    ``FENCED`` are returned BEFORE the ``shows_head`` computation in
+    ``resolve_entry_point_manifest``, so they sort as proven while the RECORD
+    may account for no file of the entry module at all. MEASURED, an
+    editable-shape RECORD listing only a stray manifest::
+
+        outcome: misplaced   RECORD lists any 'realpkg' file? False
+        _ep_sort_key: (0, 'strayd', 'stray')
+
+    The ordering is intended (only ``UNPROVEN`` is demoted, because that is
+    the outcome that means "this install proves nothing at all"); only the
+    stated reason was wrong.
+    """
+
+    proven = resolution is None or resolution.outcome is not EpOutcome.UNPROVEN
+    dist = getattr(getattr(ep, "dist", None), "name", None) or ""
+    return (0 if proven else 1, dist, ep.name or "")
+
+
+def _discover_via_entry_points(
+    seen_ep: set[str],
+    *,
+    metadata_only: bool = False,
+) -> list[
+    tuple[_ManifestEntry | _EntryPointEntry | None, ExtensionLoadError | None]
+]:
+    """Aelix-additive entry-point discovery (loaded LAST per P-21).
+
+    Issue #91 — IMPORT-FREE. Iterates ``entry_points(group="aelix.extensions")``
+    and, for each endpoint, resolves its ``aelix-plugin.toml`` from installed
+    metadata via
+    :func:`~aelix_coding_agent.extensions.ep_manifest.resolve_entry_point_manifest`.
+    Nothing here imports plugin code; the endpoint's module is imported later,
+    by :func:`_resolve_factory`, AFTER
+    :func:`_enforce_declarative_capability_gates` has seen the manifest.
+
+    Each row is ``(entry, error)`` and BOTH may be set — decision (i) of issue
+    #91: an endpoint whose manifest cannot be proved still LOADS (manifest-less
+    — a missing manifest grants nothing, it only costs the pack its
+    declarative features) and its reason is reported. The single exception is
+    :class:`~aelix_coding_agent.extensions.ep_manifest.EpApiLevelRefusal`,
+    which yields an error and NO entry.
+
+    ``metadata_only`` (the manifest scan): keep only proven
+    :class:`_ManifestEntry` rows; manifest-less endpoints are dropped rather
+    than handed to a caller that must not import plugin code.
+
+    Per-endpoint try/except so one broken installed package never blocks the
+    wave.
+    """
+
+    out: list[
+        tuple[_ManifestEntry | _EntryPointEntry | None, ExtensionLoadError | None]
+    ] = []
     try:
-        eps = importlib.metadata.entry_points(group="aelix.extensions")
+        eps = list(importlib.metadata.entry_points(group=EXTENSIONS_GROUP))
     except Exception as exc:  # noqa: BLE001 — surface but never abort
         out.append(
-            (None, ExtensionLoadError(path="entry_points:aelix.extensions", error=str(exc)))
+            (
+                None,
+                ExtensionLoadError(
+                    path=f"entry_points:{EXTENSIONS_GROUP}", error=str(exc)
+                ),
+            )
         )
         return out
+
+    rows: list[
+        tuple[EntryPoint, EpResolution | None, ExtensionLoadError | None]
+    ] = []
     for ep in eps:
-        key = f"{ep.name}={ep.value}"
-        if key in seen_ep:
-            continue
-        seen_ep.add(key)
         try:
-            factory = ep.load()
-        except Exception as exc:  # noqa: BLE001
-            out.append(
-                (None, ExtensionLoadError(path=f"entry_point:{ep.name}", error=str(exc)))
+            resolution: EpResolution | None = resolve_entry_point_manifest(ep)
+        except EpApiLevelRefusal as exc:
+            # The ONE refusal (issue #91 decision i). The pack declares it
+            # cannot run on this host, so it is not loaded at all — the single
+            # place #91 knowingly breaks a pack that loads today.
+            rows.append(
+                (
+                    ep,
+                    None,
+                    ExtensionLoadError(
+                        path=f"entry_point:{ep.name}", error=str(exc)
+                    ),
+                )
             )
             continue
-        # Pi parity: an endpoint can resolve either to a bare ``setup`` callable
-        # or to a class instance / class with __call__(self, aelix). Wrap class
-        # objects (uninstantiated) so the inner loader handles them uniformly.
-        if isinstance(factory, type):
-            try:
-                factory = factory()
-            except Exception as exc:  # noqa: BLE001
-                out.append(
-                    (None, ExtensionLoadError(path=f"entry_point:{ep.name}", error=str(exc)))
-                )
-                continue
-        if not callable(factory):
-            out.append(
+        except Exception as exc:  # noqa: BLE001 — a broken dist is not fatal
+            rows.append(
                 (
+                    ep,
                     None,
                     ExtensionLoadError(
                         path=f"entry_point:{ep.name}",
                         error=(
-                            f"entry point {ep.name!r} resolved to "
-                            f"non-callable {type(factory).__name__}; "
-                            "expected a factory function or class."
+                            f"cannot resolve the manifest of entry point "
+                            f"{ep.name!r}: {exc}"
                         ),
                     ),
                 )
             )
             continue
-        out.append((factory, None))
+        rows.append((ep, resolution, None))
+
+    rows.sort(key=lambda row: _ep_sort_key(row[0], row[1]))
+
+    for ep, resolution, failure in rows:
+        if failure is not None or resolution is None:
+            out.append((None, failure))
+            continue
+        manifest = resolution.manifest
+        pkg_dir = resolution.pkg_dir
+        carrier = _entry_point_carrier(ep, resolution.reason)
+        # Endpoints dedupe on their module:attr TARGET, not on ``name=value``:
+        # two distributions may declare different endpoint names for the same
+        # factory, and loading it twice runs ``setup()`` twice against the
+        # same runtime.
+        #
+        # Adversarial review F4 — this key used to be applied to the
+        # MANIFEST-LESS branch only, while BOUND entries deduped solely on
+        # ``pkg_dir`` via ``_push_entry`` and never entered ``seen_ep``. The
+        # comment therefore promised more than the code delivered: a second
+        # endpoint aimed at an already-BOUND ``module:attr`` that resolved
+        # manifest-less loaded the same factory a second time. MEASURED before
+        # the fix, victim BOUND + thief endpoint at the same target:
+        # ``victim.setup_ran = 2``. No privilege was gained (the thief still
+        # bound no manifest), but the stated invariant was not the delivered
+        # one. Applying the key to BOTH branches makes it so, and the
+        # ``(RECORD-owns-head, dist, name)`` sort guarantees the PROVEN
+        # endpoint is the one that wins.
+        #
+        # ``pkg_dir`` dedup stays as well, and is not redundant: it is what
+        # catches the SAME pack found by two different TIERS (an endpoint plus
+        # a directory scan), where module:attr alone would not.
+        key = f"{carrier.module}:{carrier.attr}"
+        if key in seen_ep:
+            continue
+        if resolution.bound and manifest is not None and pkg_dir is not None:
+            seen_ep.add(key)
+            out.append(
+                (
+                    _ManifestEntry(
+                        manifest=manifest, pkg_dir=pkg_dir, ep_ref=carrier
+                    ),
+                    None,
+                )
+            )
+            continue
+        if metadata_only:
+            continue
+        seen_ep.add(key)
+        error = None
+        if resolution.outcome is not EpOutcome.ABSENT:
+            # Visible, actionable, and naming the offending absolute path
+            # where there is one (MISPLACED / MALFORMED / FENCED). ABSENT is
+            # the ordinary "this pack ships no manifest" case and stays quiet.
+            error = ExtensionLoadError(
+                path=f"entry_point:{ep.name}",
+                error=(
+                    f"loaded WITHOUT its manifest ({resolution.outcome.value}): "
+                    f"{resolution.reason}. Declarative contributions "
+                    f"(tools/hooks/themes/widgets/MCP servers) are IGNORED for "
+                    f"this pack until the manifest can be proved."
+                ),
+            )
+        out.append((carrier, error))
     return out
+
+
+def _entry_point_carrier(ep: EntryPoint, reason: str) -> _EntryPointEntry:
+    """Freeze the endpoint's factory target into a carrier (no import)."""
+
+    try:
+        module = ep.module
+    except (AttributeError, ValueError):  # pragma: no cover — malformed value
+        module = ""
+    attr = getattr(ep, "attr", None) or ""
+    dist = getattr(getattr(ep, "dist", None), "name", None)
+    return _EntryPointEntry(
+        name=ep.name, module=module, attr=attr, dist=dist, reason=reason
+    )
+
+
+def _factory_from_entry_point(entry: _EntryPointEntry) -> ExtensionFactory:
+    """Resolve a manifest-less endpoint to its factory — the old ``ep.load()``.
+
+    Both of ``ep.load()``'s call shapes are preserved on purpose; losing
+    either is a regression:
+
+    * the attribute is walked DOTTED (``mod:Cls.method`` is a legal entry
+      point value, and ``getattr(module, "Cls.method")`` is not), and
+    * a class OBJECT is instantiated so ``Cls()(api)`` works (D.1.8 — Pi
+      parity: an endpoint may name a class whose instances are callable).
+
+    The import happens HERE, at load time, not at discovery: that is the whole
+    point of issue #91.
+    """
+
+    if not entry.module:
+        raise ValueError(
+            f"entry point {entry.name!r} has no module path; expected "
+            "'module.path:callable'"
+        )
+    obj: Any = importlib.import_module(entry.module)
+    for part in entry.attr.split(".") if entry.attr else ():
+        obj = getattr(obj, part)
+    if isinstance(obj, type):
+        obj = obj()
+    if not callable(obj):
+        raise TypeError(
+            f"entry point {entry.name!r} resolved to non-callable "
+            f"{type(obj).__name__}; expected a factory function or class."
+        )
+    return obj
 
 
 # === Internal helpers ===
@@ -1229,13 +1583,15 @@ def _enforce_declarative_capability_gates(manifest: PluginManifest) -> None:
 
     * It holds on the MANIFEST discovery tiers, which is where a
       ``_ManifestEntry`` comes from.
-    * It does NOT hold on the ``entry_points(group="aelix.extensions")``
-      tier: :func:`_discover_via_entry_points` calls ``ep.load()`` during
-      discovery — importing the plugin BEFORE any gate — and yields a bare
-      factory, so ``manifest`` is ``None`` and this function never runs for
-      it, even when the installed dist ships an ``aelix-plugin.toml``. That
-      is a discovery gap, tracked separately; whoever closes it must read
-      the manifest before ``ep.load()``, not after.
+    * Since issue #91 it holds on the ``entry_points(group="aelix.extensions")``
+      tier too, for the same reason and by the same route:
+      :func:`_discover_via_entry_points` no longer calls ``ep.load()`` —
+      it resolves the endpoint's manifest from installed METADATA and yields a
+      ``_ManifestEntry``, so the gate above runs BEFORE the endpoint module is
+      imported. An endpoint whose manifest cannot be PROVED degrades to
+      manifest-less loading, which grants nothing: ``capabilities.*`` is
+      consumed only here and in the manifest's own validator, so "no manifest"
+      costs a pack its declarative features and cannot buy it any.
     * It does NOT cover ``contributes.mcp_servers``, and cannot: those are
       consumed in ``cli/entry.py`` BEFORE the first harness build, so no
       load-time gate is reachable in time. That family is gated at its own
@@ -1251,6 +1607,16 @@ def _enforce_declarative_capability_gates(manifest: PluginManifest) -> None:
     The message text and exception type are USER-FACING and asserted by
     tests: they must stay byte-identical. Widget gate is checked first,
     preserving the pre-existing precedence when a manifest trips both.
+
+    LANDMINE — co-evolution with :func:`_is_lazy_eligible` (~900 lines up).
+    Every ``contributes.*`` family gated HERE must ALSO be listed there as a
+    reason to load EAGERLY. A gated family that stays lazy-eligible moves its
+    refusal out of load time and into mid-session command dispatch, i.e. the
+    gate silently relocates. The two lists are far apart and neither reads the
+    other, so the invariant is pinned by
+    ``tests/extensions/test_ep_wiring.py::test_every_gated_contributes_family_is_also_eager``,
+    which parses both function bodies and fails when one grows a family the
+    other lacks.
     """
 
     # Issue #21 tui_widgets (ADR-0182): a declared widget's ``factory`` is
@@ -1271,7 +1637,7 @@ def _enforce_declarative_capability_gates(manifest: PluginManifest) -> None:
 
 
 async def _resolve_factory(
-    entry: str | Path | ExtensionFactory | _ManifestEntry,
+    entry: str | Path | ExtensionFactory | _ManifestEntry | _EntryPointEntry,
     *,
     cwd: Path | None,
 ) -> tuple[ExtensionFactory, str, PluginManifest | None]:
@@ -1282,14 +1648,37 @@ async def _resolve_factory(
     Legacy entry types (callable / Path / str) carry ``manifest=None``;
     only the :class:`_ManifestEntry` branch threads a real manifest
     through.
+
+    Issue #91 adds the :class:`_EntryPointEntry` branch — the import that
+    ``_discover_via_entry_points`` used to perform at DISCOVERY time now
+    happens here, in the same phase as every other entry type.
     """
 
     # Sprint 6h₉b §C — manifest-discovered plugin: resolve
     # ``[plugin.entry] python = "module:callable"`` via
     # :func:`_factory_from_module` (colon-form supported below).
     if isinstance(entry, _ManifestEntry):
+        # Declarative trust gates (tui_widgets/ui_tui_trusted — ADR-0182;
+        # hooks/shell_exec — ADR-0102). Fire FIRST, before anything below can
+        # import the entry module, so a denied plugin executes NO code at all
+        # (data before code — review MEDIUM: the widget gate originally sat in
+        # _invoke_factory, after the import, and issue #91 found the hooks gate
+        # still sitting there). Hoisted to the top of the branch in #91 because
+        # the entry-point fallback below is another way to reach an import.
+        _enforce_declarative_capability_gates(entry.manifest)
         py_entry = entry.manifest.entry.python
         if py_entry is None:
+            if entry.ep_ref is not None:
+                # Issue #91: a manifest proved from an installed
+                # ``aelix.extensions`` endpoint whose OWN declaration names the
+                # callable. Before #91 the endpoint was the entry and the
+                # manifest was never read; routing it through _ManifestEntry
+                # must not make such a pack unloadable.
+                return (
+                    _factory_from_entry_point(entry.ep_ref),
+                    entry.manifest.plugin.id,
+                    entry.manifest,
+                )
             if entry.manifest.contributes.hooks:
                 # Hooks-only plugin (Tier 4b, Sprint 6h₉e / ADR-0102): no
                 # Python factory to load; return a no-op factory so
@@ -1303,15 +1692,44 @@ async def _resolve_factory(
                 f"any of capabilities.ui_tui_trusted / .ui_descriptor / "
                 f".mcp_serve is True — see Sprint 6h₉a fold-in §A)"
             )
-        # Declarative trust gates (tui_widgets/ui_tui_trusted — ADR-0182;
-        # hooks/shell_exec — ADR-0102). Fire HERE, before
-        # ``_factory_from_module`` imports the entry module, so a denied
-        # plugin executes NO code at all (data before code — review MEDIUM:
-        # the widget gate originally sat in _invoke_factory, after the import,
-        # and issue #91 found the hooks gate still sitting there).
-        _enforce_declarative_capability_gates(entry.manifest)
         factory = _factory_from_module(py_entry)
+        if entry.ep_ref is not None and isinstance(factory, type):
+            # Adversarial review F1 — the D.1.8 class carve-out, restored on
+            # the BOUND path. ``ep.load()`` returned the CLASS and the loader
+            # did ``Cls()`` so ``Cls()(api)`` worked; ``_factory_from_module``
+            # has no such carve-out and returns the class itself, whereupon
+            # ``callable(cls)`` is True (so no guard fires) and
+            # ``_invoke_factory`` calls ``Cls(api)``.
+            #
+            # Worse than a flat break, it FORKED ON INSTALL SHAPE, because
+            # only a provable install reaches this branch. MEASURED, one pack,
+            # two shapes, before the fix::
+            #
+            #     wheel    (manifest BOUND)    -> 'Factory() takes no arguments'
+            #     editable (manifest UNPROVEN) -> loads fine
+            #
+            # Scoped to ``ep_ref is not None`` deliberately: this restores what
+            # the ENDPOINT tier did before #91 and leaves the directory tier
+            # exactly as it is, where a class-valued ``[plugin.entry] python``
+            # has always meant ``Cls(api)``. Unifying the two is a follow-up
+            # with its own compat question, not a fold-in here.
+            factory = factory()
+            if not callable(factory):
+                raise TypeError(
+                    f"[plugin.entry] python {py_entry!r} of plugin "
+                    f"{entry.manifest.plugin.id!r} named a class whose "
+                    f"instances are not callable; expected a factory function "
+                    f"or a class with __call__."
+                )
         return factory, entry.manifest.plugin.id, entry.manifest
+
+    # Issue #91 — manifest-LESS installed endpoint. The display name is the
+    # factory's own qualname, exactly as the inline-factory branch below
+    # produced it when ``_discover_via_entry_points`` returned bare factories.
+    if isinstance(entry, _EntryPointEntry):
+        factory = _factory_from_entry_point(entry)
+        display = getattr(factory, "__qualname__", None) or type(factory).__name__
+        return factory, display, None
 
     # Check callable first; the isinstance guard is defensive because Path objects
     # are not callable, but the order matters: str/Path checks must come after so
