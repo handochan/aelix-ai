@@ -86,6 +86,16 @@ anyone's claim to exclusivity over the bare word, including ours.
       Then add the GitHub Actions trusted publisher to each new project so
       `release.yml` keeps working without a token.
 
+      **The placeholders are versioned `0.0.0a0`, an alpha, and that is
+      load-bearing.** Measured against pip 26.0.1 and uv 0.11.14: a *stable*
+      `0.0.0` placeholder outranks the `0.1.0b1` beta, so `pip install aelix`
+      would fetch the empty placeholder for the whole beta period. Yanking it is
+      worse — pip still counts the yanked stable when deciding whether any final
+      release exists, declines to fall back to the pre-release, and the install
+      fails outright. Only a pre-release placeholder steps aside for a
+      pre-release beta. **Do not yank these, and do not "tidy" the version to
+      0.0.0.**
+
 - [ ] **Claim the GitHub organisation `aelix-ai`** (available). There is no API
       for creating an organisation — it is a web-UI action.
       `aelix` itself is held by a German PHP-framework org, dormant since 2017;
