@@ -76,16 +76,93 @@ class PluginEntry(BaseModel):
 
 
 class Capabilities(BaseModel):
+    """Declared capabilities — three ENFORCED, six documentation-only.
+
+    ADR-0203. The nine fields look identical in the TOML and in this class,
+    but they do not mean the same thing, so each carries its enforcement
+    status in ``description``: that string is the ONLY per-flag prose that
+    reaches ``docs/contracts/manifest.schema.json``, i.e. the only place a
+    non-Python consumer (an editor's TOML schema, the web UI, a third-party
+    packer) can learn that ``shell_exec = false`` is a refusal and
+    ``fs_write = false`` is a promise.
+
+    Enforcement is a LOAD-TIME check on declared data, never a sandbox: once
+    ``factory(api)`` runs, a plugin can reach its own (mutable, non-frozen)
+    ``Capabilities`` through ``api`` and self-grant.
+    """
+
     model_config = ConfigDict(extra="forbid")
-    shell_exec: bool = False
-    fs_write: bool = False
-    fs_read_user: bool = False
-    net: bool = False
-    mcp_invoke: bool = False
-    ui_tui_trusted: bool = False
-    ui_descriptor: bool = False
-    ui_web_trusted: bool = False
-    mcp_serve: bool = False
+    shell_exec: bool = Field(
+        default=False,
+        description=(
+            "ENFORCED. Runs subprocesses. Required by [[contributes.hooks]] "
+            "(load refused without it) and by a stdio "
+            "[[contributes.mcp_servers]] (server not started without it)."
+        ),
+    )
+    fs_write: bool = Field(
+        default=False,
+        description=(
+            "DECLARED ONLY — documentation of intent, NOT a sandbox. Writes "
+            "outside the workspace. The host does not restrict file writes; "
+            "a Tier-1 plugin is in-process Python and open() is unrestricted."
+        ),
+    )
+    fs_read_user: bool = Field(
+        default=False,
+        description=(
+            "DECLARED ONLY — documentation of intent, NOT a sandbox. Reads "
+            "user files outside the workspace."
+        ),
+    )
+    net: bool = Field(
+        default=False,
+        description=(
+            "ENFORCED for MCP. Makes network calls. Required by an http/sse "
+            "[[contributes.mcp_servers]] (server not started without it). "
+            "Plain outbound calls from plugin code are not restricted."
+        ),
+    )
+    mcp_invoke: bool = Field(
+        default=False,
+        description=(
+            "DECLARED ONLY — documentation of intent, NOT a sandbox. Calls "
+            "MCP servers the host has already connected. Enforcement "
+            "deferred (ADR-0101)."
+        ),
+    )
+    ui_tui_trusted: bool = Field(
+        default=False,
+        description=(
+            "ENFORCED. Renders in the TUI. Required by "
+            "[[contributes.tui_widgets]]; the load is refused before the "
+            "plugin module is imported."
+        ),
+    )
+    ui_descriptor: bool = Field(
+        default=False,
+        description=(
+            "DECLARED ONLY — documentation of intent, NOT a sandbox. Emits "
+            "UI descriptors. Requires entry.python."
+        ),
+    )
+    ui_web_trusted: bool = Field(
+        default=False,
+        description=(
+            "DECLARED ONLY — documentation of intent, NOT a sandbox. Renders "
+            "in the web UI (Phase 6)."
+        ),
+    )
+    mcp_serve: bool = Field(
+        default=False,
+        description=(
+            "DECLARED ONLY — documentation of intent, NOT a sandbox. The "
+            "plugin EXPOSES ITS OWN MCP server; requires entry.python. This "
+            "is NOT the flag for [[contributes.mcp_servers]], which tells "
+            "the host to connect OUT to someone else's server and is gated "
+            "on shell_exec (stdio) / net (http, sse). See ADR-0203."
+        ),
+    )
 
 
 class Activation(BaseModel):

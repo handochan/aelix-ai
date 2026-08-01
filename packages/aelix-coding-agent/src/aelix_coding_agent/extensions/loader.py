@@ -43,7 +43,7 @@ import os
 import re
 import sys
 import tomllib
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -52,6 +52,7 @@ from typing import Any
 from aelix_agent_core.contracts import (
     AELIX_API_LEVEL,
     LICENSE_WHITELIST,
+    McpServerContrib,
     PluginManifest,
     parse_manifest_toml,
 )
@@ -758,6 +759,12 @@ def scan_extension_manifests(
     Discovery errors (e.g. a malformed manifest) are logged as warnings so a
     plugin whose declared MCP servers were silently skipped is diagnosable;
     the full loader re-reports them properly at load time.
+
+    SECURITY — the returned manifests are UNGATED metadata. Do NOT feed
+    ``manifest.contributes.mcp_servers`` straight to the MCP client: a stdio
+    server is a subprocess spawn and an http/sse server is an outbound
+    connection, both attacker-chosen. Route them through
+    :func:`gate_manifest_mcp_contribs` first (issue #91).
     """
 
     entries, errors = _discover_entries(
@@ -771,6 +778,123 @@ def scan_extension_manifests(
     for err in errors:
         logger.warning("manifest scan: %s: %s", err.path, err.error)
     return [e.manifest for e in entries if isinstance(e, _ManifestEntry)]
+
+
+_MCP_TRANSPORT_CAPABILITY: Mapping[str, str] = {
+    # A stdio server is ``command`` + ``args`` exec'd as a child process with
+    # the host's environment — the SAME primitive ``contributes.hooks`` is
+    # gated on, so it takes the SAME flag.
+    "stdio": "shell_exec",
+    # http/sse spawn nothing; they dial a plugin-chosen URL. Different
+    # primitive, different flag.
+    "http": "net",
+    "sse": "net",
+}
+"""Which ``[capabilities]`` flag each MCP transport requires (issue #91).
+
+Why not ``mcp_serve`` / ``mcp_invoke``, the two flags whose NAMES look like a
+match — the vocabulary is genuinely ambiguous here, so the reasoning is
+recorded rather than assumed:
+
+* ``mcp_serve`` is documented as "plugin runs as MCP server" (ADR-0096 §schema)
+  / "exposes its own MCP server" (the ``examples/echo`` template). It is about
+  the plugin BEING a server, and :class:`PluginManifest` proves it: declaring
+  ``mcp_serve`` forces ``[plugin.entry] python``, because the host has to load
+  the plugin's Python to run that server. ``[[contributes.mcp_servers]]`` is
+  the opposite direction — pure config telling the host to connect OUT to
+  someone else's server, no plugin code required. Gating on ``mcp_serve``
+  would force every config-only pack to invent an entry module, i.e. to ship
+  importable code the loader then imports: a security REGRESSION.
+  ADR-0094's tier table does map ``mcp_serve`` to the same T4 row, which is
+  the ambiguity; the schema's entry-point coupling breaks the tie.
+* ``mcp_invoke`` is "plugin calls MCP servers the host has connected" — the
+  plugin-API direction (ADR-0101 defers exactly that enforcement). It says
+  nothing about who may cause a connection to exist.
+
+So the gate follows the primitive actually exercised, not the noun in the
+flag name — which also keeps ONE mental model with the hooks gate: the host
+does not spawn a subprocess for a plugin that did not ask for ``shell_exec``.
+"""
+
+
+def gate_manifest_mcp_contribs(
+    manifests: Iterable[PluginManifest],
+) -> tuple[list[McpServerContrib], list[str], list[str]]:
+    """Split manifest-declared MCP servers into allowed / notices / refusals.
+
+    Issue #91. ``contributes.mcp_servers`` is consumed at CLI startup, before
+    the first harness build — so :func:`_enforce_declarative_capability_gates`
+    (a LOAD-time gate) structurally cannot reach it, and until this function
+    existed the family had NO gate at all: a manifest with no ``[capabilities]``
+    table and no ``[plugin.entry] python`` — the most auditable-looking pack
+    it is possible to write — got ``command``/``args`` exec'd with
+    ``{**os.environ, **env}`` on the next start, the only trace a benign MCP
+    connect warning. Measured, not theorised.
+
+    The refusal is returned rather than raised: one denied server must not
+    abort the others, matching :meth:`McpClientManager.connect_all`'s
+    one-bad-server-never-aborts-the-rest contract.
+
+    BOTH outcomes are reported, and the symmetry is deliberate. A gate that
+    only speaks when it refuses makes the ALLOW path invisible, and the allow
+    path is where the damage is: capabilities are per-manifest, not per-family,
+    so a pack the user installed for its ``tool_call`` hook — a use that
+    genuinely justifies ``shell_exec`` — gets a stdio ``[[contributes.
+    mcp_servers]]`` spawn in the same manifest for free, unannounced, every
+    start. Nothing else in the product ever shows a user a capability flag
+    (neither ``/extension``, nor the installer, nor the catalog), so this
+    notice is the only place a granted spawn becomes observable. Notices are
+    per-server prose in the same leak-safe shape as refusals.
+
+    Messages name the plugin id, the server name and the transport ONLY.
+    ``McpServerContrib.env`` holds plugin-supplied API tokens and is NEVER
+    interpolated (same leak class as the ``_ManifestEntry`` repr fix). Both
+    identifiers go through ``!r``: ``name`` is a free-form attacker-chosen
+    string, and repr escapes newlines/ANSI so neither message can forge extra
+    terminal lines.
+
+    Returns:
+        ``(allowed, notices, refusals)`` — ``allowed`` preserves the caller's
+        manifest order (which encodes MCP name-collision precedence);
+        ``notices`` is parallel to it, one line per allowed server.
+    """
+
+    allowed: list[McpServerContrib] = []
+    notices: list[str] = []
+    refusals: list[str] = []
+    for manifest in manifests:
+        caps = manifest.capabilities
+        for contrib in manifest.contributes.mcp_servers:
+            required = _MCP_TRANSPORT_CAPABILITY.get(contrib.transport)
+            if required is None:  # pragma: no cover — Literal-constrained
+                refusals.append(
+                    f"plugin {manifest.plugin.id!r} declares MCP server "
+                    f"{contrib.name!r} with unknown transport "
+                    f"{contrib.transport!r}; not started"
+                )
+                continue
+            if getattr(caps, required, False):
+                allowed.append(contrib)
+                notices.append(
+                    f"plugin {manifest.plugin.id!r} starts MCP server "
+                    f"{contrib.name!r} (transport={contrib.transport}, "
+                    f"capabilities.{required}=true)"
+                )
+                continue
+            detail = (
+                "a stdio MCP server is a subprocess the host spawns"
+                if contrib.transport == "stdio"
+                else "an MCP server over "
+                f"{contrib.transport} is an outbound network connection "
+                "the host opens"
+            )
+            refusals.append(
+                f"plugin {manifest.plugin.id!r} declares MCP server "
+                f"{contrib.name!r} (transport={contrib.transport}) but "
+                f"capabilities.{required} is false; {detail}, so it requires "
+                f"{required}=true. Server NOT started."
+            )
+    return allowed, notices, refusals
 
 
 def _discover_in_dir(
@@ -1112,6 +1236,13 @@ def _enforce_declarative_capability_gates(manifest: PluginManifest) -> None:
       it, even when the installed dist ships an ``aelix-plugin.toml``. That
       is a discovery gap, tracked separately; whoever closes it must read
       the manifest before ``ep.load()``, not after.
+    * It does NOT cover ``contributes.mcp_servers``, and cannot: those are
+      consumed in ``cli/entry.py`` BEFORE the first harness build, so no
+      load-time gate is reachable in time. That family is gated at its own
+      seam by :func:`gate_manifest_mcp_contribs`, which returns refusals
+      instead of raising (one denied server must not kill the pack). The
+      asymmetry is deliberate — recorded here so "the gates all live in this
+      function" is not read as "mcp_servers has no gate".
     * It is a LOAD-TIME check on declared data. It is not a sandbox: once
       ``factory(api)`` runs, the plugin can reach its own (mutable,
       non-frozen) :class:`Capabilities` through ``api`` and self-grant.

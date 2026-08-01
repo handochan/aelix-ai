@@ -87,18 +87,42 @@ min_level = 1
 python = "aelix_coding_agent.examples.echo.echo:setup"
 
 # Declared capabilities. Every one defaults to false — declare only what you
-# actually need; some are enforced gates, not documentation. Listing all nine
-# explicitly (as here) is the honest form for a copyable template.
+# actually need. Listing all nine explicitly (as here) is the honest form for
+# a copyable template.
+#
+# READ THIS BEFORE COPYING: these nine identical `= false` lines mean TWO
+# DIFFERENT THINGS. Three are gates the host actually enforces — set them
+# wrong and your contribution is refused, with a printed reason. The other six
+# are documentation of intent: they are NOT a sandbox, and the host does not
+# stop you. A plugin is in-process Python, so `fs_write = false` does not
+# prevent `open(path, "w")` — it only states that you do not intend to.
+# See ADR-0203 for the per-flag table.
 [capabilities]
-shell_exec = false        # runs subprocesses (gates [[contributes.hooks]])
+# --- ENFORCED (the host refuses the contribution if these are false) --------
+shell_exec = false        # runs subprocesses.
+                          #   REQUIRED by [[contributes.hooks]] and by a stdio
+                          #   [[contributes.mcp_servers]] — the host spawns
+                          #   your `command`/`args` for you. Declaring the
+                          #   contribution without this flag = load refused
+                          #   (hooks) / server not started (MCP).
+net = false               # makes network calls.
+                          #   REQUIRED by an http/sse [[contributes.mcp_servers]]
+                          #   — the host dials your `url` for you. It does NOT
+                          #   unlock a stdio server; that one needs shell_exec.
+ui_tui_trusted = false    # renders in the TUI.
+                          #   REQUIRED by [[contributes.tui_widgets]]. Refused
+                          #   BEFORE your module is imported.
+# --- DECLARED ONLY (documentation of intent — NOT a sandbox, not checked) ---
 fs_write = false          # writes outside the workspace
 fs_read_user = false      # reads user files outside the workspace
-net = false               # makes network calls
 mcp_invoke = false        # calls MCP servers the host has connected
-ui_tui_trusted = false    # renders in the TUI (REQUIRED by [[contributes.tui_widgets]])
 ui_descriptor = false     # emits UI descriptors
 ui_web_trusted = false    # renders in the web UI
-mcp_serve = false         # exposes its own MCP server
+mcp_serve = false         # exposes its OWN MCP server (forces [plugin.entry]
+                          #   python). This is NOT the flag for
+                          #   [[contributes.mcp_servers]] — that one tells the
+                          #   host to connect OUT to someone else's server and
+                          #   is gated on shell_exec / net above.
 
 # When the host loads you. At least one trigger is required and `*` is
 # rejected — there is no "always" wildcard.
@@ -144,6 +168,14 @@ description = "Echoes back the provided text."
 #
 # An MCP server the host should connect for you. transport = "stdio" | "http"
 # | "sse"; use command+args for stdio, url for http/sse.
+#
+# CAPABILITY-GATED. transport = "stdio" means the host spawns your `command`
+# as a subprocess on its own machine, so capabilities.shell_exec MUST be true
+# — the SAME flag [[contributes.hooks]] needs. transport = "http"/"sse" means
+# the host opens a connection to your `url`, so capabilities.net MUST be true.
+# The flags above default to FALSE: copy this block without flipping one and
+# your server is never started (the host prints why). `mcp_serve` is NOT the
+# flag for this block.
 # [[contributes.mcp_servers]]
 # name = "filesystem"
 # transport = "stdio"

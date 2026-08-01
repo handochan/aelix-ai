@@ -148,7 +148,7 @@ the same as registering it. What each family actually does at runtime:
 | `contributes.hooks` | **Activated** — each entry registers a subprocess hook. Also forces eager loading. |
 | `contributes.themes` | **Activated** — registered at TUI start and offered in `/settings → Theme` (see [Themes](#themes)). Forces eager loading. |
 | `contributes.tui_widgets` | **Activated** — painted into the chrome at TUI start. Forces eager loading. |
-| `contributes.mcp_servers` | **Activated** — consumed by the MCP client. |
+| `contributes.mcp_servers` | **Activated** — consumed by the MCP client at startup, and **capability-gated**: `transport = "stdio"` requires `capabilities.shell_exec = true` (the host spawns your `command`/`args` as a subprocess — the same flag `contributes.hooks` needs), while `transport = "http"`/`"sse"` requires `capabilities.net = true` (the host opens the connection to your `url`). A server whose flag is false is **not started**, and the host prints why. |
 | `contributes.commands` | **Metadata only** — supplies the *description* for a lazily-activated plugin's command stub in autocomplete. The command itself must still come from `register_command`. |
 | `contributes.tools` | **Declaration only** — it forces the plugin to load eagerly so its tools are visible to the model from startup, but it does not itself create a tool. Register the tool with `register_tool`. |
 | `contributes.descriptors` | **Reserved and inert** — declaring it logs a warning. Emit descriptors at runtime instead (see [Descriptors](#descriptors-runtime-emitted-not-manifest)). |
@@ -313,6 +313,38 @@ extensions you pass explicitly with `-e` still load.
 
 A manifest plugin (`aelix-plugin.toml`) can declare capabilities the host
 activates without imperative registration. Two of the declarative families:
+
+### Capabilities — three are gates, six are documentation
+
+The nine `[capabilities]` flags all default to `false` and all look alike, but
+they do not behave alike. Three are **enforced**: declare the contribution
+without the flag and the host refuses it, with a printed reason.
+
+| flag | status | what it gates |
+|---|---|---|
+| `shell_exec` | **ENFORCED** | `[[contributes.hooks]]` (load refused) and a `transport = "stdio"` `[[contributes.mcp_servers]]` (server not started) |
+| `net` | **ENFORCED** | a `transport = "http"`/`"sse"` `[[contributes.mcp_servers]]` (server not started) |
+| `ui_tui_trusted` | **ENFORCED** | `[[contributes.tui_widgets]]` — refused *before* your module is imported |
+| `fs_write`, `fs_read_user`, `mcp_invoke`, `ui_descriptor`, `ui_web_trusted`, `mcp_serve` | declared only | nothing yet — see below |
+
+The other six are a statement of intent, **not a sandbox**. A plugin is
+in-process Python: `fs_write = false` does not stop `open(path, "w")`, it only
+says you do not mean to. Even for the enforced three the check is on the
+*declaration*, at load time — a plugin that is already running can reach its
+own `Capabilities` and change them.
+
+Two traps worth naming:
+
+- **`mcp_serve` is not the flag for `[[contributes.mcp_servers]]`.**
+  `mcp_serve` means *your plugin is itself an MCP server* and forces
+  `[plugin.entry] python`. `[[contributes.mcp_servers]]` is the opposite —
+  config asking the host to connect **out** to a server, needing no plugin
+  code at all. It is gated on `shell_exec` / `net` per the table above.
+- **`shell_exec` does not unlock an http/sse server**, and `net` does not
+  unlock a stdio one. Different primitives, different flags.
+
+See ADR-0203 for the reasoning and `docs/contracts/manifest.schema.json` for
+the same information machine-readably.
 
 ### Themes
 

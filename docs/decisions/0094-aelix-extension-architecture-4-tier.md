@@ -47,7 +47,7 @@ ABI.
 | T1 | Trusted in-process Python | Pi-parity full extension API | `def extension(api: AelixAPI) -> None` factory function | Folder scan (`~/.aelix/extensions/`, `.aelix/extensions/`) + `[project.entry-points."aelix.extension"]` | "trust the user" (Pi pattern); future capability gating via manifest | In-process (no isolation) | TUI: direct Aelix widget. Web: trusted React slot claim (Phase 6) |
 | T2 | Cross-surface descriptors | Code-free UI contributions | JSON descriptor emit via `ctx.ui.emit_descriptor(kind, namespace, id, payload)` | T1 plugin emits at runtime via `ui:list-modules` synchronous probe OR via `[contributes.descriptors]` declaration in manifest | Same as T1 host (descriptors are static data, no executable) | In-process emit; host renders | **TUI Rich Renderable + Web React/Svelte primitive — same wire format** |
 | T3 | Rich React/Svelte components | Rich interactive Web UI | TS/JS module exporting React/Svelte/Solid component(s), claimed via Web slot manifest entry | Web manifest claim + bundle path (Phase 6 decision) | Phase 6 decision (trusted-only / iframe sandbox / WASM) | Phase 6 decision (in-process / iframe) | Web only (TUI cannot render arbitrary React) |
-| T4 | MCP + subprocess hooks | Universal peer-compatible extension | (a) MCP server (stdio/HTTP/SSE), (b) hook script (stdin JSON / stdout JSON / exit code) | `[contributes.mcp_servers]` in manifest + `[contributes.hooks]` | Subprocess process boundary | Subprocess (process isolation by default) | Both — emits descriptors or tool results consumed by T1/T2 render path |
+| T4 | MCP + subprocess hooks | Universal peer-compatible extension | (a) MCP server (stdio/HTTP/SSE), (b) hook script (stdin JSON / stdout JSON / exit code) | `[contributes.mcp_servers]` in manifest + `[contributes.hooks]` | Subprocess process boundary, **plus a load-time capability gate** (ADR-0203): a stdio MCP server and every hook require `capabilities.shell_exec`, an http/sse MCP server requires `capabilities.net`. **NOT `mcp_serve`** — see ADR-0203 §D2. | Subprocess (process isolation by default) | Both — emits descriptors or tool results consumed by T1/T2 render path |
 
 ## Cross-tier composition
 
@@ -85,6 +85,15 @@ appropriate adapters.
 - Plugins MUST declare which tiers they participate in via the
   manifest `[capabilities]` block (`ui_tui_trusted`, `ui_descriptor`,
   `ui_web_trusted`, `mcp_serve`). See ADR-0096 §3.3.3.
+  > **CORRECTED by ADR-0203 — do not follow this list for T4.**
+  > `mcp_serve` does **NOT** authorize `[[contributes.mcp_servers]]`.
+  > `mcp_serve` means "this plugin **is** an MCP server" and forces
+  > `[plugin.entry] python`; `[[contributes.mcp_servers]]` is pure config
+  > telling the host to connect **out**. Setting `mcp_serve = true` for a
+  > declared MCP server is refused by the runtime gate *and* forces the
+  > pack to ship importable code. The T4 flags actually enforced are
+  > `shell_exec` (a stdio server, and `[[contributes.hooks]]`) and `net`
+  > (an http/sse server).
 
 ## Trust model and process boundary
 
@@ -92,7 +101,12 @@ Phase 5b lock:
 
 - **T1 trusted** = "trust the user" (Pi parity). No isolation in Phase
   5b. The manifest `[capabilities]` block declares intent
-  (declaration-only, no enforcement v1). A workspace trust dialog will
+  (declaration-only, no enforcement v1 — **superseded for three flags by
+  ADR-0203**: `ui_tui_trusted`, `shell_exec` and `net` are now enforced
+  as load-time refusals of `contributes.tui_widgets` /
+  `contributes.hooks` / `contributes.mcp_servers`. The other six remain
+  declaration-only, and enforcement is a check on declared data, not a
+  sandbox). A workspace trust dialog will
   gate loading of project-scoped extensions in Phase 5c per the standard
   VS Code pattern.
 - **T2 descriptors** = code-free. The renderer is host-owned; no
@@ -150,6 +164,9 @@ Pi cited at SHA `734e08edf82ff315bc3d96472a6ebfa69a1d8016`:
   follows Neovim's API_LEVEL pattern.
 - `[capabilities]` declaration — Pi has none ("trust the user"). Aelix
   declares for Phase 6 enforcement; Phase 5b is declaration-only.
+  **ADR-0203 update**: enforcement did not wait for a Phase 6 flag day —
+  it arrived per-family (ADR-0102 hooks, 878004b tui_widgets, ADR-0203
+  mcp_servers), so three of the nine flags are enforced today.
 
 **Pi-faithful elements**:
 
