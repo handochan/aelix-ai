@@ -2032,11 +2032,19 @@ async def _invoke_factory(
     # Defensive second fence for the declarative trust gates (tui_widgets /
     # hooks). The PRIMARY gate lives in _resolve_factory, before the
     # entry-module import — data before code. This one covers manifests that
-    # reach _invoke_factory WITHOUT passing that branch: today that is the
-    # hooks-only ``_noop_factory`` short-circuit (no ``[plugin.entry]
-    # python`` → _resolve_factory returns before its gate call), and it would
-    # cover any future direct caller threading a manifest. Placed before
-    # ``factory(api)`` so a denied plugin's setup() does not run either.
+    # reach _invoke_factory WITHOUT passing that branch — today only a direct
+    # caller threading a manifest in, since every _resolve_factory return is
+    # now downstream of the early gate. Placed before ``factory(api)`` so a
+    # denied plugin's setup() does not run either.
+    #
+    # HISTORY (ADR-0206 §D2): until #91 this fence was load-bearing for a real
+    # route — at 878004b the early gate sat BELOW the ``py_entry is None``
+    # block, so the hooks-only ``_noop_factory`` short-circuit returned without
+    # ever meeting it. #91 hoisted the gate to the top of the branch (for an
+    # unrelated reason: the entry-point fallback is another way to reach an
+    # import), which covers that route twice. The fence is kept anyway —
+    # deleting a fence because today's callers happen not to need it is how the
+    # original defect was introduced.
     if manifest is not None:
         _enforce_declarative_capability_gates(manifest)
 
