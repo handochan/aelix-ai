@@ -197,6 +197,13 @@ description = "Echoes back the provided text."
 # The flags above default to FALSE: copy this block without flipping one and
 # your server is never started (the host prints why). `mcp_serve` is NOT the
 # flag for this block.
+#
+# `env` ADDS variables. Your server starts with the MCP SDK's small default set
+# (HOME, PATH, SHELL, TERM, USER) plus exactly what you list here — the host's
+# environment, including the user's provider API keys, is NOT passed through.
+# So do not expect to read a credential out of the ambient environment: take it
+# as an argument or from a path the user configures, so this manifest shows
+# what your server actually consumes.
 # [[contributes.mcp_servers]]
 # name = "filesystem"
 # transport = "stdio"
