@@ -266,10 +266,34 @@ def test_kernel_has_no_subagent_surface() -> None:
 # already-allowlisted file passes the gate silently. The list is the record of
 # WHY the kernel was opened, and a reason that is not written down is a reason
 # that stops existing — which is the failure mode the RPC sprint spent itself on.
+#
+# ``contracts/manifest.py`` — ADR-0203, the issue #91 capability-gate family.
+# DOCSTRING AND ``Field(description=...)`` ONLY: the nine ``Capabilities`` flags
+# keep their names, types and ``False`` defaults, so the parsed model and every
+# validator are byte-for-byte unchanged (``tests/contracts`` and the schema
+# generator both confirm it — regenerating ``docs/contracts/*.schema.json``
+# rewrites nothing but the new ``description`` keys).
+#
+# The kernel is the only place this text CAN live. Three of the nine flags are
+# now enforced (``shell_exec``, ``net``, ``ui_tui_trusted``) and six remain
+# documentation of intent, but all nine are identical ``= false`` lines in a
+# plugin's TOML — so ``fs_write = false`` reads as a sandbox guarantee it has
+# never made. ``description`` is the ONLY per-flag prose that reaches
+# ``docs/contracts/manifest.schema.json``, i.e. the only channel a non-Python
+# consumer (an editor's TOML schema, the web UI, a third-party packer) has for
+# telling a refusal apart from a promise. Putting it in the product layer would
+# leave the published contract still silent.
+#
+# In scope for the same reason the kernel's own maintenance is: the band rule
+# isolates delegation POLICY from the kernel, and the manifest contract
+# documenting its own enforcement status is not delegation policy. It adds no
+# import, no runtime behaviour and no delegation surface —
+# ``test_kernel_has_no_subagent_surface`` is unaffected and still passes.
 _KERNEL_CHANGE_ALLOWLIST = frozenset(
     {
         "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py",
         "packages/aelix-agent-core/pyproject.toml",
+        "packages/aelix-agent-core/src/aelix_agent_core/contracts/manifest.py",
     }
 )
 

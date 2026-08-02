@@ -43,7 +43,7 @@ import os
 import re
 import sys
 import tomllib
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -52,6 +52,7 @@ from typing import Any
 from aelix_agent_core.contracts import (
     AELIX_API_LEVEL,
     LICENSE_WHITELIST,
+    McpServerContrib,
     PluginManifest,
     parse_manifest_toml,
 )
@@ -156,8 +157,18 @@ async def load_extensions(
         try:
             factory, name, manifest = await _resolve_factory(entry, cwd=cwd)
         except Exception as exc:  # noqa: BLE001 — surface as load error
+            # Issue #91 review: label a manifest entry by its plugin id (what
+            # the sibling handler below already uses) rather than by the
+            # carrier's repr. Both this string and ``error`` are printed to
+            # stderr verbatim by cli/entry.py, so the label must stay short
+            # and must never carry manifest payload.
+            label = (
+                entry.manifest.plugin.id
+                if isinstance(entry, _ManifestEntry)
+                else str(entry)
+            )
             result.errors.append(
-                ExtensionLoadError(path=str(entry), error=str(exc))
+                ExtensionLoadError(path=label, error=str(exc))
             )
             continue
         try:
@@ -748,6 +759,12 @@ def scan_extension_manifests(
     Discovery errors (e.g. a malformed manifest) are logged as warnings so a
     plugin whose declared MCP servers were silently skipped is diagnosable;
     the full loader re-reports them properly at load time.
+
+    SECURITY — the returned manifests are UNGATED metadata. Do NOT feed
+    ``manifest.contributes.mcp_servers`` straight to the MCP client: a stdio
+    server is a subprocess spawn and an http/sse server is an outbound
+    connection, both attacker-chosen. Route them through
+    :func:`gate_manifest_mcp_contribs` first (issue #91).
     """
 
     entries, errors = _discover_entries(
@@ -761,6 +778,123 @@ def scan_extension_manifests(
     for err in errors:
         logger.warning("manifest scan: %s: %s", err.path, err.error)
     return [e.manifest for e in entries if isinstance(e, _ManifestEntry)]
+
+
+_MCP_TRANSPORT_CAPABILITY: Mapping[str, str] = {
+    # A stdio server is ``command`` + ``args`` exec'd as a child process with
+    # the host's environment — the SAME primitive ``contributes.hooks`` is
+    # gated on, so it takes the SAME flag.
+    "stdio": "shell_exec",
+    # http/sse spawn nothing; they dial a plugin-chosen URL. Different
+    # primitive, different flag.
+    "http": "net",
+    "sse": "net",
+}
+"""Which ``[capabilities]`` flag each MCP transport requires (issue #91).
+
+Why not ``mcp_serve`` / ``mcp_invoke``, the two flags whose NAMES look like a
+match — the vocabulary is genuinely ambiguous here, so the reasoning is
+recorded rather than assumed:
+
+* ``mcp_serve`` is documented as "plugin runs as MCP server" (ADR-0096 §schema)
+  / "exposes its own MCP server" (the ``examples/echo`` template). It is about
+  the plugin BEING a server, and :class:`PluginManifest` proves it: declaring
+  ``mcp_serve`` forces ``[plugin.entry] python``, because the host has to load
+  the plugin's Python to run that server. ``[[contributes.mcp_servers]]`` is
+  the opposite direction — pure config telling the host to connect OUT to
+  someone else's server, no plugin code required. Gating on ``mcp_serve``
+  would force every config-only pack to invent an entry module, i.e. to ship
+  importable code the loader then imports: a security REGRESSION.
+  ADR-0094's tier table does map ``mcp_serve`` to the same T4 row, which is
+  the ambiguity; the schema's entry-point coupling breaks the tie.
+* ``mcp_invoke`` is "plugin calls MCP servers the host has connected" — the
+  plugin-API direction (ADR-0101 defers exactly that enforcement). It says
+  nothing about who may cause a connection to exist.
+
+So the gate follows the primitive actually exercised, not the noun in the
+flag name — which also keeps ONE mental model with the hooks gate: the host
+does not spawn a subprocess for a plugin that did not ask for ``shell_exec``.
+"""
+
+
+def gate_manifest_mcp_contribs(
+    manifests: Iterable[PluginManifest],
+) -> tuple[list[McpServerContrib], list[str], list[str]]:
+    """Split manifest-declared MCP servers into allowed / notices / refusals.
+
+    Issue #91. ``contributes.mcp_servers`` is consumed at CLI startup, before
+    the first harness build — so :func:`_enforce_declarative_capability_gates`
+    (a LOAD-time gate) structurally cannot reach it, and until this function
+    existed the family had NO gate at all: a manifest with no ``[capabilities]``
+    table and no ``[plugin.entry] python`` — the most auditable-looking pack
+    it is possible to write — got ``command``/``args`` exec'd with
+    ``{**os.environ, **env}`` on the next start, the only trace a benign MCP
+    connect warning. Measured, not theorised.
+
+    The refusal is returned rather than raised: one denied server must not
+    abort the others, matching :meth:`McpClientManager.connect_all`'s
+    one-bad-server-never-aborts-the-rest contract.
+
+    BOTH outcomes are reported, and the symmetry is deliberate. A gate that
+    only speaks when it refuses makes the ALLOW path invisible, and the allow
+    path is where the damage is: capabilities are per-manifest, not per-family,
+    so a pack the user installed for its ``tool_call`` hook — a use that
+    genuinely justifies ``shell_exec`` — gets a stdio ``[[contributes.
+    mcp_servers]]`` spawn in the same manifest for free, unannounced, every
+    start. Nothing else in the product ever shows a user a capability flag
+    (neither ``/extension``, nor the installer, nor the catalog), so this
+    notice is the only place a granted spawn becomes observable. Notices are
+    per-server prose in the same leak-safe shape as refusals.
+
+    Messages name the plugin id, the server name and the transport ONLY.
+    ``McpServerContrib.env`` holds plugin-supplied API tokens and is NEVER
+    interpolated (same leak class as the ``_ManifestEntry`` repr fix). Both
+    identifiers go through ``!r``: ``name`` is a free-form attacker-chosen
+    string, and repr escapes newlines/ANSI so neither message can forge extra
+    terminal lines.
+
+    Returns:
+        ``(allowed, notices, refusals)`` — ``allowed`` preserves the caller's
+        manifest order (which encodes MCP name-collision precedence);
+        ``notices`` is parallel to it, one line per allowed server.
+    """
+
+    allowed: list[McpServerContrib] = []
+    notices: list[str] = []
+    refusals: list[str] = []
+    for manifest in manifests:
+        caps = manifest.capabilities
+        for contrib in manifest.contributes.mcp_servers:
+            required = _MCP_TRANSPORT_CAPABILITY.get(contrib.transport)
+            if required is None:  # pragma: no cover — Literal-constrained
+                refusals.append(
+                    f"plugin {manifest.plugin.id!r} declares MCP server "
+                    f"{contrib.name!r} with unknown transport "
+                    f"{contrib.transport!r}; not started"
+                )
+                continue
+            if getattr(caps, required, False):
+                allowed.append(contrib)
+                notices.append(
+                    f"plugin {manifest.plugin.id!r} starts MCP server "
+                    f"{contrib.name!r} (transport={contrib.transport}, "
+                    f"capabilities.{required}=true)"
+                )
+                continue
+            detail = (
+                "a stdio MCP server is a subprocess the host spawns"
+                if contrib.transport == "stdio"
+                else "an MCP server over "
+                f"{contrib.transport} is an outbound network connection "
+                "the host opens"
+            )
+            refusals.append(
+                f"plugin {manifest.plugin.id!r} declares MCP server "
+                f"{contrib.name!r} (transport={contrib.transport}) but "
+                f"capabilities.{required} is false; {detail}, so it requires "
+                f"{required}=true. Server NOT started."
+            )
+    return allowed, notices, refusals
 
 
 def _discover_in_dir(
@@ -827,7 +961,7 @@ class ExtensionManifestError(Exception):
     """
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, repr=False)
 class _ManifestEntry:
     """Internal carrier for manifest-discovered extensions (Sprint 6h₉b §B).
 
@@ -836,11 +970,24 @@ class _ManifestEntry:
     factory resolver can use ``[plugin.entry] python = "module:callable"``
     instead of falling back to the directory's ``setup`` convention.
 
+    ``repr`` is REDACTED on purpose (issue #91 review): this object flows
+    into ``str(entry)`` on the load-error path, and the default dataclass
+    repr expands the whole ``PluginManifest`` — including
+    ``contributes.mcp_servers[].env``, which holds plugin-supplied secrets
+    (API tokens). A load warning must never dump a token to stderr or into
+    a pasted bug report, so the repr carries the identity only.
+
     NOT exported.
     """
 
     manifest: PluginManifest
     pkg_dir: Path
+
+    def __repr__(self) -> str:
+        return (
+            f"_ManifestEntry(plugin={self.manifest.plugin.id!r}, "
+            f"pkg_dir={str(self.pkg_dir)!r})"
+        )
 
 
 def _load_manifest_from_dir(pkg_dir: Path) -> PluginManifest | None:
@@ -1052,6 +1199,77 @@ def _noop_factory(api: ExtensionAPI) -> None:
     return None
 
 
+def _enforce_declarative_capability_gates(manifest: PluginManifest) -> None:
+    """Raise when a declared ``contributes.*`` family lacks its capability.
+
+    Issue #91. Every declarative contribution whose payload is *executed*
+    (plugin code in the user's terminal, a subprocess) is gated on an opt-in
+    ``[capabilities]`` flag. The gates are collected HERE, in one function,
+    so the class has exactly one shape and the NEXT ``contributes.*`` family
+    cannot be added with its gate wired into the wrong phase — which is
+    precisely the bug this function closes: ``tui_widgets``/``ui_tui_trusted``
+    had been hoisted ahead of the entry-module import while
+    ``hooks``/``shell_exec`` was left behind in :func:`_invoke_factory`, so a
+    denied hooks plugin had its module imported and its ``setup()`` run before
+    being refused.
+
+    Called from TWO places on purpose (defense in depth):
+
+    * :func:`_resolve_factory`'s ``_ManifestEntry`` branch — BEFORE
+      :func:`_factory_from_module` imports anything, so a denied plugin
+      executes NO code at all (data before code).
+    * :func:`_invoke_factory` — before the factory runs, covering manifests
+      that reach it by a route which skipped entry resolution (the hooks-only
+      ``_noop_factory`` short-circuit does exactly that, and any future
+      direct caller threading a manifest would too) and guarding the wiring
+      step itself.
+
+    SCOPE — what "executes NO code at all" does and does not cover
+    (measured, issue #91 review; do not read the sentence above as absolute):
+
+    * It holds on the MANIFEST discovery tiers, which is where a
+      ``_ManifestEntry`` comes from.
+    * It does NOT hold on the ``entry_points(group="aelix.extensions")``
+      tier: :func:`_discover_via_entry_points` calls ``ep.load()`` during
+      discovery — importing the plugin BEFORE any gate — and yields a bare
+      factory, so ``manifest`` is ``None`` and this function never runs for
+      it, even when the installed dist ships an ``aelix-plugin.toml``. That
+      is a discovery gap, tracked separately; whoever closes it must read
+      the manifest before ``ep.load()``, not after.
+    * It does NOT cover ``contributes.mcp_servers``, and cannot: those are
+      consumed in ``cli/entry.py`` BEFORE the first harness build, so no
+      load-time gate is reachable in time. That family is gated at its own
+      seam by :func:`gate_manifest_mcp_contribs`, which returns refusals
+      instead of raising (one denied server must not kill the pack). The
+      asymmetry is deliberate — recorded here so "the gates all live in this
+      function" is not read as "mcp_servers has no gate".
+    * It is a LOAD-TIME check on declared data. It is not a sandbox: once
+      ``factory(api)`` runs, the plugin can reach its own (mutable,
+      non-frozen) :class:`Capabilities` through ``api`` and self-grant.
+      Post-``setup()`` manifest state is not a trust boundary.
+
+    The message text and exception type are USER-FACING and asserted by
+    tests: they must stay byte-identical. Widget gate is checked first,
+    preserving the pre-existing precedence when a manifest trips both.
+    """
+
+    # Issue #21 tui_widgets (ADR-0182): a declared widget's ``factory`` is
+    # plugin code executed in the user's terminal.
+    if manifest.contributes.tui_widgets and not manifest.capabilities.ui_tui_trusted:
+        raise ExtensionManifestError(
+            f"plugin {manifest.plugin.id!r} declares [[contributes.tui_widgets]] "
+            f"but capabilities.ui_tui_trusted is false; declarative TUI widgets "
+            f"require ui_tui_trusted=true"
+        )
+    # Sprint 6h₉e (Tier 4b, ADR-0102): a declared hook spawns a subprocess.
+    if manifest.contributes.hooks and not manifest.capabilities.shell_exec:
+        raise ExtensionManifestError(
+            f"plugin {manifest.plugin.id!r} declares [[contributes.hooks]] "
+            f"but capabilities.shell_exec is false; subprocess hooks "
+            f"require shell_exec=true"
+        )
+
+
 async def _resolve_factory(
     entry: str | Path | ExtensionFactory | _ManifestEntry,
     *,
@@ -1085,22 +1303,13 @@ async def _resolve_factory(
                 f"any of capabilities.ui_tui_trusted / .ui_descriptor / "
                 f".mcp_serve is True — see Sprint 6h₉a fold-in §A)"
             )
-        # Issue #21 tui_widgets (ADR-0182) — trust gate (v1 declarative),
-        # mirroring the Tier-4b hooks/shell_exec gate: a declared widget's
-        # ``factory`` is plugin code executed in the user's terminal, so
-        # ``capabilities.ui_tui_trusted`` MUST be true. Fires HERE, before
+        # Declarative trust gates (tui_widgets/ui_tui_trusted — ADR-0182;
+        # hooks/shell_exec — ADR-0102). Fire HERE, before
         # ``_factory_from_module`` imports the entry module, so a denied
         # plugin executes NO code at all (data before code — review MEDIUM:
-        # the gate originally sat in _invoke_factory, after the import).
-        if (
-            entry.manifest.contributes.tui_widgets
-            and not entry.manifest.capabilities.ui_tui_trusted
-        ):
-            raise ExtensionManifestError(
-                f"plugin {entry.manifest.plugin.id!r} declares "
-                f"[[contributes.tui_widgets]] but capabilities.ui_tui_trusted "
-                f"is false; declarative TUI widgets require ui_tui_trusted=true"
-            )
+        # the widget gate originally sat in _invoke_factory, after the import,
+        # and issue #91 found the hooks gate still sitting there).
+        _enforce_declarative_capability_gates(entry.manifest)
         factory = _factory_from_module(py_entry)
         return factory, entry.manifest.plugin.id, entry.manifest
 
@@ -1402,21 +1611,16 @@ async def _invoke_factory(
     if extension is None:
         extension = Extension(name=name, manifest=manifest)
 
-    # Issue #21 tui_widgets (ADR-0182) — defensive second fence for the
-    # ui_tui_trusted trust gate. The PRIMARY gate lives in _resolve_factory
-    # (before the entry-module import — data before code); this one covers
-    # direct-factory callers that thread a manifest without going through
-    # entry resolution (load_extension_from_factory-style paths).
-    if (
-        manifest is not None
-        and manifest.contributes.tui_widgets
-        and not manifest.capabilities.ui_tui_trusted
-    ):
-        raise ExtensionManifestError(
-            f"plugin {manifest.plugin.id!r} declares [[contributes.tui_widgets]] "
-            f"but capabilities.ui_tui_trusted is false; declarative TUI widgets "
-            f"require ui_tui_trusted=true"
-        )
+    # Defensive second fence for the declarative trust gates (tui_widgets /
+    # hooks). The PRIMARY gate lives in _resolve_factory, before the
+    # entry-module import — data before code. This one covers manifests that
+    # reach _invoke_factory WITHOUT passing that branch: today that is the
+    # hooks-only ``_noop_factory`` short-circuit (no ``[plugin.entry]
+    # python`` → _resolve_factory returns before its gate call), and it would
+    # cover any future direct caller threading a manifest. Placed before
+    # ``factory(api)`` so a denied plugin's setup() does not run either.
+    if manifest is not None:
+        _enforce_declarative_capability_gates(manifest)
 
     api = ExtensionAPI(extension, runtime)
     result: Any = factory(api)
@@ -1438,6 +1642,21 @@ async def _invoke_factory(
         )
 
         # Trust gate (v1 declarative): capabilities.shell_exec MUST be true.
+        # THIRD fence, kept deliberately (issue #91) even though
+        # _enforce_declarative_capability_gates already ran twice above: it is
+        # the last statement before the wiring loop, so it is the only copy
+        # that sees the manifest as it stands AFTER ``factory(api)`` — a
+        # plugin declaring no hooks passes both earlier gates and can append a
+        # hook contrib from setup(); this catches that.
+        #
+        # It is NOT a trust boundary, and this comment must not claim to be
+        # one (measured, issue #91 review): ``Capabilities`` is a non-frozen
+        # pydantic model reachable through the same ``api``, so a setup() that
+        # ALSO flips ``shell_exec = True`` passes all three fences and wires
+        # its hook. Stopping that needs a snapshot of the pre-setup() manifest
+        # (or a frozen ``Contributes``), which is a separate change. What this
+        # line buys is the naive half, for one attribute read on a path that
+        # already spawns subprocesses.
         if not manifest.capabilities.shell_exec:
             raise ExtensionManifestError(
                 f"plugin {manifest.plugin.id!r} declares [[contributes.hooks]] "

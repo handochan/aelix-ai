@@ -65,6 +65,7 @@ from aelix_coding_agent.builtin.permission_mode import PermissionMode, Permissio
 from aelix_coding_agent.core.runnable_models import is_runnable, unsupported_message
 from aelix_coding_agent.extensions.loader import (
     discover_and_load_extensions,
+    gate_manifest_mcp_contribs,
     scan_extension_manifests,
 )
 from aelix_coding_agent.mcp import McpClientManager
@@ -1859,11 +1860,29 @@ async def _async_main(argv: list[str]) -> int:
     # reversing makes the HIGHER-priority tier (project-local) win a
     # manifest-vs-manifest name collision, while .aelix/mcp.json (appended
     # after) still beats every manifest.
-    _manifest_mcp = [
-        contrib
-        for manifest in reversed(_scanned_manifests)
-        for contrib in manifest.contributes.mcp_servers
-    ]
+    #
+    # Issue #91 capability gate: a manifest MCP server is EXECUTION —
+    # transport=stdio exec's ``command``/``args`` as a child process with the
+    # host environment, http/sse dials a plugin-chosen URL — so it is refused
+    # unless the manifest opted in (stdio → capabilities.shell_exec, the same
+    # flag [[contributes.hooks]] needs; http/sse → capabilities.net). The gate
+    # MUST stay on this side of ``McpClientManager``: refusing after the
+    # connect attempt would be refusing after the spawn. Refusals are printed
+    # (never swallowed) and name only the plugin id + server name — ``env``
+    # holds user tokens and is never echoed.
+    #
+    # The ALLOW path is printed too. Capabilities are per-manifest, so a pack
+    # granted shell_exec for its hook also gets a stdio MCP spawn from the
+    # same manifest for free; no other surface in the product ever shows a
+    # user a capability flag, so this notice is the only place that spawn
+    # becomes observable.
+    _manifest_mcp, _mcp_notices, _mcp_refusals = gate_manifest_mcp_contribs(
+        reversed(_scanned_manifests)
+    )
+    for _notice in _mcp_notices:
+        print(f"Notice: {_notice}", file=sys.stderr)
+    for _refusal in _mcp_refusals:
+        print(f"Warning: MCP server refused: {_refusal}", file=sys.stderr)
     if _manifest_mcp:
         mcp_contribs = _manifest_mcp + mcp_contribs
     mcp_manager: McpClientManager | None = None
