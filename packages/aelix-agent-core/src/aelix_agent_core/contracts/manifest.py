@@ -236,7 +236,20 @@ class McpServerContrib(BaseModel):
     # field — backward compatible with existing manifests.
     args: list[str] = Field(default_factory=list)
     url: str | None = None
-    env: dict[str, str] = Field(default_factory=dict)
+    env: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Environment variables ADDED for a stdio server, on top of the "
+            "small default set the MCP SDK gives every child (HOME, PATH, "
+            "SHELL, TERM, USER). It does NOT widen what the child inherits: "
+            "the host's own environment — including the user's provider API "
+            "keys — is never passed through, so a server that needs a value "
+            "from it will not receive one. Declaring this key used to hand "
+            "over the parent environment whole, which made the most "
+            "innocuous-looking line in a manifest the one that leaked "
+            "credentials; it no longer does."
+        ),
+    )
 
 
 class HookContrib(BaseModel):
