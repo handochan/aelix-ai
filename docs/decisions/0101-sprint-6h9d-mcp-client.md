@@ -173,7 +173,7 @@ Per Sprint 6h₉d scope (§1.4 of the binding spec):
 | subprocess hooks (Tier 4b) | Sprint 6h₉e | split per user decision |
 | aelix-server | Sprint 6h₉f | Phase 5b-foundation #6 |
 | MCP server auth (OAuth flow) | Phase 6 | header/token passthrough only |
-| Capability enforcement (`mcp_invoke`) | Phase 6 | declaration-only (ADR-0096) |
+| Capability enforcement (`mcp_invoke`) | Phase 6 | declaration-only (ADR-0096) — **`mcp_invoke` only.** The *other* direction shipped: since ADR-0205 a manifest-declared server is refused unless `capabilities.shell_exec` (stdio) / `capabilities.net` (http, sse) is true, gated in `cli/entry.py` before `McpClientManager` is built. `mcp_invoke` — a plugin *calling* an already-connected server — is still unenforced. |
 
 ## McpServerContrib v2 note
 
