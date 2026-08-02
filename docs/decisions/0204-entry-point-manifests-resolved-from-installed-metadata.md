@@ -10,9 +10,10 @@ corrected there), **ADR-0028 §"entry_points"** (its "each endpoint's
 "`ep.name=ep.value` string key" dedup rule are both replaced).
 Relates: ADR-0096 (manifest v1), ADR-0102 (Tier-4b subprocess hooks),
 ADR-0182 (`ui_tui_trusted`), ADR-0200 (marketplace catalog + installer — this
-ADR closes the announcement gate that one recorded), ADR-0203 (manifest
+ADR closes the announcement gate that one recorded), ADR-0205 (manifest
 capability gates are enforced — this is item ①/②/③/⑤ of its "#91 must
-inherit" list). GitHub #91.
+inherit" list), ADR-0206 (`878004b`, the gate-ordering fix this change inherits
+and extends to the entry-point tier). GitHub #91.
 
 ## The problem
 
@@ -28,8 +29,8 @@ calling `ep.load()` **during discovery**. Two consequences, both measured:
    nothing. ADR-0200 recorded the consequence: *"마켓플레이스는 #91 착지 전까지
    '동작함'으로 공지 금지."*
 2. **`ep.load()` is an import.** It ran the pack's module-level code before any
-   gate had seen a byte of its manifest — the same defect 878004b had just
-   closed one tier up, where a `[[contributes.hooks]]` pack with
+   gate had seen a byte of its manifest — the same defect `878004b` (ADR-0206)
+   had just closed one tier up, where a `[[contributes.hooks]]` pack with
    `shell_exec = false` was imported and only then refused. Fixing (1) by
    reading the manifest *after* `ep.load()` would have reintroduced it.
 
@@ -178,22 +179,118 @@ interpolates `input_value=`, i.e. the entire parsed manifest dict including
 (`include_input=False`) on **both** tiers; location and message are kept, so
 the error did not get vaguer.
 
-**Honest limits.** The scan runs once at CLI startup and MCP connects before
-the first harness build, so a newly installed pack's MCP servers still need a
-process restart; themes and widgets do pick up `/reload`. `pip install -e`
-cannot be proved from metadata, so an author's own pack loads manifest-less
-and says so on every start — the population that pays for strictness here is
-authors, not published packs (measured: the official catalog ships
-`extensions: []` and no `pyproject.toml` anywhere declares the group, so the
-installed base is zero).
+## What shipped, and the gate it passed
 
-**Deliberately left open.** ADR-0203 item ④ — the **trust asymmetry** — is not
-decided here. The directory tier is gated by Project Trust; the entry-point
-tier is not, which makes it the only tier whose manifest MCP servers can be
-spawned from an untrusted directory. #91 does not widen that gap (an installed
-pack is installed by the user, not supplied by a repository), but it does make
-the tier carry manifests for the first time, so the question is now live and
-needs its own owner decision.
+Implemented and verified. Every number below was measured, not projected.
+
+- **`extensions/ep_manifest.py`** (+596) plus loader/scan rewiring. The six
+  outcomes, the fence, the `aelix.manifests` remedy and the D5 messages are all
+  live.
+- **Real `pip install`, not only fixtures.** Ten pack shapes were built as
+  genuine wheels by **two** PEP-517 backends (hatchling, setuptools) and
+  installed by **both** installer dialects `cli/extension_install.py` can choose
+  (`python -m pip install`, `uv pip install --python`) into throwaway venvs.
+  Outcomes were byte-identical across the two dialects.
+  - A hatchling wheel **binds**; its declared **tool, command, theme and MCP
+    server all reach the runtime**, and the MCP gate emits its allow-notice.
+  - `pkg_dir == site-packages root` printed **False** for every bound pack.
+  - **Nothing is imported during discovery**: the import-marker set is empty
+    after both `resolve_entry_point_manifest` and `scan_extension_manifests`,
+    and non-empty (27 markers across 9 packs) only after the load — so the
+    absence assertions are not vacuous.
+  - A `contributes.hooks` pack with `shell_exec = false` is **refused with its
+    module never imported** (zero markers), while its byte-identical
+    `shell_exec = true` twin loads and wires `handlers=['tool_call']` — the gate
+    discriminates, it is not a load failure in disguise.
+  - `pip install -e` is `UNPROVEN` with a visible, actionable error in **both**
+    src and flat layouts — confirming D1's refutation reaches the metadata floor
+    and degrades rather than binds.
+  - `FENCED` and `MISPLACED` reproduce from real wheels with the same messages
+    and the same named absolute paths as the fixtures.
+- **Gate:** pytest **7702 pass / 1 skip** (full suite, 372s) · ruff clean ·
+  pyright 8 pre-existing `scripts/pyright_spike.py` errors only (0 new).
+
+## Open — deliberately not done, and what needs an owner decision
+
+### ① Trust asymmetry — OWNER DECISION, and it gates the marketplace announcement
+
+The directory tier is gated by Project Trust; the entry-point tier is not, which
+makes it the only tier whose manifest MCP servers can be spawned from an
+untrusted directory.
+
+**Frame this accurately: it is a standing decision to ratify or reverse, not an
+unnoticed hole.** The exclusion is deliberate and documented in the comment at
+`loader.py:703-708` — under an untrusted directory the caller passes
+`no_project_local=True` so the project-local tier's arbitrary `.py` is *"NEVER
+exec_module'd, while the global/explicit/entry_point tiers below still load
+(they are user-chosen, not project-local)"*. ADR-0205 item ④ states the
+author's stance just as plainly: *"Probably correct to leave ungated — it is a
+user-level `pip install`."*
+
+What #91 changes is not the gap but its consequence: the tier now carries
+manifests for the first time, so "ungated" newly means "ungated declarative
+contributions" rather than "ungated factory". #91 does not widen it (an
+installed pack is installed by the user, not supplied by the repository). The
+owner needs to **write the decision down**, either way, before the marketplace
+is announced as working.
+
+### ② A newly installed pack's MCP servers need a process restart
+
+The scan runs once at CLI startup and MCP connects before the first harness
+build. Themes and widgets do pick up `/reload` for free; MCP servers do not.
+Not fixed here — it is a startup-ordering change, not a resolver change.
+
+### ③ setuptools' DEFAULT configuration silently drops the manifest from the wheel
+
+Found by the real-`pip` smoke test; **invisible to every existing test, because
+no existing test builds a wheel.** The fixtures hand `install_dist` a `files=`
+dict and thereby decide for pip what ships. Real `pip wheel` decides that
+itself, and the two backends disagree on the same source tree:
+
+```
+aelix_hatchpack-...whl              aelix_stpack-...whl
+    hatchpack/__init__.py               stpack/__init__.py
+    hatchpack/aelix-plugin.toml  <--    stpack/ext.py
+    hatchpack/ext.py                    (aelix-plugin.toml   ABSENT)
+    hatchpack/themes/midnight.toml      (themes/midnight.toml ABSENT)
+```
+
+A plain `[tool.setuptools.packages.find]` ships **only `*.py`**. Downstream the
+resolver is correct — the installed artifact genuinely has no manifest, so
+`ABSENT` takes the deliberately-quiet branch (`loader.py:1475`). But the user
+experience is: the pack installs, its Python `setup()` runs, its declared tool,
+command, theme and MCP server all vanish, and **nothing anywhere says a word** —
+precisely the silently-inert failure D6 exists to end, arriving through the
+build system instead of through the resolver.
+
+This is a **packaging-template / documentation gap, not a resolver bug**: the
+remedy (`[tool.setuptools.package-data]` naming `aelix-plugin.toml` and
+`themes/*.toml`) binds perfectly. It is nonetheless the single most likely way a
+real author's pack lands half-dead. **Needs its own issue** — an authoring-doc
+section, and possibly a non-quiet diagnostic when a dist declares the
+`aelix.extensions` group but ships no manifest.
+
+### ④ The `aelix.manifests` remedy relocates where theme files must live
+
+A pack using the D6 remedy gets `pkg_dir = <the DATA package>`, because
+`pkg_dir` has one producer (`manifest_path.parent`). Measured: `declpack`
+resolved to `.../site-packages/declpack_data`. That follows the stated contract,
+but it means such a pack must put its `contributes.themes` files under the data
+package, and **nothing documents that consequence.** Doc fix, not a code fix.
+
+### Checked and dismissed — not defects
+
+- **All manifest-less endpoints load under the display name `setup`**
+  (`_resolve_factory` uses the factory's `__qualname__`). Cosmetic only:
+  `Extension.tools`/`.commands` are per-instance and stayed distinct, and
+  `ExtensionRunner` holds a list, not a name-keyed map. INFERRED from reading
+  `03c6470^` (not executed): pre-#91 the `callable(entry)` branch computed the
+  same `__qualname__`, so **#91 did not introduce it**.
+- **`pip install -e` loading manifest-less on every start** is intended, not a
+  gap: metadata cannot prove an editable. The population paying for the
+  strictness is authors, not published packs — measured, the installed base is
+  zero (the official catalog ships `extensions: []` and no `pyproject.toml`
+  anywhere declares the group).
 
 ## Alternatives rejected
 
@@ -204,9 +301,9 @@ needs its own owner decision.
   every `pip install -e` author over a file no previous release read at all,
   and buys no safety: a missing manifest grants nothing (D2).
 * **Read the manifest after `ep.load()`** — reintroduces the exact defect
-  878004b fixed, one tier down. Data before code.
+  `878004b` (ADR-0206) fixed, one tier down. Data before code.
 * **A separate `read_entry_point_manifests()` wired straight into
-  `cli/entry.py`** — ADR-0203 item ① warned this reopens the hole one tier
+  `cli/entry.py`** — ADR-0205 item ① warned this reopens the hole one tier
   below with no failing test to catch it. Endpoint manifests come out of
   `scan_extension_manifests` as `_ManifestEntry`, through the same seam as
   everything else.
