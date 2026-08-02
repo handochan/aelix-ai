@@ -228,7 +228,18 @@ uv run aelix --help      # the real CLI
 ```
 
 Copy `.env.example` to `.env` for live-provider credentials (the credential-free demo
-`python -m aelix` needs none).
+`python -m aelix` needs none). A `.env` is read for **provider credentials, plus six
+provider-configuration names** — the Google Vertex project and location, the Cloudflare
+account and gateway ids, and the OpenRouter default model, each admitted only if its
+VALUE is a plain name. Five of those six are there because they decide which models you
+can see, so Vertex and both Cloudflare providers keep working from a `.env`; the sixth,
+`OPENROUTER_DEFAULT_MODEL`, chooses a model rather than revealing one. (The visibility set
+is those five plus `GOOGLE_CLOUD_API_KEY`, which the credential rule already admits — so a
+Vertex setup that runs on an API key needs nothing from the config list.) aelix loads the
+file before it knows whether it trusts the directory, so a repo you merely cloned cannot
+use one to change aelix's configuration. Everything else — CA bundles, SDK knobs, base
+URLs — belongs in your shell; see
+[ADR-0203](docs/decisions/0203-dotenv-admission-control.md).
 
 ## License & attribution
 

@@ -16,7 +16,13 @@ Gates the arbitrary-code-execution and identity surfaces aelix exposes from an
 Explicit ``-e <path>`` extensions, ``$AELIX_MCP_CONFIG`` / global MCP,
 ``--agent-file`` profiles outside the project, and installed entry-point
 extensions are **USER choices**, not project-local auto-discovery, so they are
-NEVER gated. ``AGENTS.md`` is also NOT gated (pi parity: it is markdown
+NEVER gated. That classification rests on ``$AELIX_MCP_CONFIG`` actually coming
+from the user: a cwd ``.env`` is loaded before this module runs, so it took
+putting ``AELIX_MCP_CONFIG`` on ``load_dotenv``'s ``_DOTENV_LOCKED`` list
+(ADR-0203) — the one branch ``AELIX_DOTENV_ALLOW`` cannot open — to make the
+premise true. NOT the ``^AELIX_`` rule, which sits downstream of both the locked
+branch and the hatch and never runs for this key.
+Before it, a cloned repo could put itself in the ungated tier. ``AGENTS.md`` is also NOT gated (pi parity: it is markdown
 context, not code — ``trust-manager.ts`` does not list it among the
 trust-requiring resources).
 
@@ -42,13 +48,18 @@ wired by the harness and reaches production). It also *implements and tests* the
 ``defaultProjectTrust`` handling inside :func:`resolve_project_trusted`, so the
 orchestrator can follow pi's full order when those inputs are supplied.
 
-Those last two, however, remain **deferred at the production bootstrap**: the
-sole CLI caller (``entry.py`` ``_resolve_project_trust``) does not yet pass
-``extensions=`` or ``default_project_trust=``, so in the shipped CLI the
-``project_trust`` event is never fired and ``defaultProjectTrust`` is always
-treated as ``"ask"``. Wiring them at the call site is a follow-up — it needs the
-user/global extensions loaded BEFORE trust resolution plus a ``SettingsManager``
-source for the default (related to #44).
+Both are WIRED at the production bootstrap: the CLI caller (``entry.py``
+``_resolve_project_trust``) passes ``extensions=trust_vote_extensions`` AND
+``default_project_trust=settings_manager.get_default_project_trust()``.
+
+This paragraph used to say the opposite — that the CLI "does not yet pass"
+either, so ``defaultProjectTrust`` was "always treated as ``ask``". That was
+stale, and it was not a harmless stale comment: it made the ``.env`` →
+``AELIX_SETTINGS_PATH`` → ``defaultProjectTrust: "always"`` self-elevation look
+structurally impossible to anyone auditing by code read, when it in fact
+reproduced end-to-end against the shipped CLI. ``defaultProjectTrust`` is live,
+so whatever chooses the global settings file chooses the trust default with it
+(ADR-0203).
 
 Non-interactive (print/json/rpc) default is **DENY** (pi parity,
 ``project-trust.ts:86-88``): without ``--approve`` and without a persisted
@@ -485,12 +496,12 @@ async def resolve_project_trusted(
     Pi source: ``project-trust.ts:46-96`` ``resolveProjectTrusted``. Issue #5
     (Lane C) *implements and tests* the ``project_trust`` extension event and the
     ``defaultProjectTrust`` setting inside this orchestrator (both were stubbed
-    out in the original Option A+ landing). NOTE: these two steps fire only when
-    the caller threads ``extensions=`` / ``default_project_trust=``; the
-    production CLI bootstrap (``entry.py`` ``_resolve_project_trust``) does not
-    yet pass either, so in the shipped CLI the event step and
-    ``defaultProjectTrust`` remain DEFERRED (call-site wiring is a follow-up —
-    see the module docstring).
+    out in the original Option A+ landing). These two steps fire only when the
+    caller threads ``extensions=`` / ``default_project_trust=`` — and the
+    production CLI bootstrap (``entry.py`` ``_resolve_project_trust``) DOES pass
+    both, so both are live in the shipped CLI. (This note previously claimed
+    they remained deferred; it was stale — see the module docstring and
+    ADR-0203.)
 
     Resolution order (pi-faithful):
 

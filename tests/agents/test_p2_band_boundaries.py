@@ -267,7 +267,7 @@ def test_kernel_has_no_subagent_surface() -> None:
 # WHY the kernel was opened, and a reason that is not written down is a reason
 # that stops existing — which is the failure mode the RPC sprint spent itself on.
 #
-# ``contracts/manifest.py`` — ADR-0203, the issue #91 capability-gate family.
+# ``contracts/manifest.py`` — ADR-0204, the issue #91 capability-gate family.
 # DOCSTRING AND ``Field(description=...)`` ONLY: the nine ``Capabilities`` flags
 # keep their names, types and ``False`` defaults, so the parsed model and every
 # validator are byte-for-byte unchanged (``tests/contracts`` and the schema

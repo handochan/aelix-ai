@@ -494,7 +494,10 @@ def _agents_delegation_enabled(
     ``_global_settings`` and never the merged view). That is a security property,
     not an implementation detail: a merged read would let any cloned repo switch
     delegation on from its own ``.aelix/settings.json`` — the same self-elevation
-    defeat ``get_default_project_trust`` exists to prevent.
+    defeat ``get_default_project_trust`` exists to prevent. It stops a cloned
+    repo's ``.env`` too, but only because ``load_dotenv`` refuses the names in
+    ``_DOTENV_LOCKED`` that decide WHICH file is the global one (ADR-0203);
+    global-scope-only means nothing if the repo picks the file.
 
     No manager (embedders, tests) → ``False``: the conservative direction, and
     the same answer an unset setting gives.
@@ -1827,6 +1830,19 @@ async def _async_main(argv: list[str]) -> int:
     # (``env``) and the user-global config are explicit user choices and are
     # NEVER gated. When dropped in a non-interactive run, print a clear stderr
     # notice (replaces the old post-hoc "loaded N on-disk extensions" warning).
+    #
+    # "explicit user choice" is only true because ``AELIX_MCP_CONFIG`` is on
+    # ``load_dotenv``'s ``_DOTENV_LOCKED`` list (ADR-0203) — the one branch the
+    # ``AELIX_DOTENV_ALLOW`` hatch cannot open. NOT the ``^AELIX_`` rule: that
+    # lives in ``_dotenv_key_allowed``, downstream of both the locked branch and
+    # the hatch, so for this key it never runs — and on its own it is provably
+    # insufficient, because one pasted ``export AELIX_DOTENV_ALLOW=AELIX_MCP_CONFIG``
+    # bypasses it and restored the spawn in full. It was NOT true before: a cwd ``.env`` runs before
+    # this gate exists, so a cloned repo could set ``AELIX_MCP_CONFIG`` itself
+    # and land its server in the one tier that is deliberately never gated —
+    # measured spawning ``sh -c`` at startup, even under ``--no-approve``. The
+    # ungated tier is safe only for as long as the env var behind it really does
+    # come from the user.
     if mcp_contribs and mcp_source == "project" and not project_trusted:
         print(
             "Notice: project-local .aelix/mcp.json servers skipped in an "
