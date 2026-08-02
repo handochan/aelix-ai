@@ -42,7 +42,7 @@ threaded from ``project_trusted``). This tier is NOT: an installed
 distribution is visible to every session in the environment regardless of
 which directory the agent was started in, so it is the only tier whose
 manifest-declared MCP servers can be reached from an untrusted directory.
-ADR-0203 item ④ lists deciding this as a #91 prerequisite; #91 does not
+ADR-0205 item ④ lists deciding this as a #91 prerequisite; #91 does not
 decide it, and says so rather than implying a gate that is not here.
 
 What #91 does NOT change: the population. An installed pack got there because

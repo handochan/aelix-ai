@@ -117,7 +117,7 @@ python = "aelix_coding_agent.examples.echo.echo:setup"
 # are documentation of intent: they are NOT a sandbox, and the host does not
 # stop you. A plugin is in-process Python, so `fs_write = false` does not
 # prevent `open(path, "w")` — it only states that you do not intend to.
-# See ADR-0203 for the per-flag table.
+# See ADR-0205 for the per-flag table.
 [capabilities]
 # --- ENFORCED (the host refuses the contribution if these are false) --------
 shell_exec = false        # runs subprocesses.
