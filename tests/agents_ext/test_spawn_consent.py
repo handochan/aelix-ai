@@ -54,7 +54,7 @@ from aelix_agents.posture import (
     grants_write_authority,
     posture_rank,
 )
-from aelix_agents.print_channel import resolve_child_cwd
+from aelix_agents.print_channel import PrintChannel, resolve_child_cwd
 from aelix_agents.runtime import SubagentHost, _SubagentRuntimeImpl
 from aelix_coding_agent.agents.profile import AgentProfile
 from aelix_coding_agent.builtin.permission_mode import PermissionMode
@@ -1227,7 +1227,12 @@ async def test_agents_run_renders_the_single_task_body_unchanged(
             cwd=lambda: str(tmp_path),
             posture=lambda: PermissionMode.DEFAULT,
             consent_context=lambda: ctx,
-        )
+        ),
+        # Behaviour-preserving: this case answers ``Cancel``, so nothing is ever
+        # spawned and the channel is never reached. Named explicitly because the
+        # runtime's own ``channel`` default was removed — a dead second answer to
+        # "which transport", now that the extension resolves one.
+        channel=PrintChannel(),
     )
 
     result = await runtime.spawn(_declaring(), "review the auth module")

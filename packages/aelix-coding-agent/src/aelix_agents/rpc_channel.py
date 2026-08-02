@@ -417,9 +417,16 @@ class RpcChannel:
                     # envelope's UNCAPPED details field.
                     stderr_max_bytes=STDERR_RING_BYTES,
                     stdout_line_max_bytes=MAX_LINE_BYTES,
-                    # The whole delegation budget, because a cold real child
-                    # costs ~25 s to reach its read loop and the 30 s default
-                    # would make that a coin flip.
+                    # The whole delegation budget. The reason recorded here was
+                    # "a cold real child costs ~25 s to reach its read loop and
+                    # the 30 s default would make that a coin flip"; that
+                    # PREMISE IS FALSE — re-measured at ~1.2 s (see
+                    # ``_run_turn``), so the 30 s default would in fact have
+                    # been ample. The line stays because the correct reason is a
+                    # different one: a send that cannot complete inside the
+                    # delegation's own budget has nothing left to complete into,
+                    # so tying the two together is right at any boot cost, and a
+                    # separate constant would be one more number to keep true.
                     send_timeout_ms=timeout_ms,
                     # pi DISCARDS a `success: false` on prompt/steer/abort, and
                     # aelix ports that faithfully. Nobody is watching this
@@ -623,9 +630,33 @@ class RpcChannel:
         """Hand the child its task and wait for the turn to terminate.
 
         The budget is the WHOLE delegation's, so what is left for the turn is
-        what the spawn did not already spend. A real child's boot is the
-        dominant term (~25 s cold, ~18.6 s of it import time), which is why the
-        remaining budget is recomputed rather than passed through.
+        what the spawn did not already spend.
+
+        THE BOOT COST WAS ~20× OVERSTATED HERE, and the corrected number changes
+        how this method is used. This docstring claimed "~25 s cold, ~18.6 s of
+        it import time"; re-measured on this box against a real
+        ``-m aelix_coding_agent --mode rpc`` child driven by a real
+        ``RpcClient``, three consecutive runs:
+
+            start()                    102 / 102 / 103 ms
+            first serviced command    1219 / 1224 / 1248 ms  (get_state, no model)
+            stop()                     138 / 152 / 526 ms
+
+        So the spawn spends ~1.2 s of the budget, not ~25 s. Recomputing the
+        remaining budget is still right — it is a second of a short delegation —
+        but a caller sizing a timeout around the old figure would over-budget by
+        an order of magnitude. TWO CONSEQUENCES WORTH KNOWING:
+
+        * A ``timeout_ms`` around 1 s is NOT a free "spawn but do not ask"
+          control. ``prompt_and_wait`` writes the command into the child's stdin
+          the moment ``start()`` returns (~102 ms); the child reads it when its
+          loop opens (~1.2 s) and contacts the model even if the parent has
+          already given up. The only STRUCTURALLY free control is a budget small
+          enough that ``remaining_ms`` is ``<= 0`` on the line below, so the
+          prompt is never written.
+        * A cold child is dominated by interpreter import, which is why the
+          figure moves with machine load: the same measurement taken while the
+          box was busy read 3.0 s.
         """
 
         remaining_ms = timeout_ms - int((time.monotonic() - started) * 1000)

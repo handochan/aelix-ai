@@ -378,3 +378,71 @@ def test_root_process_does_have_an_agent_tool(tmp_path: Path) -> None:
     """The discriminating control — without it the test above proves nothing."""
 
     assert "agent" in _run_probe(tmp_path, "0")
+
+
+# === AELIX_SUBAGENT_CHANNEL: a bad value must not start ======================
+
+
+def _run_cli(tmp_path: Path, name: str, **extra_env: str) -> subprocess.CompletedProcess[str]:
+    """The real CLI, one-shot, under ``_run_probe``'s hermetic recipe."""
+
+    home = tmp_path / f"home-{name}"
+    (home / ".config").mkdir(parents=True, exist_ok=True)
+    agent_dir = home / "agent"
+    agent_dir.mkdir(exist_ok=True)
+    work = tmp_path / f"work-{name}"
+    work.mkdir(exist_ok=True)
+    env = {
+        "PATH": "/usr/bin:/bin",
+        "PYTHONPATH": ":".join(str(p) for p in _SRC_DIRS),
+        "HOME": str(home),
+        "XDG_CONFIG_HOME": str(home / ".config"),
+        "AELIX_CODING_AGENT_DIR": str(agent_dir),
+        "PI_OFFLINE": "1",
+        **extra_env,
+    }
+    return subprocess.run(  # noqa: S603 — fixed argv, no shell
+        [sys.executable, "-m", "aelix_coding_agent", "--agents", "-p", "hi"],
+        capture_output=True,
+        text=True,
+        cwd=str(work),
+        env=env,
+        timeout=180,
+    )
+
+
+def test_a_bad_channel_value_refuses_to_start(tmp_path: Path) -> None:
+    """An unrecognised ``AELIX_SUBAGENT_CHANNEL`` ends the process, loudly.
+
+    ASSERTED ON THE STDERR TEXT, NOT ON THE EXIT CODE. This runs under an
+    isolated ``HOME`` with no credentials, so the process exits non-zero anyway
+    — under a silent-fallback mutation the exit code is unchanged and only the
+    MESSAGE tells the two apart.
+
+    The variable name is HARDCODED rather than imported from
+    ``aelix_agents.channel_select``: the name is the user-facing contract, so a
+    rename must redden this test instead of following along. (Product-core may
+    not import that module either — ``test_p2_import_direction`` — but this is a
+    test file, so the reason is the contract, not the band rule.)
+    """
+
+    proc = _run_cli(tmp_path, "bad-channel", AELIX_SUBAGENT_CHANNEL="rpk")
+
+    assert proc.returncode != 0
+    assert "AELIX_SUBAGENT_CHANNEL" in proc.stderr, proc.stderr
+    assert "'rpk'" in proc.stderr, proc.stderr
+    assert "rpc" in proc.stderr, proc.stderr
+
+
+def test_the_control_gets_past_construction(tmp_path: Path) -> None:
+    """THE DISCRIMINATING CONTROL. Without it the test above proves only that an
+    un-credentialed one-shot fails, which it would with any value at all.
+
+    Same command, same hermetic env, ``AELIX_SUBAGENT_CHANNEL`` unset: the run
+    still fails (no credentials), but it must fail somewhere ELSE — nothing in
+    its stderr may name the variable.
+    """
+
+    proc = _run_cli(tmp_path, "no-channel")
+
+    assert "AELIX_SUBAGENT_CHANNEL" not in proc.stderr, proc.stderr

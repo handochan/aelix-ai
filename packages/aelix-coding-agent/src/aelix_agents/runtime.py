@@ -62,7 +62,6 @@ from aelix_agents.consent import SpawnGrant, request_spawn_consent
 from aelix_agents.envelope import declined_result
 from aelix_agents.posture import posture_rank
 from aelix_agents.print_channel import (
-    PrintChannel,
     RunningChild,
     SpawnPlan,
     SubagentChannel,
@@ -296,7 +295,20 @@ class _SubagentRuntimeImpl:
     """
 
     host: SubagentHost
-    channel: SubagentChannel = field(default_factory=PrintChannel)
+    channel: SubagentChannel
+    """REQUIRED, with no default of its own.
+
+    It used to be ``field(default_factory=PrintChannel)``, which was dead —
+    ``extension.py`` is the only production construction and it has always
+    passed ``channel=``. Now that the extension RESOLVES its transport, that
+    default would be a second, silently-wrong answer for any future call site
+    that forgot the argument: a print child under an ``AELIX_SUBAGENT_CHANNEL=rpc``
+    run, reported through an envelope that cannot tell the two apart. Making it
+    required turns that into a ``TypeError`` at the construction site.
+
+    AST-verified across the repo when it was made required: 13 of the 14
+    construction sites already passed ``channel=``; the one that did not
+    (``test_spawn_consent``'s cancel case) answers ``Cancel`` and never spawns."""
     contract_version: int = CONTRACT_VERSION
 
     _children: dict[str, RunningChild] = field(default_factory=dict, init=False)

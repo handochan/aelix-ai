@@ -67,9 +67,9 @@ from aelix_agents.consent import (
 )
 from aelix_agents.panel import PANEL_MIN_CHILDREN, PartialThrottle
 from aelix_agents.posture import child_permission_mode
+from aelix_agents.channel_select import select_channel
 from aelix_agents.print_channel import (
     AGENT_TOOL_NAME,
-    PrintChannel,
     SubagentChannel,
     resolve_child_cwd,
 )
@@ -207,7 +207,23 @@ class AgentsExtension:
     VISIBLE, not usable (``resolve_profile`` still refuses them for the model
     door), but the conservative direction is still the right default."""
 
-    channel: SubagentChannel = field(default_factory=PrintChannel)
+    channel: SubagentChannel | None = None
+    """An EXPLICIT override — the test seam, and the hook the Step 6 product
+    selector fills once its global-scope-only setting exists.
+
+    ``None`` — every production call site today, ``entry.py`` included — means
+    "resolve one in :meth:`__post_init__`". That is where
+    :data:`~aelix_agents.channel_select.CHANNEL_ENV_VAR` is read and where
+    :meth:`_host_model_registry` can be bound, and a ``default_factory`` can see
+    neither."""
+
+    _channel: SubagentChannel = field(init=False, repr=False)
+    """The RESOLVED channel — non-optional, so :meth:`__call__` and
+    ``_SubagentRuntimeImpl`` never have to answer "what if it is ``None``".
+
+    ``repr=False`` is not cosmetic: without it the resolved channel object lands
+    in this dataclass's generated ``repr``, which is the string every
+    ``Warning: aelix-agents …`` and every test failure renders."""
 
     _pending: dict[str, PendingSpawn] = field(default_factory=dict, init=False)
     """``tool_call_id`` → the approved spawn. Popped with a ``None`` default in
@@ -229,12 +245,49 @@ class AgentsExtension:
 
     # ── setup ─────────────────────────────────────────────────────
 
+    def __post_init__(self) -> None:
+        """Resolve the transport ONCE, at construction.
+
+        Once per process, because ``entry.py`` constructs this object once and
+        threads it by held reference through every harness rebuild — so the
+        env var is read at the same moment ``[features] agents`` has already
+        been decided, and never again. A bad value raises out of here, out of
+        ``_async_main`` and out of ``main_sync``: a traceback ending in the
+        message, and exit 1. That is ``AELIX_SERVER_PORT``'s shipped shape, and
+        it is what keeps ``cli/entry.py`` untouched by this whole mechanism.
+
+        ``_host_model_registry`` IS A BOUND METHOD, AND THAT IS THE POINT. It
+        resolves ``self._api`` at CALL time, so binding it here — before
+        ``__call__`` has ever set ``_api`` — is safe: it simply answers ``None``
+        until then. It is also the only registry read in the process that
+        survives ``/reload``, because ``bind_model_registry`` re-runs against a
+        fresh ``_ExtensionRuntime`` on every harness rebuild, and a callable
+        that closed over a VALUE would keep answering with the dead one.
+
+        A SIDE EFFECT ACCEPTED DELIBERATELY: passing a real registry wakes
+        ``apply_cost_fallback``, which had never executed in production for
+        EITHER channel — the only production construction was
+        ``field(default_factory=PrintChannel)`` with no arguments, so the
+        function returned at its first line on every delegation and every
+        openrouter / openai-completions delegation has always reported cost 0.
+        Its own docstring calls that the COMMON path. It is not withheld from
+        ``PrintChannel`` to keep the diff small: an asymmetry there would make
+        the two channels incomparable in the smoke, and it is best-effort by
+        construction ("a price is never worth failing a run over").
+        """
+
+        self._channel = (
+            self.channel
+            if self.channel is not None
+            else select_channel(model_registry=self._host_model_registry)
+        )
+
     def __call__(self, aelix: ExtensionAPI) -> None:
         """Extension factory entry point (``ExtensionFactory``)."""
 
         self._api = aelix
         self._progress = SubagentProgressBridge(aelix)
-        self._runtime = _SubagentRuntimeImpl(host=self._host(), channel=self.channel)
+        self._runtime = _SubagentRuntimeImpl(host=self._host(), channel=self._channel)
 
         runtime = aelix.runtime
         try:
