@@ -118,11 +118,63 @@ def _bash_fork_bomb(event: ToolCallHookEvent) -> str | None:
     return None
 
 
+def _guard_key(component: str) -> str:
+    """Fold one path component to the form the sensitive-name sets are keyed in.
+
+    Comparing a raw component against those sets is not enough, because the
+    filesystems Aelix supports resolve several distinct spellings to the same
+    file. Measured against the unfolded check, every one of these was
+    auto-allowed while its canonical spelling was correctly refused::
+
+        .ENV    ".env " (trailing space)    .env::$DATA
+        Id_Rsa    .SSH/AUTHORIZED_KEYS    .AELIX/agents/e.md
+
+    Three foldings, in the order the OS applies them:
+
+    * ``name:stream`` — an NTFS alternate data stream. ``.env::$DATA`` opens
+      the DEFAULT stream of ``.env``, i.e. the file itself.
+    * trailing spaces and dots — Win32 strips them while resolving a name, so
+      ``".env "`` and ``".env."`` both reach ``.env``.
+    * case — NTFS and macOS's default APFS are case-insensitive, so ``.ENV``
+      and ``.env`` are one file.
+
+    THE CASE HALF IS NOT A WINDOWS CONCERN. It reproduces on Linux (the guard
+    is string comparison, so it folds open whatever the host does) and it is
+    live on macOS today, which ``install.sh`` explicitly targets. Issue #108
+    files it under Windows; that triage parks a shipped-platform bypass behind
+    an unshipped-platform roadmap.
+
+    A casefold-only fix would be the worst outcome available: it closes the
+    case family, looks fixed, and silently leaves the trailing-shape and stream
+    families open. All three fold here, or none do.
+
+    Deliberately fail-closed on POSIX, where a colon is a legal filename
+    character: a file genuinely named ``.env:notes`` folds to ``.env`` and gets
+    a prompt it does not strictly need. Extra prompting is the safe direction;
+    a missed sensitive name is not.
+
+    The sensitive-name sets this feeds MUST stay lowercase — see
+    :data:`~aelix_coding_agent.builtin.permission._SENSITIVE_BASENAMES`.
+    """
+
+    key = component.split(":", 1)[0]
+    stripped = key.rstrip(" .")
+    # "." and ".." fold to the empty string. ``normpath`` removes them before
+    # this is reached, but a caller that skips it must not get a key that
+    # silently matches nothing.
+    if stripped:
+        key = stripped
+    return key.casefold()
+
+
 def _write_dotenv(event: ToolCallHookEvent) -> str | None:
     path = _path_from_event(event)
     if not path:
         return None
-    basename = path.rsplit("/", 1)[-1]
+    # Normalise the separator first, exactly like every sibling rule below.
+    # Without it ``C:\proj\.env`` holds no "/" to split on, so the whole path
+    # became the "basename" and no dotenv write spelled that way was refused.
+    basename = _guard_key(path.replace("\\", "/").rsplit("/", 1)[-1])
     if basename == ".env" or basename.startswith(".env."):
         return f"[guardrail] refusing write to dotenv file: {path}"
     return None
