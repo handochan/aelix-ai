@@ -271,6 +271,9 @@ class Settings:
     # Issue #5 — pi ``settings-manager.ts:96`` ``defaultProjectTrust`` (GLOBAL
     # setting only; read GLOBAL-scope, never merged — a project must not be able
     # to self-elevate via its own settings.json). Default applied in the getter.
+    # "GLOBAL scope" is a LOCATION as much as a scope: it holds only while a
+    # repo cannot repoint the global file, which is what ``_DOTENV_LOCKED`` in
+    # ``cli/runtime_bootstrap.py`` enforces (ADR-0203).
     default_project_trust: DefaultProjectTrust | None = None
     # Aelix-original (TUI): hide the post-compaction summary from the transcript.
     # When True, ``/compact`` shows only a terse confirmation line instead of the
@@ -289,6 +292,8 @@ class Settings:
     # only (never merged) for the same self-elevation reason as
     # ``default_project_trust`` above — a cloned repo shipping its own
     # ``.aelix/settings.json`` must not be able to switch a gated capability ON.
+    # Same precondition as above: the repo must also be unable to choose WHICH
+    # file is global (``_DOTENV_LOCKED``, ADR-0203).
     # Defaults applied in the getters.
     features: FeaturesSettings | None = None
 
