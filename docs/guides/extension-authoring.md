@@ -333,7 +333,7 @@ says you do not mean to. Even for the enforced three the check is on the
 *declaration*, at load time — a plugin that is already running can reach its
 own `Capabilities` and change them.
 
-Two traps worth naming:
+Three traps worth naming:
 
 - **`mcp_serve` is not the flag for `[[contributes.mcp_servers]]`.**
   `mcp_serve` means *your plugin is itself an MCP server* and forces
@@ -342,6 +342,16 @@ Two traps worth naming:
   code at all. It is gated on `shell_exec` / `net` per the table above.
 - **`shell_exec` does not unlock an http/sse server**, and `net` does not
   unlock a stdio one. Different primitives, different flags.
+- **`env` on a stdio server ADDS variables — it does not pass the host's
+  environment through.** Your server starts with the MCP SDK's small default
+  set (`HOME`, `PATH`, `SHELL`, `TERM`, `USER`) plus exactly what you declare,
+  and never the user's `ANTHROPIC_API_KEY`, `GITHUB_TOKEN` or anything else
+  they happen to have exported. A server that expects to read a credential out
+  of the ambient environment will not find one, and that is deliberate: take
+  it as an explicit argument, or read it from a path the user configures, so
+  the manifest shows what your server consumes. (Declaring `env` used to hand
+  the child the parent environment whole — which made the most harmless-looking
+  line in a manifest the one that leaked keys.)
 
 See ADR-0205 for the reasoning and `docs/contracts/manifest.schema.json` for
 the same information machine-readably.
