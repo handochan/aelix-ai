@@ -343,7 +343,7 @@ Two traps worth naming:
 - **`shell_exec` does not unlock an http/sse server**, and `net` does not
   unlock a stdio one. Different primitives, different flags.
 
-See ADR-0203 for the reasoning and `docs/contracts/manifest.schema.json` for
+See ADR-0205 for the reasoning and `docs/contracts/manifest.schema.json` for
 the same information machine-readably.
 
 ### Themes

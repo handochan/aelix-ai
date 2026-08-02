@@ -225,7 +225,18 @@ uv run aelix --help      # 실제 CLI
 ```
 
 라이브 프로바이더 자격증명이 필요하면 `.env.example`을 `.env`로 복사하세요(자격증명이
-필요 없는 데모 `python -m aelix`는 아무것도 필요하지 않습니다).
+필요 없는 데모 `python -m aelix`는 아무것도 필요하지 않습니다). `.env`는 **프로바이더
+자격증명과, 프로바이더 설정 이름 6개**만 읽습니다 — Google Vertex의 project·location,
+Cloudflare의 account·gateway id, 그리고 OpenRouter 기본 모델이며, 각각 값 형식까지
+검사한 뒤에만 통과합니다. 이 중 5개가 "어떤 모델이 보이는가"를 결정하기 때문에 Vertex와
+Cloudflare 두 프로바이더는 `.env`만으로 계속 동작합니다. 나머지 하나인
+`OPENROUTER_DEFAULT_MODEL`은 모델을 드러내는 게 아니라 고르는 이름입니다. (가시성을
+결정하는 이름은 그 5개에 `GOOGLE_CLOUD_API_KEY`를 더한 것이고, 후자는 자격증명 규칙이
+이미 통과시킵니다 — 즉 API 키로 도는 Vertex 설정은 설정 목록이 아예 필요 없습니다.)
+aelix는 해당 디렉터리를
+신뢰할지 판단하기 전에 이 파일을 읽으므로, 단순히 clone 한 저장소가 `.env`로 aelix 설정을
+바꿀 수는 없습니다. 그 외의 값(CA 번들, SDK 옵션, base URL 등)은 셸에 두세요.
+[ADR-0203](docs/decisions/0203-dotenv-admission-control.md) 참고.
 
 ## 라이선스와 저작자 표시
 

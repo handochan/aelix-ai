@@ -1,4 +1,4 @@
-# 0203. Manifest capabilities are ENFORCED for three flags — and `contributes.mcp_servers` is one of them
+# 0205. Manifest capabilities are ENFORCED for three flags — and `contributes.mcp_servers` is one of them
 
 Status: Accepted (2026-08-01). Design record landing with the `mcp_servers`
 gate.

@@ -45,7 +45,11 @@ from aelix_agent_core.harness.hooks import (
     ToolCallResult,
 )
 
-from aelix_coding_agent.builtin.guardrail import _BASH_TOOLS, _WRITE_TOOLS
+from aelix_coding_agent.builtin.guardrail import (
+    _BASH_TOOLS,
+    _WRITE_TOOLS,
+    _guard_key,
+)
 from aelix_coding_agent.builtin.permission_mode import (
     MODE_META,
     PermissionMode,
@@ -213,6 +217,10 @@ def _summary(tool_name: str, args: dict[str, Any]) -> str:
 # Security-sensitive file basenames / suffixes that must NEVER be auto-allowed
 # even inside the project root (finding WP-0 #4 — silent persistence / backdoor
 # surfaces). Matched on the resolved path's components.
+#
+# KEYS MUST STAY LOWERCASE, with no trailing space/dot and no ``:`` — lookups go
+# through :func:`~aelix_coding_agent.builtin.guardrail._guard_key`, which folds
+# the candidate to that shape. A mixed-case entry added here would be dead.
 _SENSITIVE_BASENAMES = frozenset(
     {
         ".bashrc",
@@ -267,7 +275,18 @@ def _write_guard_passes(abs_path: str, abs_cwd: str) -> bool:
     if abs_path != abs_cwd and not abs_path.startswith(abs_cwd + os.sep):
         return False
     # Reject security-sensitive targets even inside the tree.
-    components = abs_path.replace("\\", "/").split("/")
+    #
+    # Every component is folded before it is matched (case, trailing space/dot,
+    # NTFS stream suffix) — see ``guardrail._guard_key`` for what each folding
+    # buys and for the measurement that motivated it. Unfolded, this check let
+    # ``.ENV``, ``Id_Rsa``, ``.SSH/AUTHORIZED_KEYS`` and ``.AELIX/agents/e.md``
+    # through while refusing their canonical spellings — and the last of those
+    # is the entry ADR-0197 §(i) names as the HARD PREREQUISITE for bounded
+    # widening, so the fold is load-bearing for delegation containment, not
+    # cosmetic.
+    components = [
+        _guard_key(comp) for comp in abs_path.replace("\\", "/").split("/")
+    ]
     basename = components[-1] if components else ""
     if basename in _SENSITIVE_BASENAMES:
         return False

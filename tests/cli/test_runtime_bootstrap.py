@@ -397,24 +397,30 @@ def test_resolve_model_copilot_catalogued_ids_stay_exact(
     assert "githubcopilot.com" in m.base_url
 
 
+# These two were re-keyed off ``AELIX_TEST_*`` when ``.env`` admission control
+# landed (ADR-0203): ``^AELIX_`` is refused, so the old names made both tests
+# assert on a key the loader had declined to set. The second one in particular
+# then passed VACUOUSLY — "the value did not change" is trivially true when the
+# value was never written. Credential-shaped names keep them exercising the
+# parsing / ``setdefault`` behaviour they were written for.
 def test_load_dotenv_sets_new_keys(tmp_path) -> None:
     envfile = tmp_path / ".env"
-    envfile.write_text('AELIX_TEST_K=hello\n# comment\nAELIX_TEST_Q="quoted"\n\nbadline\n')
+    envfile.write_text('ACME_TEST_API_KEY=hello\n# comment\nACME_TEST_TOKEN="quoted"\n\nbadline\n')
     try:
         load_dotenv(str(envfile))
-        assert os.environ["AELIX_TEST_K"] == "hello"
-        assert os.environ["AELIX_TEST_Q"] == "quoted"  # quotes stripped
+        assert os.environ["ACME_TEST_API_KEY"] == "hello"
+        assert os.environ["ACME_TEST_TOKEN"] == "quoted"  # quotes stripped
     finally:
-        os.environ.pop("AELIX_TEST_K", None)
-        os.environ.pop("AELIX_TEST_Q", None)
+        os.environ.pop("ACME_TEST_API_KEY", None)
+        os.environ.pop("ACME_TEST_TOKEN", None)
 
 
 def test_load_dotenv_does_not_override_existing(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("AELIX_TEST_EXISTING", "real")
+    monkeypatch.setenv("ACME_EXISTING_API_KEY", "real")
     envfile = tmp_path / ".env"
-    envfile.write_text("AELIX_TEST_EXISTING=fromfile\n")
+    envfile.write_text("ACME_EXISTING_API_KEY=fromfile\n")
     load_dotenv(str(envfile))
-    assert os.environ["AELIX_TEST_EXISTING"] == "real"  # setdefault — real env wins
+    assert os.environ["ACME_EXISTING_API_KEY"] == "real"  # setdefault — real env wins
 
 
 def test_load_dotenv_missing_file_is_noop(tmp_path) -> None:

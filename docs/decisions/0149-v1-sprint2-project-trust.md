@@ -49,6 +49,13 @@ All in `packages/aelix-coding-agent` — **zero protected `aelix-agent-core` cha
 
 - Gate **only** auto-discovered `cwd/.aelix/*`; explicit `-e`/`$AELIX_MCP_CONFIG`/entry_points are user
   choices, never gated.
+  - **SUPERSEDED IN PART by [ADR-0203](0203-dotenv-admission-control.md).** Still the behaviour, but
+    "`$AELIX_MCP_CONFIG` is a user choice" was **not true** as written: a cwd `.env` is loaded before
+    this gate exists, so a cloned repo could set that variable itself and land its server in the one
+    tier that is deliberately never gated — measured spawning `sh -c` at startup, including under
+    `--no-approve`. It is a user choice now only because `AELIX_MCP_CONFIG` is on `load_dotenv`'s
+    `_DOTENV_LOCKED` list — the one branch `AELIX_DOTENV_ALLOW` cannot open. Not the `^AELIX_`
+    rule, which the hatch bypasses and which never runs for this key.
 - **AGENTS.md is NOT gated** (pi parity — markdown, not code execution).
 - The `project_trust` extension event + `ctx.is_project_trusted()` (which would touch protected
   `aelix-agent-core`) and `defaultProjectTrust` + `settings.json` suppression (which require first

@@ -78,7 +78,7 @@ class PluginEntry(BaseModel):
 class Capabilities(BaseModel):
     """Declared capabilities — three ENFORCED, six documentation-only.
 
-    ADR-0203. The nine fields look identical in the TOML and in this class,
+    ADR-0205. The nine fields look identical in the TOML and in this class,
     but they do not mean the same thing, so each carries its enforcement
     status in ``description``: that string is the ONLY per-flag prose that
     reaches ``docs/contracts/manifest.schema.json``, i.e. the only place a
@@ -160,7 +160,7 @@ class Capabilities(BaseModel):
             "plugin EXPOSES ITS OWN MCP server; requires entry.python. This "
             "is NOT the flag for [[contributes.mcp_servers]], which tells "
             "the host to connect OUT to someone else's server and is gated "
-            "on shell_exec (stdio) / net (http, sse). See ADR-0203."
+            "on shell_exec (stdio) / net (http, sse). See ADR-0205."
         ),
     )
 
