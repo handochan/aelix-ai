@@ -658,9 +658,17 @@ def _render_agent_profile(profile: AgentProfile) -> list[RenderableType]:
 # grant type is deliberately unreachable from here.
 
 _DELEGATION_UNAVAILABLE = (
-    "Delegation is unavailable. Enable it with [features] agents (/settings) "
-    "or relaunch with --agents."
+    "Delegation is unavailable. Relaunch with --agents, or enable "
+    "[features] agents in /settings and restart aelix."
 )
+"""``--agents`` FIRST, and the restart said out loud.
+
+The previous wording — "Enable it with [features] agents (/settings) or relaunch
+with --agents" — read as though the toggle alone were sufficient, and it is not:
+the flag is consumed once per process when the harness is built, so a user who
+followed the first clause saw the toggle succeed, ran the same command, and got
+this same line again with nothing to tell them why. ``--agents`` leads because it
+is the path that works right now."""
 
 _PROJECT_SCOPE_MARKER = "per-identity confirmation"
 """BACK-COMPAT FALLBACK ONLY. The typed refusal is

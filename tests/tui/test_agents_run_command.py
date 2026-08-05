@@ -234,6 +234,14 @@ async def test_run_without_runtime_degrades(bench: _Bench) -> None:
     assert "[features] agents" in out
     assert "--agents" in out
 
+    # THE SETTINGS CLAUSE MUST NOT READ AS SUFFICIENT ON ITS OWN. The flag is
+    # consumed once per process when the harness is built, so a user who only
+    # toggles ``/settings`` lands back on this exact line with nothing to tell
+    # them why — the journey this wording exists to stop. ``--agents`` therefore
+    # comes first and the restart is stated.
+    assert "restart" in out.lower(), out
+    assert out.index("--agents") < out.index("[features] agents"), out
+
 
 async def test_run_requires_name_and_task(bench: _Bench) -> None:
     runtime = bench.bind(_FakeRuntime(result=_ok_result()))

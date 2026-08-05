@@ -69,7 +69,6 @@ from aelix_agents.panel import PANEL_MIN_CHILDREN, PartialThrottle
 from aelix_agents.posture import child_permission_mode
 from aelix_agents.print_channel import (
     AGENT_TOOL_NAME,
-    PrintChannel,
     SubagentChannel,
     resolve_child_cwd,
 )

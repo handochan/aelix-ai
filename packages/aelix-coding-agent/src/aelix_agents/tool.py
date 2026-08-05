@@ -641,6 +641,13 @@ def _usage_line(result: SubagentResult, *, status: str | None = None) -> str:
         parts.append(f"{usage.input} in / {usage.output} out")
     if usage.cost:
         parts.append(f"${usage.cost:.4f}")
+    # GATED, and not stylistically. ``test_the_p2_argument_shape_is_unchanged``
+    # pins the single-mode footer byte-for-byte against a stub channel whose
+    # result carries no model; an ungated segment breaks it. Gated, it stays
+    # green and every REAL delegation gains the one fact that made a silent
+    # model substitution impossible to notice.
+    if result.model:
+        parts.append(result.model)
     parts.append(f"{result.elapsed_ms / 1000:.1f}s")
     return "[" + " · ".join(parts) + "]"
 

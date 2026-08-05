@@ -685,3 +685,55 @@ def test_result_is_frozen() -> None:
     result = build_result(id="s", profile="p", state=_state(), outcome="ok", exit_code=0)
     with pytest.raises(Exception):  # noqa: B017 — FrozenInstanceError is a dataclass detail
         result.ok = False  # type: ignore[misc]
+
+
+# === Which model the child actually ran (A-5 half 2) ==========================
+
+
+def test_the_envelope_records_the_child_s_model_and_provider() -> None:
+    """The substitution was invisible, which is what made it dangerous.
+
+    A profile that declares no ``model:`` emits no ``--model``, so the child runs
+    the PERSISTED default rather than the parent's run-scope model — a different
+    model at a different price. Nothing in the envelope, the footer or the
+    ``/agents run`` grid named it, so the only way to notice was the bill.
+
+    The reducer already fills these from every ``message_end``; this pins that
+    they survive into the contract object callers actually read.
+    """
+
+    state = _StreamState()
+    state.summary = "done"
+    state.saw_agent_end = True
+    state.provider = "openrouter"
+    state.model = "deepseek/deepseek-v4-flash"
+
+    result = build_result(id="s1", profile="explorer", state=state, exit_code=0)
+
+    assert result.ok
+    assert result.model == "deepseek/deepseek-v4-flash"
+    assert result.provider == "openrouter"
+
+
+def test_the_footer_names_the_model_only_when_there_is_one() -> None:
+    """Gated, because the single-mode footer is pinned byte-for-byte elsewhere.
+
+    A stub-driven result carries no model and its footer must not grow a stray
+    separator; a real delegation must show what it ran on.
+    """
+
+    from aelix_agents.tool import _usage_line
+
+    state = _StreamState()
+    state.summary = "done"
+    state.saw_agent_end = True
+    silent = build_result(id="s1", profile="explorer", state=state, exit_code=0)
+    # The exact single-mode shape, so a stray separator cannot creep in.
+    assert _usage_line(silent) == "[agent explorer · ok · 0.0s]"
+
+    state.provider = "openrouter"
+    state.model = "deepseek/deepseek-v4-flash"
+    named = build_result(id="s1", profile="explorer", state=state, exit_code=0)
+
+    assert "deepseek/deepseek-v4-flash" in _usage_line(named)
+    assert "deepseek/deepseek-v4-flash" not in _usage_line(silent)

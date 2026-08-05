@@ -218,18 +218,29 @@ class AgentProfile:
     starts, so a bogus level is an ERROR here and the profile is rejected."""
 
     role: Literal["leaf", "orchestrator"] = "leaf"
-    """P2/P3 consumer (delegation). Parsed + validated in P1 so the on-disk
-    format never changes shape between phases; nothing reads it yet."""
+    """READ by ``print_channel.build_child_env`` — a ``leaf`` child is spawned
+    with delegation switched off, so it cannot start a third generation.
+
+    NOTE: ``build_rpc_child_argv`` and ``build_child_argv`` both append
+    ``--no-agents`` unconditionally today, so ``orchestrator`` does not yet buy
+    a profile anything. Declaring it is not an error; it is simply not honoured
+    (issue #123's track)."""
 
     output_cap: int = 51200
-    """P2/P3 consumer (spawned-agent output truncation). Validated, not read."""
+    """READ by ``envelope.build_result`` — the byte budget for the summary
+    handed back to the parent, after which it is truncated with a visible
+    marker."""
 
     timeout_ms: int | None = None
-    """P2/P3 consumer (spawned-agent wall clock). Validated, not read."""
+    """READ by both channels as the whole delegation's wall clock. The ``agent``
+    tool additionally bounds a caller-supplied value to
+    ``MIN_TIMEOUT_MS`` (1 000) … ``MAX_TIMEOUT_MS`` (1 800 000)."""
 
     approval_mode: Literal["inherit", "ask", "auto", "deny"] = "inherit"
-    """P2/P3 consumer (permission posture for a spawned agent). Validated, not
-    read."""
+    """READ by ``posture.child_permission_mode`` and by the consent gate: it is
+    how a profile DECLARES that it needs write authority, which is what lets the
+    spawn dialog offer to widen a ``plan`` clamp. It cannot grant that authority
+    on its own — only a human answering the dialog can."""
 
 
 @dataclass(frozen=True)

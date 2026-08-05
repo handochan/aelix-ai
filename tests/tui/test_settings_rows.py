@@ -286,3 +286,43 @@ async def test_skill_commands_help_does_not_claim_skills_are_unconsumed() -> Non
     assert "carrier" not in help_text
     assert "/skill:<name>" in help_text
     assert "#115" in help_text
+
+
+# === The false success (A-3) ==================================================
+
+
+async def test_toggling_delegation_says_it_needs_a_restart() -> None:
+    """THE CONFIRMATION IS WHERE THE LIE WAS.
+
+    ``features_agents`` is persist-only: ``_agents_delegation_enabled`` reads it
+    once per process while the harness is built, and ``/reload`` re-runs that
+    same factory over a closure variable already frozen at ``None``. So the
+    measured user journey was: ``/agents run`` refuses and points at
+    ``/settings`` → the toggle reports ``agent delegation → on`` → the same
+    command refuses again, with nothing anywhere saying why.
+
+    The row's HELP text already said "applies next launch". Help is in the
+    detail panel; the confirmation is what the user reads after acting.
+    """
+
+    sm = SettingsManager.in_memory({})
+    row = _rows(sm)["features_agents"]
+
+    result = apply_setting(row, sm)
+
+    assert result.kind == "ok"
+    assert "restart" in result.message.lower(), result.message
+    # Still says what it did — the note is an addition, not a replacement.
+    assert "agent delegation" in result.message.lower()
+    assert "on" in result.message.lower()
+
+
+async def test_a_row_without_apply_note_gains_no_suffix() -> None:
+    """The note is row-scoped, so a live row's confirmation is untouched."""
+
+    sm = SettingsManager.in_memory({})
+    rows = _rows(sm)
+    live_row = next(r for r in rows.values() if r.kind == "bool" and r.live)
+
+    assert live_row.apply_note is None
+    assert "(" not in apply_setting(live_row, sm).message

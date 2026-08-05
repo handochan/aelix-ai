@@ -1815,6 +1815,28 @@ async def _async_main(argv: list[str]) -> int:
         auth_storage.set_runtime_api_key(model.provider, parsed.api_key)
         # (the auth callback is already wired above — the runtime override now
         # takes precedence in the cascade.)
+        #
+        # ``--api-key`` DOES NOT REACH A DELEGATED CHILD, and the failure is
+        # otherwise unreadable. The override is in-memory in THIS process
+        # (``auth_storage.py``: "NOT persisted to auth.json"), while a child is a
+        # fresh ``-m aelix_coding_agent`` that inherits only the environment. Its
+        # own cascade then falls through to the config resolver, which returns an
+        # unset ``models.json`` placeholder VERBATIM (pi parity), so the child
+        # sends the placeholder NAME as its bearer token and the provider answers
+        # 401 — a provider-side error with nothing pointing at the real cause.
+        #
+        # Deliberately NOT fixed by forwarding the key: argv is world-readable
+        # via ``/proc/<pid>/cmdline``, and ``build_child_argv``'s output is
+        # shell-quoted into the ``/agents show`` dry run for copy-paste. The env
+        # handoff is specified and is the right fix; this warning is what stops
+        # the silent version shipping in the meantime.
+        if agents_ext is not None:
+            print(
+                f"Warning: --api-key is not forwarded to delegated agents "
+                f"({model.provider}); set the provider's environment variable "
+                "instead if you plan to delegate.",
+                file=sys.stderr,
+            )
 
     # MCP servers (Tier 4): connect ONCE here, share the connected tools across
     # every harness rebuild (the tool closures hold live connections, so they

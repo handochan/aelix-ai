@@ -367,6 +367,12 @@ def build_result(
         dropped_lines=state.dropped_lines,
         permission_mode=permission_mode,
         tool_trail=render_tool_trail(state),
+        # What the child ACTUALLY ran on. A profile with no ``model:`` emits no
+        # ``--model``, so the child takes the persisted default rather than the
+        # parent's run-scope model — a different model at a different price, and
+        # until now nothing anywhere named it.
+        model=state.model,
+        provider=state.provider,
     )
 
 

@@ -11,5 +11,6 @@ the numbered docs and [`../decisions/`](../decisions/README.md).)
   environment variables, selecting and switching models.
 - [models-json.md](models-json.md) — `~/.aelix/agent/models.json`: add custom
   providers/models, headers, Bearer auth, and built-in overrides.
+- [agent-profiles.md](agent-profiles.md) — define a sub-agent: the frontmatter keys, where profiles live, and what each one is allowed to do
 - [extension-authoring.md](extension-authoring.md) — write and load an extension
   (tools, slash commands, hooks, flags).
