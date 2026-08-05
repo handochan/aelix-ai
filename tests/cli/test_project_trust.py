@@ -816,40 +816,59 @@ async def test_no_project_local_keeps_entry_points_extension(
     ``no_project_local`` gates tier 1 only; entry_points is the Aelix-additive
     tier 4, loaded LAST, and is an installed/user choice — never project-local.
 
-    UPDATED for issue #91 (the guarantee is unchanged; the shape around it
-    moved). The stub used to be a fake object with a ``.load()`` method, which
-    the loader called during discovery. That call is gone — the loader now
-    reads ``ep.module`` / ``ep.attr`` and imports at LOAD time — so the stub is
-    a real ``EntryPoint`` over a real module. A bare ``EntryPoint`` has no
-    distribution, so nothing proves where its manifest would live: the pack
-    loads WITHOUT a manifest and says so. That notice is why ``result.errors``
-    is no longer empty; it is a report, not a failure, and the property this
-    test exists for — the endpoint tier survives the trust gate — still holds.
+    UPDATED for issue #91 twice. The stub used to be a fake with a ``.load()``
+    method (discovery imported it); that call is gone. Then the provenance gate
+    landed: a bare ``EntryPoint`` has no distribution and is now REFUSED
+    fail-closed, so the endpoint is a GENUINE installed-wheel image in a
+    throwaway ``site/`` declared trusted (a real ``pip install`` target), which
+    is what makes it pass provenance. The property under test is unchanged: an
+    installed endpoint survives the project-trust gate.
     """
 
-    from importlib.metadata import EntryPoint
+    import importlib.metadata
 
     from aelix_coding_agent.extensions import loader as loader_mod
     from aelix_coding_agent.extensions.loader import discover_and_load_extensions
 
+    from tests.extensions.test_ep_manifest import install_dist
+
     cwd = tmp_path / "proj"
     cwd.mkdir()
-    installed = tmp_path / "installed"
-    installed.mkdir()
-    (installed / "overgate_ext.py").write_text(
-        "def setup(aelix):\n"
-        "    aelix.register_flag('from_ep', type='bool', default=True)\n"
+    site_dir = tmp_path / "site"
+    site_dir.mkdir()
+    install_dist(
+        site_dir,
+        "overgatedist",
+        entry_points={"aelix.extensions": {"ext_remote": "overgate_ext:setup"}},
+        files={
+            "overgate_ext.py": (
+                "def setup(aelix):\n"
+                "    aelix.register_flag('from_ep', type='bool', default=True)\n"
+            )
+        },
     )
-    monkeypatch.syspath_prepend(str(installed))
+    monkeypatch.syspath_prepend(str(site_dir))
 
-    eps = [EntryPoint("ext_remote", "overgate_ext:setup", "aelix.extensions")]
-    # Patch the module OBJECT's ``importlib.metadata.entry_points`` (repo
-    # convention: monkeypatch objects, not dotted strings). Restore is
-    # automatic at test teardown.
+    # Scope entry_points to this dir and declare it a trusted site directory
+    # (the endpoint is INSTALLED, not project-local — that is the whole point).
+    real_ep = importlib.metadata.entry_points
+
+    def _scoped(**kwargs: object) -> importlib.metadata.EntryPoints:
+        found = real_ep(**kwargs)  # type: ignore[arg-type]
+        return importlib.metadata.EntryPoints(
+            ep
+            for ep in found
+            if str(
+                getattr(ep, "dist", None) and ep.dist.locate_file("")
+            ).startswith(str(site_dir))
+        )
+
+    monkeypatch.setattr(loader_mod.importlib.metadata, "entry_points", _scoped)
+    _real_env = loader_mod.environment_site_dirs
     monkeypatch.setattr(
-        loader_mod.importlib.metadata,
-        "entry_points",
-        lambda *a, **k: eps,
+        loader_mod,
+        "environment_site_dirs",
+        lambda: _real_env() | frozenset({site_dir.resolve()}),
     )
 
     result = await discover_and_load_extensions(
@@ -859,8 +878,7 @@ async def test_no_project_local_keeps_entry_points_extension(
         no_project_local=True,
     )
 
-    assert [e.path for e in result.errors] == ["entry_point:ext_remote"]
-    assert "loaded WITHOUT its manifest" in result.errors[0].error
+    assert [e.error for e in result.errors] == []
     flags = {f for ext in result.extensions for f in ext.flags}
     assert "from_ep" in flags
 

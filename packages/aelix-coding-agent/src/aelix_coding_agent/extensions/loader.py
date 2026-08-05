@@ -72,6 +72,8 @@ from aelix_coding_agent.extensions.ep_manifest import (
     EpApiLevelRefusal,
     EpOutcome,
     EpResolution,
+    entry_point_provenance,
+    environment_site_dirs,
     redact_manifest_error,
     resolve_entry_point_manifest,
 )
@@ -376,6 +378,7 @@ async def discover_and_load_extensions(
     prepend: list[ExtensionFactory] | None = None,
     no_discovery: bool = False,
     no_project_local: bool = False,
+    trusted_ep_dists: frozenset[str] = frozenset(),
     flag_values: Mapping[str, bool | str] | None = None,
 ) -> LoadExtensionsResult:
     """Pi-parity 3-tier discovery + Aelix-additive entry_points pass.
@@ -446,6 +449,13 @@ async def discover_and_load_extensions(
     This is a FINER gate than ``no_discovery`` (which disables tiers 1, 2, AND
     4): the trust gate must suppress untrusted project-local code WITHOUT
     breaking user-chosen global/explicit/installed extensions.
+
+    ``trusted_ep_dists`` (issue #91 provenance gate, option C): PEP 503 canonical
+    distribution names the operator explicitly vouched for via
+    ``--trust-extension-path``. The entry-point tier REFUSES any
+    ``aelix.extensions`` endpoint whose distribution resolves outside the
+    interpreter's real site directories (a ``git clone`` on ``sys.path``); this
+    set is the escape hatch for the legitimate ``pip install -e .`` developer.
     """
 
     all_entries, errors = _discover_entries(
@@ -455,6 +465,7 @@ async def discover_and_load_extensions(
         prepend=prepend,
         no_discovery=no_discovery,
         no_project_local=no_project_local,
+        trusted_ep_dists=trusted_ep_dists,
     )
     result = await load_extensions(all_entries, cwd=cwd, flag_values=flag_values)
     # Splice discovery-time errors in front of loader-time errors so the
@@ -633,6 +644,7 @@ def _discover_entries(
     prepend: list[ExtensionFactory] | None = None,
     no_discovery: bool = False,
     no_project_local: bool = False,
+    trusted_ep_dists: frozenset[str] = frozenset(),
     entry_points_metadata_only: bool = False,
 ) -> tuple[
     list[str | Path | ExtensionFactory | _ManifestEntry | _EntryPointEntry],
@@ -792,7 +804,9 @@ def _discover_entries(
     # from installed metadata, so it is safe for the metadata-only scan too.
     if not no_discovery:
         for ep_entry, ep_error in _discover_via_entry_points(
-            seen_ep, metadata_only=entry_points_metadata_only
+            seen_ep,
+            metadata_only=entry_points_metadata_only,
+            trusted_ep_dists=trusted_ep_dists,
         ):
             # An error and an entry are NOT mutually exclusive: decision (i) of
             # issue #91 degrades an unproven endpoint to manifest-less loading
@@ -819,6 +833,7 @@ def scan_extension_manifests(
     agent_dir: Path | None = None,
     no_discovery: bool = False,
     no_project_local: bool = False,
+    trusted_ep_dists: frozenset[str] = frozenset(),
 ) -> list[PluginManifest]:
     """Issue #21 — metadata-ONLY manifest scan (no plugin code execution).
 
@@ -881,6 +896,7 @@ def scan_extension_manifests(
         agent_dir=agent_dir,
         no_discovery=no_discovery,
         no_project_local=no_project_local,
+        trusted_ep_dists=trusted_ep_dists,
         entry_points_metadata_only=True,
     )
     for err in errors:
@@ -1343,6 +1359,7 @@ def _discover_via_entry_points(
     seen_ep: set[str],
     *,
     metadata_only: bool = False,
+    trusted_ep_dists: frozenset[str] = frozenset(),
 ) -> list[
     tuple[_ManifestEntry | _EntryPointEntry | None, ExtensionLoadError | None]
 ]:
@@ -1355,6 +1372,27 @@ def _discover_via_entry_points(
     Nothing here imports plugin code; the endpoint's module is imported later,
     by :func:`_resolve_factory`, AFTER
     :func:`_enforce_declarative_capability_gates` has seen the manifest.
+
+    THE PROVENANCE GATE (issue #91, option C). ``entry_points()`` enumerates
+    every ``*.dist-info`` on EVERY ``sys.path`` entry, and ``python -m
+    aelix_coding_agent`` puts ``cwd`` at ``sys.path[0]`` (as do an editable
+    ``.pth`` pointing into a repo and any ``PYTHONPATH`` entry). A hostile
+    ``git clone`` that commits a hand-written ``evilpack-1.0.dist-info`` is
+    therefore DISCOVERED here, its repo-controlled manifest read without import,
+    and its stdio ``contributes.mcp_servers`` handed to the MCP client to spawn
+    — all before a line of it is imported. So BEFORE resolving each endpoint's
+    manifest and before any import, :func:`~aelix_coding_agent.extensions.
+    ep_manifest.entry_point_provenance` fences the owning distribution: one that
+    resolves OUTSIDE the interpreter's real site directories (or is unlocatable)
+    is REFUSED with an :attr:`EpOutcome.UNTRUSTED_PATH` resolution — no manifest,
+    no carrier, no import, no MCP spawn — and a named error carrying the
+    ``--trust-extension-path`` override. ``trusted_ep_dists`` is that override:
+    PEP 503 canonical distribution names the operator vouched for. This gate
+    runs identically for ``metadata_only`` (the scan) and the load, because the
+    scan is the path that reaches ``contributes.mcp_servers``, so it MUST refuse
+    too. Provenance is checked FIRST and does NOT degrade: unlike an unprovable
+    manifest (which grants nothing), an untrusted dist would still be IMPORTED
+    on a manifest-less load, so it must yield no carrier at all.
 
     Each row is ``(entry, error)`` and BOTH may be set — decision (i) of issue
     #91: an endpoint whose manifest cannot be proved still LOADS (manifest-less
@@ -1387,10 +1425,25 @@ def _discover_via_entry_points(
         )
         return out
 
+    # Computed ONCE per discovery pass, not per endpoint: the environment's
+    # real site directories do not change mid-scan, and each probe touches the
+    # filesystem (site/sysconfig).
+    trusted_dirs = environment_site_dirs()
+
     rows: list[
         tuple[EntryPoint, EpResolution | None, ExtensionLoadError | None]
     ] = []
     for ep in eps:
+        # THE PROVENANCE GATE — before resolve, before import. An endpoint whose
+        # distribution is not installed into this environment (it rode in on a
+        # checkout / editable / PYTHONPATH) is refused outright; ``resolve`` is
+        # never called for it, so its manifest bytes are never even read.
+        untrusted = entry_point_provenance(
+            ep, trusted_dirs=trusted_dirs, allowed_dists=trusted_ep_dists
+        )
+        if untrusted is not None:
+            rows.append((ep, untrusted, None))
+            continue
         try:
             resolution: EpResolution | None = resolve_entry_point_manifest(ep)
         except EpApiLevelRefusal as exc:
@@ -1429,6 +1482,27 @@ def _discover_via_entry_points(
     for ep, resolution, failure in rows:
         if failure is not None or resolution is None:
             out.append((None, failure))
+            continue
+        if resolution.outcome is EpOutcome.UNTRUSTED_PATH:
+            # The provenance refusal. It emits an ERROR and NO carrier of any
+            # kind — in BOTH the scan (metadata_only) and the load — so the
+            # endpoint's module is never imported and its manifest never reaches
+            # ``contributes.mcp_servers``. This is the one non-degrading
+            # outcome: unlike an unprovable manifest, an untrusted dist would
+            # still be imported on a manifest-less load, so it must yield
+            # nothing loadable.
+            out.append(
+                (
+                    None,
+                    ExtensionLoadError(
+                        path=f"entry_point:{ep.name}",
+                        error=(
+                            f"REFUSED (untrusted sys.path provenance): "
+                            f"{resolution.reason}"
+                        ),
+                    ),
+                )
+            )
             continue
         manifest = resolution.manifest
         pkg_dir = resolution.pkg_dir

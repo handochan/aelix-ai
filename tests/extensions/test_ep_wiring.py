@@ -125,6 +125,19 @@ def site(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
         )
 
     monkeypatch.setattr(importlib.metadata, "entry_points", scoped)
+
+    # Issue #91 provenance gate: the throwaway ``site/`` directory stands in for
+    # a real site-packages, so declare it trusted (a genuine ``pip install``
+    # target). Without this the provenance gate would refuse every synthetic
+    # pack as "outside the environment site dirs", since a tmp dir is not one.
+    # The NEGATIVE provenance tests deliberately do NOT use this fixture (they
+    # need an UNtrusted directory), so they build their own site + trust set.
+    real_env_dirs = L.environment_site_dirs
+
+    def trusting() -> frozenset[Path]:
+        return real_env_dirs() | frozenset({site_dir.resolve()})
+
+    monkeypatch.setattr(L, "environment_site_dirs", trusting)
     try:
         yield site_dir
     finally:
@@ -1283,11 +1296,17 @@ async def test_a_bound_endpoint_target_is_not_loaded_twice_manifest_less(
 def test_the_outcome_taxonomy_is_pinned(
     site: Path, isolated: dict[str, Path]
 ) -> None:
-    """Contract review L11 — only two ``EpOutcome`` comparisons exist in the
-    loader, so a SEVENTH variant would silently fall into the
-    manifest-less-plus-error bucket with no test failing. The default is
-    fail-safe (degrading never grants privilege), but a variant INTENDED to
-    refuse would be swallowed. Pin the set so adding one forces a decision.
+    """Contract review L11 — the loader compares ``EpOutcome`` in a few places,
+    so a NEW variant could silently fall into the manifest-less-plus-error
+    bucket with no test failing. The default is fail-safe (degrading never
+    grants privilege), but a variant INTENDED to refuse would be swallowed. Pin
+    the set so adding one forces a decision.
+
+    Issue #91 added ``UNTRUSTED_PATH`` — the ONE variant that does NOT degrade:
+    ``_discover_via_entry_points`` intercepts it explicitly (no carrier, no
+    import), precisely the "intended to refuse" case this pin protects. Its
+    interception is proven by the provenance tests in
+    ``test_ep_provenance.py``.
     """
 
     from aelix_coding_agent.extensions.ep_manifest import EpOutcome as O
@@ -1299,6 +1318,7 @@ def test_the_outcome_taxonomy_is_pinned(
         "misplaced",
         "fenced",
         "malformed",
+        "untrusted_path",
     }
 
 

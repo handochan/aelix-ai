@@ -64,7 +64,11 @@ surface an actionable error instead of installing a silently inert pack.
 
 from __future__ import annotations
 
+import contextlib
 import logging
+import re
+import site
+import sysconfig
 import tomllib
 from dataclasses import dataclass
 from enum import StrEnum
@@ -162,6 +166,20 @@ class EpOutcome(StrEnum):
     """A manifest bound but its bytes are unusable (TOML syntax error or
     schema violation). Reason carries the ABSOLUTE path. Degrades — except
     ``api.min_level``, which raises :class:`EpApiLevelRefusal`."""
+
+    UNTRUSTED_PATH = "untrusted_path"
+    """The owning distribution resolves OUTSIDE the interpreter's real
+    environment site directories — under ``cwd`` (``python -m`` puts
+    ``sys.path[0]`` there), under an editable ``.pth`` pointing into a repo, or
+    under an arbitrary ``PYTHONPATH`` entry — OR could not be located at all
+    (fail-closed). Unlike every other non-``BOUND`` outcome this does NOT
+    degrade to a manifest-less load: a dist a hostile ``git clone`` committed
+    can drive :func:`entry_point_provenance` past nothing, so it is REFUSED
+    outright (no manifest read, no import, no MCP spawn) with a named error and
+    an explicit ``--trust-extension-path`` override. This outcome is produced
+    ONLY by :func:`entry_point_provenance`, never by
+    :func:`resolve_entry_point_manifest`, which is provenance-blind by design
+    (its callers gate provenance first)."""
 
 
 @dataclass(frozen=True, repr=False)
@@ -460,6 +478,144 @@ def _bind(rel: str, path: Path, how: str) -> EpResolution:
     )
 
 
+def _canonical_dist(name: str) -> str:
+    """PEP 503 name normalisation, so ``--trust-extension-path`` matches the
+    dist however the user spells it (``My_Pack`` == ``my-pack``)."""
+    return re.sub(r"[-_.]+", "-", name).strip().lower()
+
+
+def environment_site_dirs() -> frozenset[Path]:
+    """The interpreter's REAL install directories, resolved absolute.
+
+    An entry point whose distribution lives inside one of these got there
+    because the user ran an install command (``pip``/``uv`` into the
+    venv/tool-env or ``--user``). An entry point whose distribution lives
+    anywhere ELSE — ``cwd`` (``python -m`` places it at ``sys.path[0]``), an
+    editable ``.pth`` pointing into a repo, an arbitrary ``PYTHONPATH`` entry —
+    arrived with a checkout, which is the whole ``git clone && python -m``
+    RCE surface. This is the trusted set the provenance gate fences against.
+
+    Pulled from three sources because no single one is complete across venvs,
+    ``--user`` installs, and platform schemes:
+
+    * :func:`sysconfig.get_paths` ``purelib`` / ``platlib`` — the running
+      environment's install target;
+    * :func:`site.getsitepackages` — venv / system site-packages (absent on
+      some minimal virtualenvs, hence the guard);
+    * :func:`site.getusersitepackages` — the ``pip install --user`` target.
+
+    A module-level seam on purpose: the wiring tests install synthetic wheels
+    into a throwaway directory that stands in for site-packages, and monkeypatch
+    this function to declare that directory trusted (mirroring a real install)
+    while a *separate* directory stands in for the hostile ``cwd``.
+    """
+
+    raw: list[str] = []
+    paths = sysconfig.get_paths()
+    for key in ("purelib", "platlib"):
+        value = paths.get(key)
+        if value:
+            raw.append(value)
+    # ``getsitepackages`` is absent on some minimal virtualenvs; ``getuser...``
+    # can raise on exotic platforms. A probe failure must never abort discovery.
+    with contextlib.suppress(AttributeError):
+        raw.extend(site.getsitepackages())
+    with contextlib.suppress(Exception):
+        raw.append(site.getusersitepackages())
+
+    resolved: set[Path] = set()
+    for entry in raw:
+        try:
+            resolved.add(Path(entry).resolve())
+        except OSError:  # pragma: no cover — unresolvable scheme path
+            continue
+    return frozenset(resolved)
+
+
+def entry_point_provenance(
+    ep: EntryPoint,
+    *,
+    trusted_dirs: frozenset[Path],
+    allowed_dists: frozenset[str] = frozenset(),
+) -> EpResolution | None:
+    """Fence one ``aelix.extensions`` entry point on SYS.PATH PROVENANCE (option C).
+
+    Returns ``None`` when the entry point's distribution resolves INSIDE the
+    trusted environment site directories (or is explicitly allowed) — the
+    caller then resolves and binds its manifest exactly as before. Returns an
+    :class:`EpResolution` with :attr:`EpOutcome.UNTRUSTED_PATH` when the dist
+    resolves OUTSIDE them, or cannot be located at all (fail-closed): the
+    caller must REFUSE it — no manifest read, no import, no MCP spawn.
+
+    This is the ONE gate that does not degrade. Every other doubtful outcome in
+    this module resolves to "no manifest", which is safe because a missing
+    manifest grants nothing. Provenance is different: the threat is not a
+    manifest we cannot prove, it is a distribution a hostile ``git clone``
+    placed on ``sys.path`` at all — and even a manifest-LESS load of it imports
+    the endpoint's module (runs its top-level code) later in
+    ``_resolve_factory``. So an untrusted dist must produce NO carrier of any
+    kind.
+
+    ``allowed_dists`` is the ``--trust-extension-path`` override — distribution
+    names the operator has explicitly vouched for (the legitimate
+    ``pip install -e .`` developer). Both sides are PEP 503 normalised here, so
+    the caller may pass the name however the user typed it (``My_Pack`` matches
+    ``my-pack``). It is deliberately per-NAME: it can never be a blanket "trust
+    everything", and it is a CLI argument, so a hostile ``cwd`` ``.env`` cannot
+    inject it the way it could an env var (ADR-0203).
+
+    The refusal reason NAMES the plugin, the dist, the offending path, and the
+    override, so a developer who sees it knows exactly how to allow their own
+    pack.
+    """
+
+    ident = f"{ep.name}={ep.value}"
+    dist = getattr(ep, "dist", None)
+
+    if dist is None:
+        # Fail closed: nothing proves where this endpoint's code lives, so we
+        # cannot vouch for it. There is also no dist name to match an override
+        # against — an unlocatable dist simply cannot be allow-listed.
+        return _degraded(
+            EpOutcome.UNTRUSTED_PATH,
+            f"entry point {ident} has no owning distribution, so its sys.path "
+            f"provenance cannot be proved; refusing it fail-closed (no import, "
+            f"no manifest, no MCP spawn). An installed pack always has a "
+            f"distribution — reinstall it into this environment.",
+        )
+
+    dist_name = _dist_name(dist)
+    allowed = {_canonical_dist(name) for name in allowed_dists}
+    if _canonical_dist(dist_name) in allowed:
+        return None
+
+    try:
+        root = Path(str(dist.locate_file(""))).resolve()
+    except Exception as exc:  # noqa: BLE001 — a broken dist is refused, not admitted
+        return _degraded(
+            EpOutcome.UNTRUSTED_PATH,
+            f"cannot locate the install root of distribution {dist_name} "
+            f"(entry point {ident}): {exc}; refusing it fail-closed. If this is "
+            f"your own pack, re-run with --trust-extension-path {dist_name}.",
+        )
+
+    for trusted in trusted_dirs:
+        if root == trusted or root.is_relative_to(trusted):
+            return None
+
+    return _degraded(
+        EpOutcome.UNTRUSTED_PATH,
+        f"entry point {ident} (distribution {dist_name}) resolves to {root}, "
+        f"which is OUTSIDE this interpreter's environment site directories — "
+        f"it was placed on sys.path by the current directory, an editable "
+        f"install, or PYTHONPATH, not installed into the environment. Refusing "
+        f"to read its manifest, import it, or start its MCP servers. If you "
+        f"installed this pack yourself for development (e.g. 'pip install -e .'),"
+        f" re-run with --trust-extension-path {dist_name} to allow this ONE "
+        f"pack.",
+    )
+
+
 def resolve_entry_point_manifest(ep: EntryPoint) -> EpResolution:
     """Resolve the ``aelix-plugin.toml`` belonging to ``ep`` WITHOUT importing it.
 
@@ -591,6 +747,8 @@ __all__ = [
     "EpApiLevelRefusal",
     "EpOutcome",
     "EpResolution",
+    "entry_point_provenance",
+    "environment_site_dirs",
     "redact_manifest_error",
     "resolve_entry_point_manifest",
 ]

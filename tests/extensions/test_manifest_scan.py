@@ -145,7 +145,12 @@ def test_scan_walks_entry_points_metadata_only(
 
     calls: list[bool] = []
 
-    def _spy(seen_ep: set[str], *, metadata_only: bool = False) -> list:
+    def _spy(
+        seen_ep: set[str],
+        *,
+        metadata_only: bool = False,
+        trusted_ep_dists: frozenset[str] = frozenset(),
+    ) -> list:
         calls.append(metadata_only)
         return []
 
