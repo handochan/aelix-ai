@@ -1610,14 +1610,36 @@ async def test_every_member_snapshot_carries_the_members_submitted_index(
 
 _L2_STUB = textwrap.dedent(
     """
-    import os, pathlib, sys, time
+    import json, os, pathlib, sys, time
+
+    def emit(obj):
+        sys.stdout.write(json.dumps(obj) + "\\n")
+        sys.stdout.flush()
+
     d = pathlib.Path(sys.argv[1])
     (d / ("child-%d" % os.getpid())).write_text("x")
+    emit({"id": "stub", "created_at": "now"})
+    emit({"type": "agent_start"})
+    emit({"type": "turn_start"})
     go = d / "go"
     deadline = time.monotonic() + 30
     while time.monotonic() < deadline and not go.exists():
         time.sleep(0.02)
-    print("stub done")
+    emit({"type": "message_end", "message": {
+        "role": "assistant",
+        "content": [{"type": "text", "text": "stub done"}],
+        "stop_reason": "end_turn",
+        "usage": {"input": 1, "output": 1, "total_tokens": 2},
+        "provider": "stub", "model": "stub-1",
+    }})
+    # THE TERMINATOR IS THE POINT. This stub used to print the bare text
+    # "stub done" and exit 0 — no event stream at all, which is indistinguishable
+    # from a child that died mid-turn, and ``build_result`` now says so. The
+    # assertion below (``["ok"] * 8``) was true only because the envelope could
+    # not yet tell the difference; under-modelling the child is what let it
+    # stay true. The subject of this test is process OVERLAP, so the child is
+    # corrected to finish properly rather than the outcome being relaxed.
+    emit({"type": "agent_end", "messages": []})
     """
 )
 

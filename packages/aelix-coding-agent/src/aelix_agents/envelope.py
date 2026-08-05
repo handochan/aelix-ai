@@ -129,13 +129,33 @@ def _select_summary(state: _StreamState, stderr_clean: str, *, ok: bool) -> str:
     the child's answer with a log line. On every FAILURE path the rung fires
     exactly as specified, including the zero-stdout case it exists for.
 
+    THE ``error_message`` RUNG IS GATED THE SAME WAY, AND FOR THE TWIN REASON.
+    ``_reduce_message_end`` (``stream.py:552-556``) is last-NON-EMPTY-wins per
+    field, so ``state.error_message`` means "SOME turn errored", never "the run
+    failed" — the harness's own auto-retry (``harness/core.py:494-495``, default
+    ON, 3 attempts) recovers turn 1 on turn 2 and the child answers correctly.
+    Ungated, that stale artifact of a retried turn REPLACES the child's real
+    answer. Measured against a local endpoint returning 6 consecutive 429s (7
+    HTTP calls — the provider SDK absorbs the first 3 and the harness retries
+    twice): the envelope came back ``ok=True status='ok'`` carrying
+    ``summary="Error code: 429 …"`` while the real answer sat in ``details``,
+    and ``render_subagent_result`` renders only ``summary`` — so the PARENT
+    MODEL received the error string as the child's work, and in chain mode
+    ``ok=True`` kept the chain running and propagated it as ``{previous}``.
+    A single 429 does NOT reproduce it; the SDK absorbs that one below the
+    message layer and no ``error_message`` is ever emitted.
+
+    On a genuine failure the rung fires exactly as specified: the last turn's
+    error sets ``stop_reason`` too (``loop.py:322-325`` states the adapter
+    contract), so ``ok`` is already False by the time this is reached.
+
     On ``aborted`` / ``timeout`` the sanitizer usually reduces the tail to the
     empty string (it is all shutdown noise), so the chain falls through to the
     partial summary the child did manage to stream — which is what §(j)
     promises for those outcomes.
     """
 
-    if state.error_message:
+    if not ok and state.error_message:
         return state.error_message
     if not ok and stderr_clean:
         return stderr_clean
@@ -161,6 +181,16 @@ public constants to an exact set, and a cap is exactly the kind of policy number
 the 3-band rule keeps out of product-core."""
 
 _TRAIL_MORE = "… {count} more"
+
+STREAM_ENDED_EARLY = (
+    "The delegated agent's output stream ended without its terminator: the "
+    "child stopped mid-turn. Anything above is PARTIAL, not a finished answer."
+)
+"""Why a run with a plausible answer and a zero exit code is reported failed.
+
+Without it the parent model gets ``is_error=True`` plus a partial that reads
+like a complete answer and NO explanation, because ``state.error_message`` is
+:data:`None` on that path — the child never got far enough to set one."""
 
 
 def render_tool_trail(state: _StreamState) -> str | None:
@@ -257,11 +287,30 @@ def build_result(
     code reports that as a success with an empty summary.
     """
 
-    failed = (
+    # ``agent_end`` is the child's own terminator (``stream.py:231-235``). Its
+    # absence in a stream that reached EOF is a child that stopped MID-TURN, and
+    # the exit code cannot see it: measured against a real child that emits a
+    # good ``message_end`` and then exits 0 without a terminator, this returned
+    # ``ok=True status='ok' summary='the complete answer'`` for a run that never
+    # finished.
+    #
+    # GUARDED BY ``dropped_lines == 0``, and the guard is the whole reason the
+    # disjunct is safe. ``agent_end`` carries the entire message array on ONE
+    # line (``stream.py:535-541``), so a child that read a large file emits a
+    # terminator above ``MAX_LINE_BYTES`` and ``LineAssembler`` drops it — on a
+    # run that finished perfectly. Measured: ``saw_agent_end=False,
+    # dropped_lines=1, exit 0, summary='the complete answer'``. A bare
+    # ``or not state.saw_agent_end`` FAILS that delegation. Once a line has been
+    # dropped we cannot know whether the terminator was among them, so its
+    # absence is not evidence and the run is judged on the exit code and the
+    # stream alone.
+    no_terminator = not state.saw_agent_end and state.dropped_lines == 0
+    process_failed = (
         outcome != "ok"
         or (exit_code is not None and exit_code != 0)
         or state.stop_reason in ("error", "aborted")
     )
+    failed = process_failed or no_terminator
     if outcome != "ok":
         status: SubagentOutcome = outcome
     elif state.stop_reason == "aborted":
@@ -276,6 +325,23 @@ def build_result(
     summary, truncated, _omitted = cap_summary(
         _select_summary(state, stderr_clean, ok=ok), output_cap
     )
+
+    resolved_error = error
+    if resolved_error is None and not ok:
+        # SAFE BY CONSTRUCTION: ``_select_summary`` reads
+        # ``state.error_message``, never this argument, so nothing computed here
+        # can displace the child's partial answer — that displacement is exactly
+        # the defect the ``not ok and`` gate above fixes. Both renderers print
+        # ``error`` as a SEPARATE note gated on ``result.error not in body``
+        # (``tool.render_subagent_result``, ``aggregate._member_block``).
+        #
+        # The sentinel fires only when the missing terminator is the SOLE
+        # reason: on a timeout or an abort the status already says what
+        # happened, and a second sentence about the stream would be true and
+        # redundant.
+        resolved_error = state.error_message or (
+            STREAM_ENDED_EARLY if no_terminator and not process_failed else None
+        )
     return SubagentResult(
         id=id,
         profile=profile,
@@ -292,7 +358,7 @@ def build_result(
             tokens=state.tokens,
             turns=state.turns,
         ),
-        error=error if error is not None else (state.error_message if not ok else None),
+        error=resolved_error,
         exit_code=exit_code,
         stop_reason=state.stop_reason,
         elapsed_ms=elapsed_ms,
@@ -337,6 +403,7 @@ def declined_result(
 
 __all__ = [
     "MAX_TRAIL_BYTES",
+    "STREAM_ENDED_EARLY",
     "render_tool_trail",
     "DEFAULT_OUTPUT_CAP",
     "NO_OUTPUT",

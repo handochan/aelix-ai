@@ -215,10 +215,30 @@ _DESCRIPTION_HEAD = (
     "is never trimmed to fit. Delegate read-heavy work first."
 )
 
-_NO_PROFILES = (
-    "No agent profiles are available. Ask the user to create one under "
-    "~/.aelix/agent/agents/<name>.md before delegating."
-)
+def _no_profiles_message() -> str:
+    """The "nothing to delegate to" refusal, naming the COMPUTED directory.
+
+    NOT a constant with a literal ``~/.aelix/agent/agents``. The user agent root
+    moves with ``AELIX_CODING_AGENT_DIR`` (``cli/config.py::get_agent_dir``), so
+    a hardcoded path tells a user who set that variable to write a file in a
+    directory aelix will never read. #117 shipped exactly that bug once, in a
+    signpost written for exactly this purpose.
+
+    Resolved at CALL time, not at import: the directory comes from the
+    environment and this module is imported long before the CLI has settled it.
+
+    Reachable but rare since the bundled tier ships a starter profile
+    (``discovery.builtin_agents_dir``) — it takes a user who has deleted it or
+    whose install is partial, which is precisely when a wrong path costs the
+    most.
+    """
+
+    from aelix_coding_agent.agents.discovery import user_agents_dir
+
+    return (
+        "No agent profiles are available. Ask the user to create one at "
+        f"{user_agents_dir()}/<name>.md before delegating."
+    )
 
 
 class AgentCallError(ValueError):
@@ -544,7 +564,7 @@ def build_description(roster: str) -> str:
 
     body = roster.strip()
     if not body:
-        return f"{_DESCRIPTION_HEAD}\n\n{_NO_PROFILES}"
+        return f"{_DESCRIPTION_HEAD}\n\n{_no_profiles_message()}"
     return f"{_DESCRIPTION_HEAD}\n\nAvailable profiles:\n{body}"
 
 
@@ -664,7 +684,7 @@ def render_roster_for(profiles: Sequence[AgentProfile]) -> str:
     """Convenience for the "unknown profile" refusal path."""
 
     roster = build_roster(profiles)
-    return roster or _NO_PROFILES
+    return roster or _no_profiles_message()
 
 
 __all__ = [

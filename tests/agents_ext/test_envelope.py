@@ -11,6 +11,7 @@ import pytest
 from aelix_agents.envelope import (
     DEFAULT_OUTPUT_CAP,
     NO_OUTPUT,
+    STREAM_ENDED_EARLY,
     build_result,
     cap_summary,
     declined_result,
@@ -80,10 +81,16 @@ def test_nonzero_exit_is_a_failure_even_with_a_clean_stream() -> None:
 
 
 def test_happy_path_is_ok() -> None:
+    # ``saw_agent_end=True`` is not decoration: a run with no ``agent_end`` is a
+    # child that stopped MID-TURN, and this test is the definition of one that
+    # did not. It was implicit before ``build_result`` learned to read the
+    # terminator, which is precisely how a mid-turn death shipped as ``ok``.
     result = build_result(
         id="s1",
         profile="scout",
-        state=_state(summary="all good", stop_reason="end_turn", turns=2),
+        state=_state(
+            summary="all good", stop_reason="end_turn", turns=2, saw_agent_end=True
+        ),
         outcome="ok",
         exit_code=0,
     )
@@ -104,6 +111,127 @@ def test_aborted_stop_reason_reports_aborted_not_error() -> None:
     )
     assert result.status == "aborted"
     assert result.ok is False
+
+
+# --- the four quadrants of "did the child actually finish?" -----------------
+#
+# The two axes are INDEPENDENT and the bugs they pin are each other's mirror:
+# an ``error_message`` from a turn the harness RETRIED must not become the
+# answer, and a missing terminator must not be laundered into a success by a
+# zero exit code. Fixing either half alone is wrong — see the module under test.
+
+
+def test_recovered_provider_error_does_not_become_the_answer() -> None:
+    """QUADRANT: error + RECOVERED. The defect this fix exists for.
+
+    ``_reduce_message_end`` (``stream.py:552-556``) is last-NON-EMPTY-wins per
+    field, so ``state.error_message`` survives a turn the harness's own
+    auto-retry (``harness/core.py:494-495``, default ON) already recovered from.
+    The child then answers correctly on turn 2 and the run is a genuine success:
+    ``stop_reason='stop'``, exit 0.
+
+    MEASURED end to end against a local endpoint returning 6 consecutive 429s
+    (7 HTTP calls — the provider SDK absorbs the first 3 itself, so a SINGLE 429
+    does not reproduce this at all). Before the fix the envelope came back
+    ``ok=True status='ok'`` with ``summary="Error code: 429 …"`` and the real
+    answer stranded in ``details``. ``render_subagent_result`` renders only
+    ``summary``, so the PARENT MODEL received the error string as the child's
+    work — and because ``ok`` was True, ``_run_chain`` (``batch.py:391``) did not
+    break and propagated it to the next step as ``{previous}``.
+    """
+
+    result = build_result(
+        id="s1",
+        profile="scout",
+        state=_state(
+            summary="the answer",
+            stop_reason="stop",
+            error_message="Error code: 429 - rate_limit_exceeded",
+            saw_agent_end=True,
+        ),
+        outcome="ok",
+        exit_code=0,
+    )
+    assert (result.ok, result.status) == (True, "ok")
+    assert result.summary == "the answer"
+    # The stale artifact must not reappear as a note the model reads either.
+    assert result.error is None
+
+
+def test_unrecovered_provider_error_is_still_the_summary() -> None:
+    """QUADRANT: error + UNRECOVERED — the gate must not swallow a real failure.
+
+    Measured with 12 consecutive 429s: auto-retry is exhausted, the adapter sets
+    ``stop_reason='error'`` AND ``error_message`` together (``loop.py:322-325``
+    states that contract), and the exit code is STILL 0 — which is why
+    ``stop_reason``, not the return code, is the load-bearing disjunct.
+    """
+
+    result = build_result(
+        id="s1",
+        profile="scout",
+        state=_state(
+            stop_reason="error",
+            error_message="Error code: 429 - rate_limit_exceeded",
+            saw_agent_end=True,
+        ),
+        outcome="ok",
+        exit_code=0,
+    )
+    assert (result.ok, result.status) == (False, "error")
+    assert result.summary == "Error code: 429 - rate_limit_exceeded"
+    assert result.error == "Error code: 429 - rate_limit_exceeded"
+
+
+def test_child_that_died_mid_turn_is_not_a_success() -> None:
+    """QUADRANT: mid-turn death with exit 0.
+
+    ``agent_end`` is the child's own terminator (``stream.py:231-235``). A
+    JSON-mode child whose harness was torn down emits a good ``message_end`` and
+    exits **0** without one; before this fix that returned
+    ``ok=True status='ok'`` for a run that never finished.
+
+    THE PARTIAL MUST SURVIVE: a fix that routes the diagnostic through
+    ``_select_summary`` instead of ``error`` destroys the only work the child
+    did manage to do, which is the pi behaviour this package deliberately
+    diverges from (module docstring).
+    """
+
+    result = build_result(
+        id="s1",
+        profile="scout",
+        state=_state(summary="partial", stop_reason="end_turn"),
+        outcome="ok",
+        exit_code=0,
+    )
+    assert (result.ok, result.status) == (False, "error")
+    assert result.summary == "partial"
+    assert result.error == STREAM_ENDED_EARLY
+
+
+def test_missing_terminator_is_not_evidence_once_a_line_was_dropped() -> None:
+    """QUADRANT: the TRAP — a SUCCESSFUL child whose terminator was too big.
+
+    ``agent_end`` carries the entire message array on ONE line
+    (``stream.py:535-541``), so a child that read a multi-megabyte file emits a
+    terminator above ``MAX_LINE_BYTES`` and ``LineAssembler`` drops it — on a run
+    that finished perfectly. Measured with a real child: ``saw_agent_end=False,
+    dropped_lines=1, exit 0``.
+
+    A bare ``or not state.saw_agent_end`` FAILS that delegation. Once a line has
+    been dropped, the terminator's absence is not evidence of anything.
+    """
+
+    result = build_result(
+        id="s1",
+        profile="scout",
+        state=_state(summary="the complete answer", stop_reason="end_turn",
+                     dropped_lines=1),
+        outcome="ok",
+        exit_code=0,
+    )
+    assert (result.ok, result.status) == (True, "ok")
+    assert result.summary == "the complete answer"
 
 
 @pytest.mark.parametrize("outcome", ["timeout", "aborted", "error"])
@@ -221,7 +349,9 @@ def test_successful_run_keeps_its_summary_despite_stderr_noise() -> None:
     result = build_result(
         id="s",
         profile="p",
-        state=_state(summary="the answer", stop_reason="end_turn"),
+        state=_state(
+            summary="the answer", stop_reason="end_turn", saw_agent_end=True
+        ),
         outcome="ok",
         exit_code=0,
         stderr_tail="DeprecationWarning: ssl.PROTOCOL_TLS is deprecated\n",
@@ -233,7 +363,13 @@ def test_successful_run_keeps_its_summary_despite_stderr_noise() -> None:
 def test_no_output_sentinel() -> None:
     """An empty summary renders as a blank panel and reads like a bug."""
 
-    result = build_result(id="s", profile="p", state=_state(), outcome="ok", exit_code=0)
+    result = build_result(
+        id="s",
+        profile="p",
+        state=_state(saw_agent_end=True),
+        outcome="ok",
+        exit_code=0,
+    )
     assert result.summary == NO_OUTPUT
     assert result.ok is True
 
@@ -243,16 +379,23 @@ def test_stderr_only_success_still_surfaces_something() -> None:
 
     A child that exited 0 having said nothing on stdout but something on stderr
     is better reported with that text than with "(no output)".
+
+    ``saw_agent_end=True`` RE-ANCHORS this test rather than repairing it: it
+    passed either way, but without the terminator the run is a failure and the
+    summary arrives from the ``not ok and stderr_clean`` rung — not the final
+    ``if stderr_clean`` rung this test exists to pin. Same text, different code
+    path, and the assertion could no longer tell them apart.
     """
 
     result = build_result(
         id="s",
         profile="p",
-        state=_state(),
+        state=_state(saw_agent_end=True),
         outcome="ok",
         exit_code=0,
         stderr_tail="wrote 3 files",
     )
+    assert result.ok is True
     assert result.summary == "wrote 3 files"
 
 
@@ -398,15 +541,28 @@ def test_details_carries_raw_stderr_on_failure_only() -> None:
     assert "raw diagnostic" in failed.details
     assert "partial" in failed.details
 
+    # The subject is "on failure ONLY", so this half must genuinely SUCCEED.
+    # Without the terminator it is a failure, ``_build_details`` appends the
+    # stderr half, and the test would be asserting the failure branch twice.
     succeeded = build_result(
-        id="s", profile="p", state=_state(summary="fine"), outcome="ok",
-        exit_code=0, stderr_tail="chatty log",
+        id="s", profile="p", state=_state(summary="fine", saw_agent_end=True),
+        outcome="ok", exit_code=0, stderr_tail="chatty log",
     )
+    assert succeeded.ok is True
     assert succeeded.details == "fine"
 
 
 def test_details_is_none_when_there_is_nothing_behind_the_summary() -> None:
-    result = build_result(id="s", profile="p", state=_state(), outcome="ok", exit_code=0)
+    # RE-ANCHORED, not repaired: both branches yield ``None``, so this passed
+    # either way — and silently stopped exercising the success branch it names.
+    result = build_result(
+        id="s",
+        profile="p",
+        state=_state(saw_agent_end=True),
+        outcome="ok",
+        exit_code=0,
+    )
+    assert result.ok is True
     assert result.details is None
 
 

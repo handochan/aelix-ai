@@ -207,7 +207,17 @@ class AgentsExtension:
     VISIBLE, not usable (``resolve_profile`` still refuses them for the model
     door), but the conservative direction is still the right default."""
 
-    channel: SubagentChannel = field(default_factory=PrintChannel)
+    channel: SubagentChannel | None = None
+    """``None`` means "let the runtime build the default one", which is what
+    wires the cost fallback: ``_SubagentRuntimeImpl.__post_init__`` hands the
+    channel ``host.model_registry`` — i.e. :meth:`_host_model_registry`, read
+    LIVE because the registry is rebound on ``/reload``.
+
+    It was ``field(default_factory=PrintChannel)``, which built the channel with
+    NO registry, so every delegation's cost was structurally zero. An explicitly
+    injected channel still wins — it is passed straight through at ``:237`` and
+    the runtime leaves it alone — which is the seam every test in
+    ``tests/agents_ext`` drives."""
 
     _pending: dict[str, PendingSpawn] = field(default_factory=dict, init=False)
     """``tool_call_id`` → the approved spawn. Popped with a ``None`` default in

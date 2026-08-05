@@ -49,10 +49,22 @@ _MAX_NAME_LENGTH = 64
 _MAX_DESCRIPTION_LENGTH = 1024
 _NAME_REGEX = re.compile(r"^[a-z0-9-]+$")
 
-ProfileScope = Literal["user", "project", "explicit"]
+ProfileScope = Literal["bundled", "user", "project", "explicit"]
 """Where a profile came from, by RESOLVED-PATH CONTAINMENT — see
 ``discovery.classify_scope``. Never "how the user spelled it": ``--agent-file
-.aelix/agents/x.md`` still classifies ``"project"``."""
+.aelix/agents/x.md`` still classifies ``"project"``.
+
+``"bundled"`` is the tier shipped INSIDE the wheel
+(``discovery.builtin_agents_dir``). It exists because ``profile`` is a REQUIRED
+parameter of the ``agent`` tool while a clean install discovered zero profiles,
+so the tool's own description read "No agent profiles are available" and the
+model had no legal value to pass — delegation was 0% usable out of the box.
+
+It is deliberately NOT a security boundary: bundled files ship with the code, so
+they are exactly as trusted as the code, and every gate in the tree tests the
+literal ``"project"`` (``runtime.py:423``, ``consent.py:520``, ``posture.py:222``,
+``profile.py``'s ``extensions:`` cut, ``discovery.py:315``). ``"bundled"`` falls
+through all of them the same way ``"user"`` does, which is the intended reading."""
 
 ProfileDiagnosticCode = Literal[
     "read_failed",
