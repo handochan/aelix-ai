@@ -90,6 +90,20 @@ class SettingsRow:
     live: bool = False
     choices: tuple[str, ...] = field(default_factory=tuple)
     int_range: tuple[int, int] | None = None
+    apply_note: str | None = None
+    """Appended to the confirmation line when the change is not yet in effect.
+
+    ROW-SCOPED rather than a special case on ``key``, so the next persist-only
+    row that needs a restart inherits the mechanism instead of re-discovering it.
+
+    It exists because ``live=False`` is invisible at the one moment it matters.
+    The confirmation for a toggle reads ``agent delegation → on`` whether or not
+    anything now behaves differently, and for ``features_agents`` nothing does:
+    the flag is read once per process (``cli/entry.py::_agents_delegation_enabled``,
+    called from ``_async_main``), and ``/reload`` re-runs the same harness factory
+    over a closure variable that is already frozen — so the toggle looks like it
+    worked, ``/agents run`` still refuses, and the user has been told twice that
+    they enabled something they did not."""
 
 
 def _on_off(value: bool) -> str:
@@ -191,6 +205,7 @@ def build_settings_rows(sm: SettingsManager) -> list[SettingsRow]:
             kind="bool",
             read=lambda s: _on_off(s.get_features_agents()),
             help="Allow this agent to delegate work to a subagent. Persisted; applies next launch.",
+            apply_note="takes effect after you restart aelix",
             # DELIBERATELY NOT live (ADR-0197 §5.6): the flag is consumed once,
             # by ``cli/entry.py::_build_harness_options``, when the harness is
             # built — the ``agent`` tool and the delegation extension are either
@@ -376,9 +391,10 @@ def apply_setting(
             new = not current
             _set_bool(row.key, sm, new)
             shown = _bool_label(row, new)
+            note = f" ({row.apply_note})" if row.apply_note else ""
             return ApplyResult(
                 kind="ok",
-                message=f"{row.label.lower()} → {shown}",
+                message=f"{row.label.lower()} → {shown}{note}",
                 live=(row.key, new) if row.live else None,
             )
 

@@ -80,6 +80,10 @@ aelix --help
 (Copilot/구독 OAuth), `--api-key`를 넘기거나, `~/.aelix/agent/models.json`을 구성하세요.
 자세한 내용은 [프로바이더 가이드](docs/guides/providers-and-models.md)를 참고하세요.
 
+에이전트 위임을 쓸 계획이라면 `--api-key` 대신 환경변수를 쓰세요. `--api-key`는 부모
+프로세스의 메모리에만 존재하므로 위임된 자식은 그 값을 볼 수 없고 자체 인증에 실패합니다.
+환경변수 키는 자식이 그대로 상속받습니다.
+
 ## 프로바이더
 
 litellm도, 범용 래퍼 레이어도 없는 프로바이더별 수제 네이티브 어댑터입니다(OpenRouter와
@@ -169,7 +173,7 @@ aelix extension install <target> --require-signature            # fail-closed �
 
 ## 알려진 한계 (베타)
 
-중요한 작업에 Aelix를 붙이기 전에 알아두어야 할 두 가지입니다.
+중요한 작업에 Aelix를 붙이기 전에 알아두어야 할 세 가지입니다.
 
 **한 번의 실행에 지출 상한이 없습니다.** 최대 반복 횟수 제한도, 중복 호출 감지도, 누적
 토큰·비용 예산도 없습니다 — 모델이 툴을 계속 호출하면 스스로 끝내거나 사용자가 중단할
@@ -191,6 +195,19 @@ aelix extension install <target> --require-signature            # fail-closed �
 자격증명과 함께 갖습니다. 컨테이너나 샌드박스, 혹은 버려도 되는 체크아웃에서
 실행하세요.
 
+**위임(delegation)은 리눅스 우선이며, 그 지출은 `/cost`에 잡히지 않습니다.** 에이전트
+위임(`--agents`, `[features] agents`)은 실제 자식 프로세스를 띄우고, 그 프로세스 배관은
+POSIX 기준으로 작성되어 있습니다. 모든 spawn이 `preexec_fn`을 넘기고 종료 경로는
+`SIGKILL`을 쓰는데 윈도우에는 둘 다 없으므로, 위임은 윈도우에서 지원되지
+않습니다([#110](https://github.com/handochan/aelix-ai/issues/110)). macOS에서는 자식
+자체에는 시그널이 정상 전달되지만 자손 탐색이 `/proc`을 읽기 때문에 아무것도 찾지
+못합니다 — 위임된 에이전트가 fork한 프로세스는 그보다 오래 살아남을 수 있고, 부모가 강제
+종료된 자식도 계속 실행됩니다. 헤드리스 부모(`--print`, `--mode json`, `--mode rpc`)는
+spawn 동의 대화상자를 그릴 터미널이 없으므로 스스로 동의합니다: 자식은 여전히 부모의 권한
+자세와 툴 권한을 넘을 수 없지만, 사람에게 묻지는 않습니다. 그리고 자식의 토큰은 부모
+세션에 들어오지 않은 채 프로바이더에 청구되므로 `/cost`는 부모 몫만 보고합니다 — 자식이
+쓴 양은 각 위임의 `[agent … in / … out]` 푸터를 보세요.
+
 ## 아키텍처
 
 에이전트는 세 패키지로 구성되며(uv 워크스페이스), `Agent`와 `AgentHarness`가
@@ -208,6 +225,7 @@ aelix extension install <target> --require-signature            # fail-closed �
 [시작하기](docs/guides/getting-started.md) ·
 [프로바이더와 모델](docs/guides/providers-and-models.md) ·
 [커스텀 모델](docs/guides/models-json.md) ·
+[에이전트 프로필](docs/guides/agent-profiles.md) ·
 [확장 작성하기](docs/guides/extension-authoring.md) ·
 [릴리즈](RELEASING.md)
 

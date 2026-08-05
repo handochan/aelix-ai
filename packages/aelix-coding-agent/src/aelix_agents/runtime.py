@@ -296,8 +296,35 @@ class _SubagentRuntimeImpl:
     """
 
     host: SubagentHost
-    channel: SubagentChannel = field(default_factory=PrintChannel)
+    channel: SubagentChannel | None = None
+    """``None`` means "build the default channel in :meth:`__post_init__`".
+
+    NOT a ``default_factory``, and that is the whole fix: a factory cannot see
+    ``self``, so it could only ever produce ``PrintChannel()`` with no arguments
+    — i.e. ``model_registry=None``, which makes ``apply_cost_fallback`` return at
+    its first guard (``print_channel.py:508``) and leaves ``state.cost`` at 0 for
+    every delegation. An INJECTED channel is passed through untouched."""
     contract_version: int = CONTRACT_VERSION
+
+    def __post_init__(self) -> None:
+        # THE DEFAULT CHANNEL IS BUILT HERE because it needs the host's LIVE
+        # model-registry getter, and only ``self`` has one.
+        #
+        # Measured against a real child before this line existed: the envelope
+        # read ``11 in / 2 out`` and carried NO ``$`` at all, with a registry
+        # that priced the model correctly sitting one attribute away —
+        # ``aggregate.py:290``/``tool.py:622`` both gate on ``if usage.cost:``,
+        # so a structurally-zero cost prints nothing rather than ``$0.0000``.
+        # ``apply_cost_fallback``'s own docstring notes that openrouter and
+        # openai-completions emit no ``cost`` key, "so this fallback is the
+        # COMMON path rather than the exotic one" — it was inert exactly where
+        # it was needed most.
+        #
+        # The getter is passed, never the registry: it is rebound on ``/reload``
+        # and a captured one goes stale. An unwired host still answers ``None``,
+        # which degrades to the previous behaviour rather than raising.
+        if self.channel is None:
+            self.channel = PrintChannel(model_registry=self.host.model_registry)
 
     _children: dict[str, RunningChild] = field(default_factory=dict, init=False)
     _delegations_this_prompt: int = field(default=0, init=False)

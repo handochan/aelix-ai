@@ -52,6 +52,7 @@ from typing import Any
 import pytest
 from aelix_agents import print_channel as pc
 from aelix_agents.consent import SpawnGrant
+from aelix_agents.envelope import STREAM_ENDED_EARLY
 from aelix_agents.print_channel import (
     PrintChannel,
     RunningChild,
@@ -506,6 +507,82 @@ async def test_oversize_line_dropped_and_stream_recovers(tmp_path: Path) -> None
     # ONE turn, not two: the oversize message never reached the reducer, which
     # is the difference between "dropped" and "silently truncated".
     assert result.usage.turns == 1
+
+
+# === The terminator, against real processes ==================================
+#
+# ``agent_end`` is the child's own end-of-run marker. The exit code cannot
+# substitute for it: a JSON-mode child that dies mid-turn exits **0**
+# (``print_mode.py`` maps ``stop_reason`` to a non-zero code only ``if mode ==
+# "text"``). These two children differ ONLY in whether that marker arrived
+# intact, and they must land on opposite verdicts.
+
+_DIED_MID_TURN = _stub(
+    """
+    start()
+    say("the complete answer", input=7, output=3, total_tokens=10)
+    # No done(): the child stops mid-turn. Exit 0, exactly as a child whose
+    # harness was torn down under it does.
+    sys.exit(0)
+    """
+)
+
+_OVERSIZE_TERMINATOR = _stub(
+    """
+    start()
+    say("the complete answer", input=7, output=3, total_tokens=10)
+    # ``agent_end`` carries the whole message array on ONE line
+    # (``stream.py:535-541``), so a child that read a multi-megabyte file emits a
+    # terminator over the 4 MiB budget — on a run that finished PERFECTLY.
+    emit({"type": "agent_end", "messages": [{"role": "assistant",
+          "content": [{"type": "text", "text": "x" * (5 * 1024 * 1024)}]}]})
+    sys.exit(0)
+    """
+)
+
+
+async def test_child_that_dies_mid_turn_is_not_reported_as_success(
+    tmp_path: Path,
+) -> None:
+    """Exit 0 + a plausible answer + no terminator is a FAILED delegation.
+
+    Before ``build_result`` read ``saw_agent_end`` this returned
+    ``ok=True status='ok' summary='the complete answer'`` — the parent model was
+    handed a truncated answer as a finished one, with nothing marking it.
+    """
+
+    result = await asyncio.wait_for(
+        _stub_channel(_DIED_MID_TURN).run(_plan(tmp_path)), 30
+    )
+    assert result.exit_code == 0
+    assert result.dropped_lines == 0
+    assert result.ok is False
+    assert result.status == "error"
+    # The partial SURVIVES — it is the only work the child did, and destroying
+    # it is the pi behaviour this package deliberately diverges from.
+    assert result.summary == "the complete answer"
+    assert result.error == STREAM_ENDED_EARLY
+
+
+async def test_a_terminator_over_the_line_budget_does_not_fail_a_good_run(
+    tmp_path: Path,
+) -> None:
+    """THE TRAP. Same missing flag, opposite verdict, because a line was dropped.
+
+    A bare ``or not state.saw_agent_end`` predicate fails this delegation, and
+    this delegation SUCCEEDED. Once ``LineAssembler`` has dropped a line we
+    cannot know whether the terminator was among them, so its absence stops
+    being evidence.
+    """
+
+    result = await asyncio.wait_for(
+        _stub_channel(_OVERSIZE_TERMINATOR).run(_plan(tmp_path)), 60
+    )
+    assert result.exit_code == 0
+    assert result.dropped_lines == 1
+    assert result.ok is True
+    assert result.status == "ok"
+    assert result.summary == "the complete answer"
 
 
 # === HIGH #3 — a poisoned line must not become an orphan ======================
@@ -1672,6 +1749,72 @@ async def test_a_registry_that_raises_never_fails_the_delegation(
     )
     result = await channel.run(_plan(tmp_path))
     assert result.ok is True
+    assert result.usage.cost == 0.0
+
+
+# === The registry has to REACH the channel ===================================
+#
+# Every test above hands ``PrintChannel`` a registry explicitly. Production did
+# not: ``_SubagentRuntimeImpl.channel`` was ``field(default_factory=PrintChannel)``
+# — ``PrintChannel()`` with no arguments, so ``model_registry=None`` — and
+# ``apply_cost_fallback`` returned at its first guard for EVERY delegation. The
+# fallback was fully tested and completely inert. These two pin the wiring
+# itself, and they pin it by DELIVERY (a priced envelope), not by asserting an
+# attribute is non-None.
+
+
+async def test_the_default_runtime_channel_prices_the_child(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A runtime built the way production builds it produces a PRICED envelope.
+
+    Measured before the fix, against a real OpenRouter delegation: the envelope
+    read ``2940 in / 20 out`` and carried no ``$`` at all — ``tool.py:622`` and
+    ``aggregate.py:290`` both gate on ``if usage.cost:``, so a structurally-zero
+    cost prints nothing rather than ``$0.0000``.
+
+    ``build_child_argv`` is patched BEFORE the runtime is constructed because
+    ``PrintChannel.__init__`` resolves ``argv_builder or build_child_argv`` at
+    construction time — that is the only seam a caller who does not own the
+    channel has, and using it is what keeps this a test of the DEFAULT channel.
+    """
+
+    registry = _FakeRegistry()
+    monkeypatch.setattr(
+        pc, "build_child_argv", lambda *a, **k: [sys.executable, "-c", _HAPPY]
+    )
+    runtime = _SubagentRuntimeImpl(
+        host=SubagentHost(cwd=lambda: str(tmp_path), model_registry=lambda: registry)
+    )
+
+    assert runtime.channel is not None
+    result = await runtime.channel.run(_plan(tmp_path))
+
+    assert registry.asked == [("stub", "stub-1")]
+    assert result.usage.cost == pytest.approx((17 * 3.0 + 8 * 15.0) / 1_000_000)
+
+
+async def test_an_injected_channel_still_wins(tmp_path: Path) -> None:
+    """The seam every other test in this package drives must keep working.
+
+    ``__post_init__`` only fills a channel nobody supplied; it never replaces
+    one. Without this, "build the default in ``__post_init__``" would be
+    indistinguishable from "overwrite whatever the caller passed".
+    """
+
+    injected = PrintChannel(
+        argv_builder=lambda *a, **k: [sys.executable, "-c", _HAPPY]
+    )
+    runtime = _SubagentRuntimeImpl(
+        host=SubagentHost(
+            cwd=lambda: str(tmp_path), model_registry=lambda: _FakeRegistry()
+        ),
+        channel=injected,
+    )
+    assert runtime.channel is injected
+    # And it is genuinely still the one that runs — it has no registry, so the
+    # cost stays 0 rather than picking up the host's.
+    result = await runtime.channel.run(_plan(tmp_path))
     assert result.usage.cost == 0.0
 
 

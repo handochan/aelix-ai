@@ -78,6 +78,11 @@ aelix --help
 OAuth), pass `--api-key`, or configure `~/.aelix/agent/models.json`. See the
 [providers guide](docs/guides/providers-and-models.md).
 
+If you plan to use agent delegation, use an environment variable rather than
+`--api-key`: `--api-key` is held in memory by the parent process only, so a
+delegated child never sees it and fails to authenticate on its own. Environment
+keys are inherited by children as a matter of course.
+
 ## Providers
 
 Hand-written native adapters — no litellm, no generic wrapper layer — with per-provider
@@ -169,7 +174,7 @@ aelix extension install <target> --require-signature            # fail-closed pr
 
 ## Known limitations (beta)
 
-Two things worth knowing before you point Aelix at something that matters.
+Three things worth knowing before you point Aelix at something that matters.
 
 **A run has no spend ceiling.** There is no iteration cap, no duplicate-call
 detection, and no cumulative token or cost budget — a model that keeps calling
@@ -194,6 +199,21 @@ Otherwise a headless run has full write and shell access to the machine it runs
 on, with whatever credentials that machine holds. Give it a container, a
 sandbox, or a checkout you can throw away.
 
+**Delegation is Linux-first, and its spend is not in `/cost`.** Agent delegation
+(`--agents`, `[features] agents`) spawns a real child process, and the process
+plumbing is written for POSIX: every spawn passes a `preexec_fn` and the kill
+path uses `SIGKILL`, neither of which exists on Windows, so delegation is
+unsupported there ([#110](https://github.com/handochan/aelix-ai/issues/110)). On
+macOS the child itself is signalled correctly, but the descendant walk reads
+`/proc` and therefore finds nothing — anything a delegated agent forks can
+outlive it, and a child whose parent is killed outright keeps running. A
+headless parent (`--print`, `--mode json`, `--mode rpc`) has no terminal to draw
+the spawn-consent dialog on, so it consents on its own: the child still cannot
+exceed the parent's own posture or tool grant, but no human is asked. And a
+child's tokens are billed to the provider without ever entering the parent's
+session, so `/cost` reports the parent only — read each delegation's own
+`[agent … in / … out]` footer for what a child spent.
+
 ## Architecture
 
 Three packages make up the agent (a uv workspace), orchestrated by `Agent` and `AgentHarness`:
@@ -211,6 +231,7 @@ extensions, not core · explicit hook bus for auditability. Full rationale in
 [Getting started](docs/guides/getting-started.md) ·
 [Providers & models](docs/guides/providers-and-models.md) ·
 [Custom models](docs/guides/models-json.md) ·
+[Agent profiles](docs/guides/agent-profiles.md) ·
 [Writing an extension](docs/guides/extension-authoring.md) ·
 [Releasing](RELEASING.md)
 

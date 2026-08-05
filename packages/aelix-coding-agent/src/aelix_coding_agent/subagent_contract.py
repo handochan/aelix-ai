@@ -152,6 +152,25 @@ class SubagentResult:
     spawn-time consent dialog. Additive + defaulted: does NOT bump
     ``CONTRACT_VERSION``."""
 
+    model: str | None = None
+    provider: str | None = None
+    """WHICH MODEL THE CHILD ACTUALLY RAN, read off its own ``message_end``.
+
+    A profile that declares no ``model:`` emits no ``--model`` flag, so the child
+    falls through to the PERSISTED default rather than the parent's run-scope
+    model — a different model at a different price. (``model: inherit``
+    normalises to :data:`None` and takes the same path, so the word currently
+    means the opposite of what it says.) That substitution was completely
+    invisible: nothing in the envelope, the footer or the ``/agents run`` grid
+    named the child's model, so the only way to notice was the bill.
+
+    Recording it does not decide the precedence question — it makes the answer
+    observable, which is the half that has to exist first either way.
+
+    Populated from ``_StreamState.provider``/``.model``, which the reducer
+    already fills from every ``message_end`` (``stream.py``), so no new parsing.
+    Additive + defaulted: does NOT bump ``CONTRACT_VERSION``."""
+
 
 @dataclass(frozen=True)
 class SubagentProgress:
