@@ -78,10 +78,13 @@ aelix --help
 OAuth), pass `--api-key`, or configure `~/.aelix/agent/models.json`. See the
 [providers guide](docs/guides/providers-and-models.md).
 
-If you plan to use agent delegation, use an environment variable rather than
-`--api-key`: `--api-key` is held in memory by the parent process only, so a
-delegated child never sees it and fails to authenticate on its own. Environment
-keys are inherited by children as a matter of course.
+If you plan to use agent delegation, prefer an environment variable or `/login`
+over `--api-key`. `--api-key` is held in memory by the parent process only, so a
+delegated child never receives it — a child resolves its own credential the way
+any fresh process does: from `auth.json` (what `/login` writes) and from the
+environment it inherits. So it authenticates normally if either of those carries
+a key for the provider, and only if neither does will it stop before its first
+turn with `No API key found for <provider>`.
 
 ## Providers
 

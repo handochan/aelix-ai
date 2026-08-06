@@ -104,12 +104,20 @@ offer you the choice to widen it. You are still the one who answers.
 
 ## How the child authenticates
 
-A delegated child is a separate process. It inherits your environment, so
-provider keys set as environment variables (`ANTHROPIC_API_KEY`,
-`OPENROUTER_API_KEY`, …) work without any further setup.
+A delegated child is a separate process, and it resolves its own credential
+rather than being handed the parent's. Two of the four setup paths carry over
+without any further work: keys set as environment variables (`ANTHROPIC_API_KEY`,
+`OPENROUTER_API_KEY`, …) are inherited, and anything `/login` wrote into
+`auth.json` is read by the child directly.
 
-`--api-key` does **not** reach a child: it lives in the parent process's memory
-only. If you plan to delegate, set the environment variable instead.
+`--api-key` does **not** reach a child — it lives in the parent process's memory
+only, and it is deliberately not forwarded: putting a key on the child's command
+line would publish it to every process on the machine through `/proc`, and
+handing it over in the environment would put it somewhere the child's own `bash`
+tool can read. Measured: with `--api-key` as the *only* credential, the child
+stops before its first turn with `No API key found for <provider>` and that
+message reaches you in the delegation's summary. Set the environment variable or
+run `/login` as well.
 
 ## A second example
 
