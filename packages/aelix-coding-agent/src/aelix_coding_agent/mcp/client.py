@@ -20,7 +20,6 @@ yields a 3-tuple ``(read, write, get_session_id)``; stdio/sse yield a
 
 from __future__ import annotations
 
-import os
 from contextlib import AsyncExitStack
 from datetime import timedelta
 from typing import Any
@@ -29,7 +28,11 @@ import mcp.types as mcp_types
 from aelix_agent_core.contracts import McpServerContrib
 from mcp import ClientSession
 from mcp.client.sse import sse_client
-from mcp.client.stdio import StdioServerParameters, stdio_client
+from mcp.client.stdio import (
+    StdioServerParameters,
+    get_default_environment,
+    stdio_client,
+)
 from mcp.client.streamable_http import streamablehttp_client
 
 
@@ -139,10 +142,36 @@ class McpServerConnection:
             params = StdioServerParameters(
                 command=self._contrib.command,
                 args=list(self._contrib.args),
+                # `env` ADDS variables. It does NOT widen what the child
+                # inherits, and declaring it must never be the thing that
+                # decides how much of our environment a spawned program sees.
+                #
+                # It used to. The old expression was
+                # ``{**os.environ, **env} if env else None``, so a manifest
+                # with no ``env`` got the SDK's safe set and a manifest with
+                # ANY ``env`` got the parent environment WHOLE. Measured on
+                # this box: 5 variables (HOME, PATH, SHELL, TERM, USER) versus
+                # 131, the latter including GITHUB_TOKEN — and in a real user's
+                # shell, every provider API key they have exported.
+                #
+                # The trap was that the reason to write ``env`` is trivial. A
+                # line as innocuous as ``env = { NOTES_LOG = "debug" }`` reads
+                # as "add one variable" to every author and reviewer, while
+                # actually handing an npx-downloaded program the user's keys.
+                # The manifest — the artifact whose whole promise is that you
+                # can read it and know what a pack does — was the thing hiding
+                # it, and the most harmless-looking line was the trigger.
+                #
+                # Overlaying the SDK's default instead means the declaration
+                # now means what it looks like. A server that genuinely needs a
+                # value from the parent environment has no route here on
+                # purpose; give it one explicitly (an ``env_passthrough`` list
+                # naming the variables) rather than by making every server
+                # inherit everything.
                 env=(
-                    {**os.environ, **self._contrib.env}
+                    {**get_default_environment(), **self._contrib.env}
                     if self._contrib.env
-                    # None → SDK get_default_environment() safe inherit.
+                    # None → the SDK applies get_default_environment() itself.
                     else None
                 ),
             )

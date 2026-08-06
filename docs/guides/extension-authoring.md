@@ -148,7 +148,7 @@ the same as registering it. What each family actually does at runtime:
 | `contributes.hooks` | **Activated** — each entry registers a subprocess hook. Also forces eager loading. |
 | `contributes.themes` | **Activated** — registered at TUI start and offered in `/settings → Theme` (see [Themes](#themes)). Forces eager loading. |
 | `contributes.tui_widgets` | **Activated** — painted into the chrome at TUI start. Forces eager loading. |
-| `contributes.mcp_servers` | **Activated** — consumed by the MCP client. |
+| `contributes.mcp_servers` | **Activated** — consumed by the MCP client at startup, and **capability-gated**: `transport = "stdio"` requires `capabilities.shell_exec = true` (the host spawns your `command`/`args` as a subprocess — the same flag `contributes.hooks` needs), while `transport = "http"`/`"sse"` requires `capabilities.net = true` (the host opens the connection to your `url`). A server whose flag is false is **not started**, and the host prints why. |
 | `contributes.commands` | **Metadata only** — supplies the *description* for a lazily-activated plugin's command stub in autocomplete. The command itself must still come from `register_command`. |
 | `contributes.tools` | **Declaration only** — it forces the plugin to load eagerly so its tools are visible to the model from startup, but it does not itself create a tool. Register the tool with `register_tool`. |
 | `contributes.descriptors` | **Reserved and inert** — declaring it logs a warning. Emit descriptors at runtime instead (see [Descriptors](#descriptors-runtime-emitted-not-manifest)). |
@@ -314,6 +314,48 @@ extensions you pass explicitly with `-e` still load.
 A manifest plugin (`aelix-plugin.toml`) can declare capabilities the host
 activates without imperative registration. Two of the declarative families:
 
+### Capabilities — three are gates, six are documentation
+
+The nine `[capabilities]` flags all default to `false` and all look alike, but
+they do not behave alike. Three are **enforced**: declare the contribution
+without the flag and the host refuses it, with a printed reason.
+
+| flag | status | what it gates |
+|---|---|---|
+| `shell_exec` | **ENFORCED** | `[[contributes.hooks]]` (load refused) and a `transport = "stdio"` `[[contributes.mcp_servers]]` (server not started) |
+| `net` | **ENFORCED** | a `transport = "http"`/`"sse"` `[[contributes.mcp_servers]]` (server not started) |
+| `ui_tui_trusted` | **ENFORCED** | `[[contributes.tui_widgets]]` — refused *before* your module is imported |
+| `fs_write`, `fs_read_user`, `mcp_invoke`, `ui_descriptor`, `ui_web_trusted`, `mcp_serve` | declared only | nothing yet — see below |
+
+The other six are a statement of intent, **not a sandbox**. A plugin is
+in-process Python: `fs_write = false` does not stop `open(path, "w")`, it only
+says you do not mean to. Even for the enforced three the check is on the
+*declaration*, at load time — a plugin that is already running can reach its
+own `Capabilities` and change them.
+
+Three traps worth naming:
+
+- **`mcp_serve` is not the flag for `[[contributes.mcp_servers]]`.**
+  `mcp_serve` means *your plugin is itself an MCP server* and forces
+  `[plugin.entry] python`. `[[contributes.mcp_servers]]` is the opposite —
+  config asking the host to connect **out** to a server, needing no plugin
+  code at all. It is gated on `shell_exec` / `net` per the table above.
+- **`shell_exec` does not unlock an http/sse server**, and `net` does not
+  unlock a stdio one. Different primitives, different flags.
+- **`env` on a stdio server ADDS variables — it does not pass the host's
+  environment through.** Your server starts with the MCP SDK's small default
+  set (`HOME`, `PATH`, `SHELL`, `TERM`, `USER`) plus exactly what you declare,
+  and never the user's `ANTHROPIC_API_KEY`, `GITHUB_TOKEN` or anything else
+  they happen to have exported. A server that expects to read a credential out
+  of the ambient environment will not find one, and that is deliberate: take
+  it as an explicit argument, or read it from a path the user configures, so
+  the manifest shows what your server consumes. (Declaring `env` used to hand
+  the child the parent environment whole — which made the most harmless-looking
+  line in a manifest the one that leaked keys.)
+
+See ADR-0205 for the reasoning and `docs/contracts/manifest.schema.json` for
+the same information machine-readably.
+
 ### Themes
 
 Bundle a color theme as a plugin-relative TOML file and declare it:
@@ -363,3 +405,111 @@ def setup(aelix: ExtensionAPI) -> None:
 ```
 
 See ADR-0095 for the descriptor protocol and the full slot taxonomy.
+
+## Packaging your extension
+
+This section is only for the **installed-package** channel — the one the
+marketplace uses and `aelix extension install <pkg>` gives you. A single `.py`
+file, a directory, or a git URL need none of it. But once you build a wheel, one
+detail decides whether your manifest survives the build, and the default of the
+most common backend gets it wrong.
+
+**The footgun.** When your package declares an `aelix.extensions` entry point,
+the host reads your `aelix-plugin.toml` from the *installed distribution's
+metadata* — it must be **inside the wheel**, at
+`<your_package>/aelix-plugin.toml`. A **setuptools build with default
+configuration ships `*.py` and silently DROPS non-code files** —
+`aelix-plugin.toml` and `themes/*.toml` among them. The result is the worst kind
+of failure: the wheel installs, your `setup()` runs, the pack looks healthy —
+and every declarative contribution (declared tools/commands, themes, TUI
+widgets, MCP servers, subprocess hooks) is inert, because the manifest is simply
+not there to read. Nothing errors; the contribution just never appears.
+
+**Two backends, and what each needs.**
+
+- **hatchling (recommended).** Ships every file inside the selected package
+  directory by default, data files included, so the manifest and themes ride
+  along with no extra configuration:
+
+  ```toml
+  [build-system]
+  requires = ["hatchling"]
+  build-backend = "hatchling.build"
+
+  [project.entry-points."aelix.extensions"]
+  my-ext = "my_package:setup"
+
+  [tool.hatch.build.targets.wheel]
+  packages = ["my_package"]
+  ```
+
+- **setuptools.** You must opt the data files in **explicitly** — either
+  `include_package_data = true` plus a `MANIFEST.in` that names them, or an
+  explicit `[tool.setuptools.package-data]`:
+
+  ```toml
+  [tool.setuptools.package-data]
+  my_package = ["aelix-plugin.toml", "themes/*.toml"]
+  ```
+
+**A copyable, buildable starter** lives at
+`packages/aelix-coding-agent/src/aelix_coding_agent/examples/starter/` — a
+hatchling project with `pyproject.toml`, a package holding `setup()` +
+`aelix-plugin.toml` + `themes/example.toml`, and the entry point wired. Copy it
+and change the names.
+
+**Prove the manifest shipped — do not assume it.** After building, look inside
+the wheel and then ask the host:
+
+```bash
+pip wheel . -w dist --no-deps
+python -m zipfile -l dist/*.whl        # must list <pkg>/aelix-plugin.toml
+pip install dist/*.whl
+aelix extension verify <name>          # exit 0 == the manifest bound
+```
+
+`aelix extension verify` runs the host's own import-free resolver over your
+installed endpoint and exits non-zero if the manifest is `ABSENT` (dropped from
+the wheel — it prints the setuptools/package-data cause), `MALFORMED`,
+`MISPLACED` (shipped, but not inside the entry module's package), or otherwise
+unbindable. `aelix extension list` annotates the same verdict. Wire
+`aelix extension verify <name>` into your release CI so a build that drops the
+manifest fails there, not silently on a user's machine. See ADR-0207.
+
+## Publishing
+
+An extension does not need a catalog: `-e ./my_ext.py`, a git URL, or a pip
+package all install without one. A catalog only makes an extension
+*discoverable* — it is an advisory index, and listing never means "reviewed" or
+"safe" (ADR-0188).
+
+A catalog-listed pack has one extra requirement (ADR-0207): the installed
+distribution must yield a **bound** manifest — `aelix extension verify` must exit
+0. It need not declare any contribution, but it must carry a parseable,
+schema-valid `aelix-plugin.toml`, so a marketplace entry is an auditable,
+gated set of declarations rather than a black-box entry-point pack. An arbitrary
+`pip install <pkg>` pack is under no such obligation.
+
+The official index is the **[Aelix Marketplace](https://handochan.github.io/aelix-marketplace/)**,
+which is `DEFAULT_CATALOG_URL` — registered out of the box, though nothing is
+fetched until you ask. It ships empty and is open for submissions:
+
+```bash
+aelix extension discover --refresh       # fetch the default catalog (network)
+aelix extension discover                 # browse the cached snapshot
+aelix extension discover install <name>  # resolve from that snapshot + install
+```
+
+`discover` and `discover install` read the local cache; only `--refresh` goes to
+the network. Refresh once before looking for a freshly merged listing.
+
+To list yours, open a pull request against
+[handochan/aelix-marketplace](https://github.com/handochan/aelix-marketplace)
+with an entry naming your extension and its `source` spec — see that repo's
+[CONTRIBUTING.md](https://github.com/handochan/aelix-marketplace/blob/main/CONTRIBUTING.md).
+Sign the artifact first if you want users to be able to gate on provenance:
+
+```bash
+aelix extension keygen                          # publisher Ed25519 key; prints a keyId
+aelix extension sign <artifact> --key <keyId>   # detached .aelixsig sidecar
+```

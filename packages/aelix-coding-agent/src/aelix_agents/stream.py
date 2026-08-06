@@ -45,7 +45,7 @@ from __future__ import annotations
 
 import json
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 # Per-line budget. A line longer than this is DISCARDED and counted, never
@@ -58,16 +58,23 @@ from typing import Any
 MAX_LINE_BYTES = 4 * 1024 * 1024
 
 # Event types this reducer consumes. Everything else — ``message_start``,
-# ``message_update``, ``tool_execution_end``, ``turn_end``, the auto-retry
-# pair — is ignored on purpose. ``message_update`` in particular MUST be
-# ignored: its ``partial`` repeats the whole assistant message on every delta
-# (measured stream-to-result ratios of 329x and 2773x), while the outer
+# ``message_update``, ``turn_end``, the auto-retry pair, the compaction pair —
+# is ignored on purpose. ``message_update`` in particular MUST be ignored: its
+# ``partial`` repeats the whole assistant message on every delta (measured
+# stream-to-result ratios of 329x and 2773x), while the outer
 # ``message.content`` stays ``[]`` for the duration, so consuming it costs
 # O(n^2) and yields nothing.
+#
+# ``tool_execution_end`` USED to be on that ignored list and no longer is. It
+# carries the only per-tool success/failure signal that ever reaches the parent:
+# ``build_result`` derives status from the child's exit code and the stream
+# terminator, so before the trail a child whose every tool errored still came
+# back ``ok``.
 _AGENT_START = "agent_start"
 _TURN_START = "turn_start"
 _MESSAGE_END = "message_end"
 _TOOL_EXECUTION_START = "tool_execution_start"
+_TOOL_EXECUTION_END = "tool_execution_end"
 _AGENT_END = "agent_end"
 
 
@@ -230,6 +237,178 @@ class _StreamState:
     dropped_lines: int = 0
     """Folded in from :attr:`LineAssembler.dropped_lines` by the pump, so the
     envelope builder has one place to read."""
+
+    trail_overflow: int = 0
+    """Calls the child made beyond :data:`MAX_TRAIL_ENTRIES`.
+
+    Counted rather than dropped in silence, so the rendered trail can end with
+    an honest "… N more" instead of looking like the whole story."""
+
+    tool_trail: list[ToolCall] = field(default_factory=list)
+    """What the child DID, in order — the evidence behind :attr:`summary`.
+
+    ``summary`` is the child's CONCLUSION: the last text-bearing assistant
+    message and nothing else. Every tool the child ran, every argument it ran it
+    with and every failure it hit were on the wire and discarded here, because
+    the reducer read ``tool_execution_start.tool_name`` into
+    :attr:`current_tool` — a last-write-wins field that the very next
+    ``turn_start`` clears — and ignored ``tool_execution_end`` entirely.
+
+    That mattered most in chain mode, where step k+1 receives step k's
+    conclusion with no way to know what ground was already covered, and where a
+    child whose every tool FAILED still reports ``ok`` (``build_result``
+    derives status from the exit code and the stream terminator, neither of
+    which sees a tool error).
+
+    BOUNDED BY COUNT, not just by bytes. :data:`MAX_LINE_BYTES` bounds one line;
+    it says nothing about how many of them arrive. An unbounded accumulator here
+    would reintroduce the parent-memory-exhaustion shape that budget exists to
+    close, on a child that simply runs a lot of tools."""
+
+
+MAX_TRAIL_ENTRIES = 200
+"""How many tool calls one child's trail may record.
+
+A COUNT bound, deliberately, and separate from every byte bound on this path:
+:data:`MAX_LINE_BYTES` bounds one line and says nothing about how many arrive,
+so a child that runs ten thousand cheap tools would otherwise grow the parent's
+memory without ever tripping a size check. Overflow is COUNTED and reported, not
+silently discarded — see :attr:`_StreamState.tool_trail`."""
+
+MAX_TRAIL_ARG_CHARS = 120
+"""How much of one call's arguments survives into the trail.
+
+Long enough for a path or an ordinary command, short enough that a trail of
+:data:`MAX_TRAIL_ENTRIES` cannot dominate the byte budget it has to share with
+the summary."""
+
+_ARG_PREFERENCE = ("path", "file_path", "command", "pattern", "query", "url", "cmd")
+"""Argument names that ARE the call, when present.
+
+Deliberately a preference list rather than a per-tool table: a table would have
+to name every built-in and would go stale the moment an extension ships a tool.
+These are the spellings the built-ins already use for their primary argument, so
+``read`` renders as its path and ``bash`` as its command, while an unknown tool
+falls back to compact ``k=v`` pairs rather than to nothing."""
+
+_CONTROL_CHARS = frozenset(
+    chr(c) for c in [*range(0x00, 0x20), 0x7F, *range(0x80, 0xA0)]
+)
+"""C0, DEL and C1. The same set ``consent.contains_control_chars`` refuses.
+
+Stripped rather than refused here, because a trail is diagnostic rather than
+structural: a control character in a tool argument must not be able to fail a
+delegation that otherwise worked."""
+
+
+@dataclass
+class ToolCall:
+    """One tool invocation, as the parent saw it happen.
+
+    Mutable on purpose: ``tool_execution_start`` carries the name and the
+    arguments, ``tool_execution_end`` carries the outcome, and the two are
+    correlated by ``tool_call_id`` — so the entry is created by the first and
+    completed by the second. An entry whose ``failed`` is still ``None`` is a
+    call that never reported an end, which is exactly what a child killed
+    mid-tool leaves behind and is worth showing as such.
+    """
+
+    name: str
+    args: str = ""
+    failed: bool | None = None
+    call_id: str = ""
+
+
+def _strip_control(text: str) -> str:
+    """Remove control characters AND collapse the string onto one line.
+
+    BOTH halves are load-bearing, and the second one is the security half.
+    A trail is rendered one call per line, so a newline surviving inside an
+    argument would let a child that read attacker-controlled content forge
+    additional trail entries — inventing tool calls the parent never observed,
+    inside a block the fence labels as a faithful record. Collapsing to a single
+    line makes the line count structural rather than content-controlled.
+
+    The control-character half is the same hazard ``consent._sanitize_field``
+    exists for: these bytes are interpolated into a prompt and, on the
+    ``/agents run`` path, rendered to a terminal.
+    """
+
+    return "".join(" " if ch in _CONTROL_CHARS else ch for ch in text).strip()
+
+
+def _render_args(args: Any) -> str:
+    """The shortest honest rendering of one call's arguments. NEVER raises.
+
+    Total by construction, like every other extraction in this module: the
+    reducer's contract is that a malformed line costs that line and nothing
+    more, and ``args`` is model-authored JSON that has already survived a wire.
+    """
+
+    if not isinstance(args, dict) or not args:
+        return ""
+    try:
+        for key in _ARG_PREFERENCE:
+            value = args.get(key)
+            if isinstance(value, str) and value:
+                return _clip(_strip_control(value))
+        parts = [
+            f"{k}={v}"
+            for k, v in args.items()
+            if isinstance(v, (str, int, float, bool))
+        ]
+        return _clip(_strip_control(", ".join(parts)))
+    except Exception:  # noqa: BLE001 — a trail entry is never worth a failed run
+        return ""
+
+
+def _clip(text: str) -> str:
+    if len(text) <= MAX_TRAIL_ARG_CHARS:
+        return text
+    return text[: MAX_TRAIL_ARG_CHARS - 1] + "…"
+
+
+def _open_trail_entry(state: _StreamState, tool_name: str, event: dict[str, Any]) -> None:
+    """Record a call the child just started. NEVER raises.
+
+    Over-budget calls are COUNTED, not silently forgotten: the entry is dropped
+    but :attr:`_StreamState.trail_overflow` grows, so the renderer can say how
+    many it is not showing. A trail that simply stopped would read as "the child
+    did this much", which is the failure mode every truncation in this codebase
+    is written to avoid.
+    """
+
+    if len(state.tool_trail) >= MAX_TRAIL_ENTRIES:
+        state.trail_overflow += 1
+        return
+    call_id = event.get("tool_call_id")
+    state.tool_trail.append(
+        ToolCall(
+            name=_strip_control(tool_name)[:MAX_TRAIL_ARG_CHARS],
+            args=_render_args(event.get("args")),
+            call_id=call_id if isinstance(call_id, str) else "",
+        )
+    )
+
+
+def _close_trail_entry(state: _StreamState, event: dict[str, Any]) -> None:
+    """Attach an outcome to the call this event ends. NEVER raises.
+
+    Matched on ``tool_call_id``, which both events carry, and searched from the
+    END because tools complete near where they started even under the parallel
+    executor. An unmatched end event is ignored rather than guessed at: a wrong
+    pairing would report one tool's failure against another tool's name, which
+    is worse than reporting nothing.
+    """
+
+    call_id = event.get("tool_call_id")
+    if not isinstance(call_id, str) or not call_id:
+        return
+    failed = bool(event.get("is_error"))
+    for entry in reversed(state.tool_trail):
+        if entry.call_id == call_id:
+            entry.failed = failed
+            return
 
 
 def _usage_field(usage: dict[str, Any] | None, *names: str) -> int:
@@ -445,6 +624,36 @@ def reduce_line(state: _StreamState, line: str) -> _StreamState:
         return state
     if not isinstance(event, dict):
         return state
+    return reduce_event(state, event)
+
+
+def reduce_event(state: _StreamState, event: dict[str, Any]) -> _StreamState:
+    """Fold one ALREADY-PARSED event into ``state``; return the same instance.
+
+    The same reducer as :func:`reduce_line` with the framing removed, and it
+    exists because the two channels hand their events over in different shapes:
+    the print channel reads raw stdout bytes and has a ``str`` per line, while
+    :class:`~aelix_coding_agent.rpc.rpc_client.RpcClient` has already called
+    ``json.loads`` and hands its listeners a ``dict``.
+
+    WITHOUT THIS SPLIT THE RPC PATH FAILS SILENTLY, which is why it is a
+    refactor and not a convenience. ``reduce_line``'s first statement is
+    ``line.strip()``, so a dict raises ``AttributeError`` immediately — and
+    ``RpcClient`` wraps every listener in ``contextlib.suppress(Exception)``.
+    The result would be that EVERY event is dropped, ``state`` stays empty, and
+    ``build_result`` reports the delegation as ``ok`` with the summary
+    ``"(no output)"``. A wrong answer, delivered confidently, with no error
+    anywhere. Re-serialising the dict just to re-parse it would have worked, but
+    it is wasteful and it hides the same trap one refactor away.
+
+    No field mapping is needed in either direction: both modes serialise the
+    same kernel dataclasses through ``dataclasses.asdict``, so the wire shapes
+    are identical (``rpc/rpc_mode.py``'s ``_event_to_dict`` and
+    ``modes/print_mode.py``'s namesake).
+
+    Same "NEVER raises" contract as :func:`reduce_line` — see its docstring for
+    what that cost to learn.
+    """
 
     kind = event.get("type")
     if kind == _AGENT_START:
@@ -462,6 +671,14 @@ def reduce_line(state: _StreamState, line: str) -> _StreamState:
         tool_name = event.get("tool_name")
         if isinstance(tool_name, str) and tool_name:
             state.current_tool = tool_name
+            _open_trail_entry(state, tool_name, event)
+    elif kind == _TOOL_EXECUTION_END:
+        # NEWLY CONSUMED, and the reversal is deliberate. This event was ignored
+        # because nothing downstream had a use for it; the trail does. It is the
+        # ONLY place a per-tool failure is observable — ``build_result`` derives
+        # status from the exit code and the stream terminator, so a child whose
+        # every tool errored still reports ``ok``.
+        _close_trail_entry(state, event)
     elif kind == _AGENT_END:
         state.saw_agent_end = True
         state.current_tool = None
@@ -471,6 +688,10 @@ def reduce_line(state: _StreamState, line: str) -> _StreamState:
 __all__ = [
     "LineAssembler",
     "MAX_LINE_BYTES",
+    "MAX_TRAIL_ARG_CHARS",
+    "MAX_TRAIL_ENTRIES",
+    "ToolCall",
     "_StreamState",
+    "reduce_event",
     "reduce_line",
 ]

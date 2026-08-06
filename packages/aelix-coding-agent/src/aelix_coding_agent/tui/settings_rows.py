@@ -25,9 +25,14 @@ thinking-level / thinking-blocks / tool-card-max-lines) DUAL-WRITE: persist via
 the SettingsManager AND apply to the live session (harness / renderer / context).
 The shell owns the live half (it holds the harness/renderer/context); these
 helpers own the persist half + the canonical cycle orderings + the human-readable
-labels. The honest "persist-only" rows say so in their commit message (grep
-confirms 11 fields have ZERO coding-agent consumers — tracked for wiring) — they
-apply next launch / when a consumer is wired.
+labels.
+
+The remaining rows are PERSIST-ONLY, and eleven of them are outright INERT: the
+value round-trips to ``settings.json`` and no production code ever reads it back
+(re-measured 2026-07-31 for #111 B-11 — see the block comment above those rows).
+Their help text says so rather than promising "applies next launch", which was
+never true for them. ``features_agents`` and ``tool_card_max_lines`` sit in the
+same block but ARE wired; do not sweep them into a blanket rewrite.
 
 SKIPPED: ``markdown.code_block_indent`` — :class:`SettingsManager` exposes
 ``get_code_block_indent`` but NO setter, so a row would be dead/unsettable UI.
@@ -69,8 +74,9 @@ class SettingsRow:
     :param read: ``(sm) -> str`` — the current value rendered for the row.
     :param help: one-line description shown in the select detail panel.
     :param live: ``True`` when the change also applies to the live session this
-        run (the shell mirrors it); ``False`` = persist-only (applies next launch
-        / when a consumer is wired).
+        run (the shell mirrors it); ``False`` = persist-only. Note that
+        ``live=False`` does NOT imply "applies next launch" — for the eleven
+        inert rows (#111 B-11) nothing reads the value at any point.
     :param choices: the ordered enum literals (``enum`` rows only).
     :param int_range: ``(lo, hi)`` advisory range shown in the prompt (``int``
         rows only; the SettingsManager setter is the authoritative clamp).
@@ -84,6 +90,20 @@ class SettingsRow:
     live: bool = False
     choices: tuple[str, ...] = field(default_factory=tuple)
     int_range: tuple[int, int] | None = None
+    apply_note: str | None = None
+    """Appended to the confirmation line when the change is not yet in effect.
+
+    ROW-SCOPED rather than a special case on ``key``, so the next persist-only
+    row that needs a restart inherits the mechanism instead of re-discovering it.
+
+    It exists because ``live=False`` is invisible at the one moment it matters.
+    The confirmation for a toggle reads ``agent delegation → on`` whether or not
+    anything now behaves differently, and for ``features_agents`` nothing does:
+    the flag is read once per process (``cli/entry.py::_agents_delegation_enabled``,
+    called from ``_async_main``), and ``/reload`` re-runs the same harness factory
+    over a closure variable that is already frozen — so the toggle looks like it
+    worked, ``/agents run`` still refuses, and the user has been told twice that
+    they enabled something they did not."""
 
 
 def _on_off(value: bool) -> str:
@@ -159,12 +179,33 @@ def build_settings_rows(sm: SettingsManager) -> list[SettingsRow]:
             live=True,
         ),
         # --- PERSIST-ONLY rows (no live coding-agent consumer) ---------------
+        #
+        # #111 B-11 — HONESTY OF THE HELP TEXT. Most rows below are not merely
+        # "not live": they have NO production consumer at all, so the value is
+        # written to settings.json and then read by nobody, this launch or any
+        # other. Their help text used to promise "Persisted; applies next
+        # launch", which is a lie by omission. It now says the value is inert.
+        #
+        # Re-measured 2026-07-31 by grepping every getter AND its backing field
+        # across ``packages/*/src`` and ``src/``, excluding the setting's own
+        # definition (settings_manager.py, types.py) and this file. All eleven
+        # of the #111 rows still return ZERO consumers.
+        #
+        # The two exceptions in this block, which are genuinely wired and whose
+        # help text is therefore left alone:
+        #   * ``features_agents``      -> cli/entry.py::_build_harness_options
+        #   * ``tool_card_max_lines``  -> tui/shell.py -> render.py (live)
+        #
+        # WHEN YOU WIRE ONE OF THESE UP, revert its help text in the same
+        # commit. A row that works but claims to be inert is the same defect
+        # pointing the other way.
         SettingsRow(
             key="features_agents",
             label="Agent delegation",
             kind="bool",
             read=lambda s: _on_off(s.get_features_agents()),
             help="Allow this agent to delegate work to a subagent. Persisted; applies next launch.",
+            apply_note="takes effect after you restart aelix",
             # DELIBERATELY NOT live (ADR-0197 §5.6): the flag is consumed once,
             # by ``cli/entry.py::_build_harness_options``, when the harness is
             # built — the ``agent`` tool and the delegation extension are either
@@ -178,7 +219,10 @@ def build_settings_rows(sm: SettingsManager) -> list[SettingsRow]:
             label="Autocomplete max items",
             kind="int",
             read=lambda s: str(s.get_autocomplete_max_visible()),
-            help="Max rows in the autocomplete menu (3-20). Persisted; applies next launch.",
+            help=(
+                "Max rows in the autocomplete menu (3-20). "
+                "Saved but not yet wired — no effect in this build."
+            ),
             int_range=(3, 20),
         ),
         SettingsRow(
@@ -195,14 +239,20 @@ def build_settings_rows(sm: SettingsManager) -> list[SettingsRow]:
             label="Show hardware cursor",
             kind="bool",
             read=lambda s: _on_off(s.get_show_hardware_cursor()),
-            help="Use the terminal's hardware cursor. Persisted; applies next launch.",
+            help=(
+                "Use the terminal's hardware cursor. "
+                "Saved but not yet wired — no effect in this build."
+            ),
         ),
         SettingsRow(
             key="editor_padding_x",
             label="Editor padding",
             kind="int",
             read=lambda s: str(s.get_editor_padding_x()),
-            help="Horizontal input padding (0-3). Persisted; applies next launch.",
+            help=(
+                "Horizontal input padding (0-3). "
+                "Saved but not yet wired — no effect in this build."
+            ),
             int_range=(0, 3),
         ),
         SettingsRow(
@@ -210,21 +260,39 @@ def build_settings_rows(sm: SettingsManager) -> list[SettingsRow]:
             label="Quiet startup",
             kind="bool",
             read=lambda s: _on_off(s.get_quiet_startup()),
-            help="Suppress the startup banner. Persisted; applies next launch.",
+            help=(
+                "Suppress the startup banner. "
+                "Saved but not yet wired — the banner always shows."
+            ),
         ),
         SettingsRow(
             key="enable_skill_commands",
             label="Skill commands",
             kind="bool",
             read=lambda s: _on_off(s.get_enable_skill_commands()),
-            help="Enable /skill:<name> dynamic commands. Persisted; applies next launch.",
+            # CAREFUL: it is THIS SETTING that is inert, not skills. Skills are
+            # loaded at startup (``cli/entry.py`` ``load_skills`` ->
+            # ``harness.set_skills``) and consumed by ``/skills``, the startup
+            # banner, and rpc_mode's command list. What does not exist is the
+            # ``/skill:<name>`` command surface — and nothing reads this flag
+            # either way (#115). Saying "the skills carrier has no consumer"
+            # would tell users that ``--skill`` and ``.aelix/skills`` do nothing,
+            # which is false and is the inversion this block warns about.
+            help=(
+                "Enable /skill:<name> dynamic commands. Saved but not yet wired — "
+                "no /skill:<name> surface exists yet (#115). Skills themselves "
+                "still load; /skills lists them."
+            ),
         ),
         SettingsRow(
             key="double_escape_action",
             label="Double-escape action",
             kind="enum",
             read=lambda s: s.get_double_escape_action(),
-            help="What a quick double-Esc does. Persisted; applies next launch.",
+            help=(
+                "What a quick double-Esc does. "
+                "Saved but not yet wired — no effect in this build."
+            ),
             choices=("fork", "tree", "none"),
         ),
         SettingsRow(
@@ -232,7 +300,10 @@ def build_settings_rows(sm: SettingsManager) -> list[SettingsRow]:
             label="Tree filter mode",
             kind="enum",
             read=lambda s: s.get_tree_filter_mode(),
-            help="Default /tree filter. Persisted; applies next launch.",
+            help=(
+                "Default /tree filter. "
+                "Saved but not yet wired — no effect in this build."
+            ),
             choices=("default", "no-tools", "user-only", "labeled-only", "all"),
         ),
         SettingsRow(
@@ -240,28 +311,40 @@ def build_settings_rows(sm: SettingsManager) -> list[SettingsRow]:
             label="Auto-resize images",
             kind="bool",
             read=lambda s: _on_off(s.get_image_auto_resize()),
-            help="Down-scale large pasted images. Persisted; applies next launch.",
+            help=(
+                "Down-scale large pasted images. Saved but not yet wired — "
+                "images are always auto-resized."
+            ),
         ),
         SettingsRow(
             key="block_images",
             label="Block images",
             kind="bool",
             read=lambda s: _on_off(s.get_block_images()),
-            help="Refuse image attachments entirely. Persisted; applies next launch.",
+            help=(
+                "Refuse image attachments entirely. "
+                "Saved but not yet wired — images are never blocked."
+            ),
         ),
         SettingsRow(
             key="show_terminal_progress",
             label="Terminal progress",
             kind="bool",
             read=lambda s: _on_off(s.get_show_terminal_progress()),
-            help="Emit terminal progress (OSC) sequences. Persisted; applies next launch.",
+            help=(
+                "Emit terminal progress (OSC) sequences. "
+                "Saved but not yet wired — no effect in this build."
+            ),
         ),
         SettingsRow(
             key="clear_on_shrink",
             label="Clear on shrink",
             kind="bool",
             read=lambda s: _on_off(s.get_clear_on_shrink()),
-            help="Clear scrollback when the terminal shrinks. Persisted; applies next launch.",
+            help=(
+                "Clear scrollback when the terminal shrinks. "
+                "Saved but not yet wired — no effect in this build."
+            ),
         ),
     ]
 
@@ -308,9 +391,10 @@ def apply_setting(
             new = not current
             _set_bool(row.key, sm, new)
             shown = _bool_label(row, new)
+            note = f" ({row.apply_note})" if row.apply_note else ""
             return ApplyResult(
                 kind="ok",
-                message=f"{row.label.lower()} → {shown}",
+                message=f"{row.label.lower()} → {shown}{note}",
                 live=(row.key, new) if row.live else None,
             )
 

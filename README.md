@@ -1,8 +1,5 @@
 <p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/brand/lockup-dark.svg">
-    <img src="docs/assets/brand/lockup-light.svg" width="440" alt="Aelix — the A×X mark and wordmark">
-  </picture>
+  <img src="https://raw.githubusercontent.com/handochan/aelix-ai/main/docs/assets/brand/lockup-stacked.png" width="360" alt="Aelix — the A×X mark above the Aelix wordmark">
 </p>
 
 **Your own agent world — built on the Python ecosystem.**
@@ -16,7 +13,7 @@ extensible in the language your team already writes, on the model budgets you al
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/)
 
 <p align="center">
-  <img src="docs/assets/demo.gif" width="100%" alt="aelix demo — the agent writes its own pandas extension into my_ext.py, /reload hot-loads it without restarting, and the next prompt runs it in-process">
+  <img src="docs/assets/demo.gif" width="100%" alt="Aelix demo — the agent writes its own pandas extension into my_ext.py, /reload hot-loads it without restarting, and the next prompt runs it in-process">
 </p>
 <p align="center"><em>The agent extends itself: it authors a pandas <code>describe_dataset</code> tool into <code>my_ext.py</code>, <code>/reload</code> hot-loads it without restarting, and the very next prompt runs it in-process. Waits are fast-forwarded.</em></p>
 
@@ -28,7 +25,7 @@ And it never phones home.
 
 ---
 
-## Why aelix
+## Why Aelix
 
 - 🐍 **Extensions are just Python.** A tool is a plain function — no plugin language, no
   out-of-process bridge. Drive the agent from a terminal, a notebook, a pipeline, or CI.
@@ -48,15 +45,15 @@ And it never phones home.
   providers, message renderers, themes, and your own `/login` flow (SSO / employee-ID) — with
   live hot-reload, no restart.
 - ⚙️ **Scriptable & headless.** `--print`, line-delimited `--mode json`, and a `--mode rpc`
-  JSONL protocol make aelix embeddable in pipelines, CI, and evaluation loops — deterministic
+  JSONL protocol make Aelix embeddable in pipelines, CI, and evaluation loops — deterministic
   and machine-readable.
 
 ## Install
 
-During the beta, aelix installs from GitHub Releases through a checksum-verified installer.
-It bootstraps [uv](https://docs.astral.sh/uv/) if needed, verifies every wheel against the
-release's `SHA256SUMS` manifest (any mismatch aborts), and installs the global `aelix`
-command:
+During the beta, Aelix installs from GitHub Releases through a checksum-verified installer.
+It bootstraps [uv](https://docs.astral.sh/uv/) if needed, verifies every *Aelix* wheel
+against the release's `SHA256SUMS` manifest (any mismatch aborts — third-party
+dependencies resolve from PyPI as usual), and installs the global `aelix` command:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/handochan/aelix-ai/main/install.sh | sh
@@ -65,7 +62,7 @@ curl -fsSL https://raw.githubusercontent.com/handochan/aelix-ai/main/install.sh 
 Pin a release with `AELIX_VERSION=v0.1.0-beta.1` (recommended during the beta) and pick
 extras with `AELIX_EXTRAS` — default `tui`; `tui,images` adds inline terminal image
 rendering; empty (`AELIX_EXTRAS=`) installs the headless CLI only (print / json / rpc).
-Once aelix is published to PyPI, `uv tool install 'aelix[tui]'` — or the `pipx` / `pip`
+Once Aelix is published to PyPI, `uv tool install 'aelix[tui]'` — or the `pipx` / `pip`
 equivalent — will work as usual.
 
 ```bash
@@ -80,6 +77,11 @@ aelix --help
 `OPENROUTER_API_KEY`, launch `aelix` and run `/login` inside the TUI (Copilot / subscription
 OAuth), pass `--api-key`, or configure `~/.aelix/agent/models.json`. See the
 [providers guide](docs/guides/providers-and-models.md).
+
+If you plan to use agent delegation, use an environment variable rather than
+`--api-key`: `--api-key` is held in memory by the parent process only, so a
+delegated child never sees it and fails to authenticate on its own. Environment
+keys are inherited by children as a matter of course.
 
 ## Providers
 
@@ -101,9 +103,9 @@ preserved rather than flattened.
 
 ## Extensions are just Python — call your data stack in-process
 
-An aelix extension is just a `setup(aelix)` function. There is no separate plugin language and
+An Aelix extension is just a `setup(aelix)` function. There is no separate plugin language and
 no out-of-process bridge, so a tool can import your existing stack and hand results straight
-back to the model — this is why aelix was built for data and ML teams first:
+back to the model — this is why Aelix was built for data and ML teams first:
 
 ```python
 # my_ext.py  —  a data tool in ~20 lines; loads with:  aelix -e ./my_ext.py
@@ -145,7 +147,10 @@ aelix --print "profile data/train.parquet and flag columns with >5% nulls"
 aelix --mode json "run the eval suite and summarise failures"   # line-delimited events
 ```
 
-See [writing an extension](docs/guides/extension-authoring.md) for the full surface.
+See [writing an extension](docs/guides/extension-authoring.md) for the full surface, and
+the [Aelix Marketplace](https://handochan.github.io/aelix-marketplace/) for what has been
+published — it is the official catalog Aelix reads by default, and it is open for
+submissions.
 
 ## Trust & self-hosting
 
@@ -167,6 +172,48 @@ aelix extension trust add <key>                                 # trust a verifi
 aelix extension install <target> --require-signature            # fail-closed provenance gate
 ```
 
+## Known limitations (beta)
+
+Three things worth knowing before you point Aelix at something that matters.
+
+**A run has no spend ceiling.** There is no iteration cap, no duplicate-call
+detection, and no cumulative token or cost budget — a model that keeps calling
+tools keeps costing money until it finishes or you stop it
+([#14](https://github.com/handochan/aelix-ai/issues/14),
+[#6](https://github.com/handochan/aelix-ai/issues/6),
+[#52](https://github.com/handochan/aelix-ai/issues/52)). The backstops that do
+exist are real but none of them bound spend: `Esc` aborts the in-flight turn in
+the TUI, `GuardrailExtension` hard-denies catastrophic commands before any
+permission check, the context is compacted automatically before it overflows,
+and `bash` times out after 600 s by default (1 h ceiling on an explicit
+per-call value). Watch long unattended runs, and prefer a model whose per-token
+price you have checked.
+
+**Headless mode auto-approves mutating tools.** `--print`, `--mode json` and
+`--mode rpc` have no terminal to draw an approval dialog on, so `write`, `edit`
+and `bash` execute without asking — that is precisely what makes them
+scriptable, and it is the behaviour the embedding examples above rely on. Two
+guarantees survive: `GuardrailExtension` still hard-denies its patterns, and
+`--permission-mode plan` blocks every mutating tool on the headless path too.
+Otherwise a headless run has full write and shell access to the machine it runs
+on, with whatever credentials that machine holds. Give it a container, a
+sandbox, or a checkout you can throw away.
+
+**Delegation is Linux-first, and its spend is not in `/cost`.** Agent delegation
+(`--agents`, `[features] agents`) spawns a real child process, and the process
+plumbing is written for POSIX: every spawn passes a `preexec_fn` and the kill
+path uses `SIGKILL`, neither of which exists on Windows, so delegation is
+unsupported there ([#110](https://github.com/handochan/aelix-ai/issues/110)). On
+macOS the child itself is signalled correctly, but the descendant walk reads
+`/proc` and therefore finds nothing — anything a delegated agent forks can
+outlive it, and a child whose parent is killed outright keeps running. A
+headless parent (`--print`, `--mode json`, `--mode rpc`) has no terminal to draw
+the spawn-consent dialog on, so it consents on its own: the child still cannot
+exceed the parent's own posture or tool grant, but no human is asked. And a
+child's tokens are billed to the provider without ever entering the parent's
+session, so `/cost` reports the parent only — read each delegation's own
+`[agent … in / … out]` footer for what a child spent.
+
 ## Architecture
 
 Three packages make up the agent (a uv workspace), orchestrated by `Agent` and `AgentHarness`:
@@ -184,8 +231,12 @@ extensions, not core · explicit hook bus for auditability. Full rationale in
 [Getting started](docs/guides/getting-started.md) ·
 [Providers & models](docs/guides/providers-and-models.md) ·
 [Custom models](docs/guides/models-json.md) ·
+[Agent profiles](docs/guides/agent-profiles.md) ·
 [Writing an extension](docs/guides/extension-authoring.md) ·
 [Releasing](RELEASING.md)
+
+[Homepage →](https://handochan.github.io/aelix-ai/) ·
+[Extension catalog →](https://handochan.github.io/aelix-marketplace/)
 
 ## Building from source (contributors)
 
@@ -198,11 +249,27 @@ uv run aelix --help      # the real CLI
 ```
 
 Copy `.env.example` to `.env` for live-provider credentials (the credential-free demo
-`python -m aelix` needs none).
+`python -m aelix` needs none). A `.env` is read for **provider credentials, plus six
+provider-configuration names** — the Google Vertex project and location, the Cloudflare
+account and gateway ids, and the OpenRouter default model, each admitted only if its
+VALUE is a plain name. Five of those six are there because they decide which models you
+can see, so Vertex and both Cloudflare providers keep working from a `.env`; the sixth,
+`OPENROUTER_DEFAULT_MODEL`, chooses a model rather than revealing one. (The visibility set
+is those five plus `GOOGLE_CLOUD_API_KEY`, which the credential rule already admits — so a
+Vertex setup that runs on an API key needs nothing from the config list.) aelix loads the
+file before it knows whether it trusts the directory, so a repo you merely cloned cannot
+use one to change aelix's configuration. Everything else — CA bundles, SDK knobs, base
+URLs — belongs in your shell; see
+[ADR-0203](docs/decisions/0203-dotenv-admission-control.md).
 
 ## License & attribution
 
 [Apache-2.0](LICENSE) — permissive, with an explicit patent grant.
+
+The **name and logo** are separate from the code licence, as Apache-2.0 §6 says
+they are. [TRADEMARK.md](TRADEMARK.md) grants more than §6 does: describing your
+work as built on, compatible with, or an extension of Aelix needs no permission,
+and neither does naming your package `aelix-<something>`.
 
 Substantial portions of Aelix are a TypeScript-to-Python port of
 [pi](https://github.com/earendil-works/pi) (reference commit `734e08e`),

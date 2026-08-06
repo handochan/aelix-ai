@@ -33,49 +33,59 @@
     },
     "Capabilities": {
       "additionalProperties": false,
+      "description": "Declared capabilities \u2014 three ENFORCED, six documentation-only.\n\nADR-0205. The nine fields look identical in the TOML and in this class,\nbut they do not mean the same thing, so each carries its enforcement\nstatus in ``description``: that string is the ONLY per-flag prose that\nreaches ``docs/contracts/manifest.schema.json``, i.e. the only place a\nnon-Python consumer (an editor's TOML schema, the web UI, a third-party\npacker) can learn that ``shell_exec = false`` is a refusal and\n``fs_write = false`` is a promise.\n\nEnforcement is a LOAD-TIME check on declared data, never a sandbox: once\n``factory(api)`` runs, a plugin can reach its own (mutable, non-frozen)\n``Capabilities`` through ``api`` and self-grant.",
       "properties": {
         "fs_read_user": {
           "default": false,
+          "description": "DECLARED ONLY \u2014 documentation of intent, NOT a sandbox. Reads user files outside the workspace.",
           "title": "Fs Read User",
           "type": "boolean"
         },
         "fs_write": {
           "default": false,
+          "description": "DECLARED ONLY \u2014 documentation of intent, NOT a sandbox. Writes outside the workspace. The host does not restrict file writes; a Tier-1 plugin is in-process Python and open() is unrestricted.",
           "title": "Fs Write",
           "type": "boolean"
         },
         "mcp_invoke": {
           "default": false,
+          "description": "DECLARED ONLY \u2014 documentation of intent, NOT a sandbox. Calls MCP servers the host has already connected. Enforcement deferred (ADR-0101).",
           "title": "Mcp Invoke",
           "type": "boolean"
         },
         "mcp_serve": {
           "default": false,
+          "description": "DECLARED ONLY \u2014 documentation of intent, NOT a sandbox. The plugin EXPOSES ITS OWN MCP server; requires entry.python. This is NOT the flag for [[contributes.mcp_servers]], which tells the host to connect OUT to someone else's server and is gated on shell_exec (stdio) / net (http, sse). See ADR-0205.",
           "title": "Mcp Serve",
           "type": "boolean"
         },
         "net": {
           "default": false,
+          "description": "ENFORCED for MCP. Makes network calls. Required by an http/sse [[contributes.mcp_servers]] (server not started without it). Plain outbound calls from plugin code are not restricted.",
           "title": "Net",
           "type": "boolean"
         },
         "shell_exec": {
           "default": false,
+          "description": "ENFORCED. Runs subprocesses. Required by [[contributes.hooks]] (load refused without it) and by a stdio [[contributes.mcp_servers]] (server not started without it).",
           "title": "Shell Exec",
           "type": "boolean"
         },
         "ui_descriptor": {
           "default": false,
+          "description": "DECLARED ONLY \u2014 documentation of intent, NOT a sandbox. Emits UI descriptors. Requires entry.python.",
           "title": "Ui Descriptor",
           "type": "boolean"
         },
         "ui_tui_trusted": {
           "default": false,
+          "description": "ENFORCED. Renders in the TUI. Required by [[contributes.tui_widgets]]; the load is refused before the plugin module is imported.",
           "title": "Ui Tui Trusted",
           "type": "boolean"
         },
         "ui_web_trusted": {
           "default": false,
+          "description": "DECLARED ONLY \u2014 documentation of intent, NOT a sandbox. Renders in the web UI (Phase 6).",
           "title": "Ui Web Trusted",
           "type": "boolean"
         }
@@ -232,6 +242,7 @@
           "additionalProperties": {
             "type": "string"
           },
+          "description": "Environment variables ADDED for a stdio server, on top of the small default set the MCP SDK gives every child (HOME, PATH, SHELL, TERM, USER). It does NOT widen what the child inherits: the host's own environment \u2014 including the user's provider API keys \u2014 is never passed through, so a server that needs a value from it will not receive one. Declaring this key used to hand over the parent environment whole, which made the most innocuous-looking line in a manifest the one that leaked credentials; it no longer does.",
           "title": "Env",
           "type": "object"
         },

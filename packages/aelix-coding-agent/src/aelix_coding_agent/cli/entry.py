@@ -65,6 +65,7 @@ from aelix_coding_agent.builtin.permission_mode import PermissionMode, Permissio
 from aelix_coding_agent.core.runnable_models import is_runnable, unsupported_message
 from aelix_coding_agent.extensions.loader import (
     discover_and_load_extensions,
+    gate_manifest_mcp_contribs,
     scan_extension_manifests,
 )
 from aelix_coding_agent.mcp import McpClientManager
@@ -493,7 +494,10 @@ def _agents_delegation_enabled(
     ``_global_settings`` and never the merged view). That is a security property,
     not an implementation detail: a merged read would let any cloned repo switch
     delegation on from its own ``.aelix/settings.json`` — the same self-elevation
-    defeat ``get_default_project_trust`` exists to prevent.
+    defeat ``get_default_project_trust`` exists to prevent. It stops a cloned
+    repo's ``.env`` too, but only because ``load_dotenv`` refuses the names in
+    ``_DOTENV_LOCKED`` that decide WHICH file is the global one (ADR-0203);
+    global-scope-only means nothing if the repo picks the file.
 
     No manager (embedders, tests) → ``False``: the conservative direction, and
     the same answer an unset setting gives.
@@ -926,6 +930,9 @@ async def _build_harness_options(
         prepend=prepend_extensions,
         no_discovery=parsed.no_extensions,
         no_project_local=not project_trusted,
+        # Issue #91 provenance gate — the ``--trust-extension-path`` override
+        # (distribution names allowed despite resolving outside site-packages).
+        trusted_ep_dists=frozenset(parsed.trust_extension_paths),
         # Issue #24-FU — on reload, carry the user's restored extension flag
         # values into the fresh runtime BEFORE each ``setup()`` re-runs (``None``
         # on first build / /new / /fork / /resume, where fresh defaults are
@@ -1534,6 +1541,8 @@ async def _async_main(argv: list[str]) -> int:
                 agent_dir=Path(get_agent_dir()),
                 no_discovery=parsed.no_extensions,
                 no_project_local=True,  # SECURITY: never the project-local tier
+                # Issue #91 provenance gate — honour the same override here.
+                trusted_ep_dists=frozenset(parsed.trust_extension_paths),
             )
             trust_vote_extensions = list(_vote_loaded.extensions)
             for _err in _vote_loaded.errors:
@@ -1811,6 +1820,28 @@ async def _async_main(argv: list[str]) -> int:
         auth_storage.set_runtime_api_key(model.provider, parsed.api_key)
         # (the auth callback is already wired above — the runtime override now
         # takes precedence in the cascade.)
+        #
+        # ``--api-key`` DOES NOT REACH A DELEGATED CHILD, and the failure is
+        # otherwise unreadable. The override is in-memory in THIS process
+        # (``auth_storage.py``: "NOT persisted to auth.json"), while a child is a
+        # fresh ``-m aelix_coding_agent`` that inherits only the environment. Its
+        # own cascade then falls through to the config resolver, which returns an
+        # unset ``models.json`` placeholder VERBATIM (pi parity), so the child
+        # sends the placeholder NAME as its bearer token and the provider answers
+        # 401 — a provider-side error with nothing pointing at the real cause.
+        #
+        # Deliberately NOT fixed by forwarding the key: argv is world-readable
+        # via ``/proc/<pid>/cmdline``, and ``build_child_argv``'s output is
+        # shell-quoted into the ``/agents show`` dry run for copy-paste. The env
+        # handoff is specified and is the right fix; this warning is what stops
+        # the silent version shipping in the meantime.
+        if agents_ext is not None:
+            print(
+                f"Warning: --api-key is not forwarded to delegated agents "
+                f"({model.provider}); set the provider's environment variable "
+                "instead if you plan to delegate.",
+                file=sys.stderr,
+            )
 
     # MCP servers (Tier 4): connect ONCE here, share the connected tools across
     # every harness rebuild (the tool closures hold live connections, so they
@@ -1826,6 +1857,19 @@ async def _async_main(argv: list[str]) -> int:
     # (``env``) and the user-global config are explicit user choices and are
     # NEVER gated. When dropped in a non-interactive run, print a clear stderr
     # notice (replaces the old post-hoc "loaded N on-disk extensions" warning).
+    #
+    # "explicit user choice" is only true because ``AELIX_MCP_CONFIG`` is on
+    # ``load_dotenv``'s ``_DOTENV_LOCKED`` list (ADR-0203) — the one branch the
+    # ``AELIX_DOTENV_ALLOW`` hatch cannot open. NOT the ``^AELIX_`` rule: that
+    # lives in ``_dotenv_key_allowed``, downstream of both the locked branch and
+    # the hatch, so for this key it never runs — and on its own it is provably
+    # insufficient, because one pasted ``export AELIX_DOTENV_ALLOW=AELIX_MCP_CONFIG``
+    # bypasses it and restored the spawn in full. It was NOT true before: a cwd ``.env`` runs before
+    # this gate exists, so a cloned repo could set ``AELIX_MCP_CONFIG`` itself
+    # and land its server in the one tier that is deliberately never gated —
+    # measured spawning ``sh -c`` at startup, even under ``--no-approve``. The
+    # ungated tier is safe only for as long as the env var behind it really does
+    # come from the user.
     if mcp_contribs and mcp_source == "project" and not project_trusted:
         print(
             "Notice: project-local .aelix/mcp.json servers skipped in an "
@@ -1850,6 +1894,9 @@ async def _async_main(argv: list[str]) -> int:
             agent_dir=Path(get_agent_dir()),
             no_discovery=parsed.no_extensions,
             no_project_local=not project_trusted,
+            # Issue #91 provenance gate — the scan path is what reaches
+            # contributes.mcp_servers, so it MUST honour the same gate + override.
+            trusted_ep_dists=frozenset(parsed.trust_extension_paths),
         )
     except Exception as exc:  # noqa: BLE001 — scan is additive, never fatal
         print(f"Warning: manifest scan: {exc}", file=sys.stderr)
@@ -1859,11 +1906,29 @@ async def _async_main(argv: list[str]) -> int:
     # reversing makes the HIGHER-priority tier (project-local) win a
     # manifest-vs-manifest name collision, while .aelix/mcp.json (appended
     # after) still beats every manifest.
-    _manifest_mcp = [
-        contrib
-        for manifest in reversed(_scanned_manifests)
-        for contrib in manifest.contributes.mcp_servers
-    ]
+    #
+    # Issue #91 capability gate: a manifest MCP server is EXECUTION —
+    # transport=stdio exec's ``command``/``args`` as a child process with the
+    # host environment, http/sse dials a plugin-chosen URL — so it is refused
+    # unless the manifest opted in (stdio → capabilities.shell_exec, the same
+    # flag [[contributes.hooks]] needs; http/sse → capabilities.net). The gate
+    # MUST stay on this side of ``McpClientManager``: refusing after the
+    # connect attempt would be refusing after the spawn. Refusals are printed
+    # (never swallowed) and name only the plugin id + server name — ``env``
+    # holds user tokens and is never echoed.
+    #
+    # The ALLOW path is printed too. Capabilities are per-manifest, so a pack
+    # granted shell_exec for its hook also gets a stdio MCP spawn from the
+    # same manifest for free; no other surface in the product ever shows a
+    # user a capability flag, so this notice is the only place that spawn
+    # becomes observable.
+    _manifest_mcp, _mcp_notices, _mcp_refusals = gate_manifest_mcp_contribs(
+        reversed(_scanned_manifests)
+    )
+    for _notice in _mcp_notices:
+        print(f"Notice: {_notice}", file=sys.stderr)
+    for _refusal in _mcp_refusals:
+        print(f"Warning: MCP server refused: {_refusal}", file=sys.stderr)
     if _manifest_mcp:
         mcp_contribs = _manifest_mcp + mcp_contribs
     mcp_manager: McpClientManager | None = None
@@ -2170,8 +2235,6 @@ async def _async_main(argv: list[str]) -> int:
                 harness,
                 runtime_host=runtime,
                 harness_factory=_harness_factory,
-                repo=repo,
-                fs=fs,
             )
             return 0
 

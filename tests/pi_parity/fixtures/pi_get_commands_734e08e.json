@@ -7,11 +7,6 @@
     "rpc_get_commands": "packages/coding-agent/src/modes/rpc/rpc-mode.ts:557-590",
     "rpc_slash_command": "packages/coding-agent/src/modes/rpc/rpc-types.ts:75-84"
   },
-  "pi_file_loc": {
-    "prompt-templates.ts": 380,
-    "skills.ts": 540,
-    "rpc-mode.ts get_commands handler": 34
-  },
   "prompt_templates_surface": {
     "exports": [
       "loadPromptTemplates(env, paths) -> {templates, diagnostics}",

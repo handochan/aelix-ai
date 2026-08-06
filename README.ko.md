@@ -1,8 +1,5 @@
 <p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/brand/lockup-dark.svg">
-    <img src="docs/assets/brand/lockup-light.svg" width="440" alt="Aelix — A×X 마크와 워드마크">
-  </picture>
+  <img src="https://raw.githubusercontent.com/handochan/aelix-ai/main/docs/assets/brand/lockup-stacked.png" width="360" alt="Aelix — A×X 마크와 Aelix 워드마크">
 </p>
 
 **당신만의 에이전트 세계를, 파이썬 생태계 위에.**
@@ -16,7 +13,7 @@
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/)
 
 <p align="center">
-  <img src="docs/assets/demo.gif" width="100%" alt="aelix 데모 — 에이전트가 pandas 확장을 my_ext.py에 직접 작성하고, /reload로 재시작 없이 핫리로드한 뒤, 바로 다음 프롬프트에서 in-process로 실행">
+  <img src="docs/assets/demo.gif" width="100%" alt="Aelix 데모 — 에이전트가 pandas 확장을 my_ext.py에 직접 작성하고, /reload로 재시작 없이 핫리로드한 뒤, 바로 다음 프롬프트에서 in-process로 실행">
 </p>
 <p align="center"><em>에이전트가 스스로를 확장합니다: pandas <code>describe_dataset</code> 툴을 <code>my_ext.py</code>에 직접 작성하고, <code>/reload</code>로 재시작 없이 핫리로드한 뒤, 바로 다음 프롬프트에서 in-process로 실행합니다. 대기 구간은 빨리감기 처리했습니다.</em></p>
 
@@ -29,7 +26,7 @@ Aelix는 오늘 이 런타임 위의 터미널 에이전트로 먼저 제공됩�
 
 ---
 
-## 왜 aelix인가
+## 왜 Aelix인가
 
 - 🐍 **확장은 그냥 파이썬입니다.** 툴은 평범한 함수 하나입니다 — 플러그인 언어도, 프로세스
   밖 브리지도 없습니다. 터미널·노트북·파이프라인·CI 어디서든 에이전트를 구동하세요.
@@ -41,7 +38,7 @@ Aelix는 오늘 이 런타임 위의 터미널 에이전트로 먼저 제공됩�
   없습니다.
 - 🔏 **서명된 공급망.** 확장은 Ed25519 서명과 SHA-256 핀으로 검증됩니다(`extension keygen |
   sign | trust`, fail-closed `--require-signature`). 오프라인 카탈로그에서 설치할 수
-  있습니다. 에이전트 도구에서 보기 드문 기능이지만, aelix에서는 기본입니다.
+  있습니다. 에이전트 도구에서 보기 드문 기능이지만, Aelix에서는 기본입니다.
 - 🔍 **감사 가능한 자체 호스팅.** 완전한 오픈소스, 텔레메트리 없음, 폐쇄망을 위한
   `--offline` 모드. 신뢰는 직접 읽을 수 있는 코드에서 나옵니다 — *"내가 만들지 않은
   에이전트를 왜 돌리는가?"* 에 대한 답입니다.
@@ -56,8 +53,9 @@ Aelix는 오늘 이 런타임 위의 터미널 에이전트로 먼저 제공됩�
 ## 설치
 
 베타 기간에는 체크섬 검증 인스톨러를 통해 GitHub Releases에서 설치합니다. 필요하면
-[uv](https://docs.astral.sh/uv/)를 자동으로 설치하고, 모든 wheel을 릴리즈의 `SHA256SUMS`
-매니페스트와 대조한 뒤(불일치 시 즉시 중단), 전역 `aelix` 명령을 설치합니다:
+[uv](https://docs.astral.sh/uv/)를 자동으로 설치하고, 모든 *Aelix* wheel을 릴리즈의
+`SHA256SUMS` 매니페스트와 대조한 뒤(불일치 시 즉시 중단 — 서드파티 의존성은 평소대로
+PyPI에서 해석됩니다), 전역 `aelix` 명령을 설치합니다:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/handochan/aelix-ai/main/install.sh | sh
@@ -82,6 +80,10 @@ aelix --help
 (Copilot/구독 OAuth), `--api-key`를 넘기거나, `~/.aelix/agent/models.json`을 구성하세요.
 자세한 내용은 [프로바이더 가이드](docs/guides/providers-and-models.md)를 참고하세요.
 
+에이전트 위임을 쓸 계획이라면 `--api-key` 대신 환경변수를 쓰세요. `--api-key`는 부모
+프로세스의 메모리에만 존재하므로 위임된 자식은 그 값을 볼 수 없고 자체 인증에 실패합니다.
+환경변수 키는 자식이 그대로 상속받습니다.
+
 ## 프로바이더
 
 litellm도, 범용 래퍼 레이어도 없는 프로바이더별 수제 네이티브 어댑터입니다(OpenRouter와
@@ -102,8 +104,8 @@ Cloudflare Workers AI는 공유 OpenAI-completions 어댑터 위에서 동작합
 
 ## 확장은 그냥 파이썬입니다 — 데이터 스택을 in-process로
 
-aelix 확장은 `setup(aelix)` 함수 하나입니다. 별도의 플러그인 언어도, 프로세스 밖 브리지도
-없으므로 툴이 기존 스택을 그대로 import해 결과를 모델에 바로 돌려줄 수 있습니다 — aelix가
+Aelix 확장은 `setup(aelix)` 함수 하나입니다. 별도의 플러그인 언어도, 프로세스 밖 브리지도
+없으므로 툴이 기존 스택을 그대로 import해 결과를 모델에 바로 돌려줄 수 있습니다 — Aelix가
 데이터·ML 팀을 가장 먼저 겨냥해 만들어진 이유입니다:
 
 ```python
@@ -146,7 +148,9 @@ aelix --print "profile data/train.parquet and flag columns with >5% nulls"
 aelix --mode json "run the eval suite and summarise failures"   # 라인 단위 이벤트
 ```
 
-전체 API 표면은 [확장 작성하기](docs/guides/extension-authoring.md)를 참고하세요.
+전체 API 표면은 [확장 작성하기](docs/guides/extension-authoring.md)를, 공개된 확장 목록은
+[Aelix Marketplace](https://handochan.github.io/aelix-marketplace/)를 보세요. Aelix가 기본으로
+읽는 공식 카탈로그이며, 등록 신청을 받고 있습니다.
 
 ## 신뢰와 자체 호스팅
 
@@ -167,6 +171,43 @@ aelix extension trust add <key>                                 # 검증 키 신
 aelix extension install <target> --require-signature            # fail-closed 서명 게이트
 ```
 
+## 알려진 한계 (베타)
+
+중요한 작업에 Aelix를 붙이기 전에 알아두어야 할 세 가지입니다.
+
+**한 번의 실행에 지출 상한이 없습니다.** 최대 반복 횟수 제한도, 중복 호출 감지도, 누적
+토큰·비용 예산도 없습니다 — 모델이 툴을 계속 호출하면 스스로 끝내거나 사용자가 중단할
+때까지 비용이 계속 발생합니다([#14](https://github.com/handochan/aelix-ai/issues/14),
+[#6](https://github.com/handochan/aelix-ai/issues/6),
+[#52](https://github.com/handochan/aelix-ai/issues/52)). 존재하는 안전장치는 실제로
+동작하지만, 그중 어느 것도 지출을 제한하지는 않습니다: TUI에서 `Esc`는 진행 중인 턴을
+중단하고, `GuardrailExtension`은 권한 검사보다 먼저 파괴적인 명령을 하드 차단하며,
+컨텍스트는 넘치기 전에 자동으로 압축되고, `bash`는 기본 600초에 타임아웃됩니다(호출별로
+명시한 값은 최대 1시간). 무인 장시간 실행은 지켜보시고, 토큰 단가를 확인한 모델을
+쓰세요.
+
+**헤드리스 모드는 변경 툴을 자동 승인합니다.** `--print`, `--mode json`, `--mode rpc`는
+승인 대화상자를 그릴 터미널이 없으므로 `write`·`edit`·`bash`가 묻지 않고 실행됩니다 —
+바로 그 점이 이들을 스크립트로 쓸 수 있게 만들고, 위의 임베드 예시가 기대는 동작이기도
+합니다. 두 가지 보장은 남습니다: `GuardrailExtension`은 헤드리스에서도 자신의 패턴을
+하드 차단하고, `--permission-mode plan`은 헤드리스 경로에서도 모든 변경 툴을 차단합니다.
+그 외에는 헤드리스 실행이 해당 머신에 대한 전체 쓰기·셸 권한을, 그 머신이 보유한
+자격증명과 함께 갖습니다. 컨테이너나 샌드박스, 혹은 버려도 되는 체크아웃에서
+실행하세요.
+
+**위임(delegation)은 리눅스 우선이며, 그 지출은 `/cost`에 잡히지 않습니다.** 에이전트
+위임(`--agents`, `[features] agents`)은 실제 자식 프로세스를 띄우고, 그 프로세스 배관은
+POSIX 기준으로 작성되어 있습니다. 모든 spawn이 `preexec_fn`을 넘기고 종료 경로는
+`SIGKILL`을 쓰는데 윈도우에는 둘 다 없으므로, 위임은 윈도우에서 지원되지
+않습니다([#110](https://github.com/handochan/aelix-ai/issues/110)). macOS에서는 자식
+자체에는 시그널이 정상 전달되지만 자손 탐색이 `/proc`을 읽기 때문에 아무것도 찾지
+못합니다 — 위임된 에이전트가 fork한 프로세스는 그보다 오래 살아남을 수 있고, 부모가 강제
+종료된 자식도 계속 실행됩니다. 헤드리스 부모(`--print`, `--mode json`, `--mode rpc`)는
+spawn 동의 대화상자를 그릴 터미널이 없으므로 스스로 동의합니다: 자식은 여전히 부모의 권한
+자세와 툴 권한을 넘을 수 없지만, 사람에게 묻지는 않습니다. 그리고 자식의 토큰은 부모
+세션에 들어오지 않은 채 프로바이더에 청구되므로 `/cost`는 부모 몫만 보고합니다 — 자식이
+쓴 양은 각 위임의 `[agent … in / … out]` 푸터를 보세요.
+
 ## 아키텍처
 
 에이전트는 세 패키지로 구성되며(uv 워크스페이스), `Agent`와 `AgentHarness`가
@@ -184,8 +225,12 @@ aelix extension install <target> --require-signature            # fail-closed �
 [시작하기](docs/guides/getting-started.md) ·
 [프로바이더와 모델](docs/guides/providers-and-models.md) ·
 [커스텀 모델](docs/guides/models-json.md) ·
+[에이전트 프로필](docs/guides/agent-profiles.md) ·
 [확장 작성하기](docs/guides/extension-authoring.md) ·
 [릴리즈](RELEASING.md)
+
+[홈페이지 →](https://handochan.github.io/aelix-ai/) ·
+[확장 카탈로그 →](https://handochan.github.io/aelix-marketplace/)
 
 ## 소스에서 빌드하기 (기여자용)
 
@@ -198,11 +243,27 @@ uv run aelix --help      # 실제 CLI
 ```
 
 라이브 프로바이더 자격증명이 필요하면 `.env.example`을 `.env`로 복사하세요(자격증명이
-필요 없는 데모 `python -m aelix`는 아무것도 필요하지 않습니다).
+필요 없는 데모 `python -m aelix`는 아무것도 필요하지 않습니다). `.env`는 **프로바이더
+자격증명과, 프로바이더 설정 이름 6개**만 읽습니다 — Google Vertex의 project·location,
+Cloudflare의 account·gateway id, 그리고 OpenRouter 기본 모델이며, 각각 값 형식까지
+검사한 뒤에만 통과합니다. 이 중 5개가 "어떤 모델이 보이는가"를 결정하기 때문에 Vertex와
+Cloudflare 두 프로바이더는 `.env`만으로 계속 동작합니다. 나머지 하나인
+`OPENROUTER_DEFAULT_MODEL`은 모델을 드러내는 게 아니라 고르는 이름입니다. (가시성을
+결정하는 이름은 그 5개에 `GOOGLE_CLOUD_API_KEY`를 더한 것이고, 후자는 자격증명 규칙이
+이미 통과시킵니다 — 즉 API 키로 도는 Vertex 설정은 설정 목록이 아예 필요 없습니다.)
+aelix는 해당 디렉터리를
+신뢰할지 판단하기 전에 이 파일을 읽으므로, 단순히 clone 한 저장소가 `.env`로 aelix 설정을
+바꿀 수는 없습니다. 그 외의 값(CA 번들, SDK 옵션, base URL 등)은 셸에 두세요.
+[ADR-0203](docs/decisions/0203-dotenv-admission-control.md) 참고.
 
 ## 라이선스와 저작자 표시
 
 [Apache-2.0](LICENSE) — 명시적 특허 허여가 포함된 허용적(permissive) 라이선스입니다.
+
+**이름과 로고**는 Apache-2.0 6조가 명시한 대로 코드 라이선스와 별개입니다.
+[TRADEMARK.md](TRADEMARK.md)는 6조보다 더 넓게 허용합니다 — Aelix 기반이라거나
+호환된다거나 Aelix 확장이라고 설명하는 것, `aelix-<무엇>` 패키지명을 쓰는 것에는
+허락이 필요 없습니다.
 
 Aelix의 상당 부분은 [pi](https://github.com/earendil-works/pi)(참조 커밋 `734e08e`,
 Copyright © 2025 [Mario Zechner](https://github.com/badlogic), MIT)의 TypeScript→Python

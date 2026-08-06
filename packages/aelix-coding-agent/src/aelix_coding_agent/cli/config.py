@@ -154,6 +154,15 @@ def load_mcp_server_contribs(
     (auto-discovered ``cwd/.aelix/mcp.json``) contribs in an untrusted
     directory — ``"env"`` (``$AELIX_MCP_CONFIG``) and ``"global"`` are explicit
     user choices and are never gated.
+
+    That last sentence has a PRECONDITION (ADR-0203): ``$AELIX_MCP_CONFIG`` is
+    an "explicit user choice" only because ``cli/runtime_bootstrap.py``
+    ``load_dotenv`` refuses to let a cwd ``.env`` set it. ``.env`` is read
+    before the trust gate exists, so until that fix a cloned repo could nominate
+    its own MCP config here and have the ``command`` spawned at startup —
+    reproduced end-to-end, including under ``--no-approve``. Leaving this tier
+    ungated is a decision about the USER's intent, and it is sound only while
+    the env var behind it can carry nothing else.
     """
 
     from aelix_agent_core.contracts.manifest import McpServerContrib

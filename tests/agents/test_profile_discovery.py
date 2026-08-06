@@ -13,8 +13,10 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from aelix_coding_agent.agents import discovery
 from aelix_coding_agent.agents.discovery import (
     ProfileError,
+    builtin_agents_dir,
     classify_scope,
     discover_profiles,
     load_profile_file,
@@ -25,6 +27,13 @@ from aelix_coding_agent.agents.discovery import (
 
 _BODY = "You are the agent."
 
+_REAL_BUNDLED_DIR = builtin_agents_dir()
+"""Captured at IMPORT time, before ``_empty_bundled_tier`` can patch it away.
+
+One test in this file has to read what actually ships; every other test has to
+not see it. Resolving the real path once, here, keeps both true without either
+test knowing about the other's fixture."""
+
 
 def _write(path: Path, name: str, *, extra: str = "") -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -34,6 +43,31 @@ def _write(path: Path, name: str, *, extra: str = "") -> Path:
         encoding="utf-8",
     )
     return path
+
+
+@pytest.fixture(autouse=True)
+def _empty_bundled_tier(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Path:
+    """Point the BUNDLED tier at an empty directory for every test in this file.
+
+    The bundled tier is anchored on ``__file__``, not on a fixture path, so it
+    contributes its shipped profiles to every ``discover_profiles`` call —
+    including the ones here that assert an EXACT profile list. Without this the
+    file measures what aelix happens to ship today, and adding a second bundled
+    profile later would turn nine unrelated assertions red for a reason none of
+    them is about.
+
+    Isolated rather than accommodated: these tests exist for the user/project
+    tier rules (one of them a security rule), so the third tier is a variable to
+    hold still. What the bundled tier itself does is pinned separately below,
+    including the one assertion that DOES read the real shipped directory.
+    """
+
+    empty = tmp_path / "bundled-empty"
+    empty.mkdir()
+    monkeypatch.setattr(discovery, "builtin_agents_dir", lambda: empty)
+    return empty
 
 
 @pytest.fixture()
@@ -351,3 +385,101 @@ def test_resolve_profile_unknown_name_lists_available(
             "nope", cwd=cwd, project_trusted=True, agent_dir=str(agent_dir)
         )
     assert "scout" in str(exc.value)
+
+
+# === The BUNDLED tier (the on-ramp) ==========================================
+#
+# ``profile`` is a REQUIRED parameter of the ``agent`` tool, so before this tier
+# existed a default install had no legal value to pass and the tool's own
+# description said so. These pin the two halves that make the on-ramp real: that
+# something ships, and that shipping it takes nothing away from the user.
+
+
+def test_a_profile_actually_ships_in_the_wheel() -> None:
+    """The ONE assertion here that reads the real installed directory.
+
+    Deliberately not parametrised on a name: which starter profile ships is a
+    product decision that may change, and pinning the name here would make this
+    file fail for a reason it is not about. What must never regress is that the
+    directory is non-empty and that what is in it LOADS — a bundled profile that
+    exists but raises is worse than none, because discovery reports it as a
+    diagnostic on every single startup.
+    """
+
+    shipped = sorted(_REAL_BUNDLED_DIR.glob("*.md"))
+    assert shipped, f"no bundled profile ships in {_REAL_BUNDLED_DIR}"
+    for path in shipped:
+        result = load_profile_file(str(path), cwd=_REAL_BUNDLED_DIR)
+        errors = [d for d in result.diagnostics if d.type == "error"]
+        assert not errors, f"{path} does not load: {errors}"
+        assert result.profile is not None
+        # The description is what the model reads in the ``agent`` tool's schema
+        # to decide whether this profile fits the task. A bundled profile without
+        # one is a name the model cannot choose between.
+        assert result.profile.description, f"{path} must describe itself"
+
+
+def test_bundled_tier_is_discovered_on_a_default_install(
+    dirs: tuple[Path, Path], _empty_bundled_tier: Path
+) -> None:
+    """Nothing on disk anywhere, and delegation still has a legal profile."""
+
+    cwd, agent_dir = dirs
+    _write(_empty_bundled_tier / "explorer.md", "explorer")
+
+    result = discover_profiles(cwd, project_trusted=False, agent_dir=str(agent_dir))
+
+    assert [p.name for p in result.profiles] == ["explorer"]
+    assert result.profiles[0].scope == "bundled"
+    assert result.diagnostics == []
+
+
+def test_a_user_profile_of_the_same_name_beats_the_bundled_one(
+    dirs: tuple[Path, Path], _empty_bundled_tier: Path
+) -> None:
+    """The property that keeps a bundled profile a starting point, not a cage.
+
+    The tier order is bundled → user → project and the last writer wins, so a
+    user who writes their own ``explorer`` replaces ours outright rather than
+    colliding with something they cannot delete.
+    """
+
+    cwd, agent_dir = dirs
+    _write(_empty_bundled_tier / "explorer.md", "explorer")
+    mine = _write(user_agents_dir(str(agent_dir)) / "explorer.md", "explorer")
+
+    result = discover_profiles(cwd, project_trusted=True, agent_dir=str(agent_dir))
+
+    assert len(result.profiles) == 1
+    winner = result.profiles[0]
+    assert winner.scope == "user"
+    assert winner.file_path == str(mine)
+
+    # Disclosed rather than silent, and the message names the scopes it actually
+    # shadowed — the collision text is computed from the profiles, so it reads
+    # "user … overrides the bundled profile", not a hardcoded project/user pair.
+    warnings = [d for d in result.diagnostics if d.type == "warning"]
+    assert len(warnings) == 1
+    assert "user" in warnings[0].message and "bundled" in warnings[0].message
+
+
+def test_bundled_scope_is_classified_by_containment(
+    _empty_bundled_tier: Path,
+) -> None:
+    """``--agent-file`` naming a bundled path must not read as ``project``.
+
+    Scope is decided by resolved-path containment, and a user who runs aelix
+    from inside site-packages (or from this source tree) would otherwise see the
+    shipped profile trust-gated as project-local.
+    """
+
+    path = _write(_empty_bundled_tier / "explorer.md", "explorer")
+
+    assert (
+        classify_scope(
+            path,
+            cwd=_empty_bundled_tier.parent,
+            agent_dir=_empty_bundled_tier.parent / "agent",
+        )
+        == "bundled"
+    )

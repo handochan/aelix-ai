@@ -5,6 +5,7 @@
 - **Sprint:** Declarative extension surface, wave 1 (owner-approved scope 2026-07-03).
 - **Pi pin:** `earendil-works/pi@734e08e`. **aelix-original** — pi has NO capability manifest / activation events (verified: pi's `pi` manifest in package.json declares only WHICH FILES load; all capability registration is imperative `register*`). Design is VS Code-inspired per ADR-0096.
 - **Relates:** ADR-0096 (manifest v1 + "lazy load is mandatory" activation policy), ADR-0098 (foundation lock), ADR-0102 (Tier-4b subprocess hooks — the only previously-wired contributes family), ADR-0170 (CommandDispatchService), ADR-0177/0179 (#24 reload — the live-read idioms reused here). GitHub #21 (partial), #20 (shortcuts half).
+- **AMENDED by ADR-0204 (2026-08-01, issue #91).** Slice A below says the scan EXCLUDES the entry_points tier "because `ep.load()` is an import". That reasoning was sound and its conclusion is now obsolete: `ep.load()` has been DELETED from discovery and an endpoint's manifest is resolved from installed metadata (`RECORD` + the manifest bytes) without importing anything, so the tier is included in the scan and `scan_extension_manifests(entry_points_metadata_only=True)` is still strictly metadata-only. Slice B's lazy policy now also applies to installed packs — see ADR-0204 §D5 for the accepted break and its warning.
 
 ## Context
 

@@ -10,9 +10,136 @@ version: `aelix-ai`, `aelix-agent-core`, `aelix-coding-agent`, and the `aelix`
 umbrella meta-package. (`aelix-server`, the Web-UI daemon, is deferred to a
 later release and is not part of this publish set.)
 
+<!--
+No comparison / tag links are defined at the bottom of this file on purpose:
+the repository has no tags and no releases yet, so every `.../compare/vX...HEAD`
+and `.../releases/tag/vX` link would 404. Add them with the first pushed tag.
+-->
+
 ## [Unreleased]
 
 ### Added
+
+- **An installed extension's `aelix-plugin.toml` is now read** (#91, ADR-0204).
+  A package that declares an `aelix.extensions` entry point — what
+  `aelix extension install <pkg>` gives you, and how the marketplace ships
+  packs — previously had its manifest ignored entirely, so every
+  `contributes.*` family it declared (tools, commands, themes, TUI widgets,
+  MCP servers, hooks) was silently inert. The manifest is now resolved from
+  the distribution's installed metadata **without importing the package**, so
+  an installed pack's contributions reach the runtime and its capability
+  declarations are enforced before any of its code runs.
+- **Optional `aelix.manifests` entry-point group** (#91). Declare
+  `<same-name-as-your-aelix.extensions-entry> = "<dotted.package>"` to point
+  the host at the directory holding your `aelix-plugin.toml`. Needed only if
+  the manifest does not sit in the entry module's own package, or if your pack
+  is a single module and so has no package directory. Purely optional: a pack
+  that omits it behaves exactly as it does today.
+- **`aelix extension verify`** (#91, ADR-0207) — an import-free command that
+  reports, per installed `aelix.extensions` endpoint, whether its manifest will
+  bind, and exits 0 only when every reported endpoint is `BOUND` (non-zero for
+  `ABSENT` / `MALFORMED` / `MISPLACED` / `FENCED` / `UNPROVEN` / `UNTRUSTED` /
+  API-incompatible). Built for a catalog-submission CI. It never imports the
+  pack. The `ABSENT` report names the usual cause — a **setuptools default build
+  silently drops `aelix-plugin.toml` and `themes/*.toml` from the wheel** — and
+  the fix. `aelix extension list` now annotates the same verdict, so
+  "installed, no manifest, declarations inert" is visible instead of silent.
+- **A buildable starter extension** at
+  `packages/aelix-coding-agent/src/aelix_coding_agent/examples/starter/` (#91,
+  ADR-0207) — a hatchling package whose wheel actually ships its manifest and
+  theme — plus a new "Packaging your extension" section in the authoring guide
+  naming both build backends and the setuptools `package-data` requirement.
+- **Catalog policy** (#91, ADR-0207): a pack listed in the official catalog must
+  yield a **bound** manifest (`aelix extension verify` exits 0) — it need not
+  declare any contribution, but a manifest-less entry-point pack is not
+  catalog-eligible. An arbitrary `pip install <pkg>` pack keeps the manifest
+  fully optional. `BOUND` is an auditability floor, not a safety verdict.
+
+### Changed
+
+- **Three behaviour changes for packs installed via `aelix.extensions`** (#91).
+  All three follow from the manifest being read where it previously was not,
+  and each reports what to do:
+  - A pack declaring `[[contributes.hooks]]` without
+    `capabilities.shell_exec = true` is now **refused**, with none of its code
+    executed. Add the capability if the pack genuinely needs to run
+    subprocesses.
+  - A pack whose only `[activation]` trigger is `on_command` is now
+    **deferred**: its `setup()` runs on first use of one of those commands
+    instead of at startup. Set `on_startup_finished = true` to keep the old
+    behaviour. A warning naming the plugin and the escape hatch is logged when
+    this happens.
+  - A pack whose `[plugin.api] min_level` exceeds the host's API level is now
+    **refused** instead of loading and misbehaving later. Upgrade aelix, or
+    install a build of the plugin for this API level.
+- A pack that is refused at load time no longer has its declared MCP servers
+  started (#91). Previously the load-time refusal and the MCP gate keyed on
+  different capability flags, so a denied plugin's `[[contributes.mcp_servers]]`
+  were still spawned or dialled at every startup.
+- An extension whose `aelix-plugin.toml` fails to parse cannot be installed
+  via an entry point and silently do nothing: the pack loads **without** its
+  manifest and reports an error naming the absolute path of the file. If the
+  distribution ships a manifest the host could not attribute to the entry
+  module, the error names that file too.
+- Development installs (`pip install -e`) cannot be proved from installed
+  metadata, so a pack installed that way loads without its manifest and says
+  so on every start. Install the pack normally to exercise its manifest.
+
+### Fixed
+
+- A malformed `aelix-plugin.toml` no longer echoes the manifest's contents
+  into the error printed on startup (#91). Pydantic's validation errors
+  interpolate the whole parsed document, which for a manifest declaring MCP
+  servers includes `contributes.mcp_servers[].env` — plugin-supplied API
+  tokens. Errors now carry the failing field and message only. Affects both
+  directory-installed and package-installed extensions.
+- The same extension discovered both as an installed package and through a
+  scanned extensions directory now loads once rather than twice (#91). Its
+  `setup()` previously ran twice against the same runtime.
+
+## [0.1.0-beta.1] — not yet released
+
+The first published release of Aelix, cut as the tag `v0.1.0-beta.1`
+(distribution version `0.1.0b1`).
+
+Nothing was published before it. This file previously carried a
+`## [0.1.0] - 2026-06-20` entry describing an "initial public release" — no such
+tag and no such GitHub Release ever existed, and its contents are the first
+block of *Added* below. The *Changed* entries therefore describe changes made
+during development, relative to the state of the repository rather than to any
+earlier published version.
+
+### Added
+
+- **Agent runtime (`aelix-agent-core`)** — stateful `Agent`, hook-aware
+  `AgentHarness`, typed `HookBus`, and the low-level async agent loop.
+- **AI primitives (`aelix-ai`)** — provider-agnostic message, streaming, and
+  tool types with pi-ai parity.
+- **Providers** — Anthropic and OpenAI-compatible backends (incl. OpenRouter),
+  with reasoning/thinking wiring, custom-model loading from `models.json`, and
+  config-value auth indirection (env-var / command).
+- **Built-in tools** — bash, read, write, edit, ls, grep, and find, with
+  pi-parity schemas and behavior (including image read/resize and `rg`/`fd`
+  acquisition).
+- **Compaction** — context summarization with entry-level cut-points,
+  split-turn handling, file-op preservation, and a token cap.
+- **Extensions API (`aelix-coding-agent`)** — 4-tier extension architecture,
+  extension loader, built-in policy/guardrail extensions, runtime tool
+  registration, and example tools.
+- **Project Trust** — running in an untrusted directory gates project-local
+  extensions (`.aelix/extensions/`) and MCP servers (`.aelix/mcp.json`) behind a
+  trust prompt with on-disk persistence; deny-by-default in headless mode.
+- **Cooperative abort** — `Esc` cancels in-flight tools (bash, grep, find, read,
+  write, edit, ls) without orphaning processes, and the RPC `abort_bash` kills
+  the running shell.
+- **TUI** — an interactive terminal shell (optional `[tui]` extra) with slash
+  commands, streaming Markdown output, compact tool cards, a status footer and
+  context meter, steer/queue, session resume/fork, and an external-editor
+  binding. Inline image rendering via the optional `[images]` extra.
+- **CLI** — the real `aelix` command (session, fork, export, and model flags)
+  plus a headless RPC mode and OAuth credential management.
+- **Release engineering** — CI (ruff + pytest on Python 3.11 / 3.12) and a
+  tag-triggered PyPI publish workflow using Trusted Publishing (OIDC).
 
 - **Beta / pre-release track** — pre-releases (beta/rc/alpha) are cut as
   **GitHub Releases only** and installed via a checksum-verified `install.sh`
@@ -172,42 +299,16 @@ later release and is not part of this publish set.)
   the system temp directory permanently — one per delegation, mode 0600. Aelix
   now sweeps prompt files belonging to processes that are gone, at startup.
 
-## [0.1.0] - 2026-06-20
+### Fixed
 
-Initial public release of the Aelix agent runtime — a pi-faithful, Python-native
-agent platform.
-
-### Added
-
-- **Agent runtime (`aelix-agent-core`)** — stateful `Agent`, hook-aware
-  `AgentHarness`, typed `HookBus`, and the low-level async agent loop.
-- **AI primitives (`aelix-ai`)** — provider-agnostic message, streaming, and
-  tool types with pi-ai parity.
-- **Providers** — Anthropic and OpenAI-compatible backends (incl. OpenRouter),
-  with reasoning/thinking wiring, custom-model loading from `models.json`, and
-  config-value auth indirection (env-var / command).
-- **Built-in tools** — bash, read, write, edit, ls, grep, and find, with
-  pi-parity schemas and behavior (including image read/resize and `rg`/`fd`
-  acquisition).
-- **Compaction** — context summarization with entry-level cut-points,
-  split-turn handling, file-op preservation, and a token cap.
-- **Extensions API (`aelix-coding-agent`)** — 4-tier extension architecture,
-  extension loader, built-in policy/guardrail extensions, runtime tool
-  registration, and example tools.
-- **Project Trust** — running in an untrusted directory gates project-local
-  extensions (`.aelix/extensions/`) and MCP servers (`.aelix/mcp.json`) behind a
-  trust prompt with on-disk persistence; deny-by-default in headless mode.
-- **Cooperative abort** — `Esc` cancels in-flight tools (bash, grep, find, read,
-  write, edit, ls) without orphaning processes, and the RPC `abort_bash` kills
-  the running shell.
-- **TUI** — an interactive terminal shell (optional `[tui]` extra) with slash
-  commands, streaming Markdown output, compact tool cards, a status footer and
-  context meter, steer/queue, session resume/fork, and an external-editor
-  binding. Inline image rendering via the optional `[images]` extra.
-- **CLI** — the real `aelix` command (session, fork, export, and model flags)
-  plus a headless RPC mode and OAuth credential management.
-- **Release engineering** — CI (ruff + pytest on Python 3.11 / 3.12) and a
-  tag-triggered PyPI publish workflow using Trusted Publishing (OIDC).
-
-[Unreleased]: https://github.com/handochan/aelix-ai/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/handochan/aelix-ai/releases/tag/v0.1.0
+- **`aelix --list-models` with no credentials no longer points at a command that
+  does not exist.** It advised running `aelix auth`; the `aelix` console script
+  parses that as the first user message, so the one instruction a brand-new user
+  received could not work. It now names the provider environment variables and
+  the `/login` command inside the TUI, both of which exist.
+- **The headless "No model selected." message no longer ends with a TUI-only
+  instruction.** `--print` and `--mode json` print it when no provider can be
+  resolved, and it closed with `Then use /model to select a model.` — `/model`
+  is a TUI command, so a headless reader had no prompt to type it at. It now
+  leads with `--model <id>`, which works on the invocation that just failed, and
+  offers `/model` only as the interactive alternative.

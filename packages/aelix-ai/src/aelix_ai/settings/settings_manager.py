@@ -1015,6 +1015,16 @@ class SettingsManager:
         would let an untrusted project set ``defaultProjectTrust: "always"`` in its
         project settings and SELF-ELEVATE to trusted, defeating the trust gate. pi
         makes this a global-only setting for exactly this reason.
+
+        PRECONDITION (ADR-0203). This protects against a repo's
+        ``.aelix/settings.json``. It protects against a repo's ``.env`` only
+        because ``cli/runtime_bootstrap.py`` ``load_dotenv`` refuses
+        ``AELIX_SETTINGS_PATH`` / ``AELIX_CODING_AGENT_DIR`` / ``XDG_CONFIG_HOME``
+        / ``HOME`` — see ``_DOTENV_LOCKED``. A global-scope-only READ is worthless
+        if the repo gets to choose the FILE, and before that fix it did: a ``.env``
+        pointing ``AELIX_SETTINGS_PATH`` at a repo file was measured self-elevating
+        an untrusted directory end-to-end. If you ever make those names settable
+        from ``.env``, this docstring becomes false again.
         """
 
         return self._global_settings.default_project_trust or "ask"
@@ -1042,7 +1052,16 @@ class SettingsManager:
         settings are loaded UNGATED, so a merged read would let any cloned repo
         switch delegation ON by shipping ``.aelix/settings.json`` — the same
         self-elevation defeat, and the same fix, as
-        :meth:`get_default_project_trust` (``:1008``).
+        :meth:`get_default_project_trust`.
+
+        PRECONDITION (ADR-0203). "A cloned repo cannot switch delegation ON" is
+        true of ``.aelix/settings.json`` unconditionally, and of a repo ``.env``
+        only because ``cli/runtime_bootstrap.py`` ``load_dotenv`` refuses the
+        four names in ``_DOTENV_LOCKED`` that decide WHERE the global settings
+        file is. That was measured: a ``.env`` setting ``AELIX_SETTINGS_PATH``
+        (or ``AELIX_CODING_AGENT_DIR``) made a repo-controlled file the global
+        store, at which point every "global scope only" guarantee in this module
+        is the repo's to write. The two halves must be maintained together.
         """
 
         features = self._global_settings.features
@@ -1281,19 +1300,11 @@ class SettingsManager:
         self._mark_modified("collapse_changelog")
         self._save()
 
-    # --- enableInstallTelemetry (Pi `:797-805`) ---
-    def get_enable_install_telemetry(self) -> bool:
-        """Pi parity: ``settings-manager.ts::getEnableInstallTelemetry`` (line 797-799). Default: True."""
-
-        v = self._settings.enable_install_telemetry
-        return True if v is None else v
-
-    def set_enable_install_telemetry(self, enabled: bool) -> None:
-        """Pi parity: ``settings-manager.ts::setEnableInstallTelemetry`` (line 801-805)."""
-
-        self._global_settings.enable_install_telemetry = enabled
-        self._mark_modified("enable_install_telemetry")
-        self._save()
+    # --- enableInstallTelemetry (Pi `:797-805`) — DELIBERATE NON-PARITY ---
+    # Not ported (#111 B-2). Aelix ships no telemetry sink, so the accessor
+    # pair had zero production callers and existed only to mirror Pi's schema.
+    # A settings.json carrying ``enableInstallTelemetry`` still loads: the key
+    # is an unknown key, dropped on read and preserved on disk on write.
 
     # --- packages (Pi `:807-822`) ---
     def get_packages(self) -> list[PackageSource]:

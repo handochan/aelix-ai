@@ -49,10 +49,22 @@ _MAX_NAME_LENGTH = 64
 _MAX_DESCRIPTION_LENGTH = 1024
 _NAME_REGEX = re.compile(r"^[a-z0-9-]+$")
 
-ProfileScope = Literal["user", "project", "explicit"]
+ProfileScope = Literal["bundled", "user", "project", "explicit"]
 """Where a profile came from, by RESOLVED-PATH CONTAINMENT — see
 ``discovery.classify_scope``. Never "how the user spelled it": ``--agent-file
-.aelix/agents/x.md`` still classifies ``"project"``."""
+.aelix/agents/x.md`` still classifies ``"project"``.
+
+``"bundled"`` is the tier shipped INSIDE the wheel
+(``discovery.builtin_agents_dir``). It exists because ``profile`` is a REQUIRED
+parameter of the ``agent`` tool while a clean install discovered zero profiles,
+so the tool's own description read "No agent profiles are available" and the
+model had no legal value to pass — delegation was 0% usable out of the box.
+
+It is deliberately NOT a security boundary: bundled files ship with the code, so
+they are exactly as trusted as the code, and every gate in the tree tests the
+literal ``"project"`` (``runtime.py:423``, ``consent.py:520``, ``posture.py:222``,
+``profile.py``'s ``extensions:`` cut, ``discovery.py:315``). ``"bundled"`` falls
+through all of them the same way ``"user"`` does, which is the intended reading."""
 
 ProfileDiagnosticCode = Literal[
     "read_failed",
@@ -206,18 +218,29 @@ class AgentProfile:
     starts, so a bogus level is an ERROR here and the profile is rejected."""
 
     role: Literal["leaf", "orchestrator"] = "leaf"
-    """P2/P3 consumer (delegation). Parsed + validated in P1 so the on-disk
-    format never changes shape between phases; nothing reads it yet."""
+    """READ by ``print_channel.build_child_env`` — a ``leaf`` child is spawned
+    with delegation switched off, so it cannot start a third generation.
+
+    NOTE: ``build_rpc_child_argv`` and ``build_child_argv`` both append
+    ``--no-agents`` unconditionally today, so ``orchestrator`` does not yet buy
+    a profile anything. Declaring it is not an error; it is simply not honoured
+    (issue #123's track)."""
 
     output_cap: int = 51200
-    """P2/P3 consumer (spawned-agent output truncation). Validated, not read."""
+    """READ by ``envelope.build_result`` — the byte budget for the summary
+    handed back to the parent, after which it is truncated with a visible
+    marker."""
 
     timeout_ms: int | None = None
-    """P2/P3 consumer (spawned-agent wall clock). Validated, not read."""
+    """READ by both channels as the whole delegation's wall clock. The ``agent``
+    tool additionally bounds a caller-supplied value to
+    ``MIN_TIMEOUT_MS`` (1 000) … ``MAX_TIMEOUT_MS`` (1 800 000)."""
 
     approval_mode: Literal["inherit", "ask", "auto", "deny"] = "inherit"
-    """P2/P3 consumer (permission posture for a spawned agent). Validated, not
-    read."""
+    """READ by ``posture.child_permission_mode`` and by the consent gate: it is
+    how a profile DECLARES that it needs write authority, which is what lets the
+    spawn dialog offer to widen a ``plan`` clamp. It cannot grant that authority
+    on its own — only a human answering the dialog can."""
 
 
 @dataclass(frozen=True)

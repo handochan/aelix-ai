@@ -6,12 +6,6 @@
     "models_generated": "packages/ai/src/models.generated.ts",
     "defaults": "packages/coding-agent/src/core/defaults.ts"
   },
-  "pi_file_loc": {
-    "model-resolver.ts": 637,
-    "models.generated.ts": 16386,
-    "defaults.ts": 5,
-    "_w6_p215_note": "Sprint 6g₂ W6 P-215 corrected ``model-resolver.ts`` from the stale 439 estimate to the actual 637 LOC at SHA 734e08e (verified via ``curl ... | wc -l``)."
-  },
   "models_generated_shape": {
     "export_form": "export const MODELS = {<provider>: {<model_id>: <Model>, ...}, ...} as const",
     "top_level_provider_count": 32,

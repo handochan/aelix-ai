@@ -7,8 +7,10 @@ escalation path is exercised.
 
 from __future__ import annotations
 
+import asyncio
 import sys
 import textwrap
+import time
 
 from aelix_coding_agent.rpc.rpc_client import RpcClient, RpcClientOptions
 
@@ -24,6 +26,15 @@ def test_rpc_client_default_constants_match_pi() -> None:
 
 # Stub server: traps SIGTERM and stays alive until SIGKILL, emits a
 # stderr breadcrumb so the regression can verify stderr capture works.
+#
+# TWO breadcrumbs, and the second one is the whole fix for a 40% flake. The
+# stub is not armed against SIGTERM until ``signal.signal`` has run, and the
+# 100 ms startup grace is not a readiness signal — measured over 10 runs, the
+# child had not reached that line by the time ``stop()`` fired in 2 of them, so
+# it died on the FIRST SIGTERM and the SIGKILL escalation the test claims to
+# exercise never ran. The failing runs returned from ``stop()`` in ~110 ms; the
+# passing ones took ~415 ms. Waiting for ``stub ready`` is what makes the test
+# about the escalation instead of about the scheduler.
 _SIGTERM_IGNORE_STUB = textwrap.dedent(
     """
     import signal
@@ -35,10 +46,23 @@ _SIGTERM_IGNORE_STUB = textwrap.dedent(
 
     signal.signal(signal.SIGTERM, signal.SIG_IGN)
 
+    sys.stderr.write("stub ready\\n")
+    sys.stderr.flush()
+
     while True:
         time.sleep(0.5)
     """
 )
+
+
+async def _await_breadcrumb(client: RpcClient, needle: str) -> None:
+    """Block until ``needle`` shows up on the child's stderr."""
+
+    for _ in range(200):
+        if needle in client.get_stderr():
+            return
+        await asyncio.sleep(0.05)
+    raise AssertionError(f"stub never wrote {needle!r}; got {client.get_stderr()!r}")
 
 
 class _SigtermIgnoreClient(RpcClient):
@@ -54,14 +78,27 @@ class _SigtermIgnoreClient(RpcClient):
 
 
 async def test_stop_escalates_to_sigkill_when_sigterm_ignored() -> None:
-    """A server that ignores SIGTERM is killed via SIGKILL after 1 s."""
+    """A server that ignores SIGTERM is killed via SIGKILL after the grace."""
 
     client = _SigtermIgnoreClient()
     await client.start()
-    # Server is alive after grace period; stop() should escalate to SIGKILL.
+    # The stub is only armed once ``signal.signal`` has run. Signalling before
+    # that measures the scheduler, not the escalation.
+    await _await_breadcrumb(client, "stub ready")
+
+    started = time.monotonic()
     await client.stop()
-    # If we got here without hanging, SIGKILL fired. Stderr breadcrumb
-    # should also be captured.
+    elapsed = time.monotonic() - started
+
+    # THE SUBJECT OF THIS TEST IS THE ESCALATION, so assert it happened. The
+    # previous assertion was a stderr substring, which would also have passed
+    # had SIGTERM alone killed the child — i.e. in exactly the runs where the
+    # escalation did NOT happen.
+    grace = client.SHUTDOWN_SIGTERM_TIMEOUT_MS / 1000.0
+    assert elapsed >= grace, (
+        f"stop() returned in {elapsed:.3f}s, under the {grace:.3f}s SIGTERM "
+        "grace — the child died on SIGTERM, so SIGKILL was never reached"
+    )
     assert "stub starting" in client.get_stderr()
 
 
@@ -71,15 +108,7 @@ async def test_get_stderr_returns_captured_output() -> None:
     client = _SigtermIgnoreClient()
     await client.start()
     try:
-        # The stub writes ``stub starting`` to stderr at boot; with a
-        # small await loop we let the reader drain it.
-        import asyncio
-
-        for _ in range(20):
-            if "stub starting" in client.get_stderr():
-                break
-            await asyncio.sleep(0.05)
-        assert "stub starting" in client.get_stderr()
+        await _await_breadcrumb(client, "stub starting")
     finally:
         await client.stop()
 

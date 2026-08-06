@@ -16,7 +16,8 @@ numeric geometry verification and 16 px rasterization tests.
 | `wordmark-dark.svg` | Title-case `Aelix` for dark grounds (paper letters, glow cursor pixel). |
 | `wordmark-light.svg` | For light grounds (ink letters, `#06B6D4` pixel — glow fails contrast on paper). |
 | `wordmark-mono.svg` | Single-color wordmark via `currentColor`, pixel included. |
-| `lockup-dark.svg` / `lockup-light.svg` | Mark + wordmark, canonical composition. |
+| `lockup-dark.svg` / `lockup-light.svg` | Mark + wordmark side by side, for surfaces where you control the ground. |
+| `lockup-stacked.svg` / `.png` | Mark above wordmark on the brand ground. **Use this wherever the ground is unknown** — READMEs, PyPI, npm, social embeds — since it carries its own background and so renders identically in light and dark. |
 | `favicon.svg` / `favicon.ico` | The mark (ico: 16/32/48). |
 | `avatar.png` | 512×512 GitHub org avatar (mark on `#0B0F14`). |
 | `social-card.png` | 1280×640 social preview. |
@@ -45,6 +46,11 @@ numeric geometry verification and 16 px rasterization tests.
   Never color the x; the mark owns the crossing and the gradient.
 - Clear space: 2 mark modules (64 units) on all sides of the lockup. Below
   ~32 px lockup height, use the mark alone.
+- Theme: no single brand colour is strong on both grounds — measured against
+  white and `#0d1117`, paper reaches 1.05:1 on white and ink 1.01:1 on dark.
+  So either pick the lockup that matches a ground you control, or use the
+  stacked card, which brings its own. Do not recolour a lockup to compromise
+  between the two.
 - Do not stretch, re-color, outline, add effects, or re-space. Regenerate
   raster assets from the SVGs (any renderer; cairosvg was used here).
 

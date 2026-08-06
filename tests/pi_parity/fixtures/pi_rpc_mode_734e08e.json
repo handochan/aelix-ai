@@ -8,12 +8,6 @@
     "rpc_client": "packages/coding-agent/src/modes/rpc/rpc-client.ts",
     "modes_index": "packages/coding-agent/src/modes/index.ts"
   },
-  "pi_file_loc": {
-    "jsonl.ts": 58,
-    "rpc-types.ts": 262,
-    "rpc-mode.ts": 492,
-    "rpc-client.ts": 343
-  },
   "jsonl_protocol": {
     "framing": "LF (\\n) only — U+2028/U+2029 NOT used as separators (they're valid inside JSON strings)",
     "encoding": "UTF-8 via StringDecoder",

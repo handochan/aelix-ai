@@ -1,10 +1,19 @@
 """Agent-profile discovery + resolution (ADR-0196).
 
-AELIX-ORIGINAL. Two directories are scanned, non-recursively, for
-``<name>.md``:
+AELIX-ORIGINAL. Three directories are scanned, non-recursively, for
+``<name>.md``, in ASCENDING order of precedence:
 
+* BUNDLED — ``<this package>/agents/builtin``, always. Ships in the wheel.
 * USER   — ``<get_agent_dir()>/agents`` (``cli/config.py:82``), always.
 * PROJECT — ``<cwd>/.aelix/agents``, **only when the project is trusted**.
+
+The bundled tier is an ON-RAMP, not a security tier. ``profile`` is a REQUIRED
+parameter of the ``agent`` tool, so with no profiles on disk there was no legal
+value to pass and the tool's own description said as much — a default install
+could not delegate at all. Bundled files ship with the code and are therefore
+exactly as trusted as the code; they lose every name collision to the two
+writable tiers, so shipping one takes nothing away from a user who wants their
+own ``explorer``.
 
 The project tier is gated because a profile is an identity: it can replace the
 system prompt, swap the model, and (outside project scope) name extensions.
@@ -72,6 +81,22 @@ class ProfileDiscoveryResult:
     diagnostics: list[ProfileDiagnostic] = field(default_factory=list)
 
 
+def builtin_agents_dir() -> Path:
+    """``<this package>/agents/builtin`` — the tier shipped in the wheel.
+
+    Anchored on ``__file__`` and NOT on ``get_agent_dir()``: this directory is
+    part of the installed code, so it moves with the package and is not
+    something a user config can re-point.
+
+    It is scanned FIRST and therefore loses every name collision to the user and
+    project tiers (:func:`discover_profiles`), which is the property that keeps
+    a bundled profile a starting point rather than something a user cannot
+    escape: writing ``~/.aelix/agent/agents/explorer.md`` replaces ours outright.
+    """
+
+    return Path(__file__).resolve().parent / "builtin"
+
+
 def user_agents_dir(agent_dir: str | None = None) -> Path:
     """``<agent_dir or get_agent_dir()>/agents`` (``cli/config.py:82``).
 
@@ -127,6 +152,13 @@ def classify_scope(
     """
 
     target = _safe_resolve(resolved)
+    # Bundled first, and on the TARGET only, for the same reason "user" is: this
+    # directory lives inside the installed package, and a user who runs aelix
+    # from within site-packages (or from this source tree) would otherwise see
+    # our own shipped profile classified ``"project"`` and trust-gated by an
+    # ``--agent-file`` that names it.
+    if _is_within(target, _safe_resolve(builtin_agents_dir())):
+        return "bundled"
     if _is_within(target, _safe_resolve(user_agents_dir(str(agent_dir)))):
         return "user"
 
@@ -168,7 +200,10 @@ def discover_profiles(
     diagnostics: list[ProfileDiagnostic] = []
     by_name: dict[str, AgentProfile] = {}
 
+    # ORDER IS PRECEDENCE — last writer wins the ``by_name`` dict below, so this
+    # list runs least-authoritative first: bundled → user → project.
     tiers: list[tuple[ProfileScope, Path]] = [
+        ("bundled", builtin_agents_dir()),
         ("user", user_agents_dir(agent_dir)),
     ]
     if project_trusted:
@@ -192,16 +227,23 @@ def discover_profiles(
                         )
                     )
                 else:
-                    # Spec §2.2 (ratified): project wins. The warning naming BOTH
-                    # paths is half of the ratified mitigation; the other half is
-                    # the confirmation prompt in ``cli/entry.py``.
+                    # Spec §2.2 (ratified): the later tier wins. The warning
+                    # naming BOTH paths is half of the ratified mitigation; the
+                    # other half is the confirmation prompt in ``cli/entry.py``.
+                    #
+                    # BOTH scopes are read from the profiles rather than spelled
+                    # "project"/"user": with the bundled tier there are three
+                    # tiers and four orderings, and a hardcoded pair made the
+                    # commonest one (a user profile shadowing a bundled one) read
+                    # "project … overrides the user profile" — false on both
+                    # nouns, about the one collision a normal install produces.
                     diagnostics.append(
                         ProfileDiagnostic(
                             code="invalid_metadata",
                             message=(
-                                f"project agent profile {profile.name!r} "
-                                f"({profile.file_path}) overrides the user profile "
-                                f"at {previous.file_path}"
+                                f"{profile.scope} agent profile {profile.name!r} "
+                                f"({profile.file_path}) overrides the "
+                                f"{previous.scope} profile at {previous.file_path}"
                             ),
                             path=profile.file_path,
                             type="warning",
@@ -420,6 +462,9 @@ def _unknown_name_message(
     known = sorted(p.name for p in discovered.profiles)
     if known:
         return f"unknown agent profile {name!r}; available: {', '.join(known)}"
+    # Reachable only if the bundled tier is missing too — an install whose wheel
+    # content was stripped. Naming the WRITABLE tier is the actionable half; the
+    # bundled one is not somewhere a user should be told to write.
     return (
         f"unknown agent profile {name!r}; no profiles found in "
         f"{user_agents_dir(agent_dir)}"
@@ -455,6 +500,7 @@ def _is_within(target: Path, parent: Path) -> bool:
 __all__ = [
     "ProfileDiscoveryResult",
     "ProfileError",
+    "builtin_agents_dir",
     "classify_scope",
     "discover_profiles",
     "load_profile_file",

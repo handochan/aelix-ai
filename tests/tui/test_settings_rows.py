@@ -208,29 +208,121 @@ async def test_tool_card_max_lines_is_live() -> None:
     assert res.live == ("tool_card_max_lines", "30")  # clamped value, re-read as str
 
 
+# The eleven rows re-measured 2026-07-31 (#111 B-11) to have ZERO production
+# consumers: the value round-trips to settings.json and nothing ever reads it
+# back, this launch or any other. NOT a synonym for "persist-only" —
+# ``features_agents`` is persist-only too but IS consumed, by
+# ``cli/entry.py::_build_harness_options``, so it is absent from this set.
+INERT_ROWS = {
+    "autocomplete_max_visible",
+    "show_hardware_cursor",
+    "editor_padding_x",
+    "quiet_startup",
+    "enable_skill_commands",
+    "double_escape_action",
+    "tree_filter_mode",
+    "image_auto_resize",
+    "block_images",
+    "show_terminal_progress",
+    "clear_on_shrink",
+}
+
+
 async def test_every_persist_only_row_has_a_live_none() -> None:
-    # Honesty guard: the persist-only rows must NOT carry a live mirror payload
-    # (their commit message says "applies next launch / when a consumer is wired").
+    # Honesty guard: the persist-only rows must NOT carry a live mirror payload.
     # ``tool_card_max_lines`` is deliberately EXCLUDED — it is a live row (see
     # test_tool_card_max_lines_is_live).
     sm = SettingsManager.in_memory({})
-    persist_only = {
-        "autocomplete_max_visible",
-        "show_hardware_cursor",
-        "editor_padding_x",
-        "quiet_startup",
-        "enable_skill_commands",
-        "double_escape_action",
-        "tree_filter_mode",
-        "image_auto_resize",
-        "block_images",
-        "show_terminal_progress",
-        "clear_on_shrink",
-    }
     rows = _rows(sm)
-    for key in persist_only:
+    for key in INERT_ROWS:
         row = rows[key]
         assert row.live is False, key
         if row.kind == "bool" or row.kind == "enum":
             res = apply_setting(row, sm)
             assert res.live is None, key
+
+
+async def test_inert_rows_do_not_promise_that_they_apply_next_launch() -> None:
+    """#111 B-11 — the help text of a row nobody reads must not imply it works.
+
+    These eleven all used to end "Persisted; applies next launch", which reads
+    as "restart and it takes effect". Nothing reads them at any launch, so that
+    was a promise the build cannot keep.
+
+    WHEN YOU WIRE ONE UP, delete it from ``INERT_ROWS`` in the same commit and
+    give it honest help text. A row that works but claims to be inert is the
+    same defect pointing the other way.
+    """
+    sm = SettingsManager.in_memory({})
+    rows = _rows(sm)
+    for key in INERT_ROWS:
+        help_text = rows[key].help
+        assert "applies next launch" not in help_text, key
+        assert "not yet wired" in help_text, key
+
+
+async def test_wired_persist_only_rows_are_not_labelled_inert() -> None:
+    """The inversion guard. ``features_agents`` and ``tool_card_max_lines`` sit
+    in the same block but have real consumers, so a blanket rewrite of the
+    section would falsely demote them."""
+    sm = SettingsManager.in_memory({})
+    rows = _rows(sm)
+    for key in ("features_agents", "tool_card_max_lines"):
+        assert key not in INERT_ROWS, key
+        assert "not yet wired" not in rows[key].help, key
+
+
+async def test_skill_commands_help_does_not_claim_skills_are_unconsumed() -> None:
+    """Skills are NOT inert — only this flag is.
+
+    ``load_skills`` runs at startup and ``harness.set_skills`` publishes the
+    result, which ``/skills``, the startup banner and rpc_mode's command list
+    all read. Help text saying "the skills carrier has no consumer" would tell
+    users ``--skill`` and ``.aelix/skills`` do nothing. What is genuinely
+    missing is the ``/skill:<name>`` surface (#115).
+    """
+    sm = SettingsManager.in_memory({})
+    help_text = _rows(sm)["enable_skill_commands"].help
+    assert "carrier" not in help_text
+    assert "/skill:<name>" in help_text
+    assert "#115" in help_text
+
+
+# === The false success (A-3) ==================================================
+
+
+async def test_toggling_delegation_says_it_needs_a_restart() -> None:
+    """THE CONFIRMATION IS WHERE THE LIE WAS.
+
+    ``features_agents`` is persist-only: ``_agents_delegation_enabled`` reads it
+    once per process while the harness is built, and ``/reload`` re-runs that
+    same factory over a closure variable already frozen at ``None``. So the
+    measured user journey was: ``/agents run`` refuses and points at
+    ``/settings`` → the toggle reports ``agent delegation → on`` → the same
+    command refuses again, with nothing anywhere saying why.
+
+    The row's HELP text already said "applies next launch". Help is in the
+    detail panel; the confirmation is what the user reads after acting.
+    """
+
+    sm = SettingsManager.in_memory({})
+    row = _rows(sm)["features_agents"]
+
+    result = apply_setting(row, sm)
+
+    assert result.kind == "ok"
+    assert "restart" in result.message.lower(), result.message
+    # Still says what it did — the note is an addition, not a replacement.
+    assert "agent delegation" in result.message.lower()
+    assert "on" in result.message.lower()
+
+
+async def test_a_row_without_apply_note_gains_no_suffix() -> None:
+    """The note is row-scoped, so a live row's confirmation is untouched."""
+
+    sm = SettingsManager.in_memory({})
+    rows = _rows(sm)
+    live_row = next(r for r in rows.values() if r.kind == "bool" and r.live)
+
+    assert live_row.apply_note is None
+    assert "(" not in apply_setting(live_row, sm).message

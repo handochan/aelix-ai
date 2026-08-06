@@ -14,14 +14,27 @@ Honesty adaptation (P0 #5 principle — no false claims). Pi's
 
 Aelix has NO ``getDocsPath()`` / ``providers.md`` / ``models.md`` yet, so
 the two doc-path lines are DROPPED (printing dead paths would be a false
-claim). Pi's ``/login`` command is ALSO dropped — Aelix has no registered
-``/login`` command (the BuiltinCommand set has no such entry), so claiming it
-would be the same class of false claim. The shared help block is replaced with
-what Aelix actually offers: the environment-variable path
-(``<PROVIDER>_API_KEY``). The real ``/model`` TUI command is still surfaced by
-``format_no_model_selected_message`` (Pi's verbatim ``Then use /model to
-select a model.`` tail). Message shapes/wording otherwise track Pi where
-truthful.
+claim). The shared help block is replaced with what Aelix actually offers on
+the path these messages print from: the environment-variable route
+(``<PROVIDER>_API_KEY``).
+
+WHY THE HELP BLOCK STILL DOES NOT MENTION ``/login`` — and it is NOT the
+reason this docstring used to give. The old rationale was "Aelix has no
+registered ``/login`` command"; that stopped being true when ``/login``
+shipped (``tui/commands.py``: ``BuiltinCommand("login", ...)``, alongside
+``BuiltinCommand("model", ...)``). The real reason is REACHABILITY. Every
+production caller of these formatters is ``cli/entry.py`` inside
+``if app_mode in ("print", "json")`` — a HEADLESS run with no TUI to type a
+slash command into. A slash command is the correct advice only when the reader
+can get to a prompt; from ``aelix --print`` it is the same dead end ``aelix
+auth`` was (#111 B-1). ``cli/list_models.py`` does name ``/login``, correctly:
+it tells the reader to *start* ``aelix`` first.
+
+For the same reason ``format_no_model_selected_message`` no longer ends with
+Pi's verbatim ``Then use /model to select a model.`` — ``/model`` is TUI-only,
+so a headless reader could not act on it. The tail now leads with the
+``--model`` flag, which works from exactly where the message is printed, and
+mentions ``/model`` only as the interactive alternative.
 """
 
 from __future__ import annotations
@@ -40,9 +53,13 @@ def get_provider_login_help() -> str:
 
     Returns the shared "how to authenticate" help block referenced by the
     other three formatters. The Pi ``See: <docs>/providers.md\\n  <docs>/
-    models.md`` tail is dropped (those files do not exist in Aelix), and Pi's
-    ``/login`` command is dropped too (Aelix has no such command), in favor of
-    the ``<PROVIDER>_API_KEY`` env route.
+    models.md`` tail is dropped (those files do not exist in Aelix), in favor
+    of the ``<PROVIDER>_API_KEY`` env route.
+
+    ``/login`` is deliberately absent: it exists (``tui/commands.py``) but is
+    TUI-only, and every caller of this block prints from a headless
+    ``--print`` / ``--mode json`` run where no prompt is available to type it
+    at. See the module docstring.
     """
 
     return _PROVIDER_LOGIN_HELP
@@ -58,16 +75,25 @@ def format_no_models_available_message() -> str:
 
 
 def format_no_model_selected_message() -> str:
-    """Pi parity: ``formatNoModelSelectedMessage``.
+    """Pi parity: ``formatNoModelSelectedMessage`` (tail honestly adapted).
 
     Pi: ``No model selected.\\n\\n{help}\\n\\nThen use /model to select a
-    model.`` — preserved verbatim around the (adapted) help block.
+    model.`` The shape is preserved; the tail is not verbatim.
+
+    #111 B-1 — ``cli/entry.py`` prints this ONLY under
+    ``if app_mode in ("print", "json")``, i.e. a headless run. ``/model`` is a
+    TUI ``BuiltinCommand`` with no headless equivalent, so Pi's verbatim tail
+    told a headless reader to type something they cannot type — the same dead
+    end as the ``aelix auth`` string this batch removed from
+    ``cli/list_models.py``. ``--model`` is a real flag on the very invocation
+    that just failed, so it leads.
     """
 
     return (
         "No model selected.\n\n"
         f"{get_provider_login_help()}\n\n"
-        "Then use /model to select a model."
+        "Then pass --model <id> on the command line "
+        "(or run 'aelix' and use /model inside the TUI)."
     )
 
 

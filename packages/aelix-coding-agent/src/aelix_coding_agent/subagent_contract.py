@@ -127,12 +127,49 @@ class SubagentResult:
     by the ``agent`` tool (it rides ``ToolResult.details`` there)."""
     dropped_lines: int = 0
     """Child stdout lines discarded for exceeding the 4 MiB per-line budget."""
+    tool_trail: str | None = None
+    """What the child DID — a rendered, bounded, sanitised one-line-per-call
+    record of every tool it ran and whether that call failed.
+
+    ``summary`` is the child's CONCLUSION and nothing else: the last
+    text-bearing assistant message. Every tool call, every argument and every
+    tool-level failure crossed the wire and was discarded, which mattered most
+    in chain mode — step k+1 received step k's answer with no way to know what
+    ground was already covered, and a child whose every tool errored still came
+    back ``ok`` because status is derived from the exit code and the stream
+    terminator, neither of which observes a tool error.
+
+    NOT raw material: it is capped and its arguments are stripped of control
+    characters and newlines before it is built, because it is composed into the
+    next child's prompt. ``details`` remains the uncapped, unsanitised field.
+
+    Additive + defaulted: does NOT bump ``CONTRACT_VERSION``."""
+
     permission_mode: str | None = None
     """The posture the child actually ran under (ADR-0197 §(e)/§(i)). Recorded
     so ``/agents run``, a P4 dashboard and the ADR's audit story can all show
     what authority was granted, including when a human widened it at the
     spawn-time consent dialog. Additive + defaulted: does NOT bump
     ``CONTRACT_VERSION``."""
+
+    model: str | None = None
+    provider: str | None = None
+    """WHICH MODEL THE CHILD ACTUALLY RAN, read off its own ``message_end``.
+
+    A profile that declares no ``model:`` emits no ``--model`` flag, so the child
+    falls through to the PERSISTED default rather than the parent's run-scope
+    model — a different model at a different price. (``model: inherit``
+    normalises to :data:`None` and takes the same path, so the word currently
+    means the opposite of what it says.) That substitution was completely
+    invisible: nothing in the envelope, the footer or the ``/agents run`` grid
+    named the child's model, so the only way to notice was the bill.
+
+    Recording it does not decide the precedence question — it makes the answer
+    observable, which is the half that has to exist first either way.
+
+    Populated from ``_StreamState.provider``/``.model``, which the reducer
+    already fills from every ``message_end`` (``stream.py``), so no new parsing.
+    Additive + defaulted: does NOT bump ``CONTRACT_VERSION``."""
 
 
 @dataclass(frozen=True)

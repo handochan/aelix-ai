@@ -150,14 +150,36 @@ The frozen set is exported as `LICENSE_WHITELIST` from
 
 ## Capabilities declaration vs enforcement
 
-- **Sprint 6h₉a / Phase 5b**: capabilities are **declaration-only**.
-  Pydantic validates the schema; the runtime does NOT block plugin
-  behavior based on declarations. This avoids premature lockdown while
-  the API surface stabilizes.
-- **Phase 6 enforcement**: capabilities become actual capability tokens.
-  The host refuses to inject `shell.exec` / `fs.write` adapters into the
-  plugin's `ctx` unless declared. The workspace trust dialog surfaces
-  the capability list before loading project-scoped extensions.
+> **AMENDED by ADR-0205 (2026-08-01) — the "declaration-only" bullet below
+> was true when written and is now FALSE for three of the nine flags.**
+> `ui_tui_trusted`, `shell_exec` and `net` are **ENFORCED**: the runtime
+> refuses `contributes.tui_widgets` / `contributes.hooks` /
+> `contributes.mcp_servers` when the matching flag is false. The other six
+> (`fs_write`, `fs_read_user`, `mcp_invoke`, `ui_descriptor`,
+> `ui_web_trusted`, `mcp_serve`) remain declaration-only. See ADR-0205 for
+> the per-flag table and the reason `mcp_serve` is NOT what authorizes
+> `[[contributes.mcp_servers]]`.
+
+- **Sprint 6h₉a / Phase 5b** *(historical — superseded for 3 flags by
+  ADR-0205)*: capabilities were **declaration-only**.
+  Pydantic validates the schema; the runtime did NOT block plugin
+  behavior based on declarations. This avoided premature lockdown while
+  the API surface stabilized.
+- **Enforcement arrived incrementally, not at a Phase 6 flag day**:
+  ADR-0102 gated `contributes.hooks` on `shell_exec`, commit 878004b
+  gated `contributes.tui_widgets` on `ui_tui_trusted` (and hoisted both
+  checks BEFORE the plugin module is imported), and ADR-0205 gated
+  `contributes.mcp_servers` on `shell_exec` (stdio) / `net` (http, sse).
+  Enforcement is a **load-time check on declared data, not a sandbox** —
+  once `factory(api)` runs, a plugin can reach its own mutable
+  `Capabilities` and self-grant.
+- **Phase 6 enforcement** *(still outstanding — this is the part
+  ADR-0205 did NOT deliver)*: capabilities become actual capability
+  tokens. The host refuses to inject `shell.exec` / `fs.write` adapters
+  into the plugin's `ctx` unless declared. The workspace trust dialog
+  surfaces the capability list before loading project-scoped extensions.
+  Today no surface in the product ever shows a user a capability flag —
+  not `/extension`, not the installer, not the catalog.
 - **Aelix-additive design**: the declaration-vs-enforcement split
   mirrors VS Code's `capabilities.untrustedWorkspaces` (declarative
   metadata for v1) vs Zed's runtime capability check (enforcement at

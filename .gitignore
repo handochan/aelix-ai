@@ -21,9 +21,47 @@ venv/
 .idea/
 .vscode/
 
-# OMC runtime state (ephemeral; not project history)
-.omc/state/
-.omc/sessions/
+# Agent / OMC developer state — never publish (#111 B-7).
+#
+# The previous rules were `.omc/state/` + `.omc/sessions/`. A gitignore pattern
+# with a slash in the middle is ANCHORED to the directory holding the .gitignore,
+# so those two matched ONLY `/.omc/state/` at the repo root. A nested
+# `packages/aelix-coding-agent/src/aelix_coding_agent/.omc/state/` escaped them
+# entirely, stayed untracked-but-present on a maintainer's disk, and hatchling
+# (which honours these ignore rules when selecting build files) swept maintainer
+# session transcripts straight into the published wheel and sdist.
+#
+# A NESTED `.omc` is always developer state and is ignored at any depth, which is
+# what closes the leak. The REPO-ROOT `.omc/` is different: `.omc/specs/` is the
+# committed sprint-plan record, not scratch — 50 files are tracked there and every
+# recent sprint (P2, P3, W1-A, #114, #118) commits its plan alongside the code it
+# describes. Requiring `git add -f` for those is friction pointed at the wrong
+# thing: P1's plan was written, left unstaged, and lost exactly that way.
+#
+# So: ignore everything directly under the root `.omc/` EXCEPT `specs/`. Git
+# cannot re-include a path whose parent directory is excluded, which is why this
+# is `/.omc/*` (contents) rather than `/.omc/` (the directory itself).
+#
+# Publishing is NOT what this rule protects — the wheel and sdist are guarded
+# independently by the `exclude` blocks in each pyproject, proven by
+# `tests/packaging/test_build_hygiene.py`: strip `.omc` from those excludes and
+# planted state leaks into the wheel even with this file untouched.
+/.omc/*
+!/.omc/specs/
+**/*/.omc/
+.ruff_cache/
+
+# Agent instruction files — local to a maintainer's checkout, not product.
+CLAUDE.md
+AGENTS.md
+
+# Exported TUI session transcripts (`/export`) land in the CWD.
+aelix-session-*.html
 
 # Claude Code local settings
 .claude/settings.local.json
+
+# Name-reservation build output (scripts/reserve_*_names.py) — regenerable
+/dist-reservation/
+/npm-reservation/
+/.reservation-build/

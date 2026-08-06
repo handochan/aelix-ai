@@ -234,7 +234,13 @@ class Settings:
     shell_command_prefix: str | None = None
     npm_command: list[str] | None = None
     collapse_changelog: bool | None = None
-    enable_install_telemetry: bool | None = None
+    # NOTE (#111 B-2): Pi's ``enableInstallTelemetry`` is deliberately NOT
+    # ported. Aelix has no telemetry sink of any kind, so carrying the key
+    # advertised a capability that does not exist. An existing settings.json
+    # containing ``enableInstallTelemetry`` still loads unchanged: unknown JSON
+    # keys are dropped by ``_json_dict_to_settings`` (settings_manager.py:107)
+    # and left untouched on disk by the merge-based persist path
+    # (``_persist_scoped_settings``).
     packages: list[PackageSource] | None = None
     # Aelix-original (#32-A, ADR-0186): registered extension install sources
     # (pip index / git repo / local path). Distinct from ``packages`` (pi's
@@ -265,6 +271,9 @@ class Settings:
     # Issue #5 — pi ``settings-manager.ts:96`` ``defaultProjectTrust`` (GLOBAL
     # setting only; read GLOBAL-scope, never merged — a project must not be able
     # to self-elevate via its own settings.json). Default applied in the getter.
+    # "GLOBAL scope" is a LOCATION as much as a scope: it holds only while a
+    # repo cannot repoint the global file, which is what ``_DOTENV_LOCKED`` in
+    # ``cli/runtime_bootstrap.py`` enforces (ADR-0203).
     default_project_trust: DefaultProjectTrust | None = None
     # Aelix-original (TUI): hide the post-compaction summary from the transcript.
     # When True, ``/compact`` shows only a terse confirmation line instead of the
@@ -283,6 +292,8 @@ class Settings:
     # only (never merged) for the same self-elevation reason as
     # ``default_project_trust`` above — a cloned repo shipping its own
     # ``.aelix/settings.json`` must not be able to switch a gated capability ON.
+    # Same precondition as above: the repo must also be unable to choose WHICH
+    # file is global (``_DOTENV_LOCKED``, ADR-0203).
     # Defaults applied in the getters.
     features: FeaturesSettings | None = None
 
@@ -328,7 +339,6 @@ SETTINGS_PY_TO_JSON: Final[dict[str, str]] = {
     "shell_command_prefix": "shellCommandPrefix",
     "npm_command": "npmCommand",
     "collapse_changelog": "collapseChangelog",
-    "enable_install_telemetry": "enableInstallTelemetry",
     "packages": "packages",
     "extension_sources": "extensionSources",
     "extensions": "extensions",

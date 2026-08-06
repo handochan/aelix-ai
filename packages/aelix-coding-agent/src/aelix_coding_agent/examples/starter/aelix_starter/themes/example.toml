@@ -1,0 +1,13 @@
+# A starter theme. Only these six roles are styled; unknown keys are ignored.
+# Colors are Rich color names or hex (e.g. "#89b4fa"). A color Rich cannot parse
+# renders that role unstyled. Declared from the manifest via
+# [[contributes.themes]] path = "themes/example.toml".
+name = "starter"
+
+[roles]
+assistant = "cyan"
+tool = "yellow"
+error = "red"
+dim = "bright_black"
+accent = "blue"
+thinking = "magenta"

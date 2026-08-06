@@ -80,7 +80,18 @@ my-ext = "my_aelix_extension:MyExtension"
 ```
 
 Loaded via `importlib.metadata.entry_points(group="aelix.extensions")`.
-Each endpoint's `.load()` result is treated as an inline factory.
+
+> **SUPERSEDED in part by ADR-0204 (2026-08-01, issue #91).** "Each endpoint's
+> `.load()` result is treated as an inline factory" was true until #91 and is
+> not any more. `ep.load()` at discovery time imported (and ran the
+> module-level code of) every installed pack before any capability gate had
+> seen its manifest, and it also meant the pack's `aelix-plugin.toml` was
+> never read at all. Discovery is now import-free: the endpoint's
+> `module`/`attr` are carried as strings, its manifest is resolved from the
+> distribution's installed metadata, and the import happens later, at load
+> time, in `_resolve_factory` — alongside every other entry type. Both of
+> `ep.load()`'s call shapes are preserved there (dotted attribute walk;
+> a class object instantiated so `Cls()(api)` works).
 
 ### Priority (Pi parity + Aelix-additive)
 
@@ -93,6 +104,12 @@ Each endpoint's `.load()` result is treated as an inline factory.
 
 - Dedup by `Path.resolve()` for filesystem entries; by `ep.name=ep.value`
   string key for entry_points.
+  > **SUPERSEDED by ADR-0204 (issue #91).** The `ep.name=ep.value` key let the
+  > same factory load twice under two endpoint names, and could not see that
+  > an endpoint and a directory scan had found the *same pack*. Endpoints now
+  > dedup on their `module:attr` TARGET, and an endpoint whose manifest is
+  > proved dedups on `pkg_dir.resolve()` through the same `_push_entry` the
+  > filesystem tiers use — which is what makes cross-tier dedup work.
 - Per-entry `try/except` in each tier — one broken extension never
   aborts the wave.
 
