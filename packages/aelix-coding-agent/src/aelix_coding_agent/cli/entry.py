@@ -930,6 +930,9 @@ async def _build_harness_options(
         prepend=prepend_extensions,
         no_discovery=parsed.no_extensions,
         no_project_local=not project_trusted,
+        # Issue #91 provenance gate — the ``--trust-extension-path`` override
+        # (distribution names allowed despite resolving outside site-packages).
+        trusted_ep_dists=frozenset(parsed.trust_extension_paths),
         # Issue #24-FU — on reload, carry the user's restored extension flag
         # values into the fresh runtime BEFORE each ``setup()`` re-runs (``None``
         # on first build / /new / /fork / /resume, where fresh defaults are
@@ -1538,6 +1541,8 @@ async def _async_main(argv: list[str]) -> int:
                 agent_dir=Path(get_agent_dir()),
                 no_discovery=parsed.no_extensions,
                 no_project_local=True,  # SECURITY: never the project-local tier
+                # Issue #91 provenance gate — honour the same override here.
+                trusted_ep_dists=frozenset(parsed.trust_extension_paths),
             )
             trust_vote_extensions = list(_vote_loaded.extensions)
             for _err in _vote_loaded.errors:
@@ -1889,6 +1894,9 @@ async def _async_main(argv: list[str]) -> int:
             agent_dir=Path(get_agent_dir()),
             no_discovery=parsed.no_extensions,
             no_project_local=not project_trusted,
+            # Issue #91 provenance gate — the scan path is what reaches
+            # contributes.mcp_servers, so it MUST honour the same gate + override.
+            trusted_ep_dists=frozenset(parsed.trust_extension_paths),
         )
     except Exception as exc:  # noqa: BLE001 — scan is additive, never fatal
         print(f"Warning: manifest scan: {exc}", file=sys.stderr)

@@ -163,6 +163,22 @@ class Args:
     no_extensions: bool = False
     """Pi parity: ``--no-extensions`` / ``-ne``."""
 
+    trust_extension_paths: list[str] = field(default_factory=list)
+    """Aelix-original (issue #91 provenance gate) — ``--trust-extension-path
+    <dist-name>`` (repeatable).
+
+    The ``aelix.extensions`` entry-point tier REFUSES any endpoint whose
+    distribution resolves outside the interpreter's real site directories — the
+    ``git clone && python -m`` / editable-``.pth`` / ``PYTHONPATH`` RCE surface,
+    where a repo-committed ``.dist-info`` would otherwise be discovered and its
+    ``contributes.mcp_servers`` spawned before a line of it is imported. This
+    flag is the escape hatch for the legitimate ``pip install -e .`` developer:
+    each value is a distribution name (PEP 503 normalised) explicitly vouched
+    for. It is a CLI argument on PURPOSE — an env var could be injected by the
+    very ``cwd`` ``.env`` admission-control vector ADR-0203 just closed — and it
+    names SPECIFIC packs, never a blanket 'trust everything' that would reopen
+    the hole."""
+
     permission_mode: str | None = None
     """Aelix-original (ADR-0197 §(e)) — seeds :class:`PermissionPosture` at
     startup. :data:`None` keeps the DEFAULT posture. A bogus value WARNS via
@@ -517,6 +533,14 @@ def parse_args(argv: list[str]) -> Args:
         elif arg in ("--no-extensions", "-ne"):
             parsed.no_extensions = True
             parsed.provided.add("no_extensions")
+        elif arg == "--trust-extension-path":
+            # Issue #91 provenance gate — name a distribution to allow despite
+            # it resolving outside the environment site directories (the
+            # 'pip install -e .' developer escape hatch).
+            if i + 1 < n:
+                parsed.trust_extension_paths.append(argv[i + 1])
+                parsed.provided.add("trust_extension_paths")
+                i += 1
         elif arg in ("--approve", "-a"):
             # Pi parity: ``args.ts:180`` — trust project-local files this run.
             parsed.project_trust_override = True
@@ -660,6 +684,9 @@ Tools / Extensions:
   --tools, -t <csv>               Restrict tools to this comma-separated list
   --extension, -e <path>          Load extension (repeatable)
   --no-extensions, -ne            Disable all extensions
+  --trust-extension-path <dist>   Allow an entry-point pack installed outside
+                                  site-packages (e.g. 'pip install -e .');
+                                  names one distribution (repeatable)
   --approve, -a                   Trust project-local files for this run
   --no-approve, -na               Ignore project-local files for this run
   --permission-mode <mode>        default | auto-accept-edits | plan | yolo | auto
