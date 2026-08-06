@@ -1,0 +1,50 @@
+# A REAL, buildable starter for a marketplace extension (issue #91, ADR-0207).
+#
+# Build it and look inside the wheel:
+#
+#     pip wheel . -w dist --no-deps
+#     python -m zipfile -l dist/aelix_starter_ext-0.1.0-py3-none-any.whl
+#
+# You MUST see `aelix_starter/aelix-plugin.toml` and
+# `aelix_starter/themes/example.toml` in that listing. If the manifest is not in
+# the wheel, the host has nothing to read from your installed metadata and every
+# declarative contribution below is silently inert — the exact failure
+# `aelix extension verify` exists to catch.
+#
+# WHY HATCHLING. hatchling ships every file inside the selected package
+# directory by default, DATA FILES INCLUDED — so the manifest and the theme ride
+# along with no extra configuration. A setuptools build with default
+# configuration does the OPPOSITE: it packages *.py and drops aelix-plugin.toml
+# and themes/*.toml, so the pack installs, setup() runs, and the manifest is
+# gone. If you must use setuptools, you have to opt the data files in explicitly
+# (include_package_data = true + a MANIFEST.in that names them, or an explicit
+# [tool.setuptools.package-data]). Hatchling needs none of that. See
+# docs/guides/extension-authoring.md#packaging-your-extension.
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "aelix-starter-ext"
+version = "0.1.0"
+description = "A minimal, buildable Aelix extension: one command and one theme, shipped with a bound manifest."
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "Your Name", email = "you@example.com" }]
+license = "Apache-2.0"
+
+# THIS is what makes the host discover you as an installed extension (tier 4).
+# The name on the left is your entry-point name; the value is
+# "<module>:<callable>". The host reads the aelix-plugin.toml that sits inside
+# the package directory of THIS module — here `aelix_starter/aelix-plugin.toml`
+# — without importing your code.
+[project.entry-points."aelix.extensions"]
+aelix-starter = "aelix_starter:setup"
+
+# Explicit rather than inferred, on purpose: it names the one package directory
+# whose files (INCLUDING the manifest and themes/) hatchling ships into the
+# wheel. Inference would find the same directory, but stating it is the honest
+# template — you can see exactly what will be packaged.
+[tool.hatch.build.targets.wheel]
+packages = ["aelix_starter"]

@@ -406,12 +406,89 @@ def setup(aelix: ExtensionAPI) -> None:
 
 See ADR-0095 for the descriptor protocol and the full slot taxonomy.
 
+## Packaging your extension
+
+This section is only for the **installed-package** channel — the one the
+marketplace uses and `aelix extension install <pkg>` gives you. A single `.py`
+file, a directory, or a git URL need none of it. But once you build a wheel, one
+detail decides whether your manifest survives the build, and the default of the
+most common backend gets it wrong.
+
+**The footgun.** When your package declares an `aelix.extensions` entry point,
+the host reads your `aelix-plugin.toml` from the *installed distribution's
+metadata* — it must be **inside the wheel**, at
+`<your_package>/aelix-plugin.toml`. A **setuptools build with default
+configuration ships `*.py` and silently DROPS non-code files** —
+`aelix-plugin.toml` and `themes/*.toml` among them. The result is the worst kind
+of failure: the wheel installs, your `setup()` runs, the pack looks healthy —
+and every declarative contribution (declared tools/commands, themes, TUI
+widgets, MCP servers, subprocess hooks) is inert, because the manifest is simply
+not there to read. Nothing errors; the contribution just never appears.
+
+**Two backends, and what each needs.**
+
+- **hatchling (recommended).** Ships every file inside the selected package
+  directory by default, data files included, so the manifest and themes ride
+  along with no extra configuration:
+
+  ```toml
+  [build-system]
+  requires = ["hatchling"]
+  build-backend = "hatchling.build"
+
+  [project.entry-points."aelix.extensions"]
+  my-ext = "my_package:setup"
+
+  [tool.hatch.build.targets.wheel]
+  packages = ["my_package"]
+  ```
+
+- **setuptools.** You must opt the data files in **explicitly** — either
+  `include_package_data = true` plus a `MANIFEST.in` that names them, or an
+  explicit `[tool.setuptools.package-data]`:
+
+  ```toml
+  [tool.setuptools.package-data]
+  my_package = ["aelix-plugin.toml", "themes/*.toml"]
+  ```
+
+**A copyable, buildable starter** lives at
+`packages/aelix-coding-agent/src/aelix_coding_agent/examples/starter/` — a
+hatchling project with `pyproject.toml`, a package holding `setup()` +
+`aelix-plugin.toml` + `themes/example.toml`, and the entry point wired. Copy it
+and change the names.
+
+**Prove the manifest shipped — do not assume it.** After building, look inside
+the wheel and then ask the host:
+
+```bash
+pip wheel . -w dist --no-deps
+python -m zipfile -l dist/*.whl        # must list <pkg>/aelix-plugin.toml
+pip install dist/*.whl
+aelix extension verify <name>          # exit 0 == the manifest bound
+```
+
+`aelix extension verify` runs the host's own import-free resolver over your
+installed endpoint and exits non-zero if the manifest is `ABSENT` (dropped from
+the wheel — it prints the setuptools/package-data cause), `MALFORMED`,
+`MISPLACED` (shipped, but not inside the entry module's package), or otherwise
+unbindable. `aelix extension list` annotates the same verdict. Wire
+`aelix extension verify <name>` into your release CI so a build that drops the
+manifest fails there, not silently on a user's machine. See ADR-0207.
+
 ## Publishing
 
 An extension does not need a catalog: `-e ./my_ext.py`, a git URL, or a pip
 package all install without one. A catalog only makes an extension
 *discoverable* — it is an advisory index, and listing never means "reviewed" or
 "safe" (ADR-0188).
+
+A catalog-listed pack has one extra requirement (ADR-0207): the installed
+distribution must yield a **bound** manifest — `aelix extension verify` must exit
+0. It need not declare any contribution, but it must carry a parseable,
+schema-valid `aelix-plugin.toml`, so a marketplace entry is an auditable,
+gated set of declarations rather than a black-box entry-point pack. An arbitrary
+`pip install <pkg>` pack is under no such obligation.
 
 The official index is the **[Aelix Marketplace](https://handochan.github.io/aelix-marketplace/)**,
 which is `DEFAULT_CATALOG_URL` — registered out of the box, though nothing is

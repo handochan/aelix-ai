@@ -1,0 +1,52 @@
+# The starter manifest. It MUST end up inside the wheel, at
+# `aelix_starter/aelix-plugin.toml`, or every declaration below is inert. The
+# hatchling build in ../pyproject.toml ships it automatically; `pip wheel .` then
+# `aelix extension verify aelix-starter` proves it bound.
+#
+# Schema: aelix_agent_core.contracts.manifest.PluginManifest — STRICT
+# (extra="forbid"). Copy examples/echo/aelix-plugin.toml for the fully annotated
+# reference; this one is trimmed to exactly what the starter contributes.
+
+[plugin]
+id = "aelix-starter"
+name = "Aelix Starter"
+version = "0.1.0"
+description = "Minimal buildable extension: one command and one theme."
+authors = ["Your Name"]
+repository = "https://example.invalid/aelix-starter"
+license = "Apache-2.0"
+
+[plugin.api]
+level = 1
+min_level = 1
+
+# "<module>:<callable>" — the SAME module named by the aelix.extensions entry
+# point in pyproject.toml. The host imports this only at load time, never during
+# manifest resolution.
+[plugin.entry]
+python = "aelix_starter:setup"
+
+# A command and a theme need no enforced capability, so every flag stays false.
+# (shell_exec / net / ui_tui_trusted are the three the host actually enforces —
+# declare them only when you contribute hooks, an MCP server, or a TUI widget.)
+[capabilities]
+shell_exec = false
+net = false
+ui_tui_trusted = false
+
+# `hello` is a pure command trigger, so the host could load this pack lazily on
+# first `/hello`; on_startup_finished keeps it eager, which is the simpler
+# default while you are learning. Drop it to make the pack lazy.
+[activation]
+on_startup_finished = true
+on_command = ["hello"]
+
+# What this pack adds — each entry must match what setup() actually does.
+[[contributes.commands]]
+id = "hello"
+description = "Starter demo command — returns a greeting."
+
+# A theme file, resolved RELATIVE TO THIS MANIFEST'S DIRECTORY. This is the file
+# a setuptools default build would silently drop; the hatchling build ships it.
+[[contributes.themes]]
+path = "themes/example.toml"

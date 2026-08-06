@@ -696,16 +696,35 @@ def test_list_installed_empty(capsys: pytest.CaptureFixture[str]) -> None:
 def test_list_installed_populated(
     capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Since issue #91 `list` annotates each endpoint with its manifest-binding
+    verdict (via `classify_installed_endpoints`), so an ABSENT pack is visibly
+    inert and a BOUND one is not. See tests/cli/test_extension_verify.py for the
+    end-to-end classification."""
+
     from aelix_coding_agent.cli import extension_install as ei
+    from aelix_coding_agent.extensions.ep_manifest import EpOutcome
 
     monkeypatch.setattr(
         ei,
-        "list_installed_extensions",
-        lambda: [ei.InstalledExtension("myext", "my-ext-dist", "1.0.0")],
+        "classify_installed_endpoints",
+        lambda **_kw: [
+            ei.EndpointStatus(
+                "myext", "my-ext-dist", "1.0.0", EpOutcome.BOUND, "bound", "myext"
+            ),
+            ei.EndpointStatus(
+                "inertext", "inert-dist", "2.0.0", EpOutcome.ABSENT, "no manifest", None
+            ),
+        ],
     )
     assert run_extension_command(["list"]) == 0
     out = capsys.readouterr().out
+    # Both endpoints are listed with dist + version.
     assert "myext" in out and "my-ext-dist" in out and "1.0.0" in out
+    assert "inertext" in out and "inert-dist" in out and "2.0.0" in out
+    # The ABSENT one carries the inert annotation; the BOUND one does not.
+    assert "no manifest" in out and "inert" in out
+    myext_line = next(line for line in out.splitlines() if "myext" in line)
+    assert "inert" not in myext_line
 
 
 # === #32-A: update =======================================================
