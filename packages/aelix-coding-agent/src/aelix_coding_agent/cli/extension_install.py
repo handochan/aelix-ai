@@ -89,6 +89,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 from urllib.parse import urlparse, urlsplit, urlunsplit
 
+from ..extensions.ep_manifest import (
+    EpApiLevelRefusal,
+    EpOutcome,
+    entry_point_provenance,
+    environment_site_dirs,
+    resolve_entry_point_manifest,
+)
 from . import extension_catalog, extension_pins, extension_signing
 from .config import get_agent_dir
 
@@ -105,6 +112,7 @@ _USAGE = (
     "  source list\n"
     "  source remove <path | git-url | index-url>\n"
     "  list\n"
+    "  verify [<name>]                                [--trust-extension-path DIST]\n"
     "  discover [<query>]                             [--refresh] [--offline] "
     "[--no-default-catalog]\n"
     "  discover install <name>                        [--catalog CAT] [--yes] "
@@ -127,6 +135,14 @@ _USAGE = (
 # 3-way split lets a script tell "pip failed" from "never ran" (ADR-0185).
 _EXIT_DIDNT_RUN = 2
 
+# ``extension verify`` exit codes (issue #91, ADR-0207) — STABLE, a CI gate keys
+# on them: 0 = every reported endpoint's manifest is BOUND; 1 = at least one is
+# not (ABSENT / MALFORMED / MISPLACED / FENCED / UNPROVEN / UNTRUSTED / API
+# refusal), so the loader would drop that pack's declarative contributions;
+# 2 (``_EXIT_DIDNT_RUN``) = it did not get as far as verifying (usage error, or a
+# named target that matches nothing installed).
+_VERIFY_NOT_BOUND = 1
+
 #: The entry-point group the loader's Tier-4 pass discovers (loader.py:750).
 ENTRY_POINT_GROUP = "aelix.extensions"
 
@@ -146,9 +162,11 @@ PipRunner = Callable[[list[str]], "subprocess.CompletedProcess[bytes]"]
 __all__ = [
     "ENTRY_POINT_GROUP",
     "AmbientIndexConfig",
+    "EndpointStatus",
     "InstallBackend",
     "InstalledExtension",
     "PipRunner",
+    "classify_installed_endpoints",
     "SourceKind",
     "TargetKind",
     "build_download_args",
@@ -2154,18 +2172,254 @@ async def _cmd_source(
     return _EXIT_DIDNT_RUN
 
 
-def _cmd_list() -> int:
-    """``extension list`` — the installed inventory (entry-point ledger)."""
+# =====================================================================
+# === Manifest-binding status (issue #91 — `verify` + `list` note) =====
+# =====================================================================
 
-    installed = list_installed_extensions()
-    if not installed:
+
+@dataclass(frozen=True)
+class EndpointStatus:
+    """One ``aelix.extensions`` endpoint plus the IMPORT-FREE verdict on whether
+    its ``aelix-plugin.toml`` will bind.
+
+    Produced by :func:`classify_installed_endpoints`, which runs the SAME
+    provenance gate and metadata-only resolver the loader runs at discovery —
+    so a ``bound`` status here is exactly the loader binding the manifest, and a
+    non-``bound`` one is exactly the loader dropping that pack's declarative
+    contributions. Nothing here imports the pack.
+
+    ``outcome`` is the :class:`~aelix_coding_agent.extensions.ep_manifest.EpOutcome`
+    resolution reached, or :data:`None` for an
+    :class:`~aelix_coding_agent.extensions.ep_manifest.EpApiLevelRefusal` — the
+    pack declares a host API level this build cannot satisfy, so it is
+    incompatible rather than merely unproven.
+    """
+
+    ep_name: str
+    dist_name: str | None
+    version: str | None
+    outcome: EpOutcome | None
+    reason: str
+    plugin_id: str | None
+
+    @property
+    def bound(self) -> bool:
+        """True only when the manifest resolved to ``BOUND``."""
+        return self.outcome is EpOutcome.BOUND
+
+    def label(self) -> str:
+        """``<ep-name> [<dist> <version>]`` for the human report."""
+        if not self.dist_name:
+            return self.ep_name
+        ver = f" {self.version}" if self.version else ""
+        return f"{self.ep_name} [{self.dist_name}{ver}]"
+
+
+#: The ABSENT hint — the ONE outcome whose cause is a packaging footgun rather
+#: than an authoring mistake the reason already names. A setuptools build with
+#: default configuration drops ``aelix-plugin.toml`` (and ``themes/*.toml``)
+#: from the wheel, so the dist installs, ``setup()`` runs, the pack looks
+#: healthy — and every declarative contribution is silently inert because the
+#: manifest is simply not there to read.
+_ABSENT_HINT = (
+    "the distribution installed but ships no aelix-plugin.toml. The usual cause "
+    "is a setuptools build with DEFAULT configuration, which DROPS "
+    "aelix-plugin.toml (and themes/*.toml) from the wheel at build time — "
+    "setup() still runs, so the pack looks installed, but every declarative "
+    "contribution is silently inert. Fix: ship the manifest inside the wheel "
+    "via package-data (setuptools needs include_package_data + MANIFEST.in, or "
+    "an explicit [tool.setuptools.package-data]), or build with hatchling, which "
+    "ships package data files by default. examples/starter/ is a hatchling "
+    "scaffold that gets this right."
+)
+
+
+def classify_installed_endpoints(
+    *, trusted_ep_dists: frozenset[str] = frozenset()
+) -> list[EndpointStatus]:
+    """Resolve every installed ``aelix.extensions`` endpoint's manifest, IMPORT-FREE.
+
+    Runs the loader's own discovery gate for each endpoint — the sys.path
+    provenance fence (:func:`~aelix_coding_agent.extensions.ep_manifest.
+    entry_point_provenance`) first, then the metadata-only resolver
+    (:func:`~aelix_coding_agent.extensions.ep_manifest.resolve_entry_point_manifest`)
+    — and records the verdict WITHOUT importing a single line of plugin code.
+    This is the primitive both ``extension verify`` (the CI gate) and
+    ``extension list`` (the human annotation) read.
+
+    ``trusted_ep_dists`` are PEP 503 distribution names the operator vouched for
+    with ``--trust-extension-path`` — the developer running an ``pip install -e``
+    pack, whose dist lives outside the environment's real site directories and
+    would otherwise be refused by the provenance fence.
+    """
+
+    out: list[EndpointStatus] = []
+    try:
+        eps = list(importlib.metadata.entry_points(group=ENTRY_POINT_GROUP))
+    except Exception:  # noqa: BLE001 — a broken env yields an empty inventory, never a crash
+        return out
+    # Computed once: the environment's real site directories do not change while
+    # we classify, and each probe touches the filesystem.
+    trusted_dirs = environment_site_dirs()
+    for ep in eps:
+        dist = getattr(ep, "dist", None)
+        dist_name = getattr(dist, "name", None) if dist is not None else None
+        version = getattr(dist, "version", None) if dist is not None else None
+        dn = str(dist_name) if dist_name else None
+        vn = str(version) if version else None
+
+        prov = entry_point_provenance(
+            ep, trusted_dirs=trusted_dirs, allowed_dists=trusted_ep_dists
+        )
+        if prov is not None:
+            # UNTRUSTED_PATH — refused before any manifest read (fail-closed).
+            out.append(EndpointStatus(ep.name, dn, vn, prov.outcome, prov.reason, None))
+            continue
+        try:
+            res = resolve_entry_point_manifest(ep)
+        except EpApiLevelRefusal as exc:
+            out.append(EndpointStatus(ep.name, dn, vn, None, str(exc), None))
+            continue
+        except Exception as exc:  # noqa: BLE001 — a broken dist is a failed verify, not a crash
+            out.append(
+                EndpointStatus(
+                    ep.name,
+                    dn,
+                    vn,
+                    EpOutcome.UNPROVEN,
+                    f"cannot resolve the manifest of entry point {ep.name!r}: {exc}",
+                    None,
+                )
+            )
+            continue
+        plugin_id = res.manifest.plugin.id if res.manifest is not None else None
+        out.append(EndpointStatus(ep.name, dn, vn, res.outcome, res.reason, plugin_id))
+    return out
+
+
+def _cmd_list() -> int:
+    """``extension list`` — the installed inventory (entry-point ledger).
+
+    Since issue #91 each row is annotated with its manifest-binding verdict, so
+    the silent failure the marketplace footgun produces — *installed, no
+    manifest, declarations inert* — is VISIBLE here instead of only discoverable
+    by noticing a contribution never showed up. The classification is
+    import-free (see :func:`classify_installed_endpoints`).
+    """
+
+    statuses = classify_installed_endpoints()
+    if not statuses:
         print("No extensions installed (via entry_points).")
         return 0
     print("Installed extensions:")
-    for ext in installed:
-        dist = f" [{ext.dist_name}]" if ext.dist_name else ""
-        version = f" {ext.version}" if ext.version else ""
-        print(f"  {ext.ep_name}{version}{dist}")
+    for s in statuses:
+        if s.bound:
+            note = ""
+        elif s.outcome is EpOutcome.ABSENT:
+            note = "  — no manifest; declarative contributions inert"
+        elif s.outcome is None:
+            note = "  — INCOMPATIBLE with this host; not loaded (run 'extension verify')"
+        elif s.outcome is EpOutcome.UNTRUSTED_PATH:
+            note = "  — REFUSED (untrusted sys.path provenance); not loaded (run 'extension verify')"
+        else:
+            note = (
+                f"  — manifest not bound ({s.outcome.value}); declarations inert "
+                f"(run 'extension verify')"
+            )
+        print(f"  {s.label()}{note}")
+    return 0
+
+
+def _cmd_verify(args: list[str]) -> int:
+    """``extension verify [<name>] [--trust-extension-path DIST]`` — the
+    import-free BOUND gate (issue #91, ADR-0207).
+
+    Reports, per installed ``aelix.extensions`` endpoint, whether its
+    ``aelix-plugin.toml`` will bind — using the loader's own provenance gate and
+    metadata-only resolver, so nothing here imports the pack. Exit status is
+    STABLE for CI: 0 iff every reported endpoint is BOUND; ``_VERIFY_NOT_BOUND``
+    (1) if any is ABSENT / MALFORMED / MISPLACED / FENCED / UNPROVEN /
+    UNTRUSTED / API-incompatible; ``_EXIT_DIDNT_RUN`` (2) on a usage error or a
+    named target that matches nothing installed.
+
+    The intended catalog-submission flow: install the candidate into a clean
+    environment, run ``aelix extension verify <name>``, and gate on the exit
+    code — a BOUND manifest is what makes a catalog entry an auditable,
+    gated set of contributions rather than a black-box entry-point pack.
+    """
+
+    target: str | None = None
+    trusted: set[str] = set()
+    pending = iter(args)
+    for a in pending:
+        if a in ("-h", "--help"):
+            print(_USAGE)
+            return 0
+        if a == "--trust-extension-path":
+            val = next(pending, None)
+            if val is None:
+                print(
+                    "Error: --trust-extension-path requires a DIST name.",
+                    file=sys.stderr,
+                )
+                return _EXIT_DIDNT_RUN
+            trusted.add(val)
+        elif a.startswith("--trust-extension-path="):
+            trusted.add(a.split("=", 1)[1])
+        elif a.startswith("-"):
+            print(f"Error: unknown flag {a!r}.\n{_USAGE}", file=sys.stderr)
+            return _EXIT_DIDNT_RUN
+        elif target is None:
+            target = a
+        else:
+            print(
+                f"Error: verify takes at most one <name>.\n{_USAGE}",
+                file=sys.stderr,
+            )
+            return _EXIT_DIDNT_RUN
+
+    statuses = classify_installed_endpoints(trusted_ep_dists=frozenset(trusted))
+
+    if target is not None:
+        want = _canon(target)
+        statuses = [
+            s
+            for s in statuses
+            if _canon(s.ep_name) == want
+            or (s.dist_name is not None and _canon(s.dist_name) == want)
+        ]
+        if not statuses:
+            print(
+                f"Error: no installed aelix.extensions endpoint matches {target!r} "
+                f"(via entry_points group {ENTRY_POINT_GROUP!r}).",
+                file=sys.stderr,
+            )
+            return _EXIT_DIDNT_RUN
+
+    if not statuses:
+        print("No extensions installed (via entry_points); nothing to verify.")
+        return 0
+
+    failed = 0
+    for s in statuses:
+        if s.bound:
+            print(f"  BOUND     {s.label()}  (manifest: plugin {s.plugin_id!r})")
+            continue
+        failed += 1
+        state = s.outcome.value.upper() if s.outcome is not None else "INCOMPATIBLE"
+        print(f"  {state:<9} {s.label()}")
+        print(f"      {s.reason}")
+        if s.outcome is EpOutcome.ABSENT:
+            print(f"      hint: {_ABSENT_HINT}")
+
+    total = len(statuses)
+    if failed:
+        print(
+            f"\nverify: {failed} of {total} endpoint(s) NOT bound; their "
+            f"declarative contributions are ignored until the manifest binds."
+        )
+        return _VERIFY_NOT_BOUND
+    print(f"\nverify: all {total} endpoint(s) BOUND.")
     return 0
 
 
@@ -3369,6 +3623,8 @@ async def run_extension_command_async(
     # and the key dir under agent_dir, not the SettingsManager-backed source list).
     if sub == "list":
         return _cmd_list()
+    if sub == "verify":
+        return _cmd_verify(rest)
     if sub == "keygen":
         return _cmd_keygen(rest)
     if sub == "sign":
@@ -3402,7 +3658,7 @@ async def run_extension_command_async(
 
     print(
         f"Error: unknown extension subcommand {sub!r} "
-        "(install | source | list | discover | update | remove | keygen | sign | trust).\n"
+        "(install | source | list | verify | discover | update | remove | keygen | sign | trust).\n"
         f"{_USAGE}",
         file=sys.stderr,
     )
