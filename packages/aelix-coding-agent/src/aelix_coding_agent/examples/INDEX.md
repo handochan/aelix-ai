@@ -18,6 +18,7 @@ dotted module; before that only a filesystem path worked).
 | `echo/echo.py` | Tools & commands | The minimal complete extension. A `setup(aelix)` that registers one `AgentTool` (`echo`) and one slash command (`/hello`). Start here. |
 | `echo/aelix-plugin.toml` | Manifest | The repository's reference `aelix-plugin.toml` (manifest v1, ADR-0096) — annotated, schema-valid, with every contribution family either used or shown commented. **Copy this file** rather than guessing a manifest format. |
 | `telnaut/telnaut.py` | Providers & login | A corporate custom-provider extension (#77): a custom wire adapter via `register_api_adapter`, the models that route to it via `register_provider`, and an employee-number `/login` method via `register_login_provider`. Shows delegating to a built-in provider with `replace(opts, client=...)` so you reuse Aelix's SSE parsing. |
+| `starter/` | Packaging | A real, **buildable** hatchling package (`pyproject.toml` + `aelix_starter/` with `setup()`, `aelix-plugin.toml`, `themes/example.toml`, and the `aelix.extensions` entry point). Copy this to publish an installed pack whose manifest actually ships in the wheel. See its `README.md` and the guide's [Packaging your extension](../../../../../docs/guides/extension-authoring.md#packaging-your-extension). |
 
 ## How to load an extension
 
@@ -45,8 +46,14 @@ substitute its own `foo.py` for your installed `foo`. See `_is_module_ref` and
 
 ## Do I need a manifest?
 
-No. A single `.py` file with a top-level `setup(aelix)` is a complete
-extension — `echo.py` would work with its `aelix-plugin.toml` deleted.
+No — **unless you list in the official catalog**. A single `.py` file with a
+top-level `setup(aelix)` is a complete extension — `echo.py` would work with its
+`aelix-plugin.toml` deleted. A **catalog-listed** pack is the one exception
+(ADR-0207): its installed distribution must yield a *bound* manifest (parses +
+schema-valid — it need not declare any contribution), so a marketplace entry is
+an auditable declaration rather than a black box. Prove yours binds with
+`aelix extension verify <name>` (exit 0). An arbitrary `pip install <pkg>` pack
+is under no such obligation.
 
 Add a manifest when you need the host to know things *before* your code runs:
 lazy activation (`on_command`), declared commands/tools, declared MCP servers,

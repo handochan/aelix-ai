@@ -35,6 +35,25 @@ and `.../releases/tag/vX` link would 404. Add them with the first pushed tag.
   the manifest does not sit in the entry module's own package, or if your pack
   is a single module and so has no package directory. Purely optional: a pack
   that omits it behaves exactly as it does today.
+- **`aelix extension verify`** (#91, ADR-0207) — an import-free command that
+  reports, per installed `aelix.extensions` endpoint, whether its manifest will
+  bind, and exits 0 only when every reported endpoint is `BOUND` (non-zero for
+  `ABSENT` / `MALFORMED` / `MISPLACED` / `FENCED` / `UNPROVEN` / `UNTRUSTED` /
+  API-incompatible). Built for a catalog-submission CI. It never imports the
+  pack. The `ABSENT` report names the usual cause — a **setuptools default build
+  silently drops `aelix-plugin.toml` and `themes/*.toml` from the wheel** — and
+  the fix. `aelix extension list` now annotates the same verdict, so
+  "installed, no manifest, declarations inert" is visible instead of silent.
+- **A buildable starter extension** at
+  `packages/aelix-coding-agent/src/aelix_coding_agent/examples/starter/` (#91,
+  ADR-0207) — a hatchling package whose wheel actually ships its manifest and
+  theme — plus a new "Packaging your extension" section in the authoring guide
+  naming both build backends and the setuptools `package-data` requirement.
+- **Catalog policy** (#91, ADR-0207): a pack listed in the official catalog must
+  yield a **bound** manifest (`aelix extension verify` exits 0) — it need not
+  declare any contribution, but a manifest-less entry-point pack is not
+  catalog-eligible. An arbitrary `pip install <pkg>` pack keeps the manifest
+  fully optional. `BOUND` is an auditability floor, not a safety verdict.
 
 ### Changed
 
