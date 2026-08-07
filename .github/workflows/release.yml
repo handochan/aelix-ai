@@ -86,42 +86,116 @@ jobs:
           python-version: "3.12"
           enable-cache: true
 
-      # The tag says one version; pyproject.toml says another. Nothing before
+      # The tag says one version; the workspace says another. Nothing before
       # this step made them agree, so a tag pushed without the version bump
       # (or bumped to the wrong PEP 440 spelling) would build and publish
       # artifacts whose version does not match the tag that triggered them —
-      # and the PyPI upload is irreversible. Assert the two agree, BEFORE the
-      # build, using packaging's PEP 440 normalizer rather than a hand-rolled
-      # one: `v0.1.0-beta.1` normalizes to `0.1.0b1`, which is exactly the
-      # spelling pyproject.toml must carry.
-      - name: Assert the tag normalizes to the packaged version
+      # and the PyPI upload is irreversible.
+      #
+      # Checking the root pyproject alone is NOT enough. Four packages publish
+      # with INDEPENDENT literal versions, and they pin each other with literal
+      # `==` requirements — ten places in total today (4 versions + 6 pins:
+      # the meta pins all three, aelix-coding-agent pins two, aelix-agent-core
+      # pins one). A bump that updates the root and misses any one of the others
+      # would sail past a root-only check and publish a set whose members demand
+      # a version that does not exist on the index — irreversibly, and broken on
+      # install rather than merely mislabelled.
+      #
+      # So: assert EVERY published version and EVERY inter-package pin
+      # normalizes equal to the tag, discovering both from the workspace rather
+      # than hard-coding paths, so a new package or a new pin is covered the day
+      # it lands. packaging's PEP 440 normalizer does the comparing, not a
+      # hand-rolled one: `v0.1.0-beta.1` normalizes to `0.1.0b1`. All problems
+      # are collected and printed together, so one run tells you every place to
+      # edit. aelix-server is skipped on purpose — it is dropped from the
+      # publish set below and its inter-package deps are deliberately unpinned.
+      - name: Assert the tag matches every published version and pin
         env:
           TAG: ${{ github.ref_name }}
         run: |
           uv run --no-project --with packaging --python 3.12 python - <<'PY'
-          import os, sys, tomllib
+          import glob
+          import os
+          import sys
+          import tomllib
+
+          from packaging.requirements import Requirement
+          from packaging.utils import canonicalize_name
           from packaging.version import InvalidVersion, Version
+
+          PUBLISHED = {
+              canonicalize_name(n)
+              for n in ("aelix", "aelix-ai", "aelix-agent-core", "aelix-coding-agent")
+          }
 
           tag = os.environ["TAG"]
           try:
-              tag_version = Version(tag.removeprefix("v"))
+              want = Version(tag.removeprefix("v"))
           except InvalidVersion as exc:
               print(f"::error::Tag '{tag}' is not a PEP 440 version: {exc}")
               sys.exit(1)
 
-          with open("pyproject.toml", "rb") as fh:
-              declared = tomllib.load(fh)["project"]["version"]
-          pkg_version = Version(declared)
+          problems: list[str] = []
+          seen: set[str] = set()
 
-          if tag_version != pkg_version:
+          for path in ["pyproject.toml", *sorted(glob.glob("packages/*/pyproject.toml"))]:
+              with open(path, "rb") as fh:
+                  proj = tomllib.load(fh).get("project", {})
+              name = canonicalize_name(proj.get("name", ""))
+              if name not in PUBLISHED:
+                  continue
+              seen.add(name)
+
+              declared = proj.get("version")
+              try:
+                  if declared is None or Version(declared) != want:
+                      problems.append(
+                          f"{path}: project.version is {declared!r}, expected {want}"
+                      )
+              except InvalidVersion:
+                  problems.append(f"{path}: project.version {declared!r} is not PEP 440")
+
+              for dep in proj.get("dependencies", []):
+                  try:
+                      req = Requirement(dep)
+                  except Exception:  # noqa: BLE001 — a bad requirement is itself the problem
+                      problems.append(f"{path}: dependency {dep!r} does not parse")
+                      continue
+                  if canonicalize_name(req.name) not in PUBLISHED:
+                      continue
+                  pins = [s.version for s in req.specifier if s.operator == "=="]
+                  if not pins:
+                      problems.append(
+                          f"{path}: dependency on {req.name} is not pinned with '==' ({dep!r}); "
+                          "the published set must install lock-step"
+                      )
+                      continue
+                  try:
+                      if Version(pins[0]) != want:
+                          problems.append(
+                              f"{path}: pins {req.name}=={pins[0]}, expected {want}"
+                          )
+                  except InvalidVersion:
+                      problems.append(f"{path}: pin {dep!r} is not a PEP 440 version")
+
+          for missing in sorted(PUBLISHED - seen):
+              problems.append(f"published package {missing!r} has no pyproject.toml on disk")
+
+          if problems:
               print(
-                  f"::error::Tag '{tag}' normalizes to '{tag_version}', but "
-                  f"pyproject.toml declares version '{declared}'. Bump the "
-                  "version in every published package (see RELEASING.md) or "
+                  f"::error::Tag '{tag}' normalizes to '{want}', but the workspace "
+                  f"disagrees in {len(problems)} place(s). Bump every published "
+                  "package AND every inter-package pin (see RELEASING.md), or "
                   "retag; refusing to build a mismatched release."
               )
+              for problem in problems:
+                  print(f"::error::  {problem}")
               sys.exit(1)
-          print(f"Tag '{tag}' matches packaged version '{declared}' (normalized: {tag_version}).")
+
+          print(
+              f"Tag '{tag}' (normalized {want}) matches all {len(seen)} published "
+              "versions and every inter-package pin."
+          )
           PY
 
       - name: Build all workspace packages
@@ -326,6 +400,19 @@ jobs:
           shopt -u nullglob
           if [ "${#sboms[@]}" -ne 1 ]; then
             echo "::error::Expected exactly 1 SBOM matching 'sbom/aelix-*.cdx.json', found ${#sboms[@]}: ${sboms[*]:-(none)}. Regenerate the SBOM (scripts/) and remove any stale copies."
+            exit 1
+          fi
+
+          # Exactly one file is not the same as the RIGHT file. The SBOM name
+          # carries the version, so a bump that regenerates nothing leaves a
+          # single, perfectly well-formed SBOM describing the PREVIOUS release —
+          # count==1 passes and the release ships a bill of materials for the
+          # wrong artifacts. Read the expected version from pyproject.toml,
+          # which the build job already proved equals the tag.
+          sbom_version="$(python3 -c 'import tomllib; print(tomllib.load(open("pyproject.toml","rb"))["project"]["version"])')"
+          expected_sbom="sbom/aelix-${sbom_version}.cdx.json"
+          if [ "${sboms[0]}" != "$expected_sbom" ]; then
+            echo "::error::SBOM '${sboms[0]}' does not match this release: expected '$expected_sbom' (version $sbom_version). Regenerate the SBOM for this version and remove the stale one."
             exit 1
           fi
           echo "SBOM: ${sboms[0]}"
