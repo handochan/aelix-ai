@@ -119,7 +119,7 @@ aelix --thinking medium          # off | minimal | low | medium | high | xhigh
 aelix --append-system-prompt "Be terse."
 aelix --no-context-files         # skip auto-discovered AGENTS.md context (-nc)
 aelix --export session.jsonl out.html   # render a saved session file to HTML
-aelix --offline                  # disable startup network operations (= PI_OFFLINE=1)
+aelix --offline                  # skip the rg/fd download + catalog fetch (= PI_OFFLINE=1)
 aelix @path/to/file.py "explain this"   # inline a file into the first message
 ```
 

@@ -186,15 +186,17 @@ submissions.
 
 ## Trust & self-hosting
 
-Aelix is built for closed networks and customer-site deployment. `--offline` engages air-gap
-mode (no tool-binary downloads, no network extension installs), the extension catalog browses
-and installs without phoning home, trust uses local pins (no online revocation checks), and
-`register_login_provider` lets an extension add enterprise SSO / employee-ID auth. Policy and
-guardrails are enforced as built-in extensions, so every tool call and context mutation is an
-observable, auditable hook event.
+Aelix is built for closed networks and customer-site deployment. `--offline` blocks the
+outbound calls Aelix itself would make — the `rg`/`fd` tool-binary download, the catalog
+fetch, and index-less extension installs — though it does not touch the provider you
+configure, so a closed-network deployment still needs a reachable or self-hosted model
+endpoint. The extension catalog browses and installs from a local copy, trust uses local
+pins (no online revocation checks), and `register_login_provider` lets an extension add
+enterprise SSO / employee-ID auth. Policy and guardrails are enforced as built-in
+extensions, so every tool call and context mutation is an observable, auditable hook event.
 
 Distribute and verify extensions with a signed supply chain — trust that survives an
-air-gapped install:
+air-gapped install (enforced when you install with `--require-signature`):
 
 ```bash
 aelix extension install <path | git-url | package[==version]>   # pip-based, --offline capable
