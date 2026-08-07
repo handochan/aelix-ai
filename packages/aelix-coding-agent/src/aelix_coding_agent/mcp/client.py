@@ -20,7 +20,8 @@ yields a 3-tuple ``(read, write, get_session_id)``; stdio/sse yield a
 
 from __future__ import annotations
 
-from contextlib import AsyncExitStack
+import asyncio
+from contextlib import AsyncExitStack, suppress
 from datetime import timedelta
 from typing import Any
 
@@ -99,9 +100,14 @@ class McpServerConnection:
         Raises:
             McpConnectionError: on spawn/connect/handshake failure
                 (config validation, transport error, or initialize error).
+                A server that dies mid-handshake reports here too, so that a
+                caller connecting several servers can carry on with the rest.
+            asyncio.CancelledError: only when the *caller* was cancelled.
         """
         if self._session is not None:
             return  # idempotent — already connected
+        task = asyncio.current_task()
+        cancelling_before = task.cancelling() if task is not None else 0
         try:
             read, write = await self._open_transport()
             session = await self._exit_stack.enter_async_context(
@@ -112,18 +118,65 @@ class McpServerConnection:
             # SDK 1.27.1 uses camelCase attributes on InitializeResult.
             self._server_info = init.serverInfo
             self._protocol_version = init.protocolVersion
-        except Exception as exc:  # noqa: BLE001 — wrap all into McpConnectionError
-            await self._exit_stack.aclose()
-            self._exit_stack = AsyncExitStack()
-            self._session = None
-            self._server_info = None
-            self._protocol_version = None
+        except BaseException as exc:
+            # BaseException, not Exception, because of one specific failure: a
+            # stdio server that spawns and then dies (missing interpreter, bad
+            # entry point, instant crash). The transport helper runs its reader
+            # and writer in an anyio task group, and `enter_async_context` opens
+            # that group's cancel scope in OUR task. When the child dies the
+            # group cancels the scope, which reaches us as a bare CancelledError
+            # — a BaseException — raised out of `initialize()` below.
+            #
+            # With `except Exception` that error walked straight past this
+            # handler, so the unwind below never ran and the dead transport's
+            # cancel scope stayed *entered and cancelled*. Our task was then
+            # trapped inside it: every later await re-raised CancelledError, so
+            # one dead server took down every server after it in connect_all —
+            # the exact opposite of the contract that module documents. Measured
+            # here: 5 of 8 runs with a healthy server ahead of a dying one.
+            #
+            # Unwinding is what fixes it, because exiting the scope is what lets
+            # anyio absorb the cancellation it raised. That also tells us whose
+            # cancellation it was, which is the thing we must not get wrong.
+            await self._reset_transport()
+            cancelling_after = task.cancelling() if task is not None else 0
+            if cancelling_after > cancelling_before:
+                # anyio declined to absorb it: this cancellation is not the
+                # dead child's, it is a real cancellation of our caller. Honour
+                # it. Reporting it as a connect failure would strand the caller.
+                if isinstance(exc, asyncio.CancelledError):
+                    raise
+                raise asyncio.CancelledError from exc
+            if isinstance(exc, asyncio.CancelledError):
+                # Absorbed on unwind, so it belonged to the child transport.
+                # It described a dead server, not a cancelled caller.
+                raise McpConnectionError(
+                    f"MCP server {self._contrib.name!r} "
+                    f"({self._contrib.transport}) connect failed: the server "
+                    f"exited during the initialize handshake"
+                ) from exc
             if isinstance(exc, McpConnectionError):
                 raise
             raise McpConnectionError(
                 f"MCP server {self._contrib.name!r} ({self._contrib.transport}) "
                 f"connect failed: {exc}"
             ) from exc
+
+    async def _reset_transport(self) -> None:
+        """Unwind the transport and return to the never-connected state.
+
+        Teardown errors are dropped on purpose. This runs while a connect
+        failure is already being reported, and a transport whose child just
+        died raises plenty of secondary noise on the way out (broken pipes,
+        ``ExceptionGroup`` from the task group). The connect failure is the
+        one the caller needs; a broken-pipe from the corpse is not.
+        """
+        with suppress(BaseException):
+            await self._exit_stack.aclose()
+        self._exit_stack = AsyncExitStack()
+        self._session = None
+        self._server_info = None
+        self._protocol_version = None
 
     async def _open_transport(self) -> tuple[Any, Any]:
         """Select + open the transport per ``McpServerContrib.transport``.
