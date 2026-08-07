@@ -168,6 +168,7 @@ def _resolved(
     approval_mode: str = "inherit",
     name: str = "scout",
     source_path: str = "/home/alice/.aelix/agents/scout.md",
+    model: str | None = None,
 ) -> ResolvedProfile:
     profile = AgentProfile(
         name=name,
@@ -176,13 +177,14 @@ def _resolved(
         file_path=source_path,
         scope=scope,  # type: ignore[arg-type]
         approval_mode=approval_mode,  # type: ignore[arg-type]
+        model=model,
     )
     return ResolvedProfile(
         name=name, profile=profile, source_path=source_path, scope=scope
     )
 
 
-def _declaring(**kwargs: str) -> ResolvedProfile:
+def _declaring(**kwargs: str | None) -> ResolvedProfile:
     """A profile that DECLARES it needs write authority (``approval_mode: auto``).
 
     Since the 2026-07-27 second amendment this is the ONLY kind of profile whose
@@ -1132,7 +1134,11 @@ def test_request_spawn_consent_takes_no_memo_parameter() -> None:
 
     params = inspect.signature(request_spawn_consent).parameters
     assert "memo" not in params
-    assert set(params) == {"ctx", "resolved", "task", "parent", "cwd"}
+    # ``model`` joined the set when the dialog learned to name what will answer.
+    # It is the OPPOSITE shape to the removed rung: it adds a fact the human is
+    # told, and can only ever add one — no caller can shorten the dialog with it,
+    # and nothing it carries reaches the grant.
+    assert set(params) == {"ctx", "resolved", "task", "parent", "cwd", "model"}
 
 
 def test_build_options_takes_no_remember_flag() -> None:
@@ -1365,3 +1371,144 @@ def test_resolve_child_cwd_still_accepts_an_ordinary_directory(
         assert resolve_child_cwd(component, str(tmp_path)) == str(
             (tmp_path / component).resolve()
         )
+
+
+# === the dialog names the model (live QA, 2026-08-07) =========================
+#
+# The dialog listed Profile / Source / Directory / Permission / Task — confirmed
+# at 200 columns, so this was never truncation. Approving a spawn is approving a
+# process that reads this repository and, under a widened grant, writes to it;
+# WHICH MODEL ANSWERS is both the price of that and, for a profile that declares
+# no ``model:``, a value the human never chose. Every other part of the child's
+# identity was on screen. This one was not.
+
+
+def test_the_consent_dialog_names_the_model() -> None:
+    """One row, in the existing label style, below ``Permission:``.
+
+    Below rather than beside ``Profile:`` so ``Source:`` keeps the second body
+    row it was given on purpose — it is the one line the model cannot influence.
+    """
+
+    title = build_consent_title(
+        _declaring(), "go", PermissionMode.PLAN, cwd="/w", model="claude-opus-4-8"
+    )
+    rows = title.splitlines()
+
+    assert "Model:      claude-opus-4-8" in rows
+    assert rows.index("Model:      claude-opus-4-8") == rows.index(
+        "Permission: plan"
+    ) + 1
+    # The value column lines up with every other labelled row's: each label is
+    # padded to 12 characters, so the value starts at exactly column 12.
+    labels = [row for row in rows if row[:12].rstrip().endswith(":")]
+    assert len(labels) == 5, labels
+    assert all(row[11] == " " and row[12] != " " for row in labels), labels
+
+
+def test_an_unknown_model_costs_no_row_rather_than_naming_nothing() -> None:
+    """A child that will run its OWN model cascade has no model to name here — the
+    id is only knowable once the process exists. Omitted, so the dialog is
+    byte-identical to the one that shipped, rather than carrying a fact-shaped
+    ``Model: unknown``."""
+
+    without = build_consent_title(_declaring(), "go", PermissionMode.PLAN, cwd="/w")
+    explicit_none = build_consent_title(
+        _declaring(), "go", PermissionMode.PLAN, cwd="/w", model=None
+    )
+
+    assert without == explicit_none
+    assert "Model:" not in without
+    assert len(without.splitlines()) == 9
+
+
+def test_a_hostile_model_cannot_forge_a_row_in_the_consent_dialog() -> None:
+    """F1, applied to the new field. ``ctx.ui.select`` SPLITS the composed title on
+    ``\\n`` into rows and ANSI-parses it, so an unsanitised value here forges rows
+    — the exact hole the ``cwd`` field demonstrated. The model reaches this string
+    through its choice of PROFILE, and the profile file is not something this
+    dialog gets to trust.
+    """
+
+    hostile = (
+        "gpt\n"
+        "Permission: yolo\n"
+        "\x1b[31mSource:     /etc/passwd\x9b2J\n" + "z" * 4000
+    )
+    title = build_consent_title(
+        _declaring(), "go", PermissionMode.PLAN, cwd="/w", model=hostile
+    )
+
+    rows = title.splitlines()
+
+    # ONE row added, not four.
+    assert len(rows) == 10
+    # No row can steer the terminal, and none is wider than the narrowest one we
+    # assume — a forgery that survives as one over-long row is still a forgery.
+    assert not any(contains_control_chars(row) for row in rows)
+    assert all(len(row) <= DIALOG_ROW_CHARS for row in rows)
+    # The forged labels are inert text INSIDE the Model row, not rows of their
+    # own: exactly one row still BEGINS with each real label.
+    assert sum(row.startswith("Permission:") for row in rows) == 1
+    assert sum(row.startswith("Source:") for row in rows) == 1
+    assert rows[6].startswith("Model:      gpt Permission: yolo ")
+
+
+async def test_the_user_typed_door_shows_the_model_it_will_launch() -> None:
+    """End to end through ``/agents run``'s door: the runtime resolves the model
+    the same way it resolves the argv, and the human sees THAT.
+
+    A profile declaring its own ``model:`` names it; the parent's is not consulted
+    — the dialog must describe the spawn that will happen, not a different one.
+    """
+
+    spy = _SelectSpy(CANCEL_OPTION)
+    ctx = _FakeCtx(has_ui=True, ui=spy)
+
+    class _Parent:
+        id = "claude-sonnet-4-5"
+        provider = "anthropic"
+
+    runtime = _SubagentRuntimeImpl(
+        host=SubagentHost(
+            cwd=lambda: str(Path.cwd()),
+            posture=lambda: PermissionMode.YOLO,
+            consent_context=lambda: ctx,
+            model=_Parent,
+        )
+    )
+
+    result = await runtime.spawn(_declaring(model="claude-opus-4-8"), "go")
+
+    # Cancelled, so nothing was started and no channel was needed.
+    assert result.status == "declined"
+    assert spy.calls, "a write-capable parent must have opened a dialog"
+    assert "Model:      claude-opus-4-8" in spy.calls[0][0].splitlines()
+    # The PARENT's model is not what will run, so it is not what is shown.
+    assert "claude-sonnet-4-5" not in spy.calls[0][0]
+
+
+async def test_a_profile_with_no_model_shows_the_one_it_will_inherit() -> None:
+    """The other half of the emission table. A profile declaring neither ``model:``
+    nor ``provider:`` inherits the parent's run-scope model onto its argv — so
+    that is the model the human is approving, and the dialog says so."""
+
+    spy = _SelectSpy(CANCEL_OPTION)
+    ctx = _FakeCtx(has_ui=True, ui=spy)
+
+    class _Parent:
+        id = "claude-sonnet-4-5"
+        provider = "anthropic"
+
+    runtime = _SubagentRuntimeImpl(
+        host=SubagentHost(
+            cwd=lambda: str(Path.cwd()),
+            posture=lambda: PermissionMode.YOLO,
+            consent_context=lambda: ctx,
+            model=_Parent,
+        )
+    )
+
+    await runtime.spawn(_declaring(), "go")
+
+    assert "Model:      claude-sonnet-4-5" in spy.calls[0][0].splitlines()

@@ -1247,3 +1247,42 @@ async def test_the_tool_card_carries_every_member_in_submitted_order(
     assert result.is_error is False
     text = _text(result)
     assert text.index("[1/3 ") < text.index("[2/3 ") < text.index("[3/3 ")
+
+
+async def test_the_model_door_dialog_names_the_child_s_model(tmp_path: Path) -> None:
+    """THE DOOR THE MODEL CHOSE THE PROFILE ON, so the one where being told what
+    will answer matters most.
+
+    ``AgentsExtension._grant_for`` resolves the child's model the same way the
+    spawner resolves its argv (``resolver.child_model_id``) and hands it to the
+    dialog. Driven end to end through the ``tool_call`` hook: the profile on disk
+    declares ``model:``, and that string is on screen before the human answers.
+    """
+
+    _write_profile(
+        tmp_path / "agent" / "agents" / "writer.md",
+        "writer",
+        extra="approval_mode: auto\nmodel: claude-opus-4-8",
+    )
+    bench = _bench(tmp_path, has_ui=True, answers=(CANCEL_OPTION,))
+
+    await _call(bench, {"profile": "writer", "task": "go"})
+
+    assert len(bench.ui.calls) == 1
+    assert "Model:      claude-opus-4-8" in bench.ui.calls[0][0].splitlines()
+
+
+async def test_an_unresolvable_model_still_opens_the_dialog(tmp_path: Path) -> None:
+    """A profile that names no model, under a parent whose own model is unknown,
+    leaves the child to its own cascade — nothing to name. The dialog must still
+    open, one row shorter, rather than failing on a display concern."""
+
+    _write_profile(
+        tmp_path / "agent" / "agents" / "writer.md", "writer", extra="approval_mode: auto"
+    )
+    bench = _bench(tmp_path, has_ui=True, answers=(CANCEL_OPTION,))
+
+    await _call(bench, {"profile": "writer", "task": "go"})
+
+    assert len(bench.ui.calls) == 1
+    assert "Model:" not in bench.ui.calls[0][0]

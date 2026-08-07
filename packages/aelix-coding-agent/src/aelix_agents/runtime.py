@@ -517,6 +517,11 @@ class _SubagentRuntimeImpl:
             task,
             self.host.posture(),
             cwd=child_cwd,
+            # Named on the dialog for the same reason the directory and the
+            # posture are: it is part of what is being approved. Read here, one
+            # frame before the human sees it, rather than inside ``_run`` — the
+            # answer and the launch must describe the same spawn.
+            model=self._spawn_model(resolved),
         )
         if not grant.consented:
             return declined_result(
