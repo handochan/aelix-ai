@@ -66,6 +66,22 @@ def test_no_model_selected_shape() -> None:
     assert "run 'aelix' and use /model inside the TUI" in msg
 
 
+def test_no_model_selected_tells_a_subagent_where_its_model_comes_from() -> None:
+    """The other headless reader, and the only one for whom BOTH leading
+    remedies are unreachable.
+
+    A delegated child does not own its command line (the parent builds it) and
+    has no TUI, so ``--model`` and ``/model`` are things only its parent can do.
+    The closing sentence has to name the two places a child's model can actually
+    come from — its profile, or the parent it inherits from.
+    """
+
+    msg = format_no_model_selected_message()
+    assert "delegated subagent" in msg
+    assert "model:/provider:" in msg
+    assert "inherits the parent's" in msg
+
+
 def test_no_api_key_found_named_provider() -> None:
     """A concrete provider display name is interpolated verbatim."""
 
