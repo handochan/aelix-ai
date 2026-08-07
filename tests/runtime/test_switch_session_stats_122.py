@@ -155,14 +155,38 @@ async def test_switch_session_stats_are_stable_and_not_double_counted(
     await runtime.switch_session(target_metadata.path)
     assert len(runtime.harness._state.messages) == 2
 
-    # (resume → one turn → read): a real turn extends the transcript; the
-    # persisted history is still counted exactly once, so total minus the turn
-    # delta returns to the resumed baseline.
+    # (resume → one turn → read): a real turn EXTENDS the transcript. The
+    # persisted history must be counted EXACTLY ONCE — a double-count from the
+    # resume seed would inflate the totals here.
     await runtime.harness.prompt("continue")
-    after = len(runtime.harness._state.messages)
-    delta = after - baseline
-    assert delta > 0  # the turn appended at least the user + assistant messages
+    msgs = runtime.harness._state.messages
+    assert len(msgs) > baseline  # the turn appended the user prompt + reply
 
+    # Genuine anti-accumulation check #1 — the persisted history appears once by
+    # identity-of-content, not twice. The persisted user "hello" and the
+    # persisted assistant (unique by its usage payload) each occur EXACTLY once.
+    persisted_user = [
+        m
+        for m in msgs
+        if isinstance(m, UserMessage)
+        and any(getattr(c, "text", None) == "hello" for c in m.content)
+    ]
+    persisted_assistant = [
+        m
+        for m in msgs
+        if isinstance(m, AssistantMessage) and (m.usage or {}).get("input") == 120
+    ]
+    assert len(persisted_user) == 1, "persisted user message was double-counted"
+    assert len(persisted_assistant) == 1, "persisted assistant was double-counted"
+
+    # Genuine anti-accumulation check #2 — independently-computed token/cost
+    # totals. Only the persisted assistant carries usage (the mock turn reply has
+    # none), so the totals MUST equal the single persisted payload; a doubled
+    # resume seed would report 240 / 0.04, not 120 / 0.02. This does not
+    # re-derive the expected value from the observed count, so it is not a
+    # tautology.
     stats_after = await runtime.harness.get_session_stats()
-    assert stats_after.total_messages == after  # stats track live state
-    assert stats_after.total_messages - delta == baseline  # persisted counted once
+    assert stats_after.total_messages == len(msgs)  # stats track live state
+    assert stats_after.tokens.input == 120
+    assert stats_after.tokens.output == 40
+    assert stats_after.cost == pytest.approx(0.02)

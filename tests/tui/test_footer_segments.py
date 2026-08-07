@@ -235,17 +235,27 @@ async def test_thinking_level_renders_when_enabled() -> None:
 
 
 async def test_thinking_level_shows_off_not_none() -> None:
-    # DELIBERATE deviation from cost/tokens: at the "off" level the segment SHOWS
-    # "🧠 off" (never returns None) so a user who opted IN to monitor reasoning
-    # effort still sees it when reasoning is off.
+    # DELIBERATE deviation from cost/tokens: the segment SHOWS "🧠 off" (never
+    # returns None) so a user who opted IN to monitor reasoning effort still sees
+    # it when reasoning is off. The sharp edge the ``or 'off'`` guard exists for
+    # is a provider that returns None or "" (a partial / headless harness with no
+    # resolved level) — those must STILL render "🧠 off", never "🧠 None" and
+    # never a bare "🧠 " with no level. Feeding a truthy "off" would pass with OR
+    # WITHOUT the guard, so this exercises the falsy inputs the guard actually
+    # handles.
     footer = _FixedBranchFooter("main")
     store = _FakeStore(["thinking-level"])
-    async with _ctx(
-        footer, thinking_provider=lambda: "off", statusline_store=store
-    ) as (ctx, chrome):
-        reg = {s.id: s for s in build_footer_registry(ctx)}
-        assert reg["thinking-level"].produce() == "🧠 off"
-        assert "🧠 off" in chrome._footer_line
+    for provider in (lambda: None, lambda: ""):
+        async with _ctx(
+            footer, thinking_provider=provider, statusline_store=store
+        ) as (ctx, chrome):
+            reg = {s.id: s for s in build_footer_registry(ctx)}
+            assert reg["thinking-level"].produce() == "🧠 off"
+            line = chrome._footer_line
+            assert "🧠 off" in line
+            assert "🧠 None" not in line
+            # No bare glyph with an empty level ("🧠 " followed by nothing).
+            assert not line.rstrip().endswith("🧠")
 
 
 # === ADR-0159 invariants survive an adversarial enabled-set =============
