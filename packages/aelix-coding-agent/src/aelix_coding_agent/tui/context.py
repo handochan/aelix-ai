@@ -1179,9 +1179,18 @@ class AelixTUIContext:
     def set_context_label(self, label: str | None) -> None:
         """Update the live context-window usage segment + repaint the footer.
 
-        Called by ``run_tui`` after ``turn_end`` with a formatted label (or
-        ``None`` when usage is unavailable — e.g. model registry not wired).
+        Called by ``run_tui`` with a formatted label (or ``None`` when usage is
+        unavailable — e.g. model registry not wired) on ``settled``, on
+        ``compaction_end``, and on ``turn_end``.
+
+        An UNCHANGED label returns WITHOUT repainting. Those triggers overlap by
+        design (``turn_end`` covers the abort/error turn paths, ``settled`` the
+        success path), so the same value commonly arrives twice for one turn, and
+        this keeps that from costing a second invalidate on a paint path with a
+        flicker-regression history.
         """
+        if label == self._context_label:
+            return
         self._context_label = label
         self._refresh_footer()
 
@@ -1191,11 +1200,17 @@ class AelixTUIContext:
         """Cache the session usage scalars for the optional token/cost footer
         segments + repaint the footer (WP-2, ADR-0160).
 
-        Called by ``run_tui`` after ``turn_end`` (same cadence as
-        :meth:`set_context_label`). The token/cost segments are default-OFF, so
+        Same cadence, and the same unchanged-value short-circuit, as
+        :meth:`set_context_label`. The token/cost segments are default-OFF, so
         this is inert until the user enables them via ``/statusline``.
         """
 
+        if (
+            input_tokens == self._usage_input_tokens
+            and output_tokens == self._usage_output_tokens
+            and cost == self._usage_cost
+        ):
+            return
         self._usage_input_tokens = input_tokens
         self._usage_output_tokens = output_tokens
         self._usage_cost = cost

@@ -1400,6 +1400,9 @@ async def run_tui(
                 signals_installed.append(sig)
 
     unsubscribe_holder: dict[str, Callable[[], None] | None] = {"u": None}
+    # The ``settled`` hook registration, held so a session swap can move it onto
+    # the new harness's bus (see ``_rebind``).
+    settled_unsub_holder: dict[str, Callable[[], None] | None] = {"u": None}
 
     context_usage_tasks: set[asyncio.Task[None]] = set()
     history_tasks: set[asyncio.Task[None]] = set()
@@ -1427,6 +1430,19 @@ async def run_tui(
                 int(getattr(tokens, "output", 0) or 0),
                 float(getattr(stats, "cost", 0.0) or 0.0),
             )
+
+    def _schedule_context_usage_refresh() -> None:
+        """Run :func:`_refresh_context_usage` off-frame, GC-pinned.
+
+        The refresh is async (it walks messages and reads the session branch), so
+        every trigger schedules it the same way rather than each call site
+        re-deriving the strong-reference dance. Painting still goes through
+        ``set_context_label`` / ``set_usage_stats`` — no new render path.
+        """
+
+        task = loop.create_task(_refresh_context_usage())
+        context_usage_tasks.add(task)
+        task.add_done_callback(context_usage_tasks.discard)
 
     # Sprint 6h₂₂ (ADR-0130) — auto-retry UI countdown (closes the 6h₂₀ v2
     # deferral). Pi parity: ``interactive-mode.ts:2919-2948`` —
@@ -1594,11 +1610,19 @@ async def run_tui(
             _drive_compaction_indicator(
                 out_chrome, _compaction_working_state, etype
             )
+            if etype == "compaction_end":
+                # Compaction changes the real context with NO following turn_end,
+                # so without this the meter kept painting the pre-compaction
+                # number — a user who ran /compact saw the footer not move and
+                # concluded compaction had done nothing, while /context already
+                # reported the new, smaller figure.
+                _schedule_context_usage_refresh()
         elif etype == "turn_end":
-            # Keep a strong reference so the task isn't GC'd before it runs.
-            task = loop.create_task(_refresh_context_usage())
-            context_usage_tasks.add(task)
-            task.add_done_callback(context_usage_tasks.discard)
+            # Covers the ABORT and ERROR turn paths, which append their message to
+            # ``state.messages`` BEFORE emitting turn_end and so are already
+            # current here. The success path is one turn stale at this point and
+            # is refreshed again on ``settled`` (see the registration below).
+            _schedule_context_usage_refresh()
             # D3 — persist a cumulative /stats history row for this turn (async +
             # guarded; same strong-reference pattern as the context-usage task).
             htask = loop.create_task(_record_history())
@@ -1609,12 +1633,32 @@ async def run_tui(
             # (Sprint 6h₁₂e).
             context._refresh_footer()
 
+    async def _settled_hook(_event: object) -> None:
+        # The FIRST moment a finished turn is visible in ``state.messages``: the
+        # harness extends it at ``harness/core.py:4398`` and emits ``settled``
+        # immediately after, whereas the ``turn_end`` the loop emitted earlier is
+        # too early — a refresh there estimates over a list still missing the turn
+        # that just ended, which is why the meter sat one full turn behind.
+        _schedule_context_usage_refresh()
+
     async def _rebind(new_harness: AgentHarness, reason: str = "resume") -> None:
         prior = unsubscribe_holder["u"]
         if prior is not None:
             with contextlib.suppress(Exception):
                 prior()
         unsubscribe_holder["u"] = new_harness.subscribe(_on_agent_event)
+        # Same lifecycle as the event subscription above — a swap builds a NEW
+        # harness with a NEW hook bus, so the settled handler must move with it or
+        # the meter silently stops refreshing after the first /resume.
+        prior_settled = settled_unsub_holder["u"]
+        if prior_settled is not None:
+            with contextlib.suppress(Exception):
+                prior_settled()
+        settled_unsub_holder["u"] = None
+        with contextlib.suppress(Exception):
+            settled_unsub_holder["u"] = new_harness.hooks.on(
+                "settled", _settled_hook, source="tui-context-meter"
+            )
         # A session swap (/resume, new, fork) builds a BRAND-NEW harness whose
         # fresh _ExtensionRuntime defaults to the HEADLESS ui — re-bind the live
         # TUI ui onto it (issue #9) so an extension command's ctx.ui.select /
@@ -2030,6 +2074,10 @@ async def run_tui(
         if unsub is not None:
             with contextlib.suppress(Exception):
                 unsub()
+        settled_unsub = settled_unsub_holder["u"]
+        if settled_unsub is not None:
+            with contextlib.suppress(Exception):
+                settled_unsub()
         out_chrome.exit()
         # Sprint 6h₂₂ (ADR-0130) — cancel the auto-retry countdown ticker if a
         # shutdown lands mid-backoff. The end-event handler is the normal

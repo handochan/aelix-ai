@@ -2305,3 +2305,149 @@ async def test_run_tui_startup_survives_a_session_without_a_branch() -> None:
         code = await asyncio.wait_for(task, timeout=5)
 
     assert code == 0
+
+
+# === footer context meter freshness (Defect D) ===============================
+#
+# The footer paints CACHED scalars refreshed only by ``_refresh_context_usage``.
+# That ran on ``turn_end`` alone, which is too early AND too rare:
+#
+#  - too EARLY on the success path: the harness extends ``_state.messages`` with
+#    the turn's messages at ``harness/core.py:4398``, AFTER the loop has already
+#    emitted ``turn_end``, so a turn_end refresh estimates over a message list
+#    missing the turn that just finished — the footer sat one turn behind. The
+#    ``settled`` hook fires immediately after that extend, so it is the first
+#    moment the usage is actually known.
+#  - too RARE at compaction: ``/compact`` changes the real context with no
+#    following ``turn_end``, so the meter kept painting the pre-compaction
+#    number and made a working compaction look like a no-op.
+
+
+class _RecordingHooks:
+    """A hook bus that records ``on`` registrations so a test can fire them."""
+
+    def __init__(self) -> None:
+        self.handlers: dict[str, list[Any]] = {}
+
+    def on(self, event_type: str, handler: Any, **kwargs: Any) -> Any:
+        self.handlers.setdefault(event_type, []).append(handler)
+        return lambda: None
+
+    async def emit(self, event: object) -> None:
+        return None
+
+
+class _ContextMeterHarness(FakeHarness):
+    """Reports a context that SHRINKS on the second read, as compaction does."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.stats_calls = 0
+        self.hooks = _RecordingHooks()  # type: ignore[assignment]
+
+    async def get_session_stats(self) -> object:
+        from types import SimpleNamespace
+
+        self.stats_calls += 1
+        # First read = pre-compaction 32.3K; every later read = post 19.0K.
+        tokens = 32300 if self.stats_calls <= 1 else 19000
+        return SimpleNamespace(
+            tokens=SimpleNamespace(
+                input=tokens, output=0, cache_read=0, cache_write=0, total=tokens
+            ),
+            cost=0.0,
+            total_messages=4,
+            context_usage=SimpleNamespace(
+                tokens=tokens, context_window=200000, percent=tokens / 2000.0
+            ),
+        )
+
+
+async def test_compaction_end_refreshes_the_footer_context_meter() -> None:
+    """A /compact with no following turn must still update the meter."""
+
+    harness = _ContextMeterHarness()
+    with create_pipe_input() as pipe, create_app_session(
+        input=pipe, output=DummyOutput()
+    ):
+        runtime = FakeRuntime(harness)
+        chrome = AelixChrome()
+        task = _launch(runtime, chrome)
+        await _wait(lambda: chrome.app.is_running)
+        await _wait(lambda: bool(harness.subscribers))
+        listener = harness.subscribers[0]
+        before = harness.stats_calls
+
+        from types import SimpleNamespace
+
+        listener(SimpleNamespace(type="compaction_end"))
+        await _wait(lambda: harness.stats_calls > before, timeout=2.0)
+
+        pipe.send_text("/quit\n")
+        code = await asyncio.wait_for(task, timeout=5)
+
+    assert code == 0
+    assert harness.stats_calls > before, "compaction_end must refresh the meter"
+
+
+async def test_shell_refreshes_the_meter_on_settled_not_only_turn_end() -> None:
+    """``settled`` is the first point the finished turn is in ``state.messages``."""
+
+    harness = _ContextMeterHarness()
+    with create_pipe_input() as pipe, create_app_session(
+        input=pipe, output=DummyOutput()
+    ):
+        runtime = FakeRuntime(harness)
+        chrome = AelixChrome()
+        task = _launch(runtime, chrome)
+        await _wait(lambda: chrome.app.is_running)
+        # The shell must have registered a settled handler on the live bus.
+        await _wait(lambda: bool(harness.hooks.handlers.get("settled")))
+        handler = harness.hooks.handlers["settled"][0]
+        before = harness.stats_calls
+
+        from types import SimpleNamespace
+
+        await handler(SimpleNamespace(type="settled", next_turn_count=0))
+        await _wait(lambda: harness.stats_calls > before, timeout=2.0)
+
+        pipe.send_text("/quit\n")
+        code = await asyncio.wait_for(task, timeout=5)
+
+    assert code == 0
+    assert harness.stats_calls > before, "settled must refresh the meter"
+
+
+async def test_settled_hook_moves_to_the_new_harness_on_a_session_swap() -> None:
+    """A swap builds a NEW bus; without re-registration the meter goes silent."""
+
+    first = _ContextMeterHarness()
+    second = _ContextMeterHarness()
+    with create_pipe_input() as pipe, create_app_session(
+        input=pipe, output=DummyOutput()
+    ):
+        runtime = FakeRuntime(first)
+        chrome = AelixChrome()
+        task = _launch(runtime, chrome)
+        await _wait(lambda: chrome.app.is_running)
+        await _wait(lambda: bool(first.hooks.handlers.get("settled")))
+
+        # Drive the swap through the rebind callback run_tui registered.
+        runtime._harness = second
+        assert runtime.rebind_cb is not None
+        await runtime.rebind_cb(second, "resume")
+        await _wait(lambda: bool(second.hooks.handlers.get("settled")))
+
+        before = second.stats_calls
+        from types import SimpleNamespace
+
+        await second.hooks.handlers["settled"][0](
+            SimpleNamespace(type="settled", next_turn_count=0)
+        )
+        await _wait(lambda: second.stats_calls > before, timeout=2.0)
+
+        pipe.send_text("/quit\n")
+        code = await asyncio.wait_for(task, timeout=5)
+
+    assert code == 0
+    assert second.stats_calls > before, "the resumed harness must refresh the meter"
