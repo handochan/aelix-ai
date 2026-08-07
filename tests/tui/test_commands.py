@@ -1639,3 +1639,270 @@ async def test_context_handler_omits_composition_for_bare_harness() -> None:
     await cmd.handler(ctx, "")
     full = "\n".join(_render(c) for c in committed)
     assert "Estimated composition" not in full
+
+
+# === Issue #134 — /model <bare-id> must resolve a SCOPED (provider, id) ======
+#
+# Repro (live terminal): a session on an OpenRouter-scoped model, ``/model
+# claude-haiku-4-5``. ``resolve_model(args, None)`` takes its OpenRouter-from-env
+# branch (``OPENROUTER_API_KEY`` set + no explicit provider), finds no such id in
+# the OpenRouter catalog, and returns a BARE ``openrouter/claude-haiku-4-5`` on
+# the OpenRouter base_url. The provider is non-empty so every downstream gate
+# passes: the switch reports success, the footer updates, the id is PERSISTED as
+# the default — and only the next send fails with the provider's
+# ``400 … is not a valid model ID``.
+
+
+class _RegistryStub:
+    """Duck-typed ``ModelRegistry`` — ``get_all`` / ``get_available`` / ``find``.
+
+    ``available`` is the auth-filtered subset the ``/model`` picker offers
+    (``ModelRegistry.get_available``); ``models`` is everything the registry
+    knows (``get_all``), including providers with no configured credentials.
+    """
+
+    def __init__(
+        self, models: list[Any], available: list[Any] | None = None
+    ) -> None:
+        self._models = models
+        self._available = models if available is None else available
+
+    def get_all(self) -> list[Any]:
+        return list(self._models)
+
+    def get_available(self) -> list[Any]:
+        return list(self._available)
+
+    def find(self, provider: str, model_id: str) -> Any | None:
+        return next(
+            (
+                m
+                for m in self._models
+                if m.provider == provider and m.id == model_id
+            ),
+            None,
+        )
+
+
+def _model(provider: str, id: str, base_url: str, api: str = "anthropic-messages") -> Any:
+    from aelix_ai.streaming import Model
+
+    return Model(id=id, name=id, api=api, provider=provider, base_url=base_url)
+
+
+_ANTHROPIC_HAIKU = _model(
+    "anthropic", "claude-haiku-4-5", "https://api.anthropic.com"
+)
+_OPENROUTER_SONNET = _model(
+    "openrouter",
+    "anthropic/claude-sonnet-4-6",
+    "https://openrouter.ai/api/v1",
+    api="openai-completions",
+)
+_COPILOT_HAIKU = _model(
+    "github-copilot",
+    "claude-haiku-4-5",
+    "https://api.individual.githubcopilot.com",
+)
+
+
+def _model_ctx(
+    harness: object,
+    committed: list[object],
+    *,
+    registry: Any = None,
+    settings_manager: Any = None,
+    refresh_footer: Any = None,
+) -> CommandContext:
+    return CommandContext(
+        chrome=_FakeChrome(),  # type: ignore[arg-type]
+        harness=harness,  # type: ignore[arg-type]
+        commit=committed.append,
+        cwd="/work",
+        commands=list(BUILTIN_COMMANDS),
+        model_registry=registry,
+        settings_manager=settings_manager,
+        refresh_footer=refresh_footer,
+    )
+
+
+def test_model_bare_id_switches_to_the_correct_scoped_provider(
+    monkeypatch: Any,
+) -> None:
+    # (a) The reported bug. On an OpenRouter session, ``/model claude-haiku-4-5``
+    # must land on the ANTHROPIC model that actually serves that id — the
+    # provider AND the base_url must change, not merely the displayed label.
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+    harness = _SwitchHarness()
+    harness.current_model = _OPENROUTER_SONNET  # type: ignore[assignment]
+    committed: list[object] = []
+    registry = _RegistryStub([_ANTHROPIC_HAIKU, _OPENROUTER_SONNET])
+
+    _run("model", _model_ctx(harness, committed, registry=registry), "claude-haiku-4-5")
+
+    assert len(harness.set_calls) == 1
+    switched = harness.set_calls[0]
+    assert getattr(switched, "provider", None) == "anthropic"
+    assert getattr(switched, "id", None) == "claude-haiku-4-5"
+    assert getattr(switched, "base_url", None) == "https://api.anthropic.com"
+
+
+def test_model_unknown_bare_id_refuses_without_switching(monkeypatch: Any) -> None:
+    # (b) An id no provider serves must be refused IMMEDIATELY — no set_model, no
+    # success line, no footer refresh. Previously it "succeeded" onto whichever
+    # provider the environment implied and failed at the next send.
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+    harness = _SwitchHarness()
+    harness.current_model = _OPENROUTER_SONNET  # type: ignore[assignment]
+    committed: list[object] = []
+    refreshed: list[int] = []
+    registry = _RegistryStub([_ANTHROPIC_HAIKU, _OPENROUTER_SONNET])
+
+    _run(
+        "model",
+        _model_ctx(
+            harness,
+            committed,
+            registry=registry,
+            refresh_footer=lambda: refreshed.append(1),
+        ),
+        "no-such-model-9x",
+    )
+
+    assert harness.set_calls == []
+    assert refreshed == []
+    out = "\n".join(_render(c) for c in committed)
+    assert "no-such-model-9x" in out
+    assert "model →" not in out  # never a success line
+    assert "/model" in out  # actionable: points at the picker
+
+
+def test_model_ambiguous_bare_id_lists_candidates(monkeypatch: Any) -> None:
+    # (c) An id served by several providers is NOT guessed: both candidates are
+    # listed in canonical provider/id form so the user can disambiguate.
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+    harness = _SwitchHarness()
+    harness.current_model = _OPENROUTER_SONNET  # type: ignore[assignment]
+    committed: list[object] = []
+    registry = _RegistryStub(
+        [_ANTHROPIC_HAIKU, _COPILOT_HAIKU, _OPENROUTER_SONNET]
+    )
+
+    _run("model", _model_ctx(harness, committed, registry=registry), "claude-haiku-4-5")
+
+    assert harness.set_calls == []
+    out = "\n".join(_render(c) for c in committed)
+    assert "anthropic/claude-haiku-4-5" in out
+    assert "github-copilot/claude-haiku-4-5" in out
+
+
+def test_model_ambiguous_bare_id_prefers_the_current_provider(
+    monkeypatch: Any,
+) -> None:
+    # (c') …unless the session's CURRENT provider is one of the candidates: then
+    # "switch model" means "switch within the provider I am already on", which is
+    # unambiguous and needs no prompt.
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+    harness = _SwitchHarness()
+    harness.current_model = _COPILOT_HAIKU  # type: ignore[assignment]
+    committed: list[object] = []
+    registry = _RegistryStub([_ANTHROPIC_HAIKU, _COPILOT_HAIKU])
+
+    _run("model", _model_ctx(harness, committed, registry=registry), "claude-haiku-4-5")
+
+    assert len(harness.set_calls) == 1
+    assert getattr(harness.set_calls[0], "provider", None) == "github-copilot"
+
+
+def test_model_bare_id_known_but_unauthed_names_the_provider(
+    monkeypatch: Any,
+) -> None:
+    # An id the registry knows but has NO credentials for is refused with the
+    # provider named — "unknown id" would misdescribe a login problem.
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+    harness = _SwitchHarness()
+    harness.current_model = _OPENROUTER_SONNET  # type: ignore[assignment]
+    committed: list[object] = []
+    registry = _RegistryStub(
+        [_ANTHROPIC_HAIKU, _OPENROUTER_SONNET], available=[_OPENROUTER_SONNET]
+    )
+
+    _run("model", _model_ctx(harness, committed, registry=registry), "claude-haiku-4-5")
+
+    assert harness.set_calls == []
+    out = "\n".join(_render(c) for c in committed)
+    assert "anthropic" in out
+    assert "/login" in out
+
+
+def test_model_provider_slash_id_form_still_resolves(monkeypatch: Any) -> None:
+    # (d) The explicit ``<provider>/<id>`` form keeps its existing meaning. With
+    # an OPENROUTER_API_KEY set, an OpenRouter canonical id (which is ALWAYS
+    # vendor-slashed — the catalog has exactly one slash-free OpenRouter id)
+    # still resolves as an OpenRouter model on the OpenRouter host.
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+    harness = _SwitchHarness()
+    harness.current_model = _OPENROUTER_SONNET  # type: ignore[assignment]
+    committed: list[object] = []
+    registry = _RegistryStub([_ANTHROPIC_HAIKU, _OPENROUTER_SONNET])
+
+    _run(
+        "model",
+        _model_ctx(harness, committed, registry=registry),
+        "anthropic/claude-sonnet-4-6",
+    )
+
+    assert len(harness.set_calls) == 1
+    switched = harness.set_calls[0]
+    assert getattr(switched, "provider", None) == "openrouter"
+    assert getattr(switched, "id", None) == "anthropic/claude-sonnet-4-6"
+
+
+def test_model_no_arg_picker_path_unchanged() -> None:
+    # (e) A wired picker still owns the no-arg path even with a registry present.
+    committed: list[object] = []
+    calls: list[int] = []
+
+    async def picker() -> None:
+        calls.append(1)
+
+    ctx = _model_ctx(
+        _SwitchHarness(), committed, registry=_RegistryStub([_ANTHROPIC_HAIKU])
+    )
+    ctx.model_picker = picker
+    _run("model", ctx, "")
+    assert calls == [1]
+    assert committed == []
+
+
+def test_model_bare_id_persists_the_resolved_provider(monkeypatch: Any) -> None:
+    # The persisted default must be the RESOLVED pair, not the env-implied one:
+    # persisting ``openrouter/claude-haiku-4-5`` made the bug survive a restart.
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+
+    class _PersistSM:
+        def __init__(self) -> None:
+            self.persisted: list[tuple[str, str]] = []
+
+        def set_default_model_and_provider(self, provider: str, model_id: str) -> None:
+            self.persisted.append((provider, model_id))
+
+        async def flush(self) -> None:
+            return None
+
+        def get_enabled_models(self) -> None:
+            return None
+
+    sm = _PersistSM()
+    harness = _SwitchHarness()
+    harness.current_model = _OPENROUTER_SONNET  # type: ignore[assignment]
+    committed: list[object] = []
+    registry = _RegistryStub([_ANTHROPIC_HAIKU, _OPENROUTER_SONNET])
+
+    _run(
+        "model",
+        _model_ctx(harness, committed, registry=registry, settings_manager=sm),
+        "claude-haiku-4-5",
+    )
+
+    assert sm.persisted == [("anthropic", "claude-haiku-4-5")]

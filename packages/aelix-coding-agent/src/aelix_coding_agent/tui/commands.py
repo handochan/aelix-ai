@@ -248,6 +248,15 @@ async def _model_handler(ctx: CommandContext, args: str) -> None:
     detail footer) when the host wired one, else prints the current model. An
     explicit id (``/model openai/gpt-4o``) skips the picker and switches directly.
 
+    A BARE id resolves against the live registry — the same auth-filtered,
+    allow-list-narrowed pool the picker offers — via
+    :func:`~aelix_coding_agent.core.model_argument.resolve_model_argument`, so it
+    lands on a properly scoped ``(provider, id)`` or is refused outright. It used
+    to go straight to :func:`resolve_model`, whose launch-time environment
+    heuristics re-stamped the session's own provider onto ids that provider does
+    not serve; nothing downstream could catch it and the first symptom was the
+    provider's ``400 … is not a valid model ID`` on the next send (#134).
+
     Defensive: degrades with a committed message (never crashes) when the
     harness lacks ``current_model`` / ``set_model``, when model resolution
     fails, or when the switch raises.
@@ -278,14 +287,37 @@ async def _model_handler(ctx: CommandContext, args: str) -> None:
             enrich_copilot_base_url,
             resolve_model,
         )
+        from aelix_coding_agent.core.model_argument import resolve_model_argument
         from aelix_coding_agent.core.runnable_models import (
             is_runnable,
             unsupported_message,
         )
 
-        # Adopt the registry's proxy-ep base_url for github-copilot (enterprise/
-        # business host); resolve_model alone returns the static individual host.
-        model = enrich_copilot_base_url(resolve_model(args, None), ctx.model_registry)
+        resolution = await resolve_model_argument(
+            args,
+            registry=ctx.model_registry,
+            current_model=getattr(ctx.harness, "current_model", None),
+            settings_manager=ctx.settings_manager,
+            warn=lambda message: ctx.commit(Text(message, style="yellow")),
+        )
+        if resolution.error is not None:
+            # Refuse HERE, before any switch/persist/success line: a mismatched
+            # provider that is only reported at send time costs the user the turn
+            # AND misattributes the failure to the provider (#134).
+            ctx.commit(Text(f"✖ {resolution.error}", style="bold red"))
+            return
+        if resolution.model is not None:
+            # A registry hit is ALREADY the modify_models-injected copy, so it
+            # carries the proxy-ep base_url enrich_copilot_base_url exists to add.
+            model = resolution.model
+        else:
+            # UNDECIDED — an explicit <provider>/<id>, or no usable registry
+            # (headless / RPC / test doubles). Unchanged launch-path resolution.
+            # Adopt the registry's proxy-ep base_url for github-copilot (enterprise/
+            # business host); resolve_model alone returns the static individual host.
+            model = enrich_copilot_base_url(
+                resolve_model(args, None), ctx.model_registry
+            )
         # WP-8 follow-up — guard an explicit id whose api has no adapter (e.g.
         # ``/model gpt-5.x`` → openai-responses): surface the actionable reason,
         # not the cryptic ``No provider registered for api=...`` the loop raises.
@@ -307,7 +339,9 @@ async def _model_handler(ctx: CommandContext, args: str) -> None:
             with contextlib.suppress(Exception):
                 ctx.settings_manager.set_default_model_and_provider(provider, model_id)
                 await ctx.settings_manager.flush()
-        ctx.commit(Text(f"model → {model_id}", style="green"))
+        # Name the provider: the pair is what actually switched, and a bare id
+        # made a wrong-provider resolution look identical to a right one (#134).
+        ctx.commit(Text(f"model → {model_id} ({provider})", style="green"))
     else:
         # resolve_model returns a bare Model (empty provider) when no adapter is
         # resolvable — the switch "succeeds" but turns will fail later. Caution
