@@ -545,10 +545,16 @@ class PermissionExtension:
 
             command = _command_from_args(args)
             verdict = classify(command)
-            # No ``shell_path``: every in-tree construction of the bash
-            # operations uses the default chain (``cli/repl.py``,
-            # ``rpc/rpc_mode.py``), so this resolves the same shell the tool
-            # will spawn.
+            # Resolves the DEFAULT shell chain, with no ``shell_path``. That
+            # matches what the tool spawns today only because nothing wires a
+            # custom shell through: ``create_bash_tool`` reads
+            # ``opts["shell_path"]`` (``tools/bash.py:532``) but no caller sets
+            # it, and ``SettingsManager.get_shell_path()``
+            # (``settings_manager.py:1234``) is referenced only by its own
+            # test. Treat that as a coincidence, not an invariant — if
+            # ``shell_path`` is ever wired to the tool, this gate MUST thread
+            # the same value, or it will reason about one shell while another
+            # runs the command.
             shell = _resolve_shell(get_shell_env())
         except Exception:  # noqa: BLE001 — any classifier failure → ASK (safe)
             return "ask"

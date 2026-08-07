@@ -98,6 +98,26 @@ async def test_auto_still_allows_readonly_under_bash(resolved_shell) -> None:
     assert ctx.ui.select_calls == 0
 
 
+@pytest.mark.parametrize(
+    "shell", ["/usr/local/bin/bash-5.2", "bash5", "/usr/bin/zsh-5.9", "ksh93"]
+)
+async def test_a_version_suffixed_posix_shell_still_auto_allows(
+    resolved_shell, shell: str
+) -> None:
+    """A Homebrew/distro ``bash-5.2`` is a real bash and must not be demoted.
+
+    Guards a narrow but real regression the force-ASK gate could otherwise
+    introduce on a SHIPPING platform: the filename failed to match ``bash``, so
+    AUTO mode prompted for every command a genuine bash was about to run.
+    """
+
+    resolved_shell(shell)
+    ctx = _FakeCtx()
+
+    assert await _perm()._on_tool_call(_bash_event("ls -la"), ctx) is None  # type: ignore[arg-type]
+    assert ctx.ui.select_calls == 0
+
+
 @pytest.mark.parametrize("shell", [_POWERSHELL, _PWSH, _CMD])
 async def test_windows_shell_forces_ask_instead_of_auto_allow(
     resolved_shell, shell: str

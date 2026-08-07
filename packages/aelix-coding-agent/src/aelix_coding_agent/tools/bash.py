@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import re
 import secrets
 import shutil
 import subprocess
@@ -67,17 +68,37 @@ _POWERSHELL_NAMES = frozenset({"pwsh", "powershell"})
 _CMD_NAMES = frozenset({"cmd", "command"})
 
 
+# A trailing version on a shell's filename: ``bash-5.2``, ``zsh-5.9``,
+# ``ksh93``, ``bash-5.2p26``. Anchored on a DIGIT, so it can only ever shorten
+# a name to a shorter one — it cannot invent a match. Removing it is what keeps
+# a version-suffixed genuine bash classifiable; see :func:`shell_basename`.
+_VERSION_SUFFIX_RE = re.compile(r"[-_]?\d[\d.]*[a-z]*\d*$")
+
+
 def shell_basename(shell: str) -> str:
-    """Lower-cased, extension-stripped basename of a shell path.
+    """Canonical shell name from a shell path.
+
+    Lower-cased basename with a ``.exe`` extension and any trailing version
+    suffix removed, so ``/usr/local/bin/bash-5.2`` and ``ksh93`` answer to
+    ``bash`` and ``ksh``.
 
     Splits on BOTH separators rather than deferring to :mod:`os.path`, because
     the caller may be reasoning about a Windows path while running on POSIX
     (the permission gate, and the tests that drive it) — ``posixpath.basename``
     would hand back the whole ``C:\\…\\powershell.exe`` string.
+
+    Stripping the version matters for more than tidiness: a distro or Homebrew
+    ``bash-5.2`` on ``$SHELL`` would otherwise fail to match ``bash`` and the
+    AUTO-mode gate would prompt for every command a real bash was about to run.
+    The strip cannot go the other way and wrongly ADMIT a shell — it only ever
+    maps a name to a shorter one, and ``fish-3.6`` still resolves to ``fish``,
+    which stays out of the classifiable set.
     """
 
     name = shell.replace("\\", "/").rsplit("/", 1)[-1].lower()
-    return name[:-4] if name.endswith(".exe") else name
+    if name.endswith(".exe"):
+        name = name[:-4]
+    return _VERSION_SUFFIX_RE.sub("", name) or name
 
 
 def _command_flag_for(shell: str) -> str:

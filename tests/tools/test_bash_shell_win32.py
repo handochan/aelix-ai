@@ -17,6 +17,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from aelix_coding_agent.builtin.bash_classifier import is_classifiable_shell
 from aelix_coding_agent.tools import bash as bash_mod
 from aelix_coding_agent.tools.bash import (
     ShellConfig,
@@ -169,6 +170,58 @@ def test_shell_basename_handles_both_separators(shell: str, expected: str) -> No
 )
 def test_command_flag_for(shell: str, flag: str) -> None:
     assert _command_flag_for(shell) == flag
+
+
+# === version suffixes ========================================================
+
+
+@pytest.mark.parametrize(
+    ("shell", "expected"),
+    [
+        ("/usr/local/bin/bash-5.2", "bash"),  # Homebrew / distro side-install
+        ("bash-5.2p26", "bash"),  # OpenBSD-style patch level
+        ("bash5", "bash"),  # no separator
+        ("/usr/bin/zsh-5.9", "zsh"),
+        ("ksh93", "ksh"),  # AT&T ksh, digits with no separator
+        ("ksh88", "ksh"),
+        ("pwsh-7.4", "pwsh"),
+        ("/usr/bin/fish-3.6", "fish"),
+    ],
+)
+def test_shell_basename_strips_a_version_suffix(shell: str, expected: str) -> None:
+    """A version-suffixed genuine bash must still read as ``bash``.
+
+    Without this, ``$SHELL=/usr/local/bin/bash-5.2`` fell outside the
+    classifiable set and AUTO mode prompted for every command a real bash was
+    about to run — a spurious force-ASK on a supported platform.
+    """
+
+    assert shell_basename(shell) == expected
+
+
+@pytest.mark.parametrize("shell", ["bash", "sh", "dash", "zsh", "pwsh", "powershell", "cmd"])
+def test_unversioned_names_are_untouched(shell: str) -> None:
+    assert shell_basename(shell) == shell
+
+
+def test_version_strip_cannot_admit_a_new_shell() -> None:
+    """The strip only ever SHORTENS a name, so it cannot widen the gate.
+
+    ``fish-3.6`` must resolve to ``fish`` and stay out of the classifiable
+    set — the normalization is there to stop false prompts, not to start
+    granting auto-allow to shells the grammar cannot read.
+    """
+
+    assert shell_basename("/usr/bin/fish-3.6") == "fish"
+    assert is_classifiable_shell("/usr/bin/fish-3.6") is False
+    assert is_classifiable_shell("pwsh-7.4") is False
+    assert is_classifiable_shell("/usr/local/bin/bash-5.2") is True
+
+
+def test_a_bare_version_is_not_stripped_to_nothing() -> None:
+    """Degenerate input must not become an empty name."""
+
+    assert shell_basename("5") == "5"
 
 
 # === the flag reaches argv ==================================================
