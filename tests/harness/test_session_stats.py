@@ -339,3 +339,67 @@ def test_aggregate_cost_known_is_false_when_only_some_are_priced() -> None:
     stats = aggregate_session_stats("s", [priced, unpriced])
     assert stats.cost > 0.0
     assert stats.cost_known is False
+
+
+# === partial cost after compaction (F2) + provider-zero (F7) =================
+
+
+def test_cost_complete_false_marks_the_total_as_a_floor() -> None:
+    """After a /compact the surviving messages are a SUBSET of the real spend."""
+
+    msg = AssistantMessage(
+        content=[TextContent(text="a")],
+        usage={"input": 1000, "output": 100},
+        provider="anthropic",
+        model="claude-haiku-4-5",
+    )
+    complete = aggregate_session_stats("s", [msg])
+    partial = aggregate_session_stats("s", [msg], cost_complete=False)
+    # Same arithmetic; only the confidence differs.
+    assert partial.cost == complete.cost > 0.0
+    assert complete.cost_known is True
+    assert partial.cost_known is False
+
+
+def test_cost_complete_defaults_to_true() -> None:
+    stats = aggregate_session_stats("s", [])
+    assert stats.cost_known is True
+
+
+def test_a_provider_resolved_zero_is_not_re_priced() -> None:
+    """An explicit ``cost`` key of 0.0 is an ANSWER (free tier / cached turn)."""
+
+    msg = AssistantMessage(
+        content=[TextContent(text="a")],
+        # Dict payload carrying an explicit cost — the provider priced it.
+        usage={"input": 4000, "output": 369, "cost": {"total": 0.0}},
+        provider="anthropic",
+        model="claude-haiku-4-5",
+    )
+    stats = aggregate_session_stats("s", [msg])
+    assert stats.cost == 0.0
+    assert stats.cost_known is True  # answered, not unpriced
+
+
+def test_a_default_zero_usage_cost_still_gets_priced() -> None:
+    """REGRESSION GUARD: the live ``Usage`` dataclass defaults ``cost`` to an
+    all-zero ``UsageCost``. Treating that 0.0 as a resolved answer would return
+    $0.00 for every live turn and silently re-break the main-session cost."""
+
+    from aelix_ai.models import calculate_cost, get_model
+
+    model = get_model("anthropic", "claude-haiku-4-5")
+    assert model is not None
+    expected = calculate_cost(model, Usage(input=4000, output=369)).total
+
+    u = Usage(input=4000, output=369)  # cost is UsageCost(total=0.0), NOT None
+    assert u.cost is not None and u.cost.total == 0.0
+    msg = AssistantMessage(
+        content=[TextContent(text="a")],
+        usage=u,  # type: ignore[arg-type]
+        provider="anthropic",
+        model="claude-haiku-4-5",
+    )
+    stats = aggregate_session_stats("s", [msg])
+    assert stats.cost == expected > 0.0
+    assert stats.cost_known is True

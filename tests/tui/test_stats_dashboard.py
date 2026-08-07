@@ -544,3 +544,32 @@ def test_session_tab_shows_the_placeholder_for_an_unpriced_session() -> None:
     assert cost_lines, "the session tab must carry a cost row"
     assert UNPRICED_COST in cost_lines[0]
     assert "$0.0000" not in cost_lines[0]
+
+
+def test_format_session_cost_reports_a_partial_as_a_floor() -> None:
+    """A known-incomplete total keeps its real number, marked as a floor."""
+
+    from aelix_coding_agent.tui.stats_dashboard import format_session_cost
+
+    assert format_session_cost(_Stats(0.0127, False)) == "≥ $0.0127"
+    assert format_session_cost(_Stats(0.0127, False), prefix="") == "≥ 0.0127"
+
+
+def test_format_session_cost_placeholder_when_partial_is_zero() -> None:
+    """``≥ $0.0000`` carries no information — fall back to the placeholder."""
+
+    from aelix_coding_agent.tui.stats_dashboard import (
+        UNPRICED_COST,
+        format_session_cost,
+    )
+
+    assert format_session_cost(_Stats(0.0, False)) == UNPRICED_COST
+
+
+def test_session_tab_marks_a_compacted_session_cost_as_a_floor() -> None:
+    from aelix_coding_agent.tui.stats_dashboard import build_session_tab
+
+    lines = build_session_tab(_Stats(4.0, False), None)
+    cost_lines = [ln for ln in lines if "Cost" in ln]
+    assert cost_lines
+    assert "≥ $4.0000" in cost_lines[0]

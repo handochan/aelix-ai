@@ -2323,27 +2323,24 @@ async def test_run_tui_startup_survives_a_session_without_a_branch() -> None:
 #    number and made a working compaction look like a no-op.
 
 
-class _RecordingHooks:
-    """A hook bus that records ``on`` registrations so a test can fire them."""
-
-    def __init__(self) -> None:
-        self.handlers: dict[str, list[Any]] = {}
-
-    def on(self, event_type: str, handler: Any, **kwargs: Any) -> Any:
-        self.handlers.setdefault(event_type, []).append(handler)
-        return lambda: None
-
-    async def emit(self, event: object) -> None:
-        return None
-
-
 class _ContextMeterHarness(FakeHarness):
-    """Reports a context that SHRINKS on the second read, as compaction does."""
+    """Reports a context that SHRINKS on the second read, as compaction does.
+
+    Carries a REAL :class:`HookBus`, deliberately. An earlier version of these
+    tests used a hand-rolled double exposing a public ``handlers`` dict (the real
+    bus keeps ``_handlers`` private) and invoked the handler with ONE argument.
+    That pinned the double instead of the seam and passed against a handler the
+    real bus could never call — the registration was dead in production. Emitting
+    through the real bus is what makes the ``handler(event, ctx)`` arity contract
+    an actual assertion.
+    """
 
     def __init__(self) -> None:
         super().__init__()
         self.stats_calls = 0
-        self.hooks = _RecordingHooks()  # type: ignore[assignment]
+        from aelix_agent_core.harness.hooks import HookBus
+
+        self.hooks = HookBus(lambda: None)  # type: ignore[assignment]
 
     async def get_session_stats(self) -> object:
         from types import SimpleNamespace
@@ -2391,7 +2388,16 @@ async def test_compaction_end_refreshes_the_footer_context_meter() -> None:
 
 
 async def test_shell_refreshes_the_meter_on_settled_not_only_turn_end() -> None:
-    """``settled`` is the first point the finished turn is in ``state.messages``."""
+    """``settled`` is the first point the finished turn is in ``state.messages``.
+
+    Emits through the REAL :class:`HookBus`, so the handler's ``(event, ctx)``
+    arity is genuinely exercised: the bus calls ``handler(event, ctx)``
+    (``hooks.py:1349``), and a one-parameter handler raises ``TypeError`` here
+    instead of being swallowed at DEBUG the way ``core.py:4406`` swallows it in
+    production.
+    """
+
+    from aelix_agent_core.harness.hooks import SettledHookEvent
 
     harness = _ContextMeterHarness()
     with create_pipe_input() as pipe, create_app_session(
@@ -2401,14 +2407,10 @@ async def test_shell_refreshes_the_meter_on_settled_not_only_turn_end() -> None:
         chrome = AelixChrome()
         task = _launch(runtime, chrome)
         await _wait(lambda: chrome.app.is_running)
-        # The shell must have registered a settled handler on the live bus.
-        await _wait(lambda: bool(harness.hooks.handlers.get("settled")))
-        handler = harness.hooks.handlers["settled"][0]
         before = harness.stats_calls
 
-        from types import SimpleNamespace
-
-        await handler(SimpleNamespace(type="settled", next_turn_count=0))
+        # Real emit — this is the production call shape, not a hand-rolled one.
+        await harness.hooks.emit(SettledHookEvent(next_turn_count=0))
         await _wait(lambda: harness.stats_calls > before, timeout=2.0)
 
         pipe.send_text("/quit\n")
@@ -2418,8 +2420,39 @@ async def test_shell_refreshes_the_meter_on_settled_not_only_turn_end() -> None:
     assert harness.stats_calls > before, "settled must refresh the meter"
 
 
+async def test_settled_handler_survives_a_real_bus_emit_arity() -> None:
+    """Pin the arity contract directly: the registered handler must be callable
+    by the real bus. A 1-arg handler raises TypeError inside ``emit``."""
+
+    from aelix_agent_core.harness.hooks import HookBus, SettledHookEvent
+
+    ran: list[int] = []
+    bus = HookBus(lambda: None)
+
+    async def _one_arg(_event: Any) -> None:  # the shape that was shipped broken
+        ran.append(1)
+
+    bus.on("settled", _one_arg, source="arity-probe")
+    with pytest.raises(TypeError, match="positional argument"):
+        await bus.emit(SettledHookEvent(next_turn_count=0))
+    assert ran == [], "a 1-arg handler never runs on the real bus"
+
+    # The shape the shell now registers.
+    ran2: list[int] = []
+    bus2 = HookBus(lambda: None)
+
+    async def _two_arg(_event: Any, _ctx: Any = None) -> None:
+        ran2.append(1)
+
+    bus2.on("settled", _two_arg, source="arity-probe")
+    await bus2.emit(SettledHookEvent(next_turn_count=0))
+    assert ran2 == [1]
+
+
 async def test_settled_hook_moves_to_the_new_harness_on_a_session_swap() -> None:
     """A swap builds a NEW bus; without re-registration the meter goes silent."""
+
+    from aelix_agent_core.harness.hooks import SettledHookEvent
 
     first = _ContextMeterHarness()
     second = _ContextMeterHarness()
@@ -2430,24 +2463,123 @@ async def test_settled_hook_moves_to_the_new_harness_on_a_session_swap() -> None
         chrome = AelixChrome()
         task = _launch(runtime, chrome)
         await _wait(lambda: chrome.app.is_running)
-        await _wait(lambda: bool(first.hooks.handlers.get("settled")))
 
         # Drive the swap through the rebind callback run_tui registered.
         runtime._harness = second
         assert runtime.rebind_cb is not None
         await runtime.rebind_cb(second, "resume")
-        await _wait(lambda: bool(second.hooks.handlers.get("settled")))
 
         before = second.stats_calls
-        from types import SimpleNamespace
-
-        await second.hooks.handlers["settled"][0](
-            SimpleNamespace(type="settled", next_turn_count=0)
-        )
+        await second.hooks.emit(SettledHookEvent(next_turn_count=0))
         await _wait(lambda: second.stats_calls > before, timeout=2.0)
+
+        # …and the OLD bus must no longer drive the meter.
+        stale = second.stats_calls
+        await first.hooks.emit(SettledHookEvent(next_turn_count=0))
+        await asyncio.sleep(0.05)
 
         pipe.send_text("/quit\n")
         code = await asyncio.wait_for(task, timeout=5)
 
     assert code == 0
     assert second.stats_calls > before, "the resumed harness must refresh the meter"
+    assert second.stats_calls == stale, "the old bus must be unsubscribed"
+
+
+class _OutOfOrderStatsHarness(FakeHarness):
+    """First stats read is SLOW and STALE; every later read is fast and fresh.
+
+    Reproduces the real interleaving: ``turn_end`` fires first and snapshots
+    ``state.messages`` BEFORE ``core.py:4398`` extends it, then ``settled`` fires
+    and reads the extended list — but the first read can still FINISH last,
+    because each awaits ``get_branch`` file I/O.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.calls = 0
+        # Armed EXPLICITLY by the test rather than keyed off a call count:
+        # startup already performs its own refresh, so "the first read" is not
+        # the read under test and keying on it made this assert nothing.
+        self.slow_stale_next = False
+        from aelix_agent_core.harness.hooks import HookBus
+
+        self.hooks = HookBus(lambda: None)  # type: ignore[assignment]
+
+    async def get_session_stats(self) -> object:
+        from types import SimpleNamespace
+
+        self.calls += 1
+        if self.slow_stale_next:
+            self.slow_stale_next = False
+            await asyncio.sleep(0.25)  # the stale reader dawdles
+            tokens = 32300
+        else:
+            tokens = 19000
+        return SimpleNamespace(
+            tokens=SimpleNamespace(
+                input=tokens, output=0, cache_read=0, cache_write=0, total=tokens
+            ),
+            cost=0.0,
+            total_messages=4,
+            context_usage=SimpleNamespace(
+                tokens=tokens, context_window=200000, percent=tokens / 2000.0
+            ),
+        )
+
+
+async def test_a_slow_stale_refresh_cannot_paint_over_a_newer_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Last-SCHEDULED-wins, not last-to-finish-wins.
+
+    Without the generation guard the turn_end refresh — started first, finished
+    last — repaints its pre-extend snapshot on top of the settled refresh,
+    turning a deterministic one-turn lag into a nondeterministic one.
+    """
+
+    from aelix_agent_core.harness.hooks import SettledHookEvent
+
+    painted: list[str | None] = []
+    real_set = AelixTUIContext.set_context_label
+
+    def _record(self: Any, label: str | None) -> None:
+        painted.append(label)
+        real_set(self, label)
+
+    monkeypatch.setattr(AelixTUIContext, "set_context_label", _record)
+
+    harness = _OutOfOrderStatsHarness()
+    with create_pipe_input() as pipe, create_app_session(
+        input=pipe, output=DummyOutput()
+    ):
+        runtime = FakeRuntime(harness)
+        chrome = AelixChrome()
+        task = _launch(runtime, chrome)
+        await _wait(lambda: chrome.app.is_running)
+        await _wait(lambda: bool(harness.subscribers))
+        # Let the startup refresh finish so it cannot consume the armed read.
+        await asyncio.sleep(0.05)
+        painted.clear()
+        calls_before = harness.calls
+
+        from types import SimpleNamespace
+
+        # turn_end schedules the SLOW/STALE refresh…
+        harness.slow_stale_next = True
+        harness.subscribers[0](SimpleNamespace(type="turn_end"))
+        await asyncio.sleep(0)  # let the task start and reach its await
+        # …then settled schedules the FAST/FRESH one, which finishes first.
+        await harness.hooks.emit(SettledHookEvent(next_turn_count=0))
+        await asyncio.sleep(0.45)  # both have completed by now
+
+        pipe.send_text("/quit\n")
+        code = await asyncio.wait_for(task, timeout=5)
+
+    assert code == 0
+    assert harness.calls - calls_before >= 2, "both refreshes must have run"
+    labels = [p for p in painted if p]
+    assert labels, "the meter must paint at least once"
+    # The stale 32.3K reader finished LAST and must have been dropped.
+    assert "19K" in labels[-1], f"final label was stale: {labels[-1]!r}"
+    assert "32" not in labels[-1]

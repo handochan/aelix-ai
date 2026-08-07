@@ -2492,12 +2492,42 @@ class AgentHarness:
         session_file = self.session_file  # Sprint 6f P-118 public property
         session_id = self._state.session_id or ""
         context_usage = await self._get_context_usage_safe()
+        # After a ``/compact`` (or on resuming a compacted session)
+        # ``_state.messages`` holds only the post-compaction branch — ``compact``
+        # rebuilds it at :1591-1595 from ``select_display_entries``, which drops
+        # everything before ``first_kept_entry_id``. The summarized-away turns
+        # were still PAID FOR, so summing what remains yields a real but PARTIAL
+        # figure. Flag it so the cost renders as a floor rather than a bill; the
+        # compaction entry records ``tokens_before`` (a context LEVEL, not a
+        # per-model spend), which is not enough to reconstruct the missing cost,
+        # so we mark it incomplete rather than invent one.
+        cost_complete = await self._cost_is_complete()
         return aggregate_session_stats(
             session_id=session_id,
             messages=messages,
             session_file=session_file,
             context_usage=context_usage,
+            cost_complete=cost_complete,
         )
+
+    async def _cost_is_complete(self) -> bool:
+        """Does ``_state.messages`` still cover everything the session spent?
+
+        ``False`` once the branch carries a compaction entry. Fails CLOSED: if
+        the branch cannot be read we cannot show that it is complete, and
+        "at least $X" stays a true statement either way, whereas an exact figure
+        might not.
+        """
+
+        if self._session is None:
+            return True
+        from aelix_agent_core.session.compaction import get_latest_compaction_entry
+
+        try:
+            branch = await self._session.get_branch()
+        except Exception:  # noqa: BLE001 — unreadable branch → cannot claim complete
+            return False
+        return get_latest_compaction_entry(branch) is None
 
     def export_to_html(self, output_path: str | None = None) -> str:
         """Pi parity: ``session.exportToHtml(outputPath?)``

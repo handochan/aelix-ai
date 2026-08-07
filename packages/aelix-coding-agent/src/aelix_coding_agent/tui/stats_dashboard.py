@@ -159,29 +159,43 @@ def _avg_tool_seconds(per_tool: Any) -> float | None:
     return total / timed
 
 
-#: Shown instead of a dollar figure when no price is known for what was spent.
+#: Shown instead of a dollar figure when nothing at all could be priced.
 UNPRICED_COST = "n/a"
+#: Marks a figure that is a FLOOR, not a bill — the real spend is at least this.
+PARTIAL_COST_PREFIX = "≥ "
 
 
 def format_session_cost(stats: Any, *, prefix: str = "$") -> str:
-    """Render a session's cost, or :data:`UNPRICED_COST` when it isn't known.
+    """Render a session's cost honestly, given how much of it is known.
 
-    ``cost_known`` is ``False`` when token usage was seen that the model registry
-    had no price for, which makes ``cost`` an UNDER-count rather than a bill. A
-    confident ``$0.0000`` there reads as "this session was free" — the one
-    reading guaranteed to be wrong — so the placeholder is shown instead.
+    ``cost_known`` is ``False`` when the figure is short of the real spend —
+    either some usage had no price in the registry, or the message list no
+    longer covers the whole session (after a ``/compact`` the summarized-away
+    turns are gone from ``state.messages`` but were still paid for). Three
+    outcomes, none of which can state something false:
+
+    - known → the exact figure, ``$0.0127``.
+    - not known, but something WAS priced → ``≥ $0.0127``. A floor is a true
+      statement and keeps a real number in front of the user, which is more
+      use than discarding it.
+    - not known and nothing priced → :data:`UNPRICED_COST`. ``≥ $0.0000``
+      carries no information, and a bare ``$0.0000`` would read as "this
+      session was free" — the one reading guaranteed to be wrong.
 
     A sparse/duck-typed ``stats`` without the attribute is treated as known, so
-    an embedder that supplies its own already-priced stats still renders a
-    figure. Callers wanting a bare number pass ``prefix=""``.
+    an embedder supplying its own already-priced stats still renders a figure.
+    Callers wanting a bare number pass ``prefix=""``.
     """
 
-    if not getattr(stats, "cost_known", True):
-        return UNPRICED_COST
     try:
-        return f"{prefix}{float(getattr(stats, 'cost', 0.0) or 0.0):.4f}"
+        cost = float(getattr(stats, "cost", 0.0) or 0.0)
     except (TypeError, ValueError):
         return UNPRICED_COST
+    if getattr(stats, "cost_known", True):
+        return f"{prefix}{cost:.4f}"
+    if cost <= 0.0:
+        return UNPRICED_COST
+    return f"{PARTIAL_COST_PREFIX}{prefix}{cost:.4f}"
 
 
 def build_session_tab(stats: Any, snapshot: Any) -> list[str]:
@@ -570,6 +584,7 @@ async def run_stats(
 
 
 __all__ = [
+    "PARTIAL_COST_PREFIX",
     "UNPRICED_COST",
     "build_activity_tab",
     "build_efficiency_tab",

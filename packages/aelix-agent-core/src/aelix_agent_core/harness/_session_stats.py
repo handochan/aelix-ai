@@ -126,9 +126,21 @@ def _message_cost(msg: Any, usage: Any) -> float | None:
 
     resolved = _read(usage, "cost", None)
     if resolved is not None:
-        total = float(_read(resolved, "total", 0.0) or 0.0)
-        if total:
-            return total
+        total = _read(resolved, "total", None)
+        # A provider that resolved a cost of exactly 0.0 (free tier, cached-only
+        # turn) HAS answered, and re-pricing would overrule it with a catalog
+        # rate it did not charge. But a zero is only an answer when it was
+        # actually WRITTEN: the live ``Usage`` dataclass defaults ``cost`` to an
+        # all-zero ``UsageCost``, so on that shape a 0.0 is indistinguishable
+        # from "never priced" — the normal state of every turn, since no adapter
+        # prices. So treat an explicit ``cost`` KEY on a dict payload as the
+        # deliberate answer, and otherwise trust only a non-zero total. Reading
+        # a bare ``is not None`` as the answer would return 0.0 for every live
+        # turn and silently re-break the main-session cost.
+        if total is not None and (
+            float(total) or (isinstance(usage, dict) and "cost" in usage)
+        ):
+            return float(total)
 
     provider = getattr(msg, "provider", None)
     model_id = getattr(msg, "model", None)
@@ -166,6 +178,7 @@ def aggregate_session_stats(
     messages: list[Message],
     session_file: str | None = None,
     context_usage: Any | None = None,
+    cost_complete: bool = True,
 ) -> SessionStats:
     """Pi parity: ``agent-session.ts:2901-2945`` ``getSessionStats``.
 
@@ -189,6 +202,15 @@ def aggregate_session_stats(
     ``cost: UsageCost``. Sprint 6h₃ W6 (P-283) extracts the field
     reads through :func:`_read` so dict-shape usage payloads (legacy
     fixtures, provider passthrough) work the same as dataclasses.
+
+    ``cost_complete=False`` tells the aggregator that ``messages`` is a SUBSET
+    of what the session actually spent, so the resulting ``cost`` is a floor
+    rather than a bill and :attr:`SessionStats.cost_known` goes ``False``. The
+    caller owns that judgement because only it can see the session: after a
+    ``/compact`` the harness rebuilds ``state.messages`` from the post-compaction
+    branch (``core.py:1591-1595`` via ``select_display_entries``, which drops
+    everything before ``first_kept_entry_id``), so the summarized-away turns are
+    no longer countable here and nothing in ``messages`` reveals their absence.
     """
 
     user = 0
@@ -248,7 +270,9 @@ def aggregate_session_stats(
         cost=cost,
         session_file=session_file,
         context_usage=context_usage,
-        cost_known=unpriced == 0,
+        # Known only if every message with usage could be priced AND the caller
+        # says the message list is the whole spend.
+        cost_known=unpriced == 0 and cost_complete,
     )
 
 

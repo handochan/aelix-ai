@@ -171,18 +171,24 @@ def derive_resumed_activity(entries: Iterable[object]) -> ResumedActivity:
 
     - **turns** — one user message is one prompt is one turn, so the user
       messages on the branch are the turns that produced it. This counts a turn
-      that was interrupted mid-flight (the prompt was still issued) and, after a
-      ``/compact``, counts the summary message the compaction wrote in place of
-      the history it replaced — the pre-compaction turns are no longer on the
-      branch to be counted.
+      that was interrupted mid-flight: the prompt was still issued.
     - **seconds** — first to last MESSAGE entry. Bookkeeping entries
       (``session``, ``leaf``, ``label``) are skipped so the idle between opening
       a session and typing into it is not billed as active time, matching the
       live tracker, which starts at the first event of the first turn.
 
     Both are spans over the branch the user resumed, so a fork reports its own
-    ancestry rather than the whole tree. Pure + duck-typed: the caller supplies
-    ``await session.get_branch()``, the same source ``build_context`` reads.
+    ancestry rather than the whole tree. Pure + duck-typed.
+
+    COMPACTION — the caller supplies ``await session.get_branch()``, which is the
+    RAW path to root, NOT ``build_context``'s display selection. Compaction
+    entries are skipped here only because they are not ``type == "message"``, so
+    turns and active time span the FULL history including summarized-away turns.
+    That is the more useful answer, but it makes one ``/stats`` panel internally
+    inconsistent: Turns and Active time cover everything, while tokens and cost
+    cover only what survives in ``state.messages``, which a ``/compact`` truncates
+    (see ``harness/_session_stats.py``'s ``cost_complete``, which is why cost
+    renders as a floor there). Anyone changing either side should move both.
     """
 
     turns = 0

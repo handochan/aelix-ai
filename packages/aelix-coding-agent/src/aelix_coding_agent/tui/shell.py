@@ -1407,9 +1407,27 @@ async def run_tui(
     context_usage_tasks: set[asyncio.Task[None]] = set()
     history_tasks: set[asyncio.Task[None]] = set()
 
-    async def _refresh_context_usage() -> None:
-        # Pull the context-window meter after each turn (async; walks messages,
+    # Monotonic generation for context-usage refreshes. Several triggers can be
+    # in flight at once (``turn_end`` then ``settled`` for one turn), each
+    # awaiting ``get_session_stats`` → ``get_branch`` → file I/O, so they can
+    # COMPLETE out of order: the turn_end refresh snapshots ``state.messages``
+    # before ``core.py:4398`` extends it, yet may finish after the settled
+    # refresh and paint the stale value last. Completions therefore carry the
+    # generation they were scheduled with and a superseded one is DROPPED,
+    # making the outcome last-SCHEDULED-wins instead of last-to-finish-wins.
+    context_usage_seq: dict[str, int] = {"n": 0}
+
+    def _next_context_usage_seq() -> int:
+        context_usage_seq["n"] += 1
+        return context_usage_seq["n"]
+
+    async def _refresh_context_usage(seq: int | None = None) -> None:
+        # Pull the context-window meter (async; walks messages + reads the branch,
         # so NOT per-frame). Degrades to no segment when usage is unavailable.
+        # ``seq`` omitted → this call claims its own generation, so a direct
+        # ``await`` (the /rebind path) still supersedes anything older.
+        if seq is None:
+            seq = _next_context_usage_seq()
         get_stats = getattr(runtime_host.harness, "get_session_stats", None)
         if get_stats is None:
             return
@@ -1417,12 +1435,16 @@ async def run_tui(
             stats = await get_stats()
         except Exception:  # noqa: BLE001 — a stats hiccup must not kill the TUI
             return
+        if seq != context_usage_seq["n"]:
+            # A newer refresh was scheduled while this one was awaiting; its
+            # snapshot is fresher, so discard ours rather than racing to paint.
+            return
         context.set_context_label(
             _format_context_label(getattr(stats, "context_usage", None))
         )
         # WP-2 (ADR-0160) — also cache the token/cost scalars for the OPTIONAL
         # input-tokens / output-tokens / cost footer segments (default-OFF). One
-        # turn_end task feeds both the context% label + these scalars.
+        # refresh feeds both the context% label + these scalars.
         tokens = getattr(stats, "tokens", None)
         with contextlib.suppress(Exception):
             context.set_usage_stats(
@@ -1434,13 +1456,15 @@ async def run_tui(
     def _schedule_context_usage_refresh() -> None:
         """Run :func:`_refresh_context_usage` off-frame, GC-pinned.
 
-        The refresh is async (it walks messages and reads the session branch), so
-        every trigger schedules it the same way rather than each call site
-        re-deriving the strong-reference dance. Painting still goes through
-        ``set_context_label`` / ``set_usage_stats`` — no new render path.
+        The refresh is async, so every trigger schedules it the same way rather
+        than each call site re-deriving the strong-reference dance. The
+        generation is claimed HERE, at schedule time, so ordering follows the
+        trigger order rather than however the file I/O happens to interleave.
+        Painting still goes through ``set_context_label`` / ``set_usage_stats``
+        — no new render path.
         """
 
-        task = loop.create_task(_refresh_context_usage())
+        task = loop.create_task(_refresh_context_usage(_next_context_usage_seq()))
         context_usage_tasks.add(task)
         task.add_done_callback(context_usage_tasks.discard)
 
@@ -1633,12 +1657,21 @@ async def run_tui(
             # (Sprint 6h₁₂e).
             context._refresh_footer()
 
-    async def _settled_hook(_event: object) -> None:
+    async def _settled_hook(_event: object, _ctx: object = None) -> None:
         # The FIRST moment a finished turn is visible in ``state.messages``: the
         # harness extends it at ``harness/core.py:4398`` and emits ``settled``
         # immediately after, whereas the ``turn_end`` the loop emitted earlier is
         # too early — a refresh there estimates over a list still missing the turn
         # that just ended, which is why the meter sat one full turn behind.
+        #
+        # TWO parameters, not one. ``hooks.on`` is the EXTENSION-facing seam and
+        # its bus invokes ``handler(event, ctx)`` (``hooks.py:1349``; the
+        # ``SettledHandler`` alias types both positions). The ``subscribe`` seam
+        # the rest of this module uses passes the event ALONE, and a handler
+        # written to THAT shape raises ``TypeError: takes 1 positional argument
+        # but 2 were given`` — which ``core.py:4406`` catches and logs at DEBUG,
+        # so it fails SILENTLY and the refresh simply never runs. ``_ctx`` is
+        # defaulted so the handler stays directly callable from a unit test.
         _schedule_context_usage_refresh()
 
     async def _rebind(new_harness: AgentHarness, reason: str = "resume") -> None:

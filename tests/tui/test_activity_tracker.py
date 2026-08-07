@@ -464,3 +464,26 @@ def test_reset_clears_the_resumed_baseline() -> None:
     snap = tracker.snapshot()
     assert snap.turns == 0
     assert snap.wall_seconds == 0.0
+
+
+def test_derive_counts_pre_compaction_turns_on_the_raw_branch() -> None:
+    """``get_branch()`` is the RAW path to root, so a compaction does not hide
+    earlier turns — the compaction entry itself is skipped as a non-message.
+
+    Pins the measured behaviour; an earlier docstring claimed the opposite (that
+    only the summary survived), which would have been true of ``build_context``
+    but not of the branch this actually reads.
+    """
+
+    from aelix_coding_agent.tui.activity_tracker import derive_resumed_activity
+
+    branch = [
+        _entry("2026-08-07T10:00:00.000Z", "user"),  # pre-compaction turn
+        _entry("2026-08-07T10:00:05.000Z", "assistant"),
+        SimpleNamespace(type="compaction", timestamp="2026-08-07T10:00:06.000Z"),
+        _entry("2026-08-07T10:00:10.000Z", "user"),  # post-compaction turn
+        _entry("2026-08-07T10:00:15.000Z", "assistant"),
+    ]
+    prior = derive_resumed_activity(branch)
+    assert prior.turns == 2, "both the pre- and post-compaction prompts count"
+    assert prior.seconds == 15.0
