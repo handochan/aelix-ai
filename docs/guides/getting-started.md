@@ -9,28 +9,57 @@ see [extension-authoring.md](extension-authoring.md).
 
 ## Install
 
-Aelix installs as a single global `aelix` command. The recommended way to get an
-isolated, always-on-PATH CLI:
+Aelix installs as a single global `aelix` command. During the beta it comes from
+GitHub Releases via the checksum-verified installer:
 
 ```bash
-uv tool install 'aelix[tui]'     # recommended (uv) — CLI + interactive TUI
-pipx install 'aelix[tui]'        # or pipx
+curl -fsSL https://raw.githubusercontent.com/handochan/aelix-ai/main/install.sh | sh
 ```
 
-Or into an environment with pip:
+That script bootstraps [uv](https://docs.astral.sh/uv/) if you do not have it,
+downloads the release wheels, verifies each one against the release's
+`SHA256SUMS` manifest (any mismatch aborts), and installs `aelix` pinned to the
+exact version the manifest named. Third-party dependencies resolve from PyPI as
+usual.
+
+Two environment variables configure it:
+
+- `AELIX_VERSION` — pin an exact release tag, e.g. `v0.1.0-beta.1`. Recommended
+  during the beta. Without it the installer resolves the newest release from the
+  GitHub API.
+- `AELIX_EXTRAS` — which extras to install. Default `tui`.
 
 ```bash
-pip install 'aelix[tui]'         # CLI + interactive TUI
-pip install aelix                # CLI + non-interactive (print / json / rpc) only
-pip install 'aelix[images]'      # also enable inline image rendering
+AELIX_VERSION=v0.1.0-beta.1 AELIX_EXTRAS=tui,images \
+  sh -c "$(curl -fsSL https://raw.githubusercontent.com/handochan/aelix-ai/main/install.sh)"
 ```
 
 Extras:
 
 - `tui` — the interactive terminal UI (prompt-toolkit + Rich). Needed for the
-  default interactive mode; the bare `aelix` install still supports `--print`,
-  `--mode json`, and `--mode rpc`.
+  default interactive mode; the bare install (`AELIX_EXTRAS=`) still supports
+  `--print`, `--mode json`, and `--mode rpc`.
 - `images` — inline image rendering in the terminal.
+
+> **Not on PyPI yet.** `aelix` and its sibling distributions are unpublished, so
+> `pip install aelix`, `pipx install aelix` and `uv tool install aelix` all 404
+> today. Once the first GA release is published,
+> `uv tool install 'aelix[tui]'` — or the `pipx` / `pip` equivalent — will work
+> as usual. Until then, use the installer above.
+
+### Upgrading and uninstalling
+
+Re-run the same `curl … | sh` line to upgrade: it resolves the newest release and
+re-runs the whole checksum-verified install, and `uv tool install --force` makes
+that idempotent.
+
+```bash
+uv tool uninstall aelix          # remove it again
+```
+
+If you are behind a shared IP (CI, corporate NAT), the anonymous GitHub API limit
+of 60 requests/hour can make the release lookup fail. Set `GITHUB_TOKEN`, or pin
+`AELIX_VERSION` — a pinned tag skips that API call entirely.
 
 ## Set a provider key
 
