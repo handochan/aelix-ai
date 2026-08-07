@@ -143,7 +143,7 @@ def to_print_output_mode(app_mode: AppMode) -> Literal["text", "json"]:
     return "json" if app_mode == "json" else "text"
 
 
-async def _read_piped_stdin() -> str | None:
+async def _read_piped_stdin(*, required: bool = True) -> str | None:
     """Pi parity: ``readPipedStdin`` — plus an aelix-original hang guard.
 
     Returns :data:`None` when stdin is a TTY (interactive shell). When
@@ -155,17 +155,38 @@ async def _read_piped_stdin() -> str | None:
     forever on a non-TTY pipe whose writer never closes, and the path is
     reachable with ZERO flags (any piped stdin promotes ``app_mode`` to
     ``"print"`` in :func:`resolve_app_mode`). On POSIX we now wait for
-    FIRST-byte readiness under a deadline (default 30s;
-    ``AELIX_STDIN_TIMEOUT`` overrides, ``0`` waits forever); on timeout we
-    warn on stderr and proceed WITHOUT stdin input. ``select`` runs in a
-    worker thread but always returns at the deadline, so no thread leaks
-    (a bare ``wait_for`` around the blocking read would strand the reader
-    thread — the OS read is uncancellable). Once data/EOF is ready, the
-    read-to-EOF itself is unbounded: a producer that writes a byte and
-    never closes still hangs, matching pi (pathological, user-error
-    territory). Windows keeps the previous blocking read — ``select`` is
-    socket-only there. A stdin without a real fd (pytest capture,
-    embedders) skips the readiness gate and reads directly.
+    FIRST-byte readiness under a deadline (``AELIX_STDIN_TIMEOUT``
+    overrides, ``0`` waits forever); on timeout we proceed WITHOUT stdin
+    input. ``select`` runs in a worker thread but always returns at the
+    deadline, so no thread leaks (a bare ``wait_for`` around the blocking
+    read would strand the reader thread — the OS read is uncancellable).
+    Once data/EOF is ready, the read-to-EOF itself is unbounded: a producer
+    that writes a byte and never closes still hangs, matching pi
+    (pathological, user-error territory). Windows keeps the previous
+    blocking read — ``select`` is socket-only there. A stdin without a real
+    fd (pytest capture, embedders) skips the readiness gate and reads
+    directly.
+
+    ``required`` says whether stdin is the ONLY place a prompt can come
+    from, and it picks the default deadline:
+
+    * ``True`` (nothing on argv) — stdin IS the prompt, so waiting for it is
+      the whole point. Deadline 30s, and a timeout warns on stderr because
+      the run really is missing its input.
+    * ``False`` (argv already carries a prompt or an ``@file``) — stdin is
+      SUPPLEMENTARY. :func:`build_initial_message` concatenates
+      ``stdin + file_text + argv`` (pi parity, and asserted by
+      ``test_composition_stdin_plus_message``), so a piped payload must
+      still be picked up — ``cat notes.txt | aelix -p "summarise this"`` is
+      a supported shape, and skipping the read outright would silently drop
+      ``notes.txt``. But an inherited-yet-idle pipe (a subprocess spawned
+      with ``stdin=PIPE``, a CI harness) must not cost 30s to discover it
+      has nothing to say, so the deadline drops to a 1s grace window: long
+      enough for a real producer, short enough not to read as a hang. That
+      timeout is SILENT — nothing was missing.
+
+    An explicit ``AELIX_STDIN_TIMEOUT`` always wins over both defaults, so a
+    deliberate ``0`` (wait forever) is honoured either way.
     """
 
     if sys.stdin.isatty():
@@ -173,7 +194,7 @@ async def _read_piped_stdin() -> str | None:
     if sys.platform != "win32":
         timeout = _env_float("AELIX_STDIN_TIMEOUT")
         if timeout is None:
-            timeout = 30.0
+            timeout = 30.0 if required else 1.0
         stdin_fd: int | None
         try:
             stdin_fd = sys.stdin.fileno()
@@ -194,18 +215,23 @@ async def _read_piped_stdin() -> str | None:
                 # intent for an inf-like timeout.
                 ready = True
             if not ready:
-                # suppress: a DEAD STDERR must not abort a healthy run — an
-                # unguarded warning print here raised BrokenPipeError, which
-                # main_sync would misclassify as stdout death (exit 141) and
-                # devnull the LIVE stdout (adversarial-review LOW).
-                with contextlib.suppress(OSError):
-                    print(
-                        f"aelix: no data on piped stdin after {timeout:g}s; "
-                        "proceeding without stdin input (redirect </dev/null "
-                        "if none was intended, or set AELIX_STDIN_TIMEOUT=0 "
-                        "to wait indefinitely)",
-                        file=sys.stderr,
-                    )
+                # Only warn when stdin was the sole prompt source. With a
+                # prompt already on argv an idle pipe is unremarkable, and
+                # warning about it would put noise on the stderr of every
+                # `aelix -p ...` that happens to inherit one.
+                if required:
+                    # suppress: a DEAD STDERR must not abort a healthy run — an
+                    # unguarded warning print here raised BrokenPipeError, which
+                    # main_sync would misclassify as stdout death (exit 141) and
+                    # devnull the LIVE stdout (adversarial-review LOW).
+                    with contextlib.suppress(OSError):
+                        print(
+                            f"aelix: no data on piped stdin after {timeout:g}s; "
+                            "proceeding without stdin input (redirect </dev/null "
+                            "if none was intended, or set AELIX_STDIN_TIMEOUT=0 "
+                            "to wait indefinitely)",
+                            file=sys.stderr,
+                        )
                 return None
     data = await asyncio.to_thread(sys.stdin.read)
     stripped = data.strip()
@@ -1351,7 +1377,16 @@ async def _async_main(argv: list[str]) -> int:
     file_images: list[object] | None = None
 
     if app_mode in ("print", "json"):
-        stdin_content = await _read_piped_stdin()
+        # Wait the full deadline for stdin only when it is the ONLY prompt
+        # source. `aelix -p "hi"` that merely INHERITS an idle pipe (spawned
+        # with stdin=PIPE, or under a CI harness) used to pay the whole 30s
+        # before discovering the pipe had nothing to say — measured 35s vs
+        # 1.2s with `</dev/null`. It is not dropped, only time-boxed: a real
+        # producer still lands inside the grace window, so `cat notes.txt |
+        # aelix -p "summarise"` keeps concatenating both (pi parity).
+        stdin_content = await _read_piped_stdin(
+            required=not parsed.messages and not parsed.file_args
+        )
         if parsed.file_args:
             processed = await process_file_arguments(parsed.file_args)
             file_text = processed.text
