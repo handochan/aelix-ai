@@ -125,7 +125,7 @@ class McpServerConnection:
             # and writer in an anyio task group, and `enter_async_context` opens
             # that group's cancel scope in OUR task. When the child dies the
             # group cancels the scope, which reaches us as a bare CancelledError
-            # — a BaseException — raised out of `initialize()` below.
+            # — a BaseException — raised out of the `initialize()` above.
             #
             # With `except Exception` that error walked straight past this
             # handler, so the unwind below never ran and the dead transport's
