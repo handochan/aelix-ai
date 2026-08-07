@@ -12,6 +12,7 @@ import contextlib
 from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
 
 import pytest
 from aelix_coding_agent.extensions import HEADLESS_UI_CONTEXT
@@ -2008,7 +2009,10 @@ async def test_run_tui_resume_replays_custom_message_via_extension_renderer() ->
         await _wait(lambda: bool(calls))  # renderer dispatched during replay
         pipe.send_text("/quit\n")
         await asyncio.wait_for(task, timeout=5)
-    assert target.get_branch_calls == 1  # DISPLAY tier taken, not build_context
+    # DISPLAY tier taken, not build_context (which would leave this at 0). Two
+    # readers now: the replay itself, plus the /stats baseline the swap seeds
+    # from the arriving branch so Turns / Active time aren't 0 after a resume.
+    assert target.get_branch_calls == 2
     assert calls == [("status", False)]  # display=False custom never dispatched
 
 
@@ -2208,3 +2212,96 @@ async def test_run_tui_settings_theme_picker_selects_manifest_theme(
         assert sm.get_theme() == "solarized"  # picker enumerated the manifest theme
     finally:
         _themes.register_themes([])  # module-global cleanup
+
+
+# === resumed /stats baseline (Defect B) ======================================
+
+
+class _BranchSession:
+    """A session whose branch carries two prompts spanning 11 seconds."""
+
+    def __init__(self) -> None:
+        self.branch_reads = 0
+
+    async def get_branch(self, from_id: str | None = None) -> list[object]:
+        from types import SimpleNamespace
+
+        self.branch_reads += 1
+
+        def _msg(ts: str, role: str) -> SimpleNamespace:
+            return SimpleNamespace(
+                type="message", timestamp=ts, message=SimpleNamespace(role=role)
+            )
+
+        return [
+            SimpleNamespace(type="session", timestamp="2026-08-07T10:00:00.000Z"),
+            _msg("2026-08-07T10:00:40.000Z", "user"),
+            _msg("2026-08-07T10:00:45.000Z", "assistant"),
+            _msg("2026-08-07T10:00:48.000Z", "user"),
+            _msg("2026-08-07T10:00:51.000Z", "assistant"),
+        ]
+
+
+class _ResumedRuntime(FakeRuntime):
+    """A runtime host that exposes a resumed session, as the real one does."""
+
+    def __init__(self, harness: FakeHarness, session: _BranchSession) -> None:
+        super().__init__(harness)
+        self._session = session
+
+    @property
+    def session(self) -> _BranchSession:
+        return self._session
+
+
+async def test_run_tui_seeds_stats_baseline_from_the_resumed_branch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Startup must seed /stats from the resumed branch, not leave it at 0.
+
+    Asserts the tracker is actually seeded rather than that ``get_branch`` was
+    called — ``build_context`` reads the branch too, so a call count would pass
+    without the baseline ever reaching the tracker.
+    """
+
+    seeded: list[Any] = []
+    real_seed = tui_shell.SessionActivityTracker.seed_resumed
+
+    def _record(self: Any, prior: Any) -> None:
+        seeded.append(prior)
+        real_seed(self, prior)
+
+    monkeypatch.setattr(
+        tui_shell.SessionActivityTracker, "seed_resumed", _record, raising=True
+    )
+
+    session = _BranchSession()
+    with create_pipe_input() as pipe, create_app_session(
+        input=pipe, output=DummyOutput()
+    ):
+        runtime = _ResumedRuntime(FakeHarness(), session)
+        chrome = AelixChrome()
+        task = _launch(runtime, chrome)
+        await _wait(lambda: chrome.app.is_running)
+        pipe.send_text("/quit\n")
+        code = await asyncio.wait_for(task, timeout=5)
+
+    assert code == 0
+    assert len(seeded) == 1, "startup must seed the /stats baseline exactly once"
+    # Two prompts on the branch, spanning 10:00:40 → 10:00:51.
+    assert seeded[0].turns == 2
+    assert seeded[0].seconds == 11.0
+
+
+async def test_run_tui_startup_survives_a_session_without_a_branch() -> None:
+    """A runtime host with no ``session`` seam must not break the launch."""
+
+    async with _harness_chrome() as (runtime, chrome, pipe):
+        # FakeRuntime deliberately exposes no ``.session`` at all.
+        assert not hasattr(runtime, "session")
+        task = _launch(runtime, chrome)
+        await _wait(lambda: chrome.app.is_running)
+        pipe.send_text("/quit\n")
+        code = await asyncio.wait_for(task, timeout=5)
+
+    assert code == 0

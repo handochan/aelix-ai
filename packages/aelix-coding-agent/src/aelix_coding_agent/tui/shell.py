@@ -45,7 +45,10 @@ from aelix_coding_agent.extensions.command_dispatch import (
     CommandSurfaceBindings,
     DispatchOutcome,
 )
-from aelix_coding_agent.tui.activity_tracker import SessionActivityTracker
+from aelix_coding_agent.tui.activity_tracker import (
+    SessionActivityTracker,
+    derive_resumed_activity,
+)
 from aelix_coding_agent.tui.chrome import AelixChrome
 from aelix_coding_agent.tui.commands import (
     BUILTIN_COMMANDS,
@@ -613,6 +616,32 @@ async def run_tui(
     # supplies the live model id for message_end events that omit it. Fed at the
     # TOP of _on_agent_event (before the renderer) and reset on _rebind.
     tracker = SessionActivityTracker(model_provider=_model_id)
+
+    async def _seed_tracker_from_session() -> None:
+        """Carry a resumed session's turns + active time into the live tracker.
+
+        The tracker only ever counted THIS process, so a ``--continue`` (or an
+        in-session ``/resume``) read Turns 0 / Active time 0s while the tokens and
+        message counts #122 restored read correctly. ``get_branch`` is the same
+        source ``build_context`` reads, so the baseline describes exactly the
+        transcript the user is looking at.
+
+        Called only from ``_rebind``, which covers BOTH insertion points: startup
+        runs an initial ``_rebind`` once the harness is bootstrapped, and every
+        later swap goes through the same callback. Seeding here as well would be
+        undone anyway — ``_rebind`` resets the tracker before it seeds.
+
+        Best-effort: a session that cannot be read leaves the baseline at zero
+        rather than breaking the launch.
+        """
+
+        try:
+            session = runtime_host.session
+            if session is None:  # --no-session, or an embedder without one
+                return
+            tracker.seed_resumed(derive_resumed_activity(await session.get_branch()))
+        except Exception:  # noqa: BLE001 — /stats must never block a launch
+            return
 
     # WP-8 D3 (ADR-0168) — cross-session /stats history. The tracker above is
     # live-only (reset on swap, lost on exit); this store persists a cumulative
@@ -1619,7 +1648,12 @@ async def run_tui(
         # WP-8 (Feature 2) — a session swap starts a fresh /stats lifetime: the
         # tracker's per-tool / per-model / turn / wall accounting belongs to the
         # prior session, so reset it to track the resumed/new session from zero.
+        # Then adopt the ARRIVING session's own history, so /resume into a session
+        # with turns behind it reports them instead of 0 (a swap to a new/empty
+        # session seeds nothing and stays at zero). Reset first — seeding before
+        # the reset would be wiped by it.
         tracker.reset()
+        await _seed_tracker_from_session()
         # #122 — the footer caches the prior session's context% label + token/cost
         # scalars (``_context_label`` / ``set_usage_stats``); a swap must not leak
         # them into the new session's footer until the next turn_end. The new
