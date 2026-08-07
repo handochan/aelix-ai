@@ -91,6 +91,53 @@ async def test_recovery_warning_names_file_and_count(
     assert "skipped 1 unparseable line(s)" in caplog.text
 
 
+async def test_valid_lines_without_trailing_newline_survive_append(
+    tmp_path: Path,
+) -> None:
+    """A VALID file that merely lacks its final newline must not fuse.
+
+    Every line here parses, so nothing is skipped and ``recovery`` is
+    None — the file is not damaged, it is just unterminated (a pi export,
+    a hand-edit, or ``import_from_jsonl``, which copies foreign bytes
+    verbatim). Appending without healing the tail first fused the new
+    entry onto ``bbb2``; the next load then dropped the fused line,
+    destroying BOTH the just-typed entry and a turn that was already
+    durable on disk. That is worse than the brick this module exists to
+    fix, so the healing newline keys on the trailing byte alone.
+    """
+
+    path = tmp_path / "unterminated.jsonl"
+    _write(
+        path,
+        json.dumps(_HEADER) + "\n",
+        json.dumps(_msg("aaa1", None)) + "\n",
+        json.dumps(_msg("bbb2", "aaa1")),  # valid JSON, no trailing "\n"
+    )
+
+    storage = await JsonlSessionStorage.open(LocalFileSystem(), str(path))
+    # Not damaged: nothing was skipped.
+    assert storage.recovery is None
+    assert [e.id for e in await storage.get_entries()] == ["aaa1", "bbb2"]
+
+    await storage.append_entry(
+        MessageEntry(
+            id="new1",
+            parent_id="bbb2",
+            timestamp="2026-08-07T00:00:09.000Z",
+            message=UserMessage(content=[TextContent(text="just typed")]),
+        )
+    )
+
+    reopened = await JsonlSessionStorage.open(LocalFileSystem(), str(path))
+    # bbb2 was already durable; new1 was just written. Neither may vanish.
+    assert [e.id for e in await reopened.get_entries()] == [
+        "aaa1",
+        "bbb2",
+        "new1",
+    ]
+    assert reopened.recovery is None
+
+
 async def test_reopen_is_stable_not_a_brick(tmp_path: Path) -> None:
     """The defining symptom: opening the SAME damaged file twice both work."""
 

@@ -71,6 +71,22 @@ class SessionRecovery:
         return msg
 
 
+@dataclass(frozen=True)
+class _LoadedSession:
+    """Everything :func:`_load_jsonl_storage` learned about a file.
+
+    ``ends_with_newline`` is deliberately independent of ``recovery``: a
+    file can be perfectly valid and still lack its final newline, and
+    that alone decides whether the next append needs a healing newline.
+    """
+
+    header: _SessionHeader
+    entries: list[SessionTreeEntry]
+    leaf_id: str | None
+    recovery: SessionRecovery | None
+    ends_with_newline: bool
+
+
 def _iso_now() -> str:
     return (
         datetime.now(UTC)
@@ -286,7 +302,7 @@ async def load_jsonl_session_metadata(
 
 async def _load_jsonl_storage(
     fs: FileSystem, file_path: str
-) -> tuple[_SessionHeader, list[SessionTreeEntry], str | None, SessionRecovery | None]:
+) -> _LoadedSession:
     """Pi ``loadJsonlStorage`` (``jsonl-storage.ts:136-159``).
 
     Aelix-additive divergence (Track S1): entry lines that fail to parse
@@ -331,6 +347,14 @@ async def _load_jsonl_storage(
             f"Invalid JSONL session file {file_path}: missing session header",
         )
     header = _parse_header_line(lines[0], file_path)
+    # Whether the last write finished its line. Computed from the BYTES,
+    # not from whether anything was skipped: a file can be entirely valid
+    # and still be missing its final newline (a pi export, a hand-edit, or
+    # `import_from_jsonl`, which copies foreign bytes verbatim). Appending
+    # to such a file without healing it first fuses the new entry onto the
+    # last one, and the NEXT load then drops the fused line — destroying a
+    # turn that was already durable.
+    ends_with_newline = content.endswith("\n")
     entries: list[SessionTreeEntry] = []
     leaf_id: str | None = None
     skipped: list[int] = []
@@ -343,7 +367,13 @@ async def _load_jsonl_storage(
         entries.append(entry)
         leaf_id = _leaf_id_after_entry(entry)
     if not skipped:
-        return header, entries, leaf_id, None
+        return _LoadedSession(
+            header=header,
+            entries=entries,
+            leaf_id=leaf_id,
+            recovery=None,
+            ends_with_newline=ends_with_newline,
+        )
 
     # A gap was bridged — re-check that the surviving forest is still
     # internally consistent before handing it to the caller.
@@ -370,12 +400,18 @@ async def _load_jsonl_storage(
         file_path=file_path,
         skipped_lines=tuple(skipped),
         orphaned_entries=tuple(orphaned),
-        unterminated_tail=not content.endswith("\n"),
+        unterminated_tail=not ends_with_newline,
     )
     # No logging is configured by the CLI, so `logging.lastResort` puts
     # this on stderr where the user actually sees it.
     _LOG.warning("%s", recovery.describe())
-    return header, kept, leaf_id, recovery
+    return _LoadedSession(
+        header=header,
+        entries=kept,
+        leaf_id=leaf_id,
+        recovery=recovery,
+        ends_with_newline=ends_with_newline,
+    )
 
 
 class JsonlSessionStorage(SessionStorage[JsonlSessionMetadata]):
@@ -394,6 +430,7 @@ class JsonlSessionStorage(SessionStorage[JsonlSessionMetadata]):
         entries: list[SessionTreeEntry],
         leaf_id: str | None,
         recovery: SessionRecovery | None = None,
+        ends_with_newline: bool = True,
     ) -> None:
         self._fs = fs
         self._file_path = file_path
@@ -410,10 +447,14 @@ class JsonlSessionStorage(SessionStorage[JsonlSessionMetadata]):
             _update_label_cache(self._labels_by_id, entry)
         self._current_leaf_id: str | None = leaf_id
         self._lock = asyncio.Lock()
-        # A crash-truncated file ends mid-line; appending straight onto it
-        # would fuse the new entry to the fragment and lose BOTH on the
-        # next load. Cleared once the healing newline has been written.
-        self._needs_newline = recovery is not None and recovery.unterminated_tail
+        # A file that ends mid-line will fuse the next append onto its last
+        # line, and the load after that drops the fused result — losing the
+        # appended entry AND the previously durable one it landed on. Keyed
+        # only on the trailing byte, NOT on `recovery`: an unterminated file
+        # whose lines all happen to parse is still unterminated, and that
+        # case loses already-committed data. Cleared once the healing
+        # newline has been written.
+        self._needs_newline = not ends_with_newline
 
     async def _append_line(self, payload: dict[str, Any], what: str) -> None:
         """Append one JSON line, healing an unterminated tail first."""
@@ -435,10 +476,16 @@ class JsonlSessionStorage(SessionStorage[JsonlSessionMetadata]):
     async def open(
         cls, fs: FileSystem, file_path: str
     ) -> JsonlSessionStorage:
-        header, entries, leaf_id, recovery = await _load_jsonl_storage(
-            fs, file_path
+        loaded = await _load_jsonl_storage(fs, file_path)
+        return cls(
+            fs,
+            file_path,
+            loaded.header,
+            loaded.entries,
+            loaded.leaf_id,
+            loaded.recovery,
+            ends_with_newline=loaded.ends_with_newline,
         )
-        return cls(fs, file_path, header, entries, leaf_id, recovery)
 
     @classmethod
     async def create(
