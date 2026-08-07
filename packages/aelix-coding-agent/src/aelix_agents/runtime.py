@@ -836,6 +836,14 @@ class _SubagentRuntimeImpl:
             elapsed_ms=int((_now() - child.started_at) * 1000),
             tokens=state.tokens,
             cost=state.cost,
+            # The child's run model/provider, the same fields the reducer already
+            # fills from every ``message_end`` and the envelope reads into
+            # ``SubagentResult`` (``envelope.py:374-375``). This is the SOLE
+            # producer of ``SubagentProgress``, so this one line is what makes the
+            # model visible on every live surface. ``None`` until the first
+            # ``message_end`` — renderers omit the term while it is.
+            model=state.model,
+            provider=state.provider,
         )
         for tap in (on_event, self.host.on_progress):
             if tap is None:
