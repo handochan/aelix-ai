@@ -112,7 +112,17 @@ PyPI lookup for whatever is called `acme-notes` — someone else's package, if
 they registered the name first. That is why absolute paths are the default.
 
 Use `--relative` only when the directory travels together with its catalog (a
-mounted share, a copied USB drive) *and* installs are run from inside it.
+mounted share, a copied USB drive) *and* installs are run from inside it:
+
+```console
+$ cd /mnt/share/wheelhouse
+$ aelix extension index . --relative --name "Acme portable"
+$ aelix extension source add --catalog file:///mnt/share/wheelhouse/catalog.json
+$ aelix extension discover install acme-notes --offline
+```
+
+The catalog survives the directory moving to a new path. Nothing else about it
+does, so re-run `index` rather than hand-editing paths.
 
 ## The catalog document
 

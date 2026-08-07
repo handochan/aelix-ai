@@ -150,6 +150,25 @@ def test_relative_opt_in_emits_bare_filenames(tmp_path: Path) -> None:
     assert _entries(document)[0]["source"] == wheel.name
 
 
+def test_relative_tolerates_an_unresolved_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Scanning an unresolved root must still measure against it.
+
+    The builder is exported, so the CLI is not the only caller that can hold a
+    root in one form and artifacts in another. Comparing the two forms raises,
+    so the builder resolves both sides itself rather than trusting the caller.
+    """
+    wheel = _wheel(tmp_path, "notes-ext", "1.0.0")
+    monkeypatch.chdir(tmp_path)
+
+    document = ec.build_index_catalog(
+        ec.scan_artifacts(Path(".")), relative_to=Path(".")
+    )
+
+    assert _entries(document)[0]["source"] == wheel.name
+
+
 def test_several_versions_collapse_to_one_entry_newest_first(tmp_path: Path) -> None:
     """Two versions must not become two same-named entries.
 
@@ -246,6 +265,47 @@ def test_cli_writes_catalog_json_beside_the_wheels(
     assert "1 extension" in out
     # The next step is named, so the operator is not left guessing.
     assert "source add --catalog" in out
+
+
+def test_cli_relative_flag_works_from_a_relative_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`index . --relative` must not crash.
+
+    `--relative` exists for a wheelhouse that travels, and the guide tells
+    operators to run from inside it — so `.` is the argument they will actually
+    type. It used to raise ValueError out of `relative_to`: the scan walked an
+    UNRESOLVED root and yielded bare `foo.whl` paths, while `relative_to` was
+    handed the RESOLVED root, and a bare path is not under an absolute one. The
+    build call sits outside the handler's try/except, so it surfaced as a raw
+    traceback and exit 1 rather than a clean error.
+    """
+    wheel = _wheel(tmp_path, "notes-ext", "1.0.0")
+    monkeypatch.chdir(tmp_path)
+
+    rc = ei.run_extension_command(["index", ".", "--relative"])
+
+    assert rc == 0, capsys.readouterr().err
+    catalog = ec.parse_catalog(
+        (tmp_path / "catalog.json").read_text(), location="file://rel"
+    )
+    assert [e.source for e in catalog.entries] == [wheel.name]
+
+
+def test_cli_relative_directory_without_the_flag_still_emits_absolute(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The same unresolved-root path, on the default (absolute) branch."""
+    wheel = _wheel(tmp_path, "notes-ext", "1.0.0")
+    monkeypatch.chdir(tmp_path)
+
+    assert ei.run_extension_command(["index", "."]) == 0
+
+    source = json.loads((tmp_path / "catalog.json").read_text())["extensions"][0][
+        "source"
+    ]
+    assert Path(source).is_absolute()
+    assert Path(source) == wheel.resolve()
 
 
 def test_cli_out_dash_writes_stdout_and_no_file(

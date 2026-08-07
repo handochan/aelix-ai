@@ -2384,7 +2384,13 @@ def _cmd_index(args: list[str]) -> int:
         print(f"Error: index requires a <dir>.\n{_USAGE}", file=sys.stderr)
         return _EXIT_DIDNT_RUN
 
-    root = Path(directory).expanduser()
+    # Resolved BEFORE the scan, not after: the scan yields paths built from this
+    # root, and `--relative` measures them against it. Resolving only at the
+    # comparison left `index . --relative` measuring a bare `foo.whl` against an
+    # absolute directory, which is a ValueError — and it landed outside the
+    # try/except below, so the command that exists for a portable wheelhouse
+    # died with a raw traceback.
+    root = Path(directory).expanduser().resolve()
     if not root.is_dir():
         print(f"Error: {directory!r} is not a directory.", file=sys.stderr)
         return _EXIT_DIDNT_RUN
@@ -2401,7 +2407,7 @@ def _cmd_index(args: list[str]) -> int:
         # A relative source resolves against the PROCESS working directory (see
         # classify_target), not against the catalog — so relative is opt-in and
         # the default is absolute.
-        relative_to=root.resolve() if relative else None,
+        relative_to=root if relative else None,
     )
     payload = json.dumps(document, indent=2, sort_keys=False) + "\n"
 

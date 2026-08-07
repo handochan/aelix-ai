@@ -1044,8 +1044,12 @@ def build_index_catalog(
             reverse=True,
         )
         newest = versions[0]
+        # Both sides resolved before comparing. `relative_to` fails outright on
+        # a bare path measured against an absolute directory, so leaving either
+        # side in whatever form the caller happened to hold turned a scan of a
+        # relative directory into a ValueError.
         source = (
-            str(newest.path.relative_to(relative_to))
+            str(newest.path.resolve().relative_to(Path(relative_to).resolve()))
             if relative_to is not None
             else str(newest.path.resolve())
         )
