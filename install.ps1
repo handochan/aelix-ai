@@ -11,9 +11,10 @@
 # It mirrors install.sh step for step: download the release wheels from the
 # GitHub Release, verify each one against the published SHA256SUMS manifest (a
 # hard security gate — any mismatch aborts), then install the `aelix` CLI with
-# uv. Third-party dependencies resolve from PyPI as usual; the four first-party
-# wheels come from the checksum-verified download (uv --find-links, never
-# --no-index).
+# uv PINNED to the exact version that manifest named. Third-party dependencies
+# resolve from PyPI as usual; the four first-party wheels come from the
+# checksum-verified download (uv --find-links, never --no-index). The pin is
+# what makes the gate binding rather than advisory — see Step 5.
 #
 # Configuration (all optional, via environment):
 #   AELIX_VERSION  Pin an exact release tag (e.g. v0.1.0-beta.1). Default:
@@ -189,20 +190,43 @@ try {
     }
 
     # ── Step 5: install (hybrid: local verified wheels + PyPI for the rest) ──
-    $target = if ($AelixExtras) { "aelix[$AelixExtras]" } else { 'aelix' }
+    # The version pin below is LOAD-BEARING, not cosmetic. --find-links only
+    # ADDS candidates; the PyPI index stays enabled (third-party deps need it),
+    # and uv then resolves the best candidate across BOTH sources. Requesting
+    # the bare name `aelix` therefore lets a PyPI release of that name outrank
+    # the local wheels — and the SHA256SUMS gate in Step 4 would have verified
+    # artifacts that this very command discards. Pinning to the exact version
+    # named by the verified manifest is what closes that gap: only the
+    # checksum-verified wheel can satisfy `==$version`.
+    #
+    # The version is parsed from the wheel FILENAME, never from the tag: a tag
+    # is `v0.1.0-beta.1` while PEP 440 normalizes the same release to
+    # `0.1.0b1`, so the tag is not a usable version specifier. The
+    # meta-package wheel is `aelix-<VER>-py3-none-any.whl`; its siblings escape
+    # the hyphen in their distribution name to an underscore (`aelix_ai-…`,
+    # `aelix_agent_core-…`, `aelix_coding_agent-…`), so an `aelix-` prefix
+    # matches the meta-package alone. A PEP 440 version can never itself
+    # contain a hyphen, which is what makes the `-`-delimited split
+    # unambiguous.
+    $version = $null
+    foreach ($name in $wheels) {
+        # -match is case-insensitive, matching the shell's filename handling.
+        if ($name -match '^aelix-([^-]+)-py3-none-any\.whl$') {
+            $version = $Matches[1]
+            break
+        }
+    }
+    if (-not $version) {
+        Stop-WithError "could not parse the aelix version from SHA256SUMS for '$tag' (no 'aelix-<version>-py3-none-any.whl' entry)."
+    }
 
-    Write-Log "installing $target with uv..."
+    $target = if ($AelixExtras) { "aelix[$AelixExtras]==$version" } else { "aelix==$version" }
+
+    Write-Log "installing $target with uv (version pinned from the verified SHA256SUMS)..."
     # --find-links ADDS the four checksum-verified local wheels as candidates;
     # the default PyPI index stays enabled so third-party dependencies resolve.
     # Never use --no-index (it would make transitive deps unresolvable).
     # --force makes re-runs idempotent.
-    #
-    # Parity note, carried deliberately from install.sh: the target is NOT
-    # version-pinned. The pin is on the release TAG (which wheels get
-    # downloaded and checksum-verified), not on what uv resolves. Should
-    # `aelix` ever publish to PyPI, uv could prefer a newer index version over
-    # the verified local wheel and quietly bypass the integrity gate. Fixing
-    # that belongs in BOTH installers at once so they cannot drift.
     & uv tool install --force --find-links $tmp $target
     if ($LASTEXITCODE -ne 0) {
         Stop-WithError "uv tool install failed for '$target'."
