@@ -51,6 +51,7 @@ from aelix_agent_core.harness.hooks import ToolCallResult
 from aelix_ai.messages import TextContent
 from aelix_ai.tools import ToolResult
 from aelix_coding_agent.agents.discovery import discover_profiles
+from aelix_coding_agent.agents.resolver import child_model_id
 from aelix_coding_agent.builtin.permission_mode import PermissionMode
 from aelix_coding_agent.extensions.api import ExtensionError
 from aelix_coding_agent.subagent_contract import (
@@ -716,8 +717,33 @@ class AgentsExtension:
         # validated, which is a different thing from a memo that would outlive it
         # (``consent.py:931-942``): ``_pending.clear()`` still runs per prompt.
         return await request_spawn_consent_batch(
-            ctx, resolved, tasks, parent, cwd=cwd, mode=mode
+            ctx,
+            resolved,
+            tasks,
+            parent,
+            cwd=cwd,
+            mode=mode,
+            model=self._child_model(resolved),
         )
+
+    def _child_model(self, resolved: Any) -> str | None:
+        """What the consent dialog names as the child's model. Display only.
+
+        The same question ``runtime._spawn_model`` answers for the statusline
+        row, asked from the door that takes the decision — this hook holds the
+        ``resolved`` profile and the live parent model, and the runtime it would
+        otherwise borrow the method from may legitimately be ``None`` here (the
+        seam is released on teardown, ``extension.py:266``).
+
+        Swallows everything: a dialog that cannot name the model must still be a
+        dialog. The row is simply omitted, exactly as it is for a child that will
+        run its own model cascade.
+        """
+
+        try:
+            return child_model_id(resolved.profile, self._host_model())
+        except Exception:  # noqa: BLE001 — a missing row never blocks consent
+            return None
 
     async def _on_session_shutdown(
         self, event: SessionShutdownHookEvent, ctx: ExtensionContext

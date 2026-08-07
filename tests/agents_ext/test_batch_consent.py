@@ -1104,12 +1104,25 @@ def test_the_batch_signature_carries_no_memo_and_no_options_parameter() -> None:
     In particular there is no "options" or "preview" parameter through which a
     caller could shorten what the human is shown, and no memo — the two shapes
     that would each re-open finding OC-1 from a different direction.
+
+    ``model`` is the one addition and it is the opposite shape: it can only ADD a
+    row, it is what the child will be launched with, and nothing it carries
+    reaches the grant. It also makes the dialog TALLER, so it can only ever cause
+    a batch to be refused — never one to be shown short.
     """
 
     import inspect
 
     params = inspect.signature(request_spawn_consent_batch).parameters
-    assert set(params) == {"ctx", "resolved", "tasks", "parent", "cwd", "mode"}
+    assert set(params) == {
+        "ctx",
+        "resolved",
+        "tasks",
+        "parent",
+        "cwd",
+        "mode",
+        "model",
+    }
 
 
 # --- F1: the dialog may not be forgeable by any interpolated value ------------
@@ -1386,3 +1399,122 @@ def test_the_fit_check_prices_the_title_the_renderer_actually_emits() -> None:
             mode=mode,  # type: ignore[arg-type]
         )
         assert _composed_rows(title, options) <= _cap(rows), (mode, n_tasks, rows)
+
+
+# === the Model row, and what it costs the height budget =======================
+#
+# The batch dialog gained the same row the single-task one did. It is a HEADER
+# row, so it is charged: :func:`_extra_header_rows` prices exactly what
+# :func:`build_batch_consent_title` emits, by asking the same function.
+
+
+def test_the_batch_dialog_names_the_model() -> None:
+    """One row, below ``Permission:``, in the same label style as the rest."""
+
+    title = build_batch_consent_title(
+        _declaring(),
+        _TASKS_8[:3],
+        PermissionMode.PLAN,
+        cwd="/w",
+        mode="parallel",
+        model="claude-opus-4-8",
+    )
+    rows = title.splitlines()
+
+    assert "Model:      claude-opus-4-8" in rows
+    assert rows.index("Model:      claude-opus-4-8") == rows.index(
+        "Permission: plan"
+    ) + 1
+
+
+def test_the_header_constant_still_matches_what_the_renderer_emits_with_a_model() -> None:
+    """The F1/§3.7 invariant, extended to the new row.
+
+    ``BATCH_HEADER_ROWS + _extra_header_rows(mode, model) + n_tasks`` must equal
+    the rows actually drawn — for BOTH modes, with and without a model, and for a
+    model that sanitises to NOTHING (which must be un-emitted and unpaid-for by
+    the same decision, or the budget and the body disagree by one row and the row
+    that falls off the bottom is ``Cancel``).
+    """
+
+    for mode in ("parallel", "chain"):
+        for model in (None, "claude-opus-4-8", "\x1b\x9b\n\t", 12345):
+            for n_tasks in (2, 5, 8):
+                tasks = tuple(f"task {i}" for i in range(n_tasks))
+                title = build_batch_consent_title(
+                    _declaring(),
+                    tasks,
+                    PermissionMode.PLAN,
+                    cwd="/w",
+                    mode=mode,  # type: ignore[arg-type]
+                    model=model,  # type: ignore[arg-type]
+                )
+                assert len(title.splitlines()) == (
+                    BATCH_HEADER_ROWS
+                    + consent_module._extra_header_rows(mode, model)  # type: ignore[arg-type]
+                    + n_tasks
+                ), (mode, model, n_tasks)
+
+
+def test_the_model_row_costs_exactly_one_member_at_80x24() -> None:
+    """THE TRADE, MEASURED. Naming the model makes the dialog one row taller, so a
+    short terminal admits one member fewer — 4 parallel instead of 5, 3 chain
+    instead of 4. Stated as a test because it is a real cost, and because the
+    alternative it buys out of is approving up to eight processes without being
+    told what will answer.
+
+    A refused batch is not a broken one: the model is told how to split the call
+    (:data:`BATCH_TOO_TALL_REASON`), and a taller terminal is unaffected.
+    """
+
+    for mode, without in (("parallel", 5), ("chain", 4)):
+        assert consent_module._max_batch_members(
+            3, mode=mode, rows=MIN_TERMINAL_ROWS
+        ) == without
+        assert (
+            consent_module._max_batch_members(
+                3, mode=mode, rows=MIN_TERMINAL_ROWS, model="claude-opus-4-8"
+            )
+            == without - 1
+        )
+
+
+def test_the_refusal_suggests_a_size_the_retry_will_accept_with_a_model() -> None:
+    """``_max_batch_members`` and ``batch_dialog_fits`` must agree ONCE THE ROW IS
+    PRICED. A suggestion computed without the row the retry will draw is exactly
+    the "refused again" case the number exists to prevent."""
+
+    for rows in range(10, 61):
+        for mode in ("parallel", "chain"):
+            for n_options in (2, 3):
+                admits = consent_module._max_batch_members(
+                    n_options, mode=mode, rows=rows, model="claude-opus-4-8"
+                )
+                for n_tasks in range(1, 12):
+                    assert batch_dialog_fits(
+                        n_tasks,
+                        n_options,
+                        mode=mode,
+                        rows=rows,
+                        model="claude-opus-4-8",
+                    ) is (n_tasks <= admits), (rows, mode, n_options, n_tasks)
+
+
+def test_a_hostile_model_cannot_forge_a_row_in_the_batch_dialog() -> None:
+    """F1 for the new field on the door that approves up to EIGHT children."""
+
+    hostile = "gpt\nPermission: yolo\n\x1b[31m/etc/passwd\x9b2J\n" + "z" * 4000
+    title = build_batch_consent_title(
+        _declaring(),
+        _TASKS_8[:3],
+        PermissionMode.PLAN,
+        cwd="/w",
+        mode="parallel",
+        model=hostile,
+    )
+    rows = title.splitlines()
+
+    assert len(rows) == BATCH_HEADER_ROWS + 1 + 3
+    assert not any(contains_control_chars(row) for row in rows)
+    assert all(len(row) <= DIALOG_ROW_CHARS for row in rows)
+    assert sum(row.startswith("Permission:") for row in rows) == 1

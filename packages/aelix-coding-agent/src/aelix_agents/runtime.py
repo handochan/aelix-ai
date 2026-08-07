@@ -48,6 +48,7 @@ from typing import TYPE_CHECKING, Any
 
 from aelix_coding_agent.agents.discovery import ProfileError
 from aelix_coding_agent.agents.discovery import resolve_profile as discover_profile
+from aelix_coding_agent.agents.resolver import child_model_id
 from aelix_coding_agent.builtin.permission_mode import PermissionMode
 from aelix_coding_agent.subagent_contract import (
     CONTRACT_VERSION,
@@ -516,6 +517,20 @@ class _SubagentRuntimeImpl:
             task,
             self.host.posture(),
             cwd=child_cwd,
+            # Named on the dialog for the same reason the directory and the
+            # posture are: it is part of what is being approved.
+            #
+            # READ SEPARATELY FROM ``_run``'s, and that is a real (if remote)
+            # divergence rather than a guarantee. ``host.model`` is a LIVE getter
+            # and there is an await on a human between this read and the launch,
+            # so a ``/model`` in that window would leave the dialog naming one id
+            # and the child running another. Not reachable in the shipped TUI —
+            # the modal owns the input while it is open — and ``build_child_argv``
+            # re-reads the getter at launch anyway, so the CHILD is always
+            # correct and only the DISPLAY could go stale. Closing it properly
+            # means freezing the model into the grant, which is a change to what
+            # a grant means; that is a bigger decision than this fix.
+            model=self._spawn_model(resolved),
         )
         if not grant.consented:
             return declined_result(
@@ -759,9 +774,10 @@ class _SubagentRuntimeImpl:
         spawn_id = _new_id()
         child = RunningChild(id=spawn_id, profile=resolved.name)
         self._children[spawn_id] = child
+        spawn_model = self._spawn_model(resolved)
 
         def _emit(state: _StreamState) -> None:
-            self._publish(child, state, on_event)
+            self._publish(child, state, on_event, spawn_model=spawn_model)
 
         plan = SpawnPlan(
             id=spawn_id,
@@ -785,7 +801,7 @@ class _SubagentRuntimeImpl:
             parent_tools=_frozen_tools(self.host.active_tools()),
             timeout_ms=timeout_ms,
         )
-        self._publish(child, child.stream, on_event)
+        self._publish(child, child.stream, on_event, spawn_model=spawn_model)
         try:
             return await self.channel.run(plan, child=child, on_stream=_emit)
         finally:
@@ -811,13 +827,36 @@ class _SubagentRuntimeImpl:
             # ``error`` / ``stopped`` is left exactly as it was.
             if child.state not in _TERMINAL_STATES:
                 child.state = "error"
-            self._publish(child, child.stream, on_event)
+            self._publish(child, child.stream, on_event, spawn_model=spawn_model)
+
+    def _spawn_model(self, resolved: ResolvedProfile) -> str | None:
+        """The model id THIS SPAWN ASKS FOR, read off the emission table itself.
+
+        ``resolver.child_model_id`` answers the same question
+        ``resolver.child_model_flags`` answers for the argv, from the same two
+        inputs, so the string published here is the string the child is launched
+        with rather than a second guess at the precedence rule.
+
+        DISPLAY ONLY. Nothing about the child's command line is decided here —
+        ``build_child_argv`` still reads the parent's model through its own live
+        getter — and returning ``None`` costs a term on a status row, never a
+        spawn. Hence the blanket ``except``: ``host.model`` is a host-supplied
+        callable over a value ``/model`` rebinds mid-session, and the P4 hosts
+        the seam is typed ``Any`` for may hand us anything at all.
+        """
+
+        try:
+            return child_model_id(resolved.profile, self.host.model())
+        except Exception:  # noqa: BLE001 — a display term is never worth a spawn
+            return None
 
     def _publish(
         self,
         child: RunningChild,
         state: _StreamState,
         on_event: Callable[[SubagentProgress], None] | None,
+        *,
+        spawn_model: str | None = None,
     ) -> None:
         """Fan one progress snapshot out to both taps.
 
@@ -840,9 +879,22 @@ class _SubagentRuntimeImpl:
             # fills from every ``message_end`` and the envelope reads into
             # ``SubagentResult`` (``envelope.py:374-375``). This is the SOLE
             # producer of ``SubagentProgress``, so this one line is what makes the
-            # model visible on every live surface. ``None`` until the first
-            # ``message_end`` — renderers omit the term while it is.
-            model=state.model,
+            # model visible on every live surface.
+            #
+            # TWO SOURCES, ONE PRECEDENCE, AND THE FALLBACK IS WHY THE ROW IS EVER
+            # POPULATED AT ALL. ``state.model`` is assigned from the child's first
+            # ``message_end`` (``stream.py:561-563``) — authoritative, because it
+            # is what the child ACTUALLY ran, and a silent substitution is the
+            # thing this term exists to expose. But a delegation that finishes
+            # before its first assistant message never produces one, and measured
+            # in a real terminal that is the COMMON case for a short child: the
+            # live row read ``agent explorer · 1s`` for its whole visible life
+            # while the model sat one attribute away on the plan we had already
+            # built. ``spawn_model`` is that value — what we ASKED for — so the
+            # row is populated from the first snapshot and is only ever REFINED,
+            # never contradicted, by what comes back. ``None`` when neither
+            # exists; renderers omit the term rather than guess.
+            model=state.model or spawn_model,
             provider=state.provider,
         )
         for tap in (on_event, self.host.on_progress):

@@ -164,10 +164,13 @@ scarce. ``Source:`` keeps a row of its own — it is the one line the model cann
 influence (ADR-0197 residual R2 mitigation 1), and folding it in beside
 ``Profile:`` would risk it being clipped HORIZONTALLY instead.
 
-``mode="chain"`` spends one more (§3.1.1 mitigation 2); that row is charged by
-:func:`_extra_header_rows`, which both the renderer and
-:func:`batch_dialog_fits` call so the measured composition and the rendered one
-cannot drift."""
+``mode="chain"`` spends one more (§3.1.1 mitigation 2), and so does a spawn whose
+model is knowable (``Model:``). BOTH are charged by :func:`_extra_header_rows`,
+which both the renderer and :func:`batch_dialog_fits` call so the measured
+composition and the rendered one cannot drift. They are conditional rather than
+folded into this constant on purpose: a composition that draws neither must cost
+neither, or a dialog with no model to name silently loses a member to a row it
+never shows."""
 
 MIN_TERMINAL_ROWS = 24
 """The terminal height assumed when the real one cannot be measured (P3 §3.7).
@@ -568,7 +571,12 @@ def consent_is_required(
 
 
 def build_consent_title(
-    resolved: ResolvedProfile, task: str, clamped: PermissionMode, *, cwd: str
+    resolved: ResolvedProfile,
+    task: str,
+    clamped: PermissionMode,
+    *,
+    cwd: str,
+    model: str | None = None,
 ) -> str:
     """The whole dialog body, because there is nowhere else to put it.
 
@@ -590,27 +598,71 @@ def build_consent_title(
     (``tui/context.py:112-129``). :func:`_sanitize_field` is what makes this a
     nine-row body for every input rather than for well-behaved ones — see its
     docstring for the demonstrated forgery.
+
+    ``model`` is what the child will be LAUNCHED with (:func:`_model_row`), and
+    it sits below ``Permission:`` rather than beside ``Profile:`` so that
+    ``Source:`` keeps the second body row it was given on purpose. Omitted, and
+    costing no row, whenever there is nothing to name.
     """
 
-    return "\n".join(
-        [
-            f"Delegate to agent '{_sanitize_field(resolved.name, limit=_NAME_FIELD_CHARS)}'?",
-            "",
-            f"Profile:    {_sanitize_field(resolved.name, limit=_NAME_FIELD_CHARS)} "
-            f"({_sanitize_field(resolved.scope, limit=_SCOPE_FIELD_CHARS)} scope)",
-            f"Source:     {_sanitize_path(resolved.source_path)}",
-            f"Directory:  {_sanitize_path(cwd)}",
-            # ``clamped`` is a ``PermissionMode`` and its ``.value`` is a
-            # product-core literal, so it is the one field here no attacker
-            # reaches. Sanitised anyway: this row is the one the F1 forgery
-            # imitated, and "every field on this screen went through one helper"
-            # is a property worth being able to state without a caveat.
-            f"Permission: {_sanitize_field(clamped.value)}",
-            "",
-            "Task (written by the model, not by you):",
-            _truncate_task(task),
-        ]
-    )
+    rows = [
+        f"Delegate to agent '{_sanitize_field(resolved.name, limit=_NAME_FIELD_CHARS)}'?",
+        "",
+        f"Profile:    {_sanitize_field(resolved.name, limit=_NAME_FIELD_CHARS)} "
+        f"({_sanitize_field(resolved.scope, limit=_SCOPE_FIELD_CHARS)} scope)",
+        f"Source:     {_sanitize_path(resolved.source_path)}",
+        f"Directory:  {_sanitize_path(cwd)}",
+        # ``clamped`` is a ``PermissionMode`` and its ``.value`` is a
+        # product-core literal, so it is the one field here no attacker
+        # reaches. Sanitised anyway: this row is the one the F1 forgery
+        # imitated, and "every field on this screen went through one helper"
+        # is a property worth being able to state without a caveat.
+        f"Permission: {_sanitize_field(clamped.value)}",
+    ]
+    model_row = _model_row(model)
+    if model_row is not None:
+        rows.append(model_row)
+    rows += [
+        "",
+        "Task (written by the model, not by you):",
+        _truncate_task(task),
+    ]
+    return "\n".join(rows)
+
+
+def _model_row(model: object) -> str | None:
+    """The ``Model:`` row, or ``None`` when there is nothing to name.
+
+    WHY THE DIALOG SAYS IT AT ALL. Approving a spawn is approving a process that
+    will read this repository and — under a widened grant — write to it, and the
+    model it runs on is both the price of that and, when a profile declares no
+    ``model:``, a value the human never chose. Every other fact the child's
+    identity is made of is already on this screen; the one that decides what
+    actually answers was not, and a consent screen that cannot state it is asking
+    for approval of something it has not described.
+
+    NOT THE CHILD'S WORD — it does not exist yet. This is
+    ``resolver.child_model_id``: the id that will be on the child's argv, which
+    is the only thing knowable before the process exists. ``None`` whenever the
+    child will run its own cascade instead, and then there is no row: a
+    ``Model: unknown`` line would be a fact-shaped way of saying nothing.
+
+    ONE FUNCTION, TWO CALLERS, and that is load-bearing rather than tidy. Both
+    the renderers that EMIT this row and :func:`_extra_header_rows`, which PAYS
+    for it, ask this — the same discipline the chain row already gets, for the
+    same reason: a row emitted but not budgeted is a row that pushes ``Cancel``
+    off the bottom of a short terminal. Sanitising here rather than at the two
+    call sites is what makes "emitted" and "charged" the same predicate even for
+    a value that sanitises to nothing.
+
+    ``isinstance`` rather than truthiness: the value crosses the ``Any``-typed
+    host seam, and a non-``str`` must cost the dialog a row, never a raise.
+    """
+
+    if not isinstance(model, str):
+        return None
+    flat = _sanitize_field(model, limit=DIALOG_FIELD_CHARS)
+    return f"Model:      {flat}" if flat else None
 
 
 def _reject_str_batch(tasks: object) -> None:
@@ -637,17 +689,51 @@ def _reject_str_batch(tasks: object) -> None:
         )
 
 
-def _extra_header_rows(mode: str) -> int:
+def _chain_row(mode: str, total: int) -> str | None:
+    """§3.1.1 mitigation 2, verbatim — or ``None`` for a topology without it.
+
+    What reaches step k >= 2 is ``render_step(task_k, summary_{k-1})``: text a
+    CHILD wrote after this dialog was answered, so the human is told that the
+    rows below are not the whole of what will be sent. At N=8 the sentence is 81
+    columns and its final character may be clipped on an exactly-80-column
+    terminal; that is horizontal, costs no row, and the sentence reads without it.
+
+    A function returning the ROW rather than a boolean, for the reason
+    :func:`_model_row` states: :func:`_extra_header_rows` charges for exactly
+    what this emits, by asking this.
+    """
+
+    if mode != "chain":
+        return None
+    return (
+        f"Steps 2-{total} also receive text written by an earlier agent, "
+        "which is not shown here."
+    )
+
+
+def _extra_header_rows(mode: str, model: str | None = None) -> int:
     """Header rows a batch title spends beyond :data:`BATCH_HEADER_ROWS`.
 
     Exactly one function, called by BOTH :func:`build_batch_consent_title` (which
-    emits the row) and :func:`batch_dialog_fits` (which pays for it). Two
-    hand-maintained copies of "does this mode add a row" is how a measured height
-    and a rendered height drift apart, and here that drift is what puts ``Cancel``
+    emits the rows) and :func:`batch_dialog_fits` (which pays for them). Two
+    hand-maintained copies of "does this add a row" is how a measured height and
+    a rendered height drift apart, and here that drift is what puts ``Cancel``
     off screen.
+
+    TWO CONDITIONAL ROWS, and each is charged by asking the very function that
+    emits it — so a model that sanitises to nothing is un-emitted and unpaid-for
+    by the SAME decision rather than by two that happen to agree today.
+    ``_chain_row``'s text depends on the member count, which this function does
+    not have and does not need: only whether there is a row.
+
+    ``model`` is positional-or-keyword with a default so the arithmetic of every
+    model-less composition — which is every one this constant was measured
+    against — is unchanged, and the row is priced only where it is drawn.
     """
 
-    return 1 if mode == "chain" else 0
+    return sum(
+        row is not None for row in (_chain_row(mode, 2), _model_row(model))
+    )
 
 
 def build_batch_consent_title(
@@ -657,6 +743,7 @@ def build_batch_consent_title(
     *,
     cwd: str,
     mode: SubagentMode,
+    model: str | None = None,
 ) -> str:
     """The whole dialog body for a MULTI-task call — every member on screen (S4).
 
@@ -671,10 +758,18 @@ def build_batch_consent_title(
       horizontally clipped;
     * ``mode="chain"`` adds the §3.1.1 mitigation-2 row.
 
-    The row count is exactly ``BATCH_HEADER_ROWS + _extra_header_rows(mode) +
-    len(tasks)``, which is what :func:`batch_dialog_fits` measures. Nothing here
-    may add a row without changing that constant — ``test_batch_consent.py``
-    pins the two together.
+    The row count is exactly ``BATCH_HEADER_ROWS + _extra_header_rows(mode,
+    model) + len(tasks)``, which is what :func:`batch_dialog_fits` measures.
+    Nothing here may add a row without changing that arithmetic —
+    ``test_batch_consent.py`` pins the two together.
+
+    THE ``Model:`` ROW COSTS A MEMBER, AND THAT IS THE TRADE MADE KNOWINGLY. On
+    an 80x24 terminal with three options a parallel batch admits 4 members with
+    it rather than 5 (a chain, 3 rather than 4); larger terminals are unaffected,
+    and a refused batch is told how to split itself
+    (:data:`BATCH_TOO_TALL_REASON`) rather than being rendered short. Approving
+    up to eight processes without being told what will answer is the worse of the
+    two, and it is the one this row buys out of.
 
     ``resolved.source_path`` is on its own line for the same reason as in the
     single-task body: it is the one line the model cannot influence. Every task
@@ -705,17 +800,12 @@ def build_batch_consent_title(
         f"Directory:  {_sanitize_path(cwd)}",
         f"Permission: {_sanitize_field(clamped.value)}",
     ]
-    if _extra_header_rows(mode):
-        # §3.1.1 mitigation 2, verbatim. What reaches step k >= 2 is
-        # ``render_step(task_k, summary_{k-1})`` — text a CHILD wrote after this
-        # dialog was answered — so the human is told that the rows below are not
-        # the whole of what will be sent. At N=8 the sentence is 81 columns and
-        # its final character may be clipped on an exactly-80-column terminal;
-        # that is horizontal and costs no row, and the sentence reads without it.
-        rows.append(
-            f"Steps 2-{total} also receive text written by an earlier agent, "
-            "which is not shown here."
-        )
+    # The two conditional header rows, each emitted by the function
+    # :func:`_extra_header_rows` charges for — so what is drawn and what was
+    # priced cannot disagree.
+    rows += [
+        row for row in (_model_row(model), _chain_row(mode, total)) if row is not None
+    ]
     rows.append("Tasks (written by the model, not by you):")
     rows.extend(
         f"[{index}/{total}] {_truncate_task(task, BATCH_TASK_PREVIEW_CHARS)}"
@@ -870,7 +960,7 @@ def _terminal_rows() -> int:
 
 
 def batch_dialog_fits(
-    n_tasks: int, n_options: int, *, mode: str, rows: int
+    n_tasks: int, n_options: int, *, mode: str, rows: int, model: str | None = None
 ) -> bool:
     """Would a batch dialog of this shape be drawn IN FULL? (P3 §3.7)
 
@@ -897,23 +987,32 @@ def batch_dialog_fits(
     :data:`BATCH_TOO_TALL_REASON` tells the model how to proceed. It is asked only
     when a dialog is required at all; the common case is zero dialogs and pays
     nothing.
+
+    ``model`` is charged only when a ``Model:`` row will actually be drawn, so a
+    delegation whose model is unknowable admits exactly what it always did. When
+    it IS drawn the admitted counts drop by one — 4 parallel, 3 chain at 80x24 —
+    which is the trade :func:`build_batch_consent_title` states.
     """
 
-    header = BATCH_HEADER_ROWS + _extra_header_rows(mode)
+    header = BATCH_HEADER_ROWS + _extra_header_rows(mode, model)
     return header + n_tasks + n_options + 4 <= max(_MIN_CAP, rows - _RESERVE_ESTIMATE)
 
 
-def _max_batch_members(n_options: int, *, mode: str, rows: int) -> int:
+def _max_batch_members(
+    n_options: int, *, mode: str, rows: int, model: str | None = None
+) -> int:
     """The largest ``n_tasks`` :func:`batch_dialog_fits` admits for this shape.
 
     The same equation solved for ``n_tasks``, so the number in the refusal
     message is the number the check will actually accept on the retry — a "split
     it up" that suggests a size which is then refused again is worse than no
     number at all. ``test_batch_consent.py`` pins the two against each other
-    across the whole grid rather than trusting the algebra.
+    across the whole grid rather than trusting the algebra. ``model`` therefore
+    has to reach here too: a suggestion priced without the row the retry will
+    draw is exactly the refused-again case.
     """
 
-    header = BATCH_HEADER_ROWS + _extra_header_rows(mode)
+    header = BATCH_HEADER_ROWS + _extra_header_rows(mode, model)
     return max(0, max(_MIN_CAP, rows - _RESERVE_ESTIMATE) - header - n_options - 4)
 
 
@@ -969,12 +1068,19 @@ async def request_spawn_consent(
     parent: PermissionMode,
     *,
     cwd: str,
+    model: str | None = None,
 ) -> SpawnGrant:
     """Take one human decision about one spawn. Never raises, never spawns.
 
     ``ctx`` is the :class:`ExtensionContext` — typed ``Any`` so this module does
     not import the extension API just to name it, and because the only two
     members it uses (``has_ui``, ``ui``) are read reflectively anyway.
+
+    ``model`` is what the child will be LAUNCHED with — ``resolver.child_model_id``,
+    the id that will be on its argv — and it exists only to be SHOWN. It reaches
+    :func:`build_consent_title` and nothing else: it does not touch the clamp, the
+    options, the grant, or what is sent to the child. ``None`` (the default, and
+    every pre-existing caller) renders exactly the dialog that shipped.
 
     P2 ASKS EVERY TIME. There is no session memo and no persistence: the grant
     this returns is spent by exactly one spawn and nothing about it survives.
@@ -1079,7 +1185,7 @@ async def request_spawn_consent(
     # through a flag, so there is exactly one spelling of the widening rule.
     may_widen = _may_widen(resolved, clamped, has_ui=has_ui)
     options = build_options(clamped, may_widen=may_widen)
-    title = build_consent_title(resolved, task, clamped, cwd=cwd)
+    title = build_consent_title(resolved, task, clamped, cwd=cwd, model=model)
 
     async with _consent_lock():
         answer = await _ask(ctx.ui, title, options)
@@ -1152,6 +1258,7 @@ async def request_spawn_consent_batch(
     *,
     cwd: str,
     mode: SubagentMode,
+    model: str | None = None,
 ) -> SpawnGrant:
     """ONE human decision about ONE tool call, however many children it starts.
 
@@ -1180,6 +1287,11 @@ async def request_spawn_consent_batch(
       six of eight members, or rendering all eight with ``Cancel`` off screen, are
       both the failure S4 declares non-negotiable.
 
+    ``model`` is the same display-only value the single-task door takes, with one
+    consequence that is NOT display-only: the row it adds makes the dialog taller,
+    so :func:`batch_dialog_fits` charges for it and a short terminal admits one
+    member fewer. That can only ever REFUSE a batch, never show one short.
+
     Never raises on any input a human or a model can produce. It DOES raise
     ``TypeError`` for a ``str`` ``tasks`` and ``ValueError`` for an empty one:
     both are programming errors in a caller — ``AgentCall.tasks`` is "ALWAYS at
@@ -1197,7 +1309,9 @@ async def request_spawn_consent_batch(
         # Byte-identical to P2, deliberately: the batch renderer's shorter
         # preview and its plural heading would be a gratuitous behaviour change
         # for the shape that is already shipped and already tested.
-        return await request_spawn_consent(ctx, resolved, tasks[0], parent, cwd=cwd)
+        return await request_spawn_consent(
+            ctx, resolved, tasks[0], parent, cwd=cwd, model=model
+        )
 
     # LIVE read (OC-7), exactly as the single-task door does it.
     has_ui = bool(getattr(ctx, "has_ui", False))
@@ -1239,7 +1353,9 @@ async def request_spawn_consent_batch(
     options = build_options(clamped, may_widen=may_widen)
 
     rows = _terminal_rows()
-    if not batch_dialog_fits(len(tasks), len(options), mode=mode, rows=rows):
+    if not batch_dialog_fits(
+        len(tasks), len(options), mode=mode, rows=rows, model=model
+    ):
         # THE S4 REFUSAL, AND IT IS A LIVE PATH. Measured BEFORE the title is
         # built and before the lock is taken: there is nothing to show, so no
         # modal is opened and no other prompt is blocked behind this one. The
@@ -1251,13 +1367,17 @@ async def request_spawn_consent_batch(
             consented=False,
             reason=_too_tall_reason(
                 len(tasks),
-                admits=_max_batch_members(len(options), mode=mode, rows=rows),
+                admits=_max_batch_members(
+                    len(options), mode=mode, rows=rows, model=model
+                ),
             ),
         )
 
-    title = build_batch_consent_title(resolved, tasks, clamped, cwd=cwd, mode=mode)
+    title = build_batch_consent_title(
+        resolved, tasks, clamped, cwd=cwd, mode=mode, model=model
+    )
 
-    budgeted = BATCH_HEADER_ROWS + _extra_header_rows(mode) + len(tasks)
+    budgeted = BATCH_HEADER_ROWS + _extra_header_rows(mode, model) + len(tasks)
     if len(title.splitlines()) > budgeted:
         # BELT ON F1, AND IT IS CHEAP. Everything above already makes the row
         # count true by construction — :func:`_sanitize_field` flattens every
@@ -1276,7 +1396,9 @@ async def request_spawn_consent_batch(
             consented=False,
             reason=_too_tall_reason(
                 len(tasks),
-                admits=_max_batch_members(len(options), mode=mode, rows=rows),
+                admits=_max_batch_members(
+                    len(options), mode=mode, rows=rows, model=model
+                ),
             ),
         )
 
