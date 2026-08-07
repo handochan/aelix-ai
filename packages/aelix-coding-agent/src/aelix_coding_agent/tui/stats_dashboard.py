@@ -159,6 +159,31 @@ def _avg_tool_seconds(per_tool: Any) -> float | None:
     return total / timed
 
 
+#: Shown instead of a dollar figure when no price is known for what was spent.
+UNPRICED_COST = "n/a"
+
+
+def format_session_cost(stats: Any, *, prefix: str = "$") -> str:
+    """Render a session's cost, or :data:`UNPRICED_COST` when it isn't known.
+
+    ``cost_known`` is ``False`` when token usage was seen that the model registry
+    had no price for, which makes ``cost`` an UNDER-count rather than a bill. A
+    confident ``$0.0000`` there reads as "this session was free" — the one
+    reading guaranteed to be wrong — so the placeholder is shown instead.
+
+    A sparse/duck-typed ``stats`` without the attribute is treated as known, so
+    an embedder that supplies its own already-priced stats still renders a
+    figure. Callers wanting a bare number pass ``prefix=""``.
+    """
+
+    if not getattr(stats, "cost_known", True):
+        return UNPRICED_COST
+    try:
+        return f"{prefix}{float(getattr(stats, 'cost', 0.0) or 0.0):.4f}"
+    except (TypeError, ValueError):
+        return UNPRICED_COST
+
+
 def build_session_tab(stats: Any, snapshot: Any) -> list[str]:
     """Session-summary tab: tool calls (ok/fail), success %, tokens, cost, etc.
 
@@ -180,11 +205,7 @@ def build_session_tab(stats: Any, snapshot: Any) -> list[str]:
     ok = max(0, calls - failures)
     success = _pct(getattr(snapshot, "success_rate", None))
 
-    cost = getattr(stats, "cost", 0.0) or 0.0
-    try:
-        cost_str = f"${float(cost):.4f}"
-    except (TypeError, ValueError):
-        cost_str = "$0.0000"
+    cost_str = format_session_cost(stats)
 
     avg_latency = _dur(_avg_tool_seconds(getattr(snapshot, "per_tool", [])))
 
@@ -549,9 +570,11 @@ async def run_stats(
 
 
 __all__ = [
+    "UNPRICED_COST",
     "build_activity_tab",
     "build_efficiency_tab",
     "build_history_tab",
     "build_session_tab",
+    "format_session_cost",
     "run_stats",
 ]

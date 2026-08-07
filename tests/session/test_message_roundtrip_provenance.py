@@ -76,3 +76,19 @@ def test_tool_result_tool_name_survives_a_roundtrip() -> None:
     restored = _roundtrip(original)
     assert restored.tool_call_id == "call_1"
     assert restored.tool_name == "read_file"
+
+
+def test_a_resumed_assistant_message_can_still_be_priced() -> None:
+    """The end the provenance serves: a reloaded turn is costable."""
+
+    from aelix_agent_core.harness._session_stats import aggregate_session_stats
+
+    original = AssistantMessage(
+        content=[TextContent(text="hi")],
+        usage={"input": 4000, "output": 369},
+        provider="anthropic",
+        model="claude-haiku-4-5",
+    )
+    stats = aggregate_session_stats("s", [_roundtrip(original)])  # type: ignore[list-item]
+    assert stats.cost > 0.0
+    assert stats.cost_known is True

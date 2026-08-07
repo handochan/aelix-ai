@@ -23,6 +23,8 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
+from aelix_coding_agent.tui.stats_dashboard import format_session_cost
+
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
     from typing import Any
@@ -408,7 +410,7 @@ async def _cost_handler(ctx: CommandContext, args: str) -> None:
     table.add_row("input tokens", str(getattr(tokens, "input", 0)))
     table.add_row("output tokens", str(getattr(tokens, "output", 0)))
     table.add_row("total tokens", str(getattr(tokens, "total", 0)))
-    table.add_row("cost (USD)", f"{getattr(stats, 'cost', 0.0):.4f}")
+    table.add_row("cost (USD)", format_session_cost(stats, prefix=""))
     ctx.commit(Panel(table, title="Session usage", box=ROUNDED, border_style="cyan"))
 
 
@@ -1814,7 +1816,7 @@ async def _session_handler(ctx: CommandContext, args: str) -> None:
             table.add_row("messages", str(getattr(stats, "total_messages", 0)))
             tokens = getattr(stats, "tokens", None)
             table.add_row("tokens", str(getattr(tokens, "total", 0)))
-            table.add_row("cost (USD)", f"{getattr(stats, 'cost', 0.0):.4f}")
+            table.add_row("cost (USD)", format_session_cost(stats, prefix=""))
     ctx.commit(Panel(table, title="Session", box=ROUNDED, border_style="cyan"))
 
 

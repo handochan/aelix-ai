@@ -178,12 +178,17 @@ def test_session_stats_dataclass_is_frozen() -> None:
 
 
 def test_session_stats_has_ten_fields() -> None:
-    """Pi parity: ``SessionStats`` shape is 10 fields exactly
-    (``agent-session.ts:212-223``).
+    """Pi parity: ``SessionStats`` carries Pi's 10 fields
+    (``agent-session.ts:212-223``), plus a NAMED Aelix-additive set.
+
+    Split rather than loosened: the 10 Pi fields are still pinned exactly and
+    anything extra must be listed here, so an unplanned field still fails.
+    ``cost_known`` is additive because Pi needs no equivalent — its adapters
+    always price a turn, so it never has to say "no price known" — and it stays
+    off the RPC wire, which enumerates its keys in ``_session_stats_to_dict``.
     """
 
-    fields = set(SessionStats.__dataclass_fields__.keys())
-    assert fields == {
+    pi_fields = {
         "session_id",
         "user_messages",
         "assistant_messages",
@@ -195,6 +200,9 @@ def test_session_stats_has_ten_fields() -> None:
         "session_file",
         "context_usage",
     }
+    fields = set(SessionStats.__dataclass_fields__.keys())
+    assert pi_fields <= fields
+    assert fields - pi_fields == {"cost_known"}
 
 
 def test_session_stats_tokens_has_five_fields() -> None:
@@ -240,3 +248,94 @@ def test_aggregate_total_messages_uses_len_pi_parity() -> None:
     ]
     stats = aggregate_session_stats("s", messages)
     assert stats.total_messages == len(messages) == 3
+
+
+# === main-session cost (Defect C) ============================================
+#
+# No adapter ever calls ``calculate_cost``: a persisted assistant ``usage`` dict
+# carries input/output/cache_* and NO ``cost`` key, so summing ``usage.cost.total``
+# gave $0.0000 for the main session however many tokens it burned. (Delegated
+# children priced correctly because ``aelix_agents/print_channel.py`` calls
+# ``calculate_cost`` itself.) Every assistant message persists its ``provider`` /
+# ``model`` provenance, so the aggregator prices what the provider left unpriced.
+
+
+def test_aggregate_prices_usage_from_the_model_registry() -> None:
+    from aelix_ai.models import calculate_cost, get_model
+
+    model = get_model("anthropic", "claude-haiku-4-5")
+    assert model is not None, "fixture depends on a model the registry prices"
+    expected = calculate_cost(
+        model, Usage(input=4000, output=369, cache_read=100, cache_write=50)
+    ).total
+
+    msg = AssistantMessage(
+        content=[TextContent(text="a")],
+        # The persisted wire shape: a plain dict with no ``cost`` key.
+        usage={"input": 4000, "output": 369, "cache_read": 100, "cache_write": 50},
+        provider="anthropic",
+        model="claude-haiku-4-5",
+    )
+    stats = aggregate_session_stats("s", [msg])
+    assert stats.tokens.total == 4519
+    assert stats.cost == expected
+    assert stats.cost > 0.0
+    assert stats.cost_known is True
+
+
+def test_aggregate_prefers_a_cost_the_provider_supplied() -> None:
+    """A provider that DOES price its usage is not second-guessed."""
+
+    u = Usage(input=4000, output=369, cost=UsageCost(total=0.25))
+    msg = AssistantMessage(
+        content=[TextContent(text="a")],
+        usage=u,  # type: ignore[arg-type]
+        provider="anthropic",
+        model="claude-haiku-4-5",
+    )
+    stats = aggregate_session_stats("s", [msg])
+    assert stats.cost == 0.25
+    assert stats.cost_known is True
+
+
+def test_aggregate_reports_cost_unknown_for_an_unpriced_model() -> None:
+    """An unknown model must read as 'no price', never as a $0.0000 bill."""
+
+    msg = AssistantMessage(
+        content=[TextContent(text="a")],
+        usage={"input": 4000, "output": 369},
+        provider="acme-private",
+        model="secret-1",
+    )
+    stats = aggregate_session_stats("s", [msg])
+    assert stats.tokens.total == 4369
+    assert stats.cost == 0.0
+    assert stats.cost_known is False
+
+
+def test_aggregate_cost_known_is_true_when_nothing_was_spent() -> None:
+    """No usage at all is a genuine zero, not an unknown."""
+
+    stats = aggregate_session_stats("s", [UserMessage(content=[])])
+    assert stats.cost == 0.0
+    assert stats.cost_known is True
+
+
+def test_aggregate_cost_known_is_false_when_only_some_are_priced() -> None:
+    """A mixed session flags that the total is short of the real bill."""
+
+    priced = AssistantMessage(
+        content=[TextContent(text="a")],
+        usage={"input": 1000, "output": 100},
+        provider="anthropic",
+        model="claude-haiku-4-5",
+    )
+    unpriced = AssistantMessage(
+        content=[TextContent(text="b")],
+        usage={"input": 1000, "output": 100},
+        provider="acme-private",
+        model="secret-1",
+    )
+    stats = aggregate_session_stats("s", [priced, unpriced])
+    assert stats.cost > 0.0
+    assert stats.cost_known is False

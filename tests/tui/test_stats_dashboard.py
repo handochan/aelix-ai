@@ -486,3 +486,61 @@ async def test_run_stats_history_getter_failure_degrades_to_empty_tab() -> None:
     # The History tab still renders (the empty one-liner), not a crash.
     body = "\n".join(captured["rendered"]["History"])
     assert "No cross-session history yet." in body
+
+
+# === unpriced cost placeholder (Defect C) ====================================
+
+
+class _Stats:
+    def __init__(self, cost: float, cost_known: bool) -> None:
+        self.cost = cost
+        self.cost_known = cost_known
+
+
+def test_format_session_cost_renders_a_known_cost() -> None:
+    from aelix_coding_agent.tui.stats_dashboard import format_session_cost
+
+    assert format_session_cost(_Stats(0.0127, True)) == "$0.0127"
+    assert format_session_cost(_Stats(0.0127, True), prefix="") == "0.0127"
+
+
+def test_format_session_cost_zero_is_a_real_zero_when_known() -> None:
+    from aelix_coding_agent.tui.stats_dashboard import format_session_cost
+
+    assert format_session_cost(_Stats(0.0, True)) == "$0.0000"
+
+
+def test_format_session_cost_placeholder_when_no_price_is_known() -> None:
+    """An unpriced model must never render as a confident $0.0000."""
+
+    from aelix_coding_agent.tui.stats_dashboard import (
+        UNPRICED_COST,
+        format_session_cost,
+    )
+
+    assert format_session_cost(_Stats(0.0, False)) == UNPRICED_COST
+    assert "0.0000" not in format_session_cost(_Stats(0.0, False))
+
+
+def test_format_session_cost_defaults_to_known_for_sparse_stats() -> None:
+    """An embedder's stats object without the flag still renders a figure."""
+
+    from aelix_coding_agent.tui.stats_dashboard import format_session_cost
+
+    class _Sparse:
+        cost = 0.5
+
+    assert format_session_cost(_Sparse()) == "$0.5000"
+
+
+def test_session_tab_shows_the_placeholder_for_an_unpriced_session() -> None:
+    from aelix_coding_agent.tui.stats_dashboard import (
+        UNPRICED_COST,
+        build_session_tab,
+    )
+
+    lines = build_session_tab(_Stats(0.0, False), None)
+    cost_lines = [ln for ln in lines if "Cost" in ln]
+    assert cost_lines, "the session tab must carry a cost row"
+    assert UNPRICED_COST in cost_lines[0]
+    assert "$0.0000" not in cost_lines[0]

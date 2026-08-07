@@ -79,6 +79,13 @@ class SessionStats:
     cost: float = 0.0
     session_file: str | None = None
     context_usage: Any | None = None  # ContextUsage | None — avoid import cycle
+    # Aelix-additive (NOT on the Pi wire — ``_session_stats_to_dict`` enumerates
+    # its keys explicitly, so this stays off the RPC response). ``False`` means
+    # token usage was seen that no price could be found for, so ``cost`` is short
+    # of the real bill: a display MUST then show a placeholder rather than render
+    # ``cost`` as an authoritative figure. A wrong bill is worse than an absent
+    # one. ``True`` on an all-zero session is correct — nothing was spent.
+    cost_known: bool = True
 
 
 def _read(obj: Any, key: str, default: Any = 0) -> Any:
@@ -96,6 +103,62 @@ def _read(obj: Any, key: str, default: Any = 0) -> Any:
     if isinstance(obj, dict):
         return obj.get(key, default)
     return getattr(obj, key, default)
+
+
+def _message_cost(msg: Any, usage: Any) -> float | None:
+    """Cost of ONE assistant message in USD, or :data:`None` if unpriceable.
+
+    Pi prices a turn inside the adapter (``calculateCost``); no Aelix adapter
+    does, so a persisted ``usage`` carries ``input``/``output``/``cache_*`` and
+    **no** ``cost`` key, and the old ``usage.cost.total`` sum was structurally
+    0.0 for the main session however many tokens it burned. The pricing helper
+    itself was never at fault — callers that invoke ``calculate_cost`` directly
+    have always reported real figures; nothing invoked it on this path.
+
+    A cost the provider DID resolve always wins; otherwise the message is priced
+    from its own persisted ``provider``/``model`` provenance, which every adapter
+    stamps. Pricing per message rather than per session is what keeps a session
+    that switched models — or resumed one — honest.
+
+    Returns :data:`None` (never 0.0) when the model is absent from the registry,
+    so the caller can distinguish "no price known" from "nothing spent".
+    """
+
+    resolved = _read(usage, "cost", None)
+    if resolved is not None:
+        total = float(_read(resolved, "total", 0.0) or 0.0)
+        if total:
+            return total
+
+    provider = getattr(msg, "provider", None)
+    model_id = getattr(msg, "model", None)
+    if not provider or not model_id:
+        return None
+
+    # Local import: module scope would make the pricing catalog a hard import of
+    # every consumer of this module, and ``models_generated`` is a large static
+    # table. No I/O either way.
+    from aelix_ai.models import calculate_cost, get_model
+    from aelix_ai.streaming import Usage
+
+    model = get_model(str(provider), str(model_id))
+    if model is None:
+        return None
+    # Round-trip through the canonical calculator rather than re-deriving the
+    # arithmetic here — the 1h-cache-write rate (2x base input) lives in exactly
+    # one place and a second copy would drift from it.
+    return float(
+        calculate_cost(
+            model,
+            Usage(
+                input=int(_read(usage, "input", 0) or 0),
+                output=int(_read(usage, "output", 0) or 0),
+                cache_read=int(_read(usage, "cache_read", 0) or 0),
+                cache_write=int(_read(usage, "cache_write", 0) or 0),
+                cache_write_1h=int(_read(usage, "cache_write_1h", 0) or 0),
+            ),
+        ).total
+    )
 
 
 def aggregate_session_stats(
@@ -137,6 +200,8 @@ def aggregate_session_stats(
     cache_r = 0
     cache_w = 0
     cost = 0.0
+    # Assistant messages that reported token usage no price could be found for.
+    unpriced = 0
 
     for msg in messages:
         if isinstance(msg, UserMessage):
@@ -152,9 +217,11 @@ def aggregate_session_stats(
                 tokens_out += int(_read(usage, "output", 0) or 0)
                 cache_r += int(_read(usage, "cache_read", 0) or 0)
                 cache_w += int(_read(usage, "cache_write", 0) or 0)
-                msg_cost = _read(usage, "cost", None)
-                if msg_cost is not None:
-                    cost += float(_read(msg_cost, "total", 0.0) or 0.0)
+                msg_cost = _message_cost(msg, usage)
+                if msg_cost is None:
+                    unpriced += 1
+                else:
+                    cost += msg_cost
         elif isinstance(msg, ToolResultMessage):
             tool_results_count += 1
 
@@ -181,6 +248,7 @@ def aggregate_session_stats(
         cost=cost,
         session_file=session_file,
         context_usage=context_usage,
+        cost_known=unpriced == 0,
     )
 
 
