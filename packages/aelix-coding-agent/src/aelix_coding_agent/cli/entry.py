@@ -2217,6 +2217,18 @@ async def _async_main(argv: list[str]) -> int:
         {"agent_service": agent_service} if agent_service is not None else {}
     )
 
+    # TODO(#122 follow-up): startup ``--continue``/``--resume`` builds the harness
+    # DIRECTLY here, bypassing ``AgentSessionRuntime._finish_session_replacement``
+    # (which now rebuilds ``_state.messages`` from the session's build_context on
+    # every IN-SESSION swap). A freshly built ``AgentHarness`` never seeds
+    # ``initial_messages`` from its session, so a resumed/continued session starts
+    # with ``_state.messages == []`` and /context, /cost, /session, /stats read
+    # ZERO until the first turn (the SAME class of bug as #122, at a SEPARATE
+    # insertion point). The in-session /resume path is fixed; this startup path is
+    # deliberately left out of the #122 change's scope. Fix when picked up: seed
+    # ``initial_messages`` from ``await session.build_context()`` in
+    # ``_build_harness_options`` (or rebuild ``harness._state.messages`` right here)
+    # whenever the resolved session carries persisted history.
     harness = await _harness_factory(session)
     runtime = await create_agent_session_runtime(
         harness, _harness_factory, repo=repo, fs=fs

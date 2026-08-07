@@ -1619,6 +1619,15 @@ async def run_tui(
         # tracker's per-tool / per-model / turn / wall accounting belongs to the
         # prior session, so reset it to track the resumed/new session from zero.
         tracker.reset()
+        # #122 — the footer caches the prior session's context% label + token/cost
+        # scalars (``_context_label`` / ``set_usage_stats``); a swap must not leak
+        # them into the new session's footer until the next turn_end. The new
+        # harness's ``_state.messages`` was just rebuilt from the resumed session
+        # (AgentSessionRuntime._finish_session_replacement), and
+        # ``runtime_host.harness`` is already the new harness here (set in _apply
+        # before _rebind_session), so recompute via the SAME turn_end refresh path
+        # — no new render path. Awaited so the swap returns with a correct footer.
+        await _refresh_context_usage()
 
     runtime_host.set_rebind_session(_rebind)
 
