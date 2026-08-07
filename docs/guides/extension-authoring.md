@@ -145,9 +145,9 @@ the same as registering it. What each family actually does at runtime:
 
 | Family | Runtime effect |
 | ------ | -------------- |
-| `contributes.hooks` | **Activated** — each entry registers a subprocess hook. Also forces eager loading. |
-| `contributes.themes` | **Activated** — registered at TUI start and offered in `/settings → Theme` (see [Themes](#themes)). Forces eager loading. |
-| `contributes.tui_widgets` | **Activated** — painted into the chrome at TUI start. Forces eager loading. |
+| `contributes.hooks` | **Activated, capability-gated** — each entry registers a subprocess hook, and the whole pack's load is **refused** unless `capabilities.shell_exec = true` (the host spawns your command). Also forces eager loading. See [Capabilities](#capabilities--three-are-gates-six-are-documentation). |
+| `contributes.themes` | **Activated** — registered at TUI start and offered in `/settings → Theme` (see [Themes](#themes)). Forces eager loading. Not gated. |
+| `contributes.tui_widgets` | **Activated, capability-gated** — painted into the chrome at TUI start, but **refused before your module is imported** unless `capabilities.ui_tui_trusted = true`. Forces eager loading. See [Capabilities](#capabilities--three-are-gates-six-are-documentation). |
 | `contributes.mcp_servers` | **Activated** — consumed by the MCP client at startup, and **capability-gated**: `transport = "stdio"` requires `capabilities.shell_exec = true` (the host spawns your `command`/`args` as a subprocess — the same flag `contributes.hooks` needs), while `transport = "http"`/`"sse"` requires `capabilities.net = true` (the host opens the connection to your `url`). A server whose flag is false is **not started**, and the host prints why. |
 | `contributes.commands` | **Metadata only** — supplies the *description* for a lazily-activated plugin's command stub in autocomplete. The command itself must still come from `register_command`. |
 | `contributes.tools` | **Declaration only** — it forces the plugin to load eagerly so its tools are visible to the model from startup, but it does not itself create a tool. Register the tool with `register_tool`. |
@@ -475,6 +475,47 @@ the wheel — it prints the setuptools/package-data cause), `MALFORMED`,
 unbindable. `aelix extension list` annotates the same verdict. Wire
 `aelix extension verify <name>` into your release CI so a build that drops the
 manifest fails there, not silently on a user's machine. See ADR-0207.
+
+### Developing with `pip install -e` — the manifest downgrade
+
+**An editable install loads your pack WITHOUT its manifest.** This is the one
+case where the development workflow does not match what your users get, and it
+bites exactly when you are iterating on declarative contributions.
+
+The entry-point tier only binds a manifest whose distribution lives inside the
+environment's real site directories. An editable install deliberately does not:
+the code stays in your working tree, so the provenance fence classifies it as
+unproven and refuses the manifest. Your `setup()` still runs and every
+*imperative* registration (`register_tool`, `register_command`, …) works
+normally — but every **declarative** contribution silently vanishes: declared
+tools, themes, TUI widgets, MCP servers, subprocess hooks.
+
+The escape hatch is an explicit, per-distribution vouch:
+
+```bash
+pip install -e .
+aelix --trust-extension-path my-dist-name          # PEP 503 DIST name, not the module
+aelix extension verify --trust-extension-path my-dist-name
+```
+
+`--trust-extension-path` takes the **distribution** name (what `pip list` shows,
+normalized per PEP 503) and is repeatable. It vouches for that one distribution
+for that one run; nothing is persisted, so a plain `aelix` goes back to
+refusing. Run `aelix extension verify` without the flag before you ship — that
+is the verdict your users will get.
+
+If you would rather not pass the flag every time, build and install a real wheel
+(`pip wheel . -w dist --no-deps && pip install --force-reinstall dist/*.whl`),
+which is also the only way to test the exact artifact you publish.
+
+### Newly installed MCP servers need a restart
+
+`contributes.mcp_servers` is read by a manifest scan that runs **once at
+startup**, before the first harness is built. Installing a pack into a running
+session — via `aelix extension install` or `/reload` — therefore does not start
+its MCP servers, and no error is printed because nothing failed. Restart the
+process and they come up. Tools, commands and themes from the same pack do not
+need this; MCP servers specifically do.
 
 ## Publishing
 

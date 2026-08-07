@@ -35,11 +35,15 @@ And it never phones home.
   Business, or Enterprise seat you already sign in with (usage subject to your GitHub
   agreement). Route cheap work and hard reasoning to different models from one session. No
   metered ACUs, no new vendor.
-- 🔏 **Signed supply chain.** Extensions are verified with Ed25519 provenance and SHA-256
-  pinning (`extension keygen | sign | trust`, fail-closed `--require-signature`), installable
-  from an offline catalog. Uncommon in agent tooling; native here.
-- 🔍 **Auditable & self-hosted.** Fully open source, no telemetry, air-gap-ready `--offline`
-  mode. Trust lives in code you can read — the answer to *"why run an agent I didn't write?"*
+- 🔏 **Publisher signing you can switch on.** A complete Ed25519 provenance toolchain with
+  SHA-256 pinning (`extension keygen | sign | trust`), and `extension install
+  --require-signature` is fail-closed — an unsigned or untrusted pack is refused outright.
+  It is **not** on by default: no first-party keys are provisioned yet, so without that flag
+  a missing signature is accepted on first use. See [SECURITY.md](SECURITY.md).
+- 🔍 **Auditable & self-hosted.** Fully open source, no telemetry. `--offline` skips the
+  first-use `rg`/`fd` download and the extension-catalog fetch (it does not route model
+  calls — those go to whichever provider you configured). Trust lives in code you can
+  read — the answer to *"why run an agent I didn't write?"*
 - 🧩 **Extensible to the core.** A small kernel where even policy, permissions, and guardrails
   are swappable built-in extensions, plus one broad `ExtensionAPI` — tools, slash commands,
   providers, message renderers, themes, and your own `/login` flow (SSO / employee-ID) — with
@@ -52,8 +56,9 @@ And it never phones home.
 
 During the beta, Aelix installs from GitHub Releases through a checksum-verified installer.
 It bootstraps [uv](https://docs.astral.sh/uv/) if needed, verifies every *Aelix* wheel
-against the release's `SHA256SUMS` manifest (any mismatch aborts — third-party
-dependencies resolve from PyPI as usual), and installs the global `aelix` command:
+against the release's `SHA256SUMS` manifest (any mismatch aborts), then installs the global
+`aelix` command pinned to the exact version that manifest named — so the wheels you end up
+with are the wheels that were verified. Third-party dependencies resolve from PyPI as usual:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/handochan/aelix-ai/main/install.sh | sh
@@ -62,16 +67,28 @@ curl -fsSL https://raw.githubusercontent.com/handochan/aelix-ai/main/install.sh 
 Pin a release with `AELIX_VERSION=v0.1.0-beta.1` (recommended during the beta) and pick
 extras with `AELIX_EXTRAS` — default `tui`; `tui,images` adds inline terminal image
 rendering; empty (`AELIX_EXTRAS=`) installs the headless CLI only (print / json / rpc).
-Once Aelix is published to PyPI, `uv tool install 'aelix[tui]'` — or the `pipx` / `pip`
-equivalent — will work as usual.
+
+**Upgrading / uninstalling.** Re-run the same `curl … | sh` line to upgrade: it resolves the
+newest release and re-runs the whole checksum-verified install (`uv tool install --force`
+makes that idempotent). To remove Aelix, `uv tool uninstall aelix`.
+
+> **Not on PyPI yet.** `aelix` and its sibling distributions are not published, so
+> `pip install aelix` / `pipx install aelix` / `uv tool install aelix` will 404 today. Once
+> the first GA release is published, `uv tool install 'aelix[tui]'` — or the `pipx` / `pip`
+> equivalent — will work as usual. Until then, use the installer above.
 
 ```bash
 aelix                                            # interactive agent (TUI)
 aelix --model openai/gpt-4o-mini "summarise this repo"
 aelix --print "what files changed?"              # one-shot, headless
-aelix --offline                                  # air-gap mode
+aelix --offline                                  # skip rg/fd + catalog fetches
 aelix --help
 ```
+
+On first use of `grep` or `find`, Aelix downloads `ripgrep` and `fd` from their upstream
+GitHub Releases into `~/.aelix/agent/bin` (so both tools honour `.gitignore`). These are the only
+binaries fetched at runtime, and `--offline` skips them — the system copies on your `PATH`
+are preferred when present.
 
 `aelix` needs a provider credential — set `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` /
 `OPENROUTER_API_KEY`, launch `aelix` and run `/login` inside the TUI (Copilot / subscription
@@ -99,10 +116,22 @@ preserved rather than flattened.
 | Anthropic (Messages)                                | ✅ supported    |
 | OpenAI (chat completions)                           | ✅ supported    |
 | OpenRouter                                          | ✅ supported    |
-| GitHub Copilot (individual / Business / Enterprise) | ✅ supported    |
+| GitHub Copilot (individual / Business)              | ✅ supported    |
+| GitHub Copilot (Enterprise)                         | 🧪 unverified   |
 | OpenAI Responses API                                | 🧪 experimental |
 | Google Gemini / Vertex                              | 🧪 experimental |
 | Cloudflare Workers AI                               | 🧪 experimental |
+
+Copilot Enterprise is marked unverified because live testing covered a paid individual seat
+and a Copilot Business seat only; the endpoint catalog Aelix ships is static, so it is not
+guaranteed to match every enterprise host or plan. It may well work — it just has not been
+confirmed by us.
+
+Three providers carried in the bundled model catalog have **no adapter in this build** and
+cannot run: `amazon-bedrock` (`bedrock-converse-stream`), `azure-openai-responses`, and
+`mistral` (`mistral-conversations`). Aelix hides them rather than letting them fail at turn
+one, so they do not appear in `--list-models` or the `/model` picker. See the
+[providers guide](docs/guides/providers-and-models.md).
 
 ## Extensions are just Python — call your data stack in-process
 
@@ -157,15 +186,17 @@ submissions.
 
 ## Trust & self-hosting
 
-Aelix is built for closed networks and customer-site deployment. `--offline` engages air-gap
-mode (no tool-binary downloads, no network extension installs), the extension catalog browses
-and installs without phoning home, trust uses local pins (no online revocation checks), and
-`register_login_provider` lets an extension add enterprise SSO / employee-ID auth. Policy and
-guardrails are enforced as built-in extensions, so every tool call and context mutation is an
-observable, auditable hook event.
+Aelix is built for closed networks and customer-site deployment. `--offline` blocks the
+outbound calls Aelix itself would make — the `rg`/`fd` tool-binary download, the catalog
+fetch, and index-less extension installs — though it does not touch the provider you
+configure, so a closed-network deployment still needs a reachable or self-hosted model
+endpoint. The extension catalog browses and installs from a local copy, trust uses local
+pins (no online revocation checks), and `register_login_provider` lets an extension add
+enterprise SSO / employee-ID auth. Policy and guardrails are enforced as built-in
+extensions, so every tool call and context mutation is an observable, auditable hook event.
 
 Distribute and verify extensions with a signed supply chain — trust that survives an
-air-gapped install:
+air-gapped install (enforced when you install with `--require-signature`):
 
 ```bash
 aelix extension install <path | git-url | package[==version]>   # pip-based, --offline capable

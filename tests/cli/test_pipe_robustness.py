@@ -17,6 +17,7 @@ Two defect classes, both reachable in production:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import subprocess
 import sys
@@ -194,6 +195,182 @@ async def test_read_piped_stdin_fake_stdin_without_fileno(
 
     monkeypatch.setattr(sys, "stdin", _FakePipedStdin())
     assert await _read_piped_stdin() is None
+
+
+# === argv prompt present → stdin is supplementary, not required ===============
+#
+# `aelix -p "hi"` that merely INHERITS an idle pipe (spawned with stdin=PIPE,
+# or under a CI harness) used to pay the full 30s deadline before discovering
+# the pipe had nothing to say. It is now time-boxed to a 1s grace window
+# rather than skipped: build_initial_message concatenates stdin + argv (pi
+# parity), so a real producer must still land.
+
+
+@posix_only
+async def test_argv_prompt_shortens_the_wait_on_a_silent_pipe(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """With a prompt already on argv, a silent inherited pipe must cost the
+    short grace window rather than the 30s "stdin IS the prompt" deadline —
+    and must SAY it gave up, because from here an idle pipe is
+    indistinguishable from a producer that was about to write."""
+    read_fd, write_fd = os.pipe()  # writer stays OPEN → no data, no EOF
+    stdin = os.fdopen(read_fd)
+    monkeypatch.setattr(sys, "stdin", stdin)
+    monkeypatch.delenv("AELIX_STDIN_TIMEOUT", raising=False)
+    try:
+        started = time.monotonic()
+        result = await asyncio.wait_for(
+            _read_piped_stdin(required=False), timeout=25
+        )
+        elapsed = time.monotonic() - started
+    finally:
+        os.close(write_fd)
+        stdin.close()
+    assert result is None
+    # The point of the change: bounded by the grace window, nowhere near the
+    # 30s deadline this same pipe still costs when stdin IS the prompt.
+    assert elapsed < 15
+    assert "AELIX_STDIN_TIMEOUT" in capsys.readouterr().err
+
+
+@posix_only
+async def test_argv_prompt_still_consumes_ready_stdin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`cat notes.txt | aelix -p "summarise this"` must NOT lose notes.txt.
+    Shortening the wait must not become "skip stdin when argv has a prompt":
+    build_initial_message concatenates the two
+    (``test_composition_stdin_plus_message``), so a ready payload has to be
+    read."""
+    read_fd, write_fd = os.pipe()
+    os.write(write_fd, b"  piped notes \n")
+    os.close(write_fd)  # EOF delivered
+    stdin = os.fdopen(read_fd)
+    monkeypatch.setattr(sys, "stdin", stdin)
+    monkeypatch.delenv("AELIX_STDIN_TIMEOUT", raising=False)
+    try:
+        result = await _read_piped_stdin(required=False)
+    finally:
+        stdin.close()
+    assert result == "piped notes"
+
+
+@posix_only
+async def test_slow_producer_with_argv_prompt_is_never_silently_dropped(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`curl <slow> | aelix -p "summarize"` / `ssh host cmd | aelix -p …`.
+
+    A producer whose first byte is seconds late must either still be READ, or
+    — if the grace window really did expire — leave a note on stderr. What is
+    forbidden is the third outcome: content silently gone, stderr empty, and
+    the model answering from the argv prompt alone as if nothing were missing.
+    """
+    read_fd, write_fd = os.pipe()
+    stdin = os.fdopen(read_fd)
+    monkeypatch.setattr(sys, "stdin", stdin)
+    monkeypatch.delenv("AELIX_STDIN_TIMEOUT", raising=False)
+
+    async def _slow_writer() -> None:
+        await asyncio.sleep(2.0)  # well past the OLD 1s window
+        with contextlib.suppress(OSError):
+            os.write(write_fd, b"  late payload \n")
+            os.close(write_fd)
+
+    writer = asyncio.create_task(_slow_writer())
+    try:
+        result = await asyncio.wait_for(
+            _read_piped_stdin(required=False), timeout=25
+        )
+    finally:
+        await writer
+        stdin.close()
+
+    err = capsys.readouterr().err
+    assert result == "late payload" or err, (
+        "stdin was dropped with no note on stderr — the one outcome this "
+        f"path must never produce (result={result!r}, stderr={err!r})"
+    )
+    # With the current grace window the payload survives outright.
+    assert result == "late payload"
+
+
+@posix_only
+async def test_explicit_timeout_still_wins_over_the_grace_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An operator who set AELIX_STDIN_TIMEOUT meant it. The grace window is
+    a DEFAULT, so an explicit value overrides it — here ``0`` (wait forever)
+    must reach the blocking read rather than the 1s window."""
+    read_fd, write_fd = os.pipe()
+    os.write(write_fd, b"payload")
+    os.close(write_fd)
+    stdin = os.fdopen(read_fd)
+    monkeypatch.setattr(sys, "stdin", stdin)
+    monkeypatch.setenv("AELIX_STDIN_TIMEOUT", "0")
+    try:
+        result = await _read_piped_stdin(required=False)
+    finally:
+        stdin.close()
+    assert result == "payload"
+
+
+@posix_only
+async def test_no_argv_prompt_keeps_the_full_deadline_and_warning(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The bare `some_producer | aelix` case is unchanged: stdin IS the
+    prompt, so the wait is worth taking and a timeout is worth warning
+    about."""
+    read_fd, write_fd = os.pipe()
+    stdin = os.fdopen(read_fd)
+    monkeypatch.setattr(sys, "stdin", stdin)
+    monkeypatch.setenv("AELIX_STDIN_TIMEOUT", "0.1")
+    try:
+        result = await asyncio.wait_for(_read_piped_stdin(), timeout=15)
+    finally:
+        os.close(write_fd)
+        stdin.close()
+    assert result is None
+    assert "AELIX_STDIN_TIMEOUT" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("argv", "expected_required"),
+    [
+        (["--print"], True),
+        (["--print", "hi"], False),
+        (["-p", "hi"], False),
+        (["--mode", "json", "hi"], False),
+    ],
+)
+async def test_entry_marks_stdin_required_only_without_an_argv_prompt(
+    monkeypatch: pytest.MonkeyPatch,
+    argv: list[str],
+    expected_required: bool,
+) -> None:
+    """Wiring guard for the ``_async_main`` call site: the ``required``
+    decision has to follow the argv prompt, or the behaviour above is
+    unreachable in production no matter how the helper itself behaves."""
+    from aelix_coding_agent.cli import entry as entry_mod
+
+    seen: dict[str, bool] = {}
+
+    class _Stop(Exception):
+        pass
+
+    async def _spy(*, required: bool = True) -> str | None:
+        seen["required"] = required
+        raise _Stop  # short-circuit: nothing past the stdin read is under test
+
+    monkeypatch.setattr(entry_mod, "_read_piped_stdin", _spy)
+    with pytest.raises(_Stop):
+        await entry_mod._async_main(argv)
+    assert seen["required"] is expected_required
 
 
 # === stdout EPIPE propagation (print/JSON modes) ==============================

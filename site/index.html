@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Aelix — your own agent world</title>
-<meta name="description" content="Aelix is an agent runtime and extension platform in pure Python — self-hosted, auditable, signed, air-gap ready.">
+<meta name="description" content="Aelix is an agent runtime and extension platform in pure Python — self-hosted, auditable, extensible in the language your team already writes.">
 <meta property="og:title" content="Aelix — your own agent world">
 <meta property="og:description" content="An agent runtime and extension platform in pure Python. Self-hosted, auditable, extensible in the language your team already writes.">
 <meta property="og:type" content="website">
@@ -177,11 +177,13 @@
       cheap work and hard reasoning to different models from one session.</p>
     </div>
     <div class="feat">
-      <h3>Signed, air-gap-ready trust</h3>
-      <p>Ed25519 provenance and SHA-256 pinning on extensions (<code>keygen | sign | trust</code>,
-      fail-closed <code>--require-signature</code>), an offline catalog, and an
-      <code>--offline</code> mode built for closed networks. Policy and guardrails are
-      auditable built-in extensions.</p>
+      <h3>Trust you can switch on</h3>
+      <p>A full Ed25519 provenance toolchain with SHA-256 pinning on extensions
+      (<code>keygen | sign | trust</code>), enforced fail-closed when you install with
+      <code>--require-signature</code> — off by default, since no first-party keys are
+      provisioned yet. Plus an offline catalog and an <code>--offline</code> mode that skips
+      the first-use <code>rg</code>/<code>fd</code> download and catalog fetches. Policy and
+      guardrails are auditable built-in extensions.</p>
     </div>
   </div>
 </section>
