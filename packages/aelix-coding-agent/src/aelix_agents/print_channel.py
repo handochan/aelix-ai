@@ -405,6 +405,7 @@ def build_child_argv(
     permission_mode: PermissionMode,
     child_cwd: str,
     parent_cwd: str,
+    parent_model: Any | None = None,
 ) -> list[str]:
     """The child's exact command line — §(l).
 
@@ -426,6 +427,12 @@ def build_child_argv(
     truth. ``--no-agents`` is belt-and-braces with :data:`DEPTH_ENV_VAR`: the
     env var stops the extension loading, the flag stops the settings gate
     turning it back on.
+
+    ``parent_model`` is the parent's LIVE ``ExtensionContext.model``, forwarded
+    only when the profile declares no model of its own (``resolver``'s emission
+    table owns that rule). Without it a parent launched with ``--model`` on argv
+    spawns a child with no model at all: the flag is run scope, the bundled
+    profiles declare none, and nothing in between persists it.
     """
 
     return [
@@ -433,7 +440,11 @@ def build_child_argv(
         "-m",
         "aelix_coding_agent",
         *profile_to_argv(
-            child_profile, prompt_path=prompt_path, oneshot=True, task=task
+            child_profile,
+            prompt_path=prompt_path,
+            oneshot=True,
+            task=task,
+            parent_model=parent_model,
         ),
         "--permission-mode",
         permission_mode.value,
@@ -755,6 +766,9 @@ class PrintChannel:
     :param grace: SIGTERM → SIGKILL window handed to :func:`~aelix_agents.reaper.reap`.
     :param model_registry: read LIVE (a callable) for the cost fallback, because
         the registry is rebound on ``/reload`` and a captured one goes stale.
+    :param parent_model: the parent's effective model, read LIVE for the same
+        reason and one more — ``/model`` rebinds it mid-session, and a child
+        spawned after that must inherit what the parent is using NOW.
     :param argv_builder: the seam that renders a plan into a command line.
         Defaults to :func:`build_child_argv`. Injectable so the subprocess
         tests can drive the real pump/reaper/envelope machinery against a
@@ -768,11 +782,13 @@ class PrintChannel:
         *,
         grace: float = DEFAULT_GRACE_SECONDS,
         model_registry: Callable[[], Any | None] | None = None,
+        parent_model: Callable[[], Any | None] | None = None,
         argv_builder: Callable[..., list[str]] | None = None,
         env_builder: Callable[..., dict[str, str]] | None = None,
     ) -> None:
         self._grace = grace
         self._model_registry = model_registry
+        self._parent_model = parent_model
         self._argv_builder = argv_builder or build_child_argv
         self._env_builder = env_builder or build_child_env
 
@@ -857,6 +873,9 @@ class PrintChannel:
                 permission_mode=plan.permission_mode,
                 child_cwd=plan.cwd,
                 parent_cwd=plan.parent_cwd,
+                parent_model=(
+                    self._parent_model() if self._parent_model else None
+                ),
             )
             env = self._env_builder(profile)
             try:

@@ -281,6 +281,15 @@ class SubagentHost:
     agent_dir: Callable[[], str | None] = lambda: None
     model_registry: Callable[[], Any | None] = lambda: None
     """Read live for the cost fallback — rebound on ``/reload``."""
+    model: Callable[[], Any | None] = lambda: None
+    """The parent's EFFECTIVE model (``ExtensionContext.model``), inherited by a
+    child whose profile declares none.
+
+    Live, like everything else here, and for a sharper reason than most:
+    ``/model`` rebinds it mid-session, so a captured value would send every
+    later delegation to whatever the parent started with. The default answers
+    ``None``, which inherits nothing and leaves the child to its own cascade —
+    the pre-fix behaviour, and the only safe thing to do with no evidence."""
     on_progress: Callable[[SubagentProgress], None] | None = None
     """Host-wide progress tap (the extension's event-bus + statusline bridge).
     Called in ADDITION to any per-spawn ``on_event``, never instead of it."""
@@ -324,7 +333,10 @@ class _SubagentRuntimeImpl:
         # and a captured one goes stale. An unwired host still answers ``None``,
         # which degrades to the previous behaviour rather than raising.
         if self.channel is None:
-            self.channel = PrintChannel(model_registry=self.host.model_registry)
+            self.channel = PrintChannel(
+                model_registry=self.host.model_registry,
+                parent_model=self.host.model,
+            )
 
     _children: dict[str, RunningChild] = field(default_factory=dict, init=False)
     _delegations_this_prompt: int = field(default=0, init=False)

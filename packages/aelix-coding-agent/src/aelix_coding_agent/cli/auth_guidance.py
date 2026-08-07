@@ -35,6 +35,11 @@ Pi's verbatim ``Then use /model to select a model.`` — ``/model`` is TUI-only,
 so a headless reader could not act on it. The tail now leads with the
 ``--model`` flag, which works from exactly where the message is printed, and
 mentions ``/model`` only as the interactive alternative.
+
+REACHABILITY HAS A SECOND READER: a delegated subagent, which is headless AND
+does not own its own command line. ``format_no_model_selected_message`` closes
+by telling that reader where a child's model actually comes from, because the
+two flag/slash remedies above are ones only its parent can apply.
 """
 
 from __future__ import annotations
@@ -87,13 +92,24 @@ def format_no_model_selected_message() -> str:
     end as the ``aelix auth`` string this batch removed from
     ``cli/list_models.py``. ``--model`` is a real flag on the very invocation
     that just failed, so it leads.
+
+    A DELEGATED SUBAGENT IS THE OTHER HEADLESS READER, and neither of the first
+    two remedies is one it can act on: its command line is built by its parent,
+    and it has no TUI to type into. The third sentence is for it, and both
+    halves of it are true — ``/model`` persists via
+    ``set_default_model_and_provider``, so it rescues a later child as a stored
+    default, and a profile declaring neither ``model:`` nor ``provider:``
+    inherits whatever the parent is using (``agents/resolver.py``).
     """
 
     return (
         "No model selected.\n\n"
         f"{get_provider_login_help()}\n\n"
-        "Then pass --model <id> on the command line "
-        "(or run 'aelix' and use /model inside the TUI)."
+        "Then pass --model <id> on the command line, or run 'aelix' and use "
+        "/model inside the TUI (which also persists the choice).\n\n"
+        "A delegated subagent takes its model from its profile's "
+        "model:/provider:, and inherits the parent's when the profile declares "
+        "neither — so give the PARENT a model, or name one in the profile."
     )
 
 
