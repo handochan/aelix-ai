@@ -56,8 +56,10 @@ __all__ = [
     "DEFAULT_CATALOG_ENV",
     "DEFAULT_CATALOG_FILENAME",
     "DEFAULT_CATALOG_URL",
+    "INDEX_ARTIFACT_SUFFIXES",
     "MAX_CATALOG_BYTES",
     "MAX_CATALOG_ENTRIES",
+    "MAX_METADATA_BYTES",
     "SCHEMA_VERSION",
     "SIDECAR_SUFFIX",
     "Catalog",
@@ -65,15 +67,19 @@ __all__ = [
     "CatalogError",
     "DocumentVerifier",
     "GitRunner",
+    "IndexedArtifact",
     "Opener",
+    "build_index_catalog",
     "cache_file_path",
     "fetch_catalog",
     "load_cached_catalog",
     "now_iso",
     "parse_catalog",
+    "read_artifact",
     "resolve_default_catalog_url",
     "resolve_entry",
     "save_catalogs",
+    "scan_artifacts",
     "search_entries",
 ]
 
@@ -837,3 +843,226 @@ def resolve_entry(
                 candidates.append(entry)
     resolved = candidates[0] if len(candidates) == 1 else None
     return resolved, candidates
+
+
+# =====================================================================
+# === Index (generate a catalog from a directory of artifacts) ========
+# =====================================================================
+#
+# Issue #68. Until now a private operator hand-wrote catalog.json and kept it in
+# sync with a directory of wheels by hand — which is the part of "run your own
+# catalog" that actually costs, and the part that silently rots (a rebuilt wheel
+# changes its sha256 and nothing tells you the catalog is now wrong).
+#
+# The emit side lives beside :func:`parse_catalog` on purpose: the two halves of
+# one format drift the moment they live apart. Everything here is pure — it reads
+# artifact bytes and returns a document; the CLI half owns writing it.
+
+
+#: Distribution archive suffixes we index. Wheels first (the normal case).
+INDEX_ARTIFACT_SUFFIXES = (".whl", ".tar.gz")
+#: Cap on a single METADATA/PKG-INFO member read — an archive is untrusted input
+#: and a decompression bomb must not OOM the indexer. Real metadata is ~1-10 KB.
+MAX_METADATA_BYTES = 512 * 1024
+
+
+@dataclass(frozen=True)
+class IndexedArtifact:
+    """One built distribution found by :func:`scan_artifacts`.
+
+    ``path`` is the artifact on disk; ``sha256`` is the hash of its bytes —
+    DISPLAY-ONLY once it reaches a catalog entry, exactly like every other
+    catalog ``sha256`` (ADR-0188). Generating it here does not make it a
+    trust anchor, and it must still never seed the #64 pin store.
+    """
+
+    path: Path
+    name: str
+    version: str | None
+    summary: str | None
+    homepage: str | None
+    sha256: str
+
+
+def _version_sort_key(version: str) -> tuple[object, ...]:
+    """Order versions by their numeric runs, so 1.10 sorts above 1.9.
+
+    Deliberately not ``packaging.version``: ``packaging`` is present in most
+    environments but is NOT a declared dependency of this package, and an
+    indexer that dies on an import is worse than one that orders an exotic
+    pre-release tag by string. Numeric runs compare as ints, the text between
+    them as text.
+    """
+
+    parts: tuple[object, ...] = ()
+    for chunk in re.findall(r"\d+|\D+", version):
+        parts += ((0, int(chunk)) if chunk.isdigit() else (1, chunk),)
+    return parts
+
+
+def _read_metadata_bytes(path: Path) -> bytes | None:
+    """Read a built distribution's core metadata without unpacking it.
+
+    Wheel → the ``*.dist-info/METADATA`` member; sdist → the top-level
+    ``*/PKG-INFO``. Members are read, never extracted, so no archive can write
+    outside the directory. Returns :data:`None` when the archive carries no
+    recognisable metadata (a stray zip in the wheel directory).
+    """
+
+    if path.name.endswith(".whl"):
+        import zipfile  # noqa: PLC0415 — only the index path pays this import
+
+        with zipfile.ZipFile(path) as zf:
+            names = [
+                n
+                for n in zf.namelist()
+                if n.endswith(".dist-info/METADATA") and n.count("/") == 1
+            ]
+            if not names:
+                return None
+            with zf.open(sorted(names)[0]) as fh:
+                return fh.read(MAX_METADATA_BYTES)
+
+    import tarfile  # noqa: PLC0415 — only the index path pays this import
+
+    with tarfile.open(path, "r:gz") as tf:
+        members = [
+            m
+            for m in tf.getmembers()
+            if m.isfile() and m.name.endswith("/PKG-INFO") and m.name.count("/") == 1
+        ]
+        if not members:
+            return None
+        fh = tf.extractfile(sorted(members, key=lambda m: m.name)[0])
+        if fh is None:
+            return None
+        with fh:
+            return fh.read(MAX_METADATA_BYTES)
+
+
+def read_artifact(path: Path) -> IndexedArtifact | None:
+    """Read one built distribution into an :class:`IndexedArtifact`.
+
+    Returns :data:`None` when the file carries no usable core metadata, so a
+    stray archive in the wheel directory is skipped rather than fatal — the same
+    lenience :func:`parse_catalog` applies to a malformed entry.
+    """
+
+    import hashlib  # noqa: PLC0415 — only the index path pays this import
+    from email.parser import BytesParser  # noqa: PLC0415
+
+    try:
+        raw = _read_metadata_bytes(path)
+    except Exception:  # noqa: BLE001 — a corrupt archive skips, never aborts the scan
+        return None
+    if not raw:
+        return None
+
+    meta = BytesParser().parsebytes(raw)
+    name = _clean_display(meta.get("Name"))
+    if not name:
+        return None
+
+    homepage = _clean_display(meta.get("Home-page"))
+    if not homepage:
+        # PEP 621 projects emit Project-URL instead of the legacy Home-page.
+        for value in meta.get_all("Project-URL") or ():
+            label, _, url = str(value).partition(",")
+            if label.strip().lower() in ("homepage", "home", "repository", "source"):
+                homepage = _clean_display(url)
+                break
+
+    digest = hashlib.sha256()
+    with path.open("rb") as fh:
+        for block in iter(lambda: fh.read(1024 * 1024), b""):
+            digest.update(block)
+
+    return IndexedArtifact(
+        path=path,
+        name=name,
+        version=_clean_display(meta.get("Version")),
+        summary=_clean_display(meta.get("Summary")),
+        homepage=homepage,
+        sha256=digest.hexdigest(),
+    )
+
+
+def scan_artifacts(directory: Path) -> list[IndexedArtifact]:
+    """Read every indexable built distribution directly inside ``directory``.
+
+    Not recursive: a wheel directory is flat, and recursing would silently sweep
+    in a neighbouring build tree. Unreadable / metadata-less files are skipped.
+    Sorted by (name, version) so the emitted document is deterministic.
+    """
+
+    found: list[IndexedArtifact] = []
+    for child in sorted(directory.iterdir()):
+        if not child.is_file() or not child.name.endswith(INDEX_ARTIFACT_SUFFIXES):
+            continue
+        artifact = read_artifact(child)
+        if artifact is not None:
+            found.append(artifact)
+    return sorted(
+        found, key=lambda a: (a.name.lower(), _version_sort_key(a.version or ""))
+    )
+
+
+def build_index_catalog(
+    artifacts: Iterable[IndexedArtifact],
+    *,
+    name: str | None = None,
+    relative_to: Path | None = None,
+    updated: str | None = None,
+) -> dict[str, object]:
+    """Build a catalog DOCUMENT (the ``parse_catalog`` shape) from artifacts.
+
+    One entry per distribution NAME, not per file. Several versions of a pack in
+    one directory would otherwise emit several same-named entries, and
+    :func:`resolve_entry` REFUSES an ambiguous name rather than picking one — so
+    a two-version directory would produce a catalog whose entries cannot be
+    installed by name. Instead the newest version becomes the entry (its path,
+    its ``sha256``) and every version found is listed in ``versions``, which is
+    what that field is for.
+
+    ``source`` is an ABSOLUTE artifact path by default, because
+    ``classify_target`` resolves a path against the PROCESS working directory,
+    not against the catalog's own location — a relative source silently becomes
+    a pypi lookup from anywhere else. ``relative_to`` opts into relative
+    filenames for a directory meant to be copied or mounted elsewhere; it is
+    then the operator's job to run installs from that directory.
+    """
+
+    by_name: dict[str, list[IndexedArtifact]] = {}
+    for artifact in artifacts:
+        by_name.setdefault(artifact.name, []).append(artifact)
+
+    entries: list[dict[str, object]] = []
+    for dist_name in sorted(by_name, key=str.lower):
+        versions = sorted(
+            by_name[dist_name],
+            key=lambda a: _version_sort_key(a.version or ""),
+            reverse=True,
+        )
+        newest = versions[0]
+        source = (
+            str(newest.path.relative_to(relative_to))
+            if relative_to is not None
+            else str(newest.path.resolve())
+        )
+        entry = CatalogEntry(
+            name=dist_name,
+            source=source,
+            description=newest.summary,
+            version=newest.version,
+            versions=tuple(a.version for a in versions if a.version),
+            sha256=newest.sha256,
+            homepage=newest.homepage,
+        )
+        entries.append(entry.to_json())
+
+    document: dict[str, object] = {"schemaVersion": SCHEMA_VERSION}
+    if name:
+        document["name"] = name
+    document["updated"] = updated or now_iso()
+    document["extensions"] = entries
+    return document

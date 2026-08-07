@@ -75,6 +75,7 @@ import asyncio
 import importlib
 import importlib.metadata
 import importlib.util
+import json
 import os
 import re
 import shlex
@@ -113,6 +114,8 @@ _USAGE = (
     "  source remove <path | git-url | index-url>\n"
     "  list\n"
     "  verify [<name>]                                [--trust-extension-path DIST]\n"
+    "  index <dir>                                    [--out FILE] [--name NAME] "
+    "[--relative]\n"
     "  discover [<query>]                             [--refresh] [--offline] "
     "[--no-default-catalog]\n"
     "  discover install <name>                        [--catalog CAT] [--yes] "
@@ -2330,6 +2333,110 @@ def _cmd_list() -> int:
     return 0
 
 
+def _cmd_index(args: list[str]) -> int:
+    """``extension index <dir> [--out FILE] [--name NAME] [--relative]`` (#68).
+
+    Generate a ``catalog.json`` from a directory of built distributions, so a
+    private or air-gapped operator stops hand-writing the document and keeping
+    its hashes in sync with the wheels by hand. Reads ``name`` / ``version`` /
+    ``description`` from each artifact's own core metadata and hashes its bytes.
+
+    Writes ``<dir>/catalog.json`` unless ``--out`` says otherwise; ``--out -``
+    prints to stdout so the document can be piped or reviewed before it lands.
+    Exit 0 on success (including an empty directory, which yields an empty but
+    valid catalog), ``_EXIT_DIDNT_RUN`` (2) on a usage or filesystem error.
+    """
+
+    directory: str | None = None
+    out: str | None = None
+    doc_name: str | None = None
+    relative = False
+    pending = iter(args)
+    for a in pending:
+        if a in ("-h", "--help"):
+            print(_USAGE)
+            return 0
+        if a in ("--out", "--name"):
+            val = next(pending, None)
+            if val is None:
+                print(f"Error: {a} requires a value.", file=sys.stderr)
+                return _EXIT_DIDNT_RUN
+            if a == "--out":
+                out = val
+            else:
+                doc_name = val
+        elif a.startswith("--out="):
+            out = a.split("=", 1)[1]
+        elif a.startswith("--name="):
+            doc_name = a.split("=", 1)[1]
+        elif a == "--relative":
+            relative = True
+        elif a.startswith("-"):
+            print(f"Error: unknown flag {a!r}.\n{_USAGE}", file=sys.stderr)
+            return _EXIT_DIDNT_RUN
+        elif directory is None:
+            directory = a
+        else:
+            print(f"Error: index takes one <dir>.\n{_USAGE}", file=sys.stderr)
+            return _EXIT_DIDNT_RUN
+
+    if directory is None:
+        print(f"Error: index requires a <dir>.\n{_USAGE}", file=sys.stderr)
+        return _EXIT_DIDNT_RUN
+
+    root = Path(directory).expanduser()
+    if not root.is_dir():
+        print(f"Error: {directory!r} is not a directory.", file=sys.stderr)
+        return _EXIT_DIDNT_RUN
+
+    try:
+        artifacts = extension_catalog.scan_artifacts(root)
+    except OSError as exc:
+        print(f"Error: cannot read {directory!r}: {exc}", file=sys.stderr)
+        return _EXIT_DIDNT_RUN
+
+    document = extension_catalog.build_index_catalog(
+        artifacts,
+        name=doc_name,
+        # A relative source resolves against the PROCESS working directory (see
+        # classify_target), not against the catalog — so relative is opt-in and
+        # the default is absolute.
+        relative_to=root.resolve() if relative else None,
+    )
+    payload = json.dumps(document, indent=2, sort_keys=False) + "\n"
+
+    if out == "-":
+        sys.stdout.write(payload)
+        return 0
+
+    target = (
+        Path(out).expanduser()
+        if out
+        else root / extension_catalog.DEFAULT_CATALOG_FILENAME
+    )
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(payload, encoding="utf-8")
+    except OSError as exc:
+        print(f"Error: cannot write {str(target)!r}: {exc}", file=sys.stderr)
+        return _EXIT_DIDNT_RUN
+
+    count = len(document.get("extensions", []))  # type: ignore[arg-type]
+    skipped = sum(
+        1
+        for c in root.iterdir()
+        if c.is_file() and c.name.endswith(extension_catalog.INDEX_ARTIFACT_SUFFIXES)
+    ) - len(artifacts)
+    noun = "extension" if count == 1 else "extensions"
+    print(f"Wrote {target} ({count} {noun} from {len(artifacts)} artifacts).")
+    if skipped > 0:
+        print(f"Skipped {skipped} archive(s) with no readable metadata.")
+    if count:
+        print("Register it with:")
+        print(f"  aelix extension source add --catalog file://{target.resolve()}")
+    return 0
+
+
 def _cmd_verify(args: list[str]) -> int:
     """``extension verify [<name>] [--trust-extension-path DIST]`` — the
     import-free BOUND gate (issue #91, ADR-0207).
@@ -3625,6 +3732,9 @@ async def run_extension_command_async(
         return _cmd_list()
     if sub == "verify":
         return _cmd_verify(rest)
+    # #68 — reads a directory and writes a document; no source list involved.
+    if sub == "index":
+        return _cmd_index(rest)
     if sub == "keygen":
         return _cmd_keygen(rest)
     if sub == "sign":
@@ -3658,7 +3768,8 @@ async def run_extension_command_async(
 
     print(
         f"Error: unknown extension subcommand {sub!r} "
-        "(install | source | list | verify | discover | update | remove | keygen | sign | trust).\n"
+        "(install | source | list | verify | index | discover | update | remove | "
+        "keygen | sign | trust).\n"
         f"{_USAGE}",
         file=sys.stderr,
     )
