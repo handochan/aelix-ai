@@ -776,7 +776,7 @@ def _finished(**kwargs: object) -> SubagentResult:
 def _card_line(result: SubagentResult) -> str:
     """The footer AS DRAWN — through product-core's real card renderer.
 
-    Asserting against the renderer rather than against ``USAGE_LINE_MAX_CHARS``
+    Asserting against the renderer rather than against ``USAGE_LINE_MAX_CELLS``
     is the point: the budget is only correct while it agrees with the number
     ``render.py`` actually applies, and a copy of a constant cannot notice when
     the original moves.
@@ -810,9 +810,9 @@ def test_a_wider_terminal_is_not_the_fix_and_is_not_needed() -> None:
     the fixed width, and this asserts it does rather than asserting it is short.
     """
 
-    from aelix_agents.tool import USAGE_LINE_MAX_CHARS, _usage_line
+    from aelix_agents.tool import USAGE_LINE_MAX_CELLS, _usage_line
 
-    assert len(_usage_line(_finished())) <= USAGE_LINE_MAX_CHARS
+    assert len(_usage_line(_finished())) <= USAGE_LINE_MAX_CELLS
     assert "…" not in _card_line(_finished())
 
 
@@ -865,7 +865,7 @@ def test_a_hostile_model_cannot_corrupt_the_result_card() -> None:
     POSIX permits a newline in one.
     """
 
-    from aelix_agents.tool import USAGE_LINE_MAX_CHARS, _usage_line
+    from aelix_agents.tool import USAGE_LINE_MAX_CELLS, _usage_line
 
     hostile = "gpt\n\x1b[31m FAKE\x9b2J\n" + "z" * 3000
     line = _usage_line(_finished(model=hostile))
@@ -876,7 +876,7 @@ def test_a_hostile_model_cannot_corrupt_the_result_card() -> None:
     assert "FAKE" in line, "flattening must not silently delete the visible text"
     # Bounded at the source, so a 3 000-character model does not even reach the
     # renderer's own truncation: it is one ordinary card row, drawn whole.
-    assert len(line) <= USAGE_LINE_MAX_CHARS
+    assert len(line) <= USAGE_LINE_MAX_CELLS
     assert _card_line(_finished(model=hostile)) == line
 
     # The PROFILE is the same hole from the other side. A profile long enough to
@@ -886,3 +886,83 @@ def test_a_hostile_model_cannot_corrupt_the_result_card() -> None:
     for value in (hostile, "scout\nrm -rf /"):
         assert "\n" not in _usage_line(_finished(profile=value))
         _card_line(_finished(profile=value))  # asserts hidden == 0
+
+
+# === M1: the renderer measures CELLS, so the budget must too ==================
+#
+# MEASURED REGRESSION, and it is THIS diff's to own. Moving the child-controlled
+# model term ahead of ``status`` and ``permission`` is only safe if the budget is
+# counted in the unit ``tui/render.py`` counts in. It was not: the drop loop used
+# ``len()`` and the renderer uses ``rich.cells.cell_len``, where a CJK or emoji
+# character is 2. 60 CJK characters flatten to 40 CHARACTERS — comfortably inside
+# a character-counted budget, so nothing was dropped — but 80 CELLS, so the
+# renderer cut INSIDE the model term and took the rest of the line with it:
+#
+#   [agent explorer · 型型型型型型型型型型型型型型型型型型型型型型型型型型型型 …
+#
+# ``result.model`` is read verbatim off the child's own ``message_end``
+# (``stream.py:561-563`` accepts ANY non-empty ``str``), so the child chooses that
+# string — which means a compromised child could hide its own ``error`` status and
+# the ``yolo`` posture it ran under, from its own result card.
+
+
+def test_a_wide_char_model_cannot_hide_the_status_or_the_posture() -> None:
+    """THE INVARIANT: no value the CHILD controls may push a head field off the card.
+
+    Asserted on the DRAWN line, through the real renderer, because the whole bug
+    was the gap between what this module measured and what the renderer measures.
+    """
+
+    from rich.cells import cell_len
+
+    drawn = _card_line(_finished(model="型" * 60, status="error", ok=False))
+
+    assert cell_len(drawn) <= 76
+    assert "…" in drawn, "a 60-character model must be visibly shortened somewhere"
+    # The two facts the child must never be able to suppress.
+    assert "error" in drawn
+    assert "yolo" in drawn
+    assert drawn.startswith("[agent explorer · 型")
+
+
+def test_an_emoji_model_is_budgeted_in_cells_too() -> None:
+    """Not a CJK special case — any wide grapheme counts 2. Emoji are the shape a
+    child is most likely to reach for, being legal in a ``str`` from any provider."""
+
+    from rich.cells import cell_len
+
+    drawn = _card_line(_finished(model="🔥" * 40, status="error", ok=False))
+
+    assert cell_len(drawn) <= 76
+    assert "error" in drawn
+    assert "yolo" in drawn
+
+
+def test_the_field_drops_are_decided_in_cells() -> None:
+    """The DROP machinery, not just the squeeze, must be exercised in cells.
+
+    Two models of the SAME CHARACTER LENGTH and different cell widths. A
+    character-counted budget cannot tell them apart and drops the same fields
+    from both — which is precisely the bug: the wide one then overflows the
+    renderer. Counted in cells, the wide term costs twice the room and STRICTLY
+    more fields go.
+    """
+
+    from aelix_agents.tool import _usage_line
+    from rich.cells import cell_len
+
+    wide_model, narrow_model = "型" * 20, "m" * 20
+    # The INPUTS are indistinguishable by len() and differ only in cells — which
+    # is the whole premise: a char-counted budget treats these two identically.
+    assert len(wide_model) == len(narrow_model)
+    assert cell_len(wide_model) == 2 * cell_len(narrow_model)
+
+    wide = _usage_line(_finished(model=wide_model))
+    narrow = _usage_line(_finished(model=narrow_model))
+
+    assert cell_len(wide) <= 76
+    assert cell_len(narrow) <= 76
+    assert wide.count(" · ") < narrow.count(" · ")
+    # Whole fields, never a mid-token slice, and the head survives intact.
+    assert "…" not in wide
+    assert wide == "[agent explorer · " + "型" * 20 + " · ok · yolo]"

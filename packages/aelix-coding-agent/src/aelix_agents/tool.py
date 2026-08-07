@@ -42,6 +42,7 @@ from typing import TYPE_CHECKING, Any
 from aelix_agent_core.types import AgentTool
 from aelix_ai.messages import TextContent
 from aelix_ai.tools import ToolResult
+from rich.cells import cell_len, set_cell_size
 
 from aelix_agents.chain import TaskTooLarge, check_task_size, uses_previous
 from aelix_agents.panel import _flatten
@@ -617,8 +618,17 @@ def format_partial(text: str) -> ToolResult:
     return ToolResult(content=[TextContent(text=text)])
 
 
-USAGE_LINE_MAX_CHARS = 76
-"""What one line of a tool card is, in characters — the number the RENDERER uses.
+USAGE_LINE_MAX_CELLS = 76
+"""What one line of a tool card is, in TERMINAL CELLS — the renderer's own unit.
+
+CELLS, NOT CHARACTERS, and the distinction is the whole of finding M1. A CJK
+ideograph or an emoji occupies two cells and one character, so the two counts
+diverge by a factor of two on exactly the input a hostile child would choose.
+This module measured characters while ``tui/render.py`` measured cells
+(``rich.cells.cell_len`` / ``set_cell_size``, ``render.py:139-142``): a 60-CJK
+model flattened to 40 characters — inside the budget, so nothing was dropped —
+and 80 cells, so the renderer cut INSIDE the model term and took the status and
+the posture with it. See :func:`_usage_line`.
 
 NOT a policy this module chose. ``tui/render.py``'s ``_truncate_lines`` caps
 every card line at ``max_line_width = 76`` cells and appends ``…``
@@ -639,19 +649,32 @@ truncated — visibly wrong, never wrong in the permissive direction — and
 ``test_the_result_card_shows_the_whole_model`` measures the two against each
 other through the real renderer rather than trusting this comment."""
 
-_USAGE_FIELD_MAX_CHARS = 40
-"""Bound on the two free-text terms — the profile name and the model.
+_USAGE_FIELD_MAX_CELLS = 40
+"""Bound on each free-text term — the profile name and the model — in CELLS.
 
 ``SubagentResult.model`` is read verbatim off the child's own ``message_end``
 (``stream.py:561-563`` → ``envelope.py:374``), which makes it attacker-supplied
 exactly like ``current_tool``; ``profile`` is a filename stem and is unbounded
 for a duller reason. 40 fits every real provider id (the longest in the shipped
-registry is 32) while denying either one the ability to spend the whole line —
-the fields this function protects are exactly the ones a 3 000-character model
-string would push off the end."""
+registry is 32) while denying either one the ability to spend the whole line."""
+
+_ELLIPSIS = "…"
+"""One cell, and the same marker ``panel._flatten`` and ``tui/render.py`` use, so
+a term shortened here is not visually distinguishable from one the renderer
+shortened."""
+
+_USAGE_FIELD_MIN_CELLS = 6
+"""How far a free-text term may be squeezed before the squeezing stops.
+
+Reached only after every optional field has already gone, so it is the last
+lever between a wide term and a head field falling off the card. Small enough
+that the head ALWAYS fits: ``"[agent " + 6 + " · " + 6 + " · " + 13 + " · " +
+17 + "]"`` is 58 cells against a budget of 76, taking the widest status
+(``did not start``) and the widest posture (``auto-accept-edits``). Big enough
+that what survives is still recognisable as a name rather than an ellipsis."""
 
 # Fields dropped, in this order, when the composed line will not fit
-# :data:`USAGE_LINE_MAX_CHARS`. LOWEST VALUE FIRST, and the survivors keep their
+# :data:`USAGE_LINE_MAX_CELLS`. LOWEST VALUE FIRST, and the survivors keep their
 # natural order — this is a drop list, not a render order.
 #
 # ``turns`` goes first: it is the least actionable number here and the card's
@@ -682,8 +705,24 @@ def _usage_line(result: SubagentResult, *, status: str | None = None) -> str:
     at 76 cells, identically at 120 and at 200 columns. It now follows the
     profile, which is where the live status row has always put it
     (``progress.format_status_row``) — so the two surfaces read the same way —
-    and the line composes itself against :data:`USAGE_LINE_MAX_CHARS` so the
+    and the line composes itself against :data:`USAGE_LINE_MAX_CELLS` so the
     fields that go are chosen (:data:`_USAGE_DROP_ORDER`) rather than sliced.
+
+    AND THE BUDGET IS COUNTED IN CELLS, which is what makes that ordering safe
+    (finding M1). The model is the CHILD's own bytes, and it now sits ahead of
+    the status and the posture — so if this function measured the line in a unit
+    the renderer does not use, the child could choose a string that fits the
+    budget on paper and overflows it on screen, pushing the two facts that
+    describe its own behaviour off the card. Measured, before the fix: a 60-CJK
+    ``model`` is 40 characters (nothing dropped) and 80 cells (renderer cuts
+    mid-term), and the drawn card lost both ``error`` and ``yolo``.
+
+    So when nothing optional is left to drop, the FREE-TEXT TERMS are squeezed
+    rather than the line being handed to the renderer to cut — the model first,
+    because it is the least trustworthy value on the row, and the profile after
+    it. :data:`_USAGE_FIELD_MIN_CELLS` is low enough that the head always fits,
+    which makes "no value on this row can hide the status or the posture" a
+    property rather than a hope.
 
     A RESULT THAT FITS IS UNCHANGED, byte for byte. Every no-model footer the
     suite pins — ``[agent scout · ok · plan · 0.0s]`` and its siblings — is well
@@ -692,24 +731,8 @@ def _usage_line(result: SubagentResult, *, status: str | None = None) -> str:
     """
 
     usage = result.usage
-    # Both of these are flattened, and only one of them is a new hole. ``model``
-    # is the child's own bytes; ``profile`` is a filename stem, which POSIX lets
-    # contain ``\n`` just as happily. This string is joined into the tool
-    # result's TEXT, which ``tui/render.py`` splits on newlines into card rows —
-    # so either one could previously add rows to the card and carry a raw ESC
-    # into them. ``_flatten`` is the same helper the panel gives every
-    # child-authored string.
-    head = [f"agent {_flatten(result.profile, limit=_USAGE_FIELD_MAX_CHARS)}"]
-    # GATED, and not stylistically. ``test_the_p2_argument_shape_is_unchanged``
-    # pins the single-mode footer byte-for-byte against a stub channel whose
-    # result carries no model; an ungated segment breaks it. Gated, it stays
-    # green and every REAL delegation gains the one fact that made a silent
-    # model substitution impossible to notice.
-    if result.model:
-        head.append(_flatten(result.model, limit=_USAGE_FIELD_MAX_CHARS))
-    head.append(status or result.status)
-    if result.permission_mode:
-        head.append(result.permission_mode)
+    profile = _usage_field(result.profile)
+    model = _usage_field(result.model)
 
     tail: list[tuple[str, str]] = []
     if usage.turns:
@@ -720,30 +743,84 @@ def _usage_line(result: SubagentResult, *, status: str | None = None) -> str:
         tail.append(("cost", f"${usage.cost:.4f}"))
     tail.append(("elapsed", f"{result.elapsed_ms / 1000:.1f}s"))
 
+    def compose(dropped: set[str]) -> str:
+        # The model term is GATED, and not stylistically.
+        # ``test_the_p2_argument_shape_is_unchanged`` pins the single-mode footer
+        # byte-for-byte against a stub channel whose result carries no model; an
+        # ungated segment breaks it. Gated, it stays green and every REAL
+        # delegation gains the one fact that made a silent model substitution
+        # impossible to notice.
+        head = [f"agent {profile}", *([model] if model else []), status or result.status]
+        if result.permission_mode:
+            head.append(result.permission_mode)
+        kept = [text for name, text in tail if name not in dropped]
+        return "[" + " · ".join([*head, *kept]) + "]"
+
     dropped: set[str] = set()
-    text = _compose_usage(head, tail, dropped)
+    text = compose(dropped)
     for name in _USAGE_DROP_ORDER:
-        if len(text) <= USAGE_LINE_MAX_CHARS:
+        if cell_len(text) <= USAGE_LINE_MAX_CELLS:
             return text
         dropped.add(name)
-        text = _compose_usage(head, tail, dropped)
-    # Every optional field is gone and the head alone is still over budget — a
-    # long profile name and a long model between them. The renderer's own ``…``
-    # is then the last word, which is the pre-existing behaviour and is bounded:
-    # both free-text terms are already capped at
-    # :data:`_USAGE_FIELD_MAX_CHARS`, so no child can reach this by being
-    # verbose on its own.
+        text = compose(dropped)
+
+    # Nothing optional is left. Squeeze the free-text terms — the MODEL first,
+    # because it is the one value here the child chose — instead of letting the
+    # renderer take the tail, which at this point IS the status and the posture.
+    if model:
+        model = _squeeze(model, _room_for(model, text))
+        text = compose(dropped)
+    if cell_len(text) > USAGE_LINE_MAX_CELLS:
+        profile = _squeeze(profile, _room_for(profile, text))
+        text = compose(dropped)
     return text
 
 
-def _compose_usage(
-    head: Sequence[str], tail: Sequence[tuple[str, str]], dropped: set[str]
-) -> str:
-    return (
-        "["
-        + " · ".join([*head, *(text for name, text in tail if name not in dropped)])
-        + "]"
+def _usage_field(value: object) -> str:
+    """One free-text term: de-fanged, whitespace-collapsed, bounded in CELLS.
+
+    ``model`` is the child's own bytes; ``profile`` is a filename stem, which
+    POSIX lets contain ``\\n`` just as happily. This string is joined into the
+    tool result's TEXT, which ``tui/render.py`` splits on newlines into card rows
+    — so either one could otherwise add rows to the card and carry a raw ESC into
+    them. ``_flatten`` is the same helper the panel gives every child-authored
+    string; its own bound is in characters, so the cell bound is applied after it.
+
+    ``isinstance`` rather than truthiness, matching ``consent._model_row``: the
+    channel is an injectable seam, and a raise out of ``render_subagent_result``
+    is exactly the shape ``test_a_poisoned_usage_line_does_not_orphan_the_child``
+    exists to prevent. A non-``str`` costs the row a term, never an exception.
+    """
+
+    if not isinstance(value, str):
+        return ""
+    return _squeeze(
+        _flatten(value, limit=_USAGE_FIELD_MAX_CELLS), _USAGE_FIELD_MAX_CELLS
     )
+
+
+def _squeeze(value: str, cells: int) -> str:
+    """``value`` in at most ``cells`` terminal cells, ellipsised if it was cut.
+
+    ``set_cell_size`` is the renderer's own primitive (``render.py:140``), so a
+    term this function shortens is shortened exactly as far as the renderer would
+    have measured it — no off-by-one between the budget and the draw.
+    """
+
+    if cell_len(value) <= cells:
+        return value
+    return set_cell_size(value, max(cells - 1, 0)) + _ELLIPSIS
+
+
+def _room_for(field: str, text: str) -> int:
+    """Cells ``field`` may keep for ``text`` to land inside the budget.
+
+    Floored at :data:`_USAGE_FIELD_MIN_CELLS`: past that the term stops being a
+    name, and the head is guaranteed to fit at the floor anyway.
+    """
+
+    overflow = cell_len(text) - USAGE_LINE_MAX_CELLS
+    return max(cell_len(field) - overflow, _USAGE_FIELD_MIN_CELLS)
 
 
 def render_subagent_result(result: SubagentResult) -> ToolResult:

@@ -367,10 +367,20 @@ def build_result(
         dropped_lines=state.dropped_lines,
         permission_mode=permission_mode,
         tool_trail=render_tool_trail(state),
-        # What the child ACTUALLY ran on. A profile with no ``model:`` emits no
-        # ``--model``, so the child takes the persisted default rather than the
-        # parent's run-scope model — a different model at a different price, and
-        # until now nothing anywhere named it.
+        # What the child ACTUALLY ran on, read off its own ``message_end``.
+        #
+        # CORRECTED: this comment used to say that a profile with no ``model:``
+        # takes the persisted default rather than the parent's run-scope model.
+        # That stopped being true when ``resolver.child_model_flags`` began
+        # inheriting ``parent_model_flags`` for a profile that declares NEITHER
+        # ``model`` nor ``provider`` — such a child is now launched with the
+        # parent's ``--model``. The persisted default is reached only when the
+        # parent has no resolved model of its own either.
+        #
+        # The field is still worth having and still reads off the child, because
+        # what we ASK for and what answers can differ: a provider substitution, a
+        # profile naming a model that resolves elsewhere, or an alias resolved at
+        # the far end. This is the only value that survives that.
         model=state.model,
         provider=state.provider,
     )

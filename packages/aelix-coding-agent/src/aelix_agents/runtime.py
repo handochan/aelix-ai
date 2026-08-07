@@ -518,9 +518,18 @@ class _SubagentRuntimeImpl:
             self.host.posture(),
             cwd=child_cwd,
             # Named on the dialog for the same reason the directory and the
-            # posture are: it is part of what is being approved. Read here, one
-            # frame before the human sees it, rather than inside ``_run`` — the
-            # answer and the launch must describe the same spawn.
+            # posture are: it is part of what is being approved.
+            #
+            # READ SEPARATELY FROM ``_run``'s, and that is a real (if remote)
+            # divergence rather than a guarantee. ``host.model`` is a LIVE getter
+            # and there is an await on a human between this read and the launch,
+            # so a ``/model`` in that window would leave the dialog naming one id
+            # and the child running another. Not reachable in the shipped TUI —
+            # the modal owns the input while it is open — and ``build_child_argv``
+            # re-reads the getter at launch anyway, so the CHILD is always
+            # correct and only the DISPLAY could go stale. Closing it properly
+            # means freezing the model into the grant, which is a change to what
+            # a grant means; that is a bigger decision than this fix.
             model=self._spawn_model(resolved),
         )
         if not grant.consented:
