@@ -14,6 +14,7 @@ import secrets
 import shutil
 import signal as _signal
 import subprocess
+import sys
 import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -55,8 +56,69 @@ _DEFAULT_TIMEOUT = 600.0  # 10 min — generous enough for most builds/installs/
 _MAX_TIMEOUT = 3600.0  # 1 hour hard cap on an explicit model-supplied value
 
 
-def _resolve_shell(env: dict[str, str], shell_path: str | None = None) -> str:
+# How each shell family takes a command STRING. POSIX shells use ``-c``;
+# ``cmd.exe`` accepts only ``/c``; PowerShell is spelled ``-Command`` in full
+# (``powershell.exe`` has other ``-C…`` parameters, so the abbreviation is not
+# reliably unambiguous across 5.1 and 7).
+_POSIX_COMMAND_FLAG = "-c"
+_CMD_COMMAND_FLAG = "/c"
+_POWERSHELL_COMMAND_FLAG = "-Command"
+
+_POWERSHELL_NAMES = frozenset({"pwsh", "powershell"})
+_CMD_NAMES = frozenset({"cmd", "command"})
+
+
+def shell_basename(shell: str) -> str:
+    """Lower-cased, extension-stripped basename of a shell path.
+
+    Splits on BOTH separators rather than deferring to :mod:`os.path`, because
+    the caller may be reasoning about a Windows path while running on POSIX
+    (the permission gate, and the tests that drive it) — ``posixpath.basename``
+    would hand back the whole ``C:\\…\\powershell.exe`` string.
+    """
+
+    name = shell.replace("\\", "/").rsplit("/", 1)[-1].lower()
+    return name[:-4] if name.endswith(".exe") else name
+
+
+def _command_flag_for(shell: str) -> str:
+    """The ``run this command string`` flag for ``shell``."""
+
+    name = shell_basename(shell)
+    if name in _POWERSHELL_NAMES:
+        return _POWERSHELL_COMMAND_FLAG
+    if name in _CMD_NAMES:
+        return _CMD_COMMAND_FLAG
+    return _POSIX_COMMAND_FLAG
+
+
+@dataclass(frozen=True)
+class ShellConfig:
+    """Pi parity ``getShellConfig()`` result: the shell AND how to invoke it.
+
+    The two are inseparable once Windows is in scope. The spawn site used to
+    hard-code ``-c``, which is correct for every POSIX shell and wrong for
+    ``cmd.exe`` (``/c``) and unreliable for PowerShell (``-Command``), so the
+    flag has to be resolved together with the path rather than assumed.
+    """
+
+    path: str
+    command_flag: str = _POSIX_COMMAND_FLAG
+
+
+def _resolve_shell(
+    env: dict[str, str],
+    shell_path: str | None = None,
+    *,
+    platform: str | None = None,
+) -> ShellConfig:
     """Pi parity ``getShellConfig()`` resolution chain (``utils/shell.ts``).
+
+    ``platform`` defaults to :data:`sys.platform` and exists so tests can drive
+    the win32 arm from a POSIX box. It is injected rather than monkeypatched
+    because ``shutil.which`` *itself* branches on ``sys.platform`` and then
+    calls ``_winapi``, which is ``None`` off Windows — patching the global would
+    crash the very PATH probe under test.
 
     Resolution order:
 
@@ -66,21 +128,54 @@ def _resolve_shell(env: dict[str, str], shell_path: str | None = None) -> str:
     2. ``$SHELL`` (Aelix-additive — documented ``$SHELL``-first divergence so
        user-configured shells win when the env exports one).
     3. ``/bin/bash`` → ``bash`` on ``PATH`` → ``/bin/sh`` (Pi's Unix chain).
+
+    On Windows (#104) none of steps 2-3 can succeed: ``$SHELL`` is normally
+    unset, ``/bin/bash`` does not exist, and the ``/bin/sh`` floor is not a
+    program — so every bash call fell through to a guaranteed spawn failure.
+    The win32 arm resolves the platform's real shells instead. It is EXPERIMENTAL
+    (see ``SLICE-STATUS.md``): unlike the POSIX chain it has no live coverage.
     """
 
     if shell_path:
         if Path(shell_path).exists():
-            return shell_path
+            return ShellConfig(shell_path, _command_flag_for(shell_path))
         raise ValueError(f"Custom shell path not found: {shell_path}")
+    if (platform if platform is not None else sys.platform) == "win32":
+        return _resolve_shell_win32(env)
     shell = env.get("SHELL")
     if shell:
-        return shell
+        return ShellConfig(shell, _command_flag_for(shell))
     if Path("/bin/bash").exists():
-        return "/bin/bash"
+        return ShellConfig("/bin/bash")
     bash_on_path = shutil.which("bash")
     if bash_on_path:
-        return bash_on_path
-    return "/bin/sh"
+        return ShellConfig(bash_on_path)
+    return ShellConfig("/bin/sh")
+
+
+def _resolve_shell_win32(env: dict[str, str]) -> ShellConfig:
+    """Windows shell chain (#104): ``$SHELL`` → PowerShell → ``%COMSPEC%``.
+
+    ``$SHELL`` is honoured ONLY when it names a file that exists, because the
+    common way it is set on Windows is Git-Bash exporting the MSYS path
+    ``/usr/bin/bash`` — a path :class:`subprocess.Popen` cannot spawn. A user
+    who exports a real ``bash.exe`` keeps bash (and with it the AUTO-mode
+    classifier); everyone else gets PowerShell, which is the native shell but
+    which the bash classifier cannot read — see
+    :func:`~aelix_coding_agent.builtin.bash_classifier.is_classifiable_shell`.
+    """
+
+    shell = env.get("SHELL")
+    if shell and Path(shell).exists():
+        return ShellConfig(shell, _command_flag_for(shell))
+    for exe in ("pwsh", "powershell"):
+        found = shutil.which(exe, path=env.get("PATH"))
+        if found:
+            return ShellConfig(found, _POWERSHELL_COMMAND_FLAG)
+    comspec = env.get("COMSPEC")
+    if comspec:
+        return ShellConfig(comspec, _command_flag_for(comspec))
+    return ShellConfig("cmd.exe", _CMD_COMMAND_FLAG)
 
 
 @dataclass(frozen=True)
@@ -155,7 +250,7 @@ class _LocalBashOperations:
         shell = _resolve_shell(env_dict, self._shell_path)
         try:
             proc = subprocess.Popen(  # noqa: S603
-                [shell, "-c", command],
+                [shell.path, shell.command_flag, command],
                 cwd=cwd,
                 env=env_dict,
                 stdout=subprocess.PIPE,

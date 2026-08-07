@@ -522,19 +522,40 @@ class PermissionExtension:
 
         Imported lazily so a missing tree-sitter grammar degrades to ASK without
         breaking import of this module on an exotic no-wheel platform.
+
+        #104 — the verdict is only honoured for a shell the grammar actually
+        describes. The tool runs the command through
+        :func:`~aelix_coding_agent.tools.bash._resolve_shell`, which on Windows
+        resolves PowerShell or ``cmd``; the bash grammar reads those command
+        lines as harmless words and returns ALLOW, so an unqualified verdict
+        would auto-run ``Remove-Item -Recurse -Force`` without a prompt. When
+        the resolved shell is outside the grammar's competence the ALLOW is
+        downgraded to ASK. DENY is deliberately still honoured — a bash-shaped
+        destructive command is worth blocking whatever the shell.
         """
 
         try:
-            from aelix_coding_agent.builtin.bash_classifier import Verdict, classify
+            from aelix_coding_agent.builtin.bash_classifier import (
+                Verdict,
+                classify,
+                is_classifiable_shell,
+            )
+            from aelix_coding_agent.tools.bash import _resolve_shell
+            from aelix_coding_agent.util.shell_env import get_shell_env
 
             command = _command_from_args(args)
             verdict = classify(command)
+            # No ``shell_path``: every in-tree construction of the bash
+            # operations uses the default chain (``cli/repl.py``,
+            # ``rpc/rpc_mode.py``), so this resolves the same shell the tool
+            # will spawn.
+            shell = _resolve_shell(get_shell_env())
         except Exception:  # noqa: BLE001 — any classifier failure → ASK (safe)
             return "ask"
-        if verdict == Verdict.ALLOW:
-            return "allow"
         if verdict == Verdict.DENY:
             return "deny"
+        if verdict == Verdict.ALLOW and is_classifiable_shell(shell.path):
+            return "allow"
         return "ask"
 
     async def _prompt(

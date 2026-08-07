@@ -404,7 +404,11 @@ async def test_yolo_allows_mutating_no_prompt() -> None:
 # --- AUTO: bash routed through the classifier ---
 
 
-async def test_auto_classifier_allow_ask_deny() -> None:
+async def test_auto_classifier_allow_ask_deny(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Pin $SHELL: since #104 the ALLOW arm is only honoured for a shell the
+    # bash grammar describes, so a developer running under fish or PowerShell
+    # would otherwise see this test's first assertion flip to a prompt.
+    monkeypatch.setenv("SHELL", "/bin/bash")
     perm = PermissionExtension(posture=_posture(PermissionMode.AUTO))
     ui = _FakeUI(select_return="No")  # the ASK path would block
     ctx = _FakeCtx(has_ui=True, ui=ui)
