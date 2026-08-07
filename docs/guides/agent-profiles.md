@@ -54,6 +54,14 @@ reported as a warning naming both files:
 | `user` | `$AELIX_CODING_AGENT_DIR/agents/`, default `~/.aelix/agent/agents/` | Yours. |
 | `project` | `<cwd>/.aelix/agents/` | **Only when the directory is trusted** (`--approve`, or the trust dialog). |
 
+Aelix ships two bundled starters: **`explorer`**, a read-only investigator
+(`read`/`grep`/`glob`/`list` only — it cannot edit or run anything), and
+**`general-purpose`**, a full-toolset worker that reads, edits, and runs commands
+to take on a task whole. Both are `leaf` profiles (they do not delegate further)
+and both inherit your approval policy, so a delegated child's edits and commands
+go through the same consent you are under. Delegation is off by default; enable
+it as described above.
+
 Writing `~/.aelix/agent/agents/explorer.md` replaces the bundled `explorer`
 outright — the bundled tier is a starting point, not something you have to work
 around.

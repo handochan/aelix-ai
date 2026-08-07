@@ -419,6 +419,37 @@ def test_a_profile_actually_ships_in_the_wheel() -> None:
         assert result.profile.description, f"{path} must describe itself"
 
 
+def test_bundled_general_purpose_is_a_full_worker_that_inherits_consent() -> None:
+    """The ``general-purpose`` starter is the write-capable delegation default.
+
+    Its shape is a deliberate product + security decision (owner, 2026-08-07):
+    a full-toolset worker, but bounded so it cannot escalate the trust surface —
+    * ``tools`` unset → the full default tool set (a real worker that can edit
+      and run commands), NOT an allowlist;
+    * ``role: leaf`` → it cannot itself delegate, so a default profile can never
+      open an unbounded delegation chain;
+    * ``approval_mode`` inherits → every edit and command it runs goes through
+      the SAME consent the parent is under. It must never be ``auto`` — that
+      would hand a child silent write/exec on a default install.
+    Pin all three so a later edit that restricts tools, lets it orchestrate, or
+    auto-approves it is caught here.
+    """
+
+    result = load_profile_file(
+        str(_REAL_BUNDLED_DIR / "general-purpose.md"), cwd=_REAL_BUNDLED_DIR
+    )
+    assert not [d for d in result.diagnostics if d.type == "error"]
+    profile = result.profile
+    assert profile is not None
+    assert profile.name == "general-purpose"
+    assert profile.description
+    assert profile.role == "leaf"
+    assert profile.tools is None, "unset tools = full toolset; an allowlist would narrow it"
+    assert profile.approval_mode in (None, "inherit"), (
+        "a default write/exec worker must inherit consent, never auto-approve"
+    )
+
+
 def test_bundled_tier_is_discovered_on_a_default_install(
     dirs: tuple[Path, Path], _empty_bundled_tier: Path
 ) -> None:

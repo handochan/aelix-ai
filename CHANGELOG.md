@@ -20,6 +20,15 @@ and `.../releases/tag/vX` link would 404. Add them with the first pushed tag.
 
 ### Added
 
+- **A bundled `general-purpose` agent profile.** Alongside the read-only
+  `explorer`, a default install now ships a full-toolset worker that can read,
+  edit, and run commands to take on a delegated task whole — so basic
+  multi-agent delegation works out of the box for real work, not only for
+  read-only investigation. It is a `leaf` profile (it does not delegate further)
+  and inherits your approval policy (its edits and commands go through the same
+  consent you are under). Delegation stays off by default (`--agents` /
+  `features.agents`); user and project profiles still shadow it by name.
+
 - **An installed extension's `aelix-plugin.toml` is now read** (#91, ADR-0204).
   A package that declares an `aelix.extensions` entry point — what
   `aelix extension install <pkg>` gives you, and how the marketplace ships
