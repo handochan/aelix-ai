@@ -59,6 +59,7 @@ async def _ctx(
     footer: AelixFooterData,
     *,
     model_provider=None,
+    thinking_provider=None,
     cwd=None,
     mode: str = "all",
     permission_badge_provider=None,
@@ -73,6 +74,7 @@ async def _ctx(
             chrome,
             footer,
             model_provider=model_provider,
+            thinking_provider=thinking_provider,
             mode_provider=lambda: mode,
             permission_badge_provider=permission_badge_provider,
             cwd=cwd,
@@ -190,6 +192,70 @@ async def test_optional_token_cost_segments_render_when_enabled() -> None:
         assert "↑ 1,234" in line
         assert "↓ 56" in line
         assert "$ 0.0099" in line
+
+
+# === thinking-level segment (beta) =====================================
+
+
+async def test_thinking_level_producer_omits_without_provider() -> None:
+    # No provider wired (headless/tests) → the producer omits the segment
+    # (returns None), consistent with the other opt-in producers.
+    footer = _FixedBranchFooter("main")
+    async with _ctx(footer) as (ctx, _chrome):
+        reg = {s.id: s for s in build_footer_registry(ctx)}
+        assert reg["thinking-level"].produce() is None
+
+
+async def test_thinking_level_producer_returns_live_value() -> None:
+    footer = _FixedBranchFooter("main")
+    async with _ctx(footer, thinking_provider=lambda: "high") as (ctx, _chrome):
+        reg = {s.id: s for s in build_footer_registry(ctx)}
+        assert reg["thinking-level"].produce() == "🧠 high"
+
+
+async def test_thinking_level_off_by_default_in_footer() -> None:
+    # Default-OFF: even with a provider wired, no store → not rendered.
+    footer = _FixedBranchFooter("main")
+    async with _ctx(
+        footer, model_provider=lambda: "gpt-4o", thinking_provider=lambda: "high"
+    ) as (_ctx_obj, chrome):
+        assert "🧠" not in chrome._footer_line
+
+
+async def test_thinking_level_renders_when_enabled() -> None:
+    footer = _FixedBranchFooter("main")
+    store = _FakeStore(["model", "thinking-level"])
+    async with _ctx(
+        footer,
+        model_provider=lambda: "gpt-4o",
+        thinking_provider=lambda: "high",
+        statusline_store=store,
+    ) as (_ctx_obj, chrome):
+        assert "🧠 high" in chrome._footer_line
+
+
+async def test_thinking_level_shows_off_not_none() -> None:
+    # DELIBERATE deviation from cost/tokens: the segment SHOWS "🧠 off" (never
+    # returns None) so a user who opted IN to monitor reasoning effort still sees
+    # it when reasoning is off. The sharp edge the ``or 'off'`` guard exists for
+    # is a provider that returns None or "" (a partial / headless harness with no
+    # resolved level) — those must STILL render "🧠 off", never "🧠 None" and
+    # never a bare "🧠 " with no level. Feeding a truthy "off" would pass with OR
+    # WITHOUT the guard, so this exercises the falsy inputs the guard actually
+    # handles.
+    footer = _FixedBranchFooter("main")
+    store = _FakeStore(["thinking-level"])
+    for provider in (lambda: None, lambda: ""):
+        async with _ctx(
+            footer, thinking_provider=provider, statusline_store=store
+        ) as (ctx, chrome):
+            reg = {s.id: s for s in build_footer_registry(ctx)}
+            assert reg["thinking-level"].produce() == "🧠 off"
+            line = chrome._footer_line
+            assert "🧠 off" in line
+            assert "🧠 None" not in line
+            # No bare glyph with an empty level ("🧠 " followed by nothing).
+            assert not line.rstrip().endswith("🧠")
 
 
 # === ADR-0159 invariants survive an adversarial enabled-set =============
