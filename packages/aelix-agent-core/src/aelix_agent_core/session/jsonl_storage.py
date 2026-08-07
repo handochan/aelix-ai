@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -33,6 +34,41 @@ from aelix_agent_core.session.storage import (
     SessionError,
     SessionStorage,
 )
+
+_LOG = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class SessionRecovery:
+    """What was dropped to make a damaged session file loadable.
+
+    Emitted by :func:`_load_jsonl_storage` when a session JSONL contains
+    lines it could not parse — most often a single crash-truncated final
+    line, because the process died mid-append. ``None`` (not an empty
+    instance) is returned for clean files, so ``if recovery is not None``
+    is the "this file was damaged" test.
+    """
+
+    file_path: str
+    skipped_lines: tuple[int, ...]
+    orphaned_entries: tuple[str, ...]
+    #: The file does not end in a newline, i.e. the last write was cut
+    #: off mid-line. The next append has to open a fresh line or it
+    #: would be glued onto the fragment and lost with it.
+    unterminated_tail: bool = False
+
+    def describe(self) -> str:
+        lines = ", ".join(str(n) for n in self.skipped_lines)
+        msg = (
+            f"Recovered damaged session file {self.file_path}: skipped "
+            f"{len(self.skipped_lines)} unparseable line(s) [{lines}]"
+        )
+        if self.orphaned_entries:
+            msg += (
+                f" and dropped {len(self.orphaned_entries)} entry/entries "
+                f"orphaned by the gap"
+            )
+        return msg
 
 
 def _iso_now() -> str:
@@ -250,8 +286,35 @@ async def load_jsonl_session_metadata(
 
 async def _load_jsonl_storage(
     fs: FileSystem, file_path: str
-) -> tuple[_SessionHeader, list[SessionTreeEntry], str | None]:
-    """Pi ``loadJsonlStorage`` (``jsonl-storage.ts:136-159``)."""
+) -> tuple[_SessionHeader, list[SessionTreeEntry], str | None, SessionRecovery | None]:
+    """Pi ``loadJsonlStorage`` (``jsonl-storage.ts:136-159``).
+
+    Aelix-additive divergence (Track S1): entry lines that fail to parse
+    are **skipped**, not fatal. Pi (and Aelix before this change) raised
+    on the first bad line, which bricked the file permanently — a crash
+    mid-append truncates the LAST line, and since ``find_most_recent``
+    only validates the HEADER it re-selected the same dead file on every
+    subsequent ``--continue``, with no way out but deleting it by hand.
+
+    The header check stays strict: a file whose first line is not a v3
+    session header is genuinely "not a session file" and still raises
+    ``invalid_session``. Only the entry body is recovered.
+
+    Skipping an INTERIOR line can orphan later entries whose ``parentId``
+    referred to the dropped one; those would blow up in
+    :meth:`JsonlSessionStorage.get_path_to_root`. So when anything was
+    skipped, entries with an unresolvable parent are pruned too
+    (transitively), and the leaf pointer is rewound to the newest
+    surviving entry. Clean files take none of this: they short-circuit
+    to the original behaviour with ``recovery=None``.
+
+    Recovery is non-destructive — the damaged bytes stay on disk and are
+    re-skipped on every load. TODO (Track S, follow-up): an explicit
+    ``aelix session repair <file>`` that rewrites the file without them.
+    It is deferred because the CLI has no subcommand group yet, so it is
+    a new surface rather than a fix; recover-on-load is what actually
+    unbricks ``--continue``, and it lands here.
+    """
 
     try:
         content = await fs.read_text_file(file_path)
@@ -270,11 +333,49 @@ async def _load_jsonl_storage(
     header = _parse_header_line(lines[0], file_path)
     entries: list[SessionTreeEntry] = []
     leaf_id: str | None = None
+    skipped: list[int] = []
     for i in range(1, len(lines)):
-        entry = _parse_entry_line(lines[i], file_path, i + 1)
+        try:
+            entry = _parse_entry_line(lines[i], file_path, i + 1)
+        except SessionError:
+            skipped.append(i + 1)
+            continue
         entries.append(entry)
         leaf_id = _leaf_id_after_entry(entry)
-    return header, entries, leaf_id
+    if not skipped:
+        return header, entries, leaf_id, None
+
+    # A gap was bridged — re-check that the surviving forest is still
+    # internally consistent before handing it to the caller.
+    kept: list[SessionTreeEntry] = []
+    known: set[str] = set()
+    orphaned: list[str] = []
+    for entry in entries:
+        if entry.parent_id is not None and entry.parent_id not in known:
+            orphaned.append(entry.id)
+            continue
+        kept.append(entry)
+        known.add(entry.id)
+
+    # Rewind the leaf to the newest entry whose target still resolves; a
+    # `leaf` entry pointing at a pruned target would fail `get_leaf_id`.
+    leaf_id = None
+    for entry in reversed(kept):
+        candidate = _leaf_id_after_entry(entry)
+        if candidate is None or candidate in known:
+            leaf_id = candidate
+            break
+
+    recovery = SessionRecovery(
+        file_path=file_path,
+        skipped_lines=tuple(skipped),
+        orphaned_entries=tuple(orphaned),
+        unterminated_tail=not content.endswith("\n"),
+    )
+    # No logging is configured by the CLI, so `logging.lastResort` puts
+    # this on stderr where the user actually sees it.
+    _LOG.warning("%s", recovery.describe())
+    return header, kept, leaf_id, recovery
 
 
 class JsonlSessionStorage(SessionStorage[JsonlSessionMetadata]):
@@ -292,9 +393,13 @@ class JsonlSessionStorage(SessionStorage[JsonlSessionMetadata]):
         header: _SessionHeader,
         entries: list[SessionTreeEntry],
         leaf_id: str | None,
+        recovery: SessionRecovery | None = None,
     ) -> None:
         self._fs = fs
         self._file_path = file_path
+        #: Set when this file had to be repaired on load (Track S1);
+        #: ``None`` for a clean file.
+        self.recovery = recovery
         self._metadata = _header_to_metadata(header, file_path)
         self._entries: list[SessionTreeEntry] = list(entries)
         self._by_id: dict[str, SessionTreeEntry] = {
@@ -305,13 +410,35 @@ class JsonlSessionStorage(SessionStorage[JsonlSessionMetadata]):
             _update_label_cache(self._labels_by_id, entry)
         self._current_leaf_id: str | None = leaf_id
         self._lock = asyncio.Lock()
+        # A crash-truncated file ends mid-line; appending straight onto it
+        # would fuse the new entry to the fragment and lose BOTH on the
+        # next load. Cleared once the healing newline has been written.
+        self._needs_newline = recovery is not None and recovery.unterminated_tail
+
+    async def _append_line(self, payload: dict[str, Any], what: str) -> None:
+        """Append one JSON line, healing an unterminated tail first."""
+
+        line = json.dumps(payload) + "\n"
+        if self._needs_newline:
+            line = "\n" + line
+        try:
+            await self._fs.append_file(self._file_path, line)
+        except OSError as exc:
+            raise SessionError(
+                "storage",
+                f"Failed to append session {what}: {exc}",
+                cause=exc,
+            ) from exc
+        self._needs_newline = False
 
     @classmethod
     async def open(
         cls, fs: FileSystem, file_path: str
     ) -> JsonlSessionStorage:
-        header, entries, leaf_id = await _load_jsonl_storage(fs, file_path)
-        return cls(fs, file_path, header, entries, leaf_id)
+        header, entries, leaf_id, recovery = await _load_jsonl_storage(
+            fs, file_path
+        )
+        return cls(fs, file_path, header, entries, leaf_id, recovery)
 
     @classmethod
     async def create(
@@ -369,16 +496,7 @@ class JsonlSessionStorage(SessionStorage[JsonlSessionMetadata]):
             target_id=leaf_id,
         )
         async with self._lock:
-            try:
-                await self._fs.append_file(
-                    self._file_path, json.dumps(entry_to_json(entry)) + "\n"
-                )
-            except OSError as exc:
-                raise SessionError(
-                    "storage",
-                    f"Failed to append session leaf {entry.id}: {exc}",
-                    cause=exc,
-                ) from exc
+            await self._append_line(entry_to_json(entry), f"leaf {entry.id}")
             self._entries.append(entry)
             self._by_id[entry.id] = entry
             self._current_leaf_id = leaf_id
@@ -388,16 +506,7 @@ class JsonlSessionStorage(SessionStorage[JsonlSessionMetadata]):
 
     async def append_entry(self, entry: SessionTreeEntry) -> None:
         async with self._lock:
-            try:
-                await self._fs.append_file(
-                    self._file_path, json.dumps(entry_to_json(entry)) + "\n"
-                )
-            except OSError as exc:
-                raise SessionError(
-                    "storage",
-                    f"Failed to append session entry {entry.id}: {exc}",
-                    cause=exc,
-                ) from exc
+            await self._append_line(entry_to_json(entry), f"entry {entry.id}")
             self._entries.append(entry)
             self._by_id[entry.id] = entry
             _update_label_cache(self._labels_by_id, entry)
@@ -438,4 +547,8 @@ class JsonlSessionStorage(SessionStorage[JsonlSessionMetadata]):
         return list(self._entries)
 
 
-__all__ = ["JsonlSessionStorage", "load_jsonl_session_metadata"]
+__all__ = [
+    "JsonlSessionStorage",
+    "SessionRecovery",
+    "load_jsonl_session_metadata",
+]

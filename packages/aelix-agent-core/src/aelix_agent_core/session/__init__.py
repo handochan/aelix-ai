@@ -62,6 +62,7 @@ from aelix_agent_core.session.jsonl_repo import (
 )
 from aelix_agent_core.session.jsonl_storage import (
     JsonlSessionStorage,
+    SessionRecovery,
     load_jsonl_session_metadata,
 )
 from aelix_agent_core.session.memory_storage import MemorySessionStorage
@@ -114,6 +115,7 @@ __all__ = [
     "SessionErrorCode",
     "SessionInfoEntry",
     "SessionMetadata",
+    "SessionRecovery",
     "SessionStorage",
     "SessionTreeEntry",
     "SummarizerOverride",
