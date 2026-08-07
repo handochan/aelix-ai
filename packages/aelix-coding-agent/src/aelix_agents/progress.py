@@ -74,6 +74,7 @@ from aelix_coding_agent.subagent_contract import (
 from aelix_agents.panel import (
     PANEL_MIN_CHILDREN,
     PANEL_WIDGET_KEY,
+    _flatten,
     format_aggregate_status,
     format_panel,
 )
@@ -132,6 +133,17 @@ class _Group:
     active: bool = False
 
 
+_STATUS_MODEL_MAX_CHARS = 40
+"""Bound on the model term in :func:`format_status_row`.
+
+The statusline is one segment on a shared height-1 row and the model is
+child-authored (read off the child's own ``message_end``), so the term is
+sanitised and length-capped here rather than trusted to fit. ``chrome._render_status``
+strips newlines from this row but bounds neither its width nor its ESC content
+(``chrome.py:1036``), so — unlike ``current_tool``, which P2 left to that far end —
+this field is defended at the source, the posture the panel already takes."""
+
+
 def _format_tokens(tokens: int) -> str:
     if tokens < 1000:
         return f"{tokens} tok"
@@ -147,6 +159,8 @@ def format_status_row(progress: SubagentProgress) -> str:
     """
 
     parts = [f"agent {progress.profile}"]
+    if progress.model:
+        parts.append(_flatten(progress.model, limit=_STATUS_MODEL_MAX_CHARS))
     if progress.current_tool:
         parts.append(progress.current_tool)
     elif progress.state == "starting":
