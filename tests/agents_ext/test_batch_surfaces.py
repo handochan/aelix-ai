@@ -256,6 +256,60 @@ def test_the_panel_is_the_aggregate_header_plus_one_row_per_child() -> None:
     ]
 
 
+def test_the_panel_rows_lead_with_the_childs_model_when_present() -> None:
+    """S10 Option A: the model leads each per-child row, so the ``· state`` that
+    follows lines up across a one-profile batch (all members share one model —
+    the "light alignment"). A queued member has no snapshot and so no model."""
+
+    snapshots: list[SubagentProgress | None] = [
+        _reading(0, model="claude-opus-4-8", elapsed_ms=1_000, tokens=1_500),
+        _member(
+            1, model="claude-opus-4-8", state="done", elapsed_ms=2_000, cost=0.0031
+        ),
+        None,
+    ]
+
+    lines = format_panel(snapshots)
+    assert lines[1:] == [
+        "[1/3] claude-opus-4-8 · running · read · 1s · 1.5k tok",
+        "[2/3] claude-opus-4-8 · done · 2s · $0.0031",
+        "[3/3] queued",
+    ]
+
+
+def test_a_model_less_panel_row_omits_the_model_term() -> None:
+    """``model`` is ``None`` until the child's first ``message_end`` resolves the
+    run model. The term is OMITTED then — never ``None``, never a dangling
+    separator — so the row is byte-identical to what P3 shipped before the model
+    was carried."""
+
+    row = _panel_row(
+        _member(0, state="running", current_tool="read", elapsed_ms=1_000)
+    )
+    assert row == "running · read · 1s"
+    assert "None" not in row
+
+
+def test_a_hostile_model_cannot_break_a_panel_row() -> None:
+    """``model`` is child-authored, exactly like ``current_tool``, so it goes
+    through the same :func:`_flatten`: no newline to add a chrome row, no ESC to
+    smuggle an SGR, and bounded width — measured on the row builder AND through
+    :func:`format_panel`, the two layers finding F2 pins separately."""
+
+    hostile = "gpt\n" + "\n".join(f"\x1b[31m ROW {i}" for i in range(40)) + "x" * 5000
+    row = _panel_row(_member(0, state="running", model=hostile))
+    assert "\n" not in row
+    assert "\x1b" not in row
+    assert "\x9b" not in row  # C1: the one-byte CSI
+
+    lines = format_panel(
+        [_member(0, state="running", model=hostile), _member(1, state="running")]
+    )
+    assert not any("\n" in line for line in lines)
+    for line in lines:
+        assert len(line) <= max(PANEL_ROW_MAX_CHARS, AGGREGATE_MAX_CHARS), line
+
+
 # === the H10 throttle =========================================================
 
 

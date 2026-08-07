@@ -328,6 +328,32 @@ async def _build_session(
     return await repo.create(JsonlSessionCreateOptions(cwd=cwd))
 
 
+async def _seed_startup_messages(
+    harness: AgentHarness, session: Session
+) -> None:
+    """#122 — seed a startup harness's live transcript from its resumed session.
+
+    A freshly built :class:`AgentHarness` never seeds ``_state.messages`` from its
+    session (``AgentHarnessOptions.initial_messages`` is the only seam and the
+    factory doesn't set it), and the startup harness build bypasses
+    ``AgentSessionRuntime._finish_session_replacement`` (which rebuilds messages
+    on every IN-SESSION swap). Without this, a startup ``--continue``/``--resume``
+    (also ``--session``/``--fork``) into a session WITH history reads ZERO for
+    /context, /cost, /session, /stats until the first turn — the SAME class of bug
+    as the in-session #122 fix, at the startup insertion point.
+
+    Seeds from the SAME source the in-session fix uses
+    (:meth:`Session.build_context`). A fresh / ``--no-session`` / empty session
+    yields no messages, so the guard makes this a no-op for a normal cold start.
+    Product-core only: ``AgentState.messages`` already holds the list, so no
+    ``aelix-agent-core`` (kernel) edit is needed.
+    """
+
+    startup_ctx = await session.build_context()
+    if startup_ctx.messages:
+        harness.state.messages = list(startup_ctx.messages)
+
+
 async def _run_export(
     parsed: Args, repo: JsonlSessionRepo, fs: LocalFileSystem
 ) -> int:
@@ -2218,6 +2244,11 @@ async def _async_main(argv: list[str]) -> int:
     )
 
     harness = await _harness_factory(session)
+    # #122 — the STARTUP analogue of the in-session /resume fix. This startup build
+    # bypasses ``AgentSessionRuntime._finish_session_replacement``, so a
+    # ``--continue``/``--resume`` (also ``--session``/``--fork``) into a session
+    # WITH history would otherwise read ZERO stats until the first turn. Seed now.
+    await _seed_startup_messages(harness, session)
     runtime = await create_agent_session_runtime(
         harness, _harness_factory, repo=repo, fs=fs
     )

@@ -182,6 +182,26 @@ class SubagentProgress:
     tokens: int = 0
     cost: float = 0.0
 
+    model: str | None = None
+    provider: str | None = None
+    """WHICH MODEL THE CHILD IS RUNNING, carried LIVE so every progress surface
+    can name it — the statusline row, the batch panel, the aggregate — instead of
+    only the final ``/agents run`` grid (:attr:`SubagentResult.model`).
+
+    Same value, same provenance as :attr:`SubagentResult.model`: read off the
+    child's own ``message_end`` into ``_StreamState.provider``/``.model``
+    (``stream.py``) and fanned out by the sole producer ``runtime._publish``. It
+    is :data:`None` until the child's first ``message_end`` resolves the run
+    model — a surface must render cleanly (omit the term) while it is, never
+    print ``None`` — and, for a profile that declared no ``model:``, it names the
+    PERSISTED default the child fell through to rather than the parent's
+    run-scope model, which is exactly the substitution worth making visible.
+
+    CHILD-AUTHORED, therefore untrusted: a renderer bounds and sanitises it the
+    same way it treats ``current_tool`` (``panel._flatten``). Additive +
+    defaulted: does NOT bump :data:`CONTRACT_VERSION` (same precedent as
+    :attr:`SubagentResult.model`/``.provider``)."""
+
 
 @dataclass(frozen=True)
 class ResolvedProfile:

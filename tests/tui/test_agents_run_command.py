@@ -44,6 +44,8 @@ from aelix_coding_agent.subagent_contract import (
 from aelix_coding_agent.tui.commands import (
     BUILTIN_COMMANDS,
     CommandContext,
+    _render_subagent_result,
+    _sanitize_child_field,
     match_command,
 )
 from rich.console import Console
@@ -317,6 +319,108 @@ async def test_a_widened_grant_is_visible_in_the_panel(bench: _Bench) -> None:
     out = await bench.run("/agents run scout edit the readme")
 
     assert "auto-accept-edits" in out
+
+
+async def test_the_child_model_is_shown_on_the_result_panel(bench: _Bench) -> None:
+    """``SubagentResult.model`` is already populated (``envelope.py:374-375``) but
+    P2 named it nowhere. A profile with no ``model:`` runs the persisted default
+    at a different price, and before this row the only way to notice was the
+    bill — so the grid states ``provider/id`` on its own line."""
+
+    bench.bind(
+        _FakeRuntime(result=_ok_result(model="claude-opus-4-8", provider="anthropic"))
+    )
+    out = await bench.run("/agents run scout list files")
+
+    assert "model" in out
+    assert "anthropic/claude-opus-4-8" in out
+
+
+async def test_the_model_row_is_omitted_when_the_child_named_no_model(
+    bench: _Bench,
+) -> None:
+    """A child that errored before any ``message_end`` has no model to report.
+    Unlike ``permission`` — a security fact that stays answerable as ``—`` — an
+    absent model is simply dropped: there is nothing to name."""
+
+    bench.bind(_FakeRuntime(result=_ok_result(model=None, provider=None)))
+    out = await bench.run("/agents run scout list files")
+
+    assert "permission" in out
+    assert "model" not in out
+
+
+def test_a_hostile_child_model_cannot_drive_the_result_grids_terminal() -> None:
+    """FINDING 1 (HIGH). ``model``/``provider`` are read off the child's own
+    ``message_end`` verbatim (``stream.py:559-563`` → ``envelope.py:373-375``), so
+    they are attacker-controlled. Rich ``Text`` blocks MARKUP but writes raw
+    content ESC / C1 to the terminal, so a ``\\x1b[2J`` in the model would clear
+    the parent's screen and a one-byte ``\\x9b`` would drive its cursor.
+
+    Rendered through a ``force_terminal`` console (the real-TTY path, where Rich
+    does NOT strip) AND a ``no_color`` one (which isolates child bytes from Rich's
+    own SGR), the child's injected sequences are gone and the field is width
+    bound. The width AND the control-strip are both load-bearing: remove either
+    step from ``_sanitize_child_field`` and this test fails.
+    """
+
+    hostile = "gpt\x1b[2J\x1b]0;pwn\x07\x9b31m\n" + "Z" * 3000
+    result = SubagentResult(
+        id="s",
+        profile="scout",
+        ok=True,
+        status="ok",
+        summary="ok",
+        usage=SubagentUsage(turns=1),
+        model=hostile,
+        provider="anthropic",
+    )
+    parts = _render_subagent_result(result)
+
+    # The real-TTY path: Rich emits its OWN SGR here, so we assert the child's
+    # SPECIFIC injections are absent rather than a blanket "no ESC" (impossible
+    # under force_terminal, and Finding 1's proof used exactly this console).
+    tty = io.StringIO()
+    tty_console = Console(file=tty, width=120, force_terminal=True)
+    for part in parts:
+        tty_console.print(part)
+    out_tty = tty.getvalue()
+    assert "\x1b[2J" not in out_tty  # clear-screen — never Rich's own
+    assert "\x1b]" not in out_tty  # OSC (set window title) — never Rich's own
+    assert "\x9b" not in out_tty  # C1: the one-byte CSI — never Rich's own
+    assert "\x07" not in out_tty  # BEL
+    # Width bound: the 3000-char run is truncated, so only a handful survive.
+    assert out_tty.count("Z") < 100
+
+    # The no-color path isolates child bytes from Rich's own styling, so here the
+    # blanket assertion the reviewer asked for IS meaningful.
+    plain = io.StringIO()
+    plain_console = Console(file=plain, width=120, no_color=True)
+    for part in parts:
+        plain_console.print(part)
+    out_plain = plain.getvalue()
+    assert "\x1b" not in out_plain
+    assert "\x9b" not in out_plain
+    # The provider is still composed onto the de-fanged id — no dangling slash.
+    assert "anthropic/" in out_plain
+
+
+def test_sanitize_child_field_strips_control_collapses_and_bounds() -> None:
+    """The unit behind Finding 1, pinned directly so a later grid edit cannot
+    quietly drop a step: collapse whitespace (newline → space), delete C0/DEL/C1
+    (ESC and the one-byte CSI), bound the width, and return ``""`` for a value
+    that was nothing but control bytes (the caller then omits the row)."""
+
+    assert _sanitize_child_field("a\nb") == "a b"
+    assert "\n" not in _sanitize_child_field("a\nb\nc")
+    defanged = _sanitize_child_field("x\x1b[31m\x9b\x07y")
+    assert (
+        "\x1b" not in defanged
+        and "\x9b" not in defanged
+        and "\x07" not in defanged
+    )
+    assert _sanitize_child_field("\x1b\x00\x9b") == ""  # all-control → empty
+    assert len(_sanitize_child_field("Z" * 5000)) <= 40  # width bound
 
 
 async def test_run_renders_failure_panel(bench: _Bench) -> None:

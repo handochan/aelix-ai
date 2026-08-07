@@ -490,11 +490,19 @@ class AgentSessionRuntime:
             new_ctx = self._harness._make_context()
             session_manager = new_ctx.session_manager  # type: ignore[attr-defined]
             await setup(session_manager)
-            # Rebuild messages from the NEW session's build_context so any
-            # ``session.append_*`` performed inside ``setup`` is reflected
-            # in the active turn context. Pi parity ``:226-229``.
-            session_ctx = await new_session.build_context()
-            self._harness._state.messages = list(session_ctx.messages)
+        # Rebuild the harness's long-lived ``_state.messages`` from the NEW
+        # session's build_context on EVERY replacement (#122). Without this a
+        # resume (setup=None) left ``_state.messages == []`` — a freshly built
+        # harness never seeds ``initial_messages`` from its session — so
+        # ``get_session_stats`` / ``_get_context_usage_safe`` read an empty
+        # transcript and /context, /cost, /session, /stats all showed ZERO until
+        # the next turn. It ALSO reflects any ``session.append_*`` performed inside
+        # ``setup`` (the prior in-``if`` behaviour). Pi parity ``:226-229``. A
+        # REPLACE assignment (idempotent; the next turn only ``extend``s the
+        # delta), safe for /new + /fork too (an empty / forked session's
+        # build_context yields exactly that session's message set).
+        session_ctx = await new_session.build_context()
+        self._harness._state.messages = list(session_ctx.messages)
 
         if self._rebind_session is not None:
             await self._rebind_session(self._harness, reason)

@@ -311,6 +311,15 @@ _KERNEL_CHANGE_ALLOWLIST = frozenset(
         "packages/aelix-agent-core/src/aelix_agent_core/session/fs.py",
         "packages/aelix-agent-core/src/aelix_agent_core/session/jsonl_repo.py",
         "packages/aelix-agent-core/src/aelix_agent_core/session/__init__.py",
+        # ADR-0209, #122. A resumed session's persisted history must seed
+        # ``_state.messages`` so ``get_session_stats``/``_get_context_usage_safe``
+        # do not read zero after ``/resume``. The fix moves an existing
+        # message-hydration rebuild out of ``if setup is not None:`` so it runs on
+        # every replacement. Replace-assignment (idempotent, counted once), no
+        # ``aelix_agents`` import, no spawn/cap/consent/delegation surface —
+        # ``test_kernel_has_no_subagent_surface`` still passes (independently
+        # reviewed non-delegation). Same category as the ADR-0208 session entries.
+        "packages/aelix-agent-core/src/aelix_agent_core/runtime/agent_session_runtime.py",
     }
 )
 

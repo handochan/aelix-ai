@@ -347,9 +347,17 @@ def _panel_row(snapshot: SubagentProgress | None) -> str:
     if snapshot is None:
         return "queued"
     # ``state`` is a product-core literal (``subagent_contract.py:66``) and the
-    # numbers are numbers; ``current_tool`` is the CHILD's own bytes and is the
-    # one field here an attacker writes — see :func:`_flatten`.
-    parts = [snapshot.state]
+    # numbers are numbers; ``current_tool`` AND ``model`` are the CHILD's own
+    # bytes — both read off its stdout — and are the two fields here an attacker
+    # writes, so both go through :func:`_flatten`. ``model`` leads the row (S10
+    # Option A): it is the same for every member of a one-profile batch, so the
+    # column is naturally uniform-width and the ``· state ·`` that follows lines
+    # up across rows — the "light alignment" that survives the mandatory flatten,
+    # which collapses any padding whitespace anyway.
+    parts: list[str] = []
+    if snapshot.model:
+        parts.append(_flatten(snapshot.model, limit=PANEL_ROW_MAX_CHARS))
+    parts.append(snapshot.state)
     if snapshot.current_tool:
         parts.append(_flatten(snapshot.current_tool, limit=PANEL_ROW_MAX_CHARS))
     parts.append(f"{snapshot.elapsed_ms / 1000:.0f}s")

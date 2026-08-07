@@ -165,6 +165,18 @@ def build_footer_registry(ctx: AelixTUIContext) -> list[FooterSegment]:
         cost = ctx._usage_cost
         return f"$ {cost:.4f}" if cost else None
 
+    def _thinking_level() -> str | None:
+        # The active reasoning effort. Default-OFF opt-in (like cost/tokens), but a
+        # DELIBERATE deviation from them: it SHOWS ``🧠 off`` rather than returning
+        # None on the "off" level — the user opted IN to monitor reasoning effort,
+        # so hiding it exactly when reasoning is off would defeat the purpose. Reads
+        # the LIVE harness thinking_level via a provider closure (mirrors _model).
+        # Guarded on the provider (None in headless/tests → omit the segment); a
+        # None/empty provider result degrades to "off" so it never renders "None".
+        if ctx._thinking_provider is None:
+            return None
+        return f"🧠 {ctx._thinking_provider() or 'off'}"
+
     return [
         FooterSegment(
             "permission-mode",
@@ -229,6 +241,13 @@ def build_footer_registry(ctx: AelixTUIContext) -> list[FooterSegment]:
             _cost,
             default_enabled=False,
         ),
+        FooterSegment(
+            "thinking-level",
+            "Thinking level",
+            "The active reasoning effort (🧠 off/low/medium/high/xhigh)",
+            _thinking_level,
+            default_enabled=False,
+        ),
     ]
 
 
@@ -259,6 +278,8 @@ _SEGMENT_SPEC: list[tuple[str, str, str, bool]] = [
     ("input-tokens", "Input tokens", "Session input token total (↑)", False),
     ("output-tokens", "Output tokens", "Session output token total (↓)", False),
     ("cost", "Cost", "Session cost in USD ($)", False),
+    ("thinking-level", "Thinking level",
+     "The active reasoning effort (🧠 off/low/medium/high/xhigh)", False),
 ]
 
 
