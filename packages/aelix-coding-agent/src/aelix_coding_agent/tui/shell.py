@@ -51,6 +51,7 @@ from aelix_coding_agent.tui.commands import (
     BUILTIN_COMMANDS,
     BuiltinCommand,
     CommandContext,
+    active_tool_views,
     match_command,
     slash_word,
 )
@@ -2231,12 +2232,12 @@ def _build_banner(harness: AgentHarness, cwd: str) -> object:
     except Exception:  # noqa: BLE001
         context_label = "none"
 
-    # [Tools] — SAME source the /tools command uses (harness._action_get_all_tools).
+    # [Tools] — SAME source the /tools command uses (``active_tool_views``): the
+    # tools a turn actually sends, NOT every registered tool. Under ``--no-tools``
+    # the registered list is still full while the model has none.
     tool_names: list[str] = []
     try:
-        getter = getattr(harness, "_action_get_all_tools", None)
-        if callable(getter):
-            tool_names = [getattr(t, "name", str(t)) for t in (getter() or [])]
+        tool_names = [getattr(t, "name", str(t)) for t in active_tool_views(harness)]
     except Exception:  # noqa: BLE001
         tool_names = []
     if tool_names:

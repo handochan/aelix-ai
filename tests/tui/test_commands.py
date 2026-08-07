@@ -699,6 +699,70 @@ def test_tools_degrades_when_empty() -> None:
     assert any("No tools" in _render(c) for c in committed)
 
 
+# === registered vs ACTIVE (display truth) ===================================
+#
+# ``--no-tools`` leaves every tool REGISTERED (``_state.tools``) but sets the
+# active filter to ``[]``, and the turn sends only the active set to the model
+# (``harness/core.py:4138``). Reporting the registered list therefore claimed
+# tools the model provably did not have. Both readouts report the ACTIVE set.
+
+
+class _GatedToolsHarness:
+    """Everything registered, nothing active — the ``--no-tools`` shape."""
+
+    def _action_get_all_tools(self) -> list[object]:
+        return [_ToolView("read_file", "Read a file"), _ToolView("bash", "Run bash")]
+
+    def _action_get_active_tools(self) -> list[str]:
+        return []
+
+
+class _PartiallyGatedToolsHarness:
+    """``--tools read_file`` — a subset of the registered tools is active."""
+
+    def _action_get_all_tools(self) -> list[object]:
+        return [_ToolView("read_file", "Read a file"), _ToolView("bash", "Run bash")]
+
+    def _action_get_active_tools(self) -> list[str]:
+        return ["read_file"]
+
+
+def test_tools_reports_none_when_all_gated_off() -> None:
+    committed: list[object] = []
+    _run("tools", _ctx(_GatedToolsHarness(), committed), "")
+    rendered = "".join(_render(c) for c in committed)
+    assert "No tools" in rendered
+    # The gated-off names must not be advertised as available.
+    assert "read_file" not in rendered
+    assert "bash" not in rendered
+
+
+def test_tools_lists_only_the_active_subset() -> None:
+    committed: list[object] = []
+    _run("tools", _ctx(_PartiallyGatedToolsHarness(), committed), "")
+    rendered = "".join(_render(c) for c in committed)
+    assert "read_file" in rendered
+    assert "bash" not in rendered
+
+
+class _GatedBannerHarness(_BannerHarness):
+    """A banner harness whose registered tools are all gated off."""
+
+    def _action_get_active_tools(self) -> list[str]:
+        return []
+
+
+def test_banner_reports_none_when_all_tools_gated_off() -> None:
+    from aelix_coding_agent.tui.shell import _build_banner
+
+    out = _render(_build_banner(_GatedBannerHarness(), "/home/me/project"))  # type: ignore[arg-type]
+    assert "[Tools]" in out
+    assert "5 active" not in out
+    # No tool name may appear in the preview when none are active.
+    for name in ("bash", "read", "write", "edit", "grep"):
+        assert name not in out
+
+
 class _SkillView:
     def __init__(
         self,
