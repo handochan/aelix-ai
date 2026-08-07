@@ -219,18 +219,35 @@ class LocalFileSystem:
 
         Used by :meth:`AgentSessionRuntime.import_from_jsonl` to clone a
         caller-supplied JSONL into the canonical sessions root when the
-        source path differs from the destination. ``shutil.copy2`` is
-        used to preserve mtime semantics so the imported file's metadata
-        round-trips cleanly.
+        source path differs from the destination. mtime is preserved so
+        the imported file's metadata round-trips cleanly — ``find_most_recent``
+        sorts on it.
+
+        The destination is created at 0600 BEFORE any content lands in it.
+        Copying first and tightening afterwards would leave a window where
+        the imported prompts and tool results are group/world-readable.
+        ``shutil.copyfile`` rather than ``copy2``: ``copy2`` ends with a
+        ``copystat`` that re-applies the SOURCE's permission bits, which
+        would undo the 0600 (measured — a 0644 source produced a 0644
+        destination even when it was pre-created at 0600).
         """
 
         dst = Path(destination)
         dst.parent.mkdir(parents=True, exist_ok=True, mode=SESSION_DIR_MODE)
         _tighten(dst.parent, SESSION_DIR_MODE)
-        shutil.copy2(source, destination)
-        # copy2 carries the SOURCE's mode across, so an imported session
-        # would otherwise land at whatever the caller's file happened to be.
-        _tighten(destination, SESSION_FILE_MODE)
+        src_stat = os.stat(source)
+        fd = os.open(
+            destination,
+            os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+            SESSION_FILE_MODE,
+        )
+        try:
+            # O_CREAT leaves an EXISTING destination's mode alone.
+            self._tighten_if_loose(fd)
+        finally:
+            os.close(fd)
+        shutil.copyfile(source, destination)
+        os.utime(destination, (src_stat.st_atime, src_stat.st_mtime))
 
 
 __all__ = [
