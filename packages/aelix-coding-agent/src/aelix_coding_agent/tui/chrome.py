@@ -584,13 +584,31 @@ class AelixChrome:
         )
         # height grows with multi-line content up to 10 rows, then the buffer
         # scrolls internally (keeps the chrome from pushing scrollback off-screen).
-        # ``preferred=1``: prompt-toolkit's Dimension defaults ``preferred`` to
-        # ``max`` when omitted, which made HSplit allocate 10 rows for the editor
-        # at all times — a ~12-row blank gap (10 editor + status + footer) below
-        # the chat output, even when the editor held zero lines. Pinning
-        # ``preferred=1`` lets the editor START at 1 row and grow only when
-        # content needs more space, matching pi / Claude Code's compact-when-idle
-        # editor footprint.
+        #
+        # ``dont_extend_height`` is the load-bearing attribute here. Without it the
+        # editor was the ONE body child with ``max (10) > preferred``, so prompt-
+        # toolkit's ``HSplit._divide_heights`` handed it every spare row after the
+        # ``preferred`` pass (``containers.py`` "increase until we use all the
+        # available space"). At IDLE the inline renderer reserves
+        # ``max(min_available, last_screen_height, preferred)`` rows and only
+        # ``renderer.reset()``/``erase()`` (fired inside ``run_in_terminal``) clear
+        # that floor — so between turns the reserved height stays frozen at the
+        # TALLEST recent turn and the editor absorbed the slack, creeping upward a
+        # row at a time over a session. A pinned ``preferred=1`` (the earlier
+        # attempt) only moved the START row; the ``max`` pass still fed the editor
+        # the whole floor (an empty buffer resolved to 10 rows under a 20-row
+        # floor). ``dont_extend_height=True`` makes ``_merge_dimensions`` clamp the
+        # reported ``max`` down to the ``preferred`` (== the buffer's line count),
+        # so the editor is CONTENT-DRIVEN: it can no longer grow past its own text.
+        # The spare rows fall through to the HSplit's remaining-space filler
+        # instead of ratcheting the editor. This is a pure LAYOUT attribute — it
+        # adds no erase/redraw and stays off the flicker path.
+        #
+        # ``preferred`` is intentionally LEFT UNSPECIFIED: an explicit value makes
+        # ``_merge_dimensions`` ignore the control's content height, which is
+        # exactly what we now want to honour (empty -> 1, 3-line draft -> 3,
+        # capped at ``max=10`` with internal scroll beyond). ``min=1`` keeps a
+        # baseline row; the sibling body rows already use ``dont_extend_height``.
         # Sprint 6h₂₅ (ADR-0153, WP-3) — a live ``❯ `` input prefix (bold cyan)
         # plus a dim empty-buffer placeholder. Both are pure ``BufferControl``
         # input processors (no I/O), so they render headlessly under DummyOutput.
@@ -606,7 +624,8 @@ class AelixChrome:
                 ],
             ),
             wrap_lines=True,
-            height=Dimension(min=1, max=10, preferred=1),
+            height=Dimension(min=1, max=10),
+            dont_extend_height=True,
         )
         self._input_window = input_window
         # Sprint 6h₂₈ (ADR-0159) — the in-flow modal slot. A DynamicContainer
