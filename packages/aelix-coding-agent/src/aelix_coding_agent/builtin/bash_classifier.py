@@ -73,6 +73,34 @@ _FD_EXEC_FLAGS = frozenset({"-x", "--exec", "-X", "--exec-batch"})
 # code (``curl … | sh``) → DENY at any non-first stage.
 _SHELLS = frozenset({"sh", "bash", "zsh", "dash", "ksh", "fish"})
 
+# Shell basenames the bundled tree-sitter BASH grammar genuinely describes.
+# The other POSIX shells differ from bash in ways that do not move a COMMAND
+# NAME, which is all this classifier reads, so they stay in.
+#
+# ``fish`` is deliberately OUT (its syntax diverges far enough that the
+# extracted name can be wrong), and so is every Windows shell (#104): fed a
+# PowerShell or ``cmd`` command line, the bash grammar does not recognise
+# ``Remove-Item -Recurse -Force C:\`` or ``del /s /q`` as anything dangerous —
+# it parses them as unremarkable words and yields ALLOW. That is active
+# MIS-permissioning rather than a missed detection, which is why
+# :func:`is_classifiable_shell` gates the verdict instead of the grammar being
+# taught new syntax.
+_CLASSIFIABLE_SHELLS = frozenset({"bash", "sh", "dash", "ksh", "mksh", "zsh"})
+
+
+def is_classifiable_shell(shell: str) -> bool:
+    """Whether :func:`classify`'s verdict is meaningful for ``shell``.
+
+    ``shell`` is a path (``/bin/bash``, ``C:\\…\\powershell.exe``) or a bare
+    name. ``False`` must force ASK at the permission gate: for a shell outside
+    this set the verdict is not merely unknown, it is misleading.
+    """
+
+    from aelix_coding_agent.tools.bash import shell_basename  # noqa: PLC0415
+
+    return shell_basename(shell) in _CLASSIFIABLE_SHELLS
+
+
 # Read-only commands that are safe to auto-run → ALLOW.
 _READ_ONLY = frozenset(
     {

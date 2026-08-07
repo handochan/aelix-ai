@@ -31,6 +31,8 @@ from aelix_coding_agent.cli.entry import (
     _run_export,
 )
 
+from tests.env_sandbox import sandbox_home
+
 
 async def _make_session(
     root: Path, cwd: str, *, text: str = "hello world"
@@ -213,7 +215,7 @@ async def test_session_dir_roots_sessions(
     (persisted before the harness runs, regardless of exit code)."""
 
     monkeypatch.setattr(sys, "stdin", _FakePipedStdin())
-    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    sandbox_home(monkeypatch, tmp_path / "home")
     root = tmp_path / "sroot"
     code = await _async_main(["--session-dir", str(root), "--print"])
     assert code in (0, 1)
@@ -229,7 +231,7 @@ async def test_api_key_without_provider_errors(
     error (``main.ts:574-582``) + exit 1, and never echoes the key value."""
 
     monkeypatch.setattr(sys, "stdin", _FakePipedStdin())
-    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    sandbox_home(monkeypatch, tmp_path / "home")
     # Clear any ambient OPENROUTER_API_KEY so resolve_model can't infer a
     # provider from env (which would otherwise pass the requires-model gate).
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
@@ -248,7 +250,7 @@ async def test_models_emits_deferred_warning(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(sys, "stdin", _FakePipedStdin())
-    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    sandbox_home(monkeypatch, tmp_path / "home")
     await _async_main(["--models", "claude-*,gpt-*", "--print"])
     assert "--models" in capsys.readouterr().err
 
@@ -259,7 +261,7 @@ async def test_session_not_found_e2e_exits_1(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(sys, "stdin", _FakePipedStdin())
-    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    sandbox_home(monkeypatch, tmp_path / "home")
     code = await _async_main(["--session", "zzz-no-such-id", "--print"])
     assert code == 1
     err = capsys.readouterr().err
@@ -307,7 +309,7 @@ async def test_session_dir_flag_wins_over_env(
     from aelix_coding_agent.cli.config import ENV_SESSION_DIR
 
     monkeypatch.setattr(sys, "stdin", _FakePipedStdin())
-    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    sandbox_home(monkeypatch, tmp_path / "home")
     env_root = tmp_path / "env_root"
     flag_root = tmp_path / "flag_root"
     monkeypatch.setenv(ENV_SESSION_DIR, str(env_root))
@@ -323,7 +325,7 @@ async def test_session_dir_env_only_roots_sessions(
     from aelix_coding_agent.cli.config import ENV_SESSION_DIR
 
     monkeypatch.setattr(sys, "stdin", _FakePipedStdin())
-    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    sandbox_home(monkeypatch, tmp_path / "home")
     env_root = tmp_path / "env_root"
     monkeypatch.setenv(ENV_SESSION_DIR, str(env_root))
     code = await _async_main(["--print"])

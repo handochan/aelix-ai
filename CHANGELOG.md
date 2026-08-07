@@ -170,6 +170,22 @@ and `.../releases/tag/vX` link would 404. Add them with the first pushed tag.
   scanned extensions directory now loads once rather than twice (#91). Its
   `setup()` previously ran twice against the same runtime.
 
+### Known behaviour changes
+
+- **AUTO mode now prompts instead of auto-allowing when your `$SHELL` is one
+  the safety classifier cannot read** (#104). The AUTO posture decides whether
+  to auto-run a `bash` command by parsing it with a tree-sitter **bash**
+  grammar. That verdict is only sound for the POSIX shell family (`bash`,
+  `sh`, `dash`, `ksh`, `mksh`, `zsh` — version suffixes such as `bash-5.2` are
+  recognised). Under any other shell — `fish`, `nushell`, or PowerShell/`cmd`
+  on the experimental Windows track — the grammar reads the command line as
+  unremarkable words and returns "allow", which is active mis-permissioning
+  rather than a missed detection. Such commands now fall through to the
+  approval prompt. **If you use fish or another non-POSIX shell on Linux or
+  macOS, you will see prompts in AUTO mode where commands previously ran
+  unattended.** `DENY` verdicts are still enforced for every shell, and the
+  other permission postures are unchanged.
+
 ## [0.1.0-beta.1] — not yet released
 
 The first published release of Aelix, cut as the tag `v0.1.0-beta.1`

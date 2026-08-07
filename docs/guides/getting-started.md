@@ -61,6 +61,21 @@ If you are behind a shared IP (CI, corporate NAT), the anonymous GitHub API limi
 of 60 requests/hour can make the release lookup fail. Set `GITHUB_TOKEN`, or pin
 `AELIX_VERSION` — a pinned tag skips that API call entirely.
 
+### Windows (experimental)
+
+Windows is **not a supported platform** — Linux and macOS are. The repository
+root carries an `install.ps1` that mirrors `install.sh` step for step (same
+release download, same SHA256SUMS gate, same `uv` install), but neither it nor
+the agent itself has ever been exercised on Windows by CI:
+
+```powershell
+powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/handochan/aelix-ai/main/install.ps1 | iex"
+```
+
+Known gaps are tracked in `SLICE-STATUS.md` at the repository root. If you want
+Aelix on Windows today, WSL2 is the path that actually works: install there
+exactly as you would on Linux.
+
 ## Set a provider key
 
 `aelix` needs a provider API key. The simplest path is an environment variable:
