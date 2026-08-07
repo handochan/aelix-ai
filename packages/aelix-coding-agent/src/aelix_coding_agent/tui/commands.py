@@ -813,6 +813,36 @@ async def _confirm_project_agent_for_run(
     return answer == PROJECT_AGENT_CONFIRM_OPTIONS[0]
 
 
+# ``str.translate`` table deleting C0, DEL and C1 — the same set
+# ``panel._flatten`` and ``consent._sanitize_field`` refuse. Restated inline, NOT
+# imported: the band rule (ADR-0197) forbids product-core importing
+# ``aelix_agents``. ``0x9b`` is in the set because it IS a one-byte CSI — the
+# spelling of ``\x1b[`` that survives a scrub which only chases the ESC byte.
+_CONTROL_KILL = dict.fromkeys([*range(0x20), 0x7F, *range(0x80, 0xA0)])
+
+
+def _sanitize_child_field(value: str, width: int = 40) -> str:
+    """Bound and de-fang one CHILD-AUTHORED string for the result grid.
+
+    ``model``/``provider`` are read off the child's own ``message_end`` verbatim
+    (``stream.py:559-563`` → ``envelope.py:373-375``), so they are attacker
+    controlled exactly like ``current_tool``. Rich ``Text`` disables MARKUP
+    parsing but writes raw content ESC / C1 straight to the terminal — a
+    ``\\x1b[2J`` clears the parent's screen and a one-byte ``\\x9b`` drives its
+    cursor — so ``Text`` alone is not a defence and the bytes must be removed
+    here.
+
+    The three steps ``panel._flatten`` takes, replicated because the band rule
+    forbids importing it: collapse whitespace (kills newlines), delete C0 / DEL /
+    C1 (kills ESC and the one-byte CSI), then bound the width so a multi-kilobyte
+    model cannot blow out the panel. Returns ``""`` for a value that was nothing
+    but control bytes — the caller treats that as "nothing to name".
+    """
+
+    flat = " ".join(value.split()).translate(_CONTROL_KILL)
+    return flat if len(flat) <= width else flat[: width - 1] + "…"
+
+
 def _render_subagent_result(result: SubagentResult) -> list[RenderableType]:
     """Render one :class:`SubagentResult` for scrollback (ADR-0197 §(l)).
 
@@ -851,20 +881,21 @@ def _render_subagent_result(result: SubagentResult) -> list[RenderableType]:
     # WHICH MODEL THE CHILD ACTUALLY RAN (``SubagentResult.model``, read off its
     # own ``message_end``). Surfaced here so the substitution a profile with no
     # ``model:`` triggers — the persisted default at a different price — stops
-    # being visible only on the bill. Omitted when unknown (a child that errored
-    # before any ``message_end``): there is no model to name, so no ``—`` row.
-    # ``model``/``provider`` are CHILD-AUTHORED, so the value is collapsed to one
-    # line and rendered as ``Text`` (no Rich markup parsing), unlike the literal
-    # rows around it — the band rule forbids importing ``panel._flatten`` here.
-    if result.model:
-        model_line = " ".join(
-            (
-                f"{result.provider}/{result.model}"
-                if result.provider
-                else result.model
-            ).split()
+    # being visible only on the bill. ``model`` AND ``provider`` are
+    # CHILD-AUTHORED and unsanitised at the source, so EACH is de-fanged through
+    # :func:`_sanitize_child_field` (whitespace collapsed, control chars deleted,
+    # width bound) before it reaches ``Text`` — ``Text`` blocks Rich MARKUP but
+    # not raw ESC/C1, so it is not a defence on its own. The row is omitted when
+    # there is nothing left to name: ``model`` absent (a child that errored
+    # before any ``message_end``) or a value that sanitised to empty — no ``—``
+    # row for it. ``provider/id`` is composed from the sanitised pieces with no
+    # dangling ``/`` when the provider is absent.
+    model = _sanitize_child_field(result.model) if result.model else ""
+    if model:
+        provider = (
+            _sanitize_child_field(result.provider) if result.provider else ""
         )
-        grid.add_row("model", Text(model_line))
+        grid.add_row("model", Text(f"{provider}/{model}" if provider else model))
     # ``—`` rather than an omitted row: "which posture did that child get" must
     # be answerable even when a runtime declined to say.
     grid.add_row("permission", result.permission_mode or "—")
