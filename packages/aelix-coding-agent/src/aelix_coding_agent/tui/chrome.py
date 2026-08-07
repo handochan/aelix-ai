@@ -667,36 +667,29 @@ class AelixChrome:
                 and not self.is_modal_open()
             ),
         )
-        # ``widgets_above``/``widgets_below`` collapse to 0 rows when they hold no
-        # lines — same non-empty ``ConditionalContainer`` gate as ``header`` and
-        # ``breadcrumb`` above. An UNGATED empty ``FormattedTextControl`` still
-        # reports ``line_count == 1``, so each reserved a permanent blank row; that
-        # slack used to be masked by the input editor swallowing the reserved-height
-        # floor, and became visible once the editor was made content-bounded. The
-        # gate reads ``any(...values())`` (not ``bool(dict)``) so a slot cleared to
-        # an empty list also collapses. Visibility only — WHAT the panel draws and
-        # WHEN it invalidates (``set_widget`` already calls ``invalidate``) are
-        # unchanged, so the subagent-panel render path is untouched.
-        widgets_above_row = ConditionalContainer(
-            Window(FormattedTextControl(self._render_widgets_above), dont_extend_height=True),
-            filter=renderer_height_is_known
-            & Condition(lambda: any(self._widgets_above.values())),
-        )
-        widgets_below_row = ConditionalContainer(
-            Window(FormattedTextControl(self._render_widgets_below), dont_extend_height=True),
-            filter=renderer_height_is_known
-            & Condition(lambda: any(self._widgets_below.values())),
-        )
+        # ``widgets_above``/``widgets_below`` stay UNGATED on purpose. An empty
+        # ``FormattedTextControl`` reports ``line_count == 1``, so each holds a
+        # permanent 1-row floor — that row is a LAYOUT STABILISER, not dead space.
+        # The streaming tail lives in ``widgets_above``: ``shell.py`` writes it via
+        # ``set_widget("__stream__", …)`` and clears it with a falsy tail, which
+        # POPS the key — so an empty dict is a normal MID-STREAM state. The clear
+        # runs inside ``print_above_many``'s ``apply_before_redraw`` hook, i.e.
+        # inside the erase/CPR two-phase fold-in the round-3 flicker fix made
+        # atomic. Gating these rows on non-empty (tried, reverted) turned every
+        # mid-stream clear from an atomic CONTENT update into a HEIGHT change,
+        # shifting the input/status/footer by a row on each chunk — worse flicker
+        # than the blank row it reclaimed. See the lifecycle regression test in
+        # ``tests/tui/test_input_box_height.py``.
         body = HSplit(
             [
                 header,
                 breadcrumb,
-                widgets_above_row,
+                Window(FormattedTextControl(self._render_widgets_above), dont_extend_height=True),
                 modal_slot,
                 working_row,
                 working_spacer,
                 input_conditional,
-                widgets_below_row,
+                Window(FormattedTextControl(self._render_widgets_below), dont_extend_height=True),
                 _ansi_row(self._render_status),
                 _footer_row(),
             ]
