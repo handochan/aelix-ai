@@ -364,3 +364,126 @@ def test_malformed_message_end_does_not_crash() -> None:
     # Provider raised → falls through to "(unknown)" rather than crashing.
     assert stat.model == "(unknown)"
     assert stat.input == 5
+
+
+# === resumed-session baseline (Defect B) =====================================
+#
+# ``turns`` counts live ``turn_end`` events and ``wall_seconds`` spans
+# ``time.monotonic()`` — both are per-process, so a resumed session reported 0
+# for each while its tokens/messages read correctly. Both are reconstructible
+# from the persisted branch: every entry carries an ISO ``timestamp`` and each
+# user message is one prompt, i.e. one turn.
+
+
+def _entry(ts: str, role: str | None) -> SimpleNamespace:
+    """A persisted branch entry — ``session``/``leaf`` rows carry no message."""
+
+    if role is None:
+        return SimpleNamespace(type="session", timestamp=ts)
+    return SimpleNamespace(
+        type="message", timestamp=ts, message=SimpleNamespace(role=role)
+    )
+
+
+_BRANCH = [
+    # Session creation precedes the first prompt by 40s of idle — excluded.
+    _entry("2026-08-07T10:00:00.000Z", None),
+    _entry("2026-08-07T10:00:40.000Z", "user"),
+    _entry("2026-08-07T10:00:45.000Z", "assistant"),
+    _entry("2026-08-07T10:00:45.500Z", "toolResult"),
+    _entry("2026-08-07T10:00:48.000Z", "user"),
+    _entry("2026-08-07T10:00:51.000Z", "assistant"),
+]
+
+
+def test_derive_resumed_activity_counts_prompts_and_spans_timestamps() -> None:
+    from aelix_coding_agent.tui.activity_tracker import derive_resumed_activity
+
+    prior = derive_resumed_activity(_BRANCH)
+    # Two user prompts drove two turns.
+    assert prior.turns == 2
+    # First → last MESSAGE entry (10:00:40 → 10:00:51); the session entry's
+    # 40s of pre-prompt idle is not active time.
+    assert prior.seconds == 11.0
+
+
+def test_derive_resumed_activity_empty_branch_is_zero() -> None:
+    from aelix_coding_agent.tui.activity_tracker import derive_resumed_activity
+
+    prior = derive_resumed_activity([])
+    assert prior.turns == 0
+    assert prior.seconds == 0.0
+
+
+def test_derive_resumed_activity_tolerates_unparseable_timestamps() -> None:
+    from aelix_coding_agent.tui.activity_tracker import derive_resumed_activity
+
+    branch = [
+        _entry("not-a-timestamp", "user"),
+        _entry("2026-08-07T10:00:00.000Z", "assistant"),
+    ]
+    prior = derive_resumed_activity(branch)
+    # The prompt still counts; only the bad timestamp drops out of the span.
+    assert prior.turns == 1
+    assert prior.seconds == 0.0
+
+
+def test_seeded_tracker_reports_prior_turns_and_time_before_any_event() -> None:
+    """A resumed session's /stats must be right BEFORE the user types."""
+
+    from aelix_coding_agent.tui.activity_tracker import derive_resumed_activity
+
+    tracker = SessionActivityTracker()
+    tracker.seed_resumed(derive_resumed_activity(_BRANCH))
+    snap = tracker.snapshot()
+    assert snap.turns == 2
+    assert snap.wall_seconds == 11.0
+
+
+def test_seeded_tracker_adds_live_activity_to_the_baseline() -> None:
+    from aelix_coding_agent.tui.activity_tracker import derive_resumed_activity
+
+    tracker = SessionActivityTracker(clock=_FakeClock([100.0, 104.0]))
+    tracker.seed_resumed(derive_resumed_activity(_BRANCH))
+    tracker.on_event(SimpleNamespace(type="turn_start"))
+    tracker.on_event(SimpleNamespace(type="turn_end"))
+    snap = tracker.snapshot()
+    # 2 resumed turns + 1 live turn; 11s resumed + 4s live.
+    assert snap.turns == 3
+    assert snap.wall_seconds == 15.0
+
+
+def test_reset_clears_the_resumed_baseline() -> None:
+    """A swap to a DIFFERENT session must not inherit the prior baseline."""
+
+    from aelix_coding_agent.tui.activity_tracker import derive_resumed_activity
+
+    tracker = SessionActivityTracker()
+    tracker.seed_resumed(derive_resumed_activity(_BRANCH))
+    tracker.reset()
+    snap = tracker.snapshot()
+    assert snap.turns == 0
+    assert snap.wall_seconds == 0.0
+
+
+def test_derive_counts_pre_compaction_turns_on_the_raw_branch() -> None:
+    """``get_branch()`` is the RAW path to root, so a compaction does not hide
+    earlier turns — the compaction entry itself is skipped as a non-message.
+
+    Pins the measured behaviour; an earlier docstring claimed the opposite (that
+    only the summary survived), which would have been true of ``build_context``
+    but not of the branch this actually reads.
+    """
+
+    from aelix_coding_agent.tui.activity_tracker import derive_resumed_activity
+
+    branch = [
+        _entry("2026-08-07T10:00:00.000Z", "user"),  # pre-compaction turn
+        _entry("2026-08-07T10:00:05.000Z", "assistant"),
+        SimpleNamespace(type="compaction", timestamp="2026-08-07T10:00:06.000Z"),
+        _entry("2026-08-07T10:00:10.000Z", "user"),  # post-compaction turn
+        _entry("2026-08-07T10:00:15.000Z", "assistant"),
+    ]
+    prior = derive_resumed_activity(branch)
+    assert prior.turns == 2, "both the pre- and post-compaction prompts count"
+    assert prior.seconds == 15.0

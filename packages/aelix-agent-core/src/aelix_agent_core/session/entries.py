@@ -258,6 +258,37 @@ def _message_from_dict(data: dict[str, Any]) -> AgentMessage:
             error_message=data.get("error_message"),
             usage=data.get("usage"),
             timestamp=data.get("timestamp"),
+            # ``_message_to_dict`` is ``asdict``, so these were always WRITTEN;
+            # rebuilding field-by-field simply never read them back and the
+            # values died at the reload boundary.
+            #
+            # ``api``/``provider``/``model`` are ADR-0190's same-model
+            # provenance. Restoring them has two effects, and it is worth being
+            # exact about which:
+            #   • They are the only record of which price list a turn should be
+            #     billed at, so WITHOUT them a resumed session cannot be costed
+            #     at all (``harness/_session_stats.py::_message_cost``). This is
+            #     the effect this change actually delivers.
+            #   • They also gate ``_transform_messages``' same-model branch. That
+            #     branch's signed-thinking preservation is NOT restored by this
+            #     change and never was broken by its absence: ``_assistant_content``
+            #     below has no ``"thinking"`` case, so a persisted thinking block
+            #     returns as a raw dict, never satisfies the
+            #     ``isinstance(block, ThinkingContent)`` test at
+            #     ``_transform_messages.py:174``, and falls through the defensive
+            #     passthrough at ``:225`` — before AND after this fix. Delivering
+            #     thinking replay needs that missing case (tracked separately);
+            #     provenance is its PREREQUISITE, not its delivery.
+            # The one live behavioural delta here is that a same-model resumed
+            # turn no longer receives cross-model ``tool_call_id``
+            # renormalisation (``:218``), which is the pi-correct outcome.
+            #
+            # ``response_id`` is the OpenAI Responses adapter's
+            # ``previous_response_id`` chain.
+            api=data.get("api"),
+            provider=data.get("provider"),
+            model=data.get("model"),
+            response_id=data.get("response_id"),
         )
     if role == "toolResult":
         return ToolResultMessage(
@@ -265,6 +296,9 @@ def _message_from_dict(data: dict[str, Any]) -> AgentMessage:
             content=_user_content(list(data.get("content", []))),
             is_error=bool(data.get("is_error", False)),
             timestamp=data.get("timestamp"),
+            # Same omission: adapters that must wrap a result with its function
+            # name (Moonshot, Together, Cloudflare) read this.
+            tool_name=data.get("tool_name", "") or "",
         )
     # Unknown role — return the raw dict so callers can surface a clear
     # error at the JSONL boundary (parse fail rather than silent loss).

@@ -957,3 +957,41 @@ async def test_tabbed_tab_switch_works_while_filter_active() -> None:
         assert "B" in rendered  # the second tab's render fired
         pipe.send_text("\x1b")  # Esc closes
         assert await asyncio.wait_for(fut, timeout=5) is None
+
+
+# === footer repaint guard (Defect D) =========================================
+#
+# The context meter is refreshed from overlapping triggers (``turn_end`` covers
+# the abort/error turn paths, ``settled`` the success path), so the same value
+# commonly arrives twice for one turn. Repainting on an unchanged value would
+# add a second invalidate per turn on a path with a flicker-regression history.
+
+
+async def test_set_context_label_repaints_only_on_a_real_change() -> None:
+    async with _ctx(run_app=False) as (ctx, _chrome, _pipe):
+        painted: list[int] = []
+        ctx._refresh_footer = lambda: painted.append(1)  # type: ignore[method-assign]
+
+        ctx.set_context_label("◔ 16% · 32.3K/200K")
+        assert len(painted) == 1
+        # Same value again (the overlapping trigger) — no second paint.
+        ctx.set_context_label("◔ 16% · 32.3K/200K")
+        assert len(painted) == 1
+        # A real change after a compaction still paints.
+        ctx.set_context_label("◔ 10% · 19.0K/200K")
+        assert len(painted) == 2
+        assert ctx._context_label == "◔ 10% · 19.0K/200K"
+
+
+async def test_set_usage_stats_repaints_only_on_a_real_change() -> None:
+    async with _ctx(run_app=False) as (ctx, _chrome, _pipe):
+        painted: list[int] = []
+        ctx._refresh_footer = lambda: painted.append(1)  # type: ignore[method-assign]
+
+        ctx.set_usage_stats(100, 50, 0.25)
+        assert len(painted) == 1
+        ctx.set_usage_stats(100, 50, 0.25)
+        assert len(painted) == 1
+        # Any one field changing is a real change.
+        ctx.set_usage_stats(100, 50, 0.30)
+        assert len(painted) == 2

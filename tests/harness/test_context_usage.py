@@ -360,3 +360,75 @@ async def test_extension_context_get_context_usage_returns_none_without_model(
         assert ctx.get_context_usage() is None
     finally:
         await harness.dispose()
+
+
+# === F2: cost completeness across a compaction ==============================
+
+
+async def _priced_harness(tmp_path: Path, *, compacted: bool):
+    """A harness whose session holds one PRICED assistant turn, optionally
+    followed by a compaction entry."""
+
+    from aelix_agent_core.session import JsonlSessionStorage, LocalFileSystem
+    from aelix_agent_core.session.session import Session
+    from aelix_ai.messages import AssistantMessage
+
+    fs = LocalFileSystem()
+    storage = await JsonlSessionStorage.create(
+        fs,
+        str(tmp_path / f"cost-{compacted}.jsonl"),
+        cwd=str(tmp_path),
+        session_id="cost-test",
+    )
+    session = Session(storage)
+    user_id = await session.append_message(
+        UserMessage(content=[TextContent(text="hi")])
+    )
+    priced = AssistantMessage(
+        content=[TextContent(text="a")],
+        usage={"input": 4000, "output": 369},
+        provider="anthropic",
+        model="claude-haiku-4-5",
+    )
+    await session.append_message(priced)
+    if compacted:
+        await session.append_compaction(
+            summary="rolled up",
+            first_kept_entry_id=user_id,
+            tokens_before=4369,
+        )
+    model = Model(id="m", provider="p", context_window=200000)
+    harness = AgentHarness(
+        AgentHarnessOptions(
+            model=model,
+            stream_fn=_stream(),
+            session=session,
+            initial_messages=[priced],
+        )
+    )
+    return harness
+
+
+async def test_cost_is_complete_on_an_uncompacted_session(tmp_path: Path) -> None:
+    harness = await _priced_harness(tmp_path, compacted=False)
+    try:
+        stats = await harness.get_session_stats()
+        assert stats.cost > 0.0
+        assert stats.cost_known is True  # exact figure
+    finally:
+        await harness.dispose()
+
+
+async def test_cost_is_flagged_incomplete_after_a_compaction(
+    tmp_path: Path,
+) -> None:
+    """The summarized-away turns were PAID FOR but are gone from state.messages,
+    so the surviving total is a floor — it must not read as an exact bill."""
+
+    harness = await _priced_harness(tmp_path, compacted=True)
+    try:
+        stats = await harness.get_session_stats()
+        assert stats.cost > 0.0  # the arithmetic is still real
+        assert stats.cost_known is False  # …but it is not the whole spend
+    finally:
+        await harness.dispose()

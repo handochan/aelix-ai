@@ -182,8 +182,13 @@ def test_remaining_five_deferred_own_adr_0074() -> None:
 
 
 def test_session_stats_has_ten_fields_pi_shape() -> None:
-    """Pi parity: ``SessionStats`` shape is 10 fields
-    (``agent-session.ts:212-223``).
+    """Pi parity: ``SessionStats`` carries Pi's 10 fields
+    (``agent-session.ts:212-223``) — a STRICT SUPERSET, as this module is named.
+
+    The Pi 10 stay pinned exactly; every Aelix-additive field must be named here,
+    so an unplanned one still fails. ``cost_known`` reports whether a price could
+    be found for the session's token usage — Pi needs no equivalent because its
+    adapters always price a turn — and it is not emitted on the RPC wire.
     """
 
     fields = set(SessionStats.__dataclass_fields__.keys())
@@ -199,7 +204,8 @@ def test_session_stats_has_ten_fields_pi_shape() -> None:
         "session_file",
         "context_usage",
     }
-    assert fields == expected
+    assert expected <= fields
+    assert fields - expected == {"cost_known"}
 
 
 def test_session_stats_tokens_has_five_fields_pi_shape() -> None:

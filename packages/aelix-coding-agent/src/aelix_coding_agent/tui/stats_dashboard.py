@@ -159,6 +159,45 @@ def _avg_tool_seconds(per_tool: Any) -> float | None:
     return total / timed
 
 
+#: Shown instead of a dollar figure when nothing at all could be priced.
+UNPRICED_COST = "n/a"
+#: Marks a figure that is a FLOOR, not a bill — the real spend is at least this.
+PARTIAL_COST_PREFIX = "≥ "
+
+
+def format_session_cost(stats: Any, *, prefix: str = "$") -> str:
+    """Render a session's cost honestly, given how much of it is known.
+
+    ``cost_known`` is ``False`` when the figure is short of the real spend —
+    either some usage had no price in the registry, or the message list no
+    longer covers the whole session (after a ``/compact`` the summarized-away
+    turns are gone from ``state.messages`` but were still paid for). Three
+    outcomes, none of which can state something false:
+
+    - known → the exact figure, ``$0.0127``.
+    - not known, but something WAS priced → ``≥ $0.0127``. A floor is a true
+      statement and keeps a real number in front of the user, which is more
+      use than discarding it.
+    - not known and nothing priced → :data:`UNPRICED_COST`. ``≥ $0.0000``
+      carries no information, and a bare ``$0.0000`` would read as "this
+      session was free" — the one reading guaranteed to be wrong.
+
+    A sparse/duck-typed ``stats`` without the attribute is treated as known, so
+    an embedder supplying its own already-priced stats still renders a figure.
+    Callers wanting a bare number pass ``prefix=""``.
+    """
+
+    try:
+        cost = float(getattr(stats, "cost", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        return UNPRICED_COST
+    if getattr(stats, "cost_known", True):
+        return f"{prefix}{cost:.4f}"
+    if cost <= 0.0:
+        return UNPRICED_COST
+    return f"{PARTIAL_COST_PREFIX}{prefix}{cost:.4f}"
+
+
 def build_session_tab(stats: Any, snapshot: Any) -> list[str]:
     """Session-summary tab: tool calls (ok/fail), success %, tokens, cost, etc.
 
@@ -180,11 +219,7 @@ def build_session_tab(stats: Any, snapshot: Any) -> list[str]:
     ok = max(0, calls - failures)
     success = _pct(getattr(snapshot, "success_rate", None))
 
-    cost = getattr(stats, "cost", 0.0) or 0.0
-    try:
-        cost_str = f"${float(cost):.4f}"
-    except (TypeError, ValueError):
-        cost_str = "$0.0000"
+    cost_str = format_session_cost(stats)
 
     avg_latency = _dur(_avg_tool_seconds(getattr(snapshot, "per_tool", [])))
 
@@ -549,9 +584,12 @@ async def run_stats(
 
 
 __all__ = [
+    "PARTIAL_COST_PREFIX",
+    "UNPRICED_COST",
     "build_activity_tab",
     "build_efficiency_tab",
     "build_history_tab",
     "build_session_tab",
+    "format_session_cost",
     "run_stats",
 ]

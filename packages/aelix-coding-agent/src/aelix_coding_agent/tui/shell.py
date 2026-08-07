@@ -45,12 +45,16 @@ from aelix_coding_agent.extensions.command_dispatch import (
     CommandSurfaceBindings,
     DispatchOutcome,
 )
-from aelix_coding_agent.tui.activity_tracker import SessionActivityTracker
+from aelix_coding_agent.tui.activity_tracker import (
+    SessionActivityTracker,
+    derive_resumed_activity,
+)
 from aelix_coding_agent.tui.chrome import AelixChrome
 from aelix_coding_agent.tui.commands import (
     BUILTIN_COMMANDS,
     BuiltinCommand,
     CommandContext,
+    active_tool_views,
     match_command,
     slash_word,
 )
@@ -612,6 +616,32 @@ async def run_tui(
     # supplies the live model id for message_end events that omit it. Fed at the
     # TOP of _on_agent_event (before the renderer) and reset on _rebind.
     tracker = SessionActivityTracker(model_provider=_model_id)
+
+    async def _seed_tracker_from_session() -> None:
+        """Carry a resumed session's turns + active time into the live tracker.
+
+        The tracker only ever counted THIS process, so a ``--continue`` (or an
+        in-session ``/resume``) read Turns 0 / Active time 0s while the tokens and
+        message counts #122 restored read correctly. ``get_branch`` is the same
+        source ``build_context`` reads, so the baseline describes exactly the
+        transcript the user is looking at.
+
+        Called only from ``_rebind``, which covers BOTH insertion points: startup
+        runs an initial ``_rebind`` once the harness is bootstrapped, and every
+        later swap goes through the same callback. Seeding here as well would be
+        undone anyway — ``_rebind`` resets the tracker before it seeds.
+
+        Best-effort: a session that cannot be read leaves the baseline at zero
+        rather than breaking the launch.
+        """
+
+        try:
+            session = runtime_host.session
+            if session is None:  # --no-session, or an embedder without one
+                return
+            tracker.seed_resumed(derive_resumed_activity(await session.get_branch()))
+        except Exception:  # noqa: BLE001 — /stats must never block a launch
+            return
 
     # WP-8 D3 (ADR-0168) — cross-session /stats history. The tracker above is
     # live-only (reset on swap, lost on exit); this store persists a cumulative
@@ -1370,13 +1400,34 @@ async def run_tui(
                 signals_installed.append(sig)
 
     unsubscribe_holder: dict[str, Callable[[], None] | None] = {"u": None}
+    # The ``settled`` hook registration, held so a session swap can move it onto
+    # the new harness's bus (see ``_rebind``).
+    settled_unsub_holder: dict[str, Callable[[], None] | None] = {"u": None}
 
     context_usage_tasks: set[asyncio.Task[None]] = set()
     history_tasks: set[asyncio.Task[None]] = set()
 
-    async def _refresh_context_usage() -> None:
-        # Pull the context-window meter after each turn (async; walks messages,
+    # Monotonic generation for context-usage refreshes. Several triggers can be
+    # in flight at once (``turn_end`` then ``settled`` for one turn), each
+    # awaiting ``get_session_stats`` → ``get_branch`` → file I/O, so they can
+    # COMPLETE out of order: the turn_end refresh snapshots ``state.messages``
+    # before ``core.py:4398`` extends it, yet may finish after the settled
+    # refresh and paint the stale value last. Completions therefore carry the
+    # generation they were scheduled with and a superseded one is DROPPED,
+    # making the outcome last-SCHEDULED-wins instead of last-to-finish-wins.
+    context_usage_seq: dict[str, int] = {"n": 0}
+
+    def _next_context_usage_seq() -> int:
+        context_usage_seq["n"] += 1
+        return context_usage_seq["n"]
+
+    async def _refresh_context_usage(seq: int | None = None) -> None:
+        # Pull the context-window meter (async; walks messages + reads the branch,
         # so NOT per-frame). Degrades to no segment when usage is unavailable.
+        # ``seq`` omitted → this call claims its own generation, so a direct
+        # ``await`` (the /rebind path) still supersedes anything older.
+        if seq is None:
+            seq = _next_context_usage_seq()
         get_stats = getattr(runtime_host.harness, "get_session_stats", None)
         if get_stats is None:
             return
@@ -1384,12 +1435,16 @@ async def run_tui(
             stats = await get_stats()
         except Exception:  # noqa: BLE001 — a stats hiccup must not kill the TUI
             return
+        if seq != context_usage_seq["n"]:
+            # A newer refresh was scheduled while this one was awaiting; its
+            # snapshot is fresher, so discard ours rather than racing to paint.
+            return
         context.set_context_label(
             _format_context_label(getattr(stats, "context_usage", None))
         )
         # WP-2 (ADR-0160) — also cache the token/cost scalars for the OPTIONAL
         # input-tokens / output-tokens / cost footer segments (default-OFF). One
-        # turn_end task feeds both the context% label + these scalars.
+        # refresh feeds both the context% label + these scalars.
         tokens = getattr(stats, "tokens", None)
         with contextlib.suppress(Exception):
             context.set_usage_stats(
@@ -1397,6 +1452,21 @@ async def run_tui(
                 int(getattr(tokens, "output", 0) or 0),
                 float(getattr(stats, "cost", 0.0) or 0.0),
             )
+
+    def _schedule_context_usage_refresh() -> None:
+        """Run :func:`_refresh_context_usage` off-frame, GC-pinned.
+
+        The refresh is async, so every trigger schedules it the same way rather
+        than each call site re-deriving the strong-reference dance. The
+        generation is claimed HERE, at schedule time, so ordering follows the
+        trigger order rather than however the file I/O happens to interleave.
+        Painting still goes through ``set_context_label`` / ``set_usage_stats``
+        — no new render path.
+        """
+
+        task = loop.create_task(_refresh_context_usage(_next_context_usage_seq()))
+        context_usage_tasks.add(task)
+        task.add_done_callback(context_usage_tasks.discard)
 
     # Sprint 6h₂₂ (ADR-0130) — auto-retry UI countdown (closes the 6h₂₀ v2
     # deferral). Pi parity: ``interactive-mode.ts:2919-2948`` —
@@ -1564,11 +1634,19 @@ async def run_tui(
             _drive_compaction_indicator(
                 out_chrome, _compaction_working_state, etype
             )
+            if etype == "compaction_end":
+                # Compaction changes the real context with NO following turn_end,
+                # so without this the meter kept painting the pre-compaction
+                # number — a user who ran /compact saw the footer not move and
+                # concluded compaction had done nothing, while /context already
+                # reported the new, smaller figure.
+                _schedule_context_usage_refresh()
         elif etype == "turn_end":
-            # Keep a strong reference so the task isn't GC'd before it runs.
-            task = loop.create_task(_refresh_context_usage())
-            context_usage_tasks.add(task)
-            task.add_done_callback(context_usage_tasks.discard)
+            # Covers the ABORT and ERROR turn paths, which append their message to
+            # ``state.messages`` BEFORE emitting turn_end and so are already
+            # current here. The success path is one turn stale at this point and
+            # is refreshed again on ``settled`` (see the registration below).
+            _schedule_context_usage_refresh()
             # D3 — persist a cumulative /stats history row for this turn (async +
             # guarded; same strong-reference pattern as the context-usage task).
             htask = loop.create_task(_record_history())
@@ -1579,12 +1657,41 @@ async def run_tui(
             # (Sprint 6h₁₂e).
             context._refresh_footer()
 
+    async def _settled_hook(_event: object, _ctx: object = None) -> None:
+        # The FIRST moment a finished turn is visible in ``state.messages``: the
+        # harness extends it at ``harness/core.py:4398`` and emits ``settled``
+        # immediately after, whereas the ``turn_end`` the loop emitted earlier is
+        # too early — a refresh there estimates over a list still missing the turn
+        # that just ended, which is why the meter sat one full turn behind.
+        #
+        # TWO parameters, not one. ``hooks.on`` is the EXTENSION-facing seam and
+        # its bus invokes ``handler(event, ctx)`` (``hooks.py:1349``; the
+        # ``SettledHandler`` alias types both positions). The ``subscribe`` seam
+        # the rest of this module uses passes the event ALONE, and a handler
+        # written to THAT shape raises ``TypeError: takes 1 positional argument
+        # but 2 were given`` — which ``core.py:4406`` catches and logs at DEBUG,
+        # so it fails SILENTLY and the refresh simply never runs. ``_ctx`` is
+        # defaulted so the handler stays directly callable from a unit test.
+        _schedule_context_usage_refresh()
+
     async def _rebind(new_harness: AgentHarness, reason: str = "resume") -> None:
         prior = unsubscribe_holder["u"]
         if prior is not None:
             with contextlib.suppress(Exception):
                 prior()
         unsubscribe_holder["u"] = new_harness.subscribe(_on_agent_event)
+        # Same lifecycle as the event subscription above — a swap builds a NEW
+        # harness with a NEW hook bus, so the settled handler must move with it or
+        # the meter silently stops refreshing after the first /resume.
+        prior_settled = settled_unsub_holder["u"]
+        if prior_settled is not None:
+            with contextlib.suppress(Exception):
+                prior_settled()
+        settled_unsub_holder["u"] = None
+        with contextlib.suppress(Exception):
+            settled_unsub_holder["u"] = new_harness.hooks.on(
+                "settled", _settled_hook, source="tui-context-meter"
+            )
         # A session swap (/resume, new, fork) builds a BRAND-NEW harness whose
         # fresh _ExtensionRuntime defaults to the HEADLESS ui — re-bind the live
         # TUI ui onto it (issue #9) so an extension command's ctx.ui.select /
@@ -1618,7 +1725,12 @@ async def run_tui(
         # WP-8 (Feature 2) — a session swap starts a fresh /stats lifetime: the
         # tracker's per-tool / per-model / turn / wall accounting belongs to the
         # prior session, so reset it to track the resumed/new session from zero.
+        # Then adopt the ARRIVING session's own history, so /resume into a session
+        # with turns behind it reports them instead of 0 (a swap to a new/empty
+        # session seeds nothing and stays at zero). Reset first — seeding before
+        # the reset would be wiped by it.
         tracker.reset()
+        await _seed_tracker_from_session()
         # #122 — the footer caches the prior session's context% label + token/cost
         # scalars (``_context_label`` / ``set_usage_stats``); a swap must not leak
         # them into the new session's footer until the next turn_end. The new
@@ -1995,6 +2107,10 @@ async def run_tui(
         if unsub is not None:
             with contextlib.suppress(Exception):
                 unsub()
+        settled_unsub = settled_unsub_holder["u"]
+        if settled_unsub is not None:
+            with contextlib.suppress(Exception):
+                settled_unsub()
         out_chrome.exit()
         # Sprint 6h₂₂ (ADR-0130) — cancel the auto-retry countdown ticker if a
         # shutdown lands mid-backoff. The end-event handler is the normal
@@ -2231,12 +2347,12 @@ def _build_banner(harness: AgentHarness, cwd: str) -> object:
     except Exception:  # noqa: BLE001
         context_label = "none"
 
-    # [Tools] — SAME source the /tools command uses (harness._action_get_all_tools).
+    # [Tools] — SAME source the /tools command uses (``active_tool_views``): the
+    # tools a turn actually sends, NOT every registered tool. Under ``--no-tools``
+    # the registered list is still full while the model has none.
     tool_names: list[str] = []
     try:
-        getter = getattr(harness, "_action_get_all_tools", None)
-        if callable(getter):
-            tool_names = [getattr(t, "name", str(t)) for t in (getter() or [])]
+        tool_names = [getattr(t, "name", str(t)) for t in active_tool_views(harness)]
     except Exception:  # noqa: BLE001
         tool_names = []
     if tool_names:

@@ -28,10 +28,11 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterable
 
 
 def _read(obj: Any, key: str, default: Any = 0) -> Any:
@@ -131,6 +132,85 @@ class ActivitySnapshot:
         return sum(t.total_duration for t in self.per_tool) / timed
 
 
+@dataclass(frozen=True)
+class ResumedActivity:
+    """Turns + active seconds reconstructed from a resumed session's branch."""
+
+    turns: int = 0
+    seconds: float = 0.0
+
+
+def _entry_epoch(entry: object) -> float | None:
+    """Parse a persisted entry's ISO ``timestamp`` into epoch seconds.
+
+    Every session entry carries one (``session/entries.py``), spelled
+    ``2026-08-07T10:00:00.000Z``. Returns :data:`None` for an absent or
+    unparseable value so a single bad row narrows the span instead of
+    discarding the whole reconstruction.
+    """
+
+    raw = getattr(entry, "timestamp", None)
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        # ``fromisoformat`` accepts the trailing ``Z`` from Python 3.11 on,
+        # which is this project's floor.
+        return datetime.fromisoformat(raw).timestamp()
+    except ValueError:
+        return None
+
+
+def derive_resumed_activity(entries: Iterable[object]) -> ResumedActivity:
+    """Reconstruct turn count + active time from a persisted session branch.
+
+    :attr:`SessionActivityTracker.turns` counts live ``turn_end`` events and
+    :attr:`ActivitySnapshot.wall_seconds` spans :func:`time.monotonic` — both
+    per-PROCESS, so a resumed session reported 0 for each while its tokens and
+    message counts read correctly. Neither is persisted, but both are derivable
+    from the branch, which is why this reconstructs rather than reports zero:
+
+    - **turns** — one user message is one prompt is one turn, so the user
+      messages on the branch are the turns that produced it. This counts a turn
+      that was interrupted mid-flight: the prompt was still issued.
+    - **seconds** — first to last MESSAGE entry. Bookkeeping entries
+      (``session``, ``leaf``, ``label``) are skipped so the idle between opening
+      a session and typing into it is not billed as active time, matching the
+      live tracker, which starts at the first event of the first turn.
+
+    Both are spans over the branch the user resumed, so a fork reports its own
+    ancestry rather than the whole tree. Pure + duck-typed.
+
+    COMPACTION — the caller supplies ``await session.get_branch()``, which is the
+    RAW path to root, NOT ``build_context``'s display selection. Compaction
+    entries are skipped here only because they are not ``type == "message"``, so
+    turns and active time span the FULL history including summarized-away turns.
+    That is the more useful answer, but it makes one ``/stats`` panel internally
+    inconsistent: Turns and Active time cover everything, while tokens and cost
+    cover only what survives in ``state.messages``, which a ``/compact`` truncates
+    (see ``harness/_session_stats.py``'s ``cost_complete``, which is why cost
+    renders as a floor there). Anyone changing either side should move both.
+    """
+
+    turns = 0
+    first: float | None = None
+    last: float | None = None
+    for entry in entries:
+        if getattr(entry, "type", None) != "message":
+            continue
+        message = getattr(entry, "message", None)
+        if getattr(message, "role", None) == "user":
+            turns += 1
+        stamp = _entry_epoch(entry)
+        if stamp is None:
+            continue
+        if first is None or stamp < first:
+            first = stamp
+        if last is None or stamp > last:
+            last = stamp
+    seconds = 0.0 if first is None or last is None else max(0.0, last - first)
+    return ResumedActivity(turns=turns, seconds=seconds)
+
+
 @dataclass
 class _ToolAccum:
     calls: int = 0
@@ -172,6 +252,9 @@ class SessionActivityTracker:
         # Open ``tool_execution_start`` timestamps keyed by ``tool_call_id`` (the
         # pairing key for latency); popped when the matching end arrives.
         self._pending_starts: dict[str, float] = {}
+        # Baseline carried in from a RESUMED session (see :meth:`seed_resumed`).
+        # Held apart from the live counters so ``reset`` can drop it wholesale.
+        self._prior = ResumedActivity()
 
     def reset(self) -> None:
         """Clear all accumulated activity (new/hot-swapped session)."""
@@ -184,6 +267,29 @@ class SessionActivityTracker:
         # Drop unpaired starts too, or a post-reset end could pair against a
         # pre-reset start and bleed a stale duration into the new session.
         self._pending_starts = {}
+        # The baseline belongs to the session being left, not the one arriving;
+        # the caller re-seeds from the NEW session's branch after resetting.
+        self._prior = ResumedActivity()
+
+    def seed_resumed(self, prior: ResumedActivity) -> None:
+        """Adopt a resumed session's prior turns + active time as the baseline.
+
+        Turns and wall time are the two ``/stats`` fields with no persisted
+        counterpart to reload (unlike tokens/messages, which #122 restored by
+        rebuilding ``_state.messages``), so a resume reported 0 for both.
+        :func:`derive_resumed_activity` reconstructs them from the branch and
+        this adopts the result; live events then accumulate ON TOP, so ``/stats``
+        reads correctly both before and after the next turn.
+
+        Per-tool and per-model breakdowns are deliberately NOT seeded: the branch
+        records that a tool was called, not whether it errored or how long it
+        took, so a reconstructed leaderboard would invent numbers this module has
+        no basis for. They stay live-only and restart at zero on resume.
+        """
+
+        self._prior = ResumedActivity(
+            turns=max(0, prior.turns), seconds=max(0.0, prior.seconds)
+        )
 
     # -- event ingestion ----------------------------------------------------
 
@@ -315,19 +421,24 @@ class SessionActivityTracker:
         else:
             wall_seconds = max(0.0, self._last_ts - self._first_ts)
 
+        # A resumed baseline (if any) plus this process's activity. The two spans
+        # are added rather than bridged: the gap between the sessions is the user
+        # away from the terminal, which is not active time.
         return ActivitySnapshot(
             tool_calls=tool_calls,
             tool_failures=tool_failures,
             per_tool=per_tool,
             per_model=per_model,
-            turns=self._turns,
-            wall_seconds=wall_seconds,
+            turns=self._prior.turns + self._turns,
+            wall_seconds=self._prior.seconds + wall_seconds,
         )
 
 
 __all__ = [
     "ActivitySnapshot",
     "ModelStat",
+    "ResumedActivity",
     "SessionActivityTracker",
     "ToolStat",
+    "derive_resumed_activity",
 ]

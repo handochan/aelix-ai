@@ -23,6 +23,8 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
+from aelix_coding_agent.tui.stats_dashboard import format_session_cost
+
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
     from typing import Any
@@ -443,25 +445,52 @@ async def _cost_handler(ctx: CommandContext, args: str) -> None:
     table.add_row("input tokens", str(getattr(tokens, "input", 0)))
     table.add_row("output tokens", str(getattr(tokens, "output", 0)))
     table.add_row("total tokens", str(getattr(tokens, "total", 0)))
-    table.add_row("cost (USD)", f"{getattr(stats, 'cost', 0.0):.4f}")
+    table.add_row("cost (USD)", format_session_cost(stats, prefix=""))
     ctx.commit(Panel(table, title="Session usage", box=ROUNDED, border_style="cyan"))
 
 
-async def _tools_handler(ctx: CommandContext, args: str) -> None:
-    """``/tools`` — list the registered tools (name + description)."""
+def active_tool_views(harness: object) -> list[object]:
+    """The tools the model can actually call, as ``ToolInfo``-shaped views.
 
-    # ``_action_get_all_tools`` is semi-private (documented coupling, Sprint
-    # 6h₁₂d) — wrapping it would touch protected core.py. hasattr-guard the
-    # headless FakeHarness, then call the typed method directly.
-    tools: list[object] = []
-    if hasattr(ctx.harness, "_action_get_all_tools"):
-        try:
-            tools = list(ctx.harness._action_get_all_tools())
-        except Exception as exc:  # noqa: BLE001 — surface, never kill the REPL
-            ctx.commit(Text(f"✖ tools failed: {exc}", style="bold red"))
-            return
+    ``_action_get_all_tools`` snapshots ``_state.tools`` — every REGISTERED
+    tool — but a turn sends only the tools that survive the active filter
+    (``harness/core.py:4138`` intersects ``_state.tools`` with
+    ``_state.active_tool_names``). Under ``--no-tools`` / ``--tools a,b`` the
+    two lists differ, so a readout built on the registered list advertises
+    tools the model does not have.
+
+    ``_action_get_active_tools`` applies that same intersection and is the
+    truthful source; it yields names only, so the registered views are filtered
+    by it to keep the descriptions. A harness without the active seam (headless
+    fakes, embedders) carries no filter to apply, so its registered list stands.
+
+    Both readouts are display-only — neither may change which tools are enabled.
+    """
+
+    if not hasattr(harness, "_action_get_all_tools"):
+        return []
+    tools = list(harness._action_get_all_tools())  # type: ignore[attr-defined]
+    getter = getattr(harness, "_action_get_active_tools", None)
+    if not callable(getter):
+        return tools
+    active = {str(name) for name in getter() or ()}
+    return [t for t in tools if getattr(t, "name", str(t)) in active]
+
+
+async def _tools_handler(ctx: CommandContext, args: str) -> None:
+    """``/tools`` — list the tools the model can actually call."""
+
+    # ``_action_get_all_tools`` / ``_action_get_active_tools`` are semi-private
+    # (documented coupling, Sprint 6h₁₂d) — wrapping them would touch protected
+    # core.py. ``active_tool_views`` hasattr-guards both for the headless
+    # FakeHarness, then calls the typed methods directly.
+    try:
+        tools = active_tool_views(ctx.harness)
+    except Exception as exc:  # noqa: BLE001 — surface, never kill the REPL
+        ctx.commit(Text(f"✖ tools failed: {exc}", style="bold red"))
+        return
     if not tools:
-        ctx.commit(Text("No tools registered.", style="yellow"))
+        ctx.commit(Text("No tools active.", style="yellow"))
         return
     table = Table.grid(padding=(0, 2))
     table.add_column(style="bold cyan", no_wrap=True)
@@ -1601,13 +1630,11 @@ def _estimate_context_categories(ctx: CommandContext, window: int) -> list[str]:
 
     # Built-in tools — ToolInfo(name/description) views (full JSON schemas are not
     # exposed; the name+description text is the best available estimate seam).
+    # ACTIVE only: a gated-off tool is never sent, so its schema costs no context
+    # tokens and counting it would overstate the composition.
     tool_schemas: list[object] = []
-    tools_getter: Callable[[], list[Any]] | None = getattr(
-        harness, "_action_get_all_tools", None
-    )
-    if callable(tools_getter):
-        with contextlib.suppress(Exception):
-            tool_schemas = list(tools_getter() or [])
+    with contextlib.suppress(Exception):
+        tool_schemas = active_tool_views(harness)
 
     # Messages — the public live transcript property.
     messages: list[object] = []
@@ -1824,7 +1851,7 @@ async def _session_handler(ctx: CommandContext, args: str) -> None:
             table.add_row("messages", str(getattr(stats, "total_messages", 0)))
             tokens = getattr(stats, "tokens", None)
             table.add_row("tokens", str(getattr(tokens, "total", 0)))
-            table.add_row("cost (USD)", f"{getattr(stats, 'cost', 0.0):.4f}")
+            table.add_row("cost (USD)", format_session_cost(stats, prefix=""))
     ctx.commit(Panel(table, title="Session", box=ROUNDED, border_style="cyan"))
 
 

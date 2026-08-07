@@ -320,6 +320,19 @@ _KERNEL_CHANGE_ALLOWLIST = frozenset(
         # ``test_kernel_has_no_subagent_surface`` still passes (independently
         # reviewed non-delegation). Same category as the ADR-0208 session entries.
         "packages/aelix-agent-core/src/aelix_agent_core/runtime/agent_session_runtime.py",
+        # ADR-0210. ``/stats`` reported ``$0.0000`` for every main session: no
+        # aelix adapter calls ``calculate_cost`` (pi prices inside the adapter), so
+        # a persisted ``usage`` carries no ``cost`` key and the sum was structurally
+        # zero — and ``_message_from_dict`` never read back the four provenance
+        # fields ``asdict`` wrote, so a message could not be priced at all. Both
+        # fixes have to live where the defective code is. Additive ``cost_known``
+        # marks a floor rather than a bill (a compacted branch renders ``>= $X``);
+        # no ``aelix_agents`` import, no spawn/cap/consent/registry surface —
+        # ``test_kernel_has_no_subagent_surface`` passes (independently reviewed
+        # non-delegation). ``harness/core.py`` is already allowlisted above; it
+        # changed again here for ``get_session_stats``'s completeness check.
+        "packages/aelix-agent-core/src/aelix_agent_core/harness/_session_stats.py",
+        "packages/aelix-agent-core/src/aelix_agent_core/session/entries.py",
     }
 )
 
