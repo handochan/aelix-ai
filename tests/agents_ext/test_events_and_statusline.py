@@ -342,9 +342,42 @@ def test_the_row_text_is_one_line_and_names_the_profile() -> None:
     segment, so anything that wraps is anything that disappears."""
 
     text = format_status_row(
-        _progress(current_tool="edit", elapsed_ms=12_300, tokens=1500, cost=0.0031)
+        _progress(
+            model="claude-opus-4-8",
+            current_tool="edit",
+            elapsed_ms=12_300,
+            tokens=1500,
+            cost=0.0031,
+        )
     )
     assert "\n" not in text
     assert "scout" in text
+    # The child's run model, right after ``agent {profile}`` and before the tool.
+    assert "claude-opus-4-8" in text
+    assert text.startswith("agent scout · claude-opus-4-8 · edit")
     assert "edit" in text
     assert "1.5k tok" in text
+
+
+def test_a_model_less_child_row_has_no_stray_model_separator() -> None:
+    """``model`` is ``None`` until the child's first ``message_end`` resolves the
+    run model (a profile that declared no ``model:`` may never resolve one). The
+    term is OMITTED then — never rendered as ``· None ·`` and never a dangling
+    separator — so the row stays byte-identical to what P2 shipped."""
+
+    text = format_status_row(_progress(current_tool="edit", elapsed_ms=1_000))
+    assert text == "agent scout · edit · 1s"
+    assert "None" not in text
+
+
+def test_a_hostile_model_string_cannot_break_the_status_row() -> None:
+    """``model`` is child-authored (read off the child's own ``message_end``), so
+    a newline or an ESC in it must not add a chrome row or smuggle an SGR onto the
+    shared statusline. Same flatten the panel gives every child string."""
+
+    hostile = "gpt\n\x1b[31m FAKE\n" + "x" * 5000
+    text = format_status_row(_progress(model=hostile, elapsed_ms=1_000))
+    assert "\n" not in text
+    assert "\x1b" not in text
+    assert "\x9b" not in text  # C1: the one-byte CSI
+    assert len(text) <= len("agent scout · ") + 40 + len(" · 1s")
