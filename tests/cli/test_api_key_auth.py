@@ -45,6 +45,8 @@ from aelix_coding_agent.cli import entry as entry_mod
 from aelix_coding_agent.cli.entry import _async_main, _make_auth_callback
 from aelix_coding_agent.model_registry import ModelRegistry
 
+from tests.env_sandbox import sandbox_home
+
 
 @pytest.fixture(autouse=True)
 def _reset_registry() -> object:
@@ -147,7 +149,7 @@ async def test_api_key_no_provider_exits_1(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(sys, "stdin", _FakePipedStdin())
-    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    sandbox_home(monkeypatch, tmp_path / "home")
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     secret = "sk-NOPROVIDER-LEAK"
     code = await _async_main(["--api-key", secret, "--print"])
@@ -202,7 +204,7 @@ async def test_async_main_env_only_does_not_error(
     untouched."""
 
     monkeypatch.setattr(sys, "stdin", _FakePipedStdin())
-    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    sandbox_home(monkeypatch, tmp_path / "home")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-env-key")
     code = await _async_main(
         ["--provider", "anthropic", "--model", "claude-3", "--print"]
@@ -256,7 +258,7 @@ async def test_async_main_api_key_sets_override_and_attaches_callback(
     """
 
     monkeypatch.setattr(sys, "stdin", _FakePipedStdin())
-    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    sandbox_home(monkeypatch, tmp_path / "home")
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     # Real provider so the (mocked) turn does not fail before the wiring runs.
     _register_key_capturing_provider({})
@@ -317,7 +319,7 @@ async def test_async_main_env_only_wires_callback_and_resolves_env(
     """
 
     monkeypatch.setattr(sys, "stdin", _FakePipedStdin())
-    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    sandbox_home(monkeypatch, tmp_path / "home")
     # ITEM #2: an env-authenticated model so the no-usable-model guard does not
     # abort before the factory runs (the guard leaves env-key paths untouched).
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-env-key")

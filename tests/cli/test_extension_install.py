@@ -25,6 +25,8 @@ from aelix_coding_agent.cli.extension_install import (
     run_extension_command_async,
 )
 
+from tests.env_sandbox import sandbox_home
+
 
 @pytest.fixture(autouse=True)
 def _isolate_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -2558,7 +2560,7 @@ def test_a_pinned_explicit_config_hides_a_stale_user_index(
     )
     explicit = tmp_path / "explicit.conf"
     _write_pip_conf(explicit, "[global]\nextra-index-url = https://EXPLICIT-EXTRA/simple\n")
-    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    sandbox_home(monkeypatch, tmp_path / "home")
     monkeypatch.setenv("XDG_CONFIG_HOME", str(home))
     monkeypatch.setenv("XDG_CONFIG_DIRS", str(tmp_path / "absent"))
     monkeypatch.setenv("PIP_CONFIG_FILE", str(explicit))

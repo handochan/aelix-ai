@@ -23,6 +23,8 @@ from aelix_coding_agent.cli.file_processor import (
 )
 from PIL import Image
 
+from tests.env_sandbox import sandbox_home
+
 # === Text file branch ========================================================
 
 
@@ -240,7 +242,7 @@ async def test_tilde_expansion(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # Point HOME at tmp_path so ``~/x.txt`` resolves into the sandbox.
-    monkeypatch.setenv("HOME", str(tmp_path))
+    sandbox_home(monkeypatch, tmp_path)
     f = tmp_path / "x.txt"
     f.write_text("home-content")
     result = await process_file_arguments(["~/x.txt"])

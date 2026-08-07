@@ -35,6 +35,8 @@ from aelix_coding_agent.cli.entry import (
     _validate_resume_flag,
 )
 
+from tests.env_sandbox import sandbox_home
+
 # === arg parsing ============================================================
 
 
@@ -252,7 +254,7 @@ async def test_resume_by_id_miss_exits_1(
             return ""
 
     monkeypatch.setattr(sys, "stdin", _FakePipedStdin())
-    monkeypatch.setenv("HOME", str(tmp_path))
+    sandbox_home(monkeypatch, tmp_path)
     code = await _async_main(["--resume", "definitely-no-such-session"])
     captured = capsys.readouterr()
     assert code == 1

@@ -25,6 +25,8 @@ from aelix_coding_agent.cli.entry import (
     _validate_continue_flag,
 )
 
+from tests.env_sandbox import sandbox_home
+
 # === _validate_continue_flag (unit) =========================================
 
 
@@ -127,7 +129,7 @@ async def test_continue_empty_cwd_silent_fallback(
 
     monkeypatch.setattr(sys, "stdin", _FakePipedStdin())
     # Redirect sessions root so we get a clean slate.
-    monkeypatch.setenv("HOME", str(tmp_path))
+    sandbox_home(monkeypatch, tmp_path)
     code = await _async_main(["--continue"])
     # Empty piped stdin + no messages → no-op print mode; either exits
     # 0 (clean no-op) or 1 (provider config absent — Aelix default
