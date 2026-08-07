@@ -32,8 +32,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import os
-import signal
+
+from aelix_coding_agent.tools._process_tree import kill_process_tree
 
 
 async def run_cancellable(
@@ -84,8 +84,10 @@ async def run_cancellable(
         return await proc.communicate()
 
     def _kill_group() -> None:
-        with contextlib.suppress(ProcessLookupError, PermissionError):
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        # #105 — Windows has neither ``os.killpg`` nor ``signal.SIGKILL``, so
+        # this body raised AttributeError out of the abort/timeout handlers
+        # below. See ``_process_tree.kill_process_tree``.
+        kill_process_tree(proc.pid)
 
     try:
         if timeout is not None:

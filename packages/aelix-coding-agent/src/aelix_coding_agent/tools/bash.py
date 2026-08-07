@@ -9,10 +9,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import os
 import secrets
 import shutil
-import signal as _signal
 import subprocess
 import sys
 import tempfile
@@ -25,6 +23,7 @@ from aelix_agent_core.types import AgentTool
 from aelix_ai.messages import TextContent
 from aelix_ai.tools import ToolExecutionContext, ToolResult
 
+from aelix_coding_agent.tools._process_tree import kill_process_tree
 from aelix_coding_agent.tools._truncate import (
     DEFAULT_MAX_BYTES,
     DEFAULT_MAX_LINES,
@@ -329,12 +328,16 @@ class _LocalBashOperations:
 
 
 def _kill_group(pid: int) -> None:
-    """Send SIGKILL to the process group (Pi parity detached spawn cleanup)."""
+    """Send SIGKILL to the process group (Pi parity detached spawn cleanup).
 
-    try:
-        os.killpg(os.getpgid(pid), _signal.SIGKILL)
-    except (ProcessLookupError, PermissionError):
-        return
+    #105 — on Windows there is neither an ``os.killpg`` nor a ``SIGKILL`` to
+    reference, so this delegates to
+    :func:`~aelix_coding_agent.tools._process_tree.kill_process_tree`, which
+    keeps the POSIX body verbatim and reaps the tree with ``taskkill`` on
+    win32.
+    """
+
+    kill_process_tree(pid)
 
 
 def create_local_bash_operations(
