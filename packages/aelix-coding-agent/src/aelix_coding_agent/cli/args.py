@@ -234,14 +234,8 @@ class Args:
     prompt_templates: list[str] = field(default_factory=list)
     """Pi parity: ``--prompt-template <name>`` (repeatable)."""
 
-    no_prompt_templates: bool = False
-    """Pi parity: ``--no-prompt-templates`` / ``-np``."""
-
     themes: list[str] = field(default_factory=list)
     """Pi parity: ``--theme <name>`` (repeatable)."""
-
-    no_themes: bool = False
-    """Pi parity: ``--no-themes``."""
 
     no_context_files: bool = False
     """Pi parity: ``--no-context-files`` / ``-nc``."""
@@ -256,9 +250,6 @@ class Args:
     :data:`None` = absent, :data:`True` = no pattern supplied,
     :class:`str` = pattern.
     """
-
-    verbose: bool = False
-    """Pi parity: ``--verbose``."""
 
     offline: bool = False
     """Pi parity: ``--offline``."""
@@ -559,14 +550,10 @@ def parse_args(argv: list[str]) -> Args:
             if i + 1 < n:
                 parsed.prompt_templates.append(argv[i + 1])
                 i += 1
-        elif arg in ("--no-prompt-templates", "-np"):
-            parsed.no_prompt_templates = True
         elif arg == "--theme":
             if i + 1 < n:
                 parsed.themes.append(argv[i + 1])
                 i += 1
-        elif arg == "--no-themes":
-            parsed.no_themes = True
         elif arg in ("--no-context-files", "-nc"):
             parsed.no_context_files = True
             parsed.provided.add("no_context_files")
@@ -588,8 +575,6 @@ def parse_args(argv: list[str]) -> Args:
                 i += 1
             else:
                 parsed.list_models = True
-        elif arg == "--verbose":
-            parsed.verbose = True
         elif arg == "--offline":
             parsed.offline = True
         elif arg.startswith("@"):
@@ -694,16 +679,16 @@ Tools / Extensions:
   --skill <path>                  Enable skill (repeatable)
   --no-skills, -ns                Disable all skills
   --prompt-template <name>        Enable prompt template (repeatable)
-  --no-prompt-templates, -np      Disable all prompt templates
   --theme <name>                  Enable theme (repeatable)
-  --no-themes                     Disable all themes
   --no-context-files, -nc         Skip auto-discovered AGENTS.md context
 
 Misc:
   --export <path>                 Export the current session to HTML
   --list-models [pattern]         List available models (optional filter)
-  --verbose                       Verbose logging
-  --offline                       Disable startup network operations (same as PI_OFFLINE=1)
+  --offline                       Skip the rg/fd binary download, the extension
+                                  catalog fetch, and index-less pypi installs
+                                  (same as PI_OFFLINE=1). Provider/LLM calls are
+                                  NOT affected.
   --help, -h                      Show this help
   --version, -v                   Show version ({VERSION})
 
@@ -714,6 +699,8 @@ Subcommands:
                                   index-url); register-only (add ≠ install)
   extension source list|remove    List / remove registered sources
   extension list                  List installed extensions (entry-point ledger)
+  extension verify [<name>]       Report why a pack's manifest was/wasn't bound
+                                  (--trust-extension-path DIST to allow one)
   extension discover [<query>]    Browse / search the advisory catalogs (#65);
                                   --refresh --offline --no-default-catalog
   extension discover install      Install an extension advertised by a catalog

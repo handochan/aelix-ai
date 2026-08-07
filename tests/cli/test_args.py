@@ -107,9 +107,9 @@ def test_print_with_positional_eaten() -> None:
 
 
 def test_print_does_not_eat_flag() -> None:
-    args = parse_args(["--print", "--verbose"])
+    args = parse_args(["--print", "--offline"])
     assert args.print_mode is True
-    assert args.verbose is True
+    assert args.offline is True
     assert args.messages == []
 
 
@@ -134,9 +134,9 @@ def test_list_models_with_pattern() -> None:
 
 
 def test_list_models_does_not_eat_flag() -> None:
-    args = parse_args(["--list-models", "--verbose"])
+    args = parse_args(["--list-models", "--offline"])
     assert args.list_models is True
-    assert args.verbose is True
+    assert args.offline is True
 
 
 # === --continue / --resume / --no-session ====================================
@@ -289,17 +289,9 @@ def test_prompt_template_repeatable() -> None:
     assert args.prompt_templates == ["t1", "t2"]
 
 
-def test_no_prompt_templates_short() -> None:
-    assert parse_args(["-np"]).no_prompt_templates is True
-
-
 def test_theme_repeatable() -> None:
     args = parse_args(["--theme", "dark", "--theme", "light"])
     assert args.themes == ["dark", "light"]
-
-
-def test_no_themes() -> None:
-    assert parse_args(["--no-themes"]).no_themes is True
 
 
 def test_no_context_files_long() -> None:
@@ -317,12 +309,29 @@ def test_export() -> None:
     assert parse_args(["--export", "out.html"]).export == "out.html"
 
 
-def test_verbose() -> None:
-    assert parse_args(["--verbose"]).verbose is True
-
-
 def test_offline() -> None:
     assert parse_args(["--offline"]).offline is True
+
+
+# === Removed inert flags =====================================================
+#
+# --verbose, --no-themes and --no-prompt-templates were parsed into Args
+# fields that NOTHING outside args.py ever read, while `--help` advertised
+# them as working features. They were removed rather than left inert, so
+# `--help` only lists flags that do something.
+
+
+@pytest.mark.parametrize("flag", ["--verbose", "--no-themes", "--no-prompt-templates"])
+def test_removed_inert_flags_have_no_args_field(flag: str) -> None:
+    field_name = flag.lstrip("-").replace("-", "_")
+    assert not hasattr(parse_args([]), field_name)
+
+
+@pytest.mark.parametrize("flag", ["--verbose", "--no-themes", "--no-prompt-templates"])
+def test_removed_inert_flags_are_absent_from_help(flag: str) -> None:
+    buf = io.StringIO()
+    print_help(buf)
+    assert flag not in buf.getvalue()
 
 
 # === @file fork ==============================================================
@@ -375,9 +384,9 @@ def test_unknown_long_flag_boolean() -> None:
 
 
 def test_unknown_long_flag_does_not_eat_next_flag() -> None:
-    args = parse_args(["--solo-ext", "--verbose"])
+    args = parse_args(["--solo-ext", "--offline"])
     assert args.unknown_flags == {"solo-ext": True}
-    assert args.verbose is True
+    assert args.offline is True
 
 
 def test_unknown_short_flag_emits_diagnostic() -> None:
@@ -403,7 +412,7 @@ def test_mixed_complex_invocation() -> None:
     argv = [
         "--mode",
         "json",
-        "--verbose",
+        "--offline",
         "--provider",
         "anthropic",
         "--model",
@@ -419,7 +428,7 @@ def test_mixed_complex_invocation() -> None:
     ]
     args = parse_args(argv)
     assert args.mode == "json"
-    assert args.verbose is True
+    assert args.offline is True
     assert args.provider == "anthropic"
     assert args.model == "claude-x"
     assert args.extensions == ["ext1", "ext2"]
@@ -571,7 +580,7 @@ def test_provided_records_explicit_flags(argv: list[str], field_name: str) -> No
 def test_provided_is_empty_when_nothing_supplied() -> None:
     assert parse_args([]).provided == set()
     # Flags no profile can overlay stay out of the provenance set.
-    assert parse_args(["--verbose", "--print", "hi"]).provided == set()
+    assert parse_args(["--offline", "--print", "hi"]).provided == set()
 
 
 def test_provided_accumulates_across_flags() -> None:
@@ -618,6 +627,30 @@ def test_print_help_lists_agent_and_prompt_file_flags() -> None:
     assert "--agent-file <path>" in text
     assert "--system-prompt-file <path>" in text
     assert "--append-system-prompt-file <path>" in text
+
+
+def test_print_help_lists_every_extension_subcommand() -> None:
+    """`extension verify` shipped in `aelix extension --help` but was missing
+    from the top-level `Subcommands:` block, so the one command that explains
+    why a manifest did not bind was undiscoverable from `aelix --help`."""
+    buf = io.StringIO()
+    print_help(buf)
+    text = buf.getvalue()
+    for sub in ("install", "list", "verify", "discover", "update", "remove",
+                "keygen", "sign", "trust"):
+        assert f"extension {sub}" in text, sub
+
+
+def test_print_help_offline_line_does_not_overclaim() -> None:
+    """`--offline` reaches exactly three sites (the rg/fd download, the
+    catalog fetch, index-less pypi installs) and does NOT make provider/LLM
+    calls offline. The help line used to say "startup network operations",
+    which reads as air-gap mode."""
+    buf = io.StringIO()
+    print_help(buf)
+    text = buf.getvalue()
+    assert "--offline" in text
+    assert "startup network operations" not in text
 
 
 def test_print_help_says_path_for_skill_and_extension() -> None:
