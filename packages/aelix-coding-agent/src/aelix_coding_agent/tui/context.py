@@ -196,6 +196,7 @@ class AelixTUIContext:
         footer: AelixFooterData,
         *,
         model_provider: Callable[[], str | None] | None = None,
+        thinking_provider: Callable[[], str | None] | None = None,
         mode_provider: Callable[[], str | None] | None = None,
         pending_provider: Callable[[], int] | None = None,
         permission_badge_provider: Callable[[], str | None] | None = None,
@@ -206,6 +207,11 @@ class AelixTUIContext:
         self.chrome = chrome
         self._footer = footer
         self._model_provider = model_provider
+        # Live reasoning-effort provider for the OPTIONAL 🧠 thinking-level footer
+        # segment (default-OFF). Reads the harness's live thinking_level so the
+        # segment reflects the /thinking picker, the /settings row, and RPC
+        # mutations. None in headless/tests → the producer omits the segment.
+        self._thinking_provider = thinking_provider
         # Permission posture badge (WP-0, ADR-0157). Reads the LIVE posture mode
         # → its distinct footer glyph (✎/⏸/⚠/🤖); returns None on DEFAULT so the
         # segment is omitted. Kept SEPARATE from the ⏵⏵ steering segment so the
@@ -1116,7 +1122,8 @@ class AelixTUIContext:
     # segment) are omitted. ``permission-mode`` stays the LEADING segment of its
     # row (ADR-0159). Extension statuses join the LAST row.
     _MULTILINE_ROWS: tuple[tuple[str, ...], ...] = (
-        ("model", "git-branch", "context-remaining", "input-tokens", "output-tokens", "cost"),
+        ("model", "thinking-level", "git-branch", "context-remaining",
+         "input-tokens", "output-tokens", "cost"),
         ("current-dir",),
         ("permission-mode", "steering", "pending-queued"),
     )

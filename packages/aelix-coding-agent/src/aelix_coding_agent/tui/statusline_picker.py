@@ -46,6 +46,7 @@ def _sample_footer(
         "input-tokens": "↑ 12,345",
         "output-tokens": "↓ 6,789",
         "cost": "$ 0.0421",
+        "thinking-level": "🧠 high",
     }
     parts = [
         sample.get(s.id, s.label) for s in segments if s.id in enabled

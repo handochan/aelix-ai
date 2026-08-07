@@ -373,6 +373,15 @@ async def run_tui(
         model = getattr(runtime_host.harness, "current_model", None)
         return getattr(model, "id", None) if model is not None else None
 
+    def _thinking_level() -> str | None:
+        # Live reasoning effort for the OPTIONAL 🧠 thinking-level footer segment.
+        # Reads ``harness.state.thinking_level`` (the SAME field the /thinking
+        # picker, the /settings row, and RPC mutate) live post-hot-swap, same as
+        # ``_model_id``. Defensive getattr so a headless/partial harness yields
+        # None (the producer then omits the segment).
+        state = getattr(runtime_host.harness, "state", None)
+        return getattr(state, "thinking_level", None)
+
     def _steering_mode() -> str | None:
         # Live steering mode from the harness ("one-at-a-time"/"all") so the
         # footer ⏵⏵ segment reflects reality, not a hardcoded placeholder. Falls
@@ -412,6 +421,7 @@ async def run_tui(
         out_chrome,
         footer,
         model_provider=_model_id,
+        thinking_provider=_thinking_level,
         mode_provider=_steering_mode,
         pending_provider=lambda: getattr(
             runtime_host.harness, "pending_message_count", 0
@@ -950,6 +960,9 @@ async def run_tui(
                 style="green",
             )
         )
+        # Repaint so the OPTIONAL 🧠 thinking-level footer segment reflects the
+        # cycled level immediately (same freshness reason as _open_thinking_picker).
+        context._refresh_footer()
 
     async def _apply_live_setting(key: str, value: object) -> None:
         # Mirror a persisted dual-write row onto the LIVE session. The persist
@@ -1118,12 +1131,17 @@ async def run_tui(
         # unit-testable without the prompt-toolkit app); this wires the live
         # harness/select/commit into it. ``runtime_host.harness`` is read live
         # (post-hot-swap) rather than a captured local — same reason as the model
-        # picker. No footer refresh: there is no thinking footer segment today.
+        # picker.
         await run_thinking_picker(
             harness=runtime_host.harness,
             select=context.select,
             commit=_commit,
         )
+        # Repaint so the OPTIONAL 🧠 thinking-level footer segment reflects the
+        # new level immediately (the segment reads a live provider, but the footer
+        # is only re-rendered on demand — without this it stays stale until the
+        # next turn_end).
+        context._refresh_footer()
 
     async def _open_mcp_status() -> None:
         # Sprint 6h₂₇ (ADR-0155, WP-7) — /mcp: a read-only status panel over the
