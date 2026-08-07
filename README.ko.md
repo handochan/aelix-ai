@@ -178,9 +178,9 @@ aelix --print "profile data/train.parquet and flag columns with >5% nulls"
 aelix --mode json "run the eval suite and summarise failures"   # 라인 단위 이벤트
 ```
 
-전체 API 표면은 [확장 작성하기](docs/guides/extension-authoring.md)를, 공개된 확장 목록은
-[Aelix Marketplace](https://handochan.github.io/aelix-marketplace/)를 보세요. Aelix가 기본으로
-읽는 공식 카탈로그이며, 등록 신청을 받고 있습니다.
+전체 API 표면은 [확장 작성하기](docs/guides/extension-authoring.md)를 보세요.
+[Aelix Marketplace](https://handochan.github.io/aelix-marketplace/)는 Aelix가 기본으로 읽는
+공식 카탈로그입니다. 베타에서는 비어 있는 상태로 시작하며, 등록 신청을 받고 있습니다.
 
 ## 신뢰와 자체 호스팅
 

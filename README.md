@@ -180,9 +180,8 @@ aelix --mode json "run the eval suite and summarise failures"   # line-delimited
 ```
 
 See [writing an extension](docs/guides/extension-authoring.md) for the full surface, and
-the [Aelix Marketplace](https://handochan.github.io/aelix-marketplace/) for what has been
-published — it is the official catalog Aelix reads by default, and it is open for
-submissions.
+the [Aelix Marketplace](https://handochan.github.io/aelix-marketplace/) — the official
+catalog Aelix reads by default. It ships empty for the beta and is open for submissions.
 
 ## Trust & self-hosting
 
