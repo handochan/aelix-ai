@@ -737,3 +737,152 @@ def test_the_footer_names_the_model_only_when_there_is_one() -> None:
 
     assert "deepseek/deepseek-v4-flash" in _usage_line(named)
     assert "deepseek/deepseek-v4-flash" not in _usage_line(silent)
+
+
+# === the footer's width, measured against the renderer that imposes it ========
+#
+# LIVE QA, main @ 9ed0dde. A real delegation's card read
+#
+#   [agent explorer · ok · yolo · 1 turns · 3533 in / 4 out · $0.0036 · claude-…
+#
+# at EXACTLY 76 cells, identically at 120 and at 200 terminal columns — so this
+# was never a narrow-terminal problem and widening the window never fixed it.
+# ``tui/render.py``'s ``_truncate_lines`` caps every card line at a FIXED
+# ``max_line_width = 76`` and appends ``…``; the model was simply the last field,
+# and last is what a hard cut takes.
+
+
+def _finished(**kwargs: object) -> SubagentResult:
+    """A result shaped like a real one: a model, a posture, and every number."""
+
+    from aelix_coding_agent.subagent_contract import SubagentUsage
+
+    base: dict[str, object] = {
+        "id": "s1",
+        "profile": "explorer",
+        "ok": True,
+        "status": "ok",
+        "summary": "done",
+        "permission_mode": "yolo",
+        "usage": SubagentUsage(input=3533, output=4, turns=1, cost=0.0036),
+        "model": "claude-sonnet-4-5-20250929",
+        "provider": "anthropic",
+        "elapsed_ms": 3200,
+    }
+    base.update(kwargs)
+    return SubagentResult(**base)  # type: ignore[arg-type]
+
+
+def _card_line(result: SubagentResult) -> str:
+    """The footer AS DRAWN — through product-core's real card renderer.
+
+    Asserting against the renderer rather than against ``USAGE_LINE_MAX_CHARS``
+    is the point: the budget is only correct while it agrees with the number
+    ``render.py`` actually applies, and a copy of a constant cannot notice when
+    the original moves.
+    """
+
+    from aelix_agents.tool import _usage_line
+    from aelix_coding_agent.tui.render import _truncate_lines
+
+    lines, hidden = _truncate_lines(_usage_line(result), max_lines=12)
+    assert hidden == 0, "the footer must stay ONE card row"
+    return lines[0]
+
+
+def test_the_result_card_shows_the_whole_model() -> None:
+    """The regression, pinned where it was measured: on screen, not in the string.
+
+    ``…`` anywhere in the drawn line means the renderer cut something; the model
+    must be present in full and must not be what pays for the width.
+    """
+
+    drawn = _card_line(_finished())
+
+    assert "claude-sonnet-4-5-20250929" in drawn
+    assert "…" not in drawn
+    assert drawn.startswith("[agent explorer · claude-sonnet-4-5-20250929 · ok")
+
+
+def test_a_wider_terminal_is_not_the_fix_and_is_not_needed() -> None:
+    """The card cap does not grow with the terminal — that is why the live QA saw
+    the identical cut at 120 and at 200 columns. The footer therefore has to fit
+    the fixed width, and this asserts it does rather than asserting it is short.
+    """
+
+    from aelix_agents.tool import USAGE_LINE_MAX_CHARS, _usage_line
+
+    assert len(_usage_line(_finished())) <= USAGE_LINE_MAX_CHARS
+    assert "…" not in _card_line(_finished())
+
+
+def test_the_fields_that_pay_for_the_width_are_chosen_not_sliced() -> None:
+    """WHAT IS GIVEN UP, stated. At 76 cells a real footer cannot hold every
+    field, so the low-value ones are dropped WHOLE — never cut mid-token, and
+    never the identity, the outcome or the posture.
+
+    ``turns`` and the raw token split go first; the cost and the elapsed time —
+    what a reader scans a finished delegation for — survive.
+    """
+
+    from aelix_agents.tool import _usage_line
+
+    line = _usage_line(_finished())
+
+    assert line == (
+        "[agent explorer · claude-sonnet-4-5-20250929 · ok · yolo · $0.0036 · 3.2s]"
+    )
+    assert "turns" not in line
+    assert "in / " not in line
+
+
+def test_a_footer_that_fits_is_untouched() -> None:
+    """The common shape — no model resolved, modest numbers — is byte-identical to
+    what shipped. Nothing is dropped while there is room, and the model term is
+    still omitted rather than rendered empty."""
+
+    from aelix_agents.tool import _usage_line
+    from aelix_coding_agent.subagent_contract import SubagentUsage
+
+    assert _usage_line(
+        _finished(
+            profile="scout",
+            model=None,
+            provider=None,
+            permission_mode="plan",
+            usage=SubagentUsage(input=900, output=120, turns=2, cost=0.0031),
+            elapsed_ms=12_400,
+        )
+    ) == "[agent scout · ok · plan · 2 turns · 900 in / 120 out · $0.0031 · 12.4s]"
+
+
+def test_a_hostile_model_cannot_corrupt_the_result_card() -> None:
+    """``model`` is child-authored and this string is joined into the tool
+    result's TEXT, which ``tui/render.py`` SPLITS ON NEWLINES into card rows. A
+    raw ``\\n`` therefore added rows and a raw ESC rode into them — so the term is
+    flattened, control-stripped and bounded here, at the source, exactly as the
+    panel does it. ``profile`` gets the same treatment: it is a filename stem and
+    POSIX permits a newline in one.
+    """
+
+    from aelix_agents.tool import USAGE_LINE_MAX_CHARS, _usage_line
+
+    hostile = "gpt\n\x1b[31m FAKE\x9b2J\n" + "z" * 3000
+    line = _usage_line(_finished(model=hostile))
+
+    assert "\n" not in line
+    assert "\x1b" not in line
+    assert "\x9b" not in line  # C1: the one-byte CSI
+    assert "FAKE" in line, "flattening must not silently delete the visible text"
+    # Bounded at the source, so a 3 000-character model does not even reach the
+    # renderer's own truncation: it is one ordinary card row, drawn whole.
+    assert len(line) <= USAGE_LINE_MAX_CHARS
+    assert _card_line(_finished(model=hostile)) == line
+
+    # The PROFILE is the same hole from the other side. A profile long enough to
+    # crowd out the model is a filename someone wrote, not something a child can
+    # choose, so it is bounded but not budgeted — the renderer's own ``…`` is the
+    # last word there. What must NEVER happen either way is a second row.
+    for value in (hostile, "scout\nrm -rf /"):
+        assert "\n" not in _usage_line(_finished(profile=value))
+        _card_line(_finished(profile=value))  # asserts hidden == 0

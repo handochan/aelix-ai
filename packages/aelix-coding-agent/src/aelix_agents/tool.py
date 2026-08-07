@@ -44,6 +44,7 @@ from aelix_ai.messages import TextContent
 from aelix_ai.tools import ToolResult
 
 from aelix_agents.chain import TaskTooLarge, check_task_size, uses_previous
+from aelix_agents.panel import _flatten
 from aelix_agents.print_channel import AGENT_TOOL_NAME
 
 if TYPE_CHECKING:
@@ -616,6 +617,54 @@ def format_partial(text: str) -> ToolResult:
     return ToolResult(content=[TextContent(text=text)])
 
 
+USAGE_LINE_MAX_CHARS = 76
+"""What one line of a tool card is, in characters — the number the RENDERER uses.
+
+NOT a policy this module chose. ``tui/render.py``'s ``_truncate_lines`` caps
+every card line at ``max_line_width = 76`` cells and appends ``…``
+(``render.py:123-143``), and that number is FIXED: it does not grow with the
+terminal, so a wider window buys this line nothing. Measured on a real
+delegation at both 120 and 200 columns, the footer came out identically cut at
+76 cells, losing its last field.
+
+So the bound is real whether or not this function respects it, and the only
+question is WHICH field pays for it. Left to the renderer the answer is
+"whatever is last", which is a layout accident; :func:`_usage_line` spends the
+budget deliberately instead, and the fields it drops are dropped whole rather
+than sliced mid-token.
+
+Spelled here rather than imported: ``render.py`` is product-core and the number
+is private to it. A drift makes this line one field shorter or one field
+truncated — visibly wrong, never wrong in the permissive direction — and
+``test_the_result_card_shows_the_whole_model`` measures the two against each
+other through the real renderer rather than trusting this comment."""
+
+_USAGE_FIELD_MAX_CHARS = 40
+"""Bound on the two free-text terms — the profile name and the model.
+
+``SubagentResult.model`` is read verbatim off the child's own ``message_end``
+(``stream.py:561-563`` → ``envelope.py:374``), which makes it attacker-supplied
+exactly like ``current_tool``; ``profile`` is a filename stem and is unbounded
+for a duller reason. 40 fits every real provider id (the longest in the shipped
+registry is 32) while denying either one the ability to spend the whole line —
+the fields this function protects are exactly the ones a 3 000-character model
+string would push off the end."""
+
+# Fields dropped, in this order, when the composed line will not fit
+# :data:`USAGE_LINE_MAX_CHARS`. LOWEST VALUE FIRST, and the survivors keep their
+# natural order — this is a drop list, not a render order.
+#
+# ``turns`` goes first: it is the least actionable number here and the card's
+# own body already shows what the child did. ``tokens`` is next because it is by
+# far the widest field (``45231 in / 3821 out`` is 19 characters) and the cost
+# beneath it is the same fact in the unit anyone actually checks. Cost and
+# elapsed are last because they are what a reader scans a finished delegation
+# for. Nothing before them in the line can be dropped at all: profile, model,
+# status and permission are the identity and the outcome, and a footer that
+# elides those is not a shorter footer, it is a different one.
+_USAGE_DROP_ORDER = ("turns", "tokens", "cost", "elapsed")
+
+
 def _usage_line(result: SubagentResult, *, status: str | None = None) -> str:
     """The ``[agent … ]`` footer both renderers print.
 
@@ -626,30 +675,75 @@ def _usage_line(result: SubagentResult, *, status: str | None = None) -> str:
     heading that says ``did not start``. Keyword-only with a ``None`` default so
     the single-mode path — pinned byte-for-byte by
     ``test_the_p2_argument_shape_is_unchanged`` — cannot be changed by adding it.
+
+    THE MODEL LEADS, AND THAT IS THE FIX (live QA). It used to sit second-to-last,
+    which on a real delegation meant it was the field ``tui/render.py`` cut:
+    ``[agent explorer · ok · yolo · 1 turns · 3533 in / 4 out · $0.0036 · claude-…``
+    at 76 cells, identically at 120 and at 200 columns. It now follows the
+    profile, which is where the live status row has always put it
+    (``progress.format_status_row``) — so the two surfaces read the same way —
+    and the line composes itself against :data:`USAGE_LINE_MAX_CHARS` so the
+    fields that go are chosen (:data:`_USAGE_DROP_ORDER`) rather than sliced.
+
+    A RESULT THAT FITS IS UNCHANGED, byte for byte. Every no-model footer the
+    suite pins — ``[agent scout · ok · plan · 0.0s]`` and its siblings — is well
+    inside the budget and renders exactly as it did, because the model term is
+    still omitted when there is none and nothing is dropped while there is room.
     """
 
     usage = result.usage
-    parts = [
-        f"agent {result.profile}",
-        status or result.status,
-    ]
-    if result.permission_mode:
-        parts.append(result.permission_mode)
-    if usage.turns:
-        parts.append(f"{usage.turns} turns")
-    if usage.input or usage.output:
-        parts.append(f"{usage.input} in / {usage.output} out")
-    if usage.cost:
-        parts.append(f"${usage.cost:.4f}")
+    # Both of these are flattened, and only one of them is a new hole. ``model``
+    # is the child's own bytes; ``profile`` is a filename stem, which POSIX lets
+    # contain ``\n`` just as happily. This string is joined into the tool
+    # result's TEXT, which ``tui/render.py`` splits on newlines into card rows —
+    # so either one could previously add rows to the card and carry a raw ESC
+    # into them. ``_flatten`` is the same helper the panel gives every
+    # child-authored string.
+    head = [f"agent {_flatten(result.profile, limit=_USAGE_FIELD_MAX_CHARS)}"]
     # GATED, and not stylistically. ``test_the_p2_argument_shape_is_unchanged``
     # pins the single-mode footer byte-for-byte against a stub channel whose
     # result carries no model; an ungated segment breaks it. Gated, it stays
     # green and every REAL delegation gains the one fact that made a silent
     # model substitution impossible to notice.
     if result.model:
-        parts.append(result.model)
-    parts.append(f"{result.elapsed_ms / 1000:.1f}s")
-    return "[" + " · ".join(parts) + "]"
+        head.append(_flatten(result.model, limit=_USAGE_FIELD_MAX_CHARS))
+    head.append(status or result.status)
+    if result.permission_mode:
+        head.append(result.permission_mode)
+
+    tail: list[tuple[str, str]] = []
+    if usage.turns:
+        tail.append(("turns", f"{usage.turns} turns"))
+    if usage.input or usage.output:
+        tail.append(("tokens", f"{usage.input} in / {usage.output} out"))
+    if usage.cost:
+        tail.append(("cost", f"${usage.cost:.4f}"))
+    tail.append(("elapsed", f"{result.elapsed_ms / 1000:.1f}s"))
+
+    dropped: set[str] = set()
+    text = _compose_usage(head, tail, dropped)
+    for name in _USAGE_DROP_ORDER:
+        if len(text) <= USAGE_LINE_MAX_CHARS:
+            return text
+        dropped.add(name)
+        text = _compose_usage(head, tail, dropped)
+    # Every optional field is gone and the head alone is still over budget — a
+    # long profile name and a long model between them. The renderer's own ``…``
+    # is then the last word, which is the pre-existing behaviour and is bounded:
+    # both free-text terms are already capped at
+    # :data:`_USAGE_FIELD_MAX_CHARS`, so no child can reach this by being
+    # verbose on its own.
+    return text
+
+
+def _compose_usage(
+    head: Sequence[str], tail: Sequence[tuple[str, str]], dropped: set[str]
+) -> str:
+    return (
+        "["
+        + " · ".join([*head, *(text for name, text in tail if name not in dropped)])
+        + "]"
+    )
 
 
 def render_subagent_result(result: SubagentResult) -> ToolResult:
