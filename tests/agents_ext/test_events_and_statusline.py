@@ -381,3 +381,225 @@ def test_a_hostile_model_string_cannot_break_the_status_row() -> None:
     assert "\x1b" not in text
     assert "\x9b" not in text  # C1: the one-byte CSI
     assert len(text) <= len("agent scout · ") + 40 + len(" · 1s")
+
+
+# === the model on the LIVE row, BEFORE the child has reported one =============
+#
+# THE MEASURED GAP (live QA, main @ 9ed0dde). ``format_status_row`` renders the
+# model when ``SubagentProgress.model`` is set and omits it when it is not — both
+# correct — but that field was fed ONLY from ``_StreamState.model``, which
+# ``stream.py:561-563`` assigns from the child's first ``message_end``. A short
+# delegation returns before one arrives, so the field was ``None`` for the whole
+# VISIBLE LIFE of the row and the live statusline read ``agent explorer · 1s``
+# with no model at all — the feature shipped and was invisible in practice.
+#
+# The parent already knows what it asked for: the same value it puts on the
+# child's argv (``resolver.child_model_id``). Seeding the row with it makes the
+# term present from the first snapshot, and the child's own report still wins the
+# moment it exists.
+
+
+class _SilentChannel:
+    """A child that publishes progress and finishes WITHOUT a ``message_end``.
+
+    Exactly the QA-reproduced shape. It drives ``on_stream`` the way
+    ``PrintChannel._pump_stdout`` does but never assigns ``state.model``, which
+    is what the real reducer does for every snapshot before the child's first
+    assistant message — and for EVERY snapshot of a child that dies, is aborted,
+    or answers from a tool call alone.
+    """
+
+    def __init__(self) -> None:
+        self.plans: list[Any] = []
+
+    async def run(
+        self, plan: Any, *, child: Any = None, on_stream: Any = None
+    ) -> SubagentResult:
+        self.plans.append(plan)
+        state: _StreamState = child.stream if child is not None else _StreamState()
+        if child is not None:
+            child.state = "running"
+        for tool in (None, "read"):
+            state.current_tool = tool
+            if on_stream is not None:
+                on_stream(state)
+        if child is not None:
+            child.state = "done"
+        return SubagentResult(
+            id=plan.id, profile=plan.resolved.name, ok=True, status="ok", summary="done"
+        )
+
+
+class _ReportingChannel:
+    """…and one whose ``message_end`` lands MID-RUN, so both halves are pinned.
+
+    Its snapshots come in two shapes, in order: ones from before the child has
+    said anything (the seed's whole window, including the publish ``_run`` makes
+    before the channel is even called) and ones carrying the model the child
+    really ran. That is the real cadence, and it is the only way to assert "the
+    seed fills the gap AND the report wins" in one run rather than in two that
+    cannot see each other.
+    """
+
+    def __init__(self, model: str) -> None:
+        self.plans: list[Any] = []
+        self._model = model
+
+    async def run(
+        self, plan: Any, *, child: Any = None, on_stream: Any = None
+    ) -> SubagentResult:
+        self.plans.append(plan)
+        state: _StreamState = child.stream if child is not None else _StreamState()
+        if child is not None:
+            child.state = "running"
+        state.current_tool = "read"
+        if on_stream is not None:
+            on_stream(state)
+        state.model = self._model
+        state.current_tool = None
+        if on_stream is not None:
+            on_stream(state)
+        if child is not None:
+            child.state = "done"
+        return SubagentResult(
+            id=plan.id, profile=plan.resolved.name, ok=True, status="ok", summary="done"
+        )
+
+
+class _ParentModel:
+    """``ExtensionContext.model`` reads structurally through the host seam."""
+
+    def __init__(self, id: str, provider: str = "anthropic") -> None:  # noqa: A002
+        self.id = id
+        self.provider = provider
+
+
+def _seeded_runtime(
+    tmp_path: Path, channel: Any, *, parent_model: Any = None
+) -> tuple[Any, list[SubagentProgress]]:
+    from aelix_agents.runtime import SubagentHost, _SubagentRuntimeImpl
+
+    seen: list[SubagentProgress] = []
+    runtime = _SubagentRuntimeImpl(
+        host=SubagentHost(cwd=lambda: str(tmp_path), model=lambda: parent_model),
+        channel=channel,
+    )
+    return runtime, seen
+
+
+async def test_a_child_that_never_reports_still_names_the_model_on_the_live_row(
+    tmp_path: Path,
+) -> None:
+    """The QA-reproduced gap. No ``message_end``, so no reported model — and the
+    row must still say which model the parent asked for, because it DID ask.
+
+    Asserted over EVERY snapshot, not just the last: the row is drawn from all of
+    them and the complaint was about what is on screen while the child runs.
+    """
+
+    from tests.agents_ext.test_print_channel_spawn import _profile, _resolved
+
+    channel = _SilentChannel()
+    runtime, seen = _seeded_runtime(
+        tmp_path, channel, parent_model=_ParentModel("claude-sonnet-4-5")
+    )
+    result = await runtime.spawn(
+        _resolved(_profile(model=None, provider=None)), "go", on_event=seen.append
+    )
+
+    assert result.ok is True
+    assert seen, "the runtime published no snapshot at all"
+    assert {p.model for p in seen} == {"claude-sonnet-4-5"}
+    assert format_status_row(seen[0]).startswith("agent scout · claude-sonnet-4-5")
+
+
+async def test_a_profiles_own_model_is_the_one_the_live_row_names(
+    tmp_path: Path,
+) -> None:
+    """A profile that declares ``model:`` is not inheriting anything, and the row
+    must name what the CHILD will be launched with — never the parent's."""
+
+    from tests.agents_ext.test_print_channel_spawn import _profile, _resolved
+
+    runtime, seen = _seeded_runtime(
+        tmp_path, _SilentChannel(), parent_model=_ParentModel("claude-sonnet-4-5")
+    )
+    await runtime.spawn(
+        _resolved(_profile(model="claude-opus-4-8")), "go", on_event=seen.append
+    )
+
+    assert {p.model for p in seen} == {"claude-opus-4-8"}
+
+
+async def test_the_reported_model_wins_over_the_one_we_asked_for(
+    tmp_path: Path,
+) -> None:
+    """PRECEDENCE, and it only points one way. The seed is what we ASKED for; the
+    child's ``message_end`` is what it ACTUALLY ran, and a silent substitution —
+    a persisted default at a different price — is the exact thing the model term
+    exists to make visible. So the reported value must win every time it exists.
+    """
+
+    from tests.agents_ext.test_print_channel_spawn import _profile, _resolved
+
+    runtime, seen = _seeded_runtime(
+        tmp_path,
+        _ReportingChannel("deepseek/deepseek-v4-flash"),
+        parent_model=_ParentModel("claude-sonnet-4-5"),
+    )
+    await runtime.spawn(
+        _resolved(_profile(model=None, provider=None)), "go", on_event=seen.append
+    )
+
+    models = [p.model for p in seen]
+    # Before the report: the seed, so the row is never blank. After it: the
+    # child's own word, and it never reverts.
+    assert models[0] == "claude-sonnet-4-5"
+    assert models[-1] == "deepseek/deepseek-v4-flash"
+    assert "deepseek/deepseek-v4-flash" in models
+    assert None not in models
+    assert models.index("deepseek/deepseek-v4-flash") == models.count(
+        "claude-sonnet-4-5"
+    )
+
+
+async def test_no_model_anywhere_publishes_no_model(tmp_path: Path) -> None:
+    """A parent with no resolved model and a profile that declares none leaves the
+    child to its own cascade, whose outcome is not knowable here. ``None``, so
+    every renderer omits the term — never a guess, never ``unknown``."""
+
+    from tests.agents_ext.test_print_channel_spawn import _profile, _resolved
+
+    runtime, seen = _seeded_runtime(tmp_path, _SilentChannel(), parent_model=None)
+    await runtime.spawn(
+        _resolved(_profile(model=None, provider=None)), "go", on_event=seen.append
+    )
+
+    assert {p.model for p in seen} == {None}
+    assert "None" not in format_status_row(seen[0])
+
+
+async def test_a_host_whose_model_getter_raises_still_spawns(tmp_path: Path) -> None:
+    """The seed is a DISPLAY concern and is read off a live, host-supplied getter
+    (``/model`` rebinds it mid-session). A host that hands us something unreadable
+    must cost the child its model TERM, not its spawn — the same posture
+    ``parent_model_flags`` takes one layer down."""
+
+    from tests.agents_ext.test_print_channel_spawn import _profile, _resolved
+
+    def _boom() -> Any:
+        raise RuntimeError("stale runtime")
+
+    from aelix_agents.runtime import SubagentHost, _SubagentRuntimeImpl
+
+    seen: list[SubagentProgress] = []
+    runtime = _SubagentRuntimeImpl(
+        host=SubagentHost(cwd=lambda: str(tmp_path), model=_boom),
+        channel=_SilentChannel(),
+    )
+    result = await runtime.spawn(
+        _resolved(_profile(model=None, provider=None)), "go", on_event=seen.append
+    )
+
+    assert result.ok is True
+    assert {p.model for p in seen} == {None}
