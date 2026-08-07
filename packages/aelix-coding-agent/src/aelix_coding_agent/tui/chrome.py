@@ -913,11 +913,34 @@ class AelixChrome:
             self._last_ctrl_c = now
             self.invalidate()
 
-        @kb.add("escape", filter=Condition(lambda: self._running))
+        # Esc is TWO bindings with MUTUALLY EXCLUSIVE filters, so their relative
+        # order does not matter (prompt-toolkit runs the last binding whose filter
+        # passes, and at most one of these ever passes).
+        #
+        # Dismissing the completion menu WINS over interrupting the turn. The input
+        # editor stays LIVE during a turn (Enter mid-turn steers — see the ``enter``
+        # binding above), so the slash-command menu can be open WHILE a turn runs:
+        # typing ``/`` mid-turn pops it, and the Esc the user presses to dismiss it
+        # used to abort the turn instead. (The old comment here claimed the menu
+        # "has no focus during a turn" — it does.)
+        #
+        # This binding is NOT redundant: prompt-toolkit has no default
+        # escape → cancel_completion binding. emacs mode binds ``escape`` to an
+        # explicit no-op ("By default, ignore escape key" — it exists only to stop
+        # a stray Esc being inserted as a Meta prefix), and only vi INSERT mode
+        # cancels completion, on c-e. So merely excluding this case from the
+        # interrupt binding would leave the menu open and Esc inert.
+        @kb.add("escape", filter=has_completions)
+        def _escape_dismiss_completions(event: Any) -> None:
+            # Cancel on the SAME buffer ``has_completions`` inspected
+            # (``get_app().current_buffer``), which ``event.current_buffer`` is.
+            event.current_buffer.cancel_completion()
+
+        @kb.add("escape", filter=Condition(lambda: self._running) & ~has_completions)
         def _escape_interrupt(event: object) -> None:
             # Esc interrupts an in-progress turn (same as Ctrl-C while running);
             # running-gated so Esc stays inert when idle (no interference with
-            # editing / the completion menu, which has no focus during a turn).
+            # editing), and menu-gated so it never steals the menu's dismiss key.
             if self.on_interrupt is not None:
                 self.on_interrupt()
 
