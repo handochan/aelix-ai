@@ -17,12 +17,17 @@ version, in dependency order:
 deferred to a later release. The release workflow builds it as part of
 `uv build --all-packages` and then drops its artifacts before upload.
 
-All four published packages share the same version (currently `0.1.0`). The
+All four published packages share the same version (currently `0.1.0b1`). The
 inter-package dependencies are pinned to that exact version (e.g. the meta
-depends on `aelix-ai==0.1.0`), so installing `aelix` from PyPI always pulls a
-matching, lock-step set. The `aelix` console script is owned by
-`aelix-coding-agent` (the real CLI); the meta-package deliberately does not
-define one.
+depends on `aelix-ai==0.1.0b1`), so installing `aelix` from PyPI always pulls a
+matching, lock-step set.
+
+The `aelix` console script is declared **twice**, by both `aelix-coding-agent`
+and the `aelix` meta-package, and both point at the same target
+(`aelix_coding_agent.cli.entry:main_sync`). Because the entry points are
+identical the duplication is harmless — whichever wheel installs its script
+last, the command behaves the same — but it is a duplication, not a deliberate
+omission on the meta-package's side.
 
 ---
 
@@ -159,6 +164,15 @@ pre-release.** `release.yml` uses it in two independent places:
 So `v0.1.0-beta.1` (has `-`) → PyPI skipped, GitHub pre-release. `v0.1.0` (no
 `-`) → PyPI published, full GitHub release. Both jobs read the same signal but
 stay independent, so they can never disagree.
+
+> **A pre-release must use a hyphen, never a dot.** The tag gate in the `build`
+> job rejects the dot form outright: `v0.1.0-rc.1` is accepted, `v0.1.0.rc1` is
+> refused. This matters because the dot form contains no hyphen, so it would
+> have been read as GA — published to PyPI irreversibly (`skip-existing: false`)
+> and marked a full release. The gate also asserts, before the build runs, that
+> the tag normalizes to the version in `pyproject.toml` under PEP 440
+> (`v0.1.0-beta.1` → `0.1.0b1`), so a tag pushed without the version bump fails
+> the job instead of publishing a mismatched artifact.
 
 > The `build` and `github-release` jobs run for **every** release tag (beta and
 > GA); only `publish` is suppressed for pre-releases. The `github-release` job
