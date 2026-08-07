@@ -28,6 +28,7 @@ from contextlib import asynccontextmanager
 
 from aelix_coding_agent.tui.chrome import AelixChrome
 from prompt_toolkit.application import create_app_session
+from prompt_toolkit.application.current import set_app
 from prompt_toolkit.document import Document
 from prompt_toolkit.input.defaults import create_pipe_input
 from prompt_toolkit.layout.containers import ConditionalContainer, WritePosition
@@ -68,45 +69,77 @@ def _input_assigned_rows(chrome: AelixChrome, reserved_floor: int) -> int:
 
 
 def _widget_row_rows(chrome: AelixChrome, *, above: bool, reserved_floor: int = 30) -> int:
-    """Rows the divided body hands the widgets-above/below ConditionalContainer.
+    """Rows the divided body hands the widgets-above/below row.
 
     Identifies the row by its render callback (the inline Window has no stored
-    handle) so we read the SAME container the layout renders."""
+    handle) so we read the SAME container the layout renders.
+
+    Measured under ``set_app`` with a bumped ``render_counter``:
+    ``FormattedTextControl`` evaluates its text callable once per render pass and
+    caches the fragments under ``get_app().render_counter`` (``_fragment_cache``,
+    maxsize 1). The app is NOT running here, so ``get_app()`` would hand back a
+    fresh ``DummyApplication`` whose counter is always 0 — every measurement after
+    the first would then read STALE content (an empty first reading would pin the
+    row at 1 forever). ``set_app`` makes the real app current and the bump
+    simulates the next render pass, exactly as the redraw loop does.
+    """
     body = chrome.app.layout.container.content
     render = chrome._render_widgets_above if above else chrome._render_widgets_below
-    sizes = body._divide_heights(
-        WritePosition(xpos=0, ypos=0, width=_WIDTH, height=reserved_floor)
-    )
+    with set_app(chrome.app):
+        chrome.app.render_counter += 1
+        sizes = body._divide_heights(
+            WritePosition(xpos=0, ypos=0, width=_WIDTH, height=reserved_floor)
+        )
     assert sizes is not None, "body did not fit in the reserved floor"
     for child, size in zip(body._all_children, sizes, strict=True):
-        control = getattr(getattr(child, "content", None), "content", None)
-        if isinstance(child, ConditionalContainer) and getattr(control, "text", None) == render:
+        inner = child.content if isinstance(child, ConditionalContainer) else child
+        if getattr(getattr(inner, "content", None), "text", None) == render:
             return size
     raise AssertionError("widget row not found among body children")
 
 
-async def test_empty_widget_rows_collapse_and_show_when_populated() -> None:
-    """Option B: ``widgets_above``/``widgets_below`` reserve 0 rows when they hold
-    no lines (they used to reserve a permanent blank row each), and render their
-    content when populated. The gate reads ``any(...values())``, so a slot cleared
-    to an EMPTY LIST collapses too — ``bool(dict)`` alone would not."""
+async def test_widgets_above_row_survives_the_stream_tail_lifecycle() -> None:
+    """The widgets-above row must NEVER collapse to 0, even with no widgets.
+
+    This is a layout STABILISER, not dead space — do not "optimise" it away by
+    gating the row on a non-empty filter. The streaming tail lives in this exact
+    row: ``shell.py`` writes it with ``set_widget("__stream__", …, above=True)``
+    and clears it with a falsy tail, which becomes ``set_widget(…, None)`` and
+    POPS the key — so an empty ``_widgets_above`` is a normal mid-stream state,
+    not just an idle one.
+
+    Crucially, that clear is applied inside ``print_above_many``'s
+    ``apply_before_redraw`` hook, i.e. INSIDE the erase/CPR two-phase fold-in
+    that the round-3 flicker fix made atomic. If the row can collapse, every
+    mid-stream tail clear turns an atomic CONTENT update into a HEIGHT change
+    and shifts the input/status/footer up a row — visible flicker on every
+    chunk. An always-present 1-row floor keeps the fold-in a pure content swap.
+
+    Drives the REAL chrome through the tail lifecycle exactly as the shell does.
+    """
     async with _chrome() as chrome:
-        # Empty: both rows collapse to 0.
-        assert _widget_row_rows(chrome, above=True) == 0
-        assert _widget_row_rows(chrome, above=False) == 0
+        # Idle / no tail yet — the row is already reserved.
+        assert _widget_row_rows(chrome, above=True) >= 1
 
-        # Populated above: exactly its line count; below stays collapsed.
-        chrome.set_widget("panel", ["[1/2] running", "[2/2] done"], above=True)
-        assert _widget_row_rows(chrome, above=True) == 2
-        assert _widget_row_rows(chrome, above=False) == 0
+        # Tail arrives (3 lines) — grows to the content height.
+        chrome.set_widget("__stream__", ["a", "b", "c"], above=True)
+        assert _widget_row_rows(chrome, above=True) == 3
 
-        # Cleared (key popped): collapses again.
-        chrome.set_widget("panel", None, above=True)
-        assert _widget_row_rows(chrome, above=True) == 0
+        # Tail cleared mid-stream (the key is POPPED, leaving the dict empty).
+        # The height must NOT drop to 0 — that is the flicker regression.
+        chrome.set_widget("__stream__", None, above=True)
+        assert _widget_row_rows(chrome, above=True) >= 1, (
+            "widgets-above collapsed to 0 rows when the stream tail cleared; "
+            "the mid-stream clear now changes HEIGHT inside the print_above "
+            "fold-in instead of being an atomic content update (flicker)"
+        )
 
-        # A slot cleared to an EMPTY LIST also collapses (any(values()) is False).
-        chrome.set_widget("x", [], above=True)
-        assert _widget_row_rows(chrome, above=True) == 0
+        # A second chunk re-populates the same row, and clearing it again holds
+        # the floor — the row is stable across repeated chunk cycles.
+        chrome.set_widget("__stream__", ["next chunk"], above=True)
+        assert _widget_row_rows(chrome, above=True) == 1
+        chrome.set_widget("__stream__", None, above=True)
+        assert _widget_row_rows(chrome, above=True) >= 1
 
 
 async def test_input_window_dimension_is_content_bounded() -> None:

@@ -17,6 +17,9 @@ from contextlib import asynccontextmanager
 import pytest
 from aelix_coding_agent.tui.chrome import AelixChrome
 from prompt_toolkit.application import create_app_session
+from prompt_toolkit.application.current import set_app
+from prompt_toolkit.buffer import Buffer, CompletionState
+from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.input.base import PipeInput
 from prompt_toolkit.input.defaults import create_pipe_input
 from prompt_toolkit.layout import Float, Window
@@ -257,15 +260,47 @@ async def test_running_enter_steers_not_submits() -> None:
 # === Sprint 6h₁₂b — esc-to-interrupt + working hint =====================
 
 
-def _escape_binding(chrome: AelixChrome):
-    """Return the running-gated ``escape`` Binding from the chrome key bindings."""
+def _escape_binding(chrome: AelixChrome, name: str = "_escape_interrupt"):
+    """Return a single-key ``escape`` Binding from the chrome key bindings.
+
+    Esc carries TWO bindings (dismiss-completions and interrupt), so select by
+    handler name rather than taking the first match.
+    """
     kb = chrome.app.key_bindings
     assert kb is not None
     for binding in kb.bindings:
         keys = tuple(getattr(k, "value", str(k)) for k in binding.keys)
-        if keys == ("escape",):
+        if keys == ("escape",) and binding.handler.__name__ == name:
             return binding
-    raise AssertionError("escape binding not found")
+    raise AssertionError(f"escape binding {name!r} not found")
+
+
+class _FakeKeyEvent:
+    """Minimal stand-in for prompt-toolkit's ``KeyPressEvent``."""
+
+    def __init__(self, buffer: Buffer) -> None:
+        self.current_buffer = buffer
+
+
+@contextlib.contextmanager
+def _completion_menu_open(chrome: AelixChrome):
+    """Put the input buffer into a completion state, as typing ``/`` would.
+
+    ``has_completions`` reads ``get_app().current_buffer.complete_state``, so the
+    real app must be the current one (it is not running in these tests) for the
+    filter to see the chrome's buffer at all. It also requires at least one
+    completion — the same filter drives the menu float's visibility, so "menu
+    open" and "has >= 1 completion" are the same condition.
+    """
+    with set_app(chrome.app):
+        chrome.buffer.complete_state = CompletionState(
+            original_document=chrome.buffer.document,
+            completions=[Completion(text="/model")],
+        )
+        try:
+            yield
+        finally:
+            chrome.buffer.complete_state = None
 
 
 async def test_escape_interrupts_only_when_running() -> None:
@@ -276,12 +311,111 @@ async def test_escape_interrupts_only_when_running() -> None:
 
         # idle → the running-gate filter is False, so Esc is inert.
         chrome.set_running(False)
-        assert not binding.filter()
-        # running → filter True; invoking the handler fires on_interrupt.
-        chrome.set_running(True)
-        assert binding.filter()
+        with set_app(chrome.app):
+            assert not binding.filter()
+            # running → filter True; invoking the handler fires on_interrupt.
+            chrome.set_running(True)
+            assert binding.filter()
         binding.handler(None)  # type: ignore[arg-type]  # handler ignores the event
         assert calls == [1]
+
+
+async def test_escape_dismisses_completion_menu_instead_of_aborting_the_turn() -> None:
+    """The input editor stays live during a turn, so the slash-command menu can be
+    open WHILE a turn runs. Esc must dismiss the menu, NOT abort the turn."""
+    async with _chrome(run_app=False) as (chrome, _pipe, _buf):
+        calls: list[int] = []
+        chrome.on_interrupt = lambda: calls.append(1)
+        chrome.set_running(True)
+
+        dismiss = _escape_binding(chrome, "_escape_dismiss_completions")
+        interrupt = _escape_binding(chrome, "_escape_interrupt")
+
+        with _completion_menu_open(chrome):
+            # Mutually exclusive: with a menu open, ONLY the dismiss binding is
+            # live — so binding order cannot decide the outcome.
+            assert dismiss.filter()
+            assert not interrupt.filter()
+
+            dismiss.handler(_FakeKeyEvent(chrome.buffer))  # type: ignore[arg-type]
+            # The menu is actually gone (not merely "some handler ran").
+            assert chrome.buffer.complete_state is None
+        assert calls == []  # the turn was NOT aborted
+
+
+async def test_escape_still_interrupts_when_no_completion_menu_is_open() -> None:
+    """The original affordance is preserved: mid-turn Esc with no menu aborts."""
+    async with _chrome(run_app=False) as (chrome, _pipe, _buf):
+        calls: list[int] = []
+        chrome.on_interrupt = lambda: calls.append(1)
+        chrome.set_running(True)
+
+        dismiss = _escape_binding(chrome, "_escape_dismiss_completions")
+        interrupt = _escape_binding(chrome, "_escape_interrupt")
+
+        with set_app(chrome.app):
+            assert chrome.buffer.complete_state is None
+            assert not dismiss.filter()
+            assert interrupt.filter()
+        interrupt.handler(None)  # type: ignore[arg-type]
+        assert calls == [1]
+
+
+class _SlashCompleter(Completer):
+    """Pops a single completion for a ``/`` slash-command prefix."""
+
+    def get_completions(self, document, complete_event):  # noqa: ANN001, ANN201
+        if document.text_before_cursor.startswith("/"):
+            yield Completion("/model", start_position=-len(document.text_before_cursor))
+
+
+async def test_escape_dismisses_menu_end_to_end_through_the_key_processor() -> None:
+    """Live proof through the REAL Application: with a turn running, typing ``/``
+    pops the menu and a real Esc keypress closes it without aborting the turn.
+
+    Exercises what the filter-level tests cannot: prompt-toolkit's binding
+    RESOLUTION (Esc is also a prefix for Alt+Enter / Alt+Up) actually reaching the
+    dismiss handler, and the menu genuinely closing — a bare ``~has_completions``
+    exclusion with no dismiss binding would leave it open and Esc inert.
+    """
+    async with _chrome(run_app=True) as (chrome, pipe, _buf):
+        calls: list[int] = []
+        chrome.on_interrupt = lambda: calls.append(1)
+        chrome.set_command_completer(_SlashCompleter())
+        chrome.set_running(True)
+        await asyncio.sleep(0.05)
+
+        pipe.send_text("/")  # completes while typing in a slash context
+        for _ in range(100):
+            await asyncio.sleep(0.02)
+            state = chrome.buffer.complete_state
+            if state is not None and state.completions:
+                break
+        assert chrome.buffer.complete_state is not None, "menu never opened"
+
+        pipe.send_text("\x1b")  # a real Esc byte
+        # Esc is a PREFIX (Alt+Enter / Alt+Up), so the processor flushes it as a
+        # standalone key only after ttimeoutlen (0.05s) — wait past that.
+        for _ in range(100):
+            await asyncio.sleep(0.02)
+            if chrome.buffer.complete_state is None:
+                break
+        assert calls == [], "Esc aborted the turn instead of dismissing the menu"
+        assert chrome.running is True  # the turn is still live
+        assert chrome.buffer.complete_state is None, "Esc did not dismiss the menu"
+
+
+async def test_escape_is_inert_when_idle_with_no_completion_menu() -> None:
+    """Idle + no menu → neither Esc binding is live."""
+    async with _chrome(run_app=False) as (chrome, _pipe, _buf):
+        calls: list[int] = []
+        chrome.on_interrupt = lambda: calls.append(1)
+        chrome.set_running(False)
+
+        with set_app(chrome.app):
+            assert not _escape_binding(chrome, "_escape_dismiss_completions").filter()
+            assert not _escape_binding(chrome, "_escape_interrupt").filter()
+        assert calls == []
 
 
 async def test_working_line_shows_esc_hint_when_running() -> None:
