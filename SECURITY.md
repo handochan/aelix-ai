@@ -70,6 +70,16 @@ consent very much is:
   Aelix process.** Installing an extension is equivalent to running its author's
   code. `aelix extension install --require-signature` enforces a valid trusted
   Ed25519 signature; without it, unsigned sources are accepted on first use.
+  Note that `FIRST_PARTY_KEYS` ships empty, so signature enforcement is
+  entirely opt-in today — the README and the website say the same.
+- **Two third-party binaries are downloaded on first use.** The first `grep` or
+  `find` fetches `ripgrep` (BurntSushi/ripgrep) and `fd` (sharkdp/fd) from their
+  upstream GitHub Releases into `~/.aelix/agent/bin`, extracts them with Python's
+  stdlib safe extractors, and marks them executable — this is what lets both tools
+  honour `.gitignore` (`util/tools_manager.py`). A copy already on `PATH` is
+  preferred, and `--offline` (or `PI_OFFLINE=1`) skips the download entirely.
+  These archives are **not** checksum-pinned by Aelix; they are fetched over HTTPS
+  from the upstream project's release assets.
 
 Reports we do want, among others: a way to escape or bypass the permission gate in
 an interactive session, path-traversal out of the workspace, credential or
