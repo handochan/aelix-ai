@@ -1694,8 +1694,13 @@ _ANTHROPIC_HAIKU = _model(
     "anthropic", "claude-haiku-4-5", "https://api.anthropic.com"
 )
 _OPENROUTER_SONNET = _model(
+    # A REAL OpenRouter id: OpenRouter's Anthropic models are DOT-versioned
+    # (``anthropic/claude-sonnet-4.5``). A dash-versioned ``…-4-6`` is NOT in the
+    # OpenRouter catalog — an earlier revision of this file invented one, which
+    # made the slash-form test pass only via resolve_model's bare fallback and so
+    # green-lit the very misroute #134 is about.
     "openrouter",
-    "anthropic/claude-sonnet-4-6",
+    "anthropic/claude-sonnet-4.5",
     "https://openrouter.ai/api/v1",
     api="openai-completions",
 )
@@ -1835,11 +1840,13 @@ def test_model_bare_id_known_but_unauthed_names_the_provider(
     assert "/login" in out
 
 
-def test_model_provider_slash_id_form_still_resolves(monkeypatch: Any) -> None:
-    # (d) The explicit ``<provider>/<id>`` form keeps its existing meaning. With
-    # an OPENROUTER_API_KEY set, an OpenRouter canonical id (which is ALWAYS
-    # vendor-slashed — the catalog has exactly one slash-free OpenRouter id)
-    # still resolves as an OpenRouter model on the OpenRouter host.
+def test_model_openrouter_vendor_slashed_id_stays_on_openrouter(
+    monkeypatch: Any,
+) -> None:
+    # (d) OpenRouter's own vendor-slashed canonical id still resolves as an
+    # OpenRouter model on the OpenRouter host: no other available provider claims
+    # ``anthropic/claude-sonnet-4.5`` as a provider/id split, so pi's resolver
+    # falls through to the whole-string id match.
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
     harness = _SwitchHarness()
     harness.current_model = _OPENROUTER_SONNET  # type: ignore[assignment]
@@ -1849,13 +1856,60 @@ def test_model_provider_slash_id_form_still_resolves(monkeypatch: Any) -> None:
     _run(
         "model",
         _model_ctx(harness, committed, registry=registry),
-        "anthropic/claude-sonnet-4-6",
+        "anthropic/claude-sonnet-4.5",
     )
 
     assert len(harness.set_calls) == 1
     switched = harness.set_calls[0]
     assert getattr(switched, "provider", None) == "openrouter"
-    assert getattr(switched, "id", None) == "anthropic/claude-sonnet-4-6"
+    assert getattr(switched, "id", None) == "anthropic/claude-sonnet-4.5"
+    assert getattr(switched, "base_url", None) == "https://openrouter.ai/api/v1"
+
+
+def test_model_qualified_id_does_not_move_vendors(monkeypatch: Any) -> None:
+    # (d′) THE REGRESSION THE SLASH CARVE-OUT LEFT LIVE. A dash-versioned
+    # ``anthropic/claude-haiku-4-5`` is NOT an OpenRouter id (OpenRouter's are
+    # dot-versioned), so resolve_model's OpenRouter-from-env branch used to
+    # return a fully-formed ``openrouter/anthropic/claude-haiku-4-5`` — moving a
+    # session that was ALREADY on Anthropic, typing its OWN fully-qualified id,
+    # onto OpenRouter's host and credentials, then persisting it (#134).
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+    harness = _SwitchHarness()
+    harness.current_model = _ANTHROPIC_HAIKU  # type: ignore[assignment]
+    committed: list[object] = []
+    registry = _RegistryStub([_ANTHROPIC_HAIKU, _OPENROUTER_SONNET])
+
+    _run(
+        "model",
+        _model_ctx(harness, committed, registry=registry),
+        "anthropic/claude-haiku-4-5",
+    )
+
+    assert len(harness.set_calls) == 1
+    switched = harness.set_calls[0]
+    assert getattr(switched, "provider", None) == "anthropic"
+    assert getattr(switched, "base_url", None) == "https://api.anthropic.com"
+
+
+def test_model_unknown_qualified_id_is_refused(monkeypatch: Any) -> None:
+    # (F2) ``openrouter/gpt-4o`` names a model OpenRouter does not serve (its id
+    # is ``openai/gpt-4o``). It used to report success on
+    # ``openrouter/openrouter/gpt-4o`` and 400 at the next send.
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+    harness = _SwitchHarness()
+    harness.current_model = _OPENROUTER_SONNET  # type: ignore[assignment]
+    committed: list[object] = []
+    registry = _RegistryStub([_ANTHROPIC_HAIKU, _OPENROUTER_SONNET])
+
+    _run(
+        "model",
+        _model_ctx(harness, committed, registry=registry),
+        "openrouter/gpt-4o",
+    )
+
+    assert harness.set_calls == []
+    out = "\n".join(_render(c) for c in committed)
+    assert "model →" not in out
 
 
 def test_model_no_arg_picker_path_unchanged() -> None:

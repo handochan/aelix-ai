@@ -7,10 +7,13 @@ Proves :func:`aelix_coding_agent.core.model_argument.resolve_model_argument`:
   session's current provider is one of them (then it wins);
 * an unknown id → refused, naming the picker;
 * an id the registry knows but cannot offer → refused, naming the provider;
-* a ``<provider>/<id>`` argument → UNDECIDED (the launch-path resolver owns it);
+* a ``<provider>/<id>`` reference → the NAMED provider, with no current-provider
+  tie-break, while a gateway's vendor-slashed id (OpenRouter's
+  ``anthropic/claude-sonnet-4.5``) still resolves to the gateway;
 * the ``/scoped-models`` allow-list narrows the offered pool;
-* every degradation (no registry, empty registry, a registry that RAISES) →
-  UNDECIDED, so ``/model`` keeps its previous behaviour instead of refusing.
+* every degradation (no registry, empty registry, a registry that RAISES, an
+  unreadable auth filter) → UNDECIDED, so ``/model`` keeps its previous
+  behaviour instead of refusing.
 
 The end-to-end handler behaviour (no switch / no persist / no success line on a
 refusal) is asserted in ``tests/tui/test_commands.py``.
@@ -33,6 +36,12 @@ def _model(provider: str, id: str, base_url: str = "https://example.invalid") ->
 ANTHROPIC_HAIKU = _model("anthropic", "claude-haiku-4-5", "https://api.anthropic.com")
 COPILOT_HAIKU = _model("github-copilot", "claude-haiku-4-5")
 OPENAI_GPT = _model("openai", "gpt-4o")
+# A REAL OpenRouter id — OpenRouter's Anthropic models are DOT-versioned. The
+# dash-versioned form is a different namespace (a provider/id reference), and
+# conflating the two is what kept #134 alive through the slash carve-out.
+OPENROUTER_SONNET = _model(
+    "openrouter", "anthropic/claude-sonnet-4.5", "https://openrouter.ai/api/v1"
+)
 
 
 class _Registry:
@@ -53,6 +62,23 @@ class _Raises:
 
     def get_available(self) -> list[Model]:
         raise RuntimeError("registry unavailable")
+
+
+class _AvailableRaises:
+    """``get_all`` works, ``get_available`` does not (F3).
+
+    The auth filter is the whole point of the pool: without it, resolution would
+    span providers this session has no credentials for.
+    """
+
+    def __init__(self, models: list[Model]) -> None:
+        self._models = models
+
+    def get_all(self) -> list[Model]:
+        return list(self._models)
+
+    def get_available(self) -> list[Model]:
+        raise RuntimeError("auth storage unreadable")
 
 
 class _CurrentModel:
@@ -119,12 +145,73 @@ async def test_known_but_unavailable_id_names_its_provider() -> None:
     assert "/login" in result.error
 
 
-async def test_provider_slash_id_is_left_to_the_launch_resolver() -> None:
-    # UNDECIDED (both fields None): under an OPENROUTER_API_KEY the slash form is
-    # how OpenRouter's own canonical ids are written, so re-reading it here would
-    # move the turn to a different vendor.
+async def test_qualified_reference_resolves_to_the_named_provider() -> None:
+    # The slash form goes through the pool too. Exempting it preserved #134: a
+    # dash-versioned anthropic/claude-haiku-4-5 is NOT an OpenRouter id, so the
+    # launch resolver returned openrouter/anthropic/claude-haiku-4-5 and moved
+    # the session's vendor AND credentials without being asked.
     result = await resolve_model_argument(
-        "anthropic/claude-haiku-4-5", registry=_Registry([ANTHROPIC_HAIKU])
+        "anthropic/claude-haiku-4-5",
+        registry=_Registry([ANTHROPIC_HAIKU, OPENROUTER_SONNET]),
+    )
+    assert result.model is ANTHROPIC_HAIKU
+
+
+async def test_vendor_slashed_gateway_id_resolves_to_the_gateway() -> None:
+    # The other namespace: no available provider claims this as a provider/id
+    # split, so pi's resolver falls through to the whole-string id match and the
+    # OpenRouter copy wins — on OpenRouter's own host.
+    result = await resolve_model_argument(
+        "anthropic/claude-sonnet-4.5",
+        registry=_Registry([ANTHROPIC_HAIKU, OPENROUTER_SONNET]),
+    )
+    assert result.model is OPENROUTER_SONNET
+
+
+async def test_canonical_key_reaches_a_gateway_copy() -> None:
+    # provider/id where the id ITSELF contains a slash — how a user asks for the
+    # gateway's copy when a real provider would otherwise claim the split.
+    result = await resolve_model_argument(
+        "openrouter/anthropic/claude-sonnet-4.5",
+        registry=_Registry([ANTHROPIC_HAIKU, OPENROUTER_SONNET]),
+    )
+    assert result.model is OPENROUTER_SONNET
+
+
+async def test_qualified_reference_gets_no_current_provider_tiebreak() -> None:
+    # A bare id tie-breaks to the current provider; a QUALIFIED one must not —
+    # it NAMES a provider, so substituting a different one is the exact failure
+    # this module exists to prevent. Both gateways serve this id verbatim.
+    vercel = _model("vercel-ai-gateway", "anthropic/claude-sonnet-4.5")
+    result = await resolve_model_argument(
+        "anthropic/claude-sonnet-4.5",
+        registry=_Registry([OPENROUTER_SONNET, vercel]),
+        current_model=_CurrentModel("openrouter"),
+    )
+    assert result.model is None
+    assert result.error is not None
+    assert "openrouter/anthropic/claude-sonnet-4.5" in result.error
+    assert "vercel-ai-gateway/anthropic/claude-sonnet-4.5" in result.error
+
+
+async def test_unknown_qualified_id_is_refused() -> None:
+    # openrouter/gpt-4o: OpenRouter serves openai/gpt-4o, not this. It used to
+    # report success on openrouter/openrouter/gpt-4o and 400 at the next send.
+    result = await resolve_model_argument(
+        "openrouter/gpt-4o", registry=_Registry([OPENROUTER_SONNET, OPENAI_GPT])
+    )
+    assert result.model is None
+    assert result.error is not None
+    assert "openrouter/gpt-4o" in result.error
+
+
+async def test_undecided_when_the_auth_filter_is_unreadable() -> None:
+    # F3: get_all() works but get_available() raises. Falling back to get_all()
+    # would resolve across providers with NO configured credentials, trading a
+    # clear refusal for a confusing auth failure at send time.
+    secret = _model("secret-corp", "corp-only-model")
+    result = await resolve_model_argument(
+        "corp-only-model", registry=_AvailableRaises([secret])
     )
     assert result.model is None
     assert result.error is None

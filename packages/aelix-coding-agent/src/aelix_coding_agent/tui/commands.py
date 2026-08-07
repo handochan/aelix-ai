@@ -248,9 +248,10 @@ async def _model_handler(ctx: CommandContext, args: str) -> None:
     detail footer) when the host wired one, else prints the current model. An
     explicit id (``/model openai/gpt-4o``) skips the picker and switches directly.
 
-    A BARE id resolves against the live registry — the same auth-filtered,
-    allow-list-narrowed pool the picker offers — via
-    :func:`~aelix_coding_agent.core.model_argument.resolve_model_argument`, so it
+    An argument in EITHER form — a bare id or ``<provider>/<id>`` — resolves
+    against the live registry via
+    :func:`~aelix_coding_agent.core.model_argument.resolve_model_argument`, over
+    the same auth-filtered, allow-list-narrowed pool the picker offers, so it
     lands on a properly scoped ``(provider, id)`` or is refused outright. It used
     to go straight to :func:`resolve_model`, whose launch-time environment
     heuristics re-stamped the session's own provider onto ids that provider does
@@ -311,8 +312,8 @@ async def _model_handler(ctx: CommandContext, args: str) -> None:
             # carries the proxy-ep base_url enrich_copilot_base_url exists to add.
             model = resolution.model
         else:
-            # UNDECIDED — an explicit <provider>/<id>, or no usable registry
-            # (headless / RPC / test doubles). Unchanged launch-path resolution.
+            # UNDECIDED — no usable registry (headless / RPC / test doubles); the
+            # interactive TUI always builds one. Unchanged launch-path resolution.
             # Adopt the registry's proxy-ep base_url for github-copilot (enterprise/
             # business host); resolve_model alone returns the static individual host.
             model = enrich_copilot_base_url(
