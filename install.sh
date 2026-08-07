@@ -5,9 +5,13 @@
 #
 # It downloads the release wheels from the GitHub Release, verifies each one
 # against the published SHA256SUMS manifest (a hard security gate — any
-# mismatch aborts), then installs the `aelix` CLI with uv. Third-party
-# dependencies resolve from PyPI as usual; the four first-party wheels come
-# from the checksum-verified download (uv --find-links, never --no-index).
+# mismatch aborts), then installs the `aelix` CLI with uv, PINNED to the exact
+# version named by the verified manifest. The pin is what makes the gate
+# meaningful: it is the reason the wheels uv installs are the wheels this
+# script just verified, rather than whatever an index happens to offer under
+# the same name. Third-party dependencies still resolve from PyPI as usual;
+# the four first-party wheels come from the checksum-verified download
+# (uv --find-links, never --no-index).
 #
 # Configuration (all optional, via environment):
 #   AELIX_VERSION  Pin an exact release tag (e.g. v0.1.0-beta.1). Default:
@@ -118,7 +122,14 @@ if [ -n "$AELIX_VERSION" ]; then
 else
   log "resolving the newest release from GitHub..."
   api_get "https://api.github.com/repos/$AELIX_REPO/releases" "$tmp/releases.json" \
-    || die "failed to query the GitHub releases API for '$AELIX_REPO'."
+    || die "failed to query the GitHub releases API for '$AELIX_REPO'.
+  Unauthenticated GitHub API calls are limited to 60/hr PER IP, so this is
+  usually an HTTP 403 rate-limit on a shared address (CI runner, corporate
+  NAT, VPN) rather than a missing repo. Two escapes, either one is enough:
+    - set GITHUB_TOKEN=<a token> to lift the limit (any scope; a fine-grained
+      token with no permissions works, the releases list is public), or
+    - set AELIX_VERSION=vX.Y.Z to pin the tag and skip this API call entirely
+      (the download + checksum steps below use no API at all)."
   # The list endpoint is newest-first and INCLUDES pre-releases (unlike
   # /releases/latest), so the first tag_name is the newest beta during beta.
   tag="$(grep -m1 '"tag_name"' "$tmp/releases.json" | sed 's/.*: *"\(.*\)".*/\1/')"
@@ -151,13 +162,35 @@ while IFS= read -r name; do
 done < "$tmp/.wheels"
 
 # ── Step 5: install (hybrid: local verified wheels + PyPI for the rest) ──────
+# The version pin below is LOAD-BEARING, not cosmetic. --find-links only ADDS
+# candidates; the PyPI index stays enabled (third-party deps need it), and uv
+# then resolves the best candidate across BOTH sources. Requesting the bare
+# name `aelix` therefore lets a PyPI release of that name outrank the local
+# wheels — and the SHA256SUMS gate in Step 4 would have verified artifacts that
+# this very command discards. Pinning to the exact version named by the
+# verified manifest is what closes that gap: only the checksum-verified wheel
+# can satisfy `==$version`.
+#
+# The version is parsed from the wheel FILENAME, never from the tag: a tag is
+# `v0.1.0-beta.1` while PEP 440 normalizes the same release to `0.1.0b1`, so
+# the tag is not a usable version specifier. The meta-package wheel is
+# `aelix-<VER>-py3-none-any.whl`; its siblings escape the hyphen in their
+# distribution name to an underscore (`aelix_ai-…`, `aelix_agent_core-…`,
+# `aelix_coding_agent-…`), so an `aelix-` prefix matches the meta-package
+# alone. A PEP 440 version can never itself contain a hyphen, which is what
+# makes the `-`-delimited field split unambiguous.
+version="$(awk '$2 ~ /^aelix-[^-]+-py3-none-any\.whl$/ {
+                  split($2, f, "-"); print f[2]; exit
+                }' "$tmp/SHA256SUMS")"
+[ -n "$version" ] || die "could not parse the aelix version from SHA256SUMS for '$tag' (no 'aelix-<version>-py3-none-any.whl' entry)."
+
 if [ -n "$AELIX_EXTRAS" ]; then
-  target="aelix[$AELIX_EXTRAS]"
+  target="aelix[$AELIX_EXTRAS]==$version"
 else
-  target="aelix"
+  target="aelix==$version"
 fi
 
-log "installing $target with uv..."
+log "installing $target with uv (version pinned from the verified SHA256SUMS)..."
 # --find-links ADDS the four checksum-verified local wheels as candidates; the
 # default PyPI index stays enabled so third-party dependencies resolve. Never
 # use --no-index (it would make transitive deps unresolvable). --force makes
