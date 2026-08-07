@@ -60,8 +60,18 @@ jobs:
       - name: Validate release tag is strict semver
         run: |
           tag="${{ github.ref_name }}"
-          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.]+)?$ ]]; then
-            echo "::error::Tag '$tag' is not a valid vX.Y.Z[-prerelease] release tag; refusing to publish."
+          # A pre-release MUST be spelled with a HYPHEN. The whole pipeline
+          # decides "is this a pre-release?" by testing for a hyphen — the
+          # publish job's `if: !contains(ref_name, '-')` and the
+          # github-release job's `--prerelease` case both do. The previous
+          # `([.-][0-9A-Za-z.]+)?` also admitted the DOT form, so a tag like
+          # `v0.1.0.rc1` passed this gate, contained no hyphen, and was
+          # therefore treated as a GA release: marked as a full release on
+          # GitHub AND carried into an IRREVERSIBLE PyPI upload
+          # (skip-existing: false). Accepting only `vX.Y.Z` and
+          # `vX.Y.Z-<suffix>` makes "no hyphen" and "is GA" the same fact.
+          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
+            echo "::error::Tag '$tag' is not a valid vX.Y.Z[-prerelease] release tag; refusing to publish. A pre-release must use a hyphen (v0.1.0-beta.1), never a dot (v0.1.0.rc1)."
             exit 1
           fi
           echo "Release tag: $tag"
@@ -75,6 +85,44 @@ jobs:
           version: "0.11.14"
           python-version: "3.12"
           enable-cache: true
+
+      # The tag says one version; pyproject.toml says another. Nothing before
+      # this step made them agree, so a tag pushed without the version bump
+      # (or bumped to the wrong PEP 440 spelling) would build and publish
+      # artifacts whose version does not match the tag that triggered them —
+      # and the PyPI upload is irreversible. Assert the two agree, BEFORE the
+      # build, using packaging's PEP 440 normalizer rather than a hand-rolled
+      # one: `v0.1.0-beta.1` normalizes to `0.1.0b1`, which is exactly the
+      # spelling pyproject.toml must carry.
+      - name: Assert the tag normalizes to the packaged version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          uv run --no-project --with packaging --python 3.12 python - <<'PY'
+          import os, sys, tomllib
+          from packaging.version import InvalidVersion, Version
+
+          tag = os.environ["TAG"]
+          try:
+              tag_version = Version(tag.removeprefix("v"))
+          except InvalidVersion as exc:
+              print(f"::error::Tag '{tag}' is not a PEP 440 version: {exc}")
+              sys.exit(1)
+
+          with open("pyproject.toml", "rb") as fh:
+              declared = tomllib.load(fh)["project"]["version"]
+          pkg_version = Version(declared)
+
+          if tag_version != pkg_version:
+              print(
+                  f"::error::Tag '{tag}' normalizes to '{tag_version}', but "
+                  f"pyproject.toml declares version '{declared}'. Bump the "
+                  "version in every published package (see RELEASING.md) or "
+                  "retag; refusing to build a mismatched release."
+              )
+              sys.exit(1)
+          print(f"Tag '{tag}' matches packaged version '{declared}' (normalized: {tag_version}).")
+          PY
 
       - name: Build all workspace packages
         run: uv build --all-packages --out-dir dist
@@ -262,12 +310,29 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
           tag='${{ github.ref_name }}'
           prerelease=""
           case "$tag" in *-*) prerelease='--prerelease';; esac
+
+          # The SBOM was attached via a bare glob. An unmatched glob would be
+          # passed through to `gh` as the literal string `sbom/aelix-*.cdx.json`
+          # (a confusing upload failure), and a glob matching SEVERAL files
+          # would quietly attach all of them — the SBOM filename carries the
+          # version (`aelix-0.1.0b1.cdx.json`), so a stale copy left behind by
+          # a version bump is exactly how that happens. Require exactly one.
+          shopt -s nullglob
+          sboms=(sbom/aelix-*.cdx.json)
+          shopt -u nullglob
+          if [ "${#sboms[@]}" -ne 1 ]; then
+            echo "::error::Expected exactly 1 SBOM matching 'sbom/aelix-*.cdx.json', found ${#sboms[@]}: ${sboms[*]:-(none)}. Regenerate the SBOM (scripts/) and remove any stale copies."
+            exit 1
+          fi
+          echo "SBOM: ${sboms[0]}"
+
           gh release create "$tag" \
             dist/*.whl dist/*.tar.gz dist/SHA256SUMS \
-            sbom/aelix-*.cdx.json \
+            "${sboms[0]}" \
             --repo '${{ github.repository }}' \
             --title "$tag" \
             --notes-file "$NOTES_FILE" \
