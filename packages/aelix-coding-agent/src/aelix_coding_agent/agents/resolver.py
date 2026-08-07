@@ -178,6 +178,60 @@ def parent_model_flags(parent_model: Model | None) -> list[str]:
     return flags
 
 
+def child_model_flags(
+    profile: AgentProfile, parent_model: Model | None = None
+) -> list[str]:
+    """The ``--model`` / ``--provider`` pair a child is launched with.
+
+    The emission table's first row group, lifted into its own function so that
+    :func:`child_model_id` can READ the decision instead of restating it. The
+    precedence is unchanged and is the table's: a profile that names EITHER
+    ``model`` or ``provider`` is expressing an intent about the child's identity
+    and is taken at its word; a profile that names NEITHER inherits the parent's
+    run-scope model (:func:`parent_model_flags`).
+    """
+
+    if profile.model is None and profile.provider is None:
+        # The profile says nothing about the child's model, so the child would
+        # run its own cascade and find whatever the PARENT's cascade would have
+        # found WITHOUT the parent's run-scope flags — i.e. nothing, for a
+        # parent whose model came from ``--model`` or ``/model``. Inherit.
+        return parent_model_flags(parent_model)
+    flags: list[str] = []
+    if profile.model is not None:
+        flags += ["--model", profile.model]
+    if profile.provider is not None:
+        flags += ["--provider", profile.provider]
+    return flags
+
+
+def child_model_id(
+    profile: AgentProfile, parent_model: Model | None = None
+) -> str | None:
+    """The model id that will be ON THE CHILD'S ARGV, or ``None`` if none will.
+
+    READ OFF THE FLAGS THEMSELVES rather than re-deriving the precedence, which
+    is the whole reason :func:`child_model_flags` exists as a separate function.
+    Its callers are display surfaces — the delegation statusline row, the widget
+    panel, the spawn consent dialog — and a display that states a model the
+    child was not asked to run is worse than one that states nothing: the
+    consent dialog in particular is a claim a human acts on.
+
+    ``None`` is the honest answer whenever the flag is absent: a profile that
+    declares only a ``provider``, and a parent that has no resolved model of its
+    own, both leave the child to its own model cascade, whose outcome is not
+    knowable from here. Every caller omits the term rather than inventing one.
+
+    THIS IS NOT WHAT THE CHILD REPORTS. The child's own ``message_end`` is the
+    authoritative statement of what it actually ran, and it wins wherever both
+    are available (``aelix_agents.runtime._publish``). This is what we ASKED
+    for, which is the only thing knowable before the process exists.
+    """
+
+    flags = child_model_flags(profile, parent_model)
+    return flags[flags.index("--model") + 1] if "--model" in flags else None
+
+
 def profile_to_flags(
     profile: AgentProfile,
     *,
@@ -196,19 +250,7 @@ def profile_to_flags(
     for copy-paste — would inject the profile's raw YAML into the system prompt.
     """
 
-    flags: list[str] = []
-
-    if profile.model is None and profile.provider is None:
-        # The profile says nothing about the child's model, so the child would
-        # run its own cascade and find whatever the PARENT's cascade would have
-        # found WITHOUT the parent's run-scope flags — i.e. nothing, for a
-        # parent whose model came from ``--model`` or ``/model``. Inherit.
-        flags += parent_model_flags(parent_model)
-    else:
-        if profile.model is not None:
-            flags += ["--model", profile.model]
-        if profile.provider is not None:
-            flags += ["--provider", profile.provider]
+    flags: list[str] = child_model_flags(profile, parent_model)
 
     if profile.tools is not None:
         if not profile.tools:
@@ -400,6 +442,8 @@ __all__ = [
     "PROFILE_OVERLAY_FIELDS",
     "ProfileApplication",
     "apply_profile_to_args",
+    "child_model_flags",
+    "child_model_id",
     "parent_model_flags",
     "profile_to_argv",
     "profile_to_flags",
