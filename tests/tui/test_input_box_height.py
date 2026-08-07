@@ -67,6 +67,48 @@ def _input_assigned_rows(chrome: AelixChrome, reserved_floor: int) -> int:
     raise AssertionError("input conditional not found among body children")
 
 
+def _widget_row_rows(chrome: AelixChrome, *, above: bool, reserved_floor: int = 30) -> int:
+    """Rows the divided body hands the widgets-above/below ConditionalContainer.
+
+    Identifies the row by its render callback (the inline Window has no stored
+    handle) so we read the SAME container the layout renders."""
+    body = chrome.app.layout.container.content
+    render = chrome._render_widgets_above if above else chrome._render_widgets_below
+    sizes = body._divide_heights(
+        WritePosition(xpos=0, ypos=0, width=_WIDTH, height=reserved_floor)
+    )
+    assert sizes is not None, "body did not fit in the reserved floor"
+    for child, size in zip(body._all_children, sizes, strict=True):
+        control = getattr(getattr(child, "content", None), "content", None)
+        if isinstance(child, ConditionalContainer) and getattr(control, "text", None) == render:
+            return size
+    raise AssertionError("widget row not found among body children")
+
+
+async def test_empty_widget_rows_collapse_and_show_when_populated() -> None:
+    """Option B: ``widgets_above``/``widgets_below`` reserve 0 rows when they hold
+    no lines (they used to reserve a permanent blank row each), and render their
+    content when populated. The gate reads ``any(...values())``, so a slot cleared
+    to an EMPTY LIST collapses too — ``bool(dict)`` alone would not."""
+    async with _chrome() as chrome:
+        # Empty: both rows collapse to 0.
+        assert _widget_row_rows(chrome, above=True) == 0
+        assert _widget_row_rows(chrome, above=False) == 0
+
+        # Populated above: exactly its line count; below stays collapsed.
+        chrome.set_widget("panel", ["[1/2] running", "[2/2] done"], above=True)
+        assert _widget_row_rows(chrome, above=True) == 2
+        assert _widget_row_rows(chrome, above=False) == 0
+
+        # Cleared (key popped): collapses again.
+        chrome.set_widget("panel", None, above=True)
+        assert _widget_row_rows(chrome, above=True) == 0
+
+        # A slot cleared to an EMPTY LIST also collapses (any(values()) is False).
+        chrome.set_widget("x", [], above=True)
+        assert _widget_row_rows(chrome, above=True) == 0
+
+
 async def test_input_window_dimension_is_content_bounded() -> None:
     """The reported dimension tracks the buffer's line count and, crucially, has
     ``max == preferred`` so the window can never absorb the HSplit's slack."""

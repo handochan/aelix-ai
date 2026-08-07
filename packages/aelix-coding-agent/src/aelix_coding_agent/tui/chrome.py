@@ -667,16 +667,36 @@ class AelixChrome:
                 and not self.is_modal_open()
             ),
         )
+        # ``widgets_above``/``widgets_below`` collapse to 0 rows when they hold no
+        # lines — same non-empty ``ConditionalContainer`` gate as ``header`` and
+        # ``breadcrumb`` above. An UNGATED empty ``FormattedTextControl`` still
+        # reports ``line_count == 1``, so each reserved a permanent blank row; that
+        # slack used to be masked by the input editor swallowing the reserved-height
+        # floor, and became visible once the editor was made content-bounded. The
+        # gate reads ``any(...values())`` (not ``bool(dict)``) so a slot cleared to
+        # an empty list also collapses. Visibility only — WHAT the panel draws and
+        # WHEN it invalidates (``set_widget`` already calls ``invalidate``) are
+        # unchanged, so the subagent-panel render path is untouched.
+        widgets_above_row = ConditionalContainer(
+            Window(FormattedTextControl(self._render_widgets_above), dont_extend_height=True),
+            filter=renderer_height_is_known
+            & Condition(lambda: any(self._widgets_above.values())),
+        )
+        widgets_below_row = ConditionalContainer(
+            Window(FormattedTextControl(self._render_widgets_below), dont_extend_height=True),
+            filter=renderer_height_is_known
+            & Condition(lambda: any(self._widgets_below.values())),
+        )
         body = HSplit(
             [
                 header,
                 breadcrumb,
-                Window(FormattedTextControl(self._render_widgets_above), dont_extend_height=True),
+                widgets_above_row,
                 modal_slot,
                 working_row,
                 working_spacer,
                 input_conditional,
-                Window(FormattedTextControl(self._render_widgets_below), dont_extend_height=True),
+                widgets_below_row,
                 _ansi_row(self._render_status),
                 _footer_row(),
             ]
