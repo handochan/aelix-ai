@@ -276,6 +276,7 @@ async def run_tui(
     settings_manager: SettingsManager | None = None,
     auth_storage: AuthStorage | None = None,
     extensions: list[Extension] | None = None,
+    extension_errors: list[Any] | None = None,
     agent_service: AgentProfileService | None = None,
     chrome: AelixChrome | None = None,
     install_signal_handlers: bool = True,
@@ -314,6 +315,11 @@ async def run_tui(
         Extension` objects discovered on the first harness build (entry.py
         threads it; empty when nothing loaded) so WP-8 ``/extension`` can list
         them. ``None`` → an empty list. WP-8 (Feature 3).
+    :param extension_errors: the ``LoadExtensionsResult.errors`` from that same
+        first discovery pass — the packs that were found and refused (untrusted
+        provenance, a capability gate, a manifest that would not bind). Threaded
+        so ``/extension`` can show them instead of leaving a rejected pack
+        looking uninstalled. ``None`` → an empty list. Issue #126.
     :param agent_service: the held
         :class:`~aelix_coding_agent.agents.service.AgentProfileService` (entry.py
         constructs it over the SAME ``Args`` the harness factory closes over) so
@@ -332,6 +338,7 @@ async def run_tui(
     # ``auth_storage`` is a parameter and threads straight into the stage-B
     # /login + /logout flows.
     extensions = list(extensions) if extensions else []
+    extension_errors = list(extension_errors) if extension_errors else []
 
     def _live_extension_shortcuts() -> dict[str, Any]:
         # Issue #20 — LIVE read through the runtime host (never the stale
@@ -1249,6 +1256,9 @@ async def run_tui(
             mcp_manager=mcp_manager,
             tabbed=context.tabbed,
             commit=_commit,
+            # #126 — the refusals from the same discovery pass, so a pack that
+            # was rejected reads as rejected here rather than as absent.
+            errors=extension_errors,
             # #32-A (ADR-0186) — the Sources tab renders the persisted
             # ``extension_sources`` list live. Bound method (or None when no
             # SettingsManager is wired) so each open re-reads the current list.

@@ -209,6 +209,7 @@ async def test_interactive_mode_dispatches_to_run_tui(
         settings_manager: object = None,
         auth_storage: object = None,
         extensions: object = None,
+        extension_errors: object = None,
         agent_service: object = None,
     ) -> int:
         # Sprint 6h₂₆ (ADR-0154): the real model_registry must be threaded so
@@ -220,6 +221,8 @@ async def test_interactive_mode_dispatches_to_run_tui(
         # /scoped-models + /statusline.
         # WP-8 (Features 1 + 3): the held auth_storage (for /login + /logout) +
         # the discovered extensions list (for /extension) are threaded.
+        # #126: so are that pass's load errors, so /extension can show a pack
+        # that was refused rather than leaving it looking uninstalled.
         # ADR-0196: the held AgentProfileService is threaded for /agents. Only
         # ACCEPTED here (not asserted) — this test is the router smoke; the
         # service's own behaviour is pinned elsewhere.

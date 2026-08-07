@@ -513,3 +513,12 @@ Sign the artifact first if you want users to be able to gate on provenance:
 aelix extension keygen                          # publisher Ed25519 key; prints a keyId
 aelix extension sign <artifact> --key <keyId>   # detached .aelixsig sidecar
 ```
+
+Publishing somewhere other than the public marketplace — an internal catalog for
+your organisation, or a directory of wheels on an air-gapped network — is
+[private-catalog.md](private-catalog.md). `aelix extension index <dir>` generates
+the catalog document from your built wheels, so you never hand-maintain it.
+
+```bash
+aelix extension index dist/ --name "Acme internal"
+```

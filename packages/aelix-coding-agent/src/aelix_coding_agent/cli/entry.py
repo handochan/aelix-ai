@@ -804,6 +804,7 @@ async def _build_harness_options(
     permission_ext: PermissionExtension | None = None,
     agents_ext: Any | None = None,
     captured_extensions: list[Any] | None = None,
+    captured_extension_errors: list[Any] | None = None,
     settings_manager: SettingsManager | None = None,
     flag_values: Mapping[str, bool | str] | None = None,
     on_reload: bool = False,
@@ -950,6 +951,13 @@ async def _build_harness_options(
     if captured_extensions is not None:
         captured_extensions.clear()
         captured_extensions.extend(loaded.extensions)
+    # #126 — the refusals travel with the extensions, through the same holder
+    # pattern. Without them the /extension manager could only show what loaded,
+    # so a pack refused for untrusted provenance or a capability gate was
+    # indistinguishable there from one that was never installed.
+    if captured_extension_errors is not None:
+        captured_extension_errors.clear()
+        captured_extension_errors.extend(loaded.errors)
     # Seed the message-queue modes from persisted settings so a ``/settings``
     # steering / follow-up change SURVIVES restart (and reaches /new / /fork /
     # /resume). Both had get/set pairs on SettingsManager but no startup
@@ -1967,6 +1975,8 @@ async def _async_main(argv: list[str]) -> int:
     # extensions on the FIRST build so run_tui's /extension viewer gets the live
     # list (default empty when nothing loaded / non-interactive).
     discovered_extensions: list[Any] = []
+    # #126 — its sibling for the refusals, filled by the same build.
+    discovered_extension_errors: list[Any] = []
 
     # Issue #12: load skills ONCE (the dirs are stable for the process) and
     # re-apply them on every harness build below, so ``harness.skills`` is never
@@ -2003,6 +2013,7 @@ async def _async_main(argv: list[str]) -> int:
             # ``None`` when delegation is off, which is the P2 default.
             agents_ext=agents_ext,
             captured_extensions=discovered_extensions,
+            captured_extension_errors=discovered_extension_errors,
             model_registry=model_registry,
             # #98 — settings.json ``defaultProvider``, resolved ONCE above and
             # passed as a value so every (re)built harness resolves the turn model
@@ -2214,6 +2225,9 @@ async def _async_main(argv: list[str]) -> int:
                 # WP-8 (Feature 3) — the extensions discovered on the first
                 # harness build (empty when none loaded), for /extension.
                 extensions=discovered_extensions,
+                # #126 — and the packs that were refused, so /extension can show
+                # a rejection rather than an absence.
+                extension_errors=discovered_extension_errors,
                 # ADR-0196 — the /agents service (see its construction above for
                 # why this is conditional rather than a plain kwarg).
                 **agent_service_kwarg,

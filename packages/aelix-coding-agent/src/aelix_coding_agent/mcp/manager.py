@@ -49,6 +49,12 @@ class McpClientManager:
 
         Returns the per-server :class:`McpConnectionError` list (empty on full
         success). A single failing server never aborts the others.
+
+        Catching only ``McpConnectionError`` here is deliberate, and it relies
+        on ``McpServerConnection.connect`` reporting *every* server-side failure
+        as one — including a server that dies mid-handshake, which surfaces
+        underneath as a ``CancelledError`` (#125). A cancellation that reaches
+        this loop is therefore our caller's, and must keep travelling.
         """
         errors: list[McpConnectionError] = []
         for conn in self._connections.values():
