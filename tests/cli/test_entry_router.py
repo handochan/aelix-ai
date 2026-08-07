@@ -29,6 +29,8 @@ from aelix_coding_agent.cli.entry import (
     to_print_output_mode,
 )
 
+from tests.env_sandbox import sandbox_home
+
 # === resolve_app_mode decision table (Pi main.ts:96-113) ====================
 
 
@@ -209,6 +211,7 @@ async def test_interactive_mode_dispatches_to_run_tui(
         settings_manager: object = None,
         auth_storage: object = None,
         extensions: object = None,
+        extension_errors: object = None,
         agent_service: object = None,
     ) -> int:
         # Sprint 6h₂₆ (ADR-0154): the real model_registry must be threaded so
@@ -220,6 +223,8 @@ async def test_interactive_mode_dispatches_to_run_tui(
         # /scoped-models + /statusline.
         # WP-8 (Features 1 + 3): the held auth_storage (for /login + /logout) +
         # the discovered extensions list (for /extension) are threaded.
+        # #126: so are that pass's load errors, so /extension can show a pack
+        # that was refused rather than leaving it looking uninstalled.
         # ADR-0196: the held AgentProfileService is threaded for /agents. Only
         # ACCEPTED here (not asserted) — this test is the router smoke; the
         # service's own behaviour is pinned elsewhere.
@@ -664,7 +669,7 @@ async def test_no_provider_print_emits_guidance_and_exits_1(
     """
 
     monkeypatch.setattr(sys, "stdin", _FakePipedStdin())
-    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    sandbox_home(monkeypatch, tmp_path / "home")
     # No provider/model flags, and no OpenRouter env to infer a provider from.
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     monkeypatch.delenv("OPENROUTER_DEFAULT_MODEL", raising=False)
@@ -717,7 +722,7 @@ async def test_interactive_warns_but_still_launches_on_unrunnable_model(
 
     _force_supported_apis(monkeypatch, "anthropic-messages")
     monkeypatch.setattr(sys, "stdin", _FakeTTYStdin())
-    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    sandbox_home(monkeypatch, tmp_path / "home")
     agent_dir = tmp_path / "agent"
     agent_dir.mkdir()
     monkeypatch.setenv("AELIX_CODING_AGENT_DIR", str(agent_dir))
@@ -751,7 +756,7 @@ async def test_interactive_stays_silent_for_a_runnable_model(
 
     _force_supported_apis(monkeypatch, "anthropic-messages")
     monkeypatch.setattr(sys, "stdin", _FakeTTYStdin())
-    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    sandbox_home(monkeypatch, tmp_path / "home")
     agent_dir = tmp_path / "agent"
     agent_dir.mkdir()
     monkeypatch.setenv("AELIX_CODING_AGENT_DIR", str(agent_dir))
@@ -785,7 +790,7 @@ async def test_print_mode_refuses_unrunnable_uncatalogued_provider(
 
     _force_supported_apis(monkeypatch, "anthropic-messages")
     monkeypatch.setattr(sys, "stdin", _FakePipedStdin())
-    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    sandbox_home(monkeypatch, tmp_path / "home")
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     monkeypatch.delenv("OPENROUTER_DEFAULT_MODEL", raising=False)
 
@@ -811,7 +816,7 @@ async def test_provider_without_key_emits_no_api_key_guidance(
     """
 
     monkeypatch.setattr(sys, "stdin", _FakePipedStdin())
-    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    sandbox_home(monkeypatch, tmp_path / "home")
     # Ensure the anthropic provider has NO resolvable key in the environment.
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("ANTHROPIC_OAUTH_TOKEN", raising=False)
@@ -841,7 +846,7 @@ async def test_env_authenticated_print_passes_guard(
     NEVER emits the auth-guidance message)."""
 
     monkeypatch.setattr(sys, "stdin", _FakePipedStdin())
-    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    sandbox_home(monkeypatch, tmp_path / "home")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-env-key")
 
     code = await _async_main(

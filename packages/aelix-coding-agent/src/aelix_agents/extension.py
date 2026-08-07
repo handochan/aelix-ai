@@ -343,6 +343,7 @@ class AgentsExtension:
             project_trusted=self._host_project_trusted,
             agent_dir=lambda: self.agent_dir,
             model_registry=self._host_model_registry,
+            model=self._host_model,
             on_progress=self._publish_progress,
         )
 
@@ -406,6 +407,27 @@ class AgentsExtension:
         try:
             return api.runtime.model_registry
         except Exception:  # noqa: BLE001
+            return None
+
+    def _host_model(self) -> Any | None:
+        """The parent's model RIGHT NOW, for a child whose profile names none.
+
+        ``ExtensionContext.model`` is ``harness/core.py``'s ``_state.model``,
+        re-read every time a context is built, and ``self._ctx`` is refreshed on
+        every tool call — so this is the model the parent's own next turn would
+        use, not the one it booted with.
+
+        ``None`` before the first hook has run (there is no context to ask) and
+        ``None`` on a stale one. Both mean "no evidence", and the child then
+        runs its own cascade exactly as it did before this seam existed.
+        """
+
+        ctx = self._ctx
+        if ctx is None:
+            return None
+        try:
+            return ctx.model
+        except Exception:  # noqa: BLE001 — a stale ctx must not brick a spawn
             return None
 
     def _publish_progress(self, progress: SubagentProgress) -> None:

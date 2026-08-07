@@ -92,8 +92,30 @@ def _extension_version(ext: Any) -> str | None:
     return str(version) if version else None
 
 
-def build_installed_lines(extensions: Any, mcp_conns: Any) -> list[str]:
-    """Render the "Installed" tab: loaded extensions, then MCP servers.
+def _error_rows(errors: Any) -> list[str]:
+    """Render one ``✖ <label> — refused: <reason>`` row per load error.
+
+    ``errors`` is the loader's ``LoadExtensionsResult.errors`` — a list of
+    :class:`~aelix_coding_agent.extensions.loader.ExtensionLoadError`, each a
+    ``path`` label plus an ``error`` reason. getattr-guarded like every other
+    builder here, so an unexpected shape degrades to its ``str()``.
+    """
+
+    rows: list[str] = []
+    for err in list(errors or []):
+        label = getattr(err, "path", None)
+        reason = getattr(err, "error", None)
+        if not label and not reason:
+            rows.append(f"  ✖ {err}")
+            continue
+        rows.append(f"  ✖ {label or '?'} — refused: {reason or 'unknown reason'}")
+    return rows
+
+
+def build_installed_lines(
+    extensions: Any, mcp_conns: Any, errors: Any = None
+) -> list[str]:
+    """Render the "Installed" tab: loaded extensions, refusals, then MCP servers.
 
     ``extensions`` is the discovered ``list[Extension]`` (each with an optional
     parsed manifest carrying name/version); ``mcp_conns`` is an iterable of MCP
@@ -101,19 +123,30 @@ def build_installed_lines(extensions: Any, mcp_conns: Any) -> list[str]:
     ``name`` / ``transport`` / ``connected``). Both are fully getattr-guarded so
     a missing field degrades to ``"?"`` / an omitted version rather than raising.
 
+    ``errors`` (issue #126) is the loader's ``LoadExtensionsResult.errors``: the
+    packs that were found and then NOT loaded — an untrusted ``sys.path``
+    provenance refusal, a capability gate, a manifest that would not bind
+    (#91). Those diagnostics already reached stderr at startup and
+    ``aelix extension list``, but this manager showed nothing, so a refused pack
+    looked exactly like one that was never installed — the user had no reason to
+    suspect there was anything to fix. They render as their own section.
+
     The Aelix-additive built-in safety extensions (Guardrail / Permission) are
     rendered under a separate dim "Built-in:" section, NOT counted as user
     plugins — so the empty-state below is reachable on a clean install.
 
-    Empty inventory (no USER plugins, no built-ins AND no MCP servers) →
-    ``["No plugins or MCP servers installed."]``.
+    Empty inventory (no USER plugins, no built-ins, no MCP servers AND no
+    refusals) → ``["No plugins or MCP servers installed."]``. A refusal alone is
+    enough to suppress that line: claiming nothing is installed is exactly the
+    wrong thing to tell someone whose pack was rejected.
     """
 
     all_exts = list(extensions or [])
     builtins = [e for e in all_exts if _is_builtin_safety(e)]
     user_exts = [e for e in all_exts if not _is_builtin_safety(e)]
     conns = list(mcp_conns or [])
-    if not user_exts and not builtins and not conns:
+    error_rows = _error_rows(errors)
+    if not user_exts and not builtins and not conns and not error_rows:
         return ["No plugins or MCP servers installed."]
 
     lines: list[str] = []
@@ -124,11 +157,19 @@ def build_installed_lines(extensions: Any, mcp_conns: Any) -> list[str]:
             version = _extension_version(ext)
             suffix = f" {version}" if version else ""
             lines.append(f"  ✓ {name}{suffix}")
-    elif builtins or conns:
-        # No user plugins, but built-ins/MCP exist — say so explicitly rather
-        # than letting the built-in section masquerade as the plugin list.
+    elif builtins or conns or error_rows:
+        # No user plugins, but built-ins/MCP/refusals exist — say so explicitly
+        # rather than letting another section masquerade as the plugin list.
         lines.append("Plugins:")
         lines.append("  (no user plugins installed)")
+    if error_rows:
+        # Directly under the plugin list, because that is the list the user came
+        # to check and these are the entries missing from it.
+        if lines:
+            lines.append("")
+        lines.append("Refused (found, not loaded):")
+        lines.extend(error_rows)
+        lines.append("  Run `aelix extension verify` for the full diagnosis.")
     if conns:
         if lines:
             lines.append("")
@@ -302,6 +343,7 @@ async def run_extension_manager(
     mcp_manager: Any,
     tabbed: Callable[..., Awaitable[None]] | None,
     commit: Callable[[object], None],
+    errors: Any = None,
     sources_getter: Callable[[], Any] | None = None,
     catalog_getter: Callable[[], Any] | None = None,
     default_catalog_getter: Callable[[], tuple[str, bool] | None] | None = None,
@@ -314,6 +356,12 @@ async def run_extension_manager(
     prompt-toolkit app. ``shell.py`` wires the live discovered extensions + MCP
     manager + :meth:`AelixTUIContext.tabbed` + a ``SettingsManager``-backed
     source reader into it.
+
+    ``errors`` (issue #126) is the loader's ``LoadExtensionsResult.errors`` for
+    the same discovery pass that produced ``extensions`` — the packs that were
+    found and refused. Threaded from ``entry.py`` alongside the extensions list
+    so the Installed tab can say a pack was rejected instead of leaving it
+    looking uninstalled. Omitted / :data:`None` simply renders no such section.
 
     ``sources_getter`` (#32-A) is read INSIDE the Sources render closure so each
     open reflects the current persisted list (a source added from the CLI while
@@ -345,14 +393,16 @@ async def run_extension_manager(
         return
 
     exts = list(extensions or [])
+    load_errors = list(errors or [])
 
     # Re-read the live MCP connection set INSIDE the render closure so each tab
     # switch reflects a server that connected / dropped while the modal is open
     # (matching ``/mcp``). The extensions list is fixed at startup, so it is
-    # captured once.
+    # captured once — and so are the load errors, which are produced by the same
+    # discovery pass.
     def _installed() -> list[str]:
         conns = list(getattr(mcp_manager, "connections", {}).values())
-        return build_installed_lines(exts, conns)
+        return build_installed_lines(exts, conns, load_errors)
 
     def _default_catalog() -> tuple[str, bool] | None:
         # Guard ③ (ADR-0192): read the injected built-in default value live so an

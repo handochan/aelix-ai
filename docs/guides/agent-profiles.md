@@ -20,6 +20,28 @@ You are reviewing someone else's work. Report what is wrong, with file and line.
 Say "no findings" rather than inventing one.
 ```
 
+## Enabling delegation
+
+**Delegation is off by default.** With it off, the `agent` tool is never built
+and `/agents run` refuses — profiles still load and `/agents list` still lists
+them, but nothing can spawn.
+
+Turn it on for a single run with `--agents`:
+
+```console
+$ aelix --agents
+```
+
+Or persistently, with the **Agent delegation** row in `/settings` (it writes
+`features.agents`). That one **takes effect the next time you launch aelix**,
+not immediately: the flag is read once, while the harness is being built.
+
+`--agents` and `--no-agents` are both run-scoped and both beat the persisted
+setting, so `--no-agents` still shuts delegation off for one run when the
+setting is on. The setting is read from your global settings file only — a
+repository cannot switch delegation on by shipping its own
+`.aelix/settings.json`.
+
 ## Where profiles live
 
 Three directories are scanned, non-recursively, for `<name>.md`, in **ascending
@@ -51,7 +73,7 @@ default. An unknown key is a warning, not an error — your profile still loads.
 |---|---|---|---|
 | `name` | string | — | The identity. **This field, not the filename**, is the name you delegate to; a mismatch warns. |
 | `description` | string | — | What the model reads in the `agent` tool's schema to decide whether this profile fits the task. Write it for that reader. |
-| `model` | string | inherit | Model id for the child. `inherit` and an absent key both mean "do not pass `--model`". |
+| `model` | string | inherit | Model id for the child. `inherit` and an absent key both mean "use the parent's model" — see below. |
 | `provider` | string | inherit | Provider for the child. Set it whenever you set `model`. |
 | `tools` | list \| `[]` \| absent | absent | **Three-valued.** Absent → the child inherits the ambient tool set. A list → exactly those tools. `[]` → **no tools at all**. |
 | `builtin_tools` | bool | `true` | Whether the built-in tools are available at all. |
@@ -68,6 +90,18 @@ default. An unknown key is a warning, not an error — your profile still loads.
 | `approval_mode` | `inherit` \| `ask` \| `auto` \| `deny` | `inherit` | How the profile **declares** it needs write authority. |
 
 ### The ones that are easy to get wrong
+
+**A profile that names no model inherits the parent's.** Leave `model` and
+`provider` out and the child runs on whatever the parent is using at the moment
+it delegates — including a model the parent was launched with (`--model`) or
+switched to mid-session with `/model`. This is what lets the bundled profiles,
+which declare no model, work under any provider.
+
+Inheritance is all-or-nothing: set **either** `model` **or** `provider` and the
+parent's model stops being forwarded entirely. Pairing your `provider` with the
+parent's model id would produce a combination neither of you asked for, so a
+profile that names half a model is treated as naming a model. If you set one,
+set both.
 
 **`tools: []` is not `tools: ""`.** An empty list means *no tools*. It is not the
 same as the `--tools ''` command-line form, which inverts to *every* tool.

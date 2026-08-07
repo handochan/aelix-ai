@@ -36,12 +36,15 @@ Aelix는 오늘 이 런타임 위의 터미널 에이전트로 먼저 제공됩�
   좌석 포함(사용은 귀사의 GitHub 계약 조건을 따릅니다) — 네이티브 어댑터를 제공합니다. 싼
   작업과 어려운 추론을 한 세션에서 다른 모델로 라우팅하세요. 종량제 ACU도, 새 벤더 계약도
   없습니다.
-- 🔏 **서명된 공급망.** 확장은 Ed25519 서명과 SHA-256 핀으로 검증됩니다(`extension keygen |
-  sign | trust`, fail-closed `--require-signature`). 오프라인 카탈로그에서 설치할 수
-  있습니다. 에이전트 도구에서 보기 드문 기능이지만, Aelix에서는 기본입니다.
-- 🔍 **감사 가능한 자체 호스팅.** 완전한 오픈소스, 텔레메트리 없음, 폐쇄망을 위한
-  `--offline` 모드. 신뢰는 직접 읽을 수 있는 코드에서 나옵니다 — *"내가 만들지 않은
-  에이전트를 왜 돌리는가?"* 에 대한 답입니다.
+- 🔏 **켜서 쓰는 퍼블리셔 서명.** Ed25519 서명 + SHA-256 핀 툴체인이 완비되어 있고
+  (`extension keygen | sign | trust`), `extension install --require-signature`는
+  fail-closed입니다 — 서명이 없거나 신뢰되지 않은 팩은 거부됩니다. 다만 **기본값은
+  아닙니다**: 아직 퍼스트파티 키가 프로비저닝되지 않았으므로, 이 플래그 없이는 서명이
+  없어도 최초 사용 시 그대로 통과합니다. [SECURITY.md](SECURITY.md)를 참고하세요.
+- 🔍 **감사 가능한 자체 호스팅.** 완전한 오픈소스, 텔레메트리 없음. `--offline`은 최초
+  사용 시의 `rg`/`fd` 다운로드와 확장 카탈로그 fetch를 건너뜁니다(모델 호출 자체를
+  차단하지는 않습니다 — 호출은 설정한 프로바이더로 그대로 나갑니다). 신뢰는 직접 읽을 수
+  있는 코드에서 나옵니다 — *"내가 만들지 않은 에이전트를 왜 돌리는가?"* 에 대한 답입니다.
 - 🧩 **코어까지 확장 가능.** 정책·권한·가드레일조차 교체 가능한 내장 확장으로 제공되는 작은
   커널과, 하나의 넓은 `ExtensionAPI` — 툴, 슬래시 명령, 프로바이더, 메시지 렌더러, 테마,
   그리고 자체 `/login` 플로우(SSO/사번 인증)까지 — 를 제공합니다. 재시작 없는 라이브
@@ -54,8 +57,9 @@ Aelix는 오늘 이 런타임 위의 터미널 에이전트로 먼저 제공됩�
 
 베타 기간에는 체크섬 검증 인스톨러를 통해 GitHub Releases에서 설치합니다. 필요하면
 [uv](https://docs.astral.sh/uv/)를 자동으로 설치하고, 모든 *Aelix* wheel을 릴리즈의
-`SHA256SUMS` 매니페스트와 대조한 뒤(불일치 시 즉시 중단 — 서드파티 의존성은 평소대로
-PyPI에서 해석됩니다), 전역 `aelix` 명령을 설치합니다:
+`SHA256SUMS` 매니페스트와 대조한 뒤(불일치 시 즉시 중단), 그 매니페스트가 지목한 정확한
+버전으로 **고정해서** 전역 `aelix` 명령을 설치합니다 — 검증한 wheel이 곧 실제로 설치되는
+wheel이 되도록. 서드파티 의존성은 평소대로 PyPI에서 해석됩니다:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/handochan/aelix-ai/main/install.sh | sh
@@ -64,16 +68,28 @@ curl -fsSL https://raw.githubusercontent.com/handochan/aelix-ai/main/install.sh 
 `AELIX_VERSION=v0.1.0-beta.1`로 릴리즈를 고정하고(베타 기간 권장), `AELIX_EXTRAS`로
 extras를 선택하세요 — 기본값은 `tui`, `tui,images`는 터미널 인라인 이미지 렌더링을
 추가하고, 비워두면(`AELIX_EXTRAS=`) TUI 없는 헤드리스 CLI(print/json/rpc)만 설치됩니다.
-PyPI 게시 이후에는 `uv tool install 'aelix[tui]'` — 또는 `pipx`/`pip` — 를 그대로 쓸 수
-있게 됩니다.
+
+**업그레이드 / 제거.** 같은 `curl … | sh` 한 줄을 다시 실행하면 업그레이드됩니다 — 최신
+릴리즈를 찾아 체크섬 검증 설치를 처음부터 다시 수행합니다(`uv tool install --force`라
+재실행이 멱등입니다). 제거는 `uv tool uninstall aelix`.
+
+> **아직 PyPI에 없습니다.** `aelix` 및 형제 배포판은 게시 전이라 오늘 기준
+> `pip install aelix` / `pipx install aelix` / `uv tool install aelix`는 404입니다. 첫 GA
+> 릴리즈가 게시되면 `uv tool install 'aelix[tui]'` — 또는 `pipx`/`pip` — 를 그대로 쓸 수
+> 있게 됩니다. 그전까지는 위 인스톨러를 사용하세요.
 
 ```bash
 aelix                                            # 인터랙티브 에이전트 (TUI)
 aelix --model openai/gpt-4o-mini "summarise this repo"
 aelix --print "what files changed?"              # 일회성 헤드리스 실행
-aelix --offline                                  # 에어갭 모드
+aelix --offline                                  # rg/fd·카탈로그 fetch 건너뛰기
 aelix --help
 ```
+
+`grep`/`find`를 처음 쓸 때 Aelix는 `ripgrep`과 `fd`를 각 upstream GitHub Releases에서
+`~/.aelix/agent/bin`으로 내려받습니다(두 도구가 `.gitignore`를 존중하도록). 런타임에
+가져오는 바이너리는 이 둘뿐이고, `--offline`이면 건너뜁니다 — `PATH`에 시스템 사본이
+있으면 그쪽을 우선합니다.
 
 `aelix`에는 프로바이더 자격증명이 필요합니다 — `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` /
 `OPENROUTER_API_KEY`를 설정하거나, `aelix`를 실행한 뒤 TUI 안에서 `/login`을 입력하거나
@@ -99,10 +115,22 @@ Cloudflare Workers AI는 공유 OpenAI-completions 어댑터 위에서 동작합
 | Anthropic (Messages) | ✅ 지원 |
 | OpenAI (chat completions) | ✅ 지원 |
 | OpenRouter | ✅ 지원 |
-| GitHub Copilot (individual / Business / Enterprise) | ✅ 지원 |
+| GitHub Copilot (individual / Business) | ✅ 지원 |
+| GitHub Copilot (Enterprise) | 🧪 미검증 |
 | OpenAI Responses API | 🧪 실험적 |
 | Google Gemini / Vertex | 🧪 실험적 |
 | Cloudflare Workers AI | 🧪 실험적 |
+
+Copilot Enterprise를 미검증으로 표시한 이유: 라이브 검증은 유료 individual 좌석과 Copilot
+Business 좌석에서만 이뤄졌고, Aelix가 싣고 있는 엔드포인트 카탈로그는 정적이라 모든
+엔터프라이즈 호스트/플랜에서 맞는다고 보장할 수 없습니다. 동작할 가능성은 충분하지만, 저희가
+확인한 범위는 아닙니다.
+
+번들 모델 카탈로그에 실려 있지만 **이 빌드에 어댑터가 없어** 실행할 수 없는 프로바이더가
+셋 있습니다: `amazon-bedrock`(`bedrock-converse-stream`), `azure-openai-responses`,
+`mistral`(`mistral-conversations`). 첫 턴에서 실패시키는 대신 아예 숨기므로
+`--list-models`와 `/model` 피커에 나타나지 않습니다.
+[프로바이더 가이드](docs/guides/providers-and-models.md)를 참고하세요.
 
 ## 확장은 그냥 파이썬입니다 — 데이터 스택을 in-process로
 
@@ -156,14 +184,17 @@ aelix --mode json "run the eval suite and summarise failures"   # 라인 단위 
 
 ## 신뢰와 자체 호스팅
 
-Aelix는 폐쇄망과 고객사 내부 배포를 전제로 만들어졌습니다. `--offline`은 에어갭 모드를
-켭니다(툴 바이너리 다운로드, 네트워크 확장 설치 차단). 확장 카탈로그는 외부 통신 없이
-탐색·설치되고, 신뢰는 로컬 핀으로 관리되며(온라인 폐기 목록 조회 없음),
+Aelix는 폐쇄망과 고객사 내부 배포를 전제로 만들어졌습니다. `--offline`은 Aelix 자신이
+내보내는 요청을 차단합니다 — `rg`/`fd` 툴 바이너리 다운로드, 카탈로그 fetch, 인덱스 없는
+확장 설치. 다만 설정한 프로바이더 호출까지 막지는 않으므로, 폐쇄망 배포에도 도달 가능한
+모델 엔드포인트(또는 자체 호스팅 엔드포인트)는 여전히 필요합니다. 확장 카탈로그는 로컬
+사본에서 탐색·설치되고, 신뢰는 로컬 핀으로 관리되며(온라인 폐기 목록 조회 없음),
 `register_login_provider`로 확장이 엔터프라이즈 SSO/사번 인증을 추가할 수 있습니다.
 정책과 가드레일은 내장 확장으로 강제되므로, 모든 툴 호출과 컨텍스트 변경은 관찰·감사
 가능한 훅 이벤트입니다.
 
-서명된 공급망으로 확장을 배포·검증하세요 — 에어갭 설치에서도 살아남는 신뢰입니다:
+서명된 공급망으로 확장을 배포·검증하세요 — 에어갭 설치에서도 살아남는 신뢰입니다
+(`--require-signature`로 설치할 때 강제됩니다):
 
 ```bash
 aelix extension install <path | git-url | package[==version]>   # pip 기반, --offline 지원

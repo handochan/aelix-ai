@@ -27,6 +27,8 @@ from aelix_server import ServerConfig, create_app
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
+from tests.env_sandbox import sandbox_home
+
 # Repo root: tests/server/test_server.py → parents[2].
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _CONTRACTS_DIR = _REPO_ROOT / "docs" / "contracts"
@@ -124,7 +126,7 @@ def test_schemas_404_when_dir_absent(tmp_path: Path) -> None:
 
 
 def test_rpc_round_trip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("HOME", str(tmp_path))
+    sandbox_home(monkeypatch, tmp_path)
     app = create_app(_make_config(tmp_path))
     with TestClient(app) as client, client.websocket_connect("/rpc") as ws:
         ws.send_text(json.dumps({"type": "get_state", "id": "1"}))
@@ -140,7 +142,7 @@ def test_rpc_round_trip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None
 
 
 def test_rpc_single_flight(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("HOME", str(tmp_path))
+    sandbox_home(monkeypatch, tmp_path)
     app = create_app(_make_config(tmp_path))
     with TestClient(app) as client, client.websocket_connect("/rpc") as ws1:
         # Drive the first connection so it is fully active.
@@ -158,7 +160,7 @@ def test_rpc_active_flag_reset_after_close(
 ) -> None:
     # Regression: ``rpc_active`` must be reset in the ``finally`` block so a
     # second sequential connection succeeds (the slot is freed on disconnect).
-    monkeypatch.setenv("HOME", str(tmp_path))
+    sandbox_home(monkeypatch, tmp_path)
     app = create_app(_make_config(tmp_path))
     with TestClient(app) as client:
         # First connection: complete a round-trip then close.
@@ -236,7 +238,7 @@ def test_rpc_forwards_server_initiated_frame(
     # produced by run_rpc_mode's dispatch → stdout_write → queue → ws) back
     # over the socket. Full event-stream e2e needs a stubbed model (deferred);
     # this exercises the WHOLE bridge for a server-originated frame.
-    monkeypatch.setenv("HOME", str(tmp_path))
+    sandbox_home(monkeypatch, tmp_path)
     app = create_app(_make_config(tmp_path))
     with TestClient(app) as client, client.websocket_connect("/rpc") as ws:
         ws.send_text(json.dumps({"type": "get_state", "id": "evt"}))

@@ -147,6 +147,7 @@ import dataclasses
 import json
 import signal
 import sys
+import threading
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
@@ -1863,6 +1864,63 @@ async def _handle_command(
         )
 
 
+def _thread_pumped_stdin_reader(
+    stream: Any,
+) -> tuple[asyncio.StreamReader, threading.Thread]:
+    """Feed an :class:`asyncio.StreamReader` from a blocking stream on a thread.
+
+    The Windows arm of :func:`_open_stdin_reader` (#107). Reads with
+    ``readline`` rather than a fixed-size ``read``: on a pipe or console a
+    ``BufferedReader.read(n)`` blocks until *n* bytes arrive or EOF, which
+    would stall the RPC wire until 4 KiB of commands had accumulated. The
+    protocol is JSONL, so a line is exactly the right unit.
+
+    The thread is a daemon because a blocking ``readline`` on stdin cannot be
+    interrupted — a non-daemon thread would hold the interpreter open at exit.
+    """
+
+    loop = asyncio.get_running_loop()
+    reader = asyncio.StreamReader()
+
+    def _pump() -> None:
+        try:
+            for line in iter(stream.readline, b""):
+                loop.call_soon_threadsafe(reader.feed_data, line)
+        except Exception:  # noqa: BLE001 — a broken stdin is an EOF, not a crash
+            pass
+        finally:
+            # RuntimeError: the loop closed while we were blocked in readline.
+            with contextlib.suppress(RuntimeError):
+                loop.call_soon_threadsafe(reader.feed_eof)
+
+    thread = threading.Thread(target=_pump, name="aelix-rpc-stdin", daemon=True)
+    thread.start()
+    return reader, thread
+
+
+async def _open_stdin_reader(
+    *, platform: str | None = None
+) -> tuple[asyncio.StreamReader, threading.Thread | None]:
+    """Attach a :class:`asyncio.StreamReader` to ``sys.stdin``.
+
+    #107 — ``loop.connect_read_pipe`` raises ``NotImplementedError`` on
+    Windows, which killed ``--mode rpc`` at startup before a single command
+    could be read. The win32 arm pumps stdin from a background thread instead.
+
+    Returns the reader and, on Windows, the pump thread (``None`` on POSIX,
+    where asyncio owns the transport). ``platform`` is injected so the win32
+    arm is reachable from a POSIX test box.
+    """
+
+    if (platform if platform is not None else sys.platform) == "win32":
+        return _thread_pumped_stdin_reader(getattr(sys.stdin, "buffer", sys.stdin))
+    loop = asyncio.get_running_loop()
+    reader = asyncio.StreamReader()
+    protocol = asyncio.StreamReaderProtocol(reader)
+    await loop.connect_read_pipe(lambda: protocol, sys.stdin)
+    return reader, None
+
+
 async def run_rpc_mode(
     harness: AgentHarness,
     *,
@@ -1959,13 +2017,8 @@ async def run_rpc_mode(
         write_sink(serialize_json_line(obj).encode("utf-8"))
 
     # Connect stdin if not supplied.
-    own_stdin = stdin is None
     if stdin is None:
-        loop = asyncio.get_running_loop()
-        reader = asyncio.StreamReader()
-        protocol = asyncio.StreamReaderProtocol(reader)
-        await loop.connect_read_pipe(lambda: protocol, sys.stdin)
-        stdin = reader
+        stdin, _stdin_pump = await _open_stdin_reader()
 
     shutdown_event = asyncio.Event()
 
@@ -2206,10 +2259,12 @@ async def run_rpc_mode(
         # ``beforeSessionInvalidate`` then disposes the LIVE harness.
         with contextlib.suppress(Exception):
             await runtime_host.dispose()
-        if own_stdin:
-            # asyncio's pipe transport is closed when the reader hits EOF;
-            # nothing to actively pause on the Python side.
-            pass
+        # Neither stdin arm needs teardown. On POSIX asyncio closes the pipe
+        # transport when the reader hits EOF. On Windows (#107) the pump
+        # thread is parked in a blocking ``readline`` that nothing can
+        # interrupt, so joining it would hang shutdown until the client
+        # happened to send another line — it is a daemon thread precisely so
+        # the interpreter can exit out from under it.
 
 
 __all__ = [

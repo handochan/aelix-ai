@@ -5,6 +5,8 @@ from __future__ import annotations
 from aelix_ai.tools import ToolExecutionContext
 from aelix_coding_agent.tools import create_write_tool
 
+from tests.env_sandbox import sandbox_home
+
 
 async def _exec(tool, args):
     return await tool.execute(args, ToolExecutionContext(tool_call_id="t1"))
@@ -88,7 +90,7 @@ async def test_write_utf8_round_trip(tmp_path):
 
 async def test_write_expands_tilde_home(tmp_path, monkeypatch):
     # resolve_to_cwd runs expand_path: a leading ``~/`` resolves to $HOME.
-    monkeypatch.setenv("HOME", str(tmp_path))
+    sandbox_home(monkeypatch, tmp_path)
     tool = create_write_tool(str(tmp_path / "elsewhere"))
     result = await _exec(tool, {"path": "~/tilde.txt", "content": "hi"})
     assert result.is_error is False

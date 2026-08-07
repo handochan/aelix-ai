@@ -95,6 +95,9 @@ _PRODUCT_CORE_CAP_ALLOWLIST = frozenset(
         "MAX_CATALOG_BYTES",  # cli/extension_catalog.py — pre-P2, unrelated
         "MAX_CATALOG_ENTRIES",  # cli/extension_catalog.py — pre-P2, unrelated
         "GIT_CLONE_TIMEOUT",  # cli/extension_catalog.py — pre-P2, unrelated
+        "MAX_METADATA_BYTES",  # cli/extension_catalog.py — #68 index generator, a
+        # decompression-bomb OOM guard on a dist's METADATA read; same category as
+        # its three siblings above, NOT a delegation cap (governance-reviewed).
         "DEFAULT_MAX_BYTES",  # tools/_truncate.py — pre-P2, tool output
         "DEFAULT_MAX_LINES",  # tools/_truncate.py — pre-P2, tool output
         "GREP_MAX_LINE_LENGTH",  # tools/_truncate.py — pre-P2, tool output
@@ -289,11 +292,25 @@ def test_kernel_has_no_subagent_surface() -> None:
 # documenting its own enforcement status is not delegation policy. It adds no
 # import, no runtime behaviour and no delegation surface —
 # ``test_kernel_has_no_subagent_surface`` is unaffected and still passes.
+# ``session/*`` — ADR-0208, the session-durability track. The JSONL session
+# store lives in the kernel band and had three reproduced data-integrity
+# defects: a crash-truncated line bricked ``--continue``, a valid-but-unterminated
+# tail silently fused with the next append (losing the last committed turn), and
+# session files were world-readable 0644 while ``auth.json`` is 0600. The
+# defective code IS the kernel session layer, so the fix can live nowhere else.
+# It adds no ``aelix_agents`` import, no spawn behaviour, no cap and no delegation
+# surface — ``test_kernel_has_no_subagent_surface`` is unaffected and still passes
+# (an independent governance review confirmed the diffs carry no delegation
+# vocabulary). The single-writer lock (#46) is a follow-up and is NOT authorised here.
 _KERNEL_CHANGE_ALLOWLIST = frozenset(
     {
         "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py",
         "packages/aelix-agent-core/pyproject.toml",
         "packages/aelix-agent-core/src/aelix_agent_core/contracts/manifest.py",
+        "packages/aelix-agent-core/src/aelix_agent_core/session/jsonl_storage.py",
+        "packages/aelix-agent-core/src/aelix_agent_core/session/fs.py",
+        "packages/aelix-agent-core/src/aelix_agent_core/session/jsonl_repo.py",
+        "packages/aelix-agent-core/src/aelix_agent_core/session/__init__.py",
     }
 )
 

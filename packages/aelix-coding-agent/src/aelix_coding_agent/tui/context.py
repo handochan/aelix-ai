@@ -29,6 +29,7 @@ from prompt_toolkit.layout import HSplit, Window
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
 from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.layout.processors import PasswordProcessor, Processor
+from prompt_toolkit.utils import get_cwidth
 
 from aelix_coding_agent.extensions.ext_ui import (
     CustomComponentFactory,
@@ -135,15 +136,20 @@ _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
 def _visible_len(text: str) -> int:
-    """Display width of ``text`` ignoring SGR (color/dim) escape sequences.
+    """Display COLUMNS of ``text`` ignoring SGR (color/dim) escape sequences.
 
     ``_picker_frame`` sizes its dividers from the widest PLAIN content line, so a
     body line carrying its own ANSI (e.g. a dim footer note from the stats /
     extension tabs) must be measured by its VISIBLE length — counting the escape
     bytes would over-pad the frame.
+
+    Width is measured in terminal cells, not codepoints: East-Asian wide
+    characters occupy two columns each, so counting ``len()`` made every
+    Hangul/CJK row under-span its frame by roughly half. ``get_cwidth`` is
+    the same wcwidth-backed measure ``chrome.py`` already uses.
     """
 
-    return len(_ANSI_RE.sub("", text))
+    return get_cwidth(_ANSI_RE.sub("", text))
 
 
 def _resolve(future: asyncio.Future[Any], value: Any) -> None:
@@ -322,7 +328,7 @@ class AelixTUIContext:
                         _filter_line(state["filter"]),
                     ],
                     "Backspace to clear · Esc to cancel",
-                    max(len(title), 40),
+                    max(_visible_len(title), 40),
                 )
             idx = max(0, min(state["idx"], len(items) - 1))
             state["idx"] = idx
@@ -345,9 +351,9 @@ class AelixTUIContext:
                 counter += _filter_counter_suffix(state["filter"])
             hint = "↑/↓ move · type to filter · Enter select · Esc cancel"
             width = max(
-                [len(title), _visible_len(counter), len(hint)]
-                + [len(items[i][1]) + 2 for i in range(start, end)]
-                + [len(d) for d in detail_lines]
+                [_visible_len(title), _visible_len(counter), _visible_len(hint)]
+                + [_visible_len(items[i][1]) + 2 for i in range(start, end)]
+                + [_visible_len(d) for d in detail_lines]
             )
             body: list[str] = []
             if start > 0:
@@ -506,9 +512,9 @@ class AelixTUIContext:
             # names for the header, and the VISIBLE length of each body line
             # (a tab body may carry its own ANSI — counting the escape bytes
             # would over-pad the frame).
-            plain_header_len = len("  ".join(name for name, _ in tabs))
+            plain_header_len = _visible_len("  ".join(name for name, _ in tabs))
             width = max(
-                [len(title), plain_header_len, len(hint)]
+                [_visible_len(title), plain_header_len, _visible_len(hint)]
                 + [_visible_len(line) for line in (*extra_lines, *body_lines)]
             )
             body = [header, *extra_lines, *body_lines]
@@ -673,7 +679,7 @@ class AelixTUIContext:
                         _filter_line(state["filter"]),
                     ],
                     "Backspace to clear · Esc to cancel",
-                    max(len(title), 40),
+                    max(_visible_len(title), 40),
                 )
             cursor = max(0, min(state["cursor"], n_total - 1))
             state["cursor"] = cursor
@@ -718,9 +724,9 @@ class AelixTUIContext:
                 body.append(f"{_PICK_DIM}{p}{_PICK_RST}")
             hint = "↑/↓ move · Space toggle · Enter confirm · Esc cancel"
             width = max(
-                [len(title), _visible_len(counter), len(hint)]
-                + [len(r) + 2 for r in plain_rows]
-                + [len(p) for p in preview_lines]
+                [_visible_len(title), _visible_len(counter), _visible_len(hint)]
+                + [_visible_len(r) + 2 for r in plain_rows]
+                + [_visible_len(p) for p in preview_lines]
             )
             return _picker_frame(title, body, hint, width)
 

@@ -29,7 +29,9 @@ from aelix_agents.print_channel import (
     build_child_argv,
     narrow_tools,
 )
+from aelix_agents.rpc_channel import build_rpc_child_argv
 from aelix_agents.trust import child_trust_argv
+from aelix_ai.streaming import Model
 from aelix_coding_agent.agents.profile import AgentProfile
 from aelix_coding_agent.agents.resolver import profile_to_argv
 from aelix_coding_agent.builtin.permission_mode import PermissionMode
@@ -334,3 +336,164 @@ def test_an_extension_tool_the_child_cannot_build_is_dropped() -> None:
     )
     assert narrowing.profile.tools == ("read",)
     assert narrowing.dropped == ("some_mcp_tool",)
+
+
+# === The parent's model, inherited (M1) =======================================
+#
+# A parent launched as ``aelix --provider anthropic --model claude-haiku-4-5
+# --agents`` holds its model in RUN SCOPE only: no profile declares it and
+# nothing persists it. Before this rule the child was spawned with no model
+# token at all and died in about a second with ``No model selected`` — the exact
+# invocation the quickstart teaches.
+
+
+def _parent_model(**kwargs: object) -> Model:
+    base: dict[str, object] = {"id": "claude-haiku-4-5", "provider": "anthropic"}
+    base.update(kwargs)
+    return Model(**base)  # pyright: ignore[reportArgumentType]
+
+
+def test_a_profile_with_no_model_inherits_the_parents(tmp_path: Path) -> None:
+    """The bundled profiles declare no model; the parent's has to reach them."""
+
+    argv = build_child_argv(
+        _profile(),
+        prompt_path=str(tmp_path / "p.md"),
+        task="go",
+        permission_mode=PermissionMode.PLAN,
+        child_cwd=str(tmp_path),
+        parent_cwd=str(tmp_path),
+        parent_model=_parent_model(),
+    )
+    parsed = parse_args(argv[_LAUNCH_PREFIX:])
+    assert parsed.model == "claude-haiku-4-5"
+    assert parsed.provider == "anthropic"
+
+
+def test_a_profile_that_declares_a_model_still_wins(tmp_path: Path) -> None:
+    """Inheritance is a FALLBACK. A profile's own identity is not overridable
+    by the parent that happens to be delegating to it."""
+
+    argv = build_child_argv(
+        _profile(model="gpt-5.6", provider="openai"),
+        prompt_path=str(tmp_path / "p.md"),
+        task="go",
+        permission_mode=PermissionMode.PLAN,
+        child_cwd=str(tmp_path),
+        parent_cwd=str(tmp_path),
+        parent_model=_parent_model(),
+    )
+    parsed = parse_args(argv[_LAUNCH_PREFIX:])
+    assert parsed.model == "gpt-5.6"
+    assert parsed.provider == "openai"
+    assert "claude-haiku-4-5" not in argv
+
+
+def test_a_profile_naming_only_a_model_does_not_take_the_parents_provider(
+    tmp_path: Path,
+) -> None:
+    """Half the parent's pair is worse than none of it.
+
+    ``model: gpt-5.6`` with the parent's ``anthropic`` glued on is a
+    combination no one asked for, and it would fail in a way that blames the
+    profile author."""
+
+    argv = build_child_argv(
+        _profile(model="gpt-5.6"),
+        prompt_path=str(tmp_path / "p.md"),
+        task="go",
+        permission_mode=PermissionMode.PLAN,
+        child_cwd=str(tmp_path),
+        parent_cwd=str(tmp_path),
+        parent_model=_parent_model(),
+    )
+    assert "--provider" not in argv
+    assert parse_args(argv[_LAUNCH_PREFIX:]).model == "gpt-5.6"
+
+
+def test_a_profile_naming_only_a_provider_does_not_take_the_parents_model(
+    tmp_path: Path,
+) -> None:
+    """The mirror case: ``provider: openai`` must not be handed an anthropic id."""
+
+    argv = build_child_argv(
+        _profile(provider="openai"),
+        prompt_path=str(tmp_path / "p.md"),
+        task="go",
+        permission_mode=PermissionMode.PLAN,
+        child_cwd=str(tmp_path),
+        parent_cwd=str(tmp_path),
+        parent_model=_parent_model(),
+    )
+    assert "--model" not in argv
+    assert parse_args(argv[_LAUNCH_PREFIX:]).provider == "openai"
+
+
+def test_an_unresolved_parent_model_is_not_forwarded(tmp_path: Path) -> None:
+    """A bare ``Model()`` is what a harness that never resolved one holds.
+
+    ``--model unknown`` would replace the child's honest ``No model selected``
+    with a lookup failure for a model nobody named."""
+
+    argv = build_child_argv(
+        _profile(),
+        prompt_path=str(tmp_path / "p.md"),
+        task="go",
+        permission_mode=PermissionMode.PLAN,
+        child_cwd=str(tmp_path),
+        parent_cwd=str(tmp_path),
+        parent_model=Model(),
+    )
+    assert "--model" not in argv
+    assert "unknown" not in argv
+
+
+def test_an_unresolved_provider_still_forwards_the_model(tmp_path: Path) -> None:
+    """``--model`` alone is a supported invocation — the child's cascade infers
+    the provider. ``--provider unknown`` is not."""
+
+    argv = build_child_argv(
+        _profile(),
+        prompt_path=str(tmp_path / "p.md"),
+        task="go",
+        permission_mode=PermissionMode.PLAN,
+        child_cwd=str(tmp_path),
+        parent_cwd=str(tmp_path),
+        parent_model=_parent_model(provider="unknown"),
+    )
+    parsed = parse_args(argv[_LAUNCH_PREFIX:])
+    assert parsed.model == "claude-haiku-4-5"
+    assert "--provider" not in argv
+
+
+def test_no_parent_model_leaves_the_argv_exactly_as_it_was(tmp_path: Path) -> None:
+    """The default is inert: an unwired host costs the child nothing it had."""
+
+    common: dict[str, object] = {
+        "prompt_path": str(tmp_path / "p.md"),
+        "task": "go",
+        "permission_mode": PermissionMode.PLAN,
+        "child_cwd": str(tmp_path),
+        "parent_cwd": str(tmp_path),
+    }
+    assert build_child_argv(_profile(), **common) == build_child_argv(  # pyright: ignore[reportArgumentType]
+        _profile(), parent_model=None, **common  # pyright: ignore[reportArgumentType]
+    )
+
+
+def test_the_rpc_channel_forwards_it_the_same_way(tmp_path: Path) -> None:
+    """The two builders are interchangeable through the ``argv_builder`` seam,
+    so a child that inherits on one channel must inherit on the other."""
+
+    argv = build_rpc_child_argv(
+        _profile(),
+        prompt_path=str(tmp_path / "p.md"),
+        task="go",
+        permission_mode=PermissionMode.PLAN,
+        child_cwd=str(tmp_path),
+        parent_cwd=str(tmp_path),
+        parent_model=_parent_model(),
+    )
+    parsed = parse_args(argv[_LAUNCH_PREFIX:])
+    assert parsed.model == "claude-haiku-4-5"
+    assert parsed.provider == "anthropic"

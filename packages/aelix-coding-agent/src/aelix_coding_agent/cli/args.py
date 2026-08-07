@@ -43,6 +43,25 @@ VALID_THINKING_LEVELS: tuple[str, ...] = (
 
 VALID_MODES: tuple[str, ...] = ("text", "json", "rpc")
 
+REMOVED_FLAGS: dict[str, str] = {
+    "--verbose": "it never enabled any logging",
+    "--no-themes": "it never disabled any theme",
+    "--no-prompt-templates": "it never disabled any prompt template",
+    "-np": "it never disabled any prompt template",
+}
+"""Flags deleted for being inert, kept here only to fail LOUDLY.
+
+Each was parsed into an :class:`Args` field that nothing outside this module
+ever read, while ``--help`` advertised it as a working feature. Deleting the
+parse arms alone would have been worse than leaving them: an unrecognised
+``--name`` falls into the unknown-EXTENSION-flag branch below, which swallows
+the following token as the flag's value — so ``aelix --verbose "my prompt"``
+would record ``{"verbose": "my prompt"}`` and run with NO prompt at all, no
+error, no output the user asked for. A hard diagnostic is the only honest
+exit; it also matches what the short spelling ``-np`` already did by falling
+through to the unknown-short-flag branch.
+"""
+
 VALID_PERMISSION_MODES: tuple[str, ...] = tuple(m.value for m in PermissionMode)
 """Aelix-original (ADR-0197 §(e)) — accepted ``--permission-mode`` values.
 
@@ -234,14 +253,8 @@ class Args:
     prompt_templates: list[str] = field(default_factory=list)
     """Pi parity: ``--prompt-template <name>`` (repeatable)."""
 
-    no_prompt_templates: bool = False
-    """Pi parity: ``--no-prompt-templates`` / ``-np``."""
-
     themes: list[str] = field(default_factory=list)
     """Pi parity: ``--theme <name>`` (repeatable)."""
-
-    no_themes: bool = False
-    """Pi parity: ``--no-themes``."""
 
     no_context_files: bool = False
     """Pi parity: ``--no-context-files`` / ``-nc``."""
@@ -256,9 +269,6 @@ class Args:
     :data:`None` = absent, :data:`True` = no pattern supplied,
     :class:`str` = pattern.
     """
-
-    verbose: bool = False
-    """Pi parity: ``--verbose``."""
 
     offline: bool = False
     """Pi parity: ``--offline``."""
@@ -559,14 +569,10 @@ def parse_args(argv: list[str]) -> Args:
             if i + 1 < n:
                 parsed.prompt_templates.append(argv[i + 1])
                 i += 1
-        elif arg in ("--no-prompt-templates", "-np"):
-            parsed.no_prompt_templates = True
         elif arg == "--theme":
             if i + 1 < n:
                 parsed.themes.append(argv[i + 1])
                 i += 1
-        elif arg == "--no-themes":
-            parsed.no_themes = True
         elif arg in ("--no-context-files", "-nc"):
             parsed.no_context_files = True
             parsed.provided.add("no_context_files")
@@ -588,13 +594,25 @@ def parse_args(argv: list[str]) -> Args:
                 i += 1
             else:
                 parsed.list_models = True
-        elif arg == "--verbose":
-            parsed.verbose = True
         elif arg == "--offline":
             parsed.offline = True
         elif arg.startswith("@"):
             # Pi parity: ``@file`` positional.
             parsed.file_args.append(arg[1:])
+        elif arg.split("=", 1)[0] in REMOVED_FLAGS:
+            # Checked BEFORE the unknown-extension-flag branch on purpose —
+            # see :data:`REMOVED_FLAGS`. Reached by both spellings, so
+            # ``--verbose`` and ``-np`` fail the same way.
+            _removed = arg.split("=", 1)[0]
+            parsed.diagnostics.append(
+                {
+                    "type": "error",
+                    "message": (
+                        f"{_removed} was removed: {REMOVED_FLAGS[_removed]}. "
+                        "Drop it from the command line."
+                    ),
+                }
+            )
         elif arg.startswith("--"):
             # Pi parity: ``args.ts:167-180`` unknown extension flag.
             # Three sub-cases:
@@ -694,16 +712,16 @@ Tools / Extensions:
   --skill <path>                  Enable skill (repeatable)
   --no-skills, -ns                Disable all skills
   --prompt-template <name>        Enable prompt template (repeatable)
-  --no-prompt-templates, -np      Disable all prompt templates
   --theme <name>                  Enable theme (repeatable)
-  --no-themes                     Disable all themes
   --no-context-files, -nc         Skip auto-discovered AGENTS.md context
 
 Misc:
   --export <path>                 Export the current session to HTML
   --list-models [pattern]         List available models (optional filter)
-  --verbose                       Verbose logging
-  --offline                       Disable startup network operations (same as PI_OFFLINE=1)
+  --offline                       Skip the rg/fd binary download, the extension
+                                  catalog fetch, and index-less pypi installs
+                                  (same as PI_OFFLINE=1). Provider/LLM calls are
+                                  NOT affected.
   --help, -h                      Show this help
   --version, -v                   Show version ({VERSION})
 
@@ -714,6 +732,8 @@ Subcommands:
                                   index-url); register-only (add ≠ install)
   extension source list|remove    List / remove registered sources
   extension list                  List installed extensions (entry-point ledger)
+  extension verify [<name>]       Report why a pack's manifest was/wasn't bound
+                                  (--trust-extension-path DIST to allow one)
   extension discover [<query>]    Browse / search the advisory catalogs (#65);
                                   --refresh --offline --no-default-catalog
   extension discover install      Install an extension advertised by a catalog

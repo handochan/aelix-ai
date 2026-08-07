@@ -54,6 +54,22 @@ and `.../releases/tag/vX` link would 404. Add them with the first pushed tag.
   declare any contribution, but a manifest-less entry-point pack is not
   catalog-eligible. An arbitrary `pip install <pkg>` pack keeps the manifest
   fully optional. `BOUND` is an auditability floor, not a safety verdict.
+- **`--trust-extension-path` is documented** (#91). The flag shipped with zero
+  doc coverage, which matters because it is the escape hatch for the one
+  workflow every extension author uses: `pip install -e` loads a pack
+  **without** its manifest, so declarative contributions silently vanish while
+  imperative registration keeps working. The authoring guide now explains the
+  downgrade, the flag (it takes the PEP 503 *distribution* name, is repeatable,
+  and persists nothing), and the fact that a newly installed pack's
+  `contributes.mcp_servers` needs a process restart — the manifest scan runs
+  once at startup, before the first harness build.
+- **"Upgrading / uninstalling" is documented** in the README and the
+  getting-started guide. Neither word had appeared anywhere across README,
+  README.ko, getting-started, `install.sh` or `RELEASING.md`.
+- `aelix --help` now lists `extension verify`. It shipped in
+  `aelix extension --help` but not in the top-level `Subcommands:` block, so
+  the one command that explains why a manifest did not bind was
+  undiscoverable from the main help.
 
 ### Changed
 
@@ -84,9 +100,66 @@ and `.../releases/tag/vX` link would 404. Add them with the first pushed tag.
 - Development installs (`pip install -e`) cannot be proved from installed
   metadata, so a pack installed that way loads without its manifest and says
   so on every start. Install the pack normally to exercise its manifest.
+- **`install.sh` pins the version it installs** to the one named by the
+  checksum-verified `SHA256SUMS` manifest. `--find-links` only *adds*
+  candidates and the PyPI index stays enabled, so requesting the bare name
+  `aelix` let an index release outrank the local wheels — the checksum gate
+  could verify artifacts the next command discarded. It also names
+  `GITHUB_TOKEN` and `AELIX_VERSION` when the anonymous GitHub API call fails,
+  which on a shared NAT or CI address is usually a 403 rate-limit rather than a
+  missing repository.
+- **The release tag gate rejects dot-form pre-releases.** `v0.1.0-rc.1` is
+  accepted; `v0.1.0.rc1` is refused. The whole pipeline decides "pre-release?"
+  by testing the tag for a hyphen, so the dot form would have been treated as
+  GA — marked a full GitHub release and carried into an irreversible PyPI
+  upload. The workflow now also asserts, before building, that the tag
+  normalizes to `pyproject.toml`'s version under PEP 440, and that the SBOM
+  glob matches exactly one file.
+- **Security and `--offline` claims now match the code.** The README, the
+  Korean README and the website described extensions as *being verified* with
+  Ed25519 provenance; in fact no first-party keys are provisioned and an
+  unsigned pack is accepted unless you install with `--require-signature`.
+  `--offline` was called "air-gap mode": it skips the `rg`/`fd` download, the
+  extension-catalog fetch and index-less pypi installs, and does **not** affect
+  provider or model calls. The `rg`/`fd` auto-download is now disclosed
+  explicitly in the README and `SECURITY.md`.
+- **Provider documentation is labelled.** Copilot Enterprise is marked
+  unverified (live testing covered a paid individual seat and a Business seat
+  only). The providers guide gained an adapter-coverage table: the bundled
+  catalog spans nine wire protocols and this build ships six, so
+  `amazon-bedrock`, `azure-openai-responses` and `mistral` cannot run — they
+  are hidden from `--list-models` and `/model` rather than failing at turn one.
+  `mistral` had been listed in the guide's primary environment-variable table
+  and `azure-openai-responses` among "other supported providers".
+
+### Removed
+
+- `--verbose`, `--no-themes` and `--no-prompt-templates` (and the `-np`
+  spelling). All were parsed into `Args` fields that nothing outside
+  `cli/args.py` ever read, while `--help` advertised them as working features.
+  Passing one is now a hard argument error rather than a silent no-op: an
+  unrecognised `--name` otherwise falls into the unknown-extension-flag branch,
+  which swallows the following token as the flag's value, so
+  `aelix --verbose "my prompt"` would have run with no prompt at all and no
+  error. The positive forms `--theme` and `--prompt-template` are unaffected,
+  as is `--no-skills`.
 
 ### Fixed
 
+- **`aelix -p "..."` no longer stalls ~30s on an inherited but idle stdin
+  pipe.** Any piped stdin promotes the run to print mode, and the print path
+  then waited for a first byte before continuing — even when the prompt was
+  already on argv. A process spawned with `stdin=PIPE`, or run under a CI
+  harness, paid the full deadline for input it would never use (measured 35.2s,
+  now 6.5s). The wait is time-boxed rather than skipped: `build_initial_message`
+  concatenates stdin with the argv prompt, so `cat notes.txt | aelix -p
+  "summarise this"` still picks up both, and a producer that takes a couple of
+  seconds to get going (`curl … | aelix -p …`, `ssh host cmd | aelix -p …`)
+  still lands inside the 5s grace window. Expiry always prints a note naming
+  `AELIX_STDIN_TIMEOUT`, because from inside the process an idle pipe is
+  indistinguishable from a producer that was about to write — so input may be
+  dropped, but never silently. With nothing on argv the behaviour is unchanged,
+  since there stdin *is* the prompt.
 - A malformed `aelix-plugin.toml` no longer echoes the manifest's contents
   into the error printed on startup (#91). Pydantic's validation errors
   interpolate the whole parsed document, which for a manifest declaring MCP
@@ -96,6 +169,22 @@ and `.../releases/tag/vX` link would 404. Add them with the first pushed tag.
 - The same extension discovered both as an installed package and through a
   scanned extensions directory now loads once rather than twice (#91). Its
   `setup()` previously ran twice against the same runtime.
+
+### Known behaviour changes
+
+- **AUTO mode now prompts instead of auto-allowing when your `$SHELL` is one
+  the safety classifier cannot read** (#104). The AUTO posture decides whether
+  to auto-run a `bash` command by parsing it with a tree-sitter **bash**
+  grammar. That verdict is only sound for the POSIX shell family (`bash`,
+  `sh`, `dash`, `ksh`, `mksh`, `zsh` — version suffixes such as `bash-5.2` are
+  recognised). Under any other shell — `fish`, `nushell`, or PowerShell/`cmd`
+  on the experimental Windows track — the grammar reads the command line as
+  unremarkable words and returns "allow", which is active mis-permissioning
+  rather than a missed detection. Such commands now fall through to the
+  approval prompt. **If you use fish or another non-POSIX shell on Linux or
+  macOS, you will see prompts in AUTO mode where commands previously ran
+  unattended.** `DENY` verdicts are still enforced for every shell, and the
+  other permission postures are unchanged.
 
 ## [0.1.0-beta.1] — not yet released
 

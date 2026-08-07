@@ -485,7 +485,9 @@ class JsonlSessionRepo:
                 target_cwd, session_id, created_at
             )
         # Load ALL source entries (no leaf truncation — Pi parity vs `fork`).
-        _, all_entries, _ = await _load_jsonl_storage(self._fs, source.path)
+        all_entries = (
+            await _load_jsonl_storage(self._fs, source.path)
+        ).entries
         storage = await JsonlSessionStorage.create(
             self._fs,
             target_path,
