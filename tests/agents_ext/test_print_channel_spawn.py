@@ -64,6 +64,7 @@ from aelix_agents.print_channel import (
 from aelix_agents.reaper import descendant_pids, kill_tree, pdeathsig, reap
 from aelix_agents.runtime import _TERMINAL_STATES as _RUNTIME_TERMINAL
 from aelix_agents.runtime import SubagentHost, _SubagentRuntimeImpl
+from aelix_ai.streaming import Model
 from aelix_coding_agent.agents.profile import AgentProfile
 from aelix_coding_agent.builtin.permission_mode import PermissionMode
 from aelix_coding_agent.subagent_contract import DEPTH_ENV_VAR, ResolvedProfile
@@ -2396,3 +2397,61 @@ async def test_descendant_pids_finds_a_grandchild() -> None:
 
 def test_descendant_pids_of_an_unknown_pid_is_empty() -> None:
     assert descendant_pids(2**22 - 1) == []
+
+
+# === The parent's model reaches the child (M1) ================================
+
+
+async def test_the_default_channel_forwards_the_parents_live_model(
+    tmp_path: Path,
+) -> None:
+    """The seam, end to end: ``SubagentHost.model`` → the channel the runtime
+    builds for itself → the child's argv.
+
+    Deliberately does NOT inject a channel. The wiring under test is the one
+    ``__post_init__`` does, and every other test in this file bypasses it by
+    passing ``channel=``; a pure ``build_child_argv`` test would stay green with
+    the host getter connected to nothing at all.
+
+    The getter is called PER SPAWN rather than captured, which is what makes a
+    mid-session ``/model`` reach the next delegation.
+    """
+
+    seen: list[Any] = []
+    models = [
+        Model(id="claude-haiku-4-5", provider="anthropic"),
+        Model(id="claude-opus-5", provider="anthropic"),
+    ]
+
+    def _capture(*_args: Any, parent_model: Any = None, **_kwargs: Any) -> list[str]:
+        seen.append(parent_model)
+        return [sys.executable, "-c", _HAPPY]
+
+    runtime = _SubagentRuntimeImpl(
+        host=SubagentHost(cwd=lambda: str(tmp_path), model=lambda: models[len(seen)])
+    )
+    assert runtime.channel is not None, "__post_init__ must build the channel"
+    runtime.channel._argv_builder = _capture  # pyright: ignore[reportAttributeAccessIssue]
+
+    await runtime.spawn(_resolved(), "go")
+    await runtime.spawn(_resolved(), "again")
+
+    assert [m.id for m in seen] == ["claude-haiku-4-5", "claude-opus-5"]
+
+
+async def test_an_unwired_host_forwards_nothing(tmp_path: Path) -> None:
+    """``SubagentHost.model`` defaults to ``lambda: None`` — a host that never
+    wired it leaves the child to its own cascade, exactly as before."""
+
+    seen: list[Any] = []
+
+    def _capture(*_args: Any, parent_model: Any = None, **_kwargs: Any) -> list[str]:
+        seen.append(parent_model)
+        return [sys.executable, "-c", _HAPPY]
+
+    runtime = _SubagentRuntimeImpl(host=SubagentHost(cwd=lambda: str(tmp_path)))
+    assert runtime.channel is not None
+    runtime.channel._argv_builder = _capture  # pyright: ignore[reportAttributeAccessIssue]
+
+    await runtime.spawn(_resolved(), "go")
+    assert seen == [None]

@@ -20,6 +20,7 @@ two sides can agree on a field that nothing reads, and both can collapse
 |--------------------------|---------------------------------|------------------------------------------|
 | ``model`` not None       | ``--model <m>``                 | ``model = m``                            |
 | ``provider`` not None    | ``--provider <p>``              | ``provider = p``                         |
+| NEITHER, ``parent_model``| ``--model <id> --provider <p>`` | *(nothing — see below)*                  |
 | ``tools == ()``          | ``--no-tools``                  | ``no_tools = True``                      |
 | ``tools`` non-empty      | ``--tools a,b`` (ONE token)     | ``tools = [a, b]``                       |
 | ``tools is None``        | *(nothing)*                     | *(nothing)*                              |
@@ -41,10 +42,24 @@ Two flag choices are not cosmetic:
   body routinely exceeds what is safe to put in an argv (``ARG_MAX``, and it
   leaks in ``ps``), so the file-taking twins are used instead.
 
-The last table row is the sole exemption from "an explicit CLI flag beats the
-profile": ``append_system_prompt`` is an ACCUMULATOR, so the profile's body and
-the user's ``--append-system-prompt`` chunks coexist rather than compete. See
+The ``append_system_prompt`` row is the sole exemption from "an explicit CLI
+flag beats the profile": it is an ACCUMULATOR, so the profile's body and the
+user's ``--append-system-prompt`` chunks coexist rather than compete. See
 :func:`apply_profile_to_args`.
+
+**The ``parent_model`` row is the one table entry with no overlay counterpart,
+and that asymmetry is correct rather than drift.** The argv channel builds the
+command line of a SEPARATE PROCESS, which runs its own model cascade from
+scratch; the overlay channel edits the ``Args`` of the process that is ALREADY
+running and therefore already holds a resolved model. A parent launched as
+``aelix --provider anthropic --model claude-haiku-4-5 --agents`` carries its
+model only in run scope — no profile declares it and nothing persists it — so
+before this row the child was spawned with no model at all and died in about a
+second with ``No model selected``. Forwarding is gated on the profile declaring
+NEITHER ``model`` NOR ``provider``: a profile that names either is expressing an
+intent about the child's identity, and pairing the parent's model id with the
+profile's provider (or vice versa) would ship a combination neither side asked
+for. See :func:`parent_model_flags`.
 
 **The two channels agree on CONTENT unconditionally, and on ORDER for the argv
 each is actually used with.** Two things had to be true for that, and both were
@@ -75,11 +90,23 @@ from __future__ import annotations
 # builtin ``set`` that callers actually pass.
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from aelix_coding_agent.cli.args import Args
 
 from .discovery import ProfileError
 from .profile import AgentProfile
+
+if TYPE_CHECKING:
+    from aelix_ai.streaming import Model
+
+_UNRESOLVED = "unknown"
+"""The value ``Model``'s ``id`` / ``provider`` fields default to.
+
+A bare ``Model()`` is a real thing to be handed — it is what a harness that
+never resolved a model holds (#98/#100) — and it is NOT a model. Forwarding
+``--model unknown`` would replace the child's honest ``No model selected`` with
+a lookup failure for a model nobody named."""
 
 PROFILE_OVERLAY_FIELDS: frozenset[str] = frozenset(
     {
@@ -128,7 +155,35 @@ class ProfileApplication:
     notices: tuple[str, ...]
 
 
-def profile_to_flags(profile: AgentProfile, *, prompt_path: str) -> list[str]:
+def parent_model_flags(parent_model: Model | None) -> list[str]:
+    """The parent's run-scope model as child flags, or ``[]`` if it has none.
+
+    Reads structurally (``getattr``) because the value arrives through the
+    ``SubagentHost`` seam as ``Any``: it is ``ExtensionContext.model``, which a
+    P4 host is free to supply differently, and a host that hands us something
+    unreadable must cost the child its model inheritance, not its spawn.
+
+    The provider half is emitted only alongside a usable id, and only when it is
+    itself resolved. ``--model`` on its own is a supported invocation (the
+    child's cascade infers the provider); ``--provider unknown`` is not.
+    """
+
+    model_id = getattr(parent_model, "id", None)
+    if not model_id or model_id == _UNRESOLVED:
+        return []
+    flags = ["--model", model_id]
+    provider = getattr(parent_model, "provider", None)
+    if provider and provider != _UNRESOLVED:
+        flags += ["--provider", provider]
+    return flags
+
+
+def profile_to_flags(
+    profile: AgentProfile,
+    *,
+    prompt_path: str,
+    parent_model: Model | None = None,
+) -> list[str]:
     """Render the profile as CLI flags (the emission table, top to bottom).
 
     ``prompt_path`` is the file the system-prompt body will be read from. In P1
@@ -143,10 +198,17 @@ def profile_to_flags(profile: AgentProfile, *, prompt_path: str) -> list[str]:
 
     flags: list[str] = []
 
-    if profile.model is not None:
-        flags += ["--model", profile.model]
-    if profile.provider is not None:
-        flags += ["--provider", profile.provider]
+    if profile.model is None and profile.provider is None:
+        # The profile says nothing about the child's model, so the child would
+        # run its own cascade and find whatever the PARENT's cascade would have
+        # found WITHOUT the parent's run-scope flags — i.e. nothing, for a
+        # parent whose model came from ``--model`` or ``/model``. Inherit.
+        flags += parent_model_flags(parent_model)
+    else:
+        if profile.model is not None:
+            flags += ["--model", profile.model]
+        if profile.provider is not None:
+            flags += ["--provider", profile.provider]
 
     if profile.tools is not None:
         if not profile.tools:
@@ -186,6 +248,7 @@ def profile_to_argv(
     prompt_path: str,
     oneshot: bool,
     task: str | None = None,
+    parent_model: Model | None = None,
 ) -> list[str]:
     """Full argv for a profile-driven aelix invocation.
 
@@ -200,7 +263,12 @@ def profile_to_argv(
     prefix = (
         ["--mode", "json", "-p", "--no-session"] if oneshot else ["--mode", "rpc"]
     )
-    argv = [*prefix, *profile_to_flags(profile, prompt_path=prompt_path)]
+    argv = [
+        *prefix,
+        *profile_to_flags(
+            profile, prompt_path=prompt_path, parent_model=parent_model
+        ),
+    ]
     if oneshot and task:
         argv.append(f"Task: {task}")
     return argv
@@ -332,6 +400,7 @@ __all__ = [
     "PROFILE_OVERLAY_FIELDS",
     "ProfileApplication",
     "apply_profile_to_args",
+    "parent_model_flags",
     "profile_to_argv",
     "profile_to_flags",
 ]

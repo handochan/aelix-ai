@@ -37,7 +37,9 @@ delegations. That was measured and it cannot be built:
   does not work on a spawned child at all.** ``cli/entry.py``'s rpc branch
   passes no model registry, so the child answers ``set_model`` /
   ``cycle_model`` / ``get_available_models`` with "no registry configured".
-  The model has to come from the profile's ``--model`` / ``--provider``.
+  The model has to arrive on the argv — from the profile's ``--model`` /
+  ``--provider``, or, when the profile declares neither, forwarded from the
+  parent's own effective model (see :func:`build_rpc_child_argv`).
 
 So what does this channel buy over :class:`PrintChannel`, which is simpler on
 every axis? A live, bidirectional command channel to a running turn: ``abort``
@@ -149,6 +151,7 @@ def build_rpc_child_argv(
     permission_mode: PermissionMode,
     child_cwd: str,
     parent_cwd: str,
+    parent_model: Any | None = None,
 ) -> list[str]:
     """The rpc child's exact command line.
 
@@ -164,6 +167,12 @@ def build_rpc_child_argv(
     which is the umbrella package's mock-echo demo, and NOT the ``aelix``
     console script, which in a worktree resolves to the other tree's editable
     install.
+
+    ``parent_model`` is forwarded exactly as the print channel forwards it (see
+    :func:`~aelix_agents.print_channel.build_child_argv`), and the module
+    docstring's warning that "the model has to come from the profile's
+    ``--model`` / ``--provider``" is no longer the whole truth: it may also come
+    from the parent.
     """
 
     del task  # delivered over the wire; see the docstring
@@ -171,7 +180,12 @@ def build_rpc_child_argv(
         sys.executable,
         "-m",
         "aelix_coding_agent",
-        *profile_to_argv(child_profile, prompt_path=prompt_path, oneshot=False),
+        *profile_to_argv(
+            child_profile,
+            prompt_path=prompt_path,
+            oneshot=False,
+            parent_model=parent_model,
+        ),
         # The rpc prefix omits this and the oneshot prefix supplies it. Without
         # it every delegated child writes a session file the user never started
         # and then finds in their /resume picker.
@@ -230,11 +244,13 @@ class RpcChannel:
         *,
         grace: float = DEFAULT_GRACE_SECONDS,
         model_registry: Callable[[], Any | None] | None = None,
+        parent_model: Callable[[], Any | None] | None = None,
         argv_builder: Callable[..., list[str]] | None = None,
         env_builder: Callable[..., dict[str, str]] | None = None,
     ) -> None:
         self._grace = grace
         self._model_registry = model_registry
+        self._parent_model = parent_model
         self._argv_builder = argv_builder or build_rpc_child_argv
         self._env_builder = env_builder or build_rpc_child_env
 
@@ -405,6 +421,9 @@ class RpcChannel:
                         permission_mode=plan.permission_mode,
                         child_cwd=plan.cwd,
                         parent_cwd=plan.parent_cwd,
+                        parent_model=(
+                            self._parent_model() if self._parent_model else None
+                        ),
                     ),
                     cwd=plan.cwd,
                     env_base=self._env_builder(profile),
