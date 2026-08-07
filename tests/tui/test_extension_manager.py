@@ -412,3 +412,102 @@ async def test_run_surfaces_tabbed_exception() -> None:
     )
     assert any("extension manager failed" in _plain(c) for c in committed)
     assert any("viewer boom" in _plain(c) for c in committed)
+
+
+# === refused extensions are visible in the manager (#126) ===
+
+
+def test_installed_refused_pack_is_not_reported_as_empty() -> None:
+    """A refused pack must not render as "nothing installed" (#126).
+
+    This is the bug: #91 wired refusal diagnostics into stderr and
+    ``aelix extension list``, but the TUI manager showed nothing at all, so a
+    pack rejected for untrusted provenance looked exactly like one the user had
+    never installed — no hint that there was anything to fix.
+    """
+    from aelix_coding_agent.extensions.loader import ExtensionLoadError
+
+    refused = ExtensionLoadError(
+        path="entry_point:notes",
+        error="REFUSED (untrusted sys.path provenance); not loaded",
+    )
+    lines = build_installed_lines([], [], [refused])
+    body = "\n".join(lines)
+
+    assert lines != ["No plugins or MCP servers installed."]
+    assert "entry_point:notes" in body
+    assert "refused:" in body
+    assert "untrusted sys.path provenance" in body
+
+
+def test_installed_refused_pack_shows_alongside_loaded_ones() -> None:
+    from aelix_coding_agent.extensions.loader import ExtensionLoadError
+
+    ext = _Ext("good", _Manifest(_Plugin(name="Good", version="2.1.0")))
+    refused = ExtensionLoadError(
+        path="entry_point:bad",
+        error="loaded WITHOUT its manifest (MISPLACED): declarations IGNORED",
+    )
+    lines = build_installed_lines([ext], [], [refused])
+    body = "\n".join(lines)
+
+    assert "✓ Good 2.1.0" in body
+    assert "✖ entry_point:bad — refused:" in body
+    assert "MISPLACED" in body
+
+
+def test_installed_refusals_point_at_the_diagnosis_command() -> None:
+    from aelix_coding_agent.extensions.loader import ExtensionLoadError
+
+    lines = build_installed_lines(
+        [], [], [ExtensionLoadError(path="p", error="nope")]
+    )
+    assert any("aelix extension verify" in line for line in lines)
+
+
+def test_installed_without_errors_is_unchanged() -> None:
+    """Omitting the new argument keeps the previous output exactly."""
+    ext = _Ext("e", _Manifest(_Plugin(name="Ext", version="1.0.0")))
+    conns = [_Conn("srv", "http", connected=True)]
+    assert build_installed_lines([ext], conns) == build_installed_lines(
+        [ext], conns, []
+    )
+    assert build_installed_lines([], []) == ["No plugins or MCP servers installed."]
+
+
+def test_installed_refusal_of_an_odd_shape_degrades() -> None:
+    """An entry without path/error still renders rather than raising."""
+
+    class _Odd:
+        def __str__(self) -> str:
+            return "something went wrong"
+
+    body = "\n".join(build_installed_lines([], [], [_Odd()]))
+    assert "something went wrong" in body
+
+
+async def test_run_installed_tab_renders_refusals() -> None:
+    """The refusals reach the rendered tab through the DI flow, not just the builder."""
+    from aelix_coding_agent.extensions.loader import ExtensionLoadError
+
+    captured: dict[str, Any] = {}
+
+    async def fake_tabbed(
+        title: str, tabs: list[Any], *, initial: int = 0, filter_tabs: set[int] | None = None
+    ) -> None:
+        captured["tabs"] = tabs
+
+    await run_extension_manager(
+        extensions=[],
+        mcp_manager=_Manager([]),
+        tabbed=fake_tabbed,
+        commit=[].append,
+        errors=[
+            ExtensionLoadError(
+                path="entry_point:notes",
+                error="REFUSED (untrusted sys.path provenance); not loaded",
+            )
+        ],
+    )
+    body = "\n".join(dict(captured["tabs"])["Installed"]())
+    assert "✖ entry_point:notes — refused:" in body
