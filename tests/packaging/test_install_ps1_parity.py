@@ -135,19 +135,59 @@ def test_never_uses_no_index(sh: str, ps1: str) -> None:
         assert not [line for line in _code_lines(text) if "--no-index" in line]
 
 
-def test_ps1_carries_no_version_pin_just_like_sh(sh: str, ps1: str) -> None:
-    """Measured parity, deliberately preserved.
+def test_both_installers_pin_the_exact_version(sh: str, ps1: str) -> None:
+    """The pin is what makes the checksum gate binding, in BOTH installers.
 
-    ``install.sh`` pins the release TAG (which wheels are downloaded and
-    checksum-verified) but does NOT pin the package version handed to uv. The
-    Windows script must not quietly invent a different resolution policy; if
-    the pin is added it belongs in both at once. See the note in install.ps1.
+    ``--find-links`` only ADDS candidates — the PyPI index stays enabled so
+    third-party dependencies resolve — and uv picks the best across both
+    sources. Asking for the bare name ``aelix`` therefore lets a PyPI release
+    of that name outrank the local wheels, and Step 4 would have verified
+    artifacts that the install command then discards. Only ``==<version>`` from
+    the verified manifest forces uv onto the checksum-verified wheel.
+
+    Fails if EITHER installer drops the pin, which is the point: the hole is
+    identical on both platforms and so is the fix.
     """
 
-    assert "aelix[$AELIX_EXTRAS]" in sh
-    assert 'aelix[$AelixExtras]' in ps1
-    for text in (sh, ps1):
-        assert "aelix==" not in text
+    for name, text in (("install.sh", sh), ("install.ps1", ps1)):
+        code = "\n".join(_code_lines(text))
+        assert "==" in code, name
+        # The pinned target, both with and without extras.
+        assert re.search(r'aelix\[\$\w+\]==\$\w+', code), name
+        assert re.search(r'"aelix==\$\w+"', code), name
+
+
+def test_neither_installer_ships_an_unpinned_target(sh: str, ps1: str) -> None:
+    """Guard the exact pre-fix spellings so a revert cannot pass silently."""
+
+    for name, text in (("install.sh", sh), ("install.ps1", ps1)):
+        code = "\n".join(_code_lines(text))
+        assert 'target="aelix"' not in code, name
+        assert "target=\"aelix[$AELIX_EXTRAS]\"" not in code, name
+        assert "{ \"aelix[$AelixExtras]\" }" not in code, name
+
+
+def test_version_is_parsed_from_the_meta_wheel_not_the_tag(sh: str, ps1: str) -> None:
+    """A tag is ``v0.1.0-beta.1``; PEP 440 normalizes it to ``0.1.0b1``.
+
+    The tag is therefore NOT a usable version specifier, so both scripts read
+    the version out of the ``aelix-<VER>-py3-none-any.whl`` filename. The
+    sibling distributions escape their hyphen to an underscore
+    (``aelix_ai-…``), which is what makes an ``aelix-`` prefix select the
+    meta-package alone.
+    """
+
+    for name, text in (("install.sh", sh), ("install.ps1", ps1)):
+        code = "\n".join(_code_lines(text))
+        # PowerShell wraps the field in a capture group; awk does not.
+        assert re.search(r"aelix-\(?\[\^-\]\+\)?-py3-none-any", code), name
+
+
+def test_both_abort_when_the_version_cannot_be_parsed(sh: str, ps1: str) -> None:
+    """No version means no pin means no gate — that must stop the install."""
+
+    for name, text in (("install.sh", sh), ("install.ps1", ps1)):
+        assert "could not parse the aelix version from SHA256SUMS" in text, name
 
 
 # === crude syntax sanity (no PowerShell available here) =====================

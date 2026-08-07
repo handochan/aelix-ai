@@ -92,10 +92,14 @@ from `install.sh` — same env vars, same checksum gate, same `uv` flags. It
 cannot prove the script runs. A Windows leg should execute it end to end
 before anyone recommends it.
 
-One parity note worth surfacing at tag time: **neither installer pins the
-package version** handed to `uv`. Both pin the release *tag* (which wheels get
-downloaded and checksum-verified), then run `uv tool install --find-links <tmp>
-aelix[extras]` with the default index enabled. If `aelix` is ever published to
-PyPI, uv could prefer a newer index version over the verified local wheel and
-bypass the integrity gate. `install.ps1` deliberately reproduces this rather
-than diverging; fixing it belongs in both files at once.
+**CLOSED — the unpinned-version hole.** This slice originally shipped
+`install.ps1` reproducing `install.sh`'s lack of a package-version pin, flagged
+as a shared risk to be fixed in both files at once. The release-and-honesty
+track closed it in `install.sh`; `install.ps1` now carries the same pin. Both
+parse the exact version out of the verified `aelix-<VER>-py3-none-any.whl`
+entry in SHA256SUMS and install `aelix[extras]==<VER>`, so only the
+checksum-verified wheel can satisfy the requirement and a same-named PyPI
+release can no longer outrank it. The version comes from the wheel FILENAME,
+never the tag — a tag is `v0.1.0-beta.1` while PEP 440 normalizes the same
+release to `0.1.0b1`. `tests/packaging/test_install_ps1_parity.py` fails if
+EITHER installer drops the pin.
