@@ -180,10 +180,16 @@ async def _read_piped_stdin(*, required: bool = True) -> str | None:
       still be picked up — ``cat notes.txt | aelix -p "summarise this"`` is
       a supported shape, and skipping the read outright would silently drop
       ``notes.txt``. But an inherited-yet-idle pipe (a subprocess spawned
-      with ``stdin=PIPE``, a CI harness) must not cost 30s to discover it
-      has nothing to say, so the deadline drops to a 1s grace window: long
-      enough for a real producer, short enough not to read as a hang. That
-      timeout is SILENT — nothing was missing.
+      with ``stdin=PIPE``, a CI harness) must not cost 30s to discover it has
+      nothing to say, so the deadline drops to a 5s grace window.
+
+    Both deadlines WARN on expiry. The supplementary path used to stay quiet
+    on the theory that nothing was missing, which was wrong: it is impossible
+    to tell "idle pipe, nothing coming" from "real producer that is still
+    warming up" without waiting, so an expiry there may well have dropped a
+    payload that was about to arrive (``curl slow-url | aelix -p …``,
+    ``ssh host cmd | aelix -p …``). Dropping input is acceptable; dropping it
+    SILENTLY is not, so the note always prints and names the knob to turn.
 
     An explicit ``AELIX_STDIN_TIMEOUT`` always wins over both defaults, so a
     deliberate ``0`` (wait forever) is honoured either way.
@@ -194,7 +200,7 @@ async def _read_piped_stdin(*, required: bool = True) -> str | None:
     if sys.platform != "win32":
         timeout = _env_float("AELIX_STDIN_TIMEOUT")
         if timeout is None:
-            timeout = 30.0 if required else 1.0
+            timeout = 30.0 if required else 5.0
         stdin_fd: int | None
         try:
             stdin_fd = sys.stdin.fileno()
@@ -215,23 +221,35 @@ async def _read_piped_stdin(*, required: bool = True) -> str | None:
                 # intent for an inf-like timeout.
                 ready = True
             if not ready:
-                # Only warn when stdin was the sole prompt source. With a
-                # prompt already on argv an idle pipe is unremarkable, and
-                # warning about it would put noise on the stderr of every
-                # `aelix -p ...` that happens to inherit one.
+                # ALWAYS announce it. Expiring here is indistinguishable from
+                # "a producer that had not written yet", so this branch can and
+                # does discard input that was seconds away. Losing it is a
+                # tolerable default; losing it silently is not — that turns a
+                # slow `curl … | aelix -p …` into a wrong answer with no clue
+                # why. Both texts name the knob that makes the wait longer.
                 if required:
-                    # suppress: a DEAD STDERR must not abort a healthy run — an
-                    # unguarded warning print here raised BrokenPipeError, which
-                    # main_sync would misclassify as stdout death (exit 141) and
-                    # devnull the LIVE stdout (adversarial-review LOW).
-                    with contextlib.suppress(OSError):
-                        print(
-                            f"aelix: no data on piped stdin after {timeout:g}s; "
-                            "proceeding without stdin input (redirect </dev/null "
-                            "if none was intended, or set AELIX_STDIN_TIMEOUT=0 "
-                            "to wait indefinitely)",
-                            file=sys.stderr,
-                        )
+                    detail = (
+                        "proceeding without stdin input (redirect </dev/null "
+                        "if none was intended, or set AELIX_STDIN_TIMEOUT=0 "
+                        "to wait indefinitely)"
+                    )
+                else:
+                    detail = (
+                        "continuing with the command-line prompt only. If a "
+                        "slow producer was meant to feed stdin, raise "
+                        "AELIX_STDIN_TIMEOUT (0 waits indefinitely); redirect "
+                        "</dev/null to skip this wait entirely"
+                    )
+                # suppress: a DEAD STDERR must not abort a healthy run — an
+                # unguarded warning print here raised BrokenPipeError, which
+                # main_sync would misclassify as stdout death (exit 141) and
+                # devnull the LIVE stdout (adversarial-review LOW).
+                with contextlib.suppress(OSError):
+                    print(
+                        f"aelix: no data on piped stdin after {timeout:g}s; "
+                        f"{detail}",
+                        file=sys.stderr,
+                    )
                 return None
     data = await asyncio.to_thread(sys.stdin.read)
     stripped = data.strip()
@@ -1383,7 +1401,8 @@ async def _async_main(argv: list[str]) -> int:
         # before discovering the pipe had nothing to say — measured 35s vs
         # 1.2s with `</dev/null`. It is not dropped, only time-boxed: a real
         # producer still lands inside the grace window, so `cat notes.txt |
-        # aelix -p "summarise"` keeps concatenating both (pi parity).
+        # aelix -p "summarise"` keeps concatenating both (pi parity), and an
+        # expiry always prints a note rather than losing input in silence.
         stdin_content = await _read_piped_stdin(
             required=not parsed.messages and not parsed.file_args
         )
