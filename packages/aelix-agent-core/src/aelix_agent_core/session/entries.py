@@ -258,6 +258,17 @@ def _message_from_dict(data: dict[str, Any]) -> AgentMessage:
             error_message=data.get("error_message"),
             usage=data.get("usage"),
             timestamp=data.get("timestamp"),
+            # ``_message_to_dict`` is ``asdict``, so these were always WRITTEN;
+            # rebuilding field-by-field simply never read them back and the
+            # values died at the reload boundary. ``api``/``provider``/``model``
+            # are ADR-0190's same-model provenance, and the only record of which
+            # price list a turn should be billed at — so a resumed session could
+            # not be costed. ``response_id`` is the OpenAI Responses adapter's
+            # ``previous_response_id`` chain.
+            api=data.get("api"),
+            provider=data.get("provider"),
+            model=data.get("model"),
+            response_id=data.get("response_id"),
         )
     if role == "toolResult":
         return ToolResultMessage(
@@ -265,6 +276,9 @@ def _message_from_dict(data: dict[str, Any]) -> AgentMessage:
             content=_user_content(list(data.get("content", []))),
             is_error=bool(data.get("is_error", False)),
             timestamp=data.get("timestamp"),
+            # Same omission: adapters that must wrap a result with its function
+            # name (Moonshot, Together, Cloudflare) read this.
+            tool_name=data.get("tool_name", "") or "",
         )
     # Unknown role — return the raw dict so callers can surface a clear
     # error at the JSONL boundary (parse fail rather than silent loss).
