@@ -848,6 +848,23 @@ def _render_subagent_result(result: SubagentResult) -> list[RenderableType]:
     grid.add_column(style="bold cyan", no_wrap=True)
     grid.add_column(style="white")
     grid.add_row("status", result.status)
+    # WHICH MODEL THE CHILD ACTUALLY RAN (``SubagentResult.model``, read off its
+    # own ``message_end``). Surfaced here so the substitution a profile with no
+    # ``model:`` triggers — the persisted default at a different price — stops
+    # being visible only on the bill. Omitted when unknown (a child that errored
+    # before any ``message_end``): there is no model to name, so no ``—`` row.
+    # ``model``/``provider`` are CHILD-AUTHORED, so the value is collapsed to one
+    # line and rendered as ``Text`` (no Rich markup parsing), unlike the literal
+    # rows around it — the band rule forbids importing ``panel._flatten`` here.
+    if result.model:
+        model_line = " ".join(
+            (
+                f"{result.provider}/{result.model}"
+                if result.provider
+                else result.model
+            ).split()
+        )
+        grid.add_row("model", Text(model_line))
     # ``—`` rather than an omitted row: "which posture did that child get" must
     # be answerable even when a runtime declined to say.
     grid.add_row("permission", result.permission_mode or "—")

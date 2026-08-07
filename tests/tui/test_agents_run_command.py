@@ -319,6 +319,35 @@ async def test_a_widened_grant_is_visible_in_the_panel(bench: _Bench) -> None:
     assert "auto-accept-edits" in out
 
 
+async def test_the_child_model_is_shown_on_the_result_panel(bench: _Bench) -> None:
+    """``SubagentResult.model`` is already populated (``envelope.py:374-375``) but
+    P2 named it nowhere. A profile with no ``model:`` runs the persisted default
+    at a different price, and before this row the only way to notice was the
+    bill — so the grid states ``provider/id`` on its own line."""
+
+    bench.bind(
+        _FakeRuntime(result=_ok_result(model="claude-opus-4-8", provider="anthropic"))
+    )
+    out = await bench.run("/agents run scout list files")
+
+    assert "model" in out
+    assert "anthropic/claude-opus-4-8" in out
+
+
+async def test_the_model_row_is_omitted_when_the_child_named_no_model(
+    bench: _Bench,
+) -> None:
+    """A child that errored before any ``message_end`` has no model to report.
+    Unlike ``permission`` — a security fact that stays answerable as ``—`` — an
+    absent model is simply dropped: there is nothing to name."""
+
+    bench.bind(_FakeRuntime(result=_ok_result(model=None, provider=None)))
+    out = await bench.run("/agents run scout list files")
+
+    assert "permission" in out
+    assert "model" not in out
+
+
 async def test_run_renders_failure_panel(bench: _Bench) -> None:
     bench.bind(
         _FakeRuntime(
