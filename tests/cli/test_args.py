@@ -334,6 +334,44 @@ def test_removed_inert_flags_are_absent_from_help(flag: str) -> None:
     assert flag not in buf.getvalue()
 
 
+@pytest.mark.parametrize(
+    "flag", ["--verbose", "--no-themes", "--no-prompt-templates", "-np"]
+)
+def test_removed_flags_error_instead_of_being_swallowed(flag: str) -> None:
+    """Deleting the parse arm is not enough on its own.
+
+    An unrecognised ``--name`` falls into the unknown-EXTENSION-flag branch,
+    which swallows the NEXT token as the flag's value — so
+    ``aelix --verbose "my prompt"`` would record ``{"verbose": "my prompt"}``,
+    leave ``messages`` empty, and run with no prompt at all. A removed flag
+    must fail loudly, and must not eat the prompt on its way out.
+    """
+    args = parse_args([flag, "my prompt"])
+    assert any(
+        d["type"] == "error" and "was removed" in d["message"]
+        for d in args.diagnostics
+    ), args.diagnostics
+    assert args.messages == ["my prompt"]  # the prompt survived
+    assert args.unknown_flags == {}  # and was not eaten as a flag value
+
+
+def test_removed_flag_with_inline_value_also_errors() -> None:
+    """``--verbose=1`` must not slip past on the ``--key=value`` sub-case."""
+    args = parse_args(["--verbose=1"])
+    assert any(d["type"] == "error" for d in args.diagnostics)
+    assert args.unknown_flags == {}
+
+
+def test_genuine_unknown_extension_flag_still_swallows_its_value() -> None:
+    """Guard the pi-parity behaviour the removed-flag branch sits in front of:
+    a real unknown extension flag keeps consuming its value with NO
+    diagnostic (contrast the unknown-SHORT-flag branch)."""
+    args = parse_args(["--solo-ext", "my prompt"])
+    assert args.unknown_flags == {"solo-ext": "my prompt"}
+    assert args.messages == []
+    assert [d for d in args.diagnostics if d["type"] == "error"] == []
+
+
 # === @file fork ==============================================================
 
 

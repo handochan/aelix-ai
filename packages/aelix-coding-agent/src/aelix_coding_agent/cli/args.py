@@ -43,6 +43,25 @@ VALID_THINKING_LEVELS: tuple[str, ...] = (
 
 VALID_MODES: tuple[str, ...] = ("text", "json", "rpc")
 
+REMOVED_FLAGS: dict[str, str] = {
+    "--verbose": "it never enabled any logging",
+    "--no-themes": "it never disabled any theme",
+    "--no-prompt-templates": "it never disabled any prompt template",
+    "-np": "it never disabled any prompt template",
+}
+"""Flags deleted for being inert, kept here only to fail LOUDLY.
+
+Each was parsed into an :class:`Args` field that nothing outside this module
+ever read, while ``--help`` advertised it as a working feature. Deleting the
+parse arms alone would have been worse than leaving them: an unrecognised
+``--name`` falls into the unknown-EXTENSION-flag branch below, which swallows
+the following token as the flag's value — so ``aelix --verbose "my prompt"``
+would record ``{"verbose": "my prompt"}`` and run with NO prompt at all, no
+error, no output the user asked for. A hard diagnostic is the only honest
+exit; it also matches what the short spelling ``-np`` already did by falling
+through to the unknown-short-flag branch.
+"""
+
 VALID_PERMISSION_MODES: tuple[str, ...] = tuple(m.value for m in PermissionMode)
 """Aelix-original (ADR-0197 §(e)) — accepted ``--permission-mode`` values.
 
@@ -580,6 +599,20 @@ def parse_args(argv: list[str]) -> Args:
         elif arg.startswith("@"):
             # Pi parity: ``@file`` positional.
             parsed.file_args.append(arg[1:])
+        elif arg.split("=", 1)[0] in REMOVED_FLAGS:
+            # Checked BEFORE the unknown-extension-flag branch on purpose —
+            # see :data:`REMOVED_FLAGS`. Reached by both spellings, so
+            # ``--verbose`` and ``-np`` fail the same way.
+            _removed = arg.split("=", 1)[0]
+            parsed.diagnostics.append(
+                {
+                    "type": "error",
+                    "message": (
+                        f"{_removed} was removed: {REMOVED_FLAGS[_removed]}. "
+                        "Drop it from the command line."
+                    ),
+                }
+            )
         elif arg.startswith("--"):
             # Pi parity: ``args.ts:167-180`` unknown extension flag.
             # Three sub-cases:

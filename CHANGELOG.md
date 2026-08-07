@@ -134,10 +134,15 @@ and `.../releases/tag/vX` link would 404. Add them with the first pushed tag.
 
 ### Removed
 
-- `--verbose`, `--no-themes` and `--no-prompt-templates`. All three were
-  parsed into `Args` fields that nothing outside `cli/args.py` ever read, while
-  `--help` advertised them as working features. The positive forms `--theme`
-  and `--prompt-template` are unaffected, as is `--no-skills`.
+- `--verbose`, `--no-themes` and `--no-prompt-templates` (and the `-np`
+  spelling). All were parsed into `Args` fields that nothing outside
+  `cli/args.py` ever read, while `--help` advertised them as working features.
+  Passing one is now a hard argument error rather than a silent no-op: an
+  unrecognised `--name` otherwise falls into the unknown-extension-flag branch,
+  which swallows the following token as the flag's value, so
+  `aelix --verbose "my prompt"` would have run with no prompt at all and no
+  error. The positive forms `--theme` and `--prompt-template` are unaffected,
+  as is `--no-skills`.
 
 ### Fixed
 
@@ -146,10 +151,15 @@ and `.../releases/tag/vX` link would 404. Add them with the first pushed tag.
   then waited for a first byte before continuing — even when the prompt was
   already on argv. A process spawned with `stdin=PIPE`, or run under a CI
   harness, paid the full deadline for input it would never use (measured 35.2s,
-  now 3.3s). The wait is time-boxed rather than skipped: `build_initial_message`
+  now 6.5s). The wait is time-boxed rather than skipped: `build_initial_message`
   concatenates stdin with the argv prompt, so `cat notes.txt | aelix -p
-  "summarise this"` still picks up both. With nothing on argv the behaviour is
-  unchanged, since there stdin *is* the prompt.
+  "summarise this"` still picks up both, and a producer that takes a couple of
+  seconds to get going (`curl … | aelix -p …`, `ssh host cmd | aelix -p …`)
+  still lands inside the 5s grace window. Expiry always prints a note naming
+  `AELIX_STDIN_TIMEOUT`, because from inside the process an idle pipe is
+  indistinguishable from a producer that was about to write — so input may be
+  dropped, but never silently. With nothing on argv the behaviour is unchanged,
+  since there stdin *is* the prompt.
 - A malformed `aelix-plugin.toml` no longer echoes the manifest's contents
   into the error printed on startup (#91). Pydantic's validation errors
   interpolate the whole parsed document, which for a manifest declaring MCP
