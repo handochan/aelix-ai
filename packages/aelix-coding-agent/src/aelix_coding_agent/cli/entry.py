@@ -2108,7 +2108,16 @@ async def _async_main(argv: list[str]) -> int:
             # ReloadSeed carrying the user's prior flag values; pre-seed them into
             # the rebuilt extension runtime BEFORE ``setup()`` re-runs. ``None`` on
             # every non-reload (re)build.
-            flag_values=reload_seed.flag_values if reload_seed is not None else None,
+            # Issue #92 — on first build (reload_seed is None) seed from the
+            # hand-rolled parser's ``--ext-flag`` capture instead, so CLI flags
+            # reach ``get_flag`` on first launch. ``register_flag``'s ``not in``
+            # guard (extensions/api.py) auto-preserves a CLI-seeded value over the
+            # extension's declared default.
+            flag_values=(
+                reload_seed.flag_values
+                if reload_seed is not None
+                else (parsed.unknown_flags or None)
+            ),
             # Issue #24-FU: on reload, build UNFILTERED and defer the active-tool
             # set to reload() step-6 (avoids the raising validator bricking the
             # session when --tools named a since-removed extension tool).
