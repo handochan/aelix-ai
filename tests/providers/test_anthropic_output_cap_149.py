@@ -310,6 +310,15 @@ def test_the_absolute_ceiling_matches_the_evidence_it_was_chosen_from() -> None:
     # 32768 — the obvious power of two — is ABOVE that real ceiling, so a row
     # shaped like those models would still 400 under it.
     assert _UNSAT_ABSOLUTE_OUTPUT_CEILING < 32768
+    # A LITERAL upper bound, deliberately not derived from anything above. The
+    # two "never exceeds the ceiling" tests compare the cap against this same
+    # constant, so they move with it and would pass at any value; the p25
+    # assertion pins it but only while the catalog's own distribution holds. This
+    # line is the one that fails if someone raises the number, and raising it is
+    # the dangerous direction: every row this fires on is a gateway route whose
+    # true output ceiling nobody here can measure, and the failure mode of "too
+    # high" is a hard 400 while "too low" merely truncates a long answer.
+    assert _UNSAT_ABSOLUTE_OUTPUT_CEILING <= 32000
 
 
 def test_clamped_cap_floor_is_never_below_the_thinking_minimum() -> None:

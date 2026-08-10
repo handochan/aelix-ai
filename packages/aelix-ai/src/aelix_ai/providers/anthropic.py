@@ -250,6 +250,35 @@ What remains unverified: whether Fireworks (owner of the shipped blocker row
 ``accounts/fireworks/models/kimi-k2p6``, ctx == max == 262000) enforces such a
 ceiling at all, and what its true per-model value is. Nobody here has a Fireworks
 key; the row's SHAPE was modelled against Anthropic instead.
+
+That gap was then probed as far as the bundled catalog allows, because it is the
+sharpest evidence obtainable about the rows this constant ACTUALLY fires on. All
+36 are gateway routes — 12 fireworks, 24 vercel-ai-gateway, zero first-party
+Anthropic — and 13 of them name a model that some OTHER provider also lists with a
+SATISFIABLE, therefore trustworthy, ``maxTokens``. Those twin ceilings::
+
+    minimax-m2 196608 · qwen3.6-27b 81920 · kat-coder-pro-v2 80000
+    qwen3-coder-next 65536 · kimi-k2.6 65536 · mercury-2 50000
+    kimi-k2 32768 · kimi-k2-thinking 32768 · grok-4.3 30000
+    nemotron-nano-9b-v2 16384 · kimi-k2.5 65536 · trinity-large-preview 4096
+
+32000 clears 9 of those 13 outright. Of the four it does not, three are the value
+4096 — the classic fallback default — and in two of them it is CONTRADICTED by the
+model's own first-party row (xai declares grok-4.3 at 30000 while a gateway
+declares 4096; the same split appears for kimi-k2.5). The one genuine
+counter-example is ``nemotron-nano-9b-v2`` at 16384, a 9B model nobody asks 32000
+output tokens of. Lowering this constant to 16384 would convert that single route
+and shorten every answer on the nine that already work, so the measurement bounds
+what is still at risk rather than overturning the number.
+
+The honest summary: a defensible estimate, not a proven value, for endpoints
+nobody here can reach — and every row it touches is 100% broken today, so a route
+that still fails is no worse off than before. If a real Fireworks or Vercel key
+ever lands, re-measure and let the evidence move the number. A better long-term
+answer than any constant would be to consult the trustworthy twin above when one
+exists; deliberately NOT done here, because the twins disagree with each other
+(kimi-k2.6 is declared 65536, 131000 and 262142 by three different providers) and
+a release blocker is the wrong place to introduce cross-provider inference.
 """
 
 _MIN_CLAMPED_OUTPUT_TOKENS = 4096
