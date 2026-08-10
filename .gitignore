@@ -76,8 +76,9 @@ aelix-session-*.html
 # never changed — agents kept creating worktrees. Each number is a floor observed
 # at a moment, and it rises for as long as this repo is worked on by agents.
 #
-# `.claude/` is developer state at any depth and is ignored wholesale. Publishing
-# is guarded independently by the `exclude` blocks in every pyproject (most of
+# `.claude/` is developer state, and the repo root's copy is ignored wholesale
+# (all but one file — see the exception below). Publishing is guarded
+# independently by the `exclude` blocks in every pyproject (most of
 # tests/packaging/test_build_hygiene.py deletes this file before building,
 # precisely so the excludes are what gets measured) — this rule is the belt.
 #
@@ -96,9 +97,23 @@ aelix-session-*.html
 # does NOT work — measured, the file stays ignored by `.claude/`. The root
 # directory has to be re-admitted (`!/.claude/`), its contents re-excluded
 # (`/.claude/*`, which keeps git from descending into `worktrees/`), and only then
-# can the one file be named. The unanchored `.claude/` on the first line is kept
-# so a NESTED `.claude/` at any other depth stays ignored — `/.claude/*` alone is
-# anchored to the repo root and would miss it.
+# can the one file be named.
+#
+# AND EVERY ONE OF THEM IS ANCHORED, WHICH IS THE OPPOSITE OF THE `.omc` RULE
+# ABOVE — deliberately, and it cost a build to learn. The agent worktrees this
+# repo is developed in LIVE under `.claude/worktrees/`, so a build run from one
+# has `.claude` sitting in its own root path. An UNANCHORED rule naming that
+# directory therefore matches the build root itself, and hatchling responds by
+# discarding this entire file for that build: measured twice, first with
+# `.claude/` and again with `**/*/.claude/`, and both times a planted `.env.local`
+# — a file only this rule excludes, in a repo whose real `.env` holds provider
+# keys and a PyPI token — shipped into the sdist. Anchoring to `/.claude/` fixed
+# it in the same tree, same command. The cost is real and accepted: a nested
+# `packages/**/.claude/` is no longer ignored by git. It still reaches no
+# artifact, because the pyproject `exclude` lists name `.claude` unanchored and
+# those are read as build config rather than as VCS rules, so they do not trip
+# this. `.omc` can use the `**/*/` form for the same job only because nothing
+# ever builds from inside a `.omc/` directory.
 #
 # AND THE NEGATION CHANGES WHAT THE BUILD SHIPS, which is not obvious and was not
 # free. hatchling reads THIS FILE and concatenates its lines with the pyproject
@@ -115,7 +130,7 @@ aelix-session-*.html
 # tests/packaging/test_build_hygiene.py proves the second half by building with
 # this file present — the older fixtures there delete it on purpose and so cannot
 # see this interaction at all.
-.claude/
+/.claude/
 !/.claude/
 /.claude/*
 !/.claude/settings.json

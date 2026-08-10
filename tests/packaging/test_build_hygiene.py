@@ -496,6 +496,71 @@ def test_the_belted_sdist_is_otherwise_a_real_sdist(belted_root_sdist: list[str]
     assert missing == [], f"the belted sdist is not a real sdist: {missing}"
 
 
+@pytest.fixture(scope="module")
+def sdist_built_from_under_a_dot_claude_path(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> Iterator[list[str]]:
+    """The root sdist, belt ON, built from a root that itself sits under ``.claude/``.
+
+    Every other fixture here builds from a neutral temp directory, and that is
+    exactly why none of them can see this defect. THIS repo is developed from
+    agent worktrees under ``.claude/worktrees/<session>/``, so a maintainer's
+    real ``uv build`` frequently runs with ``.claude`` sitting in its own root
+    path — a configuration the rest of this file never reproduces.
+
+    In that configuration an UNANCHORED ``.gitignore`` rule naming ``.claude``
+    matches the build root itself, and hatchling responds by discarding the whole
+    file for that build. Everything the belt alone excludes then ships. Measured
+    twice while writing #143, with ``.claude/`` and again with ``**/*/.claude/``:
+    both times a planted ``.env.local`` reached the tarball, in a repo whose real
+    ``.env`` holds provider keys and a PyPI token. Anchoring to ``/.claude/``
+    fixed it in the same tree with the same command.
+
+    ``.env.local`` is the probe on purpose: it is excluded by ``.gitignore`` and
+    by NOTHING in any pyproject, so it can only survive the trip if the belt was
+    honoured. A probe covered by both lists would pass even with the belt thrown
+    away, and prove nothing.
+    """
+    root = tmp_path_factory.mktemp("dotclaudetree") / ".claude" / "worktrees" / "probe"
+    root.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(REPO_ROOT, root, ignore=_COPY_SKIP, symlinks=True)
+    assert (root / ".gitignore").is_file(), "the belt is the point of this fixture"
+    assert ".claude" in root.parts, "the build root must sit under a .claude path"
+
+    _plant(root / ".env.local", "SECRET_PROBE=must-never-ship\n")
+
+    out_dir = tmp_path_factory.mktemp("dotclaudesdist")
+    _build(["--sdist"], root, out_dir)
+    tarballs = list(out_dir.glob("aelix-*.tar.gz"))
+    assert len(tarballs) == 1, f"expected exactly one sdist, got {tarballs}"
+    with tarfile.open(tarballs[0]) as tf:
+        yield [name.split("/", 1)[1] for name in tf.getnames() if "/" in name]
+
+
+def test_a_build_root_under_dot_claude_still_honours_the_belt(
+    sdist_built_from_under_a_dot_claude_path: list[str],
+) -> None:
+    """An ignore rule must not match the build root — it costs the whole file."""
+    names = sdist_built_from_under_a_dot_claude_path
+    leaked = [name for name in names if name == ".env.local" or name.startswith(".venv/")]
+    assert leaked == [], (
+        "a file excluded ONLY by .gitignore reached the sdist when the build root "
+        f"sat under a `.claude/` path: {leaked}\nSome rule in .gitignore now "
+        "matches the build root itself, so hatchling discarded the entire file "
+        "for this build. Anchor it (`/.claude/`, not `.claude/` and not "
+        "`**/*/.claude/`). Coverage for nested copies belongs in the pyproject "
+        "`exclude` lists, which are read as build config and do not trip this."
+    )
+    assert _is_developer_state_absent(names), (
+        f"developer state also leaked: {[n for n in names if _is_developer_state(n)]}"
+    )
+
+
+def _is_developer_state_absent(names: list[str]) -> bool:
+    """Small helper so the assertion above reads as one thought."""
+    return not any(_is_developer_state(name) for name in names)
+
+
 @pytest.mark.parametrize("name", sorted(ALL_PYPROJECTS))
 def test_every_build_target_declares_the_exclusions(name: str) -> None:
     """Static rot-guard: a new package cannot silently re-open the hole.
