@@ -16,9 +16,25 @@ per-checkout state, including ``.claude/worktrees/<name>/``, a COMPLETE working
 copy of this repo per agent session — was in ``.git/info/exclude`` only. That
 file is per-clone and does not travel, so a fresh ``actions/checkout`` in CI
 never had it, every release built clean, and nobody saw the hole. A maintainer's
-local ``uv build --sdist`` at ee1623c produced a 20,039,596-byte tarball with
-3,065 entries, **1,994 of them under** ``.claude/worktrees/`` — internal working
-copies, uncommitted work included, ready to attach to a public GitHub Release.
+local ``uv build --sdist`` at ee1623c swept ``.claude/worktrees/`` into the
+tarball — internal working copies, uncommitted work included, ready to attach to
+a public GitHub Release.
+
+HOW BIG IS NOT A FIXED NUMBER, and the tests below are written so that it never
+has to be. Three builds of that SAME commit measured 20,039,596 bytes / 3,065
+entries / 1,994 under ``.claude/worktrees/``; then 4,112 entries six minutes
+later; then 48,004,955 bytes / 8,304 entries / 7,233 later the same day. The
+commit never changed — agents kept creating worktrees. Read any of those as a
+floor observed at a moment, not as a property of the repo; the assertions below
+plant a fixed set of probes and count leaks, so what they measure does not
+depend on how many sessions happen to be alive.
+
+``.uv-cache`` is the same class and makes the point about the belt sharpest: uv
+writes a ``.gitignore`` containing ``*`` INSIDE its cache, so ``git check-ignore``
+calls everything in there ignored — and the same ee1623c sdist still shipped five
+of those files, because hatchling reads the ROOT ``.gitignore`` and not nested
+ones. Git's opinion about a path is not evidence about an artifact.
+
 The first leak was found because the artifact was inspected; this one was found
 the same way. Neither was found by a test, which is why the tests below plant.
 
@@ -116,8 +132,21 @@ CODING_AGENT_REL = Path("packages/aelix-coding-agent/src/aelix_coding_agent")
 # depend on how many agents happen to be alive. Skipping it cannot weaken the
 # assertion, because the `.claude` probes below are planted explicitly; it makes
 # the test STRONGER by fixing what is measured instead of sampling the machine.
+#
+# `.uv-cache` is skipped on the same terms: a repo-local `UV_CACHE_DIR` holds
+# downloaded wheels and unpacked sdists and is bounded only by what the machine
+# has fetched, so copying it would make the fixture's cost depend on that. Its
+# probes are planted explicitly below too.
 _COPY_SKIP = shutil.ignore_patterns(
-    ".git", ".venv", "venv", ".ruff_cache", ".pytest_cache", "__pycache__", "*.egg-info", ".claude"
+    ".git",
+    ".venv",
+    "venv",
+    ".ruff_cache",
+    ".pytest_cache",
+    "__pycache__",
+    "*.egg-info",
+    ".claude",
+    ".uv-cache",
 )
 
 # Content files that MUST survive every exclusion, keyed by their in-wheel path.
@@ -134,6 +163,12 @@ REQUIRED_WHEEL_CONTENT = (
 # static check is order-insensitive but membership-exact.
 REQUIRED_EXCLUDES = {
     ".claude",
+    # Not a duplicate of `.claude` — see `test_the_team_config_negation_does_not_
+    # reopen_the_claude_hole` and the long note in the root pyproject. `.gitignore`
+    # negates this one path so git may track the team config, and in hatchling's
+    # combined spec that file-level negation outranks the directory pattern.
+    ".claude/settings.json",
+    ".uv-cache",
     ".omc",
     "__pycache__",
     "*.pyc",
@@ -169,6 +204,7 @@ def _is_developer_state(name: str) -> bool:
     parts = Path(name).parts
     return (
         ".claude" in parts
+        or ".uv-cache" in parts
         or ".omc" in parts
         or "__pycache__" in parts
         or name.endswith((".pyc", ".pyo"))
@@ -234,6 +270,7 @@ def build_tree(tmp_path_factory: pytest.TempPathFactory) -> Path:
     # did. Planted under the packaged tree so the wheel assertion is not relying
     # on the root probes below, which only the sdist ever sees.
     _plant(pkg / ".claude" / "settings.local.json", '{"probe": "packaging-hygiene"}')
+    _plant(pkg / ".uv-cache" / "CACHEDIR.TAG", "Signature: 8a477f597d28d172\n")
 
     # --- repo-root scratch: what the sdist swept in.
     _plant(
@@ -259,6 +296,18 @@ def build_tree(tmp_path_factory: pytest.TempPathFactory) -> Path:
         worktree / "packages" / "aelix-coding-agent" / "src" / "probe_unreleased.py",
         "# uncommitted work in progress, never publish\n",
     )
+
+    # --- #143 follow-up: `.uv-cache`, a repo-local `UV_CACHE_DIR`. The exact five
+    # names main's real sdist shipped at ee1623c. Note `.uv-cache/.gitignore`
+    # among them: uv writes `*` into it, git therefore reports every one of these
+    # ignored, and hatchling shipped them anyway because it reads only the ROOT
+    # `.gitignore`. Planting the real names keeps that distinction on the record.
+    cache = root / ".uv-cache"
+    _plant(cache / ".gitignore", "*\n")
+    _plant(cache / ".lock", "")
+    _plant(cache / "CACHEDIR.TAG", "Signature: 8a477f597d28d172\n")
+    _plant(cache / "sdists-v9" / ".gitignore", "")
+    _plant(cache / "interpreter-v4" / "probe" / "probe.msgpack", "probe")
     return root
 
 
@@ -274,8 +323,10 @@ def test_the_build_tree_really_has_no_gitignore_belt(build_tree: Path) -> None:
         build_tree / CODING_AGENT_REL / "__pycache__" / "packaging_probe.cpython-311.pyc",
         build_tree / CODING_AGENT_REL / "AGENTS.md",
         build_tree / CODING_AGENT_REL / ".claude" / "settings.local.json",
+        build_tree / CODING_AGENT_REL / ".uv-cache" / "CACHEDIR.TAG",
         build_tree / ".omc" / "specs" / "packaging-probe-internal-plan.md",
         build_tree / ".claude" / "worktrees" / "packaging-probe-session" / "pyproject.toml",
+        build_tree / ".uv-cache" / "CACHEDIR.TAG",
         build_tree / "aelix-session-packaging-probe.html",
     ):
         assert probe.is_file(), f"scratch probe was not planted: {probe}"
@@ -350,8 +401,9 @@ def test_sdist_carries_no_developer_state(root_sdist: list[str]) -> None:
     """No repo-root developer state reaches the sdist.
 
     The sdist default file set is the whole repo root, which made it the worse
-    leak of the two: internal sprint plans, review memos and session logs, and
-    then (#143) whole ``.claude/worktrees/<name>/`` working copies of the repo.
+    leak of the two: internal sprint plans, review memos and session logs, then
+    (#143) whole ``.claude/worktrees/<name>/`` working copies of the repo, and
+    alongside them a repo-local ``.uv-cache/`` that git considered fully ignored.
     """
     leaked = [name for name in root_sdist if _is_developer_state(name)]
     assert leaked == [], f"developer state leaked into the root sdist: {leaked}"
@@ -373,6 +425,75 @@ def test_sdist_still_carries_sources_and_licensing(root_sdist: list[str]) -> Non
     ]
     missing = [path for path in required if path not in present]
     assert missing == [], f"the sdist exclusions dropped real distribution content: {missing}"
+
+
+@pytest.fixture(scope="module")
+def belted_root_sdist(tmp_path_factory: pytest.TempPathFactory) -> Iterator[list[str]]:
+    """The root sdist built with ``.gitignore`` KEPT, plus a `.claude/settings.json`.
+
+    THE ONE FIXTURE HERE THAT DOES NOT DELETE THE BELT, and it exists because
+    deleting the belt hides a whole class of defect. Every other build above
+    removes ``.gitignore`` so the pyproject ``exclude`` lists are measured alone —
+    right for asking "do the excludes work", and structurally blind to any way in
+    which ``.gitignore`` can make the artifact WORSE.
+
+    It can. hatchling does not consult the two lists in sequence: it concatenates
+    the ``.gitignore`` lines and the ``exclude`` patterns into a single
+    ``pathspec.GitIgnoreSpec``, and in that spec a pattern matching the FILE
+    outranks a pattern matching only its parent DIRECTORY irrespective of order.
+    ``.gitignore`` negates ``/.claude/settings.json`` on purpose — that file is
+    Claude Code's checked-in TEAM config and git has to be allowed to track it —
+    and that file-level negation therefore beat the directory-level ``.claude``
+    in the pyprojects. Measured, not reasoned: with the negation added and only
+    ``.claude`` declared, a real ``uv build --sdist`` put ``.claude/settings.json``
+    back into the tarball — re-opened by the very branch that closed #143.
+
+    So this fixture reproduces the maintainer's actual build — belt on, team
+    config present — and the test below is what stops a future ``.gitignore``
+    negation from re-opening #143 one path at a time.
+    """
+    root = tmp_path_factory.mktemp("beltedtree") / "repo"
+    shutil.copytree(REPO_ROOT, root, ignore=_COPY_SKIP, symlinks=True)
+    assert (root / ".gitignore").is_file(), "the belt is the point of this fixture"
+
+    _plant(root / ".claude" / "settings.json", '{"probe": "team config, git-tracked"}')
+    _plant(root / ".claude" / "settings.local.json", '{"probe": "personal, ignored"}')
+    _plant(
+        root / ".claude" / "worktrees" / "belted-probe" / "probe_unreleased.py",
+        "# uncommitted work in progress, never publish\n",
+    )
+
+    out_dir = tmp_path_factory.mktemp("beltedsdist")
+    _build(["--sdist"], root, out_dir)
+    tarballs = list(out_dir.glob("aelix-*.tar.gz"))
+    assert len(tarballs) == 1, f"expected exactly one sdist, got {tarballs}"
+    with tarfile.open(tarballs[0]) as tf:
+        yield [name.split("/", 1)[1] for name in tf.getnames() if "/" in name]
+
+
+def test_the_team_config_negation_does_not_reopen_the_claude_hole(
+    belted_root_sdist: list[str],
+) -> None:
+    """A git-trackable ``.claude/settings.json`` still reaches no artifact."""
+    leaked = [name for name in belted_root_sdist if _is_developer_state(name)]
+    assert leaked == [], (
+        "developer state leaked into the sdist built WITH .gitignore in place: "
+        f"{leaked}\nA `.gitignore` negation outranked a pyproject `exclude` "
+        "directory pattern. Declare the exact negated path in every pyproject "
+        "`exclude` list too — do not remove the negation, and do not widen the "
+        "patterns."
+    )
+
+
+def test_the_belted_sdist_is_otherwise_a_real_sdist(belted_root_sdist: list[str]) -> None:
+    """Guards the guard: an empty or amputated tarball would pass the test above."""
+    present = set(belted_root_sdist)
+    missing = [
+        path
+        for path in ("pyproject.toml", "README.md", "LICENSE", ".gitignore")
+        if path not in present
+    ]
+    assert missing == [], f"the belted sdist is not a real sdist: {missing}"
 
 
 @pytest.mark.parametrize("name", sorted(ALL_PYPROJECTS))

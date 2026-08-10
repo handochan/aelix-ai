@@ -36,6 +36,8 @@ aelix-coding-agent = { workspace = true }
 packages = ["src/aelix_server"]
 exclude = [
   ".claude",
+  ".claude/settings.json",
+  ".uv-cache",
   ".omc",
   "__pycache__",
   "*.pyc",
@@ -50,6 +52,8 @@ exclude = [
 [tool.hatch.build.targets.sdist]
 exclude = [
   ".claude",
+  ".claude/settings.json",
+  ".uv-cache",
   ".omc",
   "__pycache__",
   "*.pyc",

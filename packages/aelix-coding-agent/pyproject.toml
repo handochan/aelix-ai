@@ -130,6 +130,8 @@ packages = ["src/aelix_coding_agent", "src/aelix_agents"]
 # would pass with this whole list gutted. Verified: gut it and 7 paths leak.
 exclude = [
   ".claude",
+  ".claude/settings.json",
+  ".uv-cache",
   ".omc",
   "__pycache__",
   "*.pyc",
@@ -149,6 +151,8 @@ exclude = [
 # test enforces, and a drifted .gitignore must not be able to re-open the leak.
 exclude = [
   ".claude",
+  ".claude/settings.json",
+  ".uv-cache",
   ".omc",
   "__pycache__",
   "*.pyc",

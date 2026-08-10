@@ -75,6 +75,8 @@ Issues = "https://github.com/handochan/aelix-ai/issues"
 packages = ["src/aelix_ai"]
 exclude = [
     ".claude",
+    ".claude/settings.json",
+    ".uv-cache",
     ".omc",
     "__pycache__",
     "*.pyc",
@@ -89,6 +91,8 @@ exclude = [
 [tool.hatch.build.targets.sdist]
 exclude = [
     ".claude",
+    ".claude/settings.json",
+    ".uv-cache",
     ".omc",
     "__pycache__",
     "*.pyc",

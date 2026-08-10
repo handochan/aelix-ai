@@ -86,17 +86,51 @@ aelix = "aelix_coding_agent.cli.entry:main_sync"
 # #143 — `.claude` joined the list, and it is the entry with the sharpest teeth.
 # Claude Code keeps its per-checkout state under `.claude/`, including
 # `.claude/worktrees/<name>/` — FULL working copies of this repo, one per agent
-# session. Measured at ee1623c: a local `uv build --sdist` produced a 20,039,596
-# byte tarball with 3,065 entries, 1,994 of them under `.claude/worktrees/`, and
-# a rebuild six minutes later had grown to 4,112 because another session had
-# started. `.claude` was in NEITHER exclude list NOR `.gitignore` — only in
+# session. `.claude` was in NEITHER exclude list NOR `.gitignore` — only in
 # `.git/info/exclude`, which is per-clone and does not travel with a clone, so a
 # fresh `actions/checkout` in CI never had it and nobody noticed. It is now in
 # all three places: both exclude lists (load-bearing) and `.gitignore` (belt).
+#
+# THE SIZE OF THIS LEAK IS NOT A CONSTANT — do not read the figures below as one,
+# and do not "correct" them when a rebuild disagrees. Three `uv build --sdist`
+# runs against the SAME commit (ee1623c), same machine, measured: 20,039,596
+# bytes / 3,065 entries / 1,994 under `.claude/worktrees/`; then 4,112 entries
+# six minutes later; then 48,004,955 bytes / 8,304 entries / 7,233 under
+# `.claude/worktrees/` later the same day. Nothing about the commit changed —
+# agent sessions kept checking out more working copies. Every number here is a
+# FLOOR observed at a moment, and the floor rises for as long as this repo is
+# worked on by agents. The durable fact is the class, not the digits: whatever
+# sessions are alive when someone runs `uv build`, all of them ship.
+#
+# `.uv-cache` joined the list next, and it is the one that shows why the belt
+# cannot be the answer. uv writes its own `.gitignore` containing `*` INSIDE the
+# cache directory, so `git check-ignore` calls every file in there ignored — and
+# that same ee1623c sdist still carried five of them (`.gitignore`, `.lock`,
+# `CACHEDIR.TAG`, `interpreter-v4/**/*.msgpack`, `sdists-v9/.gitignore`), because
+# hatchling consults the ROOT `.gitignore` and not nested ones. Git agreeing that
+# a path is ignored proves nothing about what a build ships. Only the exclude
+# list closes it, which is exactly the property the test below measures.
+#
+# `.claude/settings.json` LOOKS REDUNDANT NEXT TO `.claude` AND IS NOT. DO NOT
+# DELETE IT AS A DUPLICATE. `.gitignore` carries a deliberate negation for that
+# one path (it is Claude Code's checked-in TEAM config, so git must be allowed to
+# track it), and hatchling does not layer the two lists the way the ordering
+# suggests: `BuilderConfig.exclude_spec` concatenates the `.gitignore` lines and
+# these patterns into ONE `pathspec.GitIgnoreSpec`, where a pattern matching the
+# FILE beats a pattern matching only its parent DIRECTORY regardless of which
+# came later. So `!/.claude/settings.json` (file) outranks `.claude` (directory)
+# even though `.claude` is appended after it. Measured: with the negation in
+# `.gitignore` and only `.claude` here, a real `uv build --sdist` shipped
+# `.claude/settings.json`; adding this exact path took it back out and changed
+# nothing else. Note that the older fixtures in that test DELETE `.gitignore`, so
+# they cannot see this interaction at all — `test_the_team_config_negation_does_
+# not_reopen_the_claude_hole` is the one that builds with the belt in place.
 [tool.hatch.build.targets.wheel]
 packages = ["src/aelix"]
 exclude = [
   ".claude",
+  ".claude/settings.json",
+  ".uv-cache",
   ".omc",
   "__pycache__",
   "*.pyc",
@@ -116,6 +150,8 @@ exclude = [
 [tool.hatch.build.targets.sdist]
 exclude = [
   ".claude",
+  ".claude/settings.json",
+  ".uv-cache",
   ".omc",
   "__pycache__",
   "*.pyc",
