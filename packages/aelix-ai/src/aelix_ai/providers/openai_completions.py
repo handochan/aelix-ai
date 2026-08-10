@@ -628,6 +628,103 @@ def _native_effort(model: Model, effort: str) -> str | int:
     return effort if value is None else value
 
 
+_OUTPUT_CAP_MARGIN_TOKENS = 1024
+"""Fixed slack added to the prompt estimate before a model-default cap is kept.
+
+Absorbs the per-message/per-tool framing tokens the raw string walk below does
+not see (role wrappers, JSON punctuation the provider counts, BOS/EOS).
+"""
+
+
+def _estimate_text_tokens(text: str) -> int:
+    """Deliberately-high token estimate for one payload string.
+
+    ASCII is charged at the repo-wide ``ceil(len / 4)`` heuristic (same shape as
+    ``tui/context_usage.estimate_tokens``). Non-ASCII is charged at one token
+    per character: CJK and emoji tokenize far denser than 4:1, and this estimate
+    gates a *fail-closed* decision. Under-counting is what produces the 400;
+    over-counting only drops a cap the provider would have enforced anyway.
+    """
+
+    if text.isascii():
+        return -(-len(text) // 4)
+    return len(text)
+
+
+def _estimate_payload_tokens(value: Any) -> int:
+    """Estimate the prompt size of an already-built request payload."""
+
+    total = 0
+    stack: list[Any] = [value]
+    while stack:
+        current = stack.pop()
+        if isinstance(current, str):
+            total += _estimate_text_tokens(current)
+        elif isinstance(current, dict):
+            stack.extend(current.keys())
+            stack.extend(current.values())
+        elif isinstance(current, (list, tuple)):
+            stack.extend(current)
+    return total
+
+
+def _apply_max_tokens(
+    params: dict[str, Any],
+    model: Model,
+    options: OpenAICompletionsOptions | SimpleStreamOptions | None,
+    compat: OpenAICompletionsCompat,
+) -> None:
+    """Set the output cap, but never one the context window cannot hold.
+
+    Pi divergence (deliberate, widening ADR-0114). Pi's ``buildParams``
+    (``openai-completions.ts:528``) writes ``options.maxTokens`` straight
+    through, and ``buildBaseOptions`` (``simple-options.ts:6``) defaults that to
+    ``model.maxTokens`` — so pi sends the catalog's full output cap with no
+    context-window arithmetic anywhere in its provider layer (``contextWindow``
+    appears zero times in pi's adapters at 734e08e). That is precisely the
+    defect: the OpenRouter default ``moonshotai/kimi-k2.6`` lists
+    ``contextWindow=262144`` / ``maxTokens=262142``, so a first turn asks for
+    262142 output tokens on a 262144 window and the endpoint 400s with
+    "you requested about 264304 tokens ... 262142 in the output".
+
+    The rule: a *model-default* cap is emitted only when the request is
+    provably satisfiable — ``prompt_estimate + margin + cap <= context_window``.
+    Otherwise the cap is omitted and the provider clamps output to whatever the
+    context actually leaves. Omission is always satisfiable by construction,
+    which is why the guard drops rather than clamps: clamping to
+    ``context_window - estimate`` would still 400 whenever the estimate ran low,
+    whereas an over-high estimate here costs only a cap nobody could have used.
+
+    A *caller-supplied* ``options.max_tokens`` still wins unconditionally (P0
+    #6): the compaction summarizer's ``floor(0.8 * reserveTokens)`` is an
+    explicit, intentionally-small cap, never the full window.
+    """
+
+    options_max_tokens = getattr(options, "max_tokens", None)
+    if options_max_tokens is not None and options_max_tokens > 0:
+        cap = options_max_tokens
+    else:
+        cap = getattr(model, "max_tokens", 0) or 0
+        if cap <= 0:
+            return
+        context_window = getattr(model, "context_window", 0) or 0
+        # ``context_window == 0`` means "unknown" — no arithmetic is possible,
+        # so keep the catalog cap rather than silently dropping it.
+        if context_window > 0:
+            required = (
+                _estimate_payload_tokens(params.get("messages"))
+                + _estimate_payload_tokens(params.get("tools"))
+                + _OUTPUT_CAP_MARGIN_TOKENS
+            )
+            if cap + required > context_window:
+                return
+
+    if compat.max_tokens_field == "max_tokens":
+        params["max_tokens"] = cap
+    else:
+        params["max_completion_tokens"] = cap
+
+
 def build_params(
     model: Model,
     context: Context,
@@ -675,35 +772,6 @@ def build_params(
     if compat.supports_store:
         params["store"] = False
 
-    max_tokens = getattr(model, "max_tokens", 0) or 0
-    context_window = getattr(model, "context_window", 0) or 0
-    # P0 #6 (compaction fidelity): pi ``base.maxTokens = options.maxTokens ??
-    # model.maxTokens``. A caller-supplied ``options.max_tokens`` (e.g. the
-    # compaction summarizer's ``floor(0.8 * reserveTokens)`` cap) overrides the
-    # model default output cap and bypasses the ADR-0114 context-window guard
-    # below — it is an explicit, intentionally-small cap, never the full window.
-    options_max_tokens = getattr(options, "max_tokens", None)
-    if options_max_tokens is not None and options_max_tokens > 0:
-        if compat.max_tokens_field == "max_tokens":
-            params["max_tokens"] = options_max_tokens
-        else:
-            params["max_completion_tokens"] = options_max_tokens
-    else:
-        # ADR-0114: 127 catalog models list ``maxTokens == contextWindow``.
-        # Sending the full context window as the *output* cap leaves no room
-        # for the prompt and 400s on strict OpenRouter endpoints ("this
-        # endpoint's maximum context length is N tokens. However, you
-        # requested ... in the output"). When the cap is meaningless (>= the
-        # whole context window), omit it so the provider clamps the output to
-        # whatever the context allows. Models with a real, smaller output cap
-        # keep sending it unchanged.
-        cap_is_meaningful = not (context_window and max_tokens >= context_window)
-        if max_tokens > 0 and cap_is_meaningful:
-            if compat.max_tokens_field == "max_tokens":
-                params["max_tokens"] = max_tokens
-            else:
-                params["max_completion_tokens"] = max_tokens
-
     tools = list(context.tools or [])
     if tools:
         params["tools"] = convert_tools(tools, compat)
@@ -718,6 +786,12 @@ def build_params(
         _apply_anthropic_cache_control(
             messages, params.get("tools"), cache_control
         )
+
+    # NOTE: the output cap is decided *after* messages and tools are final so
+    # the prompt estimate below sees the whole payload (the live 400 counted
+    # "886 of text input, 1276 of tool input" — tools are a third of a
+    # first-turn prompt and must not be ignored).
+    _apply_max_tokens(params, model, options, compat)
 
     tool_choice = getattr(options, "tool_choice", None)
     if tool_choice is not None:
