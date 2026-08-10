@@ -1306,6 +1306,7 @@ async def run_tui(
             return
 
         chosen = None
+        no_model_reason: str | None = None
         try:
             from aelix_coding_agent.core.model_resolver import find_initial_model
 
@@ -1324,6 +1325,11 @@ async def run_tui(
                 model_registry=model_registry,
             )
             chosen = result.model
+            # #150: when the cascade refuses everything because the credentials
+            # only unlock models whose api has no adapter in this build, it says
+            # so and names the api. Strictly more actionable than the generic
+            # line below, so prefer it verbatim when present.
+            no_model_reason = result.fallback_message
         except Exception as exc:  # noqa: BLE001 — surface, never crash the REPL
             _commit(
                 Text(
@@ -1337,8 +1343,12 @@ async def run_tui(
         if chosen is None or not is_runnable(chosen):
             _commit(
                 Text(
-                    "Logged in, but no runnable model is available for that "
-                    "provider. Use /model to select a model.",
+                    f"Logged in. {no_model_reason} Use /model to select a model."
+                    if no_model_reason
+                    else (
+                        "Logged in, but no runnable model is available for that "
+                        "provider. Use /model to select a model."
+                    ),
                     style="yellow",
                 )
             )

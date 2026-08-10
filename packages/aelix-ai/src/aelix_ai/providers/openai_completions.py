@@ -53,6 +53,10 @@ from aelix_ai.providers._openai_compat import (
 )
 from aelix_ai.providers._sanitize_unicode import sanitize_surrogates
 from aelix_ai.providers._streaming_json import parse_streaming_json
+from aelix_ai.providers._token_estimate import (
+    OUTPUT_CAP_MARGIN_TOKENS,
+    estimate_payload_tokens,
+)
 from aelix_ai.providers._transform_messages import transform_messages
 from aelix_ai.streaming import (
     AssistantDoneEvent,
@@ -628,44 +632,12 @@ def _native_effort(model: Model, effort: str) -> str | int:
     return effort if value is None else value
 
 
-_OUTPUT_CAP_MARGIN_TOKENS = 1024
-"""Fixed slack added to the prompt estimate before a model-default cap is kept.
-
-Absorbs the per-message/per-tool framing tokens the raw string walk below does
-not see (role wrappers, JSON punctuation the provider counts, BOS/EOS).
-"""
-
-
-def _estimate_text_tokens(text: str) -> int:
-    """Deliberately-high token estimate for one payload string.
-
-    ASCII is charged at the repo-wide ``ceil(len / 4)`` heuristic (same shape as
-    ``tui/context_usage.estimate_tokens``). Non-ASCII is charged at one token
-    per character: CJK and emoji tokenize far denser than 4:1, and this estimate
-    gates a *fail-closed* decision. Under-counting is what produces the 400;
-    over-counting only drops a cap the provider would have enforced anyway.
-    """
-
-    if text.isascii():
-        return -(-len(text) // 4)
-    return len(text)
-
-
-def _estimate_payload_tokens(value: Any) -> int:
-    """Estimate the prompt size of an already-built request payload."""
-
-    total = 0
-    stack: list[Any] = [value]
-    while stack:
-        current = stack.pop()
-        if isinstance(current, str):
-            total += _estimate_text_tokens(current)
-        elif isinstance(current, dict):
-            stack.extend(current.keys())
-            stack.extend(current.values())
-        elif isinstance(current, (list, tuple)):
-            stack.extend(current)
-    return total
+# The prompt-size estimator and its margin moved to ``providers/_token_estimate``
+# (#149) so the anthropic-messages adapter's output-cap clamp reuses this exact
+# accounting instead of growing a second copy that drifts. Same fail-closed bias;
+# the only behaviour change is that non-ASCII is now charged per CHARACTER rather
+# than per STRING, so one em-dash no longer quadruples the estimate for a whole
+# file.
 
 
 def _apply_max_tokens(
@@ -712,9 +684,9 @@ def _apply_max_tokens(
         # so keep the catalog cap rather than silently dropping it.
         if context_window > 0:
             required = (
-                _estimate_payload_tokens(params.get("messages"))
-                + _estimate_payload_tokens(params.get("tools"))
-                + _OUTPUT_CAP_MARGIN_TOKENS
+                estimate_payload_tokens(params.get("messages"))
+                + estimate_payload_tokens(params.get("tools"))
+                + OUTPUT_CAP_MARGIN_TOKENS
             )
             if cap + required > context_window:
                 return

@@ -34,11 +34,20 @@ from aelix_coding_agent.model_registry import ModelRegistry
 
 
 def _m(provider: str, model_id: str, *, name: str | None = None) -> Model:
+    # ``base_url`` is set deliberately (#150). ``find_initial_model`` now filters
+    # its cascade with ``is_runnable``, and a model that DECLARES an empty
+    # base_url is unrunnable by the #98 credential-egress guard once any adapter
+    # is registered. Without a host these fixtures were order-dependent: they
+    # passed alone (no adapters registered → the filter fails open) and failed
+    # in a full-suite run after some earlier test had registered providers
+    # globally. A real catalog model always carries a host, so this makes the
+    # fixture well-formed rather than papering over the filter.
     return Model(
         id=model_id,
         name=name or model_id,
         api="anthropic-messages",
         provider=provider,
+        base_url=f"https://{provider}.example/v1",
         cost=ModelCost(input=1.0, output=1.0),
     )
 
@@ -611,7 +620,10 @@ def test_default_model_per_provider_has_35_entries() -> None:
     assert len(DEFAULT_MODEL_PER_PROVIDER) == 35
     assert DEFAULT_MODEL_PER_PROVIDER["anthropic"] == "claude-opus-4-7"
     assert DEFAULT_MODEL_PER_PROVIDER["openai"] == "gpt-5.4"
-    assert DEFAULT_MODEL_PER_PROVIDER["openrouter"] == "moonshotai/kimi-k2.6"
+    # Owner decision (#150 follow-up) — a deliberate pi divergence; the
+    # rationale is recorded in
+    # ``tests/pi_parity/test_phase_4_7_strict_superset.py``.
+    assert DEFAULT_MODEL_PER_PROVIDER["openrouter"] == "openai/gpt-5.4"
     assert DEFAULT_MODEL_PER_PROVIDER["ant-ling"] == "Ring-2.6-1T"
     assert DEFAULT_MODEL_PER_PROVIDER["nvidia"] == "nvidia/nemotron-3-super-120b-a12b"
     assert DEFAULT_MODEL_PER_PROVIDER["zai-coding-cn"] == "glm-5.1"

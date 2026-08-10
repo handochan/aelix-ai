@@ -61,7 +61,15 @@ DEFAULT_MODEL_PER_PROVIDER: dict[str, str] = {
     "google": "gemini-3.1-pro-preview",
     "google-vertex": "gemini-3.1-pro-preview",
     "github-copilot": "gpt-5.4",
-    "openrouter": "moonshotai/kimi-k2.6",
+    # Owner decision (#150 follow-up): a recent GPT-family model is the natural
+    # default, and ``openai/gpt-5.4`` is exactly what ``DEFAULT_MODEL_PER_PROVIDER
+    # ["openai"]`` already is — so onboarding through OpenRouter and onboarding
+    # against OpenAI directly land the user on the same model. Verified against
+    # the bundled catalog: contextWindow 1050000 / maxTokens 128000 (headroom
+    # 922000), api openai-completions, reasoning true. The previous default
+    # ``moonshotai/kimi-k2.6`` carried headroom 2 (262144/262142) and was the row
+    # that produced the Wave 1 first-turn 400.
+    "openrouter": "openai/gpt-5.4",
     "vercel-ai-gateway": "zai/glm-5.1",
     "xai": "grok-4.20-0309-reasoning",
     "groq": "openai/gpt-oss-120b",
@@ -145,6 +153,76 @@ class RestoreModelResult:
 
 # Pi parity: ``model-resolver.ts:64`` — dated YYYYMMDD detection.
 _DATE_SUFFIX_PATTERN: re.Pattern[str] = re.compile(r"-\d{8}$")
+
+
+def _no_adapter_message(blocked: list[Model]) -> str:
+    """Explain, in the user's terms, why nothing could be auto-selected.
+
+    ``blocked`` is non-empty: the user HAS working credentials, every model they
+    unlock needs an adapter this build does not ship. Saying "no model available"
+    would be a lie — the honest statement names the api and points at the exit.
+    """
+
+    apis = sorted({str(getattr(m, "api", None) or "?") for m in blocked})
+    providers = sorted({str(getattr(m, "provider", None) or "?") for m in blocked})
+    from aelix_coding_agent.core.runnable_models import supported_apis
+
+    supported = ", ".join(sorted(supported_apis())) or "(none registered)"
+    # Mirrors ``runnable_models.unsupported_message``: a self-contained sentence
+    # that deliberately does NOT name ``/model``, because the non-interactive
+    # callers have no such command — each caller appends its own instruction.
+    return (
+        f"No runnable model could be selected: the {len(blocked)} model(s) your "
+        f"credentials unlock ({', '.join(providers)}) all use the "
+        f"{', '.join(apis)} API, which this build has no adapter for "
+        f"(supported: {supported})."
+    )
+
+
+def _pick_runnable_default(available: list[Model]) -> Model | None:
+    """Steps 4/5 of the cascade, restricted to models that can actually run.
+
+    #150: this is the asymmetry the issue is about. ``tui/shell.py`` uses
+    ``is_runnable(current)`` as the TRIGGER for auto-selecting a model, but the
+    cascade it then calls did not apply that same predicate — step 4 returned the
+    ``DEFAULT_MODEL_PER_PROVIDER`` entry whatever its ``api`` was, and step 5's
+    ``get_available()`` is auth-filtered, not adapter-filtered. So the code
+    checked runnability to decide WHETHER to choose, then chose without checking
+    runnability. Three of the 35 defaults name an api with no adapter in this
+    build and therefore cannot complete a turn under any circumstances:
+    ``amazon-bedrock`` → ``bedrock-converse-stream``, ``azure-openai-responses``
+    → ``azure-openai-responses``, ``mistral`` → ``mistral-conversations``. For
+    all three, EVERY catalog row is on that same adapterless api (84 / 42 / 28
+    rows), so there is no runnable sibling to fall back to inside the provider.
+
+    Pi divergence, and the reason for it: pi's ``findInitialModel``
+    (``model-resolver.ts:483-563`` @ 734e08e) applies no adapter filter at all
+    and has no ``is_runnable`` equivalent — because pi SHIPS
+    ``amazon-bedrock.ts``, ``azure-openai-responses.ts`` and ``mistral.ts``. The
+    defaults map was ported from pi verbatim; the three entries are correct
+    upstream and unrunnable here. So this is aelix repairing a port, not
+    correcting pi.
+
+    ``partition_runnable`` fails OPEN when no adapters are registered
+    (headless/embedders/tests), so the filter is a no-op there and cannot
+    over-filter.
+    """
+
+    from aelix_coding_agent.core.runnable_models import partition_runnable
+
+    runnable, _blocked = partition_runnable(available)
+    for known_provider, default_id in DEFAULT_MODEL_PER_PROVIDER.items():
+        match = next(
+            (
+                m for m in runnable
+                if m.provider == known_provider and m.id == default_id
+            ),
+            None,
+        )
+        if match is not None:
+            return match
+    # No known-provider default is runnable — first runnable model, if any.
+    return runnable[0] if runnable else None
 
 
 def _glob_match_pi_minimatch(haystack: str, pattern: str) -> bool:
@@ -703,48 +781,55 @@ async def find_initial_model(
             fallback_message=None,
         )
 
-    # 3. Try saved default from settings.
+    # 3. Try saved default from settings — but only if it can still run. A
+    #    saved default that has become unrunnable (adapter dropped, required
+    #    config now missing) must fall THROUGH to the search below rather than
+    #    be handed back; returning it would make the caller's ``is_runnable``
+    #    post-check fail and strand the user with no model at all, when a
+    #    runnable one was available the whole time.
     if default_provider and default_model_id:
         found = model_registry.find(default_provider, default_model_id)
         if found is not None:
-            model = found
-            if default_thinking_level:
-                thinking_level = default_thinking_level
-            return InitialModelResult(
-                model=model,
-                thinking_level=thinking_level,
-                fallback_message=None,
-            )
+            from aelix_coding_agent.core.runnable_models import is_runnable
 
-    # 4. Try first available model with valid API key.
-    available_models = model_registry.get_available()
-
-    if available_models:
-        # Try to find a default model from known providers.
-        for known_provider in DEFAULT_MODEL_PER_PROVIDER:
-            default_id = DEFAULT_MODEL_PER_PROVIDER[known_provider]
-            match = next(
-                (
-                    m for m in available_models
-                    if m.provider == known_provider and m.id == default_id
-                ),
-                None,
-            )
-            if match is not None:
+            if is_runnable(found):
+                model = found
+                if default_thinking_level:
+                    thinking_level = default_thinking_level
                 return InitialModelResult(
-                    model=match,
-                    thinking_level=DEFAULT_THINKING_LEVEL,
+                    model=model,
+                    thinking_level=thinking_level,
                     fallback_message=None,
                 )
 
-        # If no default found, use first available.
+    # 4/5. First AVAILABLE (auth-configured) AND RUNNABLE (adapter present)
+    #      model — the known-provider default first, else anything runnable.
+    available_models = model_registry.get_available()
+    chosen = _pick_runnable_default(available_models)
+    if chosen is not None:
         return InitialModelResult(
-            model=available_models[0],
+            model=chosen,
             thinking_level=DEFAULT_THINKING_LEVEL,
             fallback_message=None,
         )
 
-    # 5. No model found.
+    # 6. Nothing selectable. Distinguish the two cases, because they need
+    #    different actions from the user: no credentials at all (silent — the
+    #    caller owns the first-run copy), versus credentials that unlock only
+    #    models this build cannot run (say so, and name the api). Deliberately
+    #    NOT falling back to some unrelated provider's model: silently handing
+    #    back something the user never authenticated is worse than either.
+    if available_models:
+        from aelix_coding_agent.core.runnable_models import partition_runnable
+
+        _runnable, blocked = partition_runnable(available_models)
+        if blocked:
+            return InitialModelResult(
+                model=None,
+                thinking_level=DEFAULT_THINKING_LEVEL,
+                fallback_message=_no_adapter_message(blocked),
+            )
+
     return InitialModelResult(
         model=None,
         thinking_level=DEFAULT_THINKING_LEVEL,
@@ -810,26 +895,12 @@ async def restore_model_from_session(
     # Try to find any available model.
     available_models = model_registry.get_available()
 
-    if available_models:
-        # Try to find a default model from known providers.
-        fallback_model: Model | None = None
-        for known_provider in DEFAULT_MODEL_PER_PROVIDER:
-            default_id = DEFAULT_MODEL_PER_PROVIDER[known_provider]
-            match = next(
-                (
-                    m for m in available_models
-                    if m.provider == known_provider and m.id == default_id
-                ),
-                None,
-            )
-            if match is not None:
-                fallback_model = match
-                break
+    # #150: the same runnable filter as ``find_initial_model``'s steps 4/5 —
+    # this is the identical cascade and had the identical defect. Falling back
+    # to a model with no adapter just replaces one broken session with another.
+    fallback_model: Model | None = _pick_runnable_default(available_models)
 
-        # If no default found, use first available.
-        if fallback_model is None:
-            fallback_model = available_models[0]
-
+    if fallback_model is not None:
         if should_print_messages:
             sys.stdout.write(
                 f"Falling back to: "

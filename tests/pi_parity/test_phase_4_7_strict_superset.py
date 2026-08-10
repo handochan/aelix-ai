@@ -52,7 +52,14 @@ def test_default_model_per_provider_specific_values_match_pi() -> None:
 
     assert DEFAULT_MODEL_PER_PROVIDER["anthropic"] == "claude-opus-4-7"
     assert DEFAULT_MODEL_PER_PROVIDER["openai"] == "gpt-5.4"
-    assert DEFAULT_MODEL_PER_PROVIDER["openrouter"] == "moonshotai/kimi-k2.6"
+    # DELIBERATE pi divergence (owner decision, #150 follow-up). pi still has
+    # ``moonshotai/kimi-k2.6`` here; aelix ships ``openai/gpt-5.4`` because the
+    # kimi row carries headroom 2 (contextWindow 262144 / maxTokens 262142) and
+    # was the exact row that 400'd a brand-new user's very first message in
+    # Wave 1. ``openai/gpt-5.4`` is also what ``DEFAULT_MODEL_PER_PROVIDER
+    # ["openai"]`` already is, so onboarding through OpenRouter and onboarding
+    # against OpenAI directly land the user on the same model.
+    assert DEFAULT_MODEL_PER_PROVIDER["openrouter"] == "openai/gpt-5.4"
     assert DEFAULT_MODEL_PER_PROVIDER["azure-openai-responses"] == "gpt-5.4"
     assert DEFAULT_MODEL_PER_PROVIDER["openai-codex"] == "gpt-5.5"
     assert (

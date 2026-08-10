@@ -54,6 +54,10 @@ from aelix_ai.providers._github_copilot_headers import (
     build_copilot_dynamic_headers,
     has_copilot_vision_input,
 )
+from aelix_ai.providers._token_estimate import (
+    OUTPUT_CAP_MARGIN_TOKENS,
+    estimate_payload_tokens,
+)
 from aelix_ai.streaming import (
     AssistantDoneEvent,
     AssistantErrorEvent,
@@ -194,6 +198,83 @@ def _with_interleaved_beta(
     return merged
 
 
+_NO_MAX_TOKENS_FALLBACK = 4096
+"""Cap used when the catalog row declares no ``maxTokens`` at all (pre-existing)."""
+
+_MIN_CLAMPED_OUTPUT_TOKENS = 4096
+"""Floor for a clamped cap, chosen so the thinking-budget math stays well-formed.
+
+``adjust_max_tokens_for_thinking`` shrinks the budget to leave ``_MIN_OUTPUT_TOKENS``
+(1024) of visible answer, so at a 4096 cap it emits ``budget_tokens=3072`` — still
+strictly below ``max_tokens``, which the Messages API requires. A 1024 floor would
+produce ``budget_tokens == max_tokens`` and trade one 400 for another. Reaching the
+floor at all means the prompt has nearly filled the window, so the request is
+already doomed and the provider's own "prompt is too long" is the honest error.
+"""
+
+
+def _effective_output_cap(model: Model, context: Context) -> int:
+    """The model-default output cap, clamped only when the catalog row is UNSAT.
+
+    ``max_tokens`` is MANDATORY in the Messages API, so — unlike the
+    openai-completions guard (#144), which *omits* a cap that does not fit — the
+    remedy here has to be a clamp. A clamp has consequences an omission does not,
+    so its trigger was chosen from measurement rather than by analogy.
+
+    MEASURED against the real Anthropic endpoint (2026-08-10, claude-opus-4-7 /
+    claude-haiku-4-5). Anthropic enforces exactly two independent rules:
+
+    1. ``max_tokens <= the model's own output ceiling``. Sending
+       ``max_tokens=1000000`` for claude-opus-4-7 (whose catalog contextWindow
+       IS 1000000) 400s with "max_tokens: 1000000 > 128000, which is the maximum
+       allowed number of output tokens for claude-opus-4-7".
+    2. ``prompt <= context_window``, reported separately as "prompt is too long:
+       300030 tokens > 200000 maximum".
+
+    It does **not** enforce ``prompt + max_tokens <= context_window``: a
+    142514-token prompt with ``max_tokens=64000`` on claude-haiku-4-5 (window
+    200000, sum 206514) was ACCEPTED and answered normally. That measurement is
+    what shapes this function. A prompt-aware clamp applied to *every* model —
+    the shape the openai-completions guard uses — would shrink ``max_tokens``
+    below the catalog cap on long prompts for well-behaved models like
+    claude-opus-4-7 and truncate answers Anthropic would gladly have produced.
+    That is a real regression bought for nothing, because rule (3) does not
+    exist.
+
+    So the clamp fires on one condition only: ``max_tokens >= context_window``,
+    the self-inconsistent row. No endpoint can emit its entire context as output
+    (output is drawn from the same window), so such a row is broken by
+    construction — 36 of the 264 anthropic-messages catalog rows, including
+    ``DEFAULT_MODEL_PER_PROVIDER["fireworks"]`` =
+    ``accounts/fireworks/models/kimi-k2p6`` (contextWindow == maxTokens ==
+    262000), which is a first-run blocker identical to the one #144 just fixed
+    for openai-completions. Every satisfiable row is returned byte-identical at
+    every prompt length, so nothing well-behaved changes.
+
+    In the broken branch the cap becomes ``context_window - prompt - margin``,
+    the largest value provably compatible with BOTH measured rules. The prompt
+    estimate is the shared, deliberately-high one from ``_token_estimate``
+    (reused, not re-written); over-estimating only trims a cap that was never
+    honourable anyway.
+    """
+
+    cap = getattr(model, "max_tokens", 0) or 0
+    if cap <= 0:
+        return _NO_MAX_TOKENS_FALLBACK
+    window = getattr(model, "context_window", 0) or 0
+    # ``context_window == 0`` means "unknown" — no arithmetic is possible, so
+    # keep the catalog cap rather than inventing a clamp from nothing.
+    if window <= 0 or cap < window:
+        return cap
+    required = (
+        estimate_payload_tokens(getattr(context, "system_prompt", None))
+        + estimate_payload_tokens(getattr(context, "messages", None))
+        + estimate_payload_tokens(getattr(context, "tools", None))
+        + OUTPUT_CAP_MARGIN_TOKENS
+    )
+    return max(_MIN_CLAMPED_OUTPUT_TOKENS, window - required)
+
+
 async def stream_anthropic(
     model: Model,
     context: Context,
@@ -256,13 +337,29 @@ async def stream_anthropic(
     # supplies ``options.max_tokens``, it becomes the base output cap that the
     # thinking-budget math carves from and the request ``max_tokens`` value —
     # replacing the ``model.max_tokens or 4096`` default.
+    # #149: ``model.max_tokens`` is used verbatim only while the catalog row is
+    # self-consistent. When it declares ``maxTokens >= contextWindow`` the row is
+    # broken by construction and the cap is clamped to what the window can
+    # actually hold — see :func:`_effective_output_cap` for the live measurement
+    # that chose this trigger over a blanket prompt-aware clamp.
+    model_output_cap = _effective_output_cap(model, context)
     default_max_tokens = (
         opts.max_tokens
         if opts.max_tokens is not None and opts.max_tokens > 0
-        else (model.max_tokens or 4096)
+        else model_output_cap
     )
+    # The SAME clamped ceiling is handed to the thinking math as its hard clamp.
+    # Passing only the clamped *base* would not be enough: the budget path
+    # computes ``min(base + budget, model.max_tokens)``, so an unclamped ceiling
+    # would let the carved thinking budget add itself straight back on top and
+    # re-cross the context window.
     thinking_extra, thinking_max_tokens, needs_interleaved = (
-        resolve_anthropic_thinking(model, opts.reasoning, default_max_tokens)
+        resolve_anthropic_thinking(
+            model,
+            opts.reasoning,
+            default_max_tokens,
+            max_tokens_ceiling=model_output_cap,
+        )
     )
     if oauth_mode:
         import logging as _logging

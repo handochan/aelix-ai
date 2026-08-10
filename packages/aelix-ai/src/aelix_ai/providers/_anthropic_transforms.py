@@ -425,6 +425,8 @@ def resolve_anthropic_thinking(
     model: Model,
     reasoning: str | None,
     default_max_tokens: int,
+    *,
+    max_tokens_ceiling: int | None = None,
 ) -> tuple[dict[str, Any], int, bool]:
     """Pi parity: ``streamSimpleAnthropic`` + ``buildParams`` thinking block.
 
@@ -481,7 +483,18 @@ def resolve_anthropic_thinking(
     # site (anthropic.py), so the base honors a caller override (e.g. the
     # compaction summarizer cap); the clamp stays the model cap.
     base_max = default_max_tokens
-    model_clamp = model.max_tokens or default_max_tokens
+    # #149: ``max_tokens_ceiling`` lets the caller substitute a CLAMPED hard
+    # clamp for the raw catalog ``model.max_tokens``. It matters because this
+    # line computes ``min(base + budget, clamp)`` — with the raw catalog value a
+    # row whose ``maxTokens >= contextWindow`` would let the carved thinking
+    # budget add itself back on top of an already-clamped base and re-cross the
+    # window, undoing the clamp. Defaults to ``None`` so every existing caller
+    # (and pi parity, simple-options.ts:26-50) is unchanged.
+    model_clamp = (
+        max_tokens_ceiling
+        if max_tokens_ceiling is not None and max_tokens_ceiling > 0
+        else (model.max_tokens or default_max_tokens)
+    )
     max_tokens, budget = adjust_max_tokens_for_thinking(
         base_max, model_clamp, reasoning
     )
