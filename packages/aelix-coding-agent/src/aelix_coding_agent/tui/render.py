@@ -306,14 +306,13 @@ class EventRenderer:
         self._text_stream: StreamRenderer | None = None
         self._text_accum: str = ""
         self._thinking_accum: str = ""
-        # Issue #133 item 2 — the assistant message object ``_render_message_error``
-        # has already printed a terminal-outcome line for, kept so
-        # ``_render_turn_abort`` cannot print a SECOND line for the same message.
-        # Identity, not a bool: ``message_end`` and the ``turn_end`` that follows
-        # it carry the *same* object (measured against the real loop — loop.py:397
-        # emits message_end(final), loop.py:220 emits turn_end(message) with that
-        # same ``final``), whereas a bool would go stale across turns.
-        self._error_reported_message: object | None = None
+        # Issue #133 item 2 — set when ``_render_message_error`` has already
+        # printed a terminal-outcome line for the message that just ended, so
+        # ``_render_turn_abort`` does not print a SECOND line for the same abort.
+        # Scoped to the message_end -> turn_end adjacency it guards: cleared on
+        # message_start AND consumed by ``_render_turn_abort``. See that method
+        # for why it is a bool rather than the message object.
+        self._outcome_reported: bool = False
         # /expand support (ADR-0121) — full, untruncated tool-result bodies kept
         # by sequential id so ``/expand N`` can recover the text a truncated card
         # elided. Only TRUNCATED cards get an id (that's when /expand is useful);
@@ -440,10 +439,10 @@ class EventRenderer:
         self._text_accum = ""
         self._thinking_accum = ""
         self._thinking_flushed = False
-        # Release the reference; a new message can never be the one already
-        # reported on. (Correctness does not depend on this — identity comparison
-        # is already safe — but it keeps a finished message from being pinned.)
-        self._error_reported_message = None
+        # A new message has not been reported on yet. This is the ONLY caller of
+        # _reset_message_state (on_agent_event's ``message_start`` branch), so the
+        # flag can never survive into a message it did not come from.
+        self._outcome_reported = False
 
     def _finalize_text(self) -> None:
         if self._text_stream is not None:
@@ -458,7 +457,7 @@ class EventRenderer:
         ):
             detail = message.error_message or f"request {message.stop_reason}"
             self._commit(Text(f"✖ {detail}", style="bold red"))
-            self._error_reported_message = message
+            self._outcome_reported = True
 
     def _render_turn_abort(self, message: object) -> None:
         """Issue #133 item 2 — a user interrupt must leave a trace.
@@ -478,22 +477,56 @@ class EventRenderer:
         and, today, by nothing else — the harness never threads ``signal`` into
         ``agent_loop`` (core.py:4326-4333, loop.py:107), so no adapter can raise
         it. Normal turns carry "end_turn"/"tool_use"; provider failures carry
-        "error" and already print via ``_render_message_error``. Retry-cancel goes
-        through ``abort_retry`` and prints its own line.
+        "error" and already print via ``_render_message_error``. Cancelling the
+        retry COUNTDOWN goes through ``abort_retry`` and prints its own line;
+        the TUI routes an interrupt during the retry REQUEST to
+        ``harness.abort()`` instead, though that abort does not currently take
+        effect (see the retry note below).
 
-        The identity guard is not decoration. ``AssistantErrorEvent`` is typed
+        The dedupe guard is not decoration. ``AssistantErrorEvent`` is typed
         ``reason: Literal["aborted", "error"]``, so an adapter that starts
-        honouring a signal WOULD emit message_end(aborted) followed by
-        turn_end(aborted) carrying the same object (measured) — and both sites
-        would print. Keyed on the object, not a flag, so it cannot go stale.
+        honouring a signal WOULD emit message_end(aborted) immediately followed
+        by turn_end(aborted) for that same message — and both sites would print.
+
+        The guard is a BOOL that is cleared at both ends of the only window it
+        has to cover. An earlier version keyed on the message OBJECT and claimed
+        that "cannot go stale"; that was wrong in both directions, and both
+        failures are measured, not theoretical:
+
+        * Identity goes stale on REPLACEMENT. loop.py:396-405 identity-swaps the
+          message when a message_end handler returns a replacement, so
+          ``_render_message_error`` sees the ORIGINAL while turn_end carries the
+          REPLACEMENT — ``is`` misses and the notice prints twice.
+        * A bool cleared ONLY at message_start goes stale on the RETRY path.
+          Measured by calling ``AgentHarness.abort()`` on a real harness while an
+          auto-retry attempt was in flight, the emitted sequence is
+          message_end("error") -> turn_end("error") -> auto_retry_start ->
+          turn_start -> turn_end("aborted") with NO message_start in between, so
+          a flag left set by the failed attempt would SUPPRESS the notice.
+          Scope, honestly stated: this was reached through the programmatic
+          ``abort()`` API. From the TUI keyboard it is currently NOT reachable,
+          because interrupting an in-flight auto-retry does not abort at all
+          today (Ctrl+C x2 and Esc all measured as no-ops against a hanging
+          retry, on this build AND on the parent commit — a separate pre-existing
+          gap, not something this change introduces or fixes). So this half of
+          the guard is defensive for the keyboard path and load-bearing for the
+          programmatic one.
+
+        Hence: cleared on message_start, and CONSUMED here. The window it guards
+        is exactly the adjacent message_end -> turn_end pair, which is the only
+        shape that can double-print.
 
         Yellow, not the bold red every genuine failure uses: the whole point of
         the line is that the user can tell "I stopped it" from "it crashed".
         """
 
+        # Read-and-clear BEFORE the stop_reason check: the turn is over either
+        # way, so a flag set by this turn must never outlive it.
+        already_reported = self._outcome_reported
+        self._outcome_reported = False
         if getattr(message, "stop_reason", None) != "aborted":
             return
-        if message is self._error_reported_message:
+        if already_reported:
             return
         self._commit(Text("✖ Operation aborted", style="yellow"))
 
