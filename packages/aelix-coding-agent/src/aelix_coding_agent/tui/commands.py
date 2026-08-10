@@ -260,6 +260,15 @@ async def _model_handler(ctx: CommandContext, args: str) -> None:
     not serve; nothing downstream could catch it and the first symptom was the
     provider's ``400 … is not a valid model ID`` on the next send (#134).
 
+    A third outcome (#136): a ``<provider>/<id>`` whose id this build's catalog
+    never saw, under a provider the session IS credentialled for, resolves with a
+    ``caution``. The switch and the persist happen exactly as usual — the shape
+    round-trips through :func:`resolve_model` on the next launch — but the line
+    printed is a yellow ``⚠ switched to …``, deliberately NOT the green
+    ``model → …``. That prefix is how the tests tell a success line from
+    everything else, so reusing it would quietly disarm those assertions and make
+    an unverified id indistinguishable from a catalogued one.
+
     Defensive: degrades with a committed message (never crashes) when the
     harness lacks ``current_model`` / ``set_model``, when model resolution
     fails, or when the switch raises.
@@ -285,6 +294,9 @@ async def _model_handler(ctx: CommandContext, args: str) -> None:
     if not hasattr(ctx.harness, "set_model"):
         ctx.commit(Text("Model switching is unavailable.", style="yellow"))
         return
+    # #136 — set only on the backfill path; read at the print site below, which
+    # lives outside this try. Default None keeps every other path green.
+    caution: str | None = None
     try:
         from aelix_coding_agent.cli.runtime_bootstrap import (
             enrich_copilot_base_url,
@@ -313,6 +325,7 @@ async def _model_handler(ctx: CommandContext, args: str) -> None:
             # A registry hit is ALREADY the modify_models-injected copy, so it
             # carries the proxy-ep base_url enrich_copilot_base_url exists to add.
             model = resolution.model
+            caution = resolution.caution
         else:
             # UNDECIDED — no usable registry (headless / RPC / test doubles); the
             # interactive TUI always builds one. Unchanged launch-path resolution.
@@ -342,9 +355,23 @@ async def _model_handler(ctx: CommandContext, args: str) -> None:
             with contextlib.suppress(Exception):
                 ctx.settings_manager.set_default_model_and_provider(provider, model_id)
                 await ctx.settings_manager.flush()
-        # Name the provider: the pair is what actually switched, and a bare id
-        # made a wrong-provider resolution look identical to a right one (#134).
-        ctx.commit(Text(f"model → {model_id} ({provider})", style="green"))
+        if caution is not None:
+            # #136 — the switch is real (and persisted, so it survives restart),
+            # but the id was never in the catalog: it inherited the provider's
+            # protocol and host, nothing more. A DIFFERENT verb and a warning
+            # glyph, never "model →": that prefix is the green-success
+            # discriminator the /model tests assert on, and an unverified id must
+            # not be able to impersonate a catalogued one.
+            ctx.commit(
+                Text(
+                    f"⚠ switched to {provider}/{model_id} — {caution}",
+                    style="yellow",
+                )
+            )
+        else:
+            # Name the provider: the pair is what actually switched, and a bare id
+            # made a wrong-provider resolution look identical to a right one (#134).
+            ctx.commit(Text(f"model → {model_id} ({provider})", style="green"))
     else:
         # resolve_model returns a bare Model (empty provider) when no adapter is
         # resolvable — the switch "succeeds" but turns will fail later. Caution

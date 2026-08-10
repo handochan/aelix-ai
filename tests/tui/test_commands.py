@@ -1955,25 +1955,142 @@ def test_model_qualified_id_does_not_move_vendors(monkeypatch: Any) -> None:
     assert getattr(switched, "base_url", None) == "https://api.anthropic.com"
 
 
-def test_model_unknown_qualified_id_is_refused(monkeypatch: Any) -> None:
-    # (F2) ``openrouter/gpt-4o`` names a model OpenRouter does not serve (its id
-    # is ``openai/gpt-4o``). It used to report success on
-    # ``openrouter/openrouter/gpt-4o`` and 400 at the next send.
+def test_model_uncatalogued_qualified_id_switches_with_a_caution(
+    monkeypatch: Any,
+) -> None:
+    # (F2, REWRITTEN for #136) ``openrouter/gpt-4o`` is not in the build's
+    # OpenRouter catalog. Refusing it made every model OpenRouter shipped after
+    # this build unreachable by name (measured: 179 of 400 live ids). The prefix
+    # names a provider this session is credentialled for, which is what licenses
+    # the id, so the switch happens — but it is a CAUTION, not the green line.
     monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
     harness = _SwitchHarness()
     harness.current_model = _OPENROUTER_SONNET  # type: ignore[assignment]
     committed: list[object] = []
+    refreshed: list[int] = []
     registry = _RegistryStub([_ANTHROPIC_HAIKU, _OPENROUTER_SONNET])
 
     _run(
         "model",
-        _model_ctx(harness, committed, registry=registry),
+        _model_ctx(
+            harness,
+            committed,
+            registry=registry,
+            refresh_footer=lambda: refreshed.append(1),
+        ),
         "openrouter/gpt-4o",
+    )
+
+    assert len(harness.set_calls) == 1
+    switched = harness.set_calls[0]
+    assert getattr(switched, "provider", None) == "openrouter"
+    assert getattr(switched, "id", None) == "gpt-4o"
+    assert getattr(switched, "base_url", None) == "https://openrouter.ai/api/v1"
+    assert getattr(switched, "api", None) == "openai-completions"
+    # No invented numbers: /cost and the context meter read zero rather than
+    # confidently reporting the sibling's 256k window and $2/$8 pricing.
+    assert getattr(switched, "context_window", None) == 0
+    out = "\n".join(_render(c) for c in committed)
+    # THE POINT. ``model →`` is the green-success discriminator every other
+    # /model test asserts on; an unverified id must not be able to wear it.
+    assert "model →" not in out
+    assert "switched to openrouter/gpt-4o" in out
+    assert "not in this build's catalog" in out
+    assert refreshed == [1]  # the footer still tracks the real current model
+
+
+def test_model_uncatalogued_qualified_id_still_persists_the_pair(
+    monkeypatch: Any,
+) -> None:
+    # A caution is not a half-switch. The persisted pair round-trips through
+    # entry.py → runtime_bootstrap.resolve_model on the next launch and comes
+    # back as the SAME bare shape, so suppressing the persist would make /model
+    # behave differently from every other switch for no benefit.
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+
+    class _PersistSM:
+        def __init__(self) -> None:
+            self.persisted: list[tuple[str, str]] = []
+
+        def set_default_model_and_provider(self, provider: str, model_id: str) -> None:
+            self.persisted.append((provider, model_id))
+
+        async def flush(self) -> None:
+            return None
+
+    harness = _SwitchHarness()
+    harness.current_model = _OPENROUTER_SONNET  # type: ignore[assignment]
+    settings = _PersistSM()
+    registry = _RegistryStub([_ANTHROPIC_HAIKU, _OPENROUTER_SONNET])
+
+    _run(
+        "model",
+        _model_ctx(harness, [], settings_manager=settings, registry=registry),
+        "openrouter/brand-new-id",
+    )
+
+    assert settings.persisted == [("openrouter", "brand-new-id")]
+
+
+def test_model_uncatalogued_id_under_an_unauthed_provider_is_still_refused(
+    monkeypatch: Any,
+) -> None:
+    # #134's fence, at the handler level. Only OpenRouter is authed, and a
+    # dash-versioned ``anthropic/claude-haiku-4-5`` is NOT an OpenRouter id — the
+    # exact string that used to come back as openrouter/anthropic/claude-haiku-4-5
+    # and move the session's vendor AND credentials. The #136 hatch must not be a
+    # back door to it: no switch, no persist, no success line.
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+    harness = _SwitchHarness()
+    harness.current_model = _OPENROUTER_SONNET  # type: ignore[assignment]
+    committed: list[object] = []
+    refreshed: list[int] = []
+    registry = _RegistryStub(
+        [_ANTHROPIC_HAIKU, _OPENROUTER_SONNET], available=[_OPENROUTER_SONNET]
+    )
+
+    _run(
+        "model",
+        _model_ctx(
+            harness,
+            committed,
+            registry=registry,
+            refresh_footer=lambda: refreshed.append(1),
+        ),
+        "anthropic/claude-haiku-4-5",
+    )
+
+    assert harness.set_calls == []
+    assert refreshed == []
+    out = "\n".join(_render(c) for c in committed)
+    assert "model →" not in out
+    assert "switched to" not in out
+    assert "anthropic" in out
+    assert "/login" in out
+    # The refusal must not hand the user the misroute string to paste back.
+    assert "openrouter/anthropic/claude-haiku-4-5" not in out
+
+
+def test_model_bare_uncatalogued_id_is_still_refused(monkeypatch: Any) -> None:
+    # #134's repro verbatim, re-pinned against #136. No slash means no provider
+    # was named, so the one configured gateway must NOT volunteer itself — that
+    # "whatever I am logged in to wins" rule IS the bug.
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test")
+    harness = _SwitchHarness()
+    harness.current_model = _OPENROUTER_SONNET  # type: ignore[assignment]
+    committed: list[object] = []
+    registry = _RegistryStub([_OPENROUTER_SONNET])
+
+    _run(
+        "model",
+        _model_ctx(harness, committed, registry=registry),
+        "kimi-k3-brand-new",
     )
 
     assert harness.set_calls == []
     out = "\n".join(_render(c) for c in committed)
     assert "model →" not in out
+    assert "switched to" not in out
 
 
 def test_model_no_arg_picker_path_unchanged() -> None:
