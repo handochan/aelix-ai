@@ -339,6 +339,109 @@ async def test_a_successful_login_selects_a_runnable_model(
     assert is_runnable(chosen), f"onboarding must not hand over a dead model: {chosen}"
 
 
+async def test_the_login_command_itself_selects_a_runnable_model(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """THE regression test for the ``/login`` seam — which had NO coverage.
+
+    #23's first cut put the post-login model selection inside the onboarding
+    wrapper only. ``/login`` binds to ``_open_login`` (shell.py), and
+    ``run_login`` contains zero ``set_model`` — so a user who pressed Esc at the
+    first-run prompt and then followed the feature's OWN advice ("Still no
+    provider configured. Run /login when you're ready.") stored a key
+    successfully and still died on the next message with the verbatim original
+    error, "No provider registered for api='unknown'". A live run reproduced it.
+
+    Both existing green signals missed it because both went through the wrapper:
+    ``test_a_successful_login_selects_a_runnable_model`` above, and the live
+    onboarding run. So this test deliberately does NOT pass ``first_run_login``.
+    The wizard is reached ONLY through the ``/login`` command, exactly as a
+    returning user reaches it, and the assertions below hold only when the
+    selection lives on the login path (pi's placement:
+    ``completeProviderAuthentication`` runs on every login, not from onboarding).
+    """
+
+    auth = await _auth(tmp_path)
+    registry = ModelRegistry(auth, None)
+    assert registry.get_available() == [], "must start credential-free"
+
+    async def _fake_login(**kwargs: Any) -> None:
+        # Exactly what the API-key sub-flow does on success.
+        await kwargs["auth_storage"].set_api_key("anthropic", "sk-test")
+
+    monkeypatch.setattr(login_wizard, "run_login", _fake_login)
+
+    async with _harness_chrome() as (runtime, chrome, pipe):
+        commits = _spy_commits(chrome)
+        task = _launch(
+            runtime,
+            chrome,
+            auth_storage=auth,
+            model_registry=registry,
+            # NO first_run_login: the onboarding wrapper must never run here.
+        )
+        await _wait(lambda: chrome.app.is_running)
+        await asyncio.sleep(0.25)  # give a stray onboarding task time to mount
+        # Prove the wrapper is out of the picture, so this test cannot silently
+        # end up measuring the very path it exists to distrust.
+        assert not any("No provider credentials found" in c for c in commits), commits
+        assert runtime.harness.set_models == [], "nothing may be selected yet"
+
+        try:
+            pipe.send_text("/login\n")
+            await _wait(lambda: bool(runtime.harness.set_models))
+        finally:
+            pipe.send_text("/quit\n")
+            code = await asyncio.wait_for(task, timeout=5)
+
+    assert code == 0
+    chosen = runtime.harness.set_models[-1]
+    assert chosen.provider == "anthropic", chosen
+    from aelix_coding_agent.core.runnable_models import is_runnable
+
+    assert is_runnable(chosen), f"/login must not hand over a dead model: {chosen}"
+    assert any("model →" in c for c in commits), commits
+
+
+async def test_a_cancelled_login_command_selects_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The other half of the ``/login`` seam: Esc through the wizard writes
+    nothing, so the command must select nothing — and it must stay SILENT.
+
+    The "Still no provider configured. Run /login when you're ready." line
+    belongs to first-run onboarding; printing it in response to the user having
+    just run ``/login`` would be nonsense. This pins the split that lets the
+    selection live on the login path while the message stays in the wrapper.
+    """
+
+    auth = await _auth(tmp_path)
+    registry = ModelRegistry(auth, None)
+
+    async def _cancelled_login(**_kwargs: Any) -> None:
+        return None
+
+    monkeypatch.setattr(login_wizard, "run_login", _cancelled_login)
+
+    async with _harness_chrome() as (runtime, chrome, pipe):
+        commits = _spy_commits(chrome)
+        task = _launch(
+            runtime,
+            chrome,
+            auth_storage=auth,
+            model_registry=registry,
+        )
+        await _wait(lambda: chrome.app.is_running)
+        pipe.send_text("/login\n")
+        await asyncio.sleep(0.3)
+        pipe.send_text("/quit\n")
+        code = await asyncio.wait_for(task, timeout=5)
+
+    assert code == 0
+    assert runtime.harness.set_models == []
+    assert not any("Run /login when you're ready" in c for c in commits), commits
+
+
 async def test_a_cancelled_login_selects_nothing_and_says_so(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
