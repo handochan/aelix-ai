@@ -287,6 +287,162 @@ async def test_new_openrouter_default_resolves() -> None:
     assert (res.model.provider, res.model.id) == ("openrouter", "openai/gpt-5.4")
 
 
+# ── The refusal MESSAGE must not assume the reason ─────────────────────────
+#
+# The first version of ``_unrunnable_message`` hardcoded "no adapter". But
+# ``is_runnable`` also blocks models for MISSING CONFIG on APIs that ARE
+# registered, and measured live with only a cloudflare-ai-gateway credential the
+# first-run line read:
+#
+#   the 35 model(s) your credentials unlock (cloudflare-ai-gateway) all use the
+#   anthropic-messages, openai-completions, openai-responses API, which this
+#   build has no adapter for (supported: anthropic-messages, …,
+#   openai-completions, openai-responses)
+#
+# — the same APIs named unsupported and supported in one sentence. Versus main
+# that is an accuracy regression: main's line was vague but true.
+
+
+def _cloudflare_row() -> Model:
+    """A real cloudflare-ai-gateway shape: SUPPORTED api, templated base_url."""
+
+    return Model(
+        id="claude-3-5-haiku",
+        name="claude-3-5-haiku",
+        api="anthropic-messages",
+        provider="cloudflare-ai-gateway",
+        base_url=(
+            "https://gateway.ai.cloudflare.com/v1/{CLOUDFLARE_ACCOUNT_ID}"
+            "/{CLOUDFLARE_GATEWAY_ID}/compat"
+        ),
+    )
+
+
+@pytest.fixture
+def _no_provider_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    for var in (
+        "CLOUDFLARE_ACCOUNT_ID",
+        "CLOUDFLARE_GATEWAY_ID",
+        "GOOGLE_CLOUD_API_KEY",
+        "GOOGLE_CLOUD_PROJECT",
+        "GCLOUD_PROJECT",
+        "GOOGLE_CLOUD_LOCATION",
+    ):
+        monkeypatch.delenv(var, raising=False)
+
+
+@pytest.mark.asyncio
+async def test_config_missing_models_are_not_reported_as_adapterless(
+    _no_provider_config: None,
+) -> None:
+    """The regression this section exists for."""
+
+    res = await find_initial_model(model_registry=_reg([_cloudflare_row()]))
+    assert res.model is None
+    message = res.fallback_message or ""
+    assert "no adapter" not in message, message
+    assert "CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_GATEWAY_ID" in message
+    assert "cloudflare-ai-gateway" in message
+
+
+@pytest.mark.asyncio
+async def test_the_message_never_calls_a_supported_api_unsupported(
+    _no_provider_config: None,
+) -> None:
+    """The self-contradiction guard, stated as the invariant it is."""
+
+    blocked = [_cloudflare_row()]
+    res = await find_initial_model(model_registry=_reg(blocked))
+    message = res.fallback_message or ""
+    if "has no adapter for" in message:
+        named = message.split("has no adapter for")[0]
+        for api in REGISTERED_APIS:
+            assert api not in named, (
+                f"{api} IS registered but the message calls it unsupported: "
+                f"{message}"
+            )
+
+
+@pytest.mark.asyncio
+async def test_vertex_without_gcp_auth_names_the_gcp_variables(
+    _no_provider_config: None,
+) -> None:
+    """``google-vertex`` IS a registered api — the blocker is GCP config."""
+
+    vertex = Model(
+        id="gemini-3.1-pro-preview",
+        name="gemini-3.1-pro-preview",
+        api="google-vertex",
+        provider="google-vertex",
+        base_url="https://{location}-aiplatform.googleapis.com",
+    )
+    res = await find_initial_model(model_registry=_reg([vertex]))
+    message = res.fallback_message or ""
+    assert "no adapter" not in message, message
+    assert "GOOGLE_CLOUD_API_KEY" in message
+    assert "GOOGLE_CLOUD_LOCATION" in message
+
+
+@pytest.mark.asyncio
+async def test_a_genuinely_adapterless_api_still_says_no_adapter() -> None:
+    """The other branch: azure-openai-responses has no adapter in this build.
+
+    Its rows ALSO declare an empty ``baseUrl``, so a naive delegation would tell
+    the user to set a base URL — useless advice when the adapter does not exist.
+    ``blocked_reason`` classifies adapterlessness first for exactly this row.
+    """
+
+    azure = Model(
+        id="gpt-5.4",
+        name="gpt-5.4",
+        api="azure-openai-responses",
+        provider="azure-openai-responses",
+        base_url="",
+    )
+    res = await find_initial_model(model_registry=_reg([azure]))
+    message = res.fallback_message or ""
+    assert "azure-openai-responses API, which this build has no adapter for" in message
+    assert "declares no base URL" not in message
+
+
+@pytest.mark.asyncio
+async def test_mixed_reasons_are_reported_separately(
+    _no_provider_config: None,
+) -> None:
+    """A user with two credentials gets both obstacles, each named correctly."""
+
+    bedrock = _m("amazon-bedrock", "nova", "bedrock-converse-stream")
+    res = await find_initial_model(
+        model_registry=_reg([bedrock, _cloudflare_row()])
+    )
+    message = res.fallback_message or ""
+    assert "bedrock-converse-stream API, which this build has no adapter" in message
+    assert "CLOUDFLARE_ACCOUNT_ID" in message
+    assert "1 use the bedrock-converse-stream" in message
+    assert "1 need setup first" in message
+
+
+def test_blocked_reason_splits_the_five_cases() -> None:
+    """The classifier the message groups on, exercised directly."""
+
+    assert runnable_models.blocked_reason(
+        _m("amazon-bedrock", "nova", "bedrock-converse-stream")
+    ) == runnable_models.BLOCKED_NO_ADAPTER
+    assert runnable_models.blocked_reason(
+        _cloudflare_row()
+    ) == runnable_models.BLOCKED_CONFIG_MISSING
+    assert runnable_models.blocked_reason(
+        Model(id="x", name="x", api="unknown", provider="typo", base_url="")
+    ) == runnable_models.BLOCKED_UNRESOLVED_API
+    assert runnable_models.blocked_reason(
+        Model(id="x", name="x", api="anthropic-messages", provider="ext", base_url="")
+    ) == runnable_models.BLOCKED_NO_HOST
+    # A runnable model has no reason at all.
+    assert runnable_models.blocked_reason(
+        _m("openai", "gpt-5.4", "openai-completions")
+    ) == ""
+
+
 # ── Catalog-wide guard ─────────────────────────────────────────────────────
 
 
@@ -303,14 +459,102 @@ def test_the_adapterless_providers_have_no_runnable_row_at_all() -> None:
         )
 
 
-def test_every_other_provider_default_is_runnable() -> None:
-    """The three known-bad entries are the complete set — no silent fourth."""
+def test_exactly_three_defaults_name_an_adapterless_api() -> None:
+    """Narrow by design: this compares ``api`` against the registered set ONLY.
+
+    It proves the *adapterless* population and nothing else. It does NOT prove
+    which defaults are runnable — ``is_runnable`` blocks for missing config too,
+    which is why the test below runs the real predicate instead of this proxy.
+    Renamed from ``test_every_other_provider_default_is_runnable``, which claimed
+    a result this comparison cannot reach.
+    """
 
     catalog = _catalog()
-    broken = {
+    adapterless = {
         provider
         for provider, model_id in DEFAULT_MODEL_PER_PROVIDER.items()
         if catalog.get(provider, {}).get(model_id, {}).get("api")
         not in REGISTERED_APIS
     }
-    assert broken == {"amazon-bedrock", "azure-openai-responses", "mistral"}
+    assert adapterless == {"amazon-bedrock", "azure-openai-responses", "mistral"}
+
+
+def test_the_real_predicate_over_every_default_pins_six_unrunnable(
+    _no_provider_config: None,
+) -> None:
+    """Run ``is_runnable`` itself over all 35 defaults and pin the whole set.
+
+    Measured with the six adapters registered and provider config scrubbed from
+    the environment. SIX defaults are unrunnable, not three: the three whose api
+    has no adapter, plus three more whose api IS registered but whose required
+    configuration is absent —
+
+        google-vertex          google-vertex        no GCP auth resolvable
+        cloudflare-workers-ai  openai-completions   {CLOUDFLARE_ACCOUNT_ID}
+        cloudflare-ai-gateway  openai-completions   + {CLOUDFLARE_GATEWAY_ID}
+
+    The last three are recoverable (set the env vars and they run), which is
+    exactly why the refusal message must not call them adapterless. The first
+    three are not recoverable in this build at all.
+    """
+
+    catalog = _catalog()
+    unrunnable = {}
+    for provider, model_id in DEFAULT_MODEL_PER_PROVIDER.items():
+        row = catalog.get(provider, {}).get(model_id)
+        assert row is not None, f"{provider}/{model_id} is not in the catalog"
+        model = Model(
+            id=model_id,
+            name=model_id,
+            api=row.get("api") or "unknown",
+            provider=provider,
+            base_url=row.get("baseUrl") or "",
+        )
+        if not runnable_models.is_runnable(model):
+            unrunnable[provider] = runnable_models.blocked_reason(model)
+
+    assert unrunnable == {
+        "amazon-bedrock": runnable_models.BLOCKED_NO_ADAPTER,
+        "azure-openai-responses": runnable_models.BLOCKED_NO_ADAPTER,
+        "mistral": runnable_models.BLOCKED_NO_ADAPTER,
+        "google-vertex": runnable_models.BLOCKED_VERTEX_CONFIG,
+        "cloudflare-workers-ai": runnable_models.BLOCKED_CONFIG_MISSING,
+        "cloudflare-ai-gateway": runnable_models.BLOCKED_CONFIG_MISSING,
+    }
+    assert len(DEFAULT_MODEL_PER_PROVIDER) == 35
+
+
+def test_the_three_config_blocked_defaults_recover_once_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Proves the split is real: config-missing is a different KIND of blocked."""
+
+    monkeypatch.setenv("CLOUDFLARE_ACCOUNT_ID", "acct")
+    monkeypatch.setenv("CLOUDFLARE_GATEWAY_ID", "gw")
+    monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "proj")
+    monkeypatch.setenv("GOOGLE_CLOUD_LOCATION", "us-central1")
+
+    catalog = _catalog()
+    for provider in (
+        "cloudflare-workers-ai",
+        "cloudflare-ai-gateway",
+        "google-vertex",
+    ):
+        model_id = DEFAULT_MODEL_PER_PROVIDER[provider]
+        row = catalog[provider][model_id]
+        model = Model(
+            id=model_id, name=model_id, api=row["api"], provider=provider,
+            base_url=row.get("baseUrl") or "",
+        )
+        assert runnable_models.is_runnable(model), provider
+
+    for provider in ("amazon-bedrock", "azure-openai-responses", "mistral"):
+        model_id = DEFAULT_MODEL_PER_PROVIDER[provider]
+        row = catalog[provider][model_id]
+        model = Model(
+            id=model_id, name=model_id, api=row["api"], provider=provider,
+            base_url=row.get("baseUrl") or "",
+        )
+        assert not runnable_models.is_runnable(model), (
+            f"{provider} is adapterless; no configuration can fix it"
+        )

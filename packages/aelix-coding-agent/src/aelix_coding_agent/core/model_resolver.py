@@ -155,27 +155,92 @@ class RestoreModelResult:
 _DATE_SUFFIX_PATTERN: re.Pattern[str] = re.compile(r"-\d{8}$")
 
 
-def _no_adapter_message(blocked: list[Model]) -> str:
+def _unrunnable_message(blocked: list[Model]) -> str:
     """Explain, in the user's terms, why nothing could be auto-selected.
 
-    ``blocked`` is non-empty: the user HAS working credentials, every model they
-    unlock needs an adapter this build does not ship. Saying "no model available"
-    would be a lie — the honest statement names the api and points at the exit.
+    ``blocked`` is non-empty: the user HAS working credentials and not one of the
+    models they unlock can run. Saying "no model available" would be a lie — the
+    honest statement names the actual obstacle and points at the exit.
+
+    The first version of this function hardcoded "no adapter" as that obstacle.
+    That was an assumption, and it was wrong: ``is_runnable`` also blocks models
+    for MISSING CONFIG on APIs that ARE registered. Measured live on a fresh agent
+    dir with only a cloudflare-ai-gateway credential stored, it produced
+
+        the 35 model(s) your credentials unlock (cloudflare-ai-gateway) all use
+        the anthropic-messages, openai-completions, openai-responses API, which
+        this build has no adapter for (supported: anthropic-messages, …,
+        openai-completions, openai-responses)
+
+    — naming the same three APIs as both unsupported and supported inside one
+    sentence, on the first-run path. Versus main that is an accuracy REGRESSION:
+    main's line was vague but true. So the reason is no longer assumed. The
+    blocked set is grouped by ``runnable_models.blocked_reason`` and each group is
+    described by the function that already knows how to describe it,
+    ``runnable_models.unsupported_message`` — which distinguishes the
+    cloudflare placeholder case, the Vertex GCP case, the hostless case and the
+    unresolved-api case. The "no adapter for <api>" wording is now reserved for
+    APIs that genuinely have none.
+
+    Like ``unsupported_message`` this deliberately does NOT name ``/model``: the
+    non-interactive callers have no such command, so each caller appends its own
+    instruction.
     """
 
-    apis = sorted({str(getattr(m, "api", None) or "?") for m in blocked})
-    providers = sorted({str(getattr(m, "provider", None) or "?") for m in blocked})
-    from aelix_coding_agent.core.runnable_models import supported_apis
+    from aelix_coding_agent.core.runnable_models import (
+        BLOCKED_NO_ADAPTER,
+        blocked_reason,
+        supported_apis,
+        unsupported_message,
+    )
 
-    supported = ", ".join(sorted(supported_apis())) or "(none registered)"
-    # Mirrors ``runnable_models.unsupported_message``: a self-contained sentence
-    # that deliberately does NOT name ``/model``, because the non-interactive
-    # callers have no such command — each caller appends its own instruction.
+    total = len(blocked)
+    providers = ", ".join(
+        sorted({str(getattr(m, "provider", None) or "?") for m in blocked})
+    )
+    groups: dict[str, list[Model]] = {}
+    for model in blocked:
+        groups.setdefault(blocked_reason(model) or BLOCKED_NO_ADAPTER, []).append(
+            model
+        )
+
+    def _adapter_clause(models: list[Model]) -> str:
+        apis = ", ".join(
+            sorted({str(getattr(m, "api", None) or "?") for m in models})
+        )
+        supported = ", ".join(sorted(supported_apis())) or "(none registered)"
+        return (
+            f"use the {apis} API, which this build has no adapter for "
+            f"(supported: {supported})"
+        )
+
+    # ``unsupported_message`` describes ONE model, so it is quoted as an example
+    # rather than asserted of the whole group — two cloudflare rows can need
+    # different env vars, and claiming otherwise would repeat the original sin.
+    if len(groups) == 1:
+        reason, models = next(iter(groups.items()))
+        head = "No runnable model could be selected: "
+        if reason == BLOCKED_NO_ADAPTER:
+            return (
+                f"{head}the {total} model(s) your credentials unlock "
+                f"({providers}) all {_adapter_clause(models)}."
+            )
+        return (
+            f"{head}none of the {total} model(s) your credentials unlock "
+            f"({providers}) can run yet — for example, "
+            f"{unsupported_message(models[0])}"
+        )
+
+    clauses: list[str] = []
+    for reason, models in sorted(groups.items(), key=lambda kv: (-len(kv[1]), kv[0])):
+        if reason == BLOCKED_NO_ADAPTER:
+            clauses.append(f"{len(models)} {_adapter_clause(models)}")
+        else:
+            detail = unsupported_message(models[0]).rstrip(".")
+            clauses.append(f"{len(models)} need setup first (for example, {detail})")
     return (
-        f"No runnable model could be selected: the {len(blocked)} model(s) your "
-        f"credentials unlock ({', '.join(providers)}) all use the "
-        f"{', '.join(apis)} API, which this build has no adapter for "
-        f"(supported: {supported})."
+        f"No runnable model could be selected: none of the {total} model(s) your "
+        f"credentials unlock ({providers}) can run — " + "; ".join(clauses) + "."
     )
 
 
@@ -816,7 +881,8 @@ async def find_initial_model(
     # 6. Nothing selectable. Distinguish the two cases, because they need
     #    different actions from the user: no credentials at all (silent — the
     #    caller owns the first-run copy), versus credentials that unlock only
-    #    models this build cannot run (say so, and name the api). Deliberately
+    #    models this build cannot run (say so, and name the REAL obstacle —
+    #    which is not always a missing adapter). Deliberately
     #    NOT falling back to some unrelated provider's model: silently handing
     #    back something the user never authenticated is worse than either.
     if available_models:
@@ -827,7 +893,7 @@ async def find_initial_model(
             return InitialModelResult(
                 model=None,
                 thinking_level=DEFAULT_THINKING_LEVEL,
-                fallback_message=_no_adapter_message(blocked),
+                fallback_message=_unrunnable_message(blocked),
             )
 
     return InitialModelResult(

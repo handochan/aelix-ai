@@ -201,6 +201,57 @@ def _with_interleaved_beta(
 _NO_MAX_TOKENS_FALLBACK = 4096
 """Cap used when the catalog row declares no ``maxTokens`` at all (pre-existing)."""
 
+_UNSAT_ABSOLUTE_OUTPUT_CEILING = 32000
+"""Hard output ceiling applied to a row that declares ``maxTokens >= contextWindow``.
+
+A window-derived clamp alone is NOT enough, and that was measured, not reasoned:
+with ``context_window - prompt - margin`` as the only rule, a row declaring
+``contextWindow == maxTokens == 200000`` on claude-opus-4-7 sent
+``max_tokens=198962`` and still 400'd — "max_tokens: 198962 > 128000, which is the
+maximum allowed number of output tokens for claude-opus-4-7"
+(``req_011CduShvbmQgGfWwHPuc58Z``, 2026-08-10, live against api.anthropic.com).
+The endpoint's real ceiling there is 128000 against a 200000 window: a number that
+appears NOWHERE in the row. That is the whole point — an UNSAT row has already
+proven its ``maxTokens`` is wrong, so nothing may be derived from it, and
+``context_window`` cannot stand in for a per-model output ceiling it never encodes.
+An independent, conservative absolute is therefore required alongside the window
+arithmetic. The earlier fix passed its live proof only because the synthetic row it
+used had a 1000-token gap — smaller than :data:`OUTPUT_CAP_MARGIN_TOKENS` — so the
+margin did the work the missing ceiling should have done.
+
+Why 32000, from evidence rather than taste:
+
+1. A SATISFIABLE row's ``maxTokens`` IS the endpoint's true ceiling. Measured 5/5
+   live by sending ``catalog maxTokens + 1``: claude-opus-4-5-20251101,
+   claude-sonnet-4-5-20250929 and claude-haiku-4-5-20251001 each answered
+   "max_tokens: 64001 > 64000"; claude-opus-4-7 and claude-sonnet-4-6 each answered
+   "max_tokens: 128001 > 128000". Every 400 named exactly the catalog number. So
+   the satisfiable rows — the trustworthy ones — are direct evidence about what
+   these endpoints really allow.
+2. Across the 228 SATISFIABLE anthropic-messages rows in the bundled catalog the
+   declared ceilings run min 4000 / p10 8192 / **p25 32000** / median 64000 /
+   max 384000. 32000 is that lower quartile.
+3. 32000 is also a REAL first-party Anthropic ceiling — ``claude-opus-4-0``,
+   ``claude-opus-4-1``, ``claude-opus-4-1-20250805`` and
+   ``claude-opus-4-20250514`` each declare 32000 against a 200000 window, the
+   lowest ceiling of any Claude 4.x row. 32768, the obvious power-of-two nearby,
+   is 768 tokens ABOVE that and would still 400 on a row shaped like those — which
+   is exactly the failure mode being fixed, so the measured number wins over the
+   round one.
+
+The trade, stated plainly: on an UNSAT row an answer longer than 32000 output
+tokens is now truncated where the endpoint might have allowed more. Against that,
+an UNSAT row is already broken today — it asks for the ENTIRE window as output, so
+any endpoint that enforces a per-model output ceiling 400s it outright — and a
+conservative cap that WORKS beats a generous one that fails. Satisfiable rows are
+untouched, so no well-behaved model pays for this.
+
+What remains unverified: whether Fireworks (owner of the shipped blocker row
+``accounts/fireworks/models/kimi-k2p6``, ctx == max == 262000) enforces such a
+ceiling at all, and what its true per-model value is. Nobody here has a Fireworks
+key; the row's SHAPE was modelled against Anthropic instead.
+"""
+
 _MIN_CLAMPED_OUTPUT_TOKENS = 4096
 """Floor for a clamped cap, chosen so the thinking-budget math stays well-formed.
 
@@ -251,11 +302,23 @@ def _effective_output_cap(model: Model, context: Context) -> int:
     for openai-completions. Every satisfiable row is returned byte-identical at
     every prompt length, so nothing well-behaved changes.
 
-    In the broken branch the cap becomes ``context_window - prompt - margin``,
-    the largest value provably compatible with BOTH measured rules. The prompt
-    estimate is the shared, deliberately-high one from ``_token_estimate``
-    (reused, not re-written); over-estimating only trims a cap that was never
-    honourable anyway.
+    In the broken branch the cap becomes the SMALLER of two INDEPENDENT bounds:
+
+    * ``context_window - prompt - margin`` — what the window can still hold. The
+      prompt estimate is the shared, deliberately-high one from
+      ``_token_estimate`` (reused, not re-written); over-estimating only trims a
+      cap that was never honourable anyway.
+    * :data:`_UNSAT_ABSOLUTE_OUTPUT_CEILING` — a conservative absolute, because
+      the window bound ALONE was measured to be insufficient. A row declaring
+      ``ctx == max == 200000`` on claude-opus-4-7 clamps by the window rule to
+      198962 and still 400s; the endpoint's real ceiling is 128000, a number the
+      row does not contain anywhere. That is the crux: once a row declares
+      ``maxTokens >= contextWindow`` it has already proven its own ``maxTokens``
+      wrong, so NOTHING about the model's output ceiling may be derived from it —
+      and ``context_window`` never encoded that ceiling in the first place.
+
+    Both bounds are then lifted to :data:`_MIN_CLAMPED_OUTPUT_TOKENS` so the
+    thinking-budget math stays well-formed.
     """
 
     cap = getattr(model, "max_tokens", 0) or 0
@@ -272,7 +335,10 @@ def _effective_output_cap(model: Model, context: Context) -> int:
         + estimate_payload_tokens(getattr(context, "tools", None))
         + OUTPUT_CAP_MARGIN_TOKENS
     )
-    return max(_MIN_CLAMPED_OUTPUT_TOKENS, window - required)
+    return max(
+        _MIN_CLAMPED_OUTPUT_TOKENS,
+        min(window - required, _UNSAT_ABSOLUTE_OUTPUT_CEILING),
+    )
 
 
 async def stream_anthropic(
@@ -339,9 +405,11 @@ async def stream_anthropic(
     # replacing the ``model.max_tokens or 4096`` default.
     # #149: ``model.max_tokens`` is used verbatim only while the catalog row is
     # self-consistent. When it declares ``maxTokens >= contextWindow`` the row is
-    # broken by construction and the cap is clamped to what the window can
-    # actually hold — see :func:`_effective_output_cap` for the live measurement
-    # that chose this trigger over a blanket prompt-aware clamp.
+    # broken by construction and the cap is clamped to the smaller of what the
+    # window can hold and a conservative absolute ceiling — see
+    # :func:`_effective_output_cap` for the live measurements that chose this
+    # trigger over a blanket prompt-aware clamp, and that proved the window
+    # bound alone still 400s.
     model_output_cap = _effective_output_cap(model, context)
     default_max_tokens = (
         opts.max_tokens

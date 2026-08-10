@@ -192,6 +192,54 @@ def partition_runnable(models: Iterable[Any]) -> tuple[list[Any], list[Any]]:
     return runnable, blocked
 
 
+# Reason ids returned by :func:`blocked_reason`. They exist so a caller that has
+# to describe MANY blocked models at once (the first-run cascade) can group them
+# by *why* instead of asserting one reason for all of them.
+BLOCKED_UNRESOLVED_API = "unresolved-api"
+BLOCKED_NO_ADAPTER = "no-adapter"
+BLOCKED_VERTEX_CONFIG = "vertex-config-missing"
+BLOCKED_CONFIG_MISSING = "config-missing"
+BLOCKED_NO_HOST = "no-host"
+
+
+def blocked_reason(model: Any, apis: set[str] | None = None) -> str:
+    """Why :func:`is_runnable` rejects ``model`` — ``""`` when it does not.
+
+    :func:`is_runnable` blocks a model for FIVE distinct reasons, and only one of
+    them is "this build ships no adapter for that api". The other four are
+    required-config failures on APIs that ARE registered: unexpanded ``{ENV_VAR}``
+    base-URL placeholders (cloudflare), missing GCP auth (vertex), a hostless
+    model (#98), and an api that never resolved at all. Any caller that prints a
+    single reason for a whole SET of blocked models needs this split — otherwise
+    it names the same api as both unsupported and supported in one sentence.
+
+    Ordering differs from :func:`unsupported_message` in exactly one deliberate
+    way: an api with no registered adapter is classified BEFORE the config
+    branches, because no amount of configuration can conjure an adapter, so
+    "set CLOUDFLARE_ACCOUNT_ID" / "set a baseUrl" would be useless advice there.
+    ``azure-openai-responses`` is the live case — its rows declare an empty
+    ``baseUrl`` *and* an api this build does not implement.
+    """
+
+    apis = supported_apis() if apis is None else apis
+    if not apis or is_runnable(model, apis):
+        return ""
+    api = getattr(model, "api", None)
+    if api == _UNRESOLVED_API:
+        return BLOCKED_UNRESOLVED_API
+    if api is not None and api not in apis:
+        return BLOCKED_NO_ADAPTER
+    if _vertex_config_missing(model):
+        return BLOCKED_VERTEX_CONFIG
+    if _base_url_unconfigured(model):
+        return BLOCKED_CONFIG_MISSING
+    if _base_url_missing(model):
+        return BLOCKED_NO_HOST
+    # Unreachable via the current predicate; classified as a config problem
+    # rather than invented as an adapter problem.
+    return BLOCKED_CONFIG_MISSING
+
+
 def unsupported_message(model: Any) -> str:
     """A one-line, actionable reason a model can't run (for a committed error)."""
 
@@ -260,6 +308,12 @@ def unsupported_message(model: Any) -> str:
 
 
 __all__ = [
+    "BLOCKED_CONFIG_MISSING",
+    "BLOCKED_NO_ADAPTER",
+    "BLOCKED_NO_HOST",
+    "BLOCKED_UNRESOLVED_API",
+    "BLOCKED_VERTEX_CONFIG",
+    "blocked_reason",
     "is_runnable",
     "partition_runnable",
     "supported_apis",
