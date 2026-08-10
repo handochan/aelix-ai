@@ -58,8 +58,82 @@ AGENTS.md
 # Exported TUI session transcripts (`/export`) land in the CWD.
 aelix-session-*.html
 
-# Claude Code local settings
-.claude/settings.local.json
+# Claude Code per-checkout state (#143).
+#
+# This used to be just `.claude/settings.local.json`, with the rest of `.claude/`
+# covered by `.git/info/exclude`. That file is PER-CLONE and does not travel, so
+# the protection existed only on the machines that had already set it up — and
+# hatchling, which selects build files by honouring VCS ignore rules, had nothing
+# to go on here. A maintainer's local `uv build --sdist` at ee1623c swept
+# `.claude/worktrees/` into the tarball — complete internal working copies of this
+# repo, one directory per agent session, uncommitted work included — ready to be
+# attached to a public GitHub Release.
+#
+# HOW BIG IS A MOVING TARGET, so do not read the figures as a size. Three builds
+# of that SAME commit, same machine, measured 1,994 entries under
+# `.claude/worktrees/` in a 20,039,596-byte tarball; then 4,112 six minutes
+# later; then 7,233 in a 48,004,955-byte tarball later the same day. The commit
+# never changed — agents kept creating worktrees. Each number is a floor observed
+# at a moment, and it rises for as long as this repo is worked on by agents.
+#
+# `.claude/` is developer state, and the repo root's copy is ignored wholesale
+# (all but one file — see the exception below). Publishing is guarded
+# independently by the `exclude` blocks in every pyproject (most of
+# tests/packaging/test_build_hygiene.py deletes this file before building,
+# precisely so the excludes are what gets measured) — this rule is the belt.
+#
+# The live agent worktrees under `.claude/worktrees/` are registered in
+# `.git/worktrees/`, not by being tracked, so ignoring the directory does not
+# disturb them: `git worktree list` is unaffected.
+#
+# ONE EXCEPTION, `.claude/settings.json`: Claude Code's documented CHECKED-IN
+# team configuration (`settings.local.json` is the personal sibling and stays
+# ignored). Nothing tracks it today — `git ls-files .claude/` is empty — so this
+# breaks nothing now; it exists so that a maintainer who adds team settings
+# tomorrow does not watch git silently swallow them.
+#
+# THE FOUR LINES ARE NOT INTERCHANGEABLE. Git cannot re-include a path whose
+# parent directory is excluded, so the obvious `.claude/` + `!/.claude/settings.json`
+# does NOT work — measured, the file stays ignored by `.claude/`. The root
+# directory has to be re-admitted (`!/.claude/`), its contents re-excluded
+# (`/.claude/*`, which keeps git from descending into `worktrees/`), and only then
+# can the one file be named.
+#
+# AND EVERY ONE OF THEM IS ANCHORED, WHICH IS THE OPPOSITE OF THE `.omc` RULE
+# ABOVE — deliberately, and it cost a build to learn. The agent worktrees this
+# repo is developed in LIVE under `.claude/worktrees/`, so a build run from one
+# has `.claude` sitting in its own root path. An UNANCHORED rule naming that
+# directory therefore matches the build root itself, and hatchling responds by
+# discarding this entire file for that build: measured twice, first with
+# `.claude/` and again with `**/*/.claude/`, and both times a planted `.env.local`
+# — a file only this rule excludes, in a repo whose real `.env` holds provider
+# keys and a PyPI token — shipped into the sdist. Anchoring to `/.claude/` fixed
+# it in the same tree, same command. The cost is real and accepted: a nested
+# `packages/**/.claude/` is no longer ignored by git. It still reaches no
+# artifact, because the pyproject `exclude` lists name `.claude` unanchored and
+# those are read as build config rather than as VCS rules, so they do not trip
+# this. `.omc` can use the `**/*/` form for the same job only because nothing
+# ever builds from inside a `.omc/` directory.
+#
+# AND THE NEGATION CHANGES WHAT THE BUILD SHIPS, which is not obvious and was not
+# free. hatchling reads THIS FILE and concatenates its lines with the pyproject
+# `exclude` patterns into one gitignore spec, and in that spec a pattern matching
+# the FILE outranks a pattern matching its parent DIRECTORY no matter which came
+# later — so `!/.claude/settings.json` here beat `.claude` there, and a real
+# `uv build --sdist` shipped `.claude/settings.json` into the tarball. Every
+# pyproject `exclude` list therefore names that exact path as well. Keep the two
+# in step: a negation added here needs its counterpart there, or this file
+# quietly re-opens #143 one path at a time.
+#
+# With both in place the halves are independent again, as intended: git MAY track
+# that one file, and it still reaches no artifact.
+# tests/packaging/test_build_hygiene.py proves the second half by building with
+# this file present — the older fixtures there delete it on purpose and so cannot
+# see this interaction at all.
+/.claude/
+!/.claude/
+/.claude/*
+!/.claude/settings.json
 
 # Name-reservation build output (scripts/reserve_*_names.py) — regenerable
 /dist-reservation/

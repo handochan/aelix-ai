@@ -67,16 +67,26 @@ anyone's claim to exclusivity over the bare word, including ours.
       **unregistered**, so `Aelix™` and never `Aelix®`.
 - [x] `scripts/reserve_pypi_names.py` — builds placeholder distributions for
       `aelix`, `aelix-ai`, `aelix-agent-core`, `aelix-coding-agent`,
-      `aelix-server`. All five names are still free.
+      `aelix-server`.
 - [x] `scripts/reserve_npm_names.py` — optional defensive npm placeholders.
 
 ### Needs the owner's credentials or an account action
 
-- [ ] **Upload the PyPI placeholders.** Needs a PyPI API token. Trusted
-      Publishing cannot do this: PyPI's own docs say a pending publisher
-      *"does not create a project or reserve a project's name until it is
-      actually used to publish"*. Configuring one and stopping there leaves
+- [x] **Upload the PyPI placeholders — 4 of 5 done (2026-08-07).** Needs a PyPI
+      API token. Trusted Publishing cannot do this: PyPI's own docs say a pending
+      publisher *"does not create a project or reserve a project's name until it
+      is actually used to publish"*. Configuring one and stopping there leaves
       every name open.
+
+      Measured 2026-08-10 against pypi.org: `aelix`, `aelix-ai`,
+      `aelix-agent-core` and `aelix-coding-agent` all return HTTP 200 at
+      `0.0.0a0` — the four install-path names are claimed. **`aelix-server` still
+      returns 404**: it hit PyPI's new-project rate limit (429) on the day and the
+      retry has not been run. It is brand-defensive only, not on the install path.
+
+      ```bash
+      uv publish --token pypi-XXXX dist-reservation/aelix_server-*
+      ```
 
       ```bash
       python scripts/reserve_pypi_names.py

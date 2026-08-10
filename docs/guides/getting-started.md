@@ -41,11 +41,17 @@ Extras:
   `--print`, `--mode json`, and `--mode rpc`.
 - `images` — inline image rendering in the terminal.
 
-> **Not on PyPI yet.** `aelix` and its sibling distributions are unpublished, so
-> `pip install aelix`, `pipx install aelix` and `uv tool install aelix` all 404
-> today. Once the first GA release is published,
-> `uv tool install 'aelix[tui]'` — or the `pipx` / `pip` equivalent — will work
-> as usual. Until then, use the installer above.
+> **PyPI carries a placeholder until GA — use the installer above.** Do not
+> reach for `pip install aelix`, `pipx install aelix` or
+> `uv tool install aelix` yet. They do not fail, which is exactly the problem:
+> the distribution names are reserved by a deliberate 1.3 kB metadata-only
+> `0.0.0a0` release, so each command prints a success message and installs
+> nothing runnable — check afterwards and there is no `aelix` on your `PATH`.
+> For the whole beta, real Aelix ships only through GitHub Releases and the
+> checksum-verified installer above. The placeholder is a pre-release, so it can
+> never outrank a real one: when the first GA release is published,
+> `uv tool install 'aelix[tui]'` — or the `pipx` / `pip` equivalent — resolves it
+> and works as usual, with no change needed here.
 
 ### Upgrading and uninstalling
 

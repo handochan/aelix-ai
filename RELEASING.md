@@ -37,10 +37,21 @@ Publishing uses **PyPI Trusted Publishing** (OIDC). **No API token or password
 is stored in this repository or in GitHub secrets** — PyPI mints a short-lived
 token at publish time, scoped to this exact repository + workflow + environment.
 
-Before the **first** release you must register a *pending publisher* on PyPI for
+Before the **first** release you must register a trusted publisher on PyPI for
 **each** of the four published projects (`aelix-ai`, `aelix-agent-core`,
-`aelix-coding-agent`, `aelix`). For a brand-new project name that does not yet
-exist on PyPI, use the pending-publisher form:
+`aelix-coding-agent`, `aelix`).
+
+> **Use the per-project publisher form, not the pending-publisher form.** The
+> pending form is for names that do not exist on PyPI yet. All four of these now
+> DO exist — the Gate-0 name reservation published a metadata-only `0.0.0a0`
+> placeholder to each on 2026-08-07 (verified 2026-08-10: all four return HTTP
+> 200). Add the publisher under **Manage → *project* → Publishing** instead, and
+> use the same field values as the table below. The pending-publisher steps are
+> kept here because they still apply to any genuinely new distribution name
+> (`aelix-server` is still unpublished and would need them).
+
+For a brand-new project name that does not yet exist on PyPI, use the
+pending-publisher form:
 
 1. Sign in to <https://pypi.org/> with an account that will own the projects.
 2. Go to **Account settings → Publishing → Add a pending publisher**

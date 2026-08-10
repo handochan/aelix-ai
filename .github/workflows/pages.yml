@@ -1,5 +1,21 @@
 name: Deploy site to GitHub Pages
 
+# Third-party actions are PINNED to a commit SHA (supply-chain hardening), the
+# same policy ci.yml states and release.yml follows; the trailing comment records
+# the human-readable release tag the SHA was resolved from.
+#
+# #143 — this workflow was the last one still on floating tags (`@v4`, `@v5`,
+# `@v3`), and the most privileged: the `permissions:` block below grants
+# `pages: write` and `id-token: write`, so a compromised or retargeted tag here
+# could publish to the project's Pages site and mint an OIDC token in its name.
+# A moving tag is a mutable pointer the upstream owner (or anyone who takes over
+# their account) can repoint at any commit, without this repository changing.
+#
+# The SHAs below were resolved from the tags that were in place before the pin,
+# so this is a pin and NOT a version bump — behaviour is unchanged. Note that
+# ci.yml and release.yml are on actions/checkout v5.0.0 while this file pins the
+# v4 line it was already using; bump it deliberately, not as a side effect.
+
 on:
   push:
     branches: [main]
@@ -24,10 +40,10 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/configure-pages@v5
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5.0.0
+      - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3.0.1
         with:
           path: site
       - id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4.0.5
