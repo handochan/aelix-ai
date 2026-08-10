@@ -332,6 +332,25 @@ _KERNEL_CHANGE_ALLOWLIST = frozenset(
         # non-delegation). ``harness/core.py`` is already allowlisted above; it
         # changed again here for ``get_session_stats``'s completeness check.
         "packages/aelix-agent-core/src/aelix_agent_core/harness/_session_stats.py",
+        # ADR-0210 (above) opened ``session/entries.py`` for the four provenance
+        # fields. ADR-0211, #135 is the reason it changed AGAIN, and is recorded
+        # here because this path is ALREADY listed — so the gate would otherwise
+        # let a second, unrelated kernel change through with no written reason,
+        # which is exactly the failure the allowlist comment warns about ("a
+        # reason that is not written down is a reason that stops existing").
+        # ``_message_to_dict`` is ``asdict`` and writes every field; the
+        # field-by-field reader read back only some, so nine more values died at
+        # the reload boundary — ``ImageContent.mime_type``/``.data``,
+        # ``TextContent.text_signature``, ``ToolCallContent.thought_signature``,
+        # and ``ThinkingContent`` as a whole type (it returned as a raw dict).
+        # The image pair is real breakage rather than lost fidelity: the Read
+        # tool populates ONLY those two fields, so a resumed session re-sent an
+        # empty base64 payload and the provider answered HTTP 400. Nothing was
+        # lost on disk — the same JSONL measured 32853 bytes before and after —
+        # so 149 existing session files recover on next load with no migration.
+        # Decoding JSON into dataclasses adds no ``aelix_agents`` import, no
+        # spawn behaviour, no cap, no registry and no consent surface;
+        # ``test_kernel_has_no_subagent_surface`` still passes.
         "packages/aelix-agent-core/src/aelix_agent_core/session/entries.py",
     }
 )
