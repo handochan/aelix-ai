@@ -15,6 +15,22 @@ Proves :func:`aelix_coding_agent.core.model_argument.resolve_model_argument`:
   unreadable auth filter) → UNDECIDED, so ``/model`` keeps its previous
   behaviour instead of refusing.
 
+And the one exception carved out in #136, because the registry is a BUILD-TIME
+snapshot and a gateway model newer than the build was otherwise unreachable by
+name (measured: 179 of OpenRouter's 400 live ids are missing from it):
+
+* ``<provider>/<uncatalogued-id>`` where ``<provider>`` is in the offered pool →
+  a switch WITH ``caution`` set, carrying that provider's own unanimous
+  ``api``/``base_url`` and no invented cost/context;
+* everything that would let it become #134 again — a bare id, an unauthed or
+  allow-list-excluded prefix, a provider whose siblings disagree on ``api`` or
+  ``base_url`` — is still refused, each pinned by its own test below;
+* and everything that would make the hatch reach a model it must not: an id the
+  catalog ALREADY holds for that provider is de-scoped rather than uncatalogued,
+  so it is refused with the cause named instead of resurrected with its
+  ``context_window``/``cost`` zeroed; an id with an empty path segment
+  (``openrouter//brand-new``) is refused rather than minted as ``/brand-new``.
+
 The end-to-end handler behaviour (no switch / no persist / no success line on a
 refusal) is asserted in ``tests/tui/test_commands.py``.
 """
@@ -23,13 +39,18 @@ from __future__ import annotations
 
 from typing import Any
 
-from aelix_ai.streaming import Model
+from aelix_ai.streaming import Model, ModelCost
 from aelix_coding_agent.core.model_argument import resolve_model_argument
 
 
-def _model(provider: str, id: str, base_url: str = "https://example.invalid") -> Model:
+def _model(
+    provider: str,
+    id: str,
+    base_url: str = "https://example.invalid",
+    api: str = "anthropic-messages",
+) -> Model:
     return Model(
-        id=id, name=id, api="anthropic-messages", provider=provider, base_url=base_url
+        id=id, name=id, api=api, provider=provider, base_url=base_url
     )
 
 
@@ -40,7 +61,13 @@ OPENAI_GPT = _model("openai", "gpt-4o")
 # dash-versioned form is a different namespace (a provider/id reference), and
 # conflating the two is what kept #134 alive through the slash carve-out.
 OPENROUTER_SONNET = _model(
-    "openrouter", "anthropic/claude-sonnet-4.5", "https://openrouter.ai/api/v1"
+    "openrouter",
+    "anthropic/claude-sonnet-4.5",
+    "https://openrouter.ai/api/v1",
+    # The REAL api OpenRouter speaks (measured: all 266 catalog rows are
+    # openai-completions). It differs from every other fixture here, so a
+    # backfill that adopted the wrong provider's protocol is visible.
+    api="openai-completions",
 )
 
 
@@ -194,15 +221,268 @@ async def test_qualified_reference_gets_no_current_provider_tiebreak() -> None:
     assert "vercel-ai-gateway/anthropic/claude-sonnet-4.5" in result.error
 
 
-async def test_unknown_qualified_id_is_refused() -> None:
-    # openrouter/gpt-4o: OpenRouter serves openai/gpt-4o, not this. It used to
-    # report success on openrouter/openrouter/gpt-4o and 400 at the next send.
+async def test_uncatalogued_id_under_an_authed_provider_backfills() -> None:
+    # #136 — REWRITTEN from test_unknown_qualified_id_is_refused. The registry is
+    # a BUILD-TIME snapshot (measured: 179 of OpenRouter's 400 live ids are
+    # missing from it), so refusing every uncatalogued id made a model newer than
+    # the build unreachable by name. ``openrouter/`` NAMES a provider this session
+    # is credentialled for, which is what licenses the id — the same rule as pi's
+    # buildFallbackModel, which fires only when --provider is explicit.
     result = await resolve_model_argument(
         "openrouter/gpt-4o", registry=_Registry([OPENROUTER_SONNET, OPENAI_GPT])
     )
+    assert result.error is None
+    assert result.model is not None
+    assert result.model.provider == "openrouter"
+    assert result.model.id == "gpt-4o"
+    # It inherits the NAMED provider's protocol and host, never openai's — the
+    # two fixtures deliberately disagree on ``api``.
+    assert result.model.api == "openai-completions"
+    assert OPENAI_GPT.api == "anthropic-messages"
+    assert result.model.base_url == "https://openrouter.ai/api/v1"
+    # The caution field cannot exist before the fix, so it is what makes this
+    # test impossible to pass by accident.
+    assert result.caution is not None
+    assert "gpt-4o" in result.caution
+
+
+async def test_backfilled_model_carries_no_invented_cost_or_context() -> None:
+    # #136 SHAPE. dataclasses.replace(sibling, id=...) would inherit the
+    # sibling's context_window and per-million pricing — measured on the real
+    # catalog: 256000 tokens and $2/$8 for a model NOTHING is known about, which
+    # /cost would then report as fact. The bare shape's zeros are also exactly
+    # what the same session gets after a restart, when the persisted pair goes
+    # back through runtime_bootstrap.resolve_model, so the two paths agree.
+    rich = Model(
+        id="anthropic/claude-sonnet-4.5",
+        name="Claude Sonnet 4.5",
+        api="openai-completions",
+        provider="openrouter",
+        base_url="https://openrouter.ai/api/v1",
+        context_window=256_000,
+        max_tokens=4096,
+        cost=ModelCost(input=2.0, output=8.0),
+    )
+    result = await resolve_model_argument(
+        "openrouter/brand-new-id", registry=_Registry([rich])
+    )
+    assert result.model is not None
+    assert result.model.context_window == 0
+    assert result.model.max_tokens == 0
+    assert result.model.cost.input == 0.0
+    assert result.model.cost.output == 0.0
+
+
+async def test_qualified_id_under_an_UNAUTHED_provider_is_still_refused() -> None:
+    # #134's hard fence, and the reason the backfill keys off the POOL. The
+    # session has only OpenRouter; ``anthropic/claude-haiku-4-5`` is dash-versioned
+    # so it is NOT an OpenRouter id. Before #134 this came back as a fully-formed
+    # openrouter/anthropic/claude-haiku-4-5 — the user's own vendor and
+    # credentials swapped without being asked. The #136 backfill must NOT be a
+    # back door to that: anthropic is absent from the pool, so nothing licenses it.
+    result = await resolve_model_argument(
+        "anthropic/claude-haiku-4-5",
+        registry=_Registry(
+            [ANTHROPIC_HAIKU, OPENROUTER_SONNET], available=[OPENROUTER_SONNET]
+        ),
+    )
     assert result.model is None
     assert result.error is not None
-    assert "openrouter/gpt-4o" in result.error
+    assert "anthropic" in result.error
+    assert "/login" in result.error
+    # Belt and braces: the refusal must not have quietly produced an
+    # openrouter-scoped model under any name.
+    assert "openrouter/anthropic/claude-haiku-4-5" not in result.error
+    assert result.caution is None
+
+
+async def test_bare_uncatalogued_id_gets_no_backfill() -> None:
+    # #134's repro verbatim. No slash means no provider was named, so nothing
+    # licenses picking one — the single configured gateway must NOT volunteer.
+    # This is the rule that keeps the hatch from becoming "whatever I am logged
+    # in to wins", which is the bug itself.
+    result = await resolve_model_argument(
+        "kimi-k3-brand-new", registry=_Registry([OPENROUTER_SONNET])
+    )
+    assert result.model is None
+    assert result.error is not None
+    assert result.caution is None
+
+
+async def test_vendor_slashed_uncatalogued_id_is_refused_accepted_regression() -> None:
+    # THE ACCEPTED COST of #136, pinned so nobody "fixes" it by widening the rule.
+    # ``moonshotai`` is itself a catalogued first-party provider, so reading a
+    # known prefix as a gateway VENDOR segment would read
+    # ``anthropic/claude-haiku-4-5`` the same way — that IS #134. Separating the
+    # two needs the gateway's LIVE model list (OpenRouter really does serve
+    # moonshotai/… and really does not serve dash-versioned anthropic/…), i.e.
+    # network I/O inside /model. The user pays one extra ``openrouter/`` prefix.
+    moonshot = _model("moonshotai", "kimi-k2.6", "https://api.moonshot.ai/v1")
+    result = await resolve_model_argument(
+        "moonshotai/kimi-k3-brand-new",
+        registry=_Registry([moonshot, OPENROUTER_SONNET], available=[OPENROUTER_SONNET]),
+    )
+    assert result.model is None
+    assert result.error is not None
+    assert result.caution is None
+
+
+async def test_backfill_declines_a_provider_with_no_unanimous_api() -> None:
+    # The #98 guard, inherited from cli.runtime_bootstrap._sibling_backfill. Six
+    # catalog providers span several apis; github-copilot's catalog spans
+    # anthropic-messages + openai-completions + openai-responses, and picking the
+    # first sibling once routed a Copilot id to the ANTHROPIC adapter — whose
+    # ``base_url or None`` collapses to the SDK default host, so a Copilot OAuth
+    # bearer left the process for api.anthropic.com. Refuse rather than guess.
+    copilot_claude = _model(
+        "github-copilot", "claude-haiku-4.5", "https://api.githubcopilot.com"
+    )
+    copilot_gpt = _model(
+        "github-copilot",
+        "gpt-5.4",
+        "https://api.githubcopilot.com",
+        api="openai-responses",
+    )
+    result = await resolve_model_argument(
+        "github-copilot/gpt-5.7-brand-new",
+        registry=_Registry([copilot_claude, copilot_gpt]),
+    )
+    assert result.model is None
+    assert result.error is not None
+    assert result.caution is None
+
+
+async def test_backfill_declines_a_provider_with_no_unanimous_base_url() -> None:
+    # Stricter than _sibling_backfill, deliberately: it emits ``base_url=""`` when
+    # siblings disagree, and an empty base_url is the #98 egress shape itself
+    # (every adapter resolves ``base_url or None`` → the SDK's FIRST-PARTY host).
+    # Decline instead. amazon-bedrock is the real single-api/many-host case.
+    east = _model("amazon-bedrock", "claude-a", "https://bedrock.us-east-1.invalid")
+    west = _model("amazon-bedrock", "claude-b", "https://bedrock.us-west-2.invalid")
+    result = await resolve_model_argument(
+        "amazon-bedrock/claude-brand-new", registry=_Registry([east, west])
+    )
+    assert result.model is None
+    assert result.error is not None
+
+
+async def test_backfill_declines_a_provider_whose_siblings_declare_no_host() -> None:
+    # An extension's register_provider may omit base_url entirely (the dataclass
+    # default is ""). Unanimous, but unanimously hostless — adopting it would put
+    # that provider's credentials on the SDK default host (#98). Refuse.
+    hostless = _model("mycorp", "corp-x", "")
+    result = await resolve_model_argument(
+        "mycorp/corp-brand-new", registry=_Registry([hostless])
+    )
+    assert result.model is None
+    assert result.error is not None
+
+
+async def test_backfill_sources_siblings_from_the_REGISTRY_not_the_static_catalog() -> (
+    None
+):
+    # cli.runtime_bootstrap._sibling_backfill reads aelix_ai.models.get_models(),
+    # which knows nothing about a models.json custom provider or an extension
+    # register_provider — reusing it verbatim would make the hatch silently never
+    # fire for exactly the users who hand-configured a provider, with no error to
+    # point at. ``mycorp`` is in no static catalog, so this passes only because
+    # siblings come from the registry's own get_all().
+    corp = _model("mycorp", "corp-a", "https://llm.mycorp.invalid/v1", api="openai-completions")
+    result = await resolve_model_argument(
+        "mycorp/corp-brand-new", registry=_Registry([corp])
+    )
+    assert result.model is not None
+    assert result.model.provider == "mycorp"
+    assert result.model.id == "corp-brand-new"
+    assert result.model.api == "openai-completions"
+    assert result.model.base_url == "https://llm.mycorp.invalid/v1"
+    assert result.caution is not None
+
+
+async def test_backfill_respects_the_scoped_models_allow_list() -> None:
+    # The predicate reads the NARROWED pool, not raw has_configured_auth: an
+    # allow-list that excludes openrouter means "do not offer me this provider",
+    # and the hatch must honour that rather than route around it.
+    class _SM:
+        def get_enabled_models(self) -> list[str]:
+            return ["github-copilot/claude-haiku-4-5"]
+
+    result = await resolve_model_argument(
+        "openrouter/brand-new-id",
+        registry=_Registry([COPILOT_HAIKU, OPENROUTER_SONNET]),
+        settings_manager=_SM(),
+    )
+    assert result.model is None
+    assert result.error is not None
+
+
+async def test_backfill_does_not_resurrect_a_DE_SCOPED_model() -> None:
+    # The allow-list above excluded the PROVIDER; this one keeps openrouter and
+    # excludes only this ID. /scoped-models is a (provider, id) allow-list, so a
+    # provider-granular gate is not enough: measured on the bundled catalog, this
+    # exact shape came back backfilled with context_window 1,000,000 → 0 and cost
+    # 3.0/15.0 → 0.0, under a caution line claiming the model "is not in this
+    # build's catalog" while the catalog held full metadata for it. That silently
+    # zeroes /cost and the context meter for a real paid model.
+    #
+    # A catalogued id missing from the pool is DE-SCOPED, not uncatalogued, so it
+    # must refuse — and say which, since /login is the wrong advice here.
+    class _SM:
+        def get_enabled_models(self) -> list[str]:
+            return ["openrouter/qwen3-max"]
+
+    openrouter_qwen = _model(
+        "openrouter", "qwen3-max", "https://openrouter.ai/api/v1", api="openai-completions"
+    )
+    registry = _Registry([openrouter_qwen, OPENROUTER_SONNET])
+
+    result = await resolve_model_argument(
+        f"openrouter/{OPENROUTER_SONNET.id}", registry=registry, settings_manager=_SM()
+    )
+    assert result.model is None, "a de-scoped model must not come back"
+    assert result.caution is None
+    assert result.error is not None
+    # The cause must be named accurately: the session IS logged in to openrouter,
+    # so neither "not in the catalog" nor "run /login" is true.
+    assert "/scoped-models" in result.error
+    assert "not in this build's catalog" not in result.error
+
+    # The control: the allow-listed model still resolves, with its REAL metadata,
+    # proving the allow-list is genuinely in effect rather than empty-matched
+    # into a degrade-to-full-list.
+    kept = await resolve_model_argument(
+        "openrouter/qwen3-max", registry=registry, settings_manager=_SM()
+    )
+    assert kept.model is not None
+    assert kept.caution is None
+
+    # And the hatch itself still opens for a genuinely UNCATALOGUED id under the
+    # same narrowed allow-list — the fix must not close #136 to close this hole.
+    hatch = await resolve_model_argument(
+        "openrouter/qwen4-brand-new", registry=registry, settings_manager=_SM()
+    )
+    assert hatch.model is not None
+    assert hatch.model.id == "qwen4-brand-new"
+    assert hatch.caution is not None
+
+
+async def test_backfill_refuses_an_id_with_an_empty_path_segment() -> None:
+    # ``openrouter//brand-new`` used to mint the id ``/brand-new``: the guard
+    # checked that ``rest`` was non-empty but never that its SEGMENTS were. No
+    # provider serves such an id, and google/google-vertex interpolate model.id
+    # into a URL PATH, so this is the one malformed shape worth refusing rather
+    # than forwarding for the provider to reject.
+    registry = _Registry([OPENROUTER_SONNET])
+    for argument in (
+        "openrouter//brand-new",
+        "openrouter/brand-new/",
+        "openrouter/a//b",
+        "openrouter/ /brand-new",
+    ):
+        result = await resolve_model_argument(argument, registry=registry)
+        assert result.model is None, f"{argument!r} must not backfill"
+        assert result.caution is None
+        assert result.error is not None
 
 
 async def test_undecided_when_the_auth_filter_is_unreadable() -> None:

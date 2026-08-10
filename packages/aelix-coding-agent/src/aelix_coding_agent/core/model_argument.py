@@ -35,6 +35,36 @@ string as a bare id. So ``anthropic/claude-haiku-4-5`` finds the Anthropic model
 ``anthropic/claude-sonnet-4.5`` still resolves as an OpenRouter model when no
 Anthropic provider is available to claim it — each with its own base_url.
 
+ONE EXCEPTION, and only one (#136). The registry is a BUILD-TIME snapshot, so a
+model a gateway shipped after this build was cut is unreachable by name: measured
+against OpenRouter's live ``/v1/models``, 179 of 400 ids (45%) are absent from
+the bundled catalog. :func:`_gateway_backfill` restores the escape hatch for the
+``<provider>/<id>`` form ONLY, and only when ``<provider>`` is one this session
+has configured credentials for (it must appear in the offered pool). It then
+carries that provider's own unanimous ``api``/``base_url``.
+
+That cannot reopen #134, because the credentials used are the ones the user
+NAMED. #134 was the environment silently substituting a provider nobody asked
+for; here the prefix plays the role of ``--provider`` and no vendor is ever
+crossed. A bare id gets NO backfill — no prefix means no licence — which is why
+``claude-haiku-4-5`` on an OpenRouter-only session is still refused rather than
+becoming ``openrouter/claude-haiku-4-5``. The accepted cost is that the bare
+vendor-slashed gateway form (``moonshotai/kimi-k3-brand-new``) stays refused:
+``moonshotai`` is itself a catalogued first-party provider, so reading a known
+provider prefix as a gateway VENDOR segment would read
+``anthropic/claude-haiku-4-5`` the same way — that IS #134. Distinguishing the
+two needs the gateway's live model list, i.e. network I/O inside ``/model``, and
+is deliberately out of scope. The user pays one extra ``openrouter/`` prefix.
+
+This mirrors pi's own escape hatch, ``buildFallbackModel``
+(``model-resolver.ts:160-174``, ported at ``core/model_resolver.py:278-302``),
+which pi reaches ONLY when ``--provider`` explicitly names a provider — the same
+"an explicitly named provider licenses an uncatalogued id" rule, applied to the
+in-session command. Ours is strictly stricter: pi's does not check auth at all,
+and pi's spreads a sibling model (fabricating its context window and pricing),
+while ours builds the bare shape. pi has no in-session equivalent — its ``/model``
+miss path just reopens the picker pre-filtered (``interactive-mode.ts:3966-4005``).
+
 Degradation: no registry, an empty registry, or a failed introspection returns
 UNDECIDED so the caller keeps its previous behaviour (headless, RPC, test
 doubles). Resolution must never be the thing that breaks a session.
@@ -55,17 +85,22 @@ if TYPE_CHECKING:
 class ArgumentResolution:
     """Outcome of resolving one ``/model <argument>``.
 
-    Exactly one of three states:
+    One of four states:
 
     * ``model`` set — a scoped ``(provider, id)`` the caller should switch to;
+    * ``model`` AND ``caution`` set (#136) — switch, but the id was NOT in the
+      registry: it was backfilled from an explicitly named, credentialled
+      provider, so the caller must report it as a CAUTION rather than the green
+      success line. ``caution`` is a ready-to-print one-liner;
     * ``error`` set — an actionable refusal to commit; the caller must NOT
       switch, persist, or print success;
-    * both :data:`None` (UNDECIDED) — this module has no opinion; the caller
+    * all :data:`None` (UNDECIDED) — this module has no opinion; the caller
       falls back to :func:`aelix_coding_agent.cli.runtime_bootstrap.resolve_model`.
     """
 
     model: Model | None = None
     error: str | None = None
+    caution: str | None = None
 
 
 _UNDECIDED = ArgumentResolution()
@@ -97,6 +132,133 @@ def _candidates(models: list[Any], argument: str) -> list[Any]:
         ):
             found.append(model)
     return found
+
+
+def _is_catalogued(provider: str, model_id: str, known: list[Any]) -> bool:
+    """Does ``known`` hold ``model_id`` under exactly ``provider``?
+
+    The precise ``(provider, id)`` question, deliberately narrower than
+    :func:`_candidates`: that one case-folds three READINGS of an argument to
+    diagnose a miss, whereas this asks whether the pair the backfill is about to
+    mint already exists. Case-folded on the id only, since the catalog's provider
+    ids are canonical by construction and ``provider`` here is always one the
+    pool supplied.
+    """
+
+    wanted = model_id.lower()
+    return any(
+        (getattr(m, "provider", "") or "") == provider
+        and (getattr(m, "id", "") or "").lower() == wanted
+        for m in known
+    )
+
+
+def _gateway_backfill(
+    reference: str, pool: list[Any], known: list[Any]
+) -> Model | None:
+    """A ``<provider>/<id>`` the catalog never saw, under a CREDENTIALLED provider.
+
+    The registry is a build-time snapshot, so an id a provider shipped after this
+    build is unreachable by name (#136). This restores the escape hatch under the
+    narrowest rule that cannot become #134:
+
+    1. the argument must have a prefix — a bare id names no provider, so nothing
+       licenses guessing one (that guess IS #134);
+    2. the prefix must name a provider present in ``pool``. ``pool`` is already
+       auth-filtered (``get_available``) AND ``/scoped-models``-narrowed, so this
+       one membership test buys both gates for free and stays in lock-step with
+       what the picker offers. A provider the session cannot use, or that the
+       allow-list excluded, therefore backfills nothing;
+    3. the id must be ABSENT from ``known`` for that provider. Rule 2 is
+       provider-granular but ``/scoped-models`` is a ``(provider, id)`` allow-list,
+       so a provider can be in the pool while THIS id was excluded from it. Such
+       an id is not uncatalogued — it is catalogued-and-de-scoped, and backfilling
+       it would resurrect a model the user switched off, in the bare shape, for a
+       model whose real ``context_window``/``cost`` the catalog holds. Measured on
+       the bundled catalog: ``openrouter/anthropic/claude-sonnet-4.5`` under the
+       allow-list ``["openrouter/qwen/qwen3-max"]`` came back with
+       ``context_window`` 1,000,000 → 0 and cost 3.0/15.0 → 0.0, under a caution
+       line asserting it "is not in this build's catalog" — a statement the
+       catalog itself contradicts. #136 is about ids the catalog NEVER SAW; this
+       rule keeps the hatch to exactly those;
+    4. that provider's siblings must be UNANIMOUS on ``api`` and on a non-empty
+       ``base_url``.
+
+    Rule 4 is ``cli.runtime_bootstrap._sibling_backfill``'s rule and exists for
+    its reason: a ``siblings[0]`` guess routed a github-copilot id to the ANTHROPIC
+    adapter, and that adapter's ``base_url or None`` collapses to the SDK default
+    host — so a Copilot OAuth bearer left the process for ``api.anthropic.com``
+    (#98). Six catalog providers span several apis (github-copilot, opencode,
+    opencode-go, cloudflare-ai-gateway, fireworks, amazon-bedrock); every one of
+    them is declined here. We go further than ``_sibling_backfill`` and decline a
+    non-unanimous ``base_url`` too, rather than emitting ``base_url=""`` — an empty
+    base_url is the #98 credential-egress shape itself.
+
+    Siblings come from ``known`` (the registry's ``get_all``), NOT from
+    ``aelix_ai.models.get_models`` the way ``_sibling_backfill`` does: the static
+    catalog knows nothing about a ``models.json`` custom provider or an extension
+    ``register_provider``, so sourcing from it would make the hatch silently never
+    fire for exactly the users who hand-configured a provider. Auth is still
+    enforced against ``pool``; ``known`` only supplies the protocol/host.
+
+    Returns the BARE :class:`~aelix_ai.streaming.Model` shape — no
+    ``dataclasses.replace`` of a sibling. Measured: replacing an OpenRouter
+    sibling's id inherits ``context_window=256000`` and ``cost`` 2.0/8.0 in, for a
+    model nothing is known about, so ``/cost`` would report invented dollars
+    (regressing "report tools, stats and cost honestly"). The bare shape's zeros
+    are also exactly what the SAME session gets after a restart, when the
+    persisted pair goes back through ``runtime_bootstrap.resolve_model`` — so the
+    two paths agree instead of disagreeing by 256k tokens. The zeros do disable
+    the context meter and zero ``/cost``; the caller's caution line says so.
+    """
+
+    prefix, sep, rest = reference.partition("/")
+    if not sep or not prefix.strip():
+        return None
+    model_id = rest.strip()
+    # Every path segment must be non-empty: ``openrouter//brand-new`` would
+    # otherwise mint the id ``/brand-new``. No provider serves such an id, and
+    # google/google-vertex interpolate ``model.id`` into a URL PATH, so a
+    # segment-malformed id is the one shape worth refusing outright rather than
+    # forwarding for the provider to reject.
+    if not model_id or any(not segment.strip() for segment in model_id.split("/")):
+        return None
+
+    # Auth + allow-list gate, in the pool's own casing (provider ids are lowercase
+    # in the catalog, but a user types what they like).
+    offered = {
+        (getattr(m, "provider", "") or "").lower(): getattr(m, "provider", "")
+        for m in pool
+    }
+    canonical = offered.get(prefix.lower())
+    if not canonical:
+        return None
+
+    # Rule 3 — catalogued for this provider means DE-SCOPED, not uncatalogued.
+    # The caller turns this into a refusal that names the real cause; returning a
+    # backfill here would both resurrect the model and lie about why.
+    if _is_catalogued(canonical, model_id, known):
+        return None
+
+    siblings = [m for m in known if getattr(m, "provider", "") == canonical]
+    if not siblings:
+        return None
+    apis = {getattr(m, "api", None) for m in siblings}
+    if len(apis) != 1:
+        return None
+    api = next(iter(apis))
+    if not api or api == "unknown":
+        return None
+    base_urls = {getattr(m, "base_url", "") or "" for m in siblings}
+    if len(base_urls) != 1:
+        return None
+    base_url = next(iter(base_urls))
+    if not base_url:
+        return None
+
+    from aelix_ai.streaming import Model as _Model
+
+    return _Model(id=model_id, provider=canonical, api=api, base_url=base_url)
 
 
 async def resolve_model_argument(
@@ -135,6 +297,14 @@ async def resolve_model_argument(
     catalog serves ``gpt-5.4`` from six providers and ``anthropic/claude-sonnet-4.5``
     from two, and picking one would send that provider's credentials to whichever
     sorted first.
+
+    Last, before refusing a ``<provider>/<id>`` outright, :func:`_gateway_backfill`
+    gets a turn (#136): a build-time catalog cannot know a model released after
+    it, so an id under a provider the user NAMED and is credentialled for
+    resolves to that provider's own ``api``/``base_url`` with ``caution`` set.
+    Bare ids never reach it, and neither does an id the catalog already holds for
+    that provider — that one is DE-SCOPED rather than unknown, so it is refused
+    with the cause named instead of resurrected in a degraded shape.
     """
 
     reference = argument.strip()
@@ -192,26 +362,69 @@ async def resolve_model_argument(
             )
         )
 
+    # #136 — a `<provider>/<id>` under a provider this session IS credentialled
+    # for. Placed AFTER the ambiguity block so a genuinely multi-provider id
+    # keeps its better "name one" message, and BEFORE the diagnosis below so an
+    # explicitly named, usable provider outranks "it lives elsewhere".
+    backfilled = _gateway_backfill(reference, pool, known)
+    if backfilled is not None:
+        return ArgumentResolution(
+            model=backfilled,
+            caution=(
+                f"'{backfilled.id}' is not in this build's catalog for "
+                f"{backfilled.provider} — if the id is wrong, the provider will "
+                "reject it on the next send. Context-window and cost figures are "
+                "unknown for it, so the context meter and /cost read zero. Add it "
+                "to models.json (or /login → custom provider) to make it "
+                "first-class."
+            ),
+        )
+
     # Not offered. Distinguish "the registry has never heard of this" from "it
     # exists, but not for you right now": telling a logged-out user their id is
-    # unknown sends them to fix the wrong thing.
+    # unknown sends them to fix the wrong thing. And split that second case in
+    # two, because its two causes need OPPOSITE actions — a provider with no
+    # credentials wants /login, while a provider the session is already using
+    # means this id specifically was dropped by /scoped-models (or is not
+    # runnable here), and telling that user to log in is simply false.
+    offered_providers = {getattr(m, "provider", "") or "" for m in pool}
     elsewhere = sorted(
         {getattr(m, "provider", "") or "?" for m in _candidates(known, reference)}
     )
-    if elsewhere:
+    excluded = [p for p in elsewhere if p in offered_providers]
+    unauthed = [p for p in elsewhere if p not in offered_providers]
+    if excluded:
+        return ArgumentResolution(
+            error=(
+                f"model '{reference}' is in this build's catalog for "
+                f"{', '.join(excluded)}, which this session IS logged in to — but "
+                "the model itself is not offered here: /scoped-models excludes it, "
+                "or it is not runnable in this environment. Run /scoped-models to "
+                "re-enable it, or /model with no argument to see what is offered."
+            )
+        )
+    if unauthed:
         return ArgumentResolution(
             error=(
                 f"no model '{reference}' is available in this session — it is "
-                f"served by {', '.join(elsewhere)}, which this session has no "
+                f"served by {', '.join(unauthed)}, which this session has no "
                 "configured credentials for (or which is filtered out by "
                 "/scoped-models). Run /login, or use <provider>/<id>."
             )
         )
+    # Teach the #136 hatch by SHAPE, never by example. Naming a concrete
+    # candidate here is unsafe: for a bare ``claude-haiku-4-5`` on an
+    # OpenRouter-only session the only candidate to suggest is
+    # ``openrouter/claude-haiku-4-5``, and for ``anthropic/claude-fable-5`` it is
+    # ``openrouter/anthropic/claude-fable-5`` — i.e. the refusal would hand the
+    # user the exact string #134 is about and the backfill would then honour it.
+    # The shape alone is actionable and cannot be pasted back verbatim.
     return ArgumentResolution(
         error=(
             f"no model '{reference}' is available in this session — run /model "
-            "with no argument to pick from the available models, or use "
-            "<provider>/<id>."
+            "with no argument to pick from the available models. To use an id "
+            "this build's catalog does not know, write it as <provider>/<id> "
+            "with a provider you are logged in to."
         )
     )
 
