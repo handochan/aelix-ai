@@ -11,6 +11,17 @@ both the published wheel and the sdist. The root sdist was worse still: 51
 internal sprint plans and review memos under ``.omc/specs/``, plus ``.omc/wiki/``
 session logs, ``CLAUDE.md``, ``AGENTS.md`` and root ``aelix-session-*.html``.
 
+WHAT WENT WRONG THE SECOND TIME (#143). ``.claude/`` — where Claude Code keeps
+per-checkout state, including ``.claude/worktrees/<name>/``, a COMPLETE working
+copy of this repo per agent session — was in ``.git/info/exclude`` only. That
+file is per-clone and does not travel, so a fresh ``actions/checkout`` in CI
+never had it, every release built clean, and nobody saw the hole. A maintainer's
+local ``uv build --sdist`` at ee1623c produced a 20,039,596-byte tarball with
+3,065 entries, **1,994 of them under** ``.claude/worktrees/`` — internal working
+copies, uncommitted work included, ready to attach to a public GitHub Release.
+The first leak was found because the artifact was inspected; this one was found
+the same way. Neither was found by a test, which is why the tests below plant.
+
 WHY THIS TEST EXISTS, WHY IT PLANTS FILES, AND WHY IT DELETES ``.gitignore``.
 A test that merely builds and asserts "no ``.omc`` in the artifact" is VACUOUS on
 a clean checkout: CI's ``actions/checkout`` is a fresh clone, the scratch files
@@ -97,8 +108,16 @@ CODING_AGENT_REL = Path("packages/aelix-coding-agent/src/aelix_coding_agent")
 # leftovers that would slow the copy down without changing what is measured.
 # `__pycache__` is deliberately NOT skipped for correctness reasons — a probe one
 # is planted explicitly so its exclusion is still asserted.
+#
+# `.claude` is skipped for the same reason and one stronger (#143): on a
+# maintainer's machine it holds `.claude/worktrees/<name>/` — entire working
+# copies of this repo, one per agent session, 28 MB and growing while the suite
+# runs. Copying that per module would cost minutes and make the fixture's size
+# depend on how many agents happen to be alive. Skipping it cannot weaken the
+# assertion, because the `.claude` probes below are planted explicitly; it makes
+# the test STRONGER by fixing what is measured instead of sampling the machine.
 _COPY_SKIP = shutil.ignore_patterns(
-    ".git", ".venv", "venv", ".ruff_cache", ".pytest_cache", "__pycache__", "*.egg-info"
+    ".git", ".venv", "venv", ".ruff_cache", ".pytest_cache", "__pycache__", "*.egg-info", ".claude"
 )
 
 # Content files that MUST survive every exclusion, keyed by their in-wheel path.
@@ -114,6 +133,7 @@ REQUIRED_WHEEL_CONTENT = (
 # The exclusion patterns every build target must declare. Kept as a set so the
 # static check is order-insensitive but membership-exact.
 REQUIRED_EXCLUDES = {
+    ".claude",
     ".omc",
     "__pycache__",
     "*.pyc",
@@ -136,6 +156,25 @@ def _plant(path: Path, content: str) -> None:
     """Write a scratch file, creating parents. Only ever called inside the copy."""
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
+
+
+def _is_developer_state(name: str) -> bool:
+    """True for an archive member that is a maintainer's local state, not product.
+
+    ONE predicate for both the wheel and the sdist on purpose. It used to be the
+    same expression copy-pasted into each test, and #143 showed what that costs:
+    adding a new leaking directory means remembering to add it in two places, and
+    the half that got forgotten keeps testing green over a real leak.
+    """
+    parts = Path(name).parts
+    return (
+        ".claude" in parts
+        or ".omc" in parts
+        or "__pycache__" in parts
+        or name.endswith((".pyc", ".pyo"))
+        or Path(name).name in {"CLAUDE.md", "AGENTS.md"}
+        or (Path(name).name.startswith("aelix-session-") and name.endswith(".html"))
+    )
 
 
 def _build(args: list[str], cwd: Path, out_dir: Path) -> None:
@@ -191,6 +230,10 @@ def build_tree(tmp_path_factory: pytest.TempPathFactory) -> Path:
     _plant(pkg / "AGENTS.md", "# probe\n")
     _plant(pkg / "CLAUDE.md", "# probe\n")
     _plant(pkg / "aelix-session-packaging-probe.html", "<html></html>")
+    # #143: a nested `.claude` reaches the WHEEL, the same way the nested `.omc`
+    # did. Planted under the packaged tree so the wheel assertion is not relying
+    # on the root probes below, which only the sdist ever sees.
+    _plant(pkg / ".claude" / "settings.local.json", '{"probe": "packaging-hygiene"}')
 
     # --- repo-root scratch: what the sdist swept in.
     _plant(
@@ -201,6 +244,21 @@ def build_tree(tmp_path_factory: pytest.TempPathFactory) -> Path:
     _plant(root / "CLAUDE.md", "# probe\n")
     _plant(root / "AGENTS.md", "# probe\n")
     _plant(root / "aelix-session-packaging-probe.html", "<html></html>")
+
+    # --- #143: the repo-root `.claude/` tree, which is what the sdist swept in.
+    # `.claude/worktrees/<name>/` is a COMPLETE working copy of this repo that
+    # Claude Code checks out per agent session, so the leak is not a few stray
+    # settings files — it is the whole repository, N times over, including
+    # whatever uncommitted work those sessions are holding. Two representative
+    # files from such a copy, plus the settings file that was the only `.claude`
+    # path previously git-ignored.
+    _plant(root / ".claude" / "settings.local.json", '{"probe": "packaging-hygiene"}')
+    worktree = root / ".claude" / "worktrees" / "packaging-probe-session"
+    _plant(worktree / "pyproject.toml", '[project]\nname = "probe-working-copy"\n')
+    _plant(
+        worktree / "packages" / "aelix-coding-agent" / "src" / "probe_unreleased.py",
+        "# uncommitted work in progress, never publish\n",
+    )
     return root
 
 
@@ -215,7 +273,9 @@ def test_the_build_tree_really_has_no_gitignore_belt(build_tree: Path) -> None:
         build_tree / CODING_AGENT_REL / ".omc" / "state" / "mission-state.json",
         build_tree / CODING_AGENT_REL / "__pycache__" / "packaging_probe.cpython-311.pyc",
         build_tree / CODING_AGENT_REL / "AGENTS.md",
+        build_tree / CODING_AGENT_REL / ".claude" / "settings.local.json",
         build_tree / ".omc" / "specs" / "packaging-probe-internal-plan.md",
+        build_tree / ".claude" / "worktrees" / "packaging-probe-session" / "pyproject.toml",
         build_tree / "aelix-session-packaging-probe.html",
     ):
         assert probe.is_file(), f"scratch probe was not planted: {probe}"
@@ -250,15 +310,7 @@ def root_sdist(
 
 def test_wheel_carries_no_developer_state(coding_agent_wheel: list[str]) -> None:
     """No planted scratch file reaches the wheel."""
-    leaked = [
-        name
-        for name in coding_agent_wheel
-        if ".omc" in Path(name).parts
-        or "__pycache__" in Path(name).parts
-        or name.endswith((".pyc", ".pyo"))
-        or Path(name).name in {"CLAUDE.md", "AGENTS.md"}
-        or (Path(name).name.startswith("aelix-session-") and name.endswith(".html"))
-    ]
+    leaked = [name for name in coding_agent_wheel if _is_developer_state(name)]
     assert leaked == [], (
         "developer state leaked into the aelix-coding-agent wheel: "
         f"{leaked}\nAn `agent-replay-*.jsonl` here is maintainer transcript "
@@ -298,17 +350,10 @@ def test_sdist_carries_no_developer_state(root_sdist: list[str]) -> None:
     """No repo-root developer state reaches the sdist.
 
     The sdist default file set is the whole repo root, which made it the worse
-    leak of the two: internal sprint plans, review memos and session logs.
+    leak of the two: internal sprint plans, review memos and session logs, and
+    then (#143) whole ``.claude/worktrees/<name>/`` working copies of the repo.
     """
-    leaked = [
-        name
-        for name in root_sdist
-        if ".omc" in Path(name).parts
-        or "__pycache__" in Path(name).parts
-        or name.endswith((".pyc", ".pyo"))
-        or Path(name).name in {"CLAUDE.md", "AGENTS.md"}
-        or (Path(name).name.startswith("aelix-session-") and name.endswith(".html"))
-    ]
+    leaked = [name for name in root_sdist if _is_developer_state(name)]
     assert leaked == [], f"developer state leaked into the root sdist: {leaked}"
 
 

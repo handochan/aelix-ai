@@ -129,6 +129,7 @@ packages = ["src/aelix_coding_agent", "src/aelix_agents"]
 # place the belt suppresses the planted scratch on its own and the assertion
 # would pass with this whole list gutted. Verified: gut it and 7 paths leak.
 exclude = [
+  ".claude",
   ".omc",
   "__pycache__",
   "*.pyc",
@@ -147,6 +148,7 @@ exclude = [
 # reason these are here — the reason is that the belt is not what the packaging
 # test enforces, and a drifted .gitignore must not be able to re-open the leak.
 exclude = [
+  ".claude",
   ".omc",
   "__pycache__",
   "*.pyc",

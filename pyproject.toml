@@ -82,9 +82,21 @@ aelix = "aelix_coding_agent.cli.entry:main_sync"
 # self-extension signpost. A pattern like `*.md`, `*.toml` or `*.json` would drop
 # them silently and the installed agent would name files that are not on disk.
 # tests/packaging/test_build_hygiene.py builds for real and fails if it happens.
+#
+# #143 — `.claude` joined the list, and it is the entry with the sharpest teeth.
+# Claude Code keeps its per-checkout state under `.claude/`, including
+# `.claude/worktrees/<name>/` — FULL working copies of this repo, one per agent
+# session. Measured at ee1623c: a local `uv build --sdist` produced a 20,039,596
+# byte tarball with 3,065 entries, 1,994 of them under `.claude/worktrees/`, and
+# a rebuild six minutes later had grown to 4,112 because another session had
+# started. `.claude` was in NEITHER exclude list NOR `.gitignore` — only in
+# `.git/info/exclude`, which is per-clone and does not travel with a clone, so a
+# fresh `actions/checkout` in CI never had it and nobody noticed. It is now in
+# all three places: both exclude lists (load-bearing) and `.gitignore` (belt).
 [tool.hatch.build.targets.wheel]
 packages = ["src/aelix"]
 exclude = [
+  ".claude",
   ".omc",
   "__pycache__",
   "*.pyc",
@@ -103,6 +115,7 @@ exclude = [
 # 5.7 MB tarball that would have been attached to the GitHub release.
 [tool.hatch.build.targets.sdist]
 exclude = [
+  ".claude",
   ".omc",
   "__pycache__",
   "*.pyc",

@@ -74,6 +74,7 @@ Issues = "https://github.com/handochan/aelix-ai/issues"
 [tool.hatch.build.targets.wheel]
 packages = ["src/aelix_ai"]
 exclude = [
+    ".claude",
     ".omc",
     "__pycache__",
     "*.pyc",
@@ -87,6 +88,7 @@ exclude = [
 
 [tool.hatch.build.targets.sdist]
 exclude = [
+    ".claude",
     ".omc",
     "__pycache__",
     "*.pyc",

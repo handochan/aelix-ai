@@ -50,6 +50,7 @@ aelix-ai = { workspace = true }
 [tool.hatch.build.targets.wheel]
 packages = ["src/aelix_agent_core"]
 exclude = [
+  ".claude",
   ".omc",
   "__pycache__",
   "*.pyc",
@@ -63,6 +64,7 @@ exclude = [
 
 [tool.hatch.build.targets.sdist]
 exclude = [
+  ".claude",
   ".omc",
   "__pycache__",
   "*.pyc",
