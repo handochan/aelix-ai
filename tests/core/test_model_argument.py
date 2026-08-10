@@ -24,7 +24,12 @@ name (measured: 179 of OpenRouter's 400 live ids are missing from it):
   ``api``/``base_url`` and no invented cost/context;
 * everything that would let it become #134 again — a bare id, an unauthed or
   allow-list-excluded prefix, a provider whose siblings disagree on ``api`` or
-  ``base_url`` — is still refused, each pinned by its own test below.
+  ``base_url`` — is still refused, each pinned by its own test below;
+* and everything that would make the hatch reach a model it must not: an id the
+  catalog ALREADY holds for that provider is de-scoped rather than uncatalogued,
+  so it is refused with the cause named instead of resurrected with its
+  ``context_window``/``cost`` zeroed; an id with an empty path segment
+  (``openrouter//brand-new``) is refused rather than minted as ``/brand-new``.
 
 The end-to-end handler behaviour (no switch / no persist / no success line on a
 refusal) is asserted in ``tests/tui/test_commands.py``.
@@ -409,6 +414,75 @@ async def test_backfill_respects_the_scoped_models_allow_list() -> None:
     )
     assert result.model is None
     assert result.error is not None
+
+
+async def test_backfill_does_not_resurrect_a_DE_SCOPED_model() -> None:
+    # The allow-list above excluded the PROVIDER; this one keeps openrouter and
+    # excludes only this ID. /scoped-models is a (provider, id) allow-list, so a
+    # provider-granular gate is not enough: measured on the bundled catalog, this
+    # exact shape came back backfilled with context_window 1,000,000 → 0 and cost
+    # 3.0/15.0 → 0.0, under a caution line claiming the model "is not in this
+    # build's catalog" while the catalog held full metadata for it. That silently
+    # zeroes /cost and the context meter for a real paid model.
+    #
+    # A catalogued id missing from the pool is DE-SCOPED, not uncatalogued, so it
+    # must refuse — and say which, since /login is the wrong advice here.
+    class _SM:
+        def get_enabled_models(self) -> list[str]:
+            return ["openrouter/qwen3-max"]
+
+    openrouter_qwen = _model(
+        "openrouter", "qwen3-max", "https://openrouter.ai/api/v1", api="openai-completions"
+    )
+    registry = _Registry([openrouter_qwen, OPENROUTER_SONNET])
+
+    result = await resolve_model_argument(
+        f"openrouter/{OPENROUTER_SONNET.id}", registry=registry, settings_manager=_SM()
+    )
+    assert result.model is None, "a de-scoped model must not come back"
+    assert result.caution is None
+    assert result.error is not None
+    # The cause must be named accurately: the session IS logged in to openrouter,
+    # so neither "not in the catalog" nor "run /login" is true.
+    assert "/scoped-models" in result.error
+    assert "not in this build's catalog" not in result.error
+
+    # The control: the allow-listed model still resolves, with its REAL metadata,
+    # proving the allow-list is genuinely in effect rather than empty-matched
+    # into a degrade-to-full-list.
+    kept = await resolve_model_argument(
+        "openrouter/qwen3-max", registry=registry, settings_manager=_SM()
+    )
+    assert kept.model is not None
+    assert kept.caution is None
+
+    # And the hatch itself still opens for a genuinely UNCATALOGUED id under the
+    # same narrowed allow-list — the fix must not close #136 to close this hole.
+    hatch = await resolve_model_argument(
+        "openrouter/qwen4-brand-new", registry=registry, settings_manager=_SM()
+    )
+    assert hatch.model is not None
+    assert hatch.model.id == "qwen4-brand-new"
+    assert hatch.caution is not None
+
+
+async def test_backfill_refuses_an_id_with_an_empty_path_segment() -> None:
+    # ``openrouter//brand-new`` used to mint the id ``/brand-new``: the guard
+    # checked that ``rest`` was non-empty but never that its SEGMENTS were. No
+    # provider serves such an id, and google/google-vertex interpolate model.id
+    # into a URL PATH, so this is the one malformed shape worth refusing rather
+    # than forwarding for the provider to reject.
+    registry = _Registry([OPENROUTER_SONNET])
+    for argument in (
+        "openrouter//brand-new",
+        "openrouter/brand-new/",
+        "openrouter/a//b",
+        "openrouter/ /brand-new",
+    ):
+        result = await resolve_model_argument(argument, registry=registry)
+        assert result.model is None, f"{argument!r} must not backfill"
+        assert result.caution is None
+        assert result.error is not None
 
 
 async def test_undecided_when_the_auth_filter_is_unreadable() -> None:

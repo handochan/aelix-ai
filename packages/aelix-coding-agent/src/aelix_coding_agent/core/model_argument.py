@@ -134,6 +134,25 @@ def _candidates(models: list[Any], argument: str) -> list[Any]:
     return found
 
 
+def _is_catalogued(provider: str, model_id: str, known: list[Any]) -> bool:
+    """Does ``known`` hold ``model_id`` under exactly ``provider``?
+
+    The precise ``(provider, id)`` question, deliberately narrower than
+    :func:`_candidates`: that one case-folds three READINGS of an argument to
+    diagnose a miss, whereas this asks whether the pair the backfill is about to
+    mint already exists. Case-folded on the id only, since the catalog's provider
+    ids are canonical by construction and ``provider`` here is always one the
+    pool supplied.
+    """
+
+    wanted = model_id.lower()
+    return any(
+        (getattr(m, "provider", "") or "") == provider
+        and (getattr(m, "id", "") or "").lower() == wanted
+        for m in known
+    )
+
+
 def _gateway_backfill(
     reference: str, pool: list[Any], known: list[Any]
 ) -> Model | None:
@@ -150,10 +169,22 @@ def _gateway_backfill(
        one membership test buys both gates for free and stays in lock-step with
        what the picker offers. A provider the session cannot use, or that the
        allow-list excluded, therefore backfills nothing;
-    3. that provider's siblings must be UNANIMOUS on ``api`` and on a non-empty
+    3. the id must be ABSENT from ``known`` for that provider. Rule 2 is
+       provider-granular but ``/scoped-models`` is a ``(provider, id)`` allow-list,
+       so a provider can be in the pool while THIS id was excluded from it. Such
+       an id is not uncatalogued — it is catalogued-and-de-scoped, and backfilling
+       it would resurrect a model the user switched off, in the bare shape, for a
+       model whose real ``context_window``/``cost`` the catalog holds. Measured on
+       the bundled catalog: ``openrouter/anthropic/claude-sonnet-4.5`` under the
+       allow-list ``["openrouter/qwen/qwen3-max"]`` came back with
+       ``context_window`` 1,000,000 → 0 and cost 3.0/15.0 → 0.0, under a caution
+       line asserting it "is not in this build's catalog" — a statement the
+       catalog itself contradicts. #136 is about ids the catalog NEVER SAW; this
+       rule keeps the hatch to exactly those;
+    4. that provider's siblings must be UNANIMOUS on ``api`` and on a non-empty
        ``base_url``.
 
-    Rule 3 is ``cli.runtime_bootstrap._sibling_backfill``'s rule and exists for
+    Rule 4 is ``cli.runtime_bootstrap._sibling_backfill``'s rule and exists for
     its reason: a ``siblings[0]`` guess routed a github-copilot id to the ANTHROPIC
     adapter, and that adapter's ``base_url or None`` collapses to the SDK default
     host — so a Copilot OAuth bearer left the process for ``api.anthropic.com``
@@ -182,7 +213,15 @@ def _gateway_backfill(
     """
 
     prefix, sep, rest = reference.partition("/")
-    if not sep or not rest.strip() or not prefix.strip():
+    if not sep or not prefix.strip():
+        return None
+    model_id = rest.strip()
+    # Every path segment must be non-empty: ``openrouter//brand-new`` would
+    # otherwise mint the id ``/brand-new``. No provider serves such an id, and
+    # google/google-vertex interpolate ``model.id`` into a URL PATH, so a
+    # segment-malformed id is the one shape worth refusing outright rather than
+    # forwarding for the provider to reject.
+    if not model_id or any(not segment.strip() for segment in model_id.split("/")):
         return None
 
     # Auth + allow-list gate, in the pool's own casing (provider ids are lowercase
@@ -193,6 +232,12 @@ def _gateway_backfill(
     }
     canonical = offered.get(prefix.lower())
     if not canonical:
+        return None
+
+    # Rule 3 — catalogued for this provider means DE-SCOPED, not uncatalogued.
+    # The caller turns this into a refusal that names the real cause; returning a
+    # backfill here would both resurrect the model and lie about why.
+    if _is_catalogued(canonical, model_id, known):
         return None
 
     siblings = [m for m in known if getattr(m, "provider", "") == canonical]
@@ -213,7 +258,7 @@ def _gateway_backfill(
 
     from aelix_ai.streaming import Model as _Model
 
-    return _Model(id=rest.strip(), provider=canonical, api=api, base_url=base_url)
+    return _Model(id=model_id, provider=canonical, api=api, base_url=base_url)
 
 
 async def resolve_model_argument(
@@ -257,7 +302,9 @@ async def resolve_model_argument(
     gets a turn (#136): a build-time catalog cannot know a model released after
     it, so an id under a provider the user NAMED and is credentialled for
     resolves to that provider's own ``api``/``base_url`` with ``caution`` set.
-    Bare ids never reach it.
+    Bare ids never reach it, and neither does an id the catalog already holds for
+    that provider — that one is DE-SCOPED rather than unknown, so it is refused
+    with the cause named instead of resurrected in a degraded shape.
     """
 
     reference = argument.strip()
@@ -335,15 +382,32 @@ async def resolve_model_argument(
 
     # Not offered. Distinguish "the registry has never heard of this" from "it
     # exists, but not for you right now": telling a logged-out user their id is
-    # unknown sends them to fix the wrong thing.
+    # unknown sends them to fix the wrong thing. And split that second case in
+    # two, because its two causes need OPPOSITE actions — a provider with no
+    # credentials wants /login, while a provider the session is already using
+    # means this id specifically was dropped by /scoped-models (or is not
+    # runnable here), and telling that user to log in is simply false.
+    offered_providers = {getattr(m, "provider", "") or "" for m in pool}
     elsewhere = sorted(
         {getattr(m, "provider", "") or "?" for m in _candidates(known, reference)}
     )
-    if elsewhere:
+    excluded = [p for p in elsewhere if p in offered_providers]
+    unauthed = [p for p in elsewhere if p not in offered_providers]
+    if excluded:
+        return ArgumentResolution(
+            error=(
+                f"model '{reference}' is in this build's catalog for "
+                f"{', '.join(excluded)}, which this session IS logged in to — but "
+                "the model itself is not offered here: /scoped-models excludes it, "
+                "or it is not runnable in this environment. Run /scoped-models to "
+                "re-enable it, or /model with no argument to see what is offered."
+            )
+        )
+    if unauthed:
         return ArgumentResolution(
             error=(
                 f"no model '{reference}' is available in this session — it is "
-                f"served by {', '.join(elsewhere)}, which this session has no "
+                f"served by {', '.join(unauthed)}, which this session has no "
                 "configured credentials for (or which is filtered out by "
                 "/scoped-models). Run /login, or use <provider>/<id>."
             )
