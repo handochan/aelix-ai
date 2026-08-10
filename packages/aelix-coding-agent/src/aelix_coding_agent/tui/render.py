@@ -306,6 +306,14 @@ class EventRenderer:
         self._text_stream: StreamRenderer | None = None
         self._text_accum: str = ""
         self._thinking_accum: str = ""
+        # Issue #133 item 2 — the assistant message object ``_render_message_error``
+        # has already printed a terminal-outcome line for, kept so
+        # ``_render_turn_abort`` cannot print a SECOND line for the same message.
+        # Identity, not a bool: ``message_end`` and the ``turn_end`` that follows
+        # it carry the *same* object (measured against the real loop — loop.py:397
+        # emits message_end(final), loop.py:220 emits turn_end(message) with that
+        # same ``final``), whereas a bool would go stale across turns.
+        self._error_reported_message: object | None = None
         # /expand support (ADR-0121) — full, untruncated tool-result bodies kept
         # by sequential id so ``/expand N`` can recover the text a truncated card
         # elided. Only TRUNCATED cards get an id (that's when /expand is useful);
@@ -371,7 +379,17 @@ class EventRenderer:
             self._finalize_text()
             self._render_message_error(event.message)
         elif event.type == "turn_end":
+            # ``_finalize_text`` FIRST so the partial streamed answer is committed
+            # to scrollback before the abort notice — the notice has to read as
+            # terminating the text above it, not as a header over nothing.
             self._finalize_text()
+            # ``getattr``, not ``event.message``: this branch never touched the
+            # message before, and the renderer is a plain broadcast subscriber
+            # that is fed bare ``SimpleNamespace(type="turn_end")`` stubs (e.g.
+            # tests/tui/test_run_tui_smoke.py's refresh-generation tests). Reading
+            # the attribute unconditionally turned those into an AttributeError
+            # inside the subscriber — caught in review by the full suite.
+            self._render_turn_abort(getattr(event, "message", None))
         elif event.type == "tool_execution_start":
             self._render_tool_start(event.tool_name, event.args)
         elif event.type == "tool_execution_end":
@@ -422,6 +440,10 @@ class EventRenderer:
         self._text_accum = ""
         self._thinking_accum = ""
         self._thinking_flushed = False
+        # Release the reference; a new message can never be the one already
+        # reported on. (Correctness does not depend on this — identity comparison
+        # is already safe — but it keeps a finished message from being pinned.)
+        self._error_reported_message = None
 
     def _finalize_text(self) -> None:
         if self._text_stream is not None:
@@ -436,6 +458,44 @@ class EventRenderer:
         ):
             detail = message.error_message or f"request {message.stop_reason}"
             self._commit(Text(f"✖ {detail}", style="bold red"))
+            self._error_reported_message = message
+
+    def _render_turn_abort(self, message: object) -> None:
+        """Issue #133 item 2 — a user interrupt must leave a trace.
+
+        pi prints "Operation aborted" from its ``message_end`` handler
+        (interactive-mode.ts:2752-2757) because pi's abort is signal-based: the
+        stream returns a message with stopReason "aborted" and ``message_end``
+        fires normally on the way out (agent-loop.ts:195-199). Aelix aborts by
+        CANCELLING the turn task, and the close-out (harness/core.py:4370-4383)
+        deliberately emits ONLY ``turn_end`` + ``agent_end`` — no
+        ``message_start``/``message_end`` pair, so that abort stays off the
+        session write path. ``_render_message_error`` is message_end-only and
+        therefore never ran: the Working row simply vanished and nothing at all
+        reached scrollback.
+
+        ``stop_reason == "aborted"`` on ``turn_end`` is produced by that close-out
+        and, today, by nothing else — the harness never threads ``signal`` into
+        ``agent_loop`` (core.py:4326-4333, loop.py:107), so no adapter can raise
+        it. Normal turns carry "end_turn"/"tool_use"; provider failures carry
+        "error" and already print via ``_render_message_error``. Retry-cancel goes
+        through ``abort_retry`` and prints its own line.
+
+        The identity guard is not decoration. ``AssistantErrorEvent`` is typed
+        ``reason: Literal["aborted", "error"]``, so an adapter that starts
+        honouring a signal WOULD emit message_end(aborted) followed by
+        turn_end(aborted) carrying the same object (measured) — and both sites
+        would print. Keyed on the object, not a flag, so it cannot go stale.
+
+        Yellow, not the bold red every genuine failure uses: the whole point of
+        the line is that the user can tell "I stopped it" from "it crashed".
+        """
+
+        if getattr(message, "stop_reason", None) != "aborted":
+            return
+        if message is self._error_reported_message:
+            return
+        self._commit(Text("✖ Operation aborted", style="yellow"))
 
     def _flush_thinking(self, content: str) -> None:
         self._finalize_text()
