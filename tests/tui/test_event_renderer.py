@@ -15,6 +15,8 @@ from aelix_agent_core.types import (
     MessageUpdateEvent,
     ToolExecutionEndEvent,
     ToolExecutionStartEvent,
+    TurnEndEvent,
+    TurnStartEvent,
 )
 from aelix_ai.messages import AssistantMessage, TextContent
 from aelix_ai.streaming import (
@@ -1002,3 +1004,249 @@ def test_replay_custom_wire_dict_content_renders() -> None:
     r, commits, _t = _renderer()
     r.replay([msg])
     assert "wire-dict-line" in _committed_text(commits)
+
+
+# === Issue #133 item 2 — an interrupted turn must leave a trace =============
+#
+# The harness aborts by CANCELLING the turn task; its close-out
+# (harness/core.py:4370-4383) deliberately emits only turn_end + agent_end, with
+# no message_start/message_end pair, so ``_render_message_error`` (message_end
+# only) never ran and the interrupt reached scrollback as nothing at all.
+# pi prints "Operation aborted" from its message_end handler
+# (interactive-mode.ts:2752-2757); aelix prints the same words from turn_end
+# because that is the only event its abort path produces.
+
+
+def _abort_turn_end() -> TurnEndEvent:
+    return TurnEndEvent(
+        message=AssistantMessage(content=[], stop_reason="aborted"), tool_results=[]
+    )
+
+
+def _notice_lines(commits: list[Any]) -> list[str]:
+    return [_plain(c).strip() for c in commits if "Operation aborted" in _plain(c)]
+
+
+def _outcome_lines(commits: list[Any]) -> list[str]:
+    return [_plain(c).strip() for c in commits if "✖" in _plain(c)]
+
+
+def test_turn_end_aborted_commits_notice_after_partial_text() -> None:
+    # ORDER and COUNT both matter: the notice has to terminate the partial answer
+    # above it, so asserting only "some commit contains the string" would pass for
+    # an implementation that prints it first, or twice.
+    r, commits, _tails = _renderer()
+    r.on_agent_event(MessageStartEvent(message=AssistantMessage()))
+    for delta in ("Hello ", "world"):
+        r.on_agent_event(_msg_update(TextDeltaEvent(delta=delta)))
+    r.on_agent_event(_abort_turn_end())
+
+    assert len(commits) == 2, [_plain(c) for c in commits]
+    assert "Hello world" in _plain(commits[0])
+    assert _plain(commits[1]).strip() == "✖ Operation aborted"
+    # Yellow, NOT the bold red of a genuine failure — the point of the line is
+    # that the user can tell "I stopped it" from "it crashed".
+    assert str(commits[1].style) == "yellow"
+
+
+def test_turn_end_aborted_during_tool_execution_still_notifies() -> None:
+    # Aborting while a tool runs produces the same lone turn_end(aborted) with no
+    # streamed text. Measured shape: the tool card commits, then the notice — so
+    # the notice is the LAST commit and appears exactly once.
+    r, commits, _tails = _renderer()
+    r.on_agent_event(
+        ToolExecutionStartEvent(
+            tool_call_id="t1", tool_name="bash", args={"command": "sleep 100"}
+        )
+    )
+    r.on_agent_event(_abort_turn_end())
+
+    assert _notice_lines(commits) == ["✖ Operation aborted"]
+    assert _plain(commits[-1]).strip() == "✖ Operation aborted"
+
+
+def test_turn_end_normal_completion_commits_no_notice() -> None:
+    r, commits, _tails = _renderer()
+    r.on_agent_event(MessageStartEvent(message=AssistantMessage()))
+    r.on_agent_event(_msg_update(TextDeltaEvent(delta="done")))
+    r.on_agent_event(
+        TurnEndEvent(
+            message=AssistantMessage(content=[], stop_reason="end_turn"),
+            tool_results=[],
+        )
+    )
+
+    assert _notice_lines(commits) == []
+    assert _outcome_lines(commits) == []
+
+
+def test_message_end_and_turn_end_end_turn_commit_no_outcome_line() -> None:
+    r, commits, _tails = _renderer()
+    end = AssistantMessage(content=[], stop_reason="end_turn")
+    r.on_agent_event(MessageEndEvent(message=end))
+    r.on_agent_event(TurnEndEvent(message=end, tool_results=[]))
+
+    assert _outcome_lines(commits) == []
+
+
+def test_provider_error_commits_one_line_and_no_abort_notice() -> None:
+    # A provider failure already prints via _render_message_error. turn_end then
+    # arrives carrying the SAME message with stop_reason "error" — which must not
+    # add a second line, and must never say "aborted".
+    r, commits, _tails = _renderer()
+    failed = AssistantMessage(
+        content=[], stop_reason="error", error_message="rate limit"
+    )
+    r.on_agent_event(MessageEndEvent(message=failed))
+    r.on_agent_event(TurnEndEvent(message=failed, tool_results=[]))
+
+    assert _outcome_lines(commits) == ["✖ rate limit"]
+    assert _notice_lines(commits) == []
+
+
+def test_stream_level_abort_does_not_double_print() -> None:
+    # Latent-regression guard. ``AssistantErrorEvent`` is typed
+    # ``reason: Literal["aborted", "error"]``, so an adapter that starts honouring
+    # a signal WOULD emit message_end(aborted) followed by turn_end carrying the
+    # SAME object (measured against the real loop). Both _render_message_error and
+    # _render_turn_abort match "aborted", so without the identity guard that prints
+    # two outcome lines for one abort.
+    r, commits, _tails = _renderer()
+    aborted = AssistantMessage(content=[], stop_reason="aborted")
+    r.on_agent_event(MessageEndEvent(message=aborted))
+    r.on_agent_event(TurnEndEvent(message=aborted, tool_results=[]))
+
+    assert _outcome_lines(commits) == ["✖ request aborted"]
+
+
+def test_turn_end_without_a_message_attribute_is_tolerated() -> None:
+    # The renderer is a plain broadcast subscriber and is fed bare
+    # ``SimpleNamespace(type="turn_end")`` stubs elsewhere in the TUI tests
+    # (test_run_tui_smoke.py's refresh-generation tests). The turn_end branch
+    # never read ``event.message`` before this change, so reading it
+    # unconditionally raised AttributeError inside the subscriber.
+    from types import SimpleNamespace
+
+    r, commits, _tails = _renderer()
+    r.on_agent_event(SimpleNamespace(type="turn_end"))  # must not raise
+
+    assert _outcome_lines(commits) == []
+
+
+def test_abort_notice_still_fires_on_the_turn_after_a_reported_error() -> None:
+    # The dedupe guard must not go stale: a turn that errors, then a LATER turn
+    # that is aborted, must still print the notice.
+    r, commits, _tails = _renderer()
+    failed = AssistantMessage(content=[], stop_reason="error", error_message="boom")
+    r.on_agent_event(MessageEndEvent(message=failed))
+    r.on_agent_event(TurnEndEvent(message=failed, tool_results=[]))
+    r.on_agent_event(MessageStartEvent(message=AssistantMessage()))
+    r.on_agent_event(_abort_turn_end())
+
+    assert _notice_lines(commits) == ["✖ Operation aborted"]
+
+
+async def test_message_end_replacement_does_not_double_print() -> None:
+    """A message_end-replacing extension must not defeat the dedupe guard.
+
+    Regression test for the review's LOW on the ORIGINAL object-identity guard.
+    loop.py:396-405 identity-swaps the assistant message when a message_end
+    handler returns a replacement, so ``_render_message_error`` sees the ORIGINAL
+    object while the ``turn_end`` that follows carries the REPLACEMENT. An
+    ``is`` comparison misses and BOTH outcome lines print for one abort.
+
+    This drives the REAL ``agent_loop`` (not a hand-rolled event list) so the
+    replacement swap is performed by production code.
+    """
+    from collections.abc import AsyncIterator
+    from dataclasses import replace as dc_replace
+
+    from aelix_agent_core import (
+        AgentContext,
+        AgentLoopConfig,
+        agent_loop,
+        default_convert_to_llm,
+    )
+    from aelix_ai.messages import UserMessage
+    from aelix_ai.streaming import (
+        AssistantMessageEvent,
+        Context,
+        Model,
+        SimpleStreamOptions,
+    )
+
+    r, commits, _tails = _renderer()
+
+    async def stream_fn(
+        model: Model, context: Context, options: SimpleStreamOptions
+    ) -> AsyncIterator[AssistantMessageEvent]:
+        yield AssistantErrorEvent(
+            error=AssistantMessage(content=[], stop_reason="aborted"),
+            reason="aborted",
+        )
+
+    seen: list[tuple[str, int]] = []
+
+    async def emit(event: Any) -> Any:
+        r.on_agent_event(event)
+        message = getattr(event, "message", None)
+        if event.type in ("message_end", "turn_end"):
+            seen.append((event.type, id(message)))
+        # The extension: return a REPLACEMENT at message_end. loop.py then swaps
+        # it in, so turn_end carries a different object than message_end did.
+        if event.type == "message_end" and isinstance(message, AssistantMessage):
+            return dc_replace(message)
+        return None
+
+    await agent_loop(
+        [UserMessage(content=[TextContent(text="go")])],
+        AgentContext(),
+        AgentLoopConfig(
+            model=Model(id="mock", provider="mock"),
+            convert_to_llm=default_convert_to_llm,
+        ),
+        emit=emit,
+        stream_fn=stream_fn,
+    )
+
+    # Precondition: the replacement really did happen, i.e. message_end and
+    # turn_end carried DIFFERENT objects. Without this the test could pass
+    # trivially against a guard that never faced the swap at all.
+    assistant_ends = [i for t, i in seen if t == "message_end"]
+    turn_ends = [i for t, i in seen if t == "turn_end"]
+    assert turn_ends and assistant_ends[-1] != turn_ends[-1], seen
+
+    # Exactly ONE outcome line for one abort.
+    assert _outcome_lines(commits) == ["✖ request aborted"]
+
+
+def test_abort_notice_survives_an_aborted_retry_attempt() -> None:
+    """A bool cleared ONLY at message_start would go stale on the retry path.
+
+    Measured against the real harness (provider error -> auto-retry -> abort the
+    in-flight retry request): the emitted sequence is
+
+        message_end("error") -> turn_end("error") -> agent_end ->
+        auto_retry_start -> agent_start -> turn_start -> turn_end("aborted")
+
+    with NO message_start after the failed attempt, so a flag left set by that
+    attempt would SUPPRESS the notice.
+
+    Scope, honestly stated: that sequence was reached by calling the programmatic
+    ``AgentHarness.abort()`` while a retry attempt was in flight. From the TUI
+    keyboard it is currently NOT reachable — interrupting an in-flight auto-retry
+    does not abort at all today (measured live on this build and on the parent
+    commit alike; a separate pre-existing gap). This test therefore pins the
+    renderer contract, not a currently user-reachable keyboard bug.
+    """
+    r, commits, _tails = _renderer()
+    failed = AssistantMessage(content=[], stop_reason="error", error_message="rate limit")
+    r.on_agent_event(MessageStartEvent(message=AssistantMessage()))
+    r.on_agent_event(MessageEndEvent(message=failed))
+    r.on_agent_event(TurnEndEvent(message=failed, tool_results=[]))
+    r.on_agent_event(AgentEndEvent(messages=[]))
+    # The retry attempt: turn_start, then the abort close-out. No message_start.
+    r.on_agent_event(TurnStartEvent())
+    r.on_agent_event(_abort_turn_end())
+
+    assert _outcome_lines(commits) == ["✖ rate limit", "✖ Operation aborted"]
