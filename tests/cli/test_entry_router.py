@@ -213,6 +213,7 @@ async def test_interactive_mode_dispatches_to_run_tui(
         extensions: object = None,
         extension_errors: object = None,
         agent_service: object = None,
+        first_run_login: bool = False,
     ) -> int:
         # Sprint 6h₂₆ (ADR-0154): the real model_registry must be threaded so
         # /model can list get_available() — the harness does not expose it.
@@ -234,6 +235,11 @@ async def test_interactive_mode_dispatches_to_run_tui(
         tui_permission["auth_storage"] = auth_storage
         tui_permission["extensions"] = extensions
         tui_permission["agent_service"] = agent_service
+        # Issue #23: the first-run onboarding verdict is threaded too. Only
+        # ACCEPTED + shape-checked here (the router smoke); the predicate's own
+        # truth table and the wiring's value live in
+        # tests/cli/test_first_run_onboarding.py.
+        tui_permission["first_run_login"] = first_run_login
         return 0
 
     # WP-0 nit: capture the held permission objects entry.py constructs so we can
@@ -293,6 +299,8 @@ async def test_interactive_mode_dispatches_to_run_tui(
     # WP-8 (Feature 3): the extensions list is threaded (a list, even if empty —
     # the kwarg must always be a stable value, never None, for the viewer).
     assert isinstance(tui_permission["extensions"], list)
+    # #23: always a concrete bool — run_tui must never have to guess.
+    assert isinstance(tui_permission["first_run_login"], bool)
 
 
 async def test_auth_callback_wired_without_api_key(

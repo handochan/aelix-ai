@@ -282,6 +282,7 @@ async def run_tui(
     extensions: list[Extension] | None = None,
     extension_errors: list[Any] | None = None,
     agent_service: AgentProfileService | None = None,
+    first_run_login: bool = False,
     chrome: AelixChrome | None = None,
     install_signal_handlers: bool = True,
 ) -> int:
@@ -332,6 +333,15 @@ async def run_tui(
         degraded committed message. Threaded explicitly for the same reason as
         ``model_registry``: the harness does not — and must not — hold it.
         ADR-0196.
+    :param first_run_login: issue #23 — ``True`` when entry.py measured that NO
+        provider credential resolves from any auth layer on an interactive,
+        real-terminal, non-resuming launch (see
+        ``entry.should_offer_first_run_login``, which owns the whole decision).
+        Opens the ``/login`` wizard once, right after the banner, before the
+        input loop. The verdict is passed in rather than recomputed here because
+        it can only be judged after the harness build (extension-registered
+        providers land on the registry there) — and because the stdout-TTY arm
+        of that predicate is False under a headless test output.
     :param chrome: injectable for tests (headless pipe input + DummyOutput).
     :param install_signal_handlers: pass ``False`` when embedding (tests / a host
         that owns process signals) — mirrors ``run_rpc_mode``.
@@ -1228,6 +1238,188 @@ async def run_tui(
             settings_manager=settings_manager,
         )
 
+    async def _run_first_run_onboarding() -> None:
+        """Issue #23 — the first 60 seconds: no credentials → open ``/login``.
+
+        Runs ONCE, between the banner and the input loop, only when entry.py's
+        ``should_offer_first_run_login`` said so (interactive + a real terminal
+        on both ends + not a subagent + not resuming + no explicit model intent
+        + ``ModelRegistry.get_available()`` empty).
+
+        Three steps, because the wizard alone does NOT fix #23:
+          1. wait for the prompt_toolkit Application to actually be RUNNING;
+          2. run the wizard, then RELOAD the registry;
+          3. select a model, or say plainly that none was selected.
+
+        Step 3 is the part that makes the fix real. ``run_login`` never calls
+        ``set_model``, and ``find_initial_model`` (pi ``findInitialModel``) had
+        ZERO production callers — so a user who completed the wizard still sat
+        on the ``api="unknown"`` startup model and hit "No provider registered
+        for api='unknown'" on their very first message. Pi does the equivalent
+        after a successful login (``interactive-mode.ts:4578-4628``
+        ``completeProviderAuthentication``: refresh the registry, then pick
+        ``defaultModelPerProvider`` out of ``getAvailable`` and ``setModel``,
+        with honest failure strings each ending "Use /model to select a
+        model.") — this is that shape, reusing aelix's own port of the cascade
+        instead of a second table. See step 3 for the two divergences.
+
+        Never raises: the caller also wraps it, so no onboarding failure can
+        stop the REPL from starting.
+        """
+
+        # 1. The readiness wait. ``chrome.focus()`` swallows Exception, so a
+        #    focus attempt before the app runs fails SILENTLY: the modal would
+        #    paint and keystrokes would go nowhere. Bounded (never an unbounded
+        #    spin on a chrome that failed to start) and it falls through to a
+        #    committed hint rather than hanging the launch.
+        loop_ref = asyncio.get_running_loop()
+        deadline = loop_ref.time() + 3.0
+        while loop_ref.time() < deadline and not out_chrome.app.is_running:
+            await asyncio.sleep(0.01)
+        if not out_chrome.app.is_running:
+            _commit(
+                Text(
+                    "No provider configured. Run /login to add one.",
+                    style="yellow",
+                )
+            )
+            return
+
+        _commit(
+            Text(
+                "No provider credentials found. Let's set one up "
+                "— Esc to skip.",
+                style="cyan",
+            )
+        )
+        # Esc / Ctrl+C at ANY wizard prompt returns None and run_login returns
+        # without writing, so cancelling lands here with nothing persisted.
+        await _open_login()
+
+        # 2. Reload so an OAuth login's ``modify_models`` headers are applied
+        #    in-session (``_run_oauth`` does not reload; only the custom-provider
+        #    path does). Without this the count says "configured" while the turn
+        #    could still fail.
+        if model_registry is not None:
+            with contextlib.suppress(Exception):
+                model_registry.refresh()
+
+        available: list[Any] = []
+        if model_registry is not None:
+            with contextlib.suppress(Exception):
+                available = list(model_registry.get_available())
+        if not available:
+            _commit(
+                Text(
+                    "Still no provider configured. Run /login when you're "
+                    "ready.",
+                    style="yellow",
+                )
+            )
+            return
+
+        # 3. Close the post-login cliff. Only when the startup model is
+        #    unusable — a model that already runs is left exactly as it is.
+        #
+        #    TWO DELIBERATE DIVERGENCES from pi's
+        #    ``completeProviderAuthentication`` (verified at 734e08e,
+        #    interactive-mode.ts:4578-4628):
+        #      (a) pi's trigger is ``isUnknownModel`` — an exact triple-equality
+        #          on the ``unknown/unknown/unknown`` sentinel (:187). Ours is
+        #          ``not is_runnable``, which is strictly broader: it also
+        #          replaces a model whose ``api`` has no adapter in THIS build.
+        #          Safe here because reaching this code means the user just
+        #          told us they had no usable credentials at all.
+        #      (b) pi scopes the pick to the provider just authenticated; we
+        #          reuse ``find_initial_model``'s cascade over everything now
+        #          available. Equivalent on this path — ``get_available()`` was
+        #          empty a moment ago, so everything in it came from the
+        #          credential the wizard just stored — and it additionally
+        #          honours a saved settings default, which pi's login path
+        #          ignores.
+        from aelix_coding_agent.core.runnable_models import is_runnable
+
+        current = getattr(runtime_host.harness, "current_model", None)
+        if current is not None and is_runnable(current):
+            return
+
+        chosen = None
+        try:
+            from aelix_coding_agent.core.model_resolver import find_initial_model
+
+            default_provider = None
+            default_model_id = None
+            if settings_manager is not None:
+                with contextlib.suppress(Exception):
+                    default_provider = settings_manager.get_default_provider()
+                    default_model_id = settings_manager.get_default_model()
+            # No cli_provider/cli_model is passed: that arm of the cascade can
+            # ``sys.exit(1)`` on a bad pair, which must never happen inside a
+            # live TUI. Reaching here means the user gave no explicit model
+            # anyway (the entry.py predicate refuses when they did).
+            result = await find_initial_model(
+                default_provider=default_provider,
+                default_model_id=default_model_id,
+                model_registry=model_registry,
+            )
+            chosen = result.model
+        except Exception as exc:  # noqa: BLE001 — surface, never crash the REPL
+            _commit(
+                Text(
+                    f"Logged in, but selecting a model failed: {exc}. "
+                    "Use /model to select a model.",
+                    style="yellow",
+                )
+            )
+            return
+
+        if chosen is None or not is_runnable(chosen):
+            _commit(
+                Text(
+                    "Logged in, but no runnable model is available for that "
+                    "provider. Use /model to select a model.",
+                    style="yellow",
+                )
+            )
+            return
+        if not hasattr(runtime_host.harness, "set_model"):
+            _commit(
+                Text(
+                    "Logged in. Use /model to select a model.",
+                    style="yellow",
+                )
+            )
+            return
+        try:
+            await runtime_host.harness.set_model(chosen)
+        except Exception as exc:  # noqa: BLE001
+            _commit(
+                Text(
+                    f"Logged in, but selecting its default model failed: "
+                    f"{exc}. Use /model to select a model.",
+                    style="yellow",
+                )
+            )
+            return
+        # Persist so the pick survives restart — the same follow-through
+        # /model does (pi setModel → setDefaultModelAndProvider).
+        chosen_provider = getattr(chosen, "provider", "")
+        chosen_id = getattr(chosen, "id", "")
+        if settings_manager is not None and chosen_provider and chosen_id:
+            with contextlib.suppress(Exception):
+                settings_manager.set_default_model_and_provider(
+                    chosen_provider, chosen_id
+                )
+                await settings_manager.flush()
+        _commit(
+            Text(
+                f"model → {chosen_id or '?'}  (/model to change)",
+                style="green",
+            )
+        )
+        with contextlib.suppress(Exception):
+            context._refresh_footer()
+
     async def _open_logout() -> None:
         # WP-8 (Feature 1) — /logout: list stored credentials → picker → confirm
         # → AuthStorage.logout. Same DI module as /login; wires the live auth
@@ -2087,6 +2279,15 @@ async def run_tui(
         chrome_task = asyncio.create_task(out_chrome.run())
         pump_task = asyncio.create_task(_output_pump(output_queue, out_chrome))
         _commit(_build_banner(runtime_host.harness, cwd))
+        # Issue #23 — first-run onboarding. Straight-line and reachable from
+        # nowhere else, so it is once-per-process by construction: /new,
+        # /resume and /fork rebuild the harness but never re-enter run_tui.
+        # Nothing persists a "seen" flag either — the moment any credential
+        # exists the entry.py predicate is False forever. Suppressed so a
+        # failure here can never keep the user out of their REPL.
+        if first_run_login:
+            with contextlib.suppress(Exception):
+                await _run_first_run_onboarding()
         await _input_loop(
             runtime_host,
             out_chrome,
