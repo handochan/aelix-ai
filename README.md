@@ -72,10 +72,14 @@ rendering; empty (`AELIX_EXTRAS=`) installs the headless CLI only (print / json 
 newest release and re-runs the whole checksum-verified install (`uv tool install --force`
 makes that idempotent). To remove Aelix, `uv tool uninstall aelix`.
 
-> **Not on PyPI yet.** `aelix` and its sibling distributions are not published, so
-> `pip install aelix` / `pipx install aelix` / `uv tool install aelix` will 404 today. Once
-> the first GA release is published, `uv tool install 'aelix[tui]'` — or the `pipx` / `pip`
-> equivalent — will work as usual. Until then, use the installer above.
+> **PyPI carries a placeholder until GA — use the installer above.** `pip install aelix`,
+> `pipx install aelix` and `uv tool install aelix` do **not** fail today, and that is the
+> trap: the names are reserved by a deliberate 1.3 kB metadata-only `0.0.0a0` release, so
+> those commands report success and install nothing runnable. There is no `aelix` command
+> afterwards. Real Aelix ships through GitHub Releases and the checksum-verified installer
+> above for the whole beta. The placeholder is a pre-release, so it can never outrank the
+> real thing: once the first GA release is published, `uv tool install 'aelix[tui]'` — or
+> the `pipx` / `pip` equivalent — resolves it and works as usual.
 
 ```bash
 aelix                                            # interactive agent (TUI)

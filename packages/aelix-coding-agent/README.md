@@ -19,6 +19,11 @@ pip install 'aelix-coding-agent[tui]'     # interactive terminal shell
 pip install 'aelix-coding-agent[images]'  # inline image rendering
 ```
 
+> **During the beta those commands install a placeholder, not Aelix.** The PyPI
+> names are reserved by a metadata-only `0.0.0a0` pre-release, so `pip` reports
+> success and you get no `aelix` command. Until the first GA release, install via
+> the checksum-verified installer described in the project README.
+
 See the [project README](https://github.com/handochan/aelix-ai#readme) for
 architecture, usage, and the CLI/TUI.
 

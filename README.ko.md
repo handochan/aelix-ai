@@ -73,10 +73,14 @@ extras를 선택하세요 — 기본값은 `tui`, `tui,images`는 터미널 인�
 릴리즈를 찾아 체크섬 검증 설치를 처음부터 다시 수행합니다(`uv tool install --force`라
 재실행이 멱등입니다). 제거는 `uv tool uninstall aelix`.
 
-> **아직 PyPI에 없습니다.** `aelix` 및 형제 배포판은 게시 전이라 오늘 기준
-> `pip install aelix` / `pipx install aelix` / `uv tool install aelix`는 404입니다. 첫 GA
-> 릴리즈가 게시되면 `uv tool install 'aelix[tui]'` — 또는 `pipx`/`pip` — 를 그대로 쓸 수
-> 있게 됩니다. 그전까지는 위 인스톨러를 사용하세요.
+> **GA 전까지 PyPI에 있는 것은 자리맡기용 껍데기입니다 — 위 인스톨러를 쓰세요.**
+> `pip install aelix` / `pipx install aelix` / `uv tool install aelix`는 오늘 실패하지
+> **않습니다**. 그게 함정입니다. 이름을 선점해 두려고 올린 1.3 kB짜리 메타데이터 전용
+> `0.0.0a0` 릴리즈가 있어서, 저 명령들은 성공했다고 말해 놓고 실제로 쓸 수 있는 것은
+> 아무것도 설치하지 않습니다. 설치가 끝나도 `aelix` 명령은 없습니다. 베타 기간 내내 진짜
+> Aelix는 GitHub Releases와 위의 체크섬 검증 인스톨러로만 배포됩니다. 자리맡기 버전은
+> 사전 릴리즈(pre-release)라 진짜 릴리즈를 절대 앞지르지 못합니다 — 첫 GA가 게시되는
+> 순간부터 `uv tool install 'aelix[tui]'`(또는 `pipx`/`pip`)가 그대로 동작합니다.
 
 ```bash
 aelix                                            # 인터랙티브 에이전트 (TUI)
