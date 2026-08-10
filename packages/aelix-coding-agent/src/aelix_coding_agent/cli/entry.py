@@ -143,6 +143,92 @@ def to_print_output_mode(app_mode: AppMode) -> Literal["text", "json"]:
     return "json" if app_mode == "json" else "text"
 
 
+def should_offer_first_run_login(
+    parsed: Args,
+    app_mode: AppMode,
+    model_registry: Any,
+    *,
+    stdin_is_tty: bool,
+    stdout_is_tty: bool,
+    subagent_depth_value: int,
+) -> bool:
+    """Issue #23 — should this launch open the login wizard for a first run?
+
+    AELIX-ORIGINAL, not a pi port. Pi has NO onboarding flow: on zero
+    credentials it only refuses a NON-interactive run (``main.ts:660-663``
+    ``if (appMode !== "interactive" && !session.model)``) and its
+    ``InteractiveMode.run()`` never consults ``getAvailable()``. Aelix already
+    ports pi's headless half faithfully (the auth-guidance refusal at the
+    print/json dispatch below); this adds the interactive half pi lacks.
+
+    THE PREDICATE is ``model_registry.get_available()`` being empty — the ONE
+    call that consults every auth layer :meth:`ModelRegistry.has_configured_auth`
+    knows about:
+
+      1. ``AuthStorage._runtime_overrides``  (``--api-key``)
+      2. ``AuthStorage.has(provider)``       (auth.json: API keys AND OAuth records)
+      3. ``get_env_api_key(provider)``       (process env, read live)
+      4. ``_provider_request_configs[p].api_key``  (models.json ``apiKey`` —
+         counts even when it names an unset env var, pi parity)
+      5. ``_registered_providers[p].api_key`` / ``.oauth``  (extension /
+         issue-#77 login providers)
+      6. ``AuthStorage._fallback_resolver``
+
+    ``is_runnable(startup_model)`` is deliberately NOT the predicate. It is
+    False for a fully-configured user who merely typo'd ``--model``, and a
+    login wizard is the wrong remedy for a typo — that user wants ``/model``.
+
+    CALL ORDER IS LOAD-BEARING: the registry read must happen AFTER the harness
+    build, because ``bind_model_registry`` (inside ``_harness_factory``) is what
+    replays extension-registered providers onto the registry. Judging earlier
+    would nag an issue-#77 user with a corporate login provider on every launch.
+    This is the same hazard the #98 gate documents at its own call site.
+
+    NO ENVIRONMENT VARIABLE gates this, by design. Every ``os.environ`` read is
+    a new consumer a hostile cwd ``.env`` may try to drive; ADR-0203's argument
+    is that the dangerous set is not enumerable, so the safest new control-plane
+    name is none at all. Self-extinguishing needs no flag either: the moment any
+    credential exists this returns False forever.
+
+    Fails CLOSED — any introspection error means "do not nag".
+    """
+
+    # Cheapest, most decisive guards first; the registry read is LAST.
+    if app_mode != "interactive":
+        # --print / -p, --mode json, --mode rpc, and piped stdin all collapse
+        # here via resolve_app_mode. CI needs no separate detection: CI has no
+        # TTY stdin, so resolve_app_mode already returns "print".
+        return False
+    if not (stdin_is_tty and stdout_is_tty):
+        # resolve_app_mode only reads stdin; a redirected STDOUT is still
+        # "interactive" to it. Requiring both only ever narrows.
+        return False
+    if subagent_depth_value > 0:
+        # Belt-and-braces: delegated children are already non-interactive
+        # (profile_to_argv prefixes --mode json -p --no-session, or --mode rpc),
+        # but a subagent must never be droppable into a modal under any argv.
+        return False
+    if (
+        parsed.continue_session
+        or parsed.resume
+        or parsed.resume_id
+        or parsed.fork
+        or parsed.session
+    ):
+        # Resuming prior work is not a first run.
+        return False
+    if parsed.api_key is not None or parsed.models:
+        return False
+    if "model" in parsed.provided or "provider" in parsed.provided:
+        # Explicit model intent: the user told us what to run, so a wizard would
+        # be second-guessing them.
+        return False
+    try:
+        return not model_registry.get_available()
+    except Exception:  # noqa: BLE001 — never let introspection nag the user
+        return False
+
+
 async def _read_piped_stdin(*, required: bool = True) -> str | None:
     """Pi parity: ``readPipedStdin`` — plus an aelix-original hang guard.
 
@@ -2270,10 +2356,34 @@ async def _async_main(argv: list[str]) -> int:
     # tests reach ``_async_main`` without ``register_providers`` (that runs in
     # ``main_sync``), so this stays silent for them rather than warning falsely.
     startup_model = harness.current_model
+
+    # === First-run onboarding gate (#23) ===
+    # Judged HERE for the same reason as the #98 gate directly above: this is
+    # the first point at which ``bind_model_registry`` has replayed every
+    # extension-registered provider onto ``model_registry``, so
+    # ``get_available()`` can see all six auth layers. Anything earlier would
+    # nag an issue-#77 user on every launch.
+    offer_first_run_login = should_offer_first_run_login(
+        parsed,
+        app_mode,
+        model_registry,
+        stdin_is_tty=stdin_is_tty,
+        stdout_is_tty=sys.stdout.isatty(),
+        subagent_depth_value=subagent_depth(),
+    )
+
     if (
         app_mode == "interactive"
         and startup_model is not None
         and not is_runnable(startup_model)
+        # #23 — suppress ONLY in the zero-credential case the onboarding wizard
+        # is about to handle. Measured: this warning is written to stderr before
+        # run_tui paints, so the chrome's repaint erases it; and its "/model"
+        # advice is actively wrong when ``get_available()`` is empty (the picker
+        # would open onto nothing). It stays for the configured-but-typo'd user,
+        # who is exactly who it was written for — narrowing on
+        # ``app_mode == "interactive"`` instead would silently regress #98.
+        and not offer_first_run_login
     ):
         print(
             f"Warning: {unsupported_message(startup_model)}\n"
@@ -2316,6 +2426,11 @@ async def _async_main(argv: list[str]) -> int:
                 # ADR-0196 — the /agents service (see its construction above for
                 # why this is conditional rather than a plain kwarg).
                 **agent_service_kwarg,
+                # #23 — the verdict, decided above where every provider source
+                # is visible. The TUI owns the flow (run_login needs the LIVE
+                # dialog callables, which only exist once the chrome runs), so
+                # entry.py only ever passes the boolean.
+                first_run_login=offer_first_run_login,
             )
 
         if app_mode == "rpc":
