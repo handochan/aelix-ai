@@ -302,6 +302,23 @@ def test_kernel_has_no_subagent_surface() -> None:
 # surface — ``test_kernel_has_no_subagent_surface`` is unaffected and still passes
 # (an independent governance review confirmed the diffs carry no delegation
 # vocabulary). The single-writer lock (#46) is a follow-up and is NOT authorised here.
+#
+# ``README.md`` — ADR-0212, #144. THE ONLY DOCUMENTATION-ONLY ENTRY IN THIS LIST.
+# The file said ``pip install aelix`` with no caveat, which is false in the
+# expensive direction: measured in a clean venv, that command SUCCEEDS, installs
+# five ``aelix-0.0.0a0.dist-info/*`` files and nothing else, leaves no ``aelix``
+# executable, and ``import aelix`` then fails. It is this package's
+# ``readme = "README.md"``, i.e. its PyPI long description, so the one README
+# still carrying the false line was the one served to strangers, while its two
+# siblings had already been corrected. The text can live nowhere else.
+#
+# This gate is path-scoped with no file-type filter, so prose trips it exactly as
+# code does — which is right (a README is where delegation policy would be
+# *described*), but it means the question has to be asked rather than assumed.
+# Asked and answered: the change adds no import, no symbol, no runtime behaviour,
+# no spawn site, no cap, no consent path and no registry, and changes no byte that
+# Python parses. Delegation did not create the requirement — PyPI name reservation
+# did. ``test_kernel_has_no_subagent_surface`` is unaffected and still passes.
 _KERNEL_CHANGE_ALLOWLIST = frozenset(
     {
         "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py",
@@ -333,6 +350,8 @@ _KERNEL_CHANGE_ALLOWLIST = frozenset(
         # changed again here for ``get_session_stats``'s completeness check.
         "packages/aelix-agent-core/src/aelix_agent_core/harness/_session_stats.py",
         "packages/aelix-agent-core/src/aelix_agent_core/session/entries.py",
+        # ADR-0212, #144 — documentation only; see the note above.
+        "packages/aelix-agent-core/README.md",
     }
 )
 
