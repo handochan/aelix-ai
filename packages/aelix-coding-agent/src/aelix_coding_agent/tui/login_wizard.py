@@ -447,15 +447,25 @@ def _build_provider_labels(
     filters by case-insensitive substring over the whole label
     (``context.select``): typing ``openrouter`` must still find the row.
 
-    ``blocked`` maps provider id → ``(reason, sample_model)`` for the caller's
-    detail panel and pre-key warning. Never raises: a provider whose evaluation
-    throws is simply left unannotated.
+    That split is decided from the REASON SET (``provider_block_reasons``), not
+    from ``provider_block_reason``'s one-string summary: a provider blocked by
+    ``config-missing`` AND ``no-host`` collapses to the ``mixed`` sentinel, which
+    names neither reason, and calling it a dead end told an extension author
+    their provider was impossible when it was one env var away. The sample model
+    behind the detail panel is chosen by the same verdict, so the panel cannot
+    argue against the label above it.
+
+    ``blocked`` maps provider id → ``(reason, sample_model, recoverable)`` for
+    the caller's detail panel and pre-key warning. Never raises: a provider whose
+    evaluation throws is simply left unannotated.
     """
 
     from ..core.runnable_models import (
         is_recoverable_block,
         provider_block_hint,
         provider_block_reason,
+        provider_block_reasons,
+        provider_block_sample,
         supported_apis,
     )
 
@@ -464,22 +474,27 @@ def _build_provider_labels(
     except Exception:  # noqa: BLE001
         apis = set()
     labels: list[str] = []
-    blocked: dict[str, tuple[str, Any]] = {}
+    blocked: dict[str, tuple[str, Any, bool]] = {}
     for provider in providers:
-        reason = ""
+        reasons: frozenset[str] = frozenset()
         rows: list[Any] = []
         try:
             rows = _provider_rows(model_registry, provider)
-            reason = provider_block_reason(rows, apis)
+            reasons = provider_block_reasons(rows, apis)
         except Exception:  # noqa: BLE001 — an odd row must not hide a provider
-            reason = ""
-        if not reason or not rows:
+            reasons = frozenset()
+        if not reasons or not rows:
             labels.append(provider)
             continue
-        hint = provider_block_hint(reason, rows)
-        prefix = "needs setup" if is_recoverable_block(reason) else "unusable"
+        recoverable = is_recoverable_block(reasons)
+        hint = provider_block_hint(reasons, rows, apis)
+        prefix = "needs setup" if recoverable else "unusable"
         labels.append(f"{provider}  ({prefix}: {hint})" if hint else f"{provider}  ({prefix})")
-        blocked[provider] = (reason, rows[0])
+        blocked[provider] = (
+            provider_block_reason(rows, apis),
+            provider_block_sample(rows, recoverable, apis),
+            recoverable,
+        )
     return labels, blocked
 
 
@@ -509,7 +524,7 @@ def _accepts_detail(select: Callable[..., Awaitable[str | None]]) -> bool:
 
 
 def _make_block_detail(
-    providers: list[str], blocked: dict[str, tuple[str, Any]]
+    providers: list[str], blocked: dict[str, tuple[str, Any, bool]]
 ) -> Callable[[int], list[str]] | None:
     """A ``select(detail=…)`` callback showing the FULL reason for a blocked row.
 
@@ -608,15 +623,21 @@ async def _run_api_key(
     # Issue #151: say it BEFORE the key is typed, not after it is stored. The key
     # prompt still runs — a recoverable provider genuinely needs the key too, and
     # refusing to store one would be a second way to strand the user.
+    #
+    # The summary branches on the same verdict the LABEL did. "cannot run in this
+    # build" is a statement about the BUILD, and printing it over a provider whose
+    # blocker is local configuration re-merged the two categories this flow exists
+    # to keep apart — under a row that itself read "(needs setup: set
+    # CLOUDFLARE_ACCOUNT_ID)". "in this build" is now reserved for the dead ends.
     entry = blocked.get(provider)
     if entry is not None:
         from ..core.runnable_models import blocked_message
 
         rows = _provider_rows(model_registry, provider)
+        tail = "can run until it is configured" if entry[2] else "can run in this build"
         commit(
             Text(
-                f"! {provider}: none of its {len(rows)} catalog model(s) can run "
-                "in this build.",
+                f"! {provider}: none of its {len(rows)} catalog model(s) {tail}.",
                 style="yellow",
             )
         )

@@ -203,9 +203,14 @@ BLOCKED_NO_HOST = "no-host"
 
 # Returned by :func:`provider_block_reason` when EVERY model of a provider is
 # blocked but NOT all for the same reason. There is no such provider in the
-# bundled catalog today (each of the five blocked ones is unanimous), but an
+# bundled catalog today (each of the six blocked ones is unanimous), but an
 # extension that registers a mixed bag would otherwise force a caller to assert
 # one reason for models that do not share it.
+#
+# It is a SUMMARY, not a reason: it names none of the reasons it stands for, so
+# nothing about the provider can be decided from it. A caller that has to decide
+# something — the ``/login`` label, say — must read
+# :func:`provider_block_reasons` instead. It is never a MEMBER of that set.
 BLOCKED_MIXED = "mixed"
 
 # The reason ids the USER can act on. The other two are dead ends: no amount of
@@ -261,8 +266,10 @@ def blocked_reason(model: Any, apis: set[str] | None = None) -> str:
     return BLOCKED_CONFIG_MISSING
 
 
-def provider_block_reason(models: Iterable[Any], apis: set[str] | None = None) -> str:
-    """Why NOTHING a provider offers can run — ``""`` when something can (#151).
+def provider_block_reasons(
+    models: Iterable[Any], apis: set[str] | None = None
+) -> frozenset[str]:
+    """EVERY distinct reason a provider's models are blocked — empty when one runs.
 
     :func:`blocked_reason` answers for one model; the ``/login`` provider picker
     has to answer for a whole provider BEFORE any credential exists, so it can
@@ -270,59 +277,188 @@ def provider_block_reason(models: Iterable[Any], apis: set[str] | None = None) -
     is answerable pre-login precisely because :func:`is_runnable` is
     credential-blind: it tests adapter registration and base-URL/GCP config only.
 
+    This is the LOSSLESS form, and the one any caller that has to DECIDE
+    something must use. :func:`provider_block_reason` collapses this set to a
+    single string, and that collapse is where a decision goes wrong: two
+    different but equally fixable reasons collapse to :data:`BLOCKED_MIXED`,
+    which names neither, so a caller reading the sentinel cannot tell a provider
+    one env var away from a provider this build can never run.
+
     FAILS OPEN in three distinct ways, because "unknown" is not "broken":
 
-    1. No registered adapters (headless/tests) → ``""``. Matches
+    1. No registered adapters (headless/tests) → empty. Matches
        :func:`partition_runnable`, which calls everything runnable there.
-    2. ``models`` EMPTY → ``""``. An extension may register a provider whose
+    2. ``models`` EMPTY → empty. An extension may register a provider whose
        models arrive later (#77); a provider we know nothing about must never be
        labelled unusable.
-    3. ANY runnable model → ``""``, even when most rows are blocked.
+    3. ANY runnable model → empty, even when most rows are blocked.
 
-    Returns :data:`BLOCKED_MIXED` when every model is blocked for more than one
-    reason, so no caller has to pick a winner among reasons that disagree.
+    :data:`BLOCKED_MIXED` is never a member: it is a summary of this set, not an
+    element of it.
     """
 
     apis = supported_apis() if apis is None else apis
     if not apis:
-        return ""
+        return frozenset()
     rows = list(models)
     if not rows:
-        return ""
+        return frozenset()
     reasons: set[str] = set()
     for model in rows:
         if is_runnable(model, apis):
-            return ""
+            return frozenset()
         reasons.add(blocked_reason(model, apis))
+    return frozenset(reasons)
+
+
+def provider_block_reason(models: Iterable[Any], apis: set[str] | None = None) -> str:
+    """Why NOTHING a provider offers can run — ``""`` when something can (#151).
+
+    A one-string SUMMARY of :func:`provider_block_reasons`, kept for callers that
+    only need to name the situation (logs, a single-reason assertion). It returns
+    :data:`BLOCKED_MIXED` when the rows disagree, so no caller has to pick a
+    winner among reasons that contradict each other.
+
+    Do NOT branch user-facing wording on this: the sentinel discards exactly the
+    information such a branch needs. Read :func:`provider_block_reasons` and pass
+    the set to :func:`is_recoverable_block` / :func:`provider_block_hint`.
+    """
+
+    reasons = provider_block_reasons(models, apis)
+    if not reasons:
+        return ""
     if len(reasons) == 1:
         return next(iter(reasons))
     return BLOCKED_MIXED
 
 
-def is_recoverable_block(reason: str) -> bool:
-    """True when ``reason`` names something the USER can fix (env vars, a host).
+def is_recoverable_block(reasons: str | Iterable[str]) -> bool:
+    """True when EVERY reason given names something the USER can fix.
 
     The split the ``/login`` picker needs: "set CLOUDFLARE_ACCOUNT_ID" is a next
     step, "this build ships no adapter" is a dead end, and presenting them
     identically would send a user hunting for a config knob that does not exist.
-    :data:`BLOCKED_MIXED` is deliberately NOT recoverable — a mixed set contains
-    at least one reason that is not.
+
+    Accepts one reason id or a whole set of them (:func:`provider_block_reasons`),
+    and answers from the reasons themselves — never from a summary of them. An
+    earlier version took only a single string and hardcoded :data:`BLOCKED_MIXED`
+    to ``False`` on the claim that a mixed set "contains at least one reason that
+    is not recoverable". That claim was never true: a provider whose rows are
+    blocked by ``config-missing`` AND ``no-host`` has two reasons, both fixable,
+    and was still labelled a dead end while its own detail panel named the env
+    var to set. Passing the sentinel here still yields ``False`` — it is not in
+    :data:`_RECOVERABLE_REASONS` and cannot be, because it names no reason at all.
+
+    Empty → ``False``: nothing is blocked, so there is nothing to recover from,
+    and the callers gate on "is it blocked" first.
     """
 
-    return reason in _RECOVERABLE_REASONS
+    ids = frozenset({reasons} if isinstance(reasons, str) else reasons)
+    return bool(ids) and ids <= _RECOVERABLE_REASONS
 
 
-def provider_block_hint(reason: str, models: Iterable[Any] = ()) -> str:
-    """A short, label-sized restatement of ``reason`` — ``""`` when unknown.
+def provider_block_sample(
+    models: Iterable[Any], recoverable: bool, apis: set[str] | None = None
+) -> Any:
+    """A blocked row whose OWN reason agrees with the provider-level label.
+
+    The picker shows a provider-level label ("needs setup" / "unusable") and,
+    beside it, the full sentence for ONE of that provider's models. When the rows
+    disagree, an arbitrary row (the first) can carry the opposite verdict — a
+    panel reading "set EXT_ACCOUNT_ID" under a label reading "unusable", or the
+    reverse. This picks a row that argues for the same conclusion the user is
+    reading.
+
+    Falls back to the first row when none matches (or when nothing is blocked),
+    so a caller always has something to show.
+    """
+
+    apis = supported_apis() if apis is None else apis
+    rows = list(models)
+    if not rows:
+        return None
+    for model in rows:
+        reason = blocked_reason(model, apis)
+        if reason and is_recoverable_block(reason) is recoverable:
+            return model
+    return rows[0]
+
+
+def provider_block_hint(
+    reasons: str | Iterable[str],
+    models: Iterable[Any] = (),
+    apis: set[str] | None = None,
+) -> str:
+    """A short, label-sized restatement of ``reasons`` — ``""`` when unknown.
 
     The long form is :func:`unsupported_message`, which is model-scoped and
     sentence-length; a picker ROW cannot carry that, so this returns the few
-    words that fit beside a provider id. ``models`` supplies the concrete env
-    var names for :data:`BLOCKED_CONFIG_MISSING` (read off the unexpanded
-    base-URL placeholders, the same source ``unsupported_message`` reads) — the
-    union across rows, so a provider whose models template different vars names
-    all of them. Introspection-only; never raises.
+    words that fit beside a provider id.
+
+    Accepts one reason id or a whole set (:func:`provider_block_reasons`). For a
+    set that disagrees, the hint must agree with the label the caller derives
+    from the SAME set via :func:`is_recoverable_block`:
+
+    * all-fixable → the individual hints joined (deterministic, sorted by reason
+      id), because each one is a real next step and dropping any of them hides
+      work the user still has to do;
+    * otherwise → the dead-end phrasing, which is accurate precisely because at
+      least one reason cannot be configured away.
+
+    ``models`` supplies the concrete env var names for
+    :data:`BLOCKED_CONFIG_MISSING` (read off the unexpanded base-URL
+    placeholders, the same source ``unsupported_message`` reads) — the union
+    across the rows that are blocked FOR THAT REASON, so a provider whose models
+    template different vars names all of them, and a row blocked for some other
+    reason cannot contribute a name that would not help. ``apis`` is the
+    registered-adapter set used to re-derive each row's own reason; it defaults
+    to the live one. Introspection-only; never raises.
     """
+
+    ids = frozenset({reasons} if isinstance(reasons, str) else reasons)
+    if not ids:
+        return ""
+    if len(ids) > 1:
+        if not is_recoverable_block(ids):
+            return "nothing it offers can run in this build"
+        parts: list[str] = []
+        for reason_id in sorted(ids):
+            part = _single_block_hint(reason_id, models, apis)
+            if part and part not in parts:
+                parts.append(part)
+        return "; ".join(parts)
+    return _single_block_hint(next(iter(ids)), models, apis)
+
+
+def _rows_blocked_for(
+    reason: str, models: Iterable[Any], apis: set[str] | None
+) -> list[Any]:
+    """The subset of ``models`` whose OWN :func:`blocked_reason` is ``reason``.
+
+    A hint built from every row of a provider can name something that belongs to
+    a DIFFERENT row's problem. Live case: a ``google-vertex`` row carries a
+    ``https://{location}-aiplatform…`` base_url whose ``{location}`` is filled by
+    the SDK, not by an env var — unioned into the ``config-missing`` hint beside a
+    real cloudflare var it produced ``set CLOUDFLARE_ACCOUNT_ID, location``, and
+    there is no ``location`` variable to set. Only rows that are blocked for the
+    reason being described may speak to it.
+
+    Falls back to ALL rows if the re-derivation matches nothing, so a caller that
+    passes a hand-built reason with duck-typed rows still gets its old answer.
+    """
+
+    rows = list(models)
+    try:
+        matched = [m for m in rows if blocked_reason(m, apis) == reason]
+    except Exception:  # noqa: BLE001 — introspection must never break a flow
+        return rows
+    return matched or rows
+
+
+def _single_block_hint(
+    reason: str, models: Iterable[Any] = (), apis: set[str] | None = None
+) -> str:
+    """The one-reason body of :func:`provider_block_hint` — ``""`` when unknown."""
 
     if reason == BLOCKED_NO_ADAPTER:
         return "no adapter in this build"
@@ -339,7 +475,7 @@ def provider_block_hint(reason: str, models: Iterable[Any] = ()) -> str:
         try:
             from aelix_ai.providers._base_url import unexpanded_placeholder_names
 
-            for model in models:
+            for model in _rows_blocked_for(reason, models, apis):
                 base_url = getattr(model, "base_url", None)
                 if not base_url:
                     continue
@@ -482,6 +618,8 @@ __all__ = [
     "partition_runnable",
     "provider_block_hint",
     "provider_block_reason",
+    "provider_block_reasons",
+    "provider_block_sample",
     "supported_apis",
     "unsupported_message",
 ]

@@ -127,7 +127,39 @@ def test_provider_block_reason_reports_mixed_rather_than_picking_a_winner() -> N
     apis = {"openai-completions"}
     rows = [_model(api="nope"), _model(api="openai-completions", base_url="")]
     assert rm.provider_block_reason(rows, apis) == rm.BLOCKED_MIXED
-    assert not rm.is_recoverable_block(rm.BLOCKED_MIXED)
+    # Assert on the ROWS, not on the sentinel: the previous version of this test
+    # ended with ``assert not rm.is_recoverable_block(rm.BLOCKED_MIXED)``, a
+    # tautology about a module constant that never touched ``rows`` and so passed
+    # whatever ``provider_block_reason`` returned.
+    assert not rm.is_recoverable_block(rm.provider_block_reasons(rows, apis))
+
+
+def test_provider_block_reasons_keeps_what_the_summary_discards() -> None:
+    """The lossless form: ``mixed`` names neither reason it stands for."""
+
+    apis = {"openai-completions"}
+    rows = [
+        _model(api="openai-completions", base_url="https://x/{EXT_ACCOUNT_ID}/v1"),
+        _model(api="openai-completions", base_url=""),
+    ]
+    assert rm.provider_block_reasons(rows, apis) == frozenset(
+        {rm.BLOCKED_CONFIG_MISSING, rm.BLOCKED_NO_HOST}
+    )
+    assert rm.provider_block_reason(rows, apis) == rm.BLOCKED_MIXED
+    # The sentinel is a summary OF the set, never a member of it.
+    assert rm.BLOCKED_MIXED not in rm.provider_block_reasons(rows, apis)
+
+
+def test_provider_block_reasons_fails_open_the_same_three_ways() -> None:
+    apis = {"openai-completions"}
+    assert rm.provider_block_reasons([], apis) == frozenset()
+    assert rm.provider_block_reasons([_model(api="anything")], set()) == frozenset()
+    assert (
+        rm.provider_block_reasons(
+            [_model(api="nope"), _model(api="openai-completions")], apis
+        )
+        == frozenset()
+    )
 
 
 def test_recoverable_split_matches_the_reason_ids() -> None:
@@ -138,9 +170,78 @@ def test_recoverable_split_matches_the_reason_ids() -> None:
     assert not rm.is_recoverable_block(rm.BLOCKED_UNRESOLVED_API)
 
 
+def test_a_set_of_reasons_is_recoverable_only_when_all_of_them_are() -> None:
+    """Two different fixable reasons are still fixable — the #151 round-2 defect.
+
+    ``is_recoverable_block`` used to take a single string and hardcoded
+    :data:`BLOCKED_MIXED` to ``False`` on the docstring claim that a mixed set
+    "contains at least one reason that is not recoverable". Both reasons here are
+    in ``_RECOVERABLE_REASONS``, so the claim was simply false.
+    """
+
+    assert rm.is_recoverable_block({rm.BLOCKED_CONFIG_MISSING, rm.BLOCKED_NO_HOST})
+    assert rm.is_recoverable_block({rm.BLOCKED_VERTEX_CONFIG, rm.BLOCKED_NO_HOST})
+    assert not rm.is_recoverable_block({rm.BLOCKED_NO_HOST, rm.BLOCKED_NO_ADAPTER})
+    assert not rm.is_recoverable_block({rm.BLOCKED_NO_ADAPTER, rm.BLOCKED_UNRESOLVED_API})
+    assert not rm.is_recoverable_block(frozenset())  # nothing blocked, nothing to fix
+
+
 def test_config_missing_hint_names_every_placeholder_var() -> None:
     rows = [_model(api="openai-completions", base_url="https://x/{A_ID}/{B_ID}/v1")]
     assert rm.provider_block_hint(rm.BLOCKED_CONFIG_MISSING, rows) == "set A_ID, B_ID"
+
+
+def test_hint_for_an_all_fixable_set_keeps_every_next_step() -> None:
+    rows = [_model(api="openai-completions", base_url="https://x/{A_ID}/v1")]
+    hint = rm.provider_block_hint({rm.BLOCKED_CONFIG_MISSING, rm.BLOCKED_NO_HOST}, rows)
+    assert hint == "set A_ID; no base URL configured"
+
+
+def test_config_missing_hint_ignores_placeholders_of_other_reasons() -> None:
+    """Found in the live TUI while verifying the mixed-reason fix.
+
+    A ``google-vertex`` row's ``{location}`` token is filled by the SDK, not by an
+    env var, and its reason is ``vertex-config-missing``. Unioning placeholders
+    across EVERY row put it in the ``config-missing`` hint, and the picker offered
+    ``set CLOUDFLARE_ACCOUNT_ID, location`` — there is no ``location`` to set.
+    """
+
+    apis = {"openai-completions", "google-vertex"}
+    rows = [
+        _model(api="openai-completions", base_url="https://x/{CLOUDFLARE_ACCOUNT_ID}/v1"),
+        _model(api="google-vertex", base_url="https://{location}-aiplatform.test/v1"),
+    ]
+    hint = rm.provider_block_hint(rm.BLOCKED_CONFIG_MISSING, rows, apis)
+    assert hint == "set CLOUDFLARE_ACCOUNT_ID"
+    assert "location" not in hint
+    # The whole-provider hint keeps both next steps, each naming only its own.
+    both = rm.provider_block_hint(rm.provider_block_reasons(rows, apis), rows, apis)
+    assert both == (
+        "set CLOUDFLARE_ACCOUNT_ID; "
+        "set GOOGLE_CLOUD_API_KEY, or GOOGLE_CLOUD_PROJECT + GOOGLE_CLOUD_LOCATION"
+    )
+
+
+def test_hint_for_a_set_with_a_dead_end_says_dead_end() -> None:
+    rows = [_model(api="openai-completions", base_url="https://x/{A_ID}/v1")]
+    assert (
+        rm.provider_block_hint({rm.BLOCKED_CONFIG_MISSING, rm.BLOCKED_NO_ADAPTER}, rows)
+        == "nothing it offers can run in this build"
+    )
+
+
+def test_block_sample_picks_a_row_that_argues_for_the_label() -> None:
+    """The panel's model must not contradict the provider-level verdict."""
+
+    apis = {"openai-completions"}
+    fixable = _model(id="fixable", api="openai-completions", base_url="")
+    dead = _model(id="dead", api="telnaut-proprietary")
+    rows = [fixable, dead]
+    assert rm.provider_block_sample(rows, recoverable=False, apis=apis) is dead
+    assert rm.provider_block_sample(rows, recoverable=True, apis=apis) is fixable
+    # Falls back to the first row rather than returning nothing to show.
+    assert rm.provider_block_sample([dead], recoverable=True, apis=apis) is dead
+    assert rm.provider_block_sample([], recoverable=True, apis=apis) is None
 
 
 # === the six, against the real catalog + real adapters =======================
@@ -245,6 +346,71 @@ def test_extension_provider_with_a_runnable_row_is_not_annotated(real_adapters) 
     labels, blocked = _build_provider_labels(["mycorp"], registry)
     assert labels == ["mycorp"]
     assert blocked == {}
+
+
+def test_all_fixable_mixed_provider_reads_needs_setup(real_adapters) -> None:
+    """#151 round 2: two DIFFERENT fixable reasons is still one env var away.
+
+    ``config-missing`` and ``no-host`` are both in ``_RECOVERABLE_REASONS``, but
+    together they collapse to the ``mixed`` sentinel — and the label was decided
+    from that sentinel, so this provider was announced as "unusable: nothing it
+    offers can run in this build" while its own detail panel named the env var to
+    set. Not reachable from the bundled catalog (all six blocked providers are
+    unanimous), so it takes an extension-registered provider to construct.
+    """
+
+    registry = _FakeRegistry(
+        [
+            _model(
+                id="ext-a",
+                provider="telnaut",
+                api="openai-completions",
+                base_url="https://gw.test/{TELNAUT_ACCOUNT_ID}/v1",
+            ),
+            _model(id="ext-b", provider="telnaut", api="openai-completions", base_url=""),
+        ],
+        registered=("telnaut",),
+    )
+    labels, blocked = _build_provider_labels(["telnaut"], registry)
+
+    # The LABEL is the assertion that matters — it is what the user reads, and it
+    # is what the sentinel-driven version got wrong.
+    assert labels[0] == (
+        "telnaut  (needs setup: set TELNAUT_ACCOUNT_ID; no base URL configured)"
+    )
+    assert "unusable" not in labels[0]
+    entry = blocked["telnaut"]
+    assert entry[0] == rm.BLOCKED_MIXED  # the summary is unchanged...
+    assert entry[2] is True  # ...but the verdict no longer comes from it
+    # The panel argues for the SAME conclusion the label states.
+    panel = " ".join(_make_block_detail(["telnaut"], blocked)(0))
+    assert "TELNAUT_ACCOUNT_ID" in panel
+    assert entry[1].id == "ext-a"
+
+
+def test_genuinely_mixed_provider_still_reads_unusable(real_adapters) -> None:
+    """The other half of the split: one dead-end row makes the provider a dead end."""
+
+    registry = _FakeRegistry(
+        [
+            _model(id="ext-a", provider="telnaut", api="openai-completions", base_url=""),
+            _model(id="ext-b", provider="telnaut", api="telnaut-proprietary"),
+        ],
+        registered=("telnaut",),
+    )
+    labels, blocked = _build_provider_labels(["telnaut"], registry)
+
+    assert labels[0] == "telnaut  (unusable: nothing it offers can run in this build)"
+    entry = blocked["telnaut"]
+    assert entry[0] == rm.BLOCKED_MIXED
+    # The sample is the row that CANNOT be configured away — a panel reading
+    # "set an explicit baseUrl" under "unusable" would send the user hunting for a
+    # knob that fixes one row and leaves the provider exactly as dead.
+    assert entry[1].id == "ext-b"
+    panel = " ".join(_make_block_detail(["telnaut"], blocked)(0))
+    assert "no adapter for" in panel
+    assert "baseUrl" not in panel
+    assert entry[2] is False
 
 
 def test_no_registered_adapters_annotates_nothing(monkeypatch) -> None:
@@ -386,6 +552,25 @@ async def test_selecting_an_annotated_provider_stores_the_raw_id(
     assert auth.stored == {"cloudflare-workers-ai": "sk-test-151"}
     # ...and the actionable reason was committed BEFORE the key was taken.
     assert any("CLOUDFLARE_ACCOUNT_ID" in c for c in committed)
+    # ...and the summary above that reason agrees with the "needs setup" label the
+    # user just read. "cannot run in this build" is a claim about the BUILD, and
+    # this provider's blocker is local configuration; saying it here re-merged the
+    # two categories the whole annotation exists to keep apart.
+    assert any("can run until it is configured" in c for c in committed)
+    assert not any("in this build" in c for c in committed)
+
+
+async def test_the_pre_key_summary_says_in_this_build_only_for_a_dead_end(
+    real_adapters,
+) -> None:
+    """The reserved phrasing: ``mistral`` has no adapter, so no config fixes it."""
+
+    _, offered, committed = await _login_picking(lambda o: o.startswith("mistral"))
+    assert any(o.startswith("mistral") and "unusable" in o for o in offered)
+    assert any(
+        "none of its" in c and "can run in this build" in c for c in committed
+    ), committed
+    assert not any("until it is configured" in c for c in committed)
 
 
 async def test_selecting_a_normal_provider_still_stores_the_raw_id(
