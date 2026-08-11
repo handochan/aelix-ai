@@ -493,11 +493,34 @@ aelix extension install ./my-ext --yes
 echo $?   # 3
 ```
 
-Exit **3** means pip installed the distribution but some endpoint of it will not
-bind. `0` still means installed *and* bindable, pip's own code still means the
-install failed, and `2` still means it never ran — so a script can tell the four
-apart. The package is never auto-uninstalled: undoing what you asked for would be
-its own surprise, so you get the exact `remove` command instead. Only the
+Four exit codes, pairwise distinct, so a script can tell them apart:
+
+| code | meaning |
+| ---- | ------- |
+| `0`  | installed, and every endpoint of it binds — *or* the command could not tie the install to an installed extension distribution (see below) |
+| `1`  | the installer ran and **failed**. Its own exit code is printed, not returned |
+| `2`  | the installer never ran (usage error, guard refusal, your `N` at the consent prompt) |
+| `3`  | installed, but some endpoint of it will **not** bind |
+
+`1` is normalised rather than passed through on purpose: pip's own codes are not
+disjoint from these. pip defines `VIRTUALENV_NOT_FOUND = 3` (raised under
+`PIP_REQUIRE_VIRTUALENV`, which plenty of organisations set globally) and
+`UNKNOWN_ERROR = 2`, so passing pip's code through would have let `3` mean either
+"the distribution is on disk but inert" or "pip refused to run and nothing
+landed" — opposite conclusions about the same machine.
+
+**When the command has no verdict, it says so.** A `git+URL` names no
+distribution, a reinstall of an unchanged pack moves nothing in the entry-point
+ledger, and a source tree can hide its name where nothing but executing it can
+find (setup.py-only, `[tool.poetry]`, `dynamic`). Most of those are answered by
+reading pip's own PEP 610 `direct_url.json` record — a lookup, not a guess. What
+that still cannot name gets an explicit *"this build has no binding verdict for
+it … this is NOT a claim that the pack will load"* and a pointer to `verify`,
+never the success line. The exit stays `0` there: the installer did put something
+on disk, and `3` has to keep meaning "this build **knows** it will not bind".
+
+The package is never auto-uninstalled: undoing what you asked for would be its
+own surprise, so you get the exact `remove` command instead. Only the
 distribution you just installed is reported, so an unrelated broken pack already
 in the environment is not blamed on this install.
 

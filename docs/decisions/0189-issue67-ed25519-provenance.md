@@ -162,7 +162,7 @@ signature cannot be honored while skipping the gate).
 | catalog pin-seeding | **UNCHANGED invariant** — a catalog may only FAIL-CLOSED cross-check the gate's own hash, NEVER seed `extension_pins.json` (ADR-0188 AST-guarded display-only stays green) |
 
 **Preserved invariants (must not regress):** the gate is not moved and the exit-code
-contract is intact (0 ok · pip returncode · 2 never-ran/refusal, ADR-0187); consent
+contract is intact (0 ok · pip returncode — amended to a normalised `1` by #154, see ADR-0185 · 2 never-ran/refusal, ADR-0187); consent
 remains the sole execution-trust boundary (a "signed" verdict never relaxes it);
 verification stays 100% local/air-gap (no keyserver/OIDC/transparency-log); the catalog
 NEVER writes pins (ADR-0188).

@@ -212,7 +212,7 @@ is required for #64. **If** the owner later adopts Approach B (Ed25519 `.aelixsi
 that follow-up ADR MUST explicitly revisit/supersede ADR-0010's "no aelix-defined
 signature format" first cut.
 
-**Exit codes & consent.** Inherit #19/#32-A: `0` ok · pip returncode on pip failure ·
+**Exit codes & consent.** Inherit #19/#32-A: `0` ok · pip returncode on pip failure (amended by #154 — normalised to `1`, see ADR-0185) ·
 `2` never-ran (now also covers a verify refusal). Consent stays exactly as shipped and
 runs FIRST; verify is strictly downstream (no point verifying bytes the operator
 declined).
