@@ -431,7 +431,7 @@ def _provider_rows(model_registry: Any, provider: str) -> list[Any]:
 
 def _build_provider_labels(
     providers: list[str], model_registry: Any
-) -> tuple[list[str], dict[str, tuple[str, Any]]]:
+) -> tuple[list[str], dict[str, tuple[str, Any, bool]]]:
     """``(labels, blocked)`` for the API-key picker — labels parallel to ``providers``.
 
     Issue #151: six catalog providers offer models this build cannot run, and the
