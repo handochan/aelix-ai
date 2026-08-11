@@ -398,6 +398,153 @@ def _build_oauth_callbacks(
     )
 
 
+def _provider_rows(model_registry: Any, provider: str) -> list[Any]:
+    """The catalog rows a provider offers, for the pre-login runnability test.
+
+    Prefers the LIVE registry (``get_all``) so extension-registered providers and
+    a user's ``models.json`` count; falls back to the bundled catalog per provider
+    when the registry is absent or knows nothing about that id. Measured on this
+    build: the live registry reproduces the bundled catalog exactly (1001 rows /
+    35 providers), so the fallback only matters for a ``model_registry=None``
+    caller. Returns ``[]`` on any failure — and ``[]`` makes
+    :func:`provider_block_reason` fail open, which is the safe direction.
+    """
+
+    if model_registry is not None:
+        try:
+            rows = [
+                m
+                for m in model_registry.get_all()
+                if getattr(m, "provider", None) == provider
+            ]
+        except Exception:  # noqa: BLE001 — introspection must never break /login
+            rows = []
+        if rows:
+            return rows
+    try:
+        from aelix_ai.models import get_models
+
+        return list(get_models(provider))
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _build_provider_labels(
+    providers: list[str], model_registry: Any
+) -> tuple[list[str], dict[str, tuple[str, Any]]]:
+    """``(labels, blocked)`` for the API-key picker — labels parallel to ``providers``.
+
+    Issue #151: six catalog providers offer models this build cannot run, and the
+    wizard used to say so only AFTER the key was stored. Each provider is
+    evaluated HERE, at picker-build time, so an extension that registered a
+    provider during startup (#77) is included — an import-time constant could not
+    see it.
+
+    A blocked provider's label is suffixed with a short reason, split by whether
+    the user can act on it (``needs setup:`` vs ``unusable:``) — "set
+    CLOUDFLARE_ACCOUNT_ID" is a next step, "no adapter in this build" is a dead
+    end. Every label KEEPS the bare provider id as its prefix, because the picker
+    filters by case-insensitive substring over the whole label
+    (``context.select``): typing ``openrouter`` must still find the row.
+
+    ``blocked`` maps provider id → ``(reason, sample_model)`` for the caller's
+    detail panel and pre-key warning. Never raises: a provider whose evaluation
+    throws is simply left unannotated.
+    """
+
+    from ..core.runnable_models import (
+        is_recoverable_block,
+        provider_block_hint,
+        provider_block_reason,
+        supported_apis,
+    )
+
+    try:
+        apis = supported_apis()
+    except Exception:  # noqa: BLE001
+        apis = set()
+    labels: list[str] = []
+    blocked: dict[str, tuple[str, Any]] = {}
+    for provider in providers:
+        reason = ""
+        rows: list[Any] = []
+        try:
+            rows = _provider_rows(model_registry, provider)
+            reason = provider_block_reason(rows, apis)
+        except Exception:  # noqa: BLE001 — an odd row must not hide a provider
+            reason = ""
+        if not reason or not rows:
+            labels.append(provider)
+            continue
+        hint = provider_block_hint(reason, rows)
+        prefix = "needs setup" if is_recoverable_block(reason) else "unusable"
+        labels.append(f"{provider}  ({prefix}: {hint})" if hint else f"{provider}  ({prefix})")
+        blocked[provider] = (reason, rows[0])
+    return labels, blocked
+
+
+def _accepts_detail(select: Callable[..., Awaitable[str | None]]) -> bool:
+    """True when ``select`` can take the ``detail=`` per-highlight panel callback.
+
+    ``detail`` is an ``AelixTUIContext``-only extension (NOT part of the
+    ``ExtensionUIContext`` protocol), and this module's ``select`` is duck-typed —
+    several test doubles are plain ``async def select(msg, options)``. Passing
+    ``detail=`` to those is a ``TypeError``, so the capability is probed rather
+    than assumed. A ``**kwargs`` callable counts as accepting it.
+    """
+
+    import inspect
+
+    try:
+        params = list(inspect.signature(select).parameters.values())
+    except (TypeError, ValueError):  # builtins / C callables expose no signature
+        return False
+    if any(p.kind is p.VAR_KEYWORD for p in params):
+        return True
+    return any(
+        p.name == "detail"
+        and p.kind in (p.POSITIONAL_OR_KEYWORD, p.KEYWORD_ONLY)
+        for p in params
+    )
+
+
+def _make_block_detail(
+    providers: list[str], blocked: dict[str, tuple[str, Any]]
+) -> Callable[[int], list[str]] | None:
+    """A ``select(detail=…)`` callback showing the FULL reason for a blocked row.
+
+    The label suffix is only a few words; this is where the actionable sentence
+    lands — and it renders while the row is merely HIGHLIGHTED, so the user reads
+    it before pressing Enter, let alone before typing a key. The text is
+    :func:`blocked_message` verbatim (the wording that AGREES with the label),
+    wrapped to the picker's width. Returns :data:`None` when nothing is blocked
+    so the picker keeps its unadorned shape.
+    """
+
+    if not blocked:
+        return None
+
+    def detail(index: int) -> list[str]:
+        try:
+            provider = providers[index]
+        except (IndexError, TypeError):  # pragma: no cover — index comes from us
+            return []
+        entry = blocked.get(provider)
+        if entry is None:
+            return []
+        from ..core.runnable_models import blocked_message
+
+        try:
+            message = blocked_message(entry[1])
+        except Exception:  # noqa: BLE001 — a detail panel must never break the modal
+            return []
+        import textwrap
+
+        return textwrap.wrap(message, width=72) or []
+
+    return detail
+
+
 async def _run_api_key(
     *,
     auth_storage: Any,
@@ -412,8 +559,14 @@ async def _run_api_key(
     The picker lists the built-in providers (``ENV_API_KEYS``) UNIONED with any
     extension-registered providers (``model_registry.get_registered_providers``,
     Issue #77) so a provider an extension added via ``register_provider`` can take
-    a plain API key here. The raw provider id is the selectable label so
-    ``set_api_key(id, key)`` stores under the correct id.
+    a plain API key here.
+
+    Issue #151 — providers whose every model is unrunnable are ANNOTATED, not
+    hidden: a user who came to configure Bedrock and finds no Bedrock cannot tell
+    whether they mistyped, whether it is unsupported, or whether the list is
+    broken. That splits the LABEL from the ID, so (following ``_run_oauth``) the
+    label is resolved back through ``labels.index`` and ``set_api_key`` is ALWAYS
+    called with the raw ``providers[idx]`` — never the annotated string.
     """
 
     try:
@@ -433,9 +586,42 @@ async def _run_api_key(
         commit(Text("No built-in providers available.", style="yellow"))
         return
 
-    provider = await select("Provider", providers)
-    if not provider:
+    labels, blocked = _build_provider_labels(providers, model_registry)
+    detail = _make_block_detail(providers, blocked)
+    if detail is not None and _accepts_detail(select):
+        chosen = await select("Provider", labels, detail=detail)
+    else:
+        chosen = await select("Provider", labels)
+    if not chosen:
         return
+    # Resolve the LABEL back to the raw id. The second arm keeps a caller that
+    # answers with a bare provider id working (every unblocked label IS the bare
+    # id, and the historical contract was id-as-label).
+    if chosen in labels:
+        provider = providers[labels.index(chosen)]
+    elif chosen in provider_ids:
+        provider = chosen
+    else:
+        commit(Text(f"✖ login: unknown provider {chosen!r}", style="bold red"))
+        return
+
+    # Issue #151: say it BEFORE the key is typed, not after it is stored. The key
+    # prompt still runs — a recoverable provider genuinely needs the key too, and
+    # refusing to store one would be a second way to strand the user.
+    entry = blocked.get(provider)
+    if entry is not None:
+        from ..core.runnable_models import blocked_message
+
+        rows = _provider_rows(model_registry, provider)
+        commit(
+            Text(
+                f"! {provider}: none of its {len(rows)} catalog model(s) can run "
+                "in this build.",
+                style="yellow",
+            )
+        )
+        with contextlib.suppress(Exception):
+            commit(Text(f"  {blocked_message(entry[1])}", style="yellow"))
 
     # ``password=True`` masks the secret so it is never echoed to the screen or
     # left in the terminal scrollback (WP-8 Feature 1 secret-entry hardening).

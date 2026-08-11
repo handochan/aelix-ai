@@ -201,6 +201,27 @@ BLOCKED_VERTEX_CONFIG = "vertex-config-missing"
 BLOCKED_CONFIG_MISSING = "config-missing"
 BLOCKED_NO_HOST = "no-host"
 
+# Returned by :func:`provider_block_reason` when EVERY model of a provider is
+# blocked but NOT all for the same reason. There is no such provider in the
+# bundled catalog today (each of the five blocked ones is unanimous), but an
+# extension that registers a mixed bag would otherwise force a caller to assert
+# one reason for models that do not share it.
+BLOCKED_MIXED = "mixed"
+
+# The reason ids the USER can act on. The other two are dead ends: no amount of
+# configuration conjures an adapter this build does not ship, and an api that
+# never resolved names no protocol to configure.
+_RECOVERABLE_REASONS = frozenset(
+    {BLOCKED_CONFIG_MISSING, BLOCKED_VERTEX_CONFIG, BLOCKED_NO_HOST}
+)
+
+# Label-sized restatement of :data:`_VERTEX_CONFIG_HINT` (which is a sentence
+# fragment sized for :func:`unsupported_message`). Kept adjacent to it so the
+# two never drift: both name GOOGLE_CLOUD_API_KEY and the project+location pair.
+_VERTEX_ENV_SHORT = (
+    "set GOOGLE_CLOUD_API_KEY, or GOOGLE_CLOUD_PROJECT + GOOGLE_CLOUD_LOCATION"
+)
+
 
 def blocked_reason(model: Any, apis: set[str] | None = None) -> str:
     """Why :func:`is_runnable` rejects ``model`` — ``""`` when it does not.
@@ -240,6 +261,158 @@ def blocked_reason(model: Any, apis: set[str] | None = None) -> str:
     return BLOCKED_CONFIG_MISSING
 
 
+def provider_block_reason(models: Iterable[Any], apis: set[str] | None = None) -> str:
+    """Why NOTHING a provider offers can run — ``""`` when something can (#151).
+
+    :func:`blocked_reason` answers for one model; the ``/login`` provider picker
+    has to answer for a whole provider BEFORE any credential exists, so it can
+    tell the user that a key stored here will never run anything. That question
+    is answerable pre-login precisely because :func:`is_runnable` is
+    credential-blind: it tests adapter registration and base-URL/GCP config only.
+
+    FAILS OPEN in three distinct ways, because "unknown" is not "broken":
+
+    1. No registered adapters (headless/tests) → ``""``. Matches
+       :func:`partition_runnable`, which calls everything runnable there.
+    2. ``models`` EMPTY → ``""``. An extension may register a provider whose
+       models arrive later (#77); a provider we know nothing about must never be
+       labelled unusable.
+    3. ANY runnable model → ``""``, even when most rows are blocked.
+
+    Returns :data:`BLOCKED_MIXED` when every model is blocked for more than one
+    reason, so no caller has to pick a winner among reasons that disagree.
+    """
+
+    apis = supported_apis() if apis is None else apis
+    if not apis:
+        return ""
+    rows = list(models)
+    if not rows:
+        return ""
+    reasons: set[str] = set()
+    for model in rows:
+        if is_runnable(model, apis):
+            return ""
+        reasons.add(blocked_reason(model, apis))
+    if len(reasons) == 1:
+        return next(iter(reasons))
+    return BLOCKED_MIXED
+
+
+def is_recoverable_block(reason: str) -> bool:
+    """True when ``reason`` names something the USER can fix (env vars, a host).
+
+    The split the ``/login`` picker needs: "set CLOUDFLARE_ACCOUNT_ID" is a next
+    step, "this build ships no adapter" is a dead end, and presenting them
+    identically would send a user hunting for a config knob that does not exist.
+    :data:`BLOCKED_MIXED` is deliberately NOT recoverable — a mixed set contains
+    at least one reason that is not.
+    """
+
+    return reason in _RECOVERABLE_REASONS
+
+
+def provider_block_hint(reason: str, models: Iterable[Any] = ()) -> str:
+    """A short, label-sized restatement of ``reason`` — ``""`` when unknown.
+
+    The long form is :func:`unsupported_message`, which is model-scoped and
+    sentence-length; a picker ROW cannot carry that, so this returns the few
+    words that fit beside a provider id. ``models`` supplies the concrete env
+    var names for :data:`BLOCKED_CONFIG_MISSING` (read off the unexpanded
+    base-URL placeholders, the same source ``unsupported_message`` reads) — the
+    union across rows, so a provider whose models template different vars names
+    all of them. Introspection-only; never raises.
+    """
+
+    if reason == BLOCKED_NO_ADAPTER:
+        return "no adapter in this build"
+    if reason == BLOCKED_UNRESOLVED_API:
+        return "no resolvable API protocol"
+    if reason == BLOCKED_VERTEX_CONFIG:
+        return _VERTEX_ENV_SHORT
+    if reason == BLOCKED_NO_HOST:
+        return "no base URL configured"
+    if reason == BLOCKED_MIXED:
+        return "nothing it offers can run in this build"
+    if reason == BLOCKED_CONFIG_MISSING:
+        names: list[str] = []
+        try:
+            from aelix_ai.providers._base_url import unexpanded_placeholder_names
+
+            for model in models:
+                base_url = getattr(model, "base_url", None)
+                if not base_url:
+                    continue
+                for name in unexpanded_placeholder_names(base_url):
+                    if name not in names:
+                        names.append(name)
+        except Exception:  # noqa: BLE001 — introspection must never break a flow
+            names = []
+        return f"set {', '.join(names)}" if names else "required configuration missing"
+    return ""
+
+
+def _unresolved_api_message(model: Any) -> str:
+    """The ``api == "unknown"`` branch of :func:`unsupported_message` (#98).
+
+    Extracted so :func:`blocked_message` can reach it by REASON rather than by
+    re-running ``unsupported_message``'s different branch ordering.
+    """
+
+    model_id = getattr(model, "id", None) or "?"
+    provider = getattr(model, "provider", None)
+    where = f"provider '{provider}'" if provider else "no provider"
+    return (
+        f"model '{model_id}' ({where}) could not be resolved to a known API "
+        "protocol, so this build has no adapter to run it. Check the model id "
+        "and provider spelling, or define the provider in models.json with an "
+        'explicit "api" and "baseUrl".'
+    )
+
+
+def _no_adapter_message(model: Any) -> str:
+    """The "this build ships no adapter for that api" branch, extracted.
+
+    See :func:`_unresolved_api_message` for why the branches are addressable
+    individually.
+    """
+
+    model_id = getattr(model, "id", None) or "?"
+    api = getattr(model, "api", None) or "?"
+    supported = ", ".join(sorted(supported_apis())) or "(none registered)"
+    return (
+        f"model '{model_id}' uses the '{api}' API, which this build has no adapter "
+        f"for (supported: {supported}). Pick a model on a supported API (e.g. an "
+        "openai-completions, openai-responses or anthropic-messages model)."
+    )
+
+
+def blocked_message(model: Any, apis: set[str] | None = None) -> str:
+    """The reason sentence that AGREES with :func:`blocked_reason` — ``""`` if runnable.
+
+    :func:`unsupported_message` orders its branches config-first; :func:`blocked_reason`
+    orders adapter-first, deliberately (no configuration conjures an adapter). For
+    most models the two land on the same branch, but ``azure-openai-responses`` is
+    a live counter-example: its rows declare BOTH an empty ``baseUrl`` and an api
+    this build does not implement, so ``blocked_reason`` says "no adapter" while
+    ``unsupported_message`` says "set a baseUrl" — advice that cannot help.
+
+    Anything showing a reason id and its prose SIDE BY SIDE (the #151 ``/login``
+    picker: a short label suffix plus a detail panel) must not contradict itself,
+    so this dispatches on the reason and delegates to ``unsupported_message`` only
+    for the reasons where the two orderings provably coincide.
+    """
+
+    reason = blocked_reason(model, apis)
+    if not reason:
+        return ""
+    if reason == BLOCKED_NO_ADAPTER:
+        return _no_adapter_message(model)
+    if reason == BLOCKED_UNRESOLVED_API:
+        return _unresolved_api_message(model)
+    return unsupported_message(model)
+
+
 def unsupported_message(model: Any) -> str:
     """A one-line, actionable reason a model can't run (for a committed error)."""
 
@@ -277,14 +450,7 @@ def unsupported_message(model: Any) -> str:
     # the non-interactive callers have no such command, so each caller appends
     # its own instruction.
     if api == _UNRESOLVED_API:
-        provider = getattr(model, "provider", None)
-        where = f"provider '{provider}'" if provider else "no provider"
-        return (
-            f"model '{model_id}' ({where}) could not be resolved to a known API "
-            "protocol, so this build has no adapter to run it. Check the model id "
-            "and provider spelling, or define the provider in models.json with an "
-            'explicit "api" and "baseUrl".'
-        )
+        return _unresolved_api_message(model)
     # Hostless case (#98): the api IS supported, but the model declares no
     # base_url — so the adapter would silently fall back to its SDK's first-party
     # vendor host and send THIS provider's credentials there. Ordered AFTER the
@@ -299,23 +465,23 @@ def unsupported_message(model: Any) -> str:
             '"baseUrl" for the provider (models.json), or have the registering '
             "extension pass base_url on the model."
         )
-    supported = ", ".join(sorted(supported_apis())) or "(none registered)"
-    return (
-        f"model '{model_id}' uses the '{api}' API, which this build has no adapter "
-        f"for (supported: {supported}). Pick a model on a supported API (e.g. an "
-        "openai-completions, openai-responses or anthropic-messages model)."
-    )
+    return _no_adapter_message(model)
 
 
 __all__ = [
     "BLOCKED_CONFIG_MISSING",
+    "BLOCKED_MIXED",
     "BLOCKED_NO_ADAPTER",
     "BLOCKED_NO_HOST",
     "BLOCKED_UNRESOLVED_API",
     "BLOCKED_VERTEX_CONFIG",
+    "blocked_message",
     "blocked_reason",
+    "is_recoverable_block",
     "is_runnable",
     "partition_runnable",
+    "provider_block_hint",
+    "provider_block_reason",
     "supported_apis",
     "unsupported_message",
 ]
