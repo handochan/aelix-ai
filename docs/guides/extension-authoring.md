@@ -478,9 +478,9 @@ manifest fails there, not silently on a user's machine. See ADR-0207.
 
 **`install` tells you the same thing, without being asked** (#154). Since the
 host can reach that verdict offline and without importing your pack, `aelix
-extension install` and `aelix extension discover install` end by reporting it for
-the distribution they just installed — so a user never sees "Installed. Restart
-aelix" for a pack this build will refuse to load:
+extension install`, `aelix extension discover install` and `aelix extension
+update` all end by reporting it for the distribution they just wrote — so a user
+never sees "Installed. Restart aelix" for a pack this build will refuse to load:
 
 ```bash
 aelix extension install ./my-ext --yes
@@ -528,6 +528,28 @@ in the environment is not blamed on this install.
 — see the next section. Without it, a pack installed outside the environment's
 real site directories (`pip --target` plus a matching `PYTHONPATH`) would be
 reported `UNTRUSTED_PATH`, which says "unvouched", not "broken".
+
+**`update` reports the same verdict, with the same codes.** An upgrade is an
+install: the host knows exactly as much about the bytes it just wrote, so
+`aelix extension update <name>` ends with the report above and exits `3` when the
+pack it just upgraded has gone inert. A bare `aelix extension update` walks every
+recorded source and closes with a one-line summary, so the outcome does not
+scroll away behind the per-pack reports:
+
+```bash
+aelix extension update --yes
+#   … one report per pack …
+#   update summary: 5 pack(s) — 1 bound, 3 NOT bound, 1 no verdict, 0 failed.
+#     NOT bound: brokenpack, gitpack, legacypack
+#   To re-check one: aelix extension verify <name>
+echo $?   # 3
+```
+
+The summary is bad-news-only — a run where every pack bound prints exactly what
+it always did, one success line per pack and nothing else. Across many packs the
+run's exit code is the **hardest** outcome, not the first: `1` and `2` outrank
+`3`, because `3` is the one code that asserts the installer succeeded and it may
+only be reported when that is true of every pack.
 
 ### Developing with `pip install -e` — the manifest downgrade
 

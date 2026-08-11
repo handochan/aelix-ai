@@ -107,6 +107,13 @@ without reclassifying. On any verification refusal it returns `_EXIT_DIDNT_RUN`
 returncode. Because `_upgrade_source`/`_upgrade_pypi_name` call `install_extension()`
 directly, one gate here covers `install` AND `update`/`--upgrade`.
 
+- **AMENDED by #154 (2026-08-11):** those two now reach `install_extension()` through
+  `_upgrade_and_report()`, which passes `announce=False` and prints the binding verdict
+  instead of the unconditional success line. The verify gate is untouched and still runs
+  once inside `install_extension()`, so this paragraph's conclusion holds — the call is
+  simply one hop longer. `update` thereby also gains ADR-0185's `3`, "upgraded, but now
+  inert".
+
 **Per-kind behavior.**
 
 - **PATH** — a local artifact exists on disk before pip runs. A built distribution

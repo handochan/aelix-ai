@@ -169,17 +169,23 @@ and `.../releases/tag/vX` link would 404. Add them with the first pushed tag.
   indistinguishable from a producer that was about to write — so input may be
   dropped, but never silently. With nothing on argv the behaviour is unchanged,
   since there stdin *is* the prompt.
-- **`aelix extension install` no longer reports success for a pack this build
-  already knows cannot load** (#154). The host decides — offline, and without
-  importing a line of the pack — whether an installed extension's
+- **`aelix extension install` and `update` no longer report success for a pack
+  this build already knows cannot load** (#154). The host decides — offline, and
+  without importing a line of the pack — whether an installed extension's
   `aelix-plugin.toml` will bind; `verify` and `list` read that verdict, but
   `install` never asked for it and printed an unconditional "Installed. Restart
   aelix" even for a pack whose manifest demands a newer API level than this
-  build provides. `install` and `discover install` now report the verdict for
-  the distribution they just installed — and only that one, so a pre-existing
-  broken endpoint elsewhere in the environment is not blamed on the new pack —
-  in the same wording `verify` uses. A pack that binds prints exactly what it
-  printed before — including on a reinstall. When the command *cannot* tie the
+  build provides. `install`, `discover install` and `update` now report the
+  verdict for the distribution they just wrote — and only that one, so a
+  pre-existing broken endpoint elsewhere in the environment is not blamed on the
+  new pack — in the same wording `verify` uses. A pack that binds prints exactly
+  what it printed before — including on a reinstall, on an update, and when the
+  target is a symlink to the pack directory. A bare `aelix extension update`
+  closes with a one-line summary naming the packs that will not bind, so the
+  outcome does not scroll away behind the per-pack reports; across many packs the
+  exit code is the hardest outcome, not the first (`1` and `2` outrank `3`, since
+  `3` is the one code that asserts the installer succeeded). When the command
+  *cannot* tie the
   install to an installed extension distribution — a repeat `git+URL` install, a
   repeat install of a source tree whose name cannot be read without executing it
   (setup.py-only, a `[tool.poetry]` name, a `dynamic` name), or a target that is

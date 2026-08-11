@@ -891,20 +891,235 @@ def test_a_classification_fault_degrades_to_the_no_verdict_line(
     assert "ledger exploded" in captured.err
 
 
-def test_update_still_prints_the_plain_line(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """``announce`` defaults to True, so ``update``'s reinstall path — which #154
-    deliberately does not touch — is byte-unchanged."""
+# === `update` owes the same verdict `install` owes ========================
 
-    mem = SettingsManager.in_memory(
-        {"extensionSources": [{"spec": "git+https://h/r.git", "kind": "git", "name": "r"}]}
+
+def _path_sources(*rows: tuple[Path, str]) -> SettingsManager:
+    """A settings store holding one recorded ``path`` source per row."""
+
+    return SettingsManager.in_memory(
+        {
+            "extensionSources": [
+                {"spec": str(tree), "kind": "path", "name": name} for tree, name in rows
+            ]
+        }
     )
+
+
+def _unnameable_tree(tmp_path: Path, name: str) -> Path:
+    """A setup.py-only tree: nothing in it DECLARES a distribution name.
+
+    So attribution cannot take the hint arm and must reach pip's PEP 610 record —
+    the same shape the real setuptools-default pack has.
+    """
+
+    tree = tmp_path / name
+    tree.mkdir()
+    (tree / "setup.py").write_text("from setuptools import setup\n\nsetup()\n")
+    assert EI._target_dist_hint(str(tree), "path") is None
+    return tree
+
+
+def test_update_reports_the_verdict_instead_of_promising_a_restart(
+    trusted_site: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The defect #154 exists to kill, on the sibling verb.
+
+    ``update`` reinstalls through ``install_extension``, which announced an
+    unconditional "Installed. Restart aelix" — so the build that had just taught
+    ``install`` to tell the truth still had ``update`` promising a restart for a
+    pack it KNEW could not bind. MEASURED live before this fix: ``extension update
+    legacypack --yes`` → "Installed. Restart aelix …", exit 0, while ``extension
+    verify legacypack`` at the same instant → "1 of 1 endpoint(s) NOT bound",
+    exit 1.
+    """
+
+    tree = _unnameable_tree(tmp_path, "badtree")
+    dist_info = install_dist(
+        trusted_site,
+        "futurepack",
+        entry_points={"aelix.extensions": {"futurepack": "futurepack.ext:setup"}},
+        files=_future_files("futurepack"),
+    )
+    _record_direct_url(dist_info, _uri(tree), dir_info={})
+
     code = run_extension_command(
-        ["update", "--yes", "--no-verify"], settings=mem, runner=_NoopRunner()
+        ["update", "futurepack", "--yes", "--no-verify"],
+        settings=_path_sources((tree, "futurepack")),
+        runner=_NoopRunner(),
     )
+    out = capsys.readouterr().out
+    # Same fact as install ⇒ same code. "updated but now inert" is "installed and
+    # inert"; a verb-dependent code would reintroduce the ambiguity #154 removed.
+    assert code == EI._INSTALL_NOT_BOUND
+    assert RESTART_LINE not in out
+    # The REASON, not just the shape — a fixture that regresses into a schema
+    # error would otherwise pass while proving nothing (see this module's header).
+    assert "requires API_LEVEL >= 7" in out
+    assert "aelix extension verify futurepack" in out
+
+
+def test_update_of_a_healthy_pack_is_byte_identical(
+    trusted_site: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A single healthy pack gains NO new output from the update verdict.
+
+    Same bar the install path had to clear: the compatible path stays exactly what
+    it printed before #154 reached this verb — one line, no summary, no chrome.
+    """
+
+    tree = _unnameable_tree(tmp_path, "goodtree")
+    dist_info = install_dist(
+        trusted_site,
+        "goodpack",
+        entry_points={"aelix.extensions": {"goodpack": "goodpack.ext:setup"}},
+        files=_bound_files("goodpack"),
+    )
+    _record_direct_url(dist_info, _uri(tree), dir_info={})
+
+    code = run_extension_command(
+        ["update", "goodpack", "--yes", "--no-verify"],
+        settings=_path_sources((tree, "goodpack")),
+        runner=_NoopRunner(),
+    )
+    out = capsys.readouterr().out
     assert code == 0
-    assert RESTART_LINE in capsys.readouterr().out
+    assert RESTART_LINE in out
+    assert EI._INSTALLED_NO_VERDICT not in out
+    for noise in ("BOUND", "will NOT bind", "update summary", "nothing was undone"):
+        assert noise not in out
+
+
+def test_update_with_nothing_to_attribute_says_it_has_no_verdict(
+    trusted_site: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The floor fires on ``update`` too — and still exits 0.
+
+    Nothing is recorded as coming from this tree, so there is no distribution to
+    classify. That is not a success and must not print one; it is also not a
+    failure, so the code stays 0 (see :data:`_INSTALLED_NO_VERDICT`).
+    """
+
+    tree = _unnameable_tree(tmp_path, "mystery")
+    code = run_extension_command(
+        ["update", "mysterypack", "--yes", "--no-verify"],
+        settings=_path_sources((tree, "mysterypack")),
+        runner=_NoopRunner(),
+    )
+    out = capsys.readouterr().out
+    assert code == 0
+    assert EI._INSTALLED_NO_VERDICT in out
+    assert RESTART_LINE not in out
+
+
+def test_bare_update_ends_with_an_aggregate_verdict(
+    trusted_site: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A bare ``update`` walks every source; the OUTCOME must survive the scroll.
+
+    Each pack now prints install's full report, and for a pack that cannot bind
+    that is a multi-line block ending in the ABSENT packaging hint. Three of those
+    and the last thing on screen is one arbitrary pack's remove command. So the
+    run closes by naming what happened to all of them.
+    """
+
+    good = _unnameable_tree(tmp_path, "goodtree")
+    bad = _unnameable_tree(tmp_path, "badtree")
+    mystery = _unnameable_tree(tmp_path, "mystery")
+    gi = install_dist(
+        trusted_site,
+        "goodpack",
+        entry_points={"aelix.extensions": {"goodpack": "goodpack.ext:setup"}},
+        files=_bound_files("goodpack"),
+    )
+    _record_direct_url(gi, _uri(good), dir_info={})
+    bi = install_dist(
+        trusted_site,
+        "futurepack",
+        entry_points={"aelix.extensions": {"futurepack": "futurepack.ext:setup"}},
+        files=_future_files("futurepack"),
+    )
+    _record_direct_url(bi, _uri(bad), dir_info={})
+
+    code = run_extension_command(
+        ["update", "--yes", "--no-verify"],
+        settings=_path_sources(
+            (good, "goodpack"), (bad, "futurepack"), (mystery, "mysterypack")
+        ),
+        runner=_NoopRunner(),
+    )
+    out = capsys.readouterr().out
+    assert code == EI._INSTALL_NOT_BOUND
+    assert (
+        "update summary: 3 pack(s) — 1 bound, 1 NOT bound, 1 no verdict, 0 failed."
+        in out
+    )
+    assert "NOT bound: futurepack" in out
+    assert "no verdict: mysterypack" in out
+    # …and it really is the LAST thing read, which is the whole point.
+    assert out.rstrip().endswith("To re-check one: aelix extension verify <name>")
+
+
+def test_bare_update_of_healthy_packs_adds_no_summary(
+    trusted_site: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The compatible path stays silent even across MANY packs.
+
+    The summary is bad-news-only: an all-bound run prints exactly one
+    :data:`RESTART_LINE` per pack and nothing else, byte-identical to what this
+    verb printed before #154 touched it.
+    """
+
+    trees = []
+    for name in ("packa", "packb"):
+        tree = _unnameable_tree(tmp_path, f"{name}tree")
+        dist_info = install_dist(
+            trusted_site,
+            name,
+            entry_points={"aelix.extensions": {name: f"{name}.ext:setup"}},
+            files=_bound_files(name),
+        )
+        _record_direct_url(dist_info, _uri(tree), dir_info={})
+        trees.append((tree, name))
+
+    code = run_extension_command(
+        ["update", "--yes", "--no-verify"],
+        settings=_path_sources(*trees),
+        runner=_NoopRunner(),
+    )
+    out = capsys.readouterr().out
+    assert code == 0
+    assert out.count(RESTART_LINE) == 2
+    assert "update summary" not in out
+
+
+def test_a_hard_failure_outranks_an_inert_pack_in_the_aggregate() -> None:
+    """3 is the ONE code that asserts the installer succeeded.
+
+    Under the old "first nonzero wins" fold, an early inert pack followed by a
+    pack pip failed on outright would have exited 3 — telling a script everything
+    landed when something did not. That rule was complete only while every code
+    ``update`` could see meant "something went wrong"; 3 breaks it.
+    """
+
+    # 3 then a real failure ⇒ the failure wins, in both orders.
+    assert EI._worse_update_code(EI._INSTALL_NOT_BOUND, EI._INSTALLER_FAILED) == (
+        EI._INSTALLER_FAILED
+    )
+    assert EI._worse_update_code(EI._INSTALL_NOT_BOUND, EI._EXIT_DIDNT_RUN) == (
+        EI._EXIT_DIDNT_RUN
+    )
+    assert EI._worse_update_code(EI._INSTALLER_FAILED, EI._INSTALL_NOT_BOUND) == (
+        EI._INSTALLER_FAILED
+    )
+    # Among genuine failures the original rule stands: the earliest one wins.
+    assert EI._worse_update_code(EI._INSTALLER_FAILED, EI._EXIT_DIDNT_RUN) == (
+        EI._INSTALLER_FAILED
+    )
+    # 0 never displaces anything, and 3 survives a clean neighbour.
+    assert EI._worse_update_code(0, EI._INSTALL_NOT_BOUND) == EI._INSTALL_NOT_BOUND
+    assert EI._worse_update_code(EI._INSTALL_NOT_BOUND, 0) == EI._INSTALL_NOT_BOUND
+    assert EI._worse_update_code(0, 0) == 0
 
 
 # === attribution unit coverage ===========================================
@@ -971,12 +1186,79 @@ def test_target_source_key_normalisation(
     assert EI._target_source_key(target, kind) == expected
 
 
-def test_target_source_key_of_a_directory_is_its_absolute_path(tmp_path: Path) -> None:
+def test_target_source_key_of_a_directory_is_its_resolved_path(tmp_path: Path) -> None:
     tree = tmp_path / "t"
     tree.mkdir()
-    assert EI._target_source_key(str(tree), "path") == str(tree)
+    assert EI._target_source_key(str(tree), "path") == str(tree.resolve())
     # …and the recorded file: URL for the same directory reduces to the same key.
-    assert EI._url_fs_key(_uri(tree)) == str(tree)
+    assert EI._url_fs_key(_uri(tree)) == str(tree.resolve())
+
+
+def test_target_source_key_resolves_symlinks(tmp_path: Path) -> None:
+    """A link and its target are the SAME source, and must key the same.
+
+    ``_target_source_key`` normalised with ``abspath``, which does not resolve
+    links, while :func:`_install_spec` hands pip ``Path.resolve()``'d — so pip
+    recorded the realpath and the two keys could never match. Every spelling of
+    the link below must reduce to the target's real path.
+    """
+
+    real = tmp_path / "real"
+    real.mkdir()
+    link = tmp_path / "link"
+    link.symlink_to(real, target_is_directory=True)
+    want = str(real.resolve())
+
+    assert EI._target_source_key(str(real), "path") == want
+    for spelling in (
+        str(link),  # the link itself
+        str(link) + "/",  # …with a trailing slash
+        "link",  # …relative (the fixture chdirs to tmp_path)
+        str(link / ".." / "real"),  # …and '..' traversed THROUGH the link
+    ):
+        assert EI._target_source_key(spelling, "path") == want, spelling
+    # Both sides of the PEP 610 comparison: the recorded file: URL and a
+    # ``git+file://`` target spelled through the link reduce to the same key too.
+    assert EI._url_fs_key(link.as_uri()) == want
+    assert EI._target_source_key("git+" + link.as_uri(), "git") == want
+
+
+def test_a_symlinked_target_keeps_a_healthy_packs_clean_line(
+    trusted_site: Path, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A HEALTHY pack installed through a link must not lose its verdict.
+
+    The end-to-end cost of the key mismatch above, and a REGRESSION on the
+    compatible path: attribution fell through to the no-verdict floor, so a pack
+    that binds perfectly was told "this build has no binding verdict for it" on
+    every repeat install. It failed safe — never a false success — but a healthy
+    pack has to keep the pre-#154 line byte for byte.
+    """
+
+    real = _unnameable_tree(tmp_path, "realtree")
+    link = tmp_path / "linktree"
+    link.symlink_to(real, target_is_directory=True)
+
+    dist_info = install_dist(
+        trusted_site,
+        "goodpack",
+        entry_points={"aelix.extensions": {"goodpack": "goodpack.ext:setup"}},
+        files=_bound_files("goodpack"),
+    )
+    # What pip really records: _install_spec resolves the link BEFORE pip ever
+    # sees the target, so the record names the real directory, not the link.
+    assert EI._install_spec(str(link), "path") == str(real.resolve())
+    _record_direct_url(dist_info, Path(EI._install_spec(str(link), "path")).as_uri(), dir_info={})
+
+    code = run_extension_command(
+        ["install", str(link), "--yes", "--no-verify"],
+        settings=_mem(),
+        runner=_NoopRunner(),
+    )
+    out = capsys.readouterr().out
+    assert code == 0
+    assert RESTART_LINE in out
+    assert EI._INSTALLED_NO_VERDICT not in out
 
 
 def test_recorded_source_key_survives_a_broken_record(tmp_path: Path) -> None:

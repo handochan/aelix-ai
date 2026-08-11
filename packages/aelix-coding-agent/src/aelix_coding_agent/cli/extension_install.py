@@ -164,10 +164,16 @@ _INSTALLER_FAILED = 1
 # named target that matches nothing installed).
 _VERIFY_NOT_BOUND = 1
 
-#: ``install`` / ``discover install`` exit code (issue #154): pip DID install the
-#: distribution, but the host's own import-free resolver — the SAME primitive
-#: ``verify`` reads — says at least one endpoint of the pack just installed will
-#: not bind its manifest.
+#: ``install`` / ``discover install`` / ``update`` exit code (issue #154): the
+#: installer DID put the distribution on disk, but the host's own import-free
+#: resolver — the SAME primitive ``verify`` reads — says at least one endpoint of
+#: the pack just written will not bind its manifest.
+#:
+#: ``update`` returns it for the same fact and therefore the same code: "updated,
+#: and now inert" is "installed, and inert" — an upgrade is an install, the
+#: evidence is identical, and a verb-dependent code would put back exactly the
+#: ambiguity the normalisation below removed. It also keeps ``update && restart``
+#: stopping on the one outcome where restarting cannot help.
 #:
 #: A DISTINCT code rather than ``_VERIFY_NOT_BOUND`` (1) on purpose. 1 means
 #: "the installer ran and FAILED" on this verb (:data:`_INSTALLER_FAILED`, which
@@ -185,8 +191,8 @@ _VERIFY_NOT_BOUND = 1
 _INSTALL_NOT_BOUND = 3
 
 #: The post-install line for a pack with nothing to report. A module constant so
-#: :func:`install_extension` (which prints it for ``update``'s reinstall path) and
-#: the ``install`` verdict reporter cannot drift apart.
+#: :func:`install_extension` (which prints it for the public seam's callers) and
+#: the ``install`` / ``update`` verdict reporter cannot drift apart.
 _INSTALLED_RESTART = (
     "Installed. Restart aelix (or /reload in the TUI) so the loader "
     "discovers it via entry_points."
@@ -1171,12 +1177,14 @@ def install_extension(
     ``input_fn`` are injectable for tests (an injected runner also pins the backend
     to the pip dialect — see :func:`resolve_install_backend`).
 
-    ``announce`` prints :data:`_INSTALLED_RESTART` on success. ``extension
-    install`` passes :data:`False` and prints its own line instead, because that
-    unconditional "Installed. Restart aelix" is the whole of issue #154: the host
-    already knows, import-free, whether the pack it just wrote to disk can bind,
-    and said "restart" to a pack that will never load. Defaulted :data:`True` so
-    the public seam and ``update``'s reinstall path are byte-unchanged.
+    ``announce`` prints :data:`_INSTALLED_RESTART` on success. Both CLI verbs —
+    ``extension install`` and ``extension update`` — pass :data:`False` and print
+    their own line instead, because that unconditional "Installed. Restart aelix"
+    is the whole of issue #154: the host already knows, import-free, whether the
+    pack it just wrote to disk can bind, and said "restart" to a pack that will
+    never load. It stays defaulted :data:`True` for the PUBLIC seam, whose callers
+    have no verdict of their own to print; the CLI reaches it through
+    :func:`_cmd_install` and :func:`_upgrade_and_report`, which do.
     """
 
     if not target.strip():
@@ -2510,11 +2518,22 @@ def _target_source_key(target: str, kind: TargetKind) -> str | None:
     only for direct references), and its bare name already IS the dist name.
 
     Normalised rather than string-compared, because the two sides are written by
-    different code: pip stores ``file://`` + ``os.path.abspath`` for a tree,
+    different code: pip stores ``file://`` + the RESOLVED path for a tree,
     percent-encoded, and stores a git URL with ``git+`` and any ``@<rev>`` /
     ``#egg=`` stripped off. So a ``file:`` URL is reduced to its filesystem path
     and everything else to the bare URL. A key that fails to match yields no
     attribution — never a wrong one.
+
+    The path branch resolves SYMLINKS (:func:`os.path.realpath`), not merely
+    ``abspath``. It has to, because :func:`_install_spec` — which builds the
+    argument pip actually receives — resolves them too (``Path.resolve()``), and
+    pip records what it was given. Normalising one side less than the other made
+    the keys unequal for every symlinked target, so a perfectly HEALTHY pack
+    installed through a link lost its clean line to the no-verdict floor on a
+    repeat install. ``realpath`` is ``abspath`` plus link resolution plus ``..``
+    collapsing (in that order, which is the only correct one once links are in
+    play), so it subsumes what was here before; on a path that does not exist it
+    degrades to exactly the old normalisation rather than raising.
     """
 
     if kind == "pypi":
@@ -2529,13 +2548,19 @@ def _target_source_key(target: str, kind: TargetKind) -> str | None:
             spec = head
         return _url_fs_key(spec)
     try:
-        return os.path.normpath(os.path.abspath(os.path.expanduser(target))).rstrip("/") or None
-    except (OSError, ValueError):  # pragma: no cover — abspath on a hostile cwd
+        return os.path.realpath(os.path.expanduser(target)).rstrip("/") or None
+    except (OSError, ValueError):  # pragma: no cover — realpath on a hostile cwd
         return None
 
 
 def _url_fs_key(url: str) -> str | None:
-    """``file:`` URL → its filesystem path; anything else → the URL, unslashed."""
+    """``file:`` URL → its RESOLVED filesystem path; anything else → the URL, unslashed.
+
+    Symlinks are resolved for the same reason :func:`_target_source_key` resolves
+    them: this function normalises BOTH sides of the PEP 610 comparison (the
+    target's ``git+file://`` spec and the ``url`` pip recorded), and the two are
+    only equal when both are reduced to the same real location.
+    """
 
     try:
         parsed = urlsplit(url)
@@ -2548,7 +2573,7 @@ def _url_fs_key(url: str) -> str | None:
             path = url2pathname(parsed.path)
         except (OSError, ValueError):  # pragma: no cover — malformed percent-escape
             return None
-        return os.path.normpath(path).rstrip("/") or None
+        return os.path.realpath(path).rstrip("/") or None
     return url.rstrip("/") or None
 
 
@@ -3086,7 +3111,20 @@ async def _cmd_update(
     input_fn: Callable[[str], str],
     runner: PipRunner | None,
 ) -> int:
-    """``extension update [<name>]`` — reinstall recorded source(s) --upgrade."""
+    """``extension update [<name>]`` — reinstall recorded source(s) ``--upgrade``.
+
+    Each pack ends with the same import-free binding verdict ``install`` prints
+    (see :func:`_upgrade_and_report`); with several packs the run also closes with
+    a summary, because per-pack reports bury the outcome
+    (:func:`_print_update_summary`).
+
+    Exit: ``0`` when every pack upgraded and every attributed endpoint is BOUND —
+    or when there was no verdict to give, which is not a success claim and does
+    not print one; :data:`_INSTALL_NOT_BOUND` (3) when every installer run
+    succeeded but some attributed endpoint will not bind; :data:`_INSTALLER_FAILED`
+    (1) when an installer ran and failed; ``2`` when one never ran. The last two
+    outrank 3 (:func:`_worse_update_code`).
+    """
 
     name_filter: str | None = None
     yes = False
@@ -3165,7 +3203,7 @@ async def _cmd_update(
             # Not recorded — treat <name> as a pypi package and upgrade it
             # against the registered index sources (covers a name install that
             # was never recorded, e.g. installed before this feature).
-            return _upgrade_pypi_name(
+            code, _dists = _upgrade_pypi_name(
                 name_filter,
                 index_urls,
                 yes=yes,
@@ -3174,6 +3212,7 @@ async def _cmd_update(
                 input_fn=input_fn,
                 runner=runner,
             )
+            return code
         targets = matched
     else:
         targets = installable
@@ -3182,8 +3221,9 @@ async def _cmd_update(
             return 0
 
     worst = 0
+    results: list[tuple[str, int, frozenset[str]]] = []
     for s in targets:
-        code = _upgrade_source(
+        code, dists = _upgrade_source(
             s,
             index_urls,
             yes=yes,
@@ -3192,8 +3232,151 @@ async def _cmd_update(
             input_fn=input_fn,
             runner=runner,
         )
-        worst = worst or code  # first nonzero wins (report the earliest failure)
+        results.append((s.name or _source_identity(s.spec, s.kind), code, dists))
+        worst = _worse_update_code(worst, code)
+    _print_update_summary(results)
     return worst
+
+
+def _worse_update_code(worst: int, code: int) -> int:
+    """Fold one pack's exit code into the run's, HARDEST failure first.
+
+    Before #154 reached this verb, ``update`` folded with "first nonzero wins".
+    That rule was complete because every code it could see meant *something went
+    wrong*. :data:`_INSTALL_NOT_BOUND` breaks it: 3 is the one code that ASSERTS
+    the installer succeeded ("it is on disk, and it will not bind"). Under
+    first-nonzero-wins, an early inert pack followed by a pack pip failed on
+    outright would exit 3 — telling a script everything landed when something did
+    not. So 1 / 2 displace a previously recorded 3, and 3 is reported only when it
+    is true of every target. Among the genuine failures the original rule stands:
+    the earliest one wins.
+    """
+
+    if worst == 0:
+        return code
+    if code == 0:
+        return worst
+    if worst == _INSTALL_NOT_BOUND and code != _INSTALL_NOT_BOUND:
+        return code
+    return worst
+
+
+def _print_update_summary(results: list[tuple[str, int, frozenset[str]]]) -> None:
+    """Close a multi-pack ``update`` with the verdict, so it is not buried.
+
+    A bare ``extension update`` walks every recorded source, and each pack now
+    prints ``install``'s full report — which for a pack that cannot bind is a
+    multi-line block ending in the ABSENT packaging hint. Three of those and the
+    outcome has scrolled away; the last thing on screen would be one arbitrary
+    pack's remove command. So the run ends by naming what happened to all of them.
+
+    Printed ONLY when there are several packs AND at least one is not clean. A run
+    where every pack bound stays byte-identical to what this verb printed before
+    #154 touched it (one :data:`_INSTALLED_RESTART` per pack, nothing else), which
+    keeps the compatible path free of new noise; and a single-pack update needs no
+    summary because its own report is already the last thing printed.
+    """
+
+    if len(results) < 2:
+        return
+    bound = [label for label, code, dists in results if code == 0 and dists]
+    unbound = [label for label, code, _ in results if code == _INSTALL_NOT_BOUND]
+    unknown = [label for label, code, dists in results if code == 0 and not dists]
+    failed = [
+        label
+        for label, code, _ in results
+        if code not in (0, _INSTALL_NOT_BOUND)
+    ]
+    if not (unbound or unknown or failed):
+        return
+    print(
+        f"update summary: {len(results)} pack(s) — {len(bound)} bound, "
+        f"{len(unbound)} NOT bound, {len(unknown)} no verdict, {len(failed)} failed."
+    )
+    for title, names in (
+        ("NOT bound", unbound),
+        ("no verdict", unknown),
+        ("failed", failed),
+    ):
+        if names:
+            print(f"  {title}: {', '.join(sorted(names))}")
+    if unbound or unknown:
+        print("To re-check one: aelix extension verify <name>")
+
+
+def _upgrade_and_report(
+    target: str,
+    *,
+    yes: bool,
+    index_url: str | None = None,
+    extra_index_urls: Iterable[str] | None = None,
+    offline: bool,
+    verify: _VerifyOpts,
+    input_fn: Callable[[str], str],
+    runner: PipRunner | None,
+) -> tuple[int, frozenset[str]]:
+    """``install_extension(..., upgrade=True)`` + the SAME verdict ``install`` prints.
+
+    ``update`` reinstalls through :func:`install_extension`, which announces an
+    unconditional :data:`_INSTALLED_RESTART` — the exact promise issue #154 exists
+    to stop making, still alive on this verb after ``install`` stopped making it.
+    MEASURED on the build that fixed ``install``, throwaway venv, real pip:
+    ``extension update legacypack --yes`` printed "Installed. Restart aelix (or
+    /reload in the TUI) …" and exited 0, while ``extension verify legacypack`` —
+    same build, same instant, same pack — printed "1 of 1 endpoint(s) NOT bound"
+    and exited 1. An upgrade IS an install; the host knows exactly as much about
+    the bytes it just wrote either way, and nothing about ``--upgrade`` makes that
+    promise any safer to make.
+
+    So: ``announce=False``, a before/after ledger snapshot around the call, and the
+    result through :func:`_report_install_binding` — the same three moves
+    :func:`_cmd_install` makes, so the two verbs cannot drift apart again.
+
+    Returns the exit code AND the dists attribution named, because
+    :func:`_cmd_update` may be upgrading many packs and has to summarise them: an
+    empty set with code ``0`` is "no verdict", a non-empty set with code ``0`` is
+    "bound", and the non-zero codes speak for themselves.
+    """
+
+    before = _installed_ext_dists()
+    code = install_extension(
+        target,
+        yes=yes,
+        index_url=index_url,
+        extra_index_urls=extra_index_urls,
+        offline=offline,
+        upgrade=True,
+        no_verify=verify.no_verify,
+        strict=verify.strict,
+        repin=verify.repin,
+        verify_pypi=verify.verify_pypi,
+        require_signature=verify.require_signature,
+        trusted_key=verify.trusted_key,
+        signature_path=verify.signature_path,
+        # The success line is OURS now — same reason as _cmd_install: we know
+        # something install_extension does not, namely whether it can bind.
+        announce=False,
+        input_fn=input_fn,
+        runner=runner,
+    )
+    if code != 0:
+        return code, frozenset()
+    try:
+        # A same-process install stays invisible to importlib.metadata until the
+        # path caches are dropped. ``install`` gets this for free from
+        # _record_install, which ``update`` does not run.
+        importlib.invalidate_caches()
+        dists = _attributed_dists(
+            target, classify_target(target), before, _installed_ext_dists()
+        )
+        return _report_install_binding(dists), dists
+    except Exception as exc:  # noqa: BLE001 — reporting must not fail the upgrade
+        print(
+            f"Warning: could not check whether the pack binds ({exc}).",
+            file=sys.stderr,
+        )
+        print(_INSTALLED_NO_VERDICT)
+        return 0, frozenset()
 
 
 def _upgrade_source(
@@ -3205,8 +3388,8 @@ def _upgrade_source(
     verify: _VerifyOpts,
     input_fn: Callable[[str], str],
     runner: PipRunner | None,
-) -> int:
-    """Reinstall one recorded source with ``--upgrade``."""
+) -> tuple[int, frozenset[str]]:
+    """Reinstall one recorded source with ``--upgrade``, and report its verdict."""
 
     if source.kind == "pypi":
         target = source.name or _bare_package_name(source.spec)
@@ -3220,18 +3403,11 @@ def _upgrade_source(
             runner=runner,
         )
     # git / path: the spec is directly installable.
-    return install_extension(
+    return _upgrade_and_report(
         source.spec,
         yes=yes,
         offline=offline,
-        upgrade=True,
-        no_verify=verify.no_verify,
-        strict=verify.strict,
-        repin=verify.repin,
-        verify_pypi=verify.verify_pypi,
-        require_signature=verify.require_signature,
-        trusted_key=verify.trusted_key,
-        signature_path=verify.signature_path,
+        verify=verify,
         input_fn=input_fn,
         runner=runner,
     )
@@ -3246,25 +3422,18 @@ def _upgrade_pypi_name(
     verify: _VerifyOpts,
     input_fn: Callable[[str], str],
     runner: PipRunner | None,
-) -> int:
+) -> tuple[int, frozenset[str]]:
     """``pip install --upgrade <name>`` against the registered index sources."""
 
     index_url = index_urls[0] if index_urls else None
     extra = index_urls[1:] if index_urls else []
-    return install_extension(
+    return _upgrade_and_report(
         name,
         yes=yes,
         index_url=index_url,
         extra_index_urls=extra,
         offline=offline,
-        upgrade=True,
-        no_verify=verify.no_verify,
-        strict=verify.strict,
-        repin=verify.repin,
-        verify_pypi=verify.verify_pypi,
-        require_signature=verify.require_signature,
-        trusted_key=verify.trusted_key,
-        signature_path=verify.signature_path,
+        verify=verify,
         input_fn=input_fn,
         runner=runner,
     )
