@@ -48,6 +48,17 @@ RESTART_LINE = (
 )
 
 
+def test_exit_codes_are_the_documented_four() -> None:
+    """``install``'s exit contract, pinned. ADR-0185 gave this verb a 3-way split
+    (0 / pip's code / 2 = never ran); #154 adds a FOURTH value rather than
+    overloading pip's ``1``, so a script can still tell "nothing landed on disk"
+    from "installed but it will not bind"."""
+
+    assert EI._INSTALL_NOT_BOUND == 3
+    assert EI._EXIT_DIDNT_RUN == 2
+    assert EI._INSTALL_NOT_BOUND not in (0, 1, EI._EXIT_DIDNT_RUN)
+
+
 @pytest.fixture(autouse=True)
 def _isolate_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep settings / agent-dir / project scope off the developer's real files."""
@@ -238,9 +249,11 @@ def test_incompatible_pack_is_reported_and_not_called_installed_restart(
     )
     out = capsys.readouterr().out
 
-    assert code == EI._INSTALL_NOT_BOUND
-    # The line the issue is named after must be GONE for this pack.
+    # Asserted FIRST on purpose: this is the defect in its observable form, so a
+    # revert-check failure reads as the bug ("Restart aelix" for a pack that will
+    # never load) rather than as a missing symbol.
     assert RESTART_LINE not in out
+    assert code == 3
     assert "will NOT bind" in out
     assert "INCOMPATIBLE" in out
     # FIXTURE TRAP GUARD: prove it failed for the API-level reason, not because
