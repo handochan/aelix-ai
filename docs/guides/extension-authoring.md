@@ -476,6 +476,36 @@ unbindable. `aelix extension list` annotates the same verdict. Wire
 `aelix extension verify <name>` into your release CI so a build that drops the
 manifest fails there, not silently on a user's machine. See ADR-0207.
 
+**`install` tells you the same thing, without being asked** (#154). Since the
+host can reach that verdict offline and without importing your pack, `aelix
+extension install` and `aelix extension discover install` end by reporting it for
+the distribution they just installed — so a user never sees "Installed. Restart
+aelix" for a pack this build will refuse to load:
+
+```bash
+aelix extension install ./my-ext --yes
+#   Installed, but this build already knows 1 of 1 endpoint(s) will NOT bind:
+#     INCOMPATIBLE my-ext [my-ext 1.0.0]
+#         Plugin 'my-ext' … requires API_LEVEL >= 7, host has 1; not loaded.
+#     → not loaded at all on this build.
+#   The distribution is installed; nothing was undone. To remove it:
+#     aelix extension remove my-ext
+echo $?   # 3
+```
+
+Exit **3** means pip installed the distribution but some endpoint of it will not
+bind. `0` still means installed *and* bindable, pip's own code still means the
+install failed, and `2` still means it never ran — so a script can tell the four
+apart. The package is never auto-uninstalled: undoing what you asked for would be
+its own surprise, so you get the exact `remove` command instead. Only the
+distribution you just installed is reported, so an unrelated broken pack already
+in the environment is not blamed on this install.
+
+`install` accepts `--trust-extension-path DIST` for the same reason `verify` does
+— see the next section. Without it, a pack installed outside the environment's
+real site directories (`pip --target` plus a matching `PYTHONPATH`) would be
+reported `UNTRUSTED_PATH`, which says "unvouched", not "broken".
+
 ### Developing with `pip install -e` — the manifest downgrade
 
 **An editable install loads your pack WITHOUT its manifest.** This is the one

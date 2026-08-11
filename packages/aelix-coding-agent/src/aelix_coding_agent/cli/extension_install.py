@@ -83,6 +83,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import tomllib
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -107,7 +108,8 @@ _USAGE = (
     "usage: aelix extension <command>\n"
     "  install <path | git-url | package[==version]>  [--yes] [--index-url URL] "
     "[--offline] [--no-verify] [--strict] [--repin] [--verify-pypi] "
-    "[--require-signature] [--trusted-key ID] [--signature PATH]\n"
+    "[--require-signature] [--trusted-key ID] [--signature PATH] "
+    "[--trust-extension-path DIST]\n"
     "  source add <path | git-url | index-url>        [--yes]\n"
     "  source add --catalog <url | file | git>\n"
     "  source list\n"
@@ -120,7 +122,8 @@ _USAGE = (
     "[--no-default-catalog]\n"
     "  discover install <name>                        [--catalog CAT] [--yes] "
     "[--index-url URL] [--offline] [--no-verify] [--strict] [--repin] [--verify-pypi] "
-    "[--require-signature] [--trusted-key ID] [--signature PATH]\n"
+    "[--require-signature] [--trusted-key ID] [--signature PATH] "
+    "[--trust-extension-path DIST]\n"
     "  update [<name>]                                [--yes] [--offline] "
     "[--no-verify] [--strict] [--repin] [--verify-pypi] [--require-signature] "
     "[--trusted-key ID] [--signature PATH]\n"
@@ -145,6 +148,32 @@ _EXIT_DIDNT_RUN = 2
 # 2 (``_EXIT_DIDNT_RUN``) = it did not get as far as verifying (usage error, or a
 # named target that matches nothing installed).
 _VERIFY_NOT_BOUND = 1
+
+#: ``install`` / ``discover install`` exit code (issue #154): pip DID install the
+#: distribution, but the host's own import-free resolver — the SAME primitive
+#: ``verify`` reads — says at least one endpoint of the pack just installed will
+#: not bind its manifest.
+#:
+#: A DISTINCT code rather than ``_VERIFY_NOT_BOUND`` (1) on purpose. 1 already
+#: means "pip ran and FAILED" on this verb, and ADR-0185 exists precisely so a
+#: script can tell that apart from "pip never ran" (2). Collapsing "installed but
+#: inert" onto 1 would destroy that split and tell a script nothing landed on
+#: disk, when something did. 3 keeps 0 = installed-and-bindable, so an existing
+#: ``install && …`` chain still stops — which is the point — while a script that
+#: cares can distinguish the three failure shapes.
+#:
+#: The GATE matches ``verify``'s exactly: non-zero iff some reported endpoint is
+#: not ``BOUND``. The two commands ran the same primitive and disagreed in what
+#: they told the user; after #154 they agree in verdict, in wording, and in gate.
+_INSTALL_NOT_BOUND = 3
+
+#: The post-install line for a pack with nothing to report. A module constant so
+#: :func:`install_extension` (which prints it for ``update``'s reinstall path) and
+#: the ``install`` verdict reporter cannot drift apart.
+_INSTALLED_RESTART = (
+    "Installed. Restart aelix (or /reload in the TUI) so the loader "
+    "discovers it via entry_points."
+)
 
 #: The entry-point group the loader's Tier-4 pass discovers (loader.py:750).
 ENTRY_POINT_GROUP = "aelix.extensions"
@@ -1076,6 +1105,7 @@ def install_extension(
     trusted_key: str | None = None,
     signature_path: str | None = None,
     agent_dir: str | None = None,
+    announce: bool = True,
     input_fn: Callable[[str], str] = input,
     runner: PipRunner | None = None,
 ) -> int:
@@ -1087,6 +1117,13 @@ def install_extension(
     / ``signature_path`` drive the #67 Ed25519 provenance branch. ``runner`` and
     ``input_fn`` are injectable for tests (an injected runner also pins the backend
     to the pip dialect — see :func:`resolve_install_backend`).
+
+    ``announce`` prints :data:`_INSTALLED_RESTART` on success. ``extension
+    install`` passes :data:`False` and prints its own line instead, because that
+    unconditional "Installed. Restart aelix" is the whole of issue #154: the host
+    already knows, import-free, whether the pack it just wrote to disk can bind,
+    and said "restart" to a pack that will never load. Defaulted :data:`True` so
+    the public seam and ``update``'s reinstall path are byte-unchanged.
     """
 
     if not target.strip():
@@ -1250,10 +1287,8 @@ def install_extension(
                         f"Warning: could not record integrity pin: {exc}",
                         file=sys.stderr,
                     )
-            print(
-                "Installed. Restart aelix (or /reload in the TUI) so the loader "
-                "discovers it via entry_points."
-            )
+            if announce:
+                print(_INSTALLED_RESTART)
         else:
             print(f"{backend.label} install failed (exit {code}).", file=sys.stderr)
         return code
@@ -2300,6 +2335,204 @@ def classify_installed_endpoints(
     return out
 
 
+def _print_endpoint_status(status: EndpointStatus) -> None:
+    """Render ONE endpoint verdict — the SINGLE renderer ``verify`` and the
+    post-install report both call (issue #154).
+
+    Shared on purpose. The defect #154 reports is not that install lacked a
+    check; it is that install and ``verify``, running the SAME primitive at the
+    SAME instant, told the user opposite things. One renderer makes a wording
+    drift between them impossible.
+    """
+
+    if status.bound:
+        print(f"  BOUND     {status.label()}  (manifest: plugin {status.plugin_id!r})")
+        return
+    # ``outcome is None`` is the API-level refusal — the pack says in writing it
+    # cannot run on this host, so it is INCOMPATIBLE, not merely unproven.
+    state = status.outcome.value.upper() if status.outcome is not None else "INCOMPATIBLE"
+    print(f"  {state:<9} {status.label()}")
+    print(f"      {status.reason}")
+    if status.outcome is EpOutcome.ABSENT:
+        print(f"      hint: {_ABSENT_HINT}")
+
+
+def _endpoint_is_refused(status: EndpointStatus) -> bool:
+    """True when the loader drops this endpoint ENTIRELY — no carrier at all.
+
+    Exactly two outcomes do that (loader.py ``_entry_point_manifests``): the API
+    refusal (``outcome is None`` here) and ``UNTRUSTED_PATH``. Every other
+    non-bound outcome still yields a carrier and runs ``setup()``; it only loses
+    the manifest, hence its declarative contributions. The distinction is worth
+    keeping because "will not load at all" and "loads without its declarations"
+    call for different actions, and claiming the stronger one falsely would be
+    its own defect.
+    """
+
+    return status.outcome is None or status.outcome is EpOutcome.UNTRUSTED_PATH
+
+
+def _installed_ext_dists() -> dict[str, str | None]:
+    """Snapshot ``dist name -> version`` for every dist exposing an endpoint.
+
+    The version rides along so an UPGRADE of an already-installed pack is
+    attributable to the install that caused it — a name-only diff sees nothing
+    change and would report the new build's verdict on nobody.
+    """
+
+    out: dict[str, str | None] = {}
+    for ext in list_installed_extensions():
+        if ext.dist_name:
+            out[ext.dist_name] = ext.version
+    return out
+
+
+def _target_dist_hint(target: str, kind: TargetKind) -> str | None:
+    """The distribution name the TARGET ITSELF names, when it names one.
+
+    The before/after diff catches a first install and an upgrade, but not a
+    reinstall of the same version — pip is a no-op there ("Requirement already
+    satisfied"), nothing in the ledger moves, and a diff-only attribution would
+    fall silent on the second ``install`` of the very pack that cannot bind. So
+    the target is asked as well:
+
+    * ``pypi`` — the bare name IS the distribution name, by definition;
+    * ``path`` — a wheel/sdist filename carries it, and a source tree carries it
+      in ``[project] name``;
+    * ``git`` — NOTHING. A repository name is not a distribution name and
+      guessing would risk attributing an unrelated installed pack to this
+      install, which is the one error this whole function must not make.
+
+    Whatever comes back is only ever INTERSECTED with what is actually installed,
+    so a wrong guess yields nothing rather than a false accusation.
+    """
+
+    if kind == "pypi":
+        return _bare_package_name(target) or None
+    if kind == "git":
+        return None
+    path = Path(target).expanduser()
+    name = path.name
+    if name.endswith(".whl"):
+        # PEP 427: {distribution}-{version}(-{build})?-{python}-{abi}-{platform}
+        return name.split("-", 1)[0] or None
+    for suffix in (".tar.gz", ".zip", ".tar.bz2"):
+        if name.endswith(suffix):
+            stem = name[: -len(suffix)]
+            return stem.rsplit("-", 1)[0] or None
+    pyproject = path / "pyproject.toml"
+    try:
+        with pyproject.open("rb") as fh:
+            data = tomllib.load(fh)
+    except (OSError, tomllib.TOMLDecodeError):
+        return None
+    project = data.get("project")
+    if isinstance(project, dict):
+        declared = project.get("name")
+        if isinstance(declared, str) and declared.strip():
+            return declared.strip()
+    return None
+
+
+def _attributed_dists(
+    target: str,
+    kind: TargetKind,
+    before: Mapping[str, str | None],
+    after: Mapping[str, str | None],
+) -> frozenset[str]:
+    """The distributions THIS install is responsible for — never the whole env.
+
+    ``classify_installed_endpoints`` reports every installed endpoint. Printing
+    all of them after installing one pack would be noise, and would blame the new
+    pack for a broken endpoint that was already there before the command ran.
+    Attribution is therefore three narrow sources, unioned:
+
+    * a dist that appeared (first install),
+    * a dist whose version moved (upgrade),
+    * the dist the target itself names, IF it is installed (reinstall).
+
+    One distribution can expose several endpoints, so this is a set of DISTS and
+    the report filters endpoints by dist membership — not the other way round.
+    """
+
+    attributed = {name for name in after if name not in before}
+    attributed |= {
+        name for name, version in after.items() if name in before and before[name] != version
+    }
+    hint = _target_dist_hint(target, kind)
+    if hint:
+        want = _canon(hint)
+        attributed |= {name for name in after if _canon(name) == want}
+    return frozenset(attributed)
+
+
+def _report_install_binding(
+    dists: frozenset[str], *, trusted_ep_dists: frozenset[str] = frozenset()
+) -> int:
+    """Print what the host already knows about the pack just installed (#154).
+
+    Runs :func:`classify_installed_endpoints` — import-free, offline, the same
+    primitive ``verify`` and ``list`` read — and keeps only the endpoints owned by
+    ``dists``. Returns ``0`` when every one of them is BOUND (and prints exactly
+    the pre-#154 line, so a healthy install gains no new output at all), or
+    :data:`_INSTALL_NOT_BOUND` when any is not.
+
+    An empty ``dists``, or a dist that exposes no ``aelix.extensions`` endpoint at
+    all, means there is nothing to say: the pre-#154 line is printed and ``0``
+    returned. Silence is the honest answer when nothing was attributed — the one
+    thing this must never do is invent a verdict.
+    """
+
+    if not dists:
+        print(_INSTALLED_RESTART)
+        return 0
+    # A same-process install is invisible to importlib.metadata until the path
+    # caches are dropped.
+    importlib.invalidate_caches()
+    owned = {_canon(name) for name in dists}
+    statuses = [
+        s
+        for s in classify_installed_endpoints(trusted_ep_dists=trusted_ep_dists)
+        if s.dist_name is not None and _canon(s.dist_name) in owned
+    ]
+    unbound = [s for s in statuses if not s.bound]
+    if not unbound:
+        print(_INSTALLED_RESTART)
+        return 0
+
+    refused = [s for s in unbound if _endpoint_is_refused(s)]
+    print(
+        f"Installed, but this build already knows {len(unbound)} of "
+        f"{len(statuses)} endpoint(s) will NOT bind:"
+    )
+    for status in unbound:
+        _print_endpoint_status(status)
+    if refused:
+        print("  → not loaded at all on this build.")
+    if len(refused) < len(unbound):
+        print(
+            "  → their declarative contributions (tools, hooks, themes, TUI "
+            "widgets, MCP servers) are ignored until the manifest binds."
+        )
+    bound = len(statuses) - len(unbound)
+    if bound:
+        print(
+            f"{bound} endpoint(s) of this install DID bind — restart aelix "
+            f"(or /reload in the TUI) to pick those up."
+        )
+    # The pip package is already on disk by the time any of this is knowable, and
+    # silently undoing what the user asked for would be its own defect. So: say
+    # so plainly, and hand over the exact command rather than performing it.
+    # ``statuses`` is filtered on ``dist_name is not None``, so this is non-empty
+    # whenever ``unbound`` is.
+    affected = sorted({s.dist_name for s in unbound if s.dist_name})
+    print("The distribution is installed; nothing was undone. To remove it:")
+    for dist in affected:
+        print(f"  aelix extension remove {dist}")
+    print(f"To re-check: aelix extension verify {affected[0]}")
+    return _INSTALL_NOT_BOUND
+
+
 def _cmd_list() -> int:
     """``extension list`` — the installed inventory (entry-point ledger).
 
@@ -2515,15 +2748,11 @@ def _cmd_verify(args: list[str]) -> int:
 
     failed = 0
     for s in statuses:
-        if s.bound:
-            print(f"  BOUND     {s.label()}  (manifest: plugin {s.plugin_id!r})")
-            continue
-        failed += 1
-        state = s.outcome.value.upper() if s.outcome is not None else "INCOMPATIBLE"
-        print(f"  {state:<9} {s.label()}")
-        print(f"      {s.reason}")
-        if s.outcome is EpOutcome.ABSENT:
-            print(f"      hint: {_ABSENT_HINT}")
+        if not s.bound:
+            failed += 1
+        # ONE renderer, shared with the post-install report (#154) — see
+        # :func:`_print_endpoint_status`.
+        _print_endpoint_status(s)
 
     total = len(statuses)
     if failed:
@@ -2543,7 +2772,20 @@ async def _cmd_install(
     input_fn: Callable[[str], str],
     runner: PipRunner | None,
 ) -> int:
-    """``extension install <target>`` — #19 install + resolve + record."""
+    """``extension install <target>`` — #19 install + resolve + record + VERDICT.
+
+    Since issue #154 the command ends by asking the host's own import-free
+    resolver whether the pack it just wrote to disk can actually bind, and reports
+    THAT instead of an unconditional "Installed. Restart aelix". The check was
+    already written, already local, and already read by ``verify`` and ``list``;
+    install simply never called it, so the two commands contradicted each other
+    at the same instant on the same build.
+
+    Exit: ``0`` when pip succeeded and every attributed endpoint is BOUND (output
+    byte-identical to pre-#154 — a healthy install gains no noise);
+    :data:`_INSTALL_NOT_BOUND` (3) when pip succeeded and some attributed endpoint
+    is not; pip's own code / ``2`` unchanged when the install itself failed.
+    """
 
     parsed = _parse_install_flags(args)
     if isinstance(parsed, int):
@@ -2561,7 +2803,7 @@ async def _cmd_install(
             index_url = registered[0]
             extra_index_urls = registered[1:]
 
-    before = _installed_dist_names()
+    before = _installed_ext_dists()
     code = install_extension(
         target,
         yes=parsed.yes,
@@ -2575,12 +2817,32 @@ async def _cmd_install(
         require_signature=parsed.require_signature,
         trusted_key=parsed.trusted_key,
         signature_path=parsed.signature_path,
+        # The success line is OURS now — we know something install_extension does
+        # not: whether the thing it just wrote can bind.
+        announce=False,
         input_fn=input_fn,
         runner=runner,
     )
-    if code == 0:
-        await _record_install(settings, target, kind, before)
-    return code
+    if code != 0:
+        return code
+    await _record_install(settings, target, kind, set(before))
+    # Never let a classification fault turn a completed install into a crash: the
+    # package IS on disk, and the pre-#154 line is the honest fallback for "we
+    # could not tell". ``classify_installed_endpoints`` already degrades a broken
+    # environment to an empty inventory, so this is belt-and-braces.
+    try:
+        return _report_install_binding(
+            _attributed_dists(target, kind, before, _installed_ext_dists()),
+            trusted_ep_dists=frozenset(parsed.trust_extension_paths),
+        )
+    except Exception as exc:  # noqa: BLE001 — reporting must not fail the install
+        print(
+            f"Warning: could not check whether the pack binds ({exc}); "
+            "run 'aelix extension verify'.",
+            file=sys.stderr,
+        )
+        print(_INSTALLED_RESTART)
+        return 0
 
 
 async def _record_install(
@@ -3103,7 +3365,11 @@ async def _cmd_discover_install(
     a single entry (REFUSING an ambiguous name with a candidate list), then hands
     the RESOLVED ``entry.source`` — never the friendly name — to the unchanged
     :func:`_cmd_install`, so consent + ``verify_and_pin`` + pip + ``_record_install``
-    all run exactly as for a direct install.
+    + the #154 post-install verdict all run exactly as for a direct install.
+
+    That delegation is why ``discover install`` needs no verdict logic of its own,
+    and why its exit code (including :data:`_INSTALL_NOT_BOUND`) is IDENTICAL to
+    ``install``'s by construction rather than by two implementations agreeing.
     """
 
     name: str | None = None
@@ -3123,7 +3389,12 @@ async def _cmd_discover_install(
             if not catalog_name.strip():
                 print("Error: --catalog requires a catalog name.", file=sys.stderr)
                 return _EXIT_DIDNT_RUN
-        elif a in ("--index-url", "--trusted-key", "--signature"):
+        elif a in (
+            "--index-url",
+            "--trusted-key",
+            "--signature",
+            "--trust-extension-path",
+        ):
             # A value-taking install flag — pass BOTH tokens through untouched so the
             # value is never mistaken for the <name> positional.
             install_flags.append(a)
@@ -3602,6 +3873,15 @@ class _InstallFlags:
     require_signature: bool = False
     trusted_key: str | None = None
     signature_path: str | None = None
+    #: ``--trust-extension-path DIST`` (repeatable). NEVER reaches pip — it is
+    #: consumed entirely by the post-install verdict (#154), where it means the
+    #: same thing it means to ``verify`` and to ``aelix`` itself: vouch for ONE
+    #: distribution whose install root sits outside the environment's real site
+    #: directories. Measured reachable on the install path (``PIP_TARGET`` /
+    #: ``--target`` + a matching ``PYTHONPATH``): without it, install would print
+    #: UNTRUSTED_PATH and exit 3 at a pack that is merely unvouched, not broken —
+    #: and would keep doing so on every reinstall.
+    trust_extension_paths: tuple[str, ...] = ()
 
 
 def _parse_install_flags(rest: list[str]) -> _InstallFlags | int:
@@ -3618,6 +3898,7 @@ def _parse_install_flags(rest: list[str]) -> _InstallFlags | int:
     require_signature = False
     trusted_key: str | None = None
     signature_path: str | None = None
+    trust_paths: list[str] = []
     only_positional = False  # set once a bare ``--`` is seen
     i = 0
     while i < len(rest):
@@ -3680,6 +3961,24 @@ def _parse_install_flags(rest: list[str]) -> _InstallFlags | int:
                 print("Error: --signature requires a path.", file=sys.stderr)
                 return _EXIT_DIDNT_RUN
             signature_path = value
+        elif a == "--trust-extension-path":
+            i += 1
+            if i >= len(rest) or not rest[i].strip():
+                print(
+                    "Error: --trust-extension-path requires a DIST name.",
+                    file=sys.stderr,
+                )
+                return _EXIT_DIDNT_RUN
+            trust_paths.append(rest[i])
+        elif a.startswith("--trust-extension-path="):
+            value = a.split("=", 1)[1]
+            if not value.strip():
+                print(
+                    "Error: --trust-extension-path requires a DIST name.",
+                    file=sys.stderr,
+                )
+                return _EXIT_DIDNT_RUN
+            trust_paths.append(value)
         elif a in ("-h", "--help"):
             print(_USAGE)
             return 0
@@ -3703,6 +4002,7 @@ def _parse_install_flags(rest: list[str]) -> _InstallFlags | int:
         require_signature=require_signature,
         trusted_key=trusted_key,
         signature_path=signature_path,
+        trust_extension_paths=tuple(trust_paths),
     )
 
 
