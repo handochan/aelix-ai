@@ -319,12 +319,28 @@ def blocked_summary(models: Iterable[Any], apis: set[str] | None = None) -> str:
     say why in one line, grouped by reason so it never asserts one reason for
     models that do not share it (#153). Shape::
 
-        no adapter in this build (azure-openai-responses 42, mistral 28); set
-        CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_GATEWAY_ID (cloudflare-ai-gateway 35)
+        set CLOUDFLARE_ACCOUNT_ID (cloudflare-workers-ai 8); set
+        CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_GATEWAY_ID (cloudflare-ai-gateway 35);
+        no adapter in this build (mistral 1)
 
-    Reasons are emitted in sorted reason-id order and providers in sorted name
-    order, so the line is deterministic. Runnable models are skipped; an empty
-    ``apis`` (headless/tests) yields ``""`` because nothing is blocked there.
+    Groups by (reason, HINT), not by reason alone. Two providers can share the
+    reason ``config-missing`` and need DIFFERENT variables: grouping on the
+    reason unions their names, so the line told a ``cloudflare-workers-ai`` user
+    to set ``CLOUDFLARE_GATEWAY_ID``, which that provider does not use::
+
+        workers-ai alone: set CLOUDFLARE_ACCOUNT_ID (cloudflare-workers-ai 8)
+        both together   : set CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_GATEWAY_ID
+                          (cloudflare-ai-gateway 35, cloudflare-workers-ai 8)
+
+    Never WRONG — setting the union does fix every provider in the group — but
+    over-broad, and it disagreed with the per-row hints, which are precise. It
+    matters more now that this line is the ONLY place the variable names appear
+    (#153 round 2: the names no longer fit on a picker row).
+
+    Groups are emitted in sorted (reason, hint) order and providers in sorted
+    name order, so the line is deterministic. Runnable models are skipped; an
+    empty ``apis`` (headless/tests) yields ``""`` because nothing is blocked
+    there.
 
     This exists because the two live call sites both used to hardcode ONE
     example — ``model_picker``'s hidden-count line said "e.g. openai-responses /
@@ -336,25 +352,24 @@ def blocked_summary(models: Iterable[Any], apis: set[str] | None = None) -> str:
     if not apis:
         return ""
     rows = list(models)
-    # reason id → provider → count, plus the rows behind each reason (the
-    # ``config-missing`` hint reads env-var names off their base URLs).
-    counts: dict[str, dict[str, int]] = {}
-    behind: dict[str, list[Any]] = {}
+    # (reason id, hint) → provider → count. The hint is derived PER MODEL — for
+    # ``config-missing`` it is that model's own unexpanded base-URL placeholders
+    # — so models needing different variables land in different groups.
+    counts: dict[tuple[str, str], dict[str, int]] = {}
     for model in rows:
         reason = blocked_reason(model, apis)
         if not reason:
             continue
+        hint = _single_block_hint(reason, [model], apis) or reason
         provider = getattr(model, "provider", None) or "?"
-        by_provider = counts.setdefault(reason, {})
+        by_provider = counts.setdefault((reason, hint), {})
         by_provider[provider] = by_provider.get(provider, 0) + 1
-        behind.setdefault(reason, []).append(model)
     if not counts:
         return ""
     parts: list[str] = []
-    for reason in sorted(counts):
-        hint = _single_block_hint(reason, behind[reason], apis) or reason
-        providers = ", ".join(f"{p} {n}" for p, n in sorted(counts[reason].items()))
-        parts.append(f"{hint} ({providers})")
+    for key in sorted(counts):
+        providers = ", ".join(f"{p} {n}" for p, n in sorted(counts[key].items()))
+        parts.append(f"{key[1]} ({providers})")
     return "; ".join(parts)
 
 
