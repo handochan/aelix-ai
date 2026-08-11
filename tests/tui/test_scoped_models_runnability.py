@@ -453,10 +453,18 @@ async def test_all_models_stays_reachable_when_a_dead_end_is_hidden(
     assert any("all models enabled" in _plain(c) for c in out)
 
 
-async def test_narrowing_preview_counts_the_catalog_and_flags_the_hidden_rows(
+async def test_narrowing_preview_counts_what_is_selectable_and_flags_the_rest(
     real_adapters,
 ) -> None:
-    """The other preview branch: a real narrowing says what it leaves out."""
+    """The other preview branch: a real narrowing says what it leaves out.
+
+    ROUND 3 — the denominator is what the picker can SELECT (2), not the whole
+    catalog (3). Through round 2 it was the catalog, which made the counter
+    unreachable by construction: the numerator is bounded by ``collapse_target``,
+    so with anything hidden it could never equal its own total and jumped from
+    "N of M" straight to "All models enabled". The model missing from the
+    denominator is the one the very next line names.
+    """
 
     sm = SettingsManager.in_memory({"enabledModels": ["good/ok"]})
     picker = _Picker()
@@ -466,11 +474,32 @@ async def test_narrowing_preview_counts_the_catalog_and_flags_the_hidden_rows(
         multiselect=picker,
         commit=lambda _c: None,
     )
-    # Denominator = the whole catalog (3), not the 2 rows drawn today.
-    assert picker.preview_lines[0] == "1 of 3 models enabled."
+    assert picker.preview_lines[0] == "1 of 2 models enabled."
     assert picker.preview_lines[1] == (
         "1 unrunnable model(s) not shown, and not in this selection."
     )
+
+
+async def test_preview_can_actually_reach_its_own_denominator(real_adapters) -> None:
+    """ROUND 3 — "N of M" with N == M is a state a user can be in.
+
+    The seed here already covers every selectable row, so the preview reads
+    "2 of 2" instead of skipping to "All models enabled" — and it agrees with
+    what the save then writes (a list, because nothing was toggled).
+    """
+
+    sm = SettingsManager.in_memory({"enabledModels": ["good/ok", "cfgw/haiku"]})
+    picker = _Picker()
+    await run_scoped_models(
+        registry=_FakeRegistry([RUNNABLE, RECOVERABLE, DEAD_END]),
+        settings_manager=sm,
+        multiselect=picker,
+        commit=lambda _c: None,
+    )
+    assert picker.ids() == {"good/ok", "cfgw/haiku"}
+    assert picker.preview_lines[0] == "2 of 2 models enabled."
+    # The preview promised a scoping; the write must be that scoping.
+    assert sm.get_enabled_models() == ["cfgw/haiku", "good/ok"]
 
 
 # === fail-open: unknown is not broken =========================================
@@ -558,7 +587,12 @@ def test_label_budget_is_pinned_to_the_widget_frame() -> None:
 
     from aelix_coding_agent.tui import context as ctx_mod
 
-    assert sm_mod._ROW_CHROME == len("▸ ") + len("[✓] ")
+    # Measured side on the LEFT, module constant on the right: ruff reads an
+    # UPPER_CASE name as the constant half of a comparison, so
+    # ``_ROW_CHROME == <anything computed>`` is a Yoda condition (SIM300) — and
+    # the repo's CI lint gate is ``ruff check .``.
+    cursor_and_checkbox = len("▸ ") + len("[✓] ")
+    assert cursor_and_checkbox == sm_mod._ROW_CHROME
     assert sm_mod._LABEL_BUDGET == ctx_mod._PICK_MAX_WIDTH - sm_mod._ROW_CHROME
 
 
@@ -586,6 +620,79 @@ def test_annotated_rows_fit_the_picker_frame(real_adapters) -> None:
     assert rows[0][0] == (
         "cloudflare-ai-gateway/workers-ai/@cf/nvidia/nemotron-3-120b-a12b"
     )
+
+
+@pytest.mark.parametrize(
+    "label",
+    [
+        "가" * 60,  # all-wide: the tail alone busted the budget
+        "가" * 37,
+        "猫" * 45,
+        "[" + "あ" * 40 + "] x",  # wide head, narrow tail
+        "[bbbbb]" + "漢" * 50,  # narrow head, wide tail
+        "漢" * 40 + "a" * 40,  # wide head, narrow tail, both long
+        "a" * 200,  # all-narrow
+        "[provider] " + "字a" * 50,  # alternating
+        "…" * 80,  # the ellipsis itself, repeated
+    ],
+)
+@pytest.mark.parametrize("limit", [8, 9, 20, 57, 60, sm_mod._LABEL_BUDGET])
+def test_fit_never_exceeds_its_limit_for_wide_or_mixed_labels(
+    label: str, limit: int
+) -> None:
+    """ROUND 3 — ``_fit`` promises "at most ``limit`` columns"; hold it to that.
+
+    The first cut sliced head and tail by CODEPOINT and then shrank only the
+    head, so a label whose TAIL was wide stayed one column over however far the
+    head shrank: ``_fit("가" * 60)`` measured 73 against a 72-column budget. No
+    bundled model id contains a wide character, but a user's own ``models.json``
+    or an extension-registered provider can carry any id.
+    """
+
+    out = sm_mod._fit(label, limit)
+    assert sm_mod._display_width(out) <= limit, repr(out)
+
+
+@pytest.mark.parametrize("limit", [8, 20, 57, sm_mod._LABEL_BUDGET])
+def test_fit_keeps_both_ends_and_stays_within_one_column_of_the_budget(
+    limit: int,
+) -> None:
+    """Fitting must still be a MIDDLE ellipsis, and must not over-shrink.
+
+    A "clip to nothing" implementation would also satisfy the width bound, so
+    pin the useful properties too: both ends survive, and the result fills the
+    budget nearly exactly. "Nearly" is bounded at TWO columns and no more — each
+    clipped end can strand at most one column, when the next character is wide
+    and only one column of its budget is left. ASCII labels have no slack at all;
+    :func:`test_fit_is_unchanged_for_narrow_labels` pins that case exactly.
+    """
+
+    label = "[provider] " + "字" * 60
+    out = sm_mod._fit(label, limit)
+    assert out.startswith("[")
+    assert out.endswith("字")
+    assert sm_mod._ELLIPSIS in out
+    assert limit - sm_mod._display_width(out) <= 2
+
+
+def test_fit_is_unchanged_for_narrow_labels() -> None:
+    """The catalog is all-ASCII, so the column-accurate slice must not churn it.
+
+    Reproduces the previous codepoint-slicing implementation and asserts the two
+    agree wherever the old one was correct — 1001 of 1001 real catalog labels.
+    """
+
+    def previous_implementation(label: str, limit: int) -> str:
+        keep = limit - 1
+        head = (keep + 1) // 2
+        tail = keep - head
+        return f"{label[:head]}…{label[-tail:]}"
+
+    for length in range(73, 200):
+        label = "[openrouter] " + "x" * (length - 13)
+        assert sm_mod._fit(label) == previous_implementation(
+            label, sm_mod._LABEL_BUDGET
+        )
 
 
 def test_short_rows_are_left_alone(real_adapters) -> None:
@@ -701,6 +808,96 @@ async def test_real_widget_explicit_scoping_survives_a_no_change_save(
         pipe.send_text("\r")  # confirm, touching nothing
         await asyncio.wait_for(run, timeout=5)
     assert sm.get_enabled_models() == ["cfgw/haiku"]
+
+
+async def test_real_widget_zero_keystroke_save_does_not_widen_to_all_models(
+    real_adapters,
+) -> None:
+    """ROUND 3 HIGH, against the REAL widget — the double cannot see this either.
+
+    An explicit allow-list that happens to equal the offered set met the collapse
+    test on its SEED alone, so opening the picker and pressing Enter — zero
+    keystrokes, nothing touched — replaced the scoping with "all models" and
+    re-enabled every hidden dead end with it. Invariant (1) running in the
+    widening direction, and the pre-#153 code preserved the list here.
+
+    A ``multiselect`` double cannot reproduce it: the collapse is driven by what
+    the widget returns for an UNTOUCHED seed, which is exactly what a double
+    stubs out.
+    """
+
+    sm = SettingsManager.in_memory({"enabledModels": ["cfgw/haiku", "good/ok"]})
+    async with _live_ctx() as (ctx, chrome, pipe):
+        run = asyncio.ensure_future(
+            run_scoped_models(
+                registry=_FakeRegistry([RUNNABLE, RECOVERABLE, DEAD_END]),
+                settings_manager=sm,
+                multiselect=ctx.multiselect,
+                commit=lambda _c: None,
+            )
+        )
+        await _wait_modal(chrome)
+        pipe.send_text("\r")  # confirm, touching nothing at all
+        await asyncio.wait_for(run, timeout=5)
+    # NOT None: the scoping survives, and mistral/large stays disabled.
+    saved = sm.get_enabled_models()
+    assert saved == ["cfgw/haiku", "good/ok"]
+
+
+async def test_real_widget_all_sentinel_survives_two_pass_recovery(
+    real_adapters,
+) -> None:
+    """ROUND 3 — the cost of the no-op rule, measured rather than assumed.
+
+    From an explicit list that already covers every selectable row, one confirm
+    no longer canonicalises to ``None``. The sentinel is still REACHABLE, in two
+    passes: untick a row and confirm, then re-tick it and confirm — the second
+    open seeds from a strict subset, so the re-tick is a real change.
+    """
+
+    sm = SettingsManager.in_memory({"enabledModels": ["cfgw/haiku", "good/ok"]})
+    for keys in (("\x1b[B", " "), ("\x1b[B", " ")):  # pass 1 unticks, pass 2 re-ticks
+        async with _live_ctx() as (ctx, chrome, pipe):
+            run = asyncio.ensure_future(
+                run_scoped_models(
+                    registry=_FakeRegistry([RUNNABLE, RECOVERABLE, DEAD_END]),
+                    settings_manager=sm,
+                    multiselect=ctx.multiselect,
+                    commit=lambda _c: None,
+                )
+            )
+            await _wait_modal(chrome)
+            for key in keys:
+                pipe.send_text(key)
+            pipe.send_text("\r")
+            await asyncio.wait_for(run, timeout=5)
+    assert sm.get_enabled_models() is None
+
+
+async def test_real_widget_first_run_enter_still_saves_the_all_sentinel(
+    real_adapters,
+) -> None:
+    """The no-op rule is scoped to an EXPLICIT list — a first run is unaffected.
+
+    Under the ``None`` sentinel there is no persisted list to lose, so confirming
+    an untouched first-run picker must still write ``None`` rather than freezing
+    today's runnable ids into an allow-list.
+    """
+
+    sm = SettingsManager.in_memory({})
+    async with _live_ctx() as (ctx, chrome, pipe):
+        run = asyncio.ensure_future(
+            run_scoped_models(
+                registry=_FakeRegistry([RUNNABLE, RECOVERABLE, DEAD_END]),
+                settings_manager=sm,
+                multiselect=ctx.multiselect,
+                commit=lambda _c: None,
+            )
+        )
+        await _wait_modal(chrome)
+        pipe.send_text("\r")
+        await asyncio.wait_for(run, timeout=5)
+    assert sm.get_enabled_models() is None
 
 
 def test_blocked_summary_is_empty_without_adapters() -> None:
