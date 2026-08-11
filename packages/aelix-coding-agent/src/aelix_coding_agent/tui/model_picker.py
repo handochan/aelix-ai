@@ -158,23 +158,36 @@ async def run_model_picker(
     # can't pick a model that fails at the first turn with the cryptic
     # ``No provider registered for api=...``. Empty registered set (headless /
     # providers not wired) → no filtering (partition_runnable returns all).
-    from aelix_coding_agent.core.runnable_models import partition_runnable
+    from aelix_coding_agent.core.runnable_models import (
+        blocked_summary,
+        partition_runnable,
+    )
 
     models, blocked = partition_runnable(models)
+    # #153: the reason is DERIVED (``blocked_summary``) rather than illustrated by
+    # a hardcoded example. The old line said "e.g. openai-responses / Copilot
+    # gpt-5.x" — written before that adapter existed, so it named a SUPPORTED api
+    # as the reason models were hidden — and it asserted "no adapter" for every
+    # hidden model when most of them are one env var away instead.
+    summary = blocked_summary(blocked) if blocked else ""
     if blocked:
         commit(
             Text(
-                f"({len(blocked)} model(s) hidden — their API has no adapter in "
-                "this build, e.g. openai-responses / Copilot gpt-5.x)",
+                f"({len(blocked)} model(s) hidden — {summary})"
+                if summary
+                else f"({len(blocked)} model(s) hidden — they cannot run in this build)",
                 style="dim",
             )
         )
     if not models:
         if blocked:
+            # The dim hidden-count line above already carries ``summary`` — this
+            # branch only reaches the user when that line was just printed, so
+            # repeating it here would say the same sentence twice.
             commit(
                 Text(
-                    "No runnable models — every available model uses an API this "
-                    "build has no adapter for (e.g. openai-responses).",
+                    "No runnable models — every available model is blocked "
+                    "(reasons above).",
                     style="yellow",
                 )
             )

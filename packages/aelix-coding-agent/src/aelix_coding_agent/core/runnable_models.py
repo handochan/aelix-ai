@@ -311,6 +311,53 @@ def provider_block_reasons(
     return frozenset(reasons)
 
 
+def blocked_summary(models: Iterable[Any], apis: set[str] | None = None) -> str:
+    """One dim line describing WHY a whole SET of models is blocked — ``""`` if none.
+
+    :func:`provider_block_hint` answers for one provider; a picker that has just
+    hidden (or annotated) a mixed pile of models from SEVERAL providers has to
+    say why in one line, grouped by reason so it never asserts one reason for
+    models that do not share it (#153). Shape::
+
+        no adapter in this build (azure-openai-responses 42, mistral 28); set
+        CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_GATEWAY_ID (cloudflare-ai-gateway 35)
+
+    Reasons are emitted in sorted reason-id order and providers in sorted name
+    order, so the line is deterministic. Runnable models are skipped; an empty
+    ``apis`` (headless/tests) yields ``""`` because nothing is blocked there.
+
+    This exists because the two live call sites both used to hardcode ONE
+    example — ``model_picker``'s hidden-count line said "e.g. openai-responses /
+    Copilot gpt-5.x" long after ``openai-responses`` gained an adapter, so it
+    named a supported api as the reason models were hidden.
+    """
+
+    apis = supported_apis() if apis is None else apis
+    if not apis:
+        return ""
+    rows = list(models)
+    # reason id → provider → count, plus the rows behind each reason (the
+    # ``config-missing`` hint reads env-var names off their base URLs).
+    counts: dict[str, dict[str, int]] = {}
+    behind: dict[str, list[Any]] = {}
+    for model in rows:
+        reason = blocked_reason(model, apis)
+        if not reason:
+            continue
+        provider = getattr(model, "provider", None) or "?"
+        by_provider = counts.setdefault(reason, {})
+        by_provider[provider] = by_provider.get(provider, 0) + 1
+        behind.setdefault(reason, []).append(model)
+    if not counts:
+        return ""
+    parts: list[str] = []
+    for reason in sorted(counts):
+        hint = _single_block_hint(reason, behind[reason], apis) or reason
+        providers = ", ".join(f"{p} {n}" for p, n in sorted(counts[reason].items()))
+        parts.append(f"{hint} ({providers})")
+    return "; ".join(parts)
+
+
 def provider_block_reason(models: Iterable[Any], apis: set[str] | None = None) -> str:
     """Why NOTHING a provider offers can run — ``""`` when something can (#151).
 
@@ -613,6 +660,7 @@ __all__ = [
     "BLOCKED_VERTEX_CONFIG",
     "blocked_message",
     "blocked_reason",
+    "blocked_summary",
     "is_recoverable_block",
     "is_runnable",
     "partition_runnable",
