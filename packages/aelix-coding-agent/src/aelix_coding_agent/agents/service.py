@@ -48,6 +48,7 @@ from aelix_coding_agent.cli.runtime_bootstrap import (
     enrich_copilot_base_url,
     resolve_model,
 )
+from aelix_coding_agent.core.runnable_models import is_runnable, unsupported_message
 from aelix_coding_agent.tools import ALL_TOOL_NAMES
 
 from .discovery import (
@@ -354,6 +355,22 @@ class AgentProfileService:
                     self.model_registry,
                 )
                 if model.provider:
+                    # #152 — REFUSE a model this build has no adapter for, here,
+                    # rather than letting the first turn raise ``No provider
+                    # registered for api=…`` (an internal developer string, printed
+                    # twice, after the switch has already been reported as a
+                    # success). The gate is not new and this path is not special:
+                    # ``/model`` (``tui/commands.py``), the model picker and the
+                    # ``--agent`` CLI path all already refuse on exactly this
+                    # predicate with exactly this message. This was the one caller
+                    # that had not adopted it.
+                    #
+                    # Raising inside the try is deliberate: the rollback below
+                    # restores BOTH halves, so a refused profile leaves ``parsed``
+                    # and the live harness exactly as they were — which is what the
+                    # red line the user sees then truthfully means.
+                    if not is_runnable(model):
+                        raise ProfileError(unsupported_message(model))
                     # Complete the pair on ``parsed`` so a later /new or /fork
                     # rebuild cannot resolve a model without its provider (#98).
                     self.parsed.provider = model.provider

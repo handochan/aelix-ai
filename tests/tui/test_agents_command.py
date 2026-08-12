@@ -685,3 +685,157 @@ async def test_agents_is_registered_exactly_once() -> None:
     assert names.count("agents") == 1
     command = match_command("/agents", BUILTIN_COMMANDS)
     assert command is not None and command.handler is not None
+
+
+# === #152 — a profile whose model this build cannot run =======================
+
+
+@pytest.fixture
+def _adapters_registered() -> Any:  # noqa: PT004
+    """Register a real adapter, and prove the fixture actually bites.
+
+    ``is_runnable`` returns **True** when NO provider is registered — the
+    deliberate "adapters not wired, so do not filter" degrade that
+    ``model_picker`` relies on. A test for this gate that skips this step
+    therefore passes against the BROKEN build too, which is the
+    passes-by-construction trap this repo has been bitten by before. The
+    assertions below are the fixture's own health check.
+    """
+
+    from aelix_ai import api_registry
+    from aelix_ai.providers import anthropic
+    from aelix_coding_agent.cli.runtime_bootstrap import resolve_model
+    from aelix_coding_agent.core.runnable_models import is_runnable
+
+    # ``register_all`` writes a PROCESS-GLOBAL dict that other modules hold a
+    # reference to, so it is restored IN PLACE on teardown. Without this, every
+    # later test in the same process sees a registry it never asked for: the
+    # first version of this fixture turned 21 unrelated tests red, which is the
+    # #129 cross-suite-pollution shape, self-inflicted.
+    saved = dict(api_registry._PROVIDERS)
+    try:
+        unrunnable = resolve_model("mistral-large-latest", "mistral", None, None)
+        # Idempotent: by the second test in this file the adapters are there.
+        if is_runnable(unrunnable):
+            anthropic.register_all()
+        assert is_runnable(unrunnable) is False, (
+            "the fixture model must be unrunnable once an adapter is registered "
+            "— otherwise every assertion below passes against the broken build"
+        )
+        yield unrunnable
+    finally:
+        api_registry._PROVIDERS.clear()
+        api_registry._PROVIDERS.update(saved)
+
+
+async def test_agents_use_refuses_a_model_this_build_cannot_run(
+    tmp_path: Path, _adapters_registered: Any
+) -> None:
+    """#152 — the refusal comes BEFORE the switch is reported as a success.
+
+    Previously ``/agents use`` reported "Agent profile: badmodel (user)" and the
+    first turn then raised ``No provider registered for api='mistral-conversations'``
+    — an internal developer string, printed twice, which ``runnable_models``'
+    own docstring names as the thing it exists to prevent.
+    """
+
+    bench = _Bench(tmp_path)
+    _write_profile(
+        bench.user_agents,
+        "badmodel",
+        "name: badmodel\ndescription: Unrunnable\n"
+        "model: mistral-large-latest\nprovider: mistral",
+        "BADMODEL BODY",
+    )
+    before = bench.harness.state.model
+
+    rendered = await bench.run("/agents use badmodel")
+
+    assert "no adapter for" in rendered
+    assert "mistral-conversations" in rendered
+    # The internal string must not be what the user reads.
+    assert "No provider registered" not in rendered
+    assert "Agent profile: badmodel" not in rendered
+    # Both halves rolled back: nothing was half-applied.
+    assert bench.harness.state.model is before
+    assert bench.service.active is None
+    assert "BADMODEL BODY" not in (bench.harness.state.system_prompt or "")
+
+
+async def test_agents_use_still_applies_a_runnable_model(
+    tmp_path: Path, _adapters_registered: Any
+) -> None:
+    """The gate must refuse ONLY the unrunnable — a profile on a live adapter
+    still switches, or the fix would have closed the command instead of the
+    hole."""
+
+    bench = _Bench(tmp_path)
+    _write_profile(
+        bench.user_agents,
+        "good",
+        "name: good\ndescription: Runnable\n"
+        "model: claude-sonnet-4-5\nprovider: anthropic",
+        "GOOD BODY",
+    )
+
+    rendered = await bench.run("/agents use good")
+
+    assert "Agent profile: good" in rendered
+    assert "no adapter for" not in rendered
+    assert bench.harness.state.model.id == "claude-sonnet-4-5"
+
+
+async def test_agents_list_flags_an_unrunnable_model(
+    tmp_path: Path, _adapters_registered: Any
+) -> None:
+    """The row says so before the user picks it, not only after."""
+
+    bench = _Bench(tmp_path)
+    _write_profile(
+        bench.user_agents,
+        "badmodel",
+        "name: badmodel\ndescription: Unrunnable\n"
+        "model: mistral-large-latest\nprovider: mistral",
+        "BADMODEL BODY",
+    )
+    _write_profile(
+        bench.user_agents,
+        "good",
+        "name: good\ndescription: Runnable\n"
+        "model: claude-sonnet-4-5\nprovider: anthropic",
+        "GOOD BODY",
+    )
+
+    rendered = await bench.run("/agents list")
+
+    assert "badmodel" in rendered
+    assert "no adapter in this build" in rendered
+    # Annotated, never hidden — the profile is still the user's file and still
+    # usable under a build that has the adapter.
+    assert "mistral-large-latest" in rendered
+    # And the runnable one carries no annotation.
+    good_line = next(
+        line for line in rendered.splitlines() if "claude-sonnet-4-5" in line
+    )
+    assert "no adapter" not in good_line
+
+
+async def test_is_runnable_degrades_to_true_with_no_adapters(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The reason the fixture above has to register an adapter at all.
+
+    With an EMPTY provider registry ``is_runnable`` answers True for everything —
+    the deliberate "adapters not wired, so do not filter" degrade the model picker
+    depends on. Pinning it here means a future change that removes the degrade
+    shows up as this test failing, rather than as the #152 gate silently
+    tightening in environments that never registered a provider.
+    """
+
+    from aelix_ai import api_registry
+    from aelix_coding_agent.cli.runtime_bootstrap import resolve_model
+    from aelix_coding_agent.core.runnable_models import is_runnable
+
+    monkeypatch.setattr(api_registry, "_PROVIDERS", {})
+    model = resolve_model("mistral-large-latest", "mistral", None, None)
+    assert is_runnable(model) is True

@@ -615,7 +615,38 @@ def _profile_tools_cell(profile: AgentProfile) -> str:
     return ", ".join(profile.tools)
 
 
-def _render_agents_table(result: ProfileDiscoveryResult) -> RenderableType:
+def _profile_model_cell(profile: AgentProfile, registry: Any) -> Text:
+    """The MODEL cell, annotated when this build cannot run that model (#152).
+
+    ``/agents use`` now refuses such a profile, but a refusal after the user has
+    picked is the late half of the answer — the row itself should say so first.
+    This is the same annotate-in-place shape ``/login`` and ``/scoped-models``
+    settled on: never hide a profile, because it is still the user's file and
+    still selectable with ``--agent`` in a build that HAS the adapter.
+
+    Resolution failures are swallowed on purpose: an un-annotated row is a far
+    smaller harm than a ``/agents list`` that raises, and the refusal in
+    ``AgentProfileService.use`` is the load-bearing gate either way.
+    """
+
+    cell = Text(_profile_cell(profile.model))
+    if profile.model is None:
+        return cell
+    try:
+        from aelix_coding_agent.cli.runtime_bootstrap import resolve_model
+        from aelix_coding_agent.core.runnable_models import is_runnable
+
+        model = resolve_model(profile.model, profile.provider, registry, None)
+        if not is_runnable(model):
+            cell.append("  (no adapter in this build)", style="yellow")
+    except Exception:  # noqa: BLE001 — an unannotated row beats a broken list
+        return cell
+    return cell
+
+
+def _render_agents_table(
+    result: ProfileDiscoveryResult, registry: Any = None
+) -> RenderableType:
     """``/agents list`` — name / scope / model / tools / description."""
 
     table = Table.grid(padding=(0, 2))
@@ -631,7 +662,7 @@ def _render_agents_table(result: ProfileDiscoveryResult) -> RenderableType:
         table.add_row(
             profile.name,
             profile.scope,
-            _profile_cell(profile.model),
+            _profile_model_cell(profile, registry),
             _profile_tools_cell(profile),
             _profile_cell(profile.description),
         )
@@ -1063,7 +1094,7 @@ async def _agents_handler(ctx: CommandContext, args: str) -> None:
                 ctx.commit(Text("No agent profiles found.", style="yellow"))
                 return
             if result.profiles:
-                ctx.commit(_render_agents_table(result))
+                ctx.commit(_render_agents_table(result, ctx.model_registry))
             diagnostics = _render_agents_diagnostics(result)
             if diagnostics is not None:
                 ctx.commit(diagnostics)
