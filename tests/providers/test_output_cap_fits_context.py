@@ -54,9 +54,12 @@ def _context(text: str = "Reply with exactly: ONBOARD-OK") -> Context:
 
 
 def _emitted_cap(params: dict[str, Any]) -> int | None:
-    for field in ("max_tokens", "max_completion_tokens"):
-        if field in params:
-            return int(params[field])
+    # ``param_name``, not ``field``: this module imports ``dataclasses.field``
+    # and uses it at :35, so a loop variable of that name shadows it (ruff F402,
+    # and `ruff check .` is the CI lint gate).
+    for param_name in ("max_tokens", "max_completion_tokens"):
+        if param_name in params:
+            return int(params[param_name])
     return None
 
 
