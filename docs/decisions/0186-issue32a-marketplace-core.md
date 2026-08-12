@@ -44,6 +44,7 @@ Premise the recon corrected: ADR-0005 is prose-only and abandoned its own bespok
 - **Scope boundary.** No signing/hash (ADR-0005 Q2 — separate follow-up ADR; verify must be pre-pip), no discover-catalog (separate follow-up — needs a catalog format/hosting decision), no runtime enable/disable toggle (no such API; only coarse `/reload`). The Sources tab is read-only for the same reason.
 - **Prerequisite: pip** (inherited from #19 — a uv venv ships without pip; `install`/`update`/`remove` detect it up front → exit 2 + hint).
 - **Exit codes** inherit #19's 3-way split (0 ok · pip returncode · 2 never-ran).
+  *(Amended by #154, 2026-08-11: the installer's returncode is now PRINTED, not returned — 1 means "ran and failed" unconditionally, because pip's own 3/2 collide with this verb's. See ADR-0185.)*
 - **Gate:** pytest (full suite) pass · ruff clean · pyright 0 errors on changed source.
 
 ## Adversarial review

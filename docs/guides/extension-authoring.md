@@ -476,6 +476,91 @@ unbindable. `aelix extension list` annotates the same verdict. Wire
 `aelix extension verify <name>` into your release CI so a build that drops the
 manifest fails there, not silently on a user's machine. See ADR-0207.
 
+**`install` tells you the same thing, without being asked** (#154). Since the
+host can reach that verdict offline and without importing your pack, `aelix
+extension install`, `aelix extension discover install` and `aelix extension
+update` all end by reporting it for the distribution they just wrote — so a user
+never sees "Installed. Restart aelix" for a pack this build will refuse to load:
+
+```bash
+aelix extension install ./my-ext --yes
+#   Installed, but this build already knows 1 of 1 endpoint(s) will NOT bind:
+#     INCOMPATIBLE my-ext [my-ext 1.0.0]
+#         Plugin 'my-ext' … requires API_LEVEL >= 7, host has 1; not loaded.
+#     → not loaded at all on this build.
+#   The distribution is installed; nothing was undone. To remove it:
+#     aelix extension remove my-ext
+echo $?   # 3
+```
+
+Four exit codes, pairwise distinct, so a script can tell them apart:
+
+| code | meaning |
+| ---- | ------- |
+| `0`  | installed, and every endpoint of it binds — *or* the command could not tie the install to an installed extension distribution (see below) |
+| `1`  | the installer ran and **failed**. Its own exit code is printed, not returned |
+| `2`  | the installer never ran (usage error, guard refusal, your `N` at the consent prompt) |
+| `3`  | installed, but some endpoint of it will **not** bind |
+
+`1` is normalised rather than passed through on purpose: pip's own codes are not
+disjoint from these. pip defines `VIRTUALENV_NOT_FOUND = 3` (raised under
+`PIP_REQUIRE_VIRTUALENV`, which plenty of organisations set globally) and
+`UNKNOWN_ERROR = 2`, so passing pip's code through would have let `3` mean either
+"the distribution is on disk but inert" or "pip refused to run and nothing
+landed" — opposite conclusions about the same machine.
+
+**When the command has no verdict, it says so.** A `git+URL` names no
+distribution, a reinstall of an unchanged pack moves nothing in the entry-point
+ledger, and a source tree can hide its name where nothing but executing it can
+find (setup.py-only, `[tool.poetry]`, `dynamic`). Most of those are answered by
+reading pip's own PEP 610 `direct_url.json` record — a lookup, not a guess. What
+that still cannot name gets an explicit *"this build has no binding verdict for
+it … this is NOT a claim that the pack will load"* and a pointer to `verify`,
+never the success line. The exit stays `0` there: the installer did put something
+on disk, and `3` has to keep meaning "this build **knows** it will not bind".
+
+The package is never auto-uninstalled: undoing what you asked for would be its
+own surprise, so you get the exact `remove` command instead. Only the
+distribution you just installed is reported, so an unrelated broken pack already
+in the environment is not blamed on this install.
+
+`install` accepts `--trust-extension-path DIST` for the same reason `verify` does
+— see the next section. Without it, a pack installed outside the environment's
+real site directories (`pip --target` plus a matching `PYTHONPATH`) would be
+reported `UNTRUSTED_PATH`, which says "unvouched", not "broken".
+
+**`update` reports the same verdict, with the same codes.** An upgrade is an
+install: the host knows exactly as much about the bytes it just wrote, so
+`aelix extension update <name>` ends with the report above and exits `3` when the
+pack it just upgraded has gone inert. A bare `aelix extension update` walks every
+recorded source and closes with a one-line summary, so the outcome does not
+scroll away behind the per-pack reports:
+
+```bash
+aelix extension update --yes
+#   … one report per pack …
+#   update summary: 5 pack(s) — 1 bound, 3 NOT bound, 1 no verdict, 0 failed.
+#     NOT bound: brokenpack, gitpack, legacypack
+#     no verdict: /path/to/plainpack
+#   To re-check: aelix extension verify
+echo $?   # 3
+```
+
+Every non-empty bucket gets its own detail line. A recorded source whose
+distribution name was never detected is labelled with its path rather than a
+name, and the closing hint adapts to that: `To re-check one: aelix extension
+verify <name>` is printed only when every listed row carries a name `verify`
+would accept, and otherwise the argument-less form above — which settles every
+endpoint at once — is printed instead. A hint naming `<name>` for a
+path-labelled row would be the one actionable line that cannot work, for exactly
+the rows that need it.
+
+The summary is bad-news-only — a run where every pack bound prints exactly what
+it always did, one success line per pack and nothing else. Across many packs the
+run's exit code is the **hardest** outcome, not the first: `1` and `2` outrank
+`3`, because `3` is the one code that asserts the installer succeeded and it may
+only be reported when that is true of every pack.
+
 ### Developing with `pip install -e` — the manifest downgrade
 
 **An editable install loads your pack WITHOUT its manifest.** This is the one

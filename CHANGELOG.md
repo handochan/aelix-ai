@@ -169,6 +169,49 @@ and `.../releases/tag/vX` link would 404. Add them with the first pushed tag.
   indistinguishable from a producer that was about to write — so input may be
   dropped, but never silently. With nothing on argv the behaviour is unchanged,
   since there stdin *is* the prompt.
+- **`aelix extension install` and `update` no longer report success for a pack
+  this build already knows cannot load** (#154). The host decides — offline, and
+  without importing a line of the pack — whether an installed extension's
+  `aelix-plugin.toml` will bind; `verify` and `list` read that verdict, but
+  `install` never asked for it and printed an unconditional "Installed. Restart
+  aelix" even for a pack whose manifest demands a newer API level than this
+  build provides. `install`, `discover install` and `update` now report the
+  verdict for the distribution they just wrote — and only that one, so a
+  pre-existing broken endpoint elsewhere in the environment is not blamed on the
+  new pack — in the same wording `verify` uses. A pack that binds prints exactly
+  what it printed before — including on a reinstall, on an update, and when the
+  target is a symlink to the pack directory. A bare `aelix extension update`
+  closes with a one-line summary naming the packs that will not bind, so the
+  outcome does not scroll away behind the per-pack reports; across many packs the
+  exit code is the hardest outcome, not the first (`1` and `2` outrank `3`, since
+  `3` is the one code that asserts the installer succeeded). When the command
+  *cannot* tie the
+  install to an installed extension distribution — a repeat `git+URL` install, a
+  repeat install of a source tree whose name cannot be read without executing it
+  (setup.py-only, a `[tool.poetry]` name, a `dynamic` name), or a target that is
+  not an extension at all — it now says it has **no verdict** and names `verify`,
+  rather than printing the success line for a distribution it never identified.
+  Attribution also reads pip's own PEP 610 `direct_url.json` record, which
+  answers the first two of those with the real verdict instead of a shrug.
+  **New exit code 3**: pip installed the distribution, but some endpoint of it
+  will not bind. `0` still means installed-and-bindable (and is also what "no
+  verdict" returns — something *is* on disk, and unknown is not failure); `2`
+  still means the installer never ran; **`1` now means the installer ran and
+  failed**, with its own exit code printed rather than returned, because pip's
+  codes are not disjoint from this verb's — pip defines `VIRTUALENV_NOT_FOUND =
+  3` (raised under `PIP_REQUIRE_VIRTUALENV`) and `UNKNOWN_ERROR = 2`, so a
+  passthrough left "installed but inert" and "pip refused to run" reading
+  identically. Nothing is ever auto-uninstalled — the report says the package is
+  on disk and hands over the exact `aelix extension remove` command. The
+  packaging hint printed for a manifest missing from a wheel now names the
+  starter scaffold at a path that exists — `aelix_coding_agent/examples/starter/`
+  in an installed environment — instead of a bare `examples/starter/`, which is
+  not a directory at the repo root and does not exist once installed. `install`
+  also accepts
+  `--trust-extension-path DIST` now, so a pack installed outside the
+  environment's real site directories (`pip --target` plus a matching
+  `PYTHONPATH`) is not called broken when it is merely unvouched; the flag means
+  exactly what it means to `verify` and to `aelix` itself.
 - A malformed `aelix-plugin.toml` no longer echoes the manifest's contents
   into the error printed on startup (#91). Pydantic's validation errors
   interpolate the whole parsed document, which for a manifest declaring MCP

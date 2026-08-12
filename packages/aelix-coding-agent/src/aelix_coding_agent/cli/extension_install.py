@@ -83,6 +83,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import tomllib
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -107,7 +108,8 @@ _USAGE = (
     "usage: aelix extension <command>\n"
     "  install <path | git-url | package[==version]>  [--yes] [--index-url URL] "
     "[--offline] [--no-verify] [--strict] [--repin] [--verify-pypi] "
-    "[--require-signature] [--trusted-key ID] [--signature PATH]\n"
+    "[--require-signature] [--trusted-key ID] [--signature PATH] "
+    "[--trust-extension-path DIST]\n"
     "  source add <path | git-url | index-url>        [--yes]\n"
     "  source add --catalog <url | file | git>\n"
     "  source list\n"
@@ -120,7 +122,8 @@ _USAGE = (
     "[--no-default-catalog]\n"
     "  discover install <name>                        [--catalog CAT] [--yes] "
     "[--index-url URL] [--offline] [--no-verify] [--strict] [--repin] [--verify-pypi] "
-    "[--require-signature] [--trusted-key ID] [--signature PATH]\n"
+    "[--require-signature] [--trusted-key ID] [--signature PATH] "
+    "[--trust-extension-path DIST]\n"
     "  update [<name>]                                [--yes] [--offline] "
     "[--no-verify] [--strict] [--repin] [--verify-pypi] [--require-signature] "
     "[--trusted-key ID] [--signature PATH]\n"
@@ -133,10 +136,25 @@ _USAGE = (
     "  trust list | remove <keyId> | revoke <keyId>"
 )
 
-# Exit codes: 0 = success; the pip returncode (usually 1) = pip ran and failed;
-# 2 = did NOT run pip (usage error, guard refusal, user abort, missing pip). The
-# 3-way split lets a script tell "pip failed" from "never ran" (ADR-0185).
+# Exit codes: 0 = success; 1 = the installer ran and FAILED; 2 = did NOT run the
+# installer (usage error, guard refusal, user abort, missing pip). The 3-way
+# split lets a script tell "pip failed" from "never ran" (ADR-0185).
 _EXIT_DIDNT_RUN = 2
+
+#: The installer RAN and failed. Its own returncode is PRINTED, never returned —
+#: because pip's exit codes are not disjoint from this verb's. ``pip`` defines
+#: ``VIRTUALENV_NOT_FOUND = 3`` (raised under ``--require-venv`` /
+#: ``PIP_REQUIRE_VIRTUALENV``, which orgs set globally), which is exactly
+#: :data:`_INSTALL_NOT_BOUND`; and ``UNKNOWN_ERROR = 2``, which is exactly
+#: :data:`_EXIT_DIDNT_RUN` (that collision predates #154). Passing pip's code
+#: through therefore made the documented 4-way split conditional on which codes
+#: pip happened to pick: a script reading 3 could not tell "installed but inert"
+#: (something IS on disk) from "pip refused to run at all" (nothing is) — the
+#: opposite conclusion about the same machine. Normalising here is what makes
+#: ":data:`_INSTALL_NOT_BOUND`'s premise — 1 already means the installer ran and
+#: failed" true rather than merely usual. MEASURED:
+#: ``PIP_REQUIRE_VIRTUALENV=1 python -m pip install --dry-run nothing-xyz`` → 3.
+_INSTALLER_FAILED = 1
 
 # ``extension verify`` exit codes (issue #91, ADR-0207) — STABLE, a CI gate keys
 # on them: 0 = every reported endpoint's manifest is BOUND; 1 = at least one is
@@ -145,6 +163,74 @@ _EXIT_DIDNT_RUN = 2
 # 2 (``_EXIT_DIDNT_RUN``) = it did not get as far as verifying (usage error, or a
 # named target that matches nothing installed).
 _VERIFY_NOT_BOUND = 1
+
+#: ``install`` / ``discover install`` / ``update`` exit code (issue #154): the
+#: installer DID put the distribution on disk, but the host's own import-free
+#: resolver — the SAME primitive ``verify`` reads — says at least one endpoint of
+#: the pack just written will not bind its manifest.
+#:
+#: ``update`` returns it for the same fact and therefore the same code: "updated,
+#: and now inert" is "installed, and inert" — an upgrade is an install, the
+#: evidence is identical, and a verb-dependent code would put back exactly the
+#: ambiguity the normalisation below removed. It also keeps ``update && restart``
+#: stopping on the one outcome where restarting cannot help.
+#:
+#: A DISTINCT code rather than ``_VERIFY_NOT_BOUND`` (1) on purpose. 1 means
+#: "the installer ran and FAILED" on this verb (:data:`_INSTALLER_FAILED`, which
+#: normalises pip's own code precisely so that premise holds unconditionally),
+#: and ADR-0185 exists so a script can tell that apart from "pip never ran" (2).
+#: Collapsing "installed but inert" onto 1 would destroy that split and tell a
+#: script nothing landed on disk, when something did. 3 keeps 0 =
+#: installed-and-bindable, so an existing ``install && …`` chain still stops —
+#: which is the point — while a script that cares can distinguish the three
+#: failure shapes.
+#:
+#: The GATE matches ``verify``'s exactly: non-zero iff some reported endpoint is
+#: not ``BOUND``. The two commands ran the same primitive and disagreed in what
+#: they told the user; after #154 they agree in verdict, in wording, and in gate.
+_INSTALL_NOT_BOUND = 3
+
+#: The post-install line for a pack with nothing to report. A module constant so
+#: :func:`install_extension` (which prints it for the public seam's callers) and
+#: the ``install`` / ``update`` verdict reporter cannot drift apart.
+_INSTALLED_RESTART = (
+    "Installed. Restart aelix (or /reload in the TUI) so the loader "
+    "discovers it via entry_points."
+)
+
+#: The post-install line when this command HAS no verdict — attribution came back
+#: empty, so there was no distribution to classify (issue #154 round 2).
+#:
+#: :data:`_INSTALLED_RESTART` is a promise: the loader will discover this pack via
+#: entry_points. Printing it for a pack we did not identify makes that promise on
+#: no evidence — and it is exactly the promise #154 exists to stop making. It was
+#: still reachable after the first fix on two narrower paths: a repeat
+#: ``install git+URL`` (a git URL names no distribution and a no-op reinstall
+#: moves nothing in the entry-point ledger), and a repeat ``install <dir>`` of a
+#: tree whose name is unreadable without executing it (setup.py-only, a
+#: ``[tool.poetry]`` name, a ``dynamic`` name). Same command, same pack, same
+#: environment, opposite answers — decided only by whether pip happened to move
+#: the ledger. It also covers the target that is simply not an extension: a dist
+#: with no ``aelix.extensions`` endpoint is one the loader will NEVER discover,
+#: which "Restart aelix … so the loader discovers it" flatly denies.
+#:
+#: Parsing pip's "Successfully installed …" would not rescue those: a no-op
+#: install prints "Requirement already satisfied" instead, so an output-parsing
+#: scheme still needs this floor.
+#:
+#: The exit code stays 0 deliberately. 0 on this verb has always meant "the
+#: installer put it on disk", and it did; :data:`_INSTALL_NOT_BOUND` must keep
+#: meaning "this build KNOWS it will not bind", which is a claim we cannot make
+#: here. Failing on "unknown" would invent a verdict in the other direction — the
+#: symmetric defect — and would break every ``install && …`` chain for packs that
+#: are in fact fine. What changes is the SENTENCE: it no longer claims the pack
+#: will load, and it names the command that can settle it.
+_INSTALLED_NO_VERDICT = (
+    "Installed, but this build has no binding verdict for it: this command could "
+    "not tie the install to an installed extension distribution, so it had "
+    "nothing to classify. This is NOT a claim that the pack will load.\n"
+    "To get the verdict: aelix extension verify"
+)
 
 #: The entry-point group the loader's Tier-4 pass discovers (loader.py:750).
 ENTRY_POINT_GROUP = "aelix.extensions"
@@ -1076,17 +1162,29 @@ def install_extension(
     trusted_key: str | None = None,
     signature_path: str | None = None,
     agent_dir: str | None = None,
+    announce: bool = True,
     input_fn: Callable[[str], str] = input,
     runner: PipRunner | None = None,
 ) -> int:
     """Install one extension via the resolved backend; return an exit code.
 
-    ``0`` on success; the installer's returncode when it ran and failed; ``2`` when
-    it did NOT run (usage/guard error, user abort, a #64 verify refusal, no usable
-    backend, or a #113 fail-closed refusal). ``require_signature`` / ``trusted_key``
+    ``0`` on success; :data:`_INSTALLER_FAILED` (1) when the installer ran and
+    failed — its own returncode is printed, not returned, because pip's codes
+    collide with this verb's (see that constant); ``2`` when it did NOT run
+    (usage/guard error, user abort, a #64 verify refusal, no usable backend, or a
+    #113 fail-closed refusal). ``require_signature`` / ``trusted_key``
     / ``signature_path`` drive the #67 Ed25519 provenance branch. ``runner`` and
     ``input_fn`` are injectable for tests (an injected runner also pins the backend
     to the pip dialect — see :func:`resolve_install_backend`).
+
+    ``announce`` prints :data:`_INSTALLED_RESTART` on success. Both CLI verbs —
+    ``extension install`` and ``extension update`` — pass :data:`False` and print
+    their own line instead, because that unconditional "Installed. Restart aelix"
+    is the whole of issue #154: the host already knows, import-free, whether the
+    pack it just wrote to disk can bind, and said "restart" to a pack that will
+    never load. It stays defaulted :data:`True` for the PUBLIC seam, whose callers
+    have no verdict of their own to print; the CLI reaches it through
+    :func:`_cmd_install` and :func:`_upgrade_and_report`, which do.
     """
 
     if not target.strip():
@@ -1241,22 +1339,23 @@ def install_extension(
         with _patched_environ(ambient_env):
             result = run(pip_args)
         code = int(getattr(result, "returncode", 1))
-        if code == 0:
-            if pending_pin is not None:
-                try:
-                    _record_pin(pending_pin, agent_dir)
-                except Exception as exc:  # noqa: BLE001 — pinning is best-effort
-                    print(
-                        f"Warning: could not record integrity pin: {exc}",
-                        file=sys.stderr,
-                    )
-            print(
-                "Installed. Restart aelix (or /reload in the TUI) so the loader "
-                "discovers it via entry_points."
-            )
-        else:
+        if code != 0:
+            # The installer's own code is SHOWN, not returned — see
+            # :data:`_INSTALLER_FAILED` for why passing it through made this
+            # verb's documented exit split conditional on pip's choice of codes.
             print(f"{backend.label} install failed (exit {code}).", file=sys.stderr)
-        return code
+            return _INSTALLER_FAILED
+        if pending_pin is not None:
+            try:
+                _record_pin(pending_pin, agent_dir)
+            except Exception as exc:  # noqa: BLE001 — pinning is best-effort
+                print(
+                    f"Warning: could not record integrity pin: {exc}",
+                    file=sys.stderr,
+                )
+        if announce:
+            print(_INSTALLED_RESTART)
+        return 0
     finally:
         if cleanup_dir is not None:
             shutil.rmtree(cleanup_dir, ignore_errors=True)
@@ -2232,8 +2331,12 @@ _ABSENT_HINT = (
     "contribution is silently inert. Fix: ship the manifest inside the wheel "
     "via package-data (setuptools needs include_package_data + MANIFEST.in, or "
     "an explicit [tool.setuptools.package-data]), or build with hatchling, which "
-    "ships package data files by default. examples/starter/ is a hatchling "
-    "scaffold that gets this right."
+    "ships package data files by default. A buildable hatchling scaffold that "
+    "gets this right ships INSIDE aelix, at aelix_coding_agent/examples/starter/ "
+    "(in a source checkout: "
+    "packages/aelix-coding-agent/src/aelix_coding_agent/examples/starter/); the "
+    "packaging rules are in docs/guides/extension-authoring.md, 'Packaging your "
+    "extension'."
 )
 
 
@@ -2298,6 +2401,353 @@ def classify_installed_endpoints(
         plugin_id = res.manifest.plugin.id if res.manifest is not None else None
         out.append(EndpointStatus(ep.name, dn, vn, res.outcome, res.reason, plugin_id))
     return out
+
+
+def _print_endpoint_status(status: EndpointStatus) -> None:
+    """Render ONE endpoint verdict — the SINGLE renderer ``verify`` and the
+    post-install report both call (issue #154).
+
+    Shared on purpose. The defect #154 reports is not that install lacked a
+    check; it is that install and ``verify``, running the SAME primitive at the
+    SAME instant, told the user opposite things. One renderer makes a wording
+    drift between them impossible.
+    """
+
+    if status.bound:
+        print(f"  BOUND     {status.label()}  (manifest: plugin {status.plugin_id!r})")
+        return
+    # ``outcome is None`` is the API-level refusal — the pack says in writing it
+    # cannot run on this host, so it is INCOMPATIBLE, not merely unproven.
+    state = status.outcome.value.upper() if status.outcome is not None else "INCOMPATIBLE"
+    print(f"  {state:<9} {status.label()}")
+    print(f"      {status.reason}")
+    if status.outcome is EpOutcome.ABSENT:
+        print(f"      hint: {_ABSENT_HINT}")
+
+
+def _endpoint_is_refused(status: EndpointStatus) -> bool:
+    """True when the loader drops this endpoint ENTIRELY — no carrier at all.
+
+    Exactly two outcomes do that (loader.py ``_entry_point_manifests``): the API
+    refusal (``outcome is None`` here) and ``UNTRUSTED_PATH``. Every other
+    non-bound outcome still yields a carrier and runs ``setup()``; it only loses
+    the manifest, hence its declarative contributions. The distinction is worth
+    keeping because "will not load at all" and "loads without its declarations"
+    call for different actions, and claiming the stronger one falsely would be
+    its own defect.
+    """
+
+    return status.outcome is None or status.outcome is EpOutcome.UNTRUSTED_PATH
+
+
+def _installed_ext_dists() -> dict[str, str | None]:
+    """Snapshot ``dist name -> version`` for every dist exposing an endpoint.
+
+    The version rides along so an UPGRADE of an already-installed pack is
+    attributable to the install that caused it — a name-only diff sees nothing
+    change and would report the new build's verdict on nobody.
+    """
+
+    out: dict[str, str | None] = {}
+    for ext in list_installed_extensions():
+        if ext.dist_name:
+            out[ext.dist_name] = ext.version
+    return out
+
+
+def _target_dist_hint(target: str, kind: TargetKind) -> str | None:
+    """The distribution name the TARGET ITSELF names, when it names one.
+
+    The before/after diff catches a first install and an upgrade, but not a
+    reinstall of the same version — pip is a no-op there ("Requirement already
+    satisfied"), nothing in the ledger moves, and a diff-only attribution would
+    fall silent on the second ``install`` of the very pack that cannot bind. So
+    the target is asked as well:
+
+    * ``pypi`` — the bare name IS the distribution name, by definition;
+    * ``path`` — a wheel/sdist filename carries it, and a source tree carries it
+      in ``[project] name``;
+    * ``git`` — NOTHING. A repository name is not a distribution name and
+      guessing would risk attributing an unrelated installed pack to this
+      install, which is the one error this whole function must not make.
+
+    Whatever comes back is only ever INTERSECTED with what is actually installed,
+    so a wrong guess yields nothing rather than a false accusation.
+
+    This reads only what a tree DECLARES, so it is silent for the trees whose name
+    lives somewhere it cannot look without executing them — setup.py-only, a
+    ``[tool.poetry]`` name, a ``dynamic`` name. Those, and git, are what
+    :func:`_dists_recorded_from` answers by reading pip's own record instead of
+    guessing; whatever neither can name gets :data:`_INSTALLED_NO_VERDICT`.
+    """
+
+    if kind == "pypi":
+        return _bare_package_name(target) or None
+    if kind == "git":
+        return None
+    path = Path(target).expanduser()
+    name = path.name
+    if name.endswith(".whl"):
+        # PEP 427: {distribution}-{version}(-{build})?-{python}-{abi}-{platform}
+        return name.split("-", 1)[0] or None
+    for suffix in (".tar.gz", ".zip", ".tar.bz2"):
+        if name.endswith(suffix):
+            stem = name[: -len(suffix)]
+            return stem.rsplit("-", 1)[0] or None
+    pyproject = path / "pyproject.toml"
+    try:
+        with pyproject.open("rb") as fh:
+            data = tomllib.load(fh)
+    except (OSError, tomllib.TOMLDecodeError):
+        return None
+    project = data.get("project")
+    if isinstance(project, dict):
+        declared = project.get("name")
+        if isinstance(declared, str) and declared.strip():
+            return declared.strip()
+    return None
+
+
+def _target_source_key(target: str, kind: TargetKind) -> str | None:
+    """A comparison key for the SOURCE this install came from, or ``None``.
+
+    Pairs with :func:`_recorded_source_key`, which reads the same key back out of
+    an installed distribution's PEP 610 ``direct_url.json`` — the record pip (and
+    uv) writes for every DIRECT reference saying "this dist came from exactly
+    this URL". A ``pypi`` install has no such record by definition (PEP 610 is
+    only for direct references), and its bare name already IS the dist name.
+
+    Normalised rather than string-compared, because the two sides are written by
+    different code: pip stores ``file://`` + the RESOLVED path for a tree,
+    percent-encoded, and stores a git URL with ``git+`` and any ``@<rev>`` /
+    ``#egg=`` stripped off. So a ``file:`` URL is reduced to its filesystem path
+    and everything else to the bare URL. A key that fails to match yields no
+    attribution — never a wrong one.
+
+    The path branch resolves SYMLINKS (:func:`os.path.realpath`), not merely
+    ``abspath``. It has to, because :func:`_install_spec` — which builds the
+    argument pip actually receives — resolves them too (``Path.resolve()``), and
+    pip records what it was given. Normalising one side less than the other made
+    the keys unequal for every symlinked target, so a perfectly HEALTHY pack
+    installed through a link lost its clean line to the no-verdict floor on a
+    repeat install. ``realpath`` is ``abspath`` plus link resolution plus ``..``
+    collapsing (in that order, which is the only correct one once links are in
+    play), so it subsumes what was here before; on a path that does not exist it
+    degrades to exactly the old normalisation rather than raising.
+    """
+
+    if kind == "pypi":
+        return None
+    if kind == "git":
+        spec = target[4:] if target.startswith("git+") else target
+        spec = spec.split("#", 1)[0]
+        head, sep, tail = spec.rpartition("@")
+        # ``…/repo@v1`` is a revision; ``ssh://git@host/repo`` is an authority —
+        # the difference is whether the ``@`` comes after the last ``/``.
+        if sep and "/" not in tail:
+            spec = head
+        return _url_fs_key(spec)
+    try:
+        return os.path.realpath(os.path.expanduser(target)).rstrip("/") or None
+    except (OSError, ValueError):  # pragma: no cover — realpath on a hostile cwd
+        return None
+
+
+def _url_fs_key(url: str) -> str | None:
+    """``file:`` URL → its RESOLVED filesystem path; anything else → the URL, unslashed.
+
+    Symlinks are resolved for the same reason :func:`_target_source_key` resolves
+    them: this function normalises BOTH sides of the PEP 610 comparison (the
+    target's ``git+file://`` spec and the ``url`` pip recorded), and the two are
+    only equal when both are reduced to the same real location.
+    """
+
+    try:
+        parsed = urlsplit(url)
+    except ValueError:
+        return None
+    if parsed.scheme == "file":
+        from urllib.request import url2pathname
+
+        try:
+            path = url2pathname(parsed.path)
+        except (OSError, ValueError):  # pragma: no cover — malformed percent-escape
+            return None
+        return os.path.realpath(path).rstrip("/") or None
+    return url.rstrip("/") or None
+
+
+def _recorded_source_key(dist: importlib.metadata.Distribution) -> str | None:
+    """The source key pip recorded for ``dist`` in PEP 610 ``direct_url.json``."""
+
+    try:
+        raw = dist.read_text("direct_url.json")
+    except Exception:  # noqa: BLE001 — an unreadable dist is simply not a match
+        return None
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return None
+    url = data.get("url") if isinstance(data, dict) else None
+    if not isinstance(url, str) or not url:
+        return None
+    return _url_fs_key(url)
+
+
+def _dists_recorded_from(
+    target: str, kind: TargetKind, after: Mapping[str, str | None]
+) -> frozenset[str]:
+    """Installed extension dists whose PEP 610 record names THIS exact target.
+
+    The last attribution arm, and the only one that survives a no-op reinstall of
+    a target that names no distribution: pip itself wrote down where each
+    directly-referenced dist came from, so this is a LOOKUP, not the guess
+    :func:`_target_dist_hint` refuses to make. Intersected with ``after`` so it
+    can only ever return a distribution that is installed AND exposes an
+    ``aelix.extensions`` endpoint.
+
+    Consulted ONLY when the ledger diff and the target's own name found nothing.
+    A stale record — an author who renamed the distribution built from the same
+    directory — would otherwise let a superseded dist ride along with the one
+    that actually moved; when something moved, that movement is the better
+    answer and this arm never runs.
+    """
+
+    key = _target_source_key(target, kind)
+    if key is None:
+        return frozenset()
+    wanted = {_canon(name): name for name in after}
+    out: set[str] = set()
+    try:
+        for dist in importlib.metadata.distributions():
+            raw_name = getattr(dist, "name", None)
+            if not raw_name:
+                continue
+            installed = wanted.get(_canon(str(raw_name)))
+            if installed is None or installed in out:
+                continue
+            if _recorded_source_key(dist) == key:
+                out.add(installed)
+    except Exception:  # noqa: BLE001 — a broken env attributes nothing, never crashes
+        return frozenset()
+    return frozenset(out)
+
+
+def _attributed_dists(
+    target: str,
+    kind: TargetKind,
+    before: Mapping[str, str | None],
+    after: Mapping[str, str | None],
+) -> frozenset[str]:
+    """The distributions THIS install is responsible for — never the whole env.
+
+    ``classify_installed_endpoints`` reports every installed endpoint. Printing
+    all of them after installing one pack would be noise, and would blame the new
+    pack for a broken endpoint that was already there before the command ran.
+    Attribution is therefore narrow sources, in order of how much they know:
+
+    * a dist that appeared (first install),
+    * a dist whose version moved (upgrade),
+    * the dist the target itself names, IF it is installed (reinstall),
+    * failing all of those, the dist pip RECORDED as coming from this exact
+      target (:func:`_dists_recorded_from`) — the arm that answers a repeat
+      ``git+URL`` install and a repeat install of a tree whose name cannot be
+      read without executing it.
+
+    The first three are unioned; the fourth is a fallback rather than a fourth
+    union member, because it is the only one that can name a dist this command
+    did not touch (a stale PEP 610 record survives a rename). When something
+    really did move, that movement is the better answer.
+
+    One distribution can expose several endpoints, so this is a set of DISTS and
+    the report filters endpoints by dist membership — not the other way round.
+
+    An EMPTY result is a real outcome, not a bug: it means this command cannot
+    name what landed. :func:`_report_install_binding` must then say so rather
+    than fall back to a success line (:data:`_INSTALLED_NO_VERDICT`).
+    """
+
+    attributed = {name for name in after if name not in before}
+    attributed |= {
+        name for name, version in after.items() if name in before and before[name] != version
+    }
+    hint = _target_dist_hint(target, kind)
+    if hint:
+        want = _canon(hint)
+        attributed |= {name for name in after if _canon(name) == want}
+    if attributed:
+        return frozenset(attributed)
+    return _dists_recorded_from(target, kind, after)
+
+
+def _report_install_binding(
+    dists: frozenset[str], *, trusted_ep_dists: frozenset[str] = frozenset()
+) -> int:
+    """Print what the host already knows about the pack just installed (#154).
+
+    Runs :func:`classify_installed_endpoints` — import-free, offline, the same
+    primitive ``verify`` and ``list`` read — and keeps only the endpoints owned by
+    ``dists``. Returns ``0`` when every one of them is BOUND (and prints exactly
+    the pre-#154 line, so a healthy install gains no new output at all), or
+    :data:`_INSTALL_NOT_BOUND` when any is not.
+
+    An EMPTY ``dists`` means attribution could not tie the install to an installed
+    extension distribution, so there is no verdict to report: that prints
+    :data:`_INSTALLED_NO_VERDICT` and returns ``0`` — the package is on disk, but
+    nothing here may claim it will load. The one thing this must never do is
+    invent a verdict, in either direction.
+    """
+
+    if not dists:
+        print(_INSTALLED_NO_VERDICT)
+        return 0
+    # A same-process install is invisible to importlib.metadata until the path
+    # caches are dropped.
+    importlib.invalidate_caches()
+    owned = {_canon(name) for name in dists}
+    statuses = [
+        s
+        for s in classify_installed_endpoints(trusted_ep_dists=trusted_ep_dists)
+        if s.dist_name is not None and _canon(s.dist_name) in owned
+    ]
+    unbound = [s for s in statuses if not s.bound]
+    if not unbound:
+        print(_INSTALLED_RESTART)
+        return 0
+
+    refused = [s for s in unbound if _endpoint_is_refused(s)]
+    print(
+        f"Installed, but this build already knows {len(unbound)} of "
+        f"{len(statuses)} endpoint(s) will NOT bind:"
+    )
+    for status in unbound:
+        _print_endpoint_status(status)
+    if refused:
+        print("  → not loaded at all on this build.")
+    if len(refused) < len(unbound):
+        print(
+            "  → their declarative contributions (tools, hooks, themes, TUI "
+            "widgets, MCP servers) are ignored until the manifest binds."
+        )
+    bound = len(statuses) - len(unbound)
+    if bound:
+        print(
+            f"{bound} endpoint(s) of this install DID bind — restart aelix "
+            f"(or /reload in the TUI) to pick those up."
+        )
+    # The pip package is already on disk by the time any of this is knowable, and
+    # silently undoing what the user asked for would be its own defect. So: say
+    # so plainly, and hand over the exact command rather than performing it.
+    # ``statuses`` is filtered on ``dist_name is not None``, so this is non-empty
+    # whenever ``unbound`` is.
+    affected = sorted({s.dist_name for s in unbound if s.dist_name})
+    print("The distribution is installed; nothing was undone. To remove it:")
+    for dist in affected:
+        print(f"  aelix extension remove {dist}")
+    print(f"To re-check: aelix extension verify {affected[0]}")
+    return _INSTALL_NOT_BOUND
 
 
 def _cmd_list() -> int:
@@ -2515,15 +2965,11 @@ def _cmd_verify(args: list[str]) -> int:
 
     failed = 0
     for s in statuses:
-        if s.bound:
-            print(f"  BOUND     {s.label()}  (manifest: plugin {s.plugin_id!r})")
-            continue
-        failed += 1
-        state = s.outcome.value.upper() if s.outcome is not None else "INCOMPATIBLE"
-        print(f"  {state:<9} {s.label()}")
-        print(f"      {s.reason}")
-        if s.outcome is EpOutcome.ABSENT:
-            print(f"      hint: {_ABSENT_HINT}")
+        if not s.bound:
+            failed += 1
+        # ONE renderer, shared with the post-install report (#154) — see
+        # :func:`_print_endpoint_status`.
+        _print_endpoint_status(s)
 
     total = len(statuses)
     if failed:
@@ -2543,7 +2989,25 @@ async def _cmd_install(
     input_fn: Callable[[str], str],
     runner: PipRunner | None,
 ) -> int:
-    """``extension install <target>`` — #19 install + resolve + record."""
+    """``extension install <target>`` — #19 install + resolve + record + VERDICT.
+
+    Since issue #154 the command ends by asking the host's own import-free
+    resolver whether the pack it just wrote to disk can actually bind, and reports
+    THAT instead of an unconditional "Installed. Restart aelix". The check was
+    already written, already local, and already read by ``verify`` and ``list``;
+    install simply never called it, so the two commands contradicted each other
+    at the same instant on the same build.
+
+    Exit: ``0`` when pip succeeded and every attributed endpoint is BOUND (output
+    byte-identical to pre-#154 — a healthy install gains no noise);
+    :data:`_INSTALL_NOT_BOUND` (3) when pip succeeded and some attributed endpoint
+    is not; :data:`_INSTALLER_FAILED` (1) when the installer ran and failed; ``2``
+    when it never ran.
+
+    ``0`` is ALSO returned when attribution came back empty — pip put something on
+    disk and this command cannot name it. That is not a success claim and does not
+    print one: see :data:`_INSTALLED_NO_VERDICT`.
+    """
 
     parsed = _parse_install_flags(args)
     if isinstance(parsed, int):
@@ -2561,7 +3025,7 @@ async def _cmd_install(
             index_url = registered[0]
             extra_index_urls = registered[1:]
 
-    before = _installed_dist_names()
+    before = _installed_ext_dists()
     code = install_extension(
         target,
         yes=parsed.yes,
@@ -2575,12 +3039,33 @@ async def _cmd_install(
         require_signature=parsed.require_signature,
         trusted_key=parsed.trusted_key,
         signature_path=parsed.signature_path,
+        # The success line is OURS now — we know something install_extension does
+        # not: whether the thing it just wrote can bind.
+        announce=False,
         input_fn=input_fn,
         runner=runner,
     )
-    if code == 0:
-        await _record_install(settings, target, kind, before)
-    return code
+    if code != 0:
+        return code
+    await _record_install(settings, target, kind, set(before))
+    # Never let a classification fault turn a completed install into a crash: the
+    # package IS on disk. But a fault means we do NOT have the verdict, so the
+    # line printed is the no-verdict one, not the success one — otherwise stdout
+    # would promise the pack loads while stderr says the check never ran.
+    # ``classify_installed_endpoints`` already degrades a broken environment to an
+    # empty inventory, so this is belt-and-braces.
+    try:
+        return _report_install_binding(
+            _attributed_dists(target, kind, before, _installed_ext_dists()),
+            trusted_ep_dists=frozenset(parsed.trust_extension_paths),
+        )
+    except Exception as exc:  # noqa: BLE001 — reporting must not fail the install
+        print(
+            f"Warning: could not check whether the pack binds ({exc}).",
+            file=sys.stderr,
+        )
+        print(_INSTALLED_NO_VERDICT)
+        return 0
 
 
 async def _record_install(
@@ -2626,7 +3111,20 @@ async def _cmd_update(
     input_fn: Callable[[str], str],
     runner: PipRunner | None,
 ) -> int:
-    """``extension update [<name>]`` — reinstall recorded source(s) --upgrade."""
+    """``extension update [<name>]`` — reinstall recorded source(s) ``--upgrade``.
+
+    Each pack ends with the same import-free binding verdict ``install`` prints
+    (see :func:`_upgrade_and_report`); with several packs the run also closes with
+    a summary, because per-pack reports bury the outcome
+    (:func:`_print_update_summary`).
+
+    Exit: ``0`` when every pack upgraded and every attributed endpoint is BOUND —
+    or when there was no verdict to give, which is not a success claim and does
+    not print one; :data:`_INSTALL_NOT_BOUND` (3) when every installer run
+    succeeded but some attributed endpoint will not bind; :data:`_INSTALLER_FAILED`
+    (1) when an installer ran and failed; ``2`` when one never ran. The last two
+    outrank 3 (:func:`_worse_update_code`).
+    """
 
     name_filter: str | None = None
     yes = False
@@ -2705,7 +3203,7 @@ async def _cmd_update(
             # Not recorded — treat <name> as a pypi package and upgrade it
             # against the registered index sources (covers a name install that
             # was never recorded, e.g. installed before this feature).
-            return _upgrade_pypi_name(
+            code, _dists = _upgrade_pypi_name(
                 name_filter,
                 index_urls,
                 yes=yes,
@@ -2714,6 +3212,7 @@ async def _cmd_update(
                 input_fn=input_fn,
                 runner=runner,
             )
+            return code
         targets = matched
     else:
         targets = installable
@@ -2722,8 +3221,9 @@ async def _cmd_update(
             return 0
 
     worst = 0
+    results: list[tuple[str, int, frozenset[str]]] = []
     for s in targets:
-        code = _upgrade_source(
+        code, dists = _upgrade_source(
             s,
             index_urls,
             yes=yes,
@@ -2732,8 +3232,166 @@ async def _cmd_update(
             input_fn=input_fn,
             runner=runner,
         )
-        worst = worst or code  # first nonzero wins (report the earliest failure)
+        results.append((s.name or _source_identity(s.spec, s.kind), code, dists))
+        worst = _worse_update_code(worst, code)
+    _print_update_summary(results)
     return worst
+
+
+def _worse_update_code(worst: int, code: int) -> int:
+    """Fold one pack's exit code into the run's, HARDEST failure first.
+
+    Before #154 reached this verb, ``update`` folded with "first nonzero wins".
+    That rule was complete because every code it could see meant *something went
+    wrong*. :data:`_INSTALL_NOT_BOUND` breaks it: 3 is the one code that ASSERTS
+    the installer succeeded ("it is on disk, and it will not bind"). Under
+    first-nonzero-wins, an early inert pack followed by a pack pip failed on
+    outright would exit 3 — telling a script everything landed when something did
+    not. So 1 / 2 displace a previously recorded 3, and 3 is reported only when it
+    is true of every target. Among the genuine failures the original rule stands:
+    the earliest one wins.
+    """
+
+    if worst == 0:
+        return code
+    if code == 0:
+        return worst
+    if worst == _INSTALL_NOT_BOUND and code != _INSTALL_NOT_BOUND:
+        return code
+    return worst
+
+
+def _print_update_summary(results: list[tuple[str, int, frozenset[str]]]) -> None:
+    """Close a multi-pack ``update`` with the verdict, so it is not buried.
+
+    A bare ``extension update`` walks every recorded source, and each pack now
+    prints ``install``'s full report — which for a pack that cannot bind is a
+    multi-line block ending in the ABSENT packaging hint. Three of those and the
+    outcome has scrolled away; the last thing on screen would be one arbitrary
+    pack's remove command. So the run ends by naming what happened to all of them.
+
+    Printed ONLY when there are several packs AND at least one is not clean. A run
+    where every pack bound stays byte-identical to what this verb printed before
+    #154 touched it (one :data:`_INSTALLED_RESTART` per pack, nothing else), which
+    keeps the compatible path free of new noise; and a single-pack update needs no
+    summary because its own report is already the last thing printed.
+    """
+
+    if len(results) < 2:
+        return
+    bound = [label for label, code, dists in results if code == 0 and dists]
+    unbound = [label for label, code, _ in results if code == _INSTALL_NOT_BOUND]
+    unknown = [label for label, code, dists in results if code == 0 and not dists]
+    failed = [
+        label
+        for label, code, _ in results
+        if code not in (0, _INSTALL_NOT_BOUND)
+    ]
+    if not (unbound or unknown or failed):
+        return
+    print(
+        f"update summary: {len(results)} pack(s) — {len(bound)} bound, "
+        f"{len(unbound)} NOT bound, {len(unknown)} no verdict, {len(failed)} failed."
+    )
+    for title, names in (
+        ("NOT bound", unbound),
+        ("no verdict", unknown),
+        ("failed", failed),
+    ):
+        if names:
+            print(f"  {title}: {', '.join(sorted(names))}")
+    if unbound or unknown:
+        # ``verify <name>`` only works for a row labelled with a DISTRIBUTION
+        # name. A recorded source whose dist name was never detected is labelled
+        # with its path instead (``_source_identity``), and
+        # ``verify /path/to/pack`` matches nothing installed — exit 2. Offering
+        # it there would make the summary's one actionable line the one thing
+        # that cannot work, for exactly the rows that need it. The argument-less
+        # form settles every endpoint at once and is true for any label.
+        named = all(
+            os.sep not in label and "/" not in label
+            for label in (*unbound, *unknown)
+        )
+        print(
+            "To re-check one: aelix extension verify <name>"
+            if named
+            else "To re-check: aelix extension verify"
+        )
+
+
+def _upgrade_and_report(
+    target: str,
+    *,
+    yes: bool,
+    index_url: str | None = None,
+    extra_index_urls: Iterable[str] | None = None,
+    offline: bool,
+    verify: _VerifyOpts,
+    input_fn: Callable[[str], str],
+    runner: PipRunner | None,
+) -> tuple[int, frozenset[str]]:
+    """``install_extension(..., upgrade=True)`` + the SAME verdict ``install`` prints.
+
+    ``update`` reinstalls through :func:`install_extension`, which announces an
+    unconditional :data:`_INSTALLED_RESTART` — the exact promise issue #154 exists
+    to stop making, still alive on this verb after ``install`` stopped making it.
+    MEASURED on the build that fixed ``install``, throwaway venv, real pip:
+    ``extension update legacypack --yes`` printed "Installed. Restart aelix (or
+    /reload in the TUI) …" and exited 0, while ``extension verify legacypack`` —
+    same build, same instant, same pack — printed "1 of 1 endpoint(s) NOT bound"
+    and exited 1. An upgrade IS an install; the host knows exactly as much about
+    the bytes it just wrote either way, and nothing about ``--upgrade`` makes that
+    promise any safer to make.
+
+    So: ``announce=False``, a before/after ledger snapshot around the call, and the
+    result through :func:`_report_install_binding` — the same three moves
+    :func:`_cmd_install` makes, so the two verbs cannot drift apart again.
+
+    Returns the exit code AND the dists attribution named, because
+    :func:`_cmd_update` may be upgrading many packs and has to summarise them: an
+    empty set with code ``0`` is "no verdict", a non-empty set with code ``0`` is
+    "bound", and the non-zero codes speak for themselves.
+    """
+
+    before = _installed_ext_dists()
+    code = install_extension(
+        target,
+        yes=yes,
+        index_url=index_url,
+        extra_index_urls=extra_index_urls,
+        offline=offline,
+        upgrade=True,
+        no_verify=verify.no_verify,
+        strict=verify.strict,
+        repin=verify.repin,
+        verify_pypi=verify.verify_pypi,
+        require_signature=verify.require_signature,
+        trusted_key=verify.trusted_key,
+        signature_path=verify.signature_path,
+        # The success line is OURS now — same reason as _cmd_install: we know
+        # something install_extension does not, namely whether it can bind.
+        announce=False,
+        input_fn=input_fn,
+        runner=runner,
+    )
+    if code != 0:
+        return code, frozenset()
+    try:
+        # A same-process install stays invisible to importlib.metadata until the
+        # path caches are dropped. ``install`` gets this for free from
+        # _record_install, which ``update`` does not run.
+        importlib.invalidate_caches()
+        dists = _attributed_dists(
+            target, classify_target(target), before, _installed_ext_dists()
+        )
+        return _report_install_binding(dists), dists
+    except Exception as exc:  # noqa: BLE001 — reporting must not fail the upgrade
+        print(
+            f"Warning: could not check whether the pack binds ({exc}).",
+            file=sys.stderr,
+        )
+        print(_INSTALLED_NO_VERDICT)
+        return 0, frozenset()
 
 
 def _upgrade_source(
@@ -2745,8 +3403,8 @@ def _upgrade_source(
     verify: _VerifyOpts,
     input_fn: Callable[[str], str],
     runner: PipRunner | None,
-) -> int:
-    """Reinstall one recorded source with ``--upgrade``."""
+) -> tuple[int, frozenset[str]]:
+    """Reinstall one recorded source with ``--upgrade``, and report its verdict."""
 
     if source.kind == "pypi":
         target = source.name or _bare_package_name(source.spec)
@@ -2760,18 +3418,11 @@ def _upgrade_source(
             runner=runner,
         )
     # git / path: the spec is directly installable.
-    return install_extension(
+    return _upgrade_and_report(
         source.spec,
         yes=yes,
         offline=offline,
-        upgrade=True,
-        no_verify=verify.no_verify,
-        strict=verify.strict,
-        repin=verify.repin,
-        verify_pypi=verify.verify_pypi,
-        require_signature=verify.require_signature,
-        trusted_key=verify.trusted_key,
-        signature_path=verify.signature_path,
+        verify=verify,
         input_fn=input_fn,
         runner=runner,
     )
@@ -2786,25 +3437,18 @@ def _upgrade_pypi_name(
     verify: _VerifyOpts,
     input_fn: Callable[[str], str],
     runner: PipRunner | None,
-) -> int:
+) -> tuple[int, frozenset[str]]:
     """``pip install --upgrade <name>`` against the registered index sources."""
 
     index_url = index_urls[0] if index_urls else None
     extra = index_urls[1:] if index_urls else []
-    return install_extension(
+    return _upgrade_and_report(
         name,
         yes=yes,
         index_url=index_url,
         extra_index_urls=extra,
         offline=offline,
-        upgrade=True,
-        no_verify=verify.no_verify,
-        strict=verify.strict,
-        repin=verify.repin,
-        verify_pypi=verify.verify_pypi,
-        require_signature=verify.require_signature,
-        trusted_key=verify.trusted_key,
-        signature_path=verify.signature_path,
+        verify=verify,
         input_fn=input_fn,
         runner=runner,
     )
@@ -3103,7 +3747,11 @@ async def _cmd_discover_install(
     a single entry (REFUSING an ambiguous name with a candidate list), then hands
     the RESOLVED ``entry.source`` — never the friendly name — to the unchanged
     :func:`_cmd_install`, so consent + ``verify_and_pin`` + pip + ``_record_install``
-    all run exactly as for a direct install.
+    + the #154 post-install verdict all run exactly as for a direct install.
+
+    That delegation is why ``discover install`` needs no verdict logic of its own,
+    and why its exit code (including :data:`_INSTALL_NOT_BOUND`) is IDENTICAL to
+    ``install``'s by construction rather than by two implementations agreeing.
     """
 
     name: str | None = None
@@ -3123,7 +3771,12 @@ async def _cmd_discover_install(
             if not catalog_name.strip():
                 print("Error: --catalog requires a catalog name.", file=sys.stderr)
                 return _EXIT_DIDNT_RUN
-        elif a in ("--index-url", "--trusted-key", "--signature"):
+        elif a in (
+            "--index-url",
+            "--trusted-key",
+            "--signature",
+            "--trust-extension-path",
+        ):
             # A value-taking install flag — pass BOTH tokens through untouched so the
             # value is never mistaken for the <name> positional.
             install_flags.append(a)
@@ -3602,6 +4255,15 @@ class _InstallFlags:
     require_signature: bool = False
     trusted_key: str | None = None
     signature_path: str | None = None
+    #: ``--trust-extension-path DIST`` (repeatable). NEVER reaches pip — it is
+    #: consumed entirely by the post-install verdict (#154), where it means the
+    #: same thing it means to ``verify`` and to ``aelix`` itself: vouch for ONE
+    #: distribution whose install root sits outside the environment's real site
+    #: directories. Measured reachable on the install path (``PIP_TARGET`` /
+    #: ``--target`` + a matching ``PYTHONPATH``): without it, install would print
+    #: UNTRUSTED_PATH and exit 3 at a pack that is merely unvouched, not broken —
+    #: and would keep doing so on every reinstall.
+    trust_extension_paths: tuple[str, ...] = ()
 
 
 def _parse_install_flags(rest: list[str]) -> _InstallFlags | int:
@@ -3618,6 +4280,7 @@ def _parse_install_flags(rest: list[str]) -> _InstallFlags | int:
     require_signature = False
     trusted_key: str | None = None
     signature_path: str | None = None
+    trust_paths: list[str] = []
     only_positional = False  # set once a bare ``--`` is seen
     i = 0
     while i < len(rest):
@@ -3680,6 +4343,24 @@ def _parse_install_flags(rest: list[str]) -> _InstallFlags | int:
                 print("Error: --signature requires a path.", file=sys.stderr)
                 return _EXIT_DIDNT_RUN
             signature_path = value
+        elif a == "--trust-extension-path":
+            i += 1
+            if i >= len(rest) or not rest[i].strip():
+                print(
+                    "Error: --trust-extension-path requires a DIST name.",
+                    file=sys.stderr,
+                )
+                return _EXIT_DIDNT_RUN
+            trust_paths.append(rest[i])
+        elif a.startswith("--trust-extension-path="):
+            value = a.split("=", 1)[1]
+            if not value.strip():
+                print(
+                    "Error: --trust-extension-path requires a DIST name.",
+                    file=sys.stderr,
+                )
+                return _EXIT_DIDNT_RUN
+            trust_paths.append(value)
         elif a in ("-h", "--help"):
             print(_USAGE)
             return 0
@@ -3703,6 +4384,7 @@ def _parse_install_flags(rest: list[str]) -> _InstallFlags | int:
         require_signature=require_signature,
         trusted_key=trusted_key,
         signature_path=signature_path,
+        trust_extension_paths=tuple(trust_paths),
     )
 
 

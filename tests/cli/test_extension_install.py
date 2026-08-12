@@ -213,11 +213,22 @@ def test_install_closed_stdin_denies(tmp_path: Path) -> None:
     assert runner.calls == []
 
 
-def test_install_pip_failure_propagates(tmp_path: Path) -> None:
+def test_install_failure_normalises_the_installer_code_and_shows_it(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The installer's own code is SHOWN, not returned (#154 round 2).
+
+    pip's codes are not disjoint from this verb's — ``VIRTUALENV_NOT_FOUND = 3``
+    is ``_INSTALL_NOT_BOUND`` and ``UNKNOWN_ERROR = 2`` is ``_EXIT_DIDNT_RUN`` —
+    so passing them through made "installed but inert" and "pip refused to run"
+    indistinguishable. 1 now means "the installer ran and failed", always.
+    """
+
     (tmp_path / "ext").mkdir()
     runner = _FakeRunner(returncode=7)
     code = install_extension(str(tmp_path / "ext"), yes=True, runner=runner)
-    assert code == 7
+    assert code == 1
+    assert "(exit 7)" in capsys.readouterr().err
 
 
 def test_install_offline_pypi_without_index_refused() -> None:
