@@ -121,6 +121,10 @@ The catalog (`catalog.json`) is hosted in a **separate** repository —
 submission gate **cannot be wired here**. This ADR ships the *mechanism*; the
 *wiring* is a handoff to that repo.
 
+> **The handoff was completed** in `aelix-marketplace@0611c77` (issue #145). The
+> sketch below is kept as the reasoning; see Consequences for the two places the
+> shipped gate deliberately departs from it.
+
 The submission check that repo must run, per candidate, in a clean environment:
 
 ```bash
@@ -145,6 +149,21 @@ exit and echo the tool's per-endpoint reason into the PR.
   by test to build a wheel that contains its manifest and to resolve `BOUND`.
 - The authoring guide gained a "Packaging your extension" section naming both
   backends and the setuptools `package-data` requirement.
-- The catalog policy is documented but its CI is a handoff to
-  `handochan/aelix-marketplace`; until that wiring exists, the rule is advisory
-  in practice and enforced by review.
+- The catalog policy is machine-enforced. The wiring landed in
+  `handochan/aelix-marketplace@0611c77` (issue #145): `verify-candidates.yml`
+  installs every added or changed entry into a throwaway virtualenv and requires
+  `aelix extension verify` to report `BOUND`, with a weekly sweep over the whole
+  catalog because a listing may name an unpinned source. Two corrections to the
+  recipe sketched above, both measured while wiring it:
+  - **No target name is passed.** aelix registers no `aelix.extensions` entry
+    points of its own, so in that venv the endpoints `verify` reports are exactly
+    the ones the candidate brought. This is also the only workable answer for a
+    git source, where a repository name is not a distribution name.
+  - **aelix is installed FIRST, the candidate second** — the reverse of the
+    sketch. That is the order a real user is in, so a candidate that only binds
+    by dragging aelix's own dependencies to other versions is caught by CI rather
+    than by the user.
+  The gate additionally rejects a distribution that registers **no** endpoint:
+  `verify` exits 0 when it has nothing to report, which is correct for the verb
+  (every reported endpoint was BOUND) and would have admitted a package that is
+  not an extension at all.
