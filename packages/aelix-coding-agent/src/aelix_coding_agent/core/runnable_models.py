@@ -311,6 +311,68 @@ def provider_block_reasons(
     return frozenset(reasons)
 
 
+def blocked_summary(models: Iterable[Any], apis: set[str] | None = None) -> str:
+    """One dim line describing WHY a whole SET of models is blocked — ``""`` if none.
+
+    :func:`provider_block_hint` answers for one provider; a picker that has just
+    hidden (or annotated) a mixed pile of models from SEVERAL providers has to
+    say why in one line, grouped by reason so it never asserts one reason for
+    models that do not share it (#153). Shape::
+
+        set CLOUDFLARE_ACCOUNT_ID (cloudflare-workers-ai 8); set
+        CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_GATEWAY_ID (cloudflare-ai-gateway 35);
+        no adapter in this build (mistral 1)
+
+    Groups by (reason, HINT), not by reason alone. Two providers can share the
+    reason ``config-missing`` and need DIFFERENT variables: grouping on the
+    reason unions their names, so the line told a ``cloudflare-workers-ai`` user
+    to set ``CLOUDFLARE_GATEWAY_ID``, which that provider does not use::
+
+        workers-ai alone: set CLOUDFLARE_ACCOUNT_ID (cloudflare-workers-ai 8)
+        both together   : set CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_GATEWAY_ID
+                          (cloudflare-ai-gateway 35, cloudflare-workers-ai 8)
+
+    Never WRONG — setting the union does fix every provider in the group — but
+    over-broad, and it disagreed with the per-row hints, which are precise. It
+    matters more now that this line is the ONLY place the variable names appear
+    (#153 round 2: the names no longer fit on a picker row).
+
+    Groups are emitted in sorted (reason, hint) order and providers in sorted
+    name order, so the line is deterministic. Runnable models are skipped; an
+    empty ``apis`` (headless/tests) yields ``""`` because nothing is blocked
+    there.
+
+    This exists because the two live call sites both used to hardcode ONE
+    example — ``model_picker``'s hidden-count line said "e.g. openai-responses /
+    Copilot gpt-5.x" long after ``openai-responses`` gained an adapter, so it
+    named a supported api as the reason models were hidden.
+    """
+
+    apis = supported_apis() if apis is None else apis
+    if not apis:
+        return ""
+    rows = list(models)
+    # (reason id, hint) → provider → count. The hint is derived PER MODEL — for
+    # ``config-missing`` it is that model's own unexpanded base-URL placeholders
+    # — so models needing different variables land in different groups.
+    counts: dict[tuple[str, str], dict[str, int]] = {}
+    for model in rows:
+        reason = blocked_reason(model, apis)
+        if not reason:
+            continue
+        hint = _single_block_hint(reason, [model], apis) or reason
+        provider = getattr(model, "provider", None) or "?"
+        by_provider = counts.setdefault((reason, hint), {})
+        by_provider[provider] = by_provider.get(provider, 0) + 1
+    if not counts:
+        return ""
+    parts: list[str] = []
+    for key in sorted(counts):
+        providers = ", ".join(f"{p} {n}" for p, n in sorted(counts[key].items()))
+        parts.append(f"{key[1]} ({providers})")
+    return "; ".join(parts)
+
+
 def provider_block_reason(models: Iterable[Any], apis: set[str] | None = None) -> str:
     """Why NOTHING a provider offers can run — ``""`` when something can (#151).
 
@@ -613,6 +675,7 @@ __all__ = [
     "BLOCKED_VERTEX_CONFIG",
     "blocked_message",
     "blocked_reason",
+    "blocked_summary",
     "is_recoverable_block",
     "is_runnable",
     "partition_runnable",
