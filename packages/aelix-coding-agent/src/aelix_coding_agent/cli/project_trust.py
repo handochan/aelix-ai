@@ -134,11 +134,23 @@ def has_trust_requiring_project_resources(cwd: Path) -> bool:
       entry (an empty dir loads nothing → no gate), OR
     - ``cwd/.aelix/mcp.json`` is a file, OR
     - ``cwd/.aelix/agents/`` exists as a directory with at least one entry
-      (aelix-original — see the clause comment below).
+      (aelix-original — see the clause comment below), OR
+    - ``cwd/.aelix/skills/`` exists as a directory with at least one entry
+      (#115 — see the clause comment below), OR
+    - ``cwd/.aelix/prompt-templates/`` exists as a directory with at least
+      one entry (#115).
 
     Otherwise ``False`` → there is nothing dangerous to gate, so
     :func:`resolve_project_trusted` trusts the directory without prompting
     (pi ``project-trust.ts:60-62``).
+
+    The "narrows to the surfaces it actually loads" clause above USED to
+    excuse the absence of ``skills``, on the grounds that aelix had no
+    skills loader. That was already wrong when #115 was filed —
+    ``entry._resolve_skill_dirs`` has scanned ``cwd/.aelix/skills`` since
+    issue #12 — and it stopped being merely inaccurate the moment #115
+    wired those skills into the system prompt. Both clauses restore the pi
+    resource set for the two families aelix now loads.
     """
 
     aelix_dir = cwd / CONFIG_DIR_NAME
@@ -185,6 +197,54 @@ def has_trust_requiring_project_resources(cwd: Path) -> bool:
     except OSError:
         pass
 
+    # #115 — project-scoped SKILLS and PROMPT TEMPLATES.
+    #
+    # Both are prompt injection, and the injection is the POINT of them: a
+    # skill's name/description/location go into the system prompt verbatim
+    # (``cli/skills_prompt.format_skills_for_prompt``) and a prompt template's
+    # body becomes a user turn on ``/<name>``. Text that arrives with a
+    # ``git clone`` and lands in the system prompt is exactly the surface the
+    # ``agents/`` clause above was added for; the only difference is that a
+    # profile rewrites the identity in one field while a skill description
+    # writes into it in prose.
+    #
+    # This is NOT the ``AGENTS.md`` case the module docstring exempts. AGENTS.md
+    # is ungated because pi's own trust-manager does not list it. pi's
+    # trust-manager DOES list skills (``trust-manager.ts:184-206``), so this is
+    # a return to pi parity, not a widening past it.
+    #
+    # Load-bearing, and measured before the clause existed, exactly as the
+    # ``agents/`` clause was: a repo whose ONLY ``.aelix`` resource was
+    # ``skills/`` returned predicate ``False`` → ``resolve_project_trusted``
+    # short-circuited to ``True`` at step 2 with the prompt NEVER reached (both
+    # ``has_ui=True`` and headless) → ``_resolve_skill_dirs`` then scanned the
+    # dir under its ``if project_trusted`` guard, which had nothing left to
+    # decide. The consumption-side gate at ``entry.py`` already anticipated
+    # this in prose ("a malicious project SKILL.md is a prompt-injection vector
+    # once skills reach the model"); it was half a mechanism, because the half
+    # that decides trust could not see the resource.
+    #
+    # Knock-on, deliberately relied upon rather than duplicated:
+    # ``aelix_agents.trust.child_trust_argv`` clause 1 exempts a same-cwd child
+    # from ``--no-approve`` when this predicate says ``False``. Its stated
+    # justification was that withholding trust "only strips ``.aelix/skills/``,
+    # which the gate never guarded", for "zero security gain". Adding the clause
+    # here retires that exemption at its source — no edit to the child's logic,
+    # which calls this function.
+    #
+    # An empty dir loads nothing → no gate, matching every clause above.
+    # ``.aelix/teams/`` is still RESERVED for P4 and deliberately not checked:
+    # that clause lands in the same commit as the loader that reads team
+    # descriptors, never before it (an inert check cannot be tested). These two
+    # clauses land WITH their loaders, which is why they are testable now.
+    for family in ("skills", "prompt-templates"):
+        resource_dir = aelix_dir / family
+        try:
+            if resource_dir.is_dir() and any(resource_dir.iterdir()):
+                return True
+        except OSError:
+            pass
+
     return False
 
 
@@ -222,15 +282,25 @@ def format_project_trust_prompt(cwd: Path) -> str:
     :func:`has_trust_requiring_project_resources` gates — a "Trust" answer is
     consent to exactly what this string discloses, and a user cannot approve a
     surface the prompt never mentioned. "agent profiles" was added with the
-    ``.aelix/agents/`` clause (ADR-0196); keep the two in lockstep, and extend
-    both together when ``.aelix/teams/`` lands in P4.
+    ``.aelix/agents/`` clause (ADR-0196); "skills" and "prompt templates" with
+    the #115 clause. Keep them in lockstep, and extend both together when
+    ``.aelix/teams/`` lands in P4.
+
+    The consequence is spelled in TWO clauses because the families carry two
+    different risks and one sentence covering both would misdescribe each. Code
+    execution is the extensions/MCP risk and does not apply to a skill; writing
+    into the agent's instructions is the skills/templates risk and understates
+    what an extension can do. A user reading "can execute arbitrary code" next
+    to "skills" would reasonably conclude a skill runs code, which is false.
     """
 
     return (
         "Trust project folder?\n"
         f"{cwd}\n\n"
         "This allows Aelix to load .aelix extensions, MCP servers, and agent "
-        "profiles, which can execute arbitrary code on your machine."
+        "profiles, which can execute arbitrary code on your machine — and to "
+        "load .aelix skills and prompt templates, whose text is placed into "
+        "the agent's instructions."
     )
 
 

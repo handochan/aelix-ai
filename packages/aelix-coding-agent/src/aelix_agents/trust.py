@@ -35,17 +35,27 @@ def child_trust_argv(child_cwd: Path, parent_cwd: Path) -> list[str]:
     Two clauses, and each one is load-bearing:
 
     1. SAME cwd AND the gate has nothing to gate (``.aelix/extensions``,
-       ``.aelix/mcp.json``, ``.aelix/agents`` all absent —
-       ``project_trust.py:112-177``) → emit NOTHING. Step 2
+       ``.aelix/mcp.json``, ``.aelix/agents``, ``.aelix/skills`` and
+       ``.aelix/prompt-templates`` all absent —
+       :func:`has_trust_requiring_project_resources`) → emit NOTHING. Step 2
        (``project_trust.py:525-527``) would have returned ``True`` for the
-       parent too, so there is no authority to withhold; forcing ``False`` here
-       only strips ``.aelix/skills/``, which the gate never guarded, and
-       silently regresses the ``inherit_skills: true`` DEFAULT
-       (``agents/profile.py:175``). The predicate checks ``extensions/``,
-       ``mcp.json`` and ``agents/`` and deliberately NOT ``skills/``, so a
-       skills-only repo loads its skills today — and would stop under an
-       always-on flag, for zero security gain, with the child's Notice going to
-       stderr where a successful run never surfaces it.
+       parent too, so there is no authority to withhold.
+
+       This clause carried a SECOND argument that #115 falsified, recorded here
+       because it was load-bearing: it said forcing ``False`` "only strips
+       ``.aelix/skills/``, which the gate never guarded", for "zero security
+       gain", since the predicate checked ``extensions/``, ``mcp.json`` and
+       ``agents/`` and deliberately NOT ``skills/``. #115 gave skills a
+       model-facing channel — a skill's name/description/location now go into
+       the system prompt, and a prompt template's body becomes a user turn — so
+       the gain is no longer zero and the predicate now counts both families.
+       A skills-only repo therefore makes it ``True`` and the exemption does
+       not reach that case at all any more; what remains is the one thing this
+       clause ever legitimately claimed, that a directory with nothing to gate
+       has no authority to withhold. NO logic changed here: the predicate moved
+       underneath it. That is precisely why this function calls the predicate
+       instead of re-spelling the resource list — a copy would have kept
+       granting the retired exemption.
     2. ANY other case — most importantly a DIFFERENT cwd, which is always
        MODEL-CHOSEN — → ``--no-approve``. This is the whole security value of
        the flag: it kills the nearest-ancestor escalation at

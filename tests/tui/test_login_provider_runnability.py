@@ -222,11 +222,50 @@ def test_config_missing_hint_ignores_placeholders_of_other_reasons() -> None:
     )
 
 
-def test_hint_for_a_set_with_a_dead_end_says_dead_end() -> None:
+def test_hint_for_a_mixed_set_names_the_dead_end_subset() -> None:
+    """#156 at the hint level — this test's OLD assertion was the bug itself.
+
+    ``{config-missing, no-adapter}`` is a MIXED set, and it used to require the
+    hint ``"nothing it offers can run in this build"``. The ``config-missing``
+    half is a next step the user can take, so the sentence was false about it,
+    and the row it appeared on could have said what to do instead.
+    """
+
     rows = [_model(api="openai-completions", base_url="https://x/{A_ID}/v1")]
+    hint = rm.provider_block_hint(
+        {rm.BLOCKED_CONFIG_MISSING, rm.BLOCKED_NO_ADAPTER}, rows
+    )
+    assert hint != "nothing it offers can run in this build"
+    assert "no adapter in this build" in hint  # the dead-end half, scoped
+    assert "set A_ID" in hint  # the fixable half, still actionable
+
+
+def test_hint_for_an_all_dead_end_set_still_blames_the_build() -> None:
+    """The case where the old literal is TRUE, kept so the fix cannot
+    over-correct into never blaming the build again."""
+
+    rows = [_model(api="telnaut-proprietary")]
     assert (
-        rm.provider_block_hint({rm.BLOCKED_CONFIG_MISSING, rm.BLOCKED_NO_ADAPTER}, rows)
+        rm.provider_block_hint({rm.BLOCKED_NO_ADAPTER, rm.BLOCKED_UNRESOLVED_API}, rows)
         == "nothing it offers can run in this build"
+    )
+
+
+def test_dead_end_reasons_partitions_the_set() -> None:
+    """The predicate the three states are derived from. ``is_recoverable_block``
+    is deliberately NOT widened — it is compared with ``is`` at one call site
+    and its docstring records a previous over-reach on this exact function."""
+
+    assert rm.dead_end_reasons(rm.BLOCKED_CONFIG_MISSING) == frozenset()
+    assert rm.dead_end_reasons(rm.BLOCKED_NO_ADAPTER) == {rm.BLOCKED_NO_ADAPTER}
+    assert rm.dead_end_reasons(
+        {rm.BLOCKED_CONFIG_MISSING, rm.BLOCKED_NO_ADAPTER}
+    ) == {rm.BLOCKED_NO_ADAPTER}
+    assert rm.dead_end_reasons(frozenset()) == frozenset()
+    # Unchanged, and load-bearing: the old predicate still answers as it did.
+    assert rm.is_recoverable_block({rm.BLOCKED_CONFIG_MISSING, rm.BLOCKED_NO_HOST})
+    assert not rm.is_recoverable_block(
+        {rm.BLOCKED_CONFIG_MISSING, rm.BLOCKED_NO_ADAPTER}
     )
 
 
@@ -388,8 +427,28 @@ def test_all_fixable_mixed_provider_reads_needs_setup(real_adapters) -> None:
     assert entry[1].id == "ext-a"
 
 
-def test_genuinely_mixed_provider_still_reads_unusable(real_adapters) -> None:
-    """The other half of the split: one dead-end row makes the provider a dead end."""
+def test_genuinely_mixed_provider_reads_unusable_but_names_the_subset(
+    real_adapters,
+) -> None:
+    """#156 REWROTE THIS TEST, and its old assertion WAS the defect.
+
+    It required the label to read exactly
+    ``"telnaut  (unusable: nothing it offers can run in this build)"``. This
+    provider is MIXED — ``ext-a`` is blocked by ``no-host`` (a missing
+    ``baseUrl``, which the user can set) and ``ext-b`` by ``no-adapter`` (which
+    they cannot) — so that sentence is false about ``ext-a``. The equivalent
+    shape was disproved by measurement: a provider with 8 config-missing rows
+    and 1 no-adapter row went from 0 runnable models to 8 by setting one env
+    var, while this wording blamed the build.
+
+    The VERDICT is unchanged: one unrescuable model still earns "unusable",
+    an explicit #151 decision that is NOT reversed here. Only the sentence
+    beside it changes, and it now says which models it is about.
+
+    Note this test was GREEN at HEAD against the wrong wording, so a #156 fix
+    could have shipped without ever touching it — the rewrite must be seen red
+    first.
+    """
 
     registry = _FakeRegistry(
         [
@@ -400,17 +459,48 @@ def test_genuinely_mixed_provider_still_reads_unusable(real_adapters) -> None:
     )
     labels, blocked = _build_provider_labels(["telnaut"], registry)
 
-    assert labels[0] == "telnaut  (unusable: nothing it offers can run in this build)"
+    assert labels[0].startswith("telnaut  (unusable: ")
+    assert "nothing it offers can run in this build" not in labels[0]
+    assert "some models" in labels[0]
+    assert "no adapter in this build" in labels[0]
+
     entry = blocked["telnaut"]
     assert entry[0] == rm.BLOCKED_MIXED
-    # The sample is the row that CANNOT be configured away — a panel reading
-    # "set an explicit baseUrl" under "unusable" would send the user hunting for a
-    # knob that fixes one row and leaves the provider exactly as dead.
+    # The sample is still the row that CANNOT be configured away — a panel
+    # reading "set an explicit baseUrl" under "unusable" would send the user
+    # hunting for a knob that fixes one row and leaves the provider as dead.
     assert entry[1].id == "ext-b"
     panel = " ".join(_make_block_detail(["telnaut"], blocked)(0))
     assert "no adapter for" in panel
     assert "baseUrl" not in panel
+    # Index access survives the widening — that is what the NamedTuple buys.
     assert entry[2] is False
+    assert entry.recoverable is False
+    assert entry.partial is True
+
+
+def test_all_dead_end_provider_keeps_the_build_wording(real_adapters) -> None:
+    """The honest case #156 must NOT regress.
+
+    Two reasons, BOTH dead ends, so "nothing it offers can run in this build"
+    is simply true. A fix keyed on ``len(reasons) > 1`` instead of on WHICH
+    reasons are recoverable would break exactly this — the mixed set above and
+    this set have the same cardinality, and only their membership differs.
+    """
+
+    registry = _FakeRegistry(
+        [
+            _model(id="ext-a", provider="telnaut", api="telnaut-proprietary"),
+            _model(id="ext-b", provider="telnaut", api="also-not-an-api"),
+        ],
+        registered=("telnaut",),
+    )
+    labels, blocked = _build_provider_labels(["telnaut"], registry)
+
+    assert "some models" not in labels[0]
+    entry = blocked["telnaut"]
+    assert entry.recoverable is False
+    assert entry.partial is False
 
 
 def test_no_registered_adapters_annotates_nothing(monkeypatch) -> None:

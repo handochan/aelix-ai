@@ -92,6 +92,30 @@ def get_agent_dir() -> str:
     return str(Path.home() / CONFIG_DIR_NAME / "agent")
 
 
+def packaged_skills_dir() -> Path:
+    """The skills directory that ships INSIDE the wheel (#115).
+
+    Aelix-original: pi ships zero built-in skills, so there is no pi analogue.
+    The reason aelix does is that #115's channel is otherwise empty on a fresh
+    install — the two user-facing tiers are ``~/.aelix/agent/skills`` and
+    ``<cwd>/.aelix/skills``, both of which a new user has never created, so a
+    correctly wired catalog would still deliver nothing and the feature would
+    be indistinguishable from the bug it fixes.
+
+    Resolved from the package location at CALL time, exactly like
+    ``agent_context._package_pointer``, so it is right for a source checkout
+    and for an installed user in site-packages. Returns the path whether or not
+    it exists: ``load_skills`` skips a missing directory silently, which is the
+    behaviour a stripped-down or partially-installed package should get.
+
+    NOT under ``get_agent_dir()``: that directory is user-writable state, and a
+    packaged default written there would be indistinguishable from a skill the
+    user authored — and would survive an upgrade that changed it.
+    """
+
+    return Path(__file__).resolve().parents[1] / "skills"
+
+
 def get_bin_dir() -> str:
     """Pi parity: ``getBinDir`` (``config.ts:483-485`` → ``join(getAgentDir(),
     "bin")``).
@@ -230,4 +254,5 @@ __all__ = [
     "get_bin_dir",
     "get_session_dir",
     "load_mcp_server_contribs",
+    "packaged_skills_dir",
 ]

@@ -419,6 +419,39 @@ def is_recoverable_block(reasons: str | Iterable[str]) -> bool:
     return bool(ids) and ids <= _RECOVERABLE_REASONS
 
 
+def dead_end_reasons(reasons: str | Iterable[str]) -> frozenset[str]:
+    """The subset of ``reasons`` that NO configuration can rescue — #156.
+
+    :func:`is_recoverable_block` is all-or-nothing by design, and three of its
+    five call sites pass a single reason where that is exactly right. The one
+    thing it cannot express is a MIXED provider: eight rows blocked on a
+    missing env var and one on a missing adapter answer ``False``, which is
+    true — the provider is not wholly recoverable — but callers then reached for
+    the all-dead-end WORDING, and told the user that nothing the provider
+    offers can run in this build. Measured false: setting one env var took that
+    provider from 0 runnable models to 8.
+
+    Returning the subset rather than adding a third boolean is what keeps the
+    vocabulary flat. Callers get all three states from
+    ``(bool(dead), bool(ids - dead))`` — all-recoverable, all-dead-end, mixed —
+    without a new enum to keep in sync with :data:`_RECOVERABLE_REASONS`.
+
+    Note this deliberately does NOT widen :func:`is_recoverable_block`'s return
+    type. That function is compared with ``is`` at one call site
+    (:func:`provider_block_sample`), where a non-bool would silently stop
+    matching; and its own docstring records a previous over-reach on this same
+    predicate. A new function costs nothing and cannot break the old one.
+
+    :data:`BLOCKED_MIXED` is a summary sentinel that names no reason, so it is
+    reported as a dead end here for the same reason it is not in
+    :data:`_RECOVERABLE_REASONS` — it carries no evidence that anything is
+    fixable. Callers with real reason sets should never pass it.
+    """
+
+    ids = frozenset({reasons} if isinstance(reasons, str) else reasons)
+    return ids - _RECOVERABLE_REASONS
+
+
 def provider_block_sample(
     models: Iterable[Any], recoverable: bool, apis: set[str] | None = None
 ) -> Any:
@@ -464,8 +497,14 @@ def provider_block_hint(
     * all-fixable → the individual hints joined (deterministic, sorted by reason
       id), because each one is a real next step and dropping any of them hides
       work the user still has to do;
-    * otherwise → the dead-end phrasing, which is accurate precisely because at
-      least one reason cannot be configured away.
+    * all-dead-end → the dead-end phrasing, accurate because no reason can be
+      configured away;
+    * MIXED (#156) → the dead-end SUBSET named, then the fixable next steps.
+      This case used to fall into the branch above and tell the user nothing
+      the provider offers can run in this build — disproved by setting one env
+      var and watching 8 of its 9 models become runnable. The provider-level
+      verdict stays "unusable" (a #151 decision: one unrescuable model is
+      enough to earn it), but the sentence now says which models it applies to.
 
     ``models`` supplies the concrete env var names for
     :data:`BLOCKED_CONFIG_MISSING` (read off the unexpanded base-URL
@@ -481,8 +520,42 @@ def provider_block_hint(
     if not ids:
         return ""
     if len(ids) > 1:
-        if not is_recoverable_block(ids):
+        dead = dead_end_reasons(ids)
+        if dead == ids:
+            # Every reason is a dead end — the literal is simply true.
             return "nothing it offers can run in this build"
+        if dead:
+            # MIXED (#156). The old code took this path into the branch above
+            # and claimed nothing could run, while the fixable majority ran
+            # fine as soon as one env var was set. Name the dead-end SUBSET and
+            # keep the fixable next steps beside it, because both are true and
+            # the user needs both: some models need configuration, others
+            # cannot be rescued at all.
+            fixable = "; ".join(
+                part
+                for part in dict.fromkeys(
+                    _single_block_hint(reason_id, models, apis)
+                    for reason_id in sorted(ids - dead)
+                )
+                if part
+            )
+            dead_part = "; ".join(
+                part
+                for part in dict.fromkeys(
+                    _single_block_hint(reason_id, models, apis)
+                    for reason_id in sorted(dead)
+                )
+                if part
+            )
+            if fixable and dead_part:
+                # Colons rather than verbs: the two halves come from
+                # ``_single_block_hint``, whose outputs are a mix of noun
+                # phrases ("no adapter in this build") and imperatives ("set
+                # CLOUDFLARE_ACCOUNT_ID"). No single connective verb reads
+                # correctly against both, and a row label is not the place to
+                # start conjugating.
+                return f"some models: {dead_part}; others: {fixable}"
+            return dead_part or fixable
         parts: list[str] = []
         for reason_id in sorted(ids):
             part = _single_block_hint(reason_id, models, apis)
@@ -676,6 +749,7 @@ __all__ = [
     "blocked_message",
     "blocked_reason",
     "blocked_summary",
+    "dead_end_reasons",
     "is_recoverable_block",
     "is_runnable",
     "partition_runnable",

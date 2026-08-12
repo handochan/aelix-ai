@@ -212,6 +212,109 @@ async def test_agents_only_dir_prompts_when_interactive(tmp_path: Path) -> None:
     assert out is False
 
 
+# === 2b. #115 — skills / prompt templates ====================================
+
+
+def _skills_only_dir(tmp_path: Path) -> Path:
+    """A cwd whose ONLY ``.aelix`` resource is a skill.
+
+    No ``extensions/``, ``mcp.json`` or ``agents/``: with any of those present
+    a pre-existing clause would carry the assertions and the #115 clause would
+    be untested.
+    """
+
+    skill = tmp_path / ".aelix" / "skills" / "review"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text(
+        "---\nname: review\ndescription: probe\n---\nbody\n"
+    )
+    return tmp_path
+
+
+def test_resources_empty_skills_dir_false(tmp_path: Path) -> None:
+    # An empty .aelix/skills dir loads nothing → nothing to gate. Pins the
+    # ``any(iterdir())`` half of the clause, not just ``is_dir()``.
+    (tmp_path / ".aelix" / "skills").mkdir(parents=True)
+    assert has_trust_requiring_project_resources(tmp_path) is False
+
+
+def test_resources_empty_prompt_templates_dir_false(tmp_path: Path) -> None:
+    (tmp_path / ".aelix" / "prompt-templates").mkdir(parents=True)
+    assert has_trust_requiring_project_resources(tmp_path) is False
+
+
+async def test_skills_only_dir_requires_trust(tmp_path: Path) -> None:
+    """#115 — THE SECURITY PIN, and it was measured failing before the clause.
+
+    A skill's name, description and absolute path go into the system prompt
+    (``cli/skills_prompt``), so a ``.aelix/skills`` that arrived with a
+    ``git clone`` writes instructions into the agent. Before the clause the
+    predicate returned ``False`` here, ``resolve_project_trusted``
+    short-circuited to ``True`` at step 2 in BOTH modes, and
+    ``_resolve_skill_dirs``' own ``if project_trusted`` guard — whose docstring
+    already named this exact risk — had nothing left to decide.
+    """
+
+    cwd = _skills_only_dir(tmp_path)
+
+    assert has_trust_requiring_project_resources(cwd) is True
+
+    out = await resolve_project_trusted(
+        cwd,
+        override=None,
+        has_ui=False,
+        prompt=None,
+        store=ProjectTrustStore(tmp_path / "agent"),
+    )
+    assert out is False
+
+    # Disclosure — consent covers only what the prompt names.
+    assert "skills" in format_project_trust_prompt(cwd)
+
+
+async def test_prompt_templates_only_dir_requires_trust(tmp_path: Path) -> None:
+    """The sibling family: ``/<name>`` sends a template's body as the USER TURN
+    verbatim, so a cloned template is the same injection surface as a skill."""
+
+    templates = tmp_path / ".aelix" / "prompt-templates"
+    templates.mkdir(parents=True)
+    (templates / "review.md").write_text("review this\n")
+
+    assert has_trust_requiring_project_resources(tmp_path) is True
+
+    out = await resolve_project_trusted(
+        tmp_path,
+        override=None,
+        has_ui=False,
+        prompt=None,
+        store=ProjectTrustStore(tmp_path / "agent"),
+    )
+    assert out is False
+    assert "prompt templates" in format_project_trust_prompt(tmp_path)
+
+
+async def test_skills_only_dir_prompts_when_interactive(tmp_path: Path) -> None:
+    """Headless deny alone would also pass if the gate merely failed closed for
+    lack of a UI. This pins the other half — with a UI the user is asked."""
+
+    cwd = _skills_only_dir(tmp_path)
+    asked: dict[str, object] = {"cwd": None}
+
+    async def _prompt(c: Path) -> ProjectTrustPromptResult | None:
+        asked["cwd"] = c
+        return ProjectTrustPromptResult(trusted=False, remember=False)
+
+    out = await resolve_project_trusted(
+        cwd,
+        override=None,
+        has_ui=True,
+        prompt=_prompt,
+        store=ProjectTrustStore(tmp_path / "agent"),
+    )
+    assert asked["cwd"] == cwd
+    assert out is False
+
+
 # === 3. resolve_project_trusted order ========================================
 
 

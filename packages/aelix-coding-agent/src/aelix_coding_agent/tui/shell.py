@@ -38,6 +38,7 @@ from rich.table import Table
 from rich.text import Text
 
 from aelix_coding_agent.cli.repl import handle_user_bash
+from aelix_coding_agent.cli.resource_commands import expand_resource_command
 from aelix_coding_agent.extensions import HEADLESS_UI_CONTEXT
 from aelix_coding_agent.extensions.api import MessageRenderOptions
 from aelix_coding_agent.extensions.command_dispatch import (
@@ -2371,6 +2372,7 @@ async def run_tui(
             command_ctx,
             cwd=cwd,
             dispatch=dispatch,
+            settings_manager=settings_manager,
         )
     finally:
         with contextlib.suppress(Exception):
@@ -2815,8 +2817,16 @@ async def _input_loop(
     *,
     cwd: str,
     dispatch: CommandDispatchService | None = None,
+    settings_manager: SettingsManager | None = None,
 ) -> None:
-    """Read → classify → drive the harness, one turn at a time."""
+    """Read → classify → drive the harness, one turn at a time.
+
+    ``settings_manager`` (#115) is threaded only for
+    ``get_enable_skill_commands()``, the gate on ``/skill:<name>``. ``None``
+    means "no manager", which reads as enabled — the same default
+    ``get_enable_skill_commands`` itself returns, so a caller that omits it
+    gets the setting's documented default rather than a silent off.
+    """
 
     # Issue #9 — surface bindings for extension-command output: a handler's
     # str-return and any failure commit to scrollback (a handler's own ctx.ui
@@ -2846,6 +2856,10 @@ async def _input_loop(
 
         parsed = parse_input_line(line)
         harness = runtime_host.harness
+        # #115 — the text that reaches the model. Identical to what was typed
+        # for every line except an expanded ``/skill:<name>`` / ``/<template>``,
+        # which rewrites this while the ECHO below still shows the typed line.
+        prompt_text = parsed.text
 
         if parsed.kind == "quit":
             return
@@ -2897,11 +2911,49 @@ async def _input_loop(
                 if modal is not None:
                     descriptor_renderer.open_modal(modal)
                     continue
-            label = "/" + slash_word(parsed.text)
-            output_queue.put_nowait(
-                ("commit", Text(f"Unknown command: {label} — type /help", style="yellow"))
+            # #115 — ``/skill:<name>`` and ``/<prompt-template>`` are the
+            # user-initiated half of the resource channel. They do NOT dispatch
+            # to a handler: they EXPAND into the text of this turn, so they fall
+            # through to the prompt path below instead of ``continue``-ing.
+            #
+            # Placed last among the command arms on purpose: a built-in and an
+            # extension command both outrank a template of the same name (the
+            # built-ins-win rule this chain already documents), and a skill
+            # cannot collide at all because it is namespaced under ``skill:``.
+            #
+            # ``getattr`` for both lists, matching how this module already
+            # reads every optional harness surface (``bind_login_registries``
+            # and friends). Not politeness: this runs on the UNKNOWN-COMMAND
+            # path, so an ``AttributeError`` here would propagate out of
+            # ``_input_loop`` and take down the whole REPL — for a mistyped
+            # slash command. Measured: a duck-typed harness without ``skills``
+            # made ``/unknown`` kill the session instead of printing a hint.
+            expanded = expand_resource_command(
+                parsed.text,
+                skills=getattr(harness, "skills", None) or (),
+                templates=getattr(harness, "prompt_templates", None) or (),
+                skill_commands_enabled=(
+                    settings_manager.get_enable_skill_commands()
+                    if settings_manager is not None
+                    else True
+                ),
             )
-            continue
+            if expanded is None:
+                label = "/" + slash_word(parsed.text)
+                output_queue.put_nowait(
+                    (
+                        "commit",
+                        Text(
+                            f"Unknown command: {label} — type /help",
+                            style="yellow",
+                        ),
+                    )
+                )
+                continue
+            # The TYPED line is what gets echoed; the expansion is what the model
+            # receives. Echoing the expansion would paste a whole SKILL.md body
+            # into the transcript on every invocation.
+            prompt_text = expanded
         if parsed.kind in ("bash", "bash_transient"):
             if parsed.text:
                 output = await handle_user_bash(
@@ -2922,7 +2974,7 @@ async def _input_loop(
         output_queue.put_nowait(("commit", render_user_message(parsed.text)))
         chrome.set_running(True)
         try:
-            await harness.prompt(parsed.text, source="interactive")
+            await harness.prompt(prompt_text, source="interactive")
         except Exception as exc:  # noqa: BLE001 — surface + survive a failed turn
             renderer.finalize()  # commit partial + clear the live stream window
             output_queue.put_nowait(("commit", Text(f"✖ {exc}", style="bold red")))

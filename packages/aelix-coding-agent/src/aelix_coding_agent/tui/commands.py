@@ -599,20 +599,46 @@ def _profile_cell(value: object) -> str:
     return text if text.strip() else "—"
 
 
-def _profile_tools_cell(profile: AgentProfile) -> str:
+def _profile_tools_cell(profile: AgentProfile, live_tools: Any = None) -> Text:
     """``tools`` is THREE-valued and the render must not flatten it.
 
     ``None`` (key absent) = inherit the ambient tool set; ``()`` (``tools: []``)
     = NO tools at all; a list = an allowlist. Showing the first two identically
     would display opposite intents as the same thing — the same collapse that
     made ``--tools ''`` enable everything (``entry.py:453-475``).
+
+    #155 — annotated when a name in the allowlist is not registered in THIS
+    session. A profile's ``tools:`` is the persistent form of that defect: an
+    unknown name there fails EVERY launch of the profile until the file is
+    edited, so the row is where the user should find out, not the next startup.
+    Same annotate-in-place shape as :func:`_profile_model_cell` (#152), and the
+    same rule — never hide the profile, because it is still the user's file and
+    the name may be an extension tool that a build loading that extension does
+    register.
+
+    ``live_tools`` is the session's real tool list, NOT ``ALL_TOOL_NAMES``:
+    validating against the seven built-ins would flag every legitimate
+    extension and MCP tool as broken (``--tools echo`` with the echo extension
+    is measurably valid). :data:`None` means "no registry available" and
+    annotates nothing — the same swallow-and-degrade rule the model cell uses,
+    for the same reason.
     """
 
     if profile.tools is None:
-        return "—"
+        return Text("—")
     if not profile.tools:
-        return "(none)"
-    return ", ".join(profile.tools)
+        return Text("(none)")
+    cell = Text(", ".join(profile.tools))
+    if live_tools is None:
+        return cell
+    try:
+        known = {getattr(tool, "name", tool) for tool in live_tools}
+        unknown = [name for name in profile.tools if name not in known]
+        if unknown:
+            cell.append(f"  (unknown here: {', '.join(unknown)})", style="yellow")
+    except Exception:  # noqa: BLE001 — an unannotated row beats a broken list
+        return cell
+    return cell
 
 
 def _profile_model_cell(profile: AgentProfile, registry: Any) -> Text:
@@ -645,9 +671,15 @@ def _profile_model_cell(profile: AgentProfile, registry: Any) -> Text:
 
 
 def _render_agents_table(
-    result: ProfileDiscoveryResult, registry: Any = None
+    result: ProfileDiscoveryResult, registry: Any = None, live_tools: Any = None
 ) -> RenderableType:
-    """``/agents list`` — name / scope / model / tools / description."""
+    """``/agents list`` — name / scope / model / tools / description.
+
+    ``live_tools`` (#155) is the session's registered tool list, used to flag a
+    profile whose ``tools:`` names something this build has no tool for. Like
+    ``registry``, it defaults to :data:`None` = do not annotate, so the many
+    render-only tests keep calling this with one argument.
+    """
 
     table = Table.grid(padding=(0, 2))
     table.add_column(style="bold cyan", no_wrap=True)
@@ -663,7 +695,7 @@ def _render_agents_table(
             profile.name,
             profile.scope,
             _profile_model_cell(profile, registry),
-            _profile_tools_cell(profile),
+            _profile_tools_cell(profile, live_tools),
             _profile_cell(profile.description),
         )
     return Panel(table, title="Agent profiles", box=ROUNDED, border_style="cyan")
@@ -1094,7 +1126,14 @@ async def _agents_handler(ctx: CommandContext, args: str) -> None:
                 ctx.commit(Text("No agent profiles found.", style="yellow"))
                 return
             if result.profiles:
-                ctx.commit(_render_agents_table(result, ctx.model_registry))
+                # #155 — the live registry, so an extension/MCP tool named in a
+                # profile is not mis-flagged as unknown.
+                live_tools = getattr(
+                    getattr(ctx.harness, "state", None), "tools", None
+                )
+                ctx.commit(
+                    _render_agents_table(result, ctx.model_registry, live_tools)
+                )
             diagnostics = _render_agents_diagnostics(result)
             if diagnostics is not None:
                 ctx.commit(diagnostics)

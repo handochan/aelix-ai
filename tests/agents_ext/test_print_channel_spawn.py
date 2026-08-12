@@ -2323,18 +2323,24 @@ async def test_the_relocated_child_would_execute_it_without_the_flag(
     assert marker.exists(), "the escalation this flag exists for did not reproduce"
 
 
-async def test_same_cwd_child_still_loads_project_skills(tmp_path: Path) -> None:
-    """§(g) clause 1 — the ``inherit_skills: true`` default the flag would break.
+async def test_same_cwd_child_no_longer_loads_untrusted_project_skills(
+    tmp_path: Path,
+) -> None:
+    """#115 INVERTED THIS TEST, against a real child, and the inversion IS the fix.
 
-    ``has_trust_requiring_project_resources`` checks ``.aelix/extensions``,
-    ``.aelix/mcp.json`` and ``.aelix/agents`` and deliberately NOT
-    ``.aelix/skills``, so a skills-only repo passes step 2 of the trust ladder
-    with no prompt and loads its skills TODAY. Forcing ``--no-approve`` here
-    would strip them for zero security gain, and the child's Notice goes to
-    stderr where a successful run never surfaces it.
+    It used to assert ``"repoSkill" in haystack`` — that a skills-only repo
+    loads its skills in a child that made no trust decision — because
+    ``has_trust_requiring_project_resources`` did not count ``.aelix/skills``.
+    #115 gave skills a model-facing channel, so an unprompted load is an
+    ungated system-prompt injection. The predicate counts them now, §(g)
+    clause 1 therefore stops exempting this case, the child carries
+    ``--no-approve``, and the directory is never scanned.
 
-    Observed through a deliberately malformed skill: the child warns about it by
-    name only if the directory was scanned at all.
+    Observed through a deliberately MALFORMED skill: the child emits a
+    ``Warning: skill load:`` naming it if and only if the directory was
+    scanned. A bare "the name is absent" assertion would ALSO pass if the child
+    died before it got that far, so the trusted rerun below is the positive
+    control — same repo, same malformed skill, only the trust decision differs.
     """
 
     repo = tmp_path / "repo"
@@ -2342,9 +2348,35 @@ async def test_same_cwd_child_still_loads_project_skills(tmp_path: Path) -> None
     skill.mkdir(parents=True)
     (skill / "SKILL.md").write_text("no frontmatter here\n", encoding="utf-8")
 
-    result = await _run_real_child(tmp_path, child_cwd=repo, parent_cwd=repo)
-    haystack = f"{result.summary}\n{result.details or ''}"
-    assert "repoSkill" in haystack
+    denied = await _run_real_child(tmp_path, child_cwd=repo, parent_cwd=repo)
+    assert "repoSkill" not in f"{denied.summary}\n{denied.details or ''}"
+
+    # POSITIVE CONTROL — the scan must be reachable at all, or "the name is
+    # absent" above would be satisfied by any early failure in the child.
+    #
+    # It takes BOTH levers, and each one alone was measured failing:
+    #   - stripping ``--no-approve`` alone still denies. It only moves the
+    #     decision from step 1 (explicit override) to step 6, the headless
+    #     deny-by-default a child always hits (pi ``project-trust.ts:86-88``).
+    #   - a persisted ``trust.json`` alone still denies, because step 1
+    #     short-circuits before the store is read at step 4.
+    # Together, step 1 is skipped and step 4 answers ``True``, so the same
+    # malformed skill IS reported. That pair is also the honest statement of
+    # what this fix costs: a headless child cannot load project skills without
+    # a trust decision the user already persisted.
+    agent_dir = tmp_path / "home" / "agent"
+    agent_dir.mkdir(parents=True, exist_ok=True)
+    (agent_dir / "trust.json").write_text(
+        json.dumps({str(repo.resolve()): True}), encoding="utf-8"
+    )
+
+    def _without_the_flag(*args: Any, **kwargs: Any) -> list[str]:
+        return [a for a in pc.build_child_argv(*args, **kwargs) if a != "--no-approve"]
+
+    allowed = await _run_real_child(
+        tmp_path, child_cwd=repo, parent_cwd=repo, argv_builder=_without_the_flag
+    )
+    assert "repoSkill" in f"{allowed.summary}\n{allowed.details or ''}"
 
 
 async def test_a_real_child_without_a_key_is_an_error_envelope_not_a_hang(

@@ -39,27 +39,20 @@ def _aelix(root: Path) -> Path:
 
 
 def test_same_cwd_no_trust_resources_emits_nothing(tmp_path: Path) -> None:
-    """THE CLAUSE-1 PIN — the ``inherit_skills: true`` default survives.
+    """THE CLAUSE-1 PIN — an empty directory has no authority to withhold.
 
     Step 2 of ``resolve_project_trusted`` (``project_trust.py:525-527``) would
-    have returned ``True`` for the PARENT in this directory too, so there is no
-    authority to withhold from the child. Forcing ``False`` here would only
-    strip ``.aelix/skills/``, which the trust gate never guarded in the first
-    place.
+    have returned ``True`` for the PARENT in this directory too, so denying the
+    child buys nothing.
+
+    This docstring used to carry a second argument — that forcing ``False``
+    "would only strip ``.aelix/skills/``, which the trust gate never guarded".
+    #115 retired it: skills now reach the model, the predicate counts them, and
+    the case it described has moved to
+    ``test_same_cwd_with_skills_only_now_emits_no_approve`` under clause 2.
+    What is pinned here is only the genuinely empty case.
     """
 
-    assert child_trust_argv(tmp_path, tmp_path) == []
-
-
-def test_same_cwd_with_skills_only_still_emits_nothing(tmp_path: Path) -> None:
-    """``has_trust_requiring_project_resources`` checks ``extensions/``,
-    ``mcp.json`` and ``agents/`` — deliberately NOT ``skills/``
-    (``project_trust.py:112-177``). A skills-only repo loads its skills today,
-    and must keep doing so inside a child."""
-
-    skill = _aelix(tmp_path) / "skills" / "review"
-    skill.mkdir(parents=True)
-    (skill / "SKILL.md").write_text("# review\n", encoding="utf-8")
     assert child_trust_argv(tmp_path, tmp_path) == []
 
 
@@ -78,6 +71,49 @@ def test_same_cwd_with_an_empty_extensions_dir_emits_nothing(tmp_path: Path) -> 
 
 
 # --- clause 2: anything the gate would guard → --no-approve ----------------
+
+
+def test_same_cwd_with_skills_only_now_emits_no_approve(tmp_path: Path) -> None:
+    """#115 MOVED THIS TEST FROM CLAUSE 1, and the move IS the regression.
+
+    It used to assert ``== []`` on the reasoning that
+    ``has_trust_requiring_project_resources`` "deliberately" skipped
+    ``skills/``, so withholding trust from a same-cwd child cost the
+    ``inherit_skills: true`` default for zero security gain.
+
+    That premise died with #115. A skill's name, description and path now go
+    into the system prompt (``cli/skills_prompt``), so a ``skills/`` directory
+    that arrived with a ``git clone`` writes instructions into the agent — the
+    same class of thing as the ``agents/`` profiles two tests below, which have
+    always been denied. The gain is no longer zero, so the exemption no longer
+    applies and the child is denied like every other gated resource.
+
+    Note the assertion is on ``child_trust_argv`` but the CHANGE was in
+    ``project_trust.has_trust_requiring_project_resources``: this module reads
+    that predicate rather than re-spelling the resource list, which is why one
+    edit moved both.
+    """
+
+    skill = _aelix(tmp_path) / "skills" / "review"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text("# review\n", encoding="utf-8")
+    assert child_trust_argv(tmp_path, tmp_path) == _NO_APPROVE
+
+
+def test_same_cwd_with_prompt_templates_only_emits_no_approve(
+    tmp_path: Path,
+) -> None:
+    """#115's sibling family: a template body becomes a USER TURN verbatim.
+
+    ``/<name>`` sends the file's contents as the turn text, so a cloned
+    ``.aelix/prompt-templates/`` is an injection surface on exactly the same
+    footing as ``skills/``, and is gated by the same predicate clause.
+    """
+
+    templates = _aelix(tmp_path) / "prompt-templates"
+    templates.mkdir()
+    (templates / "review.md").write_text("review this\n", encoding="utf-8")
+    assert child_trust_argv(tmp_path, tmp_path) == _NO_APPROVE
 
 
 def test_same_cwd_with_project_extensions_emits_no_approve(tmp_path: Path) -> None:

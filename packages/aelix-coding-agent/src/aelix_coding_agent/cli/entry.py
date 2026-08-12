@@ -27,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import copy
+import dataclasses
 import os
 import select
 import sys
@@ -35,7 +36,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 from aelix_agent_core.harness._frontmatter import parse_frontmatter
-from aelix_agent_core.harness.core import AgentHarness, AgentHarnessOptions
+from aelix_agent_core.harness.core import (
+    AgentHarness,
+    AgentHarnessError,
+    AgentHarnessOptions,
+)
+from aelix_agent_core.harness.prompt_templates import load_prompt_templates
 from aelix_agent_core.harness.skills import load_skills
 from aelix_agent_core.runtime import ReloadSeed
 from aelix_agent_core.runtime.agent_session_runtime import (
@@ -84,6 +90,7 @@ from .config import (
     get_agent_dir,
     get_session_dir,
     load_mcp_server_contribs,
+    packaged_skills_dir,
 )
 from .file_processor import process_file_arguments
 from .initial_message import build_initial_message
@@ -103,6 +110,7 @@ from .runtime_bootstrap import (
     register_providers,
     resolve_model,
 )
+from .skills_prompt import format_skills_for_prompt, skills_catalog_visible
 
 if TYPE_CHECKING:
     from aelix_ai.settings import SettingsManager
@@ -878,6 +886,31 @@ def _tool_options_from_env() -> dict[str, dict[str, float]]:
     return options
 
 
+class UnknownToolNamesError(Exception):
+    """``--tools`` (or a profile's ``tools:``) named something unregistered — #155.
+
+    Carries the LIVE registry alongside the kernel's message. The whole reason
+    this type exists is that the only actionable form of the error names the
+    values the user could have typed, and that list is knowable at exactly one
+    moment: after the harness is built, when extension and MCP tools have joined
+    the built-ins. Reconstructing it anywhere else drifts — a message built from
+    ``ALL_TOOL_NAMES`` alone would omit every extension tool, and ``--tools
+    echo`` with the echo extension is measurably VALID today.
+    """
+
+    def __init__(self, message: str, *, available: list[str]) -> None:
+        super().__init__(message)
+        self.available = available
+
+
+_PROMPT_TEMPLATES_DIRNAME = "prompt-templates"
+"""Directory name for prompt templates, under the agent dir and ``.aelix/``.
+
+Hyphenated to match the ``/<name>`` command surface users type and the
+``prompt-templates.ts`` module it ports; ``skills`` has no separator to match.
+"""
+
+
 def _resolve_skill_dirs(
     parsed: Args, cwd: str, project_trusted: bool
 ) -> list[str | Path]:
@@ -887,11 +920,21 @@ def _resolve_skill_dirs(
       ``cwd`` when relative). Aelix has no skill package-manager, so ``--skill``
       is a path to a skill directory (or a ``SKILL.md`` whose parent is
       scanned) rather than an installable name.
-    - Unless ``--no-skills`` is set, the global agent skills dir
-      (``~/.aelix/agent/skills``) is scanned, plus the project-local
+    - Unless ``--no-skills`` is set: the PACKAGED skills dir that ships inside
+      the wheel, then the global agent skills dir
+      (``~/.aelix/agent/skills``), plus the project-local
       ``<cwd>/.aelix/skills`` ONLY when the project is trusted — a malicious
       project ``SKILL.md`` is a prompt-injection vector once skills reach the
-      model, so it is gated like project-local extensions/MCP.
+      model (which, since #115, it does), so it is gated like project-local
+      extensions/MCP. Since #115 the trust GATE knows about ``skills/`` too:
+      before that, ``has_trust_requiring_project_resources`` did not count it,
+      so ``project_trusted`` here was always ``True`` for a skills-only repo
+      and this guard decided nothing.
+
+    Ordering is precedence, lowest first: the packaged tier is the fallback a
+    user's own skill of the same name should beat, and ``load_skills`` keeps
+    the first ``SKILL.md`` it finds per directory. It is listed FIRST so an
+    explicit ``--skill`` or a user/project skill wins.
 
     Missing directories are silently skipped by :func:`load_skills`.
     """
@@ -905,9 +948,54 @@ def _resolve_skill_dirs(
             path = path.parent
         dirs.append(str(path))
     if not parsed.no_skills:
+        dirs.append(str(packaged_skills_dir()))
         dirs.append(str(Path(get_agent_dir()) / "skills"))
         if project_trusted:
             dirs.append(str(Path(cwd) / CONFIG_DIR_NAME / "skills"))
+    return dirs
+
+
+def _resolve_prompt_template_dirs(
+    parsed: Args, cwd: str, project_trusted: bool
+) -> list[str | Path]:
+    """Compose the prompt-template directories to scan (#115).
+
+    The exact shape of :func:`_resolve_skill_dirs`, for the same reasons:
+
+    - ``--prompt-template <path>`` entries are always included (resolved
+      against ``cwd`` when relative). Pi's flag takes a template *name*, which
+      presupposes a template package manager aelix does not have — the same
+      reason ``--skill`` takes a path. Before #115 this flag was parsed into
+      ``Args`` and read by NOTHING, while ``--help`` advertised it as working;
+      its negative twin ``--no-prompt-templates`` had already been deleted into
+      ``args.REMOVED_FLAGS`` for exactly that. Redefining the surviving
+      spelling to a path is what makes the help text true.
+    - The global agent dir, then the project-local ``<cwd>/.aelix/prompt-
+      templates`` ONLY when trusted. A template body becomes a USER TURN
+      verbatim on ``/<name>``, so a cloned repo dropping one in is the same
+      injection surface as a project ``SKILL.md`` — and it is gated by the
+      same clause, added to the predicate in the commit that added this
+      loader.
+
+    No ``--no-prompt-templates`` counterpart is reintroduced: it stays a
+    loud-failure entry in ``REMOVED_FLAGS``. A user who wants no templates
+    simply has no template directories, and reviving a flag that never worked
+    is not needed to make this one honest.
+
+    Missing directories are silently skipped by ``load_prompt_templates``.
+    """
+
+    dirs: list[str | Path] = []
+    for entry in parsed.prompt_templates:
+        path = Path(entry)
+        if not path.is_absolute():
+            path = Path(cwd) / path
+        if path.suffix == ".md":
+            path = path.parent
+        dirs.append(str(path))
+    dirs.append(str(Path(get_agent_dir()) / _PROMPT_TEMPLATES_DIRNAME))
+    if project_trusted:
+        dirs.append(str(Path(cwd) / CONFIG_DIR_NAME / _PROMPT_TEMPLATES_DIRNAME))
     return dirs
 
 
@@ -929,13 +1017,31 @@ def _resolve_system_prompt(parsed: Args, cwd: str) -> str:
     )
 
 
-def _resolve_append_chunks(parsed: Args, cwd: str) -> list[str]:
+def _resolve_append_chunks(
+    parsed: Args, cwd: str, *, skills: list[Any] | None = None
+) -> list[str]:
     """The APPEND chunks for one harness build (ADR-0196).
 
     Companion to :func:`_resolve_system_prompt`, lifted from the same function
     for the same reason. Returns a FRESH list every call and never mutates
     ``parsed.append_system_prompt`` — which is what lets ``_apply_prompt_files``
     normalize the file flags exactly once without any rebuild double-appending.
+
+    ``skills`` (#115) is the loaded skill list, and the skills catalog is
+    assembled HERE rather than at the ``options.append_system_prompt``
+    assignment because ``/agents use`` recomputes the live identity by calling
+    this function directly (``agents/service.py``). One site means the two
+    paths cannot disagree about whether the catalog is present; a second
+    assembly point would be a mirror, and the profile path has already been
+    burned by one (see ``agents.prompt.compose_system_prompt``).
+
+    It is a PARAMETER, not a load performed inside this function, on purpose:
+    ``_resolve_skill_dirs`` reads the real ``~/.aelix/agent/skills`` when
+    ``AELIX_CODING_AGENT_DIR`` is unset, so a loader in here would make every
+    test that builds harness options depend on the developer's own installed
+    skills — green on CI, red on a machine with one skill in it. ``None``
+    (the default) means "no catalog", which is what every existing caller
+    wants and gets without editing.
     """
 
     # Auto-discovered AGENTS.md project context (Pi ``--no-context-files`` gate),
@@ -947,6 +1053,19 @@ def _resolve_append_chunks(parsed: Args, cwd: str) -> list[str]:
         if context:
             append.append(context)
     append.extend(parsed.append_system_prompt)
+    # Pi ordering (``system-prompt.ts:53-77`` and ``:155-170``): skills land
+    # AFTER the context files, last of the appended sections. Pi appends it
+    # under a custom ``--system-prompt`` too — measured — so this is
+    # deliberately NOT inside ``build_system_prompt`` where the extension
+    # signpost lives and a custom prompt drops it.
+    if skills and skills_catalog_visible(
+        no_tools=parsed.no_tools,
+        no_builtin_tools=parsed.no_builtin_tools,
+        active_tools=_resolve_active_tools(parsed),
+    ):
+        catalog = format_skills_for_prompt(skills)
+        if catalog:
+            append.append(catalog)
     return append
 
 
@@ -966,6 +1085,7 @@ async def _build_harness_options(
     on_reload: bool = False,
     model_registry: Any | None = None,
     default_provider: str | None = None,
+    skills: list[Any] | None = None,
 ) -> AgentHarnessOptions:
     """Assemble :class:`AgentHarnessOptions` from parsed CLI args.
 
@@ -985,6 +1105,12 @@ async def _build_harness_options(
     extension, or :data:`None` when delegation is off — which is the P2 default.
     Typed ``Any`` deliberately: product-core must not import band 3 to name it.
     See the prepend site below for the ordering + depth invariants.
+
+    ``skills`` (#115) is the loaded skill list, threaded through to
+    :func:`_resolve_append_chunks` which turns it into the model-facing
+    ``<available_skills>`` catalog. Defaults to :data:`None` = no catalog, so
+    every pre-#115 caller (and every test that builds options directly) is
+    unchanged and stays independent of the developer's own installed skills.
     """
 
     # Resolve the turn model (OpenRouter-from-env aware; falls back to a bare
@@ -1167,7 +1293,7 @@ async def _build_harness_options(
         settings_manager=settings_manager,
     )
 
-    options.append_system_prompt = _resolve_append_chunks(parsed, cwd)
+    options.append_system_prompt = _resolve_append_chunks(parsed, cwd, skills=skills)
     return options
 
 
@@ -2163,6 +2289,20 @@ async def _async_main(argv: list[str]) -> int:
             file=sys.stderr,
         )
 
+    # #115 — prompt templates, the second resource carrier that loaded nowhere.
+    # A plain local, not a holder: unlike ``skills:``, an agent profile has no
+    # ``prompt_templates:`` field, so nothing can swap the set mid-session and
+    # there is no rebuild for a holder to survive. If a profile ever gains one,
+    # this becomes a holder for the same reason ADR-0196 made skills one.
+    prompt_template_result = load_prompt_templates(
+        _resolve_prompt_template_dirs(parsed, cwd, project_trusted)
+    )
+    for diag in prompt_template_result.diagnostics:
+        print(
+            f"Warning: prompt template load: {diag.message} ({diag.path})",
+            file=sys.stderr,
+        )
+
     async def _harness_factory(
         new_session: Session, *, reload_seed: ReloadSeed | None = None
     ) -> AgentHarness:
@@ -2190,6 +2330,12 @@ async def _async_main(argv: list[str]) -> int:
             # harness so ``harness.reload()`` is functional across /new, /fork,
             # /resume.
             settings_manager=settings_manager,
+            # #115 — the model-facing skills catalog. Read through the MUTABLE
+            # holder (ADR-0196), never a captured local: ``/agents use`` can
+            # replace the loaded set in place, and the catalog has to follow it
+            # onto every later /new, /fork, /resume and /reload. This is the
+            # same reason ``set_skills`` below reads the holder too.
+            skills=skills_holder["result"].skills,
             # Issue #24-FU — the reload path (AgentSessionRuntime.reload) hands a
             # ReloadSeed carrying the user's prior flag values; pre-seed them into
             # the rebuilt extension runtime BEFORE ``setup()`` re-runs. ``None`` on
@@ -2200,7 +2346,49 @@ async def _async_main(argv: list[str]) -> int:
             # session when --tools named a since-removed extension tool).
             on_reload=reload_seed is not None,
         )
-        harness = AgentHarness(opts)
+        # #155 — DEFER an explicit ``--tools`` allowlist past construction.
+        #
+        # ``AgentHarness.__init__`` validates the seed at ``core.py:659``, AFTER
+        # the registry merge at ``:564``, so the CHECK is already correct —
+        # extension and MCP tool names are legitimately usable in ``--tools``
+        # (measured: ``--tools echo,read`` with the echo extension runs). What
+        # is wrong is WHERE it raises. From inside the constructor there is no
+        # harness yet, so a caller wanting to say "here is what you could have
+        # typed" has no registry to read and would have to rebuild the list —
+        # which is how such a list drifts and starts rejecting extension tools.
+        #
+        # Stripped from ``opts`` HERE rather than in ``_build_harness_options``:
+        # that function's contract is that ``--tools`` arrives in
+        # ``options.active_tool_names`` (pinned by
+        # ``test_build_harness_options_wires_active_tool_names``), and every
+        # other caller must keep getting it. Only the one place that constructs
+        # a harness needs the deferral. Measured the wrong way round first: moving
+        # it into ``_build_harness_options`` silently dropped the filter for every
+        # other consumer and took 6 tests with it.
+        #
+        # ``--no-tools`` yields ``[]``, which is falsy and therefore NOT deferred:
+        # it is a kill switch, cannot name an unknown tool, and leaving it seeded
+        # keeps "no tools at any point during the build" true.
+        #
+        # ``dataclasses.replace``, NOT mutation of ``opts``. The caller observes
+        # this exact object (``_run_to_harness`` captures it) and the harness
+        # RETAINS it as ``self._options``, so clearing the field in place would
+        # make both of them state that no allowlist was requested, which is
+        # false. The copy is shallow on purpose — every "one shared instance
+        # reaches every rebuild" invariant above (``permission_ext``,
+        # ``agents_ext``, the tool list) rides on shared references, and a
+        # shallow copy preserves all of them.
+        #
+        # The resulting harness has ``_options.active_tool_names is None`` while
+        # ``state.active_tool_names`` carries the allowlist. That is the same
+        # shape the reload path already produces (ADR-0179: options unfiltered,
+        # state restored by step 6), not a new one.
+        deferred_tools = opts.active_tool_names if opts.active_tool_names else None
+        harness = AgentHarness(
+            dataclasses.replace(opts, active_tool_names=None)
+            if deferred_tools is not None
+            else opts
+        )
         # ADR-0196 — honor ``--no-builtin-tools`` (built-ins off, extension + MCP
         # tools on). ``active_tool_names`` is seeded BEFORE extensions register
         # their tools, so the only faithful expression is a POST-registration
@@ -2234,6 +2422,27 @@ async def _async_main(argv: list[str]) -> int:
                 allow = set(parsed.tools)
                 names = [n for n in names if n in allow]
             await harness.set_active_tools(names)
+        elif deferred_tools is not None:
+            # #155 — apply the allowlist stripped from ``opts`` above. Identical
+            # validation to the one ``__init__`` used to run; the only change is
+            # that it raises from HERE, where ``harness.state.tools`` is the live
+            # registry the message needs.
+            #
+            # ``elif``: the branch above already intersects ``parsed.tools`` for
+            # ``--no-builtin-tools``, and applying both would re-admit the
+            # built-ins it just stripped.
+            #
+            # No reload guard is needed: ``_build_harness_options`` already
+            # returns ``active_tool_names=None`` on reload (ADR-0179 — reload()
+            # step-6 restores its own pre-teardown filter), so ``deferred_tools``
+            # is ``None`` there and this branch cannot fire.
+            try:
+                await harness.set_active_tools(list(deferred_tools))
+            except AgentHarnessError as exc:
+                raise UnknownToolNamesError(
+                    str(exc),
+                    available=sorted(t.name for t in harness.state.tools),
+                ) from exc
         # Issue #22 — replay pending provider registrations into the LIVE
         # ModelRegistry. Extensions that call ``ctx.api.register_provider``
         # during setup queue onto ``runtime.pending_provider_registrations``;
@@ -2268,6 +2477,12 @@ async def _async_main(argv: list[str]) -> int:
         # Re-apply the loaded skills on every (re)build (issue #12). Read through
         # the holder (ADR-0196) so a ``/agents use`` skill swap reaches rebuilds.
         harness.set_skills(skills_holder["result"].skills)
+        # #115 — the same re-apply for prompt templates. ``set_prompt_templates``
+        # has existed since Sprint 6h₁ with no caller; this is it. The RPC
+        # ``get_commands`` reader (``rpc/rpc_mode.py``) already advertised
+        # ``harness.prompt_templates`` and was therefore always advertising an
+        # empty list.
+        harness.set_prompt_templates(prompt_template_result.templates)
         return harness
 
     # ADR-0196 — the ``/agents list|show|use`` service. Built BEFORE the first
@@ -2329,7 +2544,28 @@ async def _async_main(argv: list[str]) -> int:
         {"agent_service": agent_service} if agent_service is not None else {}
     )
 
-    harness = await _harness_factory(session)
+    # #155 — the ONE startup boundary shared by --print, --json, RPC and the TUI.
+    # An unknown ``--tools`` name (or a profile's ``tools:``, which lands in the
+    # same ``parsed.tools``) used to escape from here as a raw traceback in every
+    # one of those modes. The issue reported it as "the CLI path" and noted the
+    # TUI degrades correctly; that TUI message is the IN-SESSION ``/agents use``
+    # handler, which this build never reaches — measured, all four modes crashed
+    # identically.
+    try:
+        harness = await _harness_factory(session)
+    except UnknownToolNamesError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        # The list is the actionable half. It comes from the live registry, so
+        # it includes extension and MCP tools, which ARE valid here.
+        print(
+            f"  Available in this session: {', '.join(exc.available)}",
+            file=sys.stderr,
+        )
+        # Named explicitly because the seven built-ins are all lowercase and
+        # "Bash" — the most natural spelling of the best-known one — is a fatal
+        # typo. Matching is exact, not case-insensitive.
+        print("  Tool names are case-sensitive.", file=sys.stderr)
+        return 1
     # #122 — the STARTUP analogue of the in-session /resume fix. This startup build
     # bypasses ``AgentSessionRuntime._finish_session_replacement``, so a
     # ``--continue``/``--resume`` (also ``--session``/``--fork``) into a session

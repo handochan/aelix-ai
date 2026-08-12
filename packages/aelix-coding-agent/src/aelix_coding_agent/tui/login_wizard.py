@@ -36,7 +36,7 @@ from __future__ import annotations
 
 import contextlib
 import webbrowser
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
 from aelix_ai.providers._error_hints import describe_provider_error
 
@@ -429,9 +429,38 @@ def _provider_rows(model_registry: Any, provider: str) -> list[Any]:
         return []
 
 
+class BlockedEntry(NamedTuple):
+    """Why a provider's models are blocked, for the picker's detail panel (#156).
+
+    A ``NamedTuple`` rather than a plain tuple, and that choice is the point of
+    the type. #151 widened this shape and shipped THREE pyright errors through
+    a green suite and correct live captures, because a tuple is structurally
+    typed at runtime — nothing notices an extra element until something unpacks
+    it. Naming the fields makes the widening visible to the type gate, which is
+    now in CI (ADR-0213).
+
+    Index access still works, so ``entry[2]`` is ``recoverable`` and the
+    pre-#156 readers and their assertions needed no edit.
+
+    :param reason: the one-string summary (may be the ``mixed`` sentinel).
+    :param sample: a blocked row whose own reason agrees with the verdict.
+    :param recoverable: EVERY reason is user-fixable → the "needs setup" label.
+    :param partial: SOME but not all reasons are dead ends → still labelled
+        "unusable" (a #151 decision), but the wording must scope itself to the
+        dead-end subset rather than to the whole provider. ``recoverable`` and
+        ``partial`` are never both true; both false means every reason is a
+        dead end.
+    """
+
+    reason: str
+    sample: Any
+    recoverable: bool
+    partial: bool = False
+
+
 def _build_provider_labels(
     providers: list[str], model_registry: Any
-) -> tuple[list[str], dict[str, tuple[str, Any, bool]]]:
+) -> tuple[list[str], dict[str, BlockedEntry]]:
     """``(labels, blocked)`` for the API-key picker — labels parallel to ``providers``.
 
     Issue #151: six catalog providers offer models this build cannot run, and the
@@ -456,11 +485,19 @@ def _build_provider_labels(
     argue against the label above it.
 
     ``blocked`` maps provider id → ``(reason, sample_model, recoverable)`` for
+    the caller's detail panel and pre-key warning. It is a
+    :class:`BlockedEntry` ``NamedTuple`` since #156, which added a fourth
+    field. Named rather than a plain 4-tuple because #151 shipped three pyright
+    errors through a green suite by widening exactly this shape — tuples are
+    structurally typed at runtime, so nothing complained. Indexing still works
+    (``entry[2]`` is ``recoverable``), so the existing readers and their tests
+    are untouched by the addition.
     the caller's detail panel and pre-key warning. Never raises: a provider whose
     evaluation throws is simply left unannotated.
     """
 
     from ..core.runnable_models import (
+        dead_end_reasons,
         is_recoverable_block,
         provider_block_hint,
         provider_block_reason,
@@ -474,7 +511,7 @@ def _build_provider_labels(
     except Exception:  # noqa: BLE001
         apis = set()
     labels: list[str] = []
-    blocked: dict[str, tuple[str, Any, bool]] = {}
+    blocked: dict[str, BlockedEntry] = {}
     for provider in providers:
         reasons: frozenset[str] = frozenset()
         rows: list[Any] = []
@@ -487,13 +524,22 @@ def _build_provider_labels(
             labels.append(provider)
             continue
         recoverable = is_recoverable_block(reasons)
+        # #156 — the third state. ``recoverable`` is False for BOTH an
+        # all-dead-end provider and a mixed one, and the label prefix is
+        # correctly "unusable" for both (a #151 decision: one model no
+        # configuration can rescue earns it). What differs is the SENTENCE
+        # beside it, which ``provider_block_hint`` now scopes to the dead-end
+        # subset instead of condemning everything the provider offers.
+        dead = dead_end_reasons(reasons)
+        partial = bool(dead) and dead != reasons
         hint = provider_block_hint(reasons, rows, apis)
         prefix = "needs setup" if recoverable else "unusable"
         labels.append(f"{provider}  ({prefix}: {hint})" if hint else f"{provider}  ({prefix})")
-        blocked[provider] = (
+        blocked[provider] = BlockedEntry(
             provider_block_reason(rows, apis),
             provider_block_sample(rows, recoverable, apis),
             recoverable,
+            partial,
         )
     return labels, blocked
 
@@ -524,7 +570,7 @@ def _accepts_detail(select: Callable[..., Awaitable[str | None]]) -> bool:
 
 
 def _make_block_detail(
-    providers: list[str], blocked: dict[str, tuple[str, Any, bool]]
+    providers: list[str], blocked: dict[str, BlockedEntry]
 ) -> Callable[[int], list[str]] | None:
     """A ``select(detail=…)`` callback showing the FULL reason for a blocked row.
 
@@ -634,7 +680,18 @@ async def _run_api_key(
         from ..core.runnable_models import blocked_message
 
         rows = _provider_rows(model_registry, provider)
-        tail = "can run until it is configured" if entry[2] else "can run in this build"
+        if entry.recoverable:
+            tail = "can run until it is configured"
+        elif entry.partial:
+            # #156 — MIXED. The all-dead-end tail says nothing here can run in
+            # this build, which is false for the fixable majority: measured, a
+            # provider with 8 config-missing rows and 1 no-adapter row went
+            # from 0 runnable to 8 by setting one env var while this line
+            # claimed the build was at fault. "yet" is the whole correction —
+            # some of these are waiting on the user, not on a new release.
+            tail = "can run yet"
+        else:
+            tail = "can run in this build"
         commit(
             Text(
                 f"! {provider}: none of its {len(rows)} catalog model(s) {tail}.",

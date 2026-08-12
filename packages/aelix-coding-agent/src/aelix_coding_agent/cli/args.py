@@ -251,7 +251,15 @@ class Args:
     """Pi parity: ``--no-skills`` / ``-ns``."""
 
     prompt_templates: list[str] = field(default_factory=list)
-    """Pi parity: ``--prompt-template <name>`` (repeatable)."""
+    """Pi ``--prompt-template``, narrowed to a PATH (repeatable) — #115.
+
+    Pi's flag takes a template *name*, which presupposes a template package
+    manager aelix does not have; ``--skill`` above takes a path for exactly the
+    same reason. Read by ``entry._resolve_prompt_template_dirs``. Until #115 it
+    was read by NOTHING while ``--help`` advertised it as working, which is the
+    same defect that got ``--no-prompt-templates`` deleted into
+    :data:`REMOVED_FLAGS`.
+    """
 
     themes: list[str] = field(default_factory=list)
     """Pi parity: ``--theme <name>`` (repeatable)."""
@@ -699,7 +707,10 @@ Agent profiles:
 Tools / Extensions:
   --no-tools, -nt                 Disable all tools
   --no-builtin-tools, -nbt        Disable built-in tools only
-  --tools, -t <csv>               Restrict tools to this comma-separated list
+  --tools, -t <csv>               Restrict tools to this comma-separated list.
+                                  Built-ins (lowercase, case-sensitive): bash,
+                                  edit, find, grep, ls, read, write. Extension
+                                  and MCP tool names are valid here too.
   --extension, -e <path>          Load extension (repeatable)
   --no-extensions, -ne            Disable all extensions
   --trust-extension-path <dist>   Allow an entry-point pack installed outside
@@ -711,7 +722,7 @@ Tools / Extensions:
   --agents / --no-agents          Enable/disable agent delegation for this run
   --skill <path>                  Enable skill (repeatable)
   --no-skills, -ns                Disable all skills
-  --prompt-template <name>        Enable prompt template (repeatable)
+  --prompt-template <path>        Enable prompt templates from a dir (repeatable)
   --theme <name>                  Enable theme (repeatable)
   --no-context-files, -nc         Skip auto-discovered AGENTS.md context
 

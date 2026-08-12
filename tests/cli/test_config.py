@@ -112,6 +112,10 @@ def test_module_exports() -> None:
         "get_bin_dir",
         "get_session_dir",
         "load_mcp_server_contribs",
+        # #115 — the packaged skills tier. Aelix-original: pi ships no built-in
+        # skills, but the #115 knowledge channel is otherwise empty on a fresh
+        # install, where neither user-facing tier exists yet.
+        "packaged_skills_dir",
     }
     assert set(config.__all__) == expected
 

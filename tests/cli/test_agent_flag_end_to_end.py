@@ -203,7 +203,13 @@ async def test_agent_flag_builds_profile_harness_options(
     assert options.model.id == "claude-sonnet-4-5"
     assert options.model.provider == "anthropic"
     assert options.active_tool_names == ["read", "grep"]
-    assert [s.name for s in captured["harness"].skills] == ["recon"]
+    # #115 — the profile's skill, PLUS the two that ship in the wheel. Asserted
+    # as membership rather than equality so adding or renaming a packaged skill
+    # is not a false failure here; the packaged tier itself is pinned by
+    # ``tests/cli/test_skills_in_system_prompt.py``.
+    loaded = [s.name for s in captured["harness"].skills]
+    assert "recon" in loaded
+    assert {"writing-skills", "extending-aelix"} <= set(loaded)
 
 
 async def test_agent_file_loads_an_explicit_path(
@@ -500,7 +506,13 @@ async def test_cli_flags_that_beat_the_profile_are_reported(
     assert "CLI flags override" in err
     assert "skills" in err
     # ...and the notice is telling the truth: the profile's skill really is gone.
-    assert [s.name for s in captured["harness"].skills] == []
+    #
+    # #115 added a PACKAGED skills tier that always loads, so this asserts the
+    # profile's OWN skill is absent rather than that the list is empty. ``== []``
+    # would now fail for a reason unrelated to the override this test is about —
+    # and, worse, would have kept passing if the override silently stopped
+    # working while the packaged tier happened to be empty.
+    assert "review" not in [s.name for s in captured["harness"].skills]
 
 
 async def test_persisted_default_still_applies_without_a_profile(
@@ -682,7 +694,13 @@ async def test_profile_body_precedes_user_appends_and_follows_context_files(
     )
 
     # Then the order.
-    assert len(appends) == 3
+    #
+    # #115 appends the skills catalog as a FOURTH chunk, and its position is
+    # part of the contract rather than noise: pi puts the skills section after
+    # the context files and the user's appends (``system-prompt.ts:53-77``), so
+    # asserting it is last also pins that ordering decision.
+    assert len(appends) == 4
+    assert "<available_skills>" in appends[3]
     assert "PROJECT_RULES" in appends[0]
     assert appends[1] == "You are SCOUT."
     assert appends[2] == "USER_CHUNK"
@@ -717,7 +735,15 @@ async def test_context_files_false_drops_agents_md_under_replace(
     assert code == _BUILT
     options = captured["options"]
     assert options.system_prompt == "You are SEALED."
-    assert options.append_system_prompt == []
+    # ``context_files: false`` drops the AGENTS.md chunk — the thing under test.
+    # #115's skills catalog is a separate chunk that this flag does NOT gate,
+    # and deliberately so: pi appends the skills section even under a custom
+    # system prompt (``system-prompt.ts:53-77``, measured). So assert the
+    # AGENTS.md content is gone rather than that the list is empty.
+    assert not any("PROJECT_RULES" in chunk for chunk in options.append_system_prompt)
+    assert all(
+        "<available_skills>" in chunk for chunk in options.append_system_prompt
+    )
 
 
 # === Refusals (all fatal — running the WRONG identity is a safety problem) ===
