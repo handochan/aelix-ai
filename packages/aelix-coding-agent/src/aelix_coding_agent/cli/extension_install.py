@@ -3301,7 +3301,22 @@ def _print_update_summary(results: list[tuple[str, int, frozenset[str]]]) -> Non
         if names:
             print(f"  {title}: {', '.join(sorted(names))}")
     if unbound or unknown:
-        print("To re-check one: aelix extension verify <name>")
+        # ``verify <name>`` only works for a row labelled with a DISTRIBUTION
+        # name. A recorded source whose dist name was never detected is labelled
+        # with its path instead (``_source_identity``), and
+        # ``verify /path/to/pack`` matches nothing installed — exit 2. Offering
+        # it there would make the summary's one actionable line the one thing
+        # that cannot work, for exactly the rows that need it. The argument-less
+        # form settles every endpoint at once and is true for any label.
+        named = all(
+            os.sep not in label and "/" not in label
+            for label in (*unbound, *unknown)
+        )
+        print(
+            "To re-check one: aelix extension verify <name>"
+            if named
+            else "To re-check: aelix extension verify"
+        )
 
 
 def _upgrade_and_report(

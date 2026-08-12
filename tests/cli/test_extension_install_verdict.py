@@ -1302,3 +1302,81 @@ def test_absent_hint_names_paths_that_exist() -> None:
 
     assert guide in EI._ABSENT_HINT
     assert "Packaging your extension" in (repo_root / guide).read_text(encoding="utf-8")
+
+
+# === The summary's one actionable line must be one that works ==============
+
+
+def _summary(results: list[tuple[str, int, frozenset[str]]]) -> str:
+    """Render ``_print_update_summary`` for ``results`` and return the output."""
+
+    import io
+    from contextlib import redirect_stdout
+
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        EI._print_update_summary(results)
+    return buf.getvalue()
+
+
+def test_every_non_empty_bucket_gets_its_own_detail_line() -> None:
+    """A count the summary reports must be traceable to the packs behind it."""
+
+    out = _summary(
+        [
+            ("goodpack", 0, frozenset({"goodpack"})),
+            ("brokenpack", EI._INSTALL_NOT_BOUND, frozenset({"brokenpack"})),
+            ("/tmp/packs/plainpack", 0, frozenset()),
+            ("flippack", EI._INSTALLER_FAILED, frozenset()),
+        ]
+    )
+    assert "1 bound, 1 NOT bound, 1 no verdict, 1 failed" in out
+    assert "NOT bound: brokenpack" in out
+    # The bucket the guide's sample used to elide.
+    assert "no verdict: /tmp/packs/plainpack" in out
+    assert "failed: flippack" in out
+
+
+def test_the_recheck_hint_is_one_verify_would_actually_accept() -> None:
+    """``verify <name>`` is offered only when every listed row carries a name.
+
+    A recorded source whose distribution name was never detected is labelled
+    with its PATH (``_source_identity``), and ``aelix extension verify
+    /path/to/pack`` matches nothing installed — it exits 2. Printing that as the
+    summary's single actionable line would make it useless for exactly the rows
+    that need it, so a path-labelled row switches the hint to the argument-less
+    form, which settles every endpoint at once.
+    """
+
+    named_only = _summary(
+        [
+            ("goodpack", 0, frozenset({"goodpack"})),
+            ("brokenpack", EI._INSTALL_NOT_BOUND, frozenset({"brokenpack"})),
+            ("legacypack", EI._INSTALL_NOT_BOUND, frozenset({"legacypack"})),
+        ]
+    )
+    assert "To re-check one: aelix extension verify <name>" in named_only
+
+    with_a_path = _summary(
+        [
+            ("goodpack", 0, frozenset({"goodpack"})),
+            ("brokenpack", EI._INSTALL_NOT_BOUND, frozenset({"brokenpack"})),
+            ("/tmp/packs/plainpack", 0, frozenset()),
+        ]
+    )
+    assert "To re-check: aelix extension verify" in with_a_path
+    assert "<name>" not in with_a_path
+
+
+def test_an_all_bound_run_still_prints_no_summary_at_all() -> None:
+    """The compatible path stays byte-identical — guards the guard above."""
+
+    assert (
+        _summary(
+            [
+                ("goodpack", 0, frozenset({"goodpack"})),
+                ("otherpack", 0, frozenset({"otherpack"})),
+            ]
+        )
+        == ""
+    )

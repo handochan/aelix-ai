@@ -541,9 +541,19 @@ aelix extension update --yes
 #   … one report per pack …
 #   update summary: 5 pack(s) — 1 bound, 3 NOT bound, 1 no verdict, 0 failed.
 #     NOT bound: brokenpack, gitpack, legacypack
-#   To re-check one: aelix extension verify <name>
+#     no verdict: /path/to/plainpack
+#   To re-check: aelix extension verify
 echo $?   # 3
 ```
+
+Every non-empty bucket gets its own detail line. A recorded source whose
+distribution name was never detected is labelled with its path rather than a
+name, and the closing hint adapts to that: `To re-check one: aelix extension
+verify <name>` is printed only when every listed row carries a name `verify`
+would accept, and otherwise the argument-less form above — which settles every
+endpoint at once — is printed instead. A hint naming `<name>` for a
+path-labelled row would be the one actionable line that cannot work, for exactly
+the rows that need it.
 
 The summary is bad-news-only — a run where every pack bound prints exactly what
 it always did, one success line per pack and nothing else. Across many packs the
