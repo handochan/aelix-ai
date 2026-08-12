@@ -217,5 +217,24 @@ asyncio_mode = "auto"
 pythonpath = ["."]
 
 [tool.pyright]
-include = ["src", "packages/*/src", "scripts"]
+# `packages/*/src` matched NOTHING. With it pyright analysed 8 files -- this
+# repo's own `src` (2) plus `scripts` (6) -- and the only errors it could ever
+# report came from a spike script, so the 239 files of product source across the
+# four packages had never been type-checked at all. `**` expands where `*` did
+# not. An include that silently matches nothing reads exactly like a clean tree,
+# so assert `filesAnalyzed` before believing any count this gate produces.
+include = ["src", "packages/**/src", "scripts"]
+# The editable installs' `.pth` files hard-code the MAIN checkout's absolute
+# paths. Inside a git worktree that makes every cross-package import resolve to
+# a SECOND copy of the same module, and pyright then reports errors that do not
+# exist on main (measured at one commit: 55 in a worktree vs 44 on main; adding
+# these paths brought the worktree to 44). Relative paths resolve against this
+# file, so every checkout -- worktree, fresh clone, CI -- type-checks its own
+# tree and they agree.
+extraPaths = [
+  "packages/aelix-agent-core/src",
+  "packages/aelix-ai/src",
+  "packages/aelix-coding-agent/src",
+  "packages/aelix-server/src",
+]
 pythonVersion = "3.11"
