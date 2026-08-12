@@ -507,7 +507,11 @@ def parse_models(
                 or provider_config.get("api")
                 or (built_in_defaults and built_in_defaults["api"])
             )
-            if not api:
+            # ``isinstance``, not just truthiness: models.json is USER-EDITABLE
+            # and these lookups are untyped, so a mistyped ``api`` (a dict, say)
+            # would otherwise be handed to ``Model`` verbatim and fail far from
+            # its cause.
+            if not isinstance(api, str) or not api:
                 continue
 
             base_url = (
@@ -515,7 +519,7 @@ def parse_models(
                 or provider_config.get("baseUrl")
                 or (built_in_defaults and built_in_defaults["base_url"])
             )
-            if not base_url:
+            if not isinstance(base_url, str) or not base_url:
                 continue
 
             compat = merge_compat(

@@ -73,7 +73,7 @@ def register_provider_object(
     # dataclasses / read-only Protocols swallow the assignment — the
     # registry's ``getattr(..., None)`` lookup handles that case.
     with contextlib.suppress(AttributeError, TypeError):
-        provider.source_id = source_id
+        provider.source_id = source_id  # pyright: ignore[reportAttributeAccessIssue]
     _PROVIDERS[provider.api] = provider
 
 

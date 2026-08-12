@@ -1,0 +1,16 @@
+{
+  "$comment": [
+    "A SEPARATE pyright project for scripts/pyright_spike.py, because the repo",
+    "config excludes that file and an `exclude` applies even to a path named on",
+    "the command line -- naming it there analyses 0 files and reports 0 errors,",
+    "which is the false zero this whole gate exists to stop believing.",
+    "",
+    "The spike ends in three deliberate negative assertions, so ZERO errors here",
+    "means the narrowing it guards has REGRESSED, not that it is healthy. CI runs",
+    "it inverted; see ADR-0213.",
+    "",
+    "`include` is relative to THIS file's directory, i.e. scripts/."
+  ],
+  "include": ["pyright_spike.py"],
+  "pythonVersion": "3.11"
+}

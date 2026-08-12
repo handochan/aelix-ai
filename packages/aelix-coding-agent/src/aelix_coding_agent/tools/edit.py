@@ -143,13 +143,27 @@ def create_edit_tool(
                 )
         path = resolve_to_cwd(raw_path, cwd)
 
+        def _errno_code(exc: OSError) -> str:
+            """The ``Error code:`` token for a failed edit (pi parity).
+
+            ``OSError.errno`` is ``int | None``, and ``errno.errorcode`` is keyed
+            by ``int``. ``dict.get(None, default)`` happens to return the default
+            rather than raising, which is why the inline spelling this replaces
+            was correct at runtime while being a type error — and it was never
+            caught, because this package had never been type-checked.
+            """
+
+            if exc.errno is None:
+                return str(exc)
+            return errno.errorcode.get(exc.errno, str(exc.errno or exc))
+
         async def _do_edit() -> ToolResult:
             # Pi parity ``computeEditsDiff``: access/read failures surface as
             # ``Could not edit file: {path}. Error code: {code}.`` (raw path).
             try:
                 data = await operations.read_file(path)
             except OSError as exc:
-                code = errno.errorcode.get(exc.errno, str(exc.errno or exc))
+                code = _errno_code(exc)
                 return ToolResult(
                     content=[
                         TextContent(
@@ -175,7 +189,7 @@ def create_edit_tool(
             try:
                 await operations.write_file(path, out_text.encode("utf-8"))
             except OSError as exc:
-                code = errno.errorcode.get(exc.errno, str(exc.errno or exc))
+                code = _errno_code(exc)
                 return ToolResult(
                     content=[
                         TextContent(

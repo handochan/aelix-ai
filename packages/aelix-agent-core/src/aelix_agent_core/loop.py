@@ -351,7 +351,11 @@ async def _stream_assistant_response(
                     message=partial, assistant_message_event=event
                 )
             )
-        elif event.type in ("end", "done"):
+        # `==`-or rather than `in ("end", "done")`: identical at runtime for a
+        # Literal field, but pyright narrows a union on `==` and does NOT narrow
+        # it on `in`, so the `in` spelling made `event.message` an error against
+        # all ten sibling event classes that carry no `message`.
+        elif event.type == "end" or event.type == "done":
             final = event.message
             if final.timestamp is None:
                 final = replace(final, timestamp=time.time())
@@ -578,7 +582,13 @@ async def _execute_and_finalize(
     ADR-0017's Sprint 3d amendment.
     """
 
-    update_events: list[asyncio.Task[None]] = []
+    # ``Future``, not ``Task``: the sink is typed ``Awaitable``, and
+    # ``ensure_future`` below returns a Task for the ``async def`` sinks this
+    # repo actually has, but a wrapping Future for any other awaitable. The
+    # element type follows the sink's real result (``AgentMessage | None``); the
+    # old ``Task[None]`` was wrong on both counts and only went unnoticed because
+    # nothing type-checked this file.
+    update_events: list[asyncio.Future[AgentMessage | None]] = []
     loop_ref = asyncio.get_running_loop()
     # Pi #5573 (``agent-loop.ts:634, 645, 656, 660, 666``): a tool that invokes
     # its ``on_partial`` callback AFTER ``execute`` has resolved — e.g. from
@@ -605,7 +615,13 @@ async def _execute_and_finalize(
                 args=prepared.args,
             )
         )
-        update_events.append(loop_ref.create_task(coro))
+        # ``ensure_future``, not ``create_task``: ``AgentEventSink`` returns an
+        # ``Awaitable``, and ``create_task`` accepts only a coroutine — a sink
+        # implemented as a plain callable returning a future would raise here.
+        # ``emit(...)`` is still CALLED on the line above, so the eager ordering
+        # the comment above depends on is unchanged; for an ``async def`` sink
+        # ensure_future does exactly what create_task did.
+        update_events.append(asyncio.ensure_future(coro, loop=loop_ref))
 
     exec_ctx = ToolExecutionContext(
         tool_call_id=prepared.tool_call.tool_call_id,

@@ -17,7 +17,8 @@ already exercised by core).
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from collections.abc import Awaitable
+from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -100,7 +101,10 @@ async def run_thinking_picker(
         return
     chosen = levels[idx]
     try:
-        await setter(chosen)
+        # ``callable()`` narrows to "returns object"; this lookup's contract
+        # is an awaitable setter, and the except below is what handles a host
+        # that does not honour it.
+        await cast("Awaitable[None]", setter(chosen))
     except Exception as exc:  # noqa: BLE001 — surface, never crash the REPL
         commit(Text(f"✖ thinking switch failed: {exc}", style="bold red"))
         return

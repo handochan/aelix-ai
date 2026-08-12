@@ -24,7 +24,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import TYPE_CHECKING, Any
+from typing import IO, TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
     import asyncio
@@ -164,7 +164,13 @@ def _panel_to_ansi(title: str, body: Any, width: int) -> list[str]:
         from rich.console import Console  # noqa: PLC0415 — optional in degraded env
         from rich.panel import Panel
 
-        console = Console(width=width, record=True, file=_NullFile())
+        # ``record=True`` means rich buffers and we read it back with
+        # ``export_text``; ``file`` only ever sees ``write``/``flush``, which
+        # ``_NullFile`` implements. The cast states that narrower contract
+        # instead of dressing the stub up as a full ``IO[str]``.
+        console = Console(
+            width=width, record=True, file=cast("IO[str]", _NullFile())
+        )
         console.print(Panel(body, title=title, expand=False, width=width))
         text = console.export_text(styles=True)
         return text.splitlines()

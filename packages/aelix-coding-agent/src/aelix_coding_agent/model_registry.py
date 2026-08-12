@@ -32,7 +32,7 @@ import asyncio
 import os
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from aelix_ai.oauth import AuthStorage
 from aelix_ai.oauth._resolve_config import (
@@ -657,7 +657,20 @@ class ModelRegistry:
             if creds is None:
                 continue
             try:
-                loaded = modify(loaded, creds)
+                # ``modify`` is a duck-typed provider hook, so its return is
+                # unconstrained. The except below catches a hook that RAISES, but
+                # whatever a hook RETURNS was adopted straight into
+                # ``self._models`` — including ``None``, which would break every
+                # later ``get_available()`` with nothing recorded in
+                # ``get_error()``. Reject a non-list so it lands on
+                # ``_load_error`` like any other per-provider failure.
+                returned = modify(loaded, creds)
+                if not isinstance(returned, list):
+                    raise TypeError(  # noqa: TRY301
+                        f"modify_models returned {type(returned).__name__}, "
+                        "expected a list of models"
+                    )
+                loaded = cast("list[Model]", returned)
             except Exception as exc:  # noqa: BLE001
                 err_line = (
                     f"modify_models failed for provider "

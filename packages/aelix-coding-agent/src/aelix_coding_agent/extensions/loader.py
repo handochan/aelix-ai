@@ -2132,9 +2132,8 @@ async def _invoke_factory(
     # imports :class:`ExtensionManifestError` from this module, so this module
     # may not import it at module scope (§6.3).
     if manifest is not None and manifest.contributes.hooks:
+        from collections.abc import Callable
         from typing import cast
-
-        from aelix_agent_core.harness.hooks import HookEventName
 
         from aelix_coding_agent.extensions.subprocess_hooks import (
             make_subprocess_handler,
@@ -2172,11 +2171,19 @@ async def _invoke_factory(
             # attribution is preserved when the harness later wires these
             # handlers into its ``HookBus``. ``error_mode="continue"`` keeps a
             # subprocess hook crash from aborting the harness (fail-open).
-            api.on(
-                # ``contrib.event`` is a validated ``str``; the 35 typed
-                # overloads narrow ``HookEventName`` so we cast to keep pyright
-                # at the 8-error baseline (prefer cast over type: ignore).
-                cast(HookEventName, contrib.event),
+            # The cast that used to sit on the ARGUMENT could not work, and the
+            # comment that justified it ("keeps pyright at the 8-error baseline")
+            # was measuring a baseline that consisted entirely of a spike file:
+            # ``ExtensionAPI.on`` is a set of per-``Literal`` overloads, and no
+            # overload accepts the ``HookEventName`` UNION a validated-but-dynamic
+            # event name has. Overload resolution is the thing being escaped, so
+            # the cast belongs on the callable, not on its argument.
+            on_dynamic = cast(
+                "Callable[..., Callable[[], None]]",
+                api.on,
+            )
+            on_dynamic(
+                contrib.event,
                 make_subprocess_handler(contrib),
                 error_mode="continue",
             )

@@ -213,7 +213,13 @@ class _PlaceholderProcessor(Processor):
         self._text = text
         self._style = style
 
-    def apply_transformation(self, ti: TransformationInput) -> Transformation:
+    def apply_transformation(
+        self, transformation_input: TransformationInput
+    ) -> Transformation:
+        # Parameter name matches ``Processor.apply_transformation``; the old
+        # ``ti`` spelling worked only because prompt_toolkit calls it
+        # positionally.
+        ti = transformation_input
         if ti.lineno == 0 and ti.document.text == "":
             # APPEND, don't replace: this processor is chained AFTER BeforeInput,
             # which has already prepended the ``❯ `` prefix fragments on line 0.

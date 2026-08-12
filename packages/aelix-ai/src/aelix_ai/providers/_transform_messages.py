@@ -153,13 +153,16 @@ def _transform_assistant_content(
     model: Model,
     tool_call_id_map: dict[str, str],
     normalize_tool_call_id: Callable[[str, Model, AssistantMessage], str] | None,
-) -> list[TextContent | ToolCallContent]:
+) -> list[TextContent | ThinkingContent | ToolCallContent]:
     """Project an assistant message's blocks through the cross-model rules.
 
     Mirrors Pi ``transformMessages``' first-pass ``flatMap`` body
-    (``transform-messages.ts:97-145``). Thinking blocks are not part of
-    Aelix's content union yet, but we accept them defensively through
-    ``getattr`` so a future port that adds them needs no change here.
+    (``transform-messages.ts:97-145``). ``ThinkingContent`` has been first-class
+    on Aelix's content union since Sprint 6b (P-58) and this function has
+    returned it ever since — the old return annotation and the sentence that
+    stood here both denied that, contradicted by the branch comment below and by
+    ``out``'s own type. Nothing caught it because this package had never been
+    type-checked.
     """
 
     same_model = _is_same_model(assistant, model)

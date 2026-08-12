@@ -38,7 +38,6 @@ from prompt_toolkit.layout.dimension import Dimension
 from aelix_coding_agent.extensions.widget_protocols import OverlayOptions
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
 
     from prompt_toolkit.key_binding import KeyBindingsBase
     from prompt_toolkit.layout.dimension import Dimension as DimensionT
@@ -249,7 +248,7 @@ class _CappedContainer(Container):
     def get_key_bindings(self) -> KeyBindingsBase | None:
         return self._child.get_key_bindings()
 
-    def get_children(self) -> Sequence[Container]:
+    def get_children(self) -> list[Container]:
         return [self._child]
 
 

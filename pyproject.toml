@@ -237,4 +237,17 @@ extraPaths = [
   "packages/aelix-coding-agent/src",
   "packages/aelix-server/src",
 ]
+# `scripts/pyright_spike.py` is `# pyright: strict` and ENDS in three deliberate
+# negative assertions ("Inverse cases -- pyright MUST emit errors for narrowing
+# to be considered working"). Its 8 errors are its PASSING state, so a gate that
+# includes it can never go green, and a round that "fixed" them would delete the
+# check that `ExtensionAPI.on`'s overloads still narrow. It is excluded here and
+# run INVERTED in CI, where zero errors is the failure (ADR-0213). The three
+# entries above it are pyright's own defaults, which naming `exclude` replaces.
+exclude = [
+  "**/node_modules",
+  "**/__pycache__",
+  "**/.*",
+  "scripts/pyright_spike.py",
+]
 pythonVersion = "3.11"

@@ -349,6 +349,19 @@ _KERNEL_CHANGE_ALLOWLIST = frozenset(
         # non-delegation). ``harness/core.py`` is already allowlisted above; it
         # changed again here for ``get_session_stats``'s completeness check.
         "packages/aelix-agent-core/src/aelix_agent_core/harness/_session_stats.py",
+        # ADR-0213, #140. The pyright gate analysed 8 of 247 files because
+        # `packages/*/src` matched nothing, so the product had never been
+        # type-checked; `loop.py` is where two of that triage's findings live.
+        # `event.type in ("end","done")` -> `== ... or == ...` is identical at
+        # runtime for a Literal field (pyright narrows on `==`, not on `in`), and
+        # `create_task` -> `ensure_future` is what the sink's declared
+        # `Awaitable` actually permits. No import, symbol, spawn site, cap,
+        # consent path or registry is added; delegation did not create the
+        # requirement — a repo-wide tooling gate did.
+        # `test_kernel_has_no_subagent_surface` is unaffected.
+        "packages/aelix-agent-core/src/aelix_agent_core/loop.py",
+        # ADR-0213. PEP 561 marker, packaging metadata rather than code.
+        "packages/aelix-agent-core/src/aelix_agent_core/py.typed",
         # ADR-0210 (above) opened ``session/entries.py`` for the four provenance
         # fields. ADR-0211, #135 is the reason it changed AGAIN, and is recorded
         # here because this path is ALREADY listed — so the gate would otherwise

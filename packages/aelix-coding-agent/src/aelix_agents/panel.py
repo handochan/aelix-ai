@@ -212,7 +212,10 @@ def _short_profile(name: str) -> str:
 def _state_counts(snapshots: Sequence[SubagentProgress | None]) -> list[str]:
     """``["2 running", "1 done", "1 queued"]`` — the non-zero terms only."""
 
-    counts = dict.fromkeys(_COUNT_ORDER, 0)
+    # ``dict.fromkeys`` over a literal tuple infers Literal keys, but the
+    # lookup below is ``_STATE_LABELS.get(state, "running")`` — a plain str.
+    # The values ARE always one of _COUNT_ORDER; the annotation just says so.
+    counts: dict[str, int] = dict.fromkeys(_COUNT_ORDER, 0)
     for snapshot in snapshots:
         if snapshot is None:
             counts["queued"] += 1

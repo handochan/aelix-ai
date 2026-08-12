@@ -26,8 +26,8 @@ import signal
 import subprocess
 import sys
 import tempfile
-from collections.abc import Callable
-from typing import TYPE_CHECKING, Any
+from collections.abc import Awaitable, Callable
+from typing import TYPE_CHECKING, Any, cast
 
 from aelix_agent_core.session.context import build_display_messages
 from aelix_agent_core.session.jsonl_storage import load_jsonl_session_metadata
@@ -88,6 +88,7 @@ if TYPE_CHECKING:
     from aelix_agent_core.runtime.agent_session_runtime import AgentSessionRuntime
     from aelix_ai.oauth import AuthStorage
     from aelix_ai.settings import SettingsManager
+    from aelix_ai.settings.types import ThinkingLevel
     from prompt_toolkit.completion import Completer
 
     from aelix_coding_agent.agents.service import AgentProfileService
@@ -362,7 +363,11 @@ async def run_tui(
         runner = getattr(runtime_host.harness, "extension_runner", None)
         get = getattr(runner, "get_shortcuts", None) if runner else None
         try:
-            return get() if callable(get) else {}
+            # ``callable()`` narrows to a callable returning ``object``, so the
+            # result needs naming. The cast states the contract this lookup
+            # expects; the except below is what actually handles a pack that
+            # does not honour it.
+            return cast("dict[str, Any]", get()) if callable(get) else {}
         except Exception:  # noqa: BLE001 — a faulty extension must not break keys
             return {}
 
@@ -516,7 +521,9 @@ async def run_tui(
             runner = getattr(runtime_host.harness, "extension_runner", None)
             get = getattr(runner, "get_message_renderer", None) if runner else None
             renderer_fn = (
-                get(getattr(msg, "custom_type", "") or "") if callable(get) else None
+                cast("Callable[..., Any] | None", get(getattr(msg, "custom_type", "") or ""))
+                if callable(get)
+                else None
             )
             if renderer_fn is None:
                 return None
@@ -554,7 +561,8 @@ async def run_tui(
         # custom messages, so it is a latent-only gap, documented not guarded.
         get_branch = getattr(session, "get_branch", None)
         if callable(get_branch):
-            return list(build_display_messages(await get_branch()))
+            branch = cast("Awaitable[Any]", get_branch())
+            return list(build_display_messages(await branch))
         return list((await session.build_context()).messages)
 
     # Issue #50 — seed the live thinking settings from the persisted store at
@@ -992,7 +1000,13 @@ async def run_tui(
         if new_level is None:
             _commit(Text("This model has no thinking levels to cycle.", style="yellow"))
             return
-        settings_manager.set_default_thinking_level(new_level)  # persist default
+        # ``cycle_thinking_level`` returns ``str``; it rotates through
+        # ``get_supported_thinking_levels`` for the current model, whose values
+        # are a SUBSET of the settings ``ThinkingLevel`` literal, so the cast is
+        # sound at every call site that can reach here.
+        settings_manager.set_default_thinking_level(
+            cast("ThinkingLevel", new_level)
+        )  # persist default
         await settings_manager.flush()
         _commit(
             Text(
@@ -1303,6 +1317,22 @@ async def run_tui(
 
         current = getattr(runtime_host.harness, "current_model", None)
         if current is not None and is_runnable(current):
+            return
+
+        if model_registry is None:
+            # ``run_tui`` declares ``model_registry`` optional and the sole
+            # production caller (``entry.py:2411``) always passes one, so this is
+            # a test-only shape — but ``find_initial_model`` takes it REQUIRED and
+            # dereferences it, and the except below would have shown the user the
+            # resulting `'NoneType' object has no attribute …` verbatim. Say the
+            # real thing instead.
+            _commit(
+                Text(
+                    "Logged in, but no model registry is available in this "
+                    "session. Use /model to select a model.",
+                    style="yellow",
+                )
+            )
             return
 
         chosen = None

@@ -803,7 +803,19 @@ class _SubagentRuntimeImpl:
         )
         self._publish(child, child.stream, on_event, spawn_model=spawn_model)
         try:
-            return await self.channel.run(plan, child=child, on_stream=_emit)
+            # ``channel`` is declared optional because ``None`` is the documented
+            # request for the default (``__post_init__`` builds a
+            # ``PrintChannel``), so it is never ``None`` here — unless something
+            # cleared it after construction, which is worth saying out loud
+            # rather than surfacing as ``'NoneType' object has no attribute
+            # 'run'`` from inside a delegation.
+            channel = self.channel
+            if channel is None:
+                raise RuntimeError(
+                    "subagent channel is unset — it was cleared after "
+                    "__post_init__ built the default"
+                )
+            return await channel.run(plan, child=child, on_stream=_emit)
         finally:
             self._children.pop(spawn_id, None)
             # THE LAST SNAPSHOT OF A DELEGATION MUST BE A TERMINAL ONE. The row

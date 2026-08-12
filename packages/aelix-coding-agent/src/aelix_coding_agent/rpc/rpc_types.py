@@ -443,10 +443,13 @@ def command_to_json(cmd: RpcCommand) -> dict[str, Any]:
         value = getattr(cmd, name)
         if value is None:
             continue
-        # W4 m6 — pyright reportArgumentType: bind the lookup to a
-        # ``str`` local before subscripting to satisfy the narrowing
-        # check on ``dict[str, Any]``.
-        wire_key: str = remap.get(name, name)
+        # An explicit miss test rather than ``remap.get(name, name)``: the
+        # two-argument form resolved to the ``str | None`` overload here, so the
+        # local it was bound to was never actually a ``str``. Values in
+        # ``_COMMAND_FIELD_REMAP`` are ``str``, so a present key is the mapping
+        # and an absent one is the field's own name.
+        mapped = remap.get(name)
+        wire_key: str = name if mapped is None else mapped
         out[wire_key] = value
     return out
 

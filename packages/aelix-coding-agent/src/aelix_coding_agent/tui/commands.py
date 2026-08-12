@@ -15,8 +15,9 @@ reload entries below carry ``handler=None`` — they exist only so the palette a
 from __future__ import annotations
 
 import contextlib
+from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from rich.box import ROUNDED
 from rich.panel import Panel
@@ -500,7 +501,9 @@ def active_tool_views(harness: object) -> list[object]:
     getter = getattr(harness, "_action_get_active_tools", None)
     if not callable(getter):
         return tools
-    active = {str(name) for name in getter() or ()}
+    active = {
+        str(name) for name in cast("Iterable[object]", getter() or ())
+    }
     return [t for t in tools if getattr(t, "name", str(t)) in active]
 
 
