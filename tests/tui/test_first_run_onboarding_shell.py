@@ -216,6 +216,13 @@ async def test_wizard_opens_and_esc_leaves_a_usable_repl(tmp_path: Path) -> None
         )
         await _wait(lambda: chrome.app.is_running)
         await _wait(lambda: chrome.is_modal_open())
+        # Wait for the LINE, not only for the modal. Both come from the same
+        # startup path but not atomically, so asserting the commit straight after
+        # a modal-only wait is a race — it holds on a fast machine and inverts on
+        # a loaded runner. Seen as a py3.11 CI failure that no local run on
+        # either interpreter reproduced, including the identical `uv sync
+        # --python 3.11` + `pytest -q` invocation.
+        await _wait(lambda: any("No provider credentials found" in c for c in commits))
         assert any("No provider credentials found" in c for c in commits), commits
 
         # Esc at the wizard's first prompt: run_login returns without writing.
