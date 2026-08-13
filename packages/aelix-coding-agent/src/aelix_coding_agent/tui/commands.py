@@ -88,6 +88,12 @@ class CommandContext:
     re-render the footer ``✱ {model}`` segment after a switch (the footer is a
     cached string recomposed only on refresh). ``None`` in headless tests."""
     model_picker: Callable[[], Awaitable[None]] | None = None
+    trust_action: Callable[[], Awaitable[None]] | None = None
+    """``/trust`` — the project-trust selector (#112, pi ``showTrustSelector``).
+
+    Host-wired like ``login_action``. ``None`` means the host did not provide
+    one (non-TUI callers, older hosts), and the handler degrades with a message.
+    """
     """``run_tui`` wires this to its ``_open_model_picker`` flow: a ``ctx.ui.select``
     over ``ModelRegistry.get_available()`` with a per-highlight detail footer
     (modality / context-window / base-url / api-key) → ``harness.set_model``. The
@@ -1603,6 +1609,24 @@ async def _mcp_handler(ctx: CommandContext, args: str) -> None:
         ctx.commit(Text(f"✖ mcp failed: {exc}", style="bold red"))
 
 
+async def _trust_handler(ctx: CommandContext, args: str) -> None:
+    """``/trust`` — decide project trust for this folder (ignores args).
+
+    pi parity (``interactive-mode.ts:2953``). Before #112 aelix had no way to
+    answer the trust question after startup: the one-shot selector runs before
+    the TUI exists, so declining — or never being asked, then watching resources
+    appear — left restarting as the only option.
+    """
+
+    if ctx.trust_action is None:
+        ctx.commit(Text("Project trust is unavailable.", style="yellow"))
+        return
+    try:
+        await ctx.trust_action()
+    except Exception as exc:  # noqa: BLE001 — surface, never kill the REPL
+        ctx.commit(Text(f"✖ trust failed: {exc}", style="bold red"))
+
+
 async def _login_handler(ctx: CommandContext, args: str) -> None:
     """``/login`` — sign in / add a provider API key (ignores args).
 
@@ -1984,6 +2008,7 @@ BUILTIN_COMMANDS: list[BuiltinCommand] = [
     BuiltinCommand("hotkeys", "Show keyboard shortcuts", _hotkeys_handler),
     BuiltinCommand("model", "Show or switch the active model", _model_handler),
     BuiltinCommand("login", "Sign in / add a provider API key", _login_handler),
+    BuiltinCommand("trust", "Decide project trust for this folder", _trust_handler),
     BuiltinCommand("logout", "Remove a provider's stored credentials", _logout_handler),
     BuiltinCommand("clear", "Clear the scrollback transcript", _clear_handler),
     BuiltinCommand("compact", "Compact the conversation context", _compact_handler),

@@ -112,6 +112,7 @@ __all__ = [
     "emit_project_trust_event",
     "format_project_trust_prompt",
     "has_trust_requiring_project_resources",
+    "maybe_save_implicit_project_trust_after_reload",
     "project_trust_options",
     "resolve_project_trusted",
 ]
@@ -486,6 +487,77 @@ class ProjectTrustStore:
         data = self._read()
         data[self._canonical(cwd)] = trusted
         self._write(data)
+
+
+# === Implicit trust, persisted after a reload (pi parity) ===================
+
+
+def maybe_save_implicit_project_trust_after_reload(
+    cwd: Path,
+    *,
+    auto_trust_cwd: Path | None,
+    project_trusted: bool,
+    store: ProjectTrustStore,
+) -> bool:
+    """Pi parity: ``maybeSaveImplicitProjectTrustAfterReload``
+    (``interactive-mode.ts:4693-4717``), with the flag from ``main.ts:708-711``.
+
+    A session that started in a directory with NOTHING to gate was trusted
+    without ever asking (``resolve_project_trusted`` step 2). If trust-requiring
+    resources appear later and a reload picks them up, pi records that the
+    implicit trust was actually used, by writing it to the store — so the next
+    launch does not re-ask about a directory the user has already been running
+    in.
+
+    Returns ``True`` only when a decision was written, so the caller can say so.
+
+    WHAT THIS IS NOT, and the distinction is the whole of #112. This runs AFTER
+    the reload, exactly as pi runs it after ``session.reload()``. It therefore
+    does **not** prevent the newly-appeared resources from loading — by the time
+    it is called they already have. It converts "never asked" into "granted, and
+    remembered"; it is a bookkeeping step, not a gate.
+
+    #112 proposed making it a gate instead (re-decide before every rebuild and
+    refuse). That was measured to work, and was declined in favour of pi parity:
+    diverging here would make aelix stricter than the reference implementation
+    at a surface pi deliberately keeps permissive, and would have to be
+    re-justified at every upstream sync. The residual risk is recorded in the
+    issue rather than in the code — a repo whose ``.aelix/extensions`` arrives
+    mid-session via ``git pull`` is trusted without a prompt, and now durably.
+
+    Guard order is pi's, and each clause carries its own reason:
+
+    - ``auto_trust_cwd != cwd`` — the flag is only set when startup found
+      nothing to gate AND no explicit ``--approve``/``--no-approve``. A cwd
+      change means this is a different directory than the one that was
+      implicitly trusted.
+    - ``not project_trusted`` — the session is not operating on trust, so there
+      is nothing to record.
+    - no trust-requiring resources — nothing has appeared yet, so there is
+      still nothing to record. This is the common case on every reload.
+    - the store already holds a decision — the user has answered for this
+      directory (or an ancestor) at some point; an implicit write must never
+      overwrite an explicit answer, least of all an explicit ``False``.
+
+    A store that cannot be read or written is reported by returning ``False``;
+    the caller surfaces it. Failing to persist must never break ``/reload``.
+    """
+
+    if auto_trust_cwd is None or auto_trust_cwd != cwd:
+        return False
+    if not project_trusted:
+        return False
+    if not has_trust_requiring_project_resources(cwd):
+        return False
+    try:
+        if store.get(cwd) is not None:
+            return False
+        store.set(cwd, True)
+    except (ValueError, OSError):
+        # pi shows a warning and carries on. A corrupt or unwritable trust file
+        # is not a reason to fail a reload the user asked for.
+        return False
+    return True
 
 
 # === The project_trust extension event (pi ``emitProjectTrustEvent``) =======

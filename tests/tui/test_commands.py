@@ -277,13 +277,15 @@ def test_sprint_a_registry_set() -> None:
     # /scoped-models; WP-8 /login + /logout (after model), /stats (after cost),
     # /extension (after mcp); issue #12 /skills (after tools); ADR-0196 /agents
     # (after skills — the same shape of markdown resource, carrying identity
-    # rather than a capability).
+    # rather than a capability); #112 /trust (after login — both answer a
+    # "who do I let act here" question, and pi groups them the same way).
     names = [c.name for c in BUILTIN_COMMANDS]
     assert names == [
         "help",
         "hotkeys",
         "model",
         "login",
+        "trust",
         "logout",
         "clear",
         "compact",

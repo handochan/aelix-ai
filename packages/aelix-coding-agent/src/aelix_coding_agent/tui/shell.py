@@ -280,6 +280,7 @@ async def run_tui(
     permission_ext: PermissionExtension | None = None,
     permission_posture: PermissionPosture | None = None,
     settings_manager: SettingsManager | None = None,
+    save_implicit_trust_after_reload: Callable[[], bool] | None = None,
     auth_storage: AuthStorage | None = None,
     extensions: list[Extension] | None = None,
     extension_errors: list[Any] | None = None,
@@ -1226,6 +1227,57 @@ async def run_tui(
             refresh_footer=context._refresh_footer,
         )
 
+    async def _open_trust() -> None:
+        """``/trust`` — pi parity (``interactive-mode.ts:2953`` ``showTrustSelector``).
+
+        aelix had no way to answer the project-trust question after startup: the
+        one-shot selector runs before ``run_tui`` exists, so a user who declined
+        (or was never asked, then saw resources appear) could only restart. pi
+        has had ``/trust`` all along; this is pure parity, and it is what makes
+        the #112 pi-parity decision livable — the store is read fresh on every
+        access, so a decision made here is picked up by the next rebuild with no
+        restart.
+        """
+
+        from pathlib import Path
+
+        from aelix_coding_agent.cli.config import get_agent_dir
+        from aelix_coding_agent.cli.project_trust import (
+            ProjectTrustStore,
+            format_project_trust_prompt,
+            interpret_trust_option,
+            project_trust_options,
+        )
+
+        cwd_path = Path(cwd)
+        try:
+            label = await context.select(
+                format_project_trust_prompt(cwd_path),
+                project_trust_options(cwd_path),
+            )
+        except Exception as exc:  # noqa: BLE001 — never kill the REPL
+            _commit(Text(f"✖ trust: {exc}", style="bold red"))
+            return
+        if not label:
+            return
+        result = interpret_trust_option(label, cwd_path)
+        target = result.target or cwd_path
+        if result.remember:
+            try:
+                ProjectTrustStore(get_agent_dir()).set(target, result.trusted)
+            except Exception as exc:  # noqa: BLE001
+                _commit(Text(f"✖ could not save trust: {exc}", style="bold red"))
+                return
+        verdict = "trusted" if result.trusted else "not trusted"
+        scope = "saved" if result.remember else "this session only"
+        _commit(
+            Text(
+                f"Project {verdict} ({scope}): {target}\n"
+                "Run /reload to apply it to project-local resources.",
+                style="yellow",
+            )
+        )
+
     async def _open_login() -> None:
         # WP-8 (Feature 1) — /login: the auth wizard (OAuth / built-in API key /
         # custom provider → AuthStorage). The flow lives in
@@ -1632,6 +1684,7 @@ async def run_tui(
         scoped_models_action=_open_scoped_models,
         statusline_action=_open_statusline,
         login_action=_open_login,
+        trust_action=_open_trust,
         logout_action=_open_logout,
         stats_action=_open_stats,
         extension_action=_open_extension,
@@ -2394,6 +2447,7 @@ async def run_tui(
             cwd=cwd,
             dispatch=dispatch,
             settings_manager=settings_manager,
+            save_implicit_trust_after_reload=save_implicit_trust_after_reload,
         )
     finally:
         with contextlib.suppress(Exception):
@@ -2839,6 +2893,7 @@ async def _input_loop(
     cwd: str,
     dispatch: CommandDispatchService | None = None,
     settings_manager: SettingsManager | None = None,
+    save_implicit_trust_after_reload: Callable[[], bool] | None = None,
 ) -> None:
     """Read → classify → drive the harness, one turn at a time.
 
@@ -2900,6 +2955,26 @@ async def _input_loop(
                 await runtime_host.reload()
             else:
                 await harness.reload_resources()
+            # #112 (pi parity, ``interactive-mode.ts:5756``) — AFTER the reload,
+            # not before. A session that was trusted without ever being asked
+            # (nothing to gate at startup) records that trust once resources
+            # have actually appeared and been loaded, so the next launch does
+            # not re-ask about a directory the user has been working in.
+            #
+            # Deliberately NOT a gate: by this line the new resources are
+            # already loaded. Making it one was measured to work and was
+            # declined in favour of pi parity — see ADR-0216 and #112.
+            if save_implicit_trust_after_reload is not None:
+                with contextlib.suppress(Exception):
+                    if save_implicit_trust_after_reload():
+                        output_queue.put_nowait((
+                            "commit",
+                            Text(
+                                "Saved project trust for this folder "
+                                "(it gained .aelix resources during this session).",
+                                style="yellow",
+                            ),
+                        ))
             continue
         # Sprint 6h₁₂a (ADR-0110) — a `prompt`-kind `/`-line resolves through the
         # command core BEFORE going to the model: (1) built-in registry handler,

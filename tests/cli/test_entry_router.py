@@ -214,6 +214,12 @@ async def test_interactive_mode_dispatches_to_run_tui(
         extension_errors: object = None,
         agent_service: object = None,
         first_run_login: bool = False,
+        # #112 — the /reload tail that persists an implicit project trust.
+        # Named explicitly rather than swallowed by ``**kwargs``: this stub is a
+        # DOUBLE for ``run_tui``, and a double that accepts anything stops
+        # proving that the router passes what it claims to. The cost is that a
+        # new kwarg breaks this test once, on purpose.
+        save_implicit_trust_after_reload: object = None,
     ) -> int:
         # Sprint 6h₂₆ (ADR-0154): the real model_registry must be threaded so
         # /model can list get_available() — the harness does not expose it.

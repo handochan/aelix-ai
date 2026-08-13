@@ -101,6 +101,7 @@ from .project_trust import (
     format_project_trust_prompt,
     has_trust_requiring_project_resources,
     interpret_trust_option,
+    maybe_save_implicit_project_trust_after_reload,
     project_trust_options,
     resolve_project_trusted,
 )
@@ -1865,6 +1866,27 @@ async def _async_main(argv: list[str]) -> int:
         except Exception as exc:  # noqa: BLE001 — vote-load failure must not block startup
             print(f"Warning: project_trust vote-load failed: {exc}", file=sys.stderr)
 
+    # Pi parity: ``main.ts:708-711`` ``autoTrustOnReloadCwd``. Computed BEFORE
+    # the resolve, because the condition is about what the directory looked like
+    # at startup — once a reload has loaded new resources the predicate answers
+    # differently and the flag would never be set.
+    #
+    # Set only when BOTH hold: the user passed no explicit ``--approve`` /
+    # ``--no-approve`` (an explicit answer is not implicit), and the directory
+    # had nothing to gate (so ``resolve_project_trusted`` will short-circuit to
+    # ``True`` at step 2 without asking anything). That pair is exactly "this
+    # session is about to be trusted without the user ever being asked".
+    #
+    # Consumed by ``maybe_save_implicit_project_trust_after_reload`` on the
+    # /reload path — see that function for what it does and, more importantly,
+    # what it deliberately does NOT do (#112).
+    auto_trust_on_reload_cwd = (
+        Path(cwd)
+        if parsed.project_trust_override is None
+        and not has_trust_requiring_project_resources(Path(cwd))
+        else None
+    )
+
     project_trusted = await _resolve_project_trust(
         parsed,
         cwd,
@@ -2642,6 +2664,31 @@ async def _async_main(argv: list[str]) -> int:
             file=sys.stderr,
         )
 
+    def _save_implicit_trust_after_reload() -> bool:
+        """Pi parity: the ``/reload`` tail at ``interactive-mode.ts:5756``.
+
+        Threaded into ``run_tui`` as one callable rather than as three values
+        (the flag, the trust verdict, the agent dir) so the TUI never has to
+        know the trust vocabulary — it just reports what this returns.
+
+        Divergence from pi, deliberate and cheap: pi also clears the flag when
+        it finds the store ALREADY holds a decision, purely to skip later work.
+        Here the flag is cleared only on a successful write, so that case costs
+        one extra ``trust.json`` read per reload. Behaviourally identical, and
+        it keeps the clearing rule to a single sentence.
+        """
+
+        nonlocal auto_trust_on_reload_cwd
+        saved = maybe_save_implicit_project_trust_after_reload(
+            Path(cwd),
+            auto_trust_cwd=auto_trust_on_reload_cwd,
+            project_trusted=project_trusted,
+            store=ProjectTrustStore(get_agent_dir()),
+        )
+        if saved:
+            auto_trust_on_reload_cwd = None
+        return saved
+
     try:
         if app_mode == "interactive":
             try:
@@ -2664,6 +2711,9 @@ async def _async_main(argv: list[str]) -> int:
                 permission_ext=permission_ext,
                 permission_posture=permission_posture,
                 settings_manager=settings_manager,
+                # #112 (pi parity) — the /reload tail that records an implicit
+                # project trust once it has actually been used.
+                save_implicit_trust_after_reload=_save_implicit_trust_after_reload,
                 # WP-8 (Feature 1) — the SAME AuthStorage object the
                 # ModelRegistry was built over (line ~680), so /login storing a
                 # key is visible to model resolution immediately (no reload).

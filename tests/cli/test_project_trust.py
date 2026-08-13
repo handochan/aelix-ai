@@ -1018,3 +1018,109 @@ async def test_bootstrap_resolve_threads_vote_extensions_and_default(
     assert captured["extensions"] == [sentinel]
     assert captured["default_project_trust"] == "always"
     assert callable(captured["on_extension_error"])
+
+
+# === #112 — implicit trust, persisted AFTER a reload (pi parity) =============
+
+
+def _implicit(tmp_path: Path, **kw: object) -> bool:
+    """Call the persist helper with the common fixture wiring."""
+
+    from aelix_coding_agent.cli.project_trust import (
+        maybe_save_implicit_project_trust_after_reload,
+    )
+
+    defaults: dict[str, object] = {
+        "auto_trust_cwd": tmp_path,
+        "project_trusted": True,
+        "store": ProjectTrustStore(tmp_path / "agent"),
+    }
+    defaults.update(kw)
+    return maybe_save_implicit_project_trust_after_reload(tmp_path, **defaults)  # type: ignore[arg-type]
+
+
+def _plant_extension(tmp_path: Path) -> None:
+    ext = tmp_path / ".aelix" / "extensions"
+    ext.mkdir(parents=True)
+    (ext / "x.py").write_text("def setup(aelix):\n    pass\n")
+
+
+def test_implicit_trust_is_persisted_once_resources_appear(tmp_path: Path) -> None:
+    """THE #112 pi-parity pin (pi ``interactive-mode.ts:4693-4717``).
+
+    A session started with nothing to gate is trusted without being asked. When
+    trust-requiring resources appear and a reload loads them, pi records that
+    the implicit trust was used, so the next launch does not re-ask.
+
+    This runs AFTER the reload and therefore does NOT prevent the load — see the
+    function's docstring. #112 proposed making it a gate; the owner chose pi
+    parity instead, so the residual is documented, not coded around.
+    """
+
+    _plant_extension(tmp_path)
+    assert _implicit(tmp_path) is True
+    assert ProjectTrustStore(tmp_path / "agent").get(tmp_path) is True
+
+
+def test_nothing_is_persisted_before_resources_appear(tmp_path: Path) -> None:
+    """The common case: every reload in a directory that stays empty."""
+
+    assert _implicit(tmp_path) is False
+    assert ProjectTrustStore(tmp_path / "agent").get(tmp_path) is None
+
+
+def test_no_persist_without_the_startup_flag(tmp_path: Path) -> None:
+    """The flag is only set when startup found nothing to gate AND no explicit
+    ``--approve``/``--no-approve``. Without it there was no implicit grant to
+    record — a session that ANSWERED the prompt must not have that answer
+    silently rewritten."""
+
+    _plant_extension(tmp_path)
+    assert _implicit(tmp_path, auto_trust_cwd=None) is False
+    assert ProjectTrustStore(tmp_path / "agent").get(tmp_path) is None
+
+
+def test_no_persist_for_a_different_cwd(tmp_path: Path) -> None:
+    """A cwd change means this is not the directory that was implicitly
+    trusted."""
+
+    _plant_extension(tmp_path)
+    other = tmp_path / "elsewhere"
+    other.mkdir()
+    assert _implicit(tmp_path, auto_trust_cwd=other) is False
+
+
+def test_no_persist_when_the_session_is_not_trusted(tmp_path: Path) -> None:
+    """Nothing is operating on trust, so there is nothing to record."""
+
+    _plant_extension(tmp_path)
+    assert _implicit(tmp_path, project_trusted=False) is False
+
+
+def test_an_explicit_answer_is_never_overwritten(tmp_path: Path) -> None:
+    """THE ONE THAT MATTERS MOST.
+
+    An implicit write must never clobber a decision the user actually made —
+    least of all an explicit ``False``. pi guards this with
+    ``trustStore.get(cwd) !== null``; without it, a user who answered "Do not
+    trust" would have that answer silently flipped to ``True`` by a later
+    reload.
+    """
+
+    _plant_extension(tmp_path)
+    store = ProjectTrustStore(tmp_path / "agent")
+    store.set(tmp_path, False)
+
+    assert _implicit(tmp_path, store=store) is False
+    assert store.get(tmp_path) is False, "the user's own 'do not trust' survived"
+
+
+def test_a_broken_store_does_not_break_the_reload(tmp_path: Path) -> None:
+    """Failing to persist must never fail a reload the user asked for."""
+
+    _plant_extension(tmp_path)
+    agent_dir = tmp_path / "agent"
+    agent_dir.mkdir()
+    (agent_dir / "trust.json").write_text("{ not json", encoding="utf-8")
+
+    assert _implicit(tmp_path, store=ProjectTrustStore(agent_dir)) is False
