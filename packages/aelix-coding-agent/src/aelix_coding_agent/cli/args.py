@@ -233,7 +233,19 @@ class Args:
     deny-by-default); :data:`True` = trust project-local ``.aelix``
     resources for this run; :data:`False` = ignore them for this run.
     Short-circuits :func:`resolve_project_trusted` (no prompt, no
-    persistence)."""
+    persistence).
+
+    "project-local resources" means exactly the families
+    :func:`has_trust_requiring_project_resources` gates — ``.aelix/extensions``,
+    ``.aelix/mcp.json``, ``.aelix/agents``, and since ADR-0214 ``.aelix/skills``
+    and ``.aelix/prompt-templates``. It does **not** cover ``AGENTS.md``, which
+    is ungated by design (pi parity: markdown context, not code) and suppressed
+    by ``--no-context-files`` instead (#160). The ``--help`` line used to read
+    "Ignore project-local files for this run", which a user wanting "do not let
+    this cloned repo influence the agent" would reasonably read as covering
+    AGENTS.md — measured, it does not: ``--no-approve`` still puts the repo's
+    AGENTS.md verbatim into the system prompt. Whether that SHOULD be gated is
+    the open policy question in #121; this field only promises what it does."""
 
     skills: list[str] = field(default_factory=list)
     """Pi parity: ``--skill <path>`` (repeatable).
@@ -716,8 +728,11 @@ Tools / Extensions:
   --trust-extension-path <dist>   Allow an entry-point pack installed outside
                                   site-packages (e.g. 'pip install -e .');
                                   names one distribution (repeatable)
-  --approve, -a                   Trust project-local files for this run
-  --no-approve, -na               Ignore project-local files for this run
+  --approve, -a                   Trust this project's .aelix resources for this
+                                  run (extensions, MCP servers, agent profiles,
+                                  skills, prompt templates)
+  --no-approve, -na               Do not trust them for this run. Note AGENTS.md
+                                  is NOT covered — use --no-context-files
   --permission-mode <mode>        default | auto-accept-edits | plan | yolo | auto
   --agents / --no-agents          Enable/disable agent delegation for this run
   --skill <path>                  Enable skill (repeatable)

@@ -13,7 +13,7 @@ edit files, and run commands. Use it to finish the task, not to expand it.
 
 ## How to work
 
-- Understand before you change. Locate the relevant code with `grep`/`glob`,
+- Understand before you change. Locate the relevant code with `grep`/`find`,
   read the parts that matter, then make the smallest change that does the job.
   Match the surrounding code's style and conventions.
 - Stay inside the task. Do not refactor unrelated code, rename things you were
