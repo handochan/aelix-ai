@@ -154,13 +154,28 @@ class _Bench:
 
         Computed through the same two entry helpers the harness factory uses, so
         this is "what a rebuild would produce", not a re-implementation of it.
+
+        ``skills=`` is MANDATORY here, and its absence was not a small bug. This
+        helper is a DOUBLE for production, and a double that omits the same
+        argument production omits compares a broken build against a broken
+        expectation and passes forever. That is exactly what happened: #115's
+        catalog was silently dropped by ``/agents use`` and this file stayed
+        green, because both sides took the same ``None`` default.
+
+        The holder is read rather than a captured list, because ``use``
+        REPLACES it in place — so this sees the post-``use`` skills, which is
+        what production composes from.
         """
 
         reference = copy.deepcopy(self.baseline)
         apply_profile_to_args(reference, profile, provided=reference.provided)
         return compose_system_prompt(
             _resolve_system_prompt(reference, str(self.cwd)),
-            _resolve_append_chunks(reference, str(self.cwd)),
+            _resolve_append_chunks(
+                reference,
+                str(self.cwd),
+                skills=self.skills_holder["result"].skills,
+            ),
         )
 
 
@@ -335,6 +350,53 @@ async def test_agents_use_swaps_system_prompt_live(bench: _Bench) -> None:
     # The DURABLE half: the same ``Args`` a rebuild would read now carries the
     # identity, so /new, /fork and /resume inherit it.
     assert "You are SCOUT." in bench.parsed.append_system_prompt
+
+
+async def test_agents_use_keeps_the_skills_catalog_in_the_live_prompt(
+    bench: _Bench,
+) -> None:
+    """#115 REOPENED ON THIS PATH, and this is the test that was missing.
+
+    ``/agents use`` rebuilds ``harness.state.system_prompt`` itself (there is no
+    kernel setter), and it was calling ``_resolve_append_chunks`` with no
+    ``skills=``. So the model lost the catalog while ``set_skills`` — three
+    lines below in the same function — kept ``/skills`` and the status panel
+    listing the very same skills. That is the human/model split #115 exists to
+    close, reintroduced by #115's own commit.
+
+    Measured before the fix: factory build 3885 chars containing
+    ``<available_skills>``, the same identity after ``/agents use`` 3345 chars
+    containing neither the block nor the skill's description.
+
+    The whole file stayed green through it because ``expected_prompt_for``
+    omitted ``skills=`` too — see its docstring. A real skill on disk is what
+    gives this assertion something to bite on; with the bench's default empty
+    ``load_skills([])`` it would pass against the broken build.
+    """
+
+    skill_dir = bench.cwd / ".aelix" / "skills" / "zorb-probe"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: zorb-probe\ndescription: ZORBLAX-9137 marker.\n---\nBODY_MARKER\n",
+        encoding="utf-8",
+    )
+    _write_profile(
+        bench.user_agents,
+        "scout",
+        "name: scout\ndescription: Read-only recon",
+        "You are SCOUT.",
+    )
+
+    await bench.run("/agents use scout")
+
+    prompt = bench.harness.state.system_prompt
+    assert "You are SCOUT." in prompt, "precondition: the identity was applied"
+    assert "<available_skills>" in prompt
+    assert "ZORBLAX-9137" in prompt
+    # Progressive disclosure holds here too — the catalog carries metadata only.
+    assert "BODY_MARKER" not in prompt
+    # And the human-facing half still agrees, which is the point of the pairing.
+    assert "zorb-probe" in [s.name for s in bench.harness.skills]
 
 
 async def test_agents_use_twice_is_not_cumulative(bench: _Bench) -> None:

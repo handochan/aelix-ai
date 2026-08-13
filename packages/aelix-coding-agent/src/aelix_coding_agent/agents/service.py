@@ -306,21 +306,38 @@ class AgentProfileService:
                 self.active = profile
 
             # === 4. Apply to the live harness (immediate half) ==============
-            # The prompt is the one place a mirror is unavoidable: there is no
-            # kernel setter, so the exact ``__init__`` join is reproduced from the
-            # exact ``_build_harness_options`` inputs.
-            harness.state.system_prompt = compose_system_prompt(
-                _resolve_system_prompt(self.parsed, self.cwd),
-                _resolve_append_chunks(self.parsed, self.cwd),
-            )
-
-            # Skills: re-scan the profile's dirs and REPLACE the holder the
-            # factory reads, then push them onto the live harness. Both halves are
-            # required — the holder for rebuilds, ``set_skills`` for this session.
+            #
+            # Skills FIRST, because the prompt is built from them (#115). A
+            # profile can add ``skills:`` paths or set ``inherit_skills: false``,
+            # so the set has to be re-scanned before anything reads it — composing
+            # first would install a catalog describing the PREVIOUS profile's
+            # skills. Both halves of the write are required: the holder for later
+            # rebuilds, ``set_skills`` for this session.
             self.skills_holder["result"] = load_skills(
                 _resolve_skill_dirs(self.parsed, self.cwd, self.project_trusted)
             )
             harness.set_skills(self.skills_holder["result"].skills)
+
+            # Then the prompt. It is the one place a mirror is unavoidable: there
+            # is no kernel setter, so the exact ``__init__`` join is reproduced
+            # from the exact ``_build_harness_options`` inputs — and ``skills=``
+            # is one of those inputs.
+            #
+            # Omitting it is not a cosmetic slip, it is #115 reopening on this
+            # path: ``set_skills`` above keeps ``/skills`` and the status panel
+            # listing the profile's skills while the model is told about none of
+            # them, which is precisely the human/model split #115 exists to
+            # close. Measured before this argument was passed: the factory build
+            # produced a 3885-char prompt containing ``<available_skills>`` and
+            # ``/agents use`` produced 3345 chars containing neither.
+            harness.state.system_prompt = compose_system_prompt(
+                _resolve_system_prompt(self.parsed, self.cwd),
+                _resolve_append_chunks(
+                    self.parsed,
+                    self.cwd,
+                    skills=self.skills_holder["result"].skills,
+                ),
+            )
 
             # Tools: the same three-way ``_resolve_active_tools`` result the
             # factory would compute, plus the same post-registration

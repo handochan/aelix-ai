@@ -1030,10 +1030,25 @@ def _resolve_append_chunks(
     ``skills`` (#115) is the loaded skill list, and the skills catalog is
     assembled HERE rather than at the ``options.append_system_prompt``
     assignment because ``/agents use`` recomputes the live identity by calling
-    this function directly (``agents/service.py``). One site means the two
-    paths cannot disagree about whether the catalog is present; a second
-    assembly point would be a mirror, and the profile path has already been
-    burned by one (see ``agents.prompt.compose_system_prompt``).
+    this function directly (``agents/service.py``).
+
+    An earlier version of this paragraph claimed that "one site means the two
+    paths cannot disagree about whether the catalog is present". That was
+    FALSE, and it shipped: one assembly site is not one CALL site, and
+    ``agents/service.py`` was passing no ``skills=`` at all, so ``/agents use``
+    silently took the ``None`` default and rebuilt the live prompt without the
+    catalog while ``set_skills`` kept ``/skills`` listing the same skills.
+    Measured: factory build 3885 chars WITH ``<available_skills>``, the same
+    identity after ``/agents use`` 3345 chars without it — #115's own defect,
+    reintroduced on the one path whose comment said it could not happen.
+
+    So the guarantee this parameter actually buys is narrower and worth stating
+    exactly: the catalog is FORMATTED in one place, so the two paths cannot
+    disagree about its SHAPE. Whether it is present at all still depends on
+    every caller passing ``skills=``, and the default is silently "no catalog".
+    ``tests/tui/test_agents_command.py`` pins the ``/agents use`` call site for
+    that reason — and its own expectation helper has to pass ``skills=`` too, or
+    it compares a broken build against a broken expectation and always passes.
 
     It is a PARAMETER, not a load performed inside this function, on purpose:
     ``_resolve_skill_dirs`` reads the real ``~/.aelix/agent/skills`` when
