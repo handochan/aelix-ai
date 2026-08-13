@@ -155,12 +155,43 @@ emitter, not on a real directory**: `mkdir` with a newline in the component fail
 on this machine's filesystem, so treat the newline variant as a property of the emitter that
 this environment could not reproduce end-to-end.
 
+**Two things the first implementation of this section got wrong**, both found by review after it
+was committed, both fixed before merge. They are recorded rather than quietly corrected because
+each is a way the section could have shipped while *believing* it was complete:
+
+- **The body is element text, not an attribute.** The first pass reused
+  `skills_prompt._escape_xml` for both. That helper is pi's, applied by pi to three short
+  attribute-ish fields, so it escapes `>`, `"` and `'` too — which element text does not need,
+  and a project's rules are full of all three. On a realistic 249-byte rules file it emitted 17
+  entities of which **2 were required**, at +28.5% bytes. Two costs followed. Because escaping
+  runs before budgeting, the inflation is spent out of the 32 KiB cap: a **31640-byte
+  `AGENTS.md`, comfortably under the cap and delivered whole by `21319a3`, was truncated**. And
+  the model was shown `don&apos;t use print()` in prose it may copy into a file or a command.
+  `_escape_text` now does `&` and `<` only (+0.8% on the same file). The structural guarantee is
+  untouched, because it never rested on the other three: a tag needs `<`.
+- **The cwd is attacker-controlled too, and it is not inside the fence.** Escaping the body
+  closed the loud half and left a quiet one: `build_system_prompt` interpolated the working
+  directory raw, twice (the `Working directory:` line and the signpost's project-local write
+  target), into the *same assembled prompt*. POSIX and git both permit `<` and `>` in a path
+  component and `git clone` recreates them, so a repo shipping a subdirectory named
+  `<project_context>` produced **3 opens against 1 close with a completely benign `AGENTS.md`** —
+  aelix emitting the unbalanced fence itself, with the user's own `--append-system-prompt` chunk
+  swallowed inside it. Two-component names go further: `a<` + `project_context>` spells a closing
+  tag, and `<project_instructions path="` + `etc` + `policy.md">` forges a complete opening
+  provenance tag with an attacker-chosen path. The cwd now gets the same `<`/`&` substitution.
+  A path with neither character is unchanged byte-for-byte, which is pinned by its own test —
+  a guard that rewrote every path would have passed the forgery assertions while breaking the
+  signpost for everyone.
+
+  This is the sharpest illustration of why §3 is argued the way it is. Escaping the body alone
+  would have satisfied every test written for it and still left the sentence at the top of this
+  section false.
+
 Implementation notes that belong here because they are load-bearing:
 
-- `cli/skills_prompt._escape_xml` is **reused, not re-derived**. Its replacement order (`&`
-  first) is what keeps it correct, and it already covers `"` and `'`, which is what makes one
-  call correct for an attribute value as well as for element text. A second escape pass for
-  the attribute would double-escape.
+- `cli/skills_prompt._escape_xml` is **reused, not re-derived, for the `path` attribute**. Its
+  replacement order (`&` first) is what keeps it correct, and it covers `"`, which an attribute
+  value genuinely needs. The body takes `_escape_text` instead, for the reasons above.
 - **Escaping happens before budgeting.** Escaping grows text (up to ~5× for `&`), so budgeting
   raw bytes would leave the cap unenforced by that factor.
 - **Truncation can only ever reach escaped content.** The loop charges tag bytes and body

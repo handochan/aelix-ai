@@ -100,6 +100,46 @@ def _safe_path(path: Path) -> str:
     return str(path).translate(_CONTROL_KILL)
 
 
+def _escape_text(value: str) -> str:
+    """Escape one ``AGENTS.md`` BODY for the fence. `&` and `<` only.
+
+    NOT :func:`~.skills_prompt._escape_xml`, and the difference is not
+    pedantry. That helper is pi's, and pi applies it to three short ATTRIBUTE-ish
+    fields (a skill's name / description / location), where escaping ``>``,
+    ``"`` and ``'`` is harmless. A whole ``AGENTS.md`` is element TEXT, where
+    XML 1.0 requires only ``&`` and ``<`` (``>`` only after ``]]``), and a
+    project's rules are full of quotes, apostrophes and shell redirections.
+    Measured on a realistic 249-byte rules file with code fences::
+
+        _escape_xml : 320 bytes (+28.5%), 17 entities, of which 2 were required
+        _escape_text: 251 bytes (+0.8%),   2 entities, both required
+
+    Two costs, both real, and the first one is the reason this exists rather
+    than being a tidiness argument:
+
+    1. THE BUDGET. Escaping happens before budgeting (deliberately — see
+       :func:`discover_context_files`), so the inflation is spent out of the
+       32 KiB cap. With ``_escape_xml`` a 31640-byte ``AGENTS.md`` — comfortably
+       under the cap the docstring advertises, and delivered WHOLE by the
+       previous revision — inflated past it and had its trailing rules dropped.
+    2. WHAT THE MODEL READS. The prompt is instructions a coding agent may copy
+       into a file or a command. ``_escape_xml`` renders
+       ``don't use print()`` as ``don&apos;t use print()`` and
+       ``awk '{print $1}' > out`` as ``awk &apos;{print $1}&apos; &gt; out``.
+
+    The structural guarantee is UNCHANGED, because it never depended on the
+    other three: a tag needs ``<``, and ``<`` is still escaped. Everything the
+    fence promises — no forged ``</project_instructions>``, no forged
+    ``<available_skills>`` — follows from that one substitution. ``&`` is
+    escaped first, or the ampersands this function introduces get double-escaped.
+
+    The ``path`` ATTRIBUTE keeps ``_escape_xml``: an attribute value really does
+    need ``"`` neutralised, and it is short enough that the cost is nil.
+    """
+
+    return value.replace("&", "&amp;").replace("<", "&lt;")
+
+
 # Pi's project-context fence, verbatim from ``system-prompt.ts:144-152`` on pi
 # main (identical at ``:53-61``, the ``customPrompt`` branch; introduced by pi
 # e2fd651e → v0.75.0 and 7577d3b8 → v0.75.4, present in every release since,
@@ -408,9 +448,40 @@ def _extension_signpost(cwd_abs: str) -> str:
 
 
 def build_system_prompt(cwd: str) -> str:
-    """The base coding-agent system prompt (identity + environment + tools)."""
+    """The base coding-agent system prompt (identity + environment + tools).
 
-    cwd_abs = os.path.abspath(cwd)
+    THE CWD IS ATTACKER-CONTROLLED TOO (#121 review). This function interpolates
+    it in two places — the ``Working directory:`` line and, via
+    :func:`_extension_signpost`, the project-local write target — and both land
+    in the SAME assembled system prompt as the ``<project_context>`` fence
+    :func:`discover_context_files` builds. POSIX and git both permit ``<`` and
+    ``>`` in a path component, and ``git clone`` recreates such a directory
+    faithfully. So a repository containing a subdirectory literally named
+    ``<project_context>`` forged the fence with a COMPLETELY BENIGN
+    ``AGENTS.md``, before this guard::
+
+        <project_context>   3      </project_context>   1
+
+    — i.e. aelix emitted the unbalanced fence *itself*, and everything after the
+    environment block (the extension signpost, and the chunk the user typed on
+    their own ``--append-system-prompt``) fell inside a block announcing it as
+    untrusted project-supplied text. Two-component names reach further: dirs
+    ``a<`` + ``project_context>`` put a literal closing tag in the base prompt,
+    and ``<project_instructions path="`` + ``etc`` + ``policy.md">`` forges a
+    complete opening provenance tag with an attacker-chosen path.
+
+    Escaping the body of ``AGENTS.md`` and leaving this raw would have closed
+    the loud half of the hole and left the quiet one open — and ADR-0217's whole
+    argument is that we do not assert a boundary we are not keeping. So the
+    same ``<``/``&`` substitution the fence body gets is applied here, on top of
+    the control-byte strip. It costs nothing for a normal path (no ``<``, no
+    ``&``, so :func:`_escape_text` returns it unchanged — measured across this
+    repo's own tree) and only a pathological directory sees ``&lt;`` in the
+    write target the signpost hands the model, which is the right trade: that
+    path is unusable for its purpose either way.
+    """
+
+    cwd_abs = _escape_text(_safe_path(Path(os.path.abspath(cwd))))
     today = datetime.now(tz=UTC).strftime("%Y-%m-%d")
     return (
         "You are Aelix, an interactive CLI coding agent. You help the user with "
@@ -578,7 +649,7 @@ def discover_context_files(cwd: str) -> str:
         # picks. Order matters only in that dropping the bytes first keeps
         # ``_escape_xml`` from having to reason about them at all.
         open_tag = f'<project_instructions path="{_escape_xml(_safe_path(path))}">\n'
-        body = _escape_xml(text.strip())
+        body = _escape_text(text.strip())
         # The tags are charged separately from the body precisely so the body is
         # the ONLY thing a truncation can reach.
         tag_bytes = len(open_tag.encode("utf-8")) + len(
