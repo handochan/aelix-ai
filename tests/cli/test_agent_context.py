@@ -1197,3 +1197,101 @@ async def test_build_harness_options_steering_defaults_one_at_a_time() -> None:
     )
     assert opts_unset.steering_mode == "one-at-a-time"
     assert opts_unset.follow_up_mode == "one-at-a-time"
+
+
+# === #159 — the byte budget must not evict the project's own AGENTS.md =======
+
+
+def test_a_huge_ancestor_does_not_evict_the_projects_own_agents_md(tmp_path) -> None:
+    """THE #159 PIN — red before the fix, and silently so.
+
+    ``discover_context_files`` walks cwd → root, then emits root-most first so
+    the nearest (most specific) instructions land last. The budget used to be
+    spent in that EMISSION order, so a large ancestor — a monorepo root, ``$HOME``,
+    ``/tmp`` — consumed all 32KB and the project's own ``AGENTS.md`` was dropped
+    entirely, with no diagnostic. Measured before the fix with a 48KB ancestor:
+
+        returned bytes             : 32768
+        ancestor present           : True
+        PROJECT'S OWN file present : False
+
+    The user sees a normal session and the file their project actually ships
+    never reached the model. Budgeting is now nearest-first; emission order is
+    unchanged.
+    """
+
+    from aelix_coding_agent.cli.agent_context import _MAX_CONTEXT_BYTES
+
+    project = tmp_path / "a" / "b" / "proj"
+    project.mkdir(parents=True)
+    (tmp_path / "AGENTS.md").write_text(
+        "ANCESTOR_FILLER " * 3000, encoding="utf-8"
+    )  # ~48KB, comfortably over the cap on its own
+    (project / "AGENTS.md").write_text("MARKER_PROJECT_OWN_RULES", encoding="utf-8")
+
+    context = discover_context_files(str(project))
+
+    assert "MARKER_PROJECT_OWN_RULES" in context
+    assert "ANCESTOR_FILLER" in context, "the ancestor should still contribute"
+    assert len(context.encode("utf-8")) <= _MAX_CONTEXT_BYTES
+
+
+def test_emission_order_is_still_root_most_first(tmp_path) -> None:
+    """Budgeting order changed; DOCUMENT order must not.
+
+    The nearest file is emitted last on purpose — closest to the model's most
+    recent context. A fix that budgeted nearest-first and also emitted
+    nearest-first would silently invert the precedence the prompt relies on.
+    """
+
+    project = tmp_path / "sub"
+    project.mkdir()
+    (tmp_path / "AGENTS.md").write_text("OUTER_RULES", encoding="utf-8")
+    (project / "AGENTS.md").write_text("INNER_RULES", encoding="utf-8")
+
+    context = discover_context_files(str(project))
+
+    assert context.index("OUTER_RULES") < context.index("INNER_RULES")
+
+
+def test_the_cap_counts_the_join_separators(tmp_path) -> None:
+    """The cap must be a real bound, not an approximate one.
+
+    ``"\\n".join`` adds one byte per gap and the running total never counted
+    them, so the result came back at 32769 for a 32768 budget as soon as two
+    chunks were kept. Only observable once more than one chunk survives — which
+    the eviction fix above made the common case.
+    """
+
+    from aelix_coding_agent.cli.agent_context import _MAX_CONTEXT_BYTES
+
+    project = tmp_path / "a" / "b" / "c"
+    project.mkdir(parents=True)
+    (tmp_path / "AGENTS.md").write_text("X" * 40_000, encoding="utf-8")
+    (tmp_path / "a" / "AGENTS.md").write_text("Y" * 40_000, encoding="utf-8")
+    (project / "AGENTS.md").write_text("NEAREST", encoding="utf-8")
+
+    context = discover_context_files(str(project))
+
+    assert "NEAREST" in context
+    assert len(context.encode("utf-8")) <= _MAX_CONTEXT_BYTES
+
+
+def test_a_dropped_context_file_is_reported(tmp_path, capsys) -> None:
+    """A silent omission is indistinguishable from "this project has no rules".
+
+    Without a diagnostic the user has no way to learn that the AGENTS.md they
+    wrote is not reaching the model — which is what made #159 a silent defect
+    rather than a visible one.
+    """
+
+    project = tmp_path / "sub"
+    project.mkdir()
+    (tmp_path / "AGENTS.md").write_text("Z" * 60_000, encoding="utf-8")
+    (project / "AGENTS.md").write_text("NEAREST", encoding="utf-8")
+
+    discover_context_files(str(project))
+
+    err = capsys.readouterr().err
+    assert "AGENTS.md" in err
+    assert "truncated" in err or "skipped" in err

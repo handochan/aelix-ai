@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import os
 import platform
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -373,6 +374,22 @@ def discover_context_files(cwd: str) -> str:
     Returns ``""`` when none are found. Root-most context comes first and the
     cwd-most last (nearer = more specific). Total content is capped at
     :data:`_MAX_CONTEXT_BYTES` to bound the prompt size.
+
+    The budget is spent NEAREST-FIRST and the result is emitted root-most first
+    (#159). Those are two different orders on purpose, and conflating them was
+    the bug: the loop used to spend the budget in emission order, so a large
+    ancestor consumed it all and the project's OWN ``AGENTS.md`` — the most
+    specific file, and the only one the project actually ships — was dropped
+    entirely with no diagnostic. Measured before the fix, with a 48KB ancestor:
+
+        returned bytes             : 32768
+        ancestor present           : True
+        PROJECT'S OWN file present : False
+
+    Anything dropped or truncated now emits a ``Warning:`` to stderr, because a
+    silent omission here is indistinguishable from a project that simply has no
+    instructions — and the user would have no way to tell that the file they
+    wrote is not reaching the model.
     """
 
     here = Path(os.path.abspath(cwd))
@@ -391,22 +408,55 @@ def discover_context_files(cwd: str) -> str:
     if not found:
         return ""
 
-    found.reverse()  # root-most first, cwd-most last
-    parts: list[str] = []
+    # ``found`` is nearest-first (cwd, then its parents), which is exactly
+    # priority order — so the budget is spent over it as-is.
+    kept: list[tuple[Path, str]] = []
+    dropped: list[Path] = []
+    truncated: list[Path] = []
     total = 0
     for path, text in found:
         chunk = f"# Project context ({path})\n\n{text.strip()}\n"
         chunk_bytes = chunk.encode("utf-8")
-        remaining = _MAX_CONTEXT_BYTES - total
+        # The ``"\n".join`` below adds one byte per gap, and those bytes are
+        # part of what reaches the model. Counting them keeps the cap a real
+        # bound rather than an approximate one: without this the result came
+        # back at 32769 for a 32768 budget as soon as two chunks were kept.
+        separator = 1 if kept else 0
+        remaining = _MAX_CONTEXT_BYTES - total - separator
         if len(chunk_bytes) > remaining:
-            # Truncate to the remaining budget (decode-safe) rather than dropping
-            # the whole chunk — a large root AGENTS.md still contributes context.
+            # Truncate the first file that does not fit — a large ancestor still
+            # contributes what it can — then stop: everything further from the
+            # cwd is lower priority than what has already been kept.
             if remaining > 0:
-                parts.append(chunk_bytes[:remaining].decode("utf-8", errors="ignore"))
+                kept.append(
+                    (path, chunk_bytes[:remaining].decode("utf-8", errors="ignore"))
+                )
+                truncated.append(path)
+                total += remaining + separator
+                dropped.extend(p for p, _ in found[len(kept) :])
+            else:
+                dropped.extend(p for p, _ in found[len(kept) :])
             break
-        parts.append(chunk)
-        total += len(chunk_bytes)
-    return "\n".join(parts)
+        kept.append((path, chunk))
+        total += len(chunk_bytes) + separator
+
+    for path in truncated:
+        print(
+            f"Warning: {_CONTEXT_FILENAME} truncated to fit the "
+            f"{_MAX_CONTEXT_BYTES}-byte context budget ({path})",
+            file=sys.stderr,
+        )
+    for path in dropped:
+        print(
+            f"Warning: {_CONTEXT_FILENAME} skipped — context budget exhausted "
+            f"by nearer files ({path})",
+            file=sys.stderr,
+        )
+
+    # Emit root-most first / cwd-most last, the pre-existing document order:
+    # the nearest and most specific instructions land closest to the model's
+    # most recent context. Only the BUDGETING order changed.
+    return "\n".join(chunk for _, chunk in reversed(kept))
 
 
 __all__ = ["build_system_prompt", "discover_context_files"]
