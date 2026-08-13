@@ -57,6 +57,7 @@ from aelix_coding_agent.tui.commands import (
     CommandContext,
     active_tool_views,
     match_command,
+    sanitize_for_terminal,
     slash_word,
 )
 from aelix_coding_agent.tui.completion import (
@@ -2688,13 +2689,40 @@ def _build_banner(harness: AgentHarness, cwd: str) -> object:
     # block at the end of this function.
 
     # === compact sections ================================================
-    # [Context] — discover_context_files at render time; non-empty → AGENTS.md
-    # loaded, else 'none'. Any failure → 'none' (never crash startup).
+    # [Context] — read off the ASSEMBLED SYSTEM PROMPT, not off the filesystem.
+    #
+    # This used to call ``discover_context_files(cwd)`` at render time and print
+    # "AGENTS.md" whenever a file existed. Two defects, both measured:
+    #
+    #   (1) It cannot see ``--no-context-files`` / ``-nc``. That gate lives at
+    #       ``cli/entry.py:1091``, ABOVE discovery, so the banner announced
+    #       project context to a session whose prompt carried none.
+    #   (2) Calling discovery a second time RE-EMITTED its stderr budget warnings
+    #       (115 bytes per render on one oversized AGENTS.md) — a duplicate of
+    #       what ``entry.py:1092`` already printed at startup, and one that
+    #       interpolates the absolute path RAW: over a directory named
+    #       ``proj\x1b]0;pwned\x07…`` both the ESC and the BEL reached stderr.
+    #
+    # :func:`split_project_context` fixes both — it answers from the prompt (so
+    # ``-nc`` needs no plumbing down here) and it captures discovery's stderr
+    # instead of letting it out twice. Any failure → 'none': the banner must
+    # never crash startup, and claiming context we could not confirm is the
+    # defect being closed.
     context_label = "none"
     try:
-        from aelix_coding_agent.cli.agent_context import discover_context_files
+        from aelix_coding_agent.tui.project_context import split_project_context
 
-        if discover_context_files(cwd).strip():
+        # Annotated rather than bare, matching ``commands._estimate_context_categories``:
+        # ``getattr`` erases to ``object`` and the type gate rejects feeding that
+        # to a ``str | None`` parameter (it did reject this line, before the
+        # annotation). ``_action_get_system_prompt`` is ``() -> str``
+        # (``harness/core.py:3629-3630``); the fakes in tests/tui lack it, hence
+        # the ``callable`` guard rather than a plain call.
+        prompt_getter: Callable[[], str] | None = getattr(
+            harness, "_action_get_system_prompt", None
+        )
+        prompt = prompt_getter() if callable(prompt_getter) else None
+        if split_project_context(prompt, cwd)[1].strip():
             context_label = "AGENTS.md"
     except Exception:  # noqa: BLE001
         context_label = "none"
@@ -2766,7 +2794,24 @@ def _build_banner(harness: AgentHarness, cwd: str) -> object:
     meta_rows: list[tuple[str, str]] = [("model:", model_id)]
     if base_url:
         meta_rows.append(("baseurl:", base_url))
-    meta_rows.extend([("cwd:", cwd), ("version:", version)])
+    # ``cwd`` is DE-FANGED (issue #121). POSIX permits every byte but ``/`` and
+    # NUL in a path component, so a directory that arrives with a ``git clone``
+    # can carry an escape sequence, and this row prints it before the user has
+    # typed anything. Rich is not a defence: rendering this banner over
+    # ``proj\x1b]0;pwned\x07\x1b[31mZ`` through a ``no_color`` console emitted
+    #
+    #     │ cwd:         /tmp/…/proj\x1b]0;pwned\x1b[31mZ    │
+    #
+    # — BEL dropped, ESC passed straight through, i.e. an unterminated OSC that
+    # then swallows whatever is printed next.
+    #
+    # SCOPED TO ``cwd``, and the scope is the issue's, not a safety finding about
+    # the others. ``cwd`` is the only value on this panel that comes from a
+    # FILENAME, which is what #121 was about. ``model_id`` / ``base_url`` (model
+    # registry, and ``models.json`` is user-editable) and the ``[Extensions]``
+    # names below are not obviously beyond an attacker's reach either — they were
+    # simply not measured here, so nothing above should be read as clearing them.
+    meta_rows.extend([("cwd:", sanitize_for_terminal(cwd)), ("version:", version)])
 
     section_rows: list[tuple[str, str]] = [
         ("[Context]", context_label),

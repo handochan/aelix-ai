@@ -66,6 +66,38 @@ consent very much is:
   so the built-in permission gate falls through to allow
   (`builtin/permission.py`, `headless_default = "allow"`). Do not point a headless
   Aelix at untrusted input on a machine you care about.
+- **`AGENTS.md` project context is loaded regardless of project trust, and no mode
+  asks you first.** Aelix walks from the working directory up to the *filesystem
+  root*, reads every `AGENTS.md` it finds, and puts the text into the system prompt.
+  A repository you have just cloned and declined to trust therefore still gets to
+  write system-level instructions for the model, alongside the `read` / `write` /
+  `bash` tools. There is no confirmation step for this in any mode — an interactive
+  session gets one after-the-fact `[Context]` line in the startup banner, and headless
+  modes get nothing. This follows pi by decision, not by omission
+  ([ADR-0217](docs/decisions/0217-project-context-files-follow-pis-published-policy-and-forward-sync-to-its-fence.md)):
+  pi's own security documentation says context files "are loaded regardless of project
+  trust unless context loading is disabled", and that prompt injection from context
+  files "is expected local-agent risk and cannot be reliably prevented by pi". Two
+  consequences worth spelling out. Because the walk does not stop at a repository
+  boundary, an `AGENTS.md` in `$HOME` reaches **every** project beneath it. And
+  because Aelix wraps each file in pi's `<project_context>` /
+  `<project_instructions path="…">` fence with both the content and the path
+  XML-escaped, tags inside a hostile file become inert text rather than a way to close
+  the boundary early and have the rest read as though it came from outside project
+  context — but that is a bound on the *labelling* only. The file is still an
+  arbitrary-instruction channel by design, and it can simply ask the model, in prose,
+  for whatever it wants. Treat an unreviewed `AGENTS.md` as untrusted input the model
+  will read and may act on.
+- **What that sends to your provider, and what `--no-context-files` does not stop.**
+  The project-context block is part of the system prompt, so the full text of every
+  discovered `AGENTS.md` **and each file's absolute path** goes to whichever model
+  provider you configured. `--no-context-files` / `-nc` removes all of that: the file
+  contents, the fence, and the `path=` attributes. It is **not** a privacy opt-out.
+  Absolute paths remain in the prompt either way, because the base system prompt
+  states the working directory (`- Working directory: /abs/path`) independently of
+  any context file. If the directory layout itself is sensitive, the flag will not
+  help you; run somewhere else. The flag *is* inherited by delegated subagents, so a
+  child spawned mid-session does not re-discover the files you suppressed.
 - **Extensions are Python, loaded in-process, with the full privileges of the
   Aelix process.** Installing an extension is equivalent to running its author's
   code. `aelix extension install --require-signature` enforces a valid trusted

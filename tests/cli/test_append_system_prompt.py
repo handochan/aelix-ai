@@ -54,12 +54,24 @@ async def test_append_system_prompt_is_copied_not_aliased(
     assert options.append_system_prompt == ["x"]
 
 
-async def test_cwd_agents_md_is_prepended_to_append_system_prompt(
+async def test_cwd_agents_md_lands_after_the_users_own_append_chunks(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    """Lock in the REAL default discovery path: an ``AGENTS.md`` in the cwd is
-    discovered and prepended ahead of the explicit ``--append-system-prompt``
-    chunks (Pi ``--no-context-files`` gate, off by default)."""
+    """Lock in the REAL default discovery path AND its position (#121).
+
+    An ``AGENTS.md`` in the cwd is discovered by default (Pi
+    ``--no-context-files`` gate, off by default) and appended AFTER the explicit
+    ``--append-system-prompt`` chunks.
+
+    That order is pi's (``system-prompt.ts``: base → ``appendSystemPrompt`` →
+    project context → skills, in the ``customPrompt`` branch at ``:49-67`` and
+    the default branch at ``:140-157`` alike). This test asserted the opposite
+    until #121 / ADR-0217, which is the divergence that decision corrected: an
+    ``AGENTS.md`` arrives with a ``git clone`` and is injected
+    trust-independently by decision, so ranking it ahead of the chunk the user
+    typed on their own command line put an untrusted repo's text above the
+    user's own.
+    """
 
     (tmp_path / "AGENTS.md").write_text("PROJECT_RULES", encoding="utf-8")
     monkeypatch.chdir(tmp_path)
@@ -67,5 +79,9 @@ async def test_cwd_agents_md_is_prepended_to_append_system_prompt(
     session = Session(MemorySessionStorage())
     options = await _build_harness_options(parsed, session)
     assert len(options.append_system_prompt) == 2
-    assert "PROJECT_RULES" in options.append_system_prompt[0]
-    assert options.append_system_prompt[1] == "x"
+    assert options.append_system_prompt[0] == "x"
+    assert "PROJECT_RULES" in options.append_system_prompt[1]
+    # Pin the fence too, not merely the position: a revert of either half of
+    # #121 is then caught by whichever of these tests runs first.
+    assert options.append_system_prompt[1].startswith("<project_context>")
+    assert options.append_system_prompt[1].endswith("</project_context>\n")

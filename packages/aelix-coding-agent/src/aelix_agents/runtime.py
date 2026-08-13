@@ -272,6 +272,31 @@ class SubagentHost:
     active_tools: Callable[[], list[str] | None] = lambda: None
     """``ExtensionContext.get_active_tools``. ``None`` means the harness has not
     materialised its ``None`` sentinel yet, i.e. every built-in is active."""
+    context_files: Callable[[], bool] = lambda: True
+    """Does the parent load auto-discovered ``AGENTS.md`` project context?
+
+    ``False`` is the parent's ``--no-context-files`` / ``-nc``, and forwarding
+    it is the point: before this seam existed the flag reached no child at all
+    (measured — ``no_context_files`` occurred nowhere in ``aelix_agents``, and
+    both argv builders emitted nothing for it), so a user who launched with
+    ``-nc`` was silently unprotected from the first delegation onward.
+    :func:`~aelix_agents.print_channel.narrow_context_files` is the consumer and
+    holds the design argument.
+
+    LIVE, like every other field here, and measurably so: ``/agents use`` edits
+    the parent's ``Args`` IN PLACE — ``agents/service.py:280`` resets it with
+    ``__dict__.update`` and then ``apply_profile_to_args`` sets
+    ``no_context_files = True`` for a ``context_files: false`` profile. Probed
+    on one ``Args``: same object id throughout, ``False → True`` on the
+    overlay and ``True → False`` again on the next reset. A captured bool would
+    be wrong in BOTH directions.
+
+    Defaults to ``True`` — "the parent loads context files", which is what every
+    child did before this field existed. Deliberately NOT fail-closed: #121
+    settled that context-file injection is trust-INDEPENDENT, so this is
+    parent-authority inheritance rather than a security gate, and a ``False``
+    default would strip ``AGENTS.md`` out of every child of every unwired host
+    on no evidence at all."""
     consent_context: Callable[[], Any] = _default_consent_context
     """Something with ``has_ui`` / ``ui`` — the extension's own
     ``ExtensionContext``. See :func:`_default_consent_context`."""
@@ -799,6 +824,17 @@ class _SubagentRuntimeImpl:
             # unchanged posture — leaves ``grant.mode`` exactly as it was.
             permission_mode=_tighten(grant.mode, permission_floor),
             parent_tools=_frozen_tools(self.host.active_tools()),
+            # Read HERE rather than in the channel for the same reason
+            # ``parent_tools`` is: the plan is the frozen record of what the
+            # parent's authority was when the spawn was admitted, and one child
+            # per plan means it can never be re-read against a parent that has
+            # since changed identity under ``/agents use``.
+            #
+            # UNGUARDED, exactly like ``active_tools`` one line up. A host
+            # getter that raises kills this spawn instead of quietly answering
+            # "the parent loads context files" — which for THIS flag is the
+            # silent un-protection that #121 found in the first place.
+            parent_context_files=self.host.context_files(),
             timeout_ms=timeout_ms,
         )
         self._publish(child, child.stream, on_event, spawn_model=spawn_model)

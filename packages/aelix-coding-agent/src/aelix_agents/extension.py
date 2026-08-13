@@ -93,6 +93,8 @@ from aelix_agents.tool import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from aelix_agent_core.harness.hooks import (
         BeforeAgentStartHookEvent,
         SessionShutdownHookEvent,
@@ -175,10 +177,17 @@ class AgentsExtension:
     every harness rebuild — the mirror of ``permission_ext`` — so the child
     registry and ``stop_all`` both survive ``/new`` / ``/fork`` / ``/resume``.
 
-    Every field is optional so ``AgentsExtension()`` is valid (that is the
-    literal call site in ``entry.py``), and every default is the conservative
-    one: no posture means :attr:`PermissionMode.DEFAULT`, whose clamp is
-    ``plan`` — an unwired host gets READ-ONLY children.
+    Every field is optional so ``AgentsExtension()`` is valid, and every default
+    is the conservative one: no posture means :attr:`PermissionMode.DEFAULT`,
+    whose clamp is ``plan`` — an unwired host gets READ-ONLY children.
+
+    This paragraph used to add "(that is the literal call site in
+    ``entry.py``)". It is not: ``entry.py:1945-1962`` passes ``posture``,
+    ``agent_dir``, ``cwd`` and ``project_trusted``. The bare form is what the
+    test suite builds — reason enough for the defaults to stay conservative —
+    but the correction matters because it is also why a NEW field is INERT in
+    production until that call site names it, which is the state
+    :attr:`no_context_files` is in right now.
     """
 
     posture: PermissionPosture | None = None
@@ -218,6 +227,28 @@ class AgentsExtension:
     injected channel still wins — it is passed straight through at ``:237`` and
     the runtime leaves it alone — which is the seam every test in
     ``tests/agents_ext`` drives."""
+
+    no_context_files: Callable[[], bool] | None = None
+    """The parent's ``--no-context-files`` / ``-nc``, read LIVE (#121).
+
+    Spelled in the NEGATIVE, the same polarity as
+    ``cli/args.py::Args.no_context_files``, so the one wiring line in
+    ``cli/entry.py`` is ``no_context_files=lambda: parsed.no_context_files``
+    with no place to invert it by accident. :meth:`_host_context_files` does the
+    single flip into the host's positive
+    :attr:`~aelix_agents.runtime.SubagentHost.context_files`.
+
+    A CALLABLE, not the bool, because the value moves under us: ``/agents use``
+    overlays a profile onto the SAME ``Args`` object ``entry.py``'s harness
+    factory closed over. Probed on one object — ``apply_profile_to_args`` with
+    a ``context_files: false`` profile flips it to ``True``, and
+    ``agents/service.py:280``'s ``__dict__.update`` reset flips it back — same
+    ``id()`` throughout. A bool captured at construction would be stale in both
+    directions.
+
+    ``None`` is the unwired default and means "no evidence", which resolves to
+    "the parent loads context files" — the behaviour every child had before
+    this field existed."""
 
     _pending: dict[str, PendingSpawn] = field(default_factory=dict, init=False)
     """``tool_call_id`` → the approved spawn. Popped with a ``None`` default in
@@ -340,6 +371,7 @@ class AgentsExtension:
             cwd=self._host_cwd,
             posture=self._host_posture,
             active_tools=self._host_active_tools,
+            context_files=self._host_context_files,
             consent_context=lambda: self._ctx,
             project_trusted=self._host_project_trusted,
             agent_dir=lambda: self.agent_dir,
@@ -391,6 +423,41 @@ class AgentsExtension:
             return list(ctx.get_active_tools())
         except Exception:  # noqa: BLE001
             return None
+
+    def _host_context_files(self) -> bool:
+        """Does the parent load ``AGENTS.md`` project context RIGHT NOW? (#121)
+
+        The single polarity flip between :attr:`no_context_files` (negative,
+        matching ``Args``) and the host's positive ``context_files``. Kept to
+        one line in one place on purpose — the wiring in ``cli/entry.py`` then
+        has nothing to invert.
+
+        THE TWO NO-EVIDENCE CASES ANSWER DIFFERENTLY, and the asymmetry is the
+        point:
+
+        * no getter at all (:attr:`no_context_files` is ``None``) → ``True``.
+          Nobody ever told us about a ``-nc``, and inventing one would strip
+          ``AGENTS.md`` out of every child of every unwired host — including
+          every test that constructs a bare ``AgentsExtension()``.
+        * a getter that RAISES → ``False``. Its presence is evidence that a
+          parent exists whose flag we were supposed to honour, so the two ways
+          of being wrong are not symmetric: a child without project context is
+          degraded and says so in its own output, whereas a child that ignores
+          a flag the user typed is the silent hole #121 is closing.
+
+        Unlike :meth:`_host_project_trusted` this reads no ``ExtensionContext``
+        — there is no context-file field on one. The liveness comes from the
+        callable reading the parent's ``Args``, which ``/agents use`` mutates in
+        place.
+        """
+
+        getter = self.no_context_files
+        if getter is None:
+            return True
+        try:
+            return not getter()
+        except Exception:  # noqa: BLE001 — a wired-but-unreadable parent denies
+            return False
 
     def _host_project_trusted(self) -> bool:
         ctx = self._ctx

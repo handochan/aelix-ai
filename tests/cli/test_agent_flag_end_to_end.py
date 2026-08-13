@@ -638,16 +638,23 @@ async def test_replace_prompt_still_appends_agents_md(
     assert any("PROJECT_RULES" in chunk for chunk in options.append_system_prompt)
 
 
-async def test_profile_body_precedes_user_appends_and_follows_context_files(
+async def test_profile_body_precedes_user_appends_which_precede_context_files(
     env: dict[str, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Append order: context files → profile body → the user's own appends.
+    """Append order: profile body → the user's own appends → context files.
 
-    ``_resolve_append_chunks`` prepends the discovered context files, and
     ``apply_profile_to_args`` does ``insert(0, body)`` on
     ``parsed.append_system_prompt`` — "FIRST among the appends", per its own
-    comment. Asserting the LIST rather than the joined string is what makes an
-    off-by-one in either half fail loudly.
+    comment — and ``_resolve_append_chunks`` appends the discovered context
+    files AFTER that whole accumulator. Asserting the LIST rather than the
+    joined string is what makes an off-by-one in any half fail loudly.
+
+    The context-files position is pi's (``system-prompt.ts``: base →
+    ``appendSystemPrompt`` → project context → skills, in both branches) and
+    was corrected to match in #121 / ADR-0217. Until then aelix PREPENDED the
+    context files, so a cloned repo's ``AGENTS.md`` — injected
+    trust-independently by decision — outranked both the profile's identity and
+    the chunk the user typed on their own command line.
 
     Why the profile body must survive a user ``--append-system-prompt`` at all:
     the appends are an ACCUMULATOR, not a scalar. The overlay's
@@ -697,13 +704,16 @@ async def test_profile_body_precedes_user_appends_and_follows_context_files(
     #
     # #115 appends the skills catalog as a FOURTH chunk, and its position is
     # part of the contract rather than noise: pi puts the skills section after
-    # the context files and the user's appends (``system-prompt.ts:53-77``), so
-    # asserting it is last also pins that ordering decision.
+    # BOTH the appends and the context files (``system-prompt.ts:65-67`` /
+    # ``:155-157``), so asserting it is last also pins that ordering decision.
     assert len(appends) == 4
+    assert appends[0] == "You are SCOUT."
+    assert appends[1] == "USER_CHUNK"
+    assert "PROJECT_RULES" in appends[2]
     assert "<available_skills>" in appends[3]
-    assert "PROJECT_RULES" in appends[0]
-    assert appends[1] == "You are SCOUT."
-    assert appends[2] == "USER_CHUNK"
+    # The context chunk is pi's fence, not the pre-#121 markdown header.
+    assert appends[2].startswith("<project_context>")
+    assert appends[2].endswith("</project_context>\n")
 
 
 async def test_context_files_false_drops_agents_md_under_replace(
@@ -741,6 +751,12 @@ async def test_context_files_false_drops_agents_md_under_replace(
     # system prompt (``system-prompt.ts:53-77``, measured). So assert the
     # AGENTS.md content is gone rather than that the list is empty.
     assert not any("PROJECT_RULES" in chunk for chunk in options.append_system_prompt)
+    # #121: the WRAPPER must be gone too. Asserting only on the content would
+    # still pass if the fence were emitted around an empty body, which announces
+    # project rules that are not there.
+    assert not any(
+        "<project_context>" in chunk for chunk in options.append_system_prompt
+    )
     assert all(
         "<available_skills>" in chunk for chunk in options.append_system_prompt
     )

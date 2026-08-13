@@ -244,8 +244,15 @@ class Args:
     "Ignore project-local files for this run", which a user wanting "do not let
     this cloned repo influence the agent" would reasonably read as covering
     AGENTS.md — measured, it does not: ``--no-approve`` still puts the repo's
-    AGENTS.md verbatim into the system prompt. Whether that SHOULD be gated is
-    the open policy question in #121; this field only promises what it does."""
+    AGENTS.md into the system prompt.
+
+    That is now SETTLED rather than open. #121 / ADR-0217 decided to keep the
+    injection trust-independent (pi ``docs/security.md:27``; pi itself added
+    context files to its trust manager at ``89a9220``/v0.79.0 and removed them
+    again at ``5cb4f59``/v0.79.1 four days later). What did change is that the
+    text is no longer injected *verbatim*: it is XML-escaped inside pi's
+    ``<project_context>`` fence, so a hostile file can no longer forge its way
+    out of the boundary (``agent_context.discover_context_files``)."""
 
     skills: list[str] = field(default_factory=list)
     """Pi parity: ``--skill <path>`` (repeatable).

@@ -208,6 +208,13 @@ aelix extension trust add <key>                                 # 검증 키 신
 aelix extension install <target> --require-signature            # fail-closed 서명 게이트
 ```
 
+의도적으로 게이트하지 **않는** 입력이 하나 있습니다. 작업 디렉터리부터 파일시스템 루트까지
+어디에서든 발견된 `AGENTS.md`는 그 프로젝트를 신뢰했는지와 무관하게 시스템 프롬프트로 읽히며,
+내용과 절대 경로가 설정한 모델 프로바이더로 전송됩니다. `--no-context-files`로 이 탐색 자체를
+끌 수 있습니다. 이렇게 게이트하지 않는 것은 pi의 공개된 정책에서 벗어나지 않고 그대로 따른
+결정입니다 — 그것이 실제로 무엇을 뜻하는지, 그리고 이 플래그가 *막지 못하는* 것은
+[SECURITY.md](SECURITY.md#scope-what-this-project-is)에 적혀 있습니다.
+
 ## 알려진 한계 (베타)
 
 중요한 작업에 Aelix를 붙이기 전에 알아두어야 할 세 가지입니다.

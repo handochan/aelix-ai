@@ -91,6 +91,7 @@ from aelix_agents.print_channel import (
     abort_child,
     apply_cost_fallback,
     build_child_env,
+    narrow_context_files,
     narrow_tools,
 )
 from aelix_agents.prompt_file import remove_prompt_dir, write_prompt_file
@@ -275,6 +276,11 @@ class RpcChannel:
         )
         profile = plan.resolved.profile
         narrowing = narrow_tools(profile, plan.parent_tools)
+        # The parent's ``-nc``, clamped onto the child exactly as the print
+        # channel clamps it — same function, so the two channels cannot drift.
+        child_profile = narrow_context_files(
+            narrowing.profile, plan.parent_context_files
+        )
         state = row.stream
         output_cap = (
             plan.output_cap if plan.output_cap is not None else profile.output_cap
@@ -415,7 +421,7 @@ class RpcChannel:
             client = RpcClient(
                 RpcClientOptions(
                     argv=self._argv_builder(
-                        narrowing.profile,
+                        child_profile,
                         prompt_path=str(row.prompt.path),
                         task=plan.task,
                         permission_mode=plan.permission_mode,

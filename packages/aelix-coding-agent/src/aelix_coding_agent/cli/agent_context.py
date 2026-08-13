@@ -43,12 +43,98 @@ from __future__ import annotations
 
 import os
 import platform
+import re
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
+# ``skills_prompt`` is stdlib-only at module scope (its only import is a
+# ``TYPE_CHECKING``-guarded ``collections.abc``), so this cannot cycle back
+# through ``cli``. Verified by importing this module first in a fresh
+# interpreter::
+#
+#     python -c "import aelix_coding_agent.cli.agent_context"   -> EXIT=0
+#     python -c "import aelix_coding_agent.cli.skills_prompt"   -> EXIT=0
+#
+# NOT re-derived here on purpose: ``_escape_xml``'s replacement ORDER is
+# load-bearing (``&`` first, or the ampersands the later replacements introduce
+# get double-escaped) and a second copy is a second thing to get wrong. It
+# already covers ``"`` and ``'``, which is what makes it safe for an ATTRIBUTE
+# value and not just for element text — see :func:`discover_context_files`.
+from .skills_prompt import _escape_xml
+
 _CONTEXT_FILENAME = "AGENTS.md"
 _MAX_CONTEXT_BYTES = 32_768
+
+# C0 + DEL + C1, deleted from any path before it is PRINTED (#121 / ADR-0217).
+#
+# POSIX permits every byte but ``/`` and NUL in a path component, so a directory
+# name that arrives with a ``git clone`` steers the terminal of anyone who runs
+# aelix inside it. The two warnings below interpolate an absolute path, and they
+# fire BEFORE any TUI exists — on the ``cli/entry.py`` discovery call, in every
+# mode including ``-p`` / ``--mode json`` / ``--mode rpc``. Measured on the real
+# function with a directory named ``proj\x1b]0;pwned\x07\x1b[31mZ``::
+#
+#     control chars reaching stderr: ['0x7', '0x1b']
+#     Warning: AGENTS.md truncated ... (/tmp/.../proj\x1b]0;pwned\x07\x1b[31mZ/AGENTS.md)
+#
+# i.e. an unterminated OSC title-set sequence, which then eats every byte the
+# terminal prints after it until some terminator turns up.
+#
+# DUPLICATED, not imported. ``tui/commands.py`` exposes ``sanitize_for_terminal``
+# with this identical table, but ``cli`` must not import ``tui`` — and this
+# module is reached by headless runs that never build a TUI at all. A fourth
+# copy of the table is the cost of the band rule; the repo already carries three
+# (``commands._sanitize_child_field``, ``consent._sanitize_field``,
+# ``panel._flatten``).
+#
+# DELETION, not escaping, matching those three: what survives ``\x1b[8m`` is the
+# inert literal ``[8m``, which renders as itself and reads as visibly odd. The
+# range covers ``\x9b``, the one-byte CSI, which an ESC-only filter would miss.
+_CONTROL_KILL = dict.fromkeys([*range(0x20), 0x7F, *range(0x80, 0xA0)])
+
+
+def _safe_path(path: Path) -> str:
+    """One path, de-fanged for printing. See :data:`_CONTROL_KILL`."""
+
+    return str(path).translate(_CONTROL_KILL)
+
+
+# Pi's project-context fence, verbatim from ``system-prompt.ts:144-152`` on pi
+# main (identical at ``:53-61``, the ``customPrompt`` branch; introduced by pi
+# e2fd651e → v0.75.0 and 7577d3b8 → v0.75.4, present in every release since,
+# currently v0.84.1). Pi writes::
+#
+#     prompt += "\n\n<project_context>\n\n";
+#     prompt += "Project-specific instructions and guidelines:\n\n";
+#     for (const { path: filePath, content } of contextFiles) {
+#         prompt += `<project_instructions path="${filePath}">\n${content}\n</project_instructions>\n\n`;
+#     }
+#     prompt += "</project_context>\n";
+#
+# Pi's leading ``"\n\n"`` is deliberately NOT reproduced: this function returns
+# an append CHUNK and the harness already joins chunks with ``"\n\n"``
+# (``harness/core.py:572-573``). Emitting it here would double the gap.
+_FENCE_OPEN = "<project_context>\n\nProject-specific instructions and guidelines:\n\n"
+_FENCE_CLOSE = "</project_context>\n"
+_INSTRUCTIONS_CLOSE = "\n</project_instructions>\n\n"
+
+# A truncation can land in the middle of an entity ``_escape_xml`` just wrote
+# (``&am``). Escaped text contains no bare ``&`` — every ``&`` starts an entity
+# that ends in ``;`` — so a trailing ``&`` + 0-4 letters with no ``;`` is
+# necessarily a cut one, and dropping it is not lossy in any other case. The
+# longest entity in play is ``&apos;`` / ``&quot;`` (``&`` + 4 letters + ``;``),
+# hence ``{0,4}``. Anchored at ``$`` and requiring no ``;``, so a COMPLETE
+# ``&amp;`` at the end is left alone (``sub("", "a&amp;")`` -> ``a&amp;``).
+#
+# Not defensive-only: a 40000-``&`` AGENTS.md truncated against the 32768-byte
+# budget lands mid-entity in 4 of the 6 possible byte alignments (varied by
+# padding the file 0-5 bytes), and in none of the 6 does the emitted body end
+# in a partial entity. This is cosmetic rather than a safety property — the
+# escape has already removed every ``<`` and ``>``, so a cut entity could not
+# reopen markup — which is why the fence balance is enforced structurally
+# below and not by this regex.
+_PARTIAL_ENTITY_TAIL = re.compile(r"&[a-z]{0,4}$")
 
 # Files that ship inside the wheel (verified against a built
 # ``aelix_coding_agent-0.1.0b1-py3-none-any.whl``) and are worth READING before
@@ -372,8 +458,67 @@ def discover_context_files(cwd: str) -> str:
     """Concatenate ``AGENTS.md`` files from cwd up to the filesystem root.
 
     Returns ``""`` when none are found. Root-most context comes first and the
-    cwd-most last (nearer = more specific). Total content is capped at
+    cwd-most last (nearer = more specific). The whole emitted chunk is capped at
     :data:`_MAX_CONTEXT_BYTES` to bound the prompt size.
+
+    TRUST-INDEPENDENT BY DECISION (#121, ADR-0217). Nothing here consults
+    project trust, and that is the policy, not an oversight. Pi's
+    ``docs/security.md:27`` states context files "are loaded regardless of
+    project trust", and ``:37`` calls context-file prompt injection an
+    "expected local-agent risk [that] cannot be reliably prevented by pi". Pi
+    tried the other way and reverted it: context files were ADDED to its trust
+    manager at ``89a9220`` (v0.79.0) and REMOVED at ``5cb4f59`` (v0.79.1), four
+    days later. ``--no-context-files`` / ``-nc`` is the switch that suppresses
+    this; ``--no-approve`` is not (see ``args.Args.project_trust_override``).
+
+    THE FENCE (pi forward-sync). Files are wrapped in pi's ``<project_context>``
+    / ``<project_instructions path="...">`` fence — see :data:`_FENCE_OPEN` for
+    the verbatim pi source. Aelix used to emit a per-file markdown header
+    ``# Project context ({path})`` with no wrapper at all; that shape never
+    matched pi's either, so nothing pi-parity was lost by replacing it.
+
+    THE ONE DECLARED DELTA: aelix XML-ESCAPES both the content and the ``path``
+    attribute; pi interpolates both raw. The argument is NOT "safer than pi" —
+    it is that an unescaped fence lets a hostile ``AGENTS.md`` close the
+    boundary early, so its payload reads to the model as being OUTSIDE the
+    project-context block. Tag counts IN THE STRING THIS FUNCTION RETURNS,
+    measured on the pre-change build with one hostile ``AGENTS.md`` whose body
+    carried all three forgeries at once::
+
+        '<project_context>'        0     '</project_context>'        1
+        '<project_instructions'    0     '</project_instructions>'   1
+        '<available_skills>'       1     '</available_skills>'       2
+        '# Project context ('      2   <- one aelix's label, one the body's
+
+    (The ``<available_skills>`` row is 1 open / 2 close *here* because the real
+    catalog is a different append chunk; in the assembled prompt the body's
+    forged pair simply became a second, indistinguishable catalog.)
+
+    An unbalanced fence makes aelix ASSERT to the model a provenance boundary it
+    is not keeping, which is the overclaim this module's own docstring already
+    forbids ("an overclaim HERE is acted on by the model"). We are not claiming
+    pi erred; we are declining to ship a label we cannot honour.
+    :func:`aelix_coding_agent.cli.skills_prompt._escape_xml` is reused rather
+    than re-derived, and it covers ``"``/``'``, so the same call is correct for
+    the attribute value as for the element text.
+
+    WHAT THE 32 KiB BOUNDS (changed by this commit, read before touching the
+    loop). It now bounds the ENTIRE returned string — fence, per-file tags,
+    and ESCAPED content — because escaping is what reaches the model and
+    escaping GROWS the text. Budgeting the raw text and escaping afterwards
+    would leave the cap unenforced by up to 5x (``&`` → ``&amp;``), which is
+    the same class of defect as the join-separator bug the previous revision
+    fixed ("without this the result came back at 32769 for a 32768 budget").
+    The cap is aelix-original: **pi has no cap at all** — it concatenates every
+    context file it loaded. Do not describe it as parity.
+
+    TRUNCATION NEVER CUTS A TAG. Only the escaped CONTENT of the first file that
+    does not fit is trimmed; its ``</project_instructions>`` and the closing
+    ``</project_context>`` are always emitted whole. Truncating the assembled
+    block instead would make aelix emit the unbalanced fence ITSELF —
+    manufacturing the exact defect the escaping above exists to prevent.
+    A trim is also walked back off a half-written entity
+    (:data:`_PARTIAL_ENTITY_TAIL`).
 
     The budget is spent NEAREST-FIRST and the result is emitted root-most first
     (#159). Those are two different orders on purpose, and conflating them was
@@ -413,50 +558,90 @@ def discover_context_files(cwd: str) -> str:
     kept: list[tuple[Path, str]] = []
     dropped: list[Path] = []
     truncated: list[Path] = []
-    total = 0
+    # The wrapper reaches the model too, so it is charged to the budget up
+    # front rather than added to a full 32 KiB of content afterwards. Measured:
+    # ``_FENCE_OPEN`` is 66 bytes and ``_FENCE_CLOSE`` 19, so omitting this
+    # overshoots the cap by 85 — small, but exactly the "approximate bound" the
+    # previous revision removed.
+    total = len(_FENCE_OPEN.encode("utf-8")) + len(_FENCE_CLOSE.encode("utf-8"))
     for path, text in found:
-        chunk = f"# Project context ({path})\n\n{text.strip()}\n"
-        chunk_bytes = chunk.encode("utf-8")
-        # The ``"\n".join`` below adds one byte per gap, and those bytes are
-        # part of what reaches the model. Counting them keeps the cap a real
-        # bound rather than an approximate one: without this the result came
-        # back at 32769 for a 32768 budget as soon as two chunks were kept.
-        separator = 1 if kept else 0
-        remaining = _MAX_CONTEXT_BYTES - total - separator
-        if len(chunk_bytes) > remaining:
+        # ESCAPE FIRST, THEN BUDGET (see the docstring). ``_escape_xml`` can
+        # grow the text ~5x in the worst case, so budgeting the raw bytes would
+        # leave the cap unenforced by that factor.
+        # ``_safe_path`` BEFORE ``_escape_xml``: the two close different
+        # channels and neither covers the other. Escaping neutralises ``"`` and
+        # ``>`` so the attribute cannot be broken out of; it leaves control
+        # bytes untouched. A directory name may legally carry any byte but
+        # ``/`` and NUL, and XML 1.0's ``Char`` production forbids C0 outright
+        # (tab/LF/CR excepted) — so a raw ``\x1b`` here would make the fence
+        # we just started asserting malformed, in the one attribute an attacker
+        # picks. Order matters only in that dropping the bytes first keeps
+        # ``_escape_xml`` from having to reason about them at all.
+        open_tag = f'<project_instructions path="{_escape_xml(_safe_path(path))}">\n'
+        body = _escape_xml(text.strip())
+        # The tags are charged separately from the body precisely so the body is
+        # the ONLY thing a truncation can reach.
+        tag_bytes = len(open_tag.encode("utf-8")) + len(
+            _INSTRUCTIONS_CLOSE.encode("utf-8")
+        )
+        body_bytes = body.encode("utf-8")
+        room = _MAX_CONTEXT_BYTES - total - tag_bytes
+        if len(body_bytes) > room:
             # Truncate the first file that does not fit — a large ancestor still
             # contributes what it can — then stop: everything further from the
             # cwd is lower priority than what has already been kept.
-            if remaining > 0:
-                kept.append(
-                    (path, chunk_bytes[:remaining].decode("utf-8", errors="ignore"))
+            if room > 0:
+                body = _PARTIAL_ENTITY_TAIL.sub(
+                    "", body_bytes[:room].decode("utf-8", errors="ignore")
                 )
+                kept.append((path, f"{open_tag}{body}{_INSTRUCTIONS_CLOSE}"))
                 truncated.append(path)
-                total += remaining + separator
-                dropped.extend(p for p, _ in found[len(kept) :])
-            else:
-                dropped.extend(p for p, _ in found[len(kept) :])
+                # Dead on this iteration (the ``break`` is two lines below) but
+                # kept so the loop invariant "``total`` is the size of what
+                # ``kept`` will emit" holds unconditionally — a later edit that
+                # continues instead of breaking must not have to rediscover it.
+                total += tag_bytes + len(body.encode("utf-8"))
+            dropped.extend(p for p, _ in found[len(kept) :])
             break
-        kept.append((path, chunk))
-        total += len(chunk_bytes) + separator
+        kept.append((path, f"{open_tag}{body}{_INSTRUCTIONS_CLOSE}"))
+        total += tag_bytes + len(body_bytes)
 
     for path in truncated:
         print(
             f"Warning: {_CONTEXT_FILENAME} truncated to fit the "
-            f"{_MAX_CONTEXT_BYTES}-byte context budget ({path})",
+            f"{_MAX_CONTEXT_BYTES}-byte context budget ({_safe_path(path)})",
             file=sys.stderr,
         )
     for path in dropped:
         print(
             f"Warning: {_CONTEXT_FILENAME} skipped — context budget exhausted "
-            f"by nearer files ({path})",
+            f"by nearer files ({_safe_path(path)})",
             file=sys.stderr,
         )
+
+    if not kept:
+        # Nothing survived the budget. Pi opens the fence only when it has at
+        # least one file (``system-prompt.ts:145``, ``contextFiles.length > 0``)
+        # and an empty ``<project_context>`` would announce project rules that
+        # are not there — the same overclaim the escaping above exists to stop.
+        # So return the "" that every no-files caller already handles.
+        #
+        # Unreachable on Linux today, and stated as measured rather than as
+        # "never": ``room`` only goes non-positive once the source path exceeds
+        # 32626 bytes (32768 - 85 fence - 57 fixed tag bytes), and ``PATH_MAX``
+        # is 4096, so ``path.is_file()`` above would have failed first. The
+        # invariant "the fence is opened only for a file we really kept" should
+        # hold by construction, not by an OS limit.
+        return ""
 
     # Emit root-most first / cwd-most last, the pre-existing document order:
     # the nearest and most specific instructions land closest to the model's
     # most recent context. Only the BUDGETING order changed.
-    return "\n".join(chunk for _, chunk in reversed(kept))
+    #
+    # No join separator: each block already ends with pi's ``"\n\n"``
+    # (:data:`_INSTRUCTIONS_CLOSE`), so concatenation reproduces pi's spacing
+    # exactly, including the blank line before ``</project_context>``.
+    return _FENCE_OPEN + "".join(block for _, block in reversed(kept)) + _FENCE_CLOSE
 
 
 __all__ = ["build_system_prompt", "discover_context_files"]

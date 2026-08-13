@@ -965,10 +965,30 @@ async def test_explicit_system_prompt_still_drops_the_signpost() -> None:
 
 
 def test_discover_context_files_finds_agents_md(tmp_path) -> None:
-    (tmp_path / "AGENTS.md").write_text("Use tabs. Run `make test`.\n", encoding="utf-8")
+    """Content + provenance, in pi's fence (#121).
+
+    The provenance assertion used to be a bare ``"AGENTS.md" in context``,
+    which the ``path=`` attribute satisfies by accident — so it survived the
+    #121 rewrite without noticing that the emitted SHAPE had changed from a
+    markdown header to pi's XML fence. Pinned to the exact emission instead:
+    ``system-prompt.ts:145-151`` on pi main, minus pi's leading ``"\\n\\n"``
+    (the harness supplies that when it joins append chunks).
+    """
+
+    agents_md = tmp_path / "AGENTS.md"
+    agents_md.write_text("Use tabs. Run `make test`.\n", encoding="utf-8")
     context = discover_context_files(str(tmp_path))
-    assert "Use tabs" in context
-    assert "AGENTS.md" in context  # labeled with the source path
+    assert context == (
+        "<project_context>\n"
+        "\n"
+        "Project-specific instructions and guidelines:\n"
+        "\n"
+        f'<project_instructions path="{agents_md}">\n'
+        "Use tabs. Run `make test`.\n"
+        "</project_instructions>\n"
+        "\n"
+        "</project_context>\n"
+    )
 
 
 def test_discover_context_files_walks_up_tree(tmp_path) -> None:
@@ -1000,6 +1020,10 @@ def test_discover_context_files_truncates_oversized(tmp_path) -> None:
     context = discover_context_files(str(tmp_path))
     assert context  # truncated, NOT silently dropped
     assert len(context.encode("utf-8")) <= _MAX_CONTEXT_BYTES
+    # #121 T2: the cap bounds the WHOLE chunk, wrapper included, and the closing
+    # tags survive the trim. See test_agent_context_trust_policy.py for the
+    # adversarial version of this.
+    assert context.endswith("</project_instructions>\n\n</project_context>\n")
 
 
 # --- _build_harness_options wiring -------------------------------------------
@@ -1254,13 +1278,19 @@ def test_emission_order_is_still_root_most_first(tmp_path) -> None:
     assert context.index("OUTER_RULES") < context.index("INNER_RULES")
 
 
-def test_the_cap_counts_the_join_separators(tmp_path) -> None:
+def test_the_cap_counts_every_byte_that_reaches_the_model(tmp_path) -> None:
     """The cap must be a real bound, not an approximate one.
 
-    ``"\\n".join`` adds one byte per gap and the running total never counted
-    them, so the result came back at 32769 for a 32768 budget as soon as two
-    chunks were kept. Only observable once more than one chunk survives — which
-    the eviction fix above made the common case.
+    Originally this pinned the ``"\\n".join`` separators: one byte per gap that
+    the running total never counted, so the result came back at 32769 for a
+    32768 budget as soon as two chunks were kept.
+
+    #121 replaced the join with pi's ``<project_context>`` fence, which moves
+    the same hazard rather than removing it — the wrapper and the per-file
+    ``<project_instructions path="...">`` tags are now the uncounted bytes, and
+    they are BIGGER than the separators were. The assertion is unchanged
+    because it was never really about ``join``: every byte the function returns
+    is a byte that reaches the model, so the cap must cover all of them.
     """
 
     from aelix_coding_agent.cli.agent_context import _MAX_CONTEXT_BYTES
@@ -1275,6 +1305,13 @@ def test_the_cap_counts_the_join_separators(tmp_path) -> None:
 
     assert "NEAREST" in context
     assert len(context.encode("utf-8")) <= _MAX_CONTEXT_BYTES
+    # More than one file survives here (that is what made the old separator bug
+    # observable), so the wrapper is charged exactly once and each kept file
+    # carries its own tag pair.
+    assert context.count("<project_context>") == 1
+    assert context.count("<project_instructions ") == context.count(
+        "</project_instructions>"
+    ) >= 2
 
 
 def test_a_dropped_context_file_is_reported(tmp_path, capsys) -> None:

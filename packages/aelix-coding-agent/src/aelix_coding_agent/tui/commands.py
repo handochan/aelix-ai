@@ -984,6 +984,36 @@ async def _confirm_project_agent_for_run(
 _CONTROL_KILL = dict.fromkeys([*range(0x20), 0x7F, *range(0x80, 0xA0)])
 
 
+def sanitize_for_terminal(value: str) -> str:
+    """De-fang one attacker-influenceable string before it is RENDERED (issue #121).
+
+    :data:`_CONTROL_KILL` with no width bound and no truncation marker — for
+    values that must survive intact, such as a path. :func:`_sanitize_child_field`
+    is the variant for grid CELLS, where a width budget also has to be enforced.
+
+    PUBLIC because the startup banner needs it: ``shell._build_banner`` renders
+    the session ``cwd`` verbatim, and POSIX permits every byte but ``/`` and NUL
+    in a path component, so a directory that arrives with a ``git clone`` steers
+    the terminal. Rich is NOT a defence — measured by rendering the banner over a
+    directory named ``proj\\x1b]0;pwned\\x07\\x1b[31mZ`` through a ``no_color``
+    console::
+
+        cwd:  /tmp/…/proj\\x1b]0;pwned\\x1b[31mZ
+
+    Rich dropped the BEL and passed the ESC through, so what reached the terminal
+    was an unterminated OSC title-set sequence — which then eats every byte
+    printed after it until some terminator turns up.
+
+    DELETION, not escaping, matching :func:`_sanitize_child_field` and
+    ``consent._sanitize_field``: what survives ``\\x1b[8m`` is the inert literal
+    ``[8m``, which renders as itself and reads as visibly odd. The table also
+    covers ``\\n`` and ``\\t``, so a path carrying a newline cannot break a
+    one-row panel layout either.
+    """
+
+    return value.translate(_CONTROL_KILL)
+
+
 def _sanitize_child_field(value: str, width: int = 40) -> str:
     """Bound and de-fang one CHILD-AUTHORED string for the result grid.
 
@@ -1734,6 +1764,15 @@ def _estimate_context_categories(ctx: CommandContext, window: int) -> list[str]:
     unreachable. Returns ``[]`` when no category has a non-trivial source (the
     caller then skips the section entirely). Never raises — a gather failure
     degrades to no section, never crashes the ``/context`` handler.
+
+    THE CATEGORIES ARE DISJOINT (issue #121). ``System prompt`` and ``Memory
+    files`` are two slices of ONE string, split by
+    :func:`~aelix_coding_agent.tui.project_context.split_project_context`, not
+    two independently gathered sources. They used to be the latter, and the
+    section then double-counted the project context under every session that had
+    one and invented it under ``-nc``; see the comment at the memory gather for
+    the measurements. Anything added here that also lands in the system prompt
+    has to be subtracted from it the same way.
     """
 
     harness = ctx.harness
@@ -1765,14 +1804,37 @@ def _estimate_context_categories(ctx: CommandContext, window: int) -> list[str]:
     with contextlib.suppress(Exception):
         messages = list(getattr(harness, "messages", []) or [])
 
-    # Memory — the loaded AGENTS.md text for this cwd (may be absent → omitted).
+    # Memory — the project context that is REALLY in the prompt read above, and
+    # SPLIT OUT of it so the two rows are disjoint.
+    #
+    # This used to call ``discover_context_files(ctx.cwd)`` directly, i.e. it
+    # asked the FILESYSTEM a question only the assembled prompt can answer, and
+    # was wrong in both directions at once. Measured on the pre-change build,
+    # one 7175-char AGENTS.md (1794 estimated tokens), window 200000:
+    #
+    #   without -nc : System prompt 2.6K + Memory files 1.8K  <- 1794 counted TWICE
+    #   with    -nc : System prompt 837  + Memory files 1.8K  <- 1794 PHANTOM
+    #
+    # The double count was the same text twice over: ``cli/entry.py:1092-1094``
+    # appends the chunk to ``append_system_prompt`` and ``harness/core.py:572-576``
+    # joins it INTO the very string ``system_prompt`` already holds. The phantom
+    # was that discovery never sees ``--no-context-files`` — that gate sits one
+    # level up, at ``cli/entry.py:1091``.
+    #
+    # :func:`split_project_context` answers from the assembled prompt instead,
+    # and by CONTAINMENT rather than by recognising a header (its module
+    # docstring says why: the chunk's shape changed inside this same issue).
+    # Guarded like every other seam here — a failure omits the row and leaves the
+    # full prompt charged to ``System prompt``, which is an understatement of one
+    # row rather than either defect above.
     memory_text: str | None = None
     with contextlib.suppress(Exception):
-        from aelix_coding_agent.cli.agent_context import (  # noqa: PLC0415
-            discover_context_files,
+        from aelix_coding_agent.tui.project_context import (  # noqa: PLC0415
+            split_project_context,
         )
 
-        memory_text = discover_context_files(ctx.cwd) or None
+        system_prompt, memory = split_project_context(system_prompt, ctx.cwd)
+        memory_text = memory or None
 
     try:
         from aelix_coding_agent.tui.context_usage import (  # noqa: PLC0415

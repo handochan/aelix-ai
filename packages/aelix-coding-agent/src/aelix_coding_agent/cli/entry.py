@@ -1023,6 +1023,14 @@ def _resolve_append_chunks(
 ) -> list[str]:
     """The APPEND chunks for one harness build (ADR-0196).
 
+    ORDER, which is part of the contract and pinned by tests:
+    ``--append-system-prompt`` chunks (profile body first, per
+    ``apply_profile_to_args``) → ``AGENTS.md`` project context → skills
+    catalog. That is pi's order (``system-prompt.ts``, both branches) and it
+    was corrected to match in #121 / ADR-0217 — see the comment on the
+    assembly below for the line numbers and for why the old
+    context-outranks-the-user order was a real defect and not a style choice.
+
     Companion to :func:`_resolve_system_prompt`, lifted from the same function
     for the same reason. Returns a FRESH list every call and never mutates
     ``parsed.append_system_prompt`` — which is what lets ``_apply_prompt_files``
@@ -1060,20 +1068,34 @@ def _resolve_append_chunks(
     wants and gets without editing.
     """
 
-    # Auto-discovered AGENTS.md project context (Pi ``--no-context-files`` gate),
-    # then the explicit ``--append-system-prompt`` chunks. The harness joins all
-    # of these onto the base system prompt with ``"\n\n"`` at ``__init__`` time.
-    append: list[str] = []
+    # PI'S ORDER (#121 forward-sync): base prompt → ``appendSystemPrompt`` →
+    # project context → skills catalog. Read off ``system-prompt.ts`` on pi
+    # main, where BOTH branches agree — the ``customPrompt`` branch at
+    # ``:49-67`` (append ``:49-51``, context ``:54-61``, skills ``:65-67``) and
+    # the default branch at ``:140-157`` (append ``:140-142``, context
+    # ``:145-152``, skills ``:155-157``).
+    #
+    # Aelix used to return ``[context, *user_appends, catalog]``. That is not a
+    # cosmetic divergence: an ``AGENTS.md`` arrives with a ``git clone`` and is
+    # injected TRUST-INDEPENDENTLY by decision (#121, ADR-0217), so putting it
+    # first made an untrusted repo's text outrank the chunk the user typed on
+    # their own command line. Between those two the user's
+    # ``--append-system-prompt`` is the one that should sit later. Pi already
+    # had it right.
+    #
+    # The harness joins all of these onto the base system prompt with ``"\n\n"``
+    # at ``__init__`` time (``harness/core.py:572-573``). A FRESH list, never
+    # ``parsed.append_system_prompt`` itself — see the docstring.
+    append: list[str] = list(parsed.append_system_prompt)
+    # Auto-discovered AGENTS.md project context (Pi ``--no-context-files`` gate).
     if not parsed.no_context_files:
         context = discover_context_files(cwd)
         if context:
             append.append(context)
-    append.extend(parsed.append_system_prompt)
-    # Pi ordering (``system-prompt.ts:53-77`` and ``:155-170``): skills land
-    # AFTER the context files, last of the appended sections. Pi appends it
-    # under a custom ``--system-prompt`` too — measured — so this is
-    # deliberately NOT inside ``build_system_prompt`` where the extension
-    # signpost lives and a custom prompt drops it.
+    # Skills land LAST of the appended sections. Pi appends the catalog under a
+    # custom ``--system-prompt`` too — measured — so this is deliberately NOT
+    # inside ``build_system_prompt`` where the extension signpost lives and a
+    # custom prompt drops it.
     if skills and skills_catalog_visible(
         no_tools=parsed.no_tools,
         no_builtin_tools=parsed.no_builtin_tools,
@@ -1936,6 +1958,20 @@ async def _async_main(argv: list[str]) -> int:
                 agent_dir=get_agent_dir(),
                 cwd=cwd,
                 project_trusted=project_trusted,
+                # #121 / ADR-0217: a parent launched with ``--no-context-files``
+                # must not spawn children that re-discover AGENTS.md for
+                # themselves. A flag the user typed that the delegation silently
+                # drops is the hole this closes.
+                #
+                # A LAMBDA, NOT ``parsed.no_context_files``. ``/agents use``
+                # rewrites this same ``Args`` OBJECT in place
+                # (``agents/service.py`` ``__dict__.update`` → the profile
+                # overlay latches ``no_context_files=True``), so a bool captured
+                # here is stale in BOTH directions — it would miss a profile that
+                # turns the flag on, and keep it on after the profile is reset.
+                # Measured on one object: same ``id()``, False→True on the
+                # overlay and True→False on the next reset.
+                no_context_files=lambda: parsed.no_context_files,
             )
 
     # === Agent profile identity (ADR-0196) ===================================

@@ -223,6 +223,17 @@ class SpawnPlan:
     """The parent's LIVE grant (``ExtensionContext.get_active_tools``). ``None``
     means "the parent holds every built-in", which is what the harness's own
     ``None`` sentinel means before it is materialised."""
+    parent_context_files: bool = True
+    """Does the PARENT load auto-discovered ``AGENTS.md`` project context?
+
+    ``False`` is the parent's ``--no-context-files`` / ``-nc``, read live off
+    :attr:`~aelix_agents.runtime.SubagentHost.context_files`. Consumed by
+    :func:`narrow_context_files`, which is where the reasoning lives.
+
+    Defaults to ``True`` — every child before this field existed loaded context
+    files unconditionally, measured: ``build_child_argv`` and
+    ``build_rpc_child_argv`` emitted no ``--no-context-files`` for any parent
+    state, and ``no_context_files`` appeared nowhere in this package."""
     timeout_ms: int | None = None
     output_cap: int | None = None
 
@@ -344,6 +355,54 @@ def narrow_tools(
     )
 
 
+def narrow_context_files(
+    profile: AgentProfile, parent_context_files: bool
+) -> AgentProfile:
+    """Clamp the child's ``AGENTS.md`` context to the parent's — the ``-nc`` inherit.
+
+    Structural, exactly like :func:`narrow_tools`: the child is LAUNCHED with
+    the result, so a parent started with ``--no-context-files`` / ``-nc`` cannot
+    be overruled by the child's profile or by the child's model.
+
+    ONE DIRECTION ONLY. ``parent_context_files=True`` returns the profile
+    untouched, so a profile's own ``context_files: false`` still wins — a parent
+    that loads project context does not force it onto a child that declined.
+
+    THE BUG THIS CLOSES. Before it, ``no_context_files`` appeared nowhere in
+    this package and both argv builders emitted no ``--no-context-files`` for
+    any parent state (measured, both channels). So a user who typed ``-nc``
+    precisely because they did not want a cloned repo's ``AGENTS.md`` steering
+    the agent got exactly that the moment the agent delegated — silently, and
+    from a child they never saw the command line of.
+
+    WHY HERE RATHER THAN AS A FLAG APPENDED IN :func:`build_child_argv`:
+    ``resolver.profile_to_flags`` already owns the single place a profile
+    becomes ``--no-context-files`` (``resolver.py:274-275``), and that emission
+    table is what keeps the argv channel and the in-process overlay from
+    drifting. A second emission site would also put the flag on the argv TWICE
+    whenever the profile itself declared ``context_files: false``.
+
+    WHY NOT ALONGSIDE :func:`~aelix_agents.trust.child_trust_argv`: that
+    function is the project-TRUST mechanism, and #121 decided context-file
+    injection is trust-INDEPENDENT (pi ``docs/security.md:27``; pi added
+    context files to its own trust manager at ``89a9220`` and removed them
+    again four days later at ``5cb4f59``). Hanging ``-nc`` off it would
+    re-couple exactly what that decision separated, and it would derive the
+    answer from the child's cwd — which is not where the user's flag lives.
+    This is parent-AUTHORITY inheritance, the same shape as ``parent_tools``
+    and ``parent_model``, and it belongs on that path.
+
+    NOT reflected in the ``/agents show`` dry run, which renders the UN-narrowed
+    profile. Pre-existing and shared with :func:`narrow_tools` — the dry run has
+    no live parent grant to intersect against either — not something introduced
+    here.
+    """
+
+    if parent_context_files:
+        return profile
+    return dataclasses.replace(profile, context_files=False)
+
+
 def resolve_child_cwd(cwd: str | None, parent_cwd: str) -> str:
     """Contain the child's working directory inside the parent's — §(l).
 
@@ -433,6 +492,11 @@ def build_child_argv(
     table owns that rule). Without it a parent launched with ``--model`` on argv
     spawns a child with no model at all: the flag is run scope, the bundled
     profiles declare none, and nothing in between persists it.
+
+    ``--no-context-files`` does NOT appear here even though the parent's ``-nc``
+    is inherited (#121): it rides in on ``child_profile.context_files``, which
+    :func:`narrow_context_files` clamps before the argv is built, so
+    ``resolver.profile_to_flags`` stays the one place that emits it.
     """
 
     return [
@@ -815,6 +879,12 @@ class PrintChannel:
         )
         profile = plan.resolved.profile
         narrowing = narrow_tools(profile, plan.parent_tools)
+        # Both narrowings, then the argv. ``narrow_tools`` owns ``dropped``
+        # (the envelope reports it); this one has nothing to report because a
+        # parent's ``-nc`` is not a request the child made and lost.
+        child_profile = narrow_context_files(
+            narrowing.profile, plan.parent_context_files
+        )
         state = row.stream
         assembler = LineAssembler()
         ring = StderrRing()
@@ -867,7 +937,7 @@ class PrintChannel:
                 row.state = "stopped"
                 return _envelope(outcome="aborted", exit_code=None)
             argv = self._argv_builder(
-                narrowing.profile,
+                child_profile,
                 prompt_path=str(row.prompt.path),
                 task=plan.task,
                 permission_mode=plan.permission_mode,
@@ -1173,6 +1243,7 @@ __all__ = [
     "apply_cost_fallback",
     "build_child_argv",
     "build_child_env",
+    "narrow_context_files",
     "narrow_tools",
     "pipe_holder_pids",
     "resolve_child_cwd",

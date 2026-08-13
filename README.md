@@ -209,6 +209,14 @@ aelix extension trust add <key>                                 # trust a verifi
 aelix extension install <target> --require-signature            # fail-closed provenance gate
 ```
 
+One input is deliberately **not** gated: an `AGENTS.md` found anywhere between your working
+directory and the filesystem root is read into the system prompt whether or not you trusted
+the project, and its text and absolute path then go to whichever model provider you
+configured. `--no-context-files` turns that discovery off. Leaving it ungated follows pi's
+published policy rather than diverging from it —
+[SECURITY.md](SECURITY.md#scope-what-this-project-is) explains what that means in practice,
+and what the flag does *not* cover.
+
 ## Known limitations (beta)
 
 Three things worth knowing before you point Aelix at something that matters.
