@@ -374,3 +374,133 @@ async def test_busy_guard_does_not_trigger_retry_loop() -> None:
     assert ei.value.code == "busy"
     assert events == []
     assert h._retry_attempt == 0
+
+
+# === #147 — the retryable → NON-retryable terminal path =======================
+
+
+async def test_retry_ending_in_a_non_retryable_error_still_emits_end(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#147 — pi emits ``auto_retry_end`` on BOTH terminal paths; aelix had one.
+
+    pi ``agent-session.ts:671-678`` (success) was ported; ``:1088-1096`` (the
+    ``stopReason === "error" && _retryAttempt > 0`` arm) was not. So a retry
+    sequence that engaged and then hit a NON-retryable error emitted a start
+    with no end.
+
+    That silence is load-bearing. ``auto_retry_end`` is the ONLY event
+    ``tui/shell.py::_end_retry_countdown`` listens to, and it is the only line
+    that restores ``out_chrome.on_interrupt`` after
+    ``_start_retry_countdown`` swapped it for a handler calling
+    ``abort_retry()`` — documented "No-op when no retry is in flight". Without
+    the end event, **Esc and Ctrl+C stay wired to a no-op for the rest of the
+    session**, including turns with no retry in them, and the "Retrying (N/M)…"
+    widget never clears.
+
+    The sequence is mundane, which is why it matters: a rate limit (retryable,
+    engages the loop) followed by an expired token (not retryable, breaks it).
+    Measured before the fix: 1 start, 0 ends, ``_retry_attempt`` left at 1.
+    """
+
+    monkeypatch.setattr("aelix_agent_core.harness.core._AUTO_RETRY_BASE_DELAY_MS", 1)
+    h = _build_harness()
+    events = await _capture_events(h)
+
+    calls: list[None] = []
+
+    async def _fake_run(prompts: Any, *, system_prompt: Any = None) -> list[Any]:
+        calls.append(None)
+        h._state.messages.extend(prompts)
+        if len(calls) == 1:
+            h._state.messages.append(_err("rate limit exceeded"))  # retryable
+        else:
+            h._state.messages.append(_err("invalid API key"))  # NOT retryable
+        return list(h._state.messages)
+
+    h._run = _fake_run  # type: ignore[method-assign]
+    await h.prompt("go")
+
+    starts = [e for e in events if isinstance(e, AutoRetryStartEvent)]
+    ends = [e for e in events if isinstance(e, AutoRetryEndEvent)]
+
+    assert len(calls) == 2, "precondition: the retry actually engaged"
+    assert len(starts) == 1
+    # THE PIN — one start must be answered by exactly one end.
+    assert len(ends) == 1
+    assert ends[0].success is False
+    assert ends[0].attempt == 1
+    assert "invalid API key" in (ends[0].final_error or "")
+    # The counter must not leak into the next turn.
+    assert h._retry_attempt == 0
+
+
+async def test_a_non_retryable_error_without_a_prior_retry_emits_nothing() -> None:
+    """The other half: no retry engaged ⇒ no end event to answer.
+
+    Without this, a fix that emitted ``auto_retry_end`` on every terminal error
+    would pass the test above while committing a spurious "✖ Retry failed" line
+    on ordinary failures. ``_end_retry_countdown`` guards against that too, but
+    the kernel should not be emitting the event in the first place.
+    """
+
+    h = _build_harness()
+    events = await _capture_events(h)
+
+    async def _fake_run(prompts: Any, *, system_prompt: Any = None) -> list[Any]:
+        h._state.messages.extend(prompts)
+        h._state.messages.append(_err("invalid API key"))
+        return list(h._state.messages)
+
+    h._run = _fake_run  # type: ignore[method-assign]
+    await h.prompt("go")
+
+    assert [e for e in events if isinstance(e, AutoRetryStartEvent)] == []
+    assert [e for e in events if isinstance(e, AutoRetryEndEvent)] == []
+    assert h._retry_attempt == 0
+
+
+async def test_an_aborted_retry_is_not_reported_as_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A user who interrupts a retry must not be told it succeeded.
+
+    The terminal-success arm compared ``stop_reason != "error"``, and an
+    aborted turn's assistant carries ``stop_reason == "aborted"`` — which is
+    not ``"error"``. So the end event claimed ``success=True`` and the TUI
+    committed a green "✓ Retry succeeded (attempt 1)" immediately under the
+    user's own "✖ Operation aborted".
+
+    Observed in the live tmux gate for #147, which is the only reason it was
+    caught: the comparison predates #147, but the fix is what made this path
+    reachable often enough to see.
+    """
+
+    monkeypatch.setattr("aelix_agent_core.harness.core._AUTO_RETRY_BASE_DELAY_MS", 1)
+    h = _build_harness()
+    events = await _capture_events(h)
+
+    calls: list[None] = []
+
+    async def _fake_run(prompts: Any, *, system_prompt: Any = None) -> list[Any]:
+        calls.append(None)
+        h._state.messages.extend(prompts)
+        if len(calls) == 1:
+            h._state.messages.append(_err("rate limit exceeded"))  # retryable
+        else:
+            h._state.messages.append(
+                AssistantMessage(
+                    content=[TextContent(text="")],
+                    stop_reason="aborted",
+                    error_message=None,
+                )
+            )
+        return list(h._state.messages)
+
+    h._run = _fake_run  # type: ignore[method-assign]
+    await h.prompt("go")
+
+    ends = [e for e in events if isinstance(e, AutoRetryEndEvent)]
+    assert len(ends) == 1, "the sequence must still close out so the TUI recovers"
+    assert ends[0].success is False, "an aborted retry is not a successful one"
+    assert h._retry_attempt == 0

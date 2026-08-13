@@ -1312,24 +1312,66 @@ class AgentHarness:
                     ), "retry continue requires a pending user message in state"
                     result = await self._run([], system_prompt=system_prompt)
 
-                # pi ``agent-session.ts:561-567`` — reset retry counter on a
-                # terminal-success assistant; emit ``auto_retry_end {success: True}``.
+                # Reset the retry counter and close out the retry sequence. pi
+                # emits ``auto_retry_end`` on BOTH terminal paths and aelix had
+                # ported only the first (#147):
+                #
+                #   success  — pi ``agent-session.ts:671-678``
+                #   error    — pi ``agent-session.ts:1088-1096``  ← was MISSING
+                #
+                # The missing arm is not cosmetic. ``auto_retry_end`` is the only
+                # signal the TUI restores its interrupt handler on
+                # (``tui/shell.py`` ``_end_retry_countdown``), because
+                # ``_start_retry_countdown`` swaps ``on_interrupt`` to one that
+                # calls ``abort_retry()`` — a documented no-op once no retry is in
+                # flight. So a retry sequence that ended on a NON-retryable error
+                # left Esc and Ctrl+C wired to a no-op **for the rest of the
+                # session**, including later turns containing no retry at all, and
+                # left the "Retrying (N/M)…" widget on screen.
+                #
+                # The triggering sequence is mundane, not exotic: a rate limit
+                # (retryable, so the loop engages) followed by an expired token
+                # (not retryable, so the loop breaks). Measured before this arm
+                # existed: 1 ``auto_retry_start``, 0 ``auto_retry_end``,
+                # ``_retry_attempt`` left at 1 — which also made the NEXT turn's
+                # first retryable error resume mid-sequence instead of at 1.
                 if self._retry_attempt > 0:
                     terminal_assistant = None
                     for msg in reversed(self._state.messages):
                         if isinstance(msg, AssistantMessage):
                             terminal_assistant = msg
                             break
-                    if (
-                        terminal_assistant is not None
-                        and terminal_assistant.stop_reason != "error"
-                    ):
+                    if terminal_assistant is not None:
                         from aelix_agent_core.types import AutoRetryEndEvent
 
-                        success_attempt = self._retry_attempt
+                        final_attempt = self._retry_attempt
+                        # ``"aborted"`` is NOT a success. The pre-#147 arm used a
+                        # bare ``!= "error"``, so a user who interrupted a retry
+                        # was congratulated with a green "✓ Retry succeeded" —
+                        # observed live in the tmux gate for this very fix. The
+                        # comparison predates #147, but this change is what made
+                        # the path reachable often enough to see, and shipping a
+                        # fix that thanks the user for cancelling would be worse
+                        # than the defect it replaces.
+                        succeeded = terminal_assistant.stop_reason not in (
+                            "error",
+                            "aborted",
+                        )
+                        # Reset BEFORE emitting: a subscriber that prompts again
+                        # synchronously must not observe the stale counter.
                         self._retry_attempt = 0
                         await self._emit_to_subscribers(
-                            AutoRetryEndEvent(success=True, attempt=success_attempt)
+                            AutoRetryEndEvent(
+                                success=succeeded,
+                                attempt=final_attempt,
+                                final_error=(
+                                    None
+                                    if succeeded
+                                    else getattr(
+                                        terminal_assistant, "error_message", None
+                                    )
+                                ),
+                            )
                         )
 
                 # Issue #4 Lane B — overflow-driven compaction recovery. pi

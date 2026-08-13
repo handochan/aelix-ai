@@ -1779,12 +1779,33 @@ async def run_tui(
                 remaining -= step
             if retry_countdown_ref["task"] is not current:
                 return
+            # #147 — the backoff is over, so the retry REQUEST is now in flight
+            # and ``abort_retry()`` has nothing left to cancel: it only wakes the
+            # sleep this loop just finished, and is documented "No-op when no
+            # retry is in flight". Hand the interrupt back to the full-turn
+            # abort, or Esc silently does nothing for the entire duration of that
+            # request — which is exactly when the provider is misbehaving and the
+            # user most wants out. That was the symptom #147 reported: "Working…"
+            # with Ctrl+C and Esc both inert.
+            #
+            # pi has the same gap (``interactive-mode.ts:3345-3350`` swaps
+            # ``onEscape`` for the whole retry lifecycle and restores it only on
+            # ``auto_retry_end``), so this is a deliberate aelix improvement
+            # rather than parity restoration — recorded as such in ADR-0215.
+            #
+            # ``_end_retry_countdown`` restores the same handler idempotently, so
+            # a retry that ends during the countdown is unaffected, and a NEXT
+            # attempt re-swaps it via ``_start_retry_countdown``.
+            out_chrome.on_interrupt = _on_interrupt
             # Pi parity: after the sleep ends the harness immediately re-runs;
-            # leave a "now…" placeholder until ``auto_retry_end`` arrives (or a
-            # new ``auto_retry_start`` for the next attempt overwrites it).
+            # leave a placeholder until ``auto_retry_end`` arrives (or a new
+            # ``auto_retry_start`` for the next attempt overwrites it). The label
+            # says "interrupt" rather than "cancel" because Esc now aborts the
+            # TURN, not the retry — advertising "Esc to cancel" for a key that
+            # did nothing is half of what made this defect so confusing.
             out_chrome.set_widget(
                 _RETRY_WIDGET_KEY,
-                [f"⟳ Retrying ({attempt}/{max_attempts}) now…"],
+                [f"⟳ Retrying ({attempt}/{max_attempts}) now… Esc to interrupt"],
                 above=True,
             )
         except Exception:  # noqa: BLE001 — log + return, never crash the TUI
