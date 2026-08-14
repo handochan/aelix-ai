@@ -1206,6 +1206,29 @@ class AelixChrome:
             self._console.file.write("\x1b[?2026h" if on else "\x1b[?2026l")
             self._console.file.flush()
 
+    @property
+    def scrollback_columns(self) -> int:
+        """Columns the SCROLLBACK console will lay committed output out at.
+
+        Issue #166 — this is a genuinely different number from prompt-toolkit's.
+        Rich's ``Console.size`` consults ``$COLUMNS`` and lets it OVERRIDE the
+        ioctl; prompt-toolkit's vt100 output asks the ioctl only. With an
+        exported ``COLUMNS`` that disagrees with the real terminal (a ``.bashrc``
+        export, ``env COLUMNS=``, ``docker exec -e``, a CI wrapper), the renderer
+        and this console lay out at two different widths in the same frame, and
+        the console re-wraps the renderer's rows into ragged long/short pairs.
+
+        Exposed so callers can take the ``min()`` of the two — the rule
+        ``aelix_agents.consent._terminal_rows`` already settled on for the row
+        axis ("$LINES MAY ONLY MAKE THIS SMALLER", finding F4). Read live, never
+        cached: Rich recomputes its size per access unless a width was injected.
+        """
+
+        try:
+            return int(self._console.width)
+        except Exception:  # noqa: BLE001 — degraded console → "no opinion"
+            return 0
+
     async def print_above(self, renderable: object) -> None:
         """Render ``renderable`` to scrollback ABOVE the pinned chrome."""
 

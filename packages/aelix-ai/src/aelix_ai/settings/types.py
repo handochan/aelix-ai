@@ -203,8 +203,10 @@ PackageSource = str | PackageSourceObject
 # 42 optional fields — every field defaults to ``None`` so unset →
 # ``None`` and getters apply per-method defaults (Pi pattern). Pi's original
 # interface has 33; aelix adds a handful more (e.g. extension_sources,
-# tool_card_max_lines, session_dir, default_project_trust,
+# tool_card_max_lines, render_max_width, session_dir, default_project_trust,
 # hide_compaction_summary, features) — all 42 are covered by SETTINGS_PY_TO_JSON.
+# (The count above read 42 while the dataclass held 41; ``render_max_width``
+# happens to make it true. Recount before trusting it.)
 
 
 @dataclass
@@ -264,6 +266,7 @@ class Settings:
     # tool-card output body (the separate 40-line diff/error cap is unaffected).
     # Clamped to ``[3, 40]`` in the setter; default 12 applied in the getter.
     tool_card_max_lines: int | None = None
+    render_max_width: int | None = None
     show_hardware_cursor: bool | None = None
     markdown: MarkdownSettings | None = None
     warnings: WarningSettings | None = None
@@ -355,6 +358,7 @@ SETTINGS_PY_TO_JSON: Final[dict[str, str]] = {
     "editor_padding_x": "editorPaddingX",
     "autocomplete_max_visible": "autocompleteMaxVisible",
     "tool_card_max_lines": "toolCardMaxLines",
+    "render_max_width": "renderMaxWidth",
     "show_hardware_cursor": "showHardwareCursor",
     "markdown": "markdown",
     "warnings": "warnings",

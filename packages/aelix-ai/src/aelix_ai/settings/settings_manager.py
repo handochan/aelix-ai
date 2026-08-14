@@ -1730,6 +1730,42 @@ class SettingsManager:
         self._mark_modified("tool_card_max_lines")
         self._save()
 
+    # --- renderMaxWidth (aelix-original, issue #166) ---
+    def get_render_max_width(self) -> int | None:
+        """Ceiling on TUI render width, in terminal cells. ``None`` = built-in.
+
+        Aelix-original (no Pi analogue). A CEILING, never a fixed width: the
+        renderer takes ``min(terminal_columns, this)``, so lowering it narrows
+        the measure on a wide terminal and it has no effect on a narrow one.
+
+        ``None`` deliberately means "use ``tui.width``'s default" rather than
+        storing a copy of that number here — the default lives in exactly one
+        place, so the two cannot drift.
+
+        Clamped on read as well as on write: a hand-edited settings.json can
+        bypass the setter, and the renderer has no clamp of its own.
+        """
+
+        v = self._settings.render_max_width
+        if not isinstance(v, (int, float)):
+            return None
+        # ``math.floor(nan)`` raises ValueError and ``math.floor(inf)`` raises
+        # OverflowError, and a hand-edited settings.json can hold either
+        # (``{"renderMaxWidth": 1e400}`` parses as inf). The exception would
+        # escape into /settings and the startup seed, so a non-finite value is
+        # treated as unset rather than as a number.
+        if isinstance(v, float) and not math.isfinite(v):
+            return None
+        return max(60, min(240, math.floor(v)))
+
+    def set_render_max_width(self, max_width: int) -> None:
+        """Set the render-width ceiling (issue #166). Clamps to ``[60, 240]``."""
+
+        clamped = max(60, min(240, math.floor(max_width)))
+        self._global_settings.render_max_width = clamped
+        self._mark_modified("render_max_width")
+        self._save()
+
     # --- markdown.codeBlockIndent (Pi `:1054-1056`) ---
     def get_code_block_indent(self) -> str:
         """Pi parity: ``settings-manager.ts::getCodeBlockIndent`` (line 1054-1056). Default: "  " (two spaces)."""

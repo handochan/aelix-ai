@@ -90,9 +90,7 @@ def _join_text(content: Any) -> str:
 
     if not isinstance(content, (list, tuple)):
         return ""
-    return "\n".join(
-        _block_text(b) for b in content if _block_type(b) == "text"
-    )
+    return "\n".join(_block_text(b) for b in content if _block_type(b) == "text")
 
 
 def component_to_text(component: Any, width: int) -> Text:
@@ -117,7 +115,30 @@ def _compact_args(args: dict[str, Any]) -> str:
         return ""
     items = ", ".join(f"{k}={v!r}" for k, v in args.items())
     items = items.replace("\n", " ")
-    return items if len(items) <= 80 else items[:77] + "…"
+    return _cap_cells(items, _HEADER_MAX_CELLS)
+
+
+#: Tool-header summary cap, in terminal CELLS. Deliberately NOT derived from the
+#: live width: the header is committed as a bare Rich ``Text`` to the adaptive
+#: scrollback console, which soft-wraps it, so this is a density choice rather
+#: than an overflow guard.
+_HEADER_MAX_CELLS = 80
+
+
+def _cap_cells(text: str, limit: int) -> str:
+    """Cap *text* at *limit* terminal CELLS, appending ``…`` when it is cut.
+
+    Cells, not codepoints. These two headers measured with ``len()`` until issue
+    #166: a Hangul or emoji summary passing an 80-CODEPOINT check is up to 160
+    cells, so it silently ate two or three scrollback rows where an ASCII one
+    took a single row. The adaptive console soft-wrapped it, which is why the
+    unit mismatch was invisible — and why leaving it in place while the width
+    became dynamic would have made the CJK case drift further, not less.
+    ``_truncate_lines`` below has always measured cells; this makes the file
+    agree with itself.
+    """
+
+    return text if cell_len(text) <= limit else set_cell_size(text, limit - 1) + "…"
 
 
 def _truncate_lines(
@@ -173,7 +194,7 @@ def _tool_header(tool_name: str, args: dict[str, Any]) -> str:
         command = args.get("command")
         if isinstance(command, str) and command:
             one_line = command.replace("\n", " ")
-            return one_line if len(one_line) <= 80 else one_line[:77] + "…"
+            return _cap_cells(one_line, _HEADER_MAX_CELLS)
     return _compact_args(args)
 
 
@@ -198,13 +219,19 @@ def _looks_like_diff(text: str) -> bool:
     return _HUNK_HEADER_RE.search(text) is not None
 
 
-def _render_diff(text: str, *, max_lines: int = 40, expand_id: int | None = None) -> Group:
+def _render_diff(
+    text: str,
+    *,
+    max_lines: int = 40,
+    expand_id: int | None = None,
+    max_line_width: int = 76,
+) -> Group:
     """Colourise a unified diff: +green / -red / @@cyan / ---|+++ bold.
 
     ``expand_id`` (when the diff is truncated) is appended to the elision footer
     as a ``/expand N`` hint so the user can recover the full diff (ADR-0121).
     """
-    kept, hidden = _truncate_lines(text, max_lines=max_lines)
+    kept, hidden = _truncate_lines(text, max_lines=max_lines, max_line_width=max_line_width)
     rows: list[Text] = []
     for line in kept:
         if line.startswith(("+++", "---")):
@@ -298,11 +325,18 @@ class EventRenderer:
         *,
         commit: Callable[[object], None],
         set_tail: Callable[[str], None],
-        width: int = 80,
+        width: int | Callable[[], int] = 80,
     ) -> None:
         self._commit = commit
         self._set_tail = set_tail
-        self._width = width
+        # Issue #166 — a CALLABLE re-measures the terminal; an int keeps the
+        # historical fixed behaviour for the many tests that pass one. The
+        # resolution point is ``_new_stream``, which already runs once per
+        # assistant message, so a resize is picked up from the next message on.
+        # Committed scrollback is never reflowed: those bytes belong to the host
+        # terminal (the app is ``full_screen=False``), which is the same
+        # guarantee every other terminal program offers.
+        self._width_of: Callable[[], int] = width if callable(width) else (lambda: width)
         self._text_stream: StreamRenderer | None = None
         self._text_accum: str = ""
         self._thinking_accum: str = ""
@@ -427,11 +461,38 @@ class EventRenderer:
 
     # === helpers ===========================================================
 
+    def _card_line_width(self) -> int:
+        """Cells a tool-card / diff line may occupy at the current width.
+
+        Four cells are reserved: two for the ``│ `` gutter each row is built with
+        below, and two of slack so a cell-width measurement never lands exactly
+        on the terminal edge.
+
+        The floor is the HISTORICAL 76, and that is the important part. Cards and
+        the approval dialog overflow differently, so the same rule does not apply
+        to both:
+
+        * the dialog is a prompt-toolkit float with ``wrap_lines=False`` — a row
+          wider than the screen is CLIPPED, losing content silently, so its width
+          must never exceed the terminal;
+        * a card row is committed as a bare Rich ``Text`` to the ADAPTIVE
+          scrollback console, which WRAPS it. Exceeding the terminal costs a
+          second screen row; it loses nothing.
+
+        Deriving this cap from the terminal in both directions therefore made
+        narrow terminals strictly worse than before. Measured on a 60-column
+        terminal with a 63-cell tool-output line: at the old fixed 76 the line
+        survived and the console wrapped it, while ``60 - 4 = 56`` cut it to
+        ``...T…`` — output DELETED that main displayed. Only widen.
+        """
+
+        return max(76, self._width_of() - 4)
+
     def _new_stream(self) -> StreamRenderer:
         return StreamRenderer(
             commit=lambda ansi: self._commit(Text.from_ansi(ansi)),
             set_tail=self._set_tail,
-            width=self._width,
+            width=self._width_of(),
         )
 
     def _reset_message_state(self) -> None:
@@ -579,26 +640,24 @@ class EventRenderer:
         if not is_error and tool_name == "edit":
             diff_text = getattr(getattr(result, "details", None), "diff", "")
             if isinstance(diff_text, str) and diff_text.strip():
-                _, diff_hidden = _truncate_lines(diff_text, max_lines=40)
-                expand_id = (
-                    self._store_expandable(diff_text) if diff_hidden > 0 else None
-                )
-                diff_group = _render_diff(diff_text, expand_id=expand_id)
+                cap = self._card_line_width()
+                _, diff_hidden = _truncate_lines(diff_text, max_lines=40, max_line_width=cap)
+                expand_id = self._store_expandable(diff_text) if diff_hidden > 0 else None
+                diff_group = _render_diff(diff_text, expand_id=expand_id, max_line_width=cap)
                 self._commit(Group(Text(text, style="green"), *diff_group.renderables))
                 return
         # §C (ADR-0116) — diff-shaped tool output (edit/write difflib, or a
         # bash `git diff`) renders with +/- colour instead of flat dim text.
         # Errors keep the red card below (a failed edit isn't a diff to review).
         if not is_error and _looks_like_diff(text):
-            _, diff_hidden = _truncate_lines(text, max_lines=40)
+            cap = self._card_line_width()
+            _, diff_hidden = _truncate_lines(text, max_lines=40, max_line_width=cap)
             expand_id = self._store_expandable(text) if diff_hidden > 0 else None
-            diff_group = _render_diff(text, expand_id=expand_id)
+            diff_group = _render_diff(text, expand_id=expand_id, max_line_width=cap)
             if exit_code is not None and exit_code != 0:
                 # Preserve the bash exit footer for diff-shaped output that
                 # still reports a non-zero exit (e.g. `git diff --exit-code`).
-                self._commit(
-                    Group(*diff_group.renderables, Text(f"exit {exit_code}", style="red"))
-                )
+                self._commit(Group(*diff_group.renderables, Text(f"exit {exit_code}", style="red")))
             else:
                 self._commit(diff_group)
             return
@@ -609,15 +668,15 @@ class EventRenderer:
         # tail (the exception type/message) lives at the bottom — so give errors a
         # higher cap to keep that visible (full detail still via a future /expand).
         kept, hidden = _truncate_lines(
-            text, max_lines=40 if is_error else self.tool_card_max_lines
+            text,
+            max_lines=40 if is_error else self.tool_card_max_lines,
+            max_line_width=self._card_line_width(),
         )
         body_style = "red" if is_error else "dim"
         rows: list[Text] = [Text(f"│ {line}", style=body_style) for line in kept]
         if hidden > 0:
             expand_id = self._store_expandable(text)
-            rows.append(
-                Text(f"│ … (+{hidden} more lines · /expand {expand_id})", style="dim")
-            )
+            rows.append(Text(f"│ … (+{hidden} more lines · /expand {expand_id})", style="dim"))
         if exit_code is not None and exit_code != 0:
             rows.append(Text(f"│ exit {exit_code}", style="red"))
         self._commit(Group(*rows))
@@ -684,9 +743,7 @@ class EventRenderer:
                         COMPACTION_SUMMARY_PREFIX,
                     )
 
-                    if self.hide_compaction_summary and text.startswith(
-                        COMPACTION_SUMMARY_PREFIX
-                    ):
+                    if self.hide_compaction_summary and text.startswith(COMPACTION_SUMMARY_PREFIX):
                         self._commit(
                             Text(
                                 "⋯ (context compacted — summary hidden)",

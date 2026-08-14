@@ -223,12 +223,18 @@ def build_approval_view(
         path = _path(request.args)
         diff_text = _synth_write_diff(path, _content(request.args))
         title = f"Create/overwrite {path or '(unknown path)'}?"
-        body = Group(Text(f"Create/overwrite {path}", style="bold"), _safe_diff(rd, diff_text, max_lines))
+        body = Group(
+            Text(f"Create/overwrite {path}", style="bold"),
+            _safe_diff(rd, diff_text, max_lines, _panel_content_cells(width)),
+        )
     elif request.kind == "edit":
         path = _path(request.args)
         diff_text = _synth_edit_diff(request.args)
         title = f"Edit {path or '(unknown path)'}?"
-        body = Group(Text(f"Edit {path}", style="bold"), _safe_diff(rd, diff_text, max_lines))
+        body = Group(
+            Text(f"Edit {path}", style="bold"),
+            _safe_diff(rd, diff_text, max_lines, _panel_content_cells(width)),
+        )
     else:
         title = f"Allow {request.tool_name}?"
         summary = ", ".join(f"{k}={v!r}" for k, v in list(request.args.items())[:6])
@@ -237,13 +243,45 @@ def build_approval_view(
     return _panel_to_ansi(title, body, width)
 
 
-def _safe_diff(render_diff: Callable[..., Any], diff_text: str, max_lines: int) -> Any:
+#: A Rich ``Panel`` costs 4 cells per row: two border columns and two of default
+#: padding. MEASURED, not assumed — a Panel of width 60/80/120 yields 56/76/116
+#: content cells. Note ``80 - 4 == 76``, which is where ``_render_diff``'s
+#: historical default came from; deriving it reproduces the old value exactly at
+#: the old width and only widens beyond it.
+_PANEL_CHROME_CELLS = 4
+
+
+def _panel_content_cells(width: int) -> int:
+    """Cells a diff row may occupy inside the dialog's Panel at *width*."""
+
+    return max(8, width - _PANEL_CHROME_CELLS)
+
+
+def _safe_diff(
+    render_diff: Callable[..., Any],
+    diff_text: str,
+    max_lines: int,
+    max_line_width: int,
+) -> Any:
+    """Render *diff_text* into the dialog body, capped to *max_line_width* cells.
+
+    Issue #166 — ``max_line_width`` is threaded here for the same reason it is
+    threaded at ``render.py``'s three call sites: without it ``_render_diff``
+    falls back to its 76-cell module default, so on a 120-column terminal the
+    write/edit approval body was still cut at 76 with an ellipsis while the bash
+    approval showed its command in full. The prompt asking permission to MUTATE
+    A FILE was the one still hiding what it was asking about.
+
+    The fallback path deliberately caps too: a ``render_diff`` that raises used
+    to return the diff verbatim, which is unbounded.
+    """
+
     from rich.text import Text  # noqa: PLC0415
 
     if not diff_text:
         return Text("(no changes to preview)", style="dim")
     try:
-        return render_diff(diff_text, max_lines=max_lines)
+        return render_diff(diff_text, max_lines=max_lines, max_line_width=max_line_width)
     except Exception:  # noqa: BLE001 — never let a diff render break the prompt
         return Text(diff_text)
 
@@ -271,7 +309,7 @@ async def run_approval_dialog(
     show_modal: Callable[..., Awaitable[Any]],
     chrome: Any,
     render_diff: Callable[..., Any] | None = None,
-    width: int = _RENDER_WIDTH,
+    width: int | Callable[[], int] = _RENDER_WIDTH,
 ) -> ApprovalDecision:
     """Drive the approval dialog and return the chosen :class:`ApprovalDecision`.
 
@@ -297,20 +335,49 @@ async def run_approval_dialog(
     from prompt_toolkit.layout.controls import FormattedTextControl  # noqa: PLC0415
     from prompt_toolkit.layout.dimension import Dimension  # noqa: PLC0415
 
-    body_lines = build_approval_view(request, render_diff=render_diff, width=width)
+    # Issue #166 — the body is re-rendered when the WIDTH changes, not baked
+    # once. A prompt waits for a human indefinitely, so "the terminal is resized
+    # while it is open" is ordinary, and prompt-toolkit repaints on it
+    # unconditionally (SIGWINCH, plus a polling fallback in
+    # ``Application._poll_output_size`` for terminals that do not deliver it).
+    # The body window is ``wrap_lines=False``, so a row wider than the screen is
+    # CLIPPED rather than re-wrapped — and because the Panel had wrapped at the
+    # OLD width, the clip takes a bite out of the MIDDLE of the command, leaving
+    # a string that reads like a different command instead of a visibly
+    # truncated one. Baking at open time was strictly worse than the historical
+    # fixed 80 on every terminal wider than 80.
+    #
+    # Keyed on the resolved width, so an ordinary repaint costs one comparison
+    # and only a real resize pays for a re-render.
+    _width_of = width if callable(width) else (lambda: width)
+    _body: dict[str, Any] = {"width": None, "lines": [], "last": 0}
+
+    def _body_lines() -> list[str]:
+        current = _width_of()
+        if current != _body["width"]:
+            lines = build_approval_view(request, render_diff=render_diff, width=current)
+            _body["width"] = current
+            _body["lines"] = lines
+            # The scroll bound moves with the line count: a narrower terminal
+            # wraps the command onto more rows, and a stale bound would strand
+            # the cursor short of the end of the body it exists to reveal.
+            _body["last"] = max(0, len(lines) - 1)
+        return cast("list[str]", _body["lines"])
+
+    _body_lines()  # prime, so the scroll bound exists before the first paint
+
     # ``scroll`` is the body line the cursor sits on — moving it lets ptk's
     # scroll-to-cursor reveal the rest of an over-tall body. ``idx`` is the
     # highlighted option row.
     state = {"idx": 0, "scroll": 0}
-    last_body = max(0, len(body_lines) - 1)
 
     def _render_body() -> str:
-        return "\n".join(body_lines)
+        return "\n".join(_body_lines())
 
     def _body_cursor() -> Point:
         # Track the cursor on the active scroll line so scroll_offsets keep it
         # (and therefore the surrounding lines) within the windowed body region.
-        return Point(x=0, y=max(0, min(state["scroll"], last_body)))
+        return Point(x=0, y=max(0, min(state["scroll"], int(_body["last"]))))
 
     def _render_options() -> str:
         return "\n".join(build_options_view(state["idx"]))
@@ -338,7 +405,7 @@ async def run_approval_dialog(
         # PageUp/PageDown (and Ctrl+Up/Ctrl+Down) scroll the body so a diff taller
         # than the height cap stays fully reachable; option nav keeps ↑/↓.
         def _scroll(delta: int) -> None:
-            state["scroll"] = max(0, min(state["scroll"] + delta, last_body))
+            state["scroll"] = max(0, min(state["scroll"] + delta, int(_body["last"])))
             chrome.invalidate()
 
         kb.add("pageup")(lambda _e: _scroll(-5))

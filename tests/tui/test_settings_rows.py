@@ -29,11 +29,13 @@ async def test_build_rows_count_and_keys() -> None:
     keys = [r.key for r in rows]
     # The planned settable rows (code-block-indent SKIPPED — no setter); +1 for
     # the Issue #66 ``tool_card_max_lines`` row + the hide_compaction_summary row
-    # + the ADR-0197 (P2) ``features_agents`` delegation row.
+    # + the ADR-0197 (P2) ``features_agents`` delegation row + the issue #166
+    # ``render_max_width`` ceiling.
     assert "code_block_indent" not in keys
     assert "tool_card_max_lines" in keys
     assert "features_agents" in keys
-    assert len(rows) == 20
+    assert "render_max_width" in keys
+    assert len(rows) == 21
     # Live-effect rows come first (roadmap appendix O ordering).
     assert keys[:7] == [
         "theme",
@@ -261,15 +263,43 @@ async def test_inert_rows_do_not_promise_that_they_apply_next_launch() -> None:
         assert "not yet wired" in help_text, key
 
 
+#: Rows that live in the #111 "persist-only" block but DO have live consumers.
+#: Kept next to the guard that uses it so adding a wired row to that block
+#: without extending the guard is a visible omission rather than a silent one —
+#: ``render_max_width`` was added to the source comment and to this list in the
+#: same commit precisely because the guard had been iterating only the original
+#: two and would not have covered it.
+WIRED_PERSIST_BLOCK_ROWS = ("features_agents", "tool_card_max_lines", "render_max_width")
+
+
 async def test_wired_persist_only_rows_are_not_labelled_inert() -> None:
-    """The inversion guard. ``features_agents`` and ``tool_card_max_lines`` sit
-    in the same block but have real consumers, so a blanket rewrite of the
-    section would falsely demote them."""
+    """The inversion guard. These rows sit in the same block but have real
+    consumers, so a blanket rewrite of the section would falsely demote them."""
     sm = SettingsManager.in_memory({})
     rows = _rows(sm)
-    for key in ("features_agents", "tool_card_max_lines"):
+    for key in WIRED_PERSIST_BLOCK_ROWS:
         assert key not in INERT_ROWS, key
         assert "not yet wired" not in rows[key].help, key
+
+
+async def test_the_wired_list_matches_the_source_comment() -> None:
+    """The comment above the block and the guard's list must not drift apart.
+
+    Both are hand-maintained, and the pairing is the only thing that makes the
+    guard trustworthy: a row named as an exception in prose but missing from the
+    list is exactly the gap this commit found.
+    """
+
+    from pathlib import Path
+
+    import aelix_coding_agent.tui.settings_rows as rows_mod
+
+    source = Path(rows_mod.__file__).read_text(encoding="utf-8")
+    block = source.split("genuinely wired and whose", 1)[1].split("WHEN YOU WIRE", 1)[0]
+    named = {line.split("``")[1] for line in block.splitlines() if "``" in line}
+    assert named == set(WIRED_PERSIST_BLOCK_ROWS), (
+        f"comment names {sorted(named)}, guard iterates {sorted(WIRED_PERSIST_BLOCK_ROWS)}"
+    )
 
 
 async def test_skill_commands_help_does_not_claim_skills_are_unconsumed() -> None:
@@ -326,3 +356,34 @@ async def test_a_row_without_apply_note_gains_no_suffix() -> None:
 
     assert live_row.apply_note is None
     assert "(" not in apply_setting(live_row, sm).message
+
+
+async def test_render_max_width_row_is_a_live_bounded_int() -> None:
+    """Issue #166 — the ceiling is settable, live, and reads "default" unset."""
+
+    sm = SettingsManager.in_memory({})
+    row = _rows(sm)["render_max_width"]
+    assert row.kind == "int"
+    assert row.live is True
+    assert row.int_range == (60, 240)
+    # Unset shows "default" rather than a number, because unset stores no number
+    # — the built-in ceiling lives in exactly one place (tui/width.py).
+    assert row.read(sm) == "default"
+    sm.set_render_max_width(90)
+    assert row.read(sm) == "90"
+
+
+async def test_render_max_width_clamps_on_write_and_on_read() -> None:
+    sm = SettingsManager.in_memory({})
+    sm.set_render_max_width(10_000)
+    assert sm.get_render_max_width() == 240
+    sm.set_render_max_width(1)
+    assert sm.get_render_max_width() == 60
+    # A hand-edited settings.json bypasses the setter, so the getter clamps too.
+    # Loading raw JSON is the real shape of that scenario — writing
+    # ``_global_settings`` directly does not, because the getter reads the merged
+    # view and a direct poke never recomputes it.
+    hand_edited = SettingsManager.in_memory({"renderMaxWidth": 9999})
+    assert hand_edited.get_render_max_width() == 240
+    too_small = SettingsManager.in_memory({"renderMaxWidth": 2})
+    assert too_small.get_render_max_width() == 60
