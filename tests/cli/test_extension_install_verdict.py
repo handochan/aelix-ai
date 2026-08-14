@@ -1287,7 +1287,6 @@ def test_absent_hint_names_paths_that_exist() -> None:
     repo_root = Path(__file__).resolve().parents[2]
     in_repo = "packages/aelix-coding-agent/src/aelix_coding_agent/examples/starter/"
     installed = "aelix_coding_agent/examples/starter/"
-    guide = "docs/guides/extension-authoring.md"
 
     assert in_repo in EI._ABSENT_HINT
     assert (repo_root / in_repo / "pyproject.toml").is_file()
@@ -1300,8 +1299,22 @@ def test_absent_hint_names_paths_that_exist() -> None:
     assert package_root.name == "aelix_coding_agent"
     assert (package_root / "examples/starter/pyproject.toml").is_file()
 
-    assert guide in EI._ABSENT_HINT
-    assert "Packaging your extension" in (repo_root / guide).read_text(encoding="utf-8")
+    # #101: the hint used to name `docs/guides/extension-authoring.md`, and this
+    # assertion used to prove it by reading that file OUT OF THE REPO — the same
+    # source-tree check the paragraph above exists to reject. `docs/guides/` is
+    # not in the wheel, so the one reader of this message, an installed user
+    # whose pack just went inert, was sent to a path they do not have.
+    #
+    # It now names the `aelix docs extension` verb, which is checked the way the
+    # `examples/starter/` half is: by resolving it through the SAME registry the
+    # command uses, against the packaged copy rather than the repo's.
+    from aelix_coding_agent.help import read_topic, resolve_topic
+
+    assert "`aelix docs extension`" in EI._ABSENT_HINT
+    topic = resolve_topic("extension")
+    assert topic is not None, "the hint names a docs topic that does not resolve"
+    assert topic.path.parent.parent.name == "aelix_coding_agent"
+    assert "Packaging your extension" in read_topic(topic)
 
 
 # === The summary's one actionable line must be one that works ==============

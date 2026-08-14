@@ -202,7 +202,7 @@ async def test_builtins_dropped_extension_and_mcp_kept(
     active = harness.state.active_tool_names
     assert active is not None, "--no-builtin-tools must produce an explicit filter"
     assert ALL_TOOL_NAMES.isdisjoint(active)
-    assert set(active) == {_EXT_TOOL, _MCP_TOOL}
+    assert set(active) == {_EXT_TOOL, _MCP_TOOL, "aelix_status"}
 
     # The filter is NON-destructive by design (core.py:3525-3534): the built-ins
     # are still REGISTERED, they are merely inactive. Asserting this is what

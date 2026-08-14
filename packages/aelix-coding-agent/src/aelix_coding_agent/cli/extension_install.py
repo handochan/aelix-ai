@@ -2335,7 +2335,7 @@ _ABSENT_HINT = (
     "gets this right ships INSIDE aelix, at aelix_coding_agent/examples/starter/ "
     "(in a source checkout: "
     "packages/aelix-coding-agent/src/aelix_coding_agent/examples/starter/); the "
-    "packaging rules are in docs/guides/extension-authoring.md, 'Packaging your "
+    "packaging rules are in `aelix docs extension`, 'Packaging your "
     "extension'."
 )
 

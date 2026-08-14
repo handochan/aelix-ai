@@ -278,7 +278,18 @@ extensions, not core · explicit hook bus for auditability. Full rationale in
 [Custom models](docs/guides/models-json.md) ·
 [Agent profiles](docs/guides/agent-profiles.md) ·
 [Writing an extension](docs/guides/extension-authoring.md) ·
+[Project trust](docs/guides/project-trust.md) ·
+[Private catalog](docs/guides/private-catalog.md) ·
 [Releasing](RELEASING.md)
+
+Every guide above except `RELEASING.md` is also copied into the wheel, so an
+installed machine reads them with no network and no checkout:
+
+```bash
+aelix docs                          # list the bundled guides
+aelix docs project-trust            # print one
+aelix docs --search register_tool   # substring search across all of them
+```
 
 [Homepage →](https://handochan.github.io/aelix-ai/) ·
 [Extension catalog →](https://handochan.github.io/aelix-marketplace/)

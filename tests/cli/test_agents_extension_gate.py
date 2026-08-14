@@ -228,7 +228,7 @@ async def test_agents_ext_none_leaves_the_prepend_untouched(
 
     prepend = await _prepend_for(monkeypatch, agents_ext=None)
 
-    assert len(prepend) == 2
+    assert len(prepend) == 3
     assert isinstance(prepend[0], GuardrailExtension)
     assert isinstance(prepend[1], PermissionExtension)
 
@@ -241,7 +241,7 @@ async def test_prepend_order_guardrail_permission_agents(
     sentinel = _Sentinel()
     prepend = await _prepend_for(monkeypatch, agents_ext=sentinel)
 
-    assert len(prepend) == 3
+    assert len(prepend) == 4
     assert isinstance(prepend[0], GuardrailExtension)
     assert isinstance(prepend[1], PermissionExtension)
     assert prepend[2] is sentinel
@@ -276,7 +276,7 @@ async def test_depth_gate_suppresses_in_child(
     monkeypatch.setenv(DEPTH_ENV_VAR, "1")
     prepend = await _prepend_for(monkeypatch, agents_ext=_Sentinel())
 
-    assert len(prepend) == 2
+    assert len(prepend) == 3
     assert all(not isinstance(e, _Sentinel) for e in prepend)
 
 

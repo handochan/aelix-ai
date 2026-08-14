@@ -924,7 +924,7 @@ class ExtensionSourceInfo:
     origin: Literal["package", "top-level"] = "top-level"
 
 
-@dataclass
+@dataclass(repr=False)
 class Extension:
     """The mutable record the loader populates while a factory runs.
 
@@ -964,6 +964,37 @@ class Extension:
     # leave this ``None``. Runtime consumers (Sprint 6h₉c/d/e/f) read
     # declared capabilities / activation / contributes through this field.
     manifest: PluginManifest | None = None
+
+    def __repr__(self) -> str:
+        """REDACTED (#101) — same defect and same fix as ``_ManifestEntry``.
+
+        The generated dataclass repr expanded :attr:`manifest` in full, and
+        ``PluginManifest.contributes.mcp_servers[].env`` is where a plugin puts
+        its API tokens. Measured on a pack loaded through the real
+        ``discover_and_load_extensions``: 1250 chars ending in
+        ``env={'GITHUB_TOKEN': 'ghp_PLANTED_SECRET_abc123'}``. ADR-0206 hardened
+        the ``_ManifestEntry`` CARRIER for exactly this; the ``Extension`` it
+        produces holds the same manifest object and kept the generated repr, so
+        the redaction stopped one object short.
+
+        An ``Extension`` reaches a repr from any logger, debugger frame,
+        ``pytest`` assertion rewrite or pasted traceback, so the object itself
+        has to be safe rather than every caller having to remember.
+
+        Identity is kept deliberately (``name`` + the plugin id + the load path)
+        and the registration buckets are reported as COUNTS: those were the only
+        useful part of the old repr, and a count carries no payload. A repr that
+        redacts by saying nothing is one that gets reverted the first time
+        someone debugs a load.
+        """
+
+        plugin_id = self.manifest.plugin.id if self.manifest is not None else None
+        return (
+            f"Extension(name={self.name!r}, plugin={plugin_id!r}, "
+            f"resolved_path={self.resolved_path!r}, "
+            f"tools={len(self.tools)}, handlers={len(self.handlers)}, "
+            f"commands={len(self.commands)})"
+        )
 
 
 ExtensionFactory = Callable[["ExtensionAPI"], Any]

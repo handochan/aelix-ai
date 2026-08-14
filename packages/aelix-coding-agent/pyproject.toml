@@ -107,7 +107,17 @@ aelix-agent-core = { workspace = true }
 # WITHOUT THIS SECOND ENTRY THE EXTENSION IS ABSENT FROM THE WHEEL and
 # `from aelix_agents import AgentsExtension` fails for every installed user
 # while passing in every source checkout.
-packages = ["src/aelix_coding_agent", "src/aelix_agents"]
+#
+# #101: `aelix_status` is the THIRD, added on the same reasoning and carrying the
+# same hazard. Both entries are guarded by tests that OPEN A BUILT WHEEL
+# (tests/status/test_status_wheel.py) rather than reading this list back, because
+# a source checkout puts every one of these on sys.path and so cannot tell a
+# shipped package from a forgotten one.
+packages = [
+  "src/aelix_coding_agent",
+  "src/aelix_agents",
+  "src/aelix_status",
+]
 # #111 B-7 — developer-state exclusions. This is the package the leak was found
 # in: `src/aelix_coding_agent/.omc/state/agent-replay-*.jsonl` (maintainer
 # transcript content) plus three OMC state JSONs shipped inside the wheel,

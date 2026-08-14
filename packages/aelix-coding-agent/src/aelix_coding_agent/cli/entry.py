@@ -1124,6 +1124,7 @@ async def _build_harness_options(
     model_registry: Any | None = None,
     default_provider: str | None = None,
     skills: list[Any] | None = None,
+    app_mode: str | None = None,
 ) -> AgentHarnessOptions:
     """Assemble :class:`AgentHarnessOptions` from parsed CLI args.
 
@@ -1244,6 +1245,34 @@ async def _build_harness_options(
     prepend_extensions: list[Any] = [GuardrailExtension(), permission]
     if agents_ext is not None and subagent_depth() < MAX_SUBAGENT_DEPTH:
         prepend_extensions.append(agents_ext)
+    # #101 — the bundled read-only introspection extension. APPENDED for the
+    # same ordering reason as ``agents_ext``: it subscribes to ``tool_call``, and
+    # nothing that is not a gate may run ahead of Guardrail/Permission. Its
+    # handler returns ``None`` unconditionally, so it can neither block, allow
+    # nor rewrite a call — it only keeps the ``ExtensionContext``, which is the
+    # only channel through which the tool ever sees a cwd or an active tool set.
+    #
+    # Function-local + guarded, mirroring ADR-0197 §(a): a broken or absent
+    # package degrades to "no status tool" rather than bricking startup.
+    try:
+        from aelix_status import StatusExtension
+    except Exception as exc:  # noqa: BLE001 — never fatal
+        print(f"Warning: aelix-status unavailable: {exc}", file=sys.stderr)
+    else:
+        prepend_extensions.append(
+            StatusExtension(
+                mode=app_mode,
+                # A CALLABLE over the RESOLVED decision, never
+                # ``ctx.is_project_trusted()``: that getter's unbound default is
+                # ``True`` (``extensions/api.py`` ``is_project_trusted or
+                # (lambda: True)`` / ``harness/core.py:265``), so a harness that
+                # nobody told about trust reports itself trusted.
+                project_trusted=lambda: project_trusted,
+                # The SAME holder ``/extension``'s viewer reads, by reference, so
+                # the rebuilt extension set after /reload is visible to the tool.
+                extensions=captured_extensions,
+            )
+        )
     loaded = await discover_and_load_extensions(
         [str(p) for p in parsed.extensions],
         cwd=Path(cwd),
@@ -1540,6 +1569,20 @@ async def _async_main(argv: list[str]) -> int:
         )
 
         return await run_extension_command_async(argv[1:])
+
+    # #101 — ``aelix docs [<topic>]`` reads the guides bundled inside the wheel.
+    # Same placement and same reason as ``extension`` above: BEFORE parse_args,
+    # because the flat flag parser would swallow ``docs`` and a topic name as
+    # chat-prompt positionals. Sync, unlike ``extension`` — nothing here awaits,
+    # and that verb is async only to flush an async settings write.
+    #
+    # Lazy import so a plain ``aelix`` launch pays nothing for a verb it is not
+    # running: ``cli.docs`` pulls in ``aelix_coding_agent.help``, which globs the
+    # bundled docs directory on first use.
+    if argv and argv[0] == "docs":
+        from aelix_coding_agent.cli.docs import run_docs_command
+
+        return run_docs_command(argv[1:])
 
     parsed = parse_args(argv)
 
@@ -2391,6 +2434,9 @@ async def _async_main(argv: list[str]) -> int:
             # the session consent memo survive /new, /fork, /resume and /reload.
             # ``None`` when delegation is off, which is the P2 default.
             agents_ext=agents_ext,
+            # #101 — the RESOLVED app mode, so the status tool reports the
+            # mode this process acted on rather than re-deriving one.
+            app_mode=app_mode,
             captured_extensions=discovered_extensions,
             captured_extension_errors=discovered_extension_errors,
             model_registry=model_registry,

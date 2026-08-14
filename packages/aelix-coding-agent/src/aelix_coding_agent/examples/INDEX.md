@@ -18,7 +18,7 @@ dotted module; before that only a filesystem path worked).
 | `echo/echo.py` | Tools & commands | The minimal complete extension. A `setup(aelix)` that registers one `AgentTool` (`echo`) and one slash command (`/hello`). Start here. |
 | `echo/aelix-plugin.toml` | Manifest | The repository's reference `aelix-plugin.toml` (manifest v1, ADR-0096) — annotated, schema-valid, with every contribution family either used or shown commented. **Copy this file** rather than guessing a manifest format. |
 | `telnaut/telnaut.py` | Providers & login | A corporate custom-provider extension (#77): a custom wire adapter via `register_api_adapter`, the models that route to it via `register_provider`, and an employee-number `/login` method via `register_login_provider`. Shows delegating to a built-in provider with `replace(opts, client=...)` so you reuse Aelix's SSE parsing. |
-| `starter/` | Packaging | A real, **buildable** hatchling package (`pyproject.toml` + `aelix_starter/` with `setup()`, `aelix-plugin.toml`, `themes/example.toml`, and the `aelix.extensions` entry point). Copy this to publish an installed pack whose manifest actually ships in the wheel. See its `README.md` and the guide's [Packaging your extension](../../../../../docs/guides/extension-authoring.md#packaging-your-extension). |
+| `starter/` | Packaging | A real, **buildable** hatchling package (`pyproject.toml` + `aelix_starter/` with `setup()`, `aelix-plugin.toml`, `themes/example.toml`, and the `aelix.extensions` entry point). Copy this to publish an installed pack whose manifest actually ships in the wheel. See its `README.md` and the guide's [Packaging your extension](../docs/extension-authoring.md#packaging-your-extension). |
 
 ## How to load an extension
 
@@ -112,6 +112,7 @@ already a complete extension.
 
 ## Further reading
 
-- `docs/guides/extension-authoring.md` — the full authoring guide.
+- [`../docs/extension-authoring.md`](../docs/extension-authoring.md) — the full
+  authoring guide, also readable as `aelix docs extension`.
 - `extensions/api.py` — `ExtensionAPI`, the object your `setup` receives.
 - `docs/decisions/0096-*.md` — the manifest v1 decision record.

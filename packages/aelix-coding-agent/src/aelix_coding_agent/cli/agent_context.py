@@ -5,8 +5,8 @@ The CLI harness previously ran with an EMPTY ``system_prompt`` and zero ``tools`
 files and had no idea it was a coding agent). This module supplies:
 
 - :func:`build_system_prompt` — the base coding-agent system prompt (identity +
-  environment + tool-use guidance + the self-extension signpost), injected
-  unless ``--system-prompt`` overrides.
+  environment + tool-use guidance + the bundled-docs pointer + the
+  self-extension signpost), injected unless ``--system-prompt`` overrides.
 - :func:`discover_context_files` — auto-discovered ``AGENTS.md`` project context
   (Pi ``--no-context-files`` / ``-nc`` gate), walked from the cwd up to the
   filesystem root and appended to the system prompt.
@@ -186,6 +186,23 @@ _PARTIAL_ENTITY_TAIL = re.compile(r"&[a-z]{0,4}$")
 _EXAMPLE_PARTS = ("examples", "echo", "echo.py")
 _API_PARTS = ("extensions", "api.py")
 
+# Bundled guides whose FILENAME does not say what is inside, as
+# ``(topic name, one clause)``. Same rule and same reason as ``_EXAMPLE_PARTS``
+# above: the name is data, so a renamed guide DROPS its line instead of sending
+# the model to a document that is not there, and the regression test can point
+# an entry at a name nothing provides and assert the omission.
+#
+# Only one entry earns its bytes today. Every other bundled filename answers
+# "what is in here" on its own; ``extension-authoring`` does not, because the
+# manifest/capability/publishing half of it is invisible from the name and is
+# the half nothing else in the prompt reaches (see :func:`_docs_signpost`).
+_DOC_HIGHLIGHTS: tuple[tuple[str, str], ...] = (
+    (
+        "extension-authoring",
+        "covers the aelix-plugin.toml manifest, capabilities and publishing",
+    ),
+)
+
 
 def _package_pointer(*parts: str) -> str | None:
     """Absolute path to a file shipped inside this package, or ``None``.
@@ -225,6 +242,126 @@ def _package_pointer(*parts: str) -> str | None:
         return str(path) if path.is_file() else None
     except (OSError, IndexError):  # pragma: no cover — defensive
         return None
+
+
+def _docs_signpost() -> str:
+    """The "Aelix documentation" block (issue #101), or ``""``.
+
+    A FORWARD-PORT of a pi surface aelix never ported. pi's system prompt
+    (``packages/coding-agent/src/core/system-prompt.ts``, fetched 2026-08-14)
+    emits::
+
+        Pi documentation (read only when the user asks about pi itself, its SDK,
+        extensions, themes, skills, or TUI):
+        - Main documentation: ${readmePath}
+        - Additional docs: ${docsPath}
+        - Examples: ${examplesPath} (extensions, custom tools, SDK)
+        - When reading pi docs or examples, resolve docs/... under Additional
+          docs and examples/... under Examples, not the current working directory
+        - When asked about: extensions (docs/extensions.md), themes (docs/themes.md), …
+        - When working on pi topics, read the docs and examples, and follow .md
+          cross-references before implementing
+        - Always read pi .md files completely and follow links to related docs
+
+    Seven bullets there, three here, and the cuts are deliberate. pi's
+    "resolve ``docs/…`` under Additional docs" line only exists because pi
+    prints topic files RELATIVE to a directory it named on an earlier line;
+    emitting one ``<abs dir>/<name>.md`` form costs the same bytes and removes
+    the ambiguity that line was added to fix. The Examples pointer is dropped
+    because :func:`_extension_signpost`, immediately below, already hands the
+    model a worked example (aelix ships three example packages, and pointing at
+    the directory would be pointing away from the one that is annotated). pi's
+    last two bullets are standing advice rather than a location; the only part
+    of them that changes what the model does here — a guide is meant to be read
+    whole, not sampled — is folded into the bullet that emits the paths.
+
+    NO OVERLAP WITH THE SIGNPOST, and the tiebreak where the subjects touch.
+    The signpost names ``examples/echo/echo.py`` and ``extensions/api.py``; this
+    block names neither. Both are about extensions, so which wins matters: for
+    a SIGNATURE the source wins, because it is the code. For the manifest,
+    capabilities and publishing the guide wins, because neither source file
+    documents them — measured with ``grep -ci``::
+
+                                       aelix-plugin   capabilit
+        extensions/api.py                    1             1
+        examples/echo/echo.py                0             0
+        docs/extension-authoring.md          9             9
+
+    api.py's two hits are one comment each (``:961``, ``:965``) on the runtime
+    ``manifest`` FIELD: they say a manifest exists, not what goes in one.
+
+    That asymmetry is why ``extension-authoring`` is the single entry in
+    :data:`_DOC_HIGHLIGHTS`. "hooks" was in an earlier draft of that clause and
+    was CUT as false: ``grep -ci hook extensions/api.py`` -> 105.
+
+    ABSOLUTE PATHS, NOT ``aelix docs <topic>``. The CLI verb exists (#101,
+    ``cli/docs.py``) and is what the extending-aelix skill points a human at,
+    but it needs the ``bash`` tool, and ``bash`` is in
+    ``builtin/permission.py`` ``_MUTATING`` (measured: ``'bash' in _MUTATING``
+    -> ``True``, ``'read' in _MUTATING`` -> ``False``). PLAN mode blocks every
+    mutating tool at ``permission.py:436``, which sits ABOVE the read-only
+    short-circuit at ``:441`` — so in the one mode where the user has explicitly
+    asked the agent to look and not touch, an ``aelix docs`` pointer is a
+    pointer the model cannot follow. ``read`` on an absolute path works in every
+    mode.
+
+    "SMALL ENOUGH FOR ``read`` TO RETURN WHOLE" IS MEASURED, and it is the claim
+    most likely to rot. The largest bundled guide is ``extension-authoring.md``
+    at 33620 bytes against ``tools/_truncate.DEFAULT_MAX_BYTES`` = 51200. This
+    is the same trap ``_extension_signpost`` hit with ``api.py`` (84KB, silently
+    truncated to a window containing none of the ``register_*`` definitions), so
+    a test pins every bundled guide under the cap rather than trusting the prose.
+
+    NAMES COME FROM THE FILES. :func:`~aelix_coding_agent.help.topics` globs the
+    bundled directory at call time, so a guide added to the bundle appears here
+    with no edit — and a stripped install (no ``docs/``) yields ``""``, i.e. the
+    block is omitted rather than advertising an empty directory.
+
+    BYTE COST. 632 chars emitted, 555 of them prose (the other 77 are the
+    install-dependent directory path, which is why the test budgets the prose
+    and not the block). That takes ``build_system_prompt("/some/project")`` from
+    3362 to 3994 on this checkout, +19%. It is paid on EVERY turn, which is why
+    the scope clause is the first thing in it: unconditional "here is the
+    documentation" biases the model toward reading docs when the user asked for
+    ordinary work. pi scopes its block for the same reason.
+    """
+
+    # Local, and cheap for callers that never build a prompt: ``help.topics``
+    # globs the filesystem on call. It is stdlib-only and does not import
+    # ``cli``, so this cannot cycle back.
+    from ..help import bundled_docs_dir, topics
+
+    names = [t.name for t in topics()]
+    if not names:
+        return ""
+
+    # De-fanged and escaped for the same reason ``build_system_prompt`` does it
+    # to the cwd (#121 / ADR-0217): this path is ``Path(__file__)``-derived, so
+    # a checkout or install under a directory named ``<project_context>`` forges
+    # the fence from the INSTALL side rather than the cwd side. Both are the
+    # identity function on a path containing no ``<``, ``&`` or control byte,
+    # which is every path this repo's own tree produces.
+    docs_dir = _escape_text(_safe_path(bundled_docs_dir()))
+
+    lines = [
+        "Aelix documentation (read one only when the user asks about Aelix "
+        "itself — its setup, extensions, providers and models, agent profiles, "
+        "or trust model):\n",
+        f"- Bundled at {docs_dir}/<name>.md, each small enough for `read` to "
+        "return whole. <name> is one of: " + ", ".join(names) + "\n",
+    ]
+    lines.extend(
+        f"  - {name} {clause}.\n" for name, clause in _DOC_HIGHLIGHTS if name in names
+    )
+    # The #101 failure this block exists to stop is not "the agent cannot find
+    # the docs", it is "the agent answers about Aelix from its memory of some
+    # other CLI". Naming the guides without this clause leaves that intact for
+    # every question the guides do not answer.
+    lines.append(
+        "- If no guide covers the question, say so — do not answer it from "
+        "another tool's behaviour.\n"
+    )
+    return "".join(lines) + "\n"
 
 
 def _extension_signpost(cwd_abs: str) -> str:
@@ -286,12 +423,23 @@ def _extension_signpost(cwd_abs: str) -> str:
         # ``parsed.unknown_flags`` is not threaded into ``flag_values``, so no CLI
         # invocation can ever set one. Naming a surface the user cannot drive is
         # the same overclaim this block exists to remove. Re-add it when #92 lands.
+        #
+        # "FOR THAT FILE" ADDED IN #101, 14 chars. The clause used to read "— no
+        # manifest, no JSON, no build step, nothing to install", which is true of
+        # the single file this bullet describes and false of Aelix: a manifest
+        # format exists, ships as ``examples/echo/aelix-plugin.toml``, and is how
+        # installed packs declare themselves. It was already the weaker half of
+        # a sentence whose closing "for it" does scope it — but #101 puts
+        # :func:`_docs_signpost` DIRECTLY ABOVE this line, naming
+        # ``aelix-plugin.toml`` by name, so the unscoped reading became an
+        # adjacent contradiction in the same prompt. A model that resolves it the
+        # wrong way refuses to write a legitimate manifest.
         "- You add your own tools/commands in plain Python, not a plugin format: "
         "ONE file defining `def setup(aelix): ...` that calls "
         "`aelix.register_tool(...)` (also register_command and "
         '`aelix.on("tool_call", handler)` for hooks). Aelix imports and RUNS IT IN '
-        "THIS PROCESS — no manifest, no JSON, no build step, nothing to install. "
-        "Never invent a config format for it.\n",
+        "THIS PROCESS — for that file there is no manifest, no JSON, no build "
+        "step, nothing to install. Never invent a config format for it.\n",
         # MINOR 4: ``tools/write.py:78-83`` mkdirs the parent (``parents=True,
         # exist_ok=True``) before EVERY write, so "mkdir if missing" only bought
         # a redundant bash call. Stated as a fact about the tool instead.
@@ -521,7 +669,13 @@ def build_system_prompt(cwd: str) -> str:
         f"- Working directory: {cwd_abs}\n"
         f"- Platform: {platform.system()}\n"
         f"- Today's date: {today}\n"
-        "\n" + _extension_signpost(cwd_abs)
+        # Docs BEFORE the signpost, not after: the signpost is the block the
+        # model is meant to act on, and its own budget test's premise is that it
+        # sits in the most recency-weighted slot of the base prompt. The docs
+        # block is a place to look, not a thing to do, so it takes the weaker
+        # slot. ``_docs_signpost`` returns "" when nothing is bundled, in which
+        # case this is byte-identical to the pre-#101 prompt.
+        "\n" + _docs_signpost() + _extension_signpost(cwd_abs)
     )
 
 

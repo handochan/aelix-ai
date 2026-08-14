@@ -759,6 +759,8 @@ Misc:
   --version, -v                   Show version ({VERSION})
 
 Subcommands:
+  docs [<topic>]                  Read the user guides bundled in this install
+                                  (no network); bare = list, --search/-s TERM
   extension install <target>      Install an extension via pip (path | git-url |
                                   package[==version]); --yes --index-url --offline
   extension source add <src>      Register an install source (path | git-url |

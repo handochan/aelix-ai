@@ -6,9 +6,11 @@ description: How to extend Aelix itself in plain Python — the setup(aelix) ent
 # Extending Aelix
 
 An extension is **one Python file with a `setup` function**. Aelix imports it and
-runs it in this process. There is no manifest, no JSON, no build step and nothing
-to install. If you find yourself inventing a config format, stop — that is the
-signal you are guessing.
+runs it in this process. For that file there is no manifest, no JSON, no build
+step and nothing to install, so if you find yourself inventing a config format
+for one, stop — that is the signal you are guessing. (Packaging an extension for
+*distribution* is a different job, and it does have a manifest format:
+`aelix-plugin.toml`. See the guides below before writing one.)
 
 ```python
 def setup(aelix):
@@ -28,6 +30,25 @@ Aelix and are the ground truth:
 
 The system prompt already gives you the absolute paths for both. Use `read` on
 them before writing code.
+
+## The guides, for what the source does not say
+
+Those two files are signatures and one worked example. Everything around them —
+the `aelix-plugin.toml` manifest, the capability gates, MCP servers, packaging
+and publishing — is in the guides bundled inside this install. They work with no
+network:
+
+```
+aelix docs                              # list every guide
+aelix docs extension-authoring          # the one for this skill
+aelix docs --search capabilities        # grep all of them
+```
+
+`aelix docs` needs the `bash` tool, and `bash` is blocked in plan mode. When it
+is unavailable, `read` the guides directly. They are `<name>.md` in
+`aelix_coding_agent/docs/` — two directories up from this skill file — and the
+system prompt prints that directory as an absolute path. Each guide is small
+enough for `read` to return whole.
 
 ## The eight surfaces
 

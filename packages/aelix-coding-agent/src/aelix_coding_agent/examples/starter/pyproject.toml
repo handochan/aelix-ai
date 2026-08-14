@@ -19,7 +19,8 @@
 # gone. If you must use setuptools, you have to opt the data files in explicitly
 # (include_package_data = true + a MANIFEST.in that names them, or an explicit
 # [tool.setuptools.package-data]). Hatchling needs none of that. See
-# docs/guides/extension-authoring.md#packaging-your-extension.
+# `aelix docs extension`, section 'Packaging your extension' (the guide ships
+# inside the wheel; `docs/guides/` exists only in a source checkout).
 
 [build-system]
 requires = ["hatchling"]

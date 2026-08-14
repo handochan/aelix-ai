@@ -271,7 +271,18 @@ spawn 동의 대화상자를 그릴 터미널이 없으므로 스스로 동의�
 [커스텀 모델](docs/guides/models-json.md) ·
 [에이전트 프로필](docs/guides/agent-profiles.md) ·
 [확장 작성하기](docs/guides/extension-authoring.md) ·
+[프로젝트 신뢰](docs/guides/project-trust.md) ·
+[프라이빗 카탈로그](docs/guides/private-catalog.md) ·
 [릴리즈](RELEASING.md)
+
+`RELEASING.md`를 제외한 위 가이드는 휠 안에도 복사되어 들어갑니다. 설치된
+환경에서는 네트워크도 체크아웃도 없이 그대로 읽을 수 있습니다.
+
+```bash
+aelix docs                          # 번들된 가이드 목록
+aelix docs project-trust            # 하나 출력
+aelix docs --search register_tool   # 전체 가이드 부분 문자열 검색
+```
 
 [홈페이지 →](https://handochan.github.io/aelix-ai/) ·
 [확장 카탈로그 →](https://handochan.github.io/aelix-marketplace/)

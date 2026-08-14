@@ -36,7 +36,8 @@ verify: all 1 endpoint(s) BOUND.
 
 Exit code 0 means the manifest bound. A non-zero exit with an `ABSENT` line and
 a `setuptools / package-data` hint means the manifest was dropped from the wheel
-— see [the packaging guide](../../../../../docs/guides/extension-authoring.md#packaging-your-extension).
+— see [the packaging guide](../../docs/extension-authoring.md#packaging-your-extension)
+(`aelix docs extension`).
 
 ## Why hatchling
 

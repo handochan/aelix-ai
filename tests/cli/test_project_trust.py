@@ -681,7 +681,7 @@ async def test_integration_approve_loads_project_extension(
     # pair forms the gate-removal detector: untrusted → no sentinel / 2 exts,
     # approved → sentinel / 3 exts.
     assert sentinel.exists()
-    assert captured["extension_count"] == 3
+    assert captured["extension_count"] == 4
     assert code in (0, 1)
 
 

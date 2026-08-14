@@ -1128,7 +1128,7 @@ async def test_build_harness_options_trusted_loads_on_disk_extension(
     # The old cosmetic warning was removed in favor of the real gate.
     assert "full system permissions" not in err
     # built-ins (2) + the discovered probe (1)
-    assert len(opts.extensions) == 3
+    assert len(opts.extensions) == 4
 
 
 async def test_build_harness_options_untrusted_suppresses_on_disk_extension(
@@ -1148,7 +1148,7 @@ async def test_build_harness_options_untrusted_suppresses_on_disk_extension(
         Args(), Session(MemorySessionStorage()), project_trusted=False
     )
     # The project-local probe was NOT loaded; only Guardrail + Permission.
-    assert len(opts.extensions) == 2
+    assert len(opts.extensions) == 3
 
 
 async def test_build_harness_options_no_warning_without_on_disk(
@@ -1162,7 +1162,7 @@ async def test_build_harness_options_no_warning_without_on_disk(
     opts = await _build_harness_options(Args(), Session(MemorySessionStorage()))
     err = capsys.readouterr().err
     assert "full system permissions" not in err
-    assert len(opts.extensions) == 2
+    assert len(opts.extensions) == 3
 
 
 # --- issue #44: settings_manager harness seam wiring -------------------------
