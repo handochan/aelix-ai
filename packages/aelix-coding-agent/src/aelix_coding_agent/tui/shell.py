@@ -501,6 +501,14 @@ async def run_tui(
     def _set_tail(ansi: str) -> None:
         output_queue.put_nowait(("tail", ansi))
 
+    # Issue #166 step 4 — the user's ``render_max_width`` CEILING, held in one
+    # mutable cell so both width consumers (the streamed text and the approval
+    # dialog) read the same live value. ``None`` means "use tui.width's built-in
+    # default", which is why the setting can sit unset instead of storing a
+    # second copy of that number. Seeded from settings below and re-pushed by
+    # ``_apply_live_setting``.
+    render_width_cap: dict[str, int | None] = {"value": None}
+
     # Issue #166 — the READER, not a number. ``EventRenderer`` resolves it in
     # ``_new_stream``, which already ran once per assistant message before this
     # change, so the re-measure point existed and was reading an immutable field.
@@ -508,7 +516,9 @@ async def run_tui(
     # written is never reflowed, because those bytes belong to the host terminal
     # (``full_screen=False``) — the same guarantee any terminal program gives.
     renderer = EventRenderer(
-        commit=_commit, set_tail=_set_tail, width=lambda: terminal_columns(out_chrome)
+        commit=_commit,
+        set_tail=_set_tail,
+        width=lambda: terminal_columns(out_chrome, max_width=render_width_cap["value"]),
     )
 
     def _render_custom_message(msg: Any) -> object | None:
@@ -590,6 +600,10 @@ async def run_tui(
         # renderer, leaving the setting inert. Guarded like the sibling above.
         with contextlib.suppress(Exception):
             renderer.tool_card_max_lines = settings_manager.get_tool_card_max_lines()
+        # (a3) render-width CEILING → the shared cell (issue #166). Same failure
+        # mode as (a2) if omitted: the setting persists and does nothing.
+        with contextlib.suppress(Exception):
+            render_width_cap["value"] = settings_manager.get_render_max_width()
         # (b) default THINKING LEVEL → the live harness. SKIP when the current
         # model does not support the stored level (a reasoning-off model collapses
         # to ``["off"]``) so an unsupported level is never forced. ``None`` (unset)
@@ -1039,6 +1053,11 @@ async def run_tui(
                 # take effect on the NEXT tool card this session (not only next
                 # launch). ``value`` is the clamped string apply_setting re-read.
                 renderer.tool_card_max_lines = int(str(value))
+            elif key == "render_max_width":
+                # Both width readers resolve this cell per render / per message,
+                # so a new ceiling applies to the next assistant message and the
+                # next approval prompt without a restart.
+                render_width_cap["value"] = int(str(value))
 
     async def _open_settings() -> None:
         # ImplConsumers (ADR-0161) — /settings: an expanded select over the
@@ -2195,7 +2214,7 @@ async def run_tui(
                 show_modal=show_modal,
                 chrome=out_chrome,
                 render_diff=_render_diff,
-                width=lambda: terminal_columns(out_chrome),
+                width=lambda: terminal_columns(out_chrome, max_width=render_width_cap["value"]),
             )
 
         permission_ext.approval_runner = _run_approval

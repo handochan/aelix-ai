@@ -53,7 +53,7 @@ def _msg_update(stream_event: Any) -> Any:
     return MessageUpdateEvent(message=AssistantMessage(), assistant_message_event=stream_event)
 
 
-async def _render_paragraph_at(cols: int) -> list[str]:
+async def _render_paragraph_at(cols: int, settings_manager: Any = None) -> list[str]:
     """Run the real ``run_tui`` at *cols* and stream one paragraph through it."""
 
     from _pyte import render_shell_to_screen  # sibling helper
@@ -70,7 +70,13 @@ async def _render_paragraph_at(cols: int) -> list[str]:
         listener(_msg_update(TextEndEvent(content=_PARAGRAPH)))  # type: ignore[operator]
         await asyncio.sleep(0.05)
 
-    return await render_shell_to_screen(runtime=runtime, rows=24, cols=cols, drive=drive)
+    return await render_shell_to_screen(
+        runtime=runtime,
+        rows=24,
+        cols=cols,
+        drive=drive,
+        settings_manager=settings_manager,
+    )
 
 
 def _first_paragraph_row_width(display: list[str]) -> int:
@@ -189,3 +195,47 @@ async def test_run_tui_sizes_the_event_renderer_from_the_live_terminal() -> None
     # message, which is what makes a resize take effect at all.
     assert callable(given), f"run_tui passed a fixed width ({given!r})"
     assert given() == cols, f"EventRenderer resolved {given()} on a {cols}-column terminal"
+
+
+# === the render_max_width ceiling (step 4) ==================================
+
+
+def _manager_with_ceiling(value: int | None) -> Any:
+    from aelix_ai.settings.settings_manager import SettingsManager
+
+    manager = SettingsManager.in_memory()
+    if value is not None:
+        manager.set_render_max_width(value)
+    return manager
+
+
+async def test_the_ceiling_setting_narrows_a_wide_terminal() -> None:
+    """A CEILING, not a fixed width: it bites only where the terminal is wider."""
+
+    display = await _render_paragraph_at(200, _manager_with_ceiling(70))
+    width = _first_paragraph_row_width(display)
+    assert width <= 70, f"ceiling of 70 ignored: streamed row was {width} cells"
+    # ...and it really is the ceiling doing it — unset, the same terminal is wider.
+    default = _first_paragraph_row_width(await _render_paragraph_at(200))
+    assert default > 70
+
+
+async def test_the_ceiling_setting_does_not_widen_a_narrow_terminal() -> None:
+    """min(terminal, ceiling) — a generous ceiling must not overflow the screen."""
+
+    display = await _render_paragraph_at(60, _manager_with_ceiling(240))
+    width = _first_paragraph_row_width(display)
+    assert width <= 60, f"a 240 ceiling overflowed a 60-column terminal ({width})"
+
+
+async def test_an_unset_ceiling_uses_the_built_in_default() -> None:
+    """Unset stores no number, so there is only ever one copy of the default."""
+
+    from aelix_ai.settings.settings_manager import SettingsManager
+
+    manager = SettingsManager.in_memory()
+    assert manager.get_render_max_width() is None
+
+    unset = _first_paragraph_row_width(await _render_paragraph_at(200, manager))
+    plain = _first_paragraph_row_width(await _render_paragraph_at(200))
+    assert unset == plain

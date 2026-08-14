@@ -105,6 +105,7 @@ async def render_shell_to_screen(
     cols: int = 80,
     drive: Callable[[AelixChrome], Awaitable[None]],
     time_fn: Callable[[], float] = lambda: 0.0,
+    settings_manager: object | None = None,
 ) -> list[str]:
     """Like :func:`render_chrome_to_screen`, but drives the REAL ``run_tui``.
 
@@ -149,6 +150,7 @@ async def render_shell_to_screen(
                 cwd=".",
                 chrome=chrome,
                 install_signal_handlers=False,
+                settings_manager=settings_manager,  # type: ignore[arg-type]
             )
         )
         try:

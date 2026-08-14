@@ -195,6 +195,7 @@ def build_settings_rows(sm: SettingsManager) -> list[SettingsRow]:
         # help text is therefore left alone:
         #   * ``features_agents``      -> cli/entry.py::_build_harness_options
         #   * ``tool_card_max_lines``  -> tui/shell.py -> render.py (live)
+        #   * ``render_max_width``     -> tui/shell.py -> tui/width.py (live)
         #
         # WHEN YOU WIRE ONE OF THESE UP, revert its help text in the same
         # commit. A row that works but claims to be inert is the same defect
@@ -233,6 +234,21 @@ def build_settings_rows(sm: SettingsManager) -> list[SettingsRow]:
             help="Max lines shown in a tool-output card (3-40). Persisted; applies live (next render).",
             live=True,
             int_range=(3, 40),
+        ),
+        SettingsRow(
+            key="render_max_width",
+            label="Render max width",
+            kind="int",
+            read=lambda s: (
+                str(s.get_render_max_width()) if s.get_render_max_width() is not None else "default"
+            ),
+            help=(
+                "Ceiling on render width in columns (60-240). A CEILING, not a "
+                "fixed width: the renderer uses min(terminal, this). Persisted; "
+                "applies live (next message)."
+            ),
+            live=True,
+            int_range=(60, 240),
         ),
         SettingsRow(
             key="show_hardware_cursor",
@@ -468,6 +484,7 @@ _INT_SETTERS: dict[str, str] = {
     "autocomplete_max_visible": "set_autocomplete_max_visible",
     "editor_padding_x": "set_editor_padding_x",
     "tool_card_max_lines": "set_tool_card_max_lines",
+    "render_max_width": "set_render_max_width",
 }
 
 

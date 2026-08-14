@@ -83,17 +83,22 @@ _FALLBACK_RENDER_WIDTH = 80
 def terminal_columns(
     chrome: AelixChrome | None,
     *,
-    max_width: int = _MAX_RENDER_WIDTH,
+    max_width: int | None = None,
 ) -> int:
-    """Live terminal columns for *chrome*, clamped to a sane render band.
+    """Live terminal columns for *chrome*, capped for readability.
 
     :param chrome: the running chrome; ``None`` (or one whose output cannot be
-        measured) yields :data:`_FALLBACK_RENDER_WIDTH`, still clamped.
-    :param max_width: ceiling override for callers with their own budget.
-        Never loosens the terminal bound — the result is always ``<=`` the real
-        terminal width once it is readable.
+        measured) yields :data:`_FALLBACK_RENDER_WIDTH`, still capped.
+    :param max_width: ceiling override — a caller's own budget, or the user's
+        ``render_max_width`` setting. ``None`` means "use the built-in default",
+        which is why the setting can be stored unset rather than duplicating the
+        number: there is exactly one 120 in the codebase and it is below.
+        A ceiling never loosens the terminal bound — the result is always ``<=``
+        the real terminal width once that is readable.
     """
 
+    if max_width is None:
+        max_width = _MAX_RENDER_WIDTH
     if chrome is None:
         return _clamp(_FALLBACK_RENDER_WIDTH, max_width)
     try:
