@@ -600,8 +600,19 @@ def _extension_signpost(cwd_abs: str, active_tool_names: set[str]) -> str:
         # exist_ok=True``) before EVERY write, so "mkdir if missing" only bought
         # a redundant bash call. Stated as a fact about the tool instead.
         #
-        # ISSUE #161, AND THIS CLAUSE IS THE SECOND DRAFT — the first one was
-        # measured against a real model and did not work.
+        # ISSUE #161, AND THIS CLAUSE IS THE THIRD DRAFT. The first two were
+        # measured against a real model and neither worked.
+        #
+        # THE THIRD DRAFT STOPPED TRYING TO STEER THE MODEL. Drafts 1 and 2
+        # asked it to stop and ask, then to hand the user a command; the table
+        # below and the ``/extension new`` probe say both fail, and the failure
+        # is a function of how the USER phrased their request. So the prompt
+        # now describes what the model should DO (write, and say where) and
+        # points at where the choice actually lives — the approval prompt,
+        # which every one of those probe runs already stopped at, and which now
+        # offers the other tier as a third answer (#161 shape 3,
+        # ``builtin/permission.py`` ``_extension_redirect``). A prompt cannot
+        # make a model stop; it can tell the truth about who decides.
         #
         # The block used to hand the model two paths and no instruction about
         # who picks, and listing the global one first (for the measured reason
@@ -632,9 +643,10 @@ def _extension_signpost(cwd_abs: str, active_tool_names: set[str]) -> str:
         # fail silently when nobody is there to answer the trust prompt either.
         "- WHERE IT GOES IS THE USER'S CHOICE, not yours: it decides whether "
         "the tool is theirs alone or ships to everyone who clones this "
-        "project. In an interactive session tell them to run "
-        "`/extension new <name>` — that asks them and writes the file. "
-        "Otherwise use the first path below and say that you did.\n",
+        "project. Write to the first path below and say which you used — the "
+        "approval prompt offers them the other one, so a wrong guess costs "
+        "them a keystroke, not a redo. `/extension new <name>` asks up front "
+        "if they would rather choose first.\n",
         "- Write it to ONE absolute path (write creates missing dirs):\n",
         # The directory is escaped (#167) — it is ``$AELIX_CODING_AGENT_DIR`` /
         # ``$HOME``-derived and was the one write target still emitted raw. The

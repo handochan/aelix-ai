@@ -331,6 +331,6 @@ def test_the_signpost_points_at_the_command() -> None:
 
     block = _extension_signpost("/some/project", {"read", "write"})
     assert "/extension new <name>" in block
-    # And the headless fallback is still there — there is no `/` command to run
-    # in `-p` / `--mode json` / `--mode rpc` or in a delegated subagent.
-    assert "use the first path below" in block
+    # And it works headlessly, where there is no `/` command to run and no
+    # approval prompt either: the model writes and SAYS which it used.
+    assert "Write to the first path below and say which you used" in block

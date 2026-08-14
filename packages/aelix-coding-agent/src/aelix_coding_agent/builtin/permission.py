@@ -37,6 +37,7 @@ import os.path
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from fnmatch import fnmatch
+from pathlib import Path
 from typing import Any, Literal
 
 from aelix_agent_core.harness.hooks import (
@@ -109,6 +110,66 @@ def _path_from_args(args: dict[str, Any]) -> str:
         if isinstance(value, str):
             return value
     return ""
+
+
+def _extension_redirect(args: dict[str, Any], cwd: str) -> tuple[str, str, str] | None:
+    """``(chosen_label, other_label, other_path)`` for an extension write, else ``None``.
+
+    ISSUE #161 SHAPE 3, and the premise it rests on was measured rather than
+    inherited. The issue says the permission layer "is allow/deny only, so it
+    cannot offer 'write here instead'". That is true of the RETURN VALUE —
+    :class:`ToolCallResult` carries ``block`` and ``reason`` and nothing else —
+    and false of the mechanism: ``ToolCallHookEvent.args`` is *the same dict*
+    the loop hands to ``tool.execute`` (``harness/core.py``
+    ``_before_tool_call_bridge``: "we pass ``ctx.args`` by reference — no
+    defensive copy"). Driven end to end through that bridge, a handler that
+    rewrites ``args["path"]`` and returns ``None`` lands the file at the new
+    path and leaves the old one absent. So the redirect needs **no kernel
+    change**, which is why this is a small change and not the multi-day
+    permission surgery the issue estimated.
+
+    THERE ARE ONLY EVER TWO TARGETS, never a free-form third: the global tier
+    (``<agent dir>/extensions/``) and the project tier
+    (``<cwd>/.aelix/extensions/``) — the same two
+    :func:`~aelix_coding_agent.cli.agent_context._extension_signpost` emits and
+    :func:`~aelix_coding_agent.extensions.scaffold.extension_targets` returns.
+    This answers "which one did the model pick, and what is the other one
+    called"; every write that is not landing in one of them returns ``None``
+    and keeps the three static rows.
+
+    The labels state the CONSEQUENCE and not just the location, because that is
+    what the user is choosing between and what neither path name tells them:
+    the project tier is trust-gated and fails SILENTLY when the project is
+    untrusted (measured — ``no_project_local=True`` drops the file with
+    ``errors=[]``), while the global tier is not gated at all.
+    """
+
+    raw = _path_from_args(args)
+    if not raw:
+        return None
+    try:
+        from aelix_coding_agent.cli.config import get_agent_dir
+        from aelix_coding_agent.extensions.scaffold import extension_targets
+
+        target = Path(raw).expanduser().resolve()
+        targets = extension_targets(cwd, get_agent_dir())
+        resolved = {
+            scope: Path(path).expanduser().resolve() for scope, path in targets.items()
+        }
+    except (OSError, ValueError):  # pragma: no cover — defensive
+        return None
+
+    for scope, directory in resolved.items():
+        if target.parent != directory:
+            continue
+        other = "project" if scope == "global" else "global"
+        name = target.name
+        labels = {
+            "global": f"Yes — user global, every project ({resolved['global'] / name})",
+            "project": f"Only this project ({resolved['project'] / name})",
+        }
+        return labels[scope], labels[other], str(resolved[other] / name)
+    return None
 
 
 def _rule_key(tool_name: str, args: dict[str, Any]) -> str:
@@ -574,13 +635,29 @@ class PermissionExtension:
         the hook's throw default (W4 code-review MEDIUM).
         """
 
+        # Issue #161 shape 3 — computed ONCE and shared by both prompt paths, so
+        # the dialog and the generic fallback cannot offer different answers to
+        # the same question. ``None`` for every write outside the two extension
+        # tiers, which is every ordinary edit.
+        redirect = (
+            _extension_redirect(event.args, ctx.cwd)
+            if event.tool_name == "write"
+            else None
+        )
+
         if self.approval_runner is not None:
-            return await self._prompt_via_dialog(event)
+            return await self._prompt_via_dialog(event, redirect)
 
         summary = _summary(event.tool_name, event.args)
         title = f"Allow {event.tool_name}? {summary}".rstrip()
+        options = list(_OPTIONS)
+        if redirect is not None:
+            _chosen_label, other_label, _other_path = redirect
+            # Inserted BEFORE the denials, matching the dialog's row order and
+            # for the same reason: it is a second way to say yes.
+            options.insert(2, other_label)
         try:
-            choice = await ctx.ui.select(title, _OPTIONS)
+            choice = await ctx.ui.select(title, options)
         except Exception as exc:  # noqa: BLE001 — deny-on-error is fail-safe
             return ToolCallResult(
                 block=True,
@@ -590,6 +667,12 @@ class PermissionExtension:
                 ),
             )
 
+        if redirect is not None and choice == redirect[1]:
+            # Matched by IDENTITY against the rendered option, never by
+            # substring — the label carries an attacker-influenceable absolute
+            # path, and a substring test on that is a way to be talked into the
+            # wrong branch.
+            return self._redirect_write(event, redirect[2])
         if choice == _YES:
             return None
         if choice == _YES_SESSION:
@@ -609,8 +692,40 @@ class PermissionExtension:
         # None (Esc / cancelled) or any unexpected value → deny.
         return ToolCallResult(block=True, reason="Denied by the user (cancelled).")
 
+    def _redirect_write(
+        self, event: ToolCallHookEvent, target: str
+    ) -> ToolCallResult | None:
+        """Send this write to the OTHER extension tier, and ALLOW it (#161).
+
+        The mutation is the redirect: ``event.args`` is the same dict the loop
+        hands to ``tool.execute``, so rewriting the path here is what makes the
+        file land somewhere else. Returning ``None`` (allow) is the other half —
+        a ``block`` would turn the user's *second yes* into a no.
+
+        The key is rewritten in place under whatever alias the caller used
+        (``path`` / ``file_path`` / …) so a tool with a different argument name
+        is redirected too rather than silently ignored, which would allow the
+        ORIGINAL path — the worst of the three outcomes.
+
+        No session rule is synthesized. "Put this one somewhere else" is a
+        statement about this file, and turning it into a standing allow for the
+        tier is not what was asked.
+        """
+
+        for key in ("path", "file_path", "file", "filename", "filepath", "target"):
+            if isinstance(event.args.get(key), str):
+                event.args[key] = target
+                return None
+        # No recognised key — refuse rather than allow the original path.
+        return ToolCallResult(
+            block=True,
+            reason="Redirect requested but the tool takes no recognised path argument.",
+        )
+
     async def _prompt_via_dialog(
-        self, event: ToolCallHookEvent
+        self,
+        event: ToolCallHookEvent,
+        redirect: tuple[str, str, str] | None = None,
     ) -> ToolCallResult | None:
         """Drive the purpose-built approval dialog (ADR-0157, STEP 5)."""
 
@@ -623,6 +738,8 @@ class PermissionExtension:
             tool_name=event.tool_name,
             args=event.args,
             kind=_request_kind(event.tool_name),
+            yes_label=redirect[0] if redirect else None,
+            redirect_label=redirect[1] if redirect else None,
         )
         try:
             decision = await self.approval_runner(request)  # type: ignore[misc]
@@ -633,6 +750,16 @@ class PermissionExtension:
                     "Permission prompt unavailable; denied for safety "
                     f"({exc.__class__.__name__})."
                 ),
+            )
+        if decision == ApprovalDecision.REDIRECT and redirect is not None:
+            return self._redirect_write(event, redirect[2])
+        if decision == ApprovalDecision.REDIRECT:
+            # The dialog cannot offer this row without ``redirect_label``, so
+            # reaching here means a host handed back a decision it was never
+            # shown. Deny — an unexplained redirect target is not something to
+            # invent.
+            return ToolCallResult(
+                block=True, reason="Denied by the user (unexpected redirect)."
             )
         if decision == ApprovalDecision.YES:
             return None

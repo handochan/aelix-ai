@@ -523,10 +523,12 @@ def test_the_signpost_asks_the_user_which_target() -> None:
 
     block = _agent_context._extension_signpost("/some/project", {"read", "write"})
     assert "WHERE IT GOES IS THE USER'S CHOICE" in block
-    # It POINTS at `/extension new` rather than asking itself — shape 1 was
-    # measured and failed; see ``tests/cli/test_extension_new.py``.
+    # It no longer tries to make the model ask — that was measured at 1/4,
+    # and pointing it at `/extension new` at 0/2. It names where the choice
+    # actually lives (the approval prompt's third answer, #161 shape 3) and
+    # still names the command for a user who would rather choose up front.
+    assert "the approval prompt offers them the other one" in block
     assert "/extension new <name>" in block
-    assert "Otherwise use the first path below" in block
     # The measured reason the global target is first is unchanged, and the
     # fallback points at it.
     lines = [line for line in block.splitlines() if line.startswith("  - ")]

@@ -992,14 +992,18 @@ def test_signpost_token_cost_stays_bounded() -> None:
     #   +  the restart fallback when /reload does not re-discover (audit MINOR 4)
     #   +  1320 -> 1600 (measured 1520): the clause that asks the USER which
     #      target to use, and the fallback for the surfaces with nobody to ask
-    #                                                  (issue #161)
+    #                                                  (issue #161 draft 1)
+    #   +  1600 -> 1700 (measured 1620): the clause stopped trying to steer
+    #      the model — measured 1/4 and 0/2 — and now names where the choice
+    #      really lives, the approval prompt's third answer
+    #                                                  (issue #161 shape 3)
     #
     # Correctness outranks brevity in a block the model ACTS on: the measured
     # failure this block exists to fix was a confidently wrong answer, not a
     # slow one, and an instruction that ERRORS when executed is worse than no
     # instruction at all. The budget still exists to stop the block becoming a
     # chapter — every raise must cite the finding that paid for it.
-    assert prose < 1600, prose
+    assert prose < 1700, prose
 
 
 async def test_harness_options_carry_the_signpost() -> None:
