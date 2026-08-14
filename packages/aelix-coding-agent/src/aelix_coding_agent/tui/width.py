@@ -6,12 +6,20 @@ modules with no shared import (``shell.py``, ``context.py``, ``descriptors.py``,
 No ADR ever justified the 80 — it is the conventional terminal default, adopted
 without a decision record.
 
-The width is read LIVE from prompt-toolkit's output, per call, mirroring the
-established row-axis precedent :func:`tui.overlay._modal_cap` (which re-reads
-``output.get_size().rows`` every render so a modal tracks terminal resize). No
-SIGWINCH handling is needed or wanted here: prompt-toolkit already registers the
-handler and re-reads its output size every frame, so polling at render time is
-both sufficient and the pattern this codebase already ships.
+:func:`terminal_columns` reads prompt-toolkit's output size on every call — it
+holds no cache and snapshots nothing. Tracking a resize is therefore the
+CALLER's responsibility, and the distinction is not academic: a caller that
+resolves the width once and bakes a Panel from it is worse than a fixed 80,
+because the stale rows get clipped by the repaint that the resize triggers.
+Callers that stay on screen must pass the reader itself (see
+``run_approval_dialog``'s ``width: int | Callable[[], int]``) so it is re-resolved
+per render — the row-axis precedent is :func:`tui.overlay._modal_cap`, re-read
+from ``_CappedContainer.preferred_height`` every render for exactly this reason.
+
+No SIGWINCH handling belongs here. prompt-toolkit already registers the handler
+(``Application.run_async`` → ``attach_winch_signal_handler``) and additionally
+polls its output size in the background for terminals that never deliver the
+signal, so a render-time read is both sufficient and the pattern already shipped.
 
 **Read the size from prompt-toolkit and nowhere else.** Rich's ``Console.size``
 consults ``$COLUMNS`` *before* the ioctl, while prompt-toolkit's Vt100 output

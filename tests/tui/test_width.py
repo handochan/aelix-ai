@@ -122,8 +122,30 @@ def test_a_tiny_caller_budget_is_honoured() -> None:
 
 # === end-to-end: the clip this step fixes ===================================
 
-_LONG_COMMAND = "echo ALPHA_BEGIN_MARKER_0123456789_this_is_a_long_command_tail_OMEGA_END_MARKER"
+# One unbroken token, so a WRAP splits it across rows while a CLIP removes a
+# piece of it. Reassembling the frame's body rows must yield it exactly.
+_TOKEN = "ALPHA_BEGIN_MARKER_0123456789_this_is_a_long_command_tail_OMEGA_END_MARKER"
+_LONG_COMMAND = f"echo {_TOKEN}"
 _TAIL = "OMEGA_END_MARKER"
+
+
+def _frame_body_text(display: list[str]) -> str:
+    """Reassemble the Panel's body, borders and wrap padding removed.
+
+    Rows inside the frame look like ``│ <content> │``. Stripping the borders and
+    concatenating with NO separator reconstructs a wrapped token verbatim — so
+    ``_TOKEN in _frame_body_text(...)`` is true when the command merely wrapped
+    and false when a clip took a bite out of it. (Joining raw rows instead leaves
+    ``│`` between the halves, which reads as a lost tail even on a healthy frame
+    — the first cut of this file failed that way at 120->70.)
+    """
+
+    out: list[str] = []
+    for row in display:
+        stripped = row.rstrip()
+        if stripped.startswith("│") and stripped.endswith("│"):
+            out.append(stripped[1:-1].strip())
+    return "".join(out)
 
 
 async def _render_dialog_at(cols: int, width: int | None) -> list[str]:
@@ -173,8 +195,11 @@ async def test_narrow_terminal_live_width_keeps_the_whole_command() -> None:
     # And the frame is closed — the right border survives on every dialog row.
     assert "╮" in joined
     assert "╯" in joined
-    # Nothing overflows the terminal.
-    assert all(len(row) <= 60 for row in display)
+    # NOTE: do NOT assert ``len(row) <= cols`` here. ``pyte.Screen.display``
+    # pads every row to exactly ``cols``, so such a check holds unconditionally
+    # and proves nothing (the review pass caught it doing exactly that). The
+    # closed frame above IS the overflow assertion: an over-wide Panel loses its
+    # right border, which is what ``╮``/``╯`` detect.
 
 
 @pytest.mark.parametrize("cols", [30, 36, 40])
@@ -192,7 +217,6 @@ async def test_a_sub_forty_terminal_still_gets_a_closed_frame(cols: int) -> None
     joined = "\n".join(display)
     assert "╮" in joined, f"frame not closed at cols={cols}"
     assert "╯" in joined, f"frame not closed at cols={cols}"
-    assert all(len(row) <= cols for row in display)
 
 
 # === the wiring ==============================================================
@@ -261,6 +285,123 @@ async def test_run_tui_sizes_the_approval_dialog_from_the_live_terminal() -> Non
         approval_mod.run_approval_dialog = real_runner  # type: ignore[assignment]
 
     assert len(seen) == 1
-    # The width came from the LIVE terminal, not the module default.
-    assert seen[0]["width"] == cols
-    assert seen[0]["width"] != 80
+    given = seen[0]["width"]
+    # A CALLABLE, not a number: the dialog must be able to re-resolve the width
+    # on every render, or a resize while the prompt is open clips the baked rows.
+    assert callable(given), f"run_tui passed a fixed width ({given!r})"
+    # ...and it resolves to the LIVE terminal, not the module default.
+    assert given() == cols
+    assert given() != 80
+
+
+# === resize WHILE the prompt is open ========================================
+#
+# The review pass on the first cut caught this as a HIGH: passing the resolved
+# NUMBER made the dialog strictly worse than the historical fixed 80 on any
+# terminal wider than 80. The Panel was baked at open width, the resize repaint
+# clipped the stale rows, and because the Panel had already wrapped, the clip
+# removed a chunk from the MIDDLE of the command — leaving text that reads like
+# a different command rather than a visibly truncated one.
+
+
+async def _render_dialog_with_resize(start: int, end: int, *, bake: bool = False) -> list[str]:
+    """Mount the dialog at *start* columns, resize to *end*, return the frame.
+
+    ``bake=True`` reproduces the PRE-FIX wiring — the width resolved once and
+    passed as a number — so the test below it can pin what that costs.
+    """
+
+    import contextlib
+    import io
+
+    import pyte
+    from aelix_coding_agent.tui.approval_dialog import ApprovalRequest, run_approval_dialog
+    from aelix_coding_agent.tui.chrome import AelixChrome
+    from aelix_coding_agent.tui.overlay import show_modal
+    from prompt_toolkit.application import create_app_session
+    from prompt_toolkit.data_structures import Size
+    from prompt_toolkit.input.defaults import create_pipe_input
+    from prompt_toolkit.output.vt100 import Vt100_Output
+    from rich.console import Console
+
+    size = {"cols": start}
+    capture = io.StringIO()
+    output = Vt100_Output(
+        capture,
+        get_size=lambda: Size(rows=24, columns=size["cols"]),
+        term="xterm-256color",
+        enable_cpr=True,
+    )
+    request = ApprovalRequest("bash", {"command": _LONG_COMMAND}, "bash")
+
+    with create_pipe_input() as pipe, create_app_session(input=pipe, output=output):
+        chrome = AelixChrome(
+            console=Console(file=io.StringIO(), force_terminal=True, width=start),
+            pt_input=pipe,
+            pt_output=output,
+            time_fn=lambda: 0.0,
+        )
+        # Production wiring: the READER, not its value (shell.py's _run_approval).
+        width: int | Any = terminal_columns(chrome) if bake else (lambda: terminal_columns(chrome))
+        asyncio.ensure_future(
+            run_approval_dialog(
+                request=request,
+                show_modal=show_modal,
+                chrome=chrome,
+                width=width,
+            )
+        )
+        task = asyncio.create_task(chrome.run())
+        try:
+            for _ in range(500):
+                await asyncio.sleep(0.01)
+                if chrome.app.is_running:
+                    break
+            await asyncio.sleep(0.02)
+            pipe.send_text("\x1b[10;1R")  # CPR → height known → rows paint
+            await asyncio.sleep(0.05)
+
+            size["cols"] = end  # the user narrows the window...
+            capture.truncate(0)
+            capture.seek(0)  # ...and we keep ONLY the post-resize frame
+            chrome.app._on_resize()  # what ptk's SIGWINCH handler calls
+            await asyncio.sleep(0.08)
+            chrome.invalidate()
+            await asyncio.sleep(0.05)
+        finally:
+            chrome.exit()
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(task, timeout=3)
+
+    screen = pyte.Screen(end, 24)
+    pyte.Stream(screen).feed(capture.getvalue())
+    return list(screen.display)
+
+
+@pytest.mark.parametrize(("start", "end"), [(100, 90), (100, 80), (120, 70)])
+async def test_resizing_while_the_prompt_is_open_keeps_the_whole_command(
+    start: int, end: int
+) -> None:
+    display = await _render_dialog_with_resize(start, end)
+    joined = "\n".join(display)
+    assert "Run shell command?" in joined, f"dialog not painted after {start}->{end}"
+    assert "╮" in joined and "╯" in joined, f"frame clipped after {start}->{end}"
+    # The command survives the resize intact — no bite taken out of its middle.
+    assert _TOKEN in _frame_body_text(display), f"command damaged after {start}->{end}"
+
+
+@pytest.mark.parametrize(("start", "end"), [(100, 80), (120, 70)])
+async def test_a_baked_width_damages_the_command_on_resize(start: int, end: int) -> None:
+    """The pre-fix wiring, pinned so the fix above cannot become vacuous.
+
+    Resolving the width once and passing the NUMBER was strictly worse than the
+    historical fixed 80 for any terminal wider than 80: the repaint clips rows
+    that were laid out at the old width, and since the Panel had already wrapped,
+    the clip removes a piece from the MIDDLE of the command.
+    """
+
+    display = await _render_dialog_with_resize(start, end, bake=True)
+    joined = "\n".join(display)
+    assert "Run shell command?" in joined  # the dialog really did paint
+    assert "╯" not in joined  # ...but its frame was clipped open
+    assert _TOKEN not in _frame_body_text(display)  # ...and the command was damaged

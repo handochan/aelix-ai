@@ -271,7 +271,7 @@ async def run_approval_dialog(
     show_modal: Callable[..., Awaitable[Any]],
     chrome: Any,
     render_diff: Callable[..., Any] | None = None,
-    width: int = _RENDER_WIDTH,
+    width: int | Callable[[], int] = _RENDER_WIDTH,
 ) -> ApprovalDecision:
     """Drive the approval dialog and return the chosen :class:`ApprovalDecision`.
 
@@ -297,20 +297,49 @@ async def run_approval_dialog(
     from prompt_toolkit.layout.controls import FormattedTextControl  # noqa: PLC0415
     from prompt_toolkit.layout.dimension import Dimension  # noqa: PLC0415
 
-    body_lines = build_approval_view(request, render_diff=render_diff, width=width)
+    # Issue #166 — the body is re-rendered when the WIDTH changes, not baked
+    # once. A prompt waits for a human indefinitely, so "the terminal is resized
+    # while it is open" is ordinary, and prompt-toolkit repaints on it
+    # unconditionally (SIGWINCH, plus a polling fallback in
+    # ``Application._poll_output_size`` for terminals that do not deliver it).
+    # The body window is ``wrap_lines=False``, so a row wider than the screen is
+    # CLIPPED rather than re-wrapped — and because the Panel had wrapped at the
+    # OLD width, the clip takes a bite out of the MIDDLE of the command, leaving
+    # a string that reads like a different command instead of a visibly
+    # truncated one. Baking at open time was strictly worse than the historical
+    # fixed 80 on every terminal wider than 80.
+    #
+    # Keyed on the resolved width, so an ordinary repaint costs one comparison
+    # and only a real resize pays for a re-render.
+    _width_of = width if callable(width) else (lambda: width)
+    _body: dict[str, Any] = {"width": None, "lines": [], "last": 0}
+
+    def _body_lines() -> list[str]:
+        current = _width_of()
+        if current != _body["width"]:
+            lines = build_approval_view(request, render_diff=render_diff, width=current)
+            _body["width"] = current
+            _body["lines"] = lines
+            # The scroll bound moves with the line count: a narrower terminal
+            # wraps the command onto more rows, and a stale bound would strand
+            # the cursor short of the end of the body it exists to reveal.
+            _body["last"] = max(0, len(lines) - 1)
+        return cast("list[str]", _body["lines"])
+
+    _body_lines()  # prime, so the scroll bound exists before the first paint
+
     # ``scroll`` is the body line the cursor sits on — moving it lets ptk's
     # scroll-to-cursor reveal the rest of an over-tall body. ``idx`` is the
     # highlighted option row.
     state = {"idx": 0, "scroll": 0}
-    last_body = max(0, len(body_lines) - 1)
 
     def _render_body() -> str:
-        return "\n".join(body_lines)
+        return "\n".join(_body_lines())
 
     def _body_cursor() -> Point:
         # Track the cursor on the active scroll line so scroll_offsets keep it
         # (and therefore the surrounding lines) within the windowed body region.
-        return Point(x=0, y=max(0, min(state["scroll"], last_body)))
+        return Point(x=0, y=max(0, min(state["scroll"], int(_body["last"]))))
 
     def _render_options() -> str:
         return "\n".join(build_options_view(state["idx"]))
@@ -338,7 +367,7 @@ async def run_approval_dialog(
         # PageUp/PageDown (and Ctrl+Up/Ctrl+Down) scroll the body so a diff taller
         # than the height cap stays fully reachable; option nav keeps ↑/↓.
         def _scroll(delta: int) -> None:
-            state["scroll"] = max(0, min(state["scroll"] + delta, last_body))
+            state["scroll"] = max(0, min(state["scroll"] + delta, int(_body["last"])))
             chrome.invalidate()
 
         kb.add("pageup")(lambda _e: _scroll(-5))

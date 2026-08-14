@@ -2206,14 +2206,22 @@ async def run_tui(
             # no ellipsis to mark the loss. Measured live at 60 columns before
             # this change: ``echo ALPHA…_command_tail_OMEGA_END_MARKER`` was
             # shown as ``echo ALPHA…_command_tail_`` — a security prompt that
-            # hid what it was asking about. Read per call so a resize between
-            # approvals is picked up (the ``overlay._modal_cap`` idiom).
+            # hid what it was asking about.
+            #
+            # A CALLABLE, not a value. The dialog re-resolves it every render,
+            # so a resize WHILE the prompt is open re-renders the body at the
+            # new width (the ``overlay._modal_cap`` idiom for the row axis).
+            # Passing the number instead was measurably worse than the old
+            # fixed 80 on any terminal wider than 80: the Panel was baked at
+            # open width and then clipped by the repaint, and since it had
+            # already wrapped, the clip removed a chunk from the MIDDLE of the
+            # command rather than its tail.
             return await run_approval_dialog(
                 request=request,  # type: ignore[arg-type]
                 show_modal=show_modal,
                 chrome=out_chrome,
                 render_diff=_render_diff,
-                width=terminal_columns(out_chrome),
+                width=lambda: terminal_columns(out_chrome),
             )
 
         permission_ext.approval_runner = _run_approval
