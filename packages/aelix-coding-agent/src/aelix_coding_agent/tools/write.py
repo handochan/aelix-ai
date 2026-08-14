@@ -101,6 +101,13 @@ def create_write_tool(
 
     return AgentTool(
         name="write",
+        # Pi parity, verbatim: ``writeToolSystemPromptContribution``
+        # (``coding-agent/src/core/tools/write.ts:20-23``). Unlike edit's, this
+        # guideline IS ported: aelix's description says what write does to the
+        # filesystem and nothing about WHEN to prefer it over edit, so the
+        # bullet adds information rather than repeating the wire text.
+        prompt_snippet="Create or overwrite files",
+        prompt_guidelines=("Use write only for new files or complete rewrites.",),
         description=(
             "Write content to a file. Creates the file if it doesn't exist, "
             "overwrites if it does. Automatically creates parent directories."

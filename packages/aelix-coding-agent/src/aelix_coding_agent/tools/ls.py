@@ -157,6 +157,9 @@ def create_ls_tool(
 
     return AgentTool(
         name="ls",
+        # Pi parity, verbatim: ``lsToolSystemPromptContribution``
+        # (``coding-agent/src/core/tools/ls.ts:19-22``).
+        prompt_snippet="List directory contents",
         description=(
             "List directory contents. Returns entries sorted alphabetically, "
             "with a '/' suffix for directories. Includes dotfiles. Output is "

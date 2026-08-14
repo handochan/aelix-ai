@@ -448,6 +448,10 @@ def create_grep_tool(
 
     return AgentTool(
         name="grep",
+        # Pi parity, verbatim: ``grepToolSystemPromptContribution``
+        # (``coding-agent/src/core/tools/grep.ts:38-41``) — snippet only, pi's
+        # guidelines list is empty here and so is this one.
+        prompt_snippet="Search file contents for patterns (respects .gitignore)",
         description=(
             "Search file contents for a pattern. Returns matching lines with "
             "file paths and line numbers. Respects .gitignore. Output is "

@@ -31,7 +31,7 @@ import dataclasses
 import os
 import select
 import sys
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -65,6 +65,12 @@ from aelix_coding_agent.agents import (
     apply_profile_to_args,
     resolve_profile,
 )
+
+# ``agents.prompt`` imports nothing but ``collections.abc`` (it is the one
+# mirrored kernel join, deliberately dependency-free), so this cannot cycle
+# back through ``agents.service`` — which imports THIS module, and does so from
+# inside a function for exactly that reason.
+from aelix_coding_agent.agents.prompt import compose_system_prompt
 from aelix_coding_agent.builtin.guardrail import GuardrailExtension
 from aelix_coding_agent.builtin.permission import PermissionExtension
 from aelix_coding_agent.builtin.permission_mode import PermissionMode, PermissionPosture
@@ -1000,7 +1006,29 @@ def _resolve_prompt_template_dirs(
     return dirs
 
 
-def _resolve_system_prompt(parsed: Args, cwd: str) -> str:
+def _visible_tools(
+    tools: Sequence[AgentTool], active: Sequence[str] | None
+) -> list[AgentTool]:
+    """The tools an ``active_tool_names`` filter leaves on, in registry order.
+
+    ``None`` means "no filter" (``AgentState.active_tool_names`` semantics,
+    ``types.py:80-82``), NOT "nothing active" — the same materialization
+    :meth:`AgentHarness._action_get_active_tools` performs. Order comes from
+    the registry rather than from the filter so ``--tools ls,read`` and
+    ``--tools read,ls`` produce a byte-identical prompt; the filter is a set
+    and treating it as an ordering would make the prompt depend on argv
+    spelling.
+    """
+
+    if active is None:
+        return list(tools)
+    allowed = set(active)
+    return [t for t in tools if t.name in allowed]
+
+
+def _resolve_system_prompt(
+    parsed: Args, cwd: str, *, tools: Sequence[AgentTool]
+) -> str:
     """The BASE system prompt for one harness build (ADR-0196).
 
     Lifted verbatim out of :func:`_build_harness_options` — which now calls it —
@@ -1009,12 +1037,25 @@ def _resolve_system_prompt(parsed: Args, cwd: str) -> str:
     ``agents.prompt.compose_system_prompt`` (pinned against a real
     ``AgentHarness``); this extraction is what makes drift on the *inputs*
     structurally impossible too.
+
+    ``tools`` is REQUIRED and keyword-only (issue #120), for the same reason
+    ``skills=`` on :func:`_resolve_append_chunks` is: this function has two
+    production callers on different code paths, and the last time one of them
+    silently omitted an argument the other passed, ``/agents use`` shipped a
+    prompt that told the model about none of the profile's skills while
+    ``/skills`` still listed them. A default here would make the identical
+    defect available again — with the tool list instead of the skill list, and
+    with no symptom a human could see.
+
+    An explicit ``--system-prompt`` still wins and ignores ``tools`` entirely,
+    which is pi's ``customPrompt`` branch: a user who supplies their own prompt
+    is not asking us to edit it.
     """
 
     return (
         parsed.system_prompt
         if parsed.system_prompt is not None
-        else build_system_prompt(cwd)
+        else build_system_prompt(cwd, tools=tools)
     )
 
 
@@ -1124,6 +1165,16 @@ async def _build_harness_options(
     model_registry: Any | None = None,
     default_provider: str | None = None,
     skills: list[Any] | None = None,
+    # Issue #120 — the LIVE skill set, read at rebuild time rather than at
+    # build time. ``skills`` above is the snapshot the init-time append chunks
+    # are composed from; a rebuild happens later, and by then ``/agents use``
+    # may have replaced the loaded set in the holder both sides share. Pi's
+    # ``_rebuildSystemPrompt`` re-reads ``_resourceLoader.getSkills()`` on
+    # every call for exactly this reason (``agent-session.ts:1046``); a
+    # snapshot here would re-emit the previous profile's catalog on the next
+    # tool change. ``None`` falls back to ``skills``, which is correct for
+    # every caller that has no holder (tests, one-shot builds).
+    skills_provider: Callable[[], list[Any]] | None = None,
     app_mode: str | None = None,
 ) -> AgentHarnessOptions:
     """Assemble :class:`AgentHarnessOptions` from parsed CLI args.
@@ -1203,7 +1254,17 @@ async def _build_harness_options(
     # extension-tool union. ``_resolve_active_tools`` still applies on first build /
     # /new / /fork / /resume.
     active_tool_names = None if on_reload else _resolve_active_tools(parsed)
-    system_prompt = _resolve_system_prompt(parsed, cwd)
+    # Issue #120 — the FIRST build's tool list, which is a floor and not the
+    # final answer. Extensions have not registered yet here (``agents_ext`` and
+    # ``StatusExtension`` are appended ~40 lines below, and on-disk extensions
+    # load inside the factory), so this can only see the built-ins plus the
+    # already-connected MCP tools, filtered by the flag-level allowlist. The
+    # post-registration rebuild in :func:`_harness_factory` is what makes it
+    # exact; the ``you may have access to other custom tools`` sentence in the
+    # prompt is what makes it honest in the window before that runs.
+    system_prompt = _resolve_system_prompt(
+        parsed, cwd, tools=_visible_tools(tools, active_tool_names)
+    )
     # Extensions: built-in safety (Guardrail FIRST so hard-deny patterns like
     # ``rm -rf`` short-circuit via first-block-wins BEFORE the permission
     # prompt) PREPENDED ahead of on-disk + explicit ``--extension`` paths.
@@ -1361,6 +1422,31 @@ async def _build_harness_options(
     )
 
     options.append_system_prompt = _resolve_append_chunks(parsed, cwd, skills=skills)
+
+    # Issue #120 — the callback that keeps the prompt's tool list true for the
+    # rest of the session. It returns the COMPLETE prompt (see the kernel field
+    # docs), composed through the SAME two helpers ``/agents use`` uses, so the
+    # three paths that can install a system prompt — first build, ``/agents
+    # use``, and a live tool change — cannot disagree about anything except the
+    # tool list itself.
+    #
+    # It closes over ``parsed`` on purpose, not over a snapshot: ``parsed`` is
+    # the one mutable Args the factory and ``AgentProfileService`` share
+    # (ADR-0196), so a ``/agents use`` that set ``system_prompt`` is honoured
+    # here for free, and a later tool change cannot clobber the profile's
+    # identity with the default prompt.
+    #
+    # The skills are read THROUGH ``skills_provider`` on every call, never
+    # closed over as a value — see that parameter for why a snapshot here
+    # would re-emit a stale catalog after ``/agents use``.
+    def _rebuild(active: list[AgentTool]) -> str:
+        live_skills = skills_provider() if skills_provider is not None else skills
+        return compose_system_prompt(
+            _resolve_system_prompt(parsed, cwd, tools=active),
+            _resolve_append_chunks(parsed, cwd, skills=live_skills),
+        )
+
+    options.system_prompt_rebuilder = _rebuild
     return options
 
 
@@ -2455,6 +2541,12 @@ async def _async_main(argv: list[str]) -> int:
             # onto every later /new, /fork, /resume and /reload. This is the
             # same reason ``set_skills`` below reads the holder too.
             skills=skills_holder["result"].skills,
+            # Issue #120 — the same holder, read LATE. ``skills=`` above is a
+            # value snapshot for the init-time chunks; this is the live read the
+            # post-registration and runtime rebuilds go through, so a tool
+            # change after ``/agents use`` re-emits the CURRENT catalog and not
+            # the one this build started with.
+            skills_provider=lambda: skills_holder["result"].skills,
             # Issue #24-FU — the reload path (AgentSessionRuntime.reload) hands a
             # ReloadSeed carrying the user's prior flag values; pre-seed them into
             # the rebuilt extension runtime BEFORE ``setup()`` re-runs. ``None`` on
@@ -2562,6 +2654,24 @@ async def _async_main(argv: list[str]) -> int:
                     str(exc),
                     available=sorted(t.name for t in harness.state.tools),
                 ) from exc
+        else:
+            # Issue #120 — THE POST-REGISTRATION REBUILD, and the reason it has
+            # its own branch. Both branches above end in ``set_active_tools``,
+            # which rebuilds on the way out; this is the third case — no flag
+            # narrowed the set, so nothing called the setter, and the prompt is
+            # still the FIRST-build one from ``_build_harness_options``. That
+            # one could not see ``agent`` or ``aelix_status`` (appended after
+            # it) nor any on-disk extension's tools (loaded inside this
+            # factory), which is exactly the understatement #120 was filed for:
+            # the sentence was wrong by two before anyone touched it.
+            #
+            # ``harness.state.tools`` here is the LIVE registry — app tools ∪
+            # extension tools ∪ MCP tools — and ``active_tool_names`` is
+            # whatever survived. Reload lands here too (``on_reload=True``
+            # returns an unfiltered options object, so ``deferred_tools`` is
+            # ``None``), which is what makes the reload half of #120's third
+            # completion criterion true.
+            harness.rebuild_system_prompt()
         # Issue #22 — replay pending provider registrations into the LIVE
         # ModelRegistry. Extensions that call ``ctx.api.register_provider``
         # during setup queue onto ``runtime.pending_provider_registrations``;

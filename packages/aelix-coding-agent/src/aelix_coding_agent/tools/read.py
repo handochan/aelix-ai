@@ -279,6 +279,20 @@ def create_read_tool(cwd: str, options: dict | None = None) -> AgentTool:
 
     return AgentTool(
         name="read",
+        # Pi parity, verbatim: ``readToolSystemPromptContribution``
+        # (``coding-agent/src/core/tools/read.ts:27-30``). The snippet is the
+        # PROSE half of issue #120 and is deliberately not ``description`` —
+        # see :class:`aelix_ai.tools.Tool`.
+        prompt_snippet="Read file contents",
+        prompt_guidelines=(
+            # Was a static bullet in ``build_system_prompt``'s Guidelines list,
+            # where a ``--no-tools`` run still told the model to "read files".
+            # Attached to the tool so it appears exactly when ``read`` is
+            # active — which is what makes #120's first completion criterion
+            # true for the guidelines and not only for the tool list.
+            "Use tools to gather context before answering questions about the "
+            "code — read files rather than guessing at their contents.",
+        ),
         description=(
             "Read the contents of a file. Supports text files and images "
             "(jpg, png, gif, webp). Images are sent as attachments. For text "

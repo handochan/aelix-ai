@@ -21,6 +21,7 @@ from aelix_coding_agent.cli.agent_context import (
 )
 from aelix_coding_agent.cli.args import Args
 from aelix_coding_agent.cli.entry import _build_harness_options
+from aelix_coding_agent.tools import create_all_tools
 
 _TOOL_NAMES = {"read", "bash", "edit", "write", "grep", "find", "ls"}
 
@@ -28,12 +29,29 @@ _TOOL_NAMES = {"read", "bash", "edit", "write", "grep", "find", "ls"}
 # --- system prompt -----------------------------------------------------------
 
 
+def _builtins() -> list:
+    """The seven real built-in tools, in registry order."""
+
+    return list(create_all_tools(".").values())
+
+
 def test_build_system_prompt_has_identity_and_tools() -> None:
-    prompt = build_system_prompt(".")
+    """Issue #120 — the toolset is described because it was PASSED IN.
+
+    This used to call ``build_system_prompt(".")`` and assert the seven names,
+    which passed for the wrong reason: they were a literal in the source, so
+    the assertion could not tell a correct list from a hard-coded one — and
+    indeed the literal was already wrong by two (``agent``, ``aelix_status``)
+    when #120 was filed. The names now come from the real tool objects, and
+    ``test_the_prompt_names_exactly_the_active_tools`` covers the case the
+    literal could never express.
+    """
+
+    prompt = build_system_prompt(".", tools=_builtins())
     assert "Aelix" in prompt  # identity (was empty → generic chatbot)
     assert "coding agent" in prompt.lower()
     for tool in ("read", "write", "edit", "bash", "grep", "find", "ls"):
-        assert tool in prompt  # the toolset is described
+        assert f"- {tool}: " in prompt  # named in the DERIVED list
 
 
 def test_build_system_prompt_includes_environment(tmp_path) -> None:
@@ -44,10 +62,32 @@ def test_build_system_prompt_includes_environment(tmp_path) -> None:
 
 def test_build_system_prompt_has_convergence_guidance() -> None:
     """Weak models loop on vague requests without explicit stop-when-done /
-    no-repeat guidance (pi's default prompt lacks it; authored here)."""
-    prompt = build_system_prompt(".")
+    no-repeat guidance (pi's default prompt lacks it; authored here).
+
+    Issue #120 made three of the four bullets conditional on there being tools
+    to call, so the prompt is built with them here. The one that survives a
+    toolless run is asserted separately below — it is about answering, not
+    about calling.
+    """
+
+    prompt = build_system_prompt(".", tools=_builtins())
     assert "STOP calling tools" in prompt
     assert "same tool with the same arguments twice" in prompt
+    assert "ambiguous" in prompt
+
+
+def test_convergence_guidance_drops_the_tool_bullets_when_there_are_no_tools() -> None:
+    """Issue #120's sixth completion criterion, on the convergence block.
+
+    "Never call the same tool twice" is not false in a toolless run, it is
+    dead text — and dead text in a prompt is paid for on every turn. The
+    ambiguity bullet is about how to ANSWER and stays.
+    """
+
+    prompt = build_system_prompt(".", tools=[])
+    assert "STOP calling tools" not in prompt
+    assert "same tool with the same arguments twice" not in prompt
+    assert "fewest tool calls" not in prompt
     assert "ambiguous" in prompt
 
 
@@ -935,13 +975,16 @@ def test_signpost_token_cost_stays_bounded() -> None:
     #      instead of an order to read a file that truncates (audit MAJOR 2)
     #   +  "or the write is blocked" alongside the decline (audit MINOR 3)
     #   +  the restart fallback when /reload does not re-discover (audit MINOR 4)
+    #   +  1320 -> 1600 (measured 1520): the clause that asks the USER which
+    #      target to use, and the fallback for the surfaces with nobody to ask
+    #                                                  (issue #161)
     #
     # Correctness outranks brevity in a block the model ACTS on: the measured
     # failure this block exists to fix was a confidently wrong answer, not a
     # slow one, and an instruction that ERRORS when executed is worse than no
     # instruction at all. The budget still exists to stop the block becoming a
     # chapter — every raise must cite the finding that paid for it.
-    assert prose < 1320, prose
+    assert prose < 1600, prose
 
 
 async def test_harness_options_carry_the_signpost() -> None:

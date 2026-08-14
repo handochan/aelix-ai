@@ -214,6 +214,18 @@ def create_edit_tool(
 
     return AgentTool(
         name="edit",
+        # Pi parity, verbatim: ``editToolSystemPromptContribution.snippet``
+        # (``coding-agent/src/core/tools/edit.ts:56``).
+        prompt_snippet=(
+            "Make precise file edits with exact text replacement, including "
+            "multiple disjoint edits in one call"
+        ),
+        # Pi ships FOUR guideline bullets here (``edit.ts:58-63``) and they are
+        # DELIBERATELY NOT ported: aelix's ``description`` below already
+        # carries the same three rules (unique + non-overlapping match, merge
+        # nearby changes, no large unchanged padding), and the description goes
+        # on the wire on every request. Re-emitting them in the prompt would
+        # bill ~440 chars per turn for facts the model already has.
         description=(
             "Edit a single file using exact text replacement. Every "
             "edits[].oldText must match a unique, non-overlapping region of "

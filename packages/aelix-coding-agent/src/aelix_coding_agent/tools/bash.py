@@ -681,6 +681,21 @@ def create_bash_tool(
 
     return AgentTool(
         name="bash",
+        # Pi parity, verbatim: ``bashToolSystemPromptContribution.snippet``
+        # (``coding-agent/src/core/tools/bash.ts:46-49``).
+        prompt_snippet="Execute bash commands (ls, grep, find, etc.)",
+        # NOT pi's bash guideline. Pi's reads "You can inspect PI_*
+        # environment variables for current model and session details" —
+        # aelix has no ``PI_*`` and porting it would hand the model a variable
+        # namespace that does not exist, which is the class of overclaim #120
+        # exists to remove. These two are aelix's own, lifted out of the static
+        # Guidelines list where a ``--no-tools`` run still advertised bash.
+        prompt_guidelines=(
+            "After editing, verify your work (run the relevant tests or build "
+            "via bash when appropriate).",
+            "Be careful with destructive or irreversible shell commands; do "
+            "not run them unless the intent is clear.",
+        ),
         description=(
             "Execute a bash command in the current working directory. Returns "
             "stdout and stderr. Output is truncated to last 2000 lines or 50KB "

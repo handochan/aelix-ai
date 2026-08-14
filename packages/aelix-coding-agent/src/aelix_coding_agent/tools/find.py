@@ -277,6 +277,9 @@ def create_find_tool(
 
     return AgentTool(
         name="find",
+        # Pi parity, verbatim: ``findToolSystemPromptContribution``
+        # (``coding-agent/src/core/tools/find.ts:37-40``).
+        prompt_snippet="Find files by glob pattern (respects .gitignore)",
         description=(
             "Search for files by glob pattern. Returns matching file paths "
             "relative to the search directory. Respects .gitignore. Output is "

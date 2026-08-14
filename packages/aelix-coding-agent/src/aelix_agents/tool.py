@@ -591,6 +591,12 @@ def create_agent_tool(
 
     return AgentTool(
         name=AGENT_TOOL_NAME,
+        # Issue #120 — the other tool the old hard-coded sentence omitted. It
+        # is default-OFF and depth-gated, so when it is absent the derived list
+        # simply does not carry this line; that is the whole difference between
+        # a derived list and the literal it replaced, which named seven tools
+        # unconditionally and these two never.
+        prompt_snippet="Delegate a scoped sub-task to a subagent",
         description=description,
         parameters=dict(AGENT_TOOL_PARAMETERS),
         execute=execute,

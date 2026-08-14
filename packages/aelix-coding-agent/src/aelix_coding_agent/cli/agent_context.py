@@ -47,6 +47,10 @@ import re
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TYPE_CHECKING, Protocol
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 # ``skills_prompt`` is stdlib-only at module scope (its only import is a
 # ``TYPE_CHECKING``-guarded ``collections.abc``), so this cannot cycle back
@@ -98,6 +102,52 @@ def _safe_path(path: Path) -> str:
     """One path, de-fanged for printing. See :data:`_CONTROL_KILL`."""
 
     return str(path).translate(_CONTROL_KILL)
+
+
+def _safe_prompt_path(path: str | Path) -> str:
+    """One filesystem path, de-fanged AND fence-safe, for the SYSTEM PROMPT.
+
+    ONE rule for every path the prompt emits (issue #167). Before this existed
+    the five sites used two different rules and *neither* was right for a path:
+
+    - ``_escape_text(_safe_path(...))`` — the ``AGENTS.md`` BODY escape — on the
+      docs directory, ``cwd_abs`` and the two write targets. It rewrites ``&``
+      to ``&amp;``, and ``&`` is legal in a POSIX path component. Measured with
+      the package copied under ``/tmp/amp&test_…/r&d/src``::
+
+          emitted   /tmp/amp&amp;test_…/r&amp;d/src/…/docs   is_dir() -> False
+          real      /tmp/amp&test_…/r&d/src/…/docs           is_dir() -> True
+
+      i.e. the prompt named a directory the model cannot open — the exact
+      failure :func:`_docs_signpost` exists to prevent, in the one mode
+      (``plan``) it was added for.
+    - RAW — no escape at all — on :func:`_extension_signpost`'s two
+      :func:`_package_pointer` targets, so a ``<`` in an install path reached
+      the prompt unneutralised and the ADR-0217 fence-forgery channel
+      ``a079188`` closed for the cwd was still open from the install side.
+
+    THE RULE, and why each half is exactly this wide:
+
+    - Strip C0 / DEL / C1 (:data:`_CONTROL_KILL`). Unchanged from
+      :func:`_safe_path`; a directory name carrying an OSC title-set sequence
+      arrives with a ``git clone``.
+    - Escape ``<`` — and ONLY ``<``. A tag needs ``<``; with every ``<``
+      replaced, no interpolated path can open ``</project_instructions>`` or
+      ``<available_skills>``, which is the entire structural guarantee
+      ADR-0217 rests on. ``>``, ``"``, ``'`` and ``&`` cannot start a tag, so
+      escaping them buys nothing and each one mangles a real path.
+    - Do NOT touch ``&``. It was only ever collateral from reusing the body
+      escape, whose ``&`` substitution exists so *its own* entities cannot be
+      double-escaped — and a path is not fence body.
+
+    A path that really does contain ``<`` still comes out mangled, and that is
+    accepted for the same reason :func:`build_system_prompt` accepted it for
+    the cwd: such a path is unusable for its purpose either way, and the fence
+    is not negotiable. ``&`` is the case that is both common and repairable,
+    which is why it is the one that changed.
+    """
+
+    return str(path).translate(_CONTROL_KILL).replace("<", "&lt;")
 
 
 def _escape_text(value: str) -> str:
@@ -235,11 +285,18 @@ def _package_pointer(*parts: str) -> str | None:
 
     So the prompt hands the model absolute file paths for its ``read`` tool.
     The conclusion the old docstring reached still holds; its reason did not.
+
+    ESCAPED HERE, not at the call sites (#167). These two pointers used to be
+    the only paths in the prompt emitted RAW, and the fix belongs on the
+    function rather than on each caller so a third pointer cannot be added
+    unescaped. The ``is_file()`` test runs on the REAL path and the escape is
+    applied to the returned string only — escaping first would make a path
+    containing ``<`` fail its own existence check and be silently dropped.
     """
 
     try:
         path = Path(__file__).resolve().parents[1].joinpath(*parts)
-        return str(path) if path.is_file() else None
+        return _safe_prompt_path(path) if path.is_file() else None
     except (OSError, IndexError):  # pragma: no cover — defensive
         return None
 
@@ -325,13 +382,14 @@ def _docs_signpost() -> str:
     with no edit — and a stripped install (no ``docs/``) yields ``""``, i.e. the
     block is omitted rather than advertising an empty directory.
 
-    THE EMITTED DIRECTORY IS ESCAPED, AND THAT IS NOT FREE. See the comment at
-    the ``_escape_text(_safe_path(...))`` call below: on an install path
-    containing ``&`` this block names a directory that does not exist. The
-    install-path escaping story is half closed, not closed —
-    :func:`_extension_signpost`'s two :func:`_package_pointer` targets are
-    emitted RAW, so a ``<`` there is not neutralised at all. Both are recorded
-    as residuals in ADR-0218 §2 rather than described as handled.
+    THE EMITTED DIRECTORY IS ESCAPED, AND THE RULE IS NOW PATH-SHAPED (#167).
+    It goes through :func:`_safe_prompt_path` — control-byte strip plus ``<``
+    only — rather than the ``AGENTS.md`` body escape, which mangled ``&`` and
+    made this block name a directory that does not exist on any install path
+    containing one. ADR-0218 §2 recorded that as a residual together with
+    :func:`_extension_signpost`'s two RAW :func:`_package_pointer` targets;
+    both are closed by that one function, which is the point — fixing one site
+    is how the two rules diverged in the first place.
 
     BYTE COST. 632 chars emitted, 555 of them prose (the other 77 are the
     install-dependent directory path, which is why the test budgets the prose
@@ -356,28 +414,20 @@ def _docs_signpost() -> str:
     # a checkout or install under a directory named ``<project_context>`` forges
     # the fence from the INSTALL side rather than the cwd side.
     #
-    # THE ``&`` HALF IS A KNOWN DEFECT, not a cost-free guard, and this comment
-    # used to imply otherwise ("the identity function on a path containing no
-    # ``<``, ``&`` or control byte"). ``&`` is legal in a POSIX path component
-    # and appears in ordinary directory names, and ``_escape_text`` rewrites it
-    # to ``&amp;`` — which is a path the filesystem does not have. Measured, the
-    # package copied under ``/tmp/amp&test_…/r&d/src`` and the prompt built from
-    # it::
+    # ``_safe_prompt_path``, NOT ``_escape_text(_safe_path(...))`` — issue #167,
+    # which ADR-0218 §2 carried as a residual and this change closes. The body
+    # escape rewrote ``&`` to ``&amp;``, and ``&`` is legal in a POSIX path
+    # component, so on an install under ``/tmp/amp&test_…/r&d/src`` this block
+    # named a directory that does not exist (measured: emitted ``is_dir()``
+    # False, real ``is_dir()`` True) — the exact failure it exists to prevent,
+    # in the one mode (``plan``) it was added for. The ``<`` half is kept and
+    # is the whole fence guarantee; see :func:`_safe_prompt_path`.
     #
-    #     emitted   /tmp/amp&amp;test_…/r&amp;d/src/aelix_coding_agent/docs
-    #     is_dir()  False
-    #     real      /tmp/amp&test_…/r&d/src/aelix_coding_agent/docs   (True)
-    #
-    # So on such an install this block names a directory the model cannot open,
-    # which is the exact failure it exists to prevent. The ``<`` substitution is
-    # what the fence needs; the ``&`` one is there only so ``_escape_text``'s
-    # own entities cannot be double-escaped, and this path is not fence body.
-    # The fix is a path-shaped escape (``<`` only, plus the control strip), NOT
-    # dropping the guard — deliberately NOT made here, because the identical
-    # mangling applies to ``build_system_prompt``'s ``cwd_abs`` and to
-    # ``_extension_signpost``'s project-local write target, and one escape rule
-    # for three call sites is the point. See ADR-0218 §2's residual.
-    docs_dir = _escape_text(_safe_path(bundled_docs_dir()))
+    # The ``/<name>.md`` placeholder below is built OUTSIDE this call on
+    # purpose: its ``<`` is deliberate prose, not an attacker-supplied byte,
+    # and escaping it would hand the model ``&lt;name&gt;.md`` as if that were
+    # a filename.
+    docs_dir = _safe_prompt_path(bundled_docs_dir())
 
     lines = [
         "Aelix documentation (read one only when the user asks about Aelix "
@@ -411,7 +461,17 @@ def _extension_signpost(cwd_abs: str) -> str:
     ``extensions/loader.py:455-457``), never the plausible-but-wrong
     ``~/.aelix/extensions``.
 
-    WHY THE GLOBAL TARGET IS LISTED FIRST (adversarial review, MAJOR 2). The
+    WHO CHOOSES (issue #161). The block asks the USER which target to use and
+    only falls back to picking one when nobody can answer. Ordering alone did
+    not settle this: the global target is listed first for the measured reason
+    below, and with no instruction about who decides, "listed first" is what
+    the model acted on. The escalation path if a live model ignores the ask is
+    a real ``/extension new <name>`` command (issue #161 shape 2) — a decision
+    to be taken on the measurement, not in advance, which is why this revision
+    is the prompt-only one and is gated on a live-model probe.
+
+    WHY THE GLOBAL TARGET IS LISTED FIRST (adversarial review, MAJOR 2), and
+    why it is also the no-one-to-ask fallback. The
     project-local tier is TRUST-GATED and fails **silently**. Measured with the
     real loader against the exact emitted paths (one project-local + one global
     extension on disk)::
@@ -479,28 +539,53 @@ def _extension_signpost(cwd_abs: str) -> str:
         # MINOR 4: ``tools/write.py:78-83`` mkdirs the parent (``parents=True,
         # exist_ok=True``) before EVERY write, so "mkdir if missing" only bought
         # a redundant bash call. Stated as a fact about the tool instead.
+        #
+        # ISSUE #161 — THE FIRST CLAUSE. The block used to hand the model two
+        # paths and no instruction about who picks, and listing the global one
+        # first (for the measured reason below) meant in practice the model
+        # picked global and the user never saw the decision. That decision is
+        # not a detail: it settles whether the tool is the user's alone or
+        # ships to everyone who clones the repo, and after ADR-0216 an implicit
+        # project trust PERSISTS, so the write moment is the last point a human
+        # sees it at all. The permission layer cannot carry the question —
+        # ``builtin/permission.py`` is allow/deny only, it has no "somewhere
+        # else instead" — so the ask has to live here.
+        #
+        # THE FALLBACK CLAUSE IS NOT PADDING. This block is emitted for ``-p`` /
+        # ``--mode json`` / ``--mode rpc`` and for delegated subagents, where
+        # there is no one to ask; without it the honest reading of "ask the
+        # user" is "refuse", which turns a working headless run into a stall.
+        # The fallback names the global target because that is the tier that is
+        # not trust-gated (measured, below) — i.e. the one that cannot fail
+        # silently when nobody is there to answer the trust prompt either.
+        "- WHERE IT GOES IS THE USER'S CHOICE, not yours. Ask which of the two "
+        "paths below to use and wait for the answer; it decides whether the "
+        "tool is theirs alone or ships to everyone who clones this project. If "
+        "there is no one to ask, use the first and say that you did.\n",
         "- Write it to ONE absolute path (write creates missing dirs):\n",
-        f"  - every project, no trust gate: {os.path.join(get_agent_dir(), 'extensions', '<name>.py')}\n",
+        # The directory is escaped (#167) — it is ``$AELIX_CODING_AGENT_DIR`` /
+        # ``$HOME``-derived and was the one write target still emitted raw. The
+        # ``<name>.py`` placeholder is appended OUTSIDE the escape: its ``<`` is
+        # deliberate prose, and ``&lt;name&gt;.py`` is not a filename.
+        "  - every project, no trust gate: "
+        + _safe_prompt_path(os.path.join(get_agent_dir(), "extensions"))
+        + f"{os.sep}<name>.py\n",
         # NOTE each label carries NO ``": "`` of its own — the tests (and any
         # future parser) recover the emitted path with ``split(": ", 1)[1]``.
+        # ``cwd_abs`` arrives already escaped from :func:`build_system_prompt`.
         "  - this project only, and only if the project is trusted "
-        f"(untrusted = skipped silently): {os.path.join(cwd_abs, '.aelix', 'extensions', '<name>.py')}\n",
+        "(untrusted = skipped silently): "
+        + os.path.join(cwd_abs, ".aelix", "extensions")
+        + f"{os.sep}<name>.py\n",
     ]
 
-    # RESIDUAL, recorded rather than claimed closed (#101 review L9). Both
-    # pointers below are emitted RAW — no ``_safe_path``, no ``_escape_text`` —
-    # although they are ``Path(__file__)``-derived exactly like the docs block's
-    # directory, and therefore attacker-influenceable from the INSTALL side in
-    # the same way #121 found for the cwd. Measured, the package copied under
-    # ``/tmp/amp&test_…/r&d/src``::
-    #
-    #     - worked example, read this one: /tmp/amp&test_…/r&d/src/…/echo.py
-    #
-    # i.e. verbatim. A ``<`` in an install path is not neutralised here at all.
-    # PRE-EXISTING and deliberately not widened into by #101 — the fix is one
-    # path-shaped escape shared by these two, the docs directory, ``cwd_abs``
-    # and the write targets above, which is its own change. ADR-0218 §2 carries
-    # it as a residual.
+    # CLOSED (#167, was ADR-0218 §2's residual). Both pointers below used to be
+    # emitted RAW — no ``_safe_path``, no escape — although they are
+    # ``Path(__file__)``-derived exactly like the docs block's directory, and
+    # therefore attacker-influenceable from the INSTALL side in the same way
+    # #121 found for the cwd. :func:`_package_pointer` now applies
+    # :func:`_safe_prompt_path` to its own return value, so the guard cannot be
+    # forgotten by a third pointer added later.
     pointers: list[str] = []
     example = _package_pointer(*_EXAMPLE_PARTS)
     if example:
@@ -645,8 +730,99 @@ def _extension_signpost(cwd_abs: str) -> str:
     return "".join(lines)
 
 
-def build_system_prompt(cwd: str) -> str:
+class PromptTool(Protocol):
+    """The three fields the prompt reads off a tool. Structural on purpose.
+
+    ``AgentTool`` satisfies it, and so does any duck-typed stand-in, so this
+    module keeps its stdlib-only import surface (see the ``skills_prompt``
+    note above) instead of importing ``aelix_agent_core.types``.
+    """
+
+    @property
+    def name(self) -> str: ...
+
+    @property
+    def prompt_snippet(self) -> str: ...
+
+    @property
+    def prompt_guidelines(self) -> tuple[str, ...]: ...
+
+
+def _tool_section(tools: Sequence[PromptTool]) -> tuple[str, list[str]]:
+    """The ``Available tools:`` block + the guidelines the active tools carry.
+
+    Pi parity: ``buildSystemPrompt`` (``coding-agent/src/core/system-prompt.ts``)
+    and the ``_rebuildSystemPrompt`` that feeds it
+    (``coding-agent/src/core/agent-session.ts:1023-1056``). The three rules
+    ported here are pi's, verbatim in behaviour:
+
+    1. **The list is the ACTIVE tool set**, not a literal. Aelix hard-coded
+       "read, write, edit, bash, grep, find, ls" (issue #120), which was wrong
+       in two opposite directions at once: it kept naming tools that
+       ``--no-tools`` / ``--tools`` / ``--no-builtin-tools`` had removed, and
+       it omitted ``agent`` and ``aelix_status``, both of which ship and both
+       of which register AFTER the prompt is first built.
+    2. **A tool appears only if it carries a ``prompt_snippet``** — pi's
+       ``visibleTools = tools.filter(name => !!toolSnippets?.[name])``, whose
+       own doc comment reads "Custom tools are omitted from that section when
+       this is not provided". So an MCP server's forty tools do not silently
+       become forty prompt lines.
+    3. **The empty case is ``(none)``**, and the sentence below makes the list
+       non-exhaustive by construction, which is what closes direction (2)
+       above without needing to know the future: a tool registered later is
+       covered by the prose rather than contradicting it.
+
+    Returns ``(block, guidelines)``; the caller decides where each goes.
+    """
+
+    visible = [t for t in tools if t.prompt_snippet]
+    listed = (
+        "\n".join(f"- {t.name}: {t.prompt_snippet}" for t in visible)
+        if visible
+        else "(none)"
+    )
+    # Pi parity, verbatim (``system-prompt.ts``). This one sentence is what
+    # makes the enumeration honest rather than merely current: the prompt is
+    # built before extension / MCP tools register, and no rebuild can outrun a
+    # tool added mid-turn, so the list is a floor and says so.
+    #
+    # SUPPRESSED WHEN THE ACTIVE SET IS EMPTY, which is a deliberate one-line
+    # divergence: pi emits the sentence unconditionally, and next to aelix's
+    # 0-tool opener ("You have NO tools in this session") it would be a flat
+    # self-contradiction in adjacent paragraphs. It keys on ``tools`` and NOT
+    # on ``visible`` — those differ, and the difference is the whole point of
+    # rule (2): a session whose only active tools carry no snippet lists
+    # ``(none)`` and still needs the sentence, because it really does have
+    # tools the prose has not named.
+    disclaimer = (
+        "In addition to the tools above, you may have access to other custom "
+        "tools depending on the project.\n\n"
+        if tools
+        else ""
+    )
+    block = f"Available tools:\n{listed}\n\n{disclaimer}"
+    guidelines: list[str] = []
+    seen: set[str] = set()
+    for tool in tools:
+        for guideline in tool.prompt_guidelines:
+            text = guideline.strip()
+            if text and text not in seen:
+                seen.add(text)
+                guidelines.append(text)
+    return block, guidelines
+
+
+def build_system_prompt(cwd: str, *, tools: Sequence[PromptTool] | None = None) -> str:
     """The base coding-agent system prompt (identity + environment + tools).
+
+    ``tools`` is the ACTIVE tool set at the moment of the build, and ``None``
+    means "the caller did not scope one" — which emits ``(none)`` rather than
+    a guess. That is pi's own default (``selectedTools`` unset ⇒ no snippets ⇒
+    ``"(none)"``) and it is the fail-honest direction: a production path that
+    forgets to pass tools under-claims, where the old hard-coded literal
+    over-claimed. The production callers both go through
+    ``cli.entry._resolve_system_prompt``, whose ``tools`` argument is
+    REQUIRED so neither can forget it.
 
     THE CWD IS ATTACKER-CONTROLLED TOO (#121 review). This function interpolates
     it in two places — the ``Working directory:`` line and, via
@@ -671,51 +847,81 @@ def build_system_prompt(cwd: str) -> str:
     Escaping the body of ``AGENTS.md`` and leaving this raw would have closed
     the loud half of the hole and left the quiet one open — and ADR-0217's whole
     argument is that we do not assert a boundary we are not keeping. So the
-    same ``<``/``&`` substitution the fence body gets is applied here, on top of
-    the control-byte strip. It costs nothing for a normal path (no ``<``, no
-    ``&``, so :func:`_escape_text` returns it unchanged — measured across this
-    repo's own tree) and only a pathological directory sees ``&lt;`` in the
-    write target the signpost hands the model, which is the right trade: that
-    path is unusable for its purpose either way.
+    ``<`` substitution the fence body gets is applied here too, on top of the
+    control-byte strip. It costs nothing for a normal path and only a
+    pathological directory sees ``&lt;`` in the write target the signpost hands
+    the model, which is the right trade: that path is unusable for its purpose
+    either way. The ``&`` half of the body escape is NOT applied — see
+    :func:`_safe_prompt_path` and issue #167; it produced a path the filesystem
+    does not have on any install or checkout under a directory containing
+    ``&``, which ``git clone`` recreates faithfully.
     """
 
-    cwd_abs = _escape_text(_safe_path(Path(os.path.abspath(cwd))))
+    cwd_abs = _safe_prompt_path(Path(os.path.abspath(cwd)))
     today = datetime.now(tz=UTC).strftime("%Y-%m-%d")
+    active = list(tools or ())
+    tool_block, tool_guidelines = _tool_section(active)
+    # THE OPENER VARIES WITH THE TOOL COUNT, and pi's does not (issue #120's
+    # sixth completion criterion is explicitly "the 0-tool wording and
+    # behaviour are verified"). Pi's opener — "You help users by reading files,
+    # executing commands, editing code, and writing new files" — is static, so
+    # a pi run with no tools still claims all four. Aelix diverges by ONE
+    # sentence, because a prompt whose whole point is that it stops claiming
+    # absent capabilities cannot open by claiming them.
+    doing = (
+        "You act by USING TOOLS to inspect and modify the codebase — you do "
+        "the work, you do not merely describe it.\n\n"
+        if active
+        else "You have NO tools in this session: you cannot read, write or run "
+        "anything. Answer from what the user gives you, and say plainly when "
+        "something would need a tool you do not have.\n\n"
+    )
+    # Tool-carried guidelines FIRST, then the tool-agnostic ones — pi's order
+    # (``system-prompt.ts``: the conditional bullets and ``promptGuidelines``
+    # are added before the two always-included ones). The three below are what
+    # is left after the bullets that named ``read`` / ``bash`` moved onto those
+    # tools; each of the moved ones was a capability claim that survived
+    # ``--no-tools`` unchanged.
+    guidelines = [
+        *tool_guidelines,
+        "Be concise and direct. Prefer doing over explaining; lead with results.",
+        "Make the smallest change that solves the problem and match the "
+        "surrounding code's style and conventions.",
+        "Never invent file paths, APIs, or command output — confirm before "
+        "relying on them.",
+    ]
+    # Same rule for the convergence block: three of its four bullets are about
+    # tool-call loops and are dead text in a run that has none.
+    converging = [
+        "If a request is ambiguous, answer with your best interpretation (and "
+        "state the assumption) rather than looping or gathering data "
+        "indefinitely. (A single clarifying lookup is fine; endless "
+        "re-fetching is not.)",
+    ]
+    if active:
+        converging[:0] = [
+            "When you have gathered enough information, STOP calling tools and "
+            "give your final answer directly. Tools gather context; they are "
+            "not the answer.",
+            "Never call the same tool with the same arguments twice. If a tool "
+            "already returned a result, use that result — do not re-run it "
+            "hoping for something different.",
+        ]
+        converging.append(
+            "Prefer the fewest tool calls that get the job done; once you can "
+            "answer, answer."
+        )
     return (
         "You are Aelix, an interactive CLI coding agent. You help the user with "
         "software-engineering tasks directly in their terminal and working "
         "directory.\n\n"
-        "You act by USING TOOLS to inspect and modify the codebase — you do the "
-        "work, you do not merely describe it. Available tools: read (read a file), "
-        "write (create or overwrite a file), edit (precise string replacements), "
-        "bash (run a shell command), grep (search file contents), find (find files "
-        "by name), ls (list a directory).\n\n"
-        "Guidelines:\n"
-        "- Be concise and direct. Prefer doing over explaining; lead with results.\n"
-        "- Use tools to gather context before answering questions about the code — "
-        "read files and run commands rather than guessing at their contents.\n"
-        "- Make the smallest change that solves the problem and match the "
-        "surrounding code's style and conventions.\n"
-        "- After editing, verify your work (run the relevant tests or build via "
-        "bash when appropriate).\n"
-        "- Never invent file paths, APIs, or command output — read or run to "
-        "confirm before relying on them.\n"
-        "- Be careful with destructive or irreversible shell commands; do not run "
-        "them unless the intent is clear.\n\n"
-        "Converging to an answer:\n"
-        "- When you have gathered enough information, STOP calling tools and give "
-        "your final answer directly. Tools gather context; they are not the "
-        "answer.\n"
-        "- Never call the same tool with the same arguments twice. If a tool "
-        "already returned a result, use that result — do not re-run it hoping for "
-        "something different.\n"
-        "- If a request is ambiguous, answer with your best interpretation (and "
-        "state the assumption) rather than looping or gathering data "
-        "indefinitely. (A single clarifying lookup is fine; endless re-fetching "
-        "is not.)\n"
-        "- Prefer the fewest tool calls that get the job done; once you can "
-        "answer, answer.\n\n"
-        "Environment:\n"
+        + doing
+        + tool_block
+        + "Guidelines:\n"
+        + "".join(f"- {g}\n" for g in guidelines)
+        + "\nConverging to an answer:\n"
+        + "".join(f"- {c}\n" for c in converging)
+        + "\nEnvironment:\n"
         f"- Working directory: {cwd_abs}\n"
         f"- Platform: {platform.system()}\n"
         f"- Today's date: {today}\n"

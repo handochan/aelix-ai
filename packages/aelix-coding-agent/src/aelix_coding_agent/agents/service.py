@@ -217,6 +217,7 @@ class AgentProfileService:
             _resolve_append_chunks,
             _resolve_skill_dirs,
             _resolve_system_prompt,
+            _visible_tools,
         )
 
         # === 1. Resolve + refuse, BEFORE any mutation =======================
@@ -318,27 +319,6 @@ class AgentProfileService:
             )
             harness.set_skills(self.skills_holder["result"].skills)
 
-            # Then the prompt. It is the one place a mirror is unavoidable: there
-            # is no kernel setter, so the exact ``__init__`` join is reproduced
-            # from the exact ``_build_harness_options`` inputs — and ``skills=``
-            # is one of those inputs.
-            #
-            # Omitting it is not a cosmetic slip, it is #115 reopening on this
-            # path: ``set_skills`` above keeps ``/skills`` and the status panel
-            # listing the profile's skills while the model is told about none of
-            # them, which is precisely the human/model split #115 exists to
-            # close. Measured before this argument was passed: the factory build
-            # produced a 3885-char prompt containing ``<available_skills>`` and
-            # ``/agents use`` produced 3345 chars containing neither.
-            harness.state.system_prompt = compose_system_prompt(
-                _resolve_system_prompt(self.parsed, self.cwd),
-                _resolve_append_chunks(
-                    self.parsed,
-                    self.cwd,
-                    skills=self.skills_holder["result"].skills,
-                ),
-            )
-
             # Tools: the same three-way ``_resolve_active_tools`` result the
             # factory would compute, plus the same post-registration
             # ``--no-builtin-tools`` filter — written twice only because one runs
@@ -359,6 +339,50 @@ class AgentProfileService:
             # cut.
             await harness.set_active_tools(
                 names if names is not None else [t.name for t in harness.state.tools]
+            )
+
+            # Then the prompt — AFTER the tools, which is a reordering issue
+            # #120 forced and a strict improvement. It used to run first and
+            # therefore composed an identity from a tool set that was about to
+            # change; now the tool list it emits is the one the harness just
+            # took.
+            #
+            # It is the one place a mirror is unavoidable: there is no kernel
+            # setter, so the exact ``__init__`` join is reproduced from the exact
+            # ``_build_harness_options`` inputs — and ``skills=`` is one of those
+            # inputs. Omitting it is not a cosmetic slip, it is #115 reopening on
+            # this path: ``set_skills`` above keeps ``/skills`` and the status
+            # panel listing the profile's skills while the model is told about
+            # none of them, which is precisely the human/model split #115 exists
+            # to close. Measured before that argument was passed: the factory
+            # build produced a 3885-char prompt containing ``<available_skills>``
+            # and ``/agents use`` produced 3345 chars containing neither.
+            #
+            # NOT REDUNDANT with the rebuild ``set_active_tools`` just ran. That
+            # rebuild only happens on a harness the factory gave a
+            # ``system_prompt_rebuilder``; a harness built without one (SDK
+            # callers, and every test that constructs ``AgentHarness`` directly)
+            # would otherwise keep a stale prompt here, which is the regression
+            # this line existed to prevent in the first place. When a rebuilder
+            # IS installed the two produce the same string — same helpers, same
+            # ``parsed``, same holder — and that equality is pinned by
+            # ``tests/cli/test_prompt_tool_honesty.py::
+            # test_the_rebuilder_and_the_agents_use_path_compose_the_same_string``.
+            # (``tests/agents/test_prompt_composition.py`` pins something else:
+            # that ``compose_system_prompt`` matches the kernel's own join.)
+            harness.state.system_prompt = compose_system_prompt(
+                _resolve_system_prompt(
+                    self.parsed,
+                    self.cwd,
+                    tools=_visible_tools(
+                        harness.state.tools, harness.state.active_tool_names
+                    ),
+                ),
+                _resolve_append_chunks(
+                    self.parsed,
+                    self.cwd,
+                    skills=self.skills_holder["result"].skills,
+                ),
             )
 
             if self.parsed.model is not None or self.parsed.provider is not None:

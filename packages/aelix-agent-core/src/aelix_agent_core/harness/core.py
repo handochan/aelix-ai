@@ -211,6 +211,30 @@ class AgentHarnessOptions:
     # semantically equivalent for the supported lifecycle). NO ``@file``
     # resolution / NO auto-discovery — those land with ResourceLoader.
     append_system_prompt: list[str] = field(default_factory=list)
+    # Issue #120 — the seam that keeps the prompt's tool list true after the
+    # active set changes. Given the tools that are active NOW, return the WHOLE
+    # system prompt to install (base + whatever the product layer appends).
+    #
+    # WHY IT LIVES HERE AT ALL. Pi keeps both halves in one class: its
+    # ``AgentSession`` owns the tool registry AND ``_rebuildSystemPrompt``, and
+    # every registry mutation funnels through ``setActiveToolsByName``, which
+    # rebuilds (``agent-session.ts:928-943``, and ``_refreshToolRegistry``
+    # ``:2553`` ends by calling it). Aelix split those: the registry landed in
+    # this kernel while the prompt text stayed in ``aelix_coding_agent``. A
+    # callback is the join — the kernel never learns what a prompt says, and
+    # the product layer never learns when the registry changed.
+    #
+    # ``None`` disables the rebuild entirely, which is the correct state for a
+    # bare-loop / SDK caller that supplied a fixed ``system_prompt``, and for
+    # ``--system-prompt`` (the product layer simply returns the user's text
+    # unchanged — pi's ``customPrompt`` branch ignores ``selectedTools`` too).
+    #
+    # It returns the COMPLETE prompt rather than a base for this class to
+    # re-join, deliberately: ``append_system_prompt`` is not the only thing the
+    # product layer appends (``/agents use`` recomputes the skills catalog and
+    # the ``AGENTS.md`` chunk from live state), so a kernel-side re-join would
+    # silently revert those. One composition site, in the layer that owns it.
+    system_prompt_rebuilder: Callable[[list[AgentTool]], str] | None = None
     initial_messages: list[AgentMessage] = field(default_factory=list)
     convert_to_llm: ConvertToLlmFn | None = None
     transform_context: Callable[[list[AgentMessage], Any], list[AgentMessage] | Awaitable[list[AgentMessage]]] | None = None
@@ -577,6 +601,11 @@ class AgentHarness:
                 else appended
             )
 
+        # Issue #120 — held before ``_state`` exists so every later mutation of
+        # the active set can reach it. Read only through
+        # :meth:`_rebuild_system_prompt`.
+        self._system_prompt_rebuilder = options.system_prompt_rebuilder
+
         self._state = AgentState(
             system_prompt=base_system_prompt,
             model=options.model,
@@ -904,6 +933,13 @@ class AgentHarness:
         # Direct assignment — _action_set_active_tools/set_tools validators
         # would raise on any stale name that slipped through.
         self._state.active_tool_names = materialized
+        # Issue #120 — pi reaches its rebuild for free here, because
+        # ``_refreshToolRegistry`` ENDS in ``setActiveToolsByName``
+        # (``agent-session.ts:2553``). The direct assignment above is the whole
+        # reason aelix does not, so the call is explicit. Without it a
+        # ``register_tool`` at runtime auto-activates a tool the prompt has
+        # never heard of — which is issue #120's third completion criterion.
+        self._rebuild_system_prompt()
 
     # === Public properties ===
 
@@ -2327,6 +2363,20 @@ class AgentHarness:
 
         self._action_set_active_tools(tool_names)
 
+    def rebuild_system_prompt(self) -> None:
+        """Re-derive ``state.system_prompt`` from the active tools (issue #120).
+
+        The public face of :meth:`_rebuild_system_prompt`, for the one caller
+        that changes what the prompt should say WITHOUT changing the active
+        set: a build whose tool registry grew because extensions registered
+        after the prompt was first composed. Every other path reaches the
+        rebuild through :meth:`set_active_tools` or the extension-tool refresh.
+
+        A no-op when no ``system_prompt_rebuilder`` was supplied.
+        """
+
+        self._rebuild_system_prompt()
+
     def set_steering_mode(self, mode: str) -> None:
         """Pi parity: ``session.setSteeringMode``
         (``rpc-mode.ts:498-501`` + ``agent-session.ts:1587-1592``).
@@ -3625,6 +3675,53 @@ class AgentHarness:
                 f"set_active_tools: unknown tool name(s): {unknown!r}",
             )
         self._state.active_tool_names = list(names)
+        # Pi parity: ``setActiveToolsByName`` rebuilds the system prompt from
+        # the new tool set before returning (``agent-session.ts:940-942``).
+        # AFTER the assignment and after the validator, so a rejected call
+        # cannot leave the prompt describing a set the state never took.
+        self._rebuild_system_prompt()
+
+    def _rebuild_system_prompt(self) -> None:
+        """Re-derive ``state.system_prompt`` from the ACTIVE tools. Issue #120.
+
+        A no-op unless :attr:`AgentHarnessOptions.system_prompt_rebuilder` was
+        supplied — see that field for why the callback exists and what it is
+        expected to return.
+
+        Called from every place the active set changes:
+        :meth:`_action_set_active_tools` (the extension-facing setter and the
+        public :meth:`set_active_tools`) and
+        :meth:`_refresh_extension_tools` (``register_tool`` at runtime). Pi
+        funnels both through ``setActiveToolsByName``; aelix's refresh path
+        assigns ``active_tool_names`` directly to dodge the validator, so it
+        calls this itself rather than inheriting the rebuild.
+
+        FAILURE IS SWALLOWED, deliberately. The callback runs product-layer
+        code — it touches the filesystem (the docs signpost globs the bundled
+        directory, the extension signpost stats two package files) — and the
+        callers are a tool registration and an extension action. Letting an
+        ``OSError`` from a prompt refresh abort ``register_tool`` would turn a
+        cosmetic staleness into a broken session; the previous prompt stays
+        installed, which is wrong in exactly the way it was wrong before this
+        seam existed.
+        """
+
+        rebuilder = self._system_prompt_rebuilder
+        if rebuilder is None:
+            return
+        active = self._state.active_tool_names
+        if active is None:
+            tools = list(self._state.tools)
+        else:
+            allowed = set(active)
+            tools = [t for t in self._state.tools if t.name in allowed]
+        try:
+            self._state.system_prompt = rebuilder(tools)
+        except Exception:  # noqa: BLE001 — see the docstring
+            _log.debug(
+                "system_prompt_rebuilder raised; keeping the previous prompt",
+                exc_info=True,
+            )
 
     def _action_get_system_prompt(self) -> str:
         return self._current_system_prompt()

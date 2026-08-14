@@ -93,11 +93,34 @@ consent very much is:
   discovered `AGENTS.md` **and each file's absolute path** goes to whichever model
   provider you configured. `--no-context-files` / `-nc` removes all of that: the file
   contents, the fence, and the `path=` attributes. It is **not** a privacy opt-out.
-  Absolute paths remain in the prompt either way, because the base system prompt
-  states the working directory (`- Working directory: /abs/path`) independently of
-  any context file. If the directory layout itself is sensitive, the flag will not
-  help you; run somewhere else. The flag *is* inherited by delegated subagents, so a
-  child spawned mid-session does not re-discover the files you suppressed.
+  The flag *is* inherited by delegated subagents, so a child spawned mid-session does
+  not re-discover the files you suppressed.
+- **The base system prompt sends six absolute paths on every turn, including your
+  OS username, and no flag suppresses them.** `--no-context-files` removes none of
+  them, because they are in the base prompt rather than in the context chunk.
+  Measured on a default run, they are: the working directory
+  (`- Working directory: /abs/path`); the two extension write targets the
+  self-extension block names (`<agent dir>/extensions/<name>.py` and
+  `<cwd>/.aelix/extensions/<name>.py`); the two files inside the installed package
+  the block tells the model to read (`examples/echo/echo.py` and
+  `extensions/api.py`); and the bundled documentation directory. The first is
+  wherever you started Aelix, and on a normal `uv tool install` the agent dir and
+  the install prefix are both under `$HOME` — so **the account name of the user
+  running Aelix reaches the configured provider on every request**, together with
+  the shape of the directory layout.
+
+  This is deliberate and it is what pi does: pi's own prompt emits
+  `getReadmePath()` / `getDocsPath()` / `getExamplesPath()` and
+  `Current working directory: …` as absolute paths, with no `~` abbreviation
+  anywhere. Aelix keeps that (issue #162). Absolute paths are also load-bearing
+  rather than incidental — a bare `python` inside the `bash` tool resolves through
+  `PATH` to a different interpreter than the `uv tool install` virtualenv, so a
+  relative or `~`-shortened pointer is not equivalent for every consumer.
+
+  If the directory layout or the account name is sensitive, no flag will help you:
+  run somewhere else, run as a different user, or redact the outbound payload from
+  an extension — the `before_provider_payload` hook can rewrite it before it
+  leaves the process.
 - **Extensions are Python, loaded in-process, with the full privileges of the
   Aelix process.** Installing an extension is equivalent to running its author's
   code. `aelix extension install --require-signature` enforces a valid trusted

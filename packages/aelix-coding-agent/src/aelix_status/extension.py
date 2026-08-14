@@ -113,6 +113,17 @@ def create_status_tool(execute: Any) -> AgentTool:
 
     return AgentTool(
         name=STATUS_TOOL_NAME,
+        # Issue #120 named this tool by name: the old hard-coded "Available
+        # tools" sentence listed seven built-ins and omitted this one and
+        # ``agent``, both of which ship. The list is now derived, and a derived
+        # list only names a tool that carries a snippet — so this is where
+        # ``aelix_status`` gets back into the prose it was missing from.
+        #
+        # It EARNS the line rather than getting it by default: the model cannot
+        # guess from a schema that the answer to "what tools do I have / is
+        # this project trusted" is a tool call rather than a guess, and guessing
+        # it is the failure #101 shipped this tool to stop.
+        prompt_snippet="Report this aelix process's own runtime state",
         description=(
             "Report this aelix process's own runtime state: version, working "
             "directory, run mode, whether the project is trusted, the active "

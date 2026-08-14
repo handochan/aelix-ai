@@ -114,12 +114,39 @@ class Tool:
     can emit the right wire format. ``execute`` is optional at the type level
     so Tool definitions can be registered before their handler is bound — the
     agent loop will refuse to call a tool whose ``execute`` is ``None``.
+
+    ``prompt_snippet`` / ``prompt_guidelines`` are the SYSTEM-PROMPT half of a
+    tool, and they are deliberately NOT ``description`` (issue #120). Pi
+    parity: ``ToolDefinition.promptSnippet`` / ``.promptGuidelines``
+    (``coding-agent/src/core/extensions/types.ts:456-459``), whose own doc
+    comment fixes the contract this port keeps —
+
+        "Optional one-line snippet for the Available tools section in the
+        default system prompt. Custom tools are omitted from that section when
+        this is not provided."
+
+    An empty ``prompt_snippet`` is therefore not a defect: it means "on the
+    wire, but not named in the prose", and the prose says exactly that in one
+    sentence instead of implying the list is exhaustive.
+
+    ``description`` cannot serve this role. It is the AUTHORITATIVE wire text
+    that every adapter already sends on every request — measured, ``read``'s
+    is 298 chars and carries the offset/limit truncation semantics, and the
+    seven built-ins together are 5460 bytes of JSON per request — so
+    reprinting it in the prompt bills the model twice for the same facts.
+
+    Declared on ``Tool`` rather than on a separate definition type because
+    aelix has no such type: ``ExtensionAPI.register_tool`` takes a ``Tool``
+    directly, so this is the one place a single rule reaches both built-ins
+    and extension-registered tools.
     """
 
     name: str = ""
     description: str = ""
     parameters: dict[str, Any] = field(default_factory=dict)
     execute: ToolExecute | None = None
+    prompt_snippet: str = ""
+    prompt_guidelines: tuple[str, ...] = ()
 
 
 class ToolArgumentValidationError(Exception):
