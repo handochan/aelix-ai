@@ -462,15 +462,31 @@ class EventRenderer:
     # === helpers ===========================================================
 
     def _card_line_width(self) -> int:
-        """Cells available to a tool-card / diff line at the current width.
+        """Cells a tool-card / diff line may occupy at the current width.
 
-        Four cells are reserved: two for the ``│ `` gutter each row is built
-        with below, and two of slack so a wrapped cell-width measurement can
-        never land exactly on the terminal edge. The floor keeps a pathologically
-        narrow terminal from producing a card with no room for content at all.
+        Four cells are reserved: two for the ``│ `` gutter each row is built with
+        below, and two of slack so a cell-width measurement never lands exactly
+        on the terminal edge.
+
+        The floor is the HISTORICAL 76, and that is the important part. Cards and
+        the approval dialog overflow differently, so the same rule does not apply
+        to both:
+
+        * the dialog is a prompt-toolkit float with ``wrap_lines=False`` — a row
+          wider than the screen is CLIPPED, losing content silently, so its width
+          must never exceed the terminal;
+        * a card row is committed as a bare Rich ``Text`` to the ADAPTIVE
+          scrollback console, which WRAPS it. Exceeding the terminal costs a
+          second screen row; it loses nothing.
+
+        Deriving this cap from the terminal in both directions therefore made
+        narrow terminals strictly worse than before. Measured on a 60-column
+        terminal with a 63-cell tool-output line: at the old fixed 76 the line
+        survived and the console wrapped it, while ``60 - 4 = 56`` cut it to
+        ``...T…`` — output DELETED that main displayed. Only widen.
         """
 
-        return max(20, self._width_of() - 4)
+        return max(76, self._width_of() - 4)
 
     def _new_stream(self) -> StreamRenderer:
         return StreamRenderer(

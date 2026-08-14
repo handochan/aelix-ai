@@ -223,12 +223,18 @@ def build_approval_view(
         path = _path(request.args)
         diff_text = _synth_write_diff(path, _content(request.args))
         title = f"Create/overwrite {path or '(unknown path)'}?"
-        body = Group(Text(f"Create/overwrite {path}", style="bold"), _safe_diff(rd, diff_text, max_lines))
+        body = Group(
+            Text(f"Create/overwrite {path}", style="bold"),
+            _safe_diff(rd, diff_text, max_lines, _panel_content_cells(width)),
+        )
     elif request.kind == "edit":
         path = _path(request.args)
         diff_text = _synth_edit_diff(request.args)
         title = f"Edit {path or '(unknown path)'}?"
-        body = Group(Text(f"Edit {path}", style="bold"), _safe_diff(rd, diff_text, max_lines))
+        body = Group(
+            Text(f"Edit {path}", style="bold"),
+            _safe_diff(rd, diff_text, max_lines, _panel_content_cells(width)),
+        )
     else:
         title = f"Allow {request.tool_name}?"
         summary = ", ".join(f"{k}={v!r}" for k, v in list(request.args.items())[:6])
@@ -237,13 +243,45 @@ def build_approval_view(
     return _panel_to_ansi(title, body, width)
 
 
-def _safe_diff(render_diff: Callable[..., Any], diff_text: str, max_lines: int) -> Any:
+#: A Rich ``Panel`` costs 4 cells per row: two border columns and two of default
+#: padding. MEASURED, not assumed — a Panel of width 60/80/120 yields 56/76/116
+#: content cells. Note ``80 - 4 == 76``, which is where ``_render_diff``'s
+#: historical default came from; deriving it reproduces the old value exactly at
+#: the old width and only widens beyond it.
+_PANEL_CHROME_CELLS = 4
+
+
+def _panel_content_cells(width: int) -> int:
+    """Cells a diff row may occupy inside the dialog's Panel at *width*."""
+
+    return max(8, width - _PANEL_CHROME_CELLS)
+
+
+def _safe_diff(
+    render_diff: Callable[..., Any],
+    diff_text: str,
+    max_lines: int,
+    max_line_width: int,
+) -> Any:
+    """Render *diff_text* into the dialog body, capped to *max_line_width* cells.
+
+    Issue #166 — ``max_line_width`` is threaded here for the same reason it is
+    threaded at ``render.py``'s three call sites: without it ``_render_diff``
+    falls back to its 76-cell module default, so on a 120-column terminal the
+    write/edit approval body was still cut at 76 with an ellipsis while the bash
+    approval showed its command in full. The prompt asking permission to MUTATE
+    A FILE was the one still hiding what it was asking about.
+
+    The fallback path deliberately caps too: a ``render_diff`` that raises used
+    to return the diff verbatim, which is unbounded.
+    """
+
     from rich.text import Text  # noqa: PLC0415
 
     if not diff_text:
         return Text("(no changes to preview)", style="dim")
     try:
-        return render_diff(diff_text, max_lines=max_lines)
+        return render_diff(diff_text, max_lines=max_lines, max_line_width=max_line_width)
     except Exception:  # noqa: BLE001 — never let a diff render break the prompt
         return Text(diff_text)
 

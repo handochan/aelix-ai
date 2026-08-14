@@ -104,19 +104,39 @@ def _first_paragraph_row_width(display: list[str]) -> int:
 # === invariant that holds today and must keep holding =======================
 
 
-@pytest.mark.parametrize("cols", [60, 80, 200])
-async def test_streamed_text_never_overflows_the_terminal(cols: int) -> None:
-    """The rendered row must never be wider than the terminal, at any width.
+#: Word wrapping cannot land exactly on the budget, so a rendered row sits a few
+#: cells short of it. Measured slack across 60/80/200 and the ceiling cases is
+#: 1-4 cells; 10 leaves room for a longer word without letting a genuinely wrong
+#: width through.
+_WRAP_SLACK = 10
 
-    Passes today; it is the guard rail for step 3. This is the assertion that
-    catches a dynamic width reading the wrong number — in particular one taken
-    from Rich (which consults ``$COLUMNS`` before the ioctl) rather than from
-    prompt-toolkit, which is how the chrome and the scrollback would end up
-    laid out at two different widths in one frame.
+
+def _expected_width(cols: int, ceiling: int = 120) -> int:
+    """What the renderer should choose: ``min(terminal, ceiling)``."""
+
+    return min(cols, ceiling)
+
+
+@pytest.mark.parametrize("cols", [60, 80, 200])
+async def test_streamed_text_uses_the_terminal_it_was_given(cols: int) -> None:
+    """The rendered row must fill the width the renderer was supposed to pick.
+
+    NOT ``width <= cols``. That was the assertion here first and it cannot fail:
+    ``pyte.Screen.display`` pads every row to exactly ``cols``, so an rstripped
+    row is ``<= cols`` by construction — the same vacuous check this branch had
+    already removed from ``test_width.py``, reintroduced one file over. Asserting
+    the row comes CLOSE to the expected width can fail in both directions, which
+    is what makes it a guard rail: it catches a width read from the wrong source
+    (Rich consults ``$COLUMNS``, prompt-toolkit does not) as well as one that is
+    simply too small.
     """
 
+    expected = _expected_width(cols)
     width = _first_paragraph_row_width(await _render_paragraph_at(cols))
-    assert width <= cols, f"a streamed row was {width} cells on a {cols}-column terminal"
+    assert expected - width <= _WRAP_SLACK, (
+        f"a streamed row was {width} cells where {expected} was available "
+        f"on a {cols}-column terminal"
+    )
 
 
 # === the defect itself, pinned as xfail until step 3 ========================
@@ -170,7 +190,18 @@ async def test_run_tui_sizes_the_event_renderer_from_the_live_terminal() -> None
             enable_cpr=True,
         )
         with create_pipe_input() as pipe, create_app_session(input=pipe, output=output):
-            chrome = AelixChrome(pt_input=pipe, pt_output=output)
+            # Give the scrollback console the SAME width the ptk output reports.
+            # terminal_columns takes min(ptk, rich), and in a pytest process Rich
+            # has no tty so it would answer 80 and mask the reading under test.
+            # On a real 111-column terminal both layers report 111; this makes the
+            # fixture match that, rather than the harness's own environment.
+            from rich.console import Console
+
+            chrome = AelixChrome(
+                console=Console(file=io.StringIO(), force_terminal=True, width=cols),
+                pt_input=pipe,
+                pt_output=output,
+            )
             runtime = FakeRuntime(FakeHarness())
             task = asyncio.ensure_future(
                 shell_mod.run_tui(
@@ -200,6 +231,14 @@ async def test_run_tui_sizes_the_event_renderer_from_the_live_terminal() -> None
 # === the render_max_width ceiling (step 4) ==================================
 
 
+# COVERAGE BOUNDARY, stated rather than implied: these cover the STARTUP SEED
+# (settings -> run_tui -> the shared cell). The in-session push in
+# ``_apply_live_setting`` is a closure inside ``run_tui`` reachable only by
+# driving the /settings picker, and its sibling ``tool_card_max_lines`` has the
+# same untested branch. Removing the seed makes the first test below fail
+# (measured: ``116 <= 70``); removing only the live push would not.
+
+
 def _manager_with_ceiling(value: int | None) -> Any:
     from aelix_ai.settings.settings_manager import SettingsManager
 
@@ -215,17 +254,23 @@ async def test_the_ceiling_setting_narrows_a_wide_terminal() -> None:
     display = await _render_paragraph_at(200, _manager_with_ceiling(70))
     width = _first_paragraph_row_width(display)
     assert width <= 70, f"ceiling of 70 ignored: streamed row was {width} cells"
+    assert 70 - width <= _WRAP_SLACK, f"ceiling of 70 under-used: {width} cells"
     # ...and it really is the ceiling doing it — unset, the same terminal is wider.
     default = _first_paragraph_row_width(await _render_paragraph_at(200))
     assert default > 70
 
 
 async def test_the_ceiling_setting_does_not_widen_a_narrow_terminal() -> None:
-    """min(terminal, ceiling) — a generous ceiling must not overflow the screen."""
+    """min(terminal, ceiling) — a generous ceiling must not overflow the screen.
+
+    Asserted as "the row still fills the 60-column terminal" rather than
+    "``<= 60``", which cannot fail on a pyte grid.
+    """
 
     display = await _render_paragraph_at(60, _manager_with_ceiling(240))
     width = _first_paragraph_row_width(display)
-    assert width <= 60, f"a 240 ceiling overflowed a 60-column terminal ({width})"
+    assert 60 - width <= _WRAP_SLACK, f"a 240 ceiling did not fill 60 columns ({width})"
+    assert width <= 60
 
 
 async def test_an_unset_ceiling_uses_the_built_in_default() -> None:

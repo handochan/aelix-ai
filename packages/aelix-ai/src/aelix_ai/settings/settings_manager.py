@@ -1749,6 +1749,13 @@ class SettingsManager:
         v = self._settings.render_max_width
         if not isinstance(v, (int, float)):
             return None
+        # ``math.floor(nan)`` raises ValueError and ``math.floor(inf)`` raises
+        # OverflowError, and a hand-edited settings.json can hold either
+        # (``{"renderMaxWidth": 1e400}`` parses as inf). The exception would
+        # escape into /settings and the startup seed, so a non-finite value is
+        # treated as unset rather than as a number.
+        if isinstance(v, float) and not math.isfinite(v):
+            return None
         return max(60, min(240, math.floor(v)))
 
     def set_render_max_width(self, max_width: int) -> None:

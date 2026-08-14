@@ -1250,3 +1250,93 @@ def test_abort_notice_survives_an_aborted_retry_attempt() -> None:
     r.on_agent_event(_abort_turn_end())
 
     assert _outcome_lines(commits) == ["✖ rate limit", "✖ Operation aborted"]
+
+
+# === issue #166: the card/diff cap and the cell-vs-codepoint unit ============
+
+
+def test_card_line_width_only_ever_widens_from_the_historical_cap() -> None:
+    """Cards may exceed the terminal; the approval dialog may not.
+
+    A card row is committed as a bare Rich ``Text`` to the ADAPTIVE scrollback
+    console, which WRAPS it — overflowing costs a second screen row and loses
+    nothing. The approval dialog is a prompt-toolkit float with
+    ``wrap_lines=False``, where overflowing CLIPS. Deriving this cap from the
+    terminal in both directions therefore made narrow terminals strictly worse:
+    measured on a 60-column terminal, a 63-cell tool-output line survived at the
+    old fixed 76 and was cut to ``...T…`` at ``60 - 4 = 56`` — output DELETED
+    that main displayed.
+    """
+
+    from aelix_coding_agent.tui.render import EventRenderer
+
+    def cap(width: int) -> int:
+        r = EventRenderer(commit=lambda _c: None, set_tail=lambda _t: None, width=width)
+        return r._card_line_width()  # noqa: SLF001 — the unit under test
+
+    # Narrow terminals keep main's behaviour exactly.
+    assert cap(40) == 76
+    assert cap(60) == 76
+    assert cap(80) == 76
+    # Wide ones gain room, minus the "│ " gutter plus slack.
+    assert cap(120) == 116
+    assert cap(200) == 196
+
+
+def test_a_narrow_terminal_does_not_delete_tool_output() -> None:
+    """The regression above, asserted on the rendered card body."""
+
+    from aelix_coding_agent.tui.render import EventRenderer, _truncate_lines
+
+    line = "y" * 54 + "TAIL_KEEP"  # 63 cells: fits 76, exceeds 56
+    r = EventRenderer(commit=lambda _c: None, set_tail=lambda _t: None, width=60)
+    kept, _hidden = _truncate_lines(line, max_lines=5, max_line_width=r._card_line_width())  # noqa: SLF001
+    assert "TAIL_KEEP" in kept[0]
+
+
+def test_card_cap_follows_a_callable_width() -> None:
+    """A live reader must reach the card cap too, not only the streamed text."""
+
+    from aelix_coding_agent.tui.render import EventRenderer
+
+    live = {"cols": 200}
+    r = EventRenderer(
+        commit=lambda _c: None, set_tail=lambda _t: None, width=lambda: live["cols"]
+    )
+    assert r._card_line_width() == 196  # noqa: SLF001
+    live["cols"] = 60
+    assert r._card_line_width() == 76  # noqa: SLF001
+
+
+def test_tool_header_cap_is_measured_in_cells_not_codepoints() -> None:
+    """A Hangul header must not eat three scrollback rows where ASCII takes one.
+
+    Before issue #166 these caps used ``len()`` while ``_truncate_lines`` next
+    door used ``cell_len``. 50 Hangul codepoints pass an 80-CODEPOINT check at
+    100 cells; the adaptive console soft-wrapped the overflow, which is why the
+    mismatch survived unnoticed.
+    """
+
+    from aelix_coding_agent.tui.render import _HEADER_MAX_CELLS, _cap_cells
+
+    hangul = "가" * 50  # 50 codepoints, 100 cells
+    assert len(hangul) < _HEADER_MAX_CELLS  # the OLD check would have passed it
+    assert cell_len(hangul) > _HEADER_MAX_CELLS  # ...while it is really 100 cells
+
+    capped = _cap_cells(hangul, _HEADER_MAX_CELLS)
+    assert cell_len(capped) <= _HEADER_MAX_CELLS
+    assert capped.endswith("…")
+
+
+def test_cap_cells_leaves_short_ascii_untouched() -> None:
+    """The unit change must not alter behaviour for the common case."""
+
+    from aelix_coding_agent.tui.render import _HEADER_MAX_CELLS, _cap_cells
+
+    short = "read(path='/tmp/x.py')"
+    assert _cap_cells(short, _HEADER_MAX_CELLS) == short
+    exact = "z" * _HEADER_MAX_CELLS
+    assert _cap_cells(exact, _HEADER_MAX_CELLS) == exact
+    over = "z" * (_HEADER_MAX_CELLS + 1)
+    assert _cap_cells(over, _HEADER_MAX_CELLS).endswith("…")
+    assert cell_len(_cap_cells(over, _HEADER_MAX_CELLS)) <= _HEADER_MAX_CELLS

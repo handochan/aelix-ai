@@ -21,15 +21,23 @@ No SIGWINCH handling belongs here. prompt-toolkit already registers the handler
 polls its output size in the background for terminals that never deliver the
 signal, so a render-time read is both sufficient and the pattern already shipped.
 
-**Read the size from prompt-toolkit and nowhere else.** Rich's ``Console.size``
-consults ``$COLUMNS`` *before* the ioctl, while prompt-toolkit's Vt100 output
-uses the ioctl on the stdout fd only. Under a stale exported ``$COLUMNS`` — tmux,
-CI shells, anything after an ``stty`` — the two disagree, and a caller that mixes
-them lays the chrome and the scrollback out at two different widths in the same
-frame. That is a failure mode the old fixed 80 did not have. The rule
-``aelix_agents.consent`` settled on for the row axis applies verbatim: when two
-readings must be combined, take ``min()``, so a stale value can only make the
-measurement smaller (never overflow the real terminal).
+**Two layers measure the terminal differently, so this takes the ``min()``.**
+Rich's ``Console.size`` consults ``$COLUMNS`` and lets it OVERRIDE the ioctl;
+prompt-toolkit's Vt100 output asks the ioctl only. With an exported ``COLUMNS``
+that disagrees with the real terminal, the renderer would lay text out at the
+ioctl width while the scrollback console re-wrapped those rows at the ``$COLUMNS``
+width — producing ragged long/short pairs, and (measured) collapsing the whole
+feature back to an 80-cell ribbon when ``COLUMNS=80`` is exported on a 200-column
+terminal.
+
+An earlier revision of this module asserted the opposite rule — "read the size
+from prompt-toolkit and nowhere else" — which was wrong: the scrollback console
+is a consumer this module does not control, so refusing to look at it does not
+make the disagreement go away, it just hides it. The row-axis precedent is
+``aelix_agents.consent._terminal_rows``, which takes ``min()`` with the written
+argument that a stale environment value MAY ONLY MAKE THE MEASUREMENT SMALLER
+(finding F4). The same direction-of-error argument holds here: too small merely
+wastes columns, too large clips.
 """
 
 from __future__ import annotations
@@ -70,8 +78,17 @@ if TYPE_CHECKING:
 
 #: Ceiling. Full-bleed prose on an ultrawide terminal is measurably harder to
 #: read than a bounded measure — the eye loses the next line's start on the
-#: return sweep. Capping is a readability decision, not a technical limit;
-#: content is WRAPPED at this width, never truncated, so nothing is lost.
+#: return sweep. Capping is a readability decision, not a technical limit.
+#:
+#: What the cap costs depends on the surface, and an earlier revision of this
+#: comment claimed "content is WRAPPED at this width, never truncated, so
+#: nothing is lost" for all of them, which was false:
+#:
+#: * streamed prose IS wrapped by Rich — lossless, the claim held;
+#: * tool-card and diff lines are cut by ``render._truncate_lines`` with a
+#:   trailing ``…`` — so on a terminal wider than the ceiling, this number is
+#:   the reason a long line is elided rather than shown. The full body is
+#:   recoverable with ``/expand``, but it is a truncation, not a wrap.
 _MAX_RENDER_WIDTH = 120
 
 #: Used only when the terminal size cannot be read (pre-run, headless, a
@@ -108,7 +125,21 @@ def terminal_columns(
     # A zero/negative reading means "unknown" from the ioctl, not "no room".
     if columns <= 0:
         return _clamp(_FALLBACK_RENDER_WIDTH, max_width)
+    # ...and the scrollback console gets a vote, because it re-wraps whatever we
+    # emit. ``0`` from it means "no opinion" (degraded/absent), not "no room".
+    console_columns = _scrollback_columns(chrome)
+    if console_columns > 0:
+        columns = min(columns, console_columns)
     return _clamp(columns, max_width)
+
+
+def _scrollback_columns(chrome: AelixChrome) -> int:
+    """The chrome's Rich-console width, or ``0`` when it has no opinion."""
+
+    try:
+        return int(chrome.scrollback_columns)
+    except Exception:  # noqa: BLE001 — older/degraded chrome → no opinion
+        return 0
 
 
 def _clamp(columns: int, max_width: int) -> int:

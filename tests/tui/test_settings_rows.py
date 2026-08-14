@@ -263,15 +263,43 @@ async def test_inert_rows_do_not_promise_that_they_apply_next_launch() -> None:
         assert "not yet wired" in help_text, key
 
 
+#: Rows that live in the #111 "persist-only" block but DO have live consumers.
+#: Kept next to the guard that uses it so adding a wired row to that block
+#: without extending the guard is a visible omission rather than a silent one —
+#: ``render_max_width`` was added to the source comment and to this list in the
+#: same commit precisely because the guard had been iterating only the original
+#: two and would not have covered it.
+WIRED_PERSIST_BLOCK_ROWS = ("features_agents", "tool_card_max_lines", "render_max_width")
+
+
 async def test_wired_persist_only_rows_are_not_labelled_inert() -> None:
-    """The inversion guard. ``features_agents`` and ``tool_card_max_lines`` sit
-    in the same block but have real consumers, so a blanket rewrite of the
-    section would falsely demote them."""
+    """The inversion guard. These rows sit in the same block but have real
+    consumers, so a blanket rewrite of the section would falsely demote them."""
     sm = SettingsManager.in_memory({})
     rows = _rows(sm)
-    for key in ("features_agents", "tool_card_max_lines"):
+    for key in WIRED_PERSIST_BLOCK_ROWS:
         assert key not in INERT_ROWS, key
         assert "not yet wired" not in rows[key].help, key
+
+
+async def test_the_wired_list_matches_the_source_comment() -> None:
+    """The comment above the block and the guard's list must not drift apart.
+
+    Both are hand-maintained, and the pairing is the only thing that makes the
+    guard trustworthy: a row named as an exception in prose but missing from the
+    list is exactly the gap this commit found.
+    """
+
+    from pathlib import Path
+
+    import aelix_coding_agent.tui.settings_rows as rows_mod
+
+    source = Path(rows_mod.__file__).read_text(encoding="utf-8")
+    block = source.split("genuinely wired and whose", 1)[1].split("WHEN YOU WIRE", 1)[0]
+    named = {line.split("``")[1] for line in block.splitlines() if "``" in line}
+    assert named == set(WIRED_PERSIST_BLOCK_ROWS), (
+        f"comment names {sorted(named)}, guard iterates {sorted(WIRED_PERSIST_BLOCK_ROWS)}"
+    )
 
 
 async def test_skill_commands_help_does_not_claim_skills_are_unconsumed() -> None:

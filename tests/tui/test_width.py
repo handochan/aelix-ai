@@ -53,8 +53,15 @@ class _FakeApp:
 
 
 class _FakeChrome:
-    def __init__(self, columns: int | BaseException) -> None:
+    def __init__(
+        self,
+        columns: int | BaseException,
+        scrollback_columns: int = 0,
+    ) -> None:
         self.app = _FakeApp(columns)
+        # 0 = "no opinion", the degraded-console case. A real chrome reports its
+        # Rich console width here, which can differ from the ptk reading.
+        self.scrollback_columns = scrollback_columns
 
 
 # === the reader =============================================================
@@ -405,3 +412,55 @@ async def test_a_baked_width_damages_the_command_on_resize(start: int, end: int)
     assert "Run shell command?" in joined  # the dialog really did paint
     assert "╯" not in joined  # ...but its frame was clipped open
     assert _TOKEN not in _frame_body_text(display)  # ...and the command was damaged
+
+
+# === the two layers disagree ================================================
+#
+# Rich's Console.size lets $COLUMNS override the ioctl; prompt-toolkit's vt100
+# output asks the ioctl only. The renderer lays text out at one width and the
+# scrollback console re-wraps it at the other. Measured on a real 200-column pty
+# with COLUMNS=80 exported: ptk 200, rich 80, and the streamed row came back at
+# 79 cells — the feature silently reverting to the ribbon it exists to remove.
+#
+# The pyte harness cannot see this: tests/tui/_pyte.py injects
+# Console(width=cols), forcing the two readings equal by construction. So this
+# has to be asserted here, on the reader itself.
+
+
+def test_the_scrollback_console_narrows_the_render_width() -> None:
+    """min(ptk, rich) — an exported COLUMNS may only make it SMALLER."""
+
+    chrome = _FakeChrome(200, scrollback_columns=80)
+    assert terminal_columns(chrome) == 80  # type: ignore[arg-type]
+
+
+def test_a_wider_scrollback_console_does_not_widen_the_render_width() -> None:
+    """...and never larger: the ioctl still bounds it."""
+
+    chrome = _FakeChrome(70, scrollback_columns=200)
+    assert terminal_columns(chrome) == 70  # type: ignore[arg-type]
+
+
+def test_a_console_with_no_opinion_is_ignored() -> None:
+    """A degraded console reports 0, which must not collapse the width to 1."""
+
+    assert terminal_columns(_FakeChrome(100, scrollback_columns=0)) == 100  # type: ignore[arg-type]
+
+
+def test_a_raising_console_accessor_is_ignored() -> None:
+    """A chrome torn down mid-read must not take the render width with it."""
+
+    class _Raising:
+        def __init__(self) -> None:
+            self.app = _FakeApp(100)
+
+        @property
+        def scrollback_columns(self) -> int:
+            raise RuntimeError("console torn down")
+
+    assert terminal_columns(_Raising()) == 100  # type: ignore[arg-type]
+
+
+def test_the_ceiling_still_applies_after_the_min() -> None:
+    chrome = _FakeChrome(400, scrollback_columns=300)
+    assert terminal_columns(chrome) == _MAX_RENDER_WIDTH  # type: ignore[arg-type]

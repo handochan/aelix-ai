@@ -191,7 +191,7 @@ def build_settings_rows(sm: SettingsManager) -> list[SettingsRow]:
         # definition (settings_manager.py, types.py) and this file. All eleven
         # of the #111 rows still return ZERO consumers.
         #
-        # The two exceptions in this block, which are genuinely wired and whose
+        # The three exceptions in this block, which are genuinely wired and whose
         # help text is therefore left alone:
         #   * ``features_agents``      -> cli/entry.py::_build_harness_options
         #   * ``tool_card_max_lines``  -> tui/shell.py -> render.py (live)
@@ -243,9 +243,11 @@ def build_settings_rows(sm: SettingsManager) -> list[SettingsRow]:
                 str(s.get_render_max_width()) if s.get_render_max_width() is not None else "default"
             ),
             help=(
-                "Ceiling on render width in columns (60-240). A CEILING, not a "
-                "fixed width: the renderer uses min(terminal, this). Persisted; "
-                "applies live (next message)."
+                "Ceiling on render width in columns (60-240; unset = 120). A "
+                "CEILING, not a fixed width: the renderer uses min(terminal, "
+                "this), so it narrows a wide terminal and does nothing on a "
+                "narrow one. Setting 120 restores the unset behaviour. "
+                "Persisted; applies live (next message)."
             ),
             live=True,
             int_range=(60, 240),
