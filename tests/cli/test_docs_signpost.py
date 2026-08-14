@@ -39,6 +39,21 @@ from aelix_coding_agent.cli.args import Args
 from aelix_coding_agent.cli.entry import _build_harness_options
 from aelix_coding_agent.help import bundled_docs_dir, topic_names
 
+
+# Issue #120 — ``build_system_prompt`` takes the ACTIVE tool set and it is
+# REQUIRED, so every call here has to say which session it is describing. The
+# blocks these tests assert on are themselves tool-gated: the docs signpost
+# follows ``read`` and the self-extension signpost follows ``write``, so a bare
+# call would emit neither and the assertions would fail for a reason that has
+# nothing to do with what they are testing.
+def _all_builtin_tools() -> list:
+    from aelix_coding_agent.tools import create_all_tools
+
+    return list(create_all_tools(".").values())
+
+
+_ALL_TOOL_NAMES_SET = {"read", "bash", "edit", "write", "grep", "find", "ls"}
+
 _HEADER = "Aelix documentation"
 #: The block emits ``<dir>/<name>.md`` once and then a bare comma-separated
 #: list. Recovered here rather than hardcoded so the test reads the same names
@@ -49,7 +64,7 @@ _LIST_MARKER = "<name> is one of: "
 def _docs_block(prompt: str) -> str:
     """The emitted block, sliced out of the assembled prompt.
 
-    Sliced from the real prompt rather than taken from ``_docs_signpost()``
+    Sliced from the real prompt rather than taken from ``_docs_signpost(_ALL_TOOL_NAMES_SET)``
     directly: a block that is correct in isolation and never reaches the prompt
     is the failure this slice makes impossible to miss.
     """
@@ -65,7 +80,7 @@ def _listed_names(block: str) -> list[str]:
 
 
 def test_the_block_is_in_the_prompt_and_names_the_bundled_directory() -> None:
-    prompt = build_system_prompt("/some/project")
+    prompt = build_system_prompt("/some/project", tools=_all_builtin_tools())
     block = _docs_block(prompt)
 
     docs = bundled_docs_dir()
@@ -83,7 +98,7 @@ def test_every_name_the_block_lists_resolves_to_a_file_on_disk() -> None:
     block agrees with the function it calls.
     """
 
-    block = _docs_block(build_system_prompt("/some/project"))
+    block = _docs_block(build_system_prompt("/some/project", tools=_all_builtin_tools()))
     names = _listed_names(block)
     assert names, block
 
@@ -102,7 +117,7 @@ def test_the_header_is_scoped_to_questions_about_aelix_itself() -> None:
     ordinary work — the same finding that put a trigger clause on the extension
     signpost's header (review MINOR 6 there). pi scopes its block too."""
 
-    block = _docs_block(build_system_prompt("/some/project"))
+    block = _docs_block(build_system_prompt("/some/project", tools=_all_builtin_tools()))
     header = block.splitlines()[0]
     assert "read one only when the user asks about Aelix itself" in header
 
@@ -119,7 +134,7 @@ def test_a_highlight_naming_a_guide_that_is_not_bundled_is_omitted(
         "_DOC_HIGHLIGHTS",
         (("guide-that-does-not-exist", "covers nothing"),),
     )
-    prompt = build_system_prompt("/some/project")
+    prompt = build_system_prompt("/some/project", tools=_all_builtin_tools())
     block = _docs_block(prompt)
 
     assert "guide-that-does-not-exist" not in prompt
@@ -142,8 +157,8 @@ def test_the_whole_block_disappears_when_nothing_is_bundled(
     empty.mkdir()
     monkeypatch.setattr(registry, "bundled_docs_dir", lambda: empty)
 
-    assert _agent_context._docs_signpost() == ""
-    prompt = build_system_prompt("/some/project")
+    assert _agent_context._docs_signpost(_ALL_TOOL_NAMES_SET) == ""
+    prompt = build_system_prompt("/some/project", tools=_all_builtin_tools())
     assert _HEADER not in prompt
     # ...and the rest of the base prompt is untouched.
     assert "Extending yourself" in prompt
@@ -164,7 +179,7 @@ def test_a_guide_added_to_the_bundle_appears_with_no_code_change(
     (fake / "brand-new-guide.md").write_text("# Brand New\n", encoding="utf-8")
     monkeypatch.setattr(registry, "bundled_docs_dir", lambda: fake)
 
-    block = _docs_block(build_system_prompt("/some/project"))
+    block = _docs_block(build_system_prompt("/some/project", tools=_all_builtin_tools()))
     assert _listed_names(block) == ["brand-new-guide"]
 
 
@@ -202,7 +217,7 @@ def test_every_bundled_guide_fits_in_one_read() -> None:
         DEFAULT_MAX_LINES,
     )
 
-    block = _docs_block(build_system_prompt("/some/project"))
+    block = _docs_block(build_system_prompt("/some/project", tools=_all_builtin_tools()))
     assert "small enough for `read` to return whole" in block
 
     docs = bundled_docs_dir()
@@ -259,7 +274,7 @@ def test_the_block_does_not_repeat_the_extension_signposts_files() -> None:
     this block must not re-emit them, or the reader gets four paths for two
     jobs and no ordering between them."""
 
-    block = _docs_block(build_system_prompt("/some/project"))
+    block = _docs_block(build_system_prompt("/some/project", tools=_all_builtin_tools()))
     assert "echo.py" not in block
     assert "api.py" not in block
 
@@ -276,7 +291,7 @@ def test_the_signposts_no_manifest_clause_does_not_contradict_this_block() -> No
     failure the signpost exists to fix.
     """
 
-    prompt = build_system_prompt("/some/project")
+    prompt = build_system_prompt("/some/project", tools=_all_builtin_tools())
     assert "for that file there is no manifest" in prompt
     assert "aelix-plugin.toml" in _docs_block(prompt)
 
@@ -289,7 +304,7 @@ def test_the_docs_block_comes_before_the_extension_signpost() -> None:
     premise is that it holds the most recency-weighted slot of the base prompt.
     Documentation is a place to look, not a thing to do."""
 
-    prompt = build_system_prompt("/some/project")
+    prompt = build_system_prompt("/some/project", tools=_all_builtin_tools())
     assert prompt.index(_HEADER) < prompt.index("Extending yourself")
 
 
@@ -303,7 +318,7 @@ def test_the_block_prose_stays_within_its_measured_budget() -> None:
     that growing this block into a chapter has to be a decision.
     """
 
-    block = _agent_context._docs_signpost()
+    block = _agent_context._docs_signpost(_ALL_TOOL_NAMES_SET)
     docs_dir = str(bundled_docs_dir())
     assert docs_dir in block
     prose = len(block) - len(docs_dir)
@@ -316,7 +331,7 @@ def test_the_names_line_carries_no_path_the_model_must_assemble_twice() -> None:
     repo-relative paths. Emitting one absolute ``<dir>/<name>.md`` form removes
     that ambiguity, so no ``docs/<something>.md`` shape may appear here."""
 
-    block = _docs_block(build_system_prompt("/some/project"))
+    block = _docs_block(build_system_prompt("/some/project", tools=_all_builtin_tools()))
     docs_dir = str(bundled_docs_dir())
     stripped = block.replace(f"{docs_dir}/<name>.md", "")
     assert not re.search(r"\bdocs/[\w.-]+\.md", stripped), stripped
@@ -340,7 +355,7 @@ async def test_explicit_system_prompt_still_drops_the_block() -> None:
     proves survives the override — so a version of this test that looked only
     at ``system_prompt`` would have been green under exactly the design it is
     supposed to reject (verified: wrapping ``entry._resolve_append_chunks`` to
-    append ``_docs_signpost()`` leaves ``system_prompt`` clean and is caught
+    append ``_docs_signpost(_ALL_TOOL_NAMES_SET)`` leaves ``system_prompt`` clean and is caught
     only by the second assertion).
     """
 

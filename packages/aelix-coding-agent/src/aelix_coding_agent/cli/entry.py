@@ -1006,6 +1006,72 @@ def _resolve_prompt_template_dirs(
     return dirs
 
 
+async def apply_post_registration_tool_policy(
+    harness: Any,
+    parsed: Args,
+    deferred_tools: list[str] | None,
+) -> None:
+    """Settle the active tool set — and therefore the prompt — after registration.
+
+    EXTRACTED FROM ``_harness_factory`` SO A TEST CAN REACH IT (#120 review,
+    HIGH). ``_harness_factory`` is nested inside :func:`_async_main`, so the
+    only way to exercise this block was to re-implement it in the test — which
+    is what the first revision of ``tests/cli/test_prompt_tool_honesty.py``
+    did, and which made the third branch below unreachable from any test:
+    deleting ``rebuild_system_prompt()`` left all 105 prompt tests green. That
+    is the "a double that omits what production does proves nothing" trap, in
+    the file whose own docstring cites it.
+
+    Public (no leading underscore) because it is now part of the contract
+    between the factory and its tests, not an implementation detail of one
+    function.
+
+    Three branches, and the third is the one #120 turns on:
+
+    1. ``--no-builtin-tools`` (and not ``--no-tools``) — built-ins off,
+       extension + MCP tools on. ADR-0196: ``active_tool_names`` is seeded
+       BEFORE extensions register, so a POST-registration filter is the only
+       faithful expression, and this is the first point where it can be
+       written. ``and not parsed.no_tools`` is MANDATORY:
+       ``_resolve_active_tools`` returns ``[]`` for ``--no-tools`` and
+       ``_action_set_active_tools`` is non-destructive, so without the guard
+       this would re-enable every extension and MCP tool the user just killed.
+    2. ``--tools`` (#155) — apply the allowlist stripped from the options
+       before construction. ``elif``, because branch 1 already intersected
+       ``parsed.tools`` and applying both would re-admit the built-ins it just
+       stripped.
+    3. Neither — nothing narrowed the set, so nothing called
+       ``set_active_tools``, so nothing rebuilt the prompt. The prompt is still
+       the FIRST-build one, which could not see ``agent`` or ``aelix_status``
+       (appended after it) nor any on-disk extension's tools (loaded inside the
+       factory). That is exactly the understatement #120 was filed for — the
+       sentence was wrong by two before anyone touched it — so this branch
+       rebuilds explicitly. Reload lands here too (``on_reload=True`` returns
+       an unfiltered options object, so ``deferred_tools`` is ``None``), which
+       is what makes the reload half of #120's third completion criterion true.
+    """
+
+    if parsed.no_builtin_tools and not parsed.no_tools:
+        names = [t.name for t in harness.state.tools if t.name not in ALL_TOOL_NAMES]
+        if parsed.tools:
+            allow = set(parsed.tools)
+            names = [n for n in names if n in allow]
+        await harness.set_active_tools(names)
+    elif deferred_tools is not None:
+        # Identical validation to the one ``__init__`` used to run; the only
+        # change is that it raises from HERE, where ``harness.state.tools`` is
+        # the live registry the message needs.
+        try:
+            await harness.set_active_tools(list(deferred_tools))
+        except AgentHarnessError as exc:
+            raise UnknownToolNamesError(
+                str(exc),
+                available=sorted(t.name for t in harness.state.tools),
+            ) from exc
+    else:
+        harness.rebuild_system_prompt()
+
+
 def _visible_tools(
     tools: Sequence[AgentTool], active: Sequence[str] | None
 ) -> list[AgentTool]:
@@ -1060,7 +1126,11 @@ def _resolve_system_prompt(
 
 
 def _resolve_append_chunks(
-    parsed: Args, cwd: str, *, skills: list[Any] | None = None
+    parsed: Args,
+    cwd: str,
+    *,
+    skills: list[Any] | None = None,
+    live_tool_names: Sequence[str] | None = None,
 ) -> list[str]:
     """The APPEND chunks for one harness build (ADR-0196).
 
@@ -1137,10 +1207,15 @@ def _resolve_append_chunks(
     # custom ``--system-prompt`` too — measured — so this is deliberately NOT
     # inside ``build_system_prompt`` where the extension signpost lives and a
     # custom prompt drops it.
+    # ``live_tool_names`` is passed only by the REBUILD path, where a real
+    # active set exists; the first build has none and falls back to the
+    # flag-level predicate. Without it the catalog gate and the tool block
+    # disagreed after any runtime tool change — see ``skills_catalog_visible``.
     if skills and skills_catalog_visible(
         no_tools=parsed.no_tools,
         no_builtin_tools=parsed.no_builtin_tools,
         active_tools=_resolve_active_tools(parsed),
+        live_tool_names=live_tool_names,
     ):
         catalog = format_skills_for_prompt(skills)
         if catalog:
@@ -1443,7 +1518,16 @@ async def _build_harness_options(
         live_skills = skills_provider() if skills_provider is not None else skills
         return compose_system_prompt(
             _resolve_system_prompt(parsed, cwd, tools=active),
-            _resolve_append_chunks(parsed, cwd, skills=live_skills),
+            _resolve_append_chunks(
+                parsed,
+                cwd,
+                skills=live_skills,
+                # The rebuild KNOWS the active set, so the skills catalog's
+                # read-tool gate must consult it rather than re-deriving from
+                # the flags — otherwise the catalog and the tool block, both in
+                # the same prompt, disagree after any runtime tool change.
+                live_tool_names=[t.name for t in active],
+            ),
         )
 
     options.system_prompt_rebuilder = _rebuild
@@ -2625,53 +2709,7 @@ async def _async_main(argv: list[str]) -> int:
         # registry plus the extension-tool union — built-ins are *app* tools
         # passed via ``options.tools``, never extension tools, so none can
         # reappear.
-        if parsed.no_builtin_tools and not parsed.no_tools:
-            names = [t.name for t in harness.state.tools if t.name not in ALL_TOOL_NAMES]
-            if parsed.tools:
-                # ``--no-builtin-tools --tools a,b`` is an INTERSECTION: the
-                # allowlist still applies, it just cannot readmit a built-in.
-                allow = set(parsed.tools)
-                names = [n for n in names if n in allow]
-            await harness.set_active_tools(names)
-        elif deferred_tools is not None:
-            # #155 — apply the allowlist stripped from ``opts`` above. Identical
-            # validation to the one ``__init__`` used to run; the only change is
-            # that it raises from HERE, where ``harness.state.tools`` is the live
-            # registry the message needs.
-            #
-            # ``elif``: the branch above already intersects ``parsed.tools`` for
-            # ``--no-builtin-tools``, and applying both would re-admit the
-            # built-ins it just stripped.
-            #
-            # No reload guard is needed: ``_build_harness_options`` already
-            # returns ``active_tool_names=None`` on reload (ADR-0179 — reload()
-            # step-6 restores its own pre-teardown filter), so ``deferred_tools``
-            # is ``None`` there and this branch cannot fire.
-            try:
-                await harness.set_active_tools(list(deferred_tools))
-            except AgentHarnessError as exc:
-                raise UnknownToolNamesError(
-                    str(exc),
-                    available=sorted(t.name for t in harness.state.tools),
-                ) from exc
-        else:
-            # Issue #120 — THE POST-REGISTRATION REBUILD, and the reason it has
-            # its own branch. Both branches above end in ``set_active_tools``,
-            # which rebuilds on the way out; this is the third case — no flag
-            # narrowed the set, so nothing called the setter, and the prompt is
-            # still the FIRST-build one from ``_build_harness_options``. That
-            # one could not see ``agent`` or ``aelix_status`` (appended after
-            # it) nor any on-disk extension's tools (loaded inside this
-            # factory), which is exactly the understatement #120 was filed for:
-            # the sentence was wrong by two before anyone touched it.
-            #
-            # ``harness.state.tools`` here is the LIVE registry — app tools ∪
-            # extension tools ∪ MCP tools — and ``active_tool_names`` is
-            # whatever survived. Reload lands here too (``on_reload=True``
-            # returns an unfiltered options object, so ``deferred_tools`` is
-            # ``None``), which is what makes the reload half of #120's third
-            # completion criterion true.
-            harness.rebuild_system_prompt()
+        await apply_post_registration_tool_policy(harness, parsed, deferred_tools)
         # Issue #22 — replay pending provider registrations into the LIVE
         # ModelRegistry. Extensions that call ``ctx.api.register_provider``
         # during setup queue onto ``runtime.pending_provider_registrations``;

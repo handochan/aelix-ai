@@ -68,19 +68,22 @@ because it is not the description.
   literal omitted now carry their own: `aelix_status` and `agent`. The issue's complaint
   that the sentence "omits `agent` and `aelix_status`" is answered by them being able to
   appear at all.
-- `build_system_prompt(cwd, *, tools=None)` emits pi's bulleted block, `(none)` for the
-  empty set, and pi's disclaimer sentence. `tools=None` means "the caller did not scope
-  one" and yields `(none)` — pi's own default, and the fail-honest direction: the old
-  literal over-claimed, an unscoped call now under-claims.
-- `cli.entry._resolve_system_prompt` takes `tools` as a **required keyword argument**.
+- `build_system_prompt(cwd, *, tools)` emits pi's bulleted block, `(none)` for the empty
+  set, and pi's disclaimer sentence. `tools` is **required** — see §5; the first revision
+  defaulted it to `None` and called that fail-honest, which it is not.
+- `cli.entry._resolve_system_prompt` takes `tools` as a required keyword argument too.
   Both production callers go through it. This is not defensive: the last time one of the
   two silently omitted an argument the other passed (`skills=`, #115), `/agents use`
   shipped a prompt that told the model about none of the profile's skills while
   `/skills` still listed them, and nothing visible broke.
+- **The two signposts are gated on the tool each one names** — the documentation block on
+  `read`, the self-extension block on `write`, its two source pointers on `read` again.
+  Pi does the same for its skills catalog (`if (hasRead && …)`). §5 has the defect that
+  forced this.
 
 ### Guidelines follow their tool
 
-Two of aelix's static guideline bullets named `read` and `bash`, so a `--no-tools` run was
+Three of aelix's static guideline bullets named `read` or `bash`, so a `--no-tools` run was
 still instructed to "read files" and to "verify your work … via bash". They moved onto
 those tools' `prompt_guidelines`. Three of the four "Converging to an answer" bullets are
 about tool-call loops and are now emitted only when there are tools to call.
@@ -96,12 +99,13 @@ overclaim this issue is about.
 
 Pi keeps the tool registry and the prompt builder in one class. Aelix split them: the
 registry landed in `aelix_agent_core`, the prompt text stayed in `aelix_coding_agent`. The
-join is a callback, `AgentHarnessOptions.system_prompt_rebuilder`, invoked from
-`_action_set_active_tools` (pi's `setActiveToolsByName`) and from
+join is a callback, `AgentHarnessOptions.system_prompt_rebuilder`, invoked from **three**
+writers: `_action_set_active_tools` (pi's `setActiveToolsByName`),
 `_refresh_extension_tools` (pi's `_refreshToolRegistry` — which reaches its rebuild for
 free by ending in the setter; aelix's assigns `active_tool_names` directly to dodge the
-validator, so the call is explicit). `cli.entry` supplies the callback; the kernel never
-learns what a prompt says.
+validator, so the call is explicit), and `set_tools` (the atomic registry replace, which
+§5 records as the one the first revision missed while asserting there was nothing to
+miss). `cli.entry` supplies the callback; the kernel never learns what a prompt says.
 
 Three properties of the callback are load-bearing:
 
@@ -110,7 +114,7 @@ Three properties of the callback are load-bearing:
   so a kernel-side re-join would silently revert them.
 - It reads the skills **through a provider**, never a captured value. Pi's
   `_rebuildSystemPrompt` re-reads `_resourceLoader.getSkills()` on every call
-  (`agent-session.ts:1046`) for the same reason: a snapshot would re-emit the previous
+  (`agent-session.ts:1043`) for the same reason: a snapshot would re-emit the previous
   profile's catalog on the next tool change.
 - It closes over the shared mutable `Args`, so `--system-prompt` and a profile's
   `system_prompt: replace` are honoured for free — pi's `customPrompt` branch ignores
@@ -196,11 +200,23 @@ keeping — applies to documentation too: a partial list reads as a complete one
 
 ## 4. Cost, honestly
 
-`build_system_prompt` with the seven built-ins went **4051 → 4615 chars (+564, +13.9%)**,
-paid on every turn. The breakdown: the bulleted list is longer than the inline sentence it
-replaced, the disclaimer sentence is ~108 chars, and `write`'s guideline is new. A
-`--no-tools` run is **3547**, i.e. smaller than before, and a `--tools read` run is 4015 —
-the cost scales with what the session actually has, which the literal never did.
+**Every number below is for `cwd = /some/project`**, re-measured on the final tree. The
+first revision of this section quoted numbers taken with a longer cwd and an intermediate
+build, so they were not reproducible as written — review caught it, and the fix is to state
+the input rather than to trust a remembered figure.
+
+| build | chars |
+|---|---|
+| pre-change (`015834c`) | 4027 |
+| default, 7 built-ins | 4625 |
+| `--tools read,write` | 4113 |
+| `--tools read` | 2175 |
+| `--no-tools` | 963 |
+
+So the default turn costs **+598 chars (+14.8%)** and every narrower session costs *less*
+than before — sharply less, because the two signposts are now gated on the tool each one
+names. That gating is not an optimisation; it is §5's correctness fix, and the byte saving
+is a side effect.
 
 The signpost prose budget rose **1320 → 1600** (measured 1520), bought by #161's ask
 clause and its fallback, following that test's standing rule that every raise cites the
@@ -217,15 +233,123 @@ fix is to give the rebuild a loader rather than to skip it.
 
 ---
 
-## 5. What is NOT closed
+## 5. The review round, and what the first commit got wrong
 
-- **No real model has been run against any of this.** Every number here comes from real
-  code building real prompt text, real `tool.execute()` calls, real adapter payloads and
-  the real harness factory — none from a provider turn. `cli/agent_context.py`'s module
-  docstring is binding on exactly this point: rewordings must re-run the probe, not merely
-  sound safer, and #161's own issue text makes a live probe the gate for shape 1. The
-  batch's live probe is a separate, explicit step; until it runs, **#161 stays open**.
-- **#101's live-model completion criterion** is still unverified and is covered by the
-  same probe.
-- **`/extension new <name>`** (issue #161 shape 2) is unbuilt by design, pending that
-  measurement.
+`652c4ce` was reviewed in five isolated contexts, each finding verified by an independent
+agent instructed to default to REFUTED. It reported **37 findings**; the ones that changed
+the code are below. They are recorded here rather than quietly fixed because three of them
+are the same class of error this repo keeps catching, and one of them was a false statement
+in the commit message itself.
+
+- 🔴 **The commit message's sabotage claim was false.** It said "dropping either rebuild
+  call … turns the corresponding test RED". True for the two kernel calls; **not** for the
+  post-registration one in `_harness_factory` — deleting that left all 105 prompt tests
+  green. The cause: the test helper *re-implemented* `_harness_factory`'s three-way branch
+  instead of calling it, so the production line was unreachable from any test. That is
+  precisely "a double that omits what production does proves nothing", committed inside the
+  file whose own docstring cites it. Fixed by extracting
+  `entry.apply_post_registration_tool_policy` — a module-level function both the factory and
+  the tests call.
+- 🔴 **The 0-tool prompt contradicted itself.** The opener, the guidelines and the
+  convergence bullets varied with the active set; the docs signpost and the self-extension
+  signpost did not. So `--no-tools` said "you cannot read, write or run anything" and then,
+  thirty lines later, named a directory to `read`, a path to `write` to, and a `grep -nE`
+  command. A worse contradiction than the one #120 was filed about, invented by the fix for
+  it. Both blocks now follow the tool they name — which is pi's own move: it appends its
+  skills catalog only `if (hasRead && skills.length > 0)`.
+- 🔴 **`set_tools` did not rebuild**, while `_rebuild_system_prompt`'s docstring asserted it
+  was "called from every place the active set changes". A comment that names an invariant is
+  worth what the check behind it is worth, so there is now an AST tripwire over
+  `harness/core.py` that fails when a writer of `_state.tools` / `_state.active_tool_names`
+  is not followed by a rebuild.
+- **`prompt_snippet` was an unbounded multi-line channel.** Pi normalizes it
+  (`_normalizePromptSnippet`: collapse `[\r\n]+` then `\s+`, trim, empty ⇒ absent); the port
+  dropped that. Restored, plus an aelix length cap — the same divergence `skills_prompt`
+  already carries, for the same reason: the value arrives with an installed pack. Order is
+  load-bearing and the first attempt got it wrong: `_CONTROL_KILL` *deletes* `\n`, so
+  stripping before collapsing welded `"ok\n\nGuidelines:"` into `"okGuidelines:"`.
+- **The skills catalog's read-tool gate re-derived from the flags** while the tool block came
+  from the live set, so one prompt could say "(none)" and "use the read tool" at once.
+  `skills_catalog_visible` now takes an authoritative `live_tool_names`.
+- **`build_system_prompt(cwd)` had a `tools=None` default** documented as "fail-honest". It
+  was not: `(none)` is a positive claim that the session has no tools, not the absence of a
+  claim, and pi's own `selectedTools` default is a list. The parameter is now required.
+- **The equality test between `/agents use` and the rebuilder was tautological** — it
+  re-evaluated the rebuilder's own expression. It now drives the real
+  `AgentProfileService.use`.
+- Plus documentation corrections: `agent-session.ts:1043` → `:1043`, the byte table in §4,
+  and `SECURITY.md`'s "no flag suppresses them" (`--system-prompt` does, and a narrower
+  toolset drops the blocks that depend on it).
+
+Every fix above was then sabotaged and the corresponding gate confirmed RED — including the
+post-registration rebuild, which is the one the first round could not have caught.
+
+## 6. #161: shape 1 was measured and failed, so shape 2 was built
+
+Issue #161 offered three shapes and said, in its own words, to escalate "on the measurement
+rather than in advance". The measurement, run against a real model in a real interactive TUI
+(`--provider anthropic --model claude-sonnet-4-5`), two runs per wording:
+
+| prompt | the user's phrasing | asked? |
+|---|---|---|
+| pre-change `015834c` | "Please add it" | ❌ wrote global, silently |
+| shipped clause | "Do the work." | ❌ wrote global, silently |
+| shipped clause | "Please add it" | ❌ wrote global — but *said* "since you didn't specify …" |
+| strengthened wording | "Please add it" | ✅ asked, and stopped its turn |
+| strengthened wording | "Do the work." | ❌ wrote global |
+
+One compliance in four, and **the variable was how the user phrased the request** — not a
+property anyone can ship. The prose clause bought a narration, not an ask.
+
+So the choice moved to `/extension new <name>` (shape 2): it validates the name, asks
+through `ctx.ui.select` with both options stating their *consequence* ("no trust gate" /
+"ships to everyone who clones it, trust-gated"), scaffolds a **working** extension the real
+loader accepts, refuses to overwrite, and says out loud that an untrusted project skips a
+project-local extension with no error. With no dialog surface it refuses and prints both
+paths rather than choosing — a version that silently chose would be the pre-#161 behaviour
+with extra steps.
+
+**The compliance problem moves, it does not vanish**, and the issue predicted exactly this:
+shape 2 "brings shape 1's compliance problem back unless the signpost points at it". The
+signpost does point at it. **It was then probed, and pointing does not work either:**
+
+| signpost clause | user said | handed off to `/extension new`? |
+|---|---|---|
+| "tell them to run `/extension new <name>`" | "Please add it" | ❌ read the example, wrote directly |
+| "DO NOT WRITE THE FILE YOURSELF … reply with that command and STOP" | "Please add it" | ❌ read the example, wrote directly |
+
+0 of 2, with the strongest wording available. So the honest claim for this ADR is narrow:
+**the USER has a first-class way to make the choice; the model does not reliably offer it.**
+The signpost keeps the pointer (it costs ~100 chars and is where the command is discoverable
+at all) and keeps both absolute paths, because writing directly is what the model actually
+does.
+
+What the probe also showed, and what nobody had credited: **the user is not blind today.**
+Every one of those writes stopped at the permission dialog — `Create/overwrite
+/home/…/extensions/reverse_string.py? [y/s/n]` — so the chosen path IS surfaced before the
+file lands. #161's premise that "the user is never asked" is true about the *choice* and
+false about the *path*. That reframes the remaining option: shape 3 is not "build visibility
+from nothing", it is "add a third answer to a dialog that already fires". It still touches
+the permission ladder hardened by ADR-0203, and it is still not done here.
+
+## 7. What is NOT closed
+
+- **The live probe covered the prompt, not the command.** A real model was run against the
+  #120 wording (`--no-tools` → "I have NO tools available right now. I cannot read a file";
+  `--tools read` → "exactly one tool: read … No, I cannot run shell commands"), against the
+  #117 regression (in all seven runs where it wrote, it read `examples/echo/echo.py` first
+  and invented no manifest), and against #101's documentation criterion (asked what an `aelix-plugin.toml` contains, it
+  answered from the bundled guide — nine capability flags, the three enforced gates,
+  "descriptors reserved and inert"). **That closes #101's open criterion.** §6 records what
+  the same probe found about #161: the model does not hand the choice to the user, with any
+  wording tried. **#161 stays open** on that, with shape 3 as the remaining option and the
+  new evidence that the permission dialog already surfaces the path.
+- **Verification coverage of the review was partial.** 37 findings were reported; the
+  adversarial verify pass had returned 8 verdicts (7 CONFIRMED, 1 REFUTED) before it was stopped when the fixes
+  above were made. The rest were acted on where they were independently reproduced here and
+  left otherwise — a handful of LOW citation and wording items remain unaddressed.
+- **Citation rot.** The review found that this batch displaced constructs that ~19 live
+  `file:line` citations elsewhere in the tree pointed at. They were correct at `015834c`.
+  Re-deriving them is a real, separable job and is not done.
+- **The `AGENTS.md` walk is still re-run per rebuild** (5.0 ms), where pi reads a cached
+  loader. Named in §4; not worth a cache until a pack registers hundreds of tools.

@@ -23,6 +23,21 @@ from aelix_coding_agent.cli.args import Args
 from aelix_coding_agent.cli.entry import _build_harness_options
 from aelix_coding_agent.tools import create_all_tools
 
+
+# Issue #120 — ``build_system_prompt`` takes the ACTIVE tool set and it is
+# REQUIRED, so every call here has to say which session it is describing. The
+# blocks these tests assert on are themselves tool-gated: the docs signpost
+# follows ``read`` and the self-extension signpost follows ``write``, so a bare
+# call would emit neither and the assertions would fail for a reason that has
+# nothing to do with what they are testing.
+def _all_builtin_tools() -> list:
+    from aelix_coding_agent.tools import create_all_tools
+
+    return list(create_all_tools(".").values())
+
+
+_ALL_TOOL_NAMES_SET = {"read", "bash", "edit", "write", "grep", "find", "ls"}
+
 _TOOL_NAMES = {"read", "bash", "edit", "write", "grep", "find", "ls"}
 
 
@@ -55,7 +70,7 @@ def test_build_system_prompt_has_identity_and_tools() -> None:
 
 
 def test_build_system_prompt_includes_environment(tmp_path) -> None:
-    prompt = build_system_prompt(str(tmp_path))
+    prompt = build_system_prompt(str(tmp_path), tools=_all_builtin_tools())
     assert str(tmp_path) in prompt  # absolute cwd surfaced
     assert "Working directory" in prompt
 
@@ -106,7 +121,7 @@ def test_convergence_guidance_drops_the_tool_bullets_when_there_are_no_tools() -
 def test_prompt_teaches_the_setup_aelix_contract() -> None:
     """(a) the contract is `def setup(aelix)`, in-process, no plugin/build step."""
 
-    prompt = build_system_prompt(".")
+    prompt = build_system_prompt(".", tools=_all_builtin_tools())
     assert "Extending yourself" in prompt
     assert "def setup(aelix)" in prompt
     assert "register_tool" in prompt
@@ -120,7 +135,7 @@ def test_prompt_gives_absolute_project_and_global_write_targets(tmp_path) -> Non
     """(b) both write targets are absolute and are the dirs the loader scans."""
     from aelix_coding_agent.cli.config import get_agent_dir
 
-    prompt = build_system_prompt(str(tmp_path))
+    prompt = build_system_prompt(str(tmp_path), tools=_all_builtin_tools())
     project_target = os.path.join(str(tmp_path), ".aelix", "extensions", "<name>.py")
     global_target = os.path.join(get_agent_dir(), "extensions", "<name>.py")
     assert project_target in prompt
@@ -147,7 +162,7 @@ async def test_prompt_lists_the_global_target_first_and_labels_the_trust_gate(
     project = tmp_path / "proj"
     project.mkdir()
 
-    prompt = build_system_prompt(str(project))
+    prompt = build_system_prompt(str(project), tools=_all_builtin_tools())
     global_target = os.path.join(get_agent_dir(), "extensions", "<name>.py")
     project_target = os.path.join(str(project), ".aelix", "extensions", "<name>.py")
 
@@ -200,7 +215,7 @@ def test_prompt_never_names_the_wrong_global_dir(tmp_path, monkeypatch) -> None:
     """
 
     monkeypatch.delenv("AELIX_CODING_AGENT_DIR", raising=False)
-    prompt = build_system_prompt(str(tmp_path))
+    prompt = build_system_prompt(str(tmp_path), tools=_all_builtin_tools())
     wrong = os.path.join(str(Path.home()), ".aelix", "extensions")
     right = os.path.join(str(Path.home()), ".aelix", "agent", "extensions")
     assert wrong + os.sep + "<name>.py" not in prompt
@@ -215,9 +230,9 @@ def test_prompt_honours_agent_dir_env_at_call_time(tmp_path, monkeypatch) -> Non
     would emit a stale path for the rest of the session.
     """
 
-    before = build_system_prompt(str(tmp_path))
+    before = build_system_prompt(str(tmp_path), tools=_all_builtin_tools())
     monkeypatch.setenv("AELIX_CODING_AGENT_DIR", str(tmp_path / "elsewhere"))
-    after = build_system_prompt(str(tmp_path))
+    after = build_system_prompt(str(tmp_path), tools=_all_builtin_tools())
 
     moved = os.path.join(str(tmp_path / "elsewhere"), "extensions", "<name>.py")
     assert moved in after
@@ -235,7 +250,7 @@ def test_prompt_pointer_paths_exist_on_disk() -> None:
     them with the ``read`` tool.
     """
 
-    prompt = build_system_prompt(".")
+    prompt = build_system_prompt(".", tools=_all_builtin_tools())
     cited = [
         line.split(": ", 1)[1].strip()
         for line in prompt.splitlines()
@@ -313,7 +328,7 @@ def test_prompt_omits_a_missing_pointer_instead_of_emitting_it_dead(
     monkeypatch.setattr(
         _agent_context, "_EXAMPLE_PARTS", ("examples", "echo", "gone.py")
     )
-    prompt = build_system_prompt(".")
+    prompt = build_system_prompt(".", tools=_all_builtin_tools())
 
     assert "gone.py" not in prompt
     assert "worked example" not in prompt
@@ -330,7 +345,7 @@ def test_prompt_omits_the_read_these_header_when_no_pointer_resolves(
 
     monkeypatch.setattr(_agent_context, "_EXAMPLE_PARTS", ("nope_a.py",))
     monkeypatch.setattr(_agent_context, "_API_PARTS", ("nope_b.py",))
-    prompt = build_system_prompt(".")
+    prompt = build_system_prompt(".", tools=_all_builtin_tools())
 
     assert "Do not recall or import the API" not in prompt
     assert "Extending yourself" in prompt  # the rest still ships
@@ -368,7 +383,7 @@ def test_prompt_never_tells_the_model_to_import_aelix_in_bash() -> None:
         [e for e in inherited if e]
     )
 
-    prompt = build_system_prompt(".")
+    prompt = build_system_prompt(".", tools=_all_builtin_tools())
     assert "python -c" not in prompt
     assert "import aelix_coding_agent" not in prompt
     assert "pip install" not in prompt
@@ -377,7 +392,7 @@ def test_prompt_never_tells_the_model_to_import_aelix_in_bash() -> None:
 def test_prompt_says_reload_is_the_users_keystroke() -> None:
     """(d) the model must not claim it activated anything; /reload is human."""
 
-    prompt = build_system_prompt(".")
+    prompt = build_system_prompt(".", tools=_all_builtin_tools())
     assert "/reload" in prompt
     assert "cannot load it yourself" in prompt
     assert "ask the user to run /reload" in prompt
@@ -408,7 +423,7 @@ def test_reload_instruction_is_mode_agnostic() -> None:
         os.path.join("cli", "repl.py"),
     }, dispatch_sites
 
-    prompt = build_system_prompt(".")
+    prompt = build_system_prompt(".", tools=_all_builtin_tools())
     assert "in an interactive session ask the user to run /reload" in prompt
     # The fallback is the one action that is correct on EVERY surface.
     assert "otherwise report the absolute path you wrote and stop" in prompt
@@ -441,7 +456,7 @@ def test_reload_instruction_admits_reload_may_not_re_discover(monkeypatch) -> No
 
     # Because that path exists, the instruction may not promise /reload works;
     # it must name the fallback that always does.
-    prompt = build_system_prompt(".")
+    prompt = build_system_prompt(".", tools=_all_builtin_tools())
     reload_line = next(ln for ln in prompt.splitlines() if "/reload" in ln)
     assert "restart aelix if /reload does not pick it up" in reload_line
 
@@ -463,7 +478,7 @@ async def test_prompt_states_write_creates_dirs_instead_of_ordering_a_mkdir(
     from aelix_ai.tools import ToolExecutionContext
     from aelix_coding_agent.tools import create_write_tool
 
-    prompt = build_system_prompt(".")
+    prompt = build_system_prompt(".", tools=_all_builtin_tools())
     assert "mkdir" not in prompt
     assert "write creates missing dirs" in prompt
 
@@ -489,7 +504,7 @@ def _emitted_api_hint() -> tuple[str, str]:
 
     import re
 
-    prompt = build_system_prompt(".")
+    prompt = build_system_prompt(".", tools=_all_builtin_tools())
     line = next(ln for ln in prompt.splitlines() if "full API" in ln)
     command = re.search(r"(grep[^']*'[^']+')", line).group(1)
     pattern = re.search(r"grep[^']*'([^']+)'", line).group(1)
@@ -514,7 +529,7 @@ def test_prompt_names_the_real_hook_call_and_a_grep_that_finds_it() -> None:
     # The real call, verbatim, including the event name the block cites.
     assert re.search(r'def on\(\s*\n\s*self,\s*\n\s*event: Literal\["tool_call"\]', api_src)
 
-    prompt = build_system_prompt(".")
+    prompt = build_system_prompt(".", tools=_all_builtin_tools())
     assert '`aelix.on("tool_call", handler)` for hooks' in prompt
 
     _command, pattern = _emitted_api_hint()
@@ -708,7 +723,7 @@ async def test_api_pointer_does_not_tell_the_model_to_read_an_untruncatable_file
     assert "def register_tool(" not in plain
 
     # (3) So the block must NOT put api.py under a read-it instruction.
-    prompt = build_system_prompt(".")
+    prompt = build_system_prompt(".", tools=_all_builtin_tools())
     api_line = next(ln for ln in prompt.splitlines() if "full API" in ln)
     assert "too big to read whole" in api_line
 
@@ -770,7 +785,7 @@ def test_signpost_header_is_scoped_to_self_extension_requests() -> None:
     there is a standing invitation to write an extension when the user asked
     for ordinary work. One trigger clause removes the pull."""
 
-    prompt = build_system_prompt(".")
+    prompt = build_system_prompt(".", tools=_all_builtin_tools())
     header = next(
         line for line in prompt.splitlines() if line.startswith("Extending yourself")
     )
@@ -838,7 +853,7 @@ async def test_prompt_does_not_claim_dot_aelix_writes_ALWAYS_prompt(tmp_path) ->
     assert not await prompted(PermissionMode.DEFAULT, has_ui=False)
     assert not await prompted(PermissionMode.AUTO_ACCEPT, has_ui=False)
 
-    prompt = build_system_prompt(".")
+    prompt = build_system_prompt(".", tools=_all_builtin_tools())
     assert "always prompts" not in prompt
     assert "even in auto-accept-edits" not in prompt
     # MINOR 7: the bullet asserted the prompt "is expected", which the table
@@ -861,7 +876,7 @@ def test_prompt_forbids_working_around_a_declined_approval() -> None:
     from aelix_coding_agent.builtin.permission import _SENSITIVE_DIR_COMPONENTS
 
     assert ".aelix" in _SENSITIVE_DIR_COMPONENTS  # why a prompt appears at all
-    prompt = build_system_prompt(".")
+    prompt = build_system_prompt(".", tools=_all_builtin_tools())
     assert "not a refusal" in prompt
     assert "do not retry it via bash" in prompt
     assert "do not write elsewhere to dodge it" in prompt
@@ -931,7 +946,7 @@ async def test_prompt_covers_a_policy_BLOCK_and_not_only_a_user_decline(
 
     # So the bullet must name the blocked case, and route it to the same stop
     # as a decline rather than to a workaround.
-    prompt = build_system_prompt(".")
+    prompt = build_system_prompt(".", tools=_all_builtin_tools())
     bullet = next(ln for ln in prompt.splitlines() if "may ask for approval" in ln)
     assert "blocked" in bullet
     assert "stop and say so" in bullet
@@ -948,8 +963,8 @@ def test_signpost_token_cost_stays_bounded() -> None:
     against the block growing into a chapter; it is not a style police.
     """
 
-    prompt = build_system_prompt("/some/project")
-    block = _agent_context._extension_signpost("/some/project")
+    prompt = build_system_prompt("/some/project", tools=_all_builtin_tools())
+    block = _agent_context._extension_signpost("/some/project", _ALL_TOOL_NAMES_SET)
     assert block in prompt
 
     emitted_paths = [

@@ -58,6 +58,21 @@ from typing import Any
 import pytest
 from aelix_coding_agent.cli import entry as entry_mod
 
+
+# Issue #120 — ``build_system_prompt`` takes the ACTIVE tool set and it is
+# REQUIRED, so every call here has to say which session it is describing. The
+# blocks these tests assert on are themselves tool-gated: the docs signpost
+# follows ``read`` and the self-extension signpost follows ``write``, so a bare
+# call would emit neither and the assertions would fail for a reason that has
+# nothing to do with what they are testing.
+def _all_builtin_tools() -> list:
+    from aelix_coding_agent.tools import create_all_tools
+
+    return list(create_all_tools(".").values())
+
+
+_ALL_TOOL_NAMES_SET = {"read", "bash", "edit", "write", "grep", "find", "ls"}
+
 _BUILT = 42
 """Sentinel exit code: the run reached the first harness build."""
 
@@ -667,7 +682,7 @@ def test_a_directory_name_cannot_forge_the_fence(tmp_path: Path, dirname: str) -
 
     prompt = "\n\n".join(
         [
-            build_system_prompt(str(project)),
+            build_system_prompt(str(project), tools=_all_builtin_tools()),
             "USER_TYPED_RULE",
             discover_context_files(str(project)),
         ]
@@ -694,7 +709,7 @@ def test_a_normal_path_is_not_mangled_by_that_guard(tmp_path: Path) -> None:
     project = tmp_path / "ordinary-project"
     project.mkdir()
 
-    prompt = build_system_prompt(str(project))
+    prompt = build_system_prompt(str(project), tools=_all_builtin_tools())
 
     assert str(project) in prompt
     assert "&amp;" not in prompt

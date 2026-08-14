@@ -95,9 +95,9 @@ consent very much is:
   contents, the fence, and the `path=` attributes. It is **not** a privacy opt-out.
   The flag *is* inherited by delegated subagents, so a child spawned mid-session does
   not re-discover the files you suppressed.
-- **The base system prompt sends six absolute paths on every turn, including your
-  OS username, and no flag suppresses them.** `--no-context-files` removes none of
-  them, because they are in the base prompt rather than in the context chunk.
+- **The base system prompt sends up to six absolute paths on every turn, including
+  your OS username.** `--no-context-files` removes none of them, because they are in
+  the base prompt rather than in the context chunk.
   Measured on a default run, they are: the working directory
   (`- Working directory: /abs/path`); the two extension write targets the
   self-extension block names (`<agent dir>/extensions/<name>.py` and
@@ -117,10 +117,16 @@ consent very much is:
   `PATH` to a different interpreter than the `uv tool install` virtualenv, so a
   relative or `~`-shortened pointer is not equivalent for every consumer.
 
-  If the directory layout or the account name is sensitive, no flag will help you:
-  run somewhere else, run as a different user, or redact the outbound payload from
-  an extension — the `before_provider_payload` hook can rewrite it before it
-  leaves the process.
+  **What does suppress them.** `--system-prompt <text>` / `--system-prompt-file
+  <path>` replace the base prompt outright, so none of the six is emitted — that is
+  the supported opt-out, at the cost of the identity, the tool guidance and the
+  self-extension block. Narrowing the toolset also drops the blocks that depend on
+  it: with no `write` tool the two extension write targets and the two package
+  pointers are not emitted, and with no `read` tool neither is the documentation
+  directory (the working directory always is). If you need the full prompt *and*
+  the redaction, an extension can rewrite the outbound payload from the
+  `before_provider_payload` hook before it leaves the process. Otherwise: run
+  somewhere else, or run as a different user.
 - **Extensions are Python, loaded in-process, with the full privileges of the
   Aelix process.** Installing an extension is equivalent to running its author's
   code. `aelix extension install --require-signature` enforces a valid trusted

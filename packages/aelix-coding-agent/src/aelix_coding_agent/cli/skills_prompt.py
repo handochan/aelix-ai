@@ -148,6 +148,7 @@ def skills_catalog_visible(
     no_tools: bool,
     no_builtin_tools: bool,
     active_tools: Sequence[str] | None,
+    live_tool_names: Sequence[str] | None = None,
 ) -> bool:
     """Pi parity: the read-tool gate at ``system-prompt.ts:69-73`` / ``:163-165``.
 
@@ -157,15 +158,30 @@ def skills_catalog_visible(
     class ``tests/cli/test_agent_context.py`` already polices for the
     extension signpost.
 
-    ``no_builtin_tools`` is a gate of its own: the built-in registry is the
-    only source of ``read``, and that filter is applied AFTER registration
-    (``entry.py`` post-build), so a name-level check cannot see it.
+    ``live_tool_names`` IS AUTHORITATIVE WHEN GIVEN (#120 review, HIGH). The
+    three arguments above are a NAME-LEVEL predicate over ``Args``, which is
+    all a first build can see — the filter that produces the real active set
+    runs after registration. Once a rebuild exists there IS a real answer, and
+    reading the flags there instead produced a prompt that contradicted itself:
+    an extension calling ``set_active_tools([])`` got an opener saying it had
+    no tools, ``Available tools: (none)``, and the skills catalog telling it to
+    "use the read tool" — because ``parsed`` still said no flag had narrowed
+    anything. The reverse also bit: ``--tools read`` plus a runtime widening
+    withheld the catalog the model could now use.
+
+    ``no_builtin_tools`` remains a gate of its own for the flag-level path: the
+    built-in registry is the only source of ``read``, and that filter is
+    applied AFTER registration, so a name-level check cannot see it. When
+    ``live_tool_names`` is supplied that whole argument is moot — the list
+    already reflects every filter.
 
     Kept here rather than in ``entry`` so it is unit-testable without a
     parsed CLI, and keyword-only so a caller cannot silently transpose the
     two booleans.
     """
 
+    if live_tool_names is not None:
+        return "read" in live_tool_names
     if no_tools or no_builtin_tools:
         return False
     if active_tools:

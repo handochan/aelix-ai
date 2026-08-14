@@ -1710,14 +1710,130 @@ async def _stats_handler(ctx: CommandContext, args: str) -> None:
         ctx.commit(Text(f"✖ stats failed: {exc}", style="bold red"))
 
 
-async def _extension_handler(ctx: CommandContext, args: str) -> None:
-    """``/extension`` — manage installed extensions + MCP servers (ignores args).
+async def _extension_new(ctx: CommandContext, name: str) -> None:
+    """``/extension new <name>`` — ASK where it goes, then scaffold it (#161).
 
-    Sprint WP-8 (Feature 3). Delegates to the host-wired ``extension_action`` flow
-    (a read-only framed tabbed viewer over the discovered extensions + the live
-    MCP manager — Installed / Discover / Sources tabs). Degrades with a committed
-    message when unavailable / on any failure (never crashes the REPL).
+    THE MEASUREMENT THAT PUT THIS HERE. Issue #161 offered three shapes and
+    said to choose on a live-model probe. Shape 1 — the self-extension block
+    asks in prose — was built and probed against a real model in a real
+    interactive TUI, twice with each wording. It complied in ONE of four runs,
+    and the variable was how the USER phrased the request: "Please add it" got
+    an ask out of the strengthened wording, "Do the work." did not, and the
+    shipped wording got no ask at all. Compliance that depends on the user's
+    phrasing is not a property anyone can ship.
+
+    So the choice becomes a dialog the user drives, which is the one thing a
+    prompt cannot be talked out of. The permission ladder could not carry it —
+    ``builtin/permission.py`` is allow/deny only and has no "somewhere else
+    instead" — so it lives on a command.
+
+    WHAT THIS DOES NOT FIX, stated plainly: a command the model never invokes
+    changes nothing. The self-extension block therefore names it, and still
+    carries both absolute paths for the case where the model writes directly
+    anyway. The honest claim is "the user has a first-class way to make the
+    choice, and the model has a one-line way to hand it to them" — not "the
+    model now asks".
     """
+
+    from aelix_coding_agent.cli.config import get_agent_dir
+    from aelix_coding_agent.extensions.scaffold import (
+        create_extension,
+        extension_targets,
+        validate_extension_name,
+    )
+
+    problem = validate_extension_name(name)
+    if problem is not None:
+        ctx.commit(Text(problem, style="yellow"))
+        return
+    name = name.strip()
+
+    targets = extension_targets(ctx.cwd, get_agent_dir())
+    # The same three ``getattr`` hops ``_confirm_project_agent`` uses, and for
+    # the same reason: a missing or mid-rebuild runtime must degrade, never
+    # raise. See that function for why the annotation is needed to keep the
+    # guarded ``await`` type-checkable.
+    select: Callable[..., Awaitable[Any]] | None = getattr(
+        getattr(getattr(ctx.harness, "runtime", None), "ui", None), "select", None
+    )
+    if not callable(select):
+        # No dialog surface (headless, or a host that wired no UI). Refusing is
+        # right: the whole point of this command is the question, and silently
+        # picking one target is the behaviour it exists to replace.
+        ctx.commit(
+            Text(
+                "/extension new needs an interactive session to ask where the "
+                "extension should go. Write the file yourself, to one of:\n"
+                f"  {targets['global'] / (name + '.py')}   (every project)\n"
+                f"  {targets['project'] / (name + '.py')}   (this project only)",
+                style="yellow",
+            )
+        )
+        return
+
+    options = [
+        "Every project — available wherever you run aelix, no trust gate",
+        "This project only — ships to everyone who clones it, trust-gated",
+    ]
+    try:
+        chosen = await select(f"Where should the {name!r} extension go?", options)
+    except Exception as exc:  # noqa: BLE001 — a broken dialog writes nothing
+        ctx.commit(Text(f"✖ could not ask where to put it: {exc}", style="bold red"))
+        return
+    if chosen is None:
+        ctx.commit(Text("Cancelled — nothing was written.", style="yellow"))
+        return
+    # Matched by IDENTITY against the rendered option, never by substring — the
+    # same rule ``_confirm_project_agent`` follows.
+    scope = "global" if chosen == options[0] else "project"
+
+    try:
+        path = create_extension(targets[scope], name)
+    except FileExistsError as exc:
+        ctx.commit(
+            Text(f"{exc} already exists — pick another name.", style="bold red")
+        )
+        return
+    except OSError as exc:  # noqa: BLE001 — surface, never kill the REPL
+        ctx.commit(Text(f"✖ could not create the extension: {exc}", style="bold red"))
+        return
+
+    lines = Text()
+    lines.append(f"Created {path}\n", style="green")
+    if scope == "project":
+        # The tier that fails SILENTLY when the project is untrusted — measured
+        # in ``_extension_signpost``'s docstring, and the reason the global
+        # target is listed first there. Saying so here is the whole value of
+        # asking rather than guessing.
+        lines.append(
+            "This project must be trusted for it to load; an untrusted project "
+            "skips it with no error.\n",
+            style="yellow",
+        )
+    lines.append("Edit it, then /reload (or restart aelix) to load it.")
+    ctx.commit(lines)
+
+
+async def _extension_handler(ctx: CommandContext, args: str) -> None:
+    """``/extension [new <name>]`` — the manager, or the scaffold flow.
+
+    Sprint WP-8 (Feature 3). With no arguments, delegates to the host-wired
+    ``extension_action`` flow (a read-only framed tabbed viewer over the
+    discovered extensions + the live MCP manager — Installed / Discover /
+    Sources tabs). Degrades with a committed message when unavailable / on any
+    failure (never crashes the REPL).
+
+    ``new <name>`` is issue #161's shape 2 — see :func:`_extension_new`. It is a
+    SUBCOMMAND rather than a command of its own because ``/extension`` already
+    owns this noun, and a second top-level verb would be a second thing for the
+    signpost to name.
+    """
+
+    subcommand = args.strip()
+    if subcommand.split(maxsplit=1)[:1] == ["new"]:
+        rest = subcommand.split(maxsplit=1)
+        await _extension_new(ctx, rest[1] if len(rest) > 1 else "")
+        return
 
     if ctx.extension_action is None:
         ctx.commit(Text("Extension manager is unavailable.", style="yellow"))

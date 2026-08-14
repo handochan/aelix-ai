@@ -301,8 +301,15 @@ def _package_pointer(*parts: str) -> str | None:
         return None
 
 
-def _docs_signpost() -> str:
+def _docs_signpost(active_tool_names: set[str]) -> str:
     """The "Aelix documentation" block (issue #101), or ``""``.
+
+    GATED ON ``read`` (#120 review, HIGH). Every bullet is an instruction to
+    ``read`` a named file, so without that tool the block is ~500 chars per
+    turn of instructions the model cannot follow — and, next to the 0-tool
+    opener, a flat contradiction. Pi gates its skills catalog the same way and
+    for the same stated reason (``system-prompt.ts``:
+    ``if (hasRead && skills.length > 0)``).
 
     A FORWARD-PORT of a pi surface aelix never ported. pi's system prompt
     (``packages/coding-agent/src/core/system-prompt.ts``, fetched 2026-08-14)
@@ -405,7 +412,28 @@ def _docs_signpost() -> str:
     # ``cli``, so this cannot cycle back.
     from ..help import bundled_docs_dir, topics
 
-    names = [t.name for t in topics()]
+    if "read" not in active_tool_names:
+        return ""
+
+    # THE FILENAMES GO THROUGH THE SAME RULE AS THE DIRECTORY (#120 review).
+    # ``topics()`` globs the bundled directory, so these are strings off the
+    # filesystem exactly like the path below them — and the first revision
+    # escaped the directory and then interpolated the names found inside it
+    # RAW, which is "fixing one site is how the rules diverge" reproduced two
+    # lines later. Reaching this needs write access to the installed package,
+    # so it is a smaller channel than the cwd one; the rule is the same and
+    # applying it costs one call. ``_normalize_prompt_text`` on top because a
+    # filename may contain a newline on POSIX, and a newline here would forge a
+    # bullet in the block below.
+    #
+    # NORMALIZE FIRST, ESCAPE SECOND — the same ordering trap as inside
+    # ``_normalize_prompt_text`` itself, and it bit again here on the first
+    # attempt. ``_safe_prompt_path`` DELETES ``\n`` (0x0A is in
+    # :data:`_CONTROL_KILL`), so running it first welded ``"ok\nfake"`` into
+    # ``"okfake"``; normalizing first turns that newline into a space and
+    # leaves the ``<`` escape as the only thing the second call has to do.
+    names = [_safe_prompt_path(_normalize_prompt_text(t.name)) for t in topics()]
+    names = [n for n in names if n]
     if not names:
         return ""
 
@@ -450,8 +478,17 @@ def _docs_signpost() -> str:
     return "".join(lines) + "\n"
 
 
-def _extension_signpost(cwd_abs: str) -> str:
+def _extension_signpost(cwd_abs: str, active_tool_names: set[str]) -> str:
     """The "Extending yourself" block (issue #117).
+
+    GATED ON ``write`` (#120 review, HIGH). The block's central instruction is
+    "Write it to ONE absolute path", and it names the ``write`` tool by its
+    behaviour ("write creates missing dirs"). Without that tool the whole
+    ~1.5 KB block is unactionable, and in a ``--no-tools`` run it directly
+    contradicts the opener. The two source pointers are gated a second time on
+    ``read``, because that is the tool they tell the model to use — a session
+    with ``write`` but no ``read`` still gets the write targets, which is the
+    honest subset.
 
     ``cwd_abs`` must already be absolute. The global target is derived from
     :func:`aelix_coding_agent.cli.config.get_agent_dir` **at call time**, so
@@ -461,14 +498,18 @@ def _extension_signpost(cwd_abs: str) -> str:
     ``extensions/loader.py:455-457``), never the plausible-but-wrong
     ``~/.aelix/extensions``.
 
-    WHO CHOOSES (issue #161). The block asks the USER which target to use and
-    only falls back to picking one when nobody can answer. Ordering alone did
-    not settle this: the global target is listed first for the measured reason
-    below, and with no instruction about who decides, "listed first" is what
-    the model acted on. The escalation path if a live model ignores the ask is
-    a real ``/extension new <name>`` command (issue #161 shape 2) — a decision
-    to be taken on the measurement, not in advance, which is why this revision
-    is the prompt-only one and is gated on a live-model probe.
+    WHO CHOOSES (issue #161). Ordering alone did not settle it: the global
+    target is listed first for the measured reason below, and with no
+    instruction about who decides, "listed first" is what the model acted on.
+    The block now points at ``/extension new <name>``, which asks the user and
+    writes the file (``tui/commands._extension_new``), and falls back to the
+    global path where there is no one to ask.
+
+    IT POINTS AT THE COMMAND RATHER THAN ASKING, because asking was tried and
+    measured. See the comment on that clause for the four-run probe table: a
+    prose "stop and ask" complied in one run of four, and the variable was how
+    the USER had phrased their request. Issue #161 said to pick the shape on
+    the measurement, and that is the measurement.
 
     WHY THE GLOBAL TARGET IS LISTED FIRST (adversarial review, MAJOR 2), and
     why it is also the no-one-to-ask fallback. The
@@ -505,6 +546,9 @@ def _extension_signpost(cwd_abs: str) -> str:
     # callers that never build a prompt.
     from .config import get_agent_dir
 
+    if "write" not in active_tool_names:
+        return ""
+
     lines = [
         # SCOPED HEADER (review MINOR 6): the block is emitted on EVERY turn and
         # sits last in the base prompt, i.e. in the most recency-weighted slot.
@@ -540,28 +584,41 @@ def _extension_signpost(cwd_abs: str) -> str:
         # exist_ok=True``) before EVERY write, so "mkdir if missing" only bought
         # a redundant bash call. Stated as a fact about the tool instead.
         #
-        # ISSUE #161 — THE FIRST CLAUSE. The block used to hand the model two
-        # paths and no instruction about who picks, and listing the global one
-        # first (for the measured reason below) meant in practice the model
-        # picked global and the user never saw the decision. That decision is
-        # not a detail: it settles whether the tool is the user's alone or
-        # ships to everyone who clones the repo, and after ADR-0216 an implicit
-        # project trust PERSISTS, so the write moment is the last point a human
-        # sees it at all. The permission layer cannot carry the question —
-        # ``builtin/permission.py`` is allow/deny only, it has no "somewhere
-        # else instead" — so the ask has to live here.
+        # ISSUE #161, AND THIS CLAUSE IS THE SECOND DRAFT — the first one was
+        # measured against a real model and did not work.
+        #
+        # The block used to hand the model two paths and no instruction about
+        # who picks, and listing the global one first (for the measured reason
+        # below) meant the model picked global and the user never saw the
+        # decision. The first fix told the model to ASK and wait. Probed in a
+        # real interactive TUI, twice per wording:
+        #
+        #   prompt              user said              asked?
+        #   ------------------  ---------------------  ----------------------
+        #   pre-change          "Please add it"        no, silently
+        #   "ask and wait"      "Do the work."         no, silently
+        #   "ask and wait"      "Please add it"        no, but said why
+        #   "STOP and ask"      "Please add it"        YES
+        #   "STOP and ask"      "Do the work."         no
+        #
+        # i.e. compliance was a function of the USER's phrasing. So the ask
+        # moved to a command the user drives (``/extension new``, #161 shape 2)
+        # and this clause POINTS at it instead of trying to be it. That is the
+        # honest shape: a prompt cannot make a model stop, but it can hand the
+        # user the surface that does.
         #
         # THE FALLBACK CLAUSE IS NOT PADDING. This block is emitted for ``-p`` /
         # ``--mode json`` / ``--mode rpc`` and for delegated subagents, where
-        # there is no one to ask; without it the honest reading of "ask the
-        # user" is "refuse", which turns a working headless run into a stall.
-        # The fallback names the global target because that is the tier that is
-        # not trust-gated (measured, below) — i.e. the one that cannot fail
-        # silently when nobody is there to answer the trust prompt either.
-        "- WHERE IT GOES IS THE USER'S CHOICE, not yours. Ask which of the two "
-        "paths below to use and wait for the answer; it decides whether the "
-        "tool is theirs alone or ships to everyone who clones this project. If "
-        "there is no one to ask, use the first and say that you did.\n",
+        # there is no ``/`` command to run and no one to run it; without it the
+        # honest reading is "refuse", which turns a working headless run into a
+        # stall. The fallback names the global target because that is the tier
+        # that is not trust-gated (measured, below) — i.e. the one that cannot
+        # fail silently when nobody is there to answer the trust prompt either.
+        "- WHERE IT GOES IS THE USER'S CHOICE, not yours: it decides whether "
+        "the tool is theirs alone or ships to everyone who clones this "
+        "project. In an interactive session tell them to run "
+        "`/extension new <name>` — that asks them and writes the file. "
+        "Otherwise use the first path below and say that you did.\n",
         "- Write it to ONE absolute path (write creates missing dirs):\n",
         # The directory is escaped (#167) — it is ``$AELIX_CODING_AGENT_DIR`` /
         # ``$HOME``-derived and was the one write target still emitted raw. The
@@ -586,13 +643,18 @@ def _extension_signpost(cwd_abs: str) -> str:
     # #121 found for the cwd. :func:`_package_pointer` now applies
     # :func:`_safe_prompt_path` to its own return value, so the guard cannot be
     # forgotten by a third pointer added later.
+    # The SECOND gate (#120 review): both bullets below are "read this file"
+    # instructions, so they follow ``read`` and not ``write``. A session with
+    # write but no read still gets the write targets above — the honest subset
+    # rather than all-or-nothing.
+    can_read = "read" in active_tool_names
     pointers: list[str] = []
-    example = _package_pointer(*_EXAMPLE_PARTS)
+    example = _package_pointer(*_EXAMPLE_PARTS) if can_read else None
     if example:
         # The ONLY read-it-whole target: 75 lines, well inside the 50KB cap, and
         # it contains a complete working ``setup(aelix)`` (``examples/echo/echo.py:55``).
         pointers.append(f"  - worked example, read this one: {example}\n")
-    api = _package_pointer(*_API_PARTS)
+    api = _package_pointer(*_API_PARTS) if can_read else None
     if api:
         # THE PATTERN. The original hint was ``grep 'def register_'`` — 10 hits,
         # NONE of them the hook surface, which is spelled ``def on(...)`` (the
@@ -730,6 +792,53 @@ def _extension_signpost(cwd_abs: str) -> str:
     return "".join(lines)
 
 
+# One prompt line's worth of attacker-influenced text (#120 review, MEDIUM).
+#
+# ``prompt_snippet`` and ``prompt_guidelines`` arrive from an EXTENSION — the
+# same trust class as a skill's frontmatter ``description``, which this repo
+# already bounds at ``skills_prompt._MAX_DESCRIPTION_CHARS``. Left raw they are
+# a multi-line, unbounded channel straight into the base system prompt: a
+# newline plus ``Guidelines:`` fakes a section header, and one 200 KB snippet
+# spends the whole prompt.
+_MAX_PROMPT_TEXT_CHARS = 200
+
+_PROMPT_TEXT_WHITESPACE = re.compile(r"\s+")
+
+
+def _normalize_prompt_text(value: str) -> str:
+    """One tool-supplied line, flattened and bounded. Empty ⇒ omit.
+
+    Pi parity for the flattening half: ``_normalizePromptSnippet``
+    (``coding-agent/src/core/agent-session.ts:999-1006``) collapses
+    ``[\\r\\n]+`` then ``\\s+`` to a single space, trims, and treats an empty
+    result as absent. Aelix's port dropped it in the first revision, which left
+    the one-line contract enforced by nothing but the author's manners.
+
+    The CAP is aelix-original, and it is the same divergence
+    :mod:`~aelix_coding_agent.cli.skills_prompt` already carries for the same
+    reason: pi bounds neither, but the value is attacker-controlled (it arrives
+    with an installed pack) and nothing upstream of here bounds it either.
+    Truncated rather than dropped, so a long snippet still names its tool.
+
+    ORDER IS LOAD-BEARING: collapse FIRST, strip control bytes second. The
+    other way round, :data:`_CONTROL_KILL` DELETES ``\\n`` (0x0A is inside
+    ``range(0x20)``) instead of turning it into a space, and two lines are
+    welded into one word — measured, ``"ok\\n\\nGuidelines:"`` came out as
+    ``"okGuidelines:"``. Pi has no control strip at all and so cannot hit this;
+    aelix wants both guards, so it has to order them. After the collapse the
+    only survivors are non-whitespace control bytes (``\\x1b`` and friends),
+    which is exactly what the strip is for — a snippet is prose, not a path,
+    but it reaches the same terminal.
+    """
+
+    if not value:
+        return ""
+    flattened = _PROMPT_TEXT_WHITESPACE.sub(" ", value).translate(_CONTROL_KILL).strip()
+    if len(flattened) <= _MAX_PROMPT_TEXT_CHARS:
+        return flattened
+    return flattened[: _MAX_PROMPT_TEXT_CHARS - 1].rstrip() + "…"
+
+
 class PromptTool(Protocol):
     """The three fields the prompt reads off a tool. Structural on purpose.
 
@@ -775,9 +884,10 @@ def _tool_section(tools: Sequence[PromptTool]) -> tuple[str, list[str]]:
     Returns ``(block, guidelines)``; the caller decides where each goes.
     """
 
-    visible = [t for t in tools if t.prompt_snippet]
+    pairs = [(t.name, _normalize_prompt_text(t.prompt_snippet)) for t in tools]
+    visible = [(name, snippet) for name, snippet in pairs if snippet]
     listed = (
-        "\n".join(f"- {t.name}: {t.prompt_snippet}" for t in visible)
+        "\n".join(f"- {name}: {snippet}" for name, snippet in visible)
         if visible
         else "(none)"
     )
@@ -805,24 +915,27 @@ def _tool_section(tools: Sequence[PromptTool]) -> tuple[str, list[str]]:
     seen: set[str] = set()
     for tool in tools:
         for guideline in tool.prompt_guidelines:
-            text = guideline.strip()
+            text = _normalize_prompt_text(guideline)
             if text and text not in seen:
                 seen.add(text)
                 guidelines.append(text)
     return block, guidelines
 
 
-def build_system_prompt(cwd: str, *, tools: Sequence[PromptTool] | None = None) -> str:
+def build_system_prompt(cwd: str, *, tools: Sequence[PromptTool]) -> str:
     """The base coding-agent system prompt (identity + environment + tools).
 
-    ``tools`` is the ACTIVE tool set at the moment of the build, and ``None``
-    means "the caller did not scope one" — which emits ``(none)`` rather than
-    a guess. That is pi's own default (``selectedTools`` unset ⇒ no snippets ⇒
-    ``"(none)"``) and it is the fail-honest direction: a production path that
-    forgets to pass tools under-claims, where the old hard-coded literal
-    over-claimed. The production callers both go through
-    ``cli.entry._resolve_system_prompt``, whose ``tools`` argument is
-    REQUIRED so neither can forget it.
+    ``tools`` is the ACTIVE tool set at the moment of the build, and it is
+    REQUIRED — there is no default, deliberately (#120 review, MEDIUM). The
+    first revision defaulted to ``None`` and called that "the fail-honest
+    direction" on the grounds that a forgetful caller would under-claim. That
+    was wrong twice over. Pi's ``selectedTools`` default is a LIST
+    (``["read", "bash", "edit", "write"]``), not "nothing". And ``(none)`` is
+    not the ABSENCE of a claim — it is the positive assertion "this session has
+    no tools", printed next to an opener that says so and with the two
+    signposts suppressed, which is a worse lie than the old literal whenever it
+    is not true. A parameter with no default cannot be silently omitted, and
+    that is the only version of "honest" actually available here.
 
     THE CWD IS ATTACKER-CONTROLLED TOO (#121 review). This function interpolates
     it in two places — the ``Working directory:`` line and, via
@@ -859,7 +972,8 @@ def build_system_prompt(cwd: str, *, tools: Sequence[PromptTool] | None = None) 
 
     cwd_abs = _safe_prompt_path(Path(os.path.abspath(cwd)))
     today = datetime.now(tz=UTC).strftime("%Y-%m-%d")
-    active = list(tools or ())
+    active = list(tools)
+    names = {t.name for t in active}
     tool_block, tool_guidelines = _tool_section(active)
     # THE OPENER VARIES WITH THE TOOL COUNT, and pi's does not (issue #120's
     # sixth completion criterion is explicitly "the 0-tool wording and
@@ -931,7 +1045,25 @@ def build_system_prompt(cwd: str, *, tools: Sequence[PromptTool] | None = None) 
         # block is a place to look, not a thing to do, so it takes the weaker
         # slot. ``_docs_signpost`` returns "" when nothing is bundled, in which
         # case this is byte-identical to the pre-#101 prompt.
-        "\n" + _docs_signpost() + _extension_signpost(cwd_abs)
+        #
+        # BOTH ARE GATED ON THE TOOL EACH ONE NEEDS (#120 review, HIGH). The
+        # first revision of this change varied the opener and the guidelines
+        # with the active set and left these two unconditional, so a
+        # ``--no-tools`` prompt said "you cannot read, write or run anything"
+        # and then, 30 lines later, handed the model a directory of files to
+        # ``read``, an absolute path to ``write`` to, and a ``grep -nE``
+        # command — three instructions it had just been told it could not
+        # follow. That is a worse contradiction than the one this issue was
+        # filed about, invented by the fix for it.
+        #
+        # Gating is pi's own move, not an aelix invention: pi appends its
+        # skills catalog only ``if (hasRead && skills.length > 0)``
+        # (``system-prompt.ts``), for the identical reason — the block's
+        # instruction is "use the read tool", and telling a model to use a tool
+        # it does not have is the defect class. ``skills_catalog_visible``
+        # already ports that gate for the catalog; these two are the blocks it
+        # did not cover.
+        "\n" + _docs_signpost(names) + _extension_signpost(cwd_abs, names)
     )
 
 

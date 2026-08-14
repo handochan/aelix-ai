@@ -2937,6 +2937,15 @@ class AgentHarness:
         # Atomic mutation after all validation succeeded.
         self._state.tools = list(tools)
         self._state.active_tool_names = new_active
+        # Issue #120 review (MEDIUM). This method replaces BOTH the registry
+        # and the active filter, so it changes what the prompt should say by
+        # exactly as much as :meth:`set_active_tools` does — and it was the one
+        # writer that did not rebuild, which made
+        # :meth:`_rebuild_system_prompt`'s "called from every place the active
+        # set changes" false as written. Placed after the atomic mutation for
+        # the same reason as there: a rejected call must not leave the prompt
+        # describing a registry the state never took.
+        self._rebuild_system_prompt()
 
     # === Sprint 3b — next_turn / append_message (Pi: agent-harness.ts:572-582) ===
 
@@ -3688,13 +3697,21 @@ class AgentHarness:
         supplied — see that field for why the callback exists and what it is
         expected to return.
 
-        Called from every place the active set changes:
-        :meth:`_action_set_active_tools` (the extension-facing setter and the
-        public :meth:`set_active_tools`) and
-        :meth:`_refresh_extension_tools` (``register_tool`` at runtime). Pi
-        funnels both through ``setActiveToolsByName``; aelix's refresh path
-        assigns ``active_tool_names`` directly to dodge the validator, so it
-        calls this itself rather than inheriting the rebuild.
+        Called from every place the active set or the registry changes, which
+        is THREE writers, not the two the first revision of this docstring
+        claimed: :meth:`_action_set_active_tools` (the extension-facing setter
+        and the public :meth:`set_active_tools`),
+        :meth:`_refresh_extension_tools` (``register_tool`` at runtime), and
+        :meth:`set_tools` (atomic registry replace — the one the first revision
+        missed while asserting there was nothing to miss). Pi funnels the first
+        two through ``setActiveToolsByName``; aelix's refresh path assigns
+        ``active_tool_names`` directly to dodge the validator, so each caller
+        invokes this itself rather than inheriting the rebuild.
+
+        The list is kept honest by ``test_every_writer_of_the_active_set_rebuilds``
+        (``tests/cli/test_prompt_tool_honesty.py``), which enumerates the
+        assignments to ``_state.active_tool_names`` / ``_state.tools`` in this
+        module and fails when one of them is not followed by a rebuild.
 
         FAILURE IS SWALLOWED, deliberately. The callback runs product-layer
         code — it touches the filesystem (the docs signpost globs the bundled
