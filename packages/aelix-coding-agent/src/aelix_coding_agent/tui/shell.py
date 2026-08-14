@@ -83,6 +83,7 @@ from aelix_coding_agent.tui.render import (
     render_user_message,
 )
 from aelix_coding_agent.tui.thinking_picker import run_thinking_picker
+from aelix_coding_agent.tui.width import terminal_columns
 
 if TYPE_CHECKING:
     from aelix_agent_core.contracts.descriptor import DescriptorEnvelope
@@ -2197,11 +2198,22 @@ async def run_tui(
         from aelix_coding_agent.tui.approval_dialog import run_approval_dialog
 
         async def _run_approval(request: object) -> object:
+            # Issue #166 step 1 — size the dialog to the LIVE terminal. The
+            # historical default (80) was rendered into whatever the terminal
+            # actually was, so a narrow terminal got a Panel wider than the
+            # screen: prompt-toolkit clips the pre-rendered ANSI rows, dropping
+            # the right border AND the tail of the command being approved, with
+            # no ellipsis to mark the loss. Measured live at 60 columns before
+            # this change: ``echo ALPHA…_command_tail_OMEGA_END_MARKER`` was
+            # shown as ``echo ALPHA…_command_tail_`` — a security prompt that
+            # hid what it was asking about. Read per call so a resize between
+            # approvals is picked up (the ``overlay._modal_cap`` idiom).
             return await run_approval_dialog(
                 request=request,  # type: ignore[arg-type]
                 show_modal=show_modal,
                 chrome=out_chrome,
                 render_diff=_render_diff,
+                width=terminal_columns(out_chrome),
             )
 
         permission_ext.approval_runner = _run_approval
