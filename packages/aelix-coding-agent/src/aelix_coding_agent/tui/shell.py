@@ -2443,6 +2443,40 @@ async def run_tui(
         chrome_task = asyncio.create_task(out_chrome.run())
         pump_task = asyncio.create_task(_output_pump(output_queue, out_chrome))
         _commit(_build_banner(runtime_host.harness, cwd))
+        # Issue #165 — the STARTUP analogue of the /resume repaint. #122 already
+        # seeds ``harness.state.messages`` (``cli/entry.py``'s
+        # ``_seed_startup_messages``) so /context, /cost and /stats read right
+        # after a ``--resume``/``--continue``/``--session``/``--fork`` launch —
+        # but nothing PAINTED the transcript, so the user landed in what looked
+        # like a brand-new session. ``renderer.replay`` had exactly two call
+        # sites and both were in-session swaps.
+        #
+        # NO ``out_chrome.clear()`` here, which is the one thing this must not
+        # copy from ``_replay_after_swap``: the screen is already fresh, and a
+        # clear would erase the banner one line above plus anything printed
+        # before the TUI came up (the --resume picker, the #98 unrunnable-model
+        # warning). Ordering therefore reads banner → transcript → marker,
+        # where the in-session path reads transcript → marker on a cleared
+        # screen.
+        #
+        # ``getattr`` and not ``runtime_host.session``: several run_tui smokes
+        # drive a runtime that has no ``session`` member at all, and one asserts
+        # exactly that. Empty history (a cold start, ``--no-session``) is a
+        # no-op — the same guard ``_seed_startup_messages`` uses.
+        _startup_session = getattr(runtime_host, "session", None)
+        _startup_messages = (
+            await _display_messages(_startup_session)
+            if _startup_session is not None
+            else []
+        )
+        if _startup_messages:
+            renderer.replay(_startup_messages)
+            _commit(
+                Text(
+                    f"↻ Resumed session ({len(_startup_messages)} messages)",
+                    style="green",
+                )
+            )
         # Issue #23 — first-run onboarding. Straight-line and reachable from
         # nowhere else, so it is once-per-process by construction: /new,
         # /resume and /fork rebuild the harness but never re-enter run_tui.

@@ -31,7 +31,7 @@ from rich.cells import cell_len, set_cell_size
 from rich.console import Group
 from rich.text import Text
 
-from .stream import StreamRenderer
+from .stream import StreamRenderer, markdown_lines
 
 logger = logging.getLogger(__name__)
 
@@ -720,10 +720,29 @@ class EventRenderer:
         """Re-render a loaded session's static messages into scrollback.
 
         pi ``renderCurrentSessionState`` parity (Sprint 6h₁₄b, ADR-0122): used by
-        ``/resume`` after a session hot-swap to repaint the resumed transcript.
-        Reuses the live helpers (``_tool_header``, ``_render_tool_end``) so a
-        resumed transcript looks identical to a freshly-streamed one; truncated
-        tool-result cards are stored too, so ``/expand`` works on them.
+        ``/resume`` after a session hot-swap, and (issue #165) by ``run_tui``'s
+        startup paint. Reuses the live helpers (``_tool_header``,
+        ``_render_tool_end``, ``markdown_lines``); truncated tool-result cards
+        are stored too, so ``/expand`` works on them.
+
+        It does NOT look identical to a freshly-streamed transcript, and this
+        docstring said it did until issue #164. What still differs, and why each
+        is left open rather than forgotten:
+
+        * a **toolResult** carries no ``details`` on the wire
+          (``messages.py``'s ``ToolResultMessage`` has none), so an edit's diff,
+          a bash ``exit N`` footer and the green edit-success style cannot be
+          recovered here — closing them needs a kernel-side field, not a render
+          change;
+        * ``tool_name`` is empty on a persisted toolResult, so a descriptor's
+          custom card is silently skipped;
+        * headers and cards do not interleave — replay walks one assistant
+          message's ``●`` headers, then the toolResult cards;
+        * a ``UserMessage`` records no steer/follow-up kind, so every echo is
+          ``» ``; an image-only user turn renders nothing at all;
+        * TWO thinking blocks in one message replay BOTH while the live path
+          shows only the first (``_thinking_flushed``) — here the live side is
+          the one losing content, so replay is deliberately NOT matched to it.
 
         Static (no streaming) — never opens a text-stream window. Each message:
         user → ``» {text}``; assistant → thinking (dim italic) + text + ``●``
@@ -731,6 +750,11 @@ class EventRenderer:
         """
 
         self._finalize_text()  # belt-and-braces: no open stream during replay
+        # Resolved ONCE for the whole replay: ``_width_of`` does a live ioctl
+        # per call (issue #166), so reading it per block would lay block 3 out
+        # at a different measure than block 1 if the terminal were resized
+        # mid-repaint.
+        replay_width = self._width_of()
         for msg in messages:
             role = getattr(msg, "role", None)
             if role == "user":
@@ -760,11 +784,44 @@ class EventRenderer:
                     if btype == "thinking":
                         thinking = (getattr(block, "thinking", "") or "").strip()
                         if thinking:
-                            self._commit(Text(thinking, style="dim italic"))
+                            # Issue #164 — the live path gates reasoning on
+                            # ``hide_thinking`` (``_flush_thinking``); replay
+                            # dumped it unconditionally, so a user with "Show
+                            # thinking" OFF got every past turn's reasoning back
+                            # on every resume. The two arms are inlined rather
+                            # than delegated: ``_flush_thinking`` latches
+                            # ``_thinking_flushed``, which only ``message_start``
+                            # clears — and replay never emits one, so calling it
+                            # would render just the FIRST block of the whole
+                            # transcript.
+                            if self.hide_thinking:
+                                hidden_id = self._store_expandable(thinking)
+                                self._commit(
+                                    Text(
+                                        f"💭 {self._hidden_thinking_label} "
+                                        f"(/expand {hidden_id})",
+                                        style="dim italic",
+                                    )
+                                )
+                            else:
+                                self._commit(Text(thinking, style="dim italic"))
                     elif btype == "text":
                         body = getattr(block, "text", "") or ""
-                        if body.strip():
-                            self._commit(Text(body))
+                        # Issue #164 — render Markdown the way the live path
+                        # does. Committing ``Text(body)`` put the raw SOURCE on
+                        # screen: literal ``**bold**``, literal backticks, no
+                        # bullets, no syntax highlighting.
+                        #
+                        # ``Text.from_ansi`` and not a bare ``Markdown``
+                        # renderable: that is what the live commit sink builds
+                        # (``_new_stream``), so replay commits the same TYPE.
+                        # The guard is on the RENDERED lines, not on
+                        # ``body.strip()`` — an HTML comment or a link-reference
+                        # definition is non-blank and renders to nothing, and
+                        # the live path commits nothing for it.
+                        rendered = markdown_lines(body, replay_width)
+                        if rendered:
+                            self._commit(Text.from_ansi("".join(rendered)))
                     elif btype == "toolCall":
                         name = getattr(block, "tool_name", "") or ""
                         summary = _tool_header(name, getattr(block, "input", {}) or {})
