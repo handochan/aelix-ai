@@ -57,9 +57,12 @@ from pathlib import Path
 __all__ = [
     "ALIASES",
     "NEAR_MISSES",
+    "NEAR_MISS_FILES",
     "SearchHit",
     "Topic",
     "bundled_docs_dir",
+    "near_miss",
+    "packaged_path",
     "read_topic",
     "resolve_topic",
     "search_topics",
@@ -128,28 +131,53 @@ ALIASES: dict[str, str] = {
 #: question, which is worse than saying there is none.
 #:
 #: `skills` is here rather than in ALIASES because aelix has no skills-authoring
-#: guide. The word appears in two guides — `agent-profiles` documents the
-#: `skills:` frontmatter key, `project-trust` documents why a project
-#: `.aelix/skills/` is gated — and neither tells you how to write one. That is a
-#: real content gap, recorded here so `aelix docs skills` reports it instead of
-#: quietly handing over a document about something else.
+#: GUIDE. It does not follow that the install has no answer, and the first
+#: revision of this text implied it did — #101's L10 review. The packaged
+#: `writing-skills` skill ships in the same wheel and is exactly the answer: the
+#: SKILL.md format, the frontmatter rules the loader enforces, the three load
+#: tiers and the trust gate. Telling a user "no guide covers this" while the
+#: file sits inside their install is a worse failure than having no answer,
+#: because they have no way to find out otherwise.
+#:
+#: Every non-guide file named below is resolved to an ABSOLUTE path by
+#: :func:`near_miss` through :data:`NEAR_MISS_FILES`, and omitted when it is not
+#: really there — the same rule the system prompt's pointers follow.
 NEAR_MISSES: dict[str, str] = {
     "skills": (
-        "no guide covers writing a skill yet. The closest coverage is "
-        "`agent-profiles` (the `skills:` frontmatter key, which takes paths) "
-        "and `project-trust` (why a project-local .aelix/skills/ is gated)."
+        "no guide covers writing a skill, but the packaged `writing-skills` "
+        "skill does — the SKILL.md format, the frontmatter the loader "
+        "enforces, the three directories skills load from, and the trust gate. "
+        "The guides cover the neighbouring parts: `agent-profiles` (the "
+        "`skills:` frontmatter key, which takes paths) and `project-trust` "
+        "(why a project-local .aelix/skills/ is gated)."
     ),
     "mcp": (
-        "no guide covers MCP servers yet. `extension-authoring` documents the "
-        "`contributes.mcp_servers` manifest family and the capability flags "
-        "that gate it; `project-trust` covers the project-local .aelix/mcp.json "
-        "gate."
+        "no guide covers MCP servers on their own. `extension-authoring` "
+        "documents the `contributes.mcp_servers` manifest family and the "
+        "capability flags that gate it, `project-trust` covers the "
+        "project-local .aelix/mcp.json gate, and the packaged reference "
+        "manifest annotates every field."
     ),
     "hooks": (
         "no standalone hooks guide. `extension-authoring` covers both hook "
-        "surfaces: `aelix.on(...)` for in-process handlers and the "
-        "`contributes.hooks` manifest family for subprocess ones."
+        "surfaces — `aelix.on(...)` for in-process handlers and the "
+        "`contributes.hooks` manifest family for subprocess ones — and the "
+        "packaged reference manifest annotates the declaration, including the "
+        "`shell_exec` capability it requires."
     ),
+}
+
+#: Near-miss name -> the packaged files that answer it, as path parts relative
+#: to the ``aelix_coding_agent`` package root.
+#:
+#: KEPT AS DATA, and resolved at call time, for the same reason
+#: ``cli/agent_context._EXAMPLE_PARTS`` is: a renamed file DROPS its pointer
+#: instead of printing a path the reader cannot open, and a test can point an
+#: entry at a file nothing provides and assert the omission.
+NEAR_MISS_FILES: dict[str, tuple[tuple[str, ...], ...]] = {
+    "skills": (("skills", "writing-skills", "SKILL.md"),),
+    "mcp": (("examples", "echo", "aelix-plugin.toml"),),
+    "hooks": (("examples", "echo", "aelix-plugin.toml"),),
 }
 
 
@@ -162,6 +190,45 @@ def bundled_docs_dir() -> Path:
     """
 
     return Path(__file__).resolve().parents[1] / "docs"
+
+
+def packaged_path(*parts: str) -> Path | None:
+    """Absolute path to a file shipped inside this package, or ``None``.
+
+    Same resolution as :func:`bundled_docs_dir` and the same rule as
+    ``cli/agent_context._package_pointer``: a pointer at a path the reader
+    cannot open is worse than no pointer, so a missing file yields ``None`` and
+    the caller omits it.
+    """
+
+    try:
+        path = Path(__file__).resolve().parents[1].joinpath(*parts)
+        return path if path.is_file() else None
+    except (OSError, IndexError):  # pragma: no cover — defensive
+        return None
+
+
+def near_miss(name: str) -> str | None:
+    """The honest answer for a name no guide covers, or ``None``.
+
+    :data:`NEAR_MISSES` carries the prose; this appends the ABSOLUTE paths of
+    the packaged files that answer it, because the reader this exists for has no
+    checkout and cannot resolve a relative name. A file that is not really there
+    is dropped rather than named.
+    """
+
+    key = name.strip().lower()
+    text = NEAR_MISSES.get(key)
+    if text is None:
+        return None
+    found = [
+        str(path)
+        for parts in NEAR_MISS_FILES.get(key, ())
+        if (path := packaged_path(*parts)) is not None
+    ]
+    if not found:
+        return text
+    return f"{text} In this install: " + ", ".join(found) + "."
 
 
 def _title_of(path: Path) -> str:

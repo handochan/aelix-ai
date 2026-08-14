@@ -28,9 +28,11 @@ a real wheel and asserts against its namelist. Both, or neither is worth much.
 from __future__ import annotations
 
 import fnmatch
+import importlib.util
 import re
 import tomllib
 from pathlib import Path
+from typing import Any
 
 REPO = Path(__file__).resolve().parent.parent
 GUIDES = REPO / "docs" / "guides"
@@ -44,6 +46,11 @@ _RESYNC = "uv run python scripts/sync_bundled_docs.py"
 
 # Globbed, not listed: a guide added to `docs/guides/` must fail this file until
 # it is bundled, which a hardcoded list could never do.
+#
+# The glob is NON-recursive and that is now a checked property rather than an
+# assumption — see `test_no_guide_hides_in_a_subdirectory`. Until #101's L1
+# review this comment was false for a guide one directory down: the file was
+# skipped by every glob in the pipeline and this file stayed green.
 SOURCE_GUIDES = sorted(p.name for p in GUIDES.glob("*.md"))
 BUNDLED_DOCS = sorted(p.name for p in BUNDLED.glob("*.md")) if BUNDLED.is_dir() else []
 
@@ -58,6 +65,88 @@ def test_guide_discovery_is_not_empty() -> None:
     assert len(SOURCE_GUIDES) >= 7, SOURCE_GUIDES
     assert "extension-authoring.md" in SOURCE_GUIDES
     assert "project-trust.md" in SOURCE_GUIDES
+
+
+def _sync_script() -> Any:
+    """Load ``scripts/sync_bundled_docs.py`` — a script, not a package.
+
+    Imported rather than re-implemented so the refusal and this guard cannot
+    disagree about what "nested" means. ``scripts/`` has no ``__init__.py`` and
+    is not on ``sys.path``, hence the explicit spec.
+    """
+
+    path = REPO / "scripts" / "sync_bundled_docs.py"
+    spec = importlib.util.spec_from_file_location("_sync_bundled_docs", path)
+    assert spec is not None and spec.loader is not None, path
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_no_guide_hides_in_a_subdirectory() -> None:
+    """``docs/guides/`` is FLAT, and the flatness is load-bearing (#101 L1).
+
+    Every glob in this pipeline — this file, `scripts/sync_bundled_docs.py`,
+    `tests/packaging/test_docs_bundle.py`, `help.registry.topics` — is `*.md`,
+    not `**/*.md`. So a guide written one directory down was skipped in
+    complete silence. Measured on this tree with `docs/guides/advanced/
+    nested-guide.md` planted:
+
+        tests/test_docs_bundle_sync.py    7 passed
+        scripts/sync_bundled_docs.py      "8 guide(s) bundled — 0 updated"
+        aelix docs                        the same 8 topics
+
+    Nothing said the ninth file existed. It never shipped, never became a
+    topic, and never failed anything.
+    """
+    nested = _sync_script().nested_guides(GUIDES)
+    assert nested == [], (
+        f"guides in a subdirectory of docs/guides/: "
+        f"{[str(p) for p in nested]}\n"
+        f"They ship nowhere and are offered nowhere. Move them to "
+        f"docs/guides/<name>.md. Fix: {_RESYNC} (which now refuses too)."
+    )
+
+
+def test_the_subdirectory_guard_is_not_vacuous(tmp_path: Path) -> None:
+    """Guards the guard above, which passes trivially on a flat tree.
+
+    Drives the same function over a synthetic guides directory containing one
+    nested file, so "no nested guides" is earned rather than a consequence of
+    the checker returning `[]` unconditionally.
+    """
+    guides = tmp_path / "guides"
+    (guides / "advanced").mkdir(parents=True)
+    (guides / "top.md").write_text("# top\n", encoding="utf-8")
+    (guides / "advanced" / "nested.md").write_text("# nested\n", encoding="utf-8")
+
+    found = _sync_script().nested_guides(guides)
+    assert [str(p) for p in found] == ["advanced/nested.md"]
+
+
+def test_the_sync_script_refuses_a_nested_guide_rather_than_skipping_it(
+    tmp_path: Path, capsys: Any, monkeypatch: Any
+) -> None:
+    """The refusal itself: exit 1, on stderr, naming the file.
+
+    A checker nobody calls is the same silence in a different place, so
+    ``main()`` is driven with ``GUIDES`` pointed at the synthetic tree.
+    """
+    guides = tmp_path / "guides"
+    (guides / "advanced").mkdir(parents=True)
+    (guides / "top.md").write_text("# top\n", encoding="utf-8")
+    (guides / "advanced" / "nested.md").write_text("# nested\n", encoding="utf-8")
+    bundled = tmp_path / "bundled"
+
+    module = _sync_script()
+    monkeypatch.setattr(module, "GUIDES", guides)
+    monkeypatch.setattr(module, "BUNDLED", bundled)
+
+    assert module.main() == 1
+    captured = capsys.readouterr()
+    assert captured.out == "", "a refusal must not look like a successful sync"
+    assert "advanced/nested.md" in captured.err
+    assert not bundled.exists(), "nothing was copied under a refusal"
 
 
 def test_every_guide_has_a_byte_equal_bundled_copy() -> None:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from aelix_coding_agent.tui import extension_manager
 from aelix_coding_agent.tui.extension_manager import (
     build_discover_lines,
     build_installed_lines,
@@ -164,6 +165,54 @@ def test_builtin_named_user_plugin_with_manifest_is_not_hidden() -> None:
     body = "\n".join(lines)
     assert "✓ GuardrailExtension 9.9.9" in body
     assert "Built-in (always on):" not in body
+
+
+def test_the_status_extension_is_a_builtin_not_a_user_plugin() -> None:
+    """#101 review L3.
+
+    ``StatusExtension`` is appended to ``entry.py``'s ``prepend_extensions``
+    unconditionally — the resulting list is ``['GuardrailExtension',
+    'PermissionExtension', 'StatusExtension']`` — and it carries no manifest, so
+    ``/extension`` presented it to every user as an installed third-party
+    plugin. It also broke the empty state this whole split exists for: on a
+    clean install with nothing installed, ``/extension`` claimed one plugin was.
+    """
+
+    status = _Ext("StatusExtension", manifest=None)
+    body = "\n".join(build_installed_lines([status], []))
+    assert "Built-in (always on):" in body
+    assert "StatusExtension" in body
+    assert "✓ StatusExtension" not in body
+    assert "(no user plugins installed)" in body
+
+
+def test_a_pack_named_like_the_status_builtin_is_still_a_plugin() -> None:
+    """The manifest disambiguation, applied to the name added above."""
+
+    impostor = _Ext(
+        "StatusExtension",
+        _Manifest(_Plugin(name="StatusExtension", version="9.9.9")),
+    )
+    body = "\n".join(build_installed_lines([impostor], []))
+    assert "✓ StatusExtension 9.9.9" in body
+    assert "Built-in (always on):" not in body
+
+
+def test_the_builtin_set_is_the_always_on_prepends_and_says_why() -> None:
+    """Membership is a RULE, not a list someone appends to.
+
+    The section a member lands in is labelled "Built-in (always on)", so the
+    rule is: prepended by ``_build_harness_options`` on EVERY run. That is what
+    keeps ``AgentsExtension`` out — it is a built-in too, but it is
+    default-off (``[features] agents``) and additionally depth-gated, so
+    "always on" would be false for it. Its own placement is a separate,
+    pre-existing question (#101's ADR records it); this test pins that the set
+    is not silently widened into a general "our classes" bucket.
+    """
+
+    assert frozenset(
+        {"GuardrailExtension", "PermissionExtension", "StatusExtension"}
+    ) == extension_manager._BUILTIN_ALWAYS_ON_NAMES
 
 
 # === build_discover_lines / build_sources_lines ===

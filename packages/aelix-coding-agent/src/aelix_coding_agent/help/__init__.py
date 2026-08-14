@@ -10,10 +10,13 @@ does not belong here.
 
 from .registry import (
     ALIASES,
+    NEAR_MISS_FILES,
     NEAR_MISSES,
     SearchHit,
     Topic,
     bundled_docs_dir,
+    near_miss,
+    packaged_path,
     read_topic,
     resolve_topic,
     search_topics,
@@ -24,9 +27,12 @@ from .registry import (
 __all__ = [
     "ALIASES",
     "NEAR_MISSES",
+    "NEAR_MISS_FILES",
     "SearchHit",
     "Topic",
     "bundled_docs_dir",
+    "near_miss",
+    "packaged_path",
     "read_topic",
     "resolve_topic",
     "search_topics",

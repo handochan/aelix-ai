@@ -83,8 +83,14 @@ prose.
 
 ### The real defect: shipped files linked to a directory that did not ship
 
-`docs/guides/` was **not** in the wheel, and six shipped files pointed at it. Measured by
-decompressing every text member of the base wheel and grepping — six hits, in five files:
+`docs/guides/` was **not** in the wheel, and **five** shipped files pointed at it, with **six**
+references between them (`examples/INDEX.md` accounts for two). Measured by decompressing every
+text member of the base wheel and grepping — six hits, in five files:
+
+> **Corrected after review (L7).** This sentence said "six shipped files", and the commit message
+> repeated it. The measurement it cites says six *references* in five *files*, and the listing
+> below has always had five entries. The commit message is written and cannot change; the number
+> to trust is the listing.
 
 ```
 aelix_coding_agent/cli/extension_install.py:2338
@@ -194,17 +200,50 @@ Seven bullets in pi, three here, and the differences are decisions rather than t
   short-circuit at `:442` — so in exactly the mode where a user asked the agent to look and not
   touch, an `aelix docs` pointer is unfollowable. The skill points a human at the verb; the prompt
   points the model at a path.
-- **"Small enough for `read` to return whole" is measured, not asserted.** Largest bundled guide
-  is `extension-authoring.md` at 33 620 B against `tools/_truncate.DEFAULT_MAX_BYTES` = 51 200,
-  and a test pins every guide under the cap. This is the trap `_extension_signpost` already hit
-  once with `api.py` (84 KB, silently truncated to a window containing none of the `register_*`
+- **"Small enough for `read` to return whole" is measured against BOTH caps, not asserted.**
+  `read` truncates when either binds (`truncate_head(selected, max_lines=DEFAULT_MAX_LINES,
+  max_bytes=DEFAULT_MAX_BYTES)`, `tools/read.py:221-223`). Widest bundled guide is
+  `extension-authoring.md` at **33 620 B / 668 lines** against **51 200 B / 2 000 lines**, and a
+  test pins every guide under both. This is the trap `_extension_signpost` already hit once with
+  `api.py` (84 KB, silently truncated to a window containing none of the `register_*`
   definitions).
+
+  > **Corrected after review (L2).** As shipped, the test asserted the byte cap only. A
+  > 2 603-line / 33 834-byte guide passes that and `read` still truncates — measured,
+  > `truncated_by='lines'`, `kept_lines=2000 of 2603` — so the prompt would have been telling the
+  > model something false. Both caps are now asserted.
 - **The names are globbed at call time**, so a guide added to the bundle appears with no code
   change, and a stripped install (no `docs/`) emits `""` rather than advertising an empty
   directory.
+
+  > **Corrected after review (L1).** "A guide added to the bundle appears with no code change" is
+  > true only for a guide at the TOP LEVEL of `docs/guides/`. Every glob in the pipeline is
+  > `*.md`, not `**/*.md`, so a guide one directory down was skipped in silence: measured with one
+  > planted nested file, `tests/test_docs_bundle_sync.py` 7 passed, the sync script printed
+  > "8 guide(s) bundled — 0 updated, 0 removed", and `aelix docs` offered the same 8 topics.
+  > `scripts/sync_bundled_docs.py` now REFUSES a nested guide (exit 1, named on stderr) and a test
+  > pins it, rather than recursing — the topic namespace is flat (`Path.stem`), so a recursive
+  > glob would ship a file that still never becomes a topic.
 - **The emitted directory is run through `_safe_path` + `_escape_text`** for the same reason
   ADR-0217 does it to the cwd: the path is `Path(__file__)`-derived, so a checkout or install
   under a directory named `<project_context>` would forge #121's fence from the *install* side.
+
+  > **RESIDUAL, corrected after review (L9). This class is half handled, not handled.** Two
+  > measurements, package copied under `/tmp/amp&test_…/r&d/src` and the prompt built from it:
+  >
+  > 1. `_escape_text` rewrites `&` to `&amp;`, and `&` is legal in a POSIX path component. The
+  >    block emitted `/tmp/amp&amp;test_…/r&amp;d/src/aelix_coding_agent/docs`, whose `is_dir()`
+  >    is `False`, while the real directory's is `True`. On such an install this block names a
+  >    path the model cannot open — the exact failure it exists to prevent.
+  > 2. `_extension_signpost`'s two `_package_pointer` targets are emitted **raw**: measured
+  >    verbatim as `/tmp/amp&test_…/r&d/src/…/echo.py`. They are `Path(__file__)`-derived in
+  >    exactly the same way, so a `<` in an install path is not neutralised there at all.
+  >
+  > Both are **pre-existing to this review and deliberately not fixed here**: the owner scoped
+  > #101, and the honest fix is one path-shaped escape (`<` and the control strip, no `&`) shared
+  > by these two pointers, this directory, `build_system_prompt`'s `cwd_abs` and the signpost's
+  > two write targets. Recommended as a follow-up: the `&` mangling turns a guard into a
+  > wrong-answer generator, which is worse than the forgery it prevents is likely.
 
 ### 3. `aelix docs` (AELIX-ORIGINAL)
 
@@ -257,12 +296,21 @@ opens a **built wheel**, because a missing entry is invisible in every source ch
 Two field decisions worth recording:
 
 - **`extension_paths` (in the issue's draft) was dropped.** Measured against the real loader:
-  `Extension.source_info` came back `None` for all four load tiers (it has zero writers);
-  `resolved_path` is set on exactly one branch (`loader.py:229`); and for the directory tiers the
+  `Extension.source_info` came back `None` for all four load tiers (it had zero writers);
+  `resolved_path` is set on exactly one branch (`loader.py:282`); and for the directory tiers the
   only path-shaped value is `Extension.name`, which *is* an absolute path — the probe returned
   `name='/tmp/…/proj/.aelix/extensions/projext.py'`. On a real machine that is `$HOME` and the OS
   username, handed to a model that may be a hosted third party. A per-extension `scope` label
   replaces it.
+
+  > **Updated after review (M1).** `source_info` now has exactly one writer:
+  > `loader._entry_point_source_info` records `ExtensionSourceInfo(source="entry_points")` for the
+  > endpoint tier. Its `path` / `base_dir` fields stay unwritten for the reason above. Scoped to
+  > that one tier because `source_info` also reaches the RPC wire through
+  > `harness/_extension_runner.py` → `rpc_mode._registered_command_source_info`; for an endpoint
+  > pack that payload goes from `source="unknown"` to `source="entry_points"`, which is a
+  > correction, while filling it for the other three would change the wire shape for every
+  > extension to say something a consumer can already derive from the path.
 - **`extension_api_version` was renamed `manifest_api_level`.** `ExtensionAPI` carries no version
   at all. The only versioned extension contract is the manifest's `[plugin.api]` `level`/`min_level`
   pair checked against `AELIX_API_LEVEL` (= 1). Shipping the field under the issue's name would
@@ -270,9 +318,24 @@ Two field decisions worth recording:
 
 **Redaction is structural, not a filter.** Nothing is ever `repr`/`asdict`/`model_dump`-ed.
 Extension identity comes from `manifest.plugin.id` (`^[a-z][a-z0-9-]{0,63}$`) and
-`plugin.version` (semver) — both schema-constrained, so a token cannot travel through either;
-`plugin.name`, which is free text, is deliberately unused. A path-shaped `Extension.name` is
-reduced to its basename.
+`plugin.version` (semver); `plugin.name`, which is free text, is deliberately unused. A
+path-shaped `Extension.name` is reduced to its basename.
+
+> **Corrected after review (M2).** As shipped, this paragraph and the code's docstring said the
+> two schema-constrained fields meant "a token cannot travel through either". False for
+> `version`: `PluginIdentity.version`'s pattern constrains SHAPE only — the prerelease and build
+> tails are unbounded `[0-9A-Za-z-.]+` runs and there is no `max_length`. Measured, a manifest
+> with `version = "1.0.0-<4132 chars>"` parsed, loaded through the real
+> `discover_and_load_extensions`, and its 4 138-character version reached the tool's output
+> verbatim. `Extension.name` for a manifest-less pack (a writable `__qualname__`) and any
+> extension-registered tool name have the same shape and were unbounded too.
+>
+> Fixed by bounding rather than dropping: every author-controlled string is emitted through
+> `snapshot.bounded_emitted_value`, which strips control bytes (`cli/agent_context._CONTROL_KILL`'s
+> table and rationale) and caps at `MAX_EMITTED_CHARS = 128` — twice the widest identity the
+> manifest schema permits (`plugin.id`, 64). **The bound is not a secrecy control**, and the
+> corrected text says so: a 40-character token fits under any usable cap, and this projection
+> reports plugin identity on purpose. What it bounds is cost and rendering.
 
 **`project_trusted` fails closed.** It does not call `ctx.is_project_trusted()`: that getter's
 unbound default is `lambda: True` (`extensions/api.py:1094`), `AgentHarnessOptions.project_trusted`
@@ -297,7 +360,7 @@ pasted traceback, so the object has to be safe rather than every caller having t
 
 ### 6. The `Available tools:` sentence is *not* fixed here
 
-`cli/agent_context.py:639` names seven tools — `read, write, edit, bash, grep, find, ls` — which
+`cli/agent_context.py:689` names seven tools — `read, write, edit, bash, grep, find, ls` — which
 is exactly pi's built-in set (§"the pi side" above), and it is a **hardcoded string**. It was
 already wrong before this change: the `agent` tool ships and is absent from it. `aelix_status`
 makes it wrong by two. Making that sentence dynamic is issue **#120** and was deliberately not
@@ -320,16 +383,25 @@ issue.)
 - **Eight extension-count assertions moved by one.** `tests/cli/test_agent_context.py`,
   `test_agents_extension_gate.py`, `test_no_builtin_tools.py`, `test_project_trust.py`. They
   count real prepends, so the shift is the change being visible, not a test being loosened.
-- **`/extension`'s viewer will list `StatusExtension` under "Plugins:"** as if it were a user
-  plugin, because `tui/extension_manager.py:44` `_BUILTIN_SAFETY_NAMES` names only Guardrail and
-  Permission. Pre-existing — `AgentsExtension` already has it — but #101 makes this one always-on
-  and therefore always visible. Not fixed here: the constant is named for *safety* extensions and a
-  status extension is not one, so the honest fix is renaming it, which belongs with that file.
-- **`scope` returns `"unclassified"` for prepended built-ins and for manifest-less entry-point
-  packs.** Not laziness: `loader._resolve_factory` derives both names identically
-  (`getattr(factory, "__qualname__", None) or type(factory).__name__`, `:1805` and `:1813`) and
-  nothing on the `Extension` distinguishes them. Telling them apart requires the loader to record
-  the tier — which would also un-dead `Extension.source_info`, currently with zero writers.
+- ~~**`/extension`'s viewer will list `StatusExtension` under "Plugins:"**~~ **FIXED after review
+  (L3).** As shipped it did, because `tui/extension_manager.py`'s `_BUILTIN_SAFETY_NAMES` held only
+  Guardrail and Permission — so every user saw a third-party plugin they had not installed, and the
+  clean-install empty state was suppressed. The constant is renamed `_BUILTIN_ALWAYS_ON_NAMES` and
+  `StatusExtension` added, which is the rename this bullet said was the honest fix. "Safety" was
+  the property of the first two members, never the membership rule; the rule is the section's own
+  label — prepended by `_build_harness_options` on **every** run. `AgentsExtension` stays out under
+  that rule and not by omission: it is default-off (`[features] agents`) and depth-gated, so
+  "always on" would be false for it. Its placement is still open and still pre-existing.
+- **`scope` reports the ENTRY-POINT tier since the M1 review**, and `"unclassified"` only for
+  prepended built-ins. As shipped it reported a pip-installed pack — the
+  `aelix extension install` / marketplace shape — as `"explicit"`, i.e. as something the user had
+  typed `-e` for. Measured on two real installed-wheel images: manifest-BOUND pack
+  `resolved_path='<site>/boundpack'` → `"explicit"`, manifest-LESS pack `name='setup'` →
+  `"unclassified"`. The loader now records the tier (see §4's `extension_paths` note); an inline
+  prepend has no such record and no path, so it stays `"unclassified"` — `loader._resolve_factory`
+  derives its name and a manifest-less endpoint's identically
+  (`getattr(factory, "__qualname__", None) or type(factory).__name__`), and inventing a `"builtin"`
+  label would mean hardcoding a list of built-in class names.
 - **`Extension`'s repr no longer expands the manifest.** Capabilities, activation and contributes
   are gone from tracebacks by design; registration buckets are counts. Use the object, not its repr.
 - **`aelix --offline docs …` does not work**, and neither does `aelix --offline extension …`.
@@ -347,14 +419,20 @@ issue.)
   the surface was live and that "CLI overrides win": measured, an extension registering `probe-flag`
   with `default="DEFAULT"`, launched as `aelix -e probe.py --probe-flag FROM_CLI --print …`, printed
   `get_flag('probe-flag') = 'DEFAULT'`. Confirmed structurally on this branch too: `unknown_flags`
-  has no production reader outside `args.py` (the one hit in `cli/agent_context.py:423` is a comment
+  has no production reader outside `args.py` (the one hit in `cli/agent_context.py:459` is a comment
   saying it is not threaded), and the only caller of `set_flag_value` is the `/reload` restore path
   at `runtime/agent_session_runtime.py:816` (#92). `providers-and-models.md`'s `--offline` section
   said the flag was "currently a no-op
   reserved for forward compatibility": false on both halves — it gates the ripgrep download
   (`util/tools_manager.py:378-380`, which printed `ripgrep not found. Offline mode enabled, skipping
-  download.` and returned `None`), catalog fetch (`cli/extension_install.py:3657`) and index-less
-  pypi installs (`:1195`).
+  download.` and returned `None`), catalog fetch (`cli/extension_install.py:1990`, `:3657-3663`)
+  and index-less pypi installs (`:1195`).
+
+  > **Corrected after review (L6).** The guide was fixed and the *code comment at the site that
+  > implements `--offline`* was not: `cli/entry.py`'s `--offline` block still said "Inert today
+  > (Aelix has no startup network operations) but preserves the contract", verbatim the claim this
+  > bullet calls false. Correcting one copy of a false sentence and leaving the other is how it
+  > comes back. The comment now names the three readers and the subcommand-routing sharp edge.
 
 ### How this was checked
 
@@ -385,6 +463,25 @@ test that was green for the wrong reason:
   bundled" rather than raising. A source checkout agrees for the wrong reason (`src/` also has no
   `docs/`), so only the installed-layout test can see it.
 
+Two more were found by the adversarial review AFTER this ADR was written, and both are the same
+class — a test that could not fail:
+
+- **An AST tripwire that pins keyword NAMES pins nothing.** `test_entry_wiring_tripwire.py` asserted
+  that `StatusExtension(...)` was constructed with `mode` / `project_trusted` / `extensions`
+  supplied, and nothing about their values. Measured against the shipped revision, one sabotage at a
+  time, 5 tests in that file and 5 green every time: `mode="interactive"`,
+  `extensions=[]`, and `project_trusted=lambda: True` — the last being a security-relevant
+  **fail-open**, since `resolve_project_trusted_fail_closed` exists precisely to refuse an unresolved
+  `True`. The first was re-run over all of `tests/status/` as well: 36 passed. Every argument is now
+  compared by `ast.unparse`d expression, and each sabotage was re-applied to confirm it goes red.
+- **A SIGPIPE test whose payload fits in the pipe.** `test_piping_to_head_uses_the_repo_pipe_convention`
+  ran `aelix docs extension | head -1` and asserted the *pipeline's* exit code — which is `head`'s.
+  The largest guide is 33 620 B and a Linux pipe holds 64 KiB, so the writer never blocked and the
+  `main_sync` guard was never entered: `PIPESTATUS` read explicitly was `aelix=0 head=0`. Replaced
+  with the construction `test_pipe_robustness.py` already uses — close the read end *before* the
+  child starts, so every write is EPIPE — which yields the quiet 141; sabotaging that `sys.exit(141)`
+  to `sys.exit(0)` now turns the test red, where before it changed nothing.
+
 Beyond unit tests, the wheel was installed into a fresh venv **without** the `tui` extra
 (`rich`/`prompt_toolkit` both `find_spec -> None`): `aelix docs` listed 8 topics, `aelix docs security`
 printed the guide, `aelix docs bogus` exited 2 with 0 bytes on stdout, and
@@ -394,16 +491,26 @@ printed the guide, `aelix docs bogus` exited 2 with 0 bytes on stdout, and
 
 - **`skills` has no guide, and none was invented.** `aelix docs skills` exits 2 with a pointer
   rather than handing over a document about something else, and a test pins the decision so
-  "we forgot" cannot later look like "we decided". The gap is narrower than that message implies,
-  though: the packaged **`writing-skills` skill ships in the same wheel** (3 972 B) and covers the
-  SKILL.md format, the frontmatter rules, the three load tiers and the trust gate. The near-miss
-  text names `agent-profiles` and `project-trust` and does **not** name it, so a user is currently
-  told less than the install actually contains. Same for `mcp` and `hooks`, which are in the same
-  state. Worth its own issue.
-- **No sdist → wheel round trip is tested.** `tests/packaging/test_build_hygiene.py` builds a wheel
-  and an sdist from one source copy and inspects each, but never unpacks the sdist and rebuilds from
-  it. That gap is recorded in `tests/packaging/test_docs_bundle.py`'s module docstring; inventing the
-  pattern for one directory, when it wants to cover every target, was declined.
+  "we forgot" cannot later look like "we decided".
+
+  > **FIXED after review (L10).** This residual said the near-miss text named `agent-profiles` and
+  > `project-trust` and *not* the packaged `writing-skills` skill (3 972 B, same wheel), so a user
+  > was told less than their install contains. It now names it, and `near_miss()` resolves the
+  > ABSOLUTE path — the reader this exists for has no checkout, so a relative name is not an
+  > answer. `mcp` and `hooks` get the same treatment for the annotated reference manifest
+  > `examples/echo/aelix-plugin.toml`, which declares both `[[contributes.mcp_servers]]` and
+  > `[[contributes.hooks]]` field by field. Every named file is resolved at call time and dropped
+  > when absent, and a packaging test asserts each is in the **built wheel** — a source-tree check
+  > could not see the failure that matters (a message naming a path only a checkout has).
+- ~~**No sdist → wheel round trip is tested.**~~ **CORRECTED after review (L5): there is one.**
+  `uv build --package <name>` — the command `tests/packaging/test_docs_bundle.py`'s fixture runs —
+  builds the sdist and then builds the wheel *out of it*. Verbatim output:
+  `Building source distribution...` / `Building wheel from source distribution...`. So every
+  assertion that file makes against the wheel already passed through the sdist: 8 `.md` files under
+  `src/aelix_coding_agent/docs/` in the tarball, 8 under `aelix_coding_agent/docs/` in the wheel.
+  `test_build_hygiene.py` uses the same `--package` form at `:341` (plus a separate `--sdist` build
+  at `:354`), so it round-trips too. The docstring that recorded the gap invited a duplicate and
+  now says this instead.
 - **`aelix docs` prints plain text, not rendered markdown.** Deliberate: `cli/docs.py` must import
   with no `[tui]` extra, and a pipe has to receive clean markdown. A rendered viewer is a separate
   surface.

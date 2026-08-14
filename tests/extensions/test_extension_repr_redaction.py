@@ -1,7 +1,7 @@
 """``repr(Extension)`` leaked plugin-supplied secrets (#101).
 
 SAME DEFECT, ONE LAYER UP FROM ADR-0206. That review hardened
-``_ManifestEntry.__repr__`` (``loader.py:1138``) because the carrier flowed into
+``_ManifestEntry.__repr__`` (``loader.py:1197-1201``) because the carrier flowed into
 ``str(entry)`` on the load-error path and the default dataclass repr expanded the
 whole ``PluginManifest`` — including ``contributes.mcp_servers[].env``, which is
 where a plugin puts its API tokens. The ``Extension`` that carrier PRODUCES kept

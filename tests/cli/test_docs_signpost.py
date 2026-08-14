@@ -180,12 +180,27 @@ def test_every_bundled_guide_fits_in_one_read() -> None:
     The fix if this fails is to split the guide or drop the promise, not to
     raise the cap.
 
+    BOTH CAPS, which is #101's L2 review. ``read`` calls ``truncate_head(
+    selected, max_lines=DEFAULT_MAX_LINES, max_bytes=DEFAULT_MAX_BYTES)``
+    (``tools/read.py:221-223``) and truncates when EITHER binds — the details
+    even carry ``truncated_by`` to say which. The first revision of this test
+    asserted only the byte cap, so a guide could pass it while the prompt told
+    the model something false. Measured with one planted 2603-line / 33 834-byte
+    guide in the bundled directory::
+
+        old byte-only assertion   PASSES (33834 < 51200)
+        truncate_head(...)        truncated=True truncated_by='lines'
+                                  kept_lines=2000 of 2603
+
     The promise is asserted FIRST on purpose: a corpus-only size check would
     pass with no block in the prompt at all, i.e. it would be green before the
     change it exists to guard.
     """
 
-    from aelix_coding_agent.tools._truncate import DEFAULT_MAX_BYTES
+    from aelix_coding_agent.tools._truncate import (
+        DEFAULT_MAX_BYTES,
+        DEFAULT_MAX_LINES,
+    )
 
     block = _docs_block(build_system_prompt("/some/project"))
     assert "small enough for `read` to return whole" in block
@@ -197,6 +212,16 @@ def test_every_bundled_guide_fits_in_one_read() -> None:
     for guide in guides:
         size = guide.stat().st_size
         assert size < DEFAULT_MAX_BYTES, f"{guide.name} is {size}B, over the read cap"
+        # ``read`` splits on "\n", so the line count that matters is
+        # ``text.split("\n")`` — one more than the number of newlines when the
+        # file ends in one. Counted the same way here rather than with
+        # ``splitlines()``, which would be off by one against the tool.
+        lines = len(guide.read_text(encoding="utf-8").split("\n"))
+        assert lines <= DEFAULT_MAX_LINES, (
+            f"{guide.name} is {lines} lines, over `read`'s "
+            f"DEFAULT_MAX_LINES={DEFAULT_MAX_LINES}. It is under the byte cap "
+            f"and `read` would still truncate it (truncated_by='lines')."
+        )
 
 
 def test_the_highlight_clause_is_true_of_the_guide_it_describes() -> None:

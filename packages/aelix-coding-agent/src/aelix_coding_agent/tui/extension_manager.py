@@ -36,16 +36,32 @@ _DIM = "\x1b[2m"
 _RST = "\x1b[0m"
 
 
-# The Aelix-additive built-in safety extensions are PREPENDED into the loaded
-# list (entry.py: ``prepend=[GuardrailExtension(), permission]``) and carry no
-# manifest — they are NOT user-installed plugins. Render them under a separate
-# dim "Built-in:" section so the user-facing "Plugins" list (and its empty-state)
-# reflects only real installs.
-_BUILTIN_SAFETY_NAMES = frozenset({"GuardrailExtension", "PermissionExtension"})
+# The Aelix-additive built-ins that ``_build_harness_options`` PREPENDS on every
+# run. They carry no manifest — they are NOT user-installed plugins — so they are
+# rendered under the separate dim "Built-in (always on):" section and the
+# user-facing "Plugins" list (and its empty-state) reflects only real installs.
+#
+# MEMBERSHIP IS THE SECTION'S OWN LABEL: prepended unconditionally, every run.
+# Renamed from ``_BUILTIN_SAFETY_NAMES`` in #101's L3 review — "safety" was the
+# property of the first two members, never the rule, and it is why the third one
+# was missed. ``StatusExtension`` (#101) is appended to ``prepend_extensions``
+# with no condition at all, so ``/extension`` was showing every user a
+# third-party plugin they had not installed AND suppressing the clean-install
+# empty state.
+#
+# WHAT STAYS OUT, and why the rule decides it rather than taste:
+# ``AgentsExtension`` is a built-in too, but it is default-off (``[features]
+# agents``) and additionally gated on ``subagent_depth() < MAX_SUBAGENT_DEPTH``,
+# so "always on" would be false for it. Its own placement is a separate,
+# pre-existing question (ADR-0218 records it) and is deliberately not decided
+# here.
+_BUILTIN_ALWAYS_ON_NAMES = frozenset(
+    {"GuardrailExtension", "PermissionExtension", "StatusExtension"}
+)
 
 
-def _is_builtin_safety(ext: Any) -> bool:
-    """True for an Aelix-additive built-in safety extension (Guardrail/Permission).
+def _is_builtin_always_on(ext: Any) -> bool:
+    """True for an Aelix-additive built-in that is prepended on every run.
 
     Structural marker: a built-in is prepended with NO manifest and a loader name
     equal to its class name (``type(entry).__name__``). We gate on BOTH the
@@ -55,7 +71,7 @@ def _is_builtin_safety(ext: Any) -> bool:
 
     if getattr(ext, "manifest", None) is not None:
         return False
-    return str(getattr(ext, "name", "") or "") in _BUILTIN_SAFETY_NAMES
+    return str(getattr(ext, "name", "") or "") in _BUILTIN_ALWAYS_ON_NAMES
 
 
 def _extension_name(ext: Any) -> str:
@@ -131,9 +147,10 @@ def build_installed_lines(
     looked exactly like one that was never installed — the user had no reason to
     suspect there was anything to fix. They render as their own section.
 
-    The Aelix-additive built-in safety extensions (Guardrail / Permission) are
-    rendered under a separate dim "Built-in:" section, NOT counted as user
-    plugins — so the empty-state below is reachable on a clean install.
+    The Aelix-additive always-on built-ins (Guardrail / Permission / Status —
+    see :data:`_BUILTIN_ALWAYS_ON_NAMES`) are rendered under a separate dim
+    "Built-in (always on):" section, NOT counted as user plugins — so the
+    empty-state below is reachable on a clean install.
 
     Empty inventory (no USER plugins, no built-ins, no MCP servers AND no
     refusals) → ``["No plugins or MCP servers installed."]``. A refusal alone is
@@ -142,8 +159,8 @@ def build_installed_lines(
     """
 
     all_exts = list(extensions or [])
-    builtins = [e for e in all_exts if _is_builtin_safety(e)]
-    user_exts = [e for e in all_exts if not _is_builtin_safety(e)]
+    builtins = [e for e in all_exts if _is_builtin_always_on(e)]
+    user_exts = [e for e in all_exts if not _is_builtin_always_on(e)]
     conns = list(mcp_conns or [])
     error_rows = _error_rows(errors)
     if not user_exts and not builtins and not conns and not error_rows:

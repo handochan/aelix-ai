@@ -1594,9 +1594,9 @@ async def _async_main(argv: list[str]) -> int:
         return 1
 
     # === --offline (Pi main.ts:425-427) ======================================
-    # Mirror Pi: ``--offline`` OR a pre-set ``PI_OFFLINE`` env both engage
-    # offline mode (Pi reads the flag with ``||`` over the env). Inert today
-    # (Aelix has no startup network operations) but preserves the contract.
+    # Mirror Pi: ``--offline`` or a pre-set ``PI_OFFLINE`` engages offline mode.
+    # NOT inert — that claim was false on BOTH halves (#101 L6): the exported env
+    # gates rg/fd download, index-less pypi install and catalog fetch; ADR-0218.
     if parsed.offline or os.environ.get("PI_OFFLINE"):
         os.environ["PI_OFFLINE"] = "1"
 

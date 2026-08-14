@@ -14,10 +14,32 @@ CLOSED against a tree where nothing was wired. The parse below asserts on
 structure: this parameter on THIS function, this call inside THIS body, this
 keyword at THIS call site.
 
+NAMES ARE NOT ENOUGH, which is the M3 review finding this file was rewritten
+for. The first revision asserted only that the keyword NAMES were present, so
+all three arguments could be sabotaged with it green. Measured, one sabotage at
+a time, against the revision that shipped at ``130acfd`` — 5 tests in this file,
+5 green every time::
+
+    mode=app_mode                            -> mode="interactive"      5 passed
+    extensions=captured_extensions           -> extensions=[]           5 passed
+    project_trusted=lambda: project_trusted  -> lambda: True            5 passed
+
+The first was re-run over the whole ``tests/status/`` directory as well: 36
+passed, i.e. nothing anywhere else saw it either.
+
+The third is a security-relevant FAIL-OPEN: the whole point of
+``resolve_project_trusted_fail_closed`` is that only an explicitly RESOLVED
+decision counts, and ``lambda: True`` re-introduces exactly the default the
+snapshot refuses to read off ``ctx.is_project_trusted()``. So every argument is
+now pinned by VALUE, compared as normalised source through :func:`ast.unparse`
+— which ignores whitespace, line breaks and comments while keeping the
+expression exact.
+
 WHAT IT DOES NOT ASSERT. That the wiring works — ``tests/status/test_status_tool.py``
 covers behaviour against a real harness. This file only pins that the three
-edits exist and are in the right places, because ``entry.py`` is held by another
-track and the edits land separately from this package.
+edits exist, are in the right places and pass the right expressions, because
+``entry.py`` is held by another track and the edits land separately from this
+package.
 """
 
 from __future__ import annotations
@@ -35,11 +57,31 @@ EXT_CLASS = "StatusExtension"
 EXT_MODULE = "aelix_status"
 
 # The three values ``StatusExtension`` cannot obtain from an ``ExtensionContext``
-# and must therefore be handed. Named here so a wiring that drops one — the
-# likeliest partial application of this handoff — fails loudly rather than
-# shipping a snapshot that silently reports ``mode="unknown"`` or
-# ``project_trusted=False`` forever.
-REQUIRED_KWARGS = {"mode", "project_trusted", "extensions"}
+# and must therefore be handed, each mapped to the EXPRESSION that must supply
+# it (normalised through ``ast.unparse``). Named here so a wiring that drops one
+# — or quietly replaces one with a constant — fails loudly rather than shipping
+# a snapshot that reports ``mode="unknown"``, an empty extension list, or a
+# ``project_trusted`` nobody resolved.
+#
+# Each value is the ONLY honest source, and none of the three is substitutable:
+#
+# ``app_mode``
+#     the single ``resolve_app_mode(parsed, stdin_is_tty)`` result, threaded in
+#     from ``_async_main``. Re-deriving it inside the factory would sample a
+#     stdin TTY state that has already changed.
+# ``lambda: project_trusted``
+#     a callable over the RESOLVED decision, read live. A bare ``True`` is the
+#     fail-open; a non-callable would freeze a ``/trust`` flip out of the answer.
+# ``captured_extensions``
+#     the live holder ``_build_harness_options`` refills on every harness
+#     rebuild — held BY REFERENCE, which is what makes ``/reload`` visible. A
+#     list literal or a copy reports the startup set forever.
+REQUIRED_KWARG_VALUES = {
+    "mode": "app_mode",
+    "project_trusted": "lambda: project_trusted",
+    "extensions": "captured_extensions",
+}
+REQUIRED_KWARGS = set(REQUIRED_KWARG_VALUES)
 
 
 @pytest.fixture(scope="module")
@@ -139,6 +181,52 @@ def test_the_status_extension_is_appended_to_the_prepend_list(
     assert not missing, f"{EXT_CLASS}(...) is missing {sorted(missing)}"
 
 
+def test_each_wired_argument_is_the_expression_it_has_to_be(
+    entry_tree: ast.Module,
+) -> None:
+    """The names alone are worth nothing — see the module docstring.
+
+    ``ast.unparse`` normalises the comparison to source with the formatting and
+    the comments removed, so re-wrapping the call or moving a comment does not
+    fail this, while changing WHAT is passed does.
+    """
+
+    factory = _function(entry_tree, FACTORY)
+    (construction,) = _status_constructions(factory)
+    actual = {
+        kw.arg: ast.unparse(kw.value) for kw in construction.keywords if kw.arg
+    }
+    for name, expected in REQUIRED_KWARG_VALUES.items():
+        assert actual.get(name) == expected, (
+            f"{EXT_CLASS}({name}=...) is `{actual.get(name)}`, must be "
+            f"`{expected}`. See REQUIRED_KWARG_VALUES for why this one has no "
+            f"substitute."
+        )
+
+
+def test_the_trust_argument_cannot_be_a_constant(entry_tree: ast.Module) -> None:
+    """The fail-open, called out separately from the table above.
+
+    ``project_trusted=lambda: True`` — or any constant — makes the snapshot
+    report a permission nobody granted, which is the exact defect
+    ``resolve_project_trusted_fail_closed`` exists to remove. Pinned twice on
+    purpose: this assertion survives a future edit that legitimately renames the
+    local variable the lambda closes over.
+    """
+
+    factory = _function(entry_tree, FACTORY)
+    (construction,) = _status_constructions(factory)
+    (trust,) = [kw for kw in construction.keywords if kw.arg == "project_trusted"]
+    assert isinstance(trust.value, ast.Lambda), ast.unparse(trust.value)
+    assert not trust.value.args.args, "the getter takes no arguments"
+    body = trust.value.body
+    assert isinstance(body, ast.Name), (
+        f"project_trusted returns `{ast.unparse(body)}` — a constant or an "
+        f"expression, not the resolved decision. Only a name bound to "
+        f"``_resolve_project_trust``'s result may be returned here."
+    )
+
+
 def test_the_safety_extensions_still_come_first(entry_tree: ast.Module) -> None:
     """APPENDED, never inserted into the literal.
 
@@ -193,8 +281,18 @@ def test_the_call_site_passes_the_resolved_app_mode(entry_tree: ast.Module) -> N
     ]
     assert calls, f"{FACTORY} is never called in {ENTRY_PATH}"
     for call in calls:
-        supplied = {kw.arg for kw in call.keywords if kw.arg}
+        supplied = {
+            kw.arg: ast.unparse(kw.value) for kw in call.keywords if kw.arg
+        }
         assert "app_mode" in supplied, (
             f"a {FACTORY}(...) call omits `app_mode=app_mode` "
             f"(line {call.lineno})"
+        )
+        # By VALUE for the same reason the constructor's arguments are (M3):
+        # ``app_mode="interactive"`` would satisfy a name-only check and pin the
+        # snapshot's ``mode`` to a lie on every headless run.
+        assert supplied["app_mode"] == "app_mode", (
+            f"a {FACTORY}(...) call passes `app_mode={supplied['app_mode']}` "
+            f"(line {call.lineno}); it must forward the resolved "
+            f"``resolve_app_mode`` result, not a literal."
         )

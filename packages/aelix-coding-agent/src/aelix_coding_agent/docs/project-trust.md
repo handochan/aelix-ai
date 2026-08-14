@@ -166,7 +166,7 @@ both: `aelix --no-approve --no-context-files`.
 In `--print`, `--mode json` and `--mode rpc` there is no UI to prompt with, so an
 undecided directory is **denied** (`project_trust.py:718-720`, pi parity). The
 project-local resources are dropped and a notice naming them goes to stderr
-(`cli/entry.py:2326-2338`), because a silent drop looks identical to a
+(`cli/entry.py:2370-2380`), because a silent drop looks identical to a
 misconfiguration.
 
 ## Where the answer is stored

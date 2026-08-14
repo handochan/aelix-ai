@@ -25,7 +25,7 @@ import sys
 from typing import TextIO
 
 from aelix_coding_agent.help import (
-    NEAR_MISSES,
+    near_miss,
     read_topic,
     resolve_topic,
     search_topics,
@@ -106,9 +106,12 @@ def run_docs_command(args: list[str]) -> int:
     if topic is None:
         # A near miss gets its own sentence rather than the generic one: telling
         # a user who typed `skills` that "skills is not a topic" is true and
-        # useless, when what they need is which guide does cover the part of it
-        # that is written down.
-        near = NEAR_MISSES.get(name.strip().lower())
+        # useless, when what they need is what in their install DOES answer it.
+        # ``near_miss`` (not the raw NEAR_MISSES dict) because it resolves the
+        # packaged files to absolute paths — #101's L10 review: this message
+        # used to omit `skills/writing-skills/SKILL.md`, which ships in the same
+        # wheel and is the actual answer.
+        near = near_miss(name)
         if near is not None:
             print(f"No guide for {name!r}: {near}", file=sys.stderr)
         else:

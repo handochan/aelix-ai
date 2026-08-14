@@ -305,17 +305,33 @@ def _docs_signpost() -> str:
     pointer the model cannot follow. ``read`` on an absolute path works in every
     mode.
 
-    "SMALL ENOUGH FOR ``read`` TO RETURN WHOLE" IS MEASURED, and it is the claim
-    most likely to rot. The largest bundled guide is ``extension-authoring.md``
-    at 33620 bytes against ``tools/_truncate.DEFAULT_MAX_BYTES`` = 51200. This
-    is the same trap ``_extension_signpost`` hit with ``api.py`` (84KB, silently
-    truncated to a window containing none of the ``register_*`` definitions), so
-    a test pins every bundled guide under the cap rather than trusting the prose.
+    "SMALL ENOUGH FOR ``read`` TO RETURN WHOLE" IS MEASURED AGAINST BOTH CAPS,
+    and it is the claim most likely to rot. ``read`` truncates when EITHER
+    binds — ``truncate_head(selected, max_lines=DEFAULT_MAX_LINES,
+    max_bytes=DEFAULT_MAX_BYTES)``, ``tools/read.py:221-223`` — so both are
+    pinned by ``tests/cli/test_docs_signpost.py``. Widest guide on this tree::
+
+        extension-authoring.md   33620 bytes   (DEFAULT_MAX_BYTES = 51200)
+        extension-authoring.md     668 lines   (DEFAULT_MAX_LINES =  2000)
+
+    Asserting the byte cap ALONE was the #101 L2 finding: a 2603-line /
+    33834-byte guide passes it and ``read`` truncates anyway, reporting
+    ``truncated_by='lines'`` and keeping 2000 of 2603. This is the same trap
+    ``_extension_signpost`` hit with ``api.py`` (84KB, silently truncated to a
+    window containing none of the ``register_*`` definitions).
 
     NAMES COME FROM THE FILES. :func:`~aelix_coding_agent.help.topics` globs the
     bundled directory at call time, so a guide added to the bundle appears here
     with no edit — and a stripped install (no ``docs/``) yields ``""``, i.e. the
     block is omitted rather than advertising an empty directory.
+
+    THE EMITTED DIRECTORY IS ESCAPED, AND THAT IS NOT FREE. See the comment at
+    the ``_escape_text(_safe_path(...))`` call below: on an install path
+    containing ``&`` this block names a directory that does not exist. The
+    install-path escaping story is half closed, not closed —
+    :func:`_extension_signpost`'s two :func:`_package_pointer` targets are
+    emitted RAW, so a ``<`` there is not neutralised at all. Both are recorded
+    as residuals in ADR-0218 §2 rather than described as handled.
 
     BYTE COST. 632 chars emitted, 555 of them prose (the other 77 are the
     install-dependent directory path, which is why the test budgets the prose
@@ -338,9 +354,29 @@ def _docs_signpost() -> str:
     # De-fanged and escaped for the same reason ``build_system_prompt`` does it
     # to the cwd (#121 / ADR-0217): this path is ``Path(__file__)``-derived, so
     # a checkout or install under a directory named ``<project_context>`` forges
-    # the fence from the INSTALL side rather than the cwd side. Both are the
-    # identity function on a path containing no ``<``, ``&`` or control byte,
-    # which is every path this repo's own tree produces.
+    # the fence from the INSTALL side rather than the cwd side.
+    #
+    # THE ``&`` HALF IS A KNOWN DEFECT, not a cost-free guard, and this comment
+    # used to imply otherwise ("the identity function on a path containing no
+    # ``<``, ``&`` or control byte"). ``&`` is legal in a POSIX path component
+    # and appears in ordinary directory names, and ``_escape_text`` rewrites it
+    # to ``&amp;`` — which is a path the filesystem does not have. Measured, the
+    # package copied under ``/tmp/amp&test_…/r&d/src`` and the prompt built from
+    # it::
+    #
+    #     emitted   /tmp/amp&amp;test_…/r&amp;d/src/aelix_coding_agent/docs
+    #     is_dir()  False
+    #     real      /tmp/amp&test_…/r&d/src/aelix_coding_agent/docs   (True)
+    #
+    # So on such an install this block names a directory the model cannot open,
+    # which is the exact failure it exists to prevent. The ``<`` substitution is
+    # what the fence needs; the ``&`` one is there only so ``_escape_text``'s
+    # own entities cannot be double-escaped, and this path is not fence body.
+    # The fix is a path-shaped escape (``<`` only, plus the control strip), NOT
+    # dropping the guard — deliberately NOT made here, because the identical
+    # mangling applies to ``build_system_prompt``'s ``cwd_abs`` and to
+    # ``_extension_signpost``'s project-local write target, and one escape rule
+    # for three call sites is the point. See ADR-0218 §2's residual.
     docs_dir = _escape_text(_safe_path(bundled_docs_dir()))
 
     lines = [
@@ -451,6 +487,20 @@ def _extension_signpost(cwd_abs: str) -> str:
         f"(untrusted = skipped silently): {os.path.join(cwd_abs, '.aelix', 'extensions', '<name>.py')}\n",
     ]
 
+    # RESIDUAL, recorded rather than claimed closed (#101 review L9). Both
+    # pointers below are emitted RAW — no ``_safe_path``, no ``_escape_text`` —
+    # although they are ``Path(__file__)``-derived exactly like the docs block's
+    # directory, and therefore attacker-influenceable from the INSTALL side in
+    # the same way #121 found for the cwd. Measured, the package copied under
+    # ``/tmp/amp&test_…/r&d/src``::
+    #
+    #     - worked example, read this one: /tmp/amp&test_…/r&d/src/…/echo.py
+    #
+    # i.e. verbatim. A ``<`` in an install path is not neutralised here at all.
+    # PRE-EXISTING and deliberately not widened into by #101 — the fix is one
+    # path-shaped escape shared by these two, the docs directory, ``cwd_abs``
+    # and the write targets above, which is its own change. ADR-0218 §2 carries
+    # it as a residual.
     pointers: list[str] = []
     example = _package_pointer(*_EXAMPLE_PARTS)
     if example:

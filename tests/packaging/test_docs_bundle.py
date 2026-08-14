@@ -19,14 +19,29 @@ the ordinary build is the right build: it is exactly the artifact a maintainer
 publishes, belt and all. A presence assertion cannot be made vacuous by the belt
 being on — only by the corpus being empty, which is asserted first.
 
-NO SDIST -> WHEEL ROUND TRIP HERE, and that is a gap, not a decision.
-``tests/packaging/`` has no such pattern to reuse: ``test_build_hygiene.py``
-builds a wheel and an sdist from the same source copy and inspects each, but
-never unpacks the sdist and rebuilds a wheel out of it. So "the sdist is
-sufficient to rebuild a wheel that still carries the docs" is UNTESTED by
-this file. Writing that pattern is a packaging-wide change (it would want to
-cover every target, not just the docs) and belongs with the file that owns
-those builds.
+THE SDIST -> WHEEL ROUND TRIP IS ALREADY EXERCISED, and an earlier revision of
+this docstring said it was not. That was wrong, and it invited someone to add a
+duplicate. ``uv build --package <name>`` does not build the two artifacts side
+by side — it builds the sdist and then builds the wheel OUT OF it. Measured, the
+command this file's fixture runs, verbatim output::
+
+    Building source distribution...
+    Building wheel from source distribution...
+    Successfully built …/aelix_coding_agent-0.1.0b1.tar.gz
+    Successfully built …/aelix_coding_agent-0.1.0b1-py3-none-any.whl
+
+So a guide that reached the wheel necessarily survived the sdist: 8 ``.md``
+files under ``src/aelix_coding_agent/docs/`` in the tarball, 8 under
+``aelix_coding_agent/docs/`` in the wheel. A doc dropped by the sdist's own
+include rules cannot appear in the wheel these assertions read, which is exactly
+what a round-trip test would be for.
+
+What the old claim was reading off ``test_build_hygiene.py`` is that it builds
+the two artifacts in two separate invocations (``--package aelix-coding-agent``
+at ``:341``, ``--sdist`` at ``:354``) and inspects each. True — but the first of
+those is the same round-tripping form, so even there the wheel came out of an
+sdist. Nothing further is needed here; adding a second round trip would
+re-measure a property this fixture already has.
 """
 
 from __future__ import annotations
@@ -163,6 +178,35 @@ def test_the_wheel_still_carries_the_help_registry(wheel_names: list[str]) -> No
     assert "aelix_coding_agent/help/registry.py" in wheel_names
     assert "aelix_coding_agent/help/__init__.py" in wheel_names
     assert "aelix_coding_agent/cli/docs.py" in wheel_names
+
+
+def test_every_file_a_near_miss_points_at_is_in_the_wheel(
+    wheel_names: list[str],
+) -> None:
+    """#101 review L10 — the near-miss pointers, asserted against the ARTIFACT.
+
+    ``aelix docs skills`` now hands an installed user the absolute path of
+    ``skills/writing-skills/SKILL.md``, and ``mcp`` / ``hooks`` the annotated
+    reference manifest. A source-tree check cannot see the failure that matters
+    here: those files being excluded from the wheel would leave the message
+    naming a path that exists only in a checkout, which is precisely the class
+    of bug this whole file was written for.
+    """
+    from aelix_coding_agent.help import NEAR_MISS_FILES
+
+    assert NEAR_MISS_FILES, "no near-miss pointers to check"
+    present = set(wheel_names)
+    missing = sorted(
+        {
+            f"aelix_coding_agent/{'/'.join(parts)}"
+            for entries in NEAR_MISS_FILES.values()
+            for parts in entries
+        }
+        - present
+    )
+    assert missing == [], (
+        f"`aelix docs` points at files that are not in the wheel: {missing}"
+    )
 
 
 def test_the_docs_resolve_from_an_INSTALLED_layout_not_the_source_tree(

@@ -229,13 +229,7 @@ def test_docs_is_listed_in_the_help_text() -> None:
     assert "docs [<topic>]" in subcommands
 
 
-def test_piping_to_head_uses_the_repo_pipe_convention() -> None:
-    """``aelix docs extension | head -1`` must not die noisily.
-
-    The repo's convention is a quiet 141 (128+SIGPIPE) or a plain 0 when the
-    output fit in the buffer — never 120, which is what an unguarded
-    interpreter-shutdown flush of a dead pipe produces (issue #57).
-    """
+def _pythonpath_env() -> dict[str, str]:
     import os
 
     env = dict(os.environ)
@@ -249,16 +243,70 @@ def test_piping_to_head_uses_the_repo_pipe_convention() -> None:
             env.get("PYTHONPATH", ""),
         ]
     )
+    return env
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="EPIPE semantics are POSIX-gated"
+)
+def test_docs_exits_141_quietly_when_the_reader_is_already_gone() -> None:
+    """The repo's pipe convention (issue #57), actually exercised.
+
+    THE TEST THIS REPLACES COULD NOT FAIL. It ran
+    ``aelix docs extension | head -1`` and asserted the pipeline's exit code —
+    which is ``head``'s, not aelix's — plus the absence of interpreter noise.
+    Measured: the largest guide is 33 620 bytes and a Linux pipe holds 64 KiB,
+    so the whole document fits in the buffer and the writer never blocks. Read
+    explicitly, ``PIPESTATUS`` was ``aelix=0 head=0`` — no write ever met a dead
+    reader, so the ``main_sync`` guard the docstring named was never entered and
+    the assertion held either way.
+
+    Closing the read end BEFORE the child starts takes the buffer out of the
+    question: every write is EPIPE. Same construction as
+    ``tests/cli/test_pipe_robustness.py::test_main_sync_exits_141_on_broken_stdout``,
+    which pins it for ``--version``; ``docs`` is the surface that actually
+    invites piping. 141 is 128+SIGPIPE; 120 is what an unguarded
+    interpreter-shutdown flush produces, and is the regression this pins.
+    """
+    import os
+
+    read_fd, write_fd = os.pipe()
+    os.close(read_fd)  # the consumer is already gone → every write is EPIPE
+    try:
+        proc = subprocess.run(  # noqa: S603
+            [sys.executable, "-m", "aelix_coding_agent", "docs", "extension"],
+            stdout=write_fd,
+            stderr=subprocess.PIPE,
+            stdin=subprocess.DEVNULL,
+            timeout=120,
+            env=_pythonpath_env(),
+        )
+    finally:
+        os.close(write_fd)
+
+    stderr = proc.stderr.decode(errors="replace")
+    assert proc.returncode == 141, stderr
+    assert "BrokenPipeError" not in stderr
+    assert "Traceback" not in stderr
+    assert "Exception ignored" not in stderr
+
+
+def test_docs_puts_only_markdown_into_a_live_pipe() -> None:
+    """The other half, and a different property: a reader that stays alive gets
+    the document and nothing else.
+
+    ``head -1`` is the reader's convenience here, and the exit code asserted is
+    ``head``'s — stated as such rather than offered as evidence about aelix.
+    """
+
     proc = subprocess.run(  # noqa: S602
         f"{sys.executable} -m aelix_coding_agent docs extension | head -1",
         shell=True,
         capture_output=True,
         text=True,
         timeout=120,
-        env=env,
+        env=_pythonpath_env(),
     )
     assert proc.stdout.strip() == "# Writing an Extension"
-    assert "BrokenPipeError" not in proc.stderr
-    # `head` is the last command in the pipeline, so the shell reports ITS code.
-    # The aelix side is checked by the absence of the interpreter's noise above.
-    assert proc.returncode == 0
+    assert proc.stderr == ""
+    assert proc.returncode == 0  # `head`'s code — the last command in the pipe

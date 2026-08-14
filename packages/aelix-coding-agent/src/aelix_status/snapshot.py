@@ -23,10 +23,15 @@ property that raises something other than ``AttributeError`` cannot.
 WHAT IS DELIBERATELY ABSENT. The issue's draft listed ``extension_paths``. It is
 dropped, measured:
 
-* ``Extension.source_info`` has ZERO writers. Probed by loading one extension per
-  tier (project / global / explicit / inline prepend) through the real
-  ``discover_and_load_extensions``: every one came back ``source_info=None``.
-* ``Extension.resolved_path`` is set on exactly one branch — ``loader.py:229``,
+* ``Extension.source_info`` carries a TIER LABEL and nothing else. It had zero
+  writers when #101 shipped — probed by loading one extension per tier
+  (project / global / explicit / inline prepend) through the real
+  ``discover_and_load_extensions``, every one came back ``source_info=None`` —
+  and the M1 review is why it now has one: ``loader._entry_point_source_info``
+  writes ``ExtensionSourceInfo(source="entry_points")`` for the endpoint tier.
+  Its ``path`` / ``base_dir`` fields are deliberately still unwritten, for the
+  reason the next two bullets give.
+* ``Extension.resolved_path`` is set on exactly one branch — ``loader.py:282``,
   ``isinstance(entry, _ManifestEntry)`` — so it is ``None`` for every
   non-manifest extension.
 * For the other tiers the only path-shaped value is ``Extension.name``, which for
@@ -55,27 +60,111 @@ from aelix_agent_core.contracts import AELIX_API_LEVEL
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
 
-# The four labels a caller can act on, plus the honest fifth.
+# The five labels a caller can act on, plus the honest sixth.
 #
-# ``unclassified`` is not a hedge, it is a measured limit. ``loader.py``'s
-# ``_resolve_factory`` produces ``Extension.name`` from six branches, and two of
-# them return a Python qualname rather than a path:
+# ``entry_point`` is the pip-installed tier — what ``aelix extension install``
+# and every marketplace pack produce. It is the ONLY tier that cannot be
+# reconstructed from the finished ``Extension``, which is why the loader records
+# it (``loader._entry_point_source_info``) instead of this file guessing.
+# Measured on two real installed-wheel images before that writer existed::
 #
-#   * ``isinstance(entry, _EntryPointEntry)`` (:1803-1805) — a manifest-less
-#     installed ``aelix.extensions`` pack;
-#   * ``callable(entry) and not isinstance(entry, (str, Path))`` (:1811-1813) —
+#     manifest-BOUND pack  resolved_path='<site>/boundpack'  -> "explicit"
+#     manifest-LESS pack   name='setup'                      -> "unclassified"
+#
+# ``"explicit"`` means "the user typed ``-e <path>``". Reporting the most common
+# install shape as its opposite is the failure this whole tool exists to stop.
+#
+# ``unclassified`` is not a hedge either, it is the residual measured limit.
+# ``loader.py``'s ``_resolve_factory`` produces ``Extension.name`` from six
+# branches, and two of them return a Python qualname rather than a path:
+#
+#   * ``isinstance(entry, _EntryPointEntry)`` (:1862-1865) — a manifest-less
+#     installed ``aelix.extensions`` pack, now separated by its recorded tier;
+#   * ``callable(entry) and not isinstance(entry, (str, Path))`` (:1870-1873) —
 #     an inline factory, which is what every PREPENDED built-in is.
 #
 # Both compute ``getattr(factory, "__qualname__", None) or type(factory).__name__``,
-# so the two are byte-identical at this layer. Separating them would mean keeping
-# a hardcoded list of built-in class names — the same list
-# ``tui/extension_manager.py:44`` keeps and the same list that already fails to
-# mention ``AgentsExtension``. A label that is true beats a label that is
-# specific and wrong.
+# so the two are byte-identical AT THAT LAYER; what separates them now is the
+# ``source_info`` the loader writes for the endpoint one. An inline factory has
+# no such record, and inventing a "builtin" label for it would mean keeping a
+# hardcoded list of built-in class names — the same list
+# ``tui/extension_manager.py:58-60`` keeps. A label that is true beats a label that
+# is specific and wrong.
 SCOPE_PROJECT = "project"
 SCOPE_GLOBAL = "global"
 SCOPE_EXPLICIT = "explicit"
+SCOPE_ENTRY_POINT = "entry_point"
 SCOPE_UNCLASSIFIED = "unclassified"
+
+#: The value ``loader._entry_point_source_info`` writes into
+#: :attr:`Extension.source_info`. Matched, never re-derived: it is
+#: ``ExtensionSourceInfo.source``'s own ``Literal`` member (``api.py:918``), so
+#: a rename there is a type error rather than a silently wrong label here.
+_LOADER_ENTRY_POINT_SOURCE = "entry_points"
+
+MAX_EMITTED_CHARS = 128
+"""Longest author-controlled string this snapshot will emit, per field.
+
+WHY THERE IS A CAP AT ALL — the claim it replaces was false. This module used to
+justify emitting ``plugin.version`` with "A secret cannot be smuggled through
+either", on the strength of the field being schema-constrained.
+``PluginIdentity.version`` is constrained in SHAPE only::
+
+    ^\\d+\\.\\d+\\.\\d+(-[0-9A-Za-z-.]+)?(\\+[0-9A-Za-z-.]+)?$
+
+(``contracts/manifest.py:40-43``) — no ``max_length``, and the prerelease and
+build tails are unbounded ``[0-9A-Za-z-.]+`` runs. Measured on this tree: a
+manifest with ``version = "1.0.0-<4132 chars>"`` parsed, loaded through the real
+``discover_and_load_extensions``, and its 4138-character version reached the
+tool's output verbatim.
+
+64 is what the schema actually bounds (``plugin.id`` is
+``^[a-z][a-z0-9-]{0,63}$``), so 128 leaves a full semver's worth of room past
+the widest identity the manifest permits while still bounding the hostile case
+by ~30x.
+
+TWO OTHER FIELDS HAVE THE SAME SHAPE and get the same treatment, because three
+separate caps drift:
+
+* ``Extension.name`` for a manifest-less pack is ``getattr(factory,
+  "__qualname__", None) or type(factory).__name__`` — ``__qualname__`` is a
+  plain writable attribute, neither length- nor charset-constrained;
+* a tool name is whatever an extension passed to ``register_tool``.
+
+WHAT THIS IS NOT. It is not a secrecy control, and saying so is the point: a
+40-character API token fits under any cap worth having, and this projection
+reports plugin identity deliberately. What the cap bounds is COST and RENDERING
+— the output is read by a model on the turn that asked for it, and one hostile
+pack must not be able to spend the context window on a version string.
+"""
+
+_TRUNCATED = "…"
+"""Appended when a value was cut, so a bounded string is never mistaken for the
+whole one. Counted INSIDE the cap, so the emitted length never exceeds it."""
+
+# DELETION, not escaping, and DUPLICATED rather than imported — the same table
+# and the same two decisions as ``cli/agent_context._CONTROL_KILL``, whose
+# comment records the measurement (a directory named
+# ``proj\x1b]0;pwned\x07\x1b[31mZ`` emitting an unterminated OSC title-set into
+# stderr). Duplicated because this package must not import ``cli`` for a
+# four-element table; the range covers ``\x9b``, the one-byte CSI an ESC-only
+# filter misses.
+#
+# ``json.dumps`` would ESCAPE a control byte rather than pass it through, so
+# this is not what keeps the payload well-formed. It is what keeps a tool
+# result from rendering as several lines of invented structure in a transcript
+# that a model then reads as the tool's own output.
+_CONTROL_KILL = dict.fromkeys([*range(0x20), 0x7F, *range(0x80, 0xA0)])
+
+
+def bounded_emitted_value(value: str) -> str:
+    """One author-controlled string, de-fanged and capped. See
+    :data:`MAX_EMITTED_CHARS`."""
+
+    cleaned = value.translate(_CONTROL_KILL)
+    if len(cleaned) <= MAX_EMITTED_CHARS:
+        return cleaned
+    return cleaned[: MAX_EMITTED_CHARS - len(_TRUNCATED)] + _TRUNCATED
 
 
 @dataclass(frozen=True)
@@ -91,11 +180,24 @@ class ExtensionSnapshot:
     over a serialised object — no serialisation of the object ever happens.
 
     ``name`` and ``version`` come from the manifest's ``[plugin]`` table when
-    there is one, and both are SCHEMA-CONSTRAINED rather than free text:
-    ``PluginIdentity.id`` is ``^[a-z][a-z0-9-]{0,63}$`` and
-    ``PluginIdentity.version`` is a semver pattern
-    (``contracts/manifest.py:38,40-43``). A secret cannot be smuggled through
-    either. ``plugin.name`` — free text, 1..128 chars — is deliberately NOT used.
+    there is one. ``PluginIdentity.id`` is ``^[a-z][a-z0-9-]{0,63}$``, which
+    bounds both its charset and its length; ``PluginIdentity.version`` is a
+    semver pattern (``contracts/manifest.py:38,40-43``) which bounds NEITHER —
+    its prerelease and build tails are unbounded ``[0-9A-Za-z-.]+`` runs and the
+    field carries no ``max_length``.
+
+    An earlier revision of this docstring read "A secret cannot be smuggled
+    through either". That was false, and measured false: a pack with
+    ``version = "1.0.0-<4132 chars>"`` validates, loads, and reached this tool's
+    output verbatim. What is true is narrower and is what the code now does —
+    every author-controlled string is emitted through
+    :func:`bounded_emitted_value`, which caps length and strips control bytes.
+    A short secret still fits under any usable cap; see
+    :data:`MAX_EMITTED_CHARS` for what the bound is and is not.
+
+    ``plugin.name`` — free text, 1..128 chars — remains deliberately NOT used:
+    ``id`` is the identity a caller can act on, and a second author-controlled
+    display string buys nothing.
     """
 
     name: str
@@ -121,7 +223,7 @@ class RuntimeSnapshot:
         (``_build_harness_options``'s ``cwd = str(Path.cwd())`` → ``AgentHarnessOptions.cwd``
         → ``harness/core.py:_make_context``). Emitted RAW, and that is not a
         disclosure decision made here: ``build_system_prompt`` already emits
-        ``- Working directory: {cwd_abs}`` at ``cli/agent_context.py:521``, so
+        ``- Working directory: {cwd_abs}`` at ``cli/agent_context.py:719``, so
         the model was told this before its first turn.
 
     ``mode``
@@ -281,19 +383,28 @@ def _within(path: str, root: str) -> bool:
 def classify_scope(extension: Any, *, cwd: str, agent_dir: str | None) -> str:
     """Which discovery tier did this extension come from?
 
-    Reconstructed from the extension itself because the loader does not record
-    it: ``LoadExtensionsResult`` is a flat ``list[Extension]``, and
-    ``Extension.source_info`` — the field that would say — is never written (see
-    the module docstring).
+    ASKED FIRST, ANSWERED BY THE LOADER. ``Extension.source_info`` is the only
+    record of a discovery tier that survives onto the object, and since #101's
+    M1 review the loader writes it for the endpoint tier
+    (``loader._entry_point_source_info``). It is consulted BEFORE the path
+    heuristic because the heuristic is wrong for exactly that tier: an installed
+    pack's ``resolved_path`` is its site-packages directory, which is path-like
+    and inside neither directory tier, so the fallthrough reports ``-e``.
 
-    The path used is ``resolved_path`` when set (manifest packs, ``loader.py:229``)
-    and ``name`` otherwise, matched against the two directory tiers documented at
-    ``loader.py:398-410``: ``<cwd>/.aelix/extensions`` and
+    Everything else is RECONSTRUCTED, because nothing records it:
+    ``LoadExtensionsResult`` is a flat ``list[Extension]``. The path used is
+    ``resolved_path`` when set (manifest packs, ``loader.py:282``) and ``name``
+    otherwise, matched against the two directory tiers documented at
+    ``loader.py:457-458``: ``<cwd>/.aelix/extensions`` and
     ``<agent_dir>/extensions``. Everything else path-shaped came from ``-e``.
 
     getattr-guarded throughout, like ``tui/extension_manager.py``'s builders, so
     an unexpected extension shape produces a label instead of an exception.
     """
+
+    source_info = getattr(extension, "source_info", None)
+    if getattr(source_info, "source", None) == _LOADER_ENTRY_POINT_SOURCE:
+        return SCOPE_ENTRY_POINT
 
     raw = getattr(extension, "resolved_path", None) or getattr(extension, "name", "")
     raw = str(raw or "")
@@ -326,20 +437,28 @@ def _extension_label(extension: Any) -> str:
     plugin = getattr(manifest, "plugin", None)
     plugin_id = getattr(plugin, "id", None)
     if plugin_id:
-        return str(plugin_id)
+        return bounded_emitted_value(str(plugin_id))
     name = str(getattr(extension, "name", "") or "")
     if not name:
         return "?"
     if _is_path_like(name):
-        return os.path.basename(name.rstrip(os.sep)) or "?"
-    return name
+        return bounded_emitted_value(os.path.basename(name.rstrip(os.sep))) or "?"
+    return bounded_emitted_value(name)
 
 
 def _extension_version(extension: Any) -> str | None:
+    """The pack's declared version, BOUNDED — see :data:`MAX_EMITTED_CHARS`.
+
+    ``plugin.version``'s schema pattern constrains its shape and not its size,
+    so this is the field the M2 review measured a 4138-character payload
+    through. ``plugin.id`` above is capped too, for uniformity rather than
+    need: its own pattern already stops at 64 characters.
+    """
+
     manifest = getattr(extension, "manifest", None)
     plugin = getattr(manifest, "plugin", None)
     version = getattr(plugin, "version", None)
-    return str(version) if version else None
+    return bounded_emitted_value(str(version)) if version else None
 
 
 def summarise_extensions(

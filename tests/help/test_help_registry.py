@@ -18,8 +18,11 @@ from pathlib import Path
 
 from aelix_coding_agent.help import (
     ALIASES,
+    NEAR_MISS_FILES,
     NEAR_MISSES,
     bundled_docs_dir,
+    near_miss,
+    packaged_path,
     read_topic,
     resolve_topic,
     search_topics,
@@ -112,6 +115,74 @@ def test_every_near_miss_names_a_guide_that_exists() -> None:
         assert any(f"`{n}`" in message for n in names), (
             f"NEAR_MISSES[{key!r}] points at no existing guide: {message!r}"
         )
+
+
+def test_every_near_miss_file_really_ships(tmp_path: Path) -> None:
+    """#101 review L10. A near miss that names a file is only worth anything if
+    the file is there — and the whole finding was that the `skills` message told
+    a user LESS than their install contains.
+
+    Both directions: every declared file resolves, AND a declared file that does
+    not exist is dropped rather than printed as a dead path.
+    """
+    assert set(NEAR_MISS_FILES) <= set(NEAR_MISSES), (
+        "a NEAR_MISS_FILES entry with no NEAR_MISSES text is unreachable"
+    )
+    for key, entries in NEAR_MISS_FILES.items():
+        assert entries, f"NEAR_MISS_FILES[{key!r}] is empty"
+        for parts in entries:
+            resolved = packaged_path(*parts)
+            assert resolved is not None, (
+                f"NEAR_MISS_FILES[{key!r}] names {'/'.join(parts)}, which does "
+                f"not ship — `aelix docs {key}` would print a dead path."
+            )
+            assert resolved.is_file()
+
+    # Not vacuous: a missing file must be OMITTED, not printed.
+    assert packaged_path("skills", "no-such-skill", "SKILL.md") is None
+
+
+def test_the_skills_near_miss_names_the_packaged_skill_that_answers_it() -> None:
+    """The L10 finding itself, pinned by content rather than by shape.
+
+    `writing-skills` ships in the same wheel and documents the SKILL.md format,
+    the frontmatter the loader enforces, the load tiers and the trust gate. The
+    message that omitted it sent a user to two guides that answer a different
+    question.
+    """
+    message = near_miss("skills")
+    assert message is not None
+    assert "writing-skills" in message
+
+    skill = packaged_path("skills", "writing-skills", "SKILL.md")
+    assert skill is not None
+    assert str(skill) in message, "the absolute path is what an installed user needs"
+
+    # And the file really does answer the question the message says it does.
+    body = skill.read_text(encoding="utf-8")
+    assert "SKILL.md" in body
+    assert "frontmatter" in body.lower()
+    assert "trust" in body.lower()
+
+
+def test_the_mcp_and_hooks_near_misses_name_the_reference_manifest() -> None:
+    """Same shape as `skills`: the annotated `aelix-plugin.toml` ships and
+    documents both declaration families field by field."""
+    manifest = packaged_path("examples", "echo", "aelix-plugin.toml")
+    assert manifest is not None
+    body = manifest.read_text(encoding="utf-8")
+    assert "[[contributes.mcp_servers]]" in body
+    assert "[[contributes.hooks]]" in body
+
+    for key in ("mcp", "hooks"):
+        message = near_miss(key)
+        assert message is not None, key
+        assert str(manifest) in message, key
+
+
+def test_an_unknown_name_has_no_near_miss() -> None:
+    assert near_miss("nonesuch") is None
+    assert near_miss("  SKILLS  ") == near_miss("skills"), "case/space insensitive"
 
 
 def test_resolve_returns_none_for_junk() -> None:

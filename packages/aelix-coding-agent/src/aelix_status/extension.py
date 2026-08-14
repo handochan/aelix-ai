@@ -8,7 +8,7 @@ runtime, the loaded-extension list or the trust decision, so a tool under
 ``tools/`` structurally cannot see the runtime state this tool exists to report.
 An extension can: ``ExtensionAPI`` and ``ExtensionContext`` are the only objects
 that carry it. ``aelix_agents`` already does exactly this for the ``agent`` tool
-(``extension.py:314`` ``register_tool``), and this follows it.
+(``aelix_agents/extension.py:314`` ``register_tool``), and this follows it.
 
 WHERE THIS PACKAGE SITS, AND THE RULE APPLIED. ADR-0197 §(a) splits the tree into
 kernel / product-core / bundled-extension, and ADR-0208 states what that split
@@ -49,6 +49,7 @@ from aelix_coding_agent.cli.config import VERSION, get_agent_dir
 
 from aelix_status.snapshot import (
     RuntimeSnapshot,
+    bounded_emitted_value,
     resolve_project_trusted_fail_closed,
     summarise_extensions,
 )
@@ -260,13 +261,19 @@ class StatusExtension:
         is the right degradation: "we could not determine the active tools" is
         better rendered as an empty list the model can see than as a tool error
         it has to interpret.
+
+        BOUNDED (#101 M2). An extension-registered tool's name is whatever its
+        author passed to ``register_tool`` — no length and no charset — so it
+        goes through the same cap as the extension identity fields.
         """
 
         ctx = self._ctx
         if ctx is None:
             return ()
         try:
-            return tuple(str(name) for name in ctx.get_active_tools())
+            return tuple(
+                bounded_emitted_value(str(name)) for name in ctx.get_active_tools()
+            )
         except Exception:  # noqa: BLE001
             return ()
 
@@ -278,13 +285,20 @@ class StatusExtension:
         it here would widen this tool's output surface to text this package never
         reviewed, for no gain the model does not already get from its own tool
         definitions.
+
+        The NAME is author-controlled too, which the first revision of this
+        docstring did not say. It is bounded rather than dropped (#101 M2): the
+        tool list is the answer, so the fix is a cap, not a deletion.
         """
 
         api = self._api
         if api is None:
             return ()
         try:
-            return tuple(str(getattr(info, "name", "")) for info in api.get_all_tools())
+            return tuple(
+                bounded_emitted_value(str(getattr(info, "name", "")))
+                for info in api.get_all_tools()
+            )
         except Exception:  # noqa: BLE001 — a stale runtime raises from assert_active
             return ()
 

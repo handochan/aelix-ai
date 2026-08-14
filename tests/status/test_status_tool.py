@@ -275,7 +275,7 @@ async def test_no_extension_path_or_home_directory_is_emitted(
     payload = await bench.call()
 
     # ``cwd`` is the one path that IS emitted, and only because
-    # ``build_system_prompt`` already emits it (``cli/agent_context.py:521``) —
+    # ``build_system_prompt`` already emits it (``cli/agent_context.py:719``) —
     # so it is excluded here rather than the assertion being weakened, and its
     # value is pinned separately.
     assert payload["cwd"] == cwd
@@ -308,13 +308,19 @@ async def test_scope_labels_follow_the_discovery_tier(
 
 
 def test_an_inline_prepended_extension_is_labelled_unclassified() -> None:
-    """The honest label, and the reason it exists.
+    """The honest label, and what is left of the reason it exists.
 
     ``loader._resolve_factory`` gives an inline factory (every PREPENDED
     built-in) and a manifest-less entry-point pack the SAME derived name —
-    ``__qualname__ or type(...).__name__`` at ``loader.py:1805`` and ``:1813``.
-    Nothing on the ``Extension`` distinguishes them, so claiming "builtin" would
-    be a guess that is wrong for installed packs.
+    ``__qualname__ or type(...).__name__`` at ``loader.py:1862-1865`` and
+    ``:1870-1873``. The endpoint half is no longer stuck here: since the #101
+    M1 review the loader records that tier in ``Extension.source_info`` and it
+    reports ``entry_point`` (``tests/status/test_status_scope_entry_point.py``).
+
+    An inline prepend has no such record and no path, so it stays
+    ``unclassified``. Claiming "builtin" would mean hardcoding a list of
+    built-in class names — the list ``tui/extension_manager.py`` keeps — and a
+    label that is true beats one that is specific and wrong.
     """
 
     bench = _Bench(extensions=[Extension(name="GuardrailExtension")])

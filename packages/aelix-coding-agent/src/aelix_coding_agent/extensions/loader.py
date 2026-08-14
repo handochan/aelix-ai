@@ -63,6 +63,7 @@ from aelix_coding_agent.extensions.api import (
     Extension,
     ExtensionAPI,
     ExtensionFactory,
+    ExtensionSourceInfo,
     PendingActivation,
     _ExtensionRuntime,
 )
@@ -103,6 +104,53 @@ class LoadExtensionsResult:
     extensions: list[Extension] = field(default_factory=list)
     errors: list[ExtensionLoadError] = field(default_factory=list)
     runtime: _ExtensionRuntime = field(default_factory=_ExtensionRuntime)
+
+
+def _entry_point_source_info(entry: Any) -> ExtensionSourceInfo | None:
+    """Record the ENTRY-POINT tier on the produced :class:`Extension`.
+
+    #101 review M1. Of the four discovery tiers this loader serves, three are
+    reconstructible from the finished ``Extension`` — the two directory tiers
+    and ``-e`` all leave a filesystem path in ``resolved_path`` or ``name``,
+    and a consumer can match it against ``<cwd>/.aelix/extensions`` and
+    ``<agent_dir>/extensions``. The endpoint tier is NOT, and it fails in a way
+    that reads as a different answer rather than as no answer. Measured on this
+    tree, two real installed-wheel images discovered through
+    :func:`discover_and_load_extensions`::
+
+        manifest-BOUND pack  resolved_path='<site>/boundpack'  -> "explicit"
+        manifest-LESS pack   name='setup'                      -> "unclassified"
+
+    ``"explicit"`` means "the user typed ``-e <path>``", which is the opposite
+    of a pip-installed pack — and the pip-installed pack is what
+    ``aelix extension install`` and every marketplace entry produce. So the
+    loader, which is the only layer that knows, writes it down.
+
+    SCOPED TO THIS TIER ON PURPOSE. :attr:`Extension.source_info` had zero
+    writers before this, and it does not flow only to the snapshot:
+    ``harness/_extension_runner.py`` attaches it to every
+    :class:`ResolvedCommand`, so ``rpc_mode._registered_command_source_info``
+    turns it into the ``sourceInfo`` an RPC client sees. For an endpoint pack
+    that payload goes from ``source="unknown"`` to ``source="entry_points"``,
+    which is a correction. Filling the field for the other three tiers would
+    change that wire shape for every extension in the product to say something
+    a consumer can already derive, so it is not done here.
+
+    ``path`` / ``base_dir`` are deliberately left unset: they are the fields
+    ``_registered_command_source_info`` puts on the wire verbatim, and the only
+    value available is a site-packages absolute path — i.e. ``$HOME`` and the
+    OS username on a real machine. The tier LABEL is what was missing.
+    """
+
+    if isinstance(entry, _EntryPointEntry):
+        return ExtensionSourceInfo(source="entry_points")
+    if isinstance(entry, _ManifestEntry) and entry.ep_ref is not None:
+        # A manifest PROVED from an installed endpoint's own RECORD. It routes
+        # through ``_ManifestEntry`` and is otherwise indistinguishable from a
+        # directory-discovered pack; ``ep_ref`` is the only thing that says
+        # where it came from.
+        return ExtensionSourceInfo(source="entry_points")
+    return None
 
 
 async def load_extensions(
@@ -160,7 +208,12 @@ async def load_extensions(
             entry.manifest
         ):
             shell = Extension(
-                name=entry.manifest.plugin.id, manifest=entry.manifest
+                name=entry.manifest.plugin.id,
+                manifest=entry.manifest,
+                # #101 M1: a DEFERRED pack is in ``result.extensions`` from
+                # startup, so the snapshot describes it before its factory has
+                # ever run. It needs the tier label as much as a loaded one.
+                source_info=_entry_point_source_info(entry),
             )
             runtime.pending_activations[entry.manifest.plugin.id] = (
                 PendingActivation(extension=shell, entry=entry, cwd=cwd)
@@ -227,6 +280,12 @@ async def load_extensions(
         # declared-but-unset Pi-parity field (api.py) until now.
         if isinstance(entry, _ManifestEntry):
             extension.resolved_path = str(entry.pkg_dir)
+        # #101 M1 — the discovery tier, for the one tier that cannot be
+        # reconstructed downstream. Assigned only when there IS one, so a
+        # factory that set the field itself is not clobbered by a ``None``.
+        tier = _entry_point_source_info(entry)
+        if tier is not None:
+            extension.source_info = tier
         # (descriptors inert-warning now emitted at the top of the loop, before
         # the lazy continue, so pure-on_command plugins are covered too.)
         result.extensions.append(extension)
