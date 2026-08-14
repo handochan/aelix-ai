@@ -98,6 +98,89 @@ async def render_chrome_to_screen(
     return list(screen.display)
 
 
+async def render_shell_to_screen(
+    *,
+    runtime: object,
+    rows: int = 24,
+    cols: int = 80,
+    drive: Callable[[AelixChrome], Awaitable[None]],
+    time_fn: Callable[[], float] = lambda: 0.0,
+) -> list[str]:
+    """Like :func:`render_chrome_to_screen`, but drives the REAL ``run_tui``.
+
+    Issue #166 — the render width a user actually sees is chosen inside
+    ``run_tui`` (it builds the :class:`EventRenderer`), so a harness that
+    constructs its own chrome can never observe it. This one hands ``run_tui``
+    the captured chrome and lets it wire everything itself; *drive* then pushes
+    events through ``runtime.harness``'s subscribers exactly as a real turn
+    would, and the committed output lands in scrollback via the production
+    ``print_above`` pump.
+
+    One deliberate difference from :func:`render_chrome_to_screen`: the injected
+    Rich console writes to the SAME buffer as the vt100 output. In production
+    the chrome's console is a bare ``Console()`` on the real stdout — the same
+    stream the renderer writes to — so pointing both at one capture is the
+    faithful arrangement, and it is what makes committed scrollback visible to
+    ``pyte`` at all. (``render_chrome_to_screen`` sends it to a throwaway
+    buffer, which is why chrome-only snapshots never show committed lines.)
+    """
+
+    from aelix_coding_agent.tui.shell import (
+        run_tui,  # local: avoids a heavy import for chrome-only tests
+    )
+
+    capture = io.StringIO()
+    output = Vt100_Output(
+        capture,
+        get_size=lambda: Size(rows=rows, columns=cols),
+        term="xterm-256color",
+        enable_cpr=True,
+    )
+    with create_pipe_input() as pipe, create_app_session(input=pipe, output=output):
+        chrome = AelixChrome(
+            console=Console(file=capture, force_terminal=True, width=cols),
+            pt_input=pipe,
+            pt_output=output,
+            time_fn=time_fn,
+        )
+        task = asyncio.ensure_future(
+            run_tui(
+                runtime,  # type: ignore[arg-type]
+                cwd=".",
+                chrome=chrome,
+                install_signal_handlers=False,
+            )
+        )
+        try:
+            for _ in range(500):
+                await asyncio.sleep(0.01)
+                if chrome.app.is_running:
+                    break
+            else:  # pragma: no cover - defensive: app never started
+                raise RuntimeError("chrome Application did not start")
+
+            await asyncio.sleep(0.02)
+            pipe.send_text(_CPR_RESPONSE)  # answer the CPR query → height known
+            await asyncio.sleep(0.05)
+
+            await drive(chrome)
+
+            # Let the output pump drain: committed renderables are queued, then
+            # flushed above the chrome by an async consumer.
+            for _ in range(60):
+                await asyncio.sleep(0.01)
+            chrome.invalidate()
+            await asyncio.sleep(0.05)
+        finally:
+            pipe.send_text("/quit\n")
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(task, timeout=5)
+
+    screen = pyte.Screen(cols, rows)
+    pyte.Stream(screen).feed(capture.getvalue())
+    return list(screen.display)
+
+
 def assert_row_contains(display: list[str], text: str) -> int:
     """Assert *text* appears in some row of *display*; return that row index."""
 
@@ -108,4 +191,4 @@ def assert_row_contains(display: list[str], text: str) -> int:
     raise AssertionError(f"{text!r} not found in any rendered row:\n{rendered}")
 
 
-__all__ = ["assert_row_contains", "render_chrome_to_screen"]
+__all__ = ["assert_row_contains", "render_chrome_to_screen", "render_shell_to_screen"]
