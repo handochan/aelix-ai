@@ -111,6 +111,10 @@ _HISTORY_MAX_RECORDS = 5000
 # W-review LOW-4: keep this module-level so tests + future docs reference one
 # canonical name; ``__dunder__`` convention signals private-to-shell.
 _RETRY_WIDGET_KEY = "__auto_retry__"
+# Issue #165 — messages per startup-replay chunk. Small enough that the first
+# rows reach the terminal promptly, large enough that the per-chunk overhead
+# (``replay`` re-resolves the render width once per call) stays negligible.
+_STARTUP_REPLAY_CHUNK = 25
 
 
 def _reload_rebuild_enabled() -> bool:
@@ -2470,7 +2474,25 @@ async def run_tui(
             else []
         )
         if _startup_messages:
-            renderer.replay(_startup_messages)
+            # Replayed in CHUNKS with a yield between them. ``replay`` is
+            # synchronous and #164 made it far more expensive per assistant
+            # block (a fresh Rich Console + Markdown each, measured ~1.5ms
+            # against ~0.007ms for the old raw-text commit), so replaying a long
+            # transcript in one call holds the event loop for the whole repaint.
+            #
+            # That is worse than it sounds, and it is why this is chunked rather
+            # than left alone: ``_commit`` only QUEUES: the pump that drains
+            # ``output_queue`` is a task, so while replay holds the loop the
+            # pump cannot run and NOTHING paints — not even the banner
+            # committed a few lines above. The user would get a blank screen for
+            # the duration, then everything at once. Measured before chunking:
+            # 0.45s for a 600-message transcript, and a review probe put an
+            # uncompacted long-context session at ~5.5s.
+            for _offset in range(0, len(_startup_messages), _STARTUP_REPLAY_CHUNK):
+                renderer.replay(
+                    _startup_messages[_offset : _offset + _STARTUP_REPLAY_CHUNK]
+                )
+                await asyncio.sleep(0)  # let the pump paint what is ready
             _commit(
                 Text(
                     f"↻ Resumed session ({len(_startup_messages)} messages)",

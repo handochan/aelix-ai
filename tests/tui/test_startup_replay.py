@@ -167,3 +167,78 @@ async def test_startup_survives_a_runtime_with_no_session_member() -> None:
         runtime=runtime, rows=24, cols=80, drive=drive, include_history=True
     )
     assert _BANNER_MARK in _flat(display)
+
+
+# === the startup repaint must not freeze the launch =========================
+
+
+async def test_chunked_replay_paints_the_same_content_as_one_call() -> None:
+    """Chunking is a scheduling change; the CONTENT must not move.
+
+    Not asserted as exact grid equality, and the difference is worth recording
+    rather than hiding: each chunk becomes its own ``print_above_many`` batch,
+    and every batch carries an ``in_terminal()`` erase/repaint, so the grid's
+    whitespace genuinely differs at extreme chunk sizes (measured: 2701 chars
+    whole vs 2446 at one message per chunk, with every content marker present in
+    both). At the shipped chunk size the two are byte-identical for this
+    fixture — the divergence only appears when the batching does.
+    """
+
+    import aelix_coding_agent.tui.shell as shell_mod
+
+    marks = (_USER_MARK, _BOLD_MARK, "OMEGA_ITEM_TWO", "Resumed")
+    original = shell_mod._STARTUP_REPLAY_CHUNK
+    try:
+        shell_mod._STARTUP_REPLAY_CHUNK = 10**9  # a single call
+        whole = await _render_startup(_entries())
+        shell_mod._STARTUP_REPLAY_CHUNK = 1  # one message per call
+        finest = await _render_startup(_entries())
+        shell_mod._STARTUP_REPLAY_CHUNK = original
+        shipped = await _render_startup(_entries())
+    finally:
+        shell_mod._STARTUP_REPLAY_CHUNK = original
+
+    for mark in marks:
+        assert mark in whole, mark
+        assert mark in finest, mark
+        assert mark in shipped, mark
+    # Order is preserved regardless of how the repaint was split.
+    for screen in (whole, finest, shipped):
+        assert screen.index(_USER_MARK) < screen.index("Resumed")
+
+
+async def test_the_pyte_history_guard_fires_instead_of_evicting() -> None:
+    """A saturated scrollback must raise, not silently drop the oldest rows.
+
+    pyte's history is a ``deque(maxlen=...)`` that evicts from the LEFT without
+    a signal, so a test asserting on the TOP of a long transcript would read an
+    eviction as "the transcript never painted" and blame the code under test.
+    """
+
+    import pytest
+
+    with pytest.raises(AssertionError, match="scrollback saturated"):
+        await _render_startup_with_history_cap(_entries(), history_lines=8)
+
+
+async def _render_startup_with_history_cap(
+    entries: list[Any], *, history_lines: int
+) -> str:
+    from _pyte import render_shell_to_screen
+    from test_run_tui_smoke import FakeHarness, FakeRuntime
+
+    runtime = FakeRuntime(FakeHarness())
+    runtime.session = _SessionWithEntries(entries)  # type: ignore[attr-defined]
+
+    async def drive(_chrome: AelixChrome) -> None:
+        await asyncio.sleep(0.2)
+
+    display = await render_shell_to_screen(
+        runtime=runtime,
+        rows=24,
+        cols=100,
+        drive=drive,
+        include_history=True,
+        history_lines=history_lines,
+    )
+    return _flat(display)
