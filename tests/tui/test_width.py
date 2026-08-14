@@ -24,7 +24,6 @@ import pytest
 from aelix_coding_agent.tui.width import (
     _FALLBACK_RENDER_WIDTH,
     _MAX_RENDER_WIDTH,
-    _MIN_RENDER_WIDTH,
     terminal_columns,
 )
 
@@ -68,7 +67,8 @@ class _FakeChrome:
         (100, 100),
         (_MAX_RENDER_WIDTH, _MAX_RENDER_WIDTH),
         (60, 60),
-        (_MIN_RENDER_WIDTH, _MIN_RENDER_WIDTH),
+        (40, 40),
+        (30, 30),
     ],
 )
 def test_reads_the_live_terminal_width(columns: int, expected: int) -> None:
@@ -80,11 +80,19 @@ def test_ultrawide_terminal_is_capped_for_readability() -> None:
     assert terminal_columns(_FakeChrome(400)) == _MAX_RENDER_WIDTH  # type: ignore[arg-type]
 
 
-def test_very_narrow_terminal_stops_at_the_floor() -> None:
-    # Below the floor a bordered Panel has no room for content; we stop
-    # shrinking and let the host terminal clip rather than emit a degenerate
-    # frame with more border than body.
-    assert terminal_columns(_FakeChrome(10)) == _MIN_RENDER_WIDTH  # type: ignore[arg-type]
+def test_a_very_narrow_terminal_is_honoured_rather_than_floored() -> None:
+    """Never return more than the terminal has — there is no floor.
+
+    The first version of this module floored at 40, which re-created the exact
+    bug it exists to fix: a 30-column terminal got 40, the Panel was rendered 40
+    wide into 30, and prompt-toolkit clipped it. See
+    ``test_a_sub_forty_terminal_still_gets_a_closed_frame`` for the rendered
+    proof.
+    """
+
+    assert terminal_columns(_FakeChrome(30)) == 30  # type: ignore[arg-type]
+    assert terminal_columns(_FakeChrome(10)) == 10  # type: ignore[arg-type]
+    assert terminal_columns(_FakeChrome(1)) == 1  # type: ignore[arg-type]
 
 
 @pytest.mark.parametrize(
@@ -107,9 +115,8 @@ def test_caller_budget_tightens_but_never_loosens_the_terminal_bound() -> None:
     assert terminal_columns(_FakeChrome(50), max_width=76) == 50  # type: ignore[arg-type]
 
 
-def test_a_sub_floor_budget_is_honoured_over_the_floor() -> None:
-    # The floor guards against TERMINAL shrinkage, not against an explicit
-    # budget — a caller asking for 20 cells means 20.
+def test_a_tiny_caller_budget_is_honoured() -> None:
+    # A caller asking for 20 cells means 20.
     assert terminal_columns(_FakeChrome(200), max_width=20) == 20  # type: ignore[arg-type]
 
 
@@ -168,6 +175,24 @@ async def test_narrow_terminal_live_width_keeps_the_whole_command() -> None:
     assert "╯" in joined
     # Nothing overflows the terminal.
     assert all(len(row) <= 60 for row in display)
+
+
+@pytest.mark.parametrize("cols", [30, 36, 40])
+async def test_a_sub_forty_terminal_still_gets_a_closed_frame(cols: int) -> None:
+    """A terminal narrower than a comfortable Panel must still not be clipped.
+
+    This is the regression the first cut of ``width.py`` shipped: a floor of 40
+    meant a 30-column terminal was handed 40, which is the pre-fix bug exactly.
+    Measured at the time through this same harness, cols=30 and cols=36 both
+    came back with an unclosed frame. A cramped frame is a cosmetic problem; an
+    unclosed one hides the command being approved.
+    """
+
+    display = await _render_dialog_at(cols=cols, width=terminal_columns(_FakeChrome(cols)))  # type: ignore[arg-type]
+    joined = "\n".join(display)
+    assert "╮" in joined, f"frame not closed at cols={cols}"
+    assert "╯" in joined, f"frame not closed at cols={cols}"
+    assert all(len(row) <= cols for row in display)
 
 
 # === the wiring ==============================================================

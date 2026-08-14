@@ -31,7 +31,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from aelix_coding_agent.tui.chrome import AelixChrome
 
-# These three are module-PRIVATE on purpose, and the reason is not cosmetic.
+# These two are module-PRIVATE on purpose, and the reason is not cosmetic.
 #
 # 1. It is the settled convention for TUI geometry: every one of its siblings is
 #    private (``shell._RENDER_WIDTH``, ``context._PICK_MIN_WIDTH`` /
@@ -50,9 +50,15 @@ if TYPE_CHECKING:
 #    what the constant is defeats the gate. The underscore here is convention,
 #    not camouflage; the names are otherwise unchanged.
 
-#: Floor. Below this a bordered Panel has no room for content, so we stop
-#: shrinking and let the host terminal clip rather than emit degenerate frames.
-_MIN_RENDER_WIDTH = 40
+# There is deliberately NO floor. The first version of this module had one
+# (40 cells, reasoning that a bordered Panel below that has no room for
+# content), and it was a self-inflicted repeat of the very bug this module
+# exists to fix: on a 30-column terminal it returned 40, the approval Panel was
+# rendered 40 cells wide into 30, and prompt-toolkit clipped it. Measured
+# through the pyte harness at the time — cols=30 and cols=36 both came back
+# with an UNCLOSED frame (no ``╮``/``╯``), identical to the pre-fix screenshot.
+# A cramped 30-cell frame is ugly; a clipped one hides what it is asking about.
+# Never return more than the terminal has.
 
 #: Ceiling. Full-bleed prose on an ultrawide terminal is measurably harder to
 #: read than a bounded measure — the eye loses the next line's start on the
@@ -93,17 +99,14 @@ def terminal_columns(
 
 
 def _clamp(columns: int, max_width: int) -> int:
-    """Clamp to ``[_MIN_RENDER_WIDTH, max_width]``.
+    """The smaller of the terminal and the caller's budget, never below 1.
 
-    ``max_width`` is honoured even when it sits below :data:`_MIN_RENDER_WIDTH`
-    (a caller asking for a 20-cell budget gets 20, not 40) — the floor exists to
-    stop *terminal* shrinkage from producing degenerate frames, not to override
-    an explicit budget.
+    The 1 is not a floor in the design sense — it is the smallest width Rich can
+    render into at all. Anything wider than the terminal gets clipped by
+    prompt-toolkit with no ellipsis, so there is nothing to trade off against.
     """
 
-    if max_width < _MIN_RENDER_WIDTH:
-        return max(1, min(columns, max_width))
-    return max(_MIN_RENDER_WIDTH, min(columns, max_width))
+    return max(1, min(columns, max_width))
 
 
 __all__ = ["terminal_columns"]
