@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import copy
 import io
+import re
 from pathlib import Path
 from typing import Any
 
@@ -48,6 +49,7 @@ from aelix_coding_agent.cli.entry import (
     _resolve_active_tools,
     _resolve_append_chunks,
     _resolve_system_prompt,
+    _visible_tools,
 )
 from aelix_coding_agent.tools import ALL_TOOL_NAMES
 from aelix_coding_agent.tui.commands import (
@@ -102,8 +104,23 @@ class _Bench:
         # Seven built-in NAMES plus one extension-shaped tool: the
         # ``--no-builtin-tools`` filter partitions purely on ``ALL_TOOL_NAMES``,
         # so real tool closures would add nothing but startup cost.
-        tools = [AgentTool(name=name, description=name) for name in sorted(ALL_TOOL_NAMES)]
-        tools.append(AgentTool(name=_EXT_TOOL, description="extension tool"))
+        #
+        # ``prompt_snippet`` IS supplied (#120), for the same reason ``skills=``
+        # is mandatory in :meth:`expected_prompt_for`: without it every tool is
+        # invisible to the prompt's derived list, the block renders ``(none)``
+        # in both the production string and the expectation, and the equality
+        # assertion below would pass no matter what the derivation did.
+        tools = [
+            AgentTool(name=name, description=name, prompt_snippet=f"does {name}")
+            for name in sorted(ALL_TOOL_NAMES)
+        ]
+        tools.append(
+            AgentTool(
+                name=_EXT_TOOL,
+                description="extension tool",
+                prompt_snippet="an extension-registered tool",
+            )
+        )
 
         self.harness = AgentHarness(
             AgentHarnessOptions(
@@ -165,12 +182,26 @@ class _Bench:
         The holder is read rather than a captured list, because ``use``
         REPLACES it in place — so this sees the post-``use`` skills, which is
         what production composes from.
+
+        ``tools=`` is MANDATORY for the identical reason (#120), and it is read
+        off the LIVE harness rather than from ``self.baseline``: ``use`` calls
+        ``set_active_tools`` before it composes, so a profile's ``tools:`` has
+        already narrowed the active set by the time production builds the
+        string. Passing the unfiltered list here would compare a correct build
+        against a stale expectation and fail for the wrong reason; passing
+        nothing at all would make both sides emit ``(none)`` and assert nothing.
         """
 
         reference = copy.deepcopy(self.baseline)
         apply_profile_to_args(reference, profile, provided=reference.provided)
         return compose_system_prompt(
-            _resolve_system_prompt(reference, str(self.cwd)),
+            _resolve_system_prompt(
+                reference,
+                str(self.cwd),
+                tools=_visible_tools(
+                    self.harness.state.tools, self.harness.state.active_tool_names
+                ),
+            ),
             _resolve_append_chunks(
                 reference,
                 str(self.cwd),
@@ -397,6 +428,49 @@ async def test_agents_use_keeps_the_skills_catalog_in_the_live_prompt(
     assert "BODY_MARKER" not in prompt
     # And the human-facing half still agrees, which is the point of the pairing.
     assert "zorb-probe" in [s.name for s in bench.harness.skills]
+
+
+async def test_a_profiles_tools_narrow_the_prompts_tool_list(bench: _Bench) -> None:
+    """``/agents use`` × #120: a profile's ``tools:`` must reach the PROSE.
+
+    ``use`` calls ``set_active_tools`` and then composes the prompt, and both
+    halves have to agree. Before #120 they could not disagree because the
+    prompt's list was a literal; now they can, and this is the only place the
+    two meet. The assertion is on the DERIVED block rather than on a substring
+    of the whole prompt, because tool names also appear in the extension
+    signpost's grep hint and in a skill description — a bare ``"bash" in
+    prompt`` would pass on a prompt that had lost the filter entirely.
+    """
+
+    _write_profile(
+        bench.user_agents,
+        "narrow",
+        "name: narrow\ndescription: Two tools only\ntools: [read, grep]",
+        "You are NARROW.",
+    )
+
+    await bench.run("/agents use narrow")
+    after = _tool_block(bench.harness.state.system_prompt)
+
+    assert sorted(after) == ["grep", "read"]
+    # And the model-facing list is exactly the harness's own answer — the two
+    # halves of the same switch, asserted against each other rather than
+    # against a literal.
+    assert sorted(after) == sorted(bench.harness._action_get_active_tools())
+    # The bench's other six tools are gone from the prose, not merely reordered.
+    for gone in ("bash", "write", "edit", "find", "ls", _EXT_TOOL):
+        assert gone not in after
+
+
+def _tool_block(prompt: str) -> list[str]:
+    """The tool NAMES the prompt's derived Available-tools block claims."""
+
+    match = re.search(r"Available tools:\n(.*?)\n\n", prompt, re.S)
+    assert match is not None, "no Available tools block"
+    body = match.group(1)
+    if body.strip() == "(none)":
+        return []
+    return [line.split(":", 1)[0][2:] for line in body.splitlines()]
 
 
 async def test_agents_use_twice_is_not_cumulative(bench: _Bench) -> None:
