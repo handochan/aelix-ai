@@ -12,11 +12,11 @@ prompt-toolkit output and the Rich console, then replays the real escape stream
 through a terminal emulator. Its ``cols`` parameter has existed since Sprint
 6h₁₀d and has never been passed anything but its default 80.
 
-Two of the tests below are ``xfail(strict=True)``. They describe the behaviour
-issue #166 step 3 will deliver, and they fail on today's code — which is the
-whole point: a gate that passes before AND after a fix measures nothing. Strict
-means the suite BREAKS when they start passing, so step 3 cannot land without
-deleting the markers and admitting what changed.
+Two of the tests below landed as ``xfail(strict=True)`` describing behaviour that
+did not exist yet, and the markers were deleted by the commit that delivered it —
+which is the point: a gate that passes before AND after a fix measures nothing.
+Strict meant the suite would BREAK the moment they started passing, so the fix
+could not land quietly.
 """
 
 from __future__ import annotations
@@ -116,32 +116,18 @@ async def test_streamed_text_never_overflows_the_terminal(cols: int) -> None:
 # === the defect itself, pinned as xfail until step 3 ========================
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "issue #166 — streamed text wraps at the hardcoded shell._RENDER_WIDTH (80) "
-        "regardless of the terminal. Step 3 makes EventRenderer's width a live "
-        "reader; DELETE this marker in that commit."
-    ),
-)
 async def test_wide_terminal_uses_more_than_eighty_columns() -> None:
-    """On a 200-column terminal the answer should not sit in an 80-cell ribbon.
+    """On a 200-column terminal the answer must not sit in an 80-cell ribbon.
 
-    Measured today: 79 cells at cols=200, identical to cols=80 — 120 columns of
-    the user's terminal left unused.
+    Was 79 cells at cols=200 — identical to cols=80, leaving 120 columns of the
+    user's terminal unused. This was xfail(strict) until the width became a live
+    reader.
     """
 
     width = _first_paragraph_row_width(await _render_paragraph_at(200))
     assert width > 80, f"the streamed row was {width} cells on a 200-column terminal"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "issue #166 — run_tui hardcodes EventRenderer(width=_RENDER_WIDTH). Step 3 "
-        "passes a callable that re-measures per message; DELETE this marker then."
-    ),
-)
 async def test_run_tui_sizes_the_event_renderer_from_the_live_terminal() -> None:
     """The wiring half: ``run_tui`` must not hand the renderer a constant.
 
@@ -159,7 +145,7 @@ async def test_run_tui_sizes_the_event_renderer_from_the_live_terminal() -> None
     from prompt_toolkit.output.vt100 import Vt100_Output
     from test_run_tui_smoke import FakeHarness, FakeRuntime
 
-    cols = 137  # not 80, not a clamp boundary
+    cols = 111  # not 80, and below the readability ceiling so it passes through
     widths: list[Any] = []
     real_cls = shell_mod.EventRenderer
 
@@ -199,5 +185,7 @@ async def test_run_tui_sizes_the_event_renderer_from_the_live_terminal() -> None
 
     assert widths, "run_tui built no EventRenderer"
     given = widths[0]
-    resolved = given() if callable(given) else given
-    assert resolved == cols, f"EventRenderer got width={given!r} on a {cols}-column terminal"
+    # A CALLABLE, not a number: ``_new_stream`` re-resolves it per assistant
+    # message, which is what makes a resize take effect at all.
+    assert callable(given), f"run_tui passed a fixed width ({given!r})"
+    assert given() == cols, f"EventRenderer resolved {given()} on a {cols}-column terminal"

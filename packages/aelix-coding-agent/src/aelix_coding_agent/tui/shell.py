@@ -226,15 +226,11 @@ def _message_text(message: object) -> str:
     if not isinstance(content, (list, tuple)):
         return ""
     return "\n".join(
-        getattr(b, "text", "") or ""
-        for b in content
-        if getattr(b, "type", None) == "text"
+        getattr(b, "text", "") or "" for b in content if getattr(b, "type", None) == "text"
     )
 
 
-def _drive_compaction_indicator(
-    chrome: AelixChrome, state: dict[str, Any], etype: object
-) -> None:
+def _drive_compaction_indicator(chrome: AelixChrome, state: dict[str, Any], etype: object) -> None:
     """Toggle the working-row "Compacting context…" indicator on compaction.
 
     A manual ``/compact`` dispatches OUTSIDE the ``set_running`` turn wrapper, so
@@ -413,9 +409,7 @@ async def run_tui(
         # a stray "⏵⏵ default" (ADR-0159, review MEDIUM).
         from aelix_coding_agent.tui.context import _DEFAULT_STEERING_MODE
 
-        return getattr(
-            runtime_host.harness, "steering_mode", _DEFAULT_STEERING_MODE
-        )
+        return getattr(runtime_host.harness, "steering_mode", _DEFAULT_STEERING_MODE)
 
     def _permission_badge() -> str | None:
         # Live permission posture badge (WP-0, ADR-0157): the held posture's
@@ -446,9 +440,7 @@ async def run_tui(
         model_provider=_model_id,
         thinking_provider=_thinking_level,
         mode_provider=_steering_mode,
-        pending_provider=lambda: getattr(
-            runtime_host.harness, "pending_message_count", 0
-        ),
+        pending_provider=lambda: getattr(runtime_host.harness, "pending_message_count", 0),
         permission_badge_provider=_permission_badge,
         cwd=cwd,
         mode="default",
@@ -469,9 +461,7 @@ async def run_tui(
         runtime = getattr(harness, "runtime", None)
         pending = tuple(getattr(runtime, "pending_activations", None) or ())
         with contextlib.suppress(Exception):
-            apply_manifest_widgets(
-                runner, context, applied_widgets, pending=pending
-            )
+            apply_manifest_widgets(runner, context, applied_widgets, pending=pending)
 
     def _apply_ext_themes(harness: AgentHarness) -> None:
         # Issue #21 themes (ADR-0184) — reconcile manifest-contributed themes
@@ -511,7 +501,15 @@ async def run_tui(
     def _set_tail(ansi: str) -> None:
         output_queue.put_nowait(("tail", ansi))
 
-    renderer = EventRenderer(commit=_commit, set_tail=_set_tail, width=_RENDER_WIDTH)
+    # Issue #166 — the READER, not a number. ``EventRenderer`` resolves it in
+    # ``_new_stream``, which already ran once per assistant message before this
+    # change, so the re-measure point existed and was reading an immutable field.
+    # A resize therefore takes effect from the next message; scrollback already
+    # written is never reflowed, because those bytes belong to the host terminal
+    # (``full_screen=False``) — the same guarantee any terminal program gives.
+    renderer = EventRenderer(
+        commit=_commit, set_tail=_set_tail, width=lambda: terminal_columns(out_chrome)
+    )
 
     def _render_custom_message(msg: Any) -> object | None:
         # Issue #62 (ADR-0183) — pi CustomMessageComponent parity: look up the
@@ -586,16 +584,12 @@ async def run_tui(
         # mirrors hide_thinking). Gates the /compact summary panel + the replayed
         # compaction-summary message; the summary stays in the LLM context.
         with contextlib.suppress(Exception):
-            renderer.hide_compaction_summary = (
-                settings_manager.get_hide_compaction_summary()
-            )
+            renderer.hide_compaction_summary = settings_manager.get_hide_compaction_summary()
         # (a2) tool-card NORMAL-output line cap → the renderer (Issue #66). Without
         # this seed the persisted ``tool_card_max_lines`` never reaches the
         # renderer, leaving the setting inert. Guarded like the sibling above.
         with contextlib.suppress(Exception):
-            renderer.tool_card_max_lines = (
-                settings_manager.get_tool_card_max_lines()
-            )
+            renderer.tool_card_max_lines = settings_manager.get_tool_card_max_lines()
         # (b) default THINKING LEVEL → the live harness. SKIP when the current
         # model does not support the stored level (a reasoning-off model collapses
         # to ``["off"]``) so an unsupported level is never forced. ``None`` (unset)
@@ -1087,9 +1081,7 @@ async def run_tui(
             rows = build_settings_rows(settings_manager)
             # Pi screenshot parity: pad the label column so values line up.
             width = max(len(r.label) for r in rows) + 2
-            labels = [
-                f"{r.label.ljust(width)}{r.read(settings_manager)}" for r in rows
-            ]
+            labels = [f"{r.label.ljust(width)}{r.read(settings_manager)}" for r in rows]
             cursor_idx = max(0, min(cursor_idx, len(labels) - 1))
             # Bind ``rows`` via a default arg so the per-highlight detail closure
             # references THIS iteration's rows (ruff B023 — the loop rebuilds rows
@@ -1463,9 +1455,7 @@ async def run_tui(
         chosen_id = getattr(chosen, "id", "")
         if settings_manager is not None and chosen_provider and chosen_id:
             with contextlib.suppress(Exception):
-                settings_manager.set_default_model_and_provider(
-                    chosen_provider, chosen_id
-                )
+                settings_manager.set_default_model_and_provider(chosen_provider, chosen_id)
                 await settings_manager.flush()
         _commit(
             Text(
@@ -1522,8 +1512,7 @@ async def run_tui(
 
         _commit(
             Text(
-                "No provider credentials found. Let's set one up "
-                "— Esc to skip.",
+                "No provider credentials found. Let's set one up — Esc to skip.",
                 style="cyan",
             )
         )
@@ -1543,8 +1532,7 @@ async def run_tui(
         if not available:
             _commit(
                 Text(
-                    "Still no provider configured. Run /login when you're "
-                    "ready.",
+                    "Still no provider configured. Run /login when you're ready.",
                     style="yellow",
                 )
             )
@@ -1632,9 +1620,7 @@ async def run_tui(
             # ``extension_sources`` list live. Bound method (or None when no
             # SettingsManager is wired) so each open re-reads the current list.
             sources_getter=(
-                settings_manager.get_extension_sources
-                if settings_manager is not None
-                else None
+                settings_manager.get_extension_sources if settings_manager is not None else None
             ),
             # Issue #65 (ADR-0188) — the filterable Discover tab renders the
             # CACHED catalogs (SYNC disk read via load_cached_catalog — no network
@@ -1649,9 +1635,7 @@ async def run_tui(
             # value (url + persisted opt-out state), rendered as a marked Sources
             # row. None when no SettingsManager, or when the user disabled the
             # built-in default via an empty AELIX_DEFAULT_CATALOG.
-            default_catalog_getter=(
-                _default_catalog if settings_manager is not None else None
-            ),
+            default_catalog_getter=(_default_catalog if settings_manager is not None else None),
         )
 
     async def _use_agent(name: str | None) -> str:
@@ -1705,6 +1689,7 @@ async def run_tui(
     loop = asyncio.get_running_loop()
     signals_installed: list[int] = []
     if install_signal_handlers and sys.platform != "win32":
+
         def _handle_signal() -> None:
             # Request a clean shutdown: EOF the input loop + stop the chrome so
             # run_tui's finally runs full teardown (unbind UI, unsubscribe,
@@ -1761,9 +1746,7 @@ async def run_tui(
             # A newer refresh was scheduled while this one was awaiting; its
             # snapshot is fresher, so discard ours rather than racing to paint.
             return
-        context.set_context_label(
-            _format_context_label(getattr(stats, "context_usage", None))
-        )
+        context.set_context_label(_format_context_label(getattr(stats, "context_usage", None)))
         # WP-2 (ADR-0160) — also cache the token/cost scalars for the OPTIONAL
         # input-tokens / output-tokens / cost footer segments (default-OFF). One
         # refresh feeds both the context% label + these scalars.
@@ -1800,9 +1783,7 @@ async def run_tui(
     # tear down the whole turn).
     retry_countdown_ref: dict[str, asyncio.Task[None] | None] = {"task": None}
 
-    async def _tick_retry_countdown(
-        attempt: int, max_attempts: int, delay_ms: int
-    ) -> None:
+    async def _tick_retry_countdown(attempt: int, max_attempts: int, delay_ms: int) -> None:
         # W-review MEDIUM-1: self-supersession — back-to-back ``auto_retry_start``
         # events (attempt N → N+1) cancel the prior task but ``cancel()`` is
         # cooperative; if the prior body is past an ``await`` checkpoint it can
@@ -1824,10 +1805,7 @@ async def run_tui(
             while remaining > 0:
                 if retry_countdown_ref["task"] is not current:
                     return  # superseded by a new ticker — exit cleanly
-                line = (
-                    f"⟳ Retrying ({attempt}/{max_attempts}) in "
-                    f"{int(remaining)}s… Esc to cancel"
-                )
+                line = f"⟳ Retrying ({attempt}/{max_attempts}) in {int(remaining)}s… Esc to cancel"
                 out_chrome.set_widget(_RETRY_WIDGET_KEY, [line], above=True)
                 step = min(1.0, remaining)
                 await asyncio.sleep(step)
@@ -1974,9 +1952,7 @@ async def run_tui(
             # stranded indicator (a BaseException-cancelled compaction never emits
             # compaction_end). All three route through the one tested helper, so
             # there is no untested dispatch glue.
-            _drive_compaction_indicator(
-                out_chrome, _compaction_working_state, etype
-            )
+            _drive_compaction_indicator(out_chrome, _compaction_working_state, etype)
             if etype == "compaction_end":
                 # Compaction changes the real context with NO following turn_end,
                 # so without this the meter kept painting the pre-compaction
@@ -2126,9 +2102,7 @@ async def run_tui(
             if not out_chrome.running:
                 out_chrome.submit_line(text)
                 return
-            output_queue.put_nowait(
-                ("commit", render_user_message(text, kind=kind))
-            )
+            output_queue.put_nowait(("commit", render_user_message(text, kind=kind)))
             try:
                 if kind == "steer":
                     await runtime_host.harness.steer(text)
@@ -2288,9 +2262,7 @@ async def run_tui(
             # W-review M1: ``os.path.join`` (not f-string with "/") so the
             # Windows path is single-separator — the model receives the bare
             # absolute path and expects platform-correct separators.
-            path = os.path.join(
-                tempfile.gettempdir(), f"aelix-clipboard-{uuid.uuid4()}.png"
-            )
+            path = os.path.join(tempfile.gettempdir(), f"aelix-clipboard-{uuid.uuid4()}.png")
             # pi normalizes to png as the ``?? "png"`` fallback; Aelix writes
             # PNG unconditionally for lossless quality + universal support.
             grabbed.save(path, "PNG")
@@ -2316,11 +2288,7 @@ async def run_tui(
     editor_open_ref: dict[str, bool] = {"open": False}
 
     async def _run_external_editor(initial: str) -> None:
-        editor = (
-            os.environ.get("VISUAL")
-            or os.environ.get("EDITOR")
-            or "vi"
-        )
+        editor = os.environ.get("VISUAL") or os.environ.get("EDITOR") or "vi"
         # ``delete=False`` so we control cleanup in the ``finally`` — the
         # editor's atomic save (vim ``:w`` → write-to-tmp + rename) won't
         # leave us with a stale fd.
@@ -2338,7 +2306,9 @@ async def run_tui(
             async with in_terminal():
                 try:
                     await asyncio.to_thread(
-                        subprocess.run, [editor, path], check=False  # noqa: S603,S607
+                        subprocess.run,
+                        [editor, path],
+                        check=False,  # noqa: S603,S607
                     )
                 except (FileNotFoundError, OSError) as exc:
                     _commit(
@@ -2435,16 +2405,21 @@ async def run_tui(
             session_runtime=runtime_host,
         )
         descriptor_unsub, descriptor_renderer = _wire_descriptors(
-            runtime_host, out_chrome, footer, context, loop, renderer, commands, cwd,
+            runtime_host,
+            out_chrome,
+            footer,
+            context,
+            loop,
+            renderer,
+            commands,
+            cwd,
             dispatch.list_commands,
         )
         # No descriptor wiring (headless fakes without an event_bus) → the palette
         # still offers built-ins + extension commands. Install the union completer.
         if descriptor_renderer is None:
             out_chrome.set_command_completer(
-                _build_input_completer(
-                    lambda: {}, commands, cwd, dispatch.list_commands
-                )
+                _build_input_completer(lambda: {}, commands, cwd, dispatch.list_commands)
             )
         chrome_task = asyncio.create_task(out_chrome.run())
         pump_task = asyncio.create_task(_output_pump(output_queue, out_chrome))
@@ -2608,9 +2583,7 @@ def _wire_descriptors(
     # every keystroke (descriptors applied/removed after this point change
     # completions live); built-ins are static and win on a name clash (§B).
     chrome.set_command_completer(
-        _build_input_completer(
-            lambda: renderer.command_routes, builtins, cwd, get_ext_commands
-        )
+        _build_input_completer(lambda: renderer.command_routes, builtins, cwd, get_ext_commands)
     )
 
     # §B — late-bind the live tool-renderer-desc lookup onto the EventRenderer so
@@ -2925,9 +2898,7 @@ async def _output_pump(queue: asyncio.Queue[tuple[str, object]], chrome: AelixCh
         def _apply_tail(ansi: str = tail_ansi) -> None:
             # Default-arg binding: freezes THIS drain's tail for the callback
             # (a bare closure over the loop variable would be a B023 hazard).
-            chrome.set_widget(
-                "__stream__", ansi.split("\n") if ansi else None, above=True
-            )
+            chrome.set_widget("__stream__", ansi.split("\n") if ansi else None, above=True)
 
         if pending:
             try:
@@ -2974,9 +2945,7 @@ async def _input_loop(
     # toasts/dialogs flow through the separately-bound TUI ui).
     ext_command_bindings = CommandSurfaceBindings(
         emit_text=lambda s: output_queue.put_nowait(("commit", Text(s))),
-        emit_error=lambda s: output_queue.put_nowait(
-            ("commit", Text(s, style="bold red"))
-        ),
+        emit_error=lambda s: output_queue.put_nowait(("commit", Text(s, style="bold red"))),
     )
 
     while True:
@@ -3032,14 +3001,16 @@ async def _input_loop(
             if save_implicit_trust_after_reload is not None:
                 with contextlib.suppress(Exception):
                     if save_implicit_trust_after_reload():
-                        output_queue.put_nowait((
-                            "commit",
-                            Text(
-                                "Saved project trust for this folder "
-                                "(it gained .aelix resources during this session).",
-                                style="yellow",
-                            ),
-                        ))
+                        output_queue.put_nowait(
+                            (
+                                "commit",
+                                Text(
+                                    "Saved project trust for this folder "
+                                    "(it gained .aelix resources during this session).",
+                                    style="yellow",
+                                ),
+                            )
+                        )
             continue
         # Sprint 6h₁₂a (ADR-0110) — a `prompt`-kind `/`-line resolves through the
         # command core BEFORE going to the model: (1) built-in registry handler,
@@ -3053,7 +3024,7 @@ async def _input_loop(
                 # args = the text after the command word (Sprint 6h₁₂d). The
                 # word is isolated by slash_word so this can never disagree with
                 # the dispatch on what the typed command word was.
-                args = parsed.text[len("/" + slash_word(parsed.text)):].strip()
+                args = parsed.text[len("/" + slash_word(parsed.text)) :].strip()
                 await command.handler(command_ctx, args)
                 continue
             # Issue #9: extension-registered commands run HERE — after built-ins
@@ -3062,9 +3033,7 @@ async def _input_loop(
             # command suppresses the model turn; only a true miss (NOT_A_COMMAND)
             # falls through.
             if dispatch is not None:
-                ext_result = await dispatch.try_execute(
-                    parsed.text, ext_command_bindings
-                )
+                ext_result = await dispatch.try_execute(parsed.text, ext_command_bindings)
                 if ext_result.outcome is not DispatchOutcome.NOT_A_COMMAND:
                     continue
             if descriptor_renderer is not None:
