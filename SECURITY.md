@@ -109,6 +109,12 @@ consent very much is:
   running Aelix reaches the configured provider on every request**, together with
   the shape of the directory layout.
 
+  Two more absolute-path channels sit *next to* the base prompt rather than in
+  it, and `--no-context-files` gates only the first: every discovered `AGENTS.md`
+  is wrapped in `<project_instructions path="…">` with its absolute path, and the
+  skills catalog names each skill's absolute `SKILL.md` location so the model can
+  read it. A skill installed under `$HOME` discloses the same account name.
+
   This is deliberate and it is what pi does: pi's own prompt emits
   `getReadmePath()` / `getDocsPath()` / `getExamplesPath()` and
   `Current working directory: …` as absolute paths, with no `~` abbreviation

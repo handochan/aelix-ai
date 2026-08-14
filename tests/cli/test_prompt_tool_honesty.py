@@ -233,8 +233,17 @@ def _live_wire_names(harness: AgentHarness) -> list[str]:
 
 @pytest.mark.parametrize(
     "argv",
-    [[], ["--no-tools"], ["--tools", "read"], ["--tools", "ls,read"]],
-    ids=["default", "no-tools", "tools-read", "tools-ls-read"],
+    [
+        [],
+        ["--no-tools"],
+        ["--tools", "read"],
+        ["--tools", "ls,read"],
+        # #120 review (LOW): the helper has a ``--no-builtin-tools`` branch and
+        # no case exercised it, so that branch was dead code here — and the
+        # flag's effect on the DERIVED list was unasserted anywhere.
+        ["--no-builtin-tools"],
+    ],
+    ids=["default", "no-tools", "tools-read", "tools-ls-read", "no-builtin-tools"],
 )
 async def test_live_prompt_matches_the_live_payload(argv, tmp_path) -> None:
     """The invariant end to end, on a REAL harness after registration.
@@ -413,23 +422,40 @@ def test_control_bytes_are_still_stripped_from_every_emitted_path() -> None:
     assert _agent_context._safe_prompt_path("a\x9bb") == "ab"  # one-byte CSI
     assert _agent_context._safe_prompt_path("r&d") == "r&d"
     assert _agent_context._safe_prompt_path("a<b") == "a&lt;b"
+    # U+2028 / U+2029 are OUTSIDE C0/DEL/C1 and `str.splitlines()` treats them
+    # as breaks, so a path carrying one would put a line break in the middle of
+    # a bullet. `_PROMPT_PATH_KILL` widens the table for the prompt half only.
+    assert _agent_context._safe_prompt_path("a b") == "ab"
+    assert _agent_context._safe_prompt_path("a b") == "ab"
+    assert len(_agent_context._safe_prompt_path("a b").splitlines()) == 1
 
 
-def test_the_package_pointers_are_no_longer_raw() -> None:
+def test_the_package_pointers_are_no_longer_raw(tmp_path, monkeypatch) -> None:
     """The other half of #167: these two were emitted with NO escape at all.
 
-    Asserted on the function rather than on a staged install, because the
-    guard now lives on ``_package_pointer`` so a third pointer added later
-    cannot miss it.
+    THE FIRST REVISION OF THIS TEST GATED ON A SOURCE SUBSTRING — it grepped
+    ``_package_pointer``'s body for ``_safe_prompt_path(path)``. Review caught
+    it: that passes on a build where the call is present but wired to nothing,
+    and its two behavioural assertions were vacuous on this tree (no install
+    path here contains a ``<``). It now STAGES a hostile install path and reads
+    what the function emits.
     """
 
-    source = Path(_agent_context.__file__).read_text(encoding="utf-8")
-    body = source.split("def _package_pointer", 1)[1].split("\ndef ", 1)[0]
-    assert "_safe_prompt_path(path)" in body
+    hostile = tmp_path / "a<pkg>b" / "src" / "aelix_coding_agent"
+    (hostile / "extensions").mkdir(parents=True)
+    (hostile / "extensions" / "api.py").write_text("# staged\n", encoding="utf-8")
+    # ``_package_pointer`` resolves from ``Path(__file__).parents[1]``, i.e. the
+    # package root — the same derivation an installed wheel gets.
+    monkeypatch.setattr(
+        _agent_context, "__file__", str(hostile / "cli" / "agent_context.py")
+    )
 
     pointer = _agent_context._package_pointer("extensions", "api.py")
     assert pointer is not None
-    assert "<" not in pointer
+    assert "<pkg>" not in pointer
+    assert "&lt;pkg>" in pointer
+    # And a missing file is still dropped rather than emitted dead.
+    assert _agent_context._package_pointer("extensions", "nope.py") is None
 
 
 def test_the_docs_block_escapes_the_names_it_globs_not_only_the_directory(

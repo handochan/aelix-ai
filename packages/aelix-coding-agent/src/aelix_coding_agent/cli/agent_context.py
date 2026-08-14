@@ -104,6 +104,21 @@ def _safe_path(path: Path) -> str:
     return str(path).translate(_CONTROL_KILL)
 
 
+# :data:`_CONTROL_KILL` plus the two Unicode line separators (#120 review, LOW).
+#
+# The base table is "C0 + DEL + C1", restated in four places in this repo, and
+# widening the SHARED one would silently diverge the other three. This copy is
+# the PROMPT-facing path escape only, and it needs two more code points that the
+# C1 range does not cover: U+2028 LINE SEPARATOR and U+2029 PARAGRAPH SEPARATOR.
+# Measured — ``"a b".splitlines()`` is TWO lines, so a directory or install
+# path carrying one puts what every line-oriented reader sees as a line break
+# into the middle of a bullet. ``_normalize_prompt_text`` already handles them
+# (Python's ``\s`` matches both); this is the same guard for the path half.
+#
+# U+0085 NEL needs no entry: it is 0x85, inside the C1 range already covered.
+_PROMPT_PATH_KILL = {**_CONTROL_KILL, 0x2028: None, 0x2029: None}
+
+
 def _safe_prompt_path(path: str | Path) -> str:
     """One filesystem path, de-fanged AND fence-safe, for the SYSTEM PROMPT.
 
@@ -128,9 +143,10 @@ def _safe_prompt_path(path: str | Path) -> str:
 
     THE RULE, and why each half is exactly this wide:
 
-    - Strip C0 / DEL / C1 (:data:`_CONTROL_KILL`). Unchanged from
-      :func:`_safe_path`; a directory name carrying an OSC title-set sequence
-      arrives with a ``git clone``.
+    - Strip C0 / DEL / C1 **plus U+2028 / U+2029** (:data:`_PROMPT_PATH_KILL`).
+      The C0 half is unchanged from :func:`_safe_path` — a directory name
+      carrying an OSC title-set sequence arrives with a ``git clone``. The two
+      Unicode line separators are the widening, and that constant says why.
     - Escape ``<`` — and ONLY ``<``. A tag needs ``<``; with every ``<``
       replaced, no interpolated path can open ``</project_instructions>`` or
       ``<available_skills>``, which is the entire structural guarantee
@@ -147,7 +163,7 @@ def _safe_prompt_path(path: str | Path) -> str:
     which is why it is the one that changed.
     """
 
-    return str(path).translate(_CONTROL_KILL).replace("<", "&lt;")
+    return str(path).translate(_PROMPT_PATH_KILL).replace("<", "&lt;")
 
 
 def _escape_text(value: str) -> str:
