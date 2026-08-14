@@ -297,6 +297,23 @@ def test_docs_puts_only_markdown_into_a_live_pipe() -> None:
 
     ``head -1`` is the reader's convenience here, and the exit code asserted is
     ``head``'s — stated as such rather than offered as evidence about aelix.
+
+    STDERR IS NOT ASSERTED EMPTY, and that is the point of the property. An
+    earlier revision asserted ``proc.stderr == ""``, which passed in every
+    worktree and FAILED in the owner's own checkout — because ``.env`` is
+    gitignored, so it exists there and in no worktree, and a project ``.env``
+    legitimately makes startup announce what it loaded. Measured in a checkout
+    carrying one::
+
+        stdout "^Notice:" lines : 0
+        stderr "^Notice:" lines : 4
+
+    So the contract this test exists to defend — the DOCUMENT and nothing else
+    on stdout — was never in danger; the assertion was simply about the wrong
+    stream, and it made the test a function of whether the working directory
+    happened to have a ``.env``. What stderr must not carry is interpreter
+    noise, which is what is asserted instead (the same property the SIGPIPE
+    half of this pair pins).
     """
 
     proc = subprocess.run(  # noqa: S602
@@ -308,5 +325,7 @@ def test_docs_puts_only_markdown_into_a_live_pipe() -> None:
         env=_pythonpath_env(),
     )
     assert proc.stdout.strip() == "# Writing an Extension"
-    assert proc.stderr == ""
+    # Diagnostics on stderr are allowed and expected; a crash is not.
+    assert "Traceback" not in proc.stderr
+    assert "BrokenPipeError" not in proc.stderr
     assert proc.returncode == 0  # `head`'s code — the last command in the pipe
