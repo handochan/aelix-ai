@@ -318,21 +318,78 @@ signpost does point at it. **It was then probed, and pointing does not work eith
 | "tell them to run `/extension new <name>`" | "Please add it" | ❌ read the example, wrote directly |
 | "DO NOT WRITE THE FILE YOURSELF … reply with that command and STOP" | "Please add it" | ❌ read the example, wrote directly |
 
-0 of 2, with the strongest wording available. So the honest claim for this ADR is narrow:
-**the USER has a first-class way to make the choice; the model does not reliably offer it.**
-The signpost keeps the pointer (it costs ~100 chars and is where the command is discoverable
-at all) and keeps both absolute paths, because writing directly is what the model actually
-does.
+0 of 2, with the strongest wording available.
 
-What the probe also showed, and what nobody had credited: **the user is not blind today.**
+So **the prompt stopped trying to steer the model.** The signpost is a third draft that
+says what to DO — write, and say where — and names where the choice actually lives. A
+prompt cannot make a model stop; it can tell the truth about who decides.
+
+## 7. #161 shape 3: the approval prompt gets a third answer
+
+What the probes also showed, and what nobody had credited: **the user is not blind today.**
 Every one of those writes stopped at the permission dialog — `Create/overwrite
-/home/…/extensions/reverse_string.py? [y/s/n]` — so the chosen path IS surfaced before the
-file lands. #161's premise that "the user is never asked" is true about the *choice* and
-false about the *path*. That reframes the remaining option: shape 3 is not "build visibility
-from nothing", it is "add a third answer to a dialog that already fires". It still touches
-the permission ladder hardened by ADR-0203, and it is still not done here.
+/home/…/extensions/reverse_string.py? [y/s/n]`. #161's premise that "the user is never
+asked" is true about the *choice* and false about the *path*. What the user could not do
+was answer anything except yes or no.
 
-## 7. What is NOT closed
+Now they can:
+
+```
+  1. [y] Yes — user global, every project (~/.aelix/agent/extensions/x.py)
+  2. [s] Yes, for this session
+  3. [p] Only this project (<cwd>/.aelix/extensions/x.py)
+  4. [n] No
+  ↑/↓ to move · 1-4 / y·s·p·n · Enter to confirm · Esc to deny
+```
+
+### The issue's blocking premise is half wrong, and measuring it is what made this small
+
+#161 says the permission layer "is allow/deny only … it cannot offer 'write here instead',
+so the choice cannot ride on the existing approval prompt", and rates shape 3 *multi-day,
+not recommended*. That is **true of the return value** — `ToolCallResult` carries `block`
+and `reason` — and **false of the mechanism**: `ToolCallHookEvent.args` is *the same dict*
+the loop hands to `tool.execute` (`harness/core.py` `_before_tool_call_bridge`: "we pass
+`ctx.args` by reference — no defensive copy"). Driven end to end through that bridge, a
+handler that rewrites `args["path"]` and returns `None` lands the file at the new path and
+leaves the original absent.
+
+**No kernel change.** Three files and one test module.
+`test_the_redirect_reaches_the_real_write_tool` drives the bridge rather than the tool, so
+it goes red if that reference is ever replaced with a copy — which would kill the design
+silently.
+
+### What is deliberately narrow
+
+- **Exactly two targets, never a free-form third.** The same two the signpost emits and
+  `extension_targets` returns. A write landing anywhere else — including *below* an
+  extensions directory, which the loader does not scan — keeps the three static rows
+  byte-for-byte.
+- **The redirect ALLOWS.** A `block` would turn the user's second *yes* into a *no*.
+- **No session rule is synthesized.** "Put this one somewhere else" is a statement about
+  this file, not a standing allow for the tier.
+- **The row sits above "No"** because it is a second way to say yes, not a way to decline.
+- **The labels state the consequence**, not only the path: the project tier is trust-gated
+  and fails SILENTLY when untrusted, the global tier is not gated at all, and no path name
+  says so.
+- **The hint line is derived from the rows.** The first revision left it reading
+  "1-3 / y·s·n" under a four-row dialog — the stale-prose defect this whole ADR is about.
+
+### Live-verified
+
+Real model, real TUI. The model chose the global tier, the user pressed `[p]`, and:
+
+```
+global tier : /tmp/probe-s4-agentdir/extensions/   → not created
+project tier: /tmp/probe-s4/.aelix/extensions/reverse_string.py   1221 bytes
+```
+
+The model then reported it correctly — *"saved it to …/.aelix/extensions/reverse_string.py
+(project-only, trusted location)"* — naming the path the USER chose, not the one it asked
+for. Sabotaged seven ways (block instead of allow, allow without mutating, offer on every
+write, row below "No", hardcoded hint, and a defensive copy in the kernel bridge); every
+gate went red.
+
+## 8. What is NOT closed
 
 - **The live probe covered the prompt, not the command.** A real model was run against the
   #120 wording (`--no-tools` → "I have NO tools available right now. I cannot read a file";
@@ -341,9 +398,10 @@ the permission ladder hardened by ADR-0203, and it is still not done here.
   and invented no manifest), and against #101's documentation criterion (asked what an `aelix-plugin.toml` contains, it
   answered from the bundled guide — nine capability flags, the three enforced gates,
   "descriptors reserved and inert"). **That closes #101's open criterion.** §6 records what
-  the same probe found about #161: the model does not hand the choice to the user, with any
-  wording tried. **#161 stays open** on that, with shape 3 as the remaining option and the
-  new evidence that the permission dialog already surfaces the path.
+  the same probe found about #161 — the model does not hand the choice over, with any
+  wording tried — and §7 is what was built instead. **The model still does not ask.** It
+  writes, and the user redirects in one keystroke; that is the shipped behaviour, not a
+  workaround for one that failed.
 - **Verification coverage of the review was partial.** 37 findings were reported; the
   adversarial verify pass had returned 8 verdicts (7 CONFIRMED, 1 REFUTED) before it was stopped when the fixes
   above were made. The rest were acted on where they were independently reproduced here and
