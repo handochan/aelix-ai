@@ -1340,3 +1340,125 @@ def test_cap_cells_leaves_short_ascii_untouched() -> None:
     over = "z" * (_HEADER_MAX_CELLS + 1)
     assert _cap_cells(over, _HEADER_MAX_CELLS).endswith("…")
     assert cell_len(_cap_cells(over, _HEADER_MAX_CELLS)) <= _HEADER_MAX_CELLS
+
+
+# === issue #164: replay renders what the live path renders ==================
+
+
+_MD_BODY = (
+    "**Set up authentication** first.\n\n"
+    "Run `aelix /login` and pick a provider.\n\n"
+    "- item one\n- item two\n"
+)
+
+
+def _replay_one_text(width: Any, body: str = _MD_BODY) -> list[Any]:
+    from aelix_ai.messages import AssistantMessage, TextContent
+
+    commits: list[Any] = []
+    r = EventRenderer(commit=commits.append, set_tail=lambda _t: None, width=width)
+    r.replay([AssistantMessage(content=[TextContent(text=body)])])
+    return commits
+
+
+def test_replay_renders_markdown_not_source() -> None:
+    """FAILS TODAY: replay committed ``Text(body)`` — the raw markdown SOURCE.
+
+    Measured before the fix: literal ``**`` and literal backticks on screen, no
+    bullets, no styling. This is what a user saw after every ``/resume``.
+    """
+
+    plain = _replay_one_text(100)[0].plain
+    assert "**" not in plain
+    assert "`" not in plain
+    assert "•" in plain  # the list actually rendered
+
+
+def test_replay_uses_the_callable_render_width() -> None:
+    """FAILS TODAY: max rendered line was 39 cells regardless of the terminal.
+
+    Production passes a CALLABLE (issue #166); only tests pass a bare int. A
+    hardcoded 80 here would pass every existing test while silently undoing that
+    work, so the width is asserted through the callable form.
+    """
+
+    plain = _replay_one_text(lambda: 100)[0].plain
+    # Rich pads every markdown line to the full width, so this is exact rather
+    # than a lower bound. Do not add an ``endswith`` assertion to these lines.
+    assert max(len(line) for line in plain.split("\n")) == 100
+
+
+def test_replay_text_matches_the_live_stream() -> None:
+    """The two paths must agree, asserted on a SINGLE-delta body.
+
+    Not a multi-chunk stream: ``_render_lines`` re-renders the whole accumulated
+    text each tick and the stream freezes already-committed lines, so a body
+    whose late content reflows earlier lines (a long table) legitimately differs.
+    That is a property of the streaming window, not a replay defect.
+    """
+
+    from aelix_agent_core.types import MessageStartEvent
+    from aelix_ai.messages import AssistantMessage
+    from aelix_ai.streaming import TextDeltaEvent, TextEndEvent
+
+    live: list[Any] = []
+    r = EventRenderer(commit=live.append, set_tail=lambda _t: None, width=100)
+    r.on_agent_event(MessageStartEvent(message=AssistantMessage()))
+    r.on_agent_event(_msg_update(TextDeltaEvent(delta=_MD_BODY)))
+    r.on_agent_event(_msg_update(TextEndEvent(content=_MD_BODY)))
+
+    replayed = _replay_one_text(100)
+    assert "".join(c.plain for c in live) == "".join(c.plain for c in replayed)
+
+
+def test_replay_skips_a_body_that_renders_to_no_markdown_lines() -> None:
+    """FAILS TODAY (1 stray commit), and would fail again on a naive fix.
+
+    ``<!-- hidden -->`` is non-blank under ``.strip()`` but renders to zero
+    lines. Guarding on the body instead of on the rendered output emits a blank
+    line the live path never emits.
+    """
+
+    assert _replay_one_text(100, "<!-- hidden -->") == []
+
+
+def test_replay_honours_hide_thinking_like_the_live_path() -> None:
+    """FAILS TODAY: replay dumped the full reasoning regardless of the setting.
+
+    ``hide_thinking`` is seeded from the persisted setting at startup, so a user
+    with "Show thinking" OFF got every past turn's chain-of-thought back on
+    every resume — and, after #165, on every ``--resume`` launch too.
+    """
+
+    from aelix_ai.messages import AssistantMessage, ThinkingContent
+
+    commits: list[Any] = []
+    r = EventRenderer(commit=commits.append, set_tail=lambda _t: None, width=80)
+    r.hide_thinking = True
+    r.replay([AssistantMessage(content=[ThinkingContent(thinking="secret chain")])])
+
+    assert commits[0].plain == "💭 Thinking… (/expand 1)"
+    assert r.get_expanded(1) == "secret chain"  # still recoverable, as when live
+
+
+def test_replay_keeps_both_thinking_blocks_where_live_shows_one() -> None:
+    """A deliberate NON-match, pinned so it is not "fixed" into a content loss.
+
+    The live path renders only the FIRST thinking block of a message — a
+    ``_thinking_flushed`` latch cleared by ``message_start``, which replay never
+    emits. Here the LIVE side is the one dropping content, so replay is left
+    showing both rather than matched down to it.
+    """
+
+    from aelix_ai.messages import AssistantMessage, ThinkingContent
+
+    commits: list[Any] = []
+    r = EventRenderer(commit=commits.append, set_tail=lambda _t: None, width=80)
+    r.replay(
+        [
+            AssistantMessage(
+                content=[ThinkingContent(thinking="A"), ThinkingContent(thinking="B")]
+            )
+        ]
+    )
+    assert [c.plain for c in commits] == ["A", "B"]

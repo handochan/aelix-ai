@@ -111,6 +111,10 @@ _HISTORY_MAX_RECORDS = 5000
 # W-review LOW-4: keep this module-level so tests + future docs reference one
 # canonical name; ``__dunder__`` convention signals private-to-shell.
 _RETRY_WIDGET_KEY = "__auto_retry__"
+# Issue #165 — messages per startup-replay chunk. Small enough that the first
+# rows reach the terminal promptly, large enough that the per-chunk overhead
+# (``replay`` re-resolves the render width once per call) stays negligible.
+_STARTUP_REPLAY_CHUNK = 25
 
 
 def _reload_rebuild_enabled() -> bool:
@@ -2443,6 +2447,58 @@ async def run_tui(
         chrome_task = asyncio.create_task(out_chrome.run())
         pump_task = asyncio.create_task(_output_pump(output_queue, out_chrome))
         _commit(_build_banner(runtime_host.harness, cwd))
+        # Issue #165 — the STARTUP analogue of the /resume repaint. #122 already
+        # seeds ``harness.state.messages`` (``cli/entry.py``'s
+        # ``_seed_startup_messages``) so /context, /cost and /stats read right
+        # after a ``--resume``/``--continue``/``--session``/``--fork`` launch —
+        # but nothing PAINTED the transcript, so the user landed in what looked
+        # like a brand-new session. ``renderer.replay`` had exactly two call
+        # sites and both were in-session swaps.
+        #
+        # NO ``out_chrome.clear()`` here, which is the one thing this must not
+        # copy from ``_replay_after_swap``: the screen is already fresh, and a
+        # clear would erase the banner one line above plus anything printed
+        # before the TUI came up (the --resume picker, the #98 unrunnable-model
+        # warning). Ordering therefore reads banner → transcript → marker,
+        # where the in-session path reads transcript → marker on a cleared
+        # screen.
+        #
+        # ``getattr`` and not ``runtime_host.session``: several run_tui smokes
+        # drive a runtime that has no ``session`` member at all, and one asserts
+        # exactly that. Empty history (a cold start, ``--no-session``) is a
+        # no-op — the same guard ``_seed_startup_messages`` uses.
+        _startup_session = getattr(runtime_host, "session", None)
+        _startup_messages = (
+            await _display_messages(_startup_session)
+            if _startup_session is not None
+            else []
+        )
+        if _startup_messages:
+            # Replayed in CHUNKS with a yield between them. ``replay`` is
+            # synchronous and #164 made it far more expensive per assistant
+            # block (a fresh Rich Console + Markdown each, measured ~1.5ms
+            # against ~0.007ms for the old raw-text commit), so replaying a long
+            # transcript in one call holds the event loop for the whole repaint.
+            #
+            # That is worse than it sounds, and it is why this is chunked rather
+            # than left alone: ``_commit`` only QUEUES: the pump that drains
+            # ``output_queue`` is a task, so while replay holds the loop the
+            # pump cannot run and NOTHING paints — not even the banner
+            # committed a few lines above. The user would get a blank screen for
+            # the duration, then everything at once. Measured before chunking:
+            # 0.45s for a 600-message transcript, and a review probe put an
+            # uncompacted long-context session at ~5.5s.
+            for _offset in range(0, len(_startup_messages), _STARTUP_REPLAY_CHUNK):
+                renderer.replay(
+                    _startup_messages[_offset : _offset + _STARTUP_REPLAY_CHUNK]
+                )
+                await asyncio.sleep(0)  # let the pump paint what is ready
+            _commit(
+                Text(
+                    f"↻ Resumed session ({len(_startup_messages)} messages)",
+                    style="green",
+                )
+            )
         # Issue #23 — first-run onboarding. Straight-line and reachable from
         # nowhere else, so it is once-per-process by construction: /new,
         # /resume and /fork rebuild the harness but never re-enter run_tui.

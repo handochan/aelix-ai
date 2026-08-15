@@ -2020,7 +2020,17 @@ async def test_run_tui_fork_replays_custom_via_renderer_second_callsite() -> Non
     """Issue #62 review (NIT): the display-tier renderer dispatch is wired on
     the SECOND replay callsite too (_replay_after_swap: /fork·/clone·/import),
     not only /resume. /fork picks the recent user message, forks, then
-    _replay_after_swap → _display_messages → get_branch → renderer."""
+    _replay_after_swap → _display_messages → get_branch → renderer.
+
+    Issue #165 added a THIRD callsite — the startup paint — and this runtime
+    exposes a ``session`` with history, so the custom renderer is now dispatched
+    once at startup and once again on the fork. The wait was
+    ``calls == ["status"]``, an exact equality that a second CORRECT dispatch
+    cannot survive; it is widened rather than narrowed, because narrowing it
+    (e.g. suppressing the startup replay for this fixture) would hide the very
+    behaviour #165 adds. The point of the test is unchanged: the fork callsite
+    dispatches. That is now the SECOND entry, so it is asserted positionally.
+    """
     from aelix_agent_core.harness._extension_runner import ExtensionRunner
     from aelix_agent_core.session.entries import CustomMessageEntry, MessageEntry
     from aelix_ai.messages import TextContent, UserMessage
@@ -2073,7 +2083,9 @@ async def test_run_tui_fork_replays_custom_via_renderer_second_callsite() -> Non
         await _wait(lambda: chrome.app.is_running)
         pipe.send_text("/fork\n")
         await _wait(lambda: runtime.fork_calls == [("u1", "before")])
-        await _wait(lambda: calls == ["status"])  # renderer dispatched on replay
+        # [0] = the #165 startup paint, [1] = the fork's _replay_after_swap.
+        await _wait(lambda: len(calls) == 2)
+        assert calls == ["status", "status"]
         pipe.send_text("/quit\n")
         await asyncio.wait_for(task, timeout=5)
 

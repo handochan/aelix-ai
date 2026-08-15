@@ -106,6 +106,8 @@ async def render_shell_to_screen(
     drive: Callable[[AelixChrome], Awaitable[None]],
     time_fn: Callable[[], float] = lambda: 0.0,
     settings_manager: object | None = None,
+    include_history: bool = False,
+    history_lines: int = 3000,
 ) -> list[str]:
     """Like :func:`render_chrome_to_screen`, but drives the REAL ``run_tui``.
 
@@ -177,6 +179,23 @@ async def render_shell_to_screen(
             pipe.send_text("/quit\n")
             with contextlib.suppress(Exception):
                 await asyncio.wait_for(task, timeout=5)
+
+    if include_history:
+        history_screen = pyte.HistoryScreen(cols, rows, history=history_lines)
+        pyte.Stream(history_screen).feed(capture.getvalue())
+        top = history_screen.history.top
+        if len(top) >= history_lines:
+            raise AssertionError(
+                f"pyte scrollback saturated at {history_lines} lines — the oldest "
+                "rows were evicted, so anything asserted about the TOP of this "
+                "transcript would be measuring the buffer, not the render. "
+                "Raise history_lines or shrink the fixture."
+            )
+        scrollback = [
+            "".join(line[i].data if i in line else " " for i in range(cols))
+            for line in top
+        ]
+        return [*scrollback, *history_screen.display]
 
     screen = pyte.Screen(cols, rows)
     pyte.Stream(screen).feed(capture.getvalue())

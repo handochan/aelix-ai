@@ -34,6 +34,30 @@ def _clamp(value: float, low: float, high: float) -> float:
     return max(low, min(value, high))
 
 
+def markdown_lines(text: str, width: int) -> list[str]:
+    """Markdown-render *text* at *width* into ANSI lines (``keepends=True``).
+
+    The single place this project turns assistant prose into styled output.
+    Extracted from :meth:`StreamRenderer._render_lines` for issue #164, where
+    ``EventRenderer.replay`` was committing the raw markdown SOURCE — literal
+    ``**bold**`` and literal backticks — while claiming a resumed transcript
+    "looks identical to a freshly-streamed one".
+
+    Returns ``[]`` for input that renders to nothing. That is not the same as
+    empty input: ``<!-- hidden -->``, a link-reference definition and a footnote
+    definition are all non-blank yet produce zero rendered lines, and the live
+    path commits nothing for them (``stream.py``'s ``if new_stable:`` never
+    fires). A caller that guards on ``text.strip()`` instead of on this return
+    value emits a stray blank line the live path does not.
+    """
+
+    if not text:
+        return []
+    buf = io.StringIO()
+    Console(file=buf, force_terminal=True, width=width).print(Markdown(text), end="")
+    return buf.getvalue().splitlines(keepends=True)
+
+
 class StreamRenderer:
     """Windowed streamed-text renderer (sink-based; no Rich ``Live``).
 
@@ -126,17 +150,11 @@ class StreamRenderer:
         self._set_tail("".join(lines[num_stable:]))
 
     def _render_lines(self, text: str) -> list[str]:
-        if not text:
-            return []
-        # Render the full accumulated text as Markdown (code blocks → syntax
-        # highlight). aider mdstream parity: re-rendered each delta; only the
-        # stable prefix above the live window is committed, so partial-markdown
-        # volatility (unclosed fences, forming tables) rides in the live window.
-        buf = io.StringIO()
-        Console(file=buf, force_terminal=True, width=self._width).print(
-            Markdown(text), end=""
-        )
-        return buf.getvalue().splitlines(keepends=True)
+        # aider mdstream parity: the FULL accumulated text is re-rendered each
+        # delta; only the stable prefix above the live window is committed, so
+        # partial-markdown volatility (unclosed fences, forming tables) rides in
+        # the live window.
+        return markdown_lines(text, self._width)
 
 
-__all__ = ["StreamRenderer"]
+__all__ = ["StreamRenderer", "markdown_lines"]
