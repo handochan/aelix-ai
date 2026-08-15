@@ -28,10 +28,30 @@ from collections.abc import Callable
 
 from rich.console import Console
 from rich.markdown import Markdown
+from rich.text import Text
 
 
 def _clamp(value: float, low: float, high: float) -> float:
     return max(low, min(value, high))
+
+
+def plain_lines(text: str, width: int, *, style: str = "") -> list[str]:
+    """Render *text* as PLAIN styled lines wrapped at *width* (no markdown).
+
+    The reasoning counterpart to :func:`markdown_lines`. Thinking is not
+    markdown: it is emitted as prose, it is shown dim italic, and running it
+    through a Markdown renderer would restyle it (headings, bullets, code spans)
+    and lose that. Kept next to its sibling so the two rendering modes are one
+    read apart rather than one in ``stream.py`` and one improvised elsewhere.
+    """
+
+    if not text:
+        return []
+    buf = io.StringIO()
+    Console(file=buf, force_terminal=True, width=width).print(
+        Text(text, style=style), end=""
+    )
+    return buf.getvalue().splitlines(keepends=True)
 
 
 def markdown_lines(text: str, width: int) -> list[str]:
@@ -157,4 +177,4 @@ class StreamRenderer:
         return markdown_lines(text, self._width)
 
 
-__all__ = ["StreamRenderer", "markdown_lines"]
+__all__ = ["StreamRenderer", "markdown_lines", "plain_lines"]

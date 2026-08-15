@@ -1441,13 +1441,15 @@ def test_replay_honours_hide_thinking_like_the_live_path() -> None:
     assert r.get_expanded(1) == "secret chain"  # still recoverable, as when live
 
 
-def test_replay_keeps_both_thinking_blocks_where_live_shows_one() -> None:
-    """A deliberate NON-match, pinned so it is not "fixed" into a content loss.
+def test_replay_keeps_every_thinking_block() -> None:
+    """Both blocks, and the live path now agrees (#170).
 
-    The live path renders only the FIRST thinking block of a message — a
-    ``_thinking_flushed`` latch cleared by ``message_start``, which replay never
-    emits. Here the LIVE side is the one dropping content, so replay is left
-    showing both rather than matched down to it.
+    This started as a pinned NON-match: the live renderer dropped the second
+    thinking block of a message (a boolean latch that could not tell "already
+    printed THIS block" from "already printed ANY block") while replay showed
+    both. Rather than match replay down to that, #170 keyed the latch on
+    ``content_index`` and fixed the live side. See
+    ``test_live_renders_every_thinking_block`` for the other half.
     """
 
     from aelix_ai.messages import AssistantMessage, ThinkingContent
@@ -1462,3 +1464,137 @@ def test_replay_keeps_both_thinking_blocks_where_live_shows_one() -> None:
         ]
     )
     assert [c.plain for c in commits] == ["A", "B"]
+
+
+# === issue #170: reasoning streams instead of landing all at once ===========
+
+
+def _thinking_renderer(hide: bool = False) -> tuple[Any, list[Any], list[str], dict[str, float]]:
+    clock = {"t": 0.0}
+    commits: list[Any] = []
+    tails: list[str] = []
+    r = EventRenderer(
+        commit=commits.append,
+        set_tail=tails.append,
+        width=60,
+        time_fn=lambda: clock["t"],
+    )
+    r.hide_thinking = hide
+    r.on_agent_event(MessageStartEvent(message=AssistantMessage()))
+    return r, commits, tails, clock
+
+
+def test_reasoning_reaches_the_tail_while_it_streams() -> None:
+    """FAILS TODAY: `thinking_delta` only accumulated — nothing was shown.
+
+    Every shipping adapter emits these in real time, so on a slow reasoning
+    model the user watched a spinner with nothing behind it until the block
+    closed.
+    """
+
+    r, commits, tails, clock = _thinking_renderer()
+    for chunk in ("Let me think ", "about the auth ", "flow carefully."):
+        clock["t"] += 0.2
+        r.on_agent_event(_msg_update(ThinkingDeltaEvent(delta=chunk, content_index=0)))
+
+    assert len(tails) == 3, "reasoning did not stream"
+    assert "flow carefully." in tails[-1]
+    assert commits == [], "nothing may be committed until the block closes"
+
+
+def test_the_tail_is_throttled() -> None:
+    """A delta can be a few characters; every push repaints a chrome widget."""
+
+    r, _commits, tails, clock = _thinking_renderer()
+    for _ in range(20):  # no clock advance at all
+        r.on_agent_event(_msg_update(ThinkingDeltaEvent(delta="x", content_index=0)))
+    assert len(tails) == 1
+
+
+def test_a_closed_block_commits_once_and_clears_its_tail() -> None:
+    """Scrollback is unchanged by #170: still one committed block, at the end."""
+
+    r, commits, tails, clock = _thinking_renderer()
+    clock["t"] += 0.2
+    r.on_agent_event(_msg_update(ThinkingDeltaEvent(delta="reasoned", content_index=0)))
+    r.on_agent_event(_msg_update(ThinkingEndEvent(content="reasoned", content_index=0)))
+
+    assert [c.plain for c in commits] == ["reasoned"]
+    assert tails[-1] == "", "the live window must be cleared by its own commit"
+
+
+def test_a_late_duplicate_end_still_does_not_reprint() -> None:
+    """ADR-0115's reason for the latch survives the rework.
+
+    The adapter emits `thinking_end` at end-of-stream, after the answer already
+    streamed, so the same block arrives twice.
+    """
+
+    r, commits, _tails, clock = _thinking_renderer()
+    clock["t"] += 0.2
+    r.on_agent_event(_msg_update(ThinkingDeltaEvent(delta="once", content_index=0)))
+    r.on_agent_event(_msg_update(ThinkingEndEvent(content="once", content_index=0)))
+    r.on_agent_event(_msg_update(ThinkingEndEvent(content="once", content_index=0)))
+
+    assert [c.plain for c in commits] == ["once"]
+
+
+def test_live_renders_every_thinking_block() -> None:
+    """FAILS TODAY (#169): the second block of a message was dropped.
+
+    think → tool → think is ordinary. The old latch was a per-MESSAGE boolean,
+    so it could not tell "already printed THIS block" from "already printed ANY
+    block"; keying on `content_index` separates them.
+    """
+
+    r, commits, _tails, clock = _thinking_renderer()
+    clock["t"] += 0.2
+    r.on_agent_event(_msg_update(ThinkingDeltaEvent(delta="FIRST", content_index=0)))
+    r.on_agent_event(_msg_update(ThinkingEndEvent(content="FIRST", content_index=0)))
+    clock["t"] += 1.0
+    r.on_agent_event(_msg_update(ThinkingDeltaEvent(delta="SECOND", content_index=1)))
+    r.on_agent_event(_msg_update(ThinkingEndEvent(content="SECOND", content_index=1)))
+
+    assert [c.plain for c in commits] == ["FIRST", "SECOND"]
+
+
+def test_a_new_block_without_an_end_closes_the_previous_one() -> None:
+    """Not every adapter guarantees an end event before the next block opens."""
+
+    r, commits, _tails, clock = _thinking_renderer()
+    clock["t"] += 0.2
+    r.on_agent_event(_msg_update(ThinkingDeltaEvent(delta="FIRST", content_index=0)))
+    clock["t"] += 0.2
+    r.on_agent_event(_msg_update(ThinkingDeltaEvent(delta="SECOND", content_index=1)))
+
+    assert [c.plain for c in commits] == ["FIRST"]
+
+
+def test_hidden_reasoning_does_not_stream() -> None:
+    """"Show thinking" OFF must not stream it and then collapse it.
+
+    That would be the loudest possible way to honour the setting.
+    """
+
+    r, commits, tails, clock = _thinking_renderer(hide=True)
+    clock["t"] += 0.5
+    r.on_agent_event(_msg_update(ThinkingDeltaEvent(delta="secret", content_index=0)))
+
+    assert tails == []
+    r.on_agent_event(_msg_update(ThinkingEndEvent(content="secret", content_index=0)))
+    assert commits[0].plain == "💭 Thinking… (/expand 1)"
+    assert r.get_expanded(1) == "secret"  # still recoverable
+
+
+def test_reasoning_still_commits_before_the_answer_it_preceded() -> None:
+    """ADR-0115's ordering guarantee, re-asserted after the rework."""
+
+    r, commits, _tails, clock = _thinking_renderer()
+    clock["t"] += 0.2
+    r.on_agent_event(_msg_update(ThinkingDeltaEvent(delta="because", content_index=0)))
+    r.on_agent_event(_msg_update(TextDeltaEvent(delta="the answer")))
+    r.on_agent_event(_msg_update(TextEndEvent(content="the answer")))
+
+    joined = [c.plain for c in commits]
+    assert joined[0] == "because"
+    assert any("the answer" in x for x in joined[1:])
