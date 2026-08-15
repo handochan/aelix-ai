@@ -1,8 +1,13 @@
-# ADR-0219 — The prompt's tool list is derived, its paths share one escape, and the user picks the write target
+# ADR-0220 — The prompt's tool list is derived, its paths share one escape, and the user picks the write target
 
 - **Status**: Accepted (2026-08-14 — landed with the implementation)
 - **Issues**: #120, #167, #161, #162
 - **Supersedes nothing.** Closes the residual ADR-0218 §2 recorded.
+- **Renumbered 0219 → 0220.** Two concurrent sessions both took 0219; the other
+  (`0219-render-width-…`, landed at `71c354a`) keeps it and this one moved, because
+  moving the one I authored touches no other session's work. Commit messages from
+  `652c4ce` to `b7269ac` and the issue comments on #120 / #167 / #162 / #101 say
+  "ADR-0219" and mean this file.
 
 ---
 

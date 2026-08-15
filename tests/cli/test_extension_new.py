@@ -20,7 +20,7 @@ writing, that cancelling writes nothing, that it refuses to overwrite, that the
 scaffold it writes actually LOADS through the real extension loader, and that
 the project-local answer says the thing that makes the two targets different.
 They cannot pin that a model runs it — nothing in a test can. That is why the
-signpost still carries both absolute paths, and why the claim in ADR-0219 is
+signpost still carries both absolute paths, and why the claim in ADR-0220 is
 "the user has a first-class way to make the choice", not "the model now asks".
 """
 
