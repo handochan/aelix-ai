@@ -204,7 +204,7 @@ beta — it only becomes required for the first GA tag (`v0.1.0`).
    form of the tag `v0.1.0-beta.1` is `0.1.0b1`):
 
    - `pyproject.toml` (meta) — `version`, the `aelix-ai==` / `aelix-agent-core==`
-     / `aelix-coding-agent==` pins, **and** the `[tui]` / `[images]` extra pins.
+     / `aelix-coding-agent==` pins, **and** the `[tui]` extra pin.
    - `packages/aelix-ai/pyproject.toml` — `version`.
    - `packages/aelix-agent-core/pyproject.toml` — `version` + `aelix-ai==` pin.
    - `packages/aelix-coding-agent/pyproject.toml` — `version` + `aelix-ai==` /

@@ -16,7 +16,6 @@ Optional extras:
 
 ```bash
 pip install 'aelix-coding-agent[tui]'     # interactive terminal shell
-pip install 'aelix-coding-agent[images]'  # inline image rendering
 ```
 
 > **During the beta those commands install a placeholder, not Aelix.** The PyPI

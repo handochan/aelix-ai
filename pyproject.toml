@@ -35,11 +35,12 @@ dependencies = [
 
 [project.optional-dependencies]
 # `pip install 'aelix[tui]'` (or `uv tool install 'aelix[tui]'`) pulls the
-# interactive TUI deps through the coding-agent extra; `[images]` adds inline
-# image rendering on top. The bare `aelix` install provides the `aelix` CLI +
-# the non-interactive (print/json/rpc) modes.
+# interactive TUI deps through the coding-agent extra. The bare `aelix` install
+# provides the `aelix` CLI + the non-interactive (print/json/rpc) modes.
+#
+# There is no `[images]` extra (#163). One existed and installed a renderer that
+# no code path reached, so paying for it bought no behaviour.
 tui = ["aelix-coding-agent[tui]==0.1.0b1"]
-images = ["aelix-coding-agent[tui,images]==0.1.0b1"]
 
 [project.urls]
 Homepage = "https://github.com/handochan/aelix-ai"
@@ -184,14 +185,6 @@ dev = [
   # still install them via the gated `[tui]` extra.
   "prompt-toolkit>=3.0,<4",
   "rich>=13.7,<15",
-  # Sprint 6h₁₀c: aelix-coding-agent[images] extra libs, pulled into the dev
-  # env so pyright + pytest resolve them. End users install them via the
-  # gated `[images]` extra. term-image is NOT pulled in here: its latest
-  # release (0.7.2) hard-caps Pillow<11, conflicting with the coding-agent's
-  # Pillow>=11 core pin, so it cannot be co-resolved in this workspace. The
-  # images.py graphics tier guards the term-image import (placeholder when
-  # absent); rich-pixels (Pillow>=10) drives the always-available Unicode tier.
-  "rich-pixels>=3.0,<4",
   "pyte>=0.8.2",
 ]
 

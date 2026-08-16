@@ -65,8 +65,8 @@ curl -fsSL https://raw.githubusercontent.com/handochan/aelix-ai/main/install.sh 
 ```
 
 Pin a release with `AELIX_VERSION=v0.1.0-beta.1` (recommended during the beta) and pick
-extras with `AELIX_EXTRAS` — default `tui`; `tui,images` adds inline terminal image
-rendering; empty (`AELIX_EXTRAS=`) installs the headless CLI only (print / json / rpc).
+extras with `AELIX_EXTRAS` — default `tui`; empty (`AELIX_EXTRAS=`) installs the headless
+CLI only (print / json / rpc).
 
 **Upgrading / uninstalling.** Re-run the same `curl … | sh` line to upgrade: it resolves the
 newest release and re-runs the whole checksum-verified install (`uv tool install --force`
@@ -289,6 +289,16 @@ installed machine reads them with no network and no checkout:
 aelix docs                          # list the bundled guides
 aelix docs project-trust            # print one
 aelix docs --search register_tool   # substring search across all of them
+```
+
+When the question is about *this directory* rather than about aelix in general —
+is it trusted, which of your extensions load here, did one of them fail to
+import — `aelix status` answers without starting a session:
+
+```bash
+aelix status                        # version, project trust, extensions
+aelix status --json                 # the same, for a script
+aelix status --no-extensions        # skip discovery; imports no extension code
 ```
 
 [Homepage →](https://handochan.github.io/aelix-ai/) ·

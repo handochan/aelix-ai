@@ -1,4 +1,4 @@
-# 0223. Line-number citations are pinned by their text, and could not be repaired mechanically
+# 0224. Line-number citations are pinned by their text, and could not be repaired mechanically
 
 Status: Accepted (2026-08-16).
 Date: 2026-08-16
@@ -8,12 +8,16 @@ as an open, "real, separable job" — this is that job, and the number was wrong
 of 25), ADR-0197 (the anchor convention `aelix_status/snapshot.py` states, amended in §6).
 GitHub: #171 (the measurement), #101, #120.
 
-**Renumbered 0221 → 0223.** A concurrent session landed
-`0221-reasoning-streams-to-a-live-window-…` on main while this was being written, and 0222
-is `aelix status` from the same batch as this one. Same convention as ADR-0220's own
-renumber: the one that has not shipped moves, because moving it touches nobody else's work.
-That is the second such collision in three days — a fact about ADR numbering, not about
-either session.
+**Renumbered 0221 → 0223 → 0224.** Twice, in one afternoon. A concurrent session landed
+`0221-reasoning-streams-to-a-live-window-…` while this was being written; 0222 went to
+`aelix status` from the same batch as this one; and then that same concurrent session moved
+its own ADR from 0222 to **0223** — the number this file had already taken — for the same
+reason. Convention as in ADR-0220's own renumber: whichever has not shipped moves, because
+moving it touches nobody else's work.
+
+Three collisions in three days is not bad luck. The number is claimed by writing a filename
+and is not reserved anywhere, so any two sessions writing an ADR the same day collide by
+construction. Worth fixing at the convention level; not fixed here.
 
 ## 1. The measurement that started it
 

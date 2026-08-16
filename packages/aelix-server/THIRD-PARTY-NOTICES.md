@@ -81,5 +81,4 @@ example a frozen binary, a container image, or vendored `site-packages`), you
 must additionally comply with those packages' licenses. In the current locked
 set this notably includes `certifi`, `pathspec`, and parts of `tqdm` (Mozilla
 Public License 2.0 — file-level copyleft: include their license texts and keep
-their source availability) and `rich-pixels` (MIT; publishes no license
-metadata on PyPI but ships its MIT license text in the wheel).
+their source availability).

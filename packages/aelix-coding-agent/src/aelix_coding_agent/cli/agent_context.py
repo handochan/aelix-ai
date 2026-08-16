@@ -414,10 +414,15 @@ def _docs_signpost(active_tool_names: set[str]) -> str:
     both are closed by that one function, which is the point — fixing one site
     is how the two rules diverged in the first place.
 
-    BYTE COST. 632 chars emitted, 555 of them prose (the other 77 are the
-    install-dependent directory path, which is why the test budgets the prose
-    and not the block). That takes ``build_system_prompt("/some/project")`` from
-    3362 to 3994 on this checkout, +19%. It is paid on EVERY turn, which is why
+    BYTE COST. 555 chars of prose plus the install-dependent directory path —
+    643 emitted on this checkout, where that path is 88 — which is why the test
+    budgets the PROSE and not the block. The percentage was quoted here as if it
+    were a property of the block; it is not. ``tools`` has been REQUIRED since
+    #120, so what this is a percentage *of* depends on the active set. With the
+    seven built-ins and ``cwd = /some/project`` it takes the prompt from 4074 to
+    4717 on this checkout, +15.8%. Both endpoints move with the install path
+    (:func:`_extension_signpost` emits two more absolute paths), so 555 is the
+    only environment-independent number here. It is paid on EVERY turn, which is why
     the scope clause is the first thing in it: unconditional "here is the
     documentation" biases the model toward reading docs when the user asked for
     ordinary work. pi scopes its block for the same reason.
@@ -671,8 +676,10 @@ def _extension_signpost(cwd_abs: str, active_tool_names: set[str]) -> str:
     # #121 found for the cwd. :func:`_package_pointer` now applies
     # :func:`_safe_prompt_path` to its own return value, so the guard cannot be
     # forgotten by a third pointer added later.
-    # The SECOND gate (#120 review): both bullets below are "read this file"
-    # instructions, so they follow ``read`` and not ``write``. A session with
+    # The SECOND gate (#120 review): both bullets below reach a file, so they
+    # follow ``read`` and not ``write``. The api bullet ALSO commands a search,
+    # which ``read`` does not buy — its WORDING carries its own searcher gate
+    # below, rather than the bullet being dropped. A session with
     # write but no read still gets the write targets above — the honest subset
     # rather than all-or-nothing.
     can_read = "read" in active_tool_names
@@ -734,10 +741,25 @@ def _extension_signpost(cwd_abs: str, active_tool_names: set[str]) -> str:
         # the instruction closes: grep reports ``1655:    def register_tool(...)``
         # and the model reads at 1655. Aelix's own grep tool always emits
         # ``path:line:`` regardless, so ``-n`` only fixes the bash surface.
-        pointers.append(
-            "  - full API, too big to read whole "
-            f"(grep -nE 'def (register_|on\\()' it, then read at the line it reports): {api}\n"
+        # ...AND THE COMMAND FOLLOWS A SEARCHER, not ``read``. Both surfaces the
+        # paragraph above weighs — real ``grep -E`` through the bash tool, and
+        # the grep TOOL's ``pattern`` argument — need a tool the enclosing
+        # ``can_read`` gate does not buy, so ``--tools read,write`` was handed a
+        # command it could not run.
+        #
+        # The fallback REWORDS rather than drops. api.py is 84KB against read's
+        # 50KB cap, so a session that can read but not search would otherwise
+        # lose the API surface entirely — a worse outcome than a slower route.
+        # ``read``'s own truncation notice already reports the next ``offset``
+        # (``tools/read.py:252-259``), so windowing is a real instruction and
+        # not a suggestion to guess.
+        how = (
+            "grep -nE 'def (register_|on\\()' it, then read at the line it reports"
+            if {"grep", "bash"} & set(active_tool_names)
+            else "read it in windows (the truncation notice gives the next "
+            "`offset`) until you reach the `def register_` / `def on(` definitions"
         )
+        pointers.append(f"  - full API, too big to read whole ({how}): {api}\n")
     if pointers:
         lines.append("- Do not recall or import the API — read the shipped source:\n")
         lines.extend(pointers)
@@ -812,10 +834,18 @@ def _extension_signpost(cwd_abs: str, active_tool_names: set[str]) -> str:
     # Naming the restart fallback costs six words and turns a silent no-op into
     # a recoverable one; the model would otherwise report success on a file the
     # session never picked up.
+    # ONE ACTION, ON EVERY SURFACE (#120 review). The earlier wording branched —
+    # "in an interactive session ask the user to run /reload; otherwise report
+    # the path" — and the model has no reliable way to evaluate that condition
+    # about itself: nothing in the prompt says which surface it is on, so
+    # "if there is no one to ask" had no referent. The fallback is now the
+    # unconditional instruction and ``/reload``'s availability is stated as a
+    # fact about the COMMAND rather than as a branch about the reader.
     lines.append(
-        "- You cannot load it yourself: in an interactive session ask the user to "
-        "run /reload (or restart aelix if /reload does not pick it up); otherwise "
-        "report the absolute path you wrote and stop.\n"
+        "- You cannot load it yourself: report the absolute path you wrote and "
+        "stop. Loading it needs a /reload at an interactive aelix prompt, or a "
+        "restart of aelix if /reload does not pick it up. Say so; do not wait "
+        "for it.\n"
     )
     return "".join(lines)
 
@@ -861,7 +891,12 @@ def _normalize_prompt_text(value: str) -> str:
 
     if not value:
         return ""
-    flattened = _PROMPT_TEXT_WHITESPACE.sub(" ", value).translate(_CONTROL_KILL).strip()
+    flattened = (
+        _PROMPT_TEXT_WHITESPACE.sub(" ", value)
+        .translate(_CONTROL_KILL)
+        .replace("<", "&lt;")
+        .strip()
+    )
     if len(flattened) <= _MAX_PROMPT_TEXT_CHARS:
         return flattened
     return flattened[: _MAX_PROMPT_TEXT_CHARS - 1].rstrip() + "…"
@@ -900,10 +935,13 @@ def _tool_section(tools: Sequence[PromptTool]) -> tuple[str, list[str]]:
        it omitted ``agent`` and ``aelix_status``, both of which ship and both
        of which register AFTER the prompt is first built.
     2. **A tool appears only if it carries a ``prompt_snippet``** — pi's
-       ``visibleTools = tools.filter(name => !!toolSnippets?.[name])``, whose
-       own doc comment reads "Custom tools are omitted from that section when
-       this is not provided". So an MCP server's forty tools do not silently
-       become forty prompt lines.
+       ``visibleTools = tools.filter(name => !!toolSnippets?.[name])``
+       (``core/system-prompt.ts:82``). The quoted sentence "Custom tools are
+       omitted from that section when this is not provided" is NOT a comment on
+       that filter; it is the contract stated on the field itself,
+       ``ToolDefinition.promptSnippet`` (``extensions/types.ts:456``). Either
+       way the effect is the one that matters: an MCP server's forty tools do
+       not silently become forty prompt lines.
     3. **The empty case is ``(none)``**, and the sentence below makes the list
        non-exhaustive by construction, which is what closes direction (2)
        above without needing to know the future: a tool registered later is

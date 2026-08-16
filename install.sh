@@ -18,8 +18,8 @@
 #                  resolve the newest release from the GitHub API. Pinning is
 #                  the recommended path during the beta.
 #   AELIX_EXTRAS   Extras to install, consumed as aelix[$AELIX_EXTRAS].
-#                  Default `tui` (interactive terminal UI). Use `tui,images`
-#                  for inline image rendering, or empty for the bare CLI.
+#                  Default `tui` (interactive terminal UI), or empty for the
+#                  bare CLI.
 #   AELIX_REPO     GitHub owner/repo. Default `handochan/aelix-ai`.
 #   UV_VERSION     Optional pin for the uv bootstrap (Astral installer).
 #   GITHUB_TOKEN   Optional; sent as a Bearer token on GitHub API calls to

@@ -66,8 +66,8 @@ curl -fsSL https://raw.githubusercontent.com/handochan/aelix-ai/main/install.sh 
 ```
 
 `AELIX_VERSION=v0.1.0-beta.1`로 릴리즈를 고정하고(베타 기간 권장), `AELIX_EXTRAS`로
-extras를 선택하세요 — 기본값은 `tui`, `tui,images`는 터미널 인라인 이미지 렌더링을
-추가하고, 비워두면(`AELIX_EXTRAS=`) TUI 없는 헤드리스 CLI(print/json/rpc)만 설치됩니다.
+extras를 선택하세요 — 기본값은 `tui`이고, 비워두면(`AELIX_EXTRAS=`) TUI 없는 헤드리스
+CLI(print/json/rpc)만 설치됩니다.
 
 **업그레이드 / 제거.** 같은 `curl … | sh` 한 줄을 다시 실행하면 업그레이드됩니다 — 최신
 릴리즈를 찾아 체크섬 검증 설치를 처음부터 다시 수행합니다(`uv tool install --force`라
@@ -282,6 +282,16 @@ spawn 동의 대화상자를 그릴 터미널이 없으므로 스스로 동의�
 aelix docs                          # 번들된 가이드 목록
 aelix docs project-trust            # 하나 출력
 aelix docs --search register_tool   # 전체 가이드 부분 문자열 검색
+```
+
+aelix 일반이 아니라 *이 디렉터리*가 궁금할 때 — 신뢰됐는지, 어떤 확장이 여기서
+로드되는지, 그중 임포트에 실패한 것이 있는지 — `aelix status`가 세션을 시작하지
+않고 답합니다.
+
+```bash
+aelix status                        # 버전 · 프로젝트 신뢰 · 확장
+aelix status --json                 # 같은 내용을 스크립트용 JSON으로
+aelix status --no-extensions        # 디스커버리 생략 (확장 코드를 임포트하지 않음)
 ```
 
 [홈페이지 →](https://handochan.github.io/aelix-ai/) ·

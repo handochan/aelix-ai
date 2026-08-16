@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import aelix_coding_agent.tui.render as render_module
+import pytest
 from aelix_agent_core.types import (
     AgentEndEvent,
     MessageEndEvent,
@@ -1441,13 +1443,15 @@ def test_replay_honours_hide_thinking_like_the_live_path() -> None:
     assert r.get_expanded(1) == "secret chain"  # still recoverable, as when live
 
 
-def test_replay_keeps_both_thinking_blocks_where_live_shows_one() -> None:
-    """A deliberate NON-match, pinned so it is not "fixed" into a content loss.
+def test_replay_keeps_every_thinking_block() -> None:
+    """Both blocks, and the live path now agrees (#170).
 
-    The live path renders only the FIRST thinking block of a message — a
-    ``_thinking_flushed`` latch cleared by ``message_start``, which replay never
-    emits. Here the LIVE side is the one dropping content, so replay is left
-    showing both rather than matched down to it.
+    This started as a pinned NON-match: the live renderer dropped the second
+    thinking block of a message (a boolean latch that could not tell "already
+    printed THIS block" from "already printed ANY block") while replay showed
+    both. Rather than match replay down to that, #170 keyed the latch on
+    ``content_index`` and fixed the live side. See
+    ``test_live_renders_every_thinking_block`` for the other half.
     """
 
     from aelix_ai.messages import AssistantMessage, ThinkingContent
@@ -1462,3 +1466,405 @@ def test_replay_keeps_both_thinking_blocks_where_live_shows_one() -> None:
         ]
     )
     assert [c.plain for c in commits] == ["A", "B"]
+
+
+# === issue #170: reasoning streams instead of landing all at once ===========
+
+
+def _thinking_renderer(hide: bool = False) -> tuple[Any, list[Any], list[str], dict[str, float]]:
+    clock = {"t": 0.0}
+    commits: list[Any] = []
+    tails: list[str] = []
+    r = EventRenderer(
+        commit=commits.append,
+        set_tail=tails.append,
+        width=60,
+        time_fn=lambda: clock["t"],
+    )
+    r.hide_thinking = hide
+    r.on_agent_event(MessageStartEvent(message=AssistantMessage()))
+    return r, commits, tails, clock
+
+
+def test_reasoning_reaches_the_tail_while_it_streams() -> None:
+    """FAILS TODAY: `thinking_delta` only accumulated — nothing was shown.
+
+    Every shipping adapter emits these in real time, so on a slow reasoning
+    model the user watched a spinner with nothing behind it until the block
+    closed.
+    """
+
+    r, commits, tails, clock = _thinking_renderer()
+    for chunk in ("Let me think ", "about the auth ", "flow carefully."):
+        clock["t"] += 0.2
+        r.on_agent_event(_msg_update(ThinkingDeltaEvent(delta=chunk, content_index=0)))
+
+    assert len(tails) == 3, "reasoning did not stream"
+    assert "flow carefully." in tails[-1]
+    assert commits == [], "nothing may be committed until the block closes"
+
+
+def test_the_live_window_shows_reasoning_as_plain_dim_italic() -> None:
+    """Reasoning is prose, not markdown, and the live form must match the
+    committed one — which is `Text(text, style="dim italic")`. Consolidating the
+    two line-renderers onto `markdown_lines` would restyle it here and nowhere
+    else, so the same reasoning would look like two different things."""
+
+    r, _commits, tails, clock = _thinking_renderer()
+    clock["t"] += 0.2
+    r.on_agent_event(
+        _msg_update(ThinkingDeltaEvent(delta="**not bold** and `not code`", content_index=0))
+    )
+
+    assert tails[-1].startswith("\x1b[2;3m"), repr(tails[-1])
+    assert "**not bold**" in tails[-1]
+    assert "`not code`" in tails[-1]
+
+
+def test_the_first_frame_of_a_block_is_never_throttled() -> None:
+    """The "reasoning has started" frame is the one the throttle must not eat.
+
+    Split out of the rate test below, which used to guard this by accident: it
+    asserted ``len(tails) == 1`` with the clock parked at 0.0, so it happened to
+    catch the ``_thinking_tail_when = 0.0`` initialisation bug while saying
+    nothing about it. Named, it survives a tidy-up of that test.
+    """
+
+    r, _commits, tails, _clock = _thinking_renderer()  # clock parked at 0.0
+    r.on_agent_event(_msg_update(ThinkingDeltaEvent(delta="thinking…", content_index=0)))
+    assert len(tails) == 1
+
+
+def test_the_tail_repaints_at_the_documented_rate() -> None:
+    """A delta can be a few characters; every push repaints a chrome widget.
+
+    Pins the RATE, not merely that some throttle exists. Deltas arrive every
+    20ms for 400ms; at the 100ms floor that is the first frame plus one per
+    100ms elapsed = 4. The literal is deliberate: an assertion derived from
+    ``_THINKING_TAIL_MIN_DELAY`` would follow the constant anywhere someone
+    moved it, and "someone tunes the floor to 10ms for snappiness" is exactly
+    the chrome-thrash regression the floor exists to prevent.
+    """
+
+    r, _commits, tails, clock = _thinking_renderer()
+    for _ in range(20):
+        clock["t"] += 0.02
+        r.on_agent_event(_msg_update(ThinkingDeltaEvent(delta="x", content_index=0)))
+    assert len(tails) == 4, f"{len(tails)} repaints over 0.4s — the floor moved"
+
+
+def test_a_closed_block_commits_once_and_clears_its_tail() -> None:
+    """Scrollback is unchanged by #170: still one committed block, at the end."""
+
+    r, commits, tails, clock = _thinking_renderer()
+    clock["t"] += 0.2
+    r.on_agent_event(_msg_update(ThinkingDeltaEvent(delta="reasoned", content_index=0)))
+    r.on_agent_event(_msg_update(ThinkingEndEvent(content="reasoned", content_index=0)))
+
+    assert [c.plain for c in commits] == ["reasoned"]
+    assert tails[-1] == "", "the live window must be cleared by its own commit"
+
+
+def test_a_late_duplicate_end_still_does_not_reprint() -> None:
+    """ADR-0115's reason for the latch survives the rework.
+
+    The adapter emits `thinking_end` at end-of-stream, after the answer already
+    streamed, so the same block arrives twice.
+    """
+
+    r, commits, _tails, clock = _thinking_renderer()
+    clock["t"] += 0.2
+    r.on_agent_event(_msg_update(ThinkingDeltaEvent(delta="once", content_index=0)))
+    r.on_agent_event(_msg_update(ThinkingEndEvent(content="once", content_index=0)))
+    r.on_agent_event(_msg_update(ThinkingEndEvent(content="once", content_index=0)))
+
+    assert [c.plain for c in commits] == ["once"]
+
+
+def test_live_renders_every_thinking_block() -> None:
+    """FAILS TODAY (#169): the second block of a message was dropped.
+
+    think → tool → think is ordinary. The old latch was a per-MESSAGE boolean,
+    so it could not tell "already printed THIS block" from "already printed ANY
+    block"; keying on `content_index` separates them.
+    """
+
+    r, commits, _tails, clock = _thinking_renderer()
+    clock["t"] += 0.2
+    r.on_agent_event(_msg_update(ThinkingDeltaEvent(delta="FIRST", content_index=0)))
+    r.on_agent_event(_msg_update(ThinkingEndEvent(content="FIRST", content_index=0)))
+    clock["t"] += 1.0
+    r.on_agent_event(_msg_update(ThinkingDeltaEvent(delta="SECOND", content_index=1)))
+    r.on_agent_event(_msg_update(ThinkingEndEvent(content="SECOND", content_index=1)))
+
+    assert [c.plain for c in commits] == ["FIRST", "SECOND"]
+
+
+def test_a_new_block_without_an_end_closes_the_previous_one() -> None:
+    """Not every adapter guarantees an end event before the next block opens."""
+
+    r, commits, _tails, clock = _thinking_renderer()
+    clock["t"] += 0.2
+    r.on_agent_event(_msg_update(ThinkingDeltaEvent(delta="FIRST", content_index=0)))
+    clock["t"] += 0.2
+    r.on_agent_event(_msg_update(ThinkingDeltaEvent(delta="SECOND", content_index=1)))
+
+    assert [c.plain for c in commits] == ["FIRST"]
+
+
+def test_hidden_reasoning_does_not_stream() -> None:
+    """"Show thinking" OFF must not stream it and then collapse it.
+
+    That would be the loudest possible way to honour the setting.
+    """
+
+    r, commits, tails, clock = _thinking_renderer(hide=True)
+    clock["t"] += 0.5
+    r.on_agent_event(_msg_update(ThinkingDeltaEvent(delta="secret", content_index=0)))
+
+    assert tails == []
+    r.on_agent_event(_msg_update(ThinkingEndEvent(content="secret", content_index=0)))
+    assert commits[0].plain == "💭 Thinking… (/expand 1)"
+    assert r.get_expanded(1) == "secret"  # still recoverable
+
+
+def test_reasoning_still_commits_before_the_answer_it_preceded() -> None:
+    """ADR-0115's ordering guarantee, re-asserted after the rework."""
+
+    r, commits, _tails, clock = _thinking_renderer()
+    clock["t"] += 0.2
+    r.on_agent_event(_msg_update(ThinkingDeltaEvent(delta="because", content_index=0)))
+    r.on_agent_event(_msg_update(TextDeltaEvent(delta="the answer")))
+    r.on_agent_event(_msg_update(TextEndEvent(content="the answer")))
+
+    joined = [c.plain for c in commits]
+    assert joined[0] == "because"
+    assert any("the answer" in x for x in joined[1:])
+
+
+# === #170 review round: the tail is acquired — these are its releases =======
+#
+# A live window is a RESOURCE. `_push_thinking_tail` takes it; every path that
+# ends a turn has to give it back. The review found none of them did: only a
+# `thinking_end` released it, so an abort or a provider error left the last
+# frame of reasoning welded above the prompt for the rest of the session.
+
+
+def test_an_aborted_turn_takes_the_reasoning_window_down() -> None:
+    """Esc mid-reasoning. Abort emits ONLY turn_end — no message_end, and the
+    cancelled adapter never sends thinking_end, so this branch is the only
+    chance to release the window."""
+
+    r, commits, tails, clock = _thinking_renderer()
+    clock["t"] += 0.2
+    r.on_agent_event(_msg_update(ThinkingDeltaEvent(delta="HALF A THOUGHT", content_index=0)))
+    assert tails[-1] != "", "precondition: reasoning is on screen"
+
+    r.on_agent_event(
+        TurnEndEvent(message=AssistantMessage(stop_reason="aborted"), tool_results=[])
+    )
+
+    assert tails[-1] == ""
+    plains = [c.plain for c in commits]
+    # The partial reasoning lands in scrollback rather than blinking out — the
+    # same contract `_finalize_text` already gives a partial ANSWER one line
+    # earlier in this branch.
+    assert plains == ["HALF A THOUGHT", "✖ Operation aborted"]
+
+
+def test_a_failed_message_takes_the_reasoning_window_down() -> None:
+    """Provider error mid-reasoning: the dead attempt must not stay painted next
+    to the retry countdown, which lives under a different widget key."""
+
+    r, commits, tails, clock = _thinking_renderer()
+    clock["t"] += 0.2
+    r.on_agent_event(_msg_update(ThinkingDeltaEvent(delta="half a thought", content_index=0)))
+    r.on_agent_event(
+        MessageEndEvent(
+            message=AssistantMessage(stop_reason="error", error_message="Connection error.")
+        )
+    )
+
+    assert tails[-1] == ""
+    assert "✖ Connection error." in [c.plain for c in commits]
+
+
+def test_a_stream_error_takes_the_reasoning_window_down() -> None:
+    r, commits, tails, clock = _thinking_renderer()
+    clock["t"] += 0.2
+    r.on_agent_event(_msg_update(ThinkingDeltaEvent(delta="half a thought", content_index=0)))
+    r.on_agent_event(_msg_update(AssistantErrorEvent(reason="error", error_message="boom")))
+
+    assert tails[-1] == ""
+    assert "✖ boom" in [c.plain for c in commits]
+
+
+def test_finalize_takes_the_reasoning_window_down() -> None:
+    """`finalize()` is the shell's catch-all close-out; it closed only text."""
+
+    r, _commits, tails, clock = _thinking_renderer()
+    clock["t"] += 0.2
+    r.on_agent_event(_msg_update(ThinkingDeltaEvent(delta="half a thought", content_index=0)))
+    r.finalize()
+
+    assert tails[-1] == ""
+
+
+def test_hiding_reasoning_mid_block_takes_the_window_down_at_once() -> None:
+    """Ctrl+T is most naturally pressed WHILE reasoning scrolls by.
+
+    The release used to be gated on the CURRENT `hide_thinking` value, so the
+    one tail written under the old value was the one never cleared: scrollback
+    got the tidy collapsed placeholder while the reasoning the user had just
+    asked to hide stayed on screen.
+    """
+
+    r, commits, tails, clock = _thinking_renderer()
+    clock["t"] += 0.2
+    r.on_agent_event(
+        _msg_update(ThinkingDeltaEvent(delta="SECRET CHAIN OF THOUGHT", content_index=0))
+    )
+    assert "SECRET CHAIN OF THOUGHT" in tails[-1], "precondition: it is on screen"
+
+    r.hide_thinking = True
+
+    assert tails[-1] == "", "the window must come down when asked, not at block close"
+    clock["t"] += 0.2
+    r.on_agent_event(_msg_update(ThinkingDeltaEvent(delta=" and more", content_index=0)))
+    r.on_agent_event(
+        _msg_update(ThinkingEndEvent(content="SECRET CHAIN OF THOUGHT and more", content_index=0))
+    )
+    assert tails[-1] == ""
+    assert [c.plain for c in commits] == ["💭 Thinking… (/expand 1)"]
+
+
+def test_showing_reasoning_again_does_not_disturb_the_window() -> None:
+    """Only the ON transition clears; turning the setting back OFF must not."""
+
+    r, _commits, tails, clock = _thinking_renderer()
+    clock["t"] += 0.2
+    r.on_agent_event(_msg_update(ThinkingDeltaEvent(delta="reasoning", content_index=0)))
+    r.hide_thinking = True
+    writes = len(tails)
+    r.hide_thinking = False
+    r.hide_thinking = False
+    assert len(tails) == writes
+
+
+def test_the_answer_window_is_not_clobbered_by_late_reasoning() -> None:
+    """Both renderers write the same last-writer-wins sink.
+
+    `openai-completions` allocates one thinking index per message and replays
+    reasoning that resumes after answer text on it, so without an ownership
+    check the live window flips between the answer being typed and a reasoning
+    fragment on every reasoning delta.
+    """
+
+    r, commits, tails, clock = _thinking_renderer()
+    clock["t"] += 0.2
+    r.on_agent_event(_msg_update(ThinkingDeltaEvent(delta="A-first-reasoning", content_index=0)))
+    clock["t"] += 0.2
+    r.on_agent_event(_msg_update(TextDeltaEvent(delta="the answer so far ...")))
+    answer_window = tails[-1]
+    assert "the answer so far" in answer_window
+
+    clock["t"] += 0.2
+    r.on_agent_event(_msg_update(ThinkingDeltaEvent(delta="B-second-reasoning", content_index=0)))
+
+    assert tails[-1] == answer_window, "reasoning overwrote the answer's live window"
+
+
+def test_a_reopened_thinking_index_still_commits() -> None:
+    """The per-block latch must not permanently retire an index the wire reuses.
+
+    Continuation of the case above: the block was flushed when the answer
+    started, so its index was already marked done. Reasoning that then resumes
+    on that same index was dropped on the floor.
+    """
+
+    r, commits, tails, clock = _thinking_renderer()
+    clock["t"] += 0.2
+    r.on_agent_event(_msg_update(ThinkingDeltaEvent(delta="A-first-reasoning", content_index=0)))
+    clock["t"] += 0.2
+    r.on_agent_event(_msg_update(TextDeltaEvent(delta="the answer so far ...")))
+    clock["t"] += 0.2
+    r.on_agent_event(_msg_update(ThinkingDeltaEvent(delta="B-second-reasoning", content_index=0)))
+    r.on_agent_event(_msg_update(ThinkingEndEvent(content="B-second-reasoning", content_index=0)))
+
+    plains = [c.plain for c in commits]
+    assert "B-second-reasoning" in plains, "the reopened block never reached scrollback"
+    assert plains.count("A-first-reasoning") == 1, "the first block printed twice"
+
+
+def test_a_second_message_renders_its_own_thinking() -> None:
+    """`content_index` restarts at 0 in every message. Nothing else in this file
+    crosses a message boundary — every other case lives inside one
+    `_thinking_renderer()`, which fires exactly one message_start."""
+
+    r, commits, _tails, clock = _thinking_renderer()
+    for turn in ("TURN1", "TURN2"):
+        if turn == "TURN2":
+            r.on_agent_event(MessageStartEvent(message=AssistantMessage()))
+        clock["t"] += 0.2
+        r.on_agent_event(_msg_update(ThinkingDeltaEvent(delta=turn, content_index=0)))
+        r.on_agent_event(_msg_update(ThinkingEndEvent(content=turn, content_index=0)))
+
+    assert [c.plain for c in commits] == ["TURN1", "TURN2"]
+
+
+def test_a_second_message_renders_thinking_delivered_without_deltas() -> None:
+    """The same crossing for a block that arrives as `thinking_end` ALONE.
+
+    This is the shape that pins the per-message reset of the done-set, and the
+    only one that does: with deltas, the delta arm un-retires a reused index on
+    its own, so the reset can be deleted and the test above stays green. Delete
+    it here and index 0 is retired for the whole session — the first turn shows
+    its reasoning and every turn after it shows none, a worse #169 than the one
+    the streaming work fixed.
+    """
+
+    r, commits, _tails, _clock = _thinking_renderer()
+    for turn in ("TURN1", "TURN2"):
+        if turn == "TURN2":
+            r.on_agent_event(MessageStartEvent(message=AssistantMessage()))
+        r.on_agent_event(_msg_update(ThinkingEndEvent(content=turn, content_index=0)))
+
+    assert [c.plain for c in commits] == ["TURN1", "TURN2"]
+
+
+def test_the_live_window_renders_a_bounded_slice_not_the_whole_block(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Rendering the whole accumulator to keep 12 lines is quadratic.
+
+    Cost per frame grows with the block while frames keep arriving at the
+    throttle floor, and the harness calls this subscriber synchronously on the
+    prompt-toolkit loop — so a long chain of thought spent most of the turn
+    inside `plain_lines`. Measured on the pre-fix build: 226ms per frame at
+    150KB. Asserted here as a bound on the INPUT rather than a wall-clock
+    number, so it stays deterministic on a loaded CI box.
+    """
+
+    seen: list[int] = []
+    real = render_module.plain_lines
+
+    def spy(text: str, width: int, *, style: str = "") -> list[str]:
+        seen.append(len(text))
+        return real(text, width, style=style)
+
+    monkeypatch.setattr(render_module, "plain_lines", spy)
+
+    para = (
+        "I need to check whether the auth flow refreshes the token before the "
+        "request or after the 401 comes back.\n"
+    )
+    block = (para * 2000)[: 150 * 1024]
+    r, _commits, tails, clock = _thinking_renderer()  # width 60
+    for half in (block[: len(block) // 2], block[len(block) // 2 :]):
+        clock["t"] += 0.2
+        r.on_agent_event(_msg_update(ThinkingDeltaEvent(delta=half, content_index=0)))
+
+    assert seen, "the tail never rendered"
+    assert max(seen) <= 60 * 14 * 2, f"whole accumulator re-rendered ({max(seen)} chars)"
+    # …and the bound costs nothing visible: the window still shows the true tail.
+    assert tails[-1] == "".join(real(block, 60, style="dim italic")[-12:])
