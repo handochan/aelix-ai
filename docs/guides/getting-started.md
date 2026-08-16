@@ -30,7 +30,7 @@ Two environment variables configure it:
 - `AELIX_EXTRAS` — which extras to install. Default `tui`.
 
 ```bash
-AELIX_VERSION=v0.1.0-beta.1 AELIX_EXTRAS=tui,images \
+AELIX_VERSION=v0.1.0-beta.1 AELIX_EXTRAS=tui \
   sh -c "$(curl -fsSL https://raw.githubusercontent.com/handochan/aelix-ai/main/install.sh)"
 ```
 
@@ -39,7 +39,8 @@ Extras:
 - `tui` — the interactive terminal UI (prompt-toolkit + Rich). Needed for the
   default interactive mode; the bare install (`AELIX_EXTRAS=`) still supports
   `--print`, `--mode json`, and `--mode rpc`.
-- `images` — inline image rendering in the terminal.
+
+`tui` is the only extra.
 
 > **PyPI carries a placeholder until GA — use the installer above.** Do not
 > reach for `pip install aelix`, `pipx install aelix` or
