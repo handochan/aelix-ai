@@ -413,6 +413,61 @@ def _porcelain_path(line: str) -> str:
     return stripped.strip().strip('"')
 
 
+def _code_only(source: str) -> str | None:
+    """The file's CODE, with every comment and docstring removed.
+
+    ``ast.parse`` drops comments outright; docstrings survive as string
+    expressions, so they are stripped explicitly. ``ast.dump`` of the result is
+    a normal form — two sources with the same code and different prose produce
+    the same string. ``None`` when the source does not parse, which the caller
+    treats as "not prose-only": a file that stopped parsing is worth failing on
+    whatever else is true about it.
+    """
+
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return None
+    def _is_prose(stmt: ast.stmt) -> bool:
+        # EVERY bare string statement, not just the first. This codebase
+        # documents dataclass fields PEP-258 style — a string literal on the
+        # line after the assignment — and those are not first in any body, so a
+        # docstring-only rule that looked at ``body[0]`` missed them and called
+        # a comment repair a band violation. A bare string statement is
+        # evaluated and discarded; it can never be behaviour.
+        return (
+            isinstance(stmt, ast.Expr)
+            and isinstance(stmt.value, ast.Constant)
+            and isinstance(stmt.value.value, str)
+        )
+
+    for node in ast.walk(tree):
+        for field in ("body", "orelse", "finalbody"):
+            body = getattr(node, field, None)
+            if not isinstance(body, list) or not body:
+                continue
+            kept = [stmt for stmt in body if not _is_prose(stmt)]
+            if len(kept) != len(body):
+                body[:] = kept or [ast.Pass()]
+    return ast.dump(tree)
+
+
+def _is_prose_only(path: str, base: str) -> bool:
+    """Did this file change in its comments and docstrings and nowhere else?"""
+
+    if not path.endswith(".py"):
+        return False
+    before = _git("show", f"{base}:{path}")
+    if before.returncode != 0:
+        return False
+    try:
+        after = (REPO_ROOT / path).read_text(encoding="utf-8")
+    except OSError:
+        return False
+    old = _code_only(before.stdout)
+    return old is not None and old == _code_only(after)
+
+
 def test_kernel_untouched_vs_merge_base() -> None:
     """No kernel file changed on this branch except those an ADR authorises.
 
@@ -428,6 +483,16 @@ def test_kernel_untouched_vs_merge_base() -> None:
     kernel itself claims in a comment to implement. The band rule isolates
     delegation POLICY from the kernel; it does not make the kernel unmaintainable.
     So the freeze is now by exception, and each exception names its ADR above.
+
+    AND A CHANGE THAT ALTERS NO CODE IS NOT A KERNEL CHANGE. The check was byte
+    based, so repairing a stale ``file.py:NNN`` in a kernel comment counted as a
+    band violation while a real behavioural change inside an already-allowlisted
+    file counted as nothing. Prose-only edits are now compared by AST with
+    comments and docstrings stripped — which makes the gate STRICTER where it
+    matters, not looser: the allowlist no longer has to absorb documentation
+    maintenance, so every name on it still means "an ADR bought a behavioural
+    change here". ADR-0224 (#171) is what walked into this: 5 of the 551
+    re-derived citations live in kernel comments.
     """
 
     base = _git("merge-base", "origin/main", "HEAD")
@@ -448,11 +513,14 @@ def test_kernel_untouched_vs_merge_base() -> None:
     assert worktree.returncode == 0, worktree.stderr
     changed.extend(line for line in worktree.stdout.splitlines() if line.strip())
 
+    base_sha = base.stdout.strip()
     unauthorised = sorted(
         {
             path
             for path in (_porcelain_path(line) for line in changed)
-            if path and path not in _KERNEL_CHANGE_ALLOWLIST
+            if path
+            and path not in _KERNEL_CHANGE_ALLOWLIST
+            and not _is_prose_only(path, base_sha)
         }
     )
     assert unauthorised == [], (

@@ -1,21 +1,22 @@
 """Drift guard: every ``<file>.py:NNN`` citation still points at what it cited.
 
 WHY THERE IS A GATE FOR THIS AT ALL. This repository explains itself by citing
-its own source with line numbers, and it does so heavily — 794 gated citations
+its own source with line numbers, and it does so heavily — 798 gated citations
 when this file was written. Line numbers rot the instant anything above them
-moves, silently, in bulk, and the repo had already been burned three times:
+moves, silently and in bulk, and the repo had been burned three times before
+anyone counted:
 
 * #101 broke 9 of the 65 citations it touched, by inserting above them;
-* the #120/#167/#161 batch displaced five constructs and broke 19 more;
-* and when the whole tree was finally measured, **490 of 742 were wrong** —
-  two thirds of them, most predating both of the above. A reader following
-  ``cli/agent_context.py:158-159`` for the context fence landed in unrelated
-  docstring prose.
+* the #120/#167/#161 batch displaced five constructs and broke about 19 more;
+* and when the whole tree was finally read against its own prose, **551 of 793
+  were wrong** — 69%, most of them predating both of the above, and 189 wrong
+  on the day they were written.
 
 The rule the repo kept re-deriving by hand is *"re-derive the citation, never
-add a delta to it"*, and it is mechanisable: a citation claims that specific
-TEXT lives at a line, so ``citations.lock.json`` pins the text and
-``scripts/check_citations.py`` re-finds the line.
+add a delta to it"*, and half of it is mechanisable: a citation claims that
+specific TEXT lives at a line, so ``citations.lock.json`` pins the text and
+``scripts/check_citations.py`` re-finds the line. The other half is not — see
+(4).
 
 WHAT THIS FILE ADDS OVER RUNNING THE SCRIPT. Four things the script cannot
 assert about itself:
@@ -28,11 +29,15 @@ assert about itself:
    REFUSES to guess when a block was edited rather than moved.
 
 (4) is the load-bearing one. An earlier revision of the relocator anchored on a
-block's most distinctive surviving line and subtracted the offset. Measured over
-479 drifted citations, that put ``agents/resolver.py:183-206`` on a bare
+block's most distinctive surviving line and subtracted the offset. Measured
+across 479 drifted citations, that put an ``agents/resolver.py`` range on a bare
 ``profile: AgentProfile,`` parameter line. A wrong number under a GREEN gate is
 worse than the rot the gate exists to stop, so exactness is a property with a
-test, not a style choice.
+test rather than a style choice.
+
+NOTE ON THE EXAMPLES ABOVE. They name files without line numbers on purpose:
+this file's own prose is a gated site, and a historical "here is what a stale
+citation looked like" would otherwise be checked as a live pointer and fail.
 """
 
 from __future__ import annotations
@@ -383,7 +388,7 @@ def test_the_scanner_numbers_citing_lines_the_same_way(
 def test_a_continuation_does_not_steal_a_file_named_after_it() -> None:
     """``:189-193`` belongs to the file named BEFORE it, not beside it.
 
-    Measured on ``aelix_agents/reaper.py:278``, which reads
+    Measured on ``aelix_agents/reaper.py`` (line 278 at the time), which read
 
         ``(:189-193). Since ``agents/resolver.py:314-315`` makes …``
 
