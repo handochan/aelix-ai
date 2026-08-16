@@ -298,6 +298,17 @@ and the load that flips it is the renderer aelix already ships.
   abort, and it dominates the abort-only one this ADR fixes. Owner's call whether it gets its
   own issue.
 
+  > **Correction (2026-08-16, ADR-0226).** That became #174 and is now fixed, but two claims in
+  > the paragraph above are wrong. They are annotated rather than rewritten, per this directory's
+  > convention that an ADR records what was believed when it was decided. **"3 to 23" is not
+  > reproducible** — five independent probes measured +30, +15, +3, +7 and +14 for the same
+  > scenario, because the count sawtooths while the cyclic collector runs; any gate written
+  > against a fixed FD delta is a coin flip. **"Never closes it" overstates the exposure** — the
+  > per-request client is a reference CYCLE, and a forced `gc.collect()` takes 15 live clients
+  > and 15 established connections to 0 and 0, so the defect is the release's TIMING, not
+  > unbounded accumulation. ADR-0226 carries the measured tables, including the finding that the
+  > two google adapters were never leaking at all.
+
 ## Rejected alternatives
 
 - **Adding an httpx cancel scope / passing an `AbortSignal` into the adapters**, as the issue
