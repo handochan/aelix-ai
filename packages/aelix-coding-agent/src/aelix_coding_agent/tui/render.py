@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
@@ -31,7 +32,7 @@ from rich.cells import cell_len, set_cell_size
 from rich.console import Group
 from rich.text import Text
 
-from .stream import StreamRenderer, markdown_lines
+from .stream import StreamRenderer, markdown_lines, plain_lines
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +124,29 @@ def _compact_args(args: dict[str, Any]) -> str:
 #: scrollback console, which soft-wraps it, so this is a density choice rather
 #: than an overflow guard.
 _HEADER_MAX_CELLS = 80
+
+#: Trailing reasoning lines held in the live tail while a thinking block
+#: streams. Matches ``StreamRenderer``'s window so reasoning and answer text
+#: occupy the same amount of screen while they are in flight.
+_THINKING_LIVE_WINDOW = 12
+
+#: Floor on how often the reasoning tail repaints, in seconds. Same 10 FPS floor
+#: ``StreamRenderer`` settled on: above ~16 Hz the eye reads widget growth as
+#: thrash rather than as a smooth update, and every push repaints a chrome
+#: widget.
+_THINKING_TAIL_MIN_DELAY = 0.1
+
+#: Ceiling the adaptive throttle can back off to, in seconds. Same 2.0 as
+#: ``StreamRenderer``'s ``max_delay``: past that the window stops reading as live.
+_THINKING_TAIL_MAX_DELAY = 2.0
+
+#: Rows of headroom above :data:`_THINKING_LIVE_WINDOW` when sizing the slice of
+#: the accumulator that can still reach the window. The budget is counted in
+#: CHARACTERS against a width counted in CELLS; one cell per character (ASCII) is
+#: the case that yields the fewest rows per character, so ``width × (window +
+#: slack)`` characters is ``window + slack`` rows at worst and more for any run of
+#: wide glyphs. The slack keeps that worst case clear of the window exactly.
+_THINKING_TAIL_LINE_SLACK = 2
 
 
 def _cap_cells(text: str, limit: int) -> str:
@@ -326,9 +350,11 @@ class EventRenderer:
         commit: Callable[[object], None],
         set_tail: Callable[[str], None],
         width: int | Callable[[], int] = 80,
+        time_fn: Callable[[], float] = time.monotonic,
     ) -> None:
         self._commit = commit
         self._set_tail = set_tail
+        self._time = time_fn
         # Issue #166 — a CALLABLE re-measures the terminal; an int keeps the
         # historical fixed behaviour for the many tests that pass one. The
         # resolution point is ``_new_stream``, which already runs once per
@@ -340,6 +366,40 @@ class EventRenderer:
         self._text_stream: StreamRenderer | None = None
         self._text_accum: str = ""
         self._thinking_accum: str = ""
+        # Issue #170 — reasoning STREAMS to the live tail as it arrives instead
+        # of appearing all at once when the block closes. Every shipping adapter
+        # already emits ``thinking_delta`` in real time (anthropic, google,
+        # openai-responses, openai-completions); the renderer was the only thing
+        # holding them, so on a slow reasoning model the user watched a spinner
+        # with nothing behind it.
+        #
+        # Tail ONLY: the block is still committed to scrollback exactly once,
+        # when it closes. Reasoning is ephemeral scaffolding — you want to watch
+        # it happen and then have one tidy block in history, not a progressive
+        # dribble of committed lines (which would also make every existing
+        # commit assertion in the suite a lie).
+        #
+        # Keyed on ``content_index``, which is what distinguishes one thinking
+        # block from the next on the wire and which this renderer previously
+        # never read. The old ``_thinking_flushed`` boolean conflated "already
+        # printed THIS block" with "already printed ANY block", so a second
+        # block in the same message was silently dropped (#169).
+        self._thinking_index: int | None = None
+        self._thinking_done: set[int] = set()
+        self._thinking_tail_when: float | None = None
+        # "A live window is currently painted for this block." The RELEASE half
+        # of the tail. Derived state is not good enough here: the obvious
+        # ``was_streaming and not self.hide_thinking`` re-reads a flag the user
+        # can flip MID-BLOCK (Ctrl+T, /settings), so the clear was skipped for
+        # exactly the tail that was painted under the old value and the
+        # reasoning the user just asked to hide stayed welded above the prompt.
+        self._thinking_tail_shown: bool = False
+        # Adaptive throttle, mirroring ``StreamRenderer``'s governor
+        # (stream.py:155-158). ``_THINKING_TAIL_MIN_DELAY`` is a FLOOR, not the
+        # interval: if a push ever gets expensive the gap widens with it, so the
+        # renderer can never spend an unbounded share of the turn inside its own
+        # repaint. Reset per block, like ``_thinking_tail_when``.
+        self._thinking_min_delay: float = _THINKING_TAIL_MIN_DELAY
         # Issue #133 item 2 — set when ``_render_message_error`` has already
         # printed a terminal-outcome line for the message that just ended, so
         # ``_render_turn_abort`` does not print a SECOND line for the same abort.
@@ -361,13 +421,14 @@ class EventRenderer:
         # ONLY the normal-output card path in _render_tool_end — the separate
         # 40-line diff/error cap is a distinct literal and stays 40.
         self.tool_card_max_lines: int = 12
-        # Thinking is buffered during ``thinking_delta`` and flushed (dim
-        # italic) BEFORE the text/tool block that follows it — not at the
-        # ``thinking_end`` event, which the adapter emits at end-of-stream
-        # (after the text already streamed live), causing reasoning to print
-        # *after* the answer. This flag makes the flush idempotent so the
-        # late ``thinking_end`` does not double-render. (ADR-0115.)
-        self._thinking_flushed: bool = False
+        # ADR-0115 still holds and is why the COMMIT happens where it does:
+        # ``thinking_end`` arrives at end-of-stream, after the answer already
+        # streamed, so a block is committed BEFORE the text/tool that follows it
+        # rather than when its end event lands — otherwise reasoning prints
+        # after the answer it preceded. What changed for #170 is only that the
+        # block is also shown live while it accumulates; the idempotency the old
+        # ``_thinking_flushed`` flag provided now lives in ``_thinking_done``,
+        # keyed per block.
         # Thinking-block visibility (Sprint 6h₁₅, ADR-0123). Default VISIBLE to
         # match pi's ``hideThinkingBlock`` default (False) — issue #50 reconcile:
         # the run_tui startup seed overwrites this from the persisted setting, so
@@ -379,7 +440,13 @@ class EventRenderer:
         # toggle PAST blocks; inline scrollback can't, so the toggle affects
         # subsequent renders — but a collapsed block is routed through the /expand
         # store so its full reasoning stays recoverable (``💭 Thinking… (/expand N)``).
-        self.hide_thinking: bool = False
+        #
+        # A PROPERTY rather than a plain attribute (see the setter): since #170
+        # reasoning is painted live, so turning the setting ON has to take the
+        # already-painted window down. Doing that in the setter covers all three
+        # writers — the startup seed, /settings live-apply and Ctrl+T
+        # (shell.py:596, 1051, 2151) — without asking each to remember.
+        self._hide_thinking: bool = False
         self._hidden_thinking_label: str = "Thinking…"
         # Aelix-original DISPLAY gate: when True, the persisted compaction-summary
         # message (a ``UserMessage`` carrying ``COMPACTION_SUMMARY_PREFIX``) is
@@ -401,6 +468,23 @@ class EventRenderer:
         # idiom). Unset (headless/tests) → default rendering.
         self.render_custom_message: Callable[[Any], object | None] | None = None
 
+    @property
+    def hide_thinking(self) -> bool:
+        """Whether reasoning is collapsed to a ``💭 Thinking…`` placeholder."""
+
+        return self._hide_thinking
+
+    @hide_thinking.setter
+    def hide_thinking(self, value: bool) -> None:
+        turning_on = value and not self._hide_thinking
+        self._hide_thinking = value
+        if turning_on:
+            # Ctrl+T is most naturally pressed WHILE reasoning is scrolling by —
+            # that is the moment it becomes noise. Honour it immediately instead
+            # of at block close: the window comes down now, and the block still
+            # commits as the collapsed placeholder when it ends.
+            self._clear_thinking_tail()
+
     def on_agent_event(self, event: AgentEvent) -> None:
         if event.type == "message_start":
             self._reset_message_state()
@@ -410,12 +494,18 @@ class EventRenderer:
             # Terminal failures arrive here as a MessageEndEvent whose message
             # carries stop_reason ∈ {"error","aborted"} (loop.py:299-310).
             self._finalize_text()
+            self._close_thinking()
             self._render_message_error(event.message)
         elif event.type == "turn_end":
             # ``_finalize_text`` FIRST so the partial streamed answer is committed
             # to scrollback before the abort notice — the notice has to read as
             # terminating the text above it, not as a header over nothing.
             self._finalize_text()
+            # Same rule for reasoning, and the reason this branch is load-bearing:
+            # abort emits ONLY turn_end (no message_end, and the cancelled adapter
+            # never sends thinking_end), so without this the last painted frame of
+            # reasoning stayed pinned above the prompt for the rest of the session.
+            self._close_thinking()
             # ``getattr``, not ``event.message``: this branch never touched the
             # message before, and the renderer is a plain broadcast subscriber
             # that is fed bare ``SimpleNamespace(type="turn_end")`` stubs (e.g.
@@ -430,9 +520,10 @@ class EventRenderer:
         # tool_execution_update / turn_start / agent_* / unknown → no-op.
 
     def finalize(self) -> None:
-        """Close any open streamed-text window (e.g. after a turn error)."""
+        """Close any open streamed-text OR reasoning window (e.g. turn error)."""
 
         self._finalize_text()
+        self._close_thinking()
 
     # === streaming-layer dispatch ==========================================
 
@@ -449,13 +540,32 @@ class EventRenderer:
                 self._text_accum = sev.content
             self._finalize_text()
         elif sev.type == "thinking_delta":
+            index = getattr(sev, "content_index", 0)
+            if self._thinking_index is not None and index != self._thinking_index:
+                # A new block started without an explicit end for the previous
+                # one — close that one out before opening this.
+                self._flush_thinking(self._thinking_accum, index=self._thinking_index)
+            if index in self._thinking_done:
+                # The wire can REOPEN an index this renderer already committed:
+                # ``openai_completions`` allocates one thinking index per message
+                # (openai_completions.py:1229) and reasoning that resumes after
+                # answer text replays on it, so the block was flushed by the
+                # text_delta arm above and then continued. Retiring the index
+                # permanently dropped that continuation on the floor.
+                self._thinking_done.discard(index)
+            self._thinking_index = index
             self._thinking_accum += sev.delta
+            self._push_thinking_tail()
         elif sev.type == "thinking_end":
-            self._flush_thinking(sev.content or self._thinking_accum)
+            self._flush_thinking(
+                sev.content or self._thinking_accum,
+                index=getattr(sev, "content_index", self._thinking_index),
+            )
         elif sev.type in ("done", "end"):
             self._finalize_text()
         elif sev.type == "error":
             self._finalize_text()
+            self._close_thinking()
             message = sev.error_message or f"request {sev.reason}"
             self._commit(Text(f"✖ {message}", style="bold red"))
 
@@ -497,9 +607,25 @@ class EventRenderer:
 
     def _reset_message_state(self) -> None:
         self._finalize_text()
+        # Belt and braces: every terminal path already closes the reasoning
+        # window, but a message that starts with one still painted would inherit
+        # the previous turn's frame, and that is the one failure mode a user
+        # cannot tell from a hang.
+        self._clear_thinking_tail()
         self._text_accum = ""
         self._thinking_accum = ""
-        self._thinking_flushed = False
+        self._thinking_index = None
+        # Per MESSAGE, not per session: ``content_index`` restarts at 0 in every
+        # message (anthropic.py:848, _google_shared.py:965,
+        # _openai_responses_shared.py:725, openai_completions.py:1242), so
+        # keeping the set would retire index 0 for the whole session. The delta
+        # arm un-retires a reused index on its own, so what this line actually
+        # covers is the block that arrives as ``thinking_end`` ALONE, with no
+        # deltas to trigger that: without it the first turn shows its reasoning
+        # and every turn after it shows none.
+        self._thinking_done = set()
+        self._thinking_tail_when = None
+        self._thinking_min_delay = _THINKING_TAIL_MIN_DELAY
         # A new message has not been reported on yet. This is the ONLY caller of
         # _reset_message_state (on_agent_event's ``message_start`` branch), so the
         # flag can never survive into a message it did not come from.
@@ -591,15 +717,137 @@ class EventRenderer:
             return
         self._commit(Text("✖ Operation aborted", style="yellow"))
 
-    def _flush_thinking(self, content: str) -> None:
+    def _thinking_tail_source(self, width: int) -> str:
+        """The suffix of the accumulator that can still reach the visible window.
+
+        Rendering the WHOLE accumulator to keep 12 lines is quadratic: cost per
+        frame grows with the block while the frames keep coming at the throttle
+        floor, so a 150KB chain of thought spent tens of seconds inside
+        ``plain_lines`` — on the prompt-toolkit loop, since the harness calls the
+        subscriber synchronously (harness/core.py:1994). At 50KB, 98% of the
+        rendered lines were discarded unread.
+
+        Rich wraps each newline-separated line independently, so a slice that
+        begins at a line boundary renders byte-identically to the full text from
+        that boundary on. Hence: take a suffix generous enough to fill the window
+        at this width even if every character lands on its own row, then
+        resynchronise to the first boundary inside its first half — which leaves
+        at least the other half, still more than the window needs. Only a slice
+        with no boundary at all in that half (one unbroken mega-paragraph) can
+        differ from the full render, and only in where the earliest visible row
+        happens to break.
+        """
+
+        text = self._thinking_accum
+        keep = max(1, width) * (_THINKING_LIVE_WINDOW + _THINKING_TAIL_LINE_SLACK)
+        if len(text) <= keep * 2:
+            return text
+        window = text[-keep * 2 :]
+        boundary = window.find("\n")
+        if 0 <= boundary < keep:
+            window = window[boundary + 1 :]
+        return window
+
+    def _push_thinking_tail(self) -> None:
+        """Show the reasoning so far in the live tail (issue #170).
+
+        Throttled, and skipped entirely when ``hide_thinking`` is on — the point
+        of that setting is to NOT show reasoning, so streaming it and then
+        collapsing it would be the loudest possible way to honour it.
+        """
+
+        if self.hide_thinking or not self._thinking_accum.strip():
+            return
+        if self._text_stream is not None:
+            # The answer owns the live window once it starts streaming, and both
+            # write the same last-writer-wins sink (shell.py:2976). A provider
+            # that resumes reasoning after answer text — openai-completions
+            # replays it on the same content_index — would otherwise flip the
+            # window between the answer being typed and a reasoning fragment.
+            # The reasoning is not lost: it still commits when the block closes.
+            return
+        now = self._time()
+        # ``None`` = nothing shown for this block yet. The FIRST push is never
+        # throttled: it is the "reasoning has started" moment, the single most
+        # useful frame, and on a fresh block the user is otherwise looking at an
+        # empty spinner. (Initialising this to 0.0 instead hid the first frame
+        # whenever the clock started near zero — real ``monotonic()`` is large
+        # enough to mask it, an injected test clock is not.)
+        if self._thinking_tail_when is not None and (
+            now - self._thinking_tail_when < self._thinking_min_delay
+        ):
+            return
+        self._thinking_tail_when = now
+        width = self._width_of()
+        started = self._time()
+        lines = plain_lines(
+            self._thinking_tail_source(width), width, style="dim italic"
+        )
+        render_time = self._time() - started
+        # The governor ``StreamRenderer`` has had since 6h₂₄ (stream.py:155-158):
+        # hold the gap at ten times the render it just paid for. With the slice
+        # above this should never leave the floor — which is the point. It is the
+        # backstop that keeps ANY future renderer that is not O(1) in block size
+        # from eating the turn, rather than a second copy of the same fix.
+        self._thinking_min_delay = min(
+            max(render_time * 10, _THINKING_TAIL_MIN_DELAY), _THINKING_TAIL_MAX_DELAY
+        )
+        self._set_tail("".join(lines[-_THINKING_LIVE_WINDOW:]))
+        self._thinking_tail_shown = True
+
+    def _clear_thinking_tail(self) -> None:
+        """Take the live reasoning window down, if one is up.
+
+        Gated on "a tail was painted", never on the CURRENT ``hide_thinking``
+        value: the tail was written under whatever the flag was when the deltas
+        arrived, and the user can flip it mid-block.
+        """
+
+        if not self._thinking_tail_shown:
+            return
+        self._thinking_tail_shown = False
+        self._set_tail("")
+
+    def _close_thinking(self) -> None:
+        """End-of-turn close-out: commit whatever reasoning streamed, drop the tail.
+
+        Called from every path that ends a turn without a ``thinking_end`` —
+        abort, provider error, message error. Reasoning that was on screen lands
+        in scrollback, matching what ``_finalize_text`` already does one line
+        earlier for a partial ANSWER; the alternative (blink it out of existence
+        the moment the user hits Esc) would make the two halves of the same turn
+        disagree about whether partial output survives.
+        """
+
+        if self._thinking_index is None and not self._thinking_tail_shown:
+            return
+        self._flush_thinking(self._thinking_accum)
+
+    def _flush_thinking(self, content: str, *, index: int | None = None) -> None:
+        """Close out a thinking block: clear its tail, commit it once.
+
+        ``index`` is the block's ``content_index``. Committing is idempotent PER
+        BLOCK rather than per message: the adapter emits ``thinking_end`` at
+        end-of-stream, after the answer has already streamed, so the same block
+        arrives twice and must not print twice — but a genuinely different block
+        (think → tool → think) must still print. The previous boolean latch
+        could not tell those apart and dropped the second one (#169).
+        """
+
         self._finalize_text()
         text = content.strip()
         self._thinking_accum = ""
-        if self._thinking_flushed:
-            # Already rendered for this message (the late ``thinking_end``
-            # carries the same content) — don't print it a second time.
+        if index is None:
+            index = self._thinking_index
+        self._thinking_index = None
+        self._thinking_tail_when = None  # the next block starts unthrottled
+        self._thinking_min_delay = _THINKING_TAIL_MIN_DELAY
+        self._clear_thinking_tail()  # the committed block replaces the live window
+        if index is not None and index in self._thinking_done:
+            # The late ``thinking_end`` for a block already printed.
             return
-        self._thinking_flushed = True
+        if index is not None:
+            self._thinking_done.add(index)
         if not text:
             return
         if self.hide_thinking:
@@ -714,7 +962,7 @@ class EventRenderer:
 
         self._expand_store.clear()
         self._expand_seq = 0
-        self._thinking_flushed = False
+        self._thinking_done = set()
 
     def replay(self, messages: list[Any]) -> None:
         """Re-render a loaded session's static messages into scrollback.
@@ -740,9 +988,11 @@ class EventRenderer:
           message's ``●`` headers, then the toolResult cards;
         * a ``UserMessage`` records no steer/follow-up kind, so every echo is
           ``» ``; an image-only user turn renders nothing at all;
-        * TWO thinking blocks in one message replay BOTH while the live path
-          shows only the first (``_thinking_flushed``) — here the live side is
-          the one losing content, so replay is deliberately NOT matched to it.
+        (One entry used to sit here and no longer does: TWO thinking blocks in
+        one message replayed BOTH while the live path showed only the first.
+        That was the live side losing content, and #170 fixed it there — the
+        idempotency latch is now keyed per ``content_index``, so the two agree
+        by both being right rather than by replay being matched down.)
 
         Static (no streaming) — never opens a text-stream window. Each message:
         user → ``» {text}``; assistant → thinking (dim italic) + text + ``●``
@@ -789,11 +1039,12 @@ class EventRenderer:
                             # dumped it unconditionally, so a user with "Show
                             # thinking" OFF got every past turn's reasoning back
                             # on every resume. The two arms are inlined rather
-                            # than delegated: ``_flush_thinking`` latches
-                            # ``_thinking_flushed``, which only ``message_start``
-                            # clears — and replay never emits one, so calling it
-                            # would render just the FIRST block of the whole
-                            # transcript.
+                            # than delegated: ``_flush_thinking`` also drives the
+                            # LIVE tail and its per-block idempotency set, and a
+                            # persisted block carries no ``content_index`` to key
+                            # that on — so replay renders the block directly
+                            # instead of borrowing streaming machinery it has no
+                            # inputs for.
                             if self.hide_thinking:
                                 hidden_id = self._store_expandable(thinking)
                                 self._commit(

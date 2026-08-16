@@ -6,7 +6,7 @@ into lists (no Rich Live, no real terminal).
 
 from __future__ import annotations
 
-from aelix_coding_agent.tui.stream import StreamRenderer
+from aelix_coding_agent.tui.stream import StreamRenderer, plain_lines
 
 
 class FakeClock:
@@ -134,3 +134,41 @@ def test_post_final_update_is_noop() -> None:
     snapshot = list(commits)
     sr.update("more")
     assert commits == snapshot
+
+
+# === plain_lines (issue #170) ===============================================
+#
+# The reasoning counterpart to `markdown_lines`. It shipped with no tests at
+# all, which left the one thing it exists for — reasoning is NOT markdown —
+# undefended: swapping the renderer's call for `markdown_lines` kept the whole
+# suite green.
+
+
+def test_plain_lines_renders_nothing_for_empty_input() -> None:
+    assert plain_lines("", 40) == []
+
+
+def test_plain_lines_emits_the_requested_style() -> None:
+    (line,) = plain_lines("reasoning", 40, style="dim italic")
+    assert line.startswith("\x1b[2;3m"), repr(line)
+    assert "reasoning" in line
+
+
+def test_plain_lines_leaves_markdown_alone() -> None:
+    """The whole reason this is not `markdown_lines`.
+
+    Run through a Markdown renderer, ``**bold**`` becomes bold, ``# heading``
+    becomes a heading and the backticks vanish — so reasoning stops reading as
+    reasoning and starts reading as the answer.
+    """
+
+    source = "# not a heading\n**not bold** and `not code`"
+    rendered = "".join(plain_lines(source, 60))
+    for literal in ("# not a heading", "**not bold**", "`not code`"):
+        assert literal in rendered, f"{literal!r} was restyled away"
+
+
+def test_plain_lines_wraps_at_width() -> None:
+    lines = plain_lines("x" * 60, 20)
+    assert len(lines) == 3
+    assert all(line.endswith("\n") for line in lines[:-1])
