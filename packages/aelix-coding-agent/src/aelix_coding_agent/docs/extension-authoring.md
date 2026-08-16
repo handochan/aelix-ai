@@ -239,6 +239,7 @@ The easiest StreamFn builds its own `openai.AsyncOpenAI` (with whatever
 `replace(opts, client=...)`, reusing all of aelix's SSE parsing and event mapping:
 
 ```python
+import contextlib
 from dataclasses import replace
 import httpx
 from openai import AsyncOpenAI
@@ -253,10 +254,14 @@ async def telnaut_stream(model, context, opts):
     def payload(params, _m):
         params["user"] = opts.api_key      # e.g. an employee number in a standard field
         return params
-    async for ev in OPENAI_COMPLETIONS_PROVIDER.stream_simple(
-        model, context, replace(opts, client=client, on_payload=payload)
-    ):
-        yield ev
+    try:
+        async for ev in OPENAI_COMPLETIONS_PROVIDER.stream_simple(
+            model, context, replace(opts, client=client, on_payload=payload)
+        ):
+            yield ev
+    finally:
+        with contextlib.suppress(Exception):   # you built it, you close it
+            await client.close()               # AsyncOpenAI: close(), not aclose()
 
 def setup(aelix):
     aelix.register_api_adapter("telnaut-openai", telnaut_stream)
@@ -264,12 +269,33 @@ def setup(aelix):
         id="gpt5mini", api="telnaut-openai", base_url="https://host/v1/gpt5mini")}))
 ```
 
+**Close the client you build.** Your StreamFn runs once per request, so a client
+built inside it is built once per turn. The built-in adapter you delegate to does
+`client = opts.client or create_async_client(...)` and only closes the ones it
+created — a client you hand it through `replace(opts, client=...)` is
+deliberately left alone, because closing an injected client would break the next
+turn of whoever injected it. So the `finally` is yours. Without it each turn
+strands a client and its connection pool until the cyclic garbage collector
+happens to run (#174).
+
+Which method depends on the SDK, and guessing gets you a silent no-op:
+`openai.AsyncOpenAI` and `anthropic.AsyncAnthropic` have **no** `aclose` and
+their `close()` is a coroutine; `httpx.AsyncClient` is the reverse (`aclose()`
+only); `google.genai.Client` has both, and only `await client.aio.aclose()`
+closes the async pool — its plain `close()` is synchronous and leaves that pool
+open. Closing the `AsyncOpenAI` above also closes the `httpx.AsyncClient` passed
+into it, so that one needs no separate teardown. Suppress exceptions in the
+`finally`: it also runs while an abort unwinds your generator, and a raise there
+would replace the user's clean cancel with a bogus provider error.
+
 `register_api_adapter` re-applies your adapter across `/reload` (the api registry
 is reset on reload; the harness rebuild replays your registration). Unlike the
 built-in adapters, custom body keys must be OpenAI-valid or go inside
 `extra_body` — the OpenAI SDK rejects unknown top-level kwargs. This is a real,
 supported extension surface (no fork), but it does run your networking code:
-`verify=False` disables certificate checks, so scope it to trusted internal hosts.
+`verify=False` disables certificate checks — it accepts *any* certificate, not
+just your internal CA's — so scope it to trusted internal hosts, and prefer
+`verify="/path/to/ca.pem"` when you can hand httpx the CA instead.
 
 A complete worked example ships at
 `aelix_coding_agent/examples/telnaut/telnaut.py`. Load it like any extension —

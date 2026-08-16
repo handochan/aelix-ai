@@ -568,7 +568,7 @@ def _reduce_message_end(state: _StreamState, message: Any) -> None:
 
     # ``usage`` is ``null`` on an errored message (``messages.py:127`` is
     # Optional and the adapters return ``None`` when every counter is zero —
-    # e.g. ``providers/anthropic.py:154-155``), so this must survive absence.
+    # e.g. ``providers/anthropic.py:155-156``), so this must survive absence.
     usage = message.get("usage")
     if not isinstance(usage, dict):
         return

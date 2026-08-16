@@ -19,10 +19,21 @@ all of aelix's SSE parsing / event mapping / param assembly. Three pieces:
 - ``register_provider(name, ProviderConfigInput(models=...))`` — the Models that
   route to that api (so they appear in ``/model``).
 - ``register_login_provider(...)`` — the employee-number ``/login`` method.
+
+AND ONE RULE THIS EXAMPLE EXISTS TO TEACH: A CLIENT YOU BUILD IS A CLIENT YOU
+CLOSE (#174). ``stream_simple`` is called once per request, so a stream_fn that
+builds a client per call builds one per turn. The built-in adapter does
+``client = opts.client or create_async_client(...)`` and only closes the ones it
+created — hand it yours through ``replace(opts, client=...)`` and it will
+deliberately leave it alone, because closing an injected client would break the
+caller's next turn. That makes the ``finally`` below yours, not the built-in's.
+Skip it and each turn strands a client and its connection pool until the cyclic
+garbage collector happens to run.
 """
 
 from __future__ import annotations
 
+import contextlib
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
@@ -46,7 +57,9 @@ async def _telnaut_stream(model: Model, context: Any, opts: Any) -> AsyncIterato
     """Custom wire adapter: verify=False client + model-in-URL + 사번 as ``user``.
 
     Delegates the actual streaming to the built-in openai-completions provider by
-    injecting a custom ``AsyncOpenAI`` (so all SSE/event logic is reused).
+    injecting a custom ``AsyncOpenAI`` (so all SSE/event logic is reused), and
+    closes that client in a ``finally`` because it built it (#174 — see the
+    module docstring).
     """
 
     import httpx
@@ -59,7 +72,13 @@ async def _telnaut_stream(model: Model, context: Any, opts: Any) -> AsyncIterato
     employee_no = opts.api_key or ""
 
     client = AsyncOpenAI(
-        http_client=httpx.AsyncClient(verify=False),  # (3) TLS verification off
+        # (3) TLS verification off. This is NOT a shortcut around a cert error:
+        # llm.telnaut.internal is served from a private CA that is not in the
+        # system trust store, and no aelix config key can express that. It also
+        # means this stream_fn accepts ANY certificate, so it must stay scoped
+        # to the internal host in _BASE_URL — never point it at the internet.
+        # (If your CA *can* be handed to httpx, prefer `verify="/path/ca.pem"`.)
+        http_client=httpx.AsyncClient(verify=False),
         base_url=getattr(model, "base_url", "") or None,  # (1) model is in the URL
         api_key=employee_no or "unused",
     )
@@ -70,11 +89,35 @@ async def _telnaut_stream(model: Model, context: Any, opts: Any) -> AsyncIterato
         params["model"] = ""  # the model is in the URL, not the body
         return params
 
-    stream = OPENAI_COMPLETIONS_PROVIDER.stream_simple(  # type: ignore[attr-defined]
-        model, context, replace(opts, client=client, on_payload=_payload)
-    )
-    async for event in stream:
-        yield event
+    try:
+        stream = OPENAI_COMPLETIONS_PROVIDER.stream_simple(  # type: ignore[attr-defined]
+            model, context, replace(opts, client=client, on_payload=_payload)
+        )
+        async for event in stream:
+            yield event
+    finally:
+        # #174 — we built this client, so we close it, on every exit. That
+        # includes the abort path: a stream_fn is an async generator, so an
+        # abandoned turn unwinds it through GeneratorExit right here. (Measured
+        # both ways against a local server, 8 turns inside gc.disable(): with
+        # this block 0 clients and 0 server-side connections survive; without
+        # it, 8 and 8 on the completed path, 8 clients on the aborted one.)
+        #
+        # ``close()``, not ``aclose()``: MEASURED on openai 1.109.1 —
+        # ``AsyncOpenAI`` has no ``aclose`` at all and its ``close`` IS a
+        # coroutine, so ``aclose()`` here raises AttributeError and closes
+        # nothing. The one await also closes the httpx client above (measured:
+        # ``is_closed`` False -> True), so it does not need its own teardown.
+        # Other SDKs differ — ``httpx.AsyncClient`` wants ``aclose()`` and
+        # ``google.genai.Client`` wants ``client.aio.aclose()`` (its plain
+        # ``close()`` leaves the async pool open). Check yours; don't copy this
+        # line blind.
+        #
+        # Suppressed because this runs while a cancellation is unwinding, and a
+        # raise from cleanup would replace the user's clean abort with a bogus
+        # provider error in the transcript.
+        with contextlib.suppress(Exception):
+            await client.close()
 
 
 async def _authenticate(ctx: LoginContext) -> str | None:

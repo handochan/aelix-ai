@@ -54,6 +54,7 @@ from aelix_ai.providers._github_copilot_headers import (
     build_copilot_dynamic_headers,
     has_copilot_vision_input,
 )
+from aelix_ai.providers._stream_close import close_provider_client
 from aelix_ai.providers._token_estimate import (
     OUTPUT_CAP_MARGIN_TOKENS,
     estimate_payload_tokens,
@@ -466,6 +467,17 @@ async def stream_anthropic(
             "routing via Authorization: Bearer header (P-94).",
         )
 
+    # #174 — the client is built in one of three arms INSIDE the ``try`` below,
+    # and the ownership arm is a fourth. Both names are bound out here so the
+    # new ``finally`` is reachable even when an early raise (an auth failure in
+    # a construction arm) means no client was ever assigned.
+    # Ownership is decided by where the client came from, not by which of the
+    # three construction arms ran — all three build one, so the single
+    # ``opts.client is None`` test covers them and cannot drift out of sync
+    # with a fourth arm the way three separate flag assignments could.
+    client: Any = None
+    owns_client = opts.client is None
+
     try:
         # 1) Build / use SDK client.
         if opts.client is not None:
@@ -627,7 +639,7 @@ async def stream_anthropic(
             # anthropic turn as same-model and preserve its signed thinking
             # blocks on replay. Without this the shared transform always
             # treats prior thinking as cross-model → downgrades to text →
-            # signatures never travel back. Mirrors openai_completions.py:1371-1379.
+            # signatures never travel back. Mirrors openai_completions.py:1381-1389.
             output = replace(
                 output,
                 content=list(output_content),
@@ -693,7 +705,7 @@ async def stream_anthropic(
             error_message=error_msg,
             # ADR-0190: stamp provenance on the error path too so a partial
             # turn surfaced to observers still carries the same-model markers
-            # (mirrors the success build). openai_completions.py:1371-1379.
+            # (mirrors the success build). openai_completions.py:1381-1389.
             api=model.api,
             provider=model.provider,
             model=model.id,
@@ -701,6 +713,18 @@ async def stream_anthropic(
         yield AssistantErrorEvent(
             reason=reason, error=error_output, error_message=error_msg
         )
+    finally:
+        # #174. This adapter needs no stream close — its ``async with
+        # stream_mgr`` already releases the STREAM (#147). What that context
+        # manager does NOT release is the client the stream was opened on, so
+        # a turn that completes normally still hands its connection back to a
+        # pool nobody closes. Measured on the unfixed build, 15 normally
+        # completed turns: 15 live clients, 15 still-established connections.
+        #
+        # This also covers the ``except _AuthError: raise`` path above, which
+        # leaked a client on every 401/403.
+        if owns_client and client is not None:
+            await close_provider_client(client)
 
 
 async def _translate_event(
