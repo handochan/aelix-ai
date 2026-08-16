@@ -1757,6 +1757,15 @@ async def _async_main(argv: list[str]) -> int:
 
         return run_docs_command(argv[1:])
 
+    # #101 — ``aelix status`` reports what a launch in this directory WOULD be,
+    # without becoming one. Same placement and same reason as the two above.
+    # Async, like ``extension``: it awaits the real trust resolver and the real
+    # extension loader rather than describing them.
+    if argv and argv[0] == "status":
+        from aelix_coding_agent.cli.status import run_status_command
+
+        return await run_status_command(argv[1:])
+
     parsed = parse_args(argv)
 
     # === Diagnostics flush ====================================================

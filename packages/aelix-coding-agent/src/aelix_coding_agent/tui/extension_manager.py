@@ -26,6 +26,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from aelix_coding_agent.extensions.always_on import (
+    BUILTIN_ALWAYS_ON_NAMES,
+    is_builtin_always_on,
+)
+
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
@@ -49,29 +54,15 @@ _RST = "\x1b[0m"
 # third-party plugin they had not installed AND suppressing the clean-install
 # empty state.
 #
-# WHAT STAYS OUT, and why the rule decides it rather than taste:
-# ``AgentsExtension`` is a built-in too, but it is default-off (``[features]
-# agents``) and additionally gated on ``subagent_depth() < MAX_SUBAGENT_DEPTH``,
-# so "always on" would be false for it. Its own placement is a separate,
-# pre-existing question (ADR-0218 records it) and is deliberately not decided
-# here.
-_BUILTIN_ALWAYS_ON_NAMES = frozenset(
-    {"GuardrailExtension", "PermissionExtension", "StatusExtension"}
-)
-
-
-def _is_builtin_always_on(ext: Any) -> bool:
-    """True for an Aelix-additive built-in that is prepended on every run.
-
-    Structural marker: a built-in is prepended with NO manifest and a loader name
-    equal to its class name (``type(entry).__name__``). We gate on BOTH the
-    well-known class name AND ``manifest is None`` so a user plugin that happened
-    to be named similarly (and therefore carries a manifest) is never hidden.
-    """
-
-    if getattr(ext, "manifest", None) is not None:
-        return False
-    return str(getattr(ext, "name", "") or "") in _BUILTIN_ALWAYS_ON_NAMES
+# THE LIST ITSELF NOW LIVES OUTSIDE THIS MODULE, and the move was forced by
+# measurement rather than tidiness: ``cli/status.py`` needs the same list, and
+# importing it from here pulled in 166 modules including ``prompt_toolkit`` and
+# ``rich`` — an optional extra, so on a headless install that is an ImportError,
+# not a cost. See ``extensions/always_on.py`` for the rule and for why
+# ``AgentsExtension`` stays out of it. Re-exported under the private name this
+# module has always used, so its callers and tests are unaffected.
+_BUILTIN_ALWAYS_ON_NAMES = BUILTIN_ALWAYS_ON_NAMES
+_is_builtin_always_on = is_builtin_always_on
 
 
 def _extension_name(ext: Any) -> str:

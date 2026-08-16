@@ -284,6 +284,16 @@ aelix docs project-trust            # 하나 출력
 aelix docs --search register_tool   # 전체 가이드 부분 문자열 검색
 ```
 
+aelix 일반이 아니라 *이 디렉터리*가 궁금할 때 — 신뢰됐는지, 어떤 확장이 여기서
+로드되는지, 그중 임포트에 실패한 것이 있는지 — `aelix status`가 세션을 시작하지
+않고 답합니다.
+
+```bash
+aelix status                        # 버전 · 프로젝트 신뢰 · 확장
+aelix status --json                 # 같은 내용을 스크립트용 JSON으로
+aelix status --no-extensions        # 디스커버리 생략 (확장 코드를 임포트하지 않음)
+```
+
 [홈페이지 →](https://handochan.github.io/aelix-ai/) ·
 [확장 카탈로그 →](https://handochan.github.io/aelix-marketplace/)
 
