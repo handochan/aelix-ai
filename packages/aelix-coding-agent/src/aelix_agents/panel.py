@@ -201,7 +201,7 @@ members finish."""
 def _format_tokens(tokens: int) -> str:
     """Compact token count for surfaces 1 and 3.
 
-    Mirrors ``progress._format_tokens`` (``progress.py:147-150``) rather than
+    Mirrors ``progress._format_tokens`` (``progress.py:157-160``) rather than
     importing it — the same call ``aggregate._format_count`` makes
     (``aggregate.py:145-155``) and for the same reason: these are three
     renderers with three different unit conventions, and a shared helper would
@@ -245,6 +245,9 @@ def _state_counts(snapshots: Sequence[SubagentProgress | None]) -> list[str]:
 
 def format_aggregate_status(
     snapshots: Sequence[SubagentProgress | None],
+    *,
+    extra_head: str = "",
+    cap: int = AGGREGATE_MAX_CHARS,
 ) -> str:
     """S10 surface 1 — ONE statusline row for the whole batch.
 
@@ -272,6 +275,15 @@ def format_aggregate_status(
     reachable only by a pathological count set (five non-zero classes at a wide
     profile name) and exists so this function can promise a bound rather than
     hope for one.
+
+    ``extra_head`` appends one term to the head, and ONLY :func:`format_panel`
+    passes it — the panel states the batch model there because it took that
+    column away from the rows. The default is empty, so the STATUSLINE row this
+    same function produces is byte-identical to what it always was: there are
+    four characters of headroom under :data:`AGGREGATE_MAX_CHARS` at S10's own
+    worked example and a model term does not fit in them. Being a parameter
+    rather than a second function is what keeps the two surfaces unable to state
+    a different fact.
     """
 
     total = len(snapshots)
@@ -279,9 +291,10 @@ def format_aggregate_status(
     if total == 0 or not live:
         return ""
 
-    text = " · ".join(
-        [f"agent {_short_profile(live[0].profile)} ×{total}", *_state_counts(snapshots)]
-    )
+    head = f"agent {_short_profile(live[0].profile)} ×{total}"
+    if extra_head:
+        head += f" · {_flatten(extra_head, limit=_MAX_PROFILE_CHARS * 2)}"
+    text = " · ".join([head, *_state_counts(snapshots)])
 
     tail = [f"{max(item.elapsed_ms for item in live) / 1000:.0f}s"]
     tokens = max(item.tokens for item in live)
@@ -298,15 +311,15 @@ def format_aggregate_status(
         # and admits a row past the ceiling onto a shared height-1 statusline.
         # ASCII is unaffected — ``cell_len`` and ``len`` agree there — so this
         # changes nothing for a batch whose profile is spelled in ASCII.
-        if cell_len(candidate) > AGGREGATE_MAX_CHARS:
+        if cell_len(candidate) > cap:
             # Left-to-right, so the drop is always a suffix: losing the cost
             # while keeping the elapsed reads as terseness; the reverse reads as
             # a bug.
             break
         text = candidate
 
-    if cell_len(text) > AGGREGATE_MAX_CHARS:
-        return set_cell_size(text, AGGREGATE_MAX_CHARS - 1) + _ELLIPSIS
+    if cell_len(text) > cap:
+        return set_cell_size(text, cap - 1) + _ELLIPSIS
     return text
 
 
@@ -371,19 +384,69 @@ def format_card(snapshots: Sequence[SubagentProgress | None]) -> str:
     )
 
 
-def _panel_row(snapshot: SubagentProgress | None) -> str:
+def _batch_model(snapshots: Sequence[SubagentProgress | None]) -> str:
+    """The one model the whole batch runs under, or ``""`` if they disagree.
+
+    Mirrors :func:`_batch_profile`. One ``agent()`` call is one profile and one
+    model across N tasks (S3), so in practice this is every published member's
+    ``model`` — but ``model`` is read off each CHILD's own ``message_end``, so
+    two children of one profile CAN report different strings (a provider
+    fallback, a mid-batch alias resolution). Disagreement returns ``""`` and the
+    rows carry their own model again, because a header claiming one model for a
+    batch running two is worse than a repeated column.
+    """
+
+    models = {s.model for s in snapshots if s is not None and s.model}
+    return next(iter(models)) if len(models) == 1 else ""
+
+
+_PANEL_DIM = "\x1b[2m"
+_PANEL_RST = "\x1b[0m"
+_GUTTER = "▌ "
+"""The panel's left edge, dim. Two visible cells, budgeted for below.
+
+``chrome._render_widget_lines`` ANSI-parses the joined lines
+(``chrome.py:1163-1167``), so raw SGR is the module's own vocabulary here — the
+same raw-escape convention ``tui/context.py`` uses — and no import is needed,
+which keeps this module's declared purity.
+
+APPLIED AFTER :func:`_flatten`, NEVER BEFORE. ``_flatten`` deletes C0, which
+includes ESC, so an escape handed to it is silently stripped; and it collapses
+whitespace, which would eat the column padding. Every untrusted PART is
+flattened on its own and the row is assembled from the results, so the width
+bound is arithmetic rather than a final pass — with a cell-accurate clamp at the
+end as the backstop, because arithmetic is a thing one gets wrong."""
+
+_TASK_MIN_CELLS = 8
+"""Never squeeze the job label below this, even if the numbers are wide. A label
+cut to two characters is a column that costs width and says nothing."""
+
+
+def _panel_row(
+    snapshot: SubagentProgress | None,
+    *,
+    task: str = "",
+    hide_model: bool = False,
+) -> str:
     if snapshot is None:
-        return "queued"
+        return f"{_flatten(task, limit=PANEL_ROW_MAX_CHARS)} · queued" if task else "queued"
     # ``state`` is a product-core literal (``subagent_contract.py:66``) and the
-    # numbers are numbers; ``current_tool`` AND ``model`` are the CHILD's own
-    # bytes — both read off its stdout — and are the two fields here an attacker
-    # writes, so both go through :func:`_flatten`. ``model`` leads the row (S10
-    # Option A): it is the same for every member of a one-profile batch, so the
-    # column is naturally uniform-width and the ``· state ·`` that follows lines
-    # up across rows — the "light alignment" that survives the mandatory flatten,
-    # which collapses any padding whitespace anyway.
+    # numbers are numbers; ``current_tool``, ``model`` AND ``task`` are strings
+    # this module does not author — the first two are the CHILD's own bytes, read
+    # off its stdout, and the third is the PARENT model's tool-call argument — so
+    # all three go through :func:`_flatten`.
+    #
+    # ``task`` takes the place ``model`` used to lead from, and the reason is the
+    # reason the old comment gave for putting ``model`` there: "it is the same
+    # for every member of a one-profile batch, so the column is naturally
+    # uniform-width". A column identical on every row identifies nothing, which
+    # is precisely what the owner asked the panel to show. The model is not lost
+    # — :func:`_batch_model` states it once in the header — and when the members
+    # DISAGREE ``hide_model`` is False and the old per-row term comes back.
     parts: list[str] = []
-    if snapshot.model:
+    if task:
+        parts.append(_flatten(task, limit=PANEL_ROW_MAX_CHARS))
+    if snapshot.model and not hide_model:
         parts.append(_flatten(snapshot.model, limit=PANEL_ROW_MAX_CHARS))
     parts.append(snapshot.state)
     if snapshot.current_tool:
@@ -396,12 +459,63 @@ def _panel_row(snapshot: SubagentProgress | None) -> str:
     return " · ".join(parts)
 
 
-def format_panel(snapshots: Sequence[SubagentProgress | None]) -> list[str]:
+def _composed_row(index: int, total: int, task: str, numbers: str) -> str:
+    """``▌ [k/N] <job label>      <state · tool · numbers>`` in one bounded row.
+
+    The job label is left-aligned from a FIXED column (the index prefix never
+    changes width within a batch) and the numbers are flush RIGHT against the row
+    budget, so only the whitespace between them moves as a child progresses.
+    Aligning the numbers to the widest row instead would make every OTHER row's
+    label jump whenever one member's elapsed time gained a digit.
+
+    The width bound is arithmetic — each untrusted part is :func:`_flatten`ed to
+    its own share, then the row is assembled from the results, because a final
+    flatten would collapse the padding this layout is made of. The closing clamp
+    is the backstop for that arithmetic; it uses ``set_cell_size`` rather than a
+    slice so it, too, counts what the terminal draws.
+    """
+
+    prefix = f"[{index + 1}/{total}] "
+    room = PANEL_ROW_MAX_CHARS - cell_len(_GUTTER) - cell_len(prefix)
+    numbers = _flatten(numbers, limit=max(0, room - _TASK_MIN_CELLS - 2))
+    label = _flatten(task, limit=max(_TASK_MIN_CELLS, room - cell_len(numbers) - 2))
+    gap = max(1, room - cell_len(label) - cell_len(numbers))
+    body = f"{prefix}{label}{' ' * gap}{_PANEL_DIM}{numbers}{_PANEL_RST}"
+    visible = cell_len(prefix) + cell_len(label) + gap + cell_len(numbers)
+    if visible > PANEL_ROW_MAX_CHARS - cell_len(_GUTTER):
+        body = set_cell_size(
+            f"{prefix}{label}{' ' * gap}{numbers}",
+            PANEL_ROW_MAX_CHARS - cell_len(_GUTTER),
+        )
+    return f"{_PANEL_DIM}{_GUTTER}{_PANEL_RST}{body}"
+
+
+def format_panel(
+    snapshots: Sequence[SubagentProgress | None],
+    *,
+    tasks: Sequence[str] = (),
+) -> list[str]:
     """S10 surface 3 — the widget panel, or ``[]`` below :data:`PANEL_MIN_CHILDREN`.
 
-    The header is :func:`format_aggregate_status` itself rather than a second
-    spelling of the same facts, so the panel and the statusline can never
-    disagree. The rows drop the profile name — it is in the header and it is the
+    The header is :func:`format_aggregate_status` PLUS the batch's one model, and
+    the rows carry each member's ``tasks`` entry where the model used to be.
+    Without that the panel answers "how many are running" and never "which one is
+    doing what": the profile is one per call, the model is one per call, and the
+    submitted task was the only differing field — and it was not plumbed here.
+
+    THE MODEL MOVED TO THE HEADER RATHER THAN BEING DROPPED. It cannot go into
+    :func:`format_aggregate_status` itself: that string is ALSO the shared
+    height-1 statusline row, bounded by :data:`AGGREGATE_MAX_CHARS`, and S10's
+    own worked example is already 74 of those 78 characters. So the panel builds
+    its own header line from the same parts, one model term longer, and the
+    statusline is untouched — the panel and the statusline still cannot state a
+    DIFFERENT fact, which is what "never disagree" was protecting.
+
+    ``tasks`` is index-aligned and optional: an empty one renders exactly what
+    this function rendered before, which is what every existing caller and the
+    N == 1 path get.
+
+    The rows drop the profile name — it is in the header and it is the
     same for every member (S3) — and spend the width on per-child state instead.
 
     Returning ``[]`` is the caller's signal to write nothing; ``set_widget`` with
@@ -419,13 +533,30 @@ def format_panel(snapshots: Sequence[SubagentProgress | None]) -> list[str]:
     total = len(snapshots)
     if total < PANEL_MIN_CHILDREN:
         return []
-    header = format_aggregate_status(snapshots)
-    lines = [header] if header else []
-    lines.extend(
-        _flatten(f"[{index + 1}/{total}] {_panel_row(snapshot)}",
-                 limit=PANEL_ROW_MAX_CHARS)
-        for index, snapshot in enumerate(snapshots)
+    model = _batch_model(snapshots) if tasks else ""
+    # The gutter costs two cells the aggregate does not know about, so the panel
+    # header is budgeted two narrower. Passed as a CAP rather than clamped after,
+    # so the existing "drop a whole trailing number" logic does the shortening
+    # instead of a cut landing mid-``$0.00…``.
+    header = format_aggregate_status(
+        snapshots,
+        extra_head=model,
+        cap=AGGREGATE_MAX_CHARS - (cell_len(_GUTTER) if tasks else 0),
     )
+    lines: list[str] = []
+    if header:
+        lines.append(f"{_PANEL_DIM}{_GUTTER}{_PANEL_RST}{header}" if tasks else header)
+    for index, snapshot in enumerate(snapshots):
+        task = tasks[index] if index < len(tasks) else ""
+        numbers = _panel_row(snapshot, hide_model=bool(model))
+        if not task:
+            # Byte-for-byte what this function rendered before ``tasks`` existed.
+            lines.append(
+                _flatten(f"[{index + 1}/{total}] {numbers}", limit=PANEL_ROW_MAX_CHARS)
+            )
+            continue
+        lines.append(_composed_row(index, total, task, numbers))
+
     if len(lines) > PANEL_MAX_ROWS:
         # Only reachable from a caller that submitted more members than
         # ``tool.py`` admits, i.e. a bug — but a silently SHORTER panel reads as
@@ -461,7 +592,7 @@ class PartialThrottle:
     * :data:`PARTIAL_MIN_INTERVAL_MS` has elapsed since the last emission.
 
     …and never when the rendered text is identical to the last emitted text.
-    That final dedup mirrors the statusline half (``progress.py:441-443``): a
+    That final dedup mirrors the statusline half (``progress.py:466-468``): a
     frame that would repaint the same bytes is a kernel ``Task`` bought for
     nothing (H10), and it cannot lose information by construction.
     """

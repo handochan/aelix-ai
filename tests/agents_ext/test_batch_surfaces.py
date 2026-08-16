@@ -397,7 +397,7 @@ def test_the_throttle_records_every_snapshot_even_when_it_drops_the_emit() -> No
 def test_an_unchanged_card_is_never_re_emitted() -> None:
     """A frame that repaints the same bytes is a kernel ``Task`` bought for
     nothing, and it cannot lose information by construction — the same dedup the
-    statusline half already does (``progress.py:441-443``)."""
+    statusline half already does (``progress.py:466-468``)."""
 
     clock = _Clock()
     throttle = PartialThrottle(1, now=clock)
@@ -450,6 +450,191 @@ def test_a_four_member_group_writes_exactly_one_status_key() -> None:
     assert ui.widgets[-1][1] == format_panel(
         [_reading(index, elapsed_ms=1_000) for index in range(4)]
     )
+
+
+# === GitHub #48 ask 3 — the panel says what each member is DOING =============
+
+
+_JOBS = (
+    "audit width.py for baked widths",
+    "port the picker frame to a terminal-derived width",
+    "re-run the pyte harness at 40 and 200 columns",
+    "write the ADR",
+)
+
+
+def _visible(line: str) -> str:
+    import re
+
+    return re.sub(r"\x1b\[[0-9;]*m", "", line)
+
+
+def _panel(snapshots: list[SubagentProgress | None], **kw: Any) -> list[str]:
+    return [_visible(line) for line in format_panel(snapshots, **kw)]
+
+
+def _four(**kw: Any) -> list[SubagentProgress | None]:
+    return [
+        _reading(0, model="gpt-5-codex", elapsed_ms=12_000, tokens=1_500, **kw),
+        _reading(1, model="gpt-5-codex", elapsed_ms=3_000, tokens=400, **kw),
+        _member(1, model="gpt-5-codex", state="done", elapsed_ms=8_000),
+        None,
+    ]
+
+
+def test_the_panel_names_the_job_each_member_is_running() -> None:
+    """The owner's ask, and the reason it needed plumbing rather than a layout.
+
+    One ``agent()`` call is one profile and one model across N tasks (S3), so
+    every per-member field the panel had was IDENTICAL on every row — including
+    ``model``, whose own comment gave "the column is naturally uniform-width" as
+    the reason to put it first. The submitted task was the only differing fact
+    and it stopped at ``extension.py``.
+    """
+
+    rows = _panel(_four(), tasks=_JOBS)[1:]
+    for index, job in enumerate(_JOBS):
+        assert job[:20] in rows[index], (index, rows[index])
+
+
+def test_the_job_label_is_index_aligned_with_the_member() -> None:
+    """``tasks[k]`` belongs to row k, and off-by-one here is invisible by
+    inspection: every label is plausible on every row.
+
+    The member table is indexed by SUBMITTED position and so is ``tasks``; that
+    is the whole reason a bare tuple is sufficient (``progress._Group``).
+    """
+
+    rows = _panel(_four(), tasks=("alpha", "bravo", "charlie", "delta"))[1:]
+    # ``▌ `` is the panel's own gutter; ``_visible`` strips the SGR around it,
+    # not the glyph.
+    assert rows[0].startswith("▌ [1/4] alpha")
+    assert rows[1].startswith("▌ [2/4] bravo")
+    assert rows[2].startswith("▌ [3/4] charlie")
+    assert rows[3].startswith("▌ [4/4] delta")
+
+
+def test_the_model_moves_to_the_header_when_every_member_agrees() -> None:
+    """It took the rows' width, so it is stated once instead of N times."""
+
+    lines = _panel(_four(), tasks=_JOBS)
+    assert "gpt-5-codex" in lines[0]
+    for row in lines[1:]:
+        assert "gpt-5-codex" not in row, row
+
+
+def test_the_model_stays_on_the_rows_when_members_disagree() -> None:
+    """``model`` is read off each CHILD's own ``message_end``, so two children of
+    one profile CAN report different strings — a provider fallback, a mid-batch
+    alias resolution. A header claiming one model for a batch running two is
+    worse than a repeated column, so the rows take it back."""
+
+    mixed: list[SubagentProgress | None] = [
+        _reading(0, model="gpt-5-codex"),
+        _reading(1, model="claude-opus-5"),
+        None,
+    ]
+    lines = _panel(mixed, tasks=_JOBS[:3])
+    assert "gpt-5-codex" not in lines[0] and "claude-opus-5" not in lines[0]
+    assert "gpt-5-codex" in lines[1]
+    assert "claude-opus-5" in lines[2]
+
+
+def test_the_shared_statusline_row_is_untouched_by_all_of_this() -> None:
+    """The model cannot go into ``format_aggregate_status``'s default output.
+
+    That string is ALSO the height-1 row shared with every other statusline
+    segment, bounded at :data:`AGGREGATE_MAX_CHARS`, and S10's worked example is
+    already 74 of those 78 characters. So the panel passes ``extra_head`` and the
+    statusline keeps exactly what it had — which is what "the panel and the
+    statusline can never disagree" was protecting: they still cannot state a
+    DIFFERENT fact, the panel simply states one more.
+    """
+
+    snapshots = _four()
+    assert format_aggregate_status(snapshots) == (
+        "agent scout ×4 · 2 running · 1 done · 1 queued · 12s · 1.5k tok"
+    )
+    assert "gpt-5-codex" not in format_aggregate_status(snapshots)
+
+
+def test_a_panel_without_tasks_is_byte_identical_to_before() -> None:
+    """Every existing caller, and the N == 1 path, pass no tasks.
+
+    This is why the whole suite stayed green through this change — which makes it
+    a fact worth pinning rather than a coincidence to rely on.
+    """
+
+    snapshots: list[SubagentProgress | None] = [
+        _reading(0, model="claude-opus-4-8", elapsed_ms=1_000, tokens=1_500),
+        _member(1, model="claude-opus-4-8", state="done", elapsed_ms=2_000, cost=0.0031),
+        None,
+    ]
+    assert format_panel(snapshots)[1:] == [
+        "[1/3] claude-opus-4-8 · running · read · 1s · 1.5k tok",
+        "[2/3] claude-opus-4-8 · done · 2s · $0.0031",
+        "[3/3] queued",
+    ]
+
+
+def test_job_labels_do_not_change_the_row_count() -> None:
+    """Row COUNT is the measured flicker path (``chrome.py:676-688`` records an
+    attempt reverted for making it worse), and the panel shares its window with
+    the live thinking stream. The label goes INSIDE the existing row."""
+
+    for tasks in ((), _JOBS):
+        assert len(format_panel(_four(), tasks=tasks)) == 5
+
+
+def test_a_hostile_job_label_cannot_break_the_panel() -> None:
+    """The task text is the PARENT model's tool-call argument, not this module's.
+
+    A prompt-injected model authors it, so it is untrusted in the same way
+    ``current_tool`` is — newlines that would add chrome rows, ESC that would
+    smuggle an SGR, and width measured in cells rather than codepoints.
+    """
+
+    evil = "보안\n" + "\n".join(f"\x1b[31mROW {i}" for i in range(40)) + "한" * 500
+    lines = format_panel(_four(), tasks=(evil, *_JOBS[1:]))
+
+    assert len(lines) == 5
+    joined = "".join(lines)
+    assert "\n" not in joined
+    assert "\x1b[31m" not in joined
+    assert "\x9b" not in joined
+    for line in lines:
+        assert cell_len(_visible(line)) <= PANEL_ROW_MAX_CHARS, cell_len(_visible(line))
+
+
+def test_the_gutter_is_an_escape_the_chrome_will_parse() -> None:
+    """``chrome._render_widget_lines`` ANSI-parses the joined lines, so raw SGR is
+    this module's own vocabulary here — but only if it SURVIVES ``_flatten``,
+    which deletes C0 and would strip an ESC handed to it. Applied after, never
+    before."""
+
+    lines = format_panel(_four(), tasks=_JOBS)
+    for line in lines:
+        assert line.startswith("\x1b[2m▌ \x1b[0m"), line
+
+
+def test_a_four_member_group_carries_its_tasks_through_the_real_bridge() -> None:
+    """The seam, not the layout: ``begin_group`` stores them and ``_render_group``
+    passes them on. Every assertion above builds the panel directly and would
+    pass with the bridge dropping ``tasks`` on the floor."""
+
+    ui = _Ui()
+    bridge, _ = _bridge(ui)
+    bridge.begin_group(_GROUP, expected=4, tasks=_JOBS)
+    for index in range(4):
+        bridge.adopt(f"sub-{index}", _GROUP, index=index)
+        bridge(_reading(index, elapsed_ms=1_000))
+
+    written = ui.widgets[-1][1]
+    assert written == format_panel(
+        [_reading(index, elapsed_ms=1_000) for index in range(4)], tasks=_JOBS
+    )
+    for index, job in enumerate(_JOBS):
+        assert job[:20] in _visible(written[index + 1])
 
 
 def test_a_group_of_one_keeps_p2s_per_child_row_and_no_panel() -> None:

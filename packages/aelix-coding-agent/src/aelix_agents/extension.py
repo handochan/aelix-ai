@@ -847,7 +847,7 @@ class AgentsExtension:
 
         ANY OPEN BATCH GROUP GOES WITH IT, and it goes through ``bridge.clear()``
         rather than a second ``end_group`` loop here: ``clear`` already ends every
-        open group before dropping the remaining rows (``progress.py:409-422``),
+        open group before dropping the remaining rows (``progress.py:434-447``),
         which is the only ordering that also blanks the widget panel. A teardown
         that raced ``_execute``'s ``finally`` would otherwise leave an aggregate
         row on a statusline whose delegation no longer exists.
@@ -966,7 +966,7 @@ class AgentsExtension:
         # (``progress._Group.active`` reads the same constant).
         #
         # A group of one is inactive, so it renders nothing — but ``end_group``
-        # clears the aggregate row unconditionally (``progress.py:351-355``), i.e. it
+        # clears the aggregate row unconditionally (``progress.py:376-380``), i.e. it
         # would issue one ``set_status(subagent:group:<id>, None)`` for a row that
         # was never written. S10's floor is that a SINGLE delegation keeps P2's
         # surfaces byte-identical, and a UI write P2 never made is not
@@ -986,7 +986,7 @@ class AgentsExtension:
             # group by the time it has to decide between an aggregate row and a
             # per-child one. ``adopt`` is idempotent and ignores an unknown key,
             # which is why it is called on every frame rather than only the first
-            # (``progress.py:320-339``).
+            # (``progress.py:345-364``).
             if grouped and bridge is not None:
                 with contextlib.suppress(Exception):
                     bridge.adopt(progress.id, key, index=index)
@@ -1008,7 +1008,13 @@ class AgentsExtension:
         # behind by a cancelled turn is a lie the user cannot dismiss and that
         # ``set_status`` has no "clear all" verb to remove.
         if grouped and bridge is not None:
-            bridge.begin_group(key, expected=total)
+            # ``tasks`` is index-aligned with the members the executor
+            # creates, which is the same index ``_on_event`` adopts with —
+            # so the panel can name what each row is DOING without a new
+            # ``SubagentProgress`` field (ADR-0199 §3.6 forbids one).
+            bridge.begin_group(
+                key, expected=total, tasks=tuple(pending.call.tasks)
+            )
         try:
             if pending.call.mode == "single":
                 # UNCHANGED FROM P2, deliberately: one child, ``spawn_granted``
