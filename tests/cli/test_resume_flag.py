@@ -90,16 +90,35 @@ def _meta(id_: str, created: str = "2026-07-06T10:11:12", cwd: str = "/w") -> Js
     return JsonlSessionMetadata(id=id_, created_at=created, cwd=cwd, path=f"{cwd}/{id_}.jsonl")
 
 
-def test_resume_choice_label_created_and_id() -> None:
-    assert _resume_choice_label(_meta("abcdef1234")) == "2026-07-06 10:11 · abcdef12"
+def test_resume_choice_label_is_the_shared_format(tmp_path: Path) -> None:
+    """The startup menu renders the SAME rows as the in-session ``/resume`` picker.
+
+    Both used to carry a private copy of ``{created} · {short-id}`` — a label that
+    named a session without saying anything about it. The format itself is gated
+    in ``tests/cli/test_session_labels.py``; what matters here is only that this
+    entry point routes through it instead of re-growing a copy.
+    """
+
+    from aelix_coding_agent.cli.session_labels import session_choice_label
+
+    path = tmp_path / "s.jsonl"
+    path.write_text(
+        '{"type": "session", "version": 3, "id": "abcdef1234", '
+        '"timestamp": "2026-07-06T10:11:12Z", "cwd": "/w"}\n',
+        encoding="utf-8",
+    )
+    meta = JsonlSessionMetadata(
+        id="abcdef1234", created_at="2026-07-06T10:11:12", cwd="/w", path=str(path)
+    )
+    now = 1_800_000_000.0
+    assert _resume_choice_label(meta, now) == session_choice_label(meta, now)
 
 
-def test_resume_choice_label_id_only() -> None:
-    assert _resume_choice_label(_meta("abcdef12", created="")) == "abcdef12"
+def test_resume_choice_label_of_an_unreadable_session_still_renders() -> None:
+    """A metadata row whose file is gone is still a row, never an exception."""
 
-
-def test_resume_choice_label_empty_is_session() -> None:
-    assert _resume_choice_label(_meta("", created="")) == "session"
+    label = _resume_choice_label(_meta("abcdef12", created=""), 1e9)
+    assert label.strip() == "?  (no messages)"
 
 
 # === _prompt_resume_choice (monkeypatch the stdin read) =====================
@@ -134,6 +153,49 @@ async def test_prompt_out_of_range_returns_none(monkeypatch: pytest.MonkeyPatch)
 
 async def test_prompt_eof_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
     assert await _prompt_with(monkeypatch, EOFError(), [_meta("aaa")]) is None
+
+
+async def test_prompt_offers_only_the_newest_page(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The menu is a plain stderr list with nothing to scroll or filter.
+
+    This repo's own session folder holds 224 sessions for one cwd; printing all
+    of them scrolls the prompt off the screen. Only the newest page is offered,
+    and the count that was left out is stated rather than silently dropped.
+    """
+
+    sessions = [_meta(f"s{i:03d}") for i in range(50)]
+    await _prompt_with(monkeypatch, "", sessions)
+    menu = capsys.readouterr().err
+    assert menu.count("\n  [") == entry_mod._RESUME_MENU_LIMIT
+    assert f"and {50 - entry_mod._RESUME_MENU_LIMIT} older" in menu
+    assert "--resume <id>" in menu
+
+
+async def test_a_number_past_the_page_does_not_open_an_unlisted_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The range check is against what was PRINTED, not against the folder.
+
+    Before the page limit the check was ``1 <= choice <= len(sessions)``, so a
+    number past the end of the menu selected a session the user was never shown —
+    with the limit in place that is now reachable by typing any number at all.
+    """
+
+    sessions = [_meta(f"s{i:03d}") for i in range(50)]
+    past_the_page = str(entry_mod._RESUME_MENU_LIMIT + 1)
+    assert await _prompt_with(monkeypatch, past_the_page, sessions) is None
+    assert await _prompt_with(monkeypatch, "1", sessions) is sessions[0]
+
+
+async def test_a_short_list_prints_no_older_footer(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    await _prompt_with(monkeypatch, "", [_meta("aaa"), _meta("bbb")])
+    menu = capsys.readouterr().err
+    assert "older" not in menu
+    assert menu.count("\n  [") == 2
 
 
 # === _resume_session_startup (real repo) ====================================

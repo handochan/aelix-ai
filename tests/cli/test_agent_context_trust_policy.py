@@ -358,7 +358,7 @@ async def test_every_app_mode_produces_the_same_context_chunk(
     Issue #121 is worded as though a headless run (``-p`` / ``--mode json`` /
     ``--mode rpc``) were the risky case, which implies the modes differ. They
     do not: ``_resolve_append_chunks`` is reached from one factory for all four
-    ``resolve_app_mode`` outcomes (``entry.py:131-147``), so this test encodes
+    ``resolve_app_mode`` outcomes (``entry.py:134-150``), so this test encodes
     that the mode is NOT a variable. If someone later special-cases headless,
     three of these four go red at once.
 

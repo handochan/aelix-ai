@@ -1,7 +1,7 @@
 """ADR-0196 — ``--no-builtin-tools`` is honored (it was parsed-but-ignored).
 
 The flag existed in ``args.py`` and reached ``parsed.no_builtin_tools``, but
-nothing consumed it: ``_resolve_active_tools`` (``cli/entry.py:627-649``)
+nothing consumed it: ``_resolve_active_tools`` (``cli/entry.py:645-667``)
 deliberately refuses to express it, because ``active_tool_names`` is seeded
 BEFORE extensions register their tools — a filter written there would also
 disable every extension and ``<server>__<tool>`` MCP tool. The faithful
@@ -290,7 +290,7 @@ async def test_filter_never_raises_on_removed_tool(
     unknown name (``core.py:3693-3699``). On the reload path that raise would be
     unrecoverable — ``reload()`` has already disposed the old harness by then —
     which is exactly why the reloaded build is unfiltered (``on_reload=True``,
-    ``cli/entry.py:1318-1331``). The ``--no-builtin-tools`` filter runs on that
+    ``cli/entry.py:1336-1349``). The ``--no-builtin-tools`` filter runs on that
     same rebuild, and it computes its names FROM the live ``state.tools`` before
     intersecting with ``parsed.tools``, so a since-removed name can only be
     dropped, never re-asserted.

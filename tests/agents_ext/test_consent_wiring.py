@@ -945,7 +945,7 @@ async def test_a_later_handler_cannot_change_the_topology_that_runs(
     ``ctx.args`` by reference with no defensive copy, precisely so a later
     ``tool_call`` handler may mutate the dict and have the mutation reach
     ``tool.execute``. ``AgentsExtension`` is APPENDED to the extension list
-    (``entry.py:1381-1383``), so a handler registered after it is not hypothetical.
+    (``entry.py:1399-1401``), so a handler registered after it is not hypothetical.
 
     An ``_execute`` that read ``args.get("mode", "single")`` would let that
     handler pick a different execution TOPOLOGY from the one the human approved —

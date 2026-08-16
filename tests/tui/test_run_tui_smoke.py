@@ -743,6 +743,97 @@ async def test_run_tui_resume_picker_excludes_active_switches_and_replays() -> N
     assert runtime.switch_calls == ["/s/new.jsonl"]
 
 
+async def test_run_tui_resume_rows_describe_the_session_and_carry_a_detail(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``/resume`` rows say what the session was about, and the cursor row says more.
+
+    The picker used to offer ``{created} · {short-id}`` — an identifier, not a
+    description — and that label function had no test at all. This drives the real
+    command against real session files and reads the arguments ``select`` was
+    actually handed, including invoking the ``detail`` callback the way the modal
+    does, because the two failure modes worth catching are a label built from the
+    wrong source and a ``detail`` indexed against the wrong list (it receives an
+    index into the FILTERED options, which here is ``choices`` minus the active
+    session — off by one if it were indexed against the repo's list).
+    """
+
+    import json
+
+    from aelix_coding_agent.tui.context import AelixTUIContext
+
+    def _write(name: str, first: str, last: str) -> str:
+        path = tmp_path / name
+        lines = [
+            json.dumps(
+                {"type": "session", "version": 3, "id": name, "timestamp": "2026-05-27T14:00:00Z"}
+            )
+        ]
+        for text in (first, last):
+            lines.append(
+                json.dumps(
+                    {
+                        "id": text[:4],
+                        "timestamp": "2026-05-27T14:05:00Z",
+                        "type": "message",
+                        "message": {"role": "user", "content": [{"type": "text", "text": text}]},
+                    }
+                )
+            )
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return str(path)
+
+    active_path = _write("active", "active first", "active last")
+    newer_path = _write("newer", "port the retry backoff", "ship it")
+    older_path = _write("older", "draw a coloured rule", "looks good")
+    metas = [
+        _ResumeMeta("aaaaaaaa", active_path, "2026-05-27T15:00"),  # active → excluded
+        _ResumeMeta("bbbbbbbb", newer_path, "2026-05-27T14:00"),
+        _ResumeMeta("cccccccc", older_path, "2026-05-27T13:00"),
+    ]
+    repo = _ResumeRepo(metas)
+    active = _ResumeSession(active_path, [])
+    target = _ResumeSession(newer_path, [])
+    runtime = _ResumeRuntime(FakeHarness(), repo, active, target=target)
+
+    seen: dict[str, object] = {}
+    real_select = AelixTUIContext.select
+
+    async def _spy_select(self, title, options, opts=None, detail=None, initial_index=0):  # type: ignore[no-untyped-def]
+        seen["title"] = title
+        seen["options"] = list(options)
+        seen["detail"] = [detail(i) if detail else None for i in range(len(options))]
+        return options[0]
+
+    monkeypatch.setattr(AelixTUIContext, "select", _spy_select)
+    try:
+        with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
+            chrome = AelixChrome()
+            task = asyncio.ensure_future(
+                run_tui(runtime, cwd=".", chrome=chrome, install_signal_handlers=False)  # type: ignore[arg-type]
+            )
+            await _wait(lambda: chrome.app.is_running)
+            pipe.send_text("/resume\n")
+            await _wait(lambda: bool(runtime.switch_calls))
+            pipe.send_text("/quit\n")
+            await asyncio.wait_for(task, timeout=5)
+    finally:
+        monkeypatch.setattr(AelixTUIContext, "select", real_select)
+
+    options = seen["options"]
+    assert isinstance(options, list) and len(options) == 2  # active one excluded
+    # The row describes the session; the id it used to show is not in it.
+    assert "port the retry backoff" in options[0]
+    assert "draw a coloured rule" in options[1]
+    assert "bbbbbbbb" not in options[0]
+    # The detail is indexed against the SAME list the labels were built from.
+    details = seen["detail"]
+    assert isinstance(details, list)
+    assert any("ship it" in line for line in details[0])  # type: ignore[union-attr]
+    assert any("looks good" in line for line in details[1])  # type: ignore[union-attr]
+    assert runtime.switch_calls == [newer_path]
+
+
 async def test_run_tui_resume_empty_choices_does_not_switch() -> None:
     # Only the active session exists → no other sessions → no switch; REPL lives.
     metas = [_ResumeMeta("aaaaaaaa", "/s/active.jsonl", "2026-05-27T15:00")]

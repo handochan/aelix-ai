@@ -26,6 +26,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import time
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, cast
 
@@ -39,6 +40,10 @@ from rich.text import Text
 
 from aelix_coding_agent.cli.repl import handle_user_bash
 from aelix_coding_agent.cli.resource_commands import expand_resource_command
+from aelix_coding_agent.cli.session_labels import (
+    session_choice_label,
+    session_detail_lines,
+)
 from aelix_coding_agent.extensions import HEADLESS_UI_CONTEXT
 from aelix_coding_agent.extensions.api import MessageRenderOptions
 from aelix_coding_agent.extensions.command_dispatch import (
@@ -204,20 +209,21 @@ def _mode_prompt_style(posture: PermissionPosture | None) -> str:
     return f"class:aelix.prompt bold {colour}".rstrip()
 
 
-def _format_session_choice(meta: object) -> str:
+def _format_session_choice(meta: object, now: float, *, width: int = 78) -> str:
     """A one-line picker label for a session (``/resume``).
 
-    ``JsonlSessionMetadata`` carries id + created_at + cwd (no title / message
-    count), so the label is ``{created} · {short-id}``; degrades to the short id
-    when no timestamp is present. Defensive getattr — never raises on an odd
-    metadata shape.
+    Delegates to :func:`~aelix_coding_agent.cli.session_labels.session_choice_label`,
+    which the startup ``--resume`` menu renders from as well. Both used to carry
+    their own copy of a ``{created} · {short-id}`` label that named the session
+    without describing it; see that module for why the FIRST user message is the
+    one shown and where the last one went.
+
+    ``now`` is passed in rather than read here so every row of one picker is aged
+    against the same instant — rows built across a second boundary would otherwise
+    disagree by a minute for no reason the user can see.
     """
 
-    short_id = (getattr(meta, "id", "") or "")[:8]
-    created = (getattr(meta, "created_at", "") or "").replace("T", " ")[:16]
-    if created:
-        return f"{created} · {short_id}" if short_id else created
-    return short_id or "session"
+    return session_choice_label(meta, now, width=width)
 
 
 def _message_text(message: object) -> str:
@@ -730,16 +736,33 @@ async def run_tui(
         if not choices:
             _commit(Text("No other sessions to resume in this folder.", style="yellow"))
             return
-        # select() shows the first 9 (newest-first); build a label→metadata map.
+        # Build a label→metadata map. ``select`` returns the chosen LABEL, not its
+        # index, so the labels have to be unique. They collide far more often now
+        # that they carry the first user message — four of this repo's sessions
+        # open with the same sentence on the same day — so a collision is broken
+        # with the session's short id, which is the thing that actually
+        # distinguishes them, rather than the old repeated " ·" padding.
+        now = time.time()
+        label_width = terminal_columns(out_chrome, max_width=render_width_cap["value"]) - 6
         labels: list[str] = []
         by_label: dict[str, object] = {}
         for meta in choices:
-            label = _format_session_choice(meta)
-            while label in by_label:  # guarantee uniqueness for the reverse map
+            label = _format_session_choice(meta, now, width=max(20, label_width))
+            if label in by_label:
+                label = f"{label}  ({(getattr(meta, 'id', '') or '')[:8]})"
+            while label in by_label:  # last resort; ids are already unique
                 label += " ·"
             labels.append(label)
             by_label[label] = meta
-        chosen = await context.select("Resume session", labels)
+        # ``detail`` is evaluated per RENDER for the highlighted row only, so the
+        # last-message tail read costs nothing for the rows the user scrolls past.
+        chosen = await context.select(
+            "Resume session",
+            labels,
+            detail=lambda index: session_detail_lines(
+                choices[index], width=max(20, label_width)
+            ),
+        )
         if not chosen:
             return  # Esc / cancelled
         meta = by_label.get(chosen)
@@ -1391,7 +1414,7 @@ async def run_tui(
 
         if model_registry is None:
             # ``run_tui`` declares ``model_registry`` optional and the sole
-            # production caller (``entry.py:2939``) always passes one, so this is
+            # production caller (``entry.py:2957``) always passes one, so this is
             # a test-only shape — but ``find_initial_model`` takes it REQUIRED and
             # dereferences it, and the except below would have shown the user the
             # resulting `'NoneType' object has no attribute …` verbatim. Say the
@@ -2839,11 +2862,11 @@ def _build_banner(harness: AgentHarness, cwd: str) -> object:
     # "AGENTS.md" whenever a file existed. Two defects, both measured:
     #
     #   (1) It cannot see ``--no-context-files`` / ``-nc``. That gate lives at
-    #       ``cli/entry.py:1202``, ABOVE discovery, so the banner announced
+    #       ``cli/entry.py:1220``, ABOVE discovery, so the banner announced
     #       project context to a session whose prompt carried none.
     #   (2) Calling discovery a second time RE-EMITTED its stderr budget warnings
     #       (115 bytes per render on one oversized AGENTS.md) — a duplicate of
-    #       what ``entry.py:1203`` already printed at startup, and one that
+    #       what ``entry.py:1221`` already printed at startup, and one that
     #       interpolates the absolute path RAW: over a directory named
     #       ``proj\x1b]0;pwned\x07…`` both the ESC and the BEL reached stderr.
     #

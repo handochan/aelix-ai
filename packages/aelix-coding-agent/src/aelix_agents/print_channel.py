@@ -543,7 +543,7 @@ def build_child_env(
     env[DEPTH_ENV_VAR] = str(depth)
 
     # Belt-and-braces with ``stdin=DEVNULL``. An INHERITED ``"0"`` means "wait
-    # forever" (``cli/entry.py:301-310``), and a child that waits forever on a
+    # forever" (``cli/entry.py:304-313``), and a child that waits forever on a
     # stdin nobody will ever write to is a delegation that only ends at the
     # timeout.
     env["AELIX_STDIN_TIMEOUT"] = "1"
@@ -954,7 +954,7 @@ class PrintChannel:
                     cwd=plan.cwd,
                     env=env,
                     # MANDATORY. An inherited stdin costs +30 s per delegation
-                    # (``_read_piped_stdin``, ``cli/entry.py:299-354``) and any
+                    # (``_read_piped_stdin``, ``cli/entry.py:302-357``) and any
                     # bytes that do arrive are PREPENDED to the task message.
                     stdin=asyncio.subprocess.DEVNULL,
                     stdout=asyncio.subprocess.PIPE,
@@ -963,7 +963,7 @@ class PrintChannel:
                     limit=STREAM_LIMIT_BYTES,
                     # Without it the child joins the PARENT's process group, so
                     # one Ctrl+C SIGINTs every subagent at once with no envelope
-                    # — and neither parent (``tui/shell.py:1713-1730``) nor child
+                    # — and neither parent (``tui/shell.py:1736-1753``) nor child
                     # (``modes/print_mode.py:114-131``) installs a SIGINT
                     # handler, so there is nothing to convert that into a result.
                     start_new_session=True,

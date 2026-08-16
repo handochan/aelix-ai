@@ -30,7 +30,9 @@ import copy
 import dataclasses
 import os
 import select
+import shutil
 import sys
+import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
@@ -74,6 +76,7 @@ from aelix_coding_agent.agents.prompt import compose_system_prompt
 from aelix_coding_agent.builtin.guardrail import GuardrailExtension
 from aelix_coding_agent.builtin.permission import PermissionExtension
 from aelix_coding_agent.builtin.permission_mode import PermissionMode, PermissionPosture
+from aelix_coding_agent.cli.session_labels import session_choice_label
 from aelix_coding_agent.core.runnable_models import is_runnable, unsupported_message
 from aelix_coding_agent.extensions.loader import (
     discover_and_load_extensions,
@@ -531,20 +534,23 @@ def _validate_resume_flag(parsed: Args) -> str | None:
     return None
 
 
-def _resume_choice_label(meta: object) -> str:
+#: How many sessions the startup menu prints. It writes a plain numbered list to
+#: stderr — there is no TUI yet, so nothing scrolls and nothing filters, and this
+#: repo's own session folder holds 224 of them. Anything older is reachable by id
+#: through ``--resume <id>``, which the footer says out loud.
+_RESUME_MENU_LIMIT = 20
+
+
+def _resume_choice_label(meta: object, now: float, *, width: int = 78) -> str:
     """A one-line picker label for the startup ``--resume`` menu.
 
-    ``JsonlSessionMetadata`` carries id + created_at (no title / message
-    count), so the label is ``{created} · {short-id}`` — same shape as the
-    in-session ``/resume`` picker (``tui/shell.py`` ``_format_session_choice``).
-    Defensive getattr — never raises on an odd metadata shape.
+    Delegates to :func:`~aelix_coding_agent.cli.session_labels.session_choice_label`
+    — the same function the in-session ``/resume`` picker renders from. The two
+    used to be separate copies of ``{created} · {short-id}``, a label that named
+    a session without saying anything about it.
     """
 
-    short_id = (getattr(meta, "id", "") or "")[:8]
-    created = (getattr(meta, "created_at", "") or "").replace("T", " ")[:16]
-    if created and short_id:
-        return f"{created} · {short_id}"
-    return created or short_id or "session"
+    return session_choice_label(meta, now, width=width)
 
 
 def _read_resume_line() -> str:
@@ -562,11 +568,23 @@ async def _prompt_resume_choice(
     from stdin off the event loop. An empty line, EOF (Ctrl-D), a non-number,
     or an out-of-range choice all return :data:`None` — the caller then starts
     a fresh session. ``sessions`` is newest-first (``repo.list`` order).
+
+    Only the newest :data:`_RESUME_MENU_LIMIT` are OFFERED, and the range check
+    below is against what was printed rather than against ``sessions``: the menu
+    previously listed every session in the folder, so a number past the end of a
+    224-line scroll would open a session the user never saw.
     """
 
+    shown = sessions[:_RESUME_MENU_LIMIT]
+    now = time.time()
+    width = max(40, shutil.get_terminal_size(fallback=(80, 24)).columns - 8)
     lines = ["Resume which session? (newest first)"]
-    for idx, meta in enumerate(sessions, start=1):
-        lines.append(f"  [{idx}] {_resume_choice_label(meta)}")
+    for idx, meta in enumerate(shown, start=1):
+        lines.append(f"  [{idx:>2}] {_resume_choice_label(meta, now, width=width)}")
+    if len(sessions) > len(shown):
+        lines.append(
+            f"  … and {len(sessions) - len(shown)} older — open one with --resume <id>"
+        )
     lines.append("Enter a number, or press Enter to start a new session: ")
     print("\n".join(lines), file=sys.stderr)
 
@@ -583,8 +601,8 @@ async def _prompt_resume_choice(
     except ValueError:
         print(f"'{raw}' is not a number; starting a new session.", file=sys.stderr)
         return None
-    if 1 <= choice <= len(sessions):
-        return sessions[choice - 1]
+    if 1 <= choice <= len(shown):
+        return shown[choice - 1]
     print(f"{choice} is out of range; starting a new session.", file=sys.stderr)
     return None
 

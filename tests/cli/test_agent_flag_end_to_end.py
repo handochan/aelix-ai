@@ -1,6 +1,6 @@
 """ADR-0196 — ``--agent`` / ``--agent-file`` end to end through ``_async_main``.
 
-The overlay sits at ``cli/entry.py:2190-2283``: AFTER the Project Trust gate
+The overlay sits at ``cli/entry.py:2208-2301``: AFTER the Project Trust gate
 (project profiles are inert until the directory is trusted) and BEFORE
 ``scan_extension_manifests`` / ``_resolve_skill_dirs`` / the harness factory, so
 everything a profile can set lands on the ONE ``Args`` the factory closes over.

@@ -1,7 +1,7 @@
 """Live agent-profile service — ``/agents list|show|use`` (ADR-0196).
 
 AELIX-ORIGINAL. The three read/write operations the TUI needs, held over the
-ONE mutable ``Args`` the harness factory closes over (``cli/entry.py:2592-2753``)
+ONE mutable ``Args`` the harness factory closes over (``cli/entry.py:2610-2771``)
 so an in-session identity switch is durable across every later rebuild.
 
 **Nothing spawns.** This is Phase 1: one identity at a time, applied to the one
@@ -74,15 +74,15 @@ class AgentProfileService:
         untrusted directory raises rather than prompting, because the trust
         decision was already made (and declined) at startup.
     :param parsed: the SAME :class:`Args` object the harness factory closes over
-        (``cli/entry.py:2592-2596``). :meth:`use` mutates it IN PLACE — that is
+        (``cli/entry.py:2610-2614``). :meth:`use` mutates it IN PLACE — that is
         what makes a switched identity survive ``/new``, ``/fork`` and
         ``/resume``.
     :param baseline: a pristine :func:`copy.deepcopy` of ``parsed`` taken before
-        any mutator ran (``cli/entry.py:1855``). Every :meth:`use` resets to it
+        any mutator ran (``cli/entry.py:1873``). Every :meth:`use` resets to it
         first, so a second switch overlays the ORIGINAL CLI intent rather than
         the previous profile.
     :param skills_holder: the ``{"result": LoadSkillsResult}`` box the factory
-        reads on every (re)build (``cli/entry.py:2571`` / ``:2746``).
+        reads on every (re)build (``cli/entry.py:2589`` / ``:2764``).
         :meth:`use` replaces its contents so a profile's ``skills:`` /
         ``inherit_skills:`` reach rebuilds too — a plain local provably would
         not, because the factory captured it once.
@@ -207,7 +207,7 @@ class AgentProfileService:
         """
 
         # Function-level import: ``cli/entry.py`` imports this package at module
-        # scope (``entry.py:62-67``), so importing it back here at module scope
+        # scope (``entry.py:64-69``), so importing it back here at module scope
         # would close an import cycle. Reusing ITS helpers (rather than
         # re-deriving the same values) is the point — a live identity computed
         # from different inputs than a rebuilt one would silently diverge on the
