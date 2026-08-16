@@ -1908,6 +1908,21 @@ class ExtensionAPI:
         ``http_client``) and delegates to ``OPENAI_COMPLETIONS_PROVIDER.stream_simple``
         via ``replace(opts, client=...)``, reusing all the SSE/event logic.
 
+        CLOSE THE CLIENT YOU BUILD (#174). A stream_fn runs once per request, so a
+        client built inside one is built once per turn, and the built-in adapter
+        you delegate to will NOT close it: it does
+        ``client = opts.client or create_async_client(...)`` and only closes what
+        it created, because closing an injected client would break the injector's
+        next turn. Wrap the delegation in ``try`` / ``finally`` and close it
+        yourself; otherwise every turn strands a client and its connection pool
+        until the cyclic collector happens to run. The method differs per SDK and
+        guessing yields a silent no-op — ``AsyncOpenAI``/``AsyncAnthropic`` have no
+        ``aclose`` and their ``close()`` is a coroutine, ``httpx.AsyncClient`` is
+        ``aclose()`` only, and ``google.genai.Client`` needs ``client.aio.aclose()``
+        (its plain ``close()`` is sync and leaves the async pool open). Worked
+        example: ``aelix_coding_agent/examples/telnaut/telnaut.py``; prose:
+        ``aelix docs extension-authoring``.
+
         Queued + fanned out to the process-global api registry now, and REPLAYED
         on every harness (re)build via :meth:`_ExtensionRuntime.bind_api_adapters`
         — that replay is what re-applies the adapter after ``reset_api_providers()``

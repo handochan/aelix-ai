@@ -57,6 +57,7 @@ from aelix_ai.providers._google_shared import (
     is_gemini3_pro_model,
     process_google_stream,
 )
+from aelix_ai.providers._stream_close import close_provider_client
 from aelix_ai.providers.openai_completions import BUILTIN_SOURCE_ID
 from aelix_ai.streaming import (
     AssistantDoneEvent,
@@ -249,6 +250,12 @@ async def stream_google_vertex(
 
     opts = _coerce_options(options)
     state = GoogleStreamState()
+    # #174 — same situation as ``google_generative_ai.stream_google``, whose
+    # note explains why this pair is closed despite being measured NOT to leak
+    # (google's ``Client`` is refcount-reclaimed, not cycle-trapped). Read that
+    # one before changing this.
+    client: Any = None
+    owns_client = opts.client is None
 
     try:
         client = opts.client or _create_client(model, opts)
@@ -311,6 +318,11 @@ async def stream_google_vertex(
         yield AssistantErrorEvent(
             reason=reason, error=error_output, error_message=err_msg
         )
+    finally:
+        # #174 — closes the CLIENT's pool. The #173 stream linger is a
+        # different resource and is not addressed here.
+        if owns_client and client is not None:
+            await close_provider_client(client)
 
 
 # === Vertex thinking-family helpers (pi google-vertex.ts:528-584) ===

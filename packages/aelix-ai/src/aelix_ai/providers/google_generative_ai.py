@@ -63,6 +63,7 @@ from aelix_ai.providers._google_shared import (
     is_gemma4_model,
     process_google_stream,
 )
+from aelix_ai.providers._stream_close import close_provider_client
 from aelix_ai.providers.openai_completions import BUILTIN_SOURCE_ID
 from aelix_ai.streaming import (
     AssistantDoneEvent,
@@ -186,6 +187,25 @@ async def stream_google(
 
     opts = _coerce_options(options)
     state = GoogleStreamState()
+    # #174. READ THIS BEFORE "FIXING" ANYTHING HERE — the two google adapters
+    # are the pair where this ``finally`` is NOT closing a measured leak.
+    # google's ``Client`` is reclaimed by plain REFCOUNTING rather than by the
+    # cyclic collector, so it already dies with this generator's frame.
+    # MEASURED on the unfixed build, 15 turns that completed normally, with the
+    # cyclic collector DISABLED: openai-completions / openai-responses /
+    # anthropic-messages each ended with 15 live clients and 15 established
+    # connections; google-generative-ai and google-vertex ended with 0 live and
+    # 1 established — the same reading as the ALREADY-FIXED codex adapter.
+    #
+    # It is closed here anyway, for two reasons that are not "leak fixed": the
+    # release becomes a property of this code instead of a property of
+    # CPython's refcounting (which PyPy does not promise), and the invariant
+    # "an adapter closes the client it built" then holds for all five adapters
+    # rather than three — so the day a google SDK bump introduces a cycle,
+    # there is already a gate watching. Do not let a later changelog promote
+    # this into a leak that was found and fixed.
+    client: Any = None
+    owns_client = opts.client is None
 
     try:
         api_key = _resolve_api_key(model, opts.api_key)
@@ -260,6 +280,14 @@ async def stream_google(
         yield AssistantErrorEvent(
             reason=reason, error=error_output, error_message=err_msg
         )
+    finally:
+        # #174 — see the note at the top of this function for why this is here
+        # even though google was measured NOT to leak. Closes the CLIENT's
+        # pool; the stream linger tracked by #173 is a different resource and
+        # is NOT addressed by this call (providers/_stream_close.py documents
+        # the two handles already measured not to work on it).
+        if owns_client and client is not None:
+            await close_provider_client(client)
 
 
 def _thinking_for_simple(

@@ -82,7 +82,10 @@ from aelix_ai.providers._openai_responses_shared import (
     convert_responses_tools,
     process_responses_stream,
 )
-from aelix_ai.providers._stream_close import close_provider_stream
+from aelix_ai.providers._stream_close import (
+    close_provider_client,
+    close_provider_stream,
+)
 from aelix_ai.providers.openai_completions import BUILTIN_SOURCE_ID
 from aelix_ai.streaming import (
     AssistantDoneEvent,
@@ -435,6 +438,10 @@ async def stream_openai_responses(
 
     # #147 — see providers/_stream_close.py for why this handle is held.
     open_stream: Any = None
+    # #174 — the CLIENT half, held out for the same reason. ``owns_client``
+    # is what keeps a caller-supplied ``options.client`` untouched.
+    client: Any = None
+    owns_client = False
 
     try:
         compat = get_responses_compat(model)
@@ -446,6 +453,7 @@ async def stream_openai_responses(
             model, context, compat, opts.headers, cache_session_id
         )
 
+        owns_client = opts.client is None
         client = opts.client or create_async_client(
             api_key=api_key,
             base_url=getattr(model, "base_url", "") or None,
@@ -553,7 +561,10 @@ async def stream_openai_responses(
             reason=reason, error=error_output, error_message=err_msg
         )
     finally:
+        # Stream first, then the client it was opened on (#147, then #174).
         await close_provider_stream(open_stream)
+        if owns_client and client is not None:
+            await close_provider_client(client)
 
 
 def stream_simple_openai_responses(

@@ -548,7 +548,7 @@ class EventRenderer:
             if index in self._thinking_done:
                 # The wire can REOPEN an index this renderer already committed:
                 # ``openai_completions`` allocates one thinking index per message
-                # (openai_completions.py:1222-1223) and reasoning that resumes after
+                # (openai_completions.py:1232-1233) and reasoning that resumes after
                 # answer text replays on it, so the block was flushed by the
                 # text_delta arm above and then continued. Retiring the index
                 # permanently dropped that continuation on the floor.
@@ -616,8 +616,8 @@ class EventRenderer:
         self._thinking_accum = ""
         self._thinking_index = None
         # Per MESSAGE, not per session: ``content_index`` restarts at 0 in every
-        # message (anthropic.py:848, _google_shared.py:965,
-        # _openai_responses_shared.py:725, openai_completions.py:1248), so
+        # message (anthropic.py:872, _google_shared.py:965,
+        # _openai_responses_shared.py:725, openai_completions.py:1258), so
         # keeping the set would retire index 0 for the whole session. The delta
         # arm un-retires a reused index on its own, so what this line actually
         # covers is the block that arrives as ``thinking_end`` ALONE, with no
