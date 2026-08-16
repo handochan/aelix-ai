@@ -68,9 +68,9 @@ tui = [
 ]
 
 # There is no `[images]` extra. ADR-0106 §D added one for `tui/images.py`, and
-# ADR-0222 removed both: nothing in this package ever called the renderer, so
+# ADR-0223 removed both: nothing in this package ever called the renderer, so
 # `pip install 'aelix-coding-agent[images]'` installed rich-pixels and changed
-# no behaviour at all. Inline images are not a shipped feature — see ADR-0222
+# no behaviour at all. Inline images are not a shipped feature — see ADR-0223
 # for what wiring one would require.
 
 [project.urls]

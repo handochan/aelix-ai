@@ -105,7 +105,7 @@ def test_expected_pins_are_present():
     # No `[images]` extra: #163 removed it along with the renderer it installed
     # a dependency for. Asserted as an ABSENCE so re-adding one without a call
     # site fails here rather than shipping as another inert promise.
-    assert "images" not in extras, "the [images] extra is gone (#163) — see ADR-0222"
+    assert "images" not in extras, "the [images] extra is gone (#163) — see ADR-0223"
 
 
     core = _load(PUBLISHED_PYPROJECTS["aelix-agent-core"])

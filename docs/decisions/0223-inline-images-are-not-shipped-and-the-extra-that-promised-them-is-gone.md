@@ -1,4 +1,4 @@
-# 0222. Inline images are not shipped, and the extra that promised them is gone
+# 0223. Inline images are not shipped, and the extra that promised them is gone
 
 Status: Accepted (2026-08-16).
 Date: 2026-08-16

@@ -63,7 +63,7 @@ re-discovering the crash.
 5. **`#108` F-3..F-6** — not investigated in this slice.
 6. **Image-protocol probe.** ~~`tui/images.py:107` keys off `TERM_PROGRAM` /
    `KITTY_WINDOW_ID` / `LC_TERMINAL`; Windows Terminal sets none of them
-   (`WT_SESSION`).~~ **Moot** — `tui/images.py` was removed in #163 (ADR-0222);
+   (`WT_SESSION`).~~ **Moot** — `tui/images.py` was removed in #163 (ADR-0223);
    nothing rendered inline images on any platform.
 7. **stdout encoding.** Nothing calls `sys.stdout.reconfigure(encoding="utf-8")`.
    Windows consoles default to a legacy code page, so non-ASCII agent output

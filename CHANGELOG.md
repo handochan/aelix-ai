@@ -148,7 +148,7 @@ and `.../releases/tag/vX` link would 404. Add them with the first pushed tag.
   terminal image rendering", but no production code path ever reached the
   renderer: its only importers were two test files. Installing it bought a
   dependency and zero behaviour. Inline images are not a shipped feature; see
-  ADR-0222 for what wiring one would take, including the `term-image` /
+  ADR-0223 for what wiring one would take, including the `term-image` /
   `Pillow>=11` conflict that leaves only the Unicode tier reachable.
 
 - `--verbose`, `--no-themes` and `--no-prompt-templates` (and the `-np`
