@@ -761,6 +761,9 @@ Misc:
 Subcommands:
   docs [<topic>]                  Read the user guides bundled in this install
                                   (no network); bare = list, --search/-s TERM
+  status                          Report what a launch here would be: version,
+                                  project trust, which extensions load;
+                                  --json --no-extensions
   extension install <target>      Install an extension via pip (path | git-url |
                                   package[==version]); --yes --index-url --offline
   extension source add <src>      Register an install source (path | git-url |
