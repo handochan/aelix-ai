@@ -110,7 +110,8 @@ consent very much is:
   the shape of the directory layout.
 
   Two more absolute-path channels sit *next to* the base prompt rather than in
-  it, and `--no-context-files` gates only the first: every discovered `AGENTS.md`
+  it, and `--no-context-files` gates only the first (the second has its own
+  flag, below): every discovered `AGENTS.md`
   is wrapped in `<project_instructions path="…">` with its absolute path, and the
   skills catalog names each skill's absolute `SKILL.md` location so the model can
   read it. A skill installed under `$HOME` discloses the same account name.
@@ -129,7 +130,17 @@ consent very much is:
   self-extension block. Narrowing the toolset also drops the blocks that depend on
   it: with no `write` tool the two extension write targets and the two package
   pointers are not emitted, and with no `read` tool neither is the documentation
-  directory (the working directory always is). If you need the full prompt *and*
+  directory (the working directory always is) — and with no `read` tool the
+  skills catalog goes with it, on that same gate.
+
+  Neither prompt flag covers that catalog otherwise: it is appended *after* the
+  base prompt, so `--system-prompt` / `--system-prompt-file` replace the six and
+  leave every `<location>` path in place. Its own switch is `--no-skills` /
+  `-ns`, which drops the default skill directories and with them the whole
+  catalog — though an explicit `--skill <path>` re-adds one regardless, because
+  explicit paths are resolved before the `no_skills` guard.
+
+  If you need the full prompt *and*
   the redaction, an extension can rewrite the outbound payload from the
   `before_provider_payload` hook before it leaves the process. Otherwise: run
   somewhere else, or run as a different user.

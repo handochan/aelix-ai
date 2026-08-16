@@ -1105,9 +1105,12 @@ def _resolve_system_prompt(
     structurally impossible too.
 
     ``tools`` is REQUIRED and keyword-only (issue #120), for the same reason
-    ``skills=`` on :func:`_resolve_append_chunks` is: this function has two
-    production callers on different code paths, and the last time one of them
-    silently omitted an argument the other passed, ``/agents use`` shipped a
+    ``skills=`` on :func:`_resolve_append_chunks` is: this function has three
+    production callers on different code paths — the first build in
+    :func:`_build_harness_options`, the ``_rebuild`` closure the kernel calls on
+    every tool change, and ``/agents use`` (``agents/service.py``) — and the
+    last time one of them silently omitted an argument another passed,
+    ``/agents use`` shipped a
     prompt that told the model about none of the profile's skills while
     ``/skills`` still listed them. A default here would make the identical
     defect available again — with the tool list instead of the skill list, and
@@ -1245,7 +1248,7 @@ async def _build_harness_options(
     # are composed from; a rebuild happens later, and by then ``/agents use``
     # may have replaced the loaded set in the holder both sides share. Pi's
     # ``_rebuildSystemPrompt`` re-reads ``_resourceLoader.getSkills()`` on
-    # every call for exactly this reason (``agent-session.ts:1046``); a
+    # every call for exactly this reason (``agent-session.ts:1043``); a
     # snapshot here would re-emit the previous profile's catalog on the next
     # tool change. ``None`` falls back to ``skills``, which is correct for
     # every caller that has no holder (tests, one-shot builds).

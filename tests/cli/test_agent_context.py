@@ -395,7 +395,7 @@ def test_prompt_says_reload_is_the_users_keystroke() -> None:
     prompt = build_system_prompt(".", tools=_all_builtin_tools())
     assert "/reload" in prompt
     assert "cannot load it yourself" in prompt
-    assert "ask the user to run /reload" in prompt
+    assert "a /reload at an interactive aelix prompt" in prompt
 
 
 def test_reload_instruction_is_mode_agnostic() -> None:
@@ -405,9 +405,14 @@ def test_reload_instruction_is_mode_agnostic() -> None:
     (``cli/repl.py:99``) — this test greps the tree for its dispatch sites so a
     third surface (or a removal) forces the wording to be revisited. Yet this
     block is emitted for ``--print`` / ``--mode json`` / ``--mode rpc`` and for
-    delegated subagents, where "ask the user to run /reload" names a command
-    the user has no way to type. The instruction must therefore carry its own
-    fallback.
+    delegated subagents, where naming ``/reload`` as something to ask for names
+    a command the user has no way to type.
+
+    So the instruction is UNCONDITIONAL and the branch is gone. An earlier
+    wording said "in an interactive session ask the user … otherwise report the
+    path", which asked the model to evaluate a condition about itself that
+    nothing in the prompt answers — the surface is never stated. Report-the-path
+    is now the instruction; ``/reload`` appears as a fact about the command.
     """
 
     src = Path(_agent_context.__file__).resolve().parents[1]
@@ -424,9 +429,12 @@ def test_reload_instruction_is_mode_agnostic() -> None:
     }, dispatch_sites
 
     prompt = build_system_prompt(".", tools=_all_builtin_tools())
-    assert "in an interactive session ask the user to run /reload" in prompt
-    # The fallback is the one action that is correct on EVERY surface.
-    assert "otherwise report the absolute path you wrote and stop" in prompt
+    # The one action that is correct on EVERY surface, stated unconditionally.
+    assert "report the absolute path you wrote and stop" in prompt
+    assert "do not wait for it" in prompt
+    # And no branch the model cannot evaluate about itself.
+    assert "in an interactive session" not in prompt
+    assert "otherwise" not in prompt.split("You cannot load it yourself")[1][:400]
 
 
 def test_reload_instruction_admits_reload_may_not_re_discover(monkeypatch) -> None:
@@ -458,7 +466,7 @@ def test_reload_instruction_admits_reload_may_not_re_discover(monkeypatch) -> No
     # it must name the fallback that always does.
     prompt = build_system_prompt(".", tools=_all_builtin_tools())
     reload_line = next(ln for ln in prompt.splitlines() if "/reload" in ln)
-    assert "restart aelix if /reload does not pick it up" in reload_line
+    assert "restart of aelix if /reload does not pick it up" in reload_line
 
 
 async def test_prompt_states_write_creates_dirs_instead_of_ordering_a_mkdir(

@@ -205,23 +205,36 @@ keeping — applies to documentation too: a partial list reads as a complete one
 
 ## 4. Cost, honestly
 
-**Every number below is for `cwd = /some/project`**, re-measured on the final tree. The
-first revision of this section quoted numbers taken with a longer cwd and an intermediate
-build, so they were not reproducible as written — review caught it, and the fix is to state
-the input rather than to trust a remembered figure.
+**Every number below is for `cwd = /some/project`, an install prefix of
+`/workspaces/aelix-prompt-honesty` and an agent dir of `/home/codespace/.aelix/agent`**,
+re-measured on the final tree.
+
+This table has now been wrong twice. The first revision quoted numbers taken with a longer
+cwd and an intermediate build; review caught that. The corrected numbers were then stale
+again by the end of the branch, because the follow-up review round changed the emitted text
+(the reload sentence, and a third gate on the API pointer). Three of the inputs are absolute
+paths, so naming only the cwd never made the table reproducible — which is why all three are
+named now.
 
 | build | chars |
 |---|---|
 | pre-change (`015834c`) | 4027 |
-| default, 7 built-ins | 4625 |
-| `--tools read,write` | 4113 |
+| default, 7 built-ins | 4717 |
+| `--tools read,write` | 4263 |
 | `--tools read` | 2175 |
 | `--no-tools` | 963 |
 
-So the default turn costs **+598 chars (+14.8%)** and every narrower session costs *less*
-than before — sharply less, because the two signposts are now gated on the tool each one
-names. That gating is not an optimisation; it is §5's correctness fix, and the byte saving
-is a side effect.
+So the default turn costs **+690 chars (+17.1%)** and every narrower session costs *less*
+than before — sharply less, because the signposts are gated on the tool each one names.
+That gating is not an optimisation; it is §5's correctness fix, and the byte saving is a
+side effect.
+
+`--tools read,write` also carries a *different* API bullet from the wide sessions. That
+bullet's instruction is a `grep -nE` command, and `read` does not buy a searcher, so
+without `grep` or `bash` it is reworded to window through the file on `read`'s own
+truncation `offset` rather than dropped: `extensions/api.py` is 84KB against `read`'s 50KB
+cap, and dropping it would cost that session the API surface entirely. Rewording rather
+than dropping is why the row is 4263 and not lower.
 
 The signpost prose budget rose **1320 → 1600** (measured 1520), bought by #161's ask
 clause and its fallback, following that test's standing rule that every raise cites the
@@ -282,7 +295,7 @@ in the commit message itself.
 - **The equality test between `/agents use` and the rebuilder was tautological** — it
   re-evaluated the rebuilder's own expression. It now drives the real
   `AgentProfileService.use`.
-- Plus documentation corrections: `agent-session.ts:1043` → `:1043`, the byte table in §4,
+- Plus documentation corrections: `agent-session.ts:1046` → `:1043`, the byte table in §4,
   and `SECURITY.md`'s "no flag suppresses them" (`--system-prompt` does, and a narrower
   toolset drops the blocks that depend on it).
 
@@ -407,12 +420,23 @@ gate went red.
   wording tried — and §7 is what was built instead. **The model still does not ask.** It
   writes, and the user redirects in one keystroke; that is the shipped behaviour, not a
   workaround for one that failed.
-- **Verification coverage of the review was partial.** 37 findings were reported; the
-  adversarial verify pass had returned 8 verdicts (7 CONFIRMED, 1 REFUTED) before it was stopped when the fixes
-  above were made. The rest were acted on where they were independently reproduced here and
-  left otherwise — a handful of LOW citation and wording items remain unaddressed.
-- **Citation rot.** The review found that this batch displaced constructs that ~19 live
-  `file:line` citations elsewhere in the tree pointed at. They were correct at `015834c`.
-  Re-deriving them is a real, separable job and is not done.
+- **The review is now fully triaged, and a follow-up round closed it.** All 37 findings
+  were re-checked against the merged tree: **19 FIXED, 12 partially fixed, 6 open**, and
+  every one of the 18 still-open items was adversarially verified (18 CONFIRMED — 2 HIGH,
+  9 MEDIUM, 7 LOW). Seventeen were then fixed on this branch; the eighteenth is the
+  citation item below. The HIGH pair is worth naming because it was a real hole rather
+  than a wording slip: `_normalize_prompt_text` collapsed and capped an extension's
+  `prompt_snippet` but did **not** escape `<`, so an installed pack could emit a balanced
+  `</project_context>` and an attacker-chosen `<project_instructions path=…>` into the same
+  assembled prompt as the real ADR-0217 fence — measured, with all 103 prompt tests green,
+  because the test that names fence balance only ever fed the built-ins. Both halves are
+  closed and both go RED under sabotage.
+- **Citation rot — reframed, and moved to #171.** This section previously called it "~19
+  citations displaced by this batch, correct at `015834c`". That was accurate and far too
+  small. Measured over the whole tree: **490 of 793 live citations are wrong.** Worse, the
+  obvious mechanical repair does not work — 455 relocations derived from `git blame` were
+  prose-audited and **40% of them still pointed somewhere the sentence was not about**,
+  because roughly a third of this repo's citations did not match their own sentence on the
+  day they were written. Issue #171 carries the measurement, ADR-0221 the decision.
 - **The `AGENTS.md` walk is still re-run per rebuild** (5.0 ms), where pi reads a cached
   loader. Named in §4; not worth a cache until a pack registers hundreds of tools.

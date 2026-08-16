@@ -279,10 +279,14 @@ def create_read_tool(cwd: str, options: dict | None = None) -> AgentTool:
 
     return AgentTool(
         name="read",
-        # Pi parity, verbatim: ``readToolSystemPromptContribution``
-        # (``coding-agent/src/core/tools/read.ts:27-30``). The snippet is the
-        # PROSE half of issue #120 and is deliberately not ``description`` —
-        # see :class:`aelix_ai.tools.Tool`.
+        # Pi parity, verbatim: ``readToolSystemPromptContribution.snippet``
+        # (``coding-agent/src/core/tools/read.ts:28``). Only the snippet is
+        # ported. Pi's guideline on the same object (``read.ts:29``, "Use read
+        # to examine files instead of cat or sed.") is NOT — the slot below
+        # carries aelix's own relocated bullet instead, and the earlier
+        # ``:27-30`` citation implied the whole object came across. The snippet
+        # is the PROSE half of issue #120 and is deliberately not
+        # ``description`` — see :class:`aelix_ai.tools.Tool`.
         prompt_snippet="Read file contents",
         prompt_guidelines=(
             # Was a static bullet in ``build_system_prompt``'s Guidelines list,
