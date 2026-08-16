@@ -8,7 +8,7 @@ the public extension API.
 
 FOUR REGISTRATIONS, and the ORDER of the whole extension matters more than the
 order of these. ``cli/entry.py`` APPENDS this extension after ``Guardrail`` and
-``Permission`` (``entry.py:860-873`` documents Guardrail-first as a security
+``Permission`` (``entry.py:1363-1365`` documents Guardrail-first as a security
 invariant — DO NOT REORDER), so under the kernel's first-block-wins reduction
 our ``tool_call`` handler runs LAST: a guardrail hard-deny and a permission
 denial both win over us, and neither can be softened by anything here.
@@ -182,7 +182,7 @@ class AgentsExtension:
     whose clamp is ``plan`` — an unwired host gets READ-ONLY children.
 
     This paragraph used to add "(that is the literal call site in
-    ``entry.py``)". It is not: ``entry.py:1945-1962`` passes ``posture``,
+    ``entry.py``)". It is not: ``entry.py:2158-2173`` passes ``posture``,
     ``agent_dir``, ``cwd`` and ``project_trusted``. The bare form is what the
     test suite builds — reason enough for the defaults to stay conservative —
     but the correction matters because it is also why a NEW field is INERT in
@@ -242,7 +242,7 @@ class AgentsExtension:
     overlays a profile onto the SAME ``Args`` object ``entry.py``'s harness
     factory closed over. Probed on one object — ``apply_profile_to_args`` with
     a ``context_files: false`` profile flips it to ``True``, and
-    ``agents/service.py:280``'s ``__dict__.update`` reset flips it back — same
+    ``agents/service.py:281``'s ``__dict__.update`` reset flips it back — same
     ``id()`` throughout. A bool captured at construction would be stale in both
     directions.
 
@@ -254,7 +254,7 @@ class AgentsExtension:
     """``tool_call_id`` → the approved spawn. Popped with a ``None`` default in
     :meth:`_execute`, which is the anti-bypass invariant: a call that skipped
     the hook finds nothing and is refused. The grant is deliberately NOT
-    smuggled through ``event.args`` even though ``harness/core.py:3723-3725``
+    smuggled through ``event.args`` even though ``harness/core.py:3930-3932``
     permits mutation — that would put an unvalidated key in the transcript."""
 
     _api: Any | None = field(default=None, init=False)
@@ -537,7 +537,7 @@ class AgentsExtension:
     ) -> None:
         """Refresh the roster, reset the delegation budget, drop stale grants.
 
-        ``before_agent_start`` (``harness/core.py:1242``) runs BEFORE the
+        ``before_agent_start`` (``harness/core.py:1299``) runs BEFORE the
         per-turn ``AgentContext`` is assembled (``:4117-4133``), so a
         description replaced here is the one this prompt's model sees. A
         ``turn_start`` handler would be one turn too late.
@@ -549,7 +549,7 @@ class AgentsExtension:
         refresh its own budget by taking another turn.
 
         LANDMINE (documented rather than discovered): ``register_tool`` →
-        ``refresh_tools`` → ``_refresh_extension_tools`` (``core.py:847-906``)
+        ``refresh_tools`` → ``_refresh_extension_tools`` (``core.py:876-942``)
         MATERIALISES ``active_tool_names`` from its ``None`` sentinel into a
         concrete list. Everything downstream that reads ``get_active_tools()``
         — including the child's tool narrowing — therefore sees a real list from
@@ -582,7 +582,7 @@ class AgentsExtension:
 
         Everything that can refuse a delegation refuses HERE, where the kernel
         renders the refusal as a model-readable blocked tool call
-        (``loop.py:518-531``) and where no process has been created yet. On
+        (``loop.py:522-535``) and where no process has been created yet. On
         success the approval is filed under ``event.tool_call_id`` and the hook
         returns ``None`` — observationally identical to not having run.
         """
@@ -637,7 +637,7 @@ class AgentsExtension:
 
         # THE PER-PROMPT BUDGET IS A CALL-LEVEL REFUSAL, AND IT IS TAKEN HERE —
         # BEFORE THE GRANT (ADR-0199 §3.5.2.1). The budget is charged per CHILD,
-        # inside ``runtime._run``'s admission block (``runtime.py:478-490``),
+        # inside ``runtime._run``'s admission block (``runtime.py:790-798``),
         # i.e. AFTER a dialog has already shown the human all N tasks. Without
         # this check a second eight-task call in one prompt would start four
         # children and hand back four budget-exhausted envelopes for the rest: a
@@ -663,7 +663,7 @@ class AgentsExtension:
             )
 
         # ONE GRANT FOR THE WHOLE CALL (S4). ``call.tasks`` is always a tuple and
-        # always non-empty (``tool.py:249``), so the single and batch doors are
+        # always non-empty (``tool.py:271-273``), so the single and batch doors are
         # one code path here; ``request_spawn_consent_batch`` delegates a
         # one-member tuple to the P2 dialog byte-for-byte.
         grant = await self._grant_for(
@@ -671,7 +671,7 @@ class AgentsExtension:
         )
         if not grant.consented:
             # ``reason`` is set by exactly ONE branch — a batch whose dialog would
-            # not fit the terminal (``consent.py:199``, ``:256-270``) — where no
+            # not fit the terminal (``consent.py:204-208``, ``:261-270``) — where no
             # human was asked at all and the model CAN act on the refusal by
             # splitting the call. ``_DECLINED``'s "do not retry it" is only true
             # of a human answer, so it must not be pasted over a refusal no human
@@ -700,7 +700,7 @@ class AgentsExtension:
         ``tasks`` is the frozen tuple from :func:`~aelix_agents.tool.parse_agent_call`
         and ``mode`` its topology; both are handed to
         :func:`~aelix_agents.consent.request_spawn_consent_batch`, which renders
-        EVERY member or refuses the call outright (``consent.py:950-956``). The
+        EVERY member or refuses the call outright (``consent.py:1282-1288``). The
         pre-filter below is unchanged and is still asked of ONE profile, ONE
         clamp and ONE predicate — which is exactly what S3's one-profile-per-call
         rule buys and why a single :class:`SpawnGrant` can still describe the
@@ -727,7 +727,7 @@ class AgentsExtension:
           (``approval_mode: auto`` / ``ask``), so the bounded widening option is
           real. ``ask`` is its author asking for a human decision REGARDLESS of
           the clamp, which is what retires the "validated, not read" deferral at
-          ``agents/profile.py:218-220``; ``auto`` under a tight parent is
+          ``agents/profile.py``'s ``approval_mode``; ``auto`` under a tight parent is
           finding B4's case, where the profile asked for writes and only a human
           may grant them.
 
@@ -782,7 +782,7 @@ class AgentsExtension:
         # chose the profile, the tasks and the directory. A batch is ONE dialog
         # for tasks that are all inside the one call this hook has already
         # validated, which is a different thing from a memo that would outlive it
-        # (``consent.py:931-942``): ``_pending.clear()`` still runs per prompt.
+        # (``consent.py:238-245``): ``_pending.clear()`` still runs per prompt.
         return await request_spawn_consent_batch(
             ctx,
             resolved,
@@ -800,7 +800,7 @@ class AgentsExtension:
         row, asked from the door that takes the decision — this hook holds the
         ``resolved`` profile and the live parent model, and the runtime it would
         otherwise borrow the method from may legitimately be ``None`` here (the
-        seam is released on teardown, ``extension.py:266``).
+        seam is released on teardown, ``extension.py:830-839``).
 
         Swallows everything: a dialog that cannot name the model must still be a
         dialog. The row is simply omitted, exactly as it is for a child that will
@@ -847,7 +847,7 @@ class AgentsExtension:
 
         ANY OPEN BATCH GROUP GOES WITH IT, and it goes through ``bridge.clear()``
         rather than a second ``end_group`` loop here: ``clear`` already ends every
-        open group before dropping the remaining rows (``progress.py:367-380``),
+        open group before dropping the remaining rows (``progress.py:409-422``),
         which is the only ordering that also blanks the widget panel. A teardown
         that raced ``_execute``'s ``finally`` would otherwise leave an aggregate
         row on a statusline whose delegation no longer exists.
@@ -875,7 +875,7 @@ class AgentsExtension:
 
         ``args`` IS NEVER READ. Not the dispatch mode, not the tasks, not the
         directory — every one of them comes off ``pending.call``, and this is a
-        security property rather than a style rule. ``harness/core.py:3722-3726``
+        security property rather than a style rule. ``harness/core.py:3930-3932``
         states verbatim that the kernel passes ``ctx.args`` BY REFERENCE with no
         defensive copy, precisely so that a later ``tool_call`` handler may mutate
         the dict and have the mutation reach ``tool.execute``. An ``_execute``
@@ -883,7 +883,7 @@ class AgentsExtension:
         registered after this extension choose a different execution TOPOLOGY
         from the one that was consented; reaching for ``args["tasks"]`` on the
         next line would re-open, for a whole batch at once, the substitution
-        window :class:`PendingSpawn` exists to close (``tool.py:139-163``). The
+        window :class:`PendingSpawn` exists to close (``tool.py:304-321``). The
         parameter stays in the signature only because ``ToolExecute`` requires it.
 
         The ONE thing that IS re-read is the identity, deliberately: the profile
@@ -920,7 +920,7 @@ class AgentsExtension:
         # are separated by the kernel's parallel execute phase, and the profile
         # search path is a directory the model's own tools can write. If the
         # name now resolves to a DIFFERENT file — a project-scoped profile that
-        # appeared and wins the collision (``agents/service.py:99-100``), a
+        # appeared and wins the collision (``agents/service.py:100-101``), a
         # user-scope file replaced by one somewhere else on the search path —
         # then what the human approved is not what would run.
         #
@@ -948,7 +948,7 @@ class AgentsExtension:
         # THE PER-CALL CLOSURE IS WHAT GROUPS ALL THREE S10 SURFACES, and it is
         # what makes ADR-0199 §3.6's "no new ``SubagentProgress`` field" answer
         # implementable. ``spawn_id`` is minted INSIDE ``runtime._run``
-        # (``runtime.py:481``) — after ``spawn_granted`` has been entered, and for
+        # (``runtime.py:799``) — after ``spawn_granted`` has been entered, and for
         # members 5-8 of an eight-task batch not until wave 2 — so nothing can
         # hand the bridge a list of ids up front. The INDEX, by contrast, is bound
         # at member creation by the executor (``batch.py:_member``'s ``_tap``), so
@@ -966,7 +966,7 @@ class AgentsExtension:
         # (``progress._Group.active`` reads the same constant).
         #
         # A group of one is inactive, so it renders nothing — but ``end_group``
-        # clears the aggregate row unconditionally (``progress.py:341``), i.e. it
+        # clears the aggregate row unconditionally (``progress.py:351-355``), i.e. it
         # would issue one ``set_status(subagent:group:<id>, None)`` for a row that
         # was never written. S10's floor is that a SINGLE delegation keeps P2's
         # surfaces byte-identical, and a UI write P2 never made is not
@@ -980,13 +980,13 @@ class AgentsExtension:
         def _on_event(index: int, progress: SubagentProgress) -> None:
             # ADOPT FIRST, EMIT SECOND. ``runtime._publish`` fans each snapshot
             # out as ``for tap in (on_event, self.host.on_progress)``
-            # (``runtime.py:533-537``) with no ``await`` between them, so THIS
+            # (``runtime.py:948-952``) with no ``await`` between them, so THIS
             # callback always runs before the session-wide bridge tap sees the
             # same snapshot: adopting here means the bridge already knows the id's
             # group by the time it has to decide between an aggregate row and a
             # per-child one. ``adopt`` is idempotent and ignores an unknown key,
             # which is why it is called on every frame rather than only the first
-            # (``progress.py:305-324``).
+            # (``progress.py:320-339``).
             if grouped and bridge is not None:
                 with contextlib.suppress(Exception):
                     bridge.adopt(progress.id, key, index=index)

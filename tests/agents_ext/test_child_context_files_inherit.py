@@ -408,7 +408,7 @@ def test_the_extension_reads_the_parents_flag_live() -> None:
     """A callable, not a captured bool — and against a REAL ``Args``.
 
     ``/agents use`` overlays a profile onto the same ``Args`` object
-    ``cli/entry.py``'s harness factory closed over: ``agents/service.py:280``
+    ``cli/entry.py``'s harness factory closed over: ``agents/service.py:281``
     resets it with ``__dict__.update`` and ``apply_profile_to_args`` then sets
     ``no_context_files = True`` for a ``context_files: false`` profile. Both
     halves are exercised below on ONE object, so a captured bool fails in both

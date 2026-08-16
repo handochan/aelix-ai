@@ -1391,7 +1391,7 @@ async def run_tui(
 
         if model_registry is None:
             # ``run_tui`` declares ``model_registry`` optional and the sole
-            # production caller (``entry.py:2411``) always passes one, so this is
+            # production caller (``entry.py:2939``) always passes one, so this is
             # a test-only shape — but ``find_initial_model`` takes it REQUIRED and
             # dereferences it, and the except below would have shown the user the
             # resulting `'NoneType' object has no attribute …` verbatim. Say the
@@ -1741,7 +1741,7 @@ async def run_tui(
     # in flight at once (``turn_end`` then ``settled`` for one turn), each
     # awaiting ``get_session_stats`` → ``get_branch`` → file I/O, so they can
     # COMPLETE out of order: the turn_end refresh snapshots ``state.messages``
-    # before ``core.py:4398`` extends it, yet may finish after the settled
+    # before ``core.py:4584`` extends it, yet may finish after the settled
     # refresh and paint the stale value last. Completions therefore carry the
     # generation they were scheduled with and a superseded one is DROPPED,
     # making the outcome last-SCHEDULED-wins instead of last-to-finish-wins.
@@ -2001,7 +2001,7 @@ async def run_tui(
 
     async def _settled_hook(_event: object, _ctx: object = None) -> None:
         # The FIRST moment a finished turn is visible in ``state.messages``: the
-        # harness extends it at ``harness/core.py:4398`` and emits ``settled``
+        # harness extends it at ``harness/core.py:4584`` and emits ``settled``
         # immediately after, whereas the ``turn_end`` the loop emitted earlier is
         # too early — a refresh there estimates over a list still missing the turn
         # that just ended, which is why the meter sat one full turn behind.
@@ -2011,7 +2011,7 @@ async def run_tui(
         # ``SettledHandler`` alias types both positions). The ``subscribe`` seam
         # the rest of this module uses passes the event ALONE, and a handler
         # written to THAT shape raises ``TypeError: takes 1 positional argument
-        # but 2 were given`` — which ``core.py:4406`` catches and logs at DEBUG,
+        # but 2 were given`` — which ``core.py:4592-4593`` catches and logs at DEBUG,
         # so it fails SILENTLY and the refresh simply never runs. ``_ctx`` is
         # defaulted so the handler stays directly callable from a unit test.
         _schedule_context_usage_refresh()
@@ -2763,11 +2763,11 @@ def _build_banner(harness: AgentHarness, cwd: str) -> object:
     # "AGENTS.md" whenever a file existed. Two defects, both measured:
     #
     #   (1) It cannot see ``--no-context-files`` / ``-nc``. That gate lives at
-    #       ``cli/entry.py:1091``, ABOVE discovery, so the banner announced
+    #       ``cli/entry.py:1202``, ABOVE discovery, so the banner announced
     #       project context to a session whose prompt carried none.
     #   (2) Calling discovery a second time RE-EMITTED its stderr budget warnings
     #       (115 bytes per render on one oversized AGENTS.md) — a duplicate of
-    #       what ``entry.py:1092`` already printed at startup, and one that
+    #       what ``entry.py:1203`` already printed at startup, and one that
     #       interpolates the absolute path RAW: over a directory named
     #       ``proj\x1b]0;pwned\x07…`` both the ESC and the BEL reached stderr.
     #
@@ -2784,7 +2784,7 @@ def _build_banner(harness: AgentHarness, cwd: str) -> object:
         # ``getattr`` erases to ``object`` and the type gate rejects feeding that
         # to a ``str | None`` parameter (it did reject this line, before the
         # annotation). ``_action_get_system_prompt`` is ``() -> str``
-        # (``harness/core.py:3629-3630``); the fakes in tests/tui lack it, hence
+        # (``harness/core.py:3743-3744``); the fakes in tests/tui lack it, hence
         # the ``callable`` guard rather than a plain call.
         prompt_getter: Callable[[], str] | None = getattr(
             harness, "_action_get_system_prompt", None

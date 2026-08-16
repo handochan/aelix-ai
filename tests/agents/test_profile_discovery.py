@@ -3,7 +3,7 @@
 The two rules under test that are SECURITY rules, not ergonomics:
 
 * the project tier is inert until ``project_trusted`` (which only became a real
-  gate once ``project_trust.py:104-139`` learned about ``.aelix/agents/``);
+  gate once ``project_trust.py:174-199`` learned about ``.aelix/agents/``);
 * scope is decided by resolved-path CONTAINMENT, so ``--agent-file`` cannot
   launder a project profile into the ungated ``explicit`` bucket.
 """
@@ -252,7 +252,7 @@ def test_symlink_inside_cwd_still_classifies_project(
     the per-identity confirmation in ``cli/entry.py``, and — the one that matters
     — ``parse_profile``'s ban on ``extensions:`` at project scope, which is the
     cut that keeps an untrusted repo from naming a tier-3 extension path
-    (ungated by BOTH discovery kill switches, ``extensions/loader.py:443-464``).
+    (ungated by BOTH discovery kill switches, ``extensions/loader.py:795-859``).
 
     Nothing here is written outside the fixture tree, and a git clone can carry
     symlinks, so the whole setup is something a repository can ship.

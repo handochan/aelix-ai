@@ -5,7 +5,7 @@ Sprint 6h₅a (Phase 4.14, ADR-0081, P-337). Diagnostic helpers for the
 references a working directory that no longer exists on disk.
 
 Aelix divergence: Pi uses sync ``existsSync(...)`` from ``node:fs``;
-Aelix :class:`FileSystem` is all-async (``session/fs.py:33-52``), so the
+Aelix :class:`FileSystem` is all-async (``session/fs.py:56-80``), so the
 helper functions are themselves ``async`` and accept an injected ``fs``.
 
 Pi call sites: factory bootstrap (``:391``) and ``importFromJsonl``

@@ -202,7 +202,7 @@ def test_a_summary_that_is_a_json_blob_is_inserted_verbatim() -> None:
 
 
 def test_a_summary_beginning_with_a_double_dash_is_safe_inside_the_task() -> None:
-    """``build_child_argv`` (``print_channel.py:331-373``): the ``"Task: "``
+    """``build_child_argv`` (``print_channel.py:459-517``): the ``"Task: "``
     prefix ``profile_to_argv`` prepends is load-bearing, because ``args.py``
     swallows an unrecognised ``--`` token into ``parsed.unknown_flags`` with no
     diagnostic. This module hands back a TASK STRING, never an argv element, and

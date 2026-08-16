@@ -5,17 +5,17 @@ outcome classification both arrive as arguments, so the whole batch layout, the
 ``is_error`` rule and the usage roll-up are pinned without spawning anything.
 
 ONE ``ToolResult`` PER ``agent`` CALL, ALWAYS. ``mode="single"`` never reaches
-this module — it stays on ``render_subagent_result`` (``tool.py:328-360``)
+this module — it stays on ``render_subagent_result`` (``tool.py:832-864``)
 byte-for-byte, which is what keeps the 40 tests in ``test_tool_and_security.py``
 and the 69 in ``test_print_channel_spawn.py`` meaningful.
 
 THE OTHER RENDERER IS NOT TOUCHED. There are two: this one plus
-``tui/commands.py:1005-1006`` → ``_render_subagent_result``, the human-facing
+``tui/commands.py:1261-1262`` → ``_render_subagent_result``, the human-facing
 ``/agents run`` door. That door stays single-task under decision S2, so it needs
 no batch rendering and gets none.
 
 "FAILED" AND "NEVER STARTED" ARE DIFFERENT FACTS AND ARE RENDERED DIFFERENTLY.
-A member refused by ``_admit_live`` (``runtime.py:245-250``), by the per-prompt
+A member refused by ``_admit_live`` (``runtime.py:446-451``), by the per-prompt
 budget, or by the batch's own wall-clock budget produced NO CHILD AT ALL. A model
 that cannot tell "this ran and failed" from "this never ran" will report the work
 as done. The classification is supplied by the executor at the point it creates
@@ -34,7 +34,7 @@ from aelix_coding_agent.subagent_contract import SubagentUsage
 
 from aelix_agents.envelope import NO_OUTPUT
 
-# The per-member usage line is IMPORTED, not re-spelled. ``tool.py:308-324``
+# The per-member usage line is IMPORTED, not re-spelled. ``tool.py:697-782``
 # already owns that format and ``render_subagent_result`` prints it for the
 # single-mode path; a second spelling here would drift the moment either is
 # edited, and a batch whose member lines disagree with a single call's line is
@@ -119,7 +119,7 @@ def roll_up_usage(results: Iterable[SubagentResult]) -> SubagentUsage:
     ``SubagentUsage.tokens`` is documented as a context LEVEL, "last message
     wins" (``subagent_contract.py:95-96``), not a running total. Summing four
     children's context levels reports a number several times the real one — the
-    same mistake ``stream.py:207-210`` already warns about — and it is the number
+    same mistake ``stream.py:214-217`` already warns about — and it is the number
     the statusline and any future cost display read. ``max`` is the honest
     aggregate: the largest context any single child reached.
 
@@ -145,7 +145,7 @@ def roll_up_usage(results: Iterable[SubagentResult]) -> SubagentUsage:
 def _format_count(value: int) -> str:
     """Compact token counts for the ``[total]`` line only.
 
-    Mirrors ``progress._format_tokens`` (``progress.py:68-71``) rather than
+    Mirrors ``progress._format_tokens`` (``progress.py:147-150``) rather than
     importing it: that helper appends its own ``" tok"`` unit, which this line
     does not want (it reads ``… in / … out``). The threshold and the one decimal
     place are kept identical so a batch total and a statusline row never disagree
@@ -162,7 +162,7 @@ def _member_block(index: int, total: int, member: MemberOutcome) -> str:
 
     Single newlines inside a member, blank lines BETWEEN members. That differs
     from ``render_subagent_result``, which joins with blank lines
-    (``tool.py:356``) — there it has the whole tool result to itself, whereas
+    (``tool.py:859``) — there it has the whole tool result to itself, whereas
     here a blank line is the only thing separating one child's answer from the
     next one's, and reusing it would make the two levels indistinguishable.
     """
@@ -171,7 +171,7 @@ def _member_block(index: int, total: int, member: MemberOutcome) -> str:
     body = member.result.summary or NO_OUTPUT
     lines = [f"[{index}/{total} {tag}] {body}"]
 
-    # The note set mirrors ``render_subagent_result`` (``tool.py:337-355``) so a
+    # The note set mirrors ``render_subagent_result`` (``tool.py:846-858``) so a
     # batch member never says less about itself than the same child would say on
     # the single-mode path.
     if member.result.error and member.result.error not in body:
@@ -186,14 +186,14 @@ def _member_block(index: int, total: int, member: MemberOutcome) -> str:
         lines.append(f"{member.result.dropped_lines} oversize output line(s) were dropped.")
     # THE USAGE LINE MUST NOT CONTRADICT THE HEADING ONE LINE ABOVE IT. Every
     # never-started envelope carries ``status="error"`` — ``_refusal_envelope``
-    # (``batch.py:613-620``) and ``runtime._error_result`` both mint one that way
+    # (``batch.py:681-696``) and ``runtime._error_result`` both mint one that way
     # — so printing ``result.status`` verbatim renders
     # ``[2/2 did not start] …`` immediately above ``[agent scout · error · 0.0s]``.
     # That is the exact conflation this module exists to prevent (see the
     # "FAILED AND NEVER STARTED" paragraph in the module docstring): the reader
     # is told twice, in two words, and the second one is wrong. The override is
     # passed rather than the status re-spelled here so ``tool._usage_line``
-    # stays the single owner of the format (``tool.py:569-584``).
+    # stays the single owner of the format (``tool.py:697-782``).
     lines.append(
         _usage_line(
             member.result, status=None if member.started else _DID_NOT_START_TAG
@@ -305,7 +305,7 @@ def _join_details(profile: str, total: int, members: Sequence[MemberOutcome]) ->
     inside each ``summary`` keeps its promise that the full output was preserved.
     Empty ones are omitted rather than rendered as an empty section, and an
     all-empty batch yields ``None`` — which is what ``render_subagent_result``
-    passes when a single child had nothing (``tool.py:358``).
+    passes when a single child had nothing (``tool.py:862``).
     """
 
     chunks = [

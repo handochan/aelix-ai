@@ -2325,7 +2325,7 @@ async def test_run_tui_startup_survives_a_session_without_a_branch() -> None:
 # That ran on ``turn_end`` alone, which is too early AND too rare:
 #
 #  - too EARLY on the success path: the harness extends ``_state.messages`` with
-#    the turn's messages at ``harness/core.py:4398``, AFTER the loop has already
+#    the turn's messages at ``harness/core.py:4584``, AFTER the loop has already
 #    emitted ``turn_end``, so a turn_end refresh estimates over a message list
 #    missing the turn that just finished — the footer sat one turn behind. The
 #    ``settled`` hook fires immediately after that extend, so it is the first
@@ -2405,7 +2405,7 @@ async def test_shell_refreshes_the_meter_on_settled_not_only_turn_end() -> None:
     Emits through the REAL :class:`HookBus`, so the handler's ``(event, ctx)``
     arity is genuinely exercised: the bus calls ``handler(event, ctx)``
     (``hooks.py:1349``), and a one-parameter handler raises ``TypeError`` here
-    instead of being swallowed at DEBUG the way ``core.py:4406`` swallows it in
+    instead of being swallowed at DEBUG the way ``core.py:4592-4593`` swallows it in
     production.
     """
 
@@ -2502,7 +2502,7 @@ class _OutOfOrderStatsHarness(FakeHarness):
     """First stats read is SLOW and STALE; every later read is fast and fresh.
 
     Reproduces the real interleaving: ``turn_end`` fires first and snapshots
-    ``state.messages`` BEFORE ``core.py:4398`` extends it, then ``settled`` fires
+    ``state.messages`` BEFORE ``core.py:4584`` extends it, then ``settled`` fires
     and reads the extended list — but the first read can still FINISH last,
     because each awaits ``get_branch`` file I/O.
     """

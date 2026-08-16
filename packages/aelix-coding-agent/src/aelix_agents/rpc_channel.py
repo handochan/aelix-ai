@@ -116,8 +116,8 @@ _TERMINAL_STATES = frozenset({"done", "error", "stopped"})
 """The :data:`~aelix_coding_agent.subagent_contract.SubagentState` values after
 which this channel must publish no further progress snapshot.
 
-A THIRD copy beside ``runtime._TERMINAL_STATES`` (``runtime.py:142``) and
-``progress._TERMINAL_STATES`` (``progress.py:94``), for the reason runtime's own
+A THIRD copy beside ``runtime._TERMINAL_STATES`` (``runtime.py:143``) and
+``progress._TERMINAL_STATES`` (``progress.py:95``), for the reason runtime's own
 copy already gives: the row lifecycle is READ here — ``_eager_abort`` writes
 ``row.state`` and :meth:`RpcChannel._listener` gates on it — and neither the
 renderer nor this channel may become a dependency of the module that owns it.
@@ -335,7 +335,7 @@ class RpcChannel:
             # ``summary``, ``stop_reason`` and ``error_message``, plus an
             # unconditional ``turns += 1`` and a ``tokens`` LEVEL overwrite.
             # ``build_result``'s ``state.stop_reason in ("error", "aborted")``
-            # disjunct (``envelope.py:260-263``) is NOT gated on the caller's
+            # disjunct (``envelope.py:308-312``) is NOT gated on the caller's
             # outcome, so one late line flips a finished, exit-0 delegation to
             # ``ok=False``. Measured on a child that finishes cleanly and then
             # writes one more ``message_end`` after its stdin EOF:
@@ -367,7 +367,7 @@ class RpcChannel:
             # symptom, on a stream that arrived in the wrong order. Measured as
             # reachable only from a synthetic child: the harness emits
             # ``MessageEndEvent`` and THEN ``AgentEndEvent``
-            # (``harness/core.py:4389-4391``, same at ``:4348``), so on any real
+            # (``harness/core.py:4575-4577``, same at ``:4534``), so on any real
             # child the terminator is last and the partial is always already
             # folded. It is a property of the kernel's emission order, not of
             # this gate, which is why the gate is still the right shape.
@@ -384,7 +384,7 @@ class RpcChannel:
             # ``subagent_start``/``subagent_end`` pairs for a single child, on
             # the channels a dashboard subscribes to. ``PrintChannel`` holds the
             # same invariant by cancelling its pumps next to its own
-            # ``_eager_abort`` (``print_channel.py:1012-1018``); this channel
+            # ``_eager_abort`` (``print_channel.py:1102-1109``); this channel
             # cannot, because the accumulator above still has to read.
             # ``runtime._run``'s ``finally`` publishes the ONE terminal snapshot
             # itself, so this channel's contract is: non-terminal snapshots only.

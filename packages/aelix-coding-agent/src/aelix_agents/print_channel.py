@@ -24,7 +24,7 @@ stylistic.
    ``proc.kill(); await proc.wait()`` after an 8 s ``wait_for`` did not unwedge
    it, because the child was blocked in ``write(2)`` on a full stderr pipe and
    never reached a signal handler. A real aelix child writes plenty to stderr:
-   ``modes/print_mode.py:229`` prints every caught exception there, the SIGTERM
+   ``modes/print_mode.py:238-239`` prints every caught exception there, the SIGTERM
    path emits a multi-line traceback, and provider SDK / httpx logging plus any
    extension ``print(..., file=sys.stderr)`` land in the same pipe. stderr goes
    into a BOUNDED ring (:class:`StderrRing`) because a chatty child must not be
@@ -342,7 +342,7 @@ def narrow_tools(
     ``tools=()`` is preserved, NOT collapsed: ``profile_to_argv`` emits
     ``--no-tools`` for it, whereas ``--tools ''`` parses to ``[]`` which
     ``_resolve_active_tools`` reads as falsy → ``None`` → EVERY tool active
-    (``agents/profile.py:155-165`` documents the inversion).
+    (``agents/profile.py:167-177`` documents the inversion).
     """
 
     grant = set(parent_grant) if parent_grant is not None else set(ALL_TOOL_NAMES)
@@ -420,7 +420,7 @@ def resolve_child_cwd(cwd: str | None, parent_cwd: str) -> str:
     component, so a model-chosen ``cwd`` may contain ``\\n`` and ``\\x1b`` — and
     the value this function returns is interpolated verbatim into the consent
     dialog, which ``ctx.ui.select`` both newline-splits into rows and ANSI-parses
-    (``tui/context.py:112-129``). A 150-byte directory name was demonstrated to
+    (``tui/context.py:115-132``). A 150-byte directory name was demonstrated to
     render a wholly forged, benign-looking dialog while the real permission row
     and the real tasks sat hidden behind SGR 8. ``consent.py``'s
     :func:`~aelix_agents.consent._sanitize_field` is the fix and is sufficient on
@@ -469,7 +469,7 @@ def build_child_argv(
     """The child's exact command line — §(l).
 
     ``[sys.executable, "-m", "aelix_coding_agent", …]`` and nothing else.
-    Specifically NOT ``-m aelix``, which ``rpc/rpc_client.py:466`` does and which
+    Specifically NOT ``-m aelix``, which ``rpc/rpc_client.py:952`` does and which
     is a live bug (``aelix`` is the umbrella meta-package demo), and NOT the
     ``aelix`` console script, which in a worktree resolves to the OTHER tree's
     editable install.
@@ -532,7 +532,7 @@ def build_child_env(
     env = dict(os.environ if base is None else base)
 
     # The depth gate. INERT at MAX_SUBAGENT_DEPTH == 1 — both branches yield 1,
-    # and ``agents/profile.py:208`` defaults ``role`` to ``"leaf"`` — but wired
+    # and ``agents/profile.py:220`` defaults ``role`` to ``"leaf"`` — but wired
     # now so P3 only has to raise the cap. Computed from the INHERITED value
     # before the key is overwritten.
     depth = (
@@ -543,7 +543,7 @@ def build_child_env(
     env[DEPTH_ENV_VAR] = str(depth)
 
     # Belt-and-braces with ``stdin=DEVNULL``. An INHERITED ``"0"`` means "wait
-    # forever" (``cli/entry.py:172-174``), and a child that waits forever on a
+    # forever" (``cli/entry.py:301-310``), and a child that waits forever on a
     # stdin nobody will ever write to is a delegation that only ends at the
     # timeout.
     env["AELIX_STDIN_TIMEOUT"] = "1"
@@ -736,7 +736,7 @@ def pipe_holder_pids(links: set[str]) -> list[int]:
     case that walk cannot serve: the child has already exited, so everything it
     left behind has been reparented and no ``PPid`` chain leads back to it — yet
     something is still holding fd 1 or fd 2, which is precisely why we are
-    asking. ``mcp/client.py:150`` calls ``stdio_client`` with no ``errlog`` and
+    asking. ``mcp/client.py:232`` calls ``stdio_client`` with no ``errlog`` and
     the SDK defaults to ``sys.stderr``, so every stdio MCP server a child
     launches is one of these.
 
@@ -954,7 +954,7 @@ class PrintChannel:
                     cwd=plan.cwd,
                     env=env,
                     # MANDATORY. An inherited stdin costs +30 s per delegation
-                    # (``_read_piped_stdin``, ``cli/entry.py:169-207``) and any
+                    # (``_read_piped_stdin``, ``cli/entry.py:299-354``) and any
                     # bytes that do arrive are PREPENDED to the task message.
                     stdin=asyncio.subprocess.DEVNULL,
                     stdout=asyncio.subprocess.PIPE,
@@ -963,7 +963,7 @@ class PrintChannel:
                     limit=STREAM_LIMIT_BYTES,
                     # Without it the child joins the PARENT's process group, so
                     # one Ctrl+C SIGINTs every subagent at once with no envelope
-                    # — and neither parent (``tui/shell.py:1323-1339``) nor child
+                    # — and neither parent (``tui/shell.py:1713-1730``) nor child
                     # (``modes/print_mode.py:114-131``) installs a SIGINT
                     # handler, so there is nothing to convert that into a result.
                     start_new_session=True,
@@ -1016,7 +1016,7 @@ class PrintChannel:
         writer holds fd 1/2 any more". Anything the child leaves behind that
         inherited its stdio keeps those pipes open long after the child is dead —
         every stdio MCP server the child launches does, because
-        ``mcp/client.py:150`` passes no ``errlog`` and the SDK defaults to
+        ``mcp/client.py:232`` passes no ``errlog`` and the SDK defaults to
         ``sys.stderr``. Measured with a stub child that forks such a descendant,
         answers correctly and exits 0 in ~50 ms, at ``timeout_ms=3000``::
 

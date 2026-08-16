@@ -106,7 +106,7 @@ def format_skills_for_prompt(skills: Iterable[object]) -> str:
     ``skills.ts:338-340``).
 
     Typed against ``object`` rather than ``Skill`` deliberately: the harness
-    exposes skills as ``list[Any]`` (``harness/core.py:1097``) and this
+    exposes skills as ``list[Any]`` (``harness/core.py:1133``) and this
     module must not force product-core to import the kernel's dataclass to
     call it.
     """

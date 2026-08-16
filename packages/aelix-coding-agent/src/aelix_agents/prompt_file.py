@@ -7,7 +7,7 @@ WHY A FILE AND NOT AN ARGUMENT. The profile BODY is the child's system prompt,
 and it can be arbitrarily long. Passing it on the command line would put a
 user's private prompt into ``/proc/<pid>/cmdline``, readable by every process
 of every user on many default configurations, and would risk ``E2BIG`` on a
-long profile. ``agents/resolver.py:176``/``:178`` already render
+long profile. ``agents/resolver.py:280``/``:282`` already render
 ``--system-prompt-file`` / ``--append-system-prompt-file``, so the child needs
 only a path.
 

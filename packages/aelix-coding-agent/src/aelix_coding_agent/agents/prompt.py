@@ -1,7 +1,7 @@
 """System-prompt composition mirror (ADR-0196).
 
 AELIX-ORIGINAL module wrapping ONE piece of mirrored kernel logic — the join
-:meth:`AgentHarness.__init__` performs at ``aelix_agent_core/harness/core.py:571-578``.
+:meth:`AgentHarness.__init__` performs at ``aelix_agent_core/harness/core.py:595-602``.
 
 Why mirror at all: ``/agents use`` swaps the active identity WITHOUT rebuilding
 the harness (no reload — a reload resets the provider and would brick a live
@@ -24,7 +24,7 @@ from collections.abc import Sequence
 
 
 def compose_system_prompt(base: str, appends: Sequence[str]) -> str:
-    """Mirror of ``AgentHarness.__init__``'s prompt join (``core.py:571-578``).
+    """Mirror of ``AgentHarness.__init__``'s prompt join (``core.py:595-602``).
 
     THE ONLY mirrored kernel code in this package. Pinned by
     ``tests/agents/test_prompt_composition.py`` against a real ``AgentHarness``.

@@ -124,9 +124,9 @@ def test_aborted_stop_reason_reports_aborted_not_error() -> None:
 def test_recovered_provider_error_does_not_become_the_answer() -> None:
     """QUADRANT: error + RECOVERED. The defect this fix exists for.
 
-    ``_reduce_message_end`` (``stream.py:552-556``) is last-NON-EMPTY-wins per
+    ``_reduce_message_end`` (``stream.py:549-557``) is last-NON-EMPTY-wins per
     field, so ``state.error_message`` survives a turn the harness's own
-    auto-retry (``harness/core.py:494-495``, default ON) already recovered from.
+    auto-retry (``harness/core.py:518-519``, default ON) already recovered from.
     The child then answers correctly on turn 2 and the run is a genuine success:
     ``stop_reason='stop'``, exit 0.
 
@@ -491,7 +491,7 @@ def test_cap_on_utf8_bytes_not_chars() -> None:
 
 
 def test_cap_uses_profile_output_cap() -> None:
-    """``AgentProfile.output_cap`` (``agents/profile.py:212``) is the budget."""
+    """``AgentProfile.output_cap`` (``agents/profile.py:229``) is the budget."""
 
     assert DEFAULT_OUTPUT_CAP == 51200
     big = "a" * 300

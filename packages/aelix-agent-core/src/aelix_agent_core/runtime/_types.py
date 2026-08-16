@@ -71,7 +71,7 @@ Pi parity rationale (P-302 — BINDING):
 Pi reassigns ``this._session`` in-place at
 ``agent-session-runtime.ts:166-173``. Aelix CANNOT mirror that directly
 because :class:`AgentHarness` captures ``_state.session_id`` at
-``__init__`` (``harness/core.py:524``) and binds runtime actions / merges
+``__init__`` (``harness/core.py:626``) and binds runtime actions / merges
 tools / caches session_name during construction. The factory pattern
 preserves all of these invariants by reconstructing the harness for each
 new :class:`Session`.

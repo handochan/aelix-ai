@@ -43,7 +43,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
-# Dim / reset escapes — mirror context.py:71/73 so a footer note renders dim
+# Dim / reset escapes — mirror context.py:74/76 so a footer note renders dim
 # inside the framed tabbed modal (duplicated, not imported, to keep this a leaf).
 _DIM = "\x1b[2m"
 _RST = "\x1b[0m"

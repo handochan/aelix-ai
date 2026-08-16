@@ -5,7 +5,7 @@ Pi parity: ``rpc-mode.ts:277-282`` (new_session handler) →
 ``runtimeHost.newSession(parent_session)`` (Pi
 ``agent-session-runtime.ts:200-232``).
 
-The Sprint 6d body at ``rpc_mode.py:309-347`` rejected
+The Sprint 6d body in ``rpc_mode.py`` rejected
 ``parent_session`` via :class:`RpcErrorResponse`. The new body routes
 through :meth:`AgentSessionRuntime.new_session` which persists lineage
 via ``repo.create(parent_session_path=...)`` — the ADR-0058

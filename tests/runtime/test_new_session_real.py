@@ -9,7 +9,7 @@ The body waveform:
   3. ``_finish_session_replacement(new_session)``.
   4. Return ``RuntimeReplaceResult(cancelled=False)``.
 
-The Sprint 6d ``_handle_new_session`` stub at ``rpc_mode.py:309-347``
+The Sprint 6d ``_handle_new_session`` stub in ``rpc_mode.py``
 rejected ``parent_session`` — this body persists it via
 ``repo.create(parent_session_path=...)``. ADR-0058 carry-forward CLOSES
 per P-330.

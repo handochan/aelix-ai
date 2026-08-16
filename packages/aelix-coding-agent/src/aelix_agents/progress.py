@@ -9,27 +9,27 @@ the child stream produces out to two places:
   :class:`~aelix_coding_agent.subagent_contract.SubagentProgress`. This is the
   channel a P4 dashboard, a Web UI or a third-party extension subscribes to.
 * the TUI statusline — ONE height-1 row per live child
-  (``tui/chrome.py:1036-1047`` renders ``set_status`` into a single line), or,
+  (``tui/chrome.py:1097-1108`` renders ``set_status`` into a single line), or,
   while a BATCH group is open, ONE aggregate row for the whole batch plus a
   ``set_widget`` panel (ADR-0199 decision S10; the layouts live in
   :mod:`aelix_agents.panel`).
 
 THE GROUP IS OPENED WITH A COUNT, NEVER WITH IDS (ADR-0199 §3.6). ``spawn_id``
-is minted inside ``runtime._run`` (``runtime.py:481``) — after ``spawn_granted``
+is minted inside ``runtime._run`` (``runtime.py:799``) — after ``spawn_granted``
 has already been entered, and for members 5-8 of an 8-task batch not until
 wave 2 — so nothing can hand this object a list of ids when the batch starts.
 Membership arrives instead through :meth:`SubagentProgressBridge.adopt`, which
 the executor's per-member ``on_event`` closure calls with the index it was
 created with. That is exact rather than heuristic because ``runtime._publish``
 fans each snapshot out as ``for tap in (on_event, self.host.on_progress)``
-(``runtime.py:533-537``) with no ``await`` between them: the per-spawn callback
+(``runtime.py:948-952``) with no ``await`` between them: the per-spawn callback
 ALWAYS runs before this session-wide tap for the same snapshot, so there is no
 window in which a member's id reaches :meth:`__call__` unadopted. An id that
 never gets adopted is not an error — it correctly falls back to its own
 per-child row, which is what a concurrent ``/agents run`` child is.
 
 THE EVENT-BUS HALF IS UNCHANGED BY GROUPING. ``SubagentProgress``
-(``subagent_contract.py:138-146``) gains no ``batch_id`` field in P3 (§3.6:
+(``subagent_contract.py:175-203``) gains no ``batch_id`` field in P3 (§3.6:
 the product-core delta is zero), so a subscriber sees N interleaved starts with
 no grouping. That residual is named in ADR-0199; it is not something this file
 papers over with an ``aelix_agents``-private channel.
@@ -140,7 +140,7 @@ The statusline is one segment on a shared height-1 row and the model is
 child-authored (read off the child's own ``message_end``), so the term is
 sanitised and length-capped here rather than trusted to fit. ``chrome._render_status``
 strips newlines from this row but bounds neither its width nor its ESC content
-(``chrome.py:1036``), so — unlike ``current_tool``, which P2 left to that far end —
+(``chrome.py:1097-1108``), so — unlike ``current_tool``, which P2 left to that far end —
 this field is defended at the source, the posture the panel already takes."""
 
 
@@ -247,7 +247,7 @@ class SubagentProgressBridge:
         Tracked so ``end_group`` can only blank a panel it actually owns."""
         self._widget_lines: tuple[str, ...] | None = None
         """The panel currently on screen. ``chrome.set_widget`` calls
-        ``invalidate()`` unconditionally (``chrome.py:1373-1380``), so an
+        ``invalidate()`` unconditionally (``chrome.py:1457-1463``), so an
         unchanged panel re-written on every reduced stdout line would be a
         full repaint per line."""
 
@@ -321,7 +321,7 @@ class SubagentProgressBridge:
         """Bind a member's freshly minted spawn id to (group, submitted index).
 
         Called from the executor's per-member ``on_event`` closure, which runs
-        BEFORE this bridge sees the same snapshot (``runtime.py:533-537``), so by
+        BEFORE this bridge sees the same snapshot (``runtime.py:948-952``), so by
         the time :meth:`__call__` is reached the membership is already known.
         Idempotent: the closure calls it on every snapshot, not only the first,
         because "the first" is not a fact the closure can cheaply know.
@@ -402,7 +402,7 @@ class SubagentProgressBridge:
         text = format_aggregate_status(group.snapshots)
         if text:
             # An empty aggregate means "nothing publishable yet"; writing it
-            # would still cost the two-space join at ``chrome.py:1047``.
+            # would still cost the two-space join at ``chrome.py:1108``.
             self._set_row(group_status_key(group.key), text)
         self._set_widget(group.key, format_panel(group.snapshots))
 
@@ -429,7 +429,7 @@ class SubagentProgressBridge:
         Read through ``api.runtime`` rather than a captured ``ctx.ui`` for the
         reason in caveat 2, and compared by IDENTITY against the headless
         singleton — the same test ``ExtensionContext.has_ui`` itself performs
-        (``extensions/api.py:1082-1083``).
+        (``extensions/api.py:1175-1176``).
         """
 
         try:
@@ -460,13 +460,13 @@ class SubagentProgressBridge:
         """Write (or blank) the batch panel, through the SAME ``_ui()`` guard.
 
         Mandatory, not tidy: ``headless_ui.set_widget`` raises
-        ``NotImplementedError`` (``headless_ui.py:126-144``) like every other
+        ``NotImplementedError`` (``headless_ui.py:126-145``) like every other
         ``ui.*`` method there, and the ``suppress`` beneath the guard covers a
         binding that flips between the guard and the call (caveat 3). A
         statusline — or panel — update must never be able to fail a delegation.
 
         ``set_widget(key, content)`` with no options places the widget
-        ``above_editor`` (``tui/context.py:943-958`` → ``chrome.set_widget(...,
+        ``above_editor`` (``tui/context.py:955-970`` → ``chrome.set_widget(...,
         above=True)``), which is the placement S10 asked for; passing
         ``ExtensionWidgetOptions`` for the default would only add an import of a
         product-core type this file does not otherwise need.

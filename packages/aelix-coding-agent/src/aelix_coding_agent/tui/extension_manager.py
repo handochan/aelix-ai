@@ -29,7 +29,7 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
-# Dim / reset escapes — mirror context.py:71/73 (and stats_dashboard.py) so the
+# Dim / reset escapes — mirror context.py:74/76 (and stats_dashboard.py) so the
 # built-in section renders dim inside the framed tabbed modal (duplicated, not
 # imported, to keep this a leaf consumer that never reaches into a shared file).
 _DIM = "\x1b[2m"

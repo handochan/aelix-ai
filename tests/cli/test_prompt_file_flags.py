@@ -9,7 +9,7 @@ which makes these flags load-bearing rather than convenience sugar.
 Two behaviours are pinned harder than the rest because they are placement bugs
 waiting to happen, not feature checks:
 
-* ``_apply_prompt_files`` runs at ``cli/entry.py:1171`` — AFTER the
+* ``_apply_prompt_files`` runs at ``cli/entry.py:1842`` — AFTER the
   ``--list-models`` short-circuit and the ``--export`` exit, BEFORE mode
   resolution. Moving it up to "right after arg validation" (the obvious spot)
   would make an unreadable file hard-fail two do-a-thing-and-exit actions that
@@ -42,7 +42,7 @@ def _normalized(argv: list[str]):
     """``parse_args`` + the ``_apply_prompt_files`` normalization pass.
 
     Returns ``(parsed, error)`` so a test can assert on either half without
-    re-deriving the call the entry point makes at ``cli/entry.py:1171``.
+    re-deriving the call the entry point makes at ``cli/entry.py:1842``.
     """
 
     parsed = parse_args(argv)
@@ -337,7 +337,7 @@ async def test_large_profile_body_survives_replace(
     assert len(options.system_prompt) > 256 * 1024
 
 
-# === Call-site placement (entry.py:1171) =====================================
+# === Call-site placement (entry.py:1842) =====================================
 
 
 async def test_prompt_files_do_not_break_list_models_or_export(

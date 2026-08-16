@@ -207,8 +207,8 @@ async def test_prompt_lists_the_global_target_first_and_labels_the_trust_gate(
 def test_prompt_never_names_the_wrong_global_dir(tmp_path, monkeypatch) -> None:
     """The plausible-but-WRONG ``~/.aelix/extensions`` must never be emitted.
 
-    ``extensions/loader.py:455-457`` scans ``get_agent_dir()/extensions`` and
-    ``cli/entry.py:925`` passes ``agent_dir=Path(get_agent_dir())``, i.e. the
+    ``extensions/loader.py:790-792`` scans ``get_agent_dir()/extensions`` and
+    ``cli/entry.py:1415`` passes ``agent_dir=Path(get_agent_dir())``, i.e. the
     real global dir is ``~/.aelix/agent/extensions``. A hardcoded
     ``~/.aelix/extensions`` would send every user's extension to a directory
     nothing ever reads.
@@ -432,11 +432,11 @@ def test_reload_instruction_is_mode_agnostic() -> None:
 def test_reload_instruction_admits_reload_may_not_re_discover(monkeypatch) -> None:
     """(d) MINOR 4 — ``/reload`` does not ALWAYS pick up a new extension file.
 
-    ``tui/shell.py:2448`` gates the factory rebuild on
+    ``tui/shell.py:3063-3066`` gates the factory rebuild on
     ``_reload_rebuild_enabled()``. That is a documented, supported kill-switch:
     with ``AELIX_RELOAD_REBUILD`` set to a falsy value ``/reload`` routes to
     ``harness.reload_resources()``, which only re-emits a resources discover
-    (``harness/core.py:2955-2962``) and never re-scans the extension
+    (``harness/core.py:3107-3114``) and never re-scans the extension
     directories — so the file the agent just wrote stays dormant while the
     agent reports success.
 
@@ -802,7 +802,7 @@ async def test_prompt_does_not_claim_dot_aelix_writes_ALWAYS_prompt(tmp_path) ->
     ``<cwd>/.aelix/extensions/x.py`` falsifies "always" in most cells — this
     test re-derives the table rather than trusting the prose:
 
-    - YOLO returns at branch (e) (``permission.py:438-439``) BEFORE the write
+    - YOLO returns at branch (e) (``permission.py:518-519``) BEFORE the write
       check, so no prompt in ANY surface.
     - Headless (``-p`` / ``--mode json`` / ``--mode rpc``) has no approver at
       all: branch (d) (``:486-489``) allows outright.
@@ -893,9 +893,9 @@ async def test_prompt_covers_a_policy_BLOCK_and_not_only_a_user_decline(
 
     - PLAN mode blocks every mutating tool on EVERY surface — the check sits
       above the read-only short-circuit precisely so it binds headless too
-      (``permission.py:414-418``).
+      (``permission.py:492-500``).
     - A DELEGATED headless child blocks on default / auto-accept-edits / auto
-      (``permission.py:486-489``, ``headless_default == "block"``).
+      (``permission.py:566-569``, ``headless_default == "block"``).
 
     Told only about declines, an agent that meets a BLOCK has no instruction
     covering it — the case where "try another way" is most tempting and most

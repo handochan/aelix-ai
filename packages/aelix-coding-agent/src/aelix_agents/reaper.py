@@ -32,7 +32,7 @@ Two defences, and BOTH are required:
 
 WHY A ``/proc`` WALK AND NOT ``os.killpg`` (finding I2). An earlier draft
 justified the group kill with *"the child's own ``bash`` tool children must die
-too"*. That is factually wrong: ``tools/bash.py:163`` uses
+too"*. That is factually wrong: ``tools/bash.py:278`` uses
 ``subprocess.Popen(..., start_new_session=True)`` and ``tools/_subprocess.py:78``
 uses ``create_subprocess_exec(..., start_new_session=True)``, so a grandchild is
 the leader of its OWN group and ``killpg`` on the child's group cannot reach it.
@@ -40,7 +40,7 @@ The descendant walk can.
 
 On the COOPERATIVE SIGTERM leg the walk is redundant — the child's own
 ``_signal_cleanup_and_exit`` → ``dispose()`` → ``abort()`` →
-``bash.py:210-215`` ``_kill_group`` already reaps its grandchildren. The
+``bash.py:325-330`` ``_kill_group`` already reaps its grandchildren. The
 escalation leg exists precisely for the child that does NOT cooperate, which is
 also the child whose grandchildren nobody else will clean up.
 
@@ -275,7 +275,7 @@ def pdeathsig() -> None:
     only RECORDS ``stdout_dead["v"]`` when the pipe breaks, and the acting
     ``break`` (``:198-205``) plus the ``raise BrokenPipeError`` (``:208-211``)
     are both strictly AFTER ``await runtime_host.harness.prompt(initial_message)``
-    (``:189-193``). Since ``agents/resolver.py:204-205`` makes the whole task the
+    (``:189-193``). Since ``agents/resolver.py:314-315`` makes the whole task the
     initial prompt, the EPIPE guard covers nothing a subagent does.
 
     Composes with ``start_new_session=True``: ``setsid()`` does not clear the

@@ -10,7 +10,7 @@ THE UNIT IS A LIST OF PER-CHILD SNAPSHOTS, INDEXED BY SUBMITTED POSITION.
 ``snapshots[k] is None`` means member ``k`` has published nothing yet — it is
 parked on the batch semaphore (``batch.MAX_CONCURRENCY``) and has no spawn id at
 all, because ``spawn_id = _new_id()`` is minted inside ``runtime._run``
-(``runtime.py:481``). That is precisely why the UI group is opened with a COUNT
+(``runtime.py:799``). That is precisely why the UI group is opened with a COUNT
 (``progress.SubagentProgressBridge.begin_group(key, expected=…)``) rather than
 with ids: without the count there is nothing to render the ``queued`` term from.
 
@@ -18,8 +18,8 @@ WHY THREE SURFACES AND NOT ONE (S10):
 
 1. :func:`format_aggregate_status` — ONE line for the whole batch.
    ``chrome._render_status`` ``"  ".join``s every registered segment into a
-   FIXED height-1 row (``tui/chrome.py:1036-1047``, rendered at
-   ``chrome.py:661``). Four 45-char per-child segments are ~186 characters and
+   FIXED height-1 row (``tui/chrome.py:1097-1108``, rendered at
+   ``chrome.py:699``). Four 45-char per-child segments are ~186 characters and
    an 80-column terminal shows 1.7 of them, so per-child statusline rows are not
    a design that survives fan-out.
 2. :func:`format_card` — N lines, one per child, for ``ctx.on_partial``. This is
@@ -27,7 +27,7 @@ WHY THREE SURFACES AND NOT ONE (S10):
    ``N == 1`` its output is byte-identical to P2's ``_partial_text``.
 3. :func:`format_panel` — the ``set_widget`` panel, and ONLY at ``N >= 2``
    (:data:`PANEL_MIN_CHILDREN`). Widgets render in their own
-   ``Window(…, dont_extend_height=True)`` (``chrome.py:655``/``:660``) so they
+   ``Window(…, dont_extend_height=True)`` (``chrome.py:693``/``:698``) so they
    may be multi-row, but a single delegation must keep P2's behaviour exactly —
    and P2 had no panel.
 """
@@ -50,14 +50,14 @@ prunes (``harness/loop.py:581`` declares ``update_events``, ``:608`` appends,
 and it is drained only when the turn settles), and ``loop.py`` is KERNEL — it
 may not be edited — so throttling here is the ONLY legal mitigation for H10.
 
-500 ms is 5 repaints at the TUI's ``refresh_interval=0.1`` (``chrome.py:685``),
+500 ms is 5 repaints at the TUI's ``refresh_interval=0.1`` (``chrome.py:723``),
 so every emission is guaranteed visible while 5 Hz is already past the rate a
 human reads a changing row. It bounds a 10-minute child at ~1 200 interval
 flushes PLUS the forced flushes on every ``current_tool`` transition (two per
 child tool call) — call it ~2 000 per child, so the worst legal fan-out
 (8 children × 10 min) holds on the order of 16 000 completed kernel Tasks
 instead of an unbounded number. Today the runtime publishes after EVERY reduced
-stdout line (``runtime.py:485-486``), which for a chatty child is hundreds per
+stdout line (``runtime.py:804-805``), which for a chatty child is hundreds per
 turn."""
 
 PANEL_MIN_CHILDREN = 2
@@ -68,8 +68,8 @@ PANEL_WIDGET_KEY = "aelix-agents:batch"
 """The ``set_widget`` slot the batch panel owns.
 
 ONE key, not one per batch, and that is safe rather than lucky: ``agent``
-declares ``execution_mode="sequential"`` (``tool.py:281-287``), which makes the
-kernel run the whole tool batch sequentially (``loop.py:683-695``), so two
+declares ``execution_mode="sequential"`` (``tool.py:603``), which makes the
+kernel run the whole tool batch sequentially (``loop.py:699-709``), so two
 ``agent`` calls never have panels open at the same time. ``progress.py`` still
 tracks which group last wrote the slot, so an end_group for a group that does
 not own it cannot blank someone else's panel."""
@@ -78,7 +78,7 @@ AGGREGATE_MAX_CHARS = 78
 """Hard ceiling on surface 1, in characters.
 
 78 and not 80: the aggregate is one segment among several on a shared height-1
-row (``chrome.py:1036-1047`` joins them with two spaces), so the last two
+row (``chrome.py:1097-1108`` joins them with two spaces), so the last two
 columns are the join, not content. It is not lower than that because S10's own
 worked example —
 ``agent scout ×4 · 2 running · 1 done · 1 queued · 33s · 12.3k tok · $0.0093``
@@ -106,15 +106,15 @@ PANEL_MAX_ROWS = 9
 """Hard ceiling on the panel's HEIGHT, in rows (finding F2, HIGH).
 
 One header plus ``tool.MAX_PARALLEL_TASKS`` (= 8) member rows, which is every
-legal batch — the parser refuses a ninth task outright (``tool.py:341-344``), so
+legal batch — the parser refuses a ninth task outright (``tool.py:392-398``), so
 this never fires on input a model can actually get past the door. Spelled here
 rather than imported so this module keeps its "no aelix_agents imports" shape,
 and checked anyway because the widget is the one surface with NO downstream
 bound: ``chrome._render_widget_lines`` joins the list with ``\\n`` and ANSI-parses
-it into a ``Window(…, dont_extend_height=True)`` (``chrome.py:1106``/``:655``),
+it into a ``Window(…, dont_extend_height=True)`` (``chrome.py:1167``/``:693``),
 which is multi-row and uncapped, so an over-long list pushes the transcript and
 the input line off screen. Contrast ``chrome._render_status``, which strips
-newlines because "this is a fixed height=1 chrome row" (``chrome.py:1036``) —
+newlines because "this is a fixed height=1 chrome row" (``chrome.py:1097-1099``) —
 the statusline was defended at the far end and the widget is not."""
 
 _ELLIPSIS = "…"
@@ -136,9 +136,9 @@ def _flatten(value: str, *, limit: int) -> str:
     EVERY string this module renders into the widget is child-authored.
     ``SubagentProgress.current_tool`` is set from the CHILD process's own stdout
     JSON — any non-empty ``str`` in ``tool_execution_start.tool_name``
-    (``stream.py:462-464``) — and the kernel emits that event with the raw
+    (``stream.py:671-673``) — and the kernel emits that event with the raw
     model-supplied name BEFORE ``_prepare_tool_call`` looks the tool up
-    (``loop.py:717-723``), so it is not constrained to a real tool name. A child
+    (``loop.py:734-744``), so it is not constrained to a real tool name. A child
     is exactly the process this phase's threat model assumes has read attacker
     controlled content (``consent._may_widen`` constraint 6). Demonstrated: 40
     newlines in ``current_tool`` turned a 3-entry panel into 43 screen rows with
@@ -182,7 +182,7 @@ members finish."""
 def _format_tokens(tokens: int) -> str:
     """Compact token count for surfaces 1 and 3.
 
-    Mirrors ``progress._format_tokens`` (``progress.py:68-71``) rather than
+    Mirrors ``progress._format_tokens`` (``progress.py:147-150``) rather than
     importing it — the same call ``aggregate._format_count`` makes
     (``aggregate.py:145-155``) and for the same reason: these are three
     renderers with three different unit conventions, and a shared helper would
@@ -201,7 +201,7 @@ def _short_profile(name: str) -> str:
 
     :func:`format_aggregate_status` is ALSO the panel's header line, and the
     panel is not newline-stripped downstream the way the statusline is
-    (``chrome.py:1036``). A profile name of 16 characters containing newlines
+    (``chrome.py:1097-1099``). A profile name of 16 characters containing newlines
     would pass the length cap and still add rows to the widget, so the same
     helper that bounds every panel row bounds this too.
     """
@@ -235,14 +235,14 @@ def format_aggregate_status(
     has published yet — the profile name is only knowable from a snapshot, and a
     row that cannot name the agent is noise on a shared row). The caller must
     treat ``""`` as "write no row", NOT as "write an empty row": an empty
-    segment still costs the two-space join at ``chrome.py:1047``.
+    segment still costs the two-space join at ``chrome.py:1108``.
 
     NUMBERS. ``elapsed`` is the MAX over live members — they start together, so
     the oldest one is the batch's age; the executor's own measured wall clock is
     the number that reaches the final ``ToolResult`` (§3.4) and it does not
     exist yet while the batch runs. ``tokens`` is also a MAX and deliberately
     NOT a sum: ``SubagentUsage.tokens`` is documented as a context LEVEL, "last
-    message wins" (``subagent_contract.py:95-96``, and ``stream.py:207-210``
+    message wins" (``subagent_contract.py:95-96``, and ``stream.py:214-217``
     warns about exactly this), so summing it would report a number several times
     the real one — the same rule ``aggregate.roll_up_usage`` follows. ``cost``
     IS a flow and IS summed.
@@ -286,7 +286,7 @@ def format_aggregate_status(
 
 
 def _child_line(progress: SubagentProgress) -> str:
-    """P2's ``extension._partial_text`` (``extension.py:685-690``), VERBATIM.
+    """P2's ``extension._partial_text``, VERBATIM.
 
     The single-child tool card must be byte-identical to what P2 wrote, which is
     what keeps the shipped single-delegation transcript unchanged under S2. Any
@@ -436,7 +436,7 @@ class PartialThrottle:
     * :data:`PARTIAL_MIN_INTERVAL_MS` has elapsed since the last emission.
 
     …and never when the rendered text is identical to the last emitted text.
-    That final dedup mirrors the statusline half (``progress.py:203-205``): a
+    That final dedup mirrors the statusline half (``progress.py:441-443``): a
     frame that would repaint the same bytes is a kernel ``Task`` bought for
     nothing (H10), and it cannot lose information by construction.
     """
@@ -483,7 +483,7 @@ class PartialThrottle:
         ``index`` is the member's SUBMITTED position, bound into the executor's
         per-member ``on_event`` closure at member creation (§3.6) — never
         inferred from the spawn id, which does not exist until ``_run`` mints it
-        (``runtime.py:481``).
+        (``runtime.py:799``).
         """
 
         if index < 0:

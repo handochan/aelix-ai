@@ -8,11 +8,11 @@ cwd, which asks the FILESYSTEM a question only the PROMPT can answer. Discovery
 knows neither of the two things the callers need:
 
 * it does not know about ``--no-context-files`` / ``-nc``. That gate lives one
-  level up, at ``cli/entry.py:1091``, so discovery happily hands back text that
+  level up, at ``cli/entry.py:1202``, so discovery happily hands back text that
   was never injected into anything; and
 * it does not know its own output is ALREADY inside the system prompt the caller
-  is separately counting — ``cli/entry.py:1092-1094`` appends the chunk to
-  ``options.append_system_prompt`` and ``harness/core.py:572-576`` joins those
+  is separately counting — ``cli/entry.py:1203-1205`` appends the chunk to
+  ``options.append_system_prompt`` and ``harness/core.py:596-602`` joins those
   onto the base prompt with ``"\\n\\n"``.
 
 Measured on the pre-change build with one 7175-char ``AGENTS.md`` (1794
@@ -55,8 +55,8 @@ def _discover_without_re_warning(cwd: str) -> str:
 
     Discovery is not a pure read: it prints a ``Warning:`` line to stderr for
     every context file it truncated or dropped against the 32 KiB budget
-    (``cli/agent_context.py:566-577``). The injection path at
-    ``cli/entry.py:1092`` has already called it once and those warnings have
+    (``cli/agent_context.py:1250-1261``). The injection path at
+    ``cli/entry.py:1203`` has already called it once and those warnings have
     already been printed, so a second copy is duplicate noise — measured at 115
     bytes re-emitted per banner render on a single oversized ``AGENTS.md``.
 
@@ -103,7 +103,7 @@ def split_project_context(system_prompt: str | None, cwd: str) -> tuple[str, str
     removed: ``entry.py`` appends the chunk exactly once, and removing more would
     be attributing text this function has not identified.
 
-    The ``"\\n\\n"`` separators that ``harness/core.py:572-576`` puts around the
+    The ``"\\n\\n"`` separators that ``harness/core.py:596-602`` puts around the
     chunk stay in the first half. They belong to the prompt's scaffolding rather
     than to either side, they are worth about one estimated token, and moving
     them would make the split depend on how the harness joins.

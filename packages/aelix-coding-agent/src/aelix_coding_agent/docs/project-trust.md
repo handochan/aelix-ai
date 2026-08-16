@@ -61,7 +61,7 @@ sync.
 
 What ADR-0217 *did* change is the boundary. The text is no longer injected
 verbatim: it is XML-escaped inside pi's `<project_context>` fence
-(`cli/agent_context.py:158-159`), so a hostile file can no longer forge its way
+(`cli/agent_context.py:224-225`), so a hostile file can no longer forge its way
 out of the fence and speak as the host. The whole block is capped at 32768 bytes.
 
 **The switch for `AGENTS.md` is `--no-context-files` / `-nc`**, not
@@ -144,7 +144,7 @@ Cancelling (Esc / Ctrl+C) denies (`project_trust.py:724-726`).
 
 The startup selector runs before the TUI exists, so declining once used to leave
 restarting as the only way to change your mind. `/trust` re-opens the same
-selector from inside a session (`tui/commands.py:1643`, registered at `:2073`).
+selector from inside a session (`tui/commands.py:1643`, registered at `:2189`).
 
 ### `--approve` / `-a` and `--no-approve` / `-na`
 
@@ -166,7 +166,7 @@ both: `aelix --no-approve --no-context-files`.
 In `--print`, `--mode json` and `--mode rpc` there is no UI to prompt with, so an
 undecided directory is **denied** (`project_trust.py:718-720`, pi parity). The
 project-local resources are dropped and a notice naming them goes to stderr
-(`cli/entry.py:2370-2380`), because a silent drop looks identical to a
+(`cli/entry.py:2540-2550`), because a silent drop looks identical to a
 misconfiguration.
 
 ## Where the answer is stored

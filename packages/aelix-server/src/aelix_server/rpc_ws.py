@@ -14,7 +14,7 @@ concurrent connection is rejected with ``close(code=1013)`` BEFORE
 across concurrent connections.
 
 Empty-line note (W1 verification): ``run_rpc_mode``'s internal ``_on_line``
-guards empty lines (``rpc_mode.py:1997-1999`` — ``if not line.strip():
+guards empty lines (``rpc_mode.py:2156-2158`` — ``if not line.strip():
 return``), so feeding ``text.encode() + b"\\n"`` is safe even when a client
 frame already ends in a newline. We additionally strip a single trailing
 newline from the received text before re-adding exactly one ``\\n`` so each
@@ -55,7 +55,7 @@ async def rpc_websocket(websocket: WebSocket) -> None:
     """Full-duplex JSONL RPC bridge for one WebSocket connection.
 
     Lifecycle: single-flight guard → ``accept`` → per-connection harness +
-    runtime (mirrors ``cli/entry.py:277-302``) → anyio task group with a
+    runtime (mirrors ``cli/entry.py:2822-2843``) → anyio task group with a
     ws→reader pump, a queue→ws drain (the SOLE sender), and ``run_rpc_mode``
     → ``finally`` resets ``rpc_active``.
     """
@@ -70,7 +70,7 @@ async def rpc_websocket(websocket: WebSocket) -> None:
     websocket.app.state.rpc_active = True
     await websocket.accept()
     try:
-        # --- per-connection harness + runtime (mirror cli/entry.py:277-302) --
+        # --- per-connection harness + runtime (mirror cli/entry.py:2822-2843) --
         fs = LocalFileSystem()
         repo = JsonlSessionRepo(fs=fs)
         session = await repo.create(JsonlSessionCreateOptions(cwd=config.cwd))

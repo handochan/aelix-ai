@@ -12,7 +12,7 @@ Design constraints (from the WP-8 spec):
   feeding scripted event objects and a fake clock — no harness, no
   prompt-toolkit, no wall-clock dependency.
 - **Read-only consumer.** It only reads duck-typed fields off the events the
-  renderer already sees (``render.py:274-289``): ``tool_execution_start`` /
+  renderer already sees (``render.py:404-430``): ``tool_execution_start`` /
   ``tool_execution_end`` (``.tool_name`` / ``.is_error``), ``message_end``
   (``.message.usage`` / ``.message.model``), and ``turn_end``. Unknown event
   types are ignored.
@@ -357,7 +357,7 @@ class SessionActivityTracker:
         if message is None:
             return
         # The loop emits message_end for EVERY persisting message (the user
-        # prompt, follow-ups, AND every tool-result message — see loop.py:84),
+        # prompt, follow-ups, AND every tool-result message — see loop.py:89-90),
         # not just assistant responses. UserMessage / ToolResultMessage carry no
         # ``.model`` and no ``.usage``, so counting them would inflate the
         # per-model ``requests`` (and the busiest-first leaderboard ordering) by

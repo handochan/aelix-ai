@@ -51,8 +51,8 @@ _SPAWN_ALLOWLIST = (
 # ``create_subprocess_exec`` / ``subprocess.Popen`` / ``os.fork``.
 #
 # Matched on the DOTTED path, not the final attribute: product-core already has
-# six unrelated ``.fork(...)`` calls (session forking — ``tui/shell.py:781``,
-# ``rpc/rpc_mode.py:1395``, ``extensions/command_context.py:116``), so a
+# six unrelated ``.fork(...)`` calls (session forking — ``tui/shell.py:861``,
+# ``rpc/rpc_mode.py:1475``, ``extensions/command_context.py:116``), so a
 # bare-name match would fire on them and this gate would have to be weakened
 # the first time it ran. Receiverless spellings are accepted for the two names
 # that can legitimately be imported directly.

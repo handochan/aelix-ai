@@ -111,7 +111,7 @@ def test_roll_up_sums_the_counters_and_maxes_tokens() -> None:
     """``SubagentUsage.tokens`` is a context LEVEL, "last message wins"
     (``subagent_contract.py:95-96``), not a running total. Summing three
     children's context levels reports a number three times the real one — the
-    mistake ``stream.py:207-210`` already warns about.
+    mistake ``stream.py:214-217`` already warns about.
     """
 
     results = [
@@ -292,7 +292,7 @@ def test_a_failed_member_carries_its_error_on_its_own_line() -> None:
 
 
 def test_an_error_already_inside_the_summary_is_not_repeated() -> None:
-    """Mirrors ``render_subagent_result`` (``tool.py:341-342``): the fallback
+    """Mirrors ``render_subagent_result`` (``tool.py:847-848``): the fallback
     chain often puts ``error_message`` INTO ``summary``, and printing it twice
     reads as two distinct failures."""
 
@@ -312,7 +312,7 @@ def test_an_empty_summary_falls_back_to_the_no_output_sentinel() -> None:
 
 def test_dropped_tools_and_dropped_lines_reach_the_member_block() -> None:
     """A batch member must never say less about itself than the same child would
-    say on the single-mode path (``tool.py:343-355``)."""
+    say on the single-mode path (``tool.py:849-858``)."""
 
     member = MemberOutcome.ran(
         _result(1, dropped_tools=("bash", "edit"), dropped_lines=3)
@@ -348,7 +348,7 @@ def test_a_did_not_start_members_usage_line_does_not_say_error() -> None:
     """The heading and the line beneath it must not disagree.
 
     Every refusal envelope carries ``status="error"`` — ``_refusal_envelope``
-    (``batch.py:613-620``) and ``runtime._error_result`` both mint one that way —
+    (``batch.py:681-696``) and ``runtime._error_result`` both mint one that way —
     so a verbatim ``result.status`` prints ``[agent scout · error · 0.0s]``
     directly under ``[2/2 did not start] …``. That tells the reader in two
     consecutive lines that this member did and did not run, and "error" is the
@@ -380,7 +380,7 @@ def test_both_renderers_emit_the_same_note_set_for_the_same_envelope() -> None:
     """A batch member must never say less about itself than the single path.
 
     ``_member_block`` mirrors ``render_subagent_result``'s notes by hand
-    (``tool.py:600-613``), so a fourth note added to one and not the other is
+    (``tool.py:846-858``), so a fourth note added to one and not the other is
     silent — the batch model would simply never hear about, say, ``truncated``.
     Compares the note lines themselves rather than counting them, so a note that
     is present in both but WORDED differently is caught too.
@@ -473,7 +473,7 @@ def test_the_not_run_line_does_not_blame_a_failure_that_never_happened() -> None
 
     The reachable one: step 2's task renders past ``MAX_TASK_BYTES`` once
     ``{previous}`` is substituted, so ``_run_chain`` appends a ``never_started``
-    member and breaks (``batch.py:355-365``) — no child, no failure. With the
+    member and breaks (``batch.py:379-386``) — no child, no failure. With the
     reason hard-coded, the same result then says ``0 failed`` in its header,
     ``did not start`` in step 2's heading, and "the chain stopped at the first
     failure" in its last line. Three sentences about one batch, two of which
@@ -584,7 +584,7 @@ def test_the_total_line_omits_usage_that_is_entirely_absent() -> None:
 
 
 def test_token_counts_below_a_thousand_are_not_abbreviated() -> None:
-    """The threshold mirrors ``progress._format_tokens`` (``progress.py:68-71``)
+    """The threshold mirrors ``progress._format_tokens`` (``progress.py:147-150``)
     so a batch total and a statusline row never disagree about how a number is
     spelled."""
 
@@ -623,7 +623,7 @@ def test_empty_details_are_omitted_and_keep_the_positions_of_the_others() -> Non
 
 def test_details_is_none_when_every_member_had_none() -> None:
     """What ``render_subagent_result`` passes when a single child had nothing
-    (``tool.py:358``)."""
+    (``tool.py:862``)."""
 
     result = render_batch_result(
         "scout", "parallel", [_ran(1), _ran(2)], not_run=0, wall_ms=1

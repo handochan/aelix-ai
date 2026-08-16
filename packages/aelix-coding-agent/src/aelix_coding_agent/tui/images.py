@@ -3,7 +3,7 @@
 Capability-gated, fallback-rich image output. The native graphics tier is driven
 by ``term-image`` (auto-detecting the Kitty / iTerm2 escape protocols and emitting
 an escape-*string* you print yourself — which fits the
-``chrome.print_above`` → ``in_terminal`` → ``Console.print`` seam, ``chrome.py:246``).
+``chrome.print_above`` → ``in_terminal`` → ``Console.print`` seam, ``chrome.py:1232-1255``).
 The Unicode half-block tier uses ``term-image``'s ``BlockImage`` when available, else
 ``rich-pixels`` (a Rich renderable). When neither extra is installed (or any render
 fails), output degrades to a ``[image: <path> W×H]`` text placeholder.

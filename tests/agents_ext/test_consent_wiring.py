@@ -6,7 +6,7 @@ in). This file pins the TRANSPORT, which is where a decision can be lost,
 forged or bypassed:
 
 * the grant travels in a private dict keyed by ``tool_call_id``, never through
-  ``event.args`` — even though ``harness/core.py:3723-3725`` explicitly permits
+  ``event.args`` — even though ``harness/core.py:3930-3932`` explicitly permits
   a handler to mutate them, because that would put an unvalidated key into the
   transcript;
 * :meth:`dict.pop` takes a ``None`` DEFAULT, and ``None`` FAILS CLOSED. A call
@@ -207,7 +207,7 @@ async def test_a_declined_dialog_blocks_and_starts_nothing(
 ) -> None:
     """Esc, Cancel and a nonsense answer are all the same decision: no.
 
-    A ``None`` answer is Esc (``tui/context.py:255-262``). Anything that is not
+    A ``None`` answer is Esc (``tui/context.py:409-410``). Anything that is not
     a rendered option is treated identically, because the alternative is
     inferring consent from a string nobody was shown.
 
@@ -428,7 +428,7 @@ async def test_the_grant_never_rides_in_the_tool_arguments(tmp_path: Path) -> No
 async def test_what_the_human_approved_is_what_runs(tmp_path: Path) -> None:
     """A LATER handler may mutate ``args``; the approved values must survive.
 
-    ``harness/core.py:3723-3725`` explicitly permits it and the dict the tool
+    ``harness/core.py:3930-3932`` explicitly permits it and the dict the tool
     receives is the same object. The dialog showed a profile, a task and a
     directory; re-reading them at execution time would let anything that ran in
     between substitute different ones.
@@ -494,7 +494,7 @@ async def test_a_mismatched_grant_is_refused(tmp_path: Path) -> None:
 async def test_two_concurrent_hook_invocations_serialize(tmp_path: Path) -> None:
     """Two modals must never be open at once.
 
-    ``tui/chrome.py:518``'s ``_modal`` is a SINGLE slot: ``mount_modal``
+    ``tui/chrome.py:524``'s ``_modal`` is a SINGLE slot: ``mount_modal``
     overwrites unconditionally, the first Future is orphaned, and the turn hangs
     until Ctrl+C. Three independent defences cover it — the kernel's own
     sequential prep phase, the tool's ``execution_mode="sequential"``, and
@@ -797,7 +797,7 @@ async def test_a_batch_refused_for_height_reads_as_split_it_not_as_declined(
     """``SpawnGrant.reason`` must survive the hook, and it must WIN over ``_DECLINED``.
 
     ``_DECLINED`` says "do not retry it", which is true of a human answer and
-    false of a dialog that was never shown (``consent.py:256-270``). A model told
+    false of a dialog that was never shown (``consent.py:261-270``). A model told
     "the user declined" when the user was never asked stops delegating for the
     rest of the prompt; a model told the terminal is too short splits the call
     and gets its work done.
@@ -941,11 +941,11 @@ async def test_a_later_handler_cannot_change_the_topology_that_runs(
 ) -> None:
     """THE ``args``-BY-REFERENCE HOLE, closed in both directions (§5, WP-6).
 
-    ``harness/core.py:3722-3726`` states verbatim that the kernel passes
+    ``harness/core.py:3930-3932`` states verbatim that the kernel passes
     ``ctx.args`` by reference with no defensive copy, precisely so a later
     ``tool_call`` handler may mutate the dict and have the mutation reach
     ``tool.execute``. ``AgentsExtension`` is APPENDED to the extension list
-    (``entry.py:860-873``), so a handler registered after it is not hypothetical.
+    (``entry.py:1381-1383``), so a handler registered after it is not hypothetical.
 
     An ``_execute`` that read ``args.get("mode", "single")`` would let that
     handler pick a different execution TOPOLOGY from the one the human approved —
@@ -1182,7 +1182,7 @@ async def test_a_single_delegation_keeps_its_own_per_child_row(
     NO GROUP IS OPENED AT ALL below ``PANEL_MIN_CHILDREN``, and that is stricter
     than "the group is inactive". An inactive group renders nothing, but
     ``end_group`` clears the aggregate row unconditionally
-    (``progress.py:341``) — one ``set_status(subagent:group:<id>, None)`` for a
+    (``progress.py:344-355``) — one ``set_status(subagent:group:<id>, None)`` for a
     row that was never written, which is a UI write P2 never made. The shipped
     ``test_events_and_statusline.py::test_statusline_row_set_and_cleared``
     counts the keys the UI is asked for and would go red on it.

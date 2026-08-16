@@ -11,7 +11,7 @@ ADR-0078 (Sprint 6h₄c wires them when the 3 DEFERRED RPC handlers move).
 Architectural decision (P-302): Aelix adopts **harness-rebuild** instead
 of session-swap. Pi can swap ``_session`` directly because
 ``AgentSession`` is a stateless wrapper; Aelix ``AgentHarness`` captures
-``_state.session_id`` at ``__init__`` (``harness/core.py:524``) and binds
+``_state.session_id`` at ``__init__`` (``harness/core.py:626``) and binds
 runtime actions / merges tools / caches session_name during construction.
 The harness factory pattern preserves all of these invariants.
 
@@ -609,7 +609,7 @@ class AgentSessionRuntime:
         """Pi parity: ``newSession`` (``agent-session-runtime.ts:200-232``).
 
         Sprint 6h₄c (ADR-0079, P-325 / P-330) — real body. Replaces the
-        Sprint 6d stub at ``rpc_mode.py:309-347`` which rejected
+        Sprint 6d stub in ``rpc_mode.py`` which rejected
         ``parent_session`` with an :class:`RpcErrorResponse`. Pi waveform:
           1. ``emit_before_switch()`` → bail if cancelled.
           2. ``repo.create(JsonlSessionCreateOptions(cwd=current_cwd,

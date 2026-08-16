@@ -293,7 +293,7 @@ async def test_handle_prompt_logs_failure_to_stderr(
     harness = _make_harness()
 
     # The stub must mirror the REAL ``AgentHarness.prompt`` signature
-    # (``harness/core.py:1178-1184``), which has always had ``images``. It was
+    # (``harness/core.py:1214-1220``), which has always had ``images``. It was
     # omitted here only because ``_handle_prompt`` used to drop ``cmd.images``
     # on the floor; now that the handler forwards them (pi does —
     # ``rpc-mode.ts:382-386``) a stub lacking the parameter raises ``TypeError``

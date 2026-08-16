@@ -3,7 +3,7 @@
 Driven against the REAL extension objects — :class:`_ExtensionRuntime`,
 :class:`ExtensionAPI`, :class:`ExtensionContext` — and not against fakes of
 them, for one reason that matters: ``ctx.has_ui`` is
-``runtime.ui is not HEADLESS_UI_CONTEXT`` (``extensions/api.py:1082-1083``), a
+``runtime.ui is not HEADLESS_UI_CONTEXT`` (``extensions/api.py:1175-1176``), a
 TIME-VARYING value (finding OC-7). A hand-rolled context with a boolean
 attribute cannot express "the UI was bound after this extension loaded", which
 is the state every interactive session is actually in.
@@ -17,7 +17,7 @@ tests here that need a real envelope drive a real (stub) child.
 THE ONE SHAPE TO INTERNALISE BEFORE READING ON: consent is taken in the
 extension's ``tool_call`` HOOK and spent in the tool's ``execute()``, linked by
 ``tool_call_id``. :func:`_call` therefore runs BOTH halves, and renders a
-blocked hook the way the kernel does (``loop.py:518-531``) — as a model-readable
+blocked hook the way the kernel does (``loop.py:522-535``) — as a model-readable
 error result — so a refusal from either half is observed identically.
 """
 
@@ -345,7 +345,7 @@ async def _call(
     """Run the hook and then ``execute()``, exactly as the kernel would.
 
     A blocked hook is rendered as an ``is_error`` tool result because that is
-    what the kernel does with one (``loop.py:518-531``): the model sees a
+    what the kernel does with one (``loop.py:522-535``): the model sees a
     refusal it can read either way, so the tests assert on the OUTCOME rather
     than on which half produced it.
     """
@@ -403,7 +403,7 @@ async def test_the_plan_carries_the_parents_live_grant(tmp_path: Path) -> None:
     """The wiring half: the grant is read from ``ctx`` at spawn time, not cached.
 
     ``get_active_tools`` is rebuilt by every ``register_tool``
-    (``core.py:847-906`` materialises the ``None`` sentinel into a real list),
+    (``core.py:876-942`` materialises the ``None`` sentinel into a real list),
     so a captured copy would be the set that existed before this extension
     loaded its own tool. ``SpawnPlan.parent_tools`` is where that live grant
     lands, and ``PrintChannel`` intersects the child's request with it.
@@ -584,11 +584,11 @@ async def test_a_profile_swapped_between_hook_and_execute_is_refused(
 
     The gate now re-resolves the approved NAME and compares. The window is real:
     the ``tool_call`` hook runs in the kernel's SEQUENTIAL prep phase
-    (``loop.py:510-531``) and ``execute()`` under ``asyncio.gather``
-    (``loop.py:877``), and the profile search path is a directory the model's own
+    (``loop.py:514-535``) and ``execute()`` under ``asyncio.gather``
+    (``loop.py:893``), and the profile search path is a directory the model's own
     tools can write. Here the user-scope file the human approved is replaced by a
     PROJECT-scoped one of the same name, which additionally WINS the collision
-    (``agents/service.py:99-100``) — the exact B5 shape, arriving one step later.
+    (``agents/service.py:100-101``) — the exact B5 shape, arriving one step later.
     """
 
     _write_profile(tmp_path / "agent" / "agents" / "scout.md", "scout")
@@ -725,7 +725,7 @@ async def test_the_prompt_budget_is_charged_PER_CHILD_not_per_call(
     """S6 — fan-out must not multiply the ceiling by :data:`MAX_PARALLEL_TASKS`.
 
     ``self._delegations_this_prompt += 1`` fires once per ``spawn_granted``
-    (``runtime.py:392``), i.e. once per CHILD. Charging per CALL instead would
+    (``runtime.py:798``), i.e. once per CHILD. Charging per CALL instead would
     turn twelve delegations per prompt into 12 × 8 = **96 child processes**, each
     a full ``-m aelix_coding_agent`` holding the parent's API keys — which is the
     measured failure the budget exists to stop (0 dialogs / 200 processes) with a
@@ -1079,8 +1079,8 @@ async def test_the_p2_argument_shape_is_unchanged(tmp_path: Path) -> None:
 #
 # Each of these asserts ``bench.channel.plans == []``. That is the whole claim:
 # ``parse_agent_call`` runs inside the ``tool_call`` HOOK, so its refusal reaches
-# the model as a blocked call (``extension.py:447-450``) rendered by the kernel
-# as an immediate error result (``loop.py:518-531``) — no consent dialog, no
+# the model as a blocked call (``extension.py:613-616``) rendered by the kernel
+# as an immediate error result (``loop.py:522-535``) — no consent dialog, no
 # ``PendingSpawn``, no ``create_subprocess_exec``. A refusal that came back from
 # ``execute()`` instead would already have cost a process.
 
@@ -1386,7 +1386,7 @@ async def test_rule_8_timeout_ms_is_bounded_at_both_ends(
     apart, and for ``True`` that is the whole test. ``isinstance(True, int)`` is
     True, so ``timeout_ms: true`` reaches the range check as the integer ``1``
     and today's ``MIN_TIMEOUT_MS`` of 1000 refuses it anyway — dropping
-    ``isinstance(timeout_ms, bool) or`` from ``tool.py:448`` therefore changes
+    ``isinstance(timeout_ms, bool) or`` from ``tool.py:500`` therefore changes
     nothing an ``is_error`` assertion can see. (An earlier version of this
     docstring claimed a bare ``true`` would "become a 1 ms deadline". It would
     not, and a reader who believed it would conclude the guard was load-bearing
@@ -1462,7 +1462,7 @@ def test_an_error_already_inside_the_summary_is_not_repeated_on_the_single_path(
 
     The batch half of this rule (``test_aggregate.py``) was pinned and the
     ORIGINAL was not, so ``and result.error not in body`` could be dropped from
-    ``tool.py:602`` with the whole suite still green. ``summary == error`` is
+    ``tool.py:847`` with the whole suite still green. ``summary == error`` is
     not a contrived shape: it is what every refusal envelope carries
     (``batch._refusal_envelope``, ``runtime._error_result``) and what the
     envelope's own fallback chain produces, so the duplicate would appear on the
@@ -1593,7 +1593,7 @@ async def test_agent_tool_refuses_project_scoped_profile_without_confirmation(
     """FINDING B5 — the model chose this string, so a repo file must not answer it.
 
     Directory trust is a yes-once decision ancestors inherit
-    (``project_trust.py:60-61``); it is NOT consent to a project-local IDENTITY,
+    (``project_trust.py:71-72``); it is NOT consent to a project-local IDENTITY,
     which additionally WINS a name collision against the user's own. No prompt
     is offered, because a prompt here would be a prompt the MODEL summoned.
     """
@@ -1681,7 +1681,7 @@ async def test_approval_mode_ask_opens_the_consent_dialog(tmp_path: Path) -> Non
     """FINDING OC-8 — ``ask`` PROMPTS; it never refuses the spawn.
 
     This replaces the drafted ``test_approval_mode_ask_refuses_to_spawn`` and
-    retires the "validated, not read" deferral at ``agents/profile.py:218-220``.
+    retires the "validated, not read" deferral at ``agents/profile.py``.
     Note that the clamp under a DEFAULT parent is already ``plan``, so this is
     also the case that proves the dialog is opened by the profile's REQUEST and
     not only by a write-capable clamp.
@@ -1817,8 +1817,8 @@ def test_execution_mode_survives_dataclasses_replace() -> None:
 
     The kernel downgrades the WHOLE BATCH to sequential when any tool in it
     declares ``execution_mode="sequential"`` (``types.py:47-56``,
-    ``loop.py:683-693``), which is what stops two ``agent`` calls in one
-    assistant message racing two modals onto ``tui/chrome.py:518``'s single
+    ``loop.py:699-709``), which is what stops two ``agent`` calls in one
+    assistant message racing two modals onto ``tui/chrome.py:524``'s single
     ``_modal`` slot. Because the description is re-stamped with
     :func:`dataclasses.replace` on every ``before_agent_start``, losing the
     field there would silently reopen the hazard.

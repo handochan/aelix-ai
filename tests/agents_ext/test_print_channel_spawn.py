@@ -24,7 +24,7 @@ forks a session-leader grandchild. A real aelix child cannot be made to produce
 any of those on demand. The four tests that DO launch ``-m aelix_coding_agent``
 are the ones whose subject is aelix's own behaviour (project trust, skills).
 
-HERMETICITY (finding I10): ``tests/conftest.py:26-40``'s download guard is an
+HERMETICITY (finding I10): ``tests/conftest.py:25-34``'s download guard is an
 in-process ``monkeypatch.setattr`` and does NOT reach a child interpreter. Every
 real-aelix child below therefore gets an EXPLICIT environment — ``HOME``,
 ``XDG_CONFIG_HOME`` and ``AELIX_CODING_AGENT_DIR`` under ``tmp_path``,
@@ -212,7 +212,7 @@ def _pipe_holding_stub(marker: Path) -> str:
     """A child that leaks a descendant holding its stdout AND stderr.
 
     Deliberately does NOT redirect the grandchild's stdio, so it inherits fd 1
-    and fd 2 — the exact shape ``mcp/client.py:150``'s ``stdio_client(params)``
+    and fd 2 — the exact shape ``mcp/client.py:232``'s ``stdio_client(params)``
     produces for every stdio MCP server a child launches (the SDK's ``errlog``
     defaults to ``sys.stderr``). The child answers and exits 0 immediately; the
     pipes stay open regardless.
@@ -236,7 +236,7 @@ def _pipe_holding_stub(marker: Path) -> str:
 def _grandchild_stub(marker: Path) -> str:
     """A child that forks a SESSION-LEADER grandchild, exactly like ``bash``.
 
-    ``tools/bash.py:163`` uses ``start_new_session=True``, so a grandchild is
+    ``tools/bash.py:278`` uses ``start_new_session=True``, so a grandchild is
     the leader of its OWN process group and ``os.killpg`` on the child's group
     cannot reach it (finding I2). The grandchild records its pid so the test can
     check it independently.
@@ -377,7 +377,7 @@ async def test_stdin_is_devnull(tmp_path: Path) -> None:
     """Pins the +30 s landmine.
 
     An INHERITED stdin sends the child into ``_read_piped_stdin``
-    (``cli/entry.py:169-207``), which blocks for the whole
+    (``cli/entry.py:247-357``), which blocks for the whole
     ``AELIX_STDIN_TIMEOUT`` on a pipe nobody will write to — and any bytes that
     DO arrive are prepended to the task message.
     """
@@ -394,7 +394,7 @@ async def test_child_is_in_its_own_process_group(tmp_path: Path) -> None:
     """``start_new_session=True`` — one Ctrl+C must not SIGINT every subagent.
 
     The default puts the child in the PARENT's group, and neither parent
-    (``tui/shell.py:1323-1339``) nor child (``modes/print_mode.py:114-131``)
+    (``tui/shell.py:1713-1730``) nor child (``modes/print_mode.py:114-131``)
     installs a SIGINT handler, so a group-wide SIGINT kills every delegation at
     once with no envelope and no partial summary.
     """
@@ -672,7 +672,7 @@ async def test_a_pipe_holding_descendant_does_not_hang_the_delegation(
     ``_stream_and_reap`` awaited both pumps and only then ``proc.wait()``, which
     silently redefined "the child finished" as "no writer holds fd 1/2 any
     more". Every stdio MCP server a child launches holds them:
-    ``mcp/client.py:150`` calls ``stdio_client`` with no ``errlog`` and the SDK
+    ``mcp/client.py:232`` calls ``stdio_client`` with no ``errlog`` and the SDK
     defaults to ``sys.stderr``. Measured before the fix, with a child that
     answers correctly and exits 0 in ~50 ms at ``timeout_ms=3000``::
 
@@ -907,7 +907,7 @@ async def test_a_wedged_child_that_closed_its_stdio_still_times_out(
     except BaseException:
         # A failed precondition must not leak the child: cancel the run, which
         # takes ``run``'s ``except asyncio.CancelledError`` abort leg
-        # (print_channel.py:944-946) and kills the tree.
+        # (print_channel.py:1102-1109) and kills the tree.
         run.cancel()
         with contextlib.suppress(BaseException):
             await run
@@ -1026,7 +1026,7 @@ def test_pdeathsig_is_sigterm_and_that_is_a_measured_choice(
     that BLOCKS SIGTERM (pthread_sigmask) -> state='S (sleeping)'`` three seconds
     after the parent was SIGKILLed). That half is real. The proposed fix is not:
     SIGKILL denies the child its own cleanup, and the child's cleanup is the
-    ONLY thing that reaches its ``bash`` grandchildren — ``tools/bash.py:163``
+    ONLY thing that reaches its ``bash`` grandchildren — ``tools/bash.py:278``
     and ``tools/_subprocess.py:78`` both pass ``start_new_session=True``, so each
     grandchild leads its own group and nothing outside the child can find them
     once the child is gone.
@@ -1243,7 +1243,7 @@ async def test_double_cancellation_still_kills(tmp_path: Path) -> None:
 async def test_bash_grandchild_killed_on_sigkill_leg(tmp_path: Path) -> None:
     """FINDING I2 — ``os.killpg`` cannot reach a session-leader grandchild.
 
-    ``tools/bash.py:163`` and ``tools/_subprocess.py:78`` both pass
+    ``tools/bash.py:278`` and ``tools/_subprocess.py:78`` both pass
     ``start_new_session=True``, so every tool subprocess the child starts is the
     leader of its own group. On the COOPERATIVE leg the child's own
     ``_signal_cleanup_and_exit`` reaps them; this test covers the child that does
@@ -1270,7 +1270,7 @@ def test_child_dies_with_parent(tmp_path: Path) -> None:
     only RECORDS ``stdout_dead``, and the acting ``break`` (``:198-205``) plus
     the ``raise BrokenPipeError`` (``:208-211``) are both strictly AFTER
     ``await runtime_host.harness.prompt(initial_message)`` (``:189-193``) —
-    which, since ``agents/resolver.py:204-205`` makes the whole task the initial
+    which, since ``agents/resolver.py:314-315`` makes the whole task the initial
     prompt, is the only thing a subagent ever does.
 
     Driven through a HELPER parent so the test process is not the one killed.
@@ -1498,7 +1498,7 @@ async def test_stop_all_aborts_a_row_that_appears_while_it_is_draining(
 
     The reaper join is used as the injection point because it IS the suspension
     point that releases a queued member in production: ``abort_child`` awaits
-    ``asyncio.shield(reaper_task)`` (``print_channel.py:695-699``).
+    ``asyncio.shield(reaper_task)`` (``print_channel.py:816-820``).
     """
 
     runtime = _SubagentRuntimeImpl(
@@ -1550,18 +1550,18 @@ async def test_the_last_snapshot_of_a_delegation_is_always_terminal(
     """A statusline row that outlives its delegation is undismissable.
 
     ``PrintChannel.run`` writes the prompt file OUTSIDE its own ``try``
-    (``print_channel.py:799``) and ``write_prompt_file`` does ``mkdtemp`` +
+    (``print_channel.py:930``) and ``write_prompt_file`` does ``mkdtemp`` +
     ``os.open``, so a full ``/tmp``, an ``EMFILE`` or a yanked ``TMPDIR`` raises
     straight out of a method that otherwise never raises — before
     ``RunningChild.state`` has moved off its ``"starting"`` default
-    (``print_channel.py:179``). P3 multiplies the trigger by eight: eight
+    (``print_channel.py:187``). P3 multiplies the trigger by eight: eight
     concurrent members each writing a prompt directory is exactly the load that
     fires it.
 
     Published non-terminal, that last snapshot makes
     ``SubagentProgressBridge.__call__`` take its LIVE branch — it WRITES a
     per-child row nothing will ever clear and leaks the id in ``_tools``
-    (``progress.py:273-277``). The registry row is already gone by then, so
+    (``progress.py:287-291``). The registry row is already gone by then, so
     ``stop`` / ``status`` cannot clear it either.
 
     The real ``write_prompt_file`` is what is patched, rather than a fake channel
@@ -1770,7 +1770,7 @@ async def test_the_default_runtime_channel_prices_the_child(
     """A runtime built the way production builds it produces a PRICED envelope.
 
     Measured before the fix, against a real OpenRouter delegation: the envelope
-    read ``2940 in / 20 out`` and carried no ``$`` at all — ``tool.py:622`` and
+    read ``2940 in / 20 out`` and carried no ``$`` at all — ``tool.py:748`` and
     ``aggregate.py:290`` both gate on ``if usage.cost:``, so a structurally-zero
     cost prints nothing rather than ``$0.0000``.
 
@@ -2064,7 +2064,7 @@ def test_orchestrator_and_leaf_produce_different_depth(
 ) -> None:
     """Closes finding I3 — ``role`` is arithmetically INERT at MAX == 1.
 
-    Both branches yield 1 there, and ``agents/profile.py:208`` defaults ``role``
+    Both branches yield 1 there, and ``agents/profile.py:220`` defaults ``role``
     to ``"leaf"``, so the shipped test would pass vacuously. Raising the cap is
     what makes the two branches distinguishable, and it is exactly what P3 does.
     """
@@ -2084,7 +2084,7 @@ def test_env_mcp_config_cleared() -> None:
 
 
 def test_env_pins_the_stdin_timeout() -> None:
-    """An INHERITED ``"0"`` means WAIT FOREVER (``cli/entry.py:172-174``)."""
+    """An INHERITED ``"0"`` means WAIT FOREVER (``cli/entry.py:302-310``)."""
 
     env = build_child_env(_profile(), base={"AELIX_STDIN_TIMEOUT": "0"})
     assert env["AELIX_STDIN_TIMEOUT"] == "1"
@@ -2273,7 +2273,7 @@ async def test_nested_project_extension_not_executed_in_relocated_child(
     """§(g) clause 2, against a REAL child.
 
     ``inherit_extensions: true`` on purpose: with the shipped default
-    (``False``, ``agents/profile.py:187-191``) ``profile_to_flags`` already
+    (``False``, ``agents/profile.py:199-203``) ``profile_to_flags`` already
     emits ``--no-extensions`` and NO project extension is discovered at all, so
     the trust flag would be untestable. This is the one profile shape where
     clause 2 is the thing standing between the child and the vendored code —

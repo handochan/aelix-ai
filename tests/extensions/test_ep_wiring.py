@@ -1333,7 +1333,7 @@ async def test_a_deferred_endpoint_pack_says_so_out_loud(
     A pure-``on_command`` endpoint pack that ran ``setup()`` at startup before
     #91 is now DEFERRED. That is the approved policy, but it was approved on
     the stated basis that "the loader already warns"; MEASURED, it did not —
-    ``loader.py:281-291`` is the shortcut-key warning inside
+    ``loader.py:403-413`` is the shortcut-key warning inside
     ``activate_pending_extension``, which fires only AFTER activation. The
     author saw nothing at all. One warning at the deferral site, naming the
     plugin and the escape hatch, is what makes the break actionable.

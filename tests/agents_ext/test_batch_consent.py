@@ -3,14 +3,14 @@
 The P2 gate asked once per spawn. A ``mode="parallel"`` / ``mode="chain"`` call
 starts up to eight children from ONE tool call, and decision S4 says that is one
 dialog rendering every member's task and the single cwd they share — not one
-dialog per child (two modals from one call collide on ``tui/chrome.py:518``'s
+dialog per child (two modals from one call collide on ``tui/chrome.py:524``'s
 single ``_modal`` slot) and emphatically not a remembered grant (the session memo
 this module removed covered LATER calls, whose tasks nobody had seen).
 
 WHAT MAKES THIS FILE DIFFERENT FROM ``test_spawn_consent.py``: a batch dialog can
 be TOO TALL, and the failure is silent. ``ctx.ui.select`` composes title and
 options into ONE non-wrapping, non-scrolling ``Window``
-(``tui/context.py:112-129``, ``:419-422``) and ``tui/overlay.py``'s
+(``tui/context.py:115-132``, ``:431-434``) and ``tui/overlay.py``'s
 ``_CappedContainer`` clamps its height (``overlay.py:221-231``), so the overflow
 is BOTTOM TRUNCATION — and ``build_options`` appends ``Cancel`` LAST. A naive
 8-task dialog at 80x24 composes to 23 rows against a cap of 19: the hint, the
@@ -66,17 +66,17 @@ from aelix_coding_agent.agents.profile import AgentProfile
 from aelix_coding_agent.builtin.permission_mode import PermissionMode
 from aelix_coding_agent.subagent_contract import ResolvedProfile
 
-# The SHIPPED reserve, read off ``tui/overlay.py:57`` (``_MODAL_RESERVE_ROWS``)
+# The SHIPPED reserve, read off ``tui/overlay.py:56`` (``_MODAL_RESERVE_ROWS``)
 # and NOT imported from ``consent.py``. ``consent._RESERVE_ESTIMATE`` is this
 # plus one row of slack for the multi-row footer ``_reserve_rows`` can grow to
-# (``overlay.py:160-195``); spelling the shipped floor here independently is what
+# (``overlay.py:159-194``); spelling the shipped floor here independently is what
 # makes "the height the code admits fits the height the TUI will draw" a check
 # rather than a tautology.
 _SHIPPED_RESERVE_ROWS = 5
-_MODAL_MIN_HEIGHT = 3  # ``overlay.py:61``
+_MODAL_MIN_HEIGHT = 3  # ``overlay.py:60``
 
 # Rows ``ctx.ui.select`` adds around a picker body: one divider under the title,
-# one counter row, one closing divider, one hint row (``tui/context.py:112-129``,
+# one counter row, one closing divider, one hint row (``tui/context.py:115-132``,
 # ``:365``).
 _FRAME_ROWS = 4
 
@@ -112,7 +112,7 @@ class _SelectSpy:
 
     Records every ``(title, options)`` pair and returns whatever ``answers``
     yields — including ``None``, which is what Esc produces
-    (``tui/context.py:255-262``).
+    (``tui/context.py:267-274``).
     """
 
     def __init__(self, *answers: object) -> None:
@@ -132,7 +132,7 @@ class _FakeCtx:
     """Minimal :class:`ExtensionContext` surface: ``has_ui`` + ``ui``.
 
     ``has_ui`` is a property over a mutable flag because the real one
-    (``extensions/api.py:1062`` → ``:1082-1083``) is TIME-VARYING, not a mode
+    (``extensions/api.py:1155`` → ``:1175-1176``) is TIME-VARYING, not a mode
     (finding OC-7).
     """
 
@@ -208,7 +208,7 @@ def _tall_terminal(monkeypatch: pytest.MonkeyPatch) -> None:
 async def test_an_eight_task_batch_opens_exactly_one_dialog() -> None:
     """S4's headline: one tool call, one decision, one modal.
 
-    Not eight — ``mount_modal`` overwrites ``tui/chrome.py:518``'s single
+    Not eight — ``mount_modal`` overwrites ``tui/chrome.py:524``'s single
     ``_modal`` slot unconditionally, so a second dialog from the same call
     orphans the first Future and hangs the turn.
     """
@@ -646,7 +646,7 @@ async def test_a_declined_batch_starts_nothing() -> None:
 
 
 async def test_esc_is_a_decline() -> None:
-    """``None`` is what ``tui/context.py:255-262`` returns for Esc."""
+    """``None`` is what ``tui/context.py:267-274`` returns for Esc."""
 
     spy = _SelectSpy(None)
     ctx = _FakeCtx(has_ui=True, ui=spy)
@@ -754,7 +754,7 @@ async def test_two_batches_ask_twice() -> None:
 
 
 async def test_a_default_parent_fans_out_with_no_dialog_at_all() -> None:
-    """THE COMMON CASE, AND IT MUST STAY FREE (S4, ``consent.py:458-472``).
+    """THE COMMON CASE, AND IT MUST STAY FREE (S4, ``consent.py:457-478``).
 
     A ``default`` parent clamps a non-declaring profile to ``plan``:
     ``grants_write_authority`` is False and nothing may be widened, so eight
@@ -984,7 +984,7 @@ async def test_a_bare_string_is_a_typeerror_not_23_dialog_rows() -> None:
 
     An earlier draft re-typed the single-task ``task`` parameter to
     ``Sequence[str]``. ``str`` SATISFIES that annotation, so
-    ``/agents run scout "review the auth module"`` (``runtime.py:330-336`` passes
+    ``/agents run scout "review the auth module"`` (``runtime.py:506-509`` passes
     a bare ``str``) would have type-checked green and rendered *"Delegate 23
     tasks…"* with one row per CHARACTER — on the one door a human typed. The
     signatures were kept single-task for that reason, and the batch door guards
@@ -1019,7 +1019,7 @@ def test_the_renderer_refuses_a_bare_string_too() -> None:
 
 
 async def test_an_empty_batch_is_a_programming_error() -> None:
-    """``AgentCall.tasks`` is "ALWAYS at least one" (``tool.py:249``).
+    """``AgentCall.tasks`` is "ALWAYS at least one" (``tool.py:271``).
 
     An empty tuple would render *"Delegate 0 tasks"* and consent to nothing;
     raising is how a caller that lost the tasks finds out immediately.
@@ -1089,7 +1089,7 @@ async def test_a_one_member_batch_is_never_refused_for_height(
 def test_the_module_still_exports_no_session_memo() -> None:
     """The batch is not the rung the removed memo was.
 
-    ``consent.py:125-143`` forbids a memo; P3 adds a batch. If a future edit
+    ``consent.py:218-245`` forbids a memo; P3 adds a batch. If a future edit
     smuggles the memo back in beside the batch, this fails first.
     """
 
@@ -1128,11 +1128,11 @@ def test_the_batch_signature_carries_no_memo_and_no_options_parameter() -> None:
 # --- F1: the dialog may not be forgeable by any interpolated value ------------
 #
 # THE CRITICAL FINDING, AND IT IS AN INVARIANT, NOT AN EXAMPLE. ``cwd`` is
-# model-chosen; ``resolve_child_cwd`` (``print_channel.py:301``) validated only
+# model-chosen; ``resolve_child_cwd`` (``print_channel.py:406``) validated only
 # containment and is-a-directory, and POSIX permits every byte but ``/`` and NUL
 # in a path component. ``resolved.name`` and ``resolved.source_path`` come from a
 # filename and permit the same. ``ctx.ui.select`` then SPLITS the composed title
-# on ``\n`` into rows AND ANSI-PARSES it (``tui/context.py:112-129``), and
+# on ``\n`` into rows AND ANSI-PARSES it (``tui/context.py:115-132``), and
 # prompt_toolkit honours SGR 8 (hidden).
 #
 # Measured before the fix, with a 150-byte directory created by plain
@@ -1255,7 +1255,7 @@ def test_no_interpolated_field_can_carry_a_control_character(payload: str) -> No
 def test_every_header_row_stays_within_one_visible_row(payload: str) -> None:
     """Width, not just height. The modal does NOT wrap.
 
-    ``tui/context.py:419-422`` builds its ``Window`` with ``wrap_lines`` left at
+    ``tui/context.py:431-434`` builds its ``Window`` with ``wrap_lines`` left at
     ``False``, so an over-long row is clipped at the terminal edge WITH NO MARKER
     — the human sees a plausible prefix and cannot tell there is more.
 

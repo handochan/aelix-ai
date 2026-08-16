@@ -24,7 +24,7 @@ from aelix_coding_agent.subagent_contract import (
 
 from aelix_agents.stream import _StreamState
 
-# ``AgentProfile.output_cap``'s default (``agents/profile.py:212``), duplicated
+# ``AgentProfile.output_cap``'s default (``agents/profile.py:229``), duplicated
 # as a module constant so a caller that has no profile (a spawn that died before
 # resolution) still has a budget.
 DEFAULT_OUTPUT_CAP = 51200
@@ -132,7 +132,7 @@ def _select_summary(state: _StreamState, stderr_clean: str, *, ok: bool) -> str:
     THE ``error_message`` RUNG IS GATED THE SAME WAY, AND FOR THE TWIN REASON.
     ``_reduce_message_end`` (``stream.py:552-556``) is last-NON-EMPTY-wins per
     field, so ``state.error_message`` means "SOME turn errored", never "the run
-    failed" — the harness's own auto-retry (``harness/core.py:494-495``, default
+    failed" — the harness's own auto-retry (``harness/core.py:518-519``, default
     ON, 3 attempts) recovers turn 1 on turn 2 and the child answers correctly.
     Ungated, that stale artifact of a retried turn REPLACES the child's real
     answer. Measured against a local endpoint returning 6 consecutive 429s (7

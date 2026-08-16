@@ -205,7 +205,7 @@ def test_csv_and_list_forms_equivalent() -> None:
 def test_skill_paths_resolve_against_profile_dir(tmp_path: Path) -> None:
     """Relative entries anchor to the PROFILE's directory, never cwd.
 
-    aelix's ``--skill`` takes a PATH (``entry.py:547-577``), so a profile must
+    aelix's ``--skill`` takes a PATH (``entry.py:921-962``), so a profile must
     mean the same thing from any working directory. The decoy below is what a
     cwd-relative implementation would have picked.
     """
@@ -250,7 +250,7 @@ def test_missing_skill_path_is_warning_at_parse(tmp_path: Path) -> None:
 def test_project_scope_extensions_is_error() -> None:
     """THE RCE CUT.
 
-    ``extensions/loader.py:443-464`` exec_module's explicit extension paths
+    ``extensions/loader.py:795-859`` exec_module's explicit extension paths
     outside BOTH the ``no_discovery`` and ``no_project_local`` guards, so a
     checked-in project profile declaring ``extensions:`` would run arbitrary
     code that Project Trust never sees.
@@ -277,7 +277,7 @@ def test_user_scope_extensions_allowed() -> None:
 
 
 def test_invalid_thinking_is_error() -> None:
-    """Deliberate asymmetry with ``args.py:313-325``, which warns and drops.
+    """Deliberate asymmetry with ``args.py:504-521``, which warns and drops.
 
     A typo on the command line must not abort a session already launching; a
     checked-in profile is read before anything starts, so it is fatal.

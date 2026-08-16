@@ -620,7 +620,7 @@ async def test_failed_use_leaves_args_and_harness_untouched(bench: _Bench) -> No
 
     Regression for the review's proven half-commit. Refusing early is not enough:
     ``harness.set_active_tools`` validates every name against ``state.tools`` and
-    raises (``core.py:3525-3532``) for a typo, an MCP tool whose server never
+    raises (``core.py:3677-3685``) for a typo, an MCP tool whose server never
     connected, or an extension tool under ``inherit_extensions: false`` — none of
     which profile PARSING can catch. Without the rollback the raise left
     ``parsed.tools`` carrying the rejected names and the prompt already swapped,

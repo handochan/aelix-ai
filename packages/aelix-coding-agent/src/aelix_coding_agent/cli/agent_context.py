@@ -220,7 +220,7 @@ def _escape_text(value: str) -> str:
 #
 # Pi's leading ``"\n\n"`` is deliberately NOT reproduced: this function returns
 # an append CHUNK and the harness already joins chunks with ``"\n\n"``
-# (``harness/core.py:572-573``). Emitting it here would double the gap.
+# (``harness/core.py:596-597``). Emitting it here would double the gap.
 _FENCE_OPEN = "<project_context>\n\nProject-specific instructions and guidelines:\n\n"
 _FENCE_CLOSE = "</project_context>\n"
 _INSTRUCTIONS_CLOSE = "\n</project_instructions>\n\n"
@@ -379,7 +379,7 @@ def _docs_signpost(active_tool_names: set[str]) -> str:
     but it needs the ``bash`` tool, and ``bash`` is in
     ``builtin/permission.py`` ``_MUTATING`` (measured: ``'bash' in _MUTATING``
     -> ``True``, ``'read' in _MUTATING`` -> ``False``). PLAN mode blocks every
-    mutating tool at ``permission.py:436``, which sits ABOVE the read-only
+    mutating tool at ``permission.py:497``, which sits ABOVE the read-only
     short-circuit at ``:441`` — so in the one mode where the user has explicitly
     asked the agent to look and not touch, an ``aelix docs`` pointer is a
     pointer the model cannot follow. ``read`` on an absolute path works in every
@@ -511,7 +511,7 @@ def _extension_signpost(cwd_abs: str, active_tool_names: set[str]) -> str:
     ``$AELIX_CODING_AGENT_DIR`` set after import is still honoured — and so the
     emitted path is the directory the loader actually scans
     (``get_agent_dir()/extensions`` → ``~/.aelix/agent/extensions``, see
-    ``extensions/loader.py:455-457``), never the plausible-but-wrong
+    ``extensions/loader.py:790-792``), never the plausible-but-wrong
     ``~/.aelix/extensions``.
 
     WHO CHOOSES (issue #161). Ordering alone did not settle it: the global
@@ -537,19 +537,19 @@ def _extension_signpost(cwd_abs: str, active_tool_names: set[str]) -> str:
         no_project_local=True  -> extensions=1  errors=[]   # local one GONE
 
     No error, no warning — precisely the confident-failure mode this block
-    exists to kill. ``cli/entry.py:928`` passes
+    exists to kill. ``cli/entry.py:1418`` passes
     ``no_project_local=not project_trusted``, so an untrusted project drops the
     file the agent just wrote while still reporting success. The global tier
-    (``loader.py:455-457``) is not trust-gated at all, so it is the target that
+    (``loader.py:790-792``) is not trust-gated at all, so it is the target that
     works in the most cases and is therefore advertised first.
 
     NOT "always loaded", deliberately. ``--no-extensions`` / ``-ne`` sets
-    ``no_discovery=True`` (``entry.py:927``), which skips BOTH directory tiers.
+    ``no_discovery=True`` (``entry.py:1417``), which skips BOTH directory tiers.
     The wording says "no trust gate" — the property actually measured — rather
     than an "always" that flag would falsify.
 
     ``resolve_project_trusted`` short-circuits to ``True`` when the project has
-    no trust-requiring resources (``project_trust.py:526-527``), so in a FRESH
+    no trust-requiring resources (``project_trust.py:679-680``), so in a FRESH
     project the local path does work for the session that creates it; it is the
     next run (which now sees a non-empty ``.aelix/extensions/``) that must
     answer the trust prompt. Both cases are covered by "loaded only if this
@@ -680,13 +680,13 @@ def _extension_signpost(cwd_abs: str, active_tool_names: set[str]) -> str:
     example = _package_pointer(*_EXAMPLE_PARTS) if can_read else None
     if example:
         # The ONLY read-it-whole target: 75 lines, well inside the 50KB cap, and
-        # it contains a complete working ``setup(aelix)`` (``examples/echo/echo.py:55``).
+        # it contains a complete working ``setup(aelix)`` (``examples/echo/echo.py:56-72``).
         pointers.append(f"  - worked example, read this one: {example}\n")
     api = _package_pointer(*_API_PARTS) if can_read else None
     if api:
         # THE PATTERN. The original hint was ``grep 'def register_'`` — 10 hits,
         # NONE of them the hook surface, which is spelled ``def on(...)`` (the
-        # typed overloads at ``extensions/api.py:1273-1600``). A model told
+        # typed overloads at ``extensions/api.py:1303-1629``). A model told
         # "hooks" exist and handed a grep that cannot find them invents a name.
         #
         # MIND THE PAREN. The obvious widening ``def (register_|on)\(`` is a
@@ -755,7 +755,7 @@ def _extension_signpost(cwd_abs: str, active_tool_names: set[str]) -> str:
     #   plan                BLOCK         BLOCK         BLOCK
     #
     # i.e. it prompts in 3 of those 15 cells. YOLO returns at branch (e)
-    # (``permission.py:438-439``) BEFORE the write check, and a headless run
+    # (``permission.py:518-519``) BEFORE the write check, and a headless run
     # (``-p`` / ``--mode json`` / ``--mode rpc``) has no approver at all —
     # branch (d) at ``:486-489`` allows (or, for a delegated child, blocks).
     # The prompt is reached only via branch (h) at ``:491-498``, because
@@ -774,7 +774,7 @@ def _extension_signpost(cwd_abs: str, active_tool_names: set[str]) -> str:
     # surfaces no prompt comes at all. Comment and text now agree on "may ask".
     #
     # MINOR 3 (truth audit): a DECLINE is not the only refusal. The table shows
-    # BLOCK for every plan-mode cell (``permission.py:414-418``, which returns
+    # BLOCK for every plan-mode cell (``permission.py:497-500``, which returns
     # above the read-only short-circuit so it binds headless too) and for a
     # delegated headless child on default / auto-accept-edits / auto
     # (``:486-489``, ``headless_default == "block"``). Those are policy, not a
@@ -798,12 +798,12 @@ def _extension_signpost(cwd_abs: str, active_tool_names: set[str]) -> str:
     # exist. Made mode-agnostic: the fallback is the one thing that is always
     # correct — report the absolute path and stop.
     #
-    # MINOR 4 (truth audit): /reload does not ALWAYS re-discover. ``shell.py:2448``
+    # MINOR 4 (truth audit): /reload does not ALWAYS re-discover. ``shell.py:3063``
     # gates the factory rebuild on ``_reload_rebuild_enabled()``; with the
     # documented kill-switch ``AELIX_RELOAD_REBUILD`` set to a falsy value
-    # (0/false/no/off, ``shell.py:109-120``) /reload routes to
+    # (0/false/no/off, ``shell.py:120-136``) /reload routes to
     # ``harness.reload_resources()``, which only re-emits a resources discover
-    # (``harness/core.py:2955-2962``) and never re-scans the extension dirs.
+    # (``harness/core.py:3107-3114``) and never re-scans the extension dirs.
     # Measured:
     #
     #   AELIX_RELOAD_REBUILD=''      -> True  -> runtime_host.reload()   [re-discovers]

@@ -1,7 +1,7 @@
 """ADR-0197 §(c)/§(f)/§(l) — ``/agents run <name> <task>`` in the TUI.
 
 ``/agents run`` is a product-core BUILT-IN and it could not be anything else:
-``shell.py:2451-2470`` runs ``match_command`` first and only falls through to
+``shell.py:3096-3113`` runs ``match_command`` first and only falls through to
 ``dispatch.try_execute`` when no built-in claims the leading word, and
 ``extensions/command_dispatch.py::_split_command`` splits an extension command on
 the FIRST SPACE, so an extension command name can never contain one. Spec §6.3's
@@ -322,7 +322,7 @@ async def test_a_widened_grant_is_visible_in_the_panel(bench: _Bench) -> None:
 
 
 async def test_the_child_model_is_shown_on_the_result_panel(bench: _Bench) -> None:
-    """``SubagentResult.model`` is already populated (``envelope.py:374-375``) but
+    """``SubagentResult.model`` is already populated (``envelope.py:384-385``) but
     P2 named it nowhere. A profile with no ``model:`` runs the persisted default
     at a different price, and before this row the only way to notice was the
     bill — so the grid states ``provider/id`` on its own line."""
@@ -352,7 +352,7 @@ async def test_the_model_row_is_omitted_when_the_child_named_no_model(
 
 def test_a_hostile_child_model_cannot_drive_the_result_grids_terminal() -> None:
     """FINDING 1 (HIGH). ``model``/``provider`` are read off the child's own
-    ``message_end`` verbatim (``stream.py:559-563`` → ``envelope.py:373-375``), so
+    ``message_end`` verbatim (``stream.py:558-563`` → ``envelope.py:384-385``), so
     they are attacker-controlled. Rich ``Text`` blocks MARKUP but writes raw
     content ESC / C1 to the terminal, so a ``\\x1b[2J`` in the model would clear
     the parent's screen and a one-byte ``\\x9b`` would drive its cursor.
@@ -539,7 +539,7 @@ async def test_the_prompt_names_the_file_the_user_would_have_to_read(
 
     A bare name is exactly what a project-vs-user collision weaponises: a repo's
     ``reviewer`` WINS against ``~/.aelix/agent/agents/reviewer.md``
-    (``agents/service.py:99-100``), so "reviewer" alone tells the human nothing
+    (``agents/service.py:100-101``), so "reviewer" alone tells the human nothing
     about which file they are about to run.
     """
 
@@ -744,7 +744,7 @@ async def test_an_untrusted_directory_refusal_does_not_open_the_dialog(
 ) -> None:
     """Only the PER-IDENTITY refusal is curable here.
 
-    ``agents/discovery.py:315-321`` raises its own project-local refusal when the
+    ``agents/discovery.py:357-363`` raises its own project-local refusal when the
     DIRECTORY is untrusted, and no answer to a per-identity dialog can fix that
     — the retry would raise it again. A prompt whose answer changes nothing is
     how users are trained to click through consent dialogs, so the sniff is
@@ -799,7 +799,7 @@ async def test_the_confirm_dialog_reuses_the_startup_copy(bench: _Bench) -> None
 def test_builtin_still_shadows_extension() -> None:
     """``/agents run …`` resolves to the built-in ``agents`` command.
 
-    ``shell.py:2451-2470`` consults ``match_command`` first and only reaches
+    ``shell.py:3096-3113`` consults ``match_command`` first and only reaches
     ``dispatch.try_execute`` on a miss, so a built-in always wins the leading
     word — which is the whole reason this branch lives in product-core.
     """

@@ -321,7 +321,7 @@ class StatusExtension:
         """Serialise the snapshot. ``args`` is ignored, deliberately.
 
         The tool declares no parameters, but ``validate_tool_arguments`` is
-        LENIENT by design — "unknown keys are preserved" (``aelix_ai/tools.py:290``)
+        LENIENT by design — "unknown keys are preserved" (``aelix_ai/tools.py:317``)
         — so a model that invents an argument reaches here with it. Ignoring the
         dict entirely means there is no input to this tool at all, which is what
         makes "read-only, no mutation" checkable rather than asserted.

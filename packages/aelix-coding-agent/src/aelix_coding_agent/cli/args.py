@@ -201,7 +201,7 @@ class Args:
     permission_mode: str | None = None
     """Aelix-original (ADR-0197 §(e)) — seeds :class:`PermissionPosture` at
     startup. :data:`None` keeps the DEFAULT posture. A bogus value WARNS via
-    :attr:`diagnostics` and drops (mirrors ``--thinking``, ``args.py:413-430``)
+    :attr:`diagnostics` and drops (mirrors ``--thinking``, ``args.py:504-521``)
     — a typo must not abort a session already launching.
 
     SECURITY: a delegated child receives this from the spawner, which computes
@@ -258,7 +258,7 @@ class Args:
     """Pi parity: ``--skill <path>`` (repeatable).
 
     Aelix divergence (ADR-0196): entries are **paths**, not installable
-    names. ``entry._resolve_skill_dirs`` (``cli/entry.py:547-577``) resolves
+    names. ``entry._resolve_skill_dirs`` (``cli/entry.py:921-962``) resolves
     each entry against ``cwd`` when relative and scans it as a skill
     directory (or the parent of a ``SKILL.md``); Aelix has no skill package
     manager, so a bare *name* silently resolves to a non-existent directory
@@ -530,7 +530,7 @@ def parse_args(argv: list[str]) -> Args:
                     parsed.permission_mode = value
                     parsed.provided.add("permission_mode")
                 else:
-                    # Mirrors --thinking (args.py:423-429): warn + drop, never
+                    # Mirrors --thinking (args.py:504-520): warn + drop, never
                     # abort. A typo must not kill a session already launching,
                     # and must NOT record as "provided" — a rejected value
                     # leaves the field at its default, so claiming the user

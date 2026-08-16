@@ -223,7 +223,7 @@ class RuntimeSnapshot:
         (``_build_harness_options``'s ``cwd = str(Path.cwd())`` → ``AgentHarnessOptions.cwd``
         → ``harness/core.py:_make_context``). Emitted RAW, and that is not a
         disclosure decision made here: ``build_system_prompt`` already emits
-        ``- Working directory: {cwd_abs}`` at ``cli/agent_context.py:719``, so
+        ``- Working directory: {cwd_abs}`` at ``cli/agent_context.py:1067``, so
         the model was told this before its first turn.
 
     ``mode``
@@ -311,7 +311,7 @@ def resolve_project_trusted_fail_closed(
     * nothing ever bound it. ``ExtensionContext.__init__`` installs
       ``is_project_trusted or (lambda: True)`` (``extensions/api.py:1094``) and
       ``AgentHarnessOptions.project_trusted`` defaults to ``True``
-      (``harness/core.py:265``), both citing pi's ``runner.ts:273`` pre-bind
+      (``harness/core.py:289``), both citing pi's ``runner.ts:273`` pre-bind
       default.
 
     That second case is not hypothetical. ``rpc_ws.py:90-94`` constructs

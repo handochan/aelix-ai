@@ -31,10 +31,10 @@ this file grows a defect that only shows up under load:
 
 CANCELLATION IS THE ONE THING THAT PROPAGATES. ``ctx.signal`` is dead — it is
 always ``None``: ``AgentHarness`` calls ``agent_loop(...)`` with no ``signal=``
-argument (``harness/core.py:4276-4282``), ``agent_loop``'s parameter defaults to
+argument (``harness/core.py:4483-4489``), ``agent_loop``'s parameter defaults to
 ``None`` (``loop.py:107``) and is threaded unchanged into
-``ToolExecutionContext(signal=signal)`` (``loop.py:610-612``). Abort is
-``turn_task.cancel()`` (``core.py:4287-4296``). So ``CancelledError`` is the ONLY
+``ToolExecutionContext(signal=signal)`` (``loop.py:626-628``). Abort is
+``turn_task.cancel()`` (``core.py:1516-1518``). So ``CancelledError`` is the ONLY
 channel by which a Ctrl+C reaches a child, and every rule below about it is load
 bearing rather than defensive.
 """
@@ -95,12 +95,12 @@ wall clock by splitting a job across tasks or by merging tasks into one.
 
 It is the only bound on how long the user is locked out, because S11 ships no
 mid-turn stop overlay: while a delegation runs, Enter is routed to ``steer()`` as
-a MESSAGE (``chrome.py:746-753``) and the queue drains only after the turn.
+a MESSAGE (``chrome.py:784-790``) and the queue drains only after the turn.
 
 IT IS A CEILING ON THE MEMBERS' TIMEOUTS, NOT ON THE CALL'S WALL CLOCK. A member
 that hits its deadline then runs its kill legs — ``reap(grace=5.0)``
 (``reaper.py:80``) plus the bounded post-kill drain ``POST_EXIT_DRAIN_SECONDS =
-2.0`` (``print_channel.py:127``). :data:`KILL_LEG_RESERVE_MS` is subtracted so the
+2.0`` (``print_channel.py:135``). :data:`KILL_LEG_RESERVE_MS` is subtracted so the
 ceiling is honoured rather than approximately honoured; the honest outer bound is
 this number plus at most one kill leg for whatever was in flight when it fired."""
 
@@ -117,7 +117,7 @@ _BATCH_BUDGET_EXHAUSTED = (
     "was created. Run the remaining tasks in a new call, or make them smaller."
 )
 
-# ONE SEMAPHORE PER RUNNING LOOP, and the precedent is ``consent.py:98-110``.
+# ONE SEMAPHORE PER RUNNING LOOP, and the precedent is ``consent.py:109-128``.
 # ``asyncio.Semaphore`` binds itself to the first loop that CONTENDS on it (the
 # ``_LoopBoundMixin`` fast path never touches ``_get_loop``) and raises "bound to
 # a different event loop" forever after. A process has exactly one loop, so in
@@ -196,7 +196,7 @@ class _Batch:
     posture: Callable[[], PermissionMode]
     """The parent's LIVE posture getter (``extension._host_posture``), read once
     per member — never a value captured at call time. shift+tab stays bound while
-    a turn runs (``chrome.py:906-909``), and wave 2 may start half an hour after
+    a turn runs (``chrome.py:967-970``), and wave 2 may start half an hour after
     wave 1."""
     clamp_at_start: PermissionMode
     """The child clamp implied by the parent posture when the batch began. It is
@@ -212,7 +212,7 @@ class _Batch:
     ``AUTO_ACCEPT`` at ``posture.py:54-60``), and in the WIDENED case it is
     always ``PLAN`` — the bottom of the lattice — so no comparison against it can
     ever detect a tightening. The raw posture does not saturate: widening is only
-    ever offered under a ``PLAN`` or ``DEFAULT`` parent (``consent.py:524``
+    ever offered under a ``PLAN`` or ``DEFAULT`` parent (``consent.py:527``
     requires ``AUTO_ACCEPT`` strictly looser than the clamp), and a ``DEFAULT``
     parent still has ``PLAN`` below it to shift+tab into. See
     :func:`_live_floor`."""
@@ -244,7 +244,7 @@ async def run_batch(
     (``SubagentProgress`` carries no batch id — §3.6 explains why it stays that
     way). The index is available before the child's id exists, which is the
     property that makes the whole grouping design work: ``spawn_id = _new_id()``
-    is minted INSIDE ``_run`` (``runtime.py:481``), and for members 5-8 not until
+    is minted INSIDE ``_run`` (``runtime.py:799``), and for members 5-8 not until
     wave 2.
     """
 
@@ -308,12 +308,12 @@ async def _run_parallel(batch: _Batch) -> tuple[list[MemberOutcome], int]:
 
     * ``return_exceptions=True`` would capture a member's ``CancelledError`` as a
       RESULT, so this frame would not propagate — which bypasses the
-      second-Ctrl+C escalation at ``print_channel.py:1056-1058`` (``_reap``'s
+      second-Ctrl+C escalation at ``print_channel.py:1214-1216`` (``_reap``'s
       ``except CancelledError: self._eager_abort(proc, row); raise``).
     * No ``ensure_future`` without holding the handle and no ``shield``: a
       detached member is a child nobody can kill, and ``PrintChannel.run``
       documents that ``CancelledError`` is the ONE thing it propagates and that
-      it kills the child eagerly before re-raising (``print_channel.py:717-725``,
+      it kills the child eagerly before re-raising (``print_channel.py:866-874``,
       ``:944-951``).
     * Awaited HERE rather than returned: cancelling the task that owns this frame
       cancels the ``_GatheringFuture``, which is the only path that cancels the
@@ -324,7 +324,7 @@ async def _run_parallel(batch: _Batch) -> tuple[list[MemberOutcome], int]:
     exception immediately and leaves its siblings RUNNING, DETACHED, holding real
     ``-m aelix_coding_agent`` processes with nothing left to reap them. That path
     is reachable, not theoretical: ``PrintChannel.run`` writes the prompt file
-    OUTSIDE its own ``try`` (``print_channel.py:774`` vs ``:775``) and
+    OUTSIDE its own ``try`` (``print_channel.py:930`` vs ``:931``) and
     ``write_prompt_file`` does ``mkdtemp`` + ``os.open``
     (``prompt_file.py:129-131``), so a full ``/tmp``, an ``EMFILE`` or a yanked
     ``TMPDIR`` raises ``OSError`` straight out — and four concurrent children each
@@ -420,7 +420,7 @@ async def _member(
     THE ACQUIRE IS THE ONLY ``await`` BEFORE ``spawn_granted``, AND IT IS OUTSIDE
     BOTH TOCTOU WINDOWS (S5 / dossier H12). ``_run``'s admission block —
     ``_admit_live()`` → budget check → ``+= 1`` → ``_new_id()`` → registry insert
-    (``runtime.py:478-490``) — contains no ``await``, so asyncio cannot interleave
+    (``runtime.py:787-801``) — contains no ``await``, so asyncio cannot interleave
     two members inside it. Putting the acquire anywhere inside that block would
     split it and let two members both pass ``_admit_live`` before either
     registered. It is here, one frame above, where the only thing it orders is how
@@ -436,9 +436,9 @@ async def _member(
 
     # WHETHER A CHILD ROW EVER EXISTED, observed rather than inferred. ``_run``
     # publishes a first snapshot IMMEDIATELY after the registry insert
-    # (``runtime.py:502``) and every refusal that precedes the insert —
+    # (``runtime.py:840``) and every refusal that precedes the insert —
     # ``_admit_live``, the per-prompt budget, a non-consented grant — returns
-    # BEFORE it (``runtime.py:478-483``). So "this tap fired at least once" is
+    # BEFORE it (``runtime.py:785-797``). So "this tap fired at least once" is
     # exactly "a delegation was admitted", which is the fact
     # ``aggregate.MemberOutcome`` needs.
     #
@@ -449,7 +449,7 @@ async def _member(
 
     def _tap(progress: SubagentProgress) -> None:
         nonlocal admitted
-        # Set FIRST. ``_publish`` swallows a tap's exception (``runtime.py:536``),
+        # Set FIRST. ``_publish`` swallows a tap's exception (``runtime.py:951-952``),
         # so a raising subscriber must not be able to lose the observation.
         admitted = True
         if batch.on_event is not None:
@@ -470,15 +470,15 @@ async def _member(
                     _refusal_envelope(batch.resolved, _BATCH_BUDGET_EXHAUSTED)
                 )
             # THE PROFILE'S OWN BUDGET IS THE DEFAULT, NOT ``DEFAULT_TIMEOUT_MS``
-            # — this line mirrors ``print_channel.py:739-743`` exactly, and it
+            # — this line mirrors ``print_channel.py:894-898`` exactly, and it
             # must, because the executor is what makes ``plan.timeout_ms`` non-
             # ``None``. Substituting the module default here would mean the
             # channel's own ``profile.timeout_ms`` fallback is UNREACHABLE for
             # every batch member, so an author who bounded their agent to one
-            # minute in frontmatter (``agents/profile.py:375``) would silently
+            # minute in frontmatter (``agents/profile.py:398``) would silently
             # get ten — times up to eight children — while ``mode="single"``,
             # which passes ``pending.call.timeout_ms`` straight through
-            # (``extension.py:876``), still honoured it. Same profile, two modes,
+            # (``extension.py:1024``), still honoured it. Same profile, two modes,
             # two clocks.
             requested_ms = (
                 batch.call.timeout_ms
@@ -525,13 +525,13 @@ def _live_floor(batch: _Batch) -> PermissionMode | None:
     """The §3.9 floor: ``None`` unless the PARENT TIGHTENED since the batch began.
 
     The problem this closes. ``_host_posture()`` is a live getter
-    (``extension.py:300-306``) but it is read exactly ONCE per call, inside
-    ``_grant_for`` (``extension.py:537``), and baked into ``grant.mode``, which
+    (``extension.py:392-398``) but it is read exactly ONCE per call, inside
+    ``_grant_for`` (``extension.py:762``), and baked into ``grant.mode``, which
     becomes every member's ``SpawnPlan.permission_mode``
-    (``runtime.py:494-498``). Meanwhile shift+tab stays live during a running
+    (``runtime.py:825``). Meanwhile shift+tab stays live during a running
     turn — its binding is gated only on ``Condition(lambda:
     self._input_has_focus() and not self.is_modal_open())``
-    (``chrome.py:906-909``), and the input window holds focus while a turn runs;
+    (``chrome.py:967-970``), and the input window holds focus while a turn runs;
     that is precisely how Enter reaches ``steer()``. Under P2 the resulting window
     was one child and milliseconds. Here it is up to
     :data:`MAX_BATCH_WALL_MS`, and S11 has deliberately removed every other
@@ -542,7 +542,7 @@ def _live_floor(batch: _Batch) -> PermissionMode | None:
     key=posture_rank)`` evaluated with an UNCHANGED posture returns ``live``
     whenever the human WIDENED at the dialog — ``consent._may_widen`` only offers
     the rung when ``AUTO_ACCEPT`` is strictly looser than the clamp
-    (``consent.py:524``), so ``grant.mode`` is strictly above ``live`` in exactly
+    (``consent.py:527``), so ``grant.mode`` is strictly above ``live`` in exactly
     the widened case. The literal form would therefore revoke every widening the
     human explicitly granted, on every batch, with no posture change at all — and
     it would break §7 invariant 1's own stated proof that "with a steady posture,
@@ -554,7 +554,7 @@ def _live_floor(batch: _Batch) -> PermissionMode | None:
     precisely the case the bullets below advertise. ``child_permission_mode``
     reaches only three of the five ranks and, whenever ``_may_widen`` returns
     True, is provably ``PLAN``: the rung requires ``AUTO_ACCEPT`` strictly looser
-    than the clamp (``consent.py:524``) and the clamp's reachable set is
+    than the clamp (``consent.py:527``) and the clamp's reachable set is
     ``{PLAN, AUTO_ACCEPT, YOLO}`` (``DEFAULT`` is folded into ``PLAN`` at
     ``posture.py:231``), so the only value strictly below ``AUTO_ACCEPT`` is
     ``PLAN``. ``PLAN`` is rank 0. Nothing is strictly below rank 0, so
@@ -581,7 +581,7 @@ def _live_floor(batch: _Batch) -> PermissionMode | None:
 
     EITHER signal admits the floor, which makes the change monotone in the safe
     direction: it can only ADD floors, never remove one, and the floor it returns
-    is rank-MINed by ``runtime._tighten`` (``runtime.py:807-818``) so no member
+    is rank-MINed by ``runtime._tighten`` (``runtime.py:955-966``) so no member
     can ever be RAISED. Under a steady posture and a steady UI neither fires, so
     §7 invariant 1 is untouched.
 
@@ -633,7 +633,7 @@ def _kill_leg_reserve_ms(mode: SubagentMode, steps_left: int) -> int:
 
     A member that hits its deadline does not stop there: ``reap`` waits
     ``DEFAULT_GRACE_SECONDS = 5.0`` (``reaper.py:80``) and then drains for a
-    bounded ``POST_EXIT_DRAIN_SECONDS = 2.0`` (``print_channel.py:127``).
+    bounded ``POST_EXIT_DRAIN_SECONDS = 2.0`` (``print_channel.py:135``).
 
     In PARALLEL those legs overlap, so one reserve covers the whole wave. In a
     CHAIN they are strictly sequential, so an eight-step chain that runs into the

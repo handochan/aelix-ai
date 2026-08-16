@@ -40,8 +40,8 @@ re-discovering the crash.
 
 ## Remaining — required before a `windows-latest` leg can be trusted
 
-1. **`preexec_fn` spawn-site guard.** `aelix_agents/print_channel.py:881` and
-   `aelix_agents/rpc_channel.py:413` pass `preexec_fn=pdeathsig`, which is
+1. **`preexec_fn` spawn-site guard.** `aelix_agents/print_channel.py:970` and
+   `aelix_agents/rpc_channel.py:438` pass `preexec_fn=pdeathsig`, which is
    POSIX-only and raises on Windows. **Owned by another track** — explicitly
    out of scope here, and untouched.
 2. **`reaper.py:208` (`os.kill(pid, signal.SIGKILL)`).** The third kill site.
@@ -69,7 +69,7 @@ re-discovering the crash.
    (and the box-drawing in the TUI chrome) will mojibake or raise
    `UnicodeEncodeError` on `print`. Cheap to fix, worth doing early — it will
    otherwise look like a hundred unrelated failures.
-8. **Ctrl+G external editor.** `tui/shell.py:1810-1811` falls back to `vi`,
+8. **Ctrl+G external editor.** `tui/shell.py:2314` falls back to `vi`,
    which does not exist on stock Windows. `notepad` is the fallback there.
 9. **`Operating System :: OS Independent` classifiers** — untouched on purpose;
    that is a tag-time decision owned elsewhere.

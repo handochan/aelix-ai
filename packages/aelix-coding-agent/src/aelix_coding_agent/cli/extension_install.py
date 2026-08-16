@@ -232,7 +232,7 @@ _INSTALLED_NO_VERDICT = (
     "To get the verdict: aelix extension verify"
 )
 
-#: The entry-point group the loader's Tier-4 pass discovers (loader.py:750).
+#: The entry-point group the loader's Tier-4 pass discovers (loader.py:1475).
 ENTRY_POINT_GROUP = "aelix.extensions"
 
 TargetKind = Literal["path", "git", "pypi"]

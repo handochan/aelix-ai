@@ -8,26 +8,26 @@ Protocol in ``subagent_contract.py`` deliberately carries no grant parameter
 ``test_product_core_never_prompts_for_spawn_consent``).
 
 THE PROBLEM IS AN EMPTY GATE, NOT UX. Measured on the shipped ladder:
-``_MUTATING`` (``builtin/permission.py:64``) is
+``_MUTATING`` (``builtin/permission.py:76``) is
 ``['bash','create_file','edit','execute_command','sh','shell','write','write_file']``
 — ``"agent"`` is NOT in it, so an ``agent`` tool call falls into the
-non-mutating branch at ``permission.py:324-325`` and is **silently allowed**.
+non-mutating branch at ``permission.py:503-504`` and is **silently allowed**.
 Delegation is today the one action a model can take that starts a whole second
 agent with real authority and asks nobody.
 
 WHY NOT JUST ADD ``"agent"`` TO ``_MUTATING``. ``_rule_key``
-(``permission.py:94-116``) falls through to an args-blind ``f"tool:{tool_name}"``
+(``permission.py:175-197``) falls through to an args-blind ``f"tool:{tool_name}"``
 at ``:116``. One "allow for this session" would then approve EVERY profile
 against EVERY task for the rest of the run. The gate has to live here, keyed on
 what actually varies. ``builtin/permission.py`` is deliberately left alone.
 
 WHY THE ``tool_call`` HOOK AND NOT ``execute()``. ``ToolExecutionContext``
 (``aelix_ai/tools.py``) has four fields and no UI; and the kernel runs
-``before_tool_call`` in the SEQUENTIAL prep phase (``loop.py:510-531``, driven
+``before_tool_call`` in the SEQUENTIAL prep phase (``loop.py:514-535``, driven
 from ``:813-823``) while ``execute()`` runs under ``asyncio.gather``
-(``loop.py:877``) with ``tool_execution = "parallel"`` by default
-(``harness/core.py:247``). Two modals from one batch would collide on
-``tui/chrome.py:518``'s single ``_modal`` slot — ``mount_modal`` overwrites
+(``loop.py:893``) with ``tool_execution = "parallel"`` by default
+(``harness/core.py:271``). Two modals from one batch would collide on
+``tui/chrome.py:524``'s single ``_modal`` slot — ``mount_modal`` overwrites
 unconditionally, the first Future is orphaned, and the turn hangs. The hook
 gives us the kernel's own serialisation for free; :data:`_CONSENT_LOCK` and the
 tool's ``execution_mode="sequential"`` are the belt and braces.
@@ -62,14 +62,14 @@ the hook already validated and every member's task is on screen, whereas the mem
 covered LATER calls whose tasks and directories nobody had seen. The price is
 that the dialog now has a HEIGHT BUDGET it can exceed — ``ctx.ui.select``
 composes title and options into one non-wrapping, non-scrolling ``Window``
-(``tui/context.py:112-129``, ``:419-422``) and ``tui/overlay.py``'s
+(``tui/context.py:115-132``, ``:431-434``) and ``tui/overlay.py``'s
 ``_CappedContainer`` bottom-truncates it (``overlay.py:221-231``), so a tall
 enough batch would push ``Cancel`` off screen. :func:`batch_dialog_fits` measures
 the composition against the live terminal and a call that would not fit is
 REFUSED rather than rendered half-way; see §3.7 of the P3 plan.
 
 ``ctx.has_ui`` IS TIME-VARYING — NEVER CACHE IT (finding OC-7). It is not a
-mode. ``extensions/api.py:1062`` returns ``runtime.ui is not
+mode. ``extensions/api.py:1154-1155`` returns ``runtime.ui is not
 HEADLESS_UI_CONTEXT`` (``:1082-1083``): ``False`` during
 ``harness.bootstrap()``, ``True`` after ``tui/shell.py`` binds the real UI,
 re-pointed on every harness rebuild (``/new`` / ``/fork`` / ``/resume``), and
@@ -102,7 +102,7 @@ if TYPE_CHECKING:
 # ``tool_call`` hook (see the module docstring), so this only has to cover the
 # second door — ``/agents run``, which is a REPL command — and any future
 # caller that has not read this file. The precedent is
-# ``builtin/permission.py:387``'s ``async with self._lock`` around its own
+# ``builtin/permission.py:573``'s ``async with self._lock`` around its own
 # modal. Module scope is correct: the resource being protected is the TUI's
 # single ``_modal`` slot, which is also process-wide.
 #
@@ -142,7 +142,7 @@ BATCH_TASK_PREVIEW_CHARS = 72
 """Per-member task budget in a MULTI-task dialog (P3 §3.7).
 
 Deliberately NOT :data:`TASK_PREVIEW_CHARS`, and deliberately smaller. The modal
-does not wrap (``tui/context.py:419-422`` builds its ``Window`` with
+does not wrap (``tui/context.py:431-434`` builds its ``Window`` with
 ``wrap_lines`` left at its default ``False``), so on an 80-column terminal a
 300-character preview would render as ONE row of which about 72 characters are
 visible and the remainder is INVISIBLY clipped — the silent drop S4 forbids, and
@@ -185,15 +185,15 @@ _RESERVE_ESTIMATE = 6
 """Rows ``tui/overlay.py`` reserves BELOW the modal, as estimated from here.
 
 ``_modal_cap`` is ``max(_MODAL_MIN_HEIGHT, rows - _reserve_rows(chrome))``
-(``overlay.py:142-152``) and ``_reserve_rows`` returns at least
-``_MODAL_RESERVE_ROWS = 5`` (``overlay.py:57``), growing with a multi-line input
-buffer and a multi-row footer (``overlay.py:160-195``). The chrome is not
+(``overlay.py:135-151``) and ``_reserve_rows`` returns at least
+``_MODAL_RESERVE_ROWS = 5`` (``overlay.py:56``), growing with a multi-line input
+buffer and a multi-row footer (``overlay.py:159-194``). The chrome is not
 reachable from an extension, so this is the shipped floor of 5 plus one row of
 slack for the grown footer. Erring HIGH is the safe direction: it admits one
 member fewer than the live cap would, never one more."""
 
 _MIN_CAP = 3
-"""``tui/overlay.py``'s ``_MODAL_MIN_HEIGHT`` (``overlay.py:61``).
+"""``tui/overlay.py``'s ``_MODAL_MIN_HEIGHT`` (``overlay.py:60``).
 
 The floor ``_modal_cap`` never goes below, so the arithmetic here has to have it
 too. It matters only on an absurdly short terminal, where every batch is refused
@@ -239,7 +239,7 @@ full."""
 # the rung above. A memo let a LATER tool call skip the dialog — its tasks and
 # its cwd were chosen after the human had answered and were never on screen. A
 # batch is ONE tool call, already validated by the hook and frozen into
-# ``PendingSpawn`` (``tool.py:139-163``), whose every task and whose one cwd are
+# ``PendingSpawn`` (``tool.py:304-328``), whose every task and whose one cwd are
 # rendered before the human answers — and if they cannot all be rendered, the
 # call is REFUSED (:func:`batch_dialog_fits`) rather than partly shown. Nothing
 # is memoised and the grant is still spent by exactly this one call.
@@ -271,7 +271,7 @@ class SpawnGrant:
 
     STILL ONE PROFILE, ONE MODE, ONE DECISION (S3): this adds a caption to the
     decision, not a second decision. Trailing and defaulted so every existing
-    constructor — ``extension.py:546``, this module's own ``_grant`` — is
+    constructor — ``extension.py:771-778``, this module's own ``_grant`` — is
     unchanged."""
 
 
@@ -350,12 +350,12 @@ def _sanitize_field(value: object, *, limit: int = DIALOG_FIELD_CHARS) -> str:
     """Make one interpolated value SAFE TO PUT IN THE DIALOG. (F1, CRITICAL)
 
     Every value this module interpolates is attacker-reachable. ``cwd`` is
-    model-chosen and ``resolve_child_cwd`` (``print_channel.py:301``) validates
+    model-chosen and ``resolve_child_cwd`` (``print_channel.py:406-456``) validates
     only containment and is-a-directory — POSIX permits any byte but ``/`` and
     NUL in a path component — and ``resolved.name`` / ``resolved.source_path``
     come from a filename, which permits the same. ``ctx.ui.select`` then does two
     things with the composed title: it SPLITS IT ON ``\\n`` into rows and it
-    ANSI-PARSES it (``tui/context.py:112-129``). A single directory of 150 bytes
+    ANSI-PARSES it (``tui/context.py:115-132``). A single directory of 150 bytes
     was demonstrated end-to-end to render a coherent, benign dialog — right
     ``Directory:``, right ``Permission: plan``, two innocuous task rows — while
     hiding the REAL permission row and the REAL tasks behind ``\\x1b[8m`` (SGR 8,
@@ -373,7 +373,7 @@ def _sanitize_field(value: object, *, limit: int = DIALOG_FIELD_CHARS) -> str:
        no hidden text and no cursor movement;
     3. bounded to :data:`DIALOG_FIELD_CHARS` — one VISIBLE row, so the row that
        was counted is the row that is read. The modal does not wrap
-       (``tui/context.py:419-422``), so without this an over-long field is
+       (``tui/context.py:431-434``), so without this an over-long field is
        clipped invisibly.
     """
 
@@ -387,7 +387,7 @@ def _sanitize_path(value: object, *, limit: int = DIALOG_FIELD_CHARS) -> str:
     """:func:`_sanitize_field` for a PATH — elides the MIDDLE, and that is security.
 
     Same three properties; only the truncation differs, and the difference is not
-    cosmetic. The modal does not wrap (``tui/context.py:419-422``), so an
+    cosmetic. The modal does not wrap (``tui/context.py:431-434``), so an
     over-long ``Directory:`` row is clipped by the terminal at column 80 WITH NO
     MARKER — the human sees a plausible prefix and cannot tell there is more.
     Containment (``print_channel.resolve_child_cwd``) only guarantees the child
@@ -595,7 +595,7 @@ def build_consent_title(
     model-chosen and the profile fields come from a filename, so all four are
     strings an attacker can put ``\\n`` and ``\\x1b`` into; the composed title is
     newline-split into rows AND ANSI-parsed by ``ctx.ui.select``
-    (``tui/context.py:112-129``). :func:`_sanitize_field` is what makes this a
+    (``tui/context.py:115-132``). :func:`_sanitize_field` is what makes this a
     nine-row body for every input rather than for well-behaved ones — see its
     docstring for the demonstrated forgery.
 
@@ -673,7 +673,7 @@ def _reject_str_batch(tasks: object) -> None:
     dialog. This is not defensive padding: an earlier draft of P3 re-typed
     :func:`request_spawn_consent`'s ``task`` parameter to ``Sequence[str]``, and
     because ``str`` satisfies that annotation, ``/agents run scout "review the
-    auth module"`` (``runtime.py:330-336``, which passes a bare ``str``) would
+    auth module"`` (``runtime.py:539-542``, which passes a bare ``str``) would
     have type-checked green and rendered *"Delegate 23 tasks to agent 'scout'?"*
     with the rows ``[1/23] r``, ``[2/23] e``, … — 23 rows on the one door a human
     typed, blowing the §3.7 height budget and clipping ``Cancel`` off screen. The
@@ -861,13 +861,13 @@ def build_options(clamped: PermissionMode, *, may_widen: bool) -> list[str]:
 #
 #   * ``AelixTUIContext.select`` composes title AND options into ONE window:
 #     ``_picker_frame`` returns ``[title, divider, *body, divider, hint]``
-#     (``tui/context.py:112-129``) and ``build()`` returns a single
+#     (``tui/context.py:115-132``) and ``build()`` returns a single
 #     ``Window(FormattedTextControl(...), dont_extend_height=True)``
 #     (``:419-422``). ``wrap_lines`` is left False and the control supplies no
 #     ``get_cursor_position``, so prompt-toolkit has nothing to scroll TO: the
 #     overflow is BOTTOM TRUNCATION. ``select``'s own ``viewport = 8`` (``:303``)
 #     scrolls the OPTIONS list and does nothing for a tall title.
-#   * ``body`` is the option rows plus one counter row (``tui/context.py:365``).
+#   * ``body`` is the option rows plus one counter row (``tui/context.py:375``).
 #   * ``_CappedContainer.preferred_height`` clamps the lot to ``_modal_cap``
 #     (``tui/overlay.py:221-231``).
 #
@@ -879,11 +879,11 @@ def build_options(clamped: PermissionMode, *, may_widen: bool) -> list[str]:
 # which is why this has never bitten. A naive 8-task batch is 16 + 3 + 4 = 23:
 # the bottom four rows — the hint, the closing divider, the counter, and the LAST
 # OPTION, which ``build_options`` guarantees is ``Cancel`` — are simply not
-# drawn. It bites from N >= 5. Esc still works (``tui/context.py:395``), but a
+# drawn. It bites from N >= 5. Esc still works (``tui/context.py:409-410``), but a
 # ``down, Enter`` from a row that was never on screen would grant AUTO_ACCEPT to
 # eight children unseen. That is verbatim the failure S4 calls non-negotiable.
 #
-# THE STRUCTURAL FIX IS NOT AVAILABLE HERE. ``tui/approval_dialog.py:363-380``
+# THE STRUCTURAL FIX IS NOT AVAILABLE HERE. ``tui/approval_dialog.py:490-506``
 # already solves this shape — ``HSplit([scrollable_body, spacer, options])`` with
 # the options at ``Dimension.exact(n)`` so "the security-critical deny option is
 # ALWAYS visible even when the diff body is far taller than the cap"
@@ -1055,7 +1055,7 @@ async def _ask(ui: Any, title: str, options: list[str]) -> str | None:
     except Exception:  # noqa: BLE001 — deny on error, never allow
         return None
     if not isinstance(answer, str):
-        # ``None`` is Esc (``tui/context.py:255-262``). Anything else is a
+        # ``None`` is Esc (``tui/context.py:267-274``). Anything else is a
         # misbehaving implementation, and it is treated identically.
         return None
     return answer
@@ -1295,7 +1295,7 @@ async def request_spawn_consent_batch(
     Never raises on any input a human or a model can produce. It DOES raise
     ``TypeError`` for a ``str`` ``tasks`` and ``ValueError`` for an empty one:
     both are programming errors in a caller — ``AgentCall.tasks`` is "ALWAYS at
-    least one, ALWAYS a tuple" (``tool.py:249``) — and both would otherwise
+    least one, ALWAYS a tuple" (``tool.py:271``) — and both would otherwise
     produce a dialog that misdescribes what is about to run.
     """
 
@@ -1303,7 +1303,7 @@ async def request_spawn_consent_batch(
     if not tasks:
         raise ValueError(
             "tasks is empty: there is no delegation to consent to. "
-            "AgentCall guarantees at least one task (tool.py:249)."
+            "AgentCall guarantees at least one task (tool.py:271)."
         )
     if len(tasks) == 1:
         # Byte-identical to P2, deliberately: the batch renderer's shorter

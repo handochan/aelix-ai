@@ -114,7 +114,7 @@ _SESSION_DRAINING = (
 
 WITHOUT IT, ``stop_all`` CANNOT STOP A BATCH — it makes it bigger. Every abort
 ``stop_all`` performs RELEASES a member parked on the batch semaphore
-(``batch.py:415``), and every ``await`` in ``stop_all`` is a chance for that
+(``batch.py:459-462``), and every ``await`` in ``stop_all`` is a chance for that
 member to reach ``create_subprocess_exec``. Draining alone is not enough and a
 flag held only FOR THE DURATION of the drain is not enough either: MEASURED with
 real processes, a wave-1 member's ``PrintChannel.run`` routinely returns — and
@@ -129,7 +129,7 @@ SESSION IS ALIVE AGAIN — the next user prompt
 (:meth:`~_SubagentRuntimeImpl.reset_delegation_budget`, called from
 ``AgentsExtension._on_before_agent_start``) or a human typing ``/agents run``
 (:meth:`~_SubagentRuntimeImpl.spawn`). Both matter, because the SAME runtime
-instance survives ``/new`` / ``/fork`` / ``/resume`` (``extension.py:171``) and
+instance survives ``/new`` / ``/fork`` / ``/resume`` (``extension.py:176-178``) and
 every one of those emits ``session_shutdown`` first.
 
 The check is not an ``await``, so it does not disturb ``_run``'s critical
@@ -146,7 +146,7 @@ END a delegation (``subagent_contract.py:66``, and see the "terminal" note at
 ``:239``).
 
 DELIBERATELY A SECOND COPY of ``progress._TERMINAL_STATES``
-(``progress.py:94``) rather than an import of another module's private name: the
+(``progress.py:95``) rather than an import of another module's private name: the
 row lifecycle is owned HERE and the renderer must not be this module's
 dependency. ``test_print_channel_spawn`` asserts the two sets are equal, so the
 copy cannot drift."""
@@ -284,7 +284,7 @@ class SubagentHost:
     holds the design argument.
 
     LIVE, like every other field here, and measurably so: ``/agents use`` edits
-    the parent's ``Args`` IN PLACE — ``agents/service.py:280`` resets it with
+    the parent's ``Args`` IN PLACE — ``agents/service.py:281`` resets it with
     ``__dict__.update`` and then ``apply_profile_to_args`` sets
     ``no_context_files = True`` for a ``context_files: false`` profile. Probed
     on one ``Args``: same object id throughout, ``False → True`` on the
@@ -337,7 +337,7 @@ class _SubagentRuntimeImpl:
     NOT a ``default_factory``, and that is the whole fix: a factory cannot see
     ``self``, so it could only ever produce ``PrintChannel()`` with no arguments
     — i.e. ``model_registry=None``, which makes ``apply_cost_fallback`` return at
-    its first guard (``print_channel.py:508``) and leaves ``state.cost`` at 0 for
+    its first guard (``print_channel.py:583``) and leaves ``state.cost`` at 0 for
     every delegation. An INJECTED channel is passed through untouched."""
     contract_version: int = CONTRACT_VERSION
 
@@ -348,7 +348,7 @@ class _SubagentRuntimeImpl:
         # Measured against a real child before this line existed: the envelope
         # read ``11 in / 2 out`` and carried NO ``$`` at all, with a registry
         # that priced the model correctly sitting one attribute away —
-        # ``aggregate.py:290``/``tool.py:622`` both gate on ``if usage.cost:``,
+        # ``aggregate.py:290``/``tool.py:748`` both gate on ``if usage.cost:``,
         # so a structurally-zero cost prints nothing rather than ``$0.0000``.
         # ``apply_cost_fallback``'s own docstring notes that openrouter and
         # openai-completions emit no ``cost`` key, "so this fallback is the
@@ -396,7 +396,7 @@ class _SubagentRuntimeImpl:
         user prompt is the evidence that the session ``stop_all`` tore down is
         alive again — and it has to be somebody's job, because the same runtime
         instance survives ``/new`` / ``/fork`` / ``/resume``
-        (``extension.py:171``) and each of those emits ``session_shutdown``
+        (``extension.py:176-178``) and each of those emits ``session_shutdown``
         first, so a permanently-shut door would silently kill delegation for the
         rest of the process.
         """
@@ -458,12 +458,12 @@ class _SubagentRuntimeImpl:
         """Resolve one profile BY NAME, refusing project scope by default.
 
         SECURITY (finding B5). Directory trust is a yes-once decision that
-        ancestors inherit (``cli/project_trust.py:60-61``); it is NOT consent to
+        ancestors inherit (``cli/project_trust.py:71-72``); it is NOT consent to
         a project-local IDENTITY, which additionally WINS a name collision
-        against the user's own (``agents/service.py:99-100``). So a
+        against the user's own (``agents/service.py:100-101``). So a
         ``scope == "project"`` profile is refused unless the caller can prove a
         per-identity confirmation happened, exactly as
-        ``agents/service.py:231-247`` does for ``/agents use``.
+        ``agents/service.py:233-249`` does for ``/agents use``.
 
         NAME ONLY, and that is a security choice, not a limitation. The
         Protocol parameter is spelled ``name_or_path`` for P3 shape stability,
@@ -526,7 +526,7 @@ class _SubagentRuntimeImpl:
         # A HUMAN TYPING ``/agents run`` REOPENS THE DOOR ``stop_all`` SHUT
         # (:data:`_SESSION_DRAINING`). ``/new`` / ``/fork`` / ``/resume`` each
         # emit ``session_shutdown`` on a runtime instance that SURVIVES them
-        # (``extension.py:171``), and the user's next act may well be this
+        # (``extension.py:176-178``), and the user's next act may well be this
         # command rather than a prompt — refusing it would be a bug the user
         # cannot diagnose. It is not a bypass: :meth:`_reopen` declines while a
         # ``stop_all`` is still executing.
@@ -688,7 +688,7 @@ class _SubagentRuntimeImpl:
         been aborted there was nothing left that could start another, and a
         single pass followed by ``self._children.clear()`` was correct. Under P3
         a batch's later waves are parked on the batch semaphore and are released
-        BY EXACTLY THE ABORTS THIS METHOD PERFORMS (``batch.py:415``): killing
+        BY EXACTLY THE ABORTS THIS METHOD PERFORMS (``batch.py:459-462``): killing
         wave 1 frees four permits, wave 2 reaches ``create_subprocess_exec``
         during this method's own ``await``\\ s, and the unconditional ``clear()``
         then dropped the only handle on them. Measured, with real processes:
@@ -819,7 +819,7 @@ class _SubagentRuntimeImpl:
             # The human's answer stays a CEILING that nothing here can raise; the
             # live parent posture is a floor that a batch's later waves must
             # honour, because shift+tab stays bound while a turn runs
-            # (``chrome.py:906-909``) and wave 2 may start half an hour after
+            # (``chrome.py:967-970``) and wave 2 may start half an hour after
             # wave 1. ``None`` — every P2 caller, and every batch member under an
             # unchanged posture — leaves ``grant.mode`` exactly as it was.
             permission_mode=_tighten(grant.mode, permission_floor),
@@ -857,16 +857,16 @@ class _SubagentRuntimeImpl:
             # THE LAST SNAPSHOT OF A DELEGATION MUST BE A TERMINAL ONE. The row
             # is gone from the registry by this line, so the delegation is over
             # by definition — but ``RunningChild.state`` starts at ``"starting"``
-            # (``print_channel.py:179``) and ``PrintChannel.run`` can raise
+            # (``print_channel.py:187``) and ``PrintChannel.run`` can raise
             # BEFORE it ever assigns one: ``write_prompt_file`` is outside its
-            # own ``try`` (``print_channel.py:775``) and does ``mkdtemp`` +
+            # own ``try`` (``print_channel.py:930-931``) and does ``mkdtemp`` +
             # ``os.open``, so a full ``/tmp``, an ``EMFILE`` or a yanked
             # ``TMPDIR`` comes straight out — and eight concurrent members each
             # writing a prompt directory is precisely the load that fires it.
             # Published non-terminal, that snapshot makes
             # ``SubagentProgressBridge`` take its live branch and WRITE a
             # statusline row nothing will ever clear, and leak the id in
-            # ``_tools`` (``progress.py:273-277``) — "a statusline segment
+            # ``_tools`` (``progress.py:287-291``) — "a statusline segment
             # outliving the delegation that owns it is a lie the user cannot
             # dismiss", in that module's own words.
             #
@@ -912,7 +912,7 @@ class _SubagentRuntimeImpl:
         Protocol offers a caller, and ``host.on_progress`` is the session-wide
         bridge onto ``api.events`` + the statusline. Exceptions are swallowed
         per tap so a broken subscriber cannot abort a delegation — the same
-        containment ``EventBus`` itself applies (``extensions/api.py:271-279``).
+        containment ``EventBus`` itself applies (``extensions/api.py:280-286``).
         """
 
         progress = SubagentProgress(
@@ -925,7 +925,7 @@ class _SubagentRuntimeImpl:
             cost=state.cost,
             # The child's run model/provider, the same fields the reducer already
             # fills from every ``message_end`` and the envelope reads into
-            # ``SubagentResult`` (``envelope.py:374-375``). This is the SOLE
+            # ``SubagentResult`` (``envelope.py:384-385``). This is the SOLE
             # producer of ``SubagentProgress``, so this one line is what makes the
             # model visible on every live surface.
             #

@@ -6,7 +6,7 @@ so this file has no processes, no event loop timing and nothing to flake on.
 
 WHAT THIS FILE CANNOT SEE, AND WHO SEES IT. A bridge whose adoption never
 matched would write four ``status_key(id)`` rows, ``chrome._render_status`` would
-``"  ".join`` them into a height-1 row (``tui/chrome.py:1036-1047``), and every
+``"  ".join`` them into a height-1 row (``tui/chrome.py:1097-1108``), and every
 assertion below over synthetic snapshots would still pass. That is why
 :func:`test_a_four_member_group_writes_exactly_one_status_key` drives the real
 bridge through the real ``begin_group`` / ``adopt`` / ``__call__`` sequence, and
@@ -150,7 +150,7 @@ def test_every_member_is_counted_exactly_once() -> None:
 def test_the_aggregate_token_count_is_the_max_and_the_cost_is_the_sum() -> None:
     """``SubagentUsage.tokens`` is a context LEVEL, "last message wins"
     (``subagent_contract.py:95-96``), so summing it across members would report
-    a number several times the real one — the mistake ``stream.py:207-210``
+    a number several times the real one — the mistake ``stream.py:214-217``
     already warns about, and the rule ``aggregate.roll_up_usage`` follows. Cost
     IS a flow and IS summed."""
 
@@ -166,7 +166,7 @@ def test_the_aggregate_token_count_is_the_max_and_the_cost_is_the_sum() -> None:
 
 def test_an_aggregate_with_nothing_published_is_empty_not_blank() -> None:
     """``""`` means "write no row". An empty segment would still cost the
-    two-space join at ``chrome.py:1047``, and a row that cannot name the agent
+    two-space join at ``chrome.py:1108``, and a row that cannot name the agent
     is noise on a row shared with everything else."""
 
     assert format_aggregate_status([None, None]) == ""
@@ -315,7 +315,7 @@ def test_a_hostile_model_cannot_break_a_panel_row() -> None:
 
 def test_the_throttle_drops_mid_stream_frames_but_never_a_state_change() -> None:
     """H10: the kernel appends an ``asyncio.Task`` per ``on_partial`` into a list
-    it never prunes (``loop.py:581``, ``:608``) and ``loop.py`` may not be
+    it never prunes (``loop.py:591``, ``:624``) and ``loop.py`` may not be
     edited, so dropping frames here is the only legal mitigation. What may never
     be dropped is the frame that carries a state change — the last thing the
     user sees must not be stale."""
@@ -395,7 +395,7 @@ def test_the_throttle_records_every_snapshot_even_when_it_drops_the_emit() -> No
 def test_an_unchanged_card_is_never_re_emitted() -> None:
     """A frame that repaints the same bytes is a kernel ``Task`` bought for
     nothing, and it cannot lose information by construction — the same dedup the
-    statusline half already does (``progress.py:203-205``)."""
+    statusline half already does (``progress.py:441-443``)."""
 
     clock = _Clock()
     throttle = PartialThrottle(1, now=clock)
@@ -539,7 +539,7 @@ def test_end_group_clears_both_the_aggregate_row_and_the_panel() -> None:
 
 def test_end_group_cannot_blank_a_panel_it_does_not_own() -> None:
     """One widget key is safe rather than lucky — ``agent`` declares
-    ``execution_mode="sequential"`` (``tool.py:281-287``) so two calls never have
+    ``execution_mode="sequential"`` (``tool.py:603``) so two calls never have
     panels open at once. The ownership check is what keeps that a belt rather
     than a bet."""
 
@@ -669,7 +669,7 @@ def test_clear_ends_every_open_group() -> None:
 def test_an_unchanged_group_row_is_not_rewritten() -> None:
     """Hundreds of publishes per turn must not become hundreds of UI writes —
     and ``chrome.set_widget`` calls ``invalidate()`` unconditionally
-    (``chrome.py:1373-1380``), so an unchanged panel would be a full repaint per
+    (``chrome.py:1457-1463``), so an unchanged panel would be a full repaint per
     reduced stdout line."""
 
     ui = _Ui()
@@ -685,7 +685,7 @@ def test_an_unchanged_group_row_is_not_rewritten() -> None:
 
 def test_headless_never_raises_on_a_group() -> None:
     """In print / json / rpc mode EVERY ``ui.*`` method raises, ``set_widget``
-    included (``headless_ui.py:126-144``). The ``_ui()`` identity guard is what
+    included (``headless_ui.py:125-145``). The ``_ui()`` identity guard is what
     keeps a delegation from dying of a panel update."""
 
     bridge, _ = _bridge(HEADLESS_UI_CONTEXT)
@@ -720,18 +720,18 @@ def test_a_raising_set_widget_still_leaves_the_aggregate_row_on_screen() -> None
 # THE HIGH FINDING, AND THE SURFACE IS NEW IN P3 (P2 shipped no widget at all).
 # ``SubagentProgress.current_tool`` is set from the CHILD process's own stdout
 # JSON — any non-empty ``str`` in ``tool_execution_start.tool_name``
-# (``stream.py:462-464``) — and the kernel emits that event with the raw
+# (``stream.py:671-673``) — and the kernel emits that event with the raw
 # model-supplied name BEFORE ``_prepare_tool_call`` looks the tool up
-# (``loop.py:717-723``), so it is not constrained to a real tool name. A child is
+# (``loop.py:734-744``), so it is not constrained to a real tool name. A child is
 # exactly the process this phase's threat model assumes has read attacker
 # controlled content (``consent._may_widen`` constraint 6).
 #
 # The far end applies no bound of its own: ``chrome._render_widget_lines``
-# returns ``ANSI("\n".join(lines))`` (``chrome.py:1106``) into a
-# ``Window(…, dont_extend_height=True)`` (``chrome.py:655``) — multi-row,
+# returns ``ANSI("\n".join(lines))`` (``chrome.py:1167``) into a
+# ``Window(…, dont_extend_height=True)`` (``chrome.py:693``) — multi-row,
 # ANSI-parsed, no height cap. Contrast the SIBLING surface, which is defended at
 # the far end: ``chrome._render_status`` strips newlines because "this is a fixed
-# height=1 chrome row" (``chrome.py:1036``).
+# height=1 chrome row" (``chrome.py:1097-1099``).
 #
 # Measured before the fix: 40 newlines in ``current_tool`` turned a 3-entry panel
 # into 43 screen rows with raw ESC intact, pushing the transcript and the input
@@ -749,7 +749,7 @@ def test_a_child_cannot_add_rows_to_the_panel() -> None:
     """The list length IS the screen height — ``chrome`` joins it with ``\\n``.
 
     So "returned 3 entries" is not the property that matters; "the rendered
-    string is 3 rows" is. Asserted on the join, which is what ``chrome.py:1106``
+    string is 3 rows" is. Asserted on the join, which is what ``chrome.py:1167``
     actually does.
     """
 
@@ -802,7 +802,7 @@ def test_a_hostile_profile_name_cannot_grow_the_panel_header() -> None:
 
 
 def test_the_panel_is_bounded_in_HEIGHT_and_says_what_it_dropped() -> None:
-    """The second dimension. ``tool.py:341-344`` refuses a ninth task, so this
+    """The second dimension. ``tool.py:392-398`` refuses a ninth task, so this
     can only fire on a bug — but the window it feeds has no height cap at all,
     and a silently SHORTER panel reads as "those children were dropped"."""
 
@@ -832,7 +832,7 @@ def test_the_row_builder_is_safe_on_its_own_not_only_via_format_panel() -> None:
     ``_panel_row`` changes nothing that :func:`format_panel` can observe: the
     mutation survives every test above. It is still worth having and still worth
     pinning. ``_panel_row`` is the function that touches the child's bytes
-    (``panel.py:281``, the site the finding names), and the next consumer of a
+    (``panel.py:349-371``, the site the finding names), and the next consumer of a
     per-child row — a card variant, a future surface — will call it rather than
     re-deriving it, and must inherit the bound rather than have to remember it.
     """

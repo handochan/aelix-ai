@@ -142,7 +142,7 @@ def _content_blocks_to_anthropic(
                 # UNCONDITIONAL (pi's inline "allowEmptySignature" behavior,
                 # anthropic.ts:1069) — NOT compat-gated. Still reachable after
                 # the shared transform, which KEEPS a same-model non-empty
-                # unsigned thinking block (_transform_messages.py:182-185).
+                # unsigned thinking block (_transform_messages.py:185-188).
                 out.append({"type": "text", "text": block.thinking})
             else:
                 out.append(
@@ -213,8 +213,8 @@ def transform_messages(
     normalization via :func:`_normalize_anthropic_tool_call_id`), then run
     the local per-shape map + tool_result coalescing over its **output** —
     which may have inserted synthetic :class:`ToolResultMessage`\\ s and
-    dropped errored turns. Mirrors ``openai_completions.py:325`` /
-    ``_google_shared.py:57``.
+    dropped errored turns. Mirrors ``openai_completions.py:334`` /
+    ``_google_shared.py:259``.
     """
 
     normalized = shared_transform_messages(

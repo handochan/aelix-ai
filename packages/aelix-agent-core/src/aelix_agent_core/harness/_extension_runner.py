@@ -21,7 +21,7 @@ intentionally does NOT carry it — the owning extension is the authority).
 Sprint 6h₅a (Phase 4.14, ADR-0081, P-333) extends the runner with
 Pi-parity ``emit()`` / ``has_handlers()`` methods that delegate to the
 harness :class:`HookBus` via two callable bridge fields wired at
-construction (``harness/core.py:632-634``). Pi top-level
+construction (``harness/core.py:743-744``). Pi top-level
 ``emitSessionShutdownEvent`` (``runner.ts:177-189``) and the cancel
 aggregator (``runner.ts:680-712``) flow through these methods so existing
 :class:`HookBus` infrastructure (sequential await + first-cancel-wins +
@@ -86,7 +86,7 @@ class ExtensionRunner:
     commands-only aggregation surface with Pi-parity ``emit()`` /
     ``has_handlers()``. Both methods delegate to the harness
     :class:`HookBus` via two callable bridge fields wired at construction
-    time by :class:`AgentHarness` (``harness/core.py:632-634``). Pi
+    time by :class:`AgentHarness` (``harness/core.py:743-744``). Pi
     cancel-aggregation semantics (``runner.ts:680-712``) are inherited
     from :func:`HookBus._reducer_session_before` (first-cancel-wins
     short-circuit + sequential await + per-handler ``error_mode``

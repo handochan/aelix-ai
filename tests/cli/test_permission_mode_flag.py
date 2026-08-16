@@ -5,7 +5,7 @@ spawner computes a CLAMPED posture with ``aelix_agents.posture.
 child_permission_mode`` and hands it to the child on the command line. Every
 security assertion downstream is therefore argv-shaped, and ``parse_args``
 swallows an unrecognised ``--`` flag into :attr:`Args.unknown_flags` with **no
-diagnostic** (``args.py:493-513``; contrast the ``Unknown short flag`` error at
+diagnostic** (``args.py:643-663``; contrast the ``Unknown short flag`` error at
 ``:514-518``). A rename or a typo would consequently ship a child that silently
 runs at the DEFAULT posture — i.e. auto-approving, since ``ctx.has_ui`` is
 :data:`False` there — behind a fully green test suite.
@@ -61,7 +61,7 @@ def test_absent_flag_leaves_permission_mode_none() -> None:
 
 
 def test_invalid_value_warns_and_drops() -> None:
-    """A bogus value mirrors ``--thinking`` (``args.py:413-430``): warn, drop, continue.
+    """A bogus value mirrors ``--thinking`` (``args.py:504-521``): warn, drop, continue.
 
     It must NOT abort a session already launching, and it must NOT record as
     "provided" — a rejected value leaves the field at its default, so claiming
@@ -191,7 +191,7 @@ def test_child_argv_parses_clean(trust_flags: list[str], mode: str) -> None:
     spelled.
 
     ``profile_to_argv`` is called rather than mirrored — the spawner builds the
-    child argv from that same function (``agents/resolver.py:183-206``), so a
+    child argv from that same function (``agents/resolver.py:287-316``), so a
     change to the prefix or the prompt-file flags is caught here too.
     """
 
@@ -220,7 +220,7 @@ def test_child_argv_parses_clean(trust_flags: list[str], mode: str) -> None:
     assert parsed.print_mode is True
     assert parsed.no_session is True
     assert parsed.project_trust_override is (False if trust_flags else None)
-    # The task rides as the single positional (``resolver.py:204-205``).
+    # The task rides as the single positional (``resolver.py:314-315``).
     assert parsed.messages == ["Task: list the files in packages/"]
 
 

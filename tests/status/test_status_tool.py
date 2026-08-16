@@ -275,7 +275,7 @@ async def test_no_extension_path_or_home_directory_is_emitted(
     payload = await bench.call()
 
     # ``cwd`` is the one path that IS emitted, and only because
-    # ``build_system_prompt`` already emits it (``cli/agent_context.py:719``) —
+    # ``build_system_prompt`` already emits it (``cli/agent_context.py:1067``) —
     # so it is excluded here rather than the assertion being weakened, and its
     # value is pinned separately.
     assert payload["cwd"] == cwd
@@ -486,7 +486,7 @@ async def test_calling_it_twice_changes_nothing() -> None:
 
 
 async def test_invented_arguments_are_ignored_rather_than_honoured() -> None:
-    """``validate_tool_arguments`` preserves unknown keys (``tools.py:290``).
+    """``validate_tool_arguments`` preserves unknown keys (``tools.py:317``).
 
     So a model that invents ``{"verbose": true}`` reaches ``execute`` with it.
     The tool has no input at all, which is what makes "read-only" checkable.

@@ -9,10 +9,10 @@ live here. The CONSENT DECISION does not — it is taken in the extension's own
 measured reasons, all of which make the hook the only correct location:
 
 1. **``execute()`` is not serialised.** The kernel runs ``before_tool_call`` in
-   the SEQUENTIAL prep phase (``loop.py:510-531``, driven from ``:809-844``) but
-   ``execute`` under ``asyncio.gather`` (``loop.py:877``), with
-   ``tool_execution = "parallel"`` by default (``harness/core.py:247``). Two
-   modals from one batch collide on ``tui/chrome.py:518``'s single ``_modal``
+   the SEQUENTIAL prep phase (``loop.py:514-535``, driven from ``:825-860``) but
+   ``execute`` under ``asyncio.gather`` (``loop.py:893``), with
+   ``tool_execution = "parallel"`` by default (``harness/core.py:271``). Two
+   modals from one batch collide on ``tui/chrome.py:524``'s single ``_modal``
    slot: ``mount_modal`` (``:1511``) overwrites unconditionally, the first
    Future is orphaned, and the turn hangs until Ctrl+C.
 2. **``execute()`` has no UI.** :class:`ToolExecutionContext`
@@ -24,7 +24,7 @@ measured reasons, all of which make the hook the only correct location:
    ``ToolCallResult(block=True, reason=…)`` is handled by
    ``harness/hooks.py::_reducer_tool_call`` (``:1419-1439``) — sequential,
    FIRST BLOCK WINS — and the kernel renders it as a model-readable immediate
-   error result (``loop.py:518-531``). An ``execute()`` refusal is just another
+   error result (``loop.py:522-535``). An ``execute()`` refusal is just another
    error string.
 
 :data:`AGENT_TOOL_NAME` is imported from :mod:`aelix_agents.print_channel`
@@ -107,7 +107,7 @@ budget can never make a legal batch unrunnable from the very first call.
 
 A batch above this is a malformed CALL, not a batch to be trimmed:
 :func:`parse_agent_call` raises, the extension's ``tool_call`` hook turns that
-into a blocked call the model reads (``extension.py:447-450``), and NO process is
+into a blocked call the model reads (``extension.py:613-616``), and NO process is
 created. Trimming to the first eight would silently drop work the model believes
 it delegated — the failure mode S7 clause 1 exists to forbid."""
 
@@ -184,7 +184,7 @@ AGENT_TOOL_PARAMETERS: dict[str, Any] = {
     # conditional here would be a rule enforced on some providers and silently
     # absent on others. It is enforced in ``parse_agent_call`` instead, whose
     # refusal the ``tool_call`` hook turns into a blocked call the model reads
-    # (``extension.py:447-450``) with no process created.
+    # (``extension.py:613-616``) with no process created.
     #
     # The P2 argument shape is unaffected: ``{"profile": …, "task": …}`` still
     # satisfies ``required``, ``mode`` defaults to "single", and the parse
@@ -259,10 +259,10 @@ class AgentCall:
     task — are P4 ``aelix-team`` work, and the reason is not conservatism: with
     one profile every member shares the same clamp
     (``posture.child_permission_mode``), the same ``consent_is_required``
-    (``consent.py:237-264``) and the same ``_may_widen``
-    (``consent.py:176-234``), which is what makes ONE consent decision for the
+    (``consent.py:530-570``) and the same ``_may_widen``
+    (``consent.py:446-527``), which is what makes ONE consent decision for the
     whole batch coherent. :class:`~aelix_agents.consent.SpawnGrant` is singular
-    by construction (``consent.py:146-158``: one ``profile``, one
+    by construction (``consent.py:248-255``: one ``profile``, one
     ``source_path``, one ``mode``).
     """
 
@@ -313,7 +313,7 @@ class PendingSpawn:
     The whole CALL is carried, not just the grant, and that is a security
     property rather than an optimisation: ``event.args`` is the same mutable
     dict the tool receives (``harness/hooks.py`` D.1.5, and
-    ``harness/core.py:3722-3726`` explicitly permits a later handler to mutate
+    ``harness/core.py:3930-3932`` explicitly permits a later handler to mutate
     it). The human approved the tasks, the profile and the directory that were on
     screen; re-reading them from ``args`` in ``execute()`` would let anything
     that ran in between substitute different ones — and under fan-out that is a
@@ -422,9 +422,9 @@ def parse_agent_call(args: Mapping[str, Any]) -> AgentCall:
 
     EVERY refusal here happens BEFORE a process exists, which is the whole point
     of validating at hook time: the ``tool_call`` hook turns an
-    :class:`AgentCallError` into a blocked call (``extension.py:447-450``) and
+    :class:`AgentCallError` into a blocked call (``extension.py:613-616``) and
     the kernel renders it as a model-readable immediate error result
-    (``loop.py:518-531``). An oversize batch is therefore a refused CALL and is
+    (``loop.py:522-535``). An oversize batch is therefore a refused CALL and is
     never trimmed to the first :data:`MAX_PARALLEL_TASKS` (S7 clause 1).
     """
 
@@ -578,9 +578,9 @@ def create_agent_tool(
     """Build the ``agent`` tool.
 
     ``execution_mode="sequential"`` IS A SECURITY SETTING, not a performance
-    one, and mirrors ``tools/bash.py:574``. The kernel's ``_execute_tool_calls``
+    one, and mirrors ``tools/bash.py:708``. The kernel's ``_execute_tool_calls``
     downgrades the WHOLE BATCH to sequential when any tool in it declares this
-    (kernel ``types.py:47-56``; ``loop.py:683-693``), which closes the
+    (kernel ``types.py:47-56``; ``loop.py:699-709``), which closes the
     concurrent-modal hazard described in the module docstring at zero
     product-core cost. It is belt-and-braces with the hook location and with
     ``consent.py``'s process-wide lock — and because the description is
@@ -610,7 +610,7 @@ def with_description(tool: AgentTool, description: str) -> AgentTool:
     :class:`AgentTool` is a frozen dataclass and ``register_tool`` fixes the
     description at registration time, so a roster that changed (a new profile
     file, a ``/reload``) can only be published by replacing the tool. Done from
-    a ``before_agent_start`` handler (``harness/core.py:1242``), which runs
+    a ``before_agent_start`` handler (``harness/core.py:1299``), which runs
     BEFORE the per-turn ``AgentContext`` is built (``:4117-4133``) — a
     ``turn_start`` handler would already be too late for the current turn.
     """
@@ -631,14 +631,14 @@ CELLS, NOT CHARACTERS, and the distinction is the whole of finding M1. A CJK
 ideograph or an emoji occupies two cells and one character, so the two counts
 diverge by a factor of two on exactly the input a hostile child would choose.
 This module measured characters while ``tui/render.py`` measured cells
-(``rich.cells.cell_len`` / ``set_cell_size``, ``render.py:139-142``): a 60-CJK
+(``rich.cells.cell_len`` / ``set_cell_size``, ``render.py:160-163``): a 60-CJK
 model flattened to 40 characters — inside the budget, so nothing was dropped —
 and 80 cells, so the renderer cut INSIDE the model term and took the status and
 the posture with it. See :func:`_usage_line`.
 
 NOT a policy this module chose. ``tui/render.py``'s ``_truncate_lines`` caps
 every card line at ``max_line_width = 76`` cells and appends ``…``
-(``render.py:123-143``), and that number is FIXED: it does not grow with the
+(``render.py:144-164``), and that number is FIXED: it does not grow with the
 terminal, so a wider window buys this line nothing. Measured on a real
 delegation at both 120 and 200 columns, the footer came out identically cut at
 76 cells, losing its last field.
@@ -659,7 +659,7 @@ _USAGE_FIELD_MAX_CELLS = 40
 """Bound on each free-text term — the profile name and the model — in CELLS.
 
 ``SubagentResult.model`` is read verbatim off the child's own ``message_end``
-(``stream.py:561-563`` → ``envelope.py:374``), which makes it attacker-supplied
+(``stream.py:561-563`` → ``envelope.py:384``), which makes it attacker-supplied
 exactly like ``current_tool``; ``profile`` is a filename stem and is unbounded
 for a duller reason. 40 fits every real provider id (the longest in the shipped
 registry is 32) while denying either one the ability to spend the whole line."""
@@ -808,7 +808,7 @@ def _usage_field(value: object) -> str:
 def _squeeze(value: str, cells: int) -> str:
     """``value`` in at most ``cells`` terminal cells, ellipsised if it was cut.
 
-    ``set_cell_size`` is the renderer's own primitive (``render.py:140``), so a
+    ``set_cell_size`` is the renderer's own primitive (``render.py:161``), so a
     term this function shortens is shortened exactly as far as the renderer would
     have measured it — no off-by-one between the budget and the draw.
     """

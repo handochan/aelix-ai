@@ -21,7 +21,7 @@ Why a clamp and not a lookup table (P2 review finding B4). The obvious shape —
 map ``approval_mode`` to a posture and hand it to the child — lets a profile
 declaring ``approval_mode: auto`` lift a DEFAULT (prompt-for-everything) parent
 into a child that auto-accepts repo-wide writes with no human in the loop. The
-child cannot compensate: ``builtin/permission.py:348-353`` returns ``None``
+child cannot compensate: ``builtin/permission.py:527-532`` returns ``None``
 (allow) for an AUTO_ACCEPT in-cwd write roughly thirty lines ABOVE the
 ``if not ctx.has_ui:`` headless branch at ``:382-383``, so the child-only
 headless floor (``PermissionExtension.headless_default``) never runs for
@@ -122,7 +122,7 @@ def grants_write_authority(mode: PermissionMode) -> bool:
 
 # Which ``approval_mode`` values are a DECLARATION that the profile needs write
 # authority — ADR-0197 §(i), owner amendment 2026-07-27. This is the whole
-# vocabulary of ``agents/profile.py:72``'s ``_APPROVAL_MODES``, and every value
+# vocabulary of ``agents/profile.py:84``'s ``_APPROVAL_MODES``, and every value
 # is justified here rather than left to the reader:
 #
 #   "auto"    DECLARES. The profile literally asks for its writes to be
@@ -135,7 +135,7 @@ def grants_write_authority(mode: PermissionMode) -> bool:
 #             without the declaration the §(i) early-out would suppress the very
 #             dialog ``ask`` exists to open, making it indistinguishable from
 #             ``inherit`` and re-opening the "validated, not read" deferral at
-#             ``agents/profile.py:218-220`` that finding OC-8 closed.
+#             ``agents/profile.py:239-243`` that finding OC-8 closed.
 #   "inherit" DOES NOT. It asks for no more authority than the parent already
 #             has. When the parent IS loose the clamp itself grants write
 #             authority and the dialog fires through
@@ -188,7 +188,7 @@ def child_permission_mode(
     (finding OC-10 — ``ask`` no longer refuses the spawn).
 
     ``scope`` is the profile's EFFECTIVE scope
-    (``agents/profile.py:52`` — ``"user"`` / ``"project"`` / ``"explicit"``).
+    (``agents/profile.py:52`` — ``"bundled"`` / ``"user"`` / ``"project"`` / ``"explicit"``).
     Only the literal ``"project"`` triggers the widening ban; ``"explicit"``
     (``--agent-file``) is a path the human typed, so it is treated as
     user-authored.

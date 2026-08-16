@@ -1009,7 +1009,7 @@ def test_replay_custom_wire_dict_content_renders() -> None:
 # === Issue #133 item 2 — an interrupted turn must leave a trace =============
 #
 # The harness aborts by CANCELLING the turn task; its close-out
-# (harness/core.py:4370-4383) deliberately emits only turn_end + agent_end, with
+# (harness/core.py:4527-4544) deliberately emits only turn_end + agent_end, with
 # no message_start/message_end pair, so ``_render_message_error`` (message_end
 # only) never ran and the interrupt reached scrollback as nothing at all.
 # pi prints "Operation aborted" from its message_end handler
@@ -1150,7 +1150,7 @@ async def test_message_end_replacement_does_not_double_print() -> None:
     """A message_end-replacing extension must not defeat the dedupe guard.
 
     Regression test for the review's LOW on the ORIGINAL object-identity guard.
-    loop.py:396-405 identity-swaps the assistant message when a message_end
+    loop.py:396-410 identity-swaps the assistant message when a message_end
     handler returns a replacement, so ``_render_message_error`` sees the ORIGINAL
     object while the ``turn_end`` that follows carries the REPLACEMENT. An
     ``is`` comparison misses and BOTH outcome lines print for one abort.

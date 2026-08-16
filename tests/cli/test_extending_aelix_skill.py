@@ -104,7 +104,7 @@ def test_the_plan_mode_caveat_is_true_of_the_real_permission_ladder() -> None:
     """The skill tells the reader to fall back to ``read`` because ``bash`` is
     blocked in plan mode. Re-derived from the ladder rather than trusted:
     ``bash`` is in ``_MUTATING``, PLAN blocks every mutating tool
-    (``builtin/permission.py:436``), and that check sits ABOVE the read-only
+    (``builtin/permission.py:497``), and that check sits ABOVE the read-only
     short-circuit at ``:441`` — so ``read`` is unaffected."""
 
     from aelix_coding_agent.builtin import permission

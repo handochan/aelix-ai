@@ -38,7 +38,7 @@ def child_trust_argv(child_cwd: Path, parent_cwd: Path) -> list[str]:
        ``.aelix/mcp.json``, ``.aelix/agents``, ``.aelix/skills`` and
        ``.aelix/prompt-templates`` all absent —
        :func:`has_trust_requiring_project_resources`) → emit NOTHING. Step 2
-       (``project_trust.py:525-527``) would have returned ``True`` for the
+       (``project_trust.py:678-680``) would have returned ``True`` for the
        parent too, so there is no authority to withhold.
 
        This clause carried a SECOND argument that #115 falsified, recorded here
@@ -59,7 +59,7 @@ def child_trust_argv(child_cwd: Path, parent_cwd: Path) -> list[str]:
     2. ANY other case — most importantly a DIFFERENT cwd, which is always
        MODEL-CHOSEN — → ``--no-approve``. This is the whole security value of
        the flag: it kills the nearest-ancestor escalation at
-       ``project_trust.py:550-557`` (transitivity documented at ``:60-61``),
+       ``project_trust.py:703-710`` (transitivity documented at ``:71-72``),
        where a child started in ``vendor/sdk`` inherits the monorepo root's
        persisted ``True`` and executes a vendored ``.aelix/extensions/*.py``
        the parent itself never loaded (``extensions/loader.py`` scans

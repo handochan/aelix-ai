@@ -540,7 +540,7 @@ def test_ask_declares_or_it_would_be_inert() -> None:
     nothing, ADR-0197 §(i)'s early-out would suppress the very dialog the value
     exists to open. It would become byte-for-byte indistinguishable from
     ``inherit``, re-opening the "validated, not read" deferral at
-    ``agents/profile.py:218-220`` that finding OC-8 closed.
+    ``agents/profile.py``'s ``approval_mode`` that finding OC-8 closed.
     """
 
     assert declares_write_authority("ask") is True
@@ -609,7 +609,7 @@ def test_an_unrecognised_approval_mode_declares_nothing(value: str) -> None:
 def test_explicit_scope_is_not_treated_as_project() -> None:
     """``--agent-file`` (scope ``"explicit"``) is a path the HUMAN typed.
 
-    ``ProfileScope`` (``agents/profile.py:52``) has three values, not two. Only
+    ``ProfileScope`` (``agents/profile.py:52``) has four values, not two. Only
     the literal ``"project"`` triggers the widening ban — treating ``explicit``
     as project would silently downgrade a user pointing at their own file.
     """

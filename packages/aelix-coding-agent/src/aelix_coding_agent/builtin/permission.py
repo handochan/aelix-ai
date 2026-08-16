@@ -304,11 +304,11 @@ _SENSITIVE_BASENAMES = frozenset(
 #
 # ``.aelix`` (ADR-0197 §(i), P2): ``.aelix/extensions/*.py``, ``.aelix/mcp.json``
 # and ``.aelix/agents/*.md`` are EXACTLY the three resources the Project Trust
-# gate exists to guard (``cli/project_trust.py:112-177``), and
+# gate exists to guard (``cli/project_trust.py:124-249``), and
 # ``.aelix/settings.json`` is the user's own configuration. Before this entry an
 # auto-accepting agent could WRITE the project identity / project extension that
 # a LATER run then EXECUTES under an ancestor ``trust.json: true``
-# (``project_trust.py:550-557``, transitivity documented at ``:60-61``) — a
+# (``project_trust.py:703-710``, transitivity documented at ``:71-72``) — a
 # write-to-exec escalation that ``--no-approve`` cannot touch, because
 # ``--no-approve`` only stops LOADING such a file, never writing one. Delegation
 # (ADR-0197) makes this reachable by a process nobody is watching and is a HARD
@@ -609,7 +609,7 @@ class PermissionExtension:
             # Resolves the DEFAULT shell chain, with no ``shell_path``. That
             # matches what the tool spawns today only because nothing wires a
             # custom shell through: ``create_bash_tool`` reads
-            # ``opts["shell_path"]`` (``tools/bash.py:532``) but no caller sets
+            # ``opts["shell_path"]`` (``tools/bash.py:551-553``) but no caller sets
             # it, and ``SettingsManager.get_shell_path()``
             # (``settings_manager.py:1234``) is referenced only by its own
             # test. Treat that as a coincidence, not an invariant — if

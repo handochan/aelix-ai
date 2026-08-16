@@ -1,7 +1,7 @@
 """ADR-0196 — ``agents/prompt.py`` is pinned to the REAL kernel join.
 
 ``compose_system_prompt`` mirrors ``AgentHarness.__init__``
-(``aelix_agent_core/harness/core.py:571-578``) because ``/agents use`` applies a
+(``aelix_agent_core/harness/core.py:595-602``) because ``/agents use`` applies a
 new identity to a LIVE harness — no rebuild, no reload — and there is no
 ``set_system_prompt`` on the kernel to delegate to. The kernel is off-limits, so
 this test is the drift alarm: if ``core.py`` ever changes its join, this fails.

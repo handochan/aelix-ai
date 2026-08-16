@@ -242,7 +242,7 @@ def _message_from_dict(data: dict[str, Any]) -> AgentMessage:
     a TypeScript assertion erased at runtime, so pi's parsed JSON *is* the
     entry and pi is structurally incapable of dropping a content field. Python
     cannot copy that shape — the whole downstream contract is ``isinstance``-based
-    (``_transform_messages.py:174``, ``_google_shared.py:296``) and needs real
+    (``_transform_messages.py:177``, ``_google_shared.py:292``) and needs real
     dataclass instances. So the obligation this decoder takes on instead is to
     be **total**: every field of every content dataclass must be read back.
     ``tests/session/test_message_roundtrip_content.py`` walks
@@ -306,7 +306,7 @@ def _message_from_dict(data: dict[str, Any]) -> AgentMessage:
                 # Without this branch a persisted thinking block came back as a
                 # raw dict, so it never satisfied the
                 # ``isinstance(block, ThinkingContent)`` test at
-                # ``_transform_messages.py:174`` and ADR-0190's signed-thinking
+                # ``_transform_messages.py:177`` and ADR-0190's signed-thinking
                 # replay was dead on every resumed session.
                 out.append(
                     ThinkingContent(
@@ -368,7 +368,7 @@ def _message_from_dict(data: dict[str, Any]) -> AgentMessage:
             #     persisted thinking block returned as a raw dict. That is no
             #     longer true: #135 / ADR-0211 added the case, so a restored
             #     block is a real ``ThinkingContent`` and now does satisfy the
-            #     ``isinstance`` test at ``_transform_messages.py:174``. The two
+            #     ``isinstance`` test at ``_transform_messages.py:177``. The two
             #     halves are complementary — provenance decides *whether* the
             #     same-model branch is taken, the thinking case decides whether
             #     there is a typed block left for it to preserve. Both are

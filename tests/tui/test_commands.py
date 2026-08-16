@@ -705,7 +705,7 @@ def test_tools_degrades_when_empty() -> None:
 #
 # ``--no-tools`` leaves every tool REGISTERED (``_state.tools``) but sets the
 # active filter to ``[]``, and the turn sends only the active set to the model
-# (``harness/core.py:4138``). Reporting the registered list therefore claimed
+# (``harness/core.py:4324-4330``). Reporting the registered list therefore claimed
 # tools the model provably did not have. Both readouts report the ACTIVE set.
 
 

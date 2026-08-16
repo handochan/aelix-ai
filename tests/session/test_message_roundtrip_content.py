@@ -107,7 +107,7 @@ async def test_image_data_survives_real_storage(tmp_path: Path) -> None:
 async def test_thinking_block_returns_typed_not_a_dict(tmp_path: Path) -> None:
     """The ADR-0190 linkage: the restored block must satisfy isinstance.
 
-    ``_transform_messages.py:174`` tests ``isinstance(block, ThinkingContent)``.
+    ``_transform_messages.py:177`` tests ``isinstance(block, ThinkingContent)``.
     A raw dict — what this used to restore as — never matches, so the signed
     block was silently downgraded to plain text on every resumed session.
     """

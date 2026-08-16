@@ -17,7 +17,7 @@ own ``explorer``.
 
 The project tier is gated because a profile is an identity: it can replace the
 system prompt, swap the model, and (outside project scope) name extensions.
-``cli/project_trust.py:104-139`` learns about ``.aelix/agents/`` in the same
+``cli/project_trust.py:174-199`` learns about ``.aelix/agents/`` in the same
 change that adds this module — without that, ``project_trusted`` here is
 decorative (an agents-only ``.aelix`` resolves trusted with no prompt in every
 mode).
@@ -101,7 +101,7 @@ def user_agents_dir(agent_dir: str | None = None) -> Path:
     """``<agent_dir or get_agent_dir()>/agents`` (``cli/config.py:82``).
 
     ``agent_dir`` is the agent ROOT (``~/.aelix/agent``), not the agents dir —
-    same convention as ``_resolve_skill_dirs`` (``entry.py:574``).
+    same convention as ``_resolve_skill_dirs`` (``entry.py:959``).
     """
 
     return Path(agent_dir or get_agent_dir()) / "agents"
@@ -138,7 +138,7 @@ def classify_scope(
       ``profile.parse_profile``'s ``extensions:``-at-project-scope prohibition —
       the last of which is the RCE cut (tier-3 explicit extension paths are
       ungated by BOTH ``--no-discovery`` and ``--no-project-local``,
-      ``extensions/loader.py:443-464``). Proven end to end before the fix.
+      ``extensions/loader.py:795-859``). Proven end to end before the fix.
 
     ``spelled`` defaults to ``resolved`` so a caller that only has the resolved
     path keeps the old (target-only) behaviour; :func:`load_profile_file` passes

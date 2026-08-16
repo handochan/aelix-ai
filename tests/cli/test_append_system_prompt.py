@@ -1,7 +1,7 @@
 """Sprint 6h₇a (Phase 5a-iii-α, ADR-0090) — entry.py append-system-prompt wire.
 
 Covers the §D wiring contract: ``parsed.append_system_prompt`` (the
-:class:`list[str]` accumulator from ``args.py:101``) propagates into
+:class:`list[str]` accumulator from ``args.py:135``) propagates into
 :attr:`AgentHarnessOptions.append_system_prompt` via
 :func:`_build_harness_options`.
 """

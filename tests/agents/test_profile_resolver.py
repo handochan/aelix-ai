@@ -188,7 +188,7 @@ def test_model_inherit_emits_no_model_flag() -> None:
 
 
 def test_tools_emitted_as_single_csv_token() -> None:
-    """``--tools`` is NOT repeatable — ``args.py:307-311`` overwrites, so a
+    """``--tools`` is NOT repeatable — ``args.py:494-498`` overwrites, so a
     repeated flag would silently keep only the last name."""
 
     flags = profile_to_flags(

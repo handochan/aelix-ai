@@ -2,7 +2,7 @@
 
 Two consumers, one tap. The event bus is what a P4 dashboard, a Web UI or a
 third-party extension subscribes to; the statusline is the one height-1 row the
-user actually sees (``tui/chrome.py:1036-1047`` — multi-row panels are
+user actually sees (``tui/chrome.py:1097-1108`` — multi-row panels are
 ``set_widget``, which is P4).
 
 THREE MEASURED HAZARDS ARE PINNED HERE, and each is invisible in production:
@@ -160,7 +160,7 @@ async def test_broken_subscriber_does_not_break_spawn(tmp_path: Path) -> None:
     """The failure this documents is INVISIBLE, which is why it needs a test.
 
     ``EventBus.emit`` swallows subscriber exceptions with no logging
-    (``extensions/api.py:277-278``), so a broken handler is silent. The
+    (``extensions/api.py:280-286``), so a broken handler is silent. The
     guarantee that matters is the other direction: it must not be able to take
     a delegation down with it, and the healthy subscribers must still be served.
     """

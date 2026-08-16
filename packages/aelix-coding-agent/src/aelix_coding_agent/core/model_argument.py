@@ -57,7 +57,7 @@ two needs the gateway's live model list, i.e. network I/O inside ``/model``, and
 is deliberately out of scope. The user pays one extra ``openrouter/`` prefix.
 
 This mirrors pi's own escape hatch, ``buildFallbackModel``
-(``model-resolver.ts:160-174``, ported at ``core/model_resolver.py:278-302``),
+(``model-resolver.ts:160-174``, ported at ``core/model_resolver.py:421-445``),
 which pi reaches ONLY when ``--provider`` explicitly names a provider — the same
 "an explicitly named provider licenses an uncatalogued id" rule, applied to the
 in-session command. Ours is strictly stricter: pi's does not check auth at all,
