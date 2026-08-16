@@ -37,6 +37,8 @@ from __future__ import annotations
 import time
 from typing import TYPE_CHECKING
 
+from rich.cells import cell_len, set_cell_size
+
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
@@ -151,12 +153,29 @@ def _flatten(value: str, *, limit: int) -> str:
     what bounds the ROW COUNT), then delete controls (which is what bounds what
     the terminal will obey), then bound the width — measured on the flattened
     string, so the limit counts what is drawn.
+
+    ``limit`` IS IN CELLS, AND THAT IS THE WHOLE OF THIS FUNCTION'S SECOND
+    FINDING. It counted codepoints, which is not what a terminal draws: a Hangul
+    syllable or an emoji occupies two columns and one character, so the two
+    diverge by a factor of two on exactly the input a hostile child would pick.
+    MEASURED before the fix, with ``current_tool`` set to ``"한" * 60`` on eight
+    members: every row came out at 78 characters — inside the ceiling, so nothing
+    was dropped — and 125 CELLS, wrapping at 80 columns into 17 screen rows
+    against a :data:`PANEL_MAX_ROWS` of 9. That ceiling is not layout: the
+    docstring beside it explains it exists because the widget is the one surface
+    with no downstream bound, so an over-long list pushes the transcript and the
+    input line off screen. A 2x breach of it is reachable from child stdout.
+
+    ``rich.cells`` rather than a private measure: ``tui/render.py`` draws with
+    ``cell_len``/``set_cell_size`` and ``tool.py`` — which imports THIS
+    function — already fixed its own half of the same finding (M1) against those
+    primitives. Sharing them is what makes the budget and the draw agree.
     """
 
     flat = " ".join(value.split()).translate(_CONTROL_KILL)
-    if len(flat) <= limit:
+    if cell_len(flat) <= limit:
         return flat
-    return flat[: limit - 1] + _ELLIPSIS
+    return set_cell_size(flat, max(0, limit - 1)) + _ELLIPSIS
 
 _STATE_LABELS: dict[str, str] = {
     "starting": "running",
@@ -273,15 +292,21 @@ def format_aggregate_status(
         tail.append(f"${cost:.4f}")
     for segment in tail:
         candidate = f"{text} · {segment}"
-        if len(candidate) > AGGREGATE_MAX_CHARS:
+        # CELLS, like :func:`_flatten`. ``_short_profile`` bounds the profile to
+        # 16 CELLS, so a Hangul name is eight characters wide and sixteen columns
+        # wide; measuring this join with ``len`` undercounts by that difference
+        # and admits a row past the ceiling onto a shared height-1 statusline.
+        # ASCII is unaffected — ``cell_len`` and ``len`` agree there — so this
+        # changes nothing for a batch whose profile is spelled in ASCII.
+        if cell_len(candidate) > AGGREGATE_MAX_CHARS:
             # Left-to-right, so the drop is always a suffix: losing the cost
             # while keeping the elapsed reads as terseness; the reverse reads as
             # a bug.
             break
         text = candidate
 
-    if len(text) > AGGREGATE_MAX_CHARS:
-        return text[: AGGREGATE_MAX_CHARS - 1] + _ELLIPSIS
+    if cell_len(text) > AGGREGATE_MAX_CHARS:
+        return set_cell_size(text, AGGREGATE_MAX_CHARS - 1) + _ELLIPSIS
     return text
 
 

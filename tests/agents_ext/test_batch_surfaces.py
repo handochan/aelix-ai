@@ -18,6 +18,7 @@ from __future__ import annotations
 from typing import Any
 
 from aelix_agents.panel import (
+    _ELLIPSIS,
     AGGREGATE_MAX_CHARS,
     PANEL_MAX_ROWS,
     PANEL_MIN_CHILDREN,
@@ -42,6 +43,7 @@ from aelix_coding_agent.subagent_contract import (
     SUBAGENT_START,
     SubagentProgress,
 )
+from rich.cells import cell_len
 
 from tests.agents_ext.test_events_and_statusline import _Api, _progress, _Ui
 
@@ -776,13 +778,141 @@ def test_a_child_cannot_emit_escape_sequences_into_the_parents_chrome() -> None:
 
 def test_every_panel_row_is_bounded_the_way_the_aggregate_already_was() -> None:
     """``format_aggregate_status`` capped at :data:`AGGREGATE_MAX_CHARS`; the
-    panel capped nothing. Same input, same class of bound, measured on both."""
+    panel capped nothing. Same input, same class of bound, measured on both.
+
+    Measured in CELLS. This used to count characters, and counting characters is
+    how the wide-character breach below survived: the rows really were inside the
+    ceiling by that measure while being nearly twice it on screen. A ceiling
+    asserted in the wrong unit is not a weaker ceiling — it is an absent one that
+    reports as present.
+    """
 
     huge = _member(0, state="running", current_tool="x" * 5000)
 
-    assert len(format_aggregate_status([huge, huge])) <= AGGREGATE_MAX_CHARS
+    assert cell_len(format_aggregate_status([huge, huge])) <= AGGREGATE_MAX_CHARS
     for row in format_panel([huge, huge]):
-        assert len(row) <= max(PANEL_ROW_MAX_CHARS, AGGREGATE_MAX_CHARS), row
+        assert cell_len(row) <= max(PANEL_ROW_MAX_CHARS, AGGREGATE_MAX_CHARS), row
+
+
+def test_a_wide_character_row_is_bounded_in_CELLS_not_characters() -> None:
+    """``current_tool`` is child-authored, and a child picks its own alphabet.
+
+    A Hangul syllable and an emoji each occupy two terminal columns and one
+    character, so a codepoint budget lets through twice what it promises.
+
+    SWEPT rather than sampled, and that is the point of this test rather than a
+    flourish. The first version asserted on ``"한" * 60`` alone and stayed GREEN
+    under the sabotage: at that length the row is long enough in CHARACTERS to
+    trip the outer truncation, which is cell-accurate and quietly repaired the
+    breach. The observable band is narrower — MEASURED against the sabotaged
+    build, the worst row is at 37 syllables and comes out at 115 cells against a
+    ceiling of 78. A sweep cannot miss a band a single sample can.
+    """
+
+    for alphabet in ("한", "🔥"):
+        for n in range(2, 60):
+            rows = format_panel(
+                [_member(k, state="running", current_tool=alphabet * n)
+                 for k in range(8)]
+            )
+            for row in rows:
+                assert cell_len(row) <= max(
+                    PANEL_ROW_MAX_CHARS, AGGREGATE_MAX_CHARS
+                ), (alphabet, n, cell_len(row), row)
+
+
+def test_a_wide_character_panel_cannot_breach_the_height_ceiling() -> None:
+    """The consequence rather than the measure, which is the property that matters.
+
+    :data:`PANEL_MAX_ROWS` is not layout: the docstring beside it explains the
+    widget is the one surface with NO downstream bound, so an over-long list
+    pushes the transcript and the input line off screen. Rows wider than the
+    terminal wrap, and a wrapped row is two screen rows. MEASURED before the fix,
+    at the worst length: nine list entries became SEVENTEEN screen rows at 80
+    columns.
+    """
+
+    for alphabet in ("한", "🔥"):
+        for n in (19, 28, 37, 46):
+            lines = format_panel(
+                [_member(k, state="running", current_tool=alphabet * n)
+                 for k in range(8)]
+            )
+            assert len(lines) == PANEL_MAX_ROWS
+            screen_rows = sum(max(1, -(-cell_len(line) // 80)) for line in lines)
+            assert screen_rows == PANEL_MAX_ROWS, (alphabet, n, screen_rows)
+
+
+def _wide_profile_batch(syllables: int) -> list[SubagentProgress | None]:
+    """The widest aggregate this formatter can be asked for, in Hangul.
+
+    Every state class non-zero and every trailing number at full width — the same
+    shape ``test_the_aggregate_row_fits_a_shared_height_one_status_bar`` uses to
+    pin the ASCII case, with the profile name swapped for one whose characters
+    are two columns wide.
+    """
+
+    states = ["running", "starting", "running", "running", "done", "error", "stopped"]
+    return [
+        _member(
+            index,
+            profile="한" * syllables,
+            state=state,
+            elapsed_ms=999_000 if index == 0 else 1_000,
+            tokens=987_654 if index == 4 else 0,
+            cost=99.9999 if index == 6 else 0,
+        )
+        for index, state in enumerate(states)
+    ] + [None]
+
+
+def test_the_aggregate_row_is_bounded_in_cells_for_a_wide_profile_name() -> None:
+    """The same unit error on the SHARED height-1 statusline row.
+
+    ``_short_profile`` bounds the name to 16 cells, so a Hangul profile is eight
+    characters and sixteen columns; the final cut measured characters and so let
+    a row onto that shared row two columns past the ceiling. MEASURED against the
+    sabotaged build at eight syllables: 80 cells.
+    """
+
+    for syllables in range(1, 24):
+        text = format_aggregate_status(_wide_profile_batch(syllables))
+        assert cell_len(text) <= AGGREGATE_MAX_CHARS, (syllables, cell_len(text), text)
+
+
+def test_the_aggregate_drops_whole_segments_rather_than_cutting_a_number() -> None:
+    """The join that appends the trailing numbers is measured in cells too, and
+    this is what that half buys — it is invisible to a width assertion.
+
+    ``format_aggregate_status`` appends ``elapsed``, ``tokens`` and ``cost``
+    left to right "so the drop is always a suffix: losing the cost while keeping
+    the elapsed reads as terseness; the reverse reads as a bug". A codepoint
+    measure admits a segment the cell measure would refuse, and the final cut
+    then slices it mid-number. MEASURED at four syllables: the fixed build ends
+    ``· 1 queued`` at 72 cells; the sabotaged one ends ``· 99…``.
+    """
+
+    text = format_aggregate_status(_wide_profile_batch(4))
+    assert not text.endswith(_ELLIPSIS), text
+    assert text.endswith("1 queued"), text
+
+
+def test_an_ascii_batch_is_unchanged_under_the_cell_measure() -> None:
+    """``cell_len`` and ``len`` agree on ASCII, so nothing a normal batch renders
+    may move. Without this, widening the measure could be paid for by quietly
+    reformatting every row anyone has ever seen."""
+
+    snapshots: list[SubagentProgress | None] = [
+        _reading(0, elapsed_ms=1_000, tokens=1_500),
+        _member(1, state="done", elapsed_ms=2_000, cost=0.0031),
+        None,
+    ]
+
+    assert format_panel(snapshots)[1:] == [
+        "[1/3] running · read · 1s · 1.5k tok",
+        "[2/3] done · 2s · $0.0031",
+        "[3/3] queued",
+    ]
 
 
 def test_a_hostile_profile_name_cannot_grow_the_panel_header() -> None:
@@ -832,7 +962,7 @@ def test_the_row_builder_is_safe_on_its_own_not_only_via_format_panel() -> None:
     ``_panel_row`` changes nothing that :func:`format_panel` can observe: the
     mutation survives every test above. It is still worth having and still worth
     pinning. ``_panel_row`` is the function that touches the child's bytes
-    (``panel.py:349-371``, the site the finding names), and the next consumer of a
+    (``panel.py:374-396``, the site the finding names), and the next consumer of a
     per-child row — a card variant, a future surface — will call it rather than
     re-deriving it, and must inherit the bound rather than have to remember it.
     """

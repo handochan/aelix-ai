@@ -947,7 +947,7 @@
    "# IDENTITY-SCOPED (finding B7). ``bind_subagents(None)`` would",
    "# null the slot for whatever runtime happens to hold it, which"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/panel.py:349-371": [
+  "packages/aelix-coding-agent/src/aelix_agents/panel.py:374-396": [
    "def _panel_row(snapshot: SubagentProgress | None) -> str:",
    "if snapshot is None:",
    "return \"queued\"",
