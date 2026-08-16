@@ -362,6 +362,16 @@ _KERNEL_CHANGE_ALLOWLIST = frozenset(
         "packages/aelix-agent-core/src/aelix_agent_core/loop.py",
         # ADR-0213. PEP 561 marker, packaging metadata rather than code.
         "packages/aelix-agent-core/src/aelix_agent_core/py.typed",
+        # ADR-0222, #163. Not code and not a delegation surface: this is the
+        # kernel package's copy of the repo-root legal notices, which
+        # ``test_license_sync.py`` requires to be byte-identical across all five
+        # published packages. Removing the `[images]` extra dropped `rich-pixels`
+        # from the runtime closure, so the paragraph naming it as a redistribution
+        # obligation became false in every copy at once — reverting this one would
+        # ship a legal file that lies AND break the sync gate. Nothing here can be
+        # imported; delegation did not create the requirement, a dependency
+        # removal did.
+        "packages/aelix-agent-core/THIRD-PARTY-NOTICES.md",
         # ADR-0210 (above) opened ``session/entries.py`` for the four provenance
         # fields. ADR-0211, #135 is the reason it changed AGAIN, and is recorded
         # here because this path is ALREADY listed — so the gate would otherwise

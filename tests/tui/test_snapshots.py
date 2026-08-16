@@ -6,20 +6,15 @@ internal render helpers. The harness (``_pyte`` sibling module) drives one paint
 frame headlessly and returns ``screen.display``; we assert key substrings appear
 at the expected rows.
 
-§2.3 image-tier validation lives at the bottom: the Unicode (``rich-pixels``) tier
-prints a colored block through a Rich ``Console`` into a captured buffer → pyte
-shows colored cells; the ``NONE`` tier degrades to the ``[image: …]`` placeholder.
-(term-image graphics tiers are dormant under Pillow≥11 — not exercised here.)
+The §2.3 image-tier snapshots were removed with `tui/images.py` itself (#163):
+they exercised a renderer no production path ever called.
 """
 
 from __future__ import annotations
 
-import io
 import os
-import tempfile
 from typing import Any
 
-import pyte
 import pytest
 from _pyte import (  # sibling helper (pytest prepend import mode)
     assert_row_contains,
@@ -29,9 +24,6 @@ from aelix_agent_core.contracts.descriptor import DescriptorEnvelope
 from aelix_coding_agent.tui.chrome import AelixChrome
 from aelix_coding_agent.tui.descriptors import DescriptorRegistry, DescriptorRenderer
 from aelix_coding_agent.tui.footer_data import AelixFooterData
-from aelix_coding_agent.tui.images import ImageCapability, render_image
-from PIL import Image
-from rich.console import Console
 
 
 def _env(kind: str, *, ns: str = "ext", id_: str = "a", **payload: Any) -> DescriptorEnvelope:
@@ -129,63 +121,6 @@ async def test_breadcrumb_descriptor_shows_joined_chain_in_header() -> None:
     header_row = assert_row_contains(display, "Home › Repo › File")
     # The header is the first chrome row (chrome.py body order: header first).
     assert header_row == 0
-
-
-# === §2.3 image Unicode-tier + placeholder ===================================
-
-
-def _render_to_pyte(
-    renderable: object, *, cols: int = 80, rows: int = 12, markup: bool = True
-) -> pyte.Screen:
-    buffer = io.StringIO()
-    # ``markup=False`` for the literal ``[image: …]`` placeholder string — Rich would
-    # otherwise parse the leading ``[image: …]`` as a (bogus) markup tag and drop it.
-    Console(
-        file=buffer, force_terminal=True, width=cols, color_system="truecolor", markup=markup
-    ).print(renderable)
-    screen = pyte.Screen(cols, rows)
-    pyte.Stream(screen).feed(buffer.getvalue())
-    return screen
-
-
-def test_image_unicode_tier_renders_colored_cells(tmp_path: Any) -> None:
-    png = tmp_path / "tiny.png"
-    Image.new("RGB", (4, 4), (255, 0, 0)).save(os.fspath(png))
-
-    renderable = render_image(os.fspath(png), max_cells=(8, 4), capability=ImageCapability.UNICODE)
-    # Unicode tier yields a Rich renderable (rich-pixels Pixels), not a placeholder.
-    assert not isinstance(renderable, str)
-
-    screen = _render_to_pyte(renderable)
-    nonempty = [row for row in screen.display if row.strip()]
-    assert nonempty, "Unicode image rendered an empty grid"
-    colored = sum(
-        1
-        for row in screen.buffer.values()
-        for cell in row.values()
-        if cell.fg != "default" or cell.bg != "default"
-    )
-    assert colored > 0, "expected colored cells from the half-block image"
-
-
-def test_image_none_capability_renders_text_placeholder() -> None:
-    with tempfile.TemporaryDirectory() as d:
-        png = os.path.join(d, "tiny.png")
-        Image.new("RGB", (4, 4)).save(png)
-        result = render_image(png, max_cells=(8, 4), capability=ImageCapability.NONE)
-
-    assert isinstance(result, str)
-    assert result.startswith("[image:")
-    assert "tiny.png" in result
-
-    screen = _render_to_pyte(result, markup=False)
-    assert_screen_contains(screen, "[image:")
-
-
-def assert_screen_contains(screen: pyte.Screen, text: str) -> None:
-    if not any(text in row for row in screen.display):
-        rendered = "\n".join(repr(row) for row in screen.display)
-        raise AssertionError(f"{text!r} not found in screen:\n{rendered}")
 
 
 if __name__ == "__main__":  # pragma: no cover

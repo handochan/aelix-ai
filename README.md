@@ -65,8 +65,8 @@ curl -fsSL https://raw.githubusercontent.com/handochan/aelix-ai/main/install.sh 
 ```
 
 Pin a release with `AELIX_VERSION=v0.1.0-beta.1` (recommended during the beta) and pick
-extras with `AELIX_EXTRAS` — default `tui`; `tui,images` adds inline terminal image
-rendering; empty (`AELIX_EXTRAS=`) installs the headless CLI only (print / json / rpc).
+extras with `AELIX_EXTRAS` — default `tui`; empty (`AELIX_EXTRAS=`) installs the headless
+CLI only (print / json / rpc).
 
 **Upgrading / uninstalling.** Re-run the same `curl … | sh` line to upgrade: it resolves the
 newest release and re-runs the whole checksum-verified install (`uv tool install --force`

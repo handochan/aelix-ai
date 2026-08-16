@@ -2,7 +2,7 @@
 
 Asserts that every published Aelix package carries the exact shared release
 version and that every inter-package ``==`` pin (including the umbrella's
-``[tui]`` / ``[images]`` extras) points at that same version. A drifted version
+``[tui]`` extra) points at that same version. A drifted version
 or a stale cross-pin would ship a self-inconsistent set that cannot resolve
 from a single find-links download, so this is enforced as a test.
 
@@ -44,7 +44,7 @@ def _iter_aelix_pins(data: dict):
     """Yield (raw_requirement, pinned_version) for every aelix-* ``==`` pin.
 
     Covers both ``[project].dependencies`` and every list under
-    ``[project.optional-dependencies]`` (the umbrella's ``[tui]``/``[images]``).
+    ``[project.optional-dependencies]`` (the umbrella's ``[tui]``).
     Non-aelix requirements and unpinned aelix requirements are skipped.
     """
     project = data.get("project", {})
@@ -102,7 +102,11 @@ def test_expected_pins_are_present():
         )
     extras = root["project"]["optional-dependencies"]
     assert f"aelix-coding-agent[tui]=={EXPECTED_VERSION}" in extras["tui"]
-    assert f"aelix-coding-agent[tui,images]=={EXPECTED_VERSION}" in extras["images"]
+    # No `[images]` extra: #163 removed it along with the renderer it installed
+    # a dependency for. Asserted as an ABSENCE so re-adding one without a call
+    # site fails here rather than shipping as another inert promise.
+    assert "images" not in extras, "the [images] extra is gone (#163) — see ADR-0222"
+
 
     core = _load(PUBLISHED_PYPROJECTS["aelix-agent-core"])
     assert f"aelix-ai=={EXPECTED_VERSION}" in core["project"]["dependencies"]

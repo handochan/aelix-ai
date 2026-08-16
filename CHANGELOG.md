@@ -143,6 +143,14 @@ and `.../releases/tag/vX` link would 404. Add them with the first pushed tag.
 
 ### Removed
 
+- **The `[images]` extra and `tui/images.py`.** The extra installed
+  `rich-pixels` and the README offered `AELIX_EXTRAS=tui,images` for "inline
+  terminal image rendering", but no production code path ever reached the
+  renderer: its only importers were two test files. Installing it bought a
+  dependency and zero behaviour. Inline images are not a shipped feature; see
+  ADR-0222 for what wiring one would take, including the `term-image` /
+  `Pillow>=11` conflict that leaves only the Unicode tier reachable.
+
 - `--verbose`, `--no-themes` and `--no-prompt-templates` (and the `-np`
   spelling). All were parsed into `Args` fields that nothing outside
   `cli/args.py` ever read, while `--help` advertised them as working features.
@@ -276,7 +284,7 @@ earlier published version.
 - **TUI** — an interactive terminal shell (optional `[tui]` extra) with slash
   commands, streaming Markdown output, compact tool cards, a status footer and
   context meter, steer/queue, session resume/fork, and an external-editor
-  binding. Inline image rendering via the optional `[images]` extra.
+  binding.
 - **CLI** — the real `aelix` command (session, fork, export, and model flags)
   plus a headless RPC mode and OAuth credential management.
 - **Release engineering** — CI (ruff + pytest on Python 3.11 / 3.12) and a

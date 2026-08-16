@@ -1,6 +1,10 @@
 # 0106. Sprint 6h₁₀c — Tier-2 Descriptor Renderer + Inline Images (Phase 5c-tui)
 
 Status: Accepted (Sprint 6h₁₀c / Phase 5c-tui sprint 3 of ~4 / W6 shipped)
+Superseded in part by: **ADR-0222** — §D (inline images) only. `tui/images.py` and the
+`[images]` extra were removed in #163: the module this ADR specifies in detail never
+acquired a production call site, so the extra installed a dependency and changed no
+behaviour. The descriptor-renderer half of this ADR stands unchanged.
 Date: 2026-05-26
 Pi pin: `earendil-works/pi@734e08edf82ff315bc3d96472a6ebfa69a1d8016` (no advance — consumer-only)
 

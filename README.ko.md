@@ -66,8 +66,8 @@ curl -fsSL https://raw.githubusercontent.com/handochan/aelix-ai/main/install.sh 
 ```
 
 `AELIX_VERSION=v0.1.0-beta.1`로 릴리즈를 고정하고(베타 기간 권장), `AELIX_EXTRAS`로
-extras를 선택하세요 — 기본값은 `tui`, `tui,images`는 터미널 인라인 이미지 렌더링을
-추가하고, 비워두면(`AELIX_EXTRAS=`) TUI 없는 헤드리스 CLI(print/json/rpc)만 설치됩니다.
+extras를 선택하세요 — 기본값은 `tui`이고, 비워두면(`AELIX_EXTRAS=`) TUI 없는 헤드리스
+CLI(print/json/rpc)만 설치됩니다.
 
 **업그레이드 / 제거.** 같은 `curl … | sh` 한 줄을 다시 실행하면 업그레이드됩니다 — 최신
 릴리즈를 찾아 체크섬 검증 설치를 처음부터 다시 수행합니다(`uv tool install --force`라

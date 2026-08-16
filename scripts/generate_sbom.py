@@ -5,8 +5,8 @@ Run from the repo root inside the dev environment::
 
     uv run python scripts/generate_sbom.py
 
-Scope: the locked runtime closure of the uv workspace — all extras (tui,
-images) included, dev group excluded. Two provenance components that no
+Scope: the locked runtime closure of the uv workspace — all extras (tui)
+included, dev group excluded. Two provenance components that no
 lockfile scanner can discover are injected on top:
 
 - pi (earendil-works/pi @ 734e08e, MIT) — substantial portions of aelix are
@@ -41,7 +41,6 @@ FIRST_PARTY = ["aelix-ai", "aelix-agent-core", "aelix-coding-agent", "aelix-serv
 # package's own distribution — extend it if `--- N components still have no
 # license` reports new names.
 OVERRIDES = {
-    "rich-pixels": "MIT",  # LICENSE in the wheel; no metadata field, no classifier
     # Windows-only conditional deps: never installed in the Linux dev env, so
     # importlib.metadata cannot see them. Confirmed against upstream releases.
     "colorama": "BSD-3-Clause",
