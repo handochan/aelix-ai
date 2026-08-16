@@ -213,7 +213,7 @@ def transform_messages(
     normalization via :func:`_normalize_anthropic_tool_call_id`), then run
     the local per-shape map + tool_result coalescing over its **output** —
     which may have inserted synthetic :class:`ToolResultMessage`\\ s and
-    dropped errored turns. Mirrors ``openai_completions.py:334`` /
+    dropped errored turns. Mirrors ``openai_completions.py:335`` /
     ``_google_shared.py:259``.
     """
 

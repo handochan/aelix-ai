@@ -82,6 +82,7 @@ from aelix_ai.providers._openai_responses_shared import (
     convert_responses_tools,
     process_responses_stream,
 )
+from aelix_ai.providers._stream_close import close_provider_stream
 from aelix_ai.providers.openai_completions import BUILTIN_SOURCE_ID
 from aelix_ai.streaming import (
     AssistantDoneEvent,
@@ -432,6 +433,9 @@ async def stream_openai_responses(
             model=model.id,
         )
 
+    # #147 — see providers/_stream_close.py for why this handle is held.
+    open_stream: Any = None
+
     try:
         compat = get_responses_compat(model)
         cache_retention = _resolve_cache_retention(opts.cache_retention)
@@ -476,6 +480,7 @@ async def stream_openai_responses(
         iterator, raw_response = await _open_responses_stream(
             client, params, request_options
         )
+        open_stream = iterator
 
         if opts.on_response is not None:
             http_response = getattr(raw_response, "http_response", raw_response)
@@ -547,6 +552,8 @@ async def stream_openai_responses(
         yield AssistantErrorEvent(
             reason=reason, error=error_output, error_message=err_msg
         )
+    finally:
+        await close_provider_stream(open_stream)
 
 
 def stream_simple_openai_responses(

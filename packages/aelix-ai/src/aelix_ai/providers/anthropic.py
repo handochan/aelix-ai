@@ -627,7 +627,7 @@ async def stream_anthropic(
             # anthropic turn as same-model and preserve its signed thinking
             # blocks on replay. Without this the shared transform always
             # treats prior thinking as cross-model → downgrades to text →
-            # signatures never travel back. Mirrors openai_completions.py:1365-1373.
+            # signatures never travel back. Mirrors openai_completions.py:1371-1379.
             output = replace(
                 output,
                 content=list(output_content),
@@ -693,7 +693,7 @@ async def stream_anthropic(
             error_message=error_msg,
             # ADR-0190: stamp provenance on the error path too so a partial
             # turn surfaced to observers still carries the same-model markers
-            # (mirrors the success build). openai_completions.py:1365-1373.
+            # (mirrors the success build). openai_completions.py:1371-1379.
             api=model.api,
             provider=model.provider,
             model=model.id,

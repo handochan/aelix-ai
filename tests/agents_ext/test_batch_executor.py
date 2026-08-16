@@ -1733,7 +1733,7 @@ async def test_l2_stop_all_mid_batch_leaves_no_process_behind(
     ``list`` / ``status`` / ``stop`` and a second ``stop_all`` could never reach
     them again. Those children hold the parent's API keys, which is precisely
     what ADR-0197 forbids, and on the ``AgentHarness.reload()`` path
-    (``harness/core.py:3194``, which emits ``session_shutdown`` and never aborts
+    (``harness/core.py:3208``, which emits ``session_shutdown`` and never aborts
     or disposes) they survive indefinitely.
 
     The in-process fake cannot show it: with no real child, ``abort_child``

@@ -3,7 +3,7 @@
 The unit tests in ``test_event_renderer.py`` assert what the renderer hands its
 sinks. These assert what a user would SEE: the renderer's sinks are wired to a
 real :class:`AelixChrome` exactly as ``shell.py`` wires them (``_set_tail`` →
-``set_widget("__stream__", …, above=True)``, shell.py:2976), the chrome paints a
+``set_widget("__stream__", …, above=True)``, shell.py:3052), the chrome paints a
 frame, and the frame is read back through a terminal emulator.
 
 That distinction is the whole point for a live WINDOW. Its failure mode is not
@@ -40,7 +40,7 @@ async def _screen(drive: Any, *, cols: int = 90, rows: int = 24) -> tuple[list[s
     def build_state(chrome: AelixChrome) -> None:
         renderer = EventRenderer(
             commit=commits.append,
-            # Exactly shell.py:2976, minus the queue hop (the pump is a plain
+            # Exactly shell.py:3052, minus the queue hop (the pump is a plain
             # relay; going through it would test asyncio, not the window).
             set_tail=lambda ansi: chrome.set_widget(
                 "__stream__", ansi.split("\n") if ansi else None, above=True
@@ -98,7 +98,7 @@ async def test_hiding_reasoning_mid_stream_clears_the_glass() -> None:
 
     def drive(r: EventRenderer) -> None:
         r.on_agent_event(_msg_update(ThinkingDeltaEvent(delta=REASONING, content_index=0)))
-        r.hide_thinking = True  # shell.py:2151, the Ctrl+T handler
+        r.hide_thinking = True  # shell.py:2227, the Ctrl+T handler
 
     display, _commits = await _screen(drive)
 
