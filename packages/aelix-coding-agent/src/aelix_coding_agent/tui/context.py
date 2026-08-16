@@ -82,6 +82,22 @@ _PICK_FILTER = "\x1b[1;36m"  # bold cyan — the live filter value
 _PICK_MIN_WIDTH = 28
 _PICK_MAX_WIDTH = 78
 
+# GitHub #48 ask 1 — the panel RULE, which used to be :data:`_PICK_DIM`. SGR 2 is
+# the faintest attribute a terminal has, and it was carrying the one element
+# whose entire job is to say where the panel starts and stops; the owner's report
+# was that an opened panel does not separate from the transcript around it.
+#
+# Cyan and not bold cyan: :data:`_PICK_SEL` is ``\x1b[1;36m`` and belongs to the
+# HIGHLIGHTED ROW, which has to stay the single brightest thing on screen. A rule
+# in the same style gives the eye two winners. Plain ANSI 36 is 4-bit, so it
+# survives a terminal with no truecolor and follows the user's own palette.
+#
+# The glyph is a constant because the choice between ``─`` and a heavier ``━`` is
+# taste, not correctness — the rest of this codebase (the banner box,
+# ``model_detail_lines``) draws ``─``, so that is the default.
+_PICK_RULE = "\x1b[36m"  # cyan — the top/bottom rule
+_PICK_RULE_CHAR = "─"
+
 
 def _filter_line(value: str, placeholder: str | None = None) -> str:
     """A standalone filter affordance: dim ``Filter:`` label + bright typed VALUE.
@@ -113,20 +129,68 @@ def _filter_counter_suffix(value: str) -> str:
 
 
 def _picker_frame(title: str, body: list[str], hint: str, content_width: int) -> ANSI:
-    """Frame a picker body: bold title + top/bottom dividers + dim hint (ADR-0163).
+    """Frame a picker body: title on a coloured rule, body, rule, dim hint.
 
     ``body`` rows are already styled by the caller (the current row colored, the
     counter/detail dimmed). ``content_width`` is the widest PLAIN content line so
-    the dividers span the panel. Returns :class:`ANSI` so the escapes render.
+    the rules span the panel. Returns :class:`ANSI` so the escapes render.
+
+    GitHub #48 ask 1. ADR-0163 shipped this as a bold title on its own line above
+    a DIM divider, and the title then reads as ordinary transcript text: the only
+    thing marking the top of the panel was the faintest attribute the terminal
+    has. A single-row title now rides the top rule — ``── Settings ─────`` — so
+    the boundary and the label are one object rather than two weak ones.
+
+    THAT ALSO REMOVES A ROW, WHICH IS THE SAFE DIRECTION. The modal does not
+    scroll, it BOTTOM-TRUNCATES: ``build()`` returns one ``Window`` with
+    ``wrap_lines`` False and no ``get_cursor_position``, so prompt-toolkit has
+    nothing to scroll to, and ``_CappedContainer`` clamps the height
+    (``tui/overlay.py:221-231``). ADR-0199 measured that at eight members the
+    hint, the closing rule, the counter and the last option — which
+    ``consent.build_options`` guarantees is ``Cancel`` — are simply not drawn.
+
+    A MULTI-ROW TITLE KEEPS THE OLD SHAPE, and that is load-bearing rather than
+    tidy. The spawn-consent dialog passes a NINE-row title
+    (``tests/agents_ext/test_spawn_consent.py:1292`` pins ``title.count("\\n")
+    == 8``) and ``aelix_agents/consent.py`` writes its height budget down as
+    ``title_rows + option_rows + 4``, gated by
+    ``tests/agents_ext/test_batch_consent.py:344``. Nine rows cannot ride a rule,
+    and quietly changing that arithmetic is how ``Cancel`` goes off screen.
+    MEASURED against the shipped helper: single-row title 8 rows → 7, nine-row
+    title 16 rows → 16, and the top rule is exactly as wide as the bottom one at
+    every content width, Hangul titles included.
     """
 
     width = max(_PICK_MIN_WIDTH, min(content_width, _PICK_MAX_WIDTH))
-    divider = f"{_PICK_DIM}{'─' * width}{_PICK_RST}"
+    rule = f"{_PICK_RULE}{_PICK_RULE_CHAR * width}{_PICK_RST}"
+    # A title only rides the rule if it LEAVES one. ``width`` is clamped to
+    # :data:`_PICK_MAX_WIDTH` while the title is not bounded at all —
+    # ``ExtensionUIContext.select`` takes whatever an extension passes — so a
+    # long enough label would make the TOP rule overrun the bottom one by its own
+    # excess. On its own line it overflows exactly as it does today, which is a
+    # clipped title; in the rule it would be a visibly broken frame.
+    fits = title and "\n" not in title and _visible_len(title) + 6 <= width
+    if fits:
+        # ``── title ────``: two lead cells, a space either side of the label,
+        # and the rest of the rule. Measured in CELLS — a Hangul title is twice
+        # its length in columns, and a top rule that disagreed with the bottom
+        # one by half its label would be worse than the dim rule it replaces.
+        # ``max(0, …)`` is not catching a live case: the ``+ 6`` above already
+        # guarantees at least two trailing cells. It is here so that a future
+        # edit to that condition degrades to a short rule rather than to a rule
+        # with no tail — ``"─" * -164`` is silently ``""``, not an error.
+        tail = _PICK_RULE_CHAR * max(0, width - 4 - _visible_len(title))
+        head = [
+            f"{_PICK_RULE}{_PICK_RULE_CHAR * 2} {_PICK_RST}"
+            f"{_PICK_BOLD}{title}{_PICK_RST}"
+            f"{_PICK_RULE} {tail}{_PICK_RST}"
+        ]
+    else:
+        head = [f"{_PICK_BOLD}{title}{_PICK_RST}", rule]
     lines = [
-        f"{_PICK_BOLD}{title}{_PICK_RST}",
-        divider,
+        *head,
         *body,
-        divider,
+        rule,
         f"{_PICK_DIM}{hint}{_PICK_RST}",
     ]
     return ANSI("\n".join(lines))

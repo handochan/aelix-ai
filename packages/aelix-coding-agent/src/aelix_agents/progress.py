@@ -466,7 +466,7 @@ class SubagentProgressBridge:
         statusline — or panel — update must never be able to fail a delegation.
 
         ``set_widget(key, content)`` with no options places the widget
-        ``above_editor`` (``tui/context.py:955-970`` → ``chrome.set_widget(...,
+        ``above_editor`` (``tui/context.py:1019-1034`` → ``chrome.set_widget(...,
         above=True)``), which is the placement S10 asked for; passing
         ``ExtensionWidgetOptions`` for the default would only add an import of a
         product-core type this file does not otherwise need.

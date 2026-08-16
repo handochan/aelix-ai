@@ -860,8 +860,13 @@ def build_options(clamped: PermissionMode, *, may_widen: bool) -> list[str]:
 # arithmetic, all of it read off the shipped TUI:
 #
 #   * ``AelixTUIContext.select`` composes title AND options into ONE window:
-#     ``_picker_frame`` returns ``[title, divider, *body, divider, hint]``
-#     (``tui/context.py:115-132``) and ``build()`` returns a single
+#     ``_picker_frame`` returns ``[title, rule, *body, rule, hint]``
+#     for a MULTI-ROW title, which is this dialog's case and the only case the
+#     arithmetic below has to hold for. GitHub #48 gave a SINGLE-row title its
+#     own shape — the label rides the top rule, one row shorter — precisely
+#     because this budget must not move: nine rows of title cannot ride a rule,
+#     so that arm was left byte-shaped as it was
+#     (``tui/context.py:115-132``). ``build()`` returns a single
 #     ``Window(FormattedTextControl(...), dont_extend_height=True)``
 #     (``:419-422``). ``wrap_lines`` is left False and the control supplies no
 #     ``get_cursor_position``, so prompt-toolkit has nothing to scroll TO: the
@@ -1055,7 +1060,7 @@ async def _ask(ui: Any, title: str, options: list[str]) -> str | None:
     except Exception:  # noqa: BLE001 — deny on error, never allow
         return None
     if not isinstance(answer, str):
-        # ``None`` is Esc (``tui/context.py:267-274``). Anything else is a
+        # ``None`` is Esc (``tui/context.py:331-338``). Anything else is a
         # misbehaving implementation, and it is treated identically.
         return None
     return answer

@@ -700,7 +700,7 @@ class AgentsExtension:
         ``tasks`` is the frozen tuple from :func:`~aelix_agents.tool.parse_agent_call`
         and ``mode`` its topology; both are handed to
         :func:`~aelix_agents.consent.request_spawn_consent_batch`, which renders
-        EVERY member or refuses the call outright (``consent.py:1282-1288``). The
+        EVERY member or refuses the call outright (``consent.py:1287-1293``). The
         pre-filter below is unchanged and is still asked of ONE profile, ONE
         clamp and ONE predicate — which is exactly what S3's one-profile-per-call
         rule buys and why a single :class:`SpawnGrant` can still describe the
