@@ -6,7 +6,7 @@ in). This file pins the TRANSPORT, which is where a decision can be lost,
 forged or bypassed:
 
 * the grant travels in a private dict keyed by ``tool_call_id``, never through
-  ``event.args`` — even though ``harness/core.py:3930-3932`` explicitly permits
+  ``event.args`` — even though ``harness/core.py:3944-3946`` explicitly permits
   a handler to mutate them, because that would put an unvalidated key into the
   transcript;
 * :meth:`dict.pop` takes a ``None`` DEFAULT, and ``None`` FAILS CLOSED. A call
@@ -428,7 +428,7 @@ async def test_the_grant_never_rides_in_the_tool_arguments(tmp_path: Path) -> No
 async def test_what_the_human_approved_is_what_runs(tmp_path: Path) -> None:
     """A LATER handler may mutate ``args``; the approved values must survive.
 
-    ``harness/core.py:3930-3932`` explicitly permits it and the dict the tool
+    ``harness/core.py:3944-3946`` explicitly permits it and the dict the tool
     receives is the same object. The dialog showed a profile, a task and a
     directory; re-reading them at execution time would let anything that ran in
     between substitute different ones.
@@ -941,7 +941,7 @@ async def test_a_later_handler_cannot_change_the_topology_that_runs(
 ) -> None:
     """THE ``args``-BY-REFERENCE HOLE, closed in both directions (§5, WP-6).
 
-    ``harness/core.py:3930-3932`` states verbatim that the kernel passes
+    ``harness/core.py:3944-3946`` states verbatim that the kernel passes
     ``ctx.args`` by reference with no defensive copy, precisely so a later
     ``tool_call`` handler may mutate the dict and have the mutation reach
     ``tool.execute``. ``AgentsExtension`` is APPENDED to the extension list

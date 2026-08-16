@@ -1741,7 +1741,7 @@ async def run_tui(
     # in flight at once (``turn_end`` then ``settled`` for one turn), each
     # awaiting ``get_session_stats`` → ``get_branch`` → file I/O, so they can
     # COMPLETE out of order: the turn_end refresh snapshots ``state.messages``
-    # before ``core.py:4584`` extends it, yet may finish after the settled
+    # before ``core.py:4598`` extends it, yet may finish after the settled
     # refresh and paint the stale value last. Completions therefore carry the
     # generation they were scheduled with and a superseded one is DROPPED,
     # making the outcome last-SCHEDULED-wins instead of last-to-finish-wins.
@@ -1805,6 +1805,77 @@ async def run_tui(
     # hook calls ``session.abortRetry()``, NOT ``abort()`` — the latter would
     # tear down the whole turn).
     retry_countdown_ref: dict[str, asyncio.Task[None] | None] = {"task": None}
+    # #147 round 2 — the (attempt, max_attempts) of the retry sequence that is
+    # currently holding the interrupt handler, or ``None`` when none is. This is
+    # what lets a signal OTHER than the ticker's wall clock perform the handover
+    # below; ``_end_retry_countdown`` clears it, so a late ``turn_start`` from a
+    # sequence that already finished cannot repaint a stale widget.
+    retry_handover_ref: dict[str, tuple[int, int] | None] = {"pending": None}
+
+    def _hand_back_retry_interrupt() -> None:
+        """Give the interrupt key back to the full-turn abort. Idempotent.
+
+        #147 — the backoff is over, so the retry REQUEST is now in flight and
+        ``abort_retry()`` has nothing left to cancel: it only wakes the sleep,
+        and is documented "No-op when no retry is in flight". Without this, Esc
+        and Ctrl+C silently do nothing for the entire duration of that request —
+        which is exactly when the provider is misbehaving and the user most
+        wants out. That was the symptom #147 reported: "Working…" with both keys
+        inert.
+
+        ADR-0215 recorded this as "a deliberate aelix improvement rather than
+        parity restoration", on the reading that pi restores ``onEscape`` only on
+        ``auto_retry_end`` (``interactive-mode.ts:3345-3350``). THAT IS NO LONGER
+        TRUE and the claim is retired here: pi **0.79.9** restores it under
+        ``case "agent_start"`` (``interactive-mode.js:2212-2216``) with the
+        comment *"Restore main escape handler if retry handler is still active
+        (retry success event fires later, but we need main handler now)"* — the
+        same argument, reached the same way. So this is parity, and the event it
+        keys off is pi's. Caveat: 0.79.9 is not the pin (ADR-0034 pins v0.74.1 /
+        734e08e, and ADR-0178 records the repo went private), so whether pi
+        changed or the original reading was wrong is not established. See
+        ADR-0225 "Pi parity".
+
+        WHY THIS IS A FUNCTION AND NOT TWO LINES AT THE END OF THE TICKER.
+        ADR-0215 timed the handover off the ticker's own ``asyncio.sleep``,
+        which is a SECOND timer for the same nominal delay, started strictly
+        after the harness started its first (the harness emits
+        ``auto_retry_start`` and only then begins its backoff, so the ticker's
+        clock starts a scheduling hop late). The two then race, and the ticker
+        shares the prompt-toolkit loop with a renderer measured at up to 226 ms
+        of SYNCHRONOUS work per frame (ADR-0221). Measured on an idle loop the
+        ticker wins by 2 ms; with 150 ms of loop pressure the retry turn's
+        ``turn_start`` lands 336 ms before the handover, and at 400 ms it lands
+        1237 ms before — a window in which the turn is visibly running, the
+        spinner is up, and the interrupt is still wired to the no-op. Ordering
+        by luck is not ordering. ``turn_start`` is the CAUSAL signal ("the retry
+        attempt has begun") and it already reaches ``_on_agent_event``, so the
+        handover is driven from it and the ticker's clock is demoted to a
+        backstop for the case where no turn ever starts.
+
+        It also closes a fail-open: the ticker body runs under
+        ``except Exception: return``, so a raising ``set_widget`` would skip the
+        handover entirely and leave the interrupt inert for the whole request —
+        a smaller copy of the very defect #147 reported.
+        """
+
+        pending = retry_handover_ref["pending"]
+        if pending is None:
+            return
+        retry_handover_ref["pending"] = None
+        attempt, max_attempts = pending
+        out_chrome.on_interrupt = _on_interrupt
+        # Pi parity: after the sleep ends the harness immediately re-runs; leave
+        # a placeholder until ``auto_retry_end`` arrives (or a new
+        # ``auto_retry_start`` for the next attempt overwrites it). The label
+        # says "interrupt" rather than "cancel" because Esc now aborts the TURN,
+        # not the retry — advertising "Esc to cancel" for a key that did nothing
+        # is half of what made this defect so confusing.
+        out_chrome.set_widget(
+            _RETRY_WIDGET_KEY,
+            [f"⟳ Retrying ({attempt}/{max_attempts}) now… Esc to interrupt"],
+            above=True,
+        )
 
     async def _tick_retry_countdown(attempt: int, max_attempts: int, delay_ms: int) -> None:
         # W-review MEDIUM-1: self-supersession — back-to-back ``auto_retry_start``
@@ -1835,35 +1906,15 @@ async def run_tui(
                 remaining -= step
             if retry_countdown_ref["task"] is not current:
                 return
-            # #147 — the backoff is over, so the retry REQUEST is now in flight
-            # and ``abort_retry()`` has nothing left to cancel: it only wakes the
-            # sleep this loop just finished, and is documented "No-op when no
-            # retry is in flight". Hand the interrupt back to the full-turn
-            # abort, or Esc silently does nothing for the entire duration of that
-            # request — which is exactly when the provider is misbehaving and the
-            # user most wants out. That was the symptom #147 reported: "Working…"
-            # with Ctrl+C and Esc both inert.
-            #
-            # pi has the same gap (``interactive-mode.ts:3345-3350`` swaps
-            # ``onEscape`` for the whole retry lifecycle and restores it only on
-            # ``auto_retry_end``), so this is a deliberate aelix improvement
-            # rather than parity restoration — recorded as such in ADR-0215.
+            # BACKSTOP ONLY. ``turn_start`` normally gets here first (see
+            # ``_hand_back_retry_interrupt``); this covers the case where the
+            # backoff ends and no turn ever starts. Both callers run the one
+            # idempotent helper, so there is no second copy to drift.
             #
             # ``_end_retry_countdown`` restores the same handler idempotently, so
             # a retry that ends during the countdown is unaffected, and a NEXT
             # attempt re-swaps it via ``_start_retry_countdown``.
-            out_chrome.on_interrupt = _on_interrupt
-            # Pi parity: after the sleep ends the harness immediately re-runs;
-            # leave a placeholder until ``auto_retry_end`` arrives (or a new
-            # ``auto_retry_start`` for the next attempt overwrites it). The label
-            # says "interrupt" rather than "cancel" because Esc now aborts the
-            # TURN, not the retry — advertising "Esc to cancel" for a key that
-            # did nothing is half of what made this defect so confusing.
-            out_chrome.set_widget(
-                _RETRY_WIDGET_KEY,
-                [f"⟳ Retrying ({attempt}/{max_attempts}) now… Esc to interrupt"],
-                above=True,
-            )
+            _hand_back_retry_interrupt()
         except Exception:  # noqa: BLE001 — log + return, never crash the TUI
             return
 
@@ -1876,10 +1927,16 @@ async def run_tui(
         # Swap the interrupt handler so Esc cancels the retry sleep (Pi
         # parity), not the whole turn. The original is restored on end.
         out_chrome.on_interrupt = _on_retry_interrupt
+        attempt = getattr(event, "attempt", 1)
+        max_attempts = getattr(event, "max_attempts", 1)
+        # Arm the handover. Until this is set, a ``turn_start`` (the first
+        # attempt's own, or one from any turn outside a retry sequence) is a
+        # no-op in ``_hand_back_retry_interrupt``.
+        retry_handover_ref["pending"] = (attempt, max_attempts)
         retry_countdown_ref["task"] = loop.create_task(
             _tick_retry_countdown(
-                getattr(event, "attempt", 1),
-                getattr(event, "max_attempts", 1),
+                attempt,
+                max_attempts,
                 getattr(event, "delay_ms", 0),
             )
         )
@@ -1895,6 +1952,10 @@ async def run_tui(
         if task is not None and not task.done():
             task.cancel()
         retry_countdown_ref["task"] = None
+        # Disarm the causal handover with the same idempotence as the handler
+        # restore below: without this, a ``turn_start`` from the NEXT prompt
+        # would repaint this finished sequence's "Retrying (N/M) now…" widget.
+        retry_handover_ref["pending"] = None
         out_chrome.set_widget(_RETRY_WIDGET_KEY, None, above=True)
         out_chrome.on_interrupt = _on_interrupt
         if not had_active:
@@ -1970,6 +2031,21 @@ async def run_tui(
             _start_retry_countdown(event)
         elif etype == "auto_retry_end":
             _end_retry_countdown(event)
+        elif etype == "agent_start":
+            # #147 round 2 — the retry attempt has actually begun, which is the
+            # fact the interrupt handover was previously only GUESSING at from a
+            # duplicate wall clock. No-op unless a retry sequence armed it; see
+            # ``_hand_back_retry_interrupt`` for the measured skew this closes.
+            #
+            # ``agent_start`` rather than ``turn_start`` because that is pi's own
+            # choice, comment included (``interactive-mode.js:2212-2216`` at
+            # v0.79.9): *"Restore main escape handler if retry handler is still
+            # active (retry success event fires later, but we need main handler
+            # now)"*. It is also the tighter signal — one per attempt, where
+            # ``turn_start`` repeats for every tool round-trip inside it. Measured
+            # on the retry path the two land in the same millisecond, so this is
+            # parity rather than a behaviour difference.
+            _hand_back_retry_interrupt()
         elif etype in ("compaction_start", "compaction_end", "turn_start"):
             # compaction_start/end drive the indicator; turn_start self-heals a
             # stranded indicator (a BaseException-cancelled compaction never emits
@@ -2001,7 +2077,7 @@ async def run_tui(
 
     async def _settled_hook(_event: object, _ctx: object = None) -> None:
         # The FIRST moment a finished turn is visible in ``state.messages``: the
-        # harness extends it at ``harness/core.py:4584`` and emits ``settled``
+        # harness extends it at ``harness/core.py:4598`` and emits ``settled``
         # immediately after, whereas the ``turn_end`` the loop emitted earlier is
         # too early — a refresh there estimates over a list still missing the turn
         # that just ended, which is why the meter sat one full turn behind.
@@ -2011,7 +2087,7 @@ async def run_tui(
         # ``SettledHandler`` alias types both positions). The ``subscribe`` seam
         # the rest of this module uses passes the event ALONE, and a handler
         # written to THAT shape raises ``TypeError: takes 1 positional argument
-        # but 2 were given`` — which ``core.py:4592-4593`` catches and logs at DEBUG,
+        # but 2 were given`` — which ``core.py:4606-4607`` catches and logs at DEBUG,
         # so it fails SILENTLY and the refresh simply never runs. ``_ctx`` is
         # defaulted so the handler stays directly callable from a unit test.
         _schedule_context_usage_refresh()
@@ -2784,7 +2860,7 @@ def _build_banner(harness: AgentHarness, cwd: str) -> object:
         # ``getattr`` erases to ``object`` and the type gate rejects feeding that
         # to a ``str | None`` parameter (it did reject this line, before the
         # annotation). ``_action_get_system_prompt`` is ``() -> str``
-        # (``harness/core.py:3743-3744``); the fakes in tests/tui lack it, hence
+        # (``harness/core.py:3757-3758``); the fakes in tests/tui lack it, hence
         # the ``callable`` guard rather than a plain call.
         prompt_getter: Callable[[], str] | None = getattr(
             harness, "_action_get_system_prompt", None

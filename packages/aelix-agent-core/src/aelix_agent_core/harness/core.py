@@ -1516,6 +1516,20 @@ class AgentHarness:
         turn_task = self._current_turn_task
         if turn_task is not None and not turn_task.done():
             turn_task.cancel()
+        # #147 / ADR-0225 — an auto-retry BACKOFF sits BETWEEN turn tasks, so the
+        # branch above has nothing to cancel there, and the next attempt's
+        # :meth:`_run` clears ``_abort_requested`` on entry. The abort was
+        # therefore discarded for the whole sleep. MEASURED against a local
+        # provider, counting requests: no abort → 2, ``abort()`` during the
+        # backoff → 2 (identical, i.e. lost), ``abort_retry()`` → 1.
+        #
+        # The TUI is not how this is reached — during the countdown its interrupt
+        # is deliberately wired to ``abort_retry`` for pi parity — but the RPC
+        # ``abort`` command and any SDK embedder call THIS method, and asking a
+        # turn to stop has to include "stop retrying it". ``abort_retry`` is
+        # documented as a no-op when no retry is in flight, so this costs nothing
+        # on every other abort.
+        self.abort_retry()
         # Sprint 3 Lane B — fire all registered bash AbortSignals so that an
         # in-flight bash subprocess is killed by Esc, not just the Python task.
         # Mirrors abort_bash() which fires the same set via the RPC path.

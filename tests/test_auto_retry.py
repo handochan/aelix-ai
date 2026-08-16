@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import contextlib
 from typing import Any
 
 import pytest
@@ -504,3 +505,121 @@ async def test_an_aborted_retry_is_not_reported_as_success(
     assert len(ends) == 1, "the sequence must still close out so the TUI recovers"
     assert ends[0].success is False, "an aborted retry is not a successful one"
     assert h._retry_attempt == 0
+
+
+# === #147 / ADR-0225 — abort() during the BACKOFF SLEEP ======================
+#
+# Every test above monkeypatches ``h._run``, so no real turn task is ever
+# created and the abort path they exercise is not the one the product runs.
+# These two use a real ``stream_fn`` for that reason.
+
+
+def _retryable_stream_fn(calls: list[int]) -> Any:
+    """A stream_fn that always fails retryably, and counts its own calls."""
+
+    from aelix_ai.streaming import AssistantErrorEvent, AssistantStartEvent
+
+    async def stream_fn(model: Any, context: Any, options: Any = None) -> Any:
+        calls.append(1)
+        yield AssistantStartEvent(partial=AssistantMessage(content=[]))
+        failed = AssistantMessage(
+            content=[],
+            stop_reason="error",
+            error_message="rate limit exceeded",
+        )
+        yield AssistantErrorEvent(
+            reason="error", error=failed, error_message="rate limit exceeded"
+        )
+
+    return stream_fn
+
+
+async def _run_with_abort_during_backoff(
+    monkeypatch: pytest.MonkeyPatch, *, abort: bool
+) -> int:
+    import asyncio
+
+    monkeypatch.setattr(
+        "aelix_agent_core.harness.core._AUTO_RETRY_BASE_DELAY_MS", 600
+    )
+    calls: list[int] = []
+    h = AgentHarness(
+        AgentHarnessOptions(
+            session=Session(MemorySessionStorage()),
+            stream_fn=_retryable_stream_fn(calls),
+        )
+    )
+    h._state.auto_retry_enabled = True
+    h._state.auto_compaction_enabled = False
+
+    # EVENT-DRIVEN, NOT TIMED. A first version slept 0.15 s to "land inside" the
+    # 600 ms backoff and flaked under load: with the loop starved, 0.15 s of wall
+    # clock could already be past the whole backoff, the retry had fired, and the
+    # test reported a defect that was not there. ``auto_retry_start`` is emitted
+    # immediately before the sleep begins, so waiting on it is exact at any speed.
+    in_backoff = asyncio.Event()
+
+    async def _watch(event: object) -> None:
+        if isinstance(event, AutoRetryStartEvent):
+            in_backoff.set()
+
+    h.subscribe(_watch)
+
+    turn = asyncio.create_task(h.prompt("go"))
+    await asyncio.wait_for(in_backoff.wait(), timeout=30)
+
+    # Each arm waits for its OWN outcome, bounded, rather than for a fixed
+    # duration. Waiting for the turn to END would not work for the control: with
+    # no abort the loop runs every attempt, so ``calls`` reaches 4, not 2.
+    if abort:
+        await h.abort()
+        with contextlib.suppress(BaseException):
+            await asyncio.wait_for(asyncio.shield(turn), timeout=30)
+    else:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + 30
+        while len(calls) < 2 and loop.time() < deadline:
+            await asyncio.sleep(0.01)
+    served = len(calls)
+
+    if not turn.done():
+        turn.cancel()
+    # The abort path raises CancelledError, a BaseException.
+    with contextlib.suppress(BaseException):
+        await turn
+    await h.dispose()
+    return served
+
+
+async def test_abort_during_the_retry_backoff_stops_the_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SABOTAGE: delete the ``self.abort_retry()`` call from
+    :meth:`AgentHarness.abort`. The backoff sleep sits BETWEEN turn tasks, so
+    ``_current_turn_task`` is ``None`` and there is nothing to cancel; the next
+    attempt's ``_run`` then clears ``_abort_requested`` on entry and the retry
+    fires anyway. Measured before the fix: 2 provider calls, identical to no
+    abort at all.
+
+    The TUI does not reach this — during the countdown its interrupt is wired to
+    ``abort_retry`` for pi parity — but the RPC ``abort`` command and any SDK
+    embedder call ``abort()``.
+    """
+
+    assert await _run_with_abort_during_backoff(monkeypatch, abort=True) == 1, (
+        "abort() during the backoff was discarded and the retry went out anyway"
+    )
+
+
+async def test_a_backoff_that_is_not_aborted_still_retries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """POSITIVE CONTROL — do not delete as redundant.
+
+    Same rig, no abort. If this ever reports one call, the retry is not firing
+    for some unrelated reason and the test above passes without proving anything.
+    """
+
+    assert await _run_with_abort_during_backoff(monkeypatch, abort=False) >= 2, (
+        "the rig never produced a retry, so its sibling proves nothing"
+    )

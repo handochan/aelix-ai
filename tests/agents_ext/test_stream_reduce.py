@@ -478,7 +478,7 @@ def test_usage_zero_in_one_spelling_falls_through_to_the_other() -> None:
     """Skip-on-falsy, matching the kernel's ``a or b`` dual-read exactly.
 
     An adapter that emits BOTH spellings with one zeroed (several do — see
-    ``providers/openai_completions.py:972-979``) must not report zero.
+    ``providers/openai_completions.py:973-980``) must not report zero.
     """
 
     state = _StreamState()

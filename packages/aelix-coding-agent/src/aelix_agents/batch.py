@@ -31,7 +31,7 @@ this file grows a defect that only shows up under load:
 
 CANCELLATION IS THE ONE THING THAT PROPAGATES. ``ctx.signal`` is dead — it is
 always ``None``: ``AgentHarness`` calls ``agent_loop(...)`` with no ``signal=``
-argument (``harness/core.py:4483-4489``), ``agent_loop``'s parameter defaults to
+argument (``harness/core.py:4497-4503``), ``agent_loop``'s parameter defaults to
 ``None`` (``loop.py:107``) and is threaded unchanged into
 ``ToolExecutionContext(signal=signal)`` (``loop.py:626-628``). Abort is
 ``turn_task.cancel()`` (``core.py:1516-1518``). So ``CancelledError`` is the ONLY

@@ -68,17 +68,17 @@
    "if turn_task is not None and not turn_task.done():",
    "turn_task.cancel()"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:1669-1673": [
+  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:1683-1687": [
    "rebuilt = build_session_context(",
    "await self._session.get_branch()",
    ").messages",
    "self._state.messages.clear()",
    "self._state.messages.extend(rebuilt)"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:1828-1828": [
+  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:1842-1842": [
    "if exc.code == \"invalid_state\" and \"Nothing to compact\" in str(exc):"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:1994-1994": [
+  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:2008-2008": [
    "for listener in list(self._listeners):"
   ],
   "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:246-246": [
@@ -93,7 +93,7 @@
   "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:289-289": [
    "project_trusted: bool = True"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:3107-3114": [
+  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:3121-3128": [
    "async def reload_resources(self) -> None:",
    "\"\"\"Pi parity ``extendResourcesFromExtensions(\"reload\")``.",
    "",
@@ -103,10 +103,10 @@
    "",
    "await self._emit_resources_discover(\"reload\")"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:3194-3194": [
+  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:3208-3208": [
    "await self._emit_session_shutdown(\"reload\")"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:3662-3667": [
+  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:3676-3681": [
    "def _current_system_prompt(self) -> str:",
    "\"\"\"F-10: prefer per-turn snapshot, else fall back to long-lived state.\"\"\"",
    "",
@@ -114,7 +114,7 @@
    "return self._turn_state.system_prompt",
    "return self._state.system_prompt"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:3677-3685": [
+  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:3691-3699": [
    "def _action_set_active_tools(self, names: list[str]) -> None:",
    "# F-9: non-destructive — record the active filter, don't drop tools.",
    "known = {t.name for t in self._state.tools}",
@@ -124,7 +124,7 @@
    "\"invalid_argument\",",
    "f\"set_active_tools: unknown tool name(s): {unknown!r}\","
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:3677-3691": [
+  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:3691-3705": [
    "def _action_set_active_tools(self, names: list[str]) -> None:",
    "# F-9: non-destructive — record the active filter, don't drop tools.",
    "known = {t.name for t in self._state.tools}",
@@ -134,7 +134,7 @@
    "\"invalid_argument\",",
    "f\"set_active_tools: unknown tool name(s): {unknown!r}\","
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:3679-3685": [
+  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:3693-3699": [
    "known = {t.name for t in self._state.tools}",
    "unknown = [n for n in names if n not in known]",
    "if unknown:",
@@ -143,16 +143,16 @@
    "f\"set_active_tools: unknown tool name(s): {unknown!r}\",",
    ")"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:3743-3744": [
+  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:3757-3758": [
    "def _action_get_system_prompt(self) -> str:",
    "return self._current_system_prompt()"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:3930-3932": [
+  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:3944-3946": [
    "Per D.1.5 we pass ``ctx.args`` by reference — no defensive copy. This",
    "is the contract that lets a handler mutate the dict and have the",
    "mutation reach ``tool.execute`` and the after-callback."
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:4324-4330": [
+  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:4338-4344": [
    "# F-9: apply the active-tool filter without mutating ``_state.tools``.",
    "active = self._state.active_tool_names",
    "if active is None:",
@@ -161,7 +161,7 @@
    "active_set = set(active)",
    "active_tools = [t for t in self._state.tools if t.name in active_set]"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:4483-4489": [
+  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:4497-4503": [
    "agent_loop(",
    "prompts,",
    "context,",
@@ -170,7 +170,7 @@
    "stream_fn=effective_stream_fn,",
    ")"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:4527-4543": [
+  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:4541-4557": [
    "aborted_message = AssistantMessage(",
    "content=[],",
    "stop_reason=\"aborted\",",
@@ -180,7 +180,7 @@
    "TurnEndEvent(message=aborted_message, tool_results=[]),",
    "AgentEndEvent(messages=list(self._state.messages)),"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:4527-4544": [
+  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:4541-4558": [
    "aborted_message = AssistantMessage(",
    "content=[],",
    "stop_reason=\"aborted\",",
@@ -190,18 +190,18 @@
    "TurnEndEvent(message=aborted_message, tool_results=[]),",
    "AgentEndEvent(messages=list(self._state.messages)),"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:4534-4534": [
+  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:4548-4548": [
    "AgentEndEvent(messages=list(self._state.messages)),"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:4575-4577": [
+  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:4589-4591": [
    "MessageEndEvent(message=failure),",
    "TurnEndEvent(message=failure, tool_results=[]),",
    "AgentEndEvent(messages=list(self._state.messages)),"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:4584-4584": [
+  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:4598-4598": [
    "self._state.messages.extend(new_messages)"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:4592-4593": [
+  "packages/aelix-agent-core/src/aelix_agent_core/harness/core.py:4606-4607": [
    "except Exception as exc: # noqa: BLE001",
    "_log.debug(\"settled hook handler raised: %r\", exc, exc_info=True)"
   ],
@@ -582,13 +582,14 @@
   "packages/aelix-ai/src/aelix_ai/providers/anthropic.py:848-848": [
    "yield ThinkingDeltaEvent("
   ],
-  "packages/aelix-ai/src/aelix_ai/providers/openai_completions.py:1229-1229": [
-   "partial = AssistantMessage(content=list(output_content))"
+  "packages/aelix-ai/src/aelix_ai/providers/openai_completions.py:1222-1223": [
+   "if thinking_index is None:",
+   "thinking_index = len(output_content)"
   ],
-  "packages/aelix-ai/src/aelix_ai/providers/openai_completions.py:1242-1242": [
+  "packages/aelix-ai/src/aelix_ai/providers/openai_completions.py:1248-1248": [
    "yield ThinkingDeltaEvent("
   ],
-  "packages/aelix-ai/src/aelix_ai/providers/openai_completions.py:1365-1373": [
+  "packages/aelix-ai/src/aelix_ai/providers/openai_completions.py:1371-1379": [
    "output = AssistantMessage(",
    "content=list(output_content),",
    "stop_reason=stop_reason,",
@@ -598,13 +599,13 @@
    "provider=model.provider,",
    "model=model.id,"
   ],
-  "packages/aelix-ai/src/aelix_ai/providers/openai_completions.py:334-334": [
+  "packages/aelix-ai/src/aelix_ai/providers/openai_completions.py:335-335": [
    "transformed = transform_messages("
   ],
-  "packages/aelix-ai/src/aelix_ai/providers/openai_completions.py:500-500": [
+  "packages/aelix-ai/src/aelix_ai/providers/openai_completions.py:501-501": [
    "params = getattr(tool, \"parameters\", None) or {"
   ],
-  "packages/aelix-ai/src/aelix_ai/providers/openai_completions.py:972-979": [
+  "packages/aelix-ai/src/aelix_ai/providers/openai_completions.py:973-980": [
    "return {",
    "\"input\": int(prompt),",
    "\"output\": int(completion),",
@@ -2828,28 +2829,28 @@
    "# dispose, restore terminal). Avoids sys.exit from a detached task,",
    "# which bypassed teardown and left the terminal in raw mode."
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:2151-2151": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:2227-2227": [
    "renderer.hide_thinking = not renderer.hide_thinking"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:2314-2314": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:2390-2390": [
    "editor = os.environ.get(\"VISUAL\") or os.environ.get(\"EDITOR\") or \"vi\""
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:2399-2399": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:2475-2475": [
    "runtime_host.harness.runtime.bind_ui(context)"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:2976-2976": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3052-3052": [
    "chrome.set_widget(\"__stream__\", ansi.split(\"\\n\") if ansi else None, above=True)"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3063-3063": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3139-3139": [
    "if _reload_rebuild_enabled():"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3063-3066": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3139-3142": [
    "if _reload_rebuild_enabled():",
    "await runtime_host.reload()",
    "else:",
    "await harness.reload_resources()"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3096-3113": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3172-3189": [
    "if parsed.kind == \"prompt\" and parsed.text.startswith(\"/\"):",
    "command = match_command(parsed.text, command_ctx.commands)",
    "if command is not None and command.handler is not None:",

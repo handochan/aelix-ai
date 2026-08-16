@@ -1665,6 +1665,184 @@ async def test_run_tui_auto_retry_back_to_back_starts_cancel_prior_ticker() -> N
         await asyncio.wait_for(task, timeout=5)
 
 
+async def _wait_slow(predicate) -> None:  # type: ignore[no-untyped-def]
+    """``_wait`` with a bound sized for a loaded box.
+
+    Every use of this asserts PRESENCE (a widget appeared, an abort landed), so a
+    longer bound can only remove false failures. Two of these gates flaked at the
+    3 s default during a full-suite run that shared the box with a seven-agent
+    workflow, which is the shape of load CI actually has.
+    """
+
+    await _wait(predicate, timeout=20.0)
+
+
+# === #147 — the interrupt handover, once the backoff is over ==================
+#
+# ADR-0215 closed #147 by handing the interrupt key back to the full-turn abort
+# once the backoff ends, so Ctrl+C is not inert for the whole retry REQUEST.
+# NOTHING PINNED IT. Measured on 7815cc6: deleting the handover line left
+# ``tests/tui/ tests/test_auto_retry.py tests/rpc/`` at 1710 passed / 1 skipped
+# — the fix for a shipped bug could be removed in silence. These four tests are
+# that gate, and each one below names the sabotage it is the answer to.
+
+
+async def _armed_retry(
+    chrome: AelixChrome, subscriber: Callable[[object], None], *, delay_ms: int
+) -> None:
+    """Put the chrome in the mid-backoff state: Esc wired to ``abort_retry``."""
+
+    from aelix_agent_core.types import AutoRetryStartEvent
+
+    subscriber(
+        AutoRetryStartEvent(
+            attempt=1, max_attempts=3, delay_ms=delay_ms, error_message="429"
+        )
+    )
+    await _wait_slow(lambda: "__auto_retry__" in chrome._widgets_above)
+
+
+async def test_run_tui_retry_agent_start_hands_the_interrupt_back_at_once() -> None:
+    """#147 round 2 — the handover is driven by ``agent_start``, not a timer.
+
+    SABOTAGE: delete the ``_hand_back_retry_interrupt()`` call from the
+    ``agent_start`` arm of ``_on_agent_event``. The backoff here is 30 s, so a
+    handover that still waits for the ticker's own clock cannot arrive and the
+    final assertion reads ``aborts == 0`` instead.
+
+    WHY A TIMER IS THE WRONG SIGNAL. The ticker's ``asyncio.sleep`` is a SECOND
+    clock for the same nominal delay, started a scheduling hop after the
+    harness started its first, and it shares the prompt-toolkit loop with a
+    renderer measured at up to 226 ms of synchronous work per frame (ADR-0221).
+    Measured against the real harness: idle, the ticker wins by 2 ms; under
+    150 ms of loop pressure the retry turn's ``turn_start`` lands 336 ms before
+    the handover and at 400 ms it lands 1237 ms before — a window where the turn
+    is visibly running and the interrupt is still the documented no-op.
+    """
+
+    from aelix_agent_core.types import AgentStartEvent
+
+    harness = _RetryHarness()
+    async with _harness_chrome(harness=harness) as (runtime, chrome, pipe):
+        task = _launch(runtime, chrome)
+        await _wait_slow(lambda: chrome.app.is_running)
+        await _wait_slow(lambda: bool(runtime.harness.subscribers))
+        subscriber: Callable[[object], None] = (
+            runtime.harness.subscribers[0]  # type: ignore[assignment]
+        )
+
+        # A backoff far longer than this test can wait for. If the handover is
+        # timed rather than caused, it does not happen inside this test at all.
+        await _armed_retry(chrome, subscriber, delay_ms=30_000)
+        assert chrome.on_interrupt is not None
+        chrome.on_interrupt()
+        assert harness.retry_aborts == 1, "mid-backoff Esc must still cancel the retry"
+        assert harness.aborts == 0
+
+        # The retry attempt begins — the request is going out NOW.
+        subscriber(AgentStartEvent())
+
+        await _wait_slow(lambda: "now…" in " ".join(chrome._widgets_above["__auto_retry__"]))
+        label = " ".join(chrome._widgets_above["__auto_retry__"])
+        assert "Esc to interrupt" in label, label
+        assert "Esc to cancel" not in label, "the label must stop advertising the no-op"
+
+        chrome.on_interrupt()
+        await _wait_slow(lambda: harness.aborts == 1)
+        assert harness.retry_aborts == 1, "the turn abort must not be a second abort_retry"
+
+        pipe.send_text("/quit\n")
+        await asyncio.wait_for(task, timeout=5)
+
+
+async def test_run_tui_retry_countdown_expiry_still_hands_the_interrupt_back() -> None:
+    """ADR-0215's own guarantee, pinned for the first time.
+
+    SABOTAGE: delete the ``_hand_back_retry_interrupt()`` call at the end of
+    ``_tick_retry_countdown``. No ``turn_start`` is emitted here, so the causal
+    path cannot cover for it and Esc stays wired to ``abort_retry``.
+
+    This is the backstop for a backoff that expires with no turn behind it.
+    """
+
+    harness = _RetryHarness()
+    async with _harness_chrome(harness=harness) as (runtime, chrome, pipe):
+        task = _launch(runtime, chrome)
+        await _wait_slow(lambda: chrome.app.is_running)
+        await _wait_slow(lambda: bool(runtime.harness.subscribers))
+        subscriber: Callable[[object], None] = (
+            runtime.harness.subscribers[0]  # type: ignore[assignment]
+        )
+
+        await _armed_retry(chrome, subscriber, delay_ms=50)
+        # Let the ticker's own clock run out. No turn_start is sent.
+        await _wait_slow(lambda: "now…" in " ".join(chrome._widgets_above["__auto_retry__"]))
+
+        assert chrome.on_interrupt is not None
+        chrome.on_interrupt()
+        await _wait_slow(lambda: harness.aborts == 1)
+        assert harness.retry_aborts == 0, "after the backoff Esc must abort the TURN"
+
+        pipe.send_text("/quit\n")
+        await asyncio.wait_for(task, timeout=5)
+
+
+async def test_run_tui_agent_start_outside_a_retry_leaves_the_chrome_alone() -> None:
+    """SABOTAGE: drop the ``pending is None`` guard in
+    ``_hand_back_retry_interrupt``. Every ordinary turn would then paint a
+    "Retrying (…)" widget over a session that never retried anything.
+    """
+
+    from aelix_agent_core.types import AgentStartEvent
+
+    harness = _RetryHarness()
+    async with _harness_chrome(harness=harness) as (runtime, chrome, pipe):
+        task = _launch(runtime, chrome)
+        await _wait_slow(lambda: chrome.app.is_running)
+        await _wait_slow(lambda: bool(runtime.harness.subscribers))
+        subscriber: Callable[[object], None] = (
+            runtime.harness.subscribers[0]  # type: ignore[assignment]
+        )
+
+        subscriber(AgentStartEvent())
+        await asyncio.sleep(0.05)
+        assert "__auto_retry__" not in chrome._widgets_above
+
+        pipe.send_text("/quit\n")
+        await asyncio.wait_for(task, timeout=5)
+
+
+async def test_run_tui_a_finished_retry_is_not_repainted_by_the_next_turn() -> None:
+    """SABOTAGE: delete ``retry_handover_ref["pending"] = None`` from
+    ``_end_retry_countdown``. The next prompt's ``turn_start`` then repaints the
+    finished sequence's "Retrying (1/3) now…" widget over a healthy turn — a
+    stale banner claiming the provider is still failing.
+    """
+
+    from aelix_agent_core.types import AgentStartEvent, AutoRetryEndEvent
+
+    harness = _RetryHarness()
+    async with _harness_chrome(harness=harness) as (runtime, chrome, pipe):
+        task = _launch(runtime, chrome)
+        await _wait_slow(lambda: chrome.app.is_running)
+        await _wait_slow(lambda: bool(runtime.harness.subscribers))
+        subscriber: Callable[[object], None] = (
+            runtime.harness.subscribers[0]  # type: ignore[assignment]
+        )
+
+        await _armed_retry(chrome, subscriber, delay_ms=30_000)
+        subscriber(AutoRetryEndEvent(success=False, attempt=1, final_error="cancelled"))
+        await _wait_slow(lambda: "__auto_retry__" not in chrome._widgets_above)
+
+        # A later, perfectly ordinary turn.
+        subscriber(AgentStartEvent())
+        await asyncio.sleep(0.05)
+        assert "__auto_retry__" not in chrome._widgets_above
+
+        pipe.send_text("/quit\n")
+        await asyncio.wait_for(task, timeout=5)
+
+
 # === WP-8 — /login + /logout + /stats + /extension wiring ===================
 
 
@@ -2325,7 +2503,7 @@ async def test_run_tui_startup_survives_a_session_without_a_branch() -> None:
 # That ran on ``turn_end`` alone, which is too early AND too rare:
 #
 #  - too EARLY on the success path: the harness extends ``_state.messages`` with
-#    the turn's messages at ``harness/core.py:4584``, AFTER the loop has already
+#    the turn's messages at ``harness/core.py:4598``, AFTER the loop has already
 #    emitted ``turn_end``, so a turn_end refresh estimates over a message list
 #    missing the turn that just finished — the footer sat one turn behind. The
 #    ``settled`` hook fires immediately after that extend, so it is the first
@@ -2405,7 +2583,7 @@ async def test_shell_refreshes_the_meter_on_settled_not_only_turn_end() -> None:
     Emits through the REAL :class:`HookBus`, so the handler's ``(event, ctx)``
     arity is genuinely exercised: the bus calls ``handler(event, ctx)``
     (``hooks.py:1349``), and a one-parameter handler raises ``TypeError`` here
-    instead of being swallowed at DEBUG the way ``core.py:4592-4593`` swallows it in
+    instead of being swallowed at DEBUG the way ``core.py:4606-4607`` swallows it in
     production.
     """
 
@@ -2502,7 +2680,7 @@ class _OutOfOrderStatsHarness(FakeHarness):
     """First stats read is SLOW and STALE; every later read is fast and fresh.
 
     Reproduces the real interleaving: ``turn_end`` fires first and snapshots
-    ``state.messages`` BEFORE ``core.py:4584`` extends it, then ``settled`` fires
+    ``state.messages`` BEFORE ``core.py:4598`` extends it, then ``settled`` fires
     and reads the extended list — but the first read can still FINISH last,
     because each awaits ``get_branch`` file I/O.
     """

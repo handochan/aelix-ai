@@ -52,6 +52,7 @@ from aelix_ai.providers._openai_compat import (
     get_compat,
 )
 from aelix_ai.providers._sanitize_unicode import sanitize_surrogates
+from aelix_ai.providers._stream_close import close_provider_stream
 from aelix_ai.providers._streaming_json import parse_streaming_json
 from aelix_ai.providers._token_estimate import (
     OUTPUT_CAP_MARGIN_TOKENS,
@@ -1039,6 +1040,10 @@ async def stream_openai_completions(
     # ``id``, ``name``, ``partial_args``, ``stream_index``.
     has_finish_reason = False
     captured_usage: dict[str, Any] | None = None
+    # #147 — the handle the ``finally`` at the bottom closes. Held separately
+    # from ``iterator`` because that name is assigned deep inside the ``try``
+    # and the cleanup has to be reachable from before it exists.
+    open_stream: Any = None
 
     try:
         compat = get_compat(model)
@@ -1118,6 +1123,7 @@ async def stream_openai_completions(
         iterator, raw_response = await _open_stream(
             client, params, request_options
         )
+        open_stream = iterator
         if opts.on_response is not None:
             # Pi parity (W4 M-5): the raw wrapper exposes ``.http_response``
             # (the underlying httpx Response). Some test fakes attach the
@@ -1421,6 +1427,8 @@ async def stream_openai_completions(
         yield AssistantErrorEvent(
             reason=reason, error=error_output, error_message=err_msg
         )
+    finally:
+        await close_provider_stream(open_stream)
 
 
 def _get_attr(obj: Any, name: str, default: Any) -> Any:
