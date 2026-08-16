@@ -457,7 +457,22 @@ def cmd_fix() -> int:
     changed = 0
     for rel, items in sorted(by_file.items()):
         path = REPO / rel
-        lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+        # ``split_lines``, NOT ``splitlines()`` — the same rule that function
+        # exists to enforce, and this WRITE path was the one place still breaking
+        # it. ``citing_line`` is produced by ``split_lines``, so indexing a
+        # ``splitlines()`` list with it is off by one for every line after a
+        # U+2028 / U+2029 / form feed / vertical tab / U+0085 — and this repo's
+        # most-cited file, ``cli/agent_context.py``, carries exactly one U+2028.
+        #
+        # MEASURED, not theorised. A ``--fix`` run relocating ``shell.py:3063``
+        # wrote `3123` onto the FRONT of a neighbouring line and left the citation
+        # itself untouched, producing a source file that no longer parsed. Nothing
+        # in the tool noticed: the drift check reads with ``split_lines`` and so
+        # never re-read the line it had corrupted. ADR-0224 sabotage-guarded three
+        # line-counting sites; this was a fourth, on the only path that WRITES.
+        text = path.read_text(encoding="utf-8")
+        trailing = text.endswith("\n")
+        lines = split_lines(text)
         items.sort(key=lambda d: (d.cite.citing_line, d.cite.col), reverse=True)
         for d in items:
             a, b = d.suggestion  # type: ignore[misc]
@@ -468,7 +483,7 @@ def cmd_fix() -> int:
             after = line[d.cite.col + len(d.cite.num_text) :]
             lines[i] = before + new_text + after
             changed += 1
-        path.write_text("".join(lines), encoding="utf-8")
+        path.write_text("\n".join(lines) + ("\n" if trailing else ""), encoding="utf-8")
 
     print(f"relocated {changed} citation(s) across {len(by_file)} file(s).")
     if stuck:
