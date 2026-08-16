@@ -2224,7 +2224,15 @@ async def run_tui(
             if not out_chrome.running:
                 out_chrome.submit_line(text)
                 return
-            output_queue.put_nowait(("commit", render_user_message(text, kind=kind)))
+            # ``renderer.render_width()`` rather than a second ``terminal_columns``
+            # call: the echo has to land at the same measure as the transcript it
+            # sits in, and one source cannot drift from itself.
+            output_queue.put_nowait(
+                (
+                    "commit",
+                    render_user_message(text, kind=kind, width=renderer.render_width()),
+                )
+            )
             try:
                 if kind == "steer":
                     await runtime_host.harness.steer(text)
@@ -3275,7 +3283,9 @@ async def _input_loop(
         # Echo the user's own line into the transcript (Sprint 6h₁₂b) so the
         # assistant reply has its visible question above it — prompt path only
         # (bash / commands / empty already returned/continued before here).
-        output_queue.put_nowait(("commit", render_user_message(parsed.text)))
+        output_queue.put_nowait(
+            ("commit", render_user_message(parsed.text, width=renderer.render_width()))
+        )
         chrome.set_running(True)
         try:
             await harness.prompt(prompt_text, source="interactive")

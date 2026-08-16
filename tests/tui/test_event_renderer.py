@@ -49,6 +49,16 @@ def _renderer() -> tuple[EventRenderer, list[Any], list[str]]:
 def _plain(renderable: Any) -> str:
     if hasattr(renderable, "renderables"):  # rich Group → flatten its rows
         return "".join(_plain(child) for child in renderable.renderables)
+    # #48 — the user echo is a ``Constrain`` around a ``Padding`` around the
+    # ``Text``, and both wrap ONE child under ``.renderable`` rather than a list
+    # under ``.renderables``. Without this hop the helper fell through to
+    # ``str()`` and every replay assertion read
+    # ``<rich.constrain.Constrain object at 0x…>`` while the renderer was in fact
+    # correct — a failure of the instrument, in the same shape as the one the
+    # ``Padding`` hop in ``test_run_tui_smoke.py`` was added for.
+    inner = getattr(renderable, "renderable", None)
+    if inner is not None:
+        return _plain(inner)
     return renderable.plain if hasattr(renderable, "plain") else str(renderable)
 
 
@@ -937,6 +947,105 @@ def test_render_user_message_bar_survives_wrapping() -> None:
     assert len(body) >= 2, "the fixture no longer wraps; widen the input"
     for text, cells in body:
         assert cells == 32, f"wrapped row {text!r} painted {cells}/32 cells"
+
+
+def test_render_user_message_bar_is_capped_at_the_render_width() -> None:
+    """The bar may not be wider than the prose it sits above.
+
+    ``Padding`` resolves its width at print time from the console, and
+    ``chrome._console`` is a bare ``Console`` — raw terminal columns — while every
+    other renderer is laid out against ``terminal_columns(...)``, capped at 120
+    (ADR-0219). MEASURED on the first shipped version of the bar: 40 / 80 / 120 /
+    **200** cells at those console widths, i.e. a 200-cell band under 120-cell
+    prose.
+
+    Asserted on the PAINT rather than on line length: a wrapper that narrowed the
+    text and let the padding keep filling the console would satisfy a length
+    check and change nothing on screen.
+    """
+
+    from aelix_coding_agent.tui.render import render_user_message
+
+    long_turn = "please refactor the width helper so it stops baking a fixed 80 " * 3
+    body = _bar_rows(render_user_message(long_turn, width=120), 200)
+    assert body
+    for text, cells in body:
+        assert cells == 120, f"row {text!r} painted {cells} cells on a 200-col console"
+
+
+def test_render_user_message_width_only_ever_caps() -> None:
+    """A narrow terminal must be untouched by the cap.
+
+    ``Constrain`` is a ceiling, not a target — at 40, 80 and 120 columns the bar
+    still spans the console. Without this, a "fix" that pinned every bar to 120
+    would pass the test above and leave a 40-column terminal with a bar three
+    times its width.
+    """
+
+    from aelix_coding_agent.tui.render import render_user_message
+
+    long_turn = "please refactor the width helper so it stops baking a fixed 80 " * 3
+    for console in (40, 80, 120):
+        body = _bar_rows(render_user_message(long_turn, width=120), console)
+        assert body
+        for text, cells in body:
+            assert cells == console, f"{text!r} painted {cells}/{console}"
+
+
+def test_replay_user_echo_is_capped_at_the_renderers_width() -> None:
+    """A repainted transcript is bounded by the RENDERER, not by the console.
+
+    ``replay`` resolves ``_width_of()`` once for the whole repaint; the echo has
+    to be laid out against that number like every other block, or a ``/resume``
+    on a wide terminal repaints 120-cell prose under full-terminal bars.
+
+    Caught by a sabotage — dropping ``width=`` from the replay call left every
+    other test green.
+    """
+
+    from aelix_ai.messages import TextContent, UserMessage
+
+    commits: list[Any] = []
+    renderer = EventRenderer(commit=commits.append, set_tail=lambda _s: None, width=100)
+    renderer.replay([UserMessage(content=[TextContent(text="what is 2+2 " * 20)])])
+
+    echoes = [c for c in commits if "what is 2+2" in _plain(c)]
+    assert echoes, "replay committed no user echo"
+    rows = _bar_rows(echoes[0], 200)
+    assert rows
+    for text, cells in rows:
+        assert cells == 100, f"replayed bar painted {cells}/100: {text!r}"
+
+
+def test_every_production_echo_call_passes_a_width() -> None:
+    """``width=None`` means unbounded, and every production caller must not take it.
+
+    The unit tests above rely on that default, so it cannot be removed — which
+    makes "a caller forgot" a silent, shipped defect rather than a failure. Two
+    sabotages proved that concretely: dropping ``width=`` from the steer /
+    follow-up echo and from replay left the entire suite green, because the
+    helper was doing exactly what it was asked.
+
+    This is a SHAPE gate and is deliberately paired with, not a substitute for,
+    the behavioural caps above: it also covers a caller nobody has written yet.
+    """
+
+    import ast
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2] / "packages"
+    offenders: list[str] = []
+    for path in root.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            name = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
+            if name != "render_user_message":
+                continue
+            if not any(kw.arg == "width" for kw in node.keywords):
+                offenders.append(f"{path.name}:{node.lineno}")
+    assert not offenders, f"render_user_message called without width= at {offenders}"
 
 
 def test_render_user_message_steer_and_follow_up_labels_same_visual() -> None:

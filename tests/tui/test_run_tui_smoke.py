@@ -578,6 +578,74 @@ async def test_run_tui_echoes_user_prompt_into_transcript() -> None:
     assert any(c == "» what is 2+2" for c in commits)
 
 
+def _plain_of(renderable: object) -> str:
+    """The same Group / Constrain / Padding unwrap ``_spy_commits`` performs."""
+
+    rows = getattr(renderable, "renderables", None)
+    if rows is not None:
+        return "\n".join(_plain_of(r) for r in rows).strip("\n")
+    inner = getattr(renderable, "renderable", None)
+    if inner is not None:
+        return _plain_of(inner)
+    text = getattr(renderable, "plain", None)
+    return text if isinstance(text, str) else str(renderable)
+
+
+async def test_run_tui_echo_bar_is_capped_at_the_render_width() -> None:
+    """The live echo path passes a width — measured on what it COMMITS.
+
+    ``render_user_message`` takes ``width=None`` to mean unbounded, which the
+    unit tests in ``test_event_renderer.py`` rely on. A production caller that
+    silently kept that default would leave the bar painting the full terminal
+    under 120-cell prose — the defect the parameter exists for — and no unit test
+    would notice, because the helper would be doing exactly what it was asked.
+
+    So this asserts on the renderable that reached ``print_above``, rendered to a
+    200-column console. It cannot be satisfied by the presence of a keyword.
+    """
+
+    from tests.tui.test_event_renderer import _bar_rows
+
+    captured: list[object] = []
+    async with _harness_chrome() as (runtime, chrome, pipe):
+        # BOTH entry points. The output pump batches through
+        # ``print_above_many`` (the flicker fix), so a spy on ``print_above``
+        # alone captured nothing and this test timed out rather than failing —
+        # which is the same near-miss ``_spy_commits`` documents above.
+        orig_single = chrome.print_above
+        orig_many = chrome.print_above_many
+
+        def _spy_one(renderable: object, *a: object, **k: object) -> None:
+            captured.append(renderable)
+            return orig_single(renderable, *a, **k)  # type: ignore[arg-type]
+
+        def _spy_many(renderables: object, *a: object, **k: object) -> None:
+            captured.extend(list(renderables))  # type: ignore[call-overload]
+            return orig_many(renderables, *a, **k)  # type: ignore[arg-type]
+
+        chrome.print_above = _spy_one  # type: ignore[method-assign]
+        chrome.print_above_many = _spy_many  # type: ignore[method-assign]
+        task = _launch(runtime, chrome)
+        await _wait(lambda: chrome.app.is_running)
+        # ``.strip()`` is load-bearing: ``parse_input_line`` strips the line, so a
+        # fixture with a trailing space never equals what lands in ``prompts``
+        # and the wait below times out on the WRONG condition — the bar was in
+        # fact rendering correctly the whole time.
+        long_turn = ("please refactor the width helper so it stops baking a fixed 80 " * 3).strip()
+        pipe.send_text(long_turn + "\n")
+        await _wait(lambda: runtime.harness.prompts == [(long_turn, "interactive")])
+        await _wait(lambda: any(_plain_of(c).startswith("» please") for c in captured))
+        pipe.send_text("/quit\n")
+        await asyncio.wait_for(task, timeout=5)
+
+    echoes = [c for c in captured if _plain_of(c).startswith("» please")]
+    assert echoes, "the echo never reached the chrome"
+    rows = _bar_rows(echoes[0], 200)
+    assert rows, "the committed echo painted nothing"
+    for text, cells in rows:
+        assert cells <= 120, f"committed bar painted {cells} cells: {text!r}"
+
+
 async def test_run_tui_does_not_echo_bash_command_or_empty(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -29,7 +29,8 @@ from typing import TYPE_CHECKING, Any
 
 from aelix_ai.messages import AssistantMessage
 from rich.cells import cell_len, set_cell_size
-from rich.console import Group
+from rich.console import Group, RenderableType
+from rich.constrain import Constrain
 from rich.padding import Padding
 from rich.text import Text
 
@@ -335,7 +336,7 @@ _USER_ECHO_STYLE = "bold black on cyan"
 _TOOL_MARKER = "●"
 
 
-def render_user_message(text: str, kind: str = "prompt") -> Group:
+def render_user_message(text: str, kind: str = "prompt", *, width: int | None = None) -> Group:
     """Build the canonical echo for a human turn (Sprint 6h₂₅, ADR-0153).
 
     Every site that echoes the user's own input — the live prompt, the replayed
@@ -360,14 +361,35 @@ def render_user_message(text: str, kind: str = "prompt") -> Group:
     ``kind`` selects the leading marker: ``"prompt"`` keeps the ``» `` chevron;
     ``"steer"`` / ``"follow_up"`` use a distinct ``Steering: `` / ``Follow-up: ``
     label inside the SAME bar. An unknown kind degrades to the prompt chevron.
+
+    ``width`` BOUNDS THE PAINTED BAR, and the first version of this shipped
+    without it. ``Padding`` resolves its width at print time from the console it
+    is printed to, and ``chrome._console`` is a bare :class:`~rich.console.Console`
+    — raw terminal columns — while every other renderer here is laid out against
+    ``terminal_columns(...)``, which is capped at 120 (ADR-0219). MEASURED on the
+    shipped build: the bar was 40 / 80 / 120 / **200** cells at those console
+    widths, i.e. on a wide terminal a 200-cell band under 120-cell prose.
+
+    :class:`~rich.constrain.Constrain` bounds the PAINT, not just the text —
+    measured on the emitted SGR rather than on line length, because a wrapper
+    that narrowed the text and let the padding fill the console would buy
+    nothing. It only ever caps: at 40, 80 and 120 columns the output is
+    byte-identical to the unbounded form.
+
+    ``None`` means unbounded and exists for the many tests that construct this
+    directly. Every production caller passes a width, and
+    ``test_run_tui_smoke.py`` pins that end to end on the COMMITTED bytes, so a
+    caller that silently falls back to the default is caught by what reaches the
+    terminal rather than by the presence of a keyword.
     """
 
     label = _USER_MESSAGE_LABELS.get(kind, _USER_MESSAGE_LABELS["prompt"])
-    return Group(
-        Text(""),
-        Padding(Text(f"{label}{text}"), (0, 1), style=_USER_ECHO_STYLE),
-        Text(""),
+    bar: RenderableType = Padding(
+        Text(f"{label}{text}"), (0, 1), style=_USER_ECHO_STYLE
     )
+    if width is not None:
+        bar = Constrain(bar, width)
+    return Group(Text(""), bar, Text(""))
 
 
 def render_tool_call_line(tool_name: str, summary: str) -> Text:
@@ -625,6 +647,23 @@ class EventRenderer:
 
     # === helpers ===========================================================
 
+    def render_width(self) -> int:
+        """The width every renderer in this module lays out against, live.
+
+        Public because ``tui/shell.py`` echoes the user's own turn from two sites
+        this class does not own — the live prompt and a steer / follow-up
+        injection — and those need the SAME number, not a second derivation of
+        it. ``run_tui`` builds this renderer with
+        ``width=lambda: terminal_columns(chrome, max_width=render_width_cap)``
+        (issue #166), so reading it here is reading the one source rather than
+        recomputing a matching one that can drift from it.
+
+        A live ioctl per call, deliberately: callers resolve it once per thing
+        they lay out, the same way :meth:`replay` does for a whole repaint.
+        """
+
+        return self._width_of()
+
     def _card_line_width(self) -> int:
         """Cells a tool-card / diff line may occupy at the current width.
 
@@ -814,7 +853,7 @@ class EventRenderer:
             return
         if self._text_stream is not None:
             # The answer owns the live window once it starts streaming, and both
-            # write the same last-writer-wins sink (shell.py:3075). A provider
+            # write the same last-writer-wins sink (shell.py:3083). A provider
             # that resumes reasoning after answer text — openai-completions
             # replays it on the same content_index — would otherwise flip the
             # window between the answer being typed and a reasoning fragment.
@@ -1080,8 +1119,10 @@ class EventRenderer:
                         )
                     else:
                         # Sprint 6h₂₅ (ADR-0153) — shared user-echo vocabulary so a
-                        # replayed transcript echoes input identically to a live turn.
-                        self._commit(render_user_message(text))
+                        # replayed transcript echoes input identically to a live
+                        # turn. ``replay_width`` is the same measure the rest of
+                        # this repaint uses, resolved once above.
+                        self._commit(render_user_message(text, width=replay_width))
             elif role == "assistant":
                 for block in getattr(msg, "content", []) or []:
                     btype = getattr(block, "type", None)

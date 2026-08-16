@@ -12,7 +12,7 @@ Design constraints (from the WP-8 spec):
   feeding scripted event objects and a fake clock — no harness, no
   prompt-toolkit, no wall-clock dependency.
 - **Read-only consumer.** It only reads duck-typed fields off the events the
-  renderer already sees (``render.py:458-484``): ``tool_execution_start`` /
+  renderer already sees (``render.py:480-506``): ``tool_execution_start`` /
   ``tool_execution_end`` (``.tool_name`` / ``.is_error``), ``message_end``
   (``.message.usage`` / ``.message.model``), and ``turn_end``. Unknown event
   types are ignored.
