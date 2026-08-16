@@ -138,12 +138,27 @@ so this ran on the prompt-toolkit loop. The answer path has had an adaptive gove
   (7–12 dim-italic repaints per turn, reasoning tokens repeating — the signature of repeated
   tail repaints), a completed turn leaves a clean live region, and a Ctrl+C abort leaves
   `✖ Operation aborted` with nothing pinned.
-- **NOT verified live against a real model:** an abort landing inside the
-  reasoning-**before**-answer window. On this provider that window is a fraction of a second;
-  the runs that reached it had already started the answer, and the harness reports when a run
-  proves nothing (several did). That exact path is covered by the chrome-level tests instead.
-  Recorded rather than glossed, because a fixed-delay abort that happens to land after the
-  answer starts looks identical to a passing one.
+- **Live, against a real model, in the exact failing window** (deepseek/deepseek-r1 via
+  openrouter, 90×24 pty, Ctrl+C 25s after submit, reasoning still streaming and no answer text
+  yet — 379 tail repaints before the interrupt):
+
+  | build | final painted screen |
+  |---|---|
+  | `5834acd` (pre-fix) | `✖ Operation aborted` on row 9, **reasoning still painted on rows 11–20**, directly above the input box |
+  | this ADR's code | reasoning committed on rows 11–19, notice on row 20, **live region clean** |
+
+  This paragraph replaces a "NOT verified" note that was **wrong, and wrong through my own
+  instrument**. The probe counted `\x1b[2;3m`; Rich emits the reasoning style as `\x1b[0;2;3m`
+  here (reset-prefixed), so the counter under-reported, several genuinely-in-window runs were
+  labelled vacuous, and the conclusion drawn from them — "this window is unreachable on a live
+  provider" — was an artefact. Two things were both true and got conflated: `openai/gpt-5.5`
+  really does finish reasoning too fast for a fixed-delay interrupt, and the counter that was
+  supposed to detect exactly that was broken. A slow-reasoning model plus a corrected pattern
+  reaches the window on the first attempt.
+
+  Kept as a caution, since the failure mode generalises: a probe's own detector needs a positive
+  control. A counter that reads zero looks identical whether the event did not happen or the
+  pattern did not match, and "nothing to strand" is the reading that quietly excuses a gap.
 
 ## Rejected alternatives
 
