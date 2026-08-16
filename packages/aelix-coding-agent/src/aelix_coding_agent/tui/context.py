@@ -1117,15 +1117,29 @@ class AelixTUIContext:
                 values[segment.id] = value
         return values
 
-    # WP-8 (Feature 5) — the mockup-A grouped row layout: each row lists the
-    # segment ids it carries, in render order. Empty rows (no enabled, non-empty
-    # segment) are omitted. ``permission-mode`` stays the LEADING segment of its
-    # row (ADR-0159). Extension statuses join the LAST row.
+    # WP-8 (Feature 5) — the grouped row layout: each row lists the segment ids
+    # it carries, in render order. Empty rows (no enabled, non-empty segment) are
+    # omitted. ``permission-mode`` stays the LEADING segment of its row
+    # (ADR-0159). Extension statuses join the LAST row.
+    #
+    # TWO rows, not the three WP-8 shipped. ``current-dir`` had a row to itself
+    # and ``permission-mode`` another, so the common case — one directory, the
+    # default posture — spent two chrome rows on about thirty cells:
+    #
+    #     ✱ gpt-5.6-luna  ·  🧠 high  ·  ⎇ main  ·  ◔ 24% · 96.4K/400K
+    #     📂 /workspaces/aelix-ai
+    #     ● default
+    #
+    # The chrome is subtracted from the scrollback the user is actually reading,
+    # so a row costs more than it looks. Merged with ``permission-mode`` FIRST:
+    # ADR-0159 requires the badge to lead its row, and it is the security-visible
+    # segment, so it keeps the position the eye lands on. The pairing is also the
+    # honest one — both answer "where am I and what am I allowed to do", while
+    # row 1 answers "what am I talking to".
     _MULTILINE_ROWS: tuple[tuple[str, ...], ...] = (
         ("model", "thinking-level", "git-branch", "context-remaining",
          "input-tokens", "output-tokens", "cost"),
-        ("current-dir",),
-        ("permission-mode", "steering", "pending-queued"),
+        ("permission-mode", "current-dir", "steering", "pending-queued"),
     )
 
     def _refresh_footer(self) -> None:

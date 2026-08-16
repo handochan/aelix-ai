@@ -834,40 +834,130 @@ def _group_rows(group: Any) -> list[Any]:
     return list(getattr(group, "renderables", []))
 
 
-def test_render_user_message_blank_line_chevron_and_cyan() -> None:
+def _echo_text(group: Any) -> str:
+    """The label+body of a user echo, out of whatever renderable carries it."""
+
+    inner = getattr(_group_rows(group)[1], "renderable", None)
+    return getattr(inner, "plain", "")
+
+
+def _painted_rows(group: Any, width: int) -> list[tuple[str, int]]:
+    """Render *group*; return ``(text, painted_cells)`` for each emitted line.
+
+    Measured off the EMITTED ESCAPE STREAM, deliberately, not off a pyte screen.
+    pyte inserts a phantom blank row after any line that exactly fills the width
+    — verified with no Rich in the loop: feeding ``"A" * 10 + "\\n" + "BBB"`` to a
+    10-wide ``pyte.Screen`` yields ``['AAAAAAAAAA', '', 'BBB']`` — and a
+    full-width bar puts EVERY row on that boundary. Asserting row positions
+    through pyte would report a bar split in two while the bytes are continuous.
+    """
+
+    import io
+    import re
+
+    from aelix_coding_agent.tui.render import _USER_ECHO_STYLE
+    from rich.console import Console
+    from rich.text import Text
+
+    def _render(renderable: object) -> str:
+        buf = io.StringIO()
+        Console(
+            file=buf, width=width, force_terminal=True, color_system="truecolor"
+        ).print(renderable)
+        return buf.getvalue()
+
+    # SELF-CALIBRATING, so this stays a test about COVERAGE and not about the
+    # colour. Which SGR the bar emits is a taste decision that has already moved
+    # once (blue → cyan); that every cell of every row is inside it is the
+    # invariant. Hardcoding the code would fail the next time the colour changes
+    # and say nothing about the property under test.
+    bar_sgr = re.findall(r"\x1b\[([0-9;]*)m", _render(Text("X", style=_USER_ECHO_STYLE)))
+    assert bar_sgr, "the echo style emits no SGR — is colour disabled here?"
+    bar_codes = bar_sgr[0]
+
+    rows: list[tuple[str, int]] = []
+    for line in _render(group).split("\n")[:-1]:
+        plain = re.sub(r"\x1b\[[0-9;]*m", "", line)
+        painted = 0
+        on = False
+        i = 0
+        while i < len(line):
+            m = re.match(r"\x1b\[([0-9;]*)m", line[i:])
+            if m:
+                on = m.group(1) == bar_codes
+                i += m.end()
+                continue
+            painted += 1 if on else 0
+            i += 1
+        rows.append((plain, painted))
+    return rows
+
+
+def _bar_rows(group: Any, width: int) -> list[tuple[str, int]]:
+    return [(t, n) for t, n in _painted_rows(group, width) if t.strip()]
+
+
+def test_render_user_message_is_a_bar_that_spans_the_width() -> None:
+    """#48 — the echo owns its ground, and owns ALL of it.
+
+    SABOTAGE: put the middle row back to ``Text(..., style=_USER_ECHO_STYLE)``.
+    Rich then paints only the glyph run, the trailing cells keep the terminal's
+    own ground, and the ragged right edge fails the width assertion. That is the
+    whole difference between a bar and coloured text.
+    """
+
     from aelix_coding_agent.tui.render import render_user_message
 
     group = render_user_message("hello there")
     rows = _group_rows(group)
-    # Sprint 6h₃₂ — blank lines ABOVE and BELOW fence the echo off (the single
-    # leading blank of ADR-0153 was too subtle).
+    # Sprint 6h₃₂ — blank lines ABOVE and BELOW still fence the echo off.
     assert len(rows) == 3
-    assert rows[0].plain == ""  # leading blank
-    assert rows[2].plain == ""  # trailing blank
-    # The middle row keeps the ``» `` chevron and is styled bold cyan (stands out).
-    assert rows[1].plain == "» hello there"
-    assert "bold cyan" in str(rows[1].style)
+    assert rows[0].plain == ""
+    assert rows[2].plain == ""
+    assert _echo_text(group) == "» hello there"
+
+    body = _bar_rows(group, 40)
+    assert body
+    for text, cells in body:
+        assert cells == 40, f"row {text!r} painted {cells}/40 cells — not a bar"
+
+
+def test_render_user_message_bar_survives_wrapping() -> None:
+    """A long turn is ONE bar, not a painted first row and a bare remainder.
+
+    SABOTAGE: the same one. A manually right-padded ``Text`` covers the first
+    row and leaves every continuation row unpainted — measured before choosing
+    ``Padding``, which is the reason the helper uses it.
+    """
+
+    from aelix_coding_agent.tui.render import render_user_message
+
+    long_turn = "fix the retry loop in the harness and add a test for it as well"
+    body = _bar_rows(render_user_message(long_turn), 32)
+    assert len(body) >= 2, "the fixture no longer wraps; widen the input"
+    for text, cells in body:
+        assert cells == 32, f"wrapped row {text!r} painted {cells}/32 cells"
 
 
 def test_render_user_message_steer_and_follow_up_labels_same_visual() -> None:
     from aelix_coding_agent.tui.render import render_user_message
 
-    steer = _group_rows(render_user_message("go left", kind="steer"))
-    follow = _group_rows(render_user_message("then commit", kind="follow_up"))
+    steer = render_user_message("go left", kind="steer")
+    follow = render_user_message("then commit", kind="follow_up")
     # Distinct labels...
-    assert steer[1].plain == "Steering: go left"
-    assert follow[1].plain == "Follow-up: then commit"
-    # ...but the SAME visual language: leading blank line + bold cyan.
-    for rows in (steer, follow):
-        assert rows[0].plain == ""
-        assert "bold cyan" in str(rows[1].style)
+    assert _echo_text(steer) == "Steering: go left"
+    assert _echo_text(follow) == "Follow-up: then commit"
+    # ...but the SAME visual language: fenced by blanks, and inside the bar.
+    for group in (steer, follow):
+        assert _group_rows(group)[0].plain == ""
+        body = _bar_rows(group, 40)
+        assert body and all(n == 40 for _, n in body), body
 
 
 def test_render_user_message_unknown_kind_degrades_to_prompt() -> None:
     from aelix_coding_agent.tui.render import render_user_message
 
-    rows = _group_rows(render_user_message("oops", kind="mystery"))
-    assert rows[1].plain == "» oops"
+    assert _echo_text(render_user_message("oops", kind="mystery")) == "» oops"
 
 
 # === Sprint 6h₃₂ — shared tool-call header helper ==========================

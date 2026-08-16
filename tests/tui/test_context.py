@@ -995,3 +995,89 @@ async def test_set_usage_stats_repaints_only_on_a_real_change() -> None:
         # Any one field changing is a real change.
         ctx.set_usage_stats(100, 50, 0.30)
         assert len(painted) == 2
+
+
+# === the multi-line statusline is TWO rows, and that shape is pinned =========
+#
+# WP-8 shipped three rows and nothing asserted it, so when this was cut to two
+# the whole tui suite stayed green — the same "a shipped shape with no gate"
+# pattern #147 turned up. These tests are that gate.
+
+
+class _MultilineStore:
+    """A statusline store fixed to multiline mode (no disk, no agent dir)."""
+
+    def __init__(self, enabled: list[str] | None = None) -> None:
+        from aelix_coding_agent.tui.statusline_store import StatuslineConfig
+
+        self._cfg = StatuslineConfig(
+            enabled=enabled if enabled is not None else [], multiline=True
+        )
+
+    def load(self):  # noqa: ANN201 — duck-typed, matches StatuslineStore.load
+        return self._cfg
+
+
+@asynccontextmanager
+async def _multiline_footer(
+    footer: AelixFooterData, *, enabled: list[str], **kwargs
+) -> AsyncGenerator[tuple[AelixTUIContext, AelixChrome]]:
+    with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
+        console = Console(file=io.StringIO(), force_terminal=True, width=100)
+        chrome = AelixChrome(console=console)
+        ctx = AelixTUIContext(
+            chrome,
+            footer,
+            statusline_store=_MultilineStore(enabled),  # type: ignore[arg-type]
+            **kwargs,
+        )
+        yield ctx, chrome
+
+
+async def test_multiline_statusline_is_two_rows_not_three() -> None:
+    """The common case — one directory, the default posture — costs TWO rows.
+
+    SABOTAGE: split ``current-dir`` back into a row of its own in
+    ``_MULTILINE_ROWS``. The row count goes to three and this fails. Chrome rows
+    are subtracted from the scrollback the user is reading, which is why the
+    count is asserted and not just the contents.
+    """
+
+    footer = _FixedBranchFooter("main")
+    async with _multiline_footer(
+        footer,
+        enabled=["model", "git-branch", "current-dir", "permission-mode"],
+        model_provider=lambda: "gpt-5.6-luna",
+        cwd="/workspaces/aelix-ai",
+        permission_badge_provider=lambda: None,
+    ) as (_ctx, chrome):
+        rows = chrome._footer_line.split("\n")
+        assert len(rows) == 2, rows
+        assert "✱ gpt-5.6-luna" in rows[0] and "⎇ main" in rows[0]
+        assert "📂 /workspaces/aelix-ai" in rows[1]
+
+
+async def test_multiline_statusline_keeps_the_permission_badge_leading() -> None:
+    """ADR-0159: the security-visible segment leads its row — still true at two.
+
+    SABOTAGE: put ``current-dir`` before ``permission-mode`` in that row tuple.
+    The badge stops being the first thing on the line the eye lands on, and this
+    fails. Merging two rows is exactly the change that could lose the invariant
+    quietly, since nothing else in the suite asserts it for the multi-line path.
+    """
+
+    from aelix_coding_agent.builtin.permission_mode import DEFAULT_BADGE
+
+    footer = _FixedBranchFooter("main")
+    async with _multiline_footer(
+        footer,
+        enabled=["model", "current-dir", "permission-mode"],
+        model_provider=lambda: "gpt-5.6-luna",
+        cwd="/workspaces/aelix-ai",
+        # ADR-0159: the badge is omitted entirely when no posture is wired, so a
+        # provider has to be present for there to be anything to lead with.
+        permission_badge_provider=lambda: None,
+    ) as (_ctx, chrome):
+        second = chrome._footer_line.split("\n")[1]
+        assert DEFAULT_BADGE in second, second
+        assert second.index(DEFAULT_BADGE) < second.index("📂"), second

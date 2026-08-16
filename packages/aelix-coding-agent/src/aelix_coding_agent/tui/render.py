@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Any
 from aelix_ai.messages import AssistantMessage
 from rich.cells import cell_len, set_cell_size
 from rich.console import Group
+from rich.padding import Padding
 from rich.text import Text
 
 from .stream import StreamRenderer, markdown_lines, plain_lines
@@ -279,14 +280,53 @@ def _render_diff(
 # Sprint 6h₂₅ (ADR-0153, TUI v2 quick-wins WP-6 trivial tier) — shared user-echo
 # vocabulary. Human input was the weakest visual element (monochrome ``» text``
 # with no separation, buried among colored tool cards / diffs / thinking). The
-# trivial-tier lift = ONE helper every human-input site shares: a leading blank
-# line for separation + a bold-cyan echo that stands out. (The full-width
-# background bubble — WP-6 medium tier — is deferred.)
+# trivial-tier lift was ONE helper every human-input site shares: a leading blank
+# line for separation + a bold-cyan echo that stands out.
+#
+# #48 lands the medium tier that comment deferred — the full-width background
+# bar. Padding + blank lines were still only NEGATIVE space, so a human turn read
+# as "a gap" rather than as its own object, and a wrapped one lost even that.
 _USER_MESSAGE_LABELS: dict[str, str] = {
     "prompt": "» ",
     "steer": "Steering: ",
     "follow_up": "Follow-up: ",
 }
+
+#: The user-echo bar. AN EXPLICIT FOREGROUND **AND** BACKGROUND, deliberately.
+#:
+#: The rest of this module names a colour and lets the terminal supply the
+#: ground (``bold cyan``, ``dim``, …), which is only safe while the ground is
+#: whatever the user already reads text on. A bar owns its ground, so BOTH
+#: halves have to be stated.
+#:
+#: Cyan because that is already aelix's colour — the tool-card marker and header
+#: are cyan, so the bar reads as part of the same product rather than as a
+#: foreign stripe. It stays the terminal's OWN cyan (ANSI 46, not a 256/truecolor
+#: shade), so it tracks the user's theme and survives the colour-system degrade
+#: Rich does on a poorer terminal. Only the text is pinned, to black.
+#:
+#: ``reverse`` was the other candidate and was REJECTED on measurement. Rich
+#: emits it as ``1;7;36``: foreground cyan plus SGR 7, and the terminal then
+#: swaps, so the TEXT becomes the terminal's own background colour. On a dark
+#: theme that is dark-on-cyan and fine; on a light one it is near-white on cyan,
+#: which is the low-contrast case. It delegates half the pair to the user's
+#: theme, and it is the half that can go wrong. "Cannot clash" was true of hue
+#: and not of contrast.
+#:
+#: It is NOT routed through ``tui/themes.py``. That registry is the
+#: EXTENSION-facing surface (``context.py`` hands it to widget factories); no
+#: renderer in this module has ever consulted it, and its roles are
+#: foreground-only. Wiring the transcript renderer to it is real work and is what
+#: #58 (auto light/dark) is actually about — doing it here, for one line, would
+#: leave the other twenty hardcoded styles behind and claim a theme integration
+#: that does not exist.
+#:
+#: MEASURED through the commit path (``chrome.print_above`` →
+#: ``chrome._console.print``): the SGR survives, pyte reads the cells back, and
+#: with ``Padding`` every wrapped row is covered edge to edge. Piped output and
+#: ``NO_COLOR`` drop it entirely — the text and its ``» `` marker still carry the
+#: turn there, which is why the marker was not replaced by the bar.
+_USER_ECHO_STYLE = "bold black on cyan"
 
 # Sprint 6h₃₂ — the tool-call header marker. A bold filled ``●`` (replacing the
 # thin ``⚙`` gear) reads at a glance against the dim result card below it; the
@@ -300,20 +340,34 @@ def render_user_message(text: str, kind: str = "prompt") -> Group:
 
     Every site that echoes the user's own input — the live prompt, the replayed
     transcript, and steer / follow-up injections — routes through this helper so
-    they share ONE visual language: the echo line is wrapped in blank lines ABOVE
-    AND BELOW (vertical padding that fences the human turn off from the colored
-    tool cards / diffs / streamed answer it sits between) and styled to STAND OUT
-    (bold cyan). Sprint 6h₃₂ added the trailing blank — a single LEADING blank
-    (the ADR-0153 original) was too subtle when the turn landed mid-stream.
+    they share ONE visual language. The turn is a full-width bar
+    (:data:`_USER_ECHO_STYLE`), still fenced by a blank line above and below.
+
+    #48 — WHY A BAR AND NOT MORE PADDING. ADR-0153 gave the echo a leading blank
+    and bold cyan; Sprint 6h₃₂ added the trailing blank because one was "too
+    subtle when the turn landed mid-stream". Both rounds bought separation with
+    NEGATIVE space, and negative space is what a human turn was already made of —
+    it read as a gap between coloured tool cards rather than as an object. The
+    bar gives it its own ground, which is the one property none of the
+    surrounding renderers use (tool cards colour their marker, diffs their
+    gutter, reasoning is dim italic — all on the terminal's ground).
+
+    ``Padding`` rather than a padded :class:`Text`: MEASURED, a manually
+    right-padded ``Text`` covers only the FIRST row once the line wraps, leaving
+    a ragged bar; ``Padding`` with a style fills every wrapped row edge to edge.
+    The ``(0, 1)`` inset keeps the glyphs off the terminal's left column.
 
     ``kind`` selects the leading marker: ``"prompt"`` keeps the ``» `` chevron;
     ``"steer"`` / ``"follow_up"`` use a distinct ``Steering: `` / ``Follow-up: ``
-    label but the SAME padding + bold-cyan visual language. An unknown kind
-    degrades to the prompt chevron.
+    label inside the SAME bar. An unknown kind degrades to the prompt chevron.
     """
 
     label = _USER_MESSAGE_LABELS.get(kind, _USER_MESSAGE_LABELS["prompt"])
-    return Group(Text(""), Text(f"{label}{text}", style="bold cyan"), Text(""))
+    return Group(
+        Text(""),
+        Padding(Text(f"{label}{text}"), (0, 1), style=_USER_ECHO_STYLE),
+        Text(""),
+    )
 
 
 def render_tool_call_line(tool_name: str, summary: str) -> Text:

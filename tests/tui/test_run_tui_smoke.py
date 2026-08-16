@@ -525,14 +525,21 @@ def _spy_commits(chrome: AelixChrome) -> list[str]:
     orig_many = chrome.print_above_many
 
     def _plain(renderable: object) -> str:
-        # Sprint 6h₂₅ (ADR-0153) — the user echo is now a Rich Group (leading
-        # blank line + bold-cyan echo via render_user_message). Flatten a Group
-        # into its rows' plain text and drop the leading/trailing blank rows so
-        # the echo reads as the bare ``» text`` line (matches the pre-helper
-        # capture shape these tests assert on).
+        # Sprint 6h₂₅ (ADR-0153) — the user echo is a Rich Group (blank line +
+        # echo via render_user_message). Flatten a Group into its rows' plain
+        # text and drop the leading/trailing blank rows so the echo reads as the
+        # bare ``» text`` line (the capture shape these tests assert on).
         rows = getattr(renderable, "renderables", None)
         if rows is not None:
             return "\n".join(_plain(r) for r in rows).strip("\n")
+        # #48 — that echo row is now a ``Padding`` (the full-width bar), which
+        # wraps ONE child under ``.renderable``, not a list under
+        # ``.renderables``. Without this hop the spy fell through to ``str()``
+        # and recorded a repr, so every assertion on ``» text`` failed while the
+        # TUI was in fact rendering correctly.
+        inner = getattr(renderable, "renderable", None)
+        if inner is not None:
+            return _plain(inner)
         text = getattr(renderable, "plain", None)
         return text if isinstance(text, str) else str(renderable)
 
