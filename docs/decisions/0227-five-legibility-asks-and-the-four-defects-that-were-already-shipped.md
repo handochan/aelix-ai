@@ -44,6 +44,19 @@ at `extension.py`.
 **The multiline statusline is three rows where two would do.** Confirmed and merged, with
 the permission badge still leading its row (ADR-0159's invariant).
 
+WHAT THE ROW COSTS, measured against `main` rather than against an intermediate state of
+this branch, because that is the comparison a reader of main's history needs. On main the
+block is three rows and `current-dir` has one to itself: at 80 columns the path renders
+whole (73 cells) and an extension status joins the LAST row — `permission-mode` /
+`steering` / `pending-queued`, 50 cells — with no unbounded segment in front of it, so
+nothing is clipped. Merging the rows is what put an unbounded segment on a shared height-1
+row for the first time. After both ordering fixes below, the merged row is 79 cells at 80
+columns: every live signal and the extension's status are complete, and the path is cut at
+`📂 /workspaces/aelix-ai/p`. That is the trade the ask buys — one row of the user's
+scrollback for the tail of a path their own shell prompt already shows. It is a trade, not
+a free win, and the earlier framing of it here (a 95-cell row losing `⏵⏵` and `⋯ N queued`)
+described a state that only ever existed inside this branch.
+
 **The resume list does not say what a session contains.** Confirmed. Both pickers rendered
 `{created} · {short-id}` — an identifier, not a description — from two separate copies of
 the same function, one of which had no tests at all.
@@ -204,9 +217,12 @@ moment work started, because the label's share shrank as the numbers grew.
 dropped" did not shorten the head, it truncated the state COUNTS — at a
 31-character model id the count it reached first was ``1 failed``. And merging
 ``current-dir`` into the permission row put the only UNBOUNDED segment in the
-middle of a height-1 row that clips: measured at 80 columns with a nested cwd the
-row is 95 cells and the two segments pushed off were ``⏵⏵`` steering and
-``⋯ N queued``, the only live signals on the footer. The path goes last now.
+middle of a height-1 row that clips: measured at 80 columns with
+``cwd=…/aelix-coding-agent/src/aelix_coding_agent`` the composed row is 106 cells
+against 79 on the glass, and the two segments pushed off were ``⏵⏵`` steering and
+``⋯ 3 queued``, the only live signals on the footer. The path goes last now. (The
+number was written down as 95 for an unnamed cwd; re-measured with the cwd named,
+it is 106. Which segments were lost was right.)
 (Both of these needed a second correction; see the round-three section.)
 
 **The citation gate agreed with a lie.** Nine citations naming ``_picker_frame``

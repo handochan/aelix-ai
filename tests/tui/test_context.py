@@ -1091,10 +1091,12 @@ async def test_the_merged_statusline_row_drops_the_path_before_the_live_signals(
     thing multi-line mode exists to stop.
 
     ``current-dir`` is the one segment with no bound, so it decides whether the
-    row overflows. MEASURED at 80 columns with a realistically nested cwd the
-    merged row is 95 cells; with the directory in the MIDDLE the two segments
-    pushed off the end were ``⏵⏵`` steering and ``⋯ N queued`` — the only live and
-    transient signals on the footer. Ordered this way the overflow eats the path.
+    row overflows. MEASURED at 80 columns with
+    ``cwd=…/aelix-coding-agent/src/aelix_coding_agent``: the composed row is 106
+    cells against 79 on the glass, and with the directory in the MIDDLE the two
+    segments pushed off the end were ``⏵⏵ all`` and ``⋯ 3 queued`` — the only live
+    and transient signals on the footer. Ordered this way the overflow eats the
+    path instead. The cwd is named because the cell count depends on it.
 
     RENDERED, NOT READ OFF THE TUPLE. The first version asserted four things about
     ``_MULTILINE_ROWS[1]`` and never built a context, so it could not see the

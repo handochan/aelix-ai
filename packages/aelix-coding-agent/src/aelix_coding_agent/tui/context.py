@@ -1225,13 +1225,28 @@ class AelixTUIContext:
     # merge introduced and then had to fix. The chrome row is height-1 and is
     # CLIPPED at the terminal, which is the very thing multi-line mode exists to
     # stop — and ``current-dir`` is the one segment with no bound, so it decides
-    # whether the row overflows. MEASURED at 80 columns with a realistically
-    # nested cwd: the merged row is 95 cells, and with the directory in the
-    # middle the two segments pushed off the end were ``⏵⏵`` steering and
-    # ``⋯ N queued``, the only LIVE and TRANSIENT signals on the whole footer.
-    # Ordered this way the overflow eats the path instead — the segment a user
-    # can already see in their own shell prompt, and the one whose tail is the
-    # most guessable.
+    # whether the row overflows.
+    #
+    # MEASURED through the real chrome onto a pyte screen at 80 columns, with
+    # ``cwd=/workspaces/aelix-ai/packages/aelix-coding-agent/src/aelix_coding_agent``
+    # and the four segments below enabled. The cwd is named because the number
+    # depends on it, and an earlier draft of this comment reported 95 cells for an
+    # unnamed one:
+    #
+    #     path in the middle  composed 106 cells → 79 on glass, LOST ``⏵⏵ all``
+    #                         and ``⋯ 3 queued`` — the only LIVE and TRANSIENT
+    #                         signals on the whole footer
+    #     path last (this)    composed 106 cells → 79 on glass, LOST only the
+    #                         path's tail
+    #
+    # With one extension status published the composed row is 129 cells in both
+    # orderings, and the ordering decides whether the extension's own status
+    # survives too: it does here, and does not with the path in front of it.
+    #
+    # So the overflow eats the path — the segment a user can already see in their
+    # own shell prompt, and the one whose tail is the most guessable. That is a
+    # TRADE for the row this merge saves, not a free win: on ``main``, where
+    # ``current-dir`` had a row to itself, this path rendered whole.
     _MULTILINE_ROWS: tuple[tuple[str, ...], ...] = (
         ("model", "thinking-level", "git-branch", "context-remaining",
          "input-tokens", "output-tokens", "cost"),
