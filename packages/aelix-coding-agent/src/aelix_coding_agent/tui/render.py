@@ -342,10 +342,20 @@ _TOOL_MARKER = "●"
 #: ``aelix_agents/panel._CONTROL_KILL`` and ``cli/session_labels._clean`` carry it.
 #: The newline is spared because a multi-line paste is meant to be several rows of
 #: one bar.
+#:
+#: THE TAB IS SPARED FOR THE SAME REASON AND IT WAS NOT, AT FIRST. Mapping it to a
+#: space made every nesting level of a tab-indented paste — a Makefile, Go, tab
+#: indented C — render as ONE column, and the loss is permanent: the echo is
+#: replayed from the session file on every ``/resume``. Neither harm this map
+#: exists for is a property of ``\t``. MEASURED at width 60: Rich expands the tab
+#: to its 8-column stop BEFORE writing, so the spaces are painted INSIDE the
+#: background run, no raw ``\t`` reaches the terminal in either arm, and every bar
+#: row is still exactly the full width. What ``\x1b`` and ``\x9b`` do — end the
+#: run and change the terminal's colour state — a tab does not do.
 _ECHO_CONTROL_MAP = {
     codepoint: " "
     for codepoint in (*range(0x00, 0x20), 0x7F, *range(0x80, 0xA0))
-    if codepoint != 0x0A
+    if codepoint not in (0x09, 0x0A)
 }
 
 
@@ -355,11 +365,12 @@ _ECHO_MIN_CONSTRAIN = 2
 
 
 def _strip_controls(text: str) -> str:
-    """Replace every control character except ``\n`` with a space.
+    """Replace every control character except ``\n`` and ``\t`` with a space.
 
     The echo is the one renderer here that puts a caller's bytes on the terminal
     unchanged, and the bar made that visible: an escape inside the text ends the
-    background run and reaches the glass. See :func:`render_user_message`.
+    background run and reaches the glass. See :func:`render_user_message`, and
+    :data:`_ECHO_CONTROL_MAP` for why the tab is not one of those.
     """
 
     return text.translate(_ECHO_CONTROL_MAP)

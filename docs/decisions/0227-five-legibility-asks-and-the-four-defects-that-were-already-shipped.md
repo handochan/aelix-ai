@@ -285,8 +285,24 @@ gate renders a row.
 paints the panel and the merged footer through the real chrome and reads them back
 off a pyte screen, because both surfaces are decided by a CLIP rather than by a
 return value: a formatter can return four distinct labels and the terminal can
-still show four identical ones. Fifteen sabotages — eleven against the source,
+still show four identical ones. Eighteen sabotages — fourteen against the source,
 four against the glass — all RED.
+
+One of those eighteen was reported GREEN the first time and the mutation had not
+applied: a ``str.replace`` missed because the function it targeted had gained a
+docstring. That is the same failure as a probe whose pattern never matches — zero
+looks identical to "no defect" — so the harness now asserts every mutation
+actually changed the file before it draws a conclusion.
+
+**The control strip took the tab as well as the escapes.** ``\t`` is C0, so the
+map that closed the escape hole mapped it to a space — and every nesting level of
+a tab-indented paste (a Makefile, Go, tab-indented C) rendered as ONE column. The
+loss is permanent rather than cosmetic: the echo is replayed from the session file
+on every ``/resume``. Neither harm the strip exists for is a property of a tab.
+MEASURED at width 60: Rich expands it to its 8-column stop BEFORE writing, so the
+spaces are painted inside the background run, no raw ``\t`` reaches the terminal
+in either arm, and every bar row is still exactly the full width. It is spared
+now, alongside the newline and for the same reason.
 
 **One of my own probes reported a false finding**, again. ``verify_round2.py``
 hard-coded the pre-fix example string, so it reported 29 cells against a cap of 24

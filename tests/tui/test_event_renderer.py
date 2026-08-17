@@ -1094,14 +1094,44 @@ def test_an_escape_in_the_echoed_turn_does_not_tear_the_bar() -> None:
 
 
 def test_a_multi_line_paste_is_still_several_rows_of_one_bar() -> None:
-    """The newline is the one control that survives, because a multi-line paste is
-    meant to be several rows of one bar rather than a run-on."""
+    """The newline is one of two controls that survive, because a multi-line paste
+    is meant to be several rows of one bar rather than a run-on."""
 
     from aelix_coding_agent.tui.render import render_user_message
 
     body = _bar_rows(render_user_message("first line\nsecond line", width=40), 40)
     assert len(body) == 2, body
     assert all(cells == 40 for _t, cells in body), body
+
+
+def test_a_tab_indented_paste_keeps_its_indentation() -> None:
+    """The tab is the other one, and the first version of the strip took it.
+
+    Mapping ``\\t`` to a space rendered every nesting level of a Makefile, of Go,
+    of tab-indented C as ONE column — and the echo is replayed from the session
+    file, so the flattening is permanent rather than cosmetic. Neither harm the
+    strip exists for is a property of a tab: Rich expands it to its 8-column stop
+    BEFORE writing, so the spaces are painted inside the background run, no raw
+    ``\\t`` reaches the terminal, and the bar stays whole. The last two assertions
+    are what say so, and they are why sparing it is safe rather than a trade.
+    """
+
+    from aelix_coding_agent.tui.render import render_user_message
+
+    group = render_user_message("run this:\n\tmake build\n\t\tCC=gcc", width=60)
+    rows = _bar_rows(group, 60)
+    assert len(rows) == 3, rows
+
+    # Nesting is VISIBLE: the deeper line starts further in than the shallower one,
+    # and both start further in than the unindented one. Column counts rather than
+    # a substring, because one collapsed space is still "indented" by a substring.
+    indents = [len(row_text) - len(row_text.lstrip(" ")) for row_text, _c in rows]
+    assert indents[0] < indents[1] < indents[2], (indents, rows)
+    assert indents[2] - indents[1] >= 8, (indents, rows)
+
+    rendered = _render_group_to_ansi(group, 60)
+    assert "\t" not in rendered, repr(rendered)  # Rich expanded it, not us
+    assert all(cells == 60 for _t, cells in rows), rows  # the bar is still whole
 
 
 def test_the_echo_survives_a_width_too_narrow_to_constrain() -> None:
