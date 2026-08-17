@@ -12,7 +12,7 @@ the pre-change build with one 7175-char ``AGENTS.md`` (1794 estimated tokens):
   discovery call re-emitted 115 bytes of stderr warnings carrying the absolute
   path RAW — ESC and BEL from a hostile directory name reached the stream.
 
-The assembly these tests mirror is ``cli/entry.py:1228-1233`` (the chunk is
+The assembly these tests mirror is ``cli/entry.py:1241-1246`` (the chunk is
 appended VERBATIM, gated on ``not parsed.no_context_files``) joined by
 ``harness/core.py:596-602`` with ``"\\n\\n"``. Nothing here asserts the chunk's
 INTERNAL shape: that belongs to ``cli/agent_context.py`` and changed inside this
@@ -176,7 +176,7 @@ async def test_context_omits_memory_row_under_no_context_files(project: Path) ->
 
     The ``AGENTS.md`` is on disk and discoverable; the only thing that changed is
     that the assembled prompt does not contain it, which is exactly what
-    ``entry.py:1230`` produces under ``--no-context-files``.
+    ``entry.py:1243`` produces under ``--no-context-files``.
     """
 
     assert _discover_quietly(project), "the file must be discoverable, just not used"
@@ -252,7 +252,7 @@ def test_banner_context_row_reports_agents_md_when_it_is_in_the_prompt(
 def test_banner_does_not_re_emit_the_context_budget_warnings(tmp_path: Path) -> None:
     """Rendering a banner must not print discovery's warnings a second time.
 
-    ``cli/entry.py:1231`` already called discovery once at startup and its
+    ``cli/entry.py:1244`` already called discovery once at startup and its
     ``Warning:`` lines have already been shown; the banner render is a REPORT and
     must be silent. An oversized ``AGENTS.md`` is what makes discovery warn
     (``agent_context.py:1250-1255``, the 32768-byte budget).
@@ -329,7 +329,7 @@ def test_split_returns_the_prompt_whole_when_context_is_absent(project: Path) ->
 def test_split_finds_the_chunk_when_it_is_not_last(project: Path) -> None:
     """The production shape whenever skills are loaded.
 
-    ``cli/entry.py:1228-1250`` orders the appended sections base → user append →
+    ``cli/entry.py:1241-1263`` orders the appended sections base → user append →
     project context → skills catalog, so the chunk is only the tail of the prompt
     in the no-skills case. A split that quietly assumed "at the end" would drop
     the row for every session that has a skill.

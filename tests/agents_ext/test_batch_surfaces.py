@@ -264,7 +264,14 @@ def test_the_panel_is_the_aggregate_header_plus_one_row_per_child() -> None:
 def test_the_panel_rows_lead_with_the_childs_model_when_present() -> None:
     """S10 Option A: the model leads each per-child row, so the ``· state`` that
     follows lines up across a one-profile batch (all members share one model —
-    the "light alignment"). A queued member has no snapshot and so no model."""
+    the "light alignment"). A queued member has no snapshot and so no model.
+
+    THE NO-TASKS PATH, which is where this ordering still holds. With a job-label
+    column ahead of it the same ordering costs the state word instead (see
+    :func:`test_the_model_stays_on_the_rows_when_members_disagree`); here the whole
+    row budget belongs to this string, so leading with the model costs nothing and
+    the shipped alignment is kept.
+    """
 
     snapshots: list[SubagentProgress | None] = [
         _reading(0, model="claude-opus-4-8", elapsed_ms=1_000, tokens=1_500),
@@ -400,7 +407,7 @@ def test_the_throttle_records_every_snapshot_even_when_it_drops_the_emit() -> No
 def test_an_unchanged_card_is_never_re_emitted() -> None:
     """A frame that repaints the same bytes is a kernel ``Task`` bought for
     nothing, and it cannot lose information by construction — the same dedup the
-    statusline half already does (``progress.py:466-468``)."""
+    statusline half already does (``progress.py:496-498``)."""
 
     clock = _Clock()
     throttle = PartialThrottle(1, now=clock)
@@ -453,6 +460,57 @@ def test_a_four_member_group_writes_exactly_one_status_key() -> None:
     assert ui.widgets[-1][1] == format_panel(
         [_reading(index, elapsed_ms=1_000) for index in range(4)]
     )
+
+
+def test_the_bridge_measures_the_terminal_rather_than_assuming_the_constant() -> None:
+    """The WIRING, which nothing else here can see.
+
+    ``format_panel`` honours the ``width`` it is given, and every test of that is
+    a test of the formatter. Whether the one production caller actually MEASURES a
+    terminal and passes it is a separate fact, and dropping the argument at the
+    call site left the formatter tests green — a sabotage run caught exactly that.
+    This drives the real bridge through the real ``begin_group`` / ``adopt`` /
+    ``__call__`` sequence with a UI whose chrome reports 40 columns, and reads what
+    reached ``set_widget``.
+
+    The assertion is that the panel is bounded by the TERMINAL, not by
+    :data:`PANEL_ROW_MAX_CHARS`: at 40 columns a 78-cell row is the defect, and
+    ``40 <= 78`` would hold for either.
+    """
+
+    class _Sized:
+        """A chrome whose output reports a fixed size, like ``tui/width`` reads."""
+
+        def __init__(self, columns: int) -> None:
+            size = type("Size", (), {"columns": columns, "rows": 24})()
+            output = type("Out", (), {"get_size": lambda _self: size})()
+            self.app = type("App", (), {"output": output})()
+
+    ui = _Ui()
+    ui.chrome = _Sized(40)  # type: ignore[attr-defined]
+    bridge, _ = _bridge(ui)
+    jobs = tuple(f"port the exponential retry backoff to {name}" for name in
+                 ("google", "openai", "azure", "vertex"))
+    bridge.begin_group(_GROUP, expected=4, tasks=jobs)
+    for index in range(4):
+        bridge.adopt(f"sub-{index}", _GROUP, index=index)
+        bridge(_reading(index, model="github-copilot/gpt-5.6-codex", elapsed_ms=1_000))
+
+    written = ui.widgets[-1][1]
+    assert written is not None
+    for row in written:
+        assert cell_len(_visible(row)) <= 40, (cell_len(_visible(row)), row)
+    # Positive control: the same batch at a wide terminal is NOT clipped to 40, so
+    # the bound above is the terminal's doing and not something else's.
+    ui_wide = _Ui()
+    ui_wide.chrome = _Sized(200)  # type: ignore[attr-defined]
+    wide, _ = _bridge(ui_wide)
+    wide.begin_group(_GROUP, expected=4, tasks=jobs)
+    for index in range(4):
+        wide.adopt(f"sub-{index}", _GROUP, index=index)
+        wide(_reading(index, model="github-copilot/gpt-5.6-codex", elapsed_ms=1_000))
+    widest = max(cell_len(_visible(row)) for row in ui_wide.widgets[-1][1] or [])
+    assert 40 < widest <= PANEL_ROW_MAX_CHARS, widest
 
 
 # === GitHub #48 ask 3 — the panel says what each member is DOING =============
@@ -530,17 +588,37 @@ def test_the_model_stays_on_the_rows_when_members_disagree() -> None:
     """``model`` is read off each CHILD's own ``message_end``, so two children of
     one profile CAN report different strings — a provider fallback, a mid-batch
     alias resolution. A header claiming one model for a batch running two is
-    worse than a repeated column, so the rows take it back."""
+    worse than a repeated column, so the rows take it back.
+
+    AND WHEN THE ROW CANNOT HOLD BOTH, THE STATE WINS. That is the second half of
+    this invariant and the reason the terms were reordered. The numbers half gets
+    only what the job-label column leaves, so a wide label plus a provider-scoped
+    id does not fit — and with the model first, the state was what fell off:
+    MEASURED with members disagreeing and 35-cell labels, 2 of 4 rows showed their
+    state at 78, 80, 100 AND 120 columns alike, flat, because the budget is fixed
+    and a wider terminal cannot help. State-first is 4 of 4 at all of them.
+    """
 
     mixed: list[SubagentProgress | None] = [
         _reading(0, model="gpt-5-codex"),
         _reading(1, model="claude-opus-5"),
         None,
     ]
-    lines = _panel(mixed, tasks=_JOBS[:3])
-    assert "gpt-5-codex" not in lines[0] and "claude-opus-5" not in lines[0]
-    assert "gpt-5-codex" in lines[1]
-    assert "claude-opus-5" in lines[2]
+
+    # Short labels: there is room for both, and the rows carry the model in full.
+    roomy = _panel(mixed, tasks=("alpha", "beta", "gamma"))
+    assert "gpt-5-codex" not in roomy[0] and "claude-opus-5" not in roomy[0]
+    assert "gpt-5-codex" in roomy[1]
+    assert "claude-opus-5" in roomy[2]
+
+    # Wide labels: there is not, and what survives is the state on EVERY row.
+    tight = _panel(mixed, tasks=_JOBS[:3])
+    assert "gpt-5-codex" not in tight[0] and "claude-opus-5" not in tight[0]
+    for row in tight[1:]:
+        assert "running" in row or "queued" in row, row
+    # The model is still attempted — truncated, not dropped — so the row says
+    # which fact it ran out of room for rather than silently omitting it.
+    assert "gpt-5-co" in tight[1], tight[1]
 
 
 def test_the_shared_statusline_row_is_untouched_by_all_of_this() -> None:

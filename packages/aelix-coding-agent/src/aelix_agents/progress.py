@@ -74,6 +74,7 @@ from aelix_coding_agent.subagent_contract import (
 
 from aelix_agents.panel import (
     PANEL_MIN_CHILDREN,
+    PANEL_ROW_MAX_CHARS,
     PANEL_WIDGET_KEY,
     _flatten,
     format_aggregate_status,
@@ -429,7 +430,36 @@ class SubagentProgressBridge:
             # An empty aggregate means "nothing publishable yet"; writing it
             # would still cost the two-space join at ``chrome.py:1108``.
             self._set_row(group_status_key(group.key), text)
-        self._set_widget(group.key, format_panel(group.snapshots, tasks=group.tasks))
+        self._set_widget(
+            group.key,
+            format_panel(group.snapshots, tasks=group.tasks, width=self._panel_width()),
+        )
+
+    def _panel_width(self) -> int:
+        """The columns the panel is actually painting into.
+
+        ``panel.py`` is pure and cannot see a terminal — it is the module whose
+        docstring promises no UI handle — so the width is measured HERE, at the one
+        place that already holds a live UI binding, and passed in. It only ever
+        narrows: ``format_panel`` caps whatever arrives at ``PANEL_ROW_MAX_CHARS``,
+        so a wide screen is unchanged and a narrow one stops being told it has 78
+        columns.
+
+        DEGRADES TO THE OLD CONSTANT, never raises and never returns nothing. A
+        headless run, a UI without a chrome, a chrome whose output cannot be sized
+        before it runs — each yields the 78 the panel used before this existed,
+        which is the behaviour ADR-0199 shipped.
+        """
+
+        from aelix_coding_agent.tui.width import terminal_columns
+
+        chrome = getattr(self._ui(), "chrome", None)
+        if chrome is None:
+            return PANEL_ROW_MAX_CHARS
+        try:
+            return terminal_columns(chrome, max_width=PANEL_ROW_MAX_CHARS)
+        except Exception:  # noqa: BLE001 — an unsizeable output is not a render error
+            return PANEL_ROW_MAX_CHARS
 
     def clear(self) -> None:
         """Drop every row and panel we own — the ``session_shutdown`` /

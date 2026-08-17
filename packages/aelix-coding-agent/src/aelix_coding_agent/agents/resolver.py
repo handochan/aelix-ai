@@ -7,7 +7,7 @@ must never disagree:
   to RENDER a dry run (``/agents show``) and, in P2, to launch a child process.
 * :func:`apply_profile_to_args` — an in-process overlay onto the
   :class:`~aelix_coding_agent.cli.args.Args` the harness factory closes over
-  (``cli/entry.py:2218-2225``).
+  (``cli/entry.py:2231-2238``).
 
 The emission table below is written once and both functions follow it row for
 row; ``tests/agents/test_profile_resolver.py::test_anti_drift_parity`` pins the
@@ -138,7 +138,7 @@ The overlay CLEARS ``parsed.provider`` in that case rather than leaving a
 persisted default in place: a settings ``defaultProvider`` merged into
 ``parsed.provider`` impersonates an explicit ``--provider`` and hijacks both the
 ``<provider>/<model>`` shorthand and the OpenRouter-env path (#98,
-``cli/entry.py:1317-1322``). The caller re-feeds it through ``resolve_model``'s
+``cli/entry.py:1330-1335``). The caller re-feeds it through ``resolve_model``'s
 lowest-precedence ``default_provider`` slot instead."""
 
 
@@ -256,7 +256,7 @@ def profile_to_flags(
         if not profile.tools:
             # ``()`` means NO tools. ``--tools ''`` would mean the OPPOSITE:
             # ``parse_args`` yields ``[]``, which ``_resolve_active_tools``
-            # (``entry.py:655-677``) reads as falsy → ``None`` → every tool active.
+            # (``entry.py:668-690``) reads as falsy → ``None`` → every tool active.
             flags.append("--no-tools")
         else:
             flags += ["--tools", ",".join(profile.tools)]
@@ -335,7 +335,7 @@ def apply_profile_to_args(
     and the profile body always joins it (see the branch's comment).
 
     Mutates in place because the harness factory closes over this exact object
-    (``cli/entry.py:2620-2624``); rebinding a fresh ``Args`` would not reach it.
+    (``cli/entry.py:2633-2637``); rebinding a fresh ``Args`` would not reach it.
 
     Raises :class:`ProfileError` when the profile would silently WIDEN a kill
     switch the user set explicitly (``--no-extensions`` vs ``extensions:``).

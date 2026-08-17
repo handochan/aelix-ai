@@ -945,7 +945,7 @@ async def test_a_later_handler_cannot_change_the_topology_that_runs(
     ``ctx.args`` by reference with no defensive copy, precisely so a later
     ``tool_call`` handler may mutate the dict and have the mutation reach
     ``tool.execute``. ``AgentsExtension`` is APPENDED to the extension list
-    (``entry.py:1409-1411``), so a handler registered after it is not hypothetical.
+    (``entry.py:1422-1424``), so a handler registered after it is not hypothetical.
 
     An ``_execute`` that read ``args.get("mode", "single")`` would let that
     handler pick a different execution TOPOLOGY from the one the human approved —
@@ -1182,7 +1182,7 @@ async def test_a_single_delegation_keeps_its_own_per_child_row(
     NO GROUP IS OPENED AT ALL below ``PANEL_MIN_CHILDREN``, and that is stricter
     than "the group is inactive". An inactive group renders nothing, but
     ``end_group`` clears the aggregate row unconditionally
-    (``progress.py:369-380``) — one ``set_status(subagent:group:<id>, None)`` for a
+    (``progress.py:370-381``) — one ``set_status(subagent:group:<id>, None)`` for a
     row that was never written, which is a UI write P2 never made. The shipped
     ``test_events_and_statusline.py::test_statusline_row_set_and_cleared``
     counts the keys the UI is asked for and would go red on it.

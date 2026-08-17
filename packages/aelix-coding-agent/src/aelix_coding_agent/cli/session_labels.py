@@ -47,6 +47,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from collections.abc import Sequence
 from datetime import datetime
 from typing import Any
 
@@ -145,8 +146,44 @@ def _read_head(path: str, window: int) -> bytes:
         return handle.read(window)
 
 
+def _read_last_line(path: str) -> bytes:
+    """The file's final non-empty line, whatever its size.
+
+    THE ESCAPE HATCH FOR A RECORD BIGGER THAN THE WINDOW. :func:`_read_tail` drops
+    everything before its first newline so it never parses half a record — and
+    when the last record is LARGER than the window, the only newline in the blob
+    is the file's own trailing one, so the slice is empty and the caller gets
+    nothing. MEASURED, the cliff is one byte wide: a final record of 131 070 bytes
+    still yields its timestamp and 131 071 yields none, against a 131 072-byte
+    window. One ``read`` of a large file inside an assistant turn puts a session
+    over it easily.
+
+    Nothing is unbounded here — the walk doubles backwards until it finds a line
+    boundary and then reads ONE line, so the cost is the size of that record and
+    it is paid only when the window already failed.
+    """
+
+    step = 64 * 1024
+    with open(path, "rb") as handle:
+        size = os.fstat(handle.fileno()).st_size
+        while step < size * 2:
+            handle.seek(max(0, size - step))
+            blob = handle.read()
+            head = 0 if step >= size else blob.find(b"\n") + 1
+            if head or step >= size:
+                lines = [line for line in blob[head:].split(b"\n") if line.strip()]
+                if lines:
+                    return lines[-1]
+            step *= 2
+    return b""
+
+
 def _read_tail(path: str, window: int) -> bytes:
-    """The final ``window`` bytes, with a partial leading line dropped."""
+    """The final ``window`` bytes, with a partial leading line dropped.
+
+    An empty result means "the window held no complete record"; callers that need
+    one anyway fall back to :func:`_read_last_line`.
+    """
 
     with open(path, "rb") as handle:
         if os.fstat(handle.fileno()).st_size <= window:
@@ -162,19 +199,38 @@ def first_user_message(path: str) -> str | None:
 
     Never raises: a missing, unreadable, or malformed session file yields
     :data:`None` so a picker still lists the session by its age.
+
+    A RECORD THAT STRADDLES THE WINDOW EDGE IS RE-READ IN FULL, not abandoned.
+    Giving up made a long first turn indistinguishable from an EMPTY session:
+    both rendered ``(no messages)``, byte for byte, so the row said "nothing was
+    asked here" about the session with the longest question in the folder.
+    MEASURED, the cliff is at 65 259 bytes of message text against a 65 536-byte
+    window — a pasted file or a stack trace in the opening prompt reaches it. The
+    re-read is one ``readline`` and it is only paid when the window failed.
     """
 
     try:
         blob = _read_head(path, _HEAD_WINDOW)
     except OSError:
         return None
-    for line in blob.split(b"\n"):
+    lines = blob.split(b"\n")
+    for line in lines:
         if b'"user"' not in line:
             continue
         text = _user_text(line)
         if text:
             return text
-    return None
+    # The window was full AND its final fragment is an unterminated line: that
+    # fragment is a record the scan above could not parse, not the end of the file.
+    if len(blob) < _HEAD_WINDOW or not lines[-1]:
+        return None
+    try:
+        with open(path, "rb") as handle:
+            handle.seek(len(blob) - len(lines[-1]))
+            straddling = handle.readline()
+    except OSError:
+        return None
+    return _user_text(straddling) if b'"user"' in straddling else None
 
 
 def last_user_message(path: str) -> str | None:
@@ -199,10 +255,20 @@ def last_activity(path: str) -> str | None:
     Read from the tail rather than computed from every message, because entries
     are appended in time order — pi takes a ``Math.max`` over all of them only
     because it is already streaming the file for the message count.
+
+    AND A FINAL RECORD BIGGER THAN THE WINDOW IS STILL READ. Returning
+    :data:`None` here is not a neutral failure: :func:`session_activity_epoch`
+    then falls back to ``created_at``, which is BIASED STALE and silent about it.
+    MEASURED on a session created 300 days ago and used four minutes ago, the row
+    read ``10mo`` — not ``?``, which is the value :func:`format_age` reserves for
+    an age it does not know. One large ``read`` result inside the last assistant
+    turn is enough, and the cliff is one byte wide.
     """
 
     try:
         blob = _read_tail(path, _ACTIVITY_WINDOW)
+        if not blob.strip():
+            blob = _read_last_line(path)
     except OSError:
         return None
     for line in reversed(blob.split(b"\n")):
@@ -264,11 +330,20 @@ def format_age(when: float | None, now: float) -> str:
     return f"{days // 365}y"
 
 
-def session_age(meta: object, now: float) -> str:
-    """The relative age of ``meta``: last activity, then created_at, then mtime.
+def session_activity_epoch(meta: object) -> float | None:
+    """When ``meta`` was last USED, as an epoch, or :data:`None` if unknowable.
 
-    pi's fallback order (``core/session-manager.js:412-418``), with mtime last
-    because it moves for reasons that are not conversation activity.
+    Last activity, then ``created_at``, then mtime — pi's fallback order
+    (``core/session-manager.js:412-418``), with mtime last because it moves for
+    reasons that are not conversation activity.
+
+    SEPARATED FROM :func:`session_age` SO A CALLER CAN SORT BY IT. A picker that
+    LABELS its rows with this number and ORDERS them by another is telling the
+    user two different things at once, and the startup menu did exactly that: it
+    printed activity ages over a list the repository had sorted by ``created_at``,
+    then cut it to twenty. MEASURED over 25 sessions where one was created 300
+    days ago and used five minutes ago — it sat at position 25 of 25, was cut, and
+    the footer described it as "older".
     """
 
     path = getattr(meta, "path", "") or ""
@@ -280,7 +355,28 @@ def session_age(meta: object, now: float) -> str:
             when = os.stat(path).st_mtime
         except OSError:
             when = None
-    return format_age(when, now)
+    return when
+
+
+def session_age(meta: object, now: float) -> str:
+    """The relative age of ``meta``: last activity, then created_at, then mtime."""
+
+    return format_age(session_activity_epoch(meta), now)
+
+
+def by_recent_activity(sessions: Sequence[Any]) -> list[Any]:
+    """``sessions`` newest-USED first — the order the labels claim.
+
+    ``JsonlSessionRepo.list`` sorts by ``created_at``, which is a different fact
+    and the one the rows do not show. Sorting here rather than in the repository
+    keeps the kernel's contract untouched; both pickers call this.
+
+    STABLE, and ties keep the repository's order. Sessions whose age is unknowable
+    sort last rather than first, because a row that cannot say when it was used is
+    the weakest candidate for the top of the list, not the strongest.
+    """
+
+    return sorted(sessions, key=lambda meta: session_activity_epoch(meta) or 0.0, reverse=True)
 
 
 def _clean(text: str) -> str:
@@ -442,10 +538,12 @@ def session_detail_lines(meta: object, *, width: int = 78) -> list[str]:
 
 
 __all__ = [
+    "by_recent_activity",
     "first_user_message",
     "format_age",
     "last_activity",
     "last_user_message",
+    "session_activity_epoch",
     "session_age",
     "session_choice_label",
     "session_detail_lines",

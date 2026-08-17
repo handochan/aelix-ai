@@ -41,6 +41,7 @@ from rich.text import Text
 from aelix_coding_agent.cli.repl import handle_user_bash
 from aelix_coding_agent.cli.resource_commands import expand_resource_command
 from aelix_coding_agent.cli.session_labels import (
+    by_recent_activity,
     session_choice_label,
     session_detail_lines,
     short_field,
@@ -736,7 +737,13 @@ async def run_tui(
             _commit(Text(f"✖ could not list sessions: {exc}", style="bold red"))
             return
         current_file = getattr(runtime_host.session, "session_file", None)
-        choices = [m for m in sessions if getattr(m, "path", None) != current_file]
+        # NEWEST-USED FIRST, matching the age each row displays. ``repo.list``
+        # orders by ``created_at``, a different fact from the one the label states,
+        # and shared with the startup menu so the two pickers cannot disagree about
+        # which session is the most recent.
+        choices = by_recent_activity(
+            [m for m in sessions if getattr(m, "path", None) != current_file]
+        )
         if not choices:
             _commit(Text("No other sessions to resume in this folder.", style="yellow"))
             return
@@ -1444,7 +1451,7 @@ async def run_tui(
 
         if model_registry is None:
             # ``run_tui`` declares ``model_registry`` optional and the sole
-            # production caller (``entry.py:2967``) always passes one, so this is
+            # production caller (``entry.py:2980``) always passes one, so this is
             # a test-only shape — but ``find_initial_model`` takes it REQUIRED and
             # dereferences it, and the except below would have shown the user the
             # resulting `'NoneType' object has no attribute …` verbatim. Say the
@@ -2900,11 +2907,11 @@ def _build_banner(harness: AgentHarness, cwd: str) -> object:
     # "AGENTS.md" whenever a file existed. Two defects, both measured:
     #
     #   (1) It cannot see ``--no-context-files`` / ``-nc``. That gate lives at
-    #       ``cli/entry.py:1230``, ABOVE discovery, so the banner announced
+    #       ``cli/entry.py:1243``, ABOVE discovery, so the banner announced
     #       project context to a session whose prompt carried none.
     #   (2) Calling discovery a second time RE-EMITTED its stderr budget warnings
     #       (115 bytes per render on one oversized AGENTS.md) — a duplicate of
-    #       what ``entry.py:1231`` already printed at startup, and one that
+    #       what ``entry.py:1244`` already printed at startup, and one that
     #       interpolates the absolute path RAW: over a directory named
     #       ``proj\x1b]0;pwned\x07…`` both the ESC and the BEL reached stderr.
     #

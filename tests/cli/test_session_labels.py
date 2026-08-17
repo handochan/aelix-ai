@@ -17,6 +17,7 @@ from pathlib import Path
 
 from aelix_agent_core.session.storage import JsonlSessionMetadata
 from aelix_coding_agent.cli.session_labels import (
+    by_recent_activity,
     first_user_message,
     format_age,
     last_activity,
@@ -201,6 +202,120 @@ def test_a_missing_file_degrades_and_never_raises(tmp_path: Path) -> None:
     assert first_user_message(missing) is None
     assert last_user_message(missing) is None
     assert last_activity(missing) is None
+
+
+def test_a_record_bigger_than_its_window_is_read_rather_than_given_up_on(
+    tmp_path: Path,
+) -> None:
+    """Both windows had a one-byte cliff, and both failed toward a WRONG answer.
+
+    ``last_activity``: ``_read_tail`` drops everything before its first newline so
+    it never parses half a record, and when the last record is LARGER than the
+    window the only newline in the blob is the file's own trailing one — so the
+    slice was empty. MEASURED, a final record of 131 070 bytes yielded its
+    timestamp and 131 071 yielded none, against a 131 072-byte window. That is not
+    a neutral failure: the age then falls back to ``created_at``, which is biased
+    STALE and silent about it, so a session created 300 days ago and used four
+    minutes ago read ``10mo`` rather than the ``?`` ``format_age`` reserves for an
+    unknown age. One large ``read`` result inside the last assistant turn is enough.
+
+    ``first_user_message``: the same shape at the head. MEASURED, the cliff is at
+    65 259 bytes of message text against a 65 536-byte window, and past it the row
+    rendered ``(no messages)`` — byte-identical to a genuinely empty session, so
+    the folder's LONGEST question displayed as no question at all.
+
+    The last assertion is the control that keeps the fix honest: an actually
+    empty session must still read ``(no messages)``.
+    """
+
+    def _session(name: str, *, first: str, pad: int) -> str:
+        return _write(
+            tmp_path,
+            _header(),
+            _user(first),
+            json.dumps(
+                {
+                    "id": "e2",
+                    "timestamp": "2026-08-02T11:00:00.000Z",
+                    "type": "message",
+                    "message": {"role": "assistant", "content": [{"type": "text", "text": "A" * pad}]},
+                }
+            ),
+            name=name,
+        )
+
+    # A final record either side of the tail window, and far past it.
+    for pad in (2_000, 130_000, 140_000, 400_000):
+        path = _session(f"tail-{pad}.jsonl", first="the task", pad=pad)
+        assert last_activity(path) == "2026-08-02T11:00:00.000Z", pad
+
+    # A first message either side of the head window, and far past it.
+    for size in (1_000, 60_000, 70_000, 200_000):
+        opening = "refactor the payment module " + "A" * size
+        path = _write(tmp_path, _header(), _user(opening), name=f"head-{size}.jsonl")
+        got = first_user_message(path)
+        assert got is not None and got.startswith("refactor the payment module"), size
+
+    # Control: an empty session is still empty, and still says so.
+    empty = _write(tmp_path, _header(), name="empty.jsonl")
+    assert first_user_message(empty) is None
+    assert "(no messages)" in session_choice_label(_meta(empty), 1e9, width=78)
+
+
+def test_the_pickers_order_by_the_age_they_display(tmp_path: Path) -> None:
+    """The label says "last used"; the list was sorted by "created".
+
+    ``JsonlSessionRepo.list`` orders by ``created_at``. Every row these pickers
+    print is labelled with last-ACTIVITY age. The two disagreed harmlessly while
+    the startup menu printed every session, and stopped being harmless the moment
+    a twenty-row cap stood in front of it: MEASURED over 25 sessions where one was
+    created 300 days ago and used minutes ago, it sat at position 25 of 25, was
+    cut, and the footer described it as "older".
+
+    Twenty-five sessions here, not three, because the defect is the interaction
+    with the cap and a fixture smaller than the cap cannot show it.
+    """
+
+    from aelix_coding_agent.cli.entry import _RESUME_MENU_LIMIT
+
+    metas: list[object] = []
+    for index in range(24):
+        day = 24 - index
+        stamp = f"2026-07-{day:02d}T12:00:00"
+        path = _write(
+            tmp_path,
+            _header(stamp=stamp + ".000Z"),
+            _user(f"filler {index}"),
+            name=f"filler-{index:02d}.jsonl",
+        )
+        metas.append(_meta(path, id_="bbbbbbbb", created=stamp))
+
+    active = _write(
+        tmp_path,
+        _header(stamp="2025-10-21T12:00:00.000Z"),
+        _user("OLD-BUT-ACTIVE: the long refactor"),
+        json.dumps(
+            {
+                "id": "e2",
+                "timestamp": "2026-08-01T09:30:00.000Z",
+                "type": "message",
+                "message": {"role": "assistant", "content": [{"type": "text", "text": "ok"}]},
+            }
+        ),
+        name="active.jsonl",
+    )
+    metas.append(_meta(active, id_="aaaaaaaa", created="2025-10-21T12:00:00"))
+
+    # The premise: in the repository's own order it is last, and the cap cuts it.
+    assert active not in [getattr(m, "path", "") for m in metas[:_RESUME_MENU_LIMIT]]
+
+    ranked = by_recent_activity(metas)
+    assert getattr(ranked[0], "path", "") == active, [getattr(m, "path", "") for m in ranked[:3]]
+    assert active in [getattr(m, "path", "") for m in ranked[:_RESUME_MENU_LIMIT]]
+    # Nothing was lost or duplicated by the sort.
+    assert sorted(getattr(m, "path", "") for m in ranked) == sorted(
+        getattr(m, "path", "") for m in metas
+    )
 
 
 def test_one_malformed_record_costs_one_row_and_not_the_whole_session_list(

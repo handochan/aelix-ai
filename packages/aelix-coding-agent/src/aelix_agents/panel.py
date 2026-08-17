@@ -327,7 +327,7 @@ members finish."""
 def _format_tokens(tokens: int) -> str:
     """Compact token count for surfaces 1 and 3.
 
-    Mirrors ``progress._format_tokens`` (``progress.py:157-160``) rather than
+    Mirrors ``progress._format_tokens`` (``progress.py:158-161``) rather than
     importing it — the same call ``aggregate._format_count`` makes
     (``aggregate.py:145-155``) and for the same reason: these are three
     renderers with three different unit conventions, and a shared helper would
@@ -596,7 +596,12 @@ did not fix that case either — it bought a partial word on half the rows and p
 for it at every width."""
 
 
-def _panel_row(snapshot: SubagentProgress | None, *, hide_model: bool = False) -> str:
+def _panel_row(
+    snapshot: SubagentProgress | None,
+    *,
+    hide_model: bool = False,
+    state_first: bool = False,
+) -> str:
     if snapshot is None:
         return "queued"
     # ``state`` is a product-core literal (``subagent_contract.py:66``) and the
@@ -616,10 +621,28 @@ def _panel_row(snapshot: SubagentProgress | None, *, hide_model: bool = False) -
     # once in the header instead. When the members DISAGREE ``hide_model`` is
     # False and the per-row term comes back, since a header claiming one model
     # for a batch running two is worse than a repeated column.
+    #
+    # STATE FIRST ONLY WHEN THERE IS A LABEL COLUMN AHEAD OF IT. Main puts the
+    # model first (S10 "Option A") and that costs nothing there, because the whole
+    # 78 cells belong to this string. With a job-label column the numbers half gets
+    # only what the label leaves, and a 28-cell provider-scoped id spends that
+    # remainder before the state word is ever reached — MEASURED with members
+    # DISAGREEING (so the model cannot leave the rows) and 35-cell labels, 2 of 4
+    # rows showed their state at 78, 80, 100 AND 120 columns alike, flat, because
+    # the budget is fixed and a wider terminal does not help. State-first is 4 of 4
+    # at every one of them.
+    #
+    # Scoped to the tasks path so the no-tasks rows stay byte-identical to main,
+    # which is a contract this module states twice and a test pins. Measured on
+    # that path, model-first costs nothing: main and HEAD are the same row counts
+    # at every width, because there is no column competing for the budget.
     parts: list[str] = []
+    if state_first:
+        parts.append(snapshot.state)
     if snapshot.model and not hide_model:
         parts.append(_flatten(snapshot.model, limit=PANEL_ROW_MAX_CHARS))
-    parts.append(snapshot.state)
+    if not state_first:
+        parts.append(snapshot.state)
     if snapshot.current_tool:
         parts.append(_flatten(snapshot.current_tool, limit=PANEL_ROW_MAX_CHARS))
     parts.append(f"{snapshot.elapsed_ms / 1000:.0f}s")
@@ -653,7 +676,9 @@ def _label_column(tasks: Sequence[str], room: int) -> int:
     return max(_TASK_MIN_CELLS, min(widest, reserved, room))
 
 
-def _composed_row(index: int, total: int, task: str, numbers: str, column: int) -> str:
+def _composed_row(
+    index: int, total: int, task: str, numbers: str, column: int, budget: int
+) -> str:
     """``▌ [k/N] <job label>   <state · tool · numbers>`` in one bounded row.
 
     LEFT-PACKED, NOT PADDED TO THE FULL BUDGET, and that is a correction. The
@@ -681,16 +706,15 @@ def _composed_row(index: int, total: int, task: str, numbers: str, column: int) 
     """
 
     prefix = f"[{index + 1}/{total}] "
-    room = PANEL_ROW_MAX_CHARS - cell_len(_GUTTER) - cell_len(prefix)
+    room = max(0, budget - cell_len(_GUTTER) - cell_len(prefix))
     label = _flatten(task, limit=max(_TASK_MIN_CELLS, min(column, room)))
     numbers = _flatten(numbers, limit=max(0, room - column - 2))
     pad = " " * max(1, column - cell_len(label) + 2)
     body = f"{prefix}{label}{pad}{_PANEL_DIM}{numbers}{_PANEL_RST}"
     visible = cell_len(prefix) + cell_len(label) + len(pad) + cell_len(numbers)
-    if visible > PANEL_ROW_MAX_CHARS - cell_len(_GUTTER):
+    if visible > budget - cell_len(_GUTTER):
         body = _cut_to_cells(
-            f"{prefix}{label}{pad}{numbers}",
-            PANEL_ROW_MAX_CHARS - cell_len(_GUTTER),
+            f"{prefix}{label}{pad}{numbers}", max(0, budget - cell_len(_GUTTER))
         )
     return f"{_PANEL_DIM}{_GUTTER}{_PANEL_RST}{body}"
 
@@ -699,6 +723,7 @@ def format_panel(
     snapshots: Sequence[SubagentProgress | None],
     *,
     tasks: Sequence[str] = (),
+    width: int = PANEL_ROW_MAX_CHARS,
 ) -> list[str]:
     """S10 surface 3 — the widget panel, or ``[]`` below :data:`PANEL_MIN_CHILDREN`.
 
@@ -727,20 +752,40 @@ def format_panel(
     an empty list would still allocate the window.
 
     BOUNDED IN BOTH DIMENSIONS, AND THAT IS SECURITY, NOT LAYOUT (F2, HIGH).
-    Every row is :func:`_flatten`ed to :data:`PANEL_ROW_MAX_CHARS` and the list
-    is bounded to :data:`PANEL_MAX_ROWS`, because the far end applies neither:
+    Every row is :func:`_flatten`ed to ``width`` and the list is bounded to
+    :data:`PANEL_MAX_ROWS`, because the far end applies neither:
     ``chrome._render_widget_lines`` ANSI-parses ``"\\n".join(lines)`` into a
     window with no height cap. The width bound is applied to the WHOLE row, after
     the ``[k/N] `` prefix, so the number this function promises is the number of
     columns it uses.
+
+    ``width`` IS THE TERMINAL'S, CAPPED AT :data:`PANEL_ROW_MAX_CHARS`, and the
+    caller supplies it — this module cannot see a terminal and does not import
+    ``tui/width.py``. It only ever narrows: the panel stays a 78-cell ribbon on a
+    200-column screen, deliberately, because a batch panel is a summary and not a
+    table. What it fixes is the other end. The job-label column was sized against
+    the fixed 78 while the window paints into whatever the terminal has, so at 30
+    to 60 columns a long label took cells the terminal did not have and the state
+    word went with them. MEASURED against ``main`` on a pyte screen, member rows
+    still showing a state word, 35-cell labels: main 1/4 1/4 4/4 4/4 at 30/40/50/60
+    columns against 0/4 0/4 2/4 4/4 here — a regression this branch introduced and
+    that no constant can fix, because the right number is the terminal's.
+
+    A RESIZE BETWEEN PUBLISHES LEAVES THE LAST WIDTH IN PLACE, and that is
+    acceptable rather than ignored: the panel is only on screen while a batch is
+    running, and the runtime republishes on every reduced stdout line from every
+    member, so a stale width lives for one frame. Worse, it degrades to exactly
+    what this parameter replaced — rows measured against 78 and clipped by the
+    window — which is the behaviour shipped for the whole of ADR-0199.
     """
 
     total = len(snapshots)
     if total < PANEL_MIN_CHILDREN:
         return []
+    budget = min(width, PANEL_ROW_MAX_CHARS)
     model = _batch_model(snapshots) if tasks else ""
     column = _label_column(
-        tasks, PANEL_ROW_MAX_CHARS - cell_len(_GUTTER) - len(f"[{total}/{total}] ")
+        tasks, max(0, budget - cell_len(_GUTTER) - len(f"[{total}/{total}] "))
     ) if tasks else 0
     # The gutter costs two cells the aggregate does not know about, so the panel
     # header is budgeted two narrower. Passed as a CAP rather than clamped after,
@@ -749,7 +794,7 @@ def format_panel(
     header = format_aggregate_status(
         snapshots,
         extra_head=model,
-        cap=AGGREGATE_MAX_CHARS - (cell_len(_GUTTER) if tasks else 0),
+        cap=min(budget, AGGREGATE_MAX_CHARS) - (cell_len(_GUTTER) if tasks else 0),
     )
     # THE ROWS HIDE THE MODEL ONLY IF THE HEADER ACTUALLY SHOWED IT — READ OFF
     # THE HEADER, never assumed from "a batch model exists". Assuming it was a
@@ -771,14 +816,12 @@ def format_panel(
         lines.append(f"{_PANEL_DIM}{_GUTTER}{_PANEL_RST}{header}" if tasks else header)
     for index, snapshot in enumerate(snapshots):
         task = tasks[index] if index < len(tasks) else ""
-        numbers = _panel_row(snapshot, hide_model=shown_in_header)
+        numbers = _panel_row(snapshot, hide_model=shown_in_header, state_first=bool(task))
         if not task:
             # Byte-for-byte what this function rendered before ``tasks`` existed.
-            lines.append(
-                _flatten(f"[{index + 1}/{total}] {numbers}", limit=PANEL_ROW_MAX_CHARS)
-            )
+            lines.append(_flatten(f"[{index + 1}/{total}] {numbers}", limit=budget))
             continue
-        lines.append(_composed_row(index, total, task, numbers, column))
+        lines.append(_composed_row(index, total, task, numbers, column, budget))
 
     if len(lines) > PANEL_MAX_ROWS:
         # Only reachable from a caller that submitted more members than
@@ -815,7 +858,7 @@ class PartialThrottle:
     * :data:`PARTIAL_MIN_INTERVAL_MS` has elapsed since the last emission.
 
     …and never when the rendered text is identical to the last emitted text.
-    That final dedup mirrors the statusline half (``progress.py:466-468``): a
+    That final dedup mirrors the statusline half (``progress.py:496-498``): a
     frame that would repaint the same bytes is a kernel ``Task`` bought for
     nothing (H10), and it cannot lose information by construction.
     """

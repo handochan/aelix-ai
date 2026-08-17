@@ -76,7 +76,11 @@ from aelix_coding_agent.agents.prompt import compose_system_prompt
 from aelix_coding_agent.builtin.guardrail import GuardrailExtension
 from aelix_coding_agent.builtin.permission import PermissionExtension
 from aelix_coding_agent.builtin.permission_mode import PermissionMode, PermissionPosture
-from aelix_coding_agent.cli.session_labels import session_choice_label, short_field
+from aelix_coding_agent.cli.session_labels import (
+    by_recent_activity,
+    session_choice_label,
+    short_field,
+)
 from aelix_coding_agent.core.runnable_models import is_runnable, unsupported_message
 from aelix_coding_agent.extensions.loader import (
     discover_and_load_extensions,
@@ -567,15 +571,24 @@ async def _prompt_resume_choice(
     The menu + prompt go to STDERR (stdout stays clean); the selection is read
     from stdin off the event loop. An empty line, EOF (Ctrl-D), a non-number,
     or an out-of-range choice all return :data:`None` — the caller then starts
-    a fresh session. ``sessions`` is newest-first (``repo.list`` order).
+    a fresh session.
 
     Only the newest :data:`_RESUME_MENU_LIMIT` are OFFERED, and the range check
     below is against what was printed rather than against ``sessions``: the menu
     previously listed every session in the folder, so a number past the end of a
     224-line scroll would open a session the user never saw.
+
+    ORDERED BEFORE IT IS CUT, which the cap made mandatory. ``repo.list`` sorts by
+    ``created_at`` and every row here is LABELLED with last-activity age, so the
+    two disagreed — harmlessly while the menu printed everything, and not once a
+    cap stood in front of it. MEASURED over 25 sessions where one was created 300
+    days ago and used five minutes ago: main printed it at position 25 of 25, this
+    menu cut it, and the footer called it "older". Sorting by the same fact the
+    rows display is the whole fix; ``by_recent_activity`` is shared with
+    ``/resume`` so the two pickers cannot drift again.
     """
 
-    shown = sessions[:_RESUME_MENU_LIMIT]
+    shown = by_recent_activity(sessions)[:_RESUME_MENU_LIMIT]
     now = time.time()
     # The short id STAYS on this menu, unlike the in-session picker. There it
     # lives in the per-highlight detail panel; here there is no such panel, and

@@ -57,10 +57,19 @@ def _snapshots() -> list[SubagentProgress | None]:
 
 
 async def _panel_on_screen(cols: int) -> tuple[list[str], list[str]]:
-    """Paint the real widget; return (all rows, the panel's own rows)."""
+    """Paint the real widget; return (all rows, the panel's own rows).
+
+    ``width=cols`` because that is what production passes: ``progress.py``
+    measures the live terminal through ``tui.width.terminal_columns`` and hands it
+    to ``format_panel``. Leaving it at the default would test the panel against a
+    width the chrome is not painting into — the exact mismatch the parameter
+    exists to close.
+    """
 
     def build_state(chrome: AelixChrome) -> None:
-        chrome.set_widget(PANEL_WIDGET_KEY, format_panel(_snapshots(), tasks=_JOBS))
+        chrome.set_widget(
+            PANEL_WIDGET_KEY, format_panel(_snapshots(), tasks=_JOBS, width=cols)
+        )
 
     display = await render_chrome_to_screen(rows=24, cols=cols, build_state=build_state)
     # The gutter is the panel's own left edge and nothing else on the chrome draws
@@ -122,6 +131,29 @@ async def test_a_narrow_terminal_loses_the_numbers_and_keeps_the_jobs() -> None:
     # see this: a pyte row is ALWAYS exactly ``cols`` wide.
     assert "queued" in members[-1], members[-1]
     assert members[-1].index("queued") < 50, members[-1]
+
+
+async def test_the_panel_keeps_the_state_on_a_narrow_terminal() -> None:
+    """The column was sized against a constant while the window paints into a
+    terminal, and at 30-60 columns a long label took cells that did not exist.
+
+    MEASURED against ``main`` on this same harness, member rows still showing a
+    state word with 35-cell labels: main 1/4 1/4 4/4 4/4 at 30/40/50/60 columns,
+    against 0/4 0/4 2/4 4/4 before the width was plumbed through — a regression
+    this branch introduced and that no constant could fix, because the right
+    number is the terminal's. With it, every row keeps its state at all four.
+
+    The labels are what give way instead, and that is the intended order: the
+    state is the fact the header cannot restate, while the job label is elided
+    rather than lost. At 30 columns with 60-cell labels there is room for neither
+    in full, which is a property of 30 columns and not of this layout.
+    """
+
+    for cols in (30, 40, 50, 60, 72, 80):
+        _display, panel_rows = await _panel_on_screen(cols)
+        assert len(panel_rows) == 5, (cols, panel_rows)
+        for row in panel_rows[1:]:
+            assert any(word in row for word in _STATE_WORDS), (cols, row)
 
 
 async def test_the_merged_footer_row_clips_the_path_not_the_live_signals() -> None:
