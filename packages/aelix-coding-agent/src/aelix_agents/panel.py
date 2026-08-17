@@ -254,9 +254,18 @@ def _cut_to_cells(text: str, cells: int) -> str:
     """Truncate to at most ``cells`` columns, EXACTLY, by accumulation.
 
     ``rich.cells.set_cell_size`` is not exact for a string that begins with
-    zero-width characters. MEASURED: ``set_cell_size("\\u200d" * 2 + "a" * 79, 39)``
-    returns a string measuring 40 cells, not 39 — so ``_flatten`` handed back
-    ``limit + 1`` for that input while believing the library had bounded it.
+    U+200D ZERO WIDTH JOINER. MEASURED: ``set_cell_size("\\u200d" * 2 + "a" * 79,
+    39)`` returns a string measuring 40 cells, not 39 — so ``_flatten`` handed
+    back ``limit + 1`` for that input while believing the library had bounded it.
+    An odd number of leading joiners undershoots by one; an even number of two or
+    more overshoots by one.
+
+    ZWJ SPECIFICALLY, not zero-width generally, and the distinction is worth the
+    word: swept over the same shapes, U+200B, U+0301, U+FE0F, U+200E and U+00AD
+    are all exact. ZWJ is the one that makes rich's grapheme spans disagree with
+    its own measure of the whole. A reader hardening "zero-width" input would be
+    guarding five characters that were never broken, and might well conclude the
+    guard was unnecessary when three of them tested clean.
     Nothing else in this module noticed, because the closing clamp in
     :func:`_composed_row` calls the same function.
 

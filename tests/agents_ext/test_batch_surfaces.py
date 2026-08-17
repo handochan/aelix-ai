@@ -792,11 +792,14 @@ def test_the_cell_bound_holds_for_the_shapes_the_first_sweep_did_not_cover() -> 
     it therefore cannot reach both broke the bound, and an external review found
     them:
 
-    * ZERO-WIDTH FIRST. ``rich.cells.set_cell_size`` is not exact for a string
-      that begins with zero-width characters — MEASURED,
+    * A LEADING U+200D ZERO WIDTH JOINER. ``rich.cells.set_cell_size`` is not
+      exact for a string that begins with one — MEASURED,
       ``set_cell_size("\\u200d" * 2 + "a" * 79, 39)`` returns 40 cells — so
       ``_flatten`` returned ``limit + 1`` while believing the library had bounded
-      it. 176 (limit, input) pairs violated the bound.
+      it. 176 (limit, input) pairs violated the bound. ZWJ SPECIFICALLY: U+200B,
+      U+0301, U+FE0F, U+200E and U+00AD are all exact over the same sweep, which
+      is why the loop below still walks every zero-width character it can find
+      rather than only the one that broke.
     * GRAPHEME CLUSTERS. ``cell_len`` measures clusters, so it is NOT additive
       over characters: ``❤️`` is 1 by the per-character sum and 2 as a string.
       An accumulate loop that trusts the sum therefore under-counts, and the first
@@ -1541,7 +1544,7 @@ def test_the_row_builder_is_safe_on_its_own_not_only_via_format_panel() -> None:
     ``_panel_row`` changes nothing that :func:`format_panel` can observe: the
     mutation survives every test above. It is still worth having and still worth
     pinning. ``_panel_row`` is the function that touches the child's bytes
-    (``panel.py:521-543``, the site the finding names), and the next consumer of a
+    (``panel.py:530-552``, the site the finding names), and the next consumer of a
     per-child row — a card variant, a future surface — will call it rather than
     re-deriving it, and must inherit the bound rather than have to remember it.
     """

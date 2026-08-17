@@ -950,7 +950,7 @@
    "# IDENTITY-SCOPED (finding B7). ``bind_subagents(None)`` would",
    "# null the slot for whatever runtime happens to hold it, which"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/panel.py:521-543": [
+  "packages/aelix-coding-agent/src/aelix_agents/panel.py:530-552": [
    "if total == 0:",
    "return \"\"",
    "if total == 1:",

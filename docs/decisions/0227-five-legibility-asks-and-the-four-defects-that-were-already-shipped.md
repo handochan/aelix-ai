@@ -325,6 +325,79 @@ hard-coded the pre-fix example string, so it reported 29 cells against a cap of 
 where the code already said 21: measuring the wrong build, which is the same
 mistake as trusting a gate that never ran against the broken one.
 
+## Rounds four and five: two external reviews, and the triage that made them usable
+
+Two reviews arrived from outside this session, both written against `6ee6146` —
+three commits behind. Rather than accept or argue with them, every claim was
+re-measured against HEAD **and** against `main`, and sorted into four buckets. That
+sort was worth more than any individual finding, because "real" and "this branch's"
+turned out to be different questions for most of them:
+
+| | | |
+|---|---|---|
+| **LIVE-NEW** | 9 | this branch caused it — all fixed |
+| **LIVE-PRE** | 8 | real, but `main` does it too — not a gate for this branch |
+| **FALSE** | 5 | did not reproduce |
+
+**The two that mattered most were P1s and both failed toward a wrong answer.** One
+malformed record — a text block holding a NUMBER — reached `str.join` and raised
+`TypeError` out of `session_choice_label`, whose own docstring promises it "degrades
+… never raises". The pickers call it in a loop, so ONE bad file took away the user's
+whole session list, the good sessions with it, at exactly the moment they were
+recovering work. And `rich.cells` turned out to be inexact twice: `set_cell_size`
+mis-measures a string led by U+200D, and `cell_len` is not additive over grapheme
+clusters (`❤️` is 1 by the per-character sum and 2 as a string), so the accumulate
+loop written to fix the first returned 9 cells against a budget of 5.
+
+**Three more were the same shape as ask 4's:** a feature added a constraint that
+made a pre-existing disagreement start to hurt. The 20-row cap on the startup menu
+was applied to a list ordered by `created_at` while every row is labelled with
+last-ACTIVITY age — measured, a session used five minutes ago sat at position 25 of
+25, was cut, and the footer called it "older", where `main` had listed it. Two
+window reads gave up on a record larger than their window instead of re-reading it,
+each with a one-byte cliff, and each failing stale (`10mo` for a session used four
+minutes ago) or blank (`(no messages)`, byte-identical to an empty session, for the
+folder's longest question).
+
+**And the panel never saw the terminal.** The job-label column was sized against a
+fixed 78 while the widget window paints into whatever the terminal has, so a long
+label spent cells that did not exist. Rows still showing a state word, 35-cell
+labels: `main` 1/4 1/4 4/4 4/4 at 30/40/50/60 columns; this branch 0/4 0/4 2/4 4/4;
+with the real width plumbed through, 4/4 at every one. No constant could have fixed
+it — the right number is the terminal's, which is what ADR-0219 already established
+for every other surface and this one missed.
+
+### What the sort saved
+
+Five claims were **refuted with positive controls**, and each control is the reason
+to believe the refutation. The batch-widget ownership race needs two groups open at
+once; `agent` declares `execution_mode="sequential"`, and the check ran the same
+probe with `execution_mode=None` to show it CAN reach two before showing that the
+real mode reaches one. The UI-rebind cache staleness needs the bridge to survive a
+rebind; it is rebuilt every time, shown by running the real loader twice against one
+held extension — after the first control was discarded as invalid. `/reload` loading
+project-local extensions before the trust gate is false because the gate is inside
+discovery, not at the call site: proven over a pty with a marker file, and with a
+GLOBAL marker as the control that proves the reload really did re-discover.
+
+### And three of my own new sentences were wrong
+
+The `_picker_frame` comment stated three things as MEASURED — that an OSC title set
+the terminal's window title, that it made the top rule 32 cells against the bottom's
+40, and that prompt-toolkit consumes every escape. All three are false. **The
+correction was also wrong**: it replaced them with a rule-delta table produced by a
+probe that pre-translated the title before computing the width, i.e. measuring a
+build that does not exist — the same error as testing a gate against the wrong tree,
+one call deeper. The rules are equal in every escape class and both title
+placements, because both come from one number. What the sanitiser buys is control
+bytes deleted; what it does not buy is now written down beside it.
+
+The new `_cut_to_cells` docstring said `set_cell_size` is inexact "for zero-width
+characters"; measured, U+200B, U+0301, U+FE0F, U+200E and U+00AD are all exact and
+it is U+200D specifically. Over-broad prose is not harmless here: a reader hardening
+"zero-width" would guard five characters that were never broken and might conclude
+from three clean tests that the guard was pointless.
+
 ## Rejected alternatives
 
 **Putting the batch model into `format_aggregate_status`'s own output.** That string is
@@ -370,3 +443,35 @@ artifact belongs in the scratchpad; the file was removed from the branch's histo
   is the same guarantee every other terminal program offers.
 * **In `chain` mode the job label is the UN-SUBSTITUTED template.** `{previous}` is filled
   per step at run time, so the column is a label, not the prompt the child received.
+* **`truncate_cells` measures with `get_cwidth`, which scores a VS16 emoji at 1 cell**
+  where `rich.cells` and `wcwidth` both say 2. Measured, a realistic mixed line —
+  eight ordinary emoji among ASCII prose — comes back at 74 by the library the code
+  uses and 81 by the other two; a flood of `❤️` gives 74 against 147. **I could not
+  settle which matches a real terminal**: the pyte harness that arbitrates every other
+  width question here is not usable for it — its ASCII control passes 20/20 but it
+  already reports 19 columns for 10 Hangul syllables, so it is wrong before emoji are
+  reached. Left alone on this branch rather than changed on a two-to-one vote, because
+  `tui/context._visible_len` sizes the picker frame with the SAME library, so the label
+  and the rule at least agree with each other today. A follow-up wants one width
+  library across both, chosen against a terminal rather than against another library.
+* **Three other `set_cell_size` call sites keep the U+200D inexactness**:
+  `render._cap_cells`, `render._truncate_lines` and `aelix_agents/tool._squeeze`, each
+  one cell over, each identical at `main`. `_squeeze` reaches the glass — a ZWJ-led
+  model name gives a 77-cell usage footer against a 76-cell ceiling. The tidy fix is to
+  lift `_cut_to_cells` into a shared exact truncator; this branch fixed the one site it
+  broke rather than sweeping a pre-existing one.
+* **Truncation cuts codepoints, not grapheme clusters.** Measured against `main` the
+  branch is strictly better on every shape (ZWJ family 32/40 splits at `main` against
+  25/40 here; base-plus-combining 30/40 against 0/40), but the regional-indicator case
+  is unchanged and is the one where the cut shows a character the source never held: a
+  lone U+1F1F0 renders as a boxed capital K, not as half a Korean flag. 19 of 40
+  budgets, identically at `main` and here.
+* **`_USER_ECHO_STYLE` emits SGR 30**, the indexed foreground that "bold as bright"
+  remaps to bright black — at every `color_system`, with no RGB fallback. The colour was
+  chosen by the owner from eight candidates rendered in their own terminal and stands;
+  recorded because the *mechanism* is a fact and a future contrast complaint should
+  start here rather than re-derive it.
+* **`tests/` builds ~40 Rich consoles with a declared `width` and no `height`**, which a
+  dumb TERM silently discards in favour of 80. Two tests in `test_event_renderer.py`
+  still fail under `TERM=dumb`, exactly as they do at `main`. The two helpers this
+  branch relies on declare a height; the rest is a repo-wide sweep and not this change.
