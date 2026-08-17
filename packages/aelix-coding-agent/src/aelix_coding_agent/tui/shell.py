@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING, Any, cast
 from aelix_agent_core.session.context import build_display_messages
 from aelix_agent_core.session.jsonl_storage import load_jsonl_session_metadata
 from prompt_toolkit.application.run_in_terminal import in_terminal
+from prompt_toolkit.utils import get_cwidth
 from rich.box import ROUNDED
 from rich.panel import Panel
 from rich.table import Table
@@ -778,17 +779,43 @@ async def run_tui(
             # field through; a raw ``[:8]`` here would have been the one term on
             # this row that keeps its control bytes — and the picker BODY is not
             # sanitised, because those rows are normally this module's own styling.
-            # The 12 cells it costs come out of the label rather than off the end,
-            # since the row is already sized to sit inside the rule.
-            collision = f"  ({short_field(getattr(meta, 'id', '') or '', 8)})"
-            label = _format_session_choice(meta, now, width=max(20, label_width))
-            if label in by_label:
-                label = _format_session_choice(
-                    meta, now, width=max(20, label_width - len(collision))
-                )
-                label = f"{label}{collision}"
-            while label in by_label:  # last resort; ids are already unique
-                label += " ·"
+            # What it costs comes out of the LABEL rather than off the end, since
+            # the row is already sized to sit exactly inside the rule.
+            #
+            # IN CELLS ON BOTH SIDES. Reserving ``len(suffix)`` against a budget
+            # measured in cells came up four short for a CJK id — ``short_field``
+            # caps at 8 CELLS, and four wide characters are 8 cells but four
+            # characters — so two sessions with Hangul ids drew an 82-cell row
+            # inside the 78-cell rule. ``jsonl_repo`` validates an id only as a
+            # non-empty ``str``, so its shape is the same untrusted input
+            # ``short_field`` exists for.
+            #
+            # AND THE LAST RESORT IS NUMBERED, NOT PADDED. Eight cells of id are
+            # not unique: two ids sharing a prefix collide again, and IDENTICAL
+            # ids are what ``cp session.jsonl session.backup.jsonl`` and every sync
+            # tool produce — ``jsonl_repo`` does not reject them. The old fallback
+            # appended ``" ·"`` in an UNBUDGETED loop, so the row grew straight
+            # past the rule (MEASURED: four same-id sessions gave 82 cells against
+            # 78, forty gave 154), and the rows it produced differed only by
+            # trailing punctuation — the very padding the label format replaced.
+            # That loop is main's, and it took ~26 duplicates to overrun there;
+            # this branch's fuller label is what made the FIRST extra duplicate do
+            # it. An ordinal is bounded by the same budget as every other attempt,
+            # and it says which copy it is.
+            short = short_field(getattr(meta, "id", "") or "", 8)
+            attempt = 1
+            while True:
+                if attempt == 1:
+                    suffix = ""
+                elif attempt == 2:
+                    suffix = f"  ({short})"
+                else:
+                    suffix = f"  ({short} #{attempt - 1})"
+                room = max(20, label_width - get_cwidth(suffix))
+                label = f"{_format_session_choice(meta, now, width=room)}{suffix}"
+                if label not in by_label:
+                    break
+                attempt += 1
             labels.append(label)
             by_label[label] = meta
         # ``detail`` is evaluated per RENDER for the highlighted row only, so the

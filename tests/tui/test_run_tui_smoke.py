@@ -1076,6 +1076,107 @@ async def test_run_tui_resume_disambiguates_without_leaving_the_rule_or_the_byte
         assert get_cwidth(row) + 2 <= _PICK_MAX_WIDTH, (get_cwidth(row), row)
 
 
+async def test_run_tui_resume_disambiguates_duplicate_ids_inside_the_rule(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two shapes the first disambiguation fix left open, both inside the budget.
+
+    IDENTICAL IDS ARE ORDINARY. ``short_field`` caps the id at eight cells, so two
+    ids sharing a prefix collide again — and ``cp session.jsonl
+    session.backup.jsonl``, or any sync tool, produces ids that are simply equal.
+    ``jsonl_repo`` validates an id only as a non-empty ``str`` and never rejects a
+    duplicate. The old fallback appended ``" ·"`` in a loop nothing budgeted:
+    MEASURED through the real ``/resume``, four same-id sessions drew an 82-cell
+    row inside the 78-cell rule and forty drew 154. That loop is main's, but
+    main's label was ~29 cells, so it took ~26 duplicates to overrun there; this
+    branch's fuller label is what made the first extra duplicate do it.
+
+    A WIDE ID COSTS MORE CELLS THAN CHARACTERS. The budget was reduced by
+    ``len(suffix)`` while ``short_field`` caps in CELLS, so four Hangul characters
+    reserved 4 against a cost of 8 and TWO sessions drew an 82-cell row.
+
+    Six sessions, so the ordinal runs past ``#1`` and the loop's own growth is
+    measured rather than assumed.
+    """
+
+    import json
+
+    from aelix_coding_agent.tui.context import _PICK_MAX_WIDTH, AelixTUIContext
+    from prompt_toolkit.utils import get_cwidth
+
+    def _session(name: str) -> str:
+        path = tmp_path / name
+        path.write_text(
+            json.dumps(
+                {"type": "session", "version": 3, "id": "s", "timestamp": "2026-05-27T14:00:00Z"}
+            )
+            + "\n"
+            + json.dumps(
+                {
+                    "id": "e0",
+                    "timestamp": "2026-05-27T14:05:00Z",
+                    "type": "message",
+                    "message": {
+                        "role": "user",
+                        "content": [{"type": "text", "text": "port the retry backoff " * 20}],
+                    },
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        return str(path)
+
+    for label, session_id in (("identical", "0f3ab9c1-7e22-4d0a"), ("wide", "한국어한국어한국어")):
+        paths = [_session(f"{label}-{index}.jsonl") for index in range(6)]
+        metas = [
+            _ResumeMeta("aaaaaaaa", str(tmp_path / f"{label}-active.jsonl"), "2026-05-27T15:00"),
+            *(_ResumeMeta(session_id, path, "2026-05-27T14:00") for path in paths),
+        ]
+        runtime = _ResumeRuntime(
+            FakeHarness(), _ResumeRepo(metas),
+            _ResumeSession(str(tmp_path / f"{label}-active.jsonl"), []),
+            target=_ResumeSession(paths[0], []),
+        )
+
+        seen: dict[str, object] = {}
+        real_select = AelixTUIContext.select
+
+        async def _spy(  # type: ignore[no-untyped-def]
+            self, title, options, opts=None, detail=None, initial_index=0, _seen=seen
+        ):
+            _seen["options"] = list(options)
+            return options[0]
+
+        monkeypatch.setattr(AelixTUIContext, "select", _spy)
+        monkeypatch.setattr(tui_shell, "terminal_columns", lambda *a, **k: 200)
+        try:
+            with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
+                chrome = AelixChrome()
+                task = asyncio.ensure_future(
+                    run_tui(runtime, cwd=".", chrome=chrome, install_signal_handlers=False)  # type: ignore[arg-type]
+                )
+                await _wait(lambda c=chrome: c.app.is_running)
+                pipe.send_text("/resume\n")
+                await _wait(lambda r=runtime: bool(r.switch_calls))
+                pipe.send_text("/quit\n")
+                await asyncio.wait_for(task, timeout=5)
+        finally:
+            monkeypatch.setattr(AelixTUIContext, "select", real_select)
+
+        rows = seen["options"]
+        # ``choices`` excludes the ACTIVE session, so one fewer than ``metas``.
+        expected = len(metas) - 1
+        assert len(rows) == expected, (label, len(rows))  # type: ignore[arg-type]
+        assert len(set(rows)) == expected, (label, rows)  # type: ignore[arg-type]
+        for row in rows:  # type: ignore[union-attr]
+            assert get_cwidth(row) + 2 <= _PICK_MAX_WIDTH, (label, get_cwidth(row), row)
+        # The ordinal, not trailing punctuation: the rows must differ by something
+        # a user can read, and the old fallback differed only by ``" ·"``.
+        assert any("#" in row for row in rows), (label, rows)  # type: ignore[union-attr]
+        assert not any(row.endswith(" ·") for row in rows), (label, rows)  # type: ignore[union-attr]
+
+
 async def test_run_tui_resume_empty_choices_does_not_switch() -> None:
     # Only the active session exists → no other sessions → no switch; REPL lives.
     metas = [_ResumeMeta("aaaaaaaa", "/s/active.jsonl", "2026-05-27T15:00")]
