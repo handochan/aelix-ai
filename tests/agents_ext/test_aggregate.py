@@ -584,7 +584,7 @@ def test_the_total_line_omits_usage_that_is_entirely_absent() -> None:
 
 
 def test_token_counts_below_a_thousand_are_not_abbreviated() -> None:
-    """The threshold mirrors ``progress._format_tokens`` (``progress.py:147-150``)
+    """The threshold mirrors ``progress._format_tokens`` (``progress.py:158-161``)
     so a batch total and a statusline row never disagree about how a number is
     spelled."""
 

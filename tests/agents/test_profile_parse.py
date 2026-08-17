@@ -205,7 +205,7 @@ def test_csv_and_list_forms_equivalent() -> None:
 def test_skill_paths_resolve_against_profile_dir(tmp_path: Path) -> None:
     """Relative entries anchor to the PROFILE's directory, never cwd.
 
-    aelix's ``--skill`` takes a PATH (``entry.py:921-962``), so a profile must
+    aelix's ``--skill`` takes a PATH (``entry.py:962-1003``), so a profile must
     mean the same thing from any working directory. The decoy below is what a
     cwd-relative implementation would have picked.
     """

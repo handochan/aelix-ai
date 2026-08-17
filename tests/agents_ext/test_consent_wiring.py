@@ -207,7 +207,7 @@ async def test_a_declined_dialog_blocks_and_starts_nothing(
 ) -> None:
     """Esc, Cancel and a nonsense answer are all the same decision: no.
 
-    A ``None`` answer is Esc (``tui/context.py:409-410``). Anything that is not
+    A ``None`` answer is Esc (``tui/context.py:453-454``). Anything that is not
     a rendered option is treated identically, because the alternative is
     inferring consent from a string nobody was shown.
 
@@ -945,7 +945,7 @@ async def test_a_later_handler_cannot_change_the_topology_that_runs(
     ``ctx.args`` by reference with no defensive copy, precisely so a later
     ``tool_call`` handler may mutate the dict and have the mutation reach
     ``tool.execute``. ``AgentsExtension`` is APPENDED to the extension list
-    (``entry.py:1381-1383``), so a handler registered after it is not hypothetical.
+    (``entry.py:1422-1424``), so a handler registered after it is not hypothetical.
 
     An ``_execute`` that read ``args.get("mode", "single")`` would let that
     handler pick a different execution TOPOLOGY from the one the human approved —
@@ -1182,7 +1182,7 @@ async def test_a_single_delegation_keeps_its_own_per_child_row(
     NO GROUP IS OPENED AT ALL below ``PANEL_MIN_CHILDREN``, and that is stricter
     than "the group is inactive". An inactive group renders nothing, but
     ``end_group`` clears the aggregate row unconditionally
-    (``progress.py:344-355``) — one ``set_status(subagent:group:<id>, None)`` for a
+    (``progress.py:370-381``) — one ``set_status(subagent:group:<id>, None)`` for a
     row that was never written, which is a UI write P2 never made. The shipped
     ``test_events_and_statusline.py::test_statusline_row_set_and_cleared``
     counts the keys the UI is asked for and would go red on it.

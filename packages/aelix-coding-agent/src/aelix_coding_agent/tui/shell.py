@@ -26,12 +26,14 @@ import signal
 import subprocess
 import sys
 import tempfile
+import time
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, cast
 
 from aelix_agent_core.session.context import build_display_messages
 from aelix_agent_core.session.jsonl_storage import load_jsonl_session_metadata
 from prompt_toolkit.application.run_in_terminal import in_terminal
+from prompt_toolkit.utils import get_cwidth
 from rich.box import ROUNDED
 from rich.panel import Panel
 from rich.table import Table
@@ -39,6 +41,12 @@ from rich.text import Text
 
 from aelix_coding_agent.cli.repl import handle_user_bash
 from aelix_coding_agent.cli.resource_commands import expand_resource_command
+from aelix_coding_agent.cli.session_labels import (
+    by_recent_activity,
+    session_choice_label,
+    session_detail_lines,
+    short_field,
+)
 from aelix_coding_agent.extensions import HEADLESS_UI_CONTEXT
 from aelix_coding_agent.extensions.api import MessageRenderOptions
 from aelix_coding_agent.extensions.command_dispatch import (
@@ -64,7 +72,10 @@ from aelix_coding_agent.tui.completion import (
     DescriptorCommandCompleter,
     FileMentionCompleter,
 )
-from aelix_coding_agent.tui.context import AelixTUIContext
+from aelix_coding_agent.tui.context import (
+    _PICK_MAX_WIDTH,
+    AelixTUIContext,
+)
 from aelix_coding_agent.tui.descriptors import (
     DescriptorRegistry,
     DescriptorRenderer,
@@ -204,20 +215,21 @@ def _mode_prompt_style(posture: PermissionPosture | None) -> str:
     return f"class:aelix.prompt bold {colour}".rstrip()
 
 
-def _format_session_choice(meta: object) -> str:
+def _format_session_choice(meta: object, now: float, *, width: int = 78) -> str:
     """A one-line picker label for a session (``/resume``).
 
-    ``JsonlSessionMetadata`` carries id + created_at + cwd (no title / message
-    count), so the label is ``{created} · {short-id}``; degrades to the short id
-    when no timestamp is present. Defensive getattr — never raises on an odd
-    metadata shape.
+    Delegates to :func:`~aelix_coding_agent.cli.session_labels.session_choice_label`,
+    which the startup ``--resume`` menu renders from as well. Both used to carry
+    their own copy of a ``{created} · {short-id}`` label that named the session
+    without describing it; see that module for why the FIRST user message is the
+    one shown and where the last one went.
+
+    ``now`` is passed in rather than read here so every row of one picker is aged
+    against the same instant — rows built across a second boundary would otherwise
+    disagree by a minute for no reason the user can see.
     """
 
-    short_id = (getattr(meta, "id", "") or "")[:8]
-    created = (getattr(meta, "created_at", "") or "").replace("T", " ")[:16]
-    if created:
-        return f"{created} · {short_id}" if short_id else created
-    return short_id or "session"
+    return session_choice_label(meta, now, width=width)
 
 
 def _message_text(message: object) -> str:
@@ -726,20 +738,95 @@ async def run_tui(
             _commit(Text(f"✖ could not list sessions: {exc}", style="bold red"))
             return
         current_file = getattr(runtime_host.session, "session_file", None)
-        choices = [m for m in sessions if getattr(m, "path", None) != current_file]
+        # NEWEST-USED FIRST, matching the age each row displays. ``repo.list``
+        # orders by ``created_at``, a different fact from the one the label states,
+        # and shared with the startup menu so the two pickers cannot disagree about
+        # which session is the most recent.
+        choices = by_recent_activity(
+            [m for m in sessions if getattr(m, "path", None) != current_file]
+        )
         if not choices:
             _commit(Text("No other sessions to resume in this folder.", style="yellow"))
             return
-        # select() shows the first 9 (newest-first); build a label→metadata map.
+        # Build a label→metadata map. ``select`` returns the chosen LABEL, not its
+        # index, so the labels have to be unique. They collide far more often now
+        # that they carry the first user message — four of this repo's sessions
+        # open with the same sentence on the same day — so a collision is broken
+        # with the session's short id, which is the thing that actually
+        # distinguishes them, rather than the old repeated " ·" padding.
+        now = time.time()
+        # BOUNDED BY THE FRAME THAT WILL DRAW IT, not by the terminal. The first
+        # version read ``terminal_columns(...) - 6`` alone, and ``_picker_frame``
+        # clamps its rule to ``_PICK_MAX_WIDTH``: measured, a 120-column terminal
+        # produced 114-cell rows inside a 78-cell rule, so the session list hung
+        # 36 columns past the coloured boundary this same branch added to make
+        # that boundary visible. The row must never be wider than the rule.
+        label_width = min(
+            terminal_columns(out_chrome, max_width=render_width_cap["value"]) - 6,
+            # MINUS THE ROW PREFIX. ``select`` renders each option as ``▸ <label>``
+            # or two spaces plus the label, and sizes the frame from
+            # ``_visible_len(option) + 2`` — then ``_picker_frame`` clamps the rule
+            # to ``_PICK_MAX_WIDTH``. A label AT that cap therefore produces an
+            # 80-cell body row inside a 78-cell rule. Measured: 2 cells of
+            # overhang, which is what was left after the first fix took 36 off.
+            _PICK_MAX_WIDTH - 2,
+        )
         labels: list[str] = []
         by_label: dict[str, object] = {}
         for meta in choices:
-            label = _format_session_choice(meta)
-            while label in by_label:  # guarantee uniqueness for the reverse map
-                label += " ·"
+            # THE DISAMBIGUATOR IS BUDGETED AND SANITISED, like the label it joins.
+            # ``short_field`` is what ``session_labels`` puts every header-derived
+            # field through; a raw ``[:8]`` here would have been the one term on
+            # this row that keeps its control bytes — and the picker BODY is not
+            # sanitised, because those rows are normally this module's own styling.
+            # What it costs comes out of the LABEL rather than off the end, since
+            # the row is already sized to sit exactly inside the rule.
+            #
+            # IN CELLS ON BOTH SIDES. Reserving ``len(suffix)`` against a budget
+            # measured in cells came up four short for a CJK id — ``short_field``
+            # caps at 8 CELLS, and four wide characters are 8 cells but four
+            # characters — so two sessions with Hangul ids drew an 82-cell row
+            # inside the 78-cell rule. ``jsonl_repo`` validates an id only as a
+            # non-empty ``str``, so its shape is the same untrusted input
+            # ``short_field`` exists for.
+            #
+            # AND THE LAST RESORT IS NUMBERED, NOT PADDED. Eight cells of id are
+            # not unique: two ids sharing a prefix collide again, and IDENTICAL
+            # ids are what ``cp session.jsonl session.backup.jsonl`` and every sync
+            # tool produce — ``jsonl_repo`` does not reject them. The old fallback
+            # appended ``" ·"`` in an UNBUDGETED loop, so the row grew straight
+            # past the rule (MEASURED: four same-id sessions gave 82 cells against
+            # 78, forty gave 154), and the rows it produced differed only by
+            # trailing punctuation — the very padding the label format replaced.
+            # That loop is main's, and it took ~26 duplicates to overrun there;
+            # this branch's fuller label is what made the FIRST extra duplicate do
+            # it. An ordinal is bounded by the same budget as every other attempt,
+            # and it says which copy it is.
+            short = short_field(getattr(meta, "id", "") or "", 8)
+            attempt = 1
+            while True:
+                if attempt == 1:
+                    suffix = ""
+                elif attempt == 2:
+                    suffix = f"  ({short})"
+                else:
+                    suffix = f"  ({short} #{attempt - 1})"
+                room = max(20, label_width - get_cwidth(suffix))
+                label = f"{_format_session_choice(meta, now, width=room)}{suffix}"
+                if label not in by_label:
+                    break
+                attempt += 1
             labels.append(label)
             by_label[label] = meta
-        chosen = await context.select("Resume session", labels)
+        # ``detail`` is evaluated per RENDER for the highlighted row only, so the
+        # last-message tail read costs nothing for the rows the user scrolls past.
+        chosen = await context.select(
+            "Resume session",
+            labels,
+            detail=lambda index: session_detail_lines(
+                choices[index], width=max(20, label_width)
+            ),
+        )
         if not chosen:
             return  # Esc / cancelled
         meta = by_label.get(chosen)
@@ -1391,7 +1478,7 @@ async def run_tui(
 
         if model_registry is None:
             # ``run_tui`` declares ``model_registry`` optional and the sole
-            # production caller (``entry.py:2939``) always passes one, so this is
+            # production caller (``entry.py:2980``) always passes one, so this is
             # a test-only shape — but ``find_initial_model`` takes it REQUIRED and
             # dereferences it, and the except below would have shown the user the
             # resulting `'NoneType' object has no attribute …` verbatim. Say the
@@ -2201,7 +2288,15 @@ async def run_tui(
             if not out_chrome.running:
                 out_chrome.submit_line(text)
                 return
-            output_queue.put_nowait(("commit", render_user_message(text, kind=kind)))
+            # ``renderer.render_width()`` rather than a second ``terminal_columns``
+            # call: the echo has to land at the same measure as the transcript it
+            # sits in, and one source cannot drift from itself.
+            output_queue.put_nowait(
+                (
+                    "commit",
+                    render_user_message(text, kind=kind, width=renderer.render_width()),
+                )
+            )
             try:
                 if kind == "steer":
                     await runtime_host.harness.steer(text)
@@ -2839,11 +2934,11 @@ def _build_banner(harness: AgentHarness, cwd: str) -> object:
     # "AGENTS.md" whenever a file existed. Two defects, both measured:
     #
     #   (1) It cannot see ``--no-context-files`` / ``-nc``. That gate lives at
-    #       ``cli/entry.py:1202``, ABOVE discovery, so the banner announced
+    #       ``cli/entry.py:1243``, ABOVE discovery, so the banner announced
     #       project context to a session whose prompt carried none.
     #   (2) Calling discovery a second time RE-EMITTED its stderr budget warnings
     #       (115 bytes per render on one oversized AGENTS.md) — a duplicate of
-    #       what ``entry.py:1203`` already printed at startup, and one that
+    #       what ``entry.py:1244`` already printed at startup, and one that
     #       interpolates the absolute path RAW: over a directory named
     #       ``proj\x1b]0;pwned\x07…`` both the ESC and the BEL reached stderr.
     #
@@ -3252,7 +3347,9 @@ async def _input_loop(
         # Echo the user's own line into the transcript (Sprint 6h₁₂b) so the
         # assistant reply has its visible question above it — prompt path only
         # (bash / commands / empty already returned/continued before here).
-        output_queue.put_nowait(("commit", render_user_message(parsed.text)))
+        output_queue.put_nowait(
+            ("commit", render_user_message(parsed.text, width=renderer.render_width()))
+        )
         chrome.set_running(True)
         try:
             await harness.prompt(prompt_text, source="interactive")

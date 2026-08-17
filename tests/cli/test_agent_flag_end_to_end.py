@@ -1,6 +1,6 @@
 """ADR-0196 — ``--agent`` / ``--agent-file`` end to end through ``_async_main``.
 
-The overlay sits at ``cli/entry.py:2190-2283``: AFTER the Project Trust gate
+The overlay sits at ``cli/entry.py:2231-2324``: AFTER the Project Trust gate
 (project profiles are inert until the directory is trusted) and BEFORE
 ``scan_extension_manifests`` / ``_resolve_skill_dirs`` / the harness factory, so
 everything a profile can set lands on the ONE ``Args`` the factory closes over.
@@ -22,7 +22,7 @@ are about ORDER, not features:
   PINNED the runtime key upstream of the overlay too, so it either refused a run
   the profile could have driven or attached the key to the wrong provider.
 
-The run is stopped at ``create_agent_session_runtime`` (``cli/entry.py:2841``),
+The run is stopped at ``create_agent_session_runtime`` (``cli/entry.py:2864``),
 after the factory has built the harness and before any turn: no network, no API
 keys, no registry auth.
 """

@@ -61,6 +61,7 @@ THREE MEASURED CAVEATS, all of which shape this file.
 from __future__ import annotations
 
 import contextlib
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -73,6 +74,7 @@ from aelix_coding_agent.subagent_contract import (
 
 from aelix_agents.panel import (
     PANEL_MIN_CHILDREN,
+    PANEL_ROW_MAX_CHARS,
     PANEL_WIDGET_KEY,
     _flatten,
     format_aggregate_status,
@@ -126,11 +128,20 @@ class _Group:
     aggregate, no panel — and an inactive group still exists so that
     :meth:`SubagentProgressBridge.end_group` is symmetric for every call the
     extension opens, batch or not.
+
+    ``tasks`` is index-aligned with ``snapshots`` and is what the panel shows a
+    member DOING. It has to be carried here rather than read off a snapshot
+    because it is the one distinguishing fact a snapshot does not have: one
+    ``agent()`` call is one profile and one model across N tasks (S3), so every
+    other per-member field is identical, and ADR-0199 §3.6 rules out adding a
+    field to ``SubagentProgress``. The submitted INDEX is bound at member
+    creation, which is exactly what makes an index-aligned tuple sufficient.
     """
 
     key: str
     snapshots: list[SubagentProgress | None] = field(default_factory=list)
     active: bool = False
+    tasks: tuple[str, ...] = ()
 
 
 _STATUS_MODEL_MAX_CHARS = 40
@@ -292,7 +303,9 @@ class SubagentProgressBridge:
 
     # ── the batch group (S10) ─────────────────────────────────────
 
-    def begin_group(self, key: str, *, expected: int) -> None:
+    def begin_group(
+        self, key: str, *, expected: int, tasks: Sequence[str] = ()
+    ) -> None:
         """Open a group of ``expected`` members under ``key``.
 
         A COUNT, not ids — §3.6, restated in this module's docstring: the ids do
@@ -300,6 +313,18 @@ class SubagentProgressBridge:
         semaphore they will not exist for minutes. The count is what lets the
         aggregate say ``5 queued`` instead of pretending the batch is a
         three-member one that keeps growing.
+
+        ``tasks`` is the submitted task text, index-aligned with the members, and
+        it is the only per-member fact that differs across a batch — the profile
+        and the model are one apiece by construction. Defaulted to empty so every
+        existing caller and test is unaffected; the panel falls back to what it
+        rendered before when a group has none.
+
+        A LABEL, NOT A PROMPT, in ``chain`` mode: ``chain`` substitutes
+        ``{previous}`` per step at RUN time (``chain.py``), so ``tasks[k]`` is
+        the un-substituted template. That is the right thing to show — it is what
+        the model wrote and what the index means — but it is not what the child
+        received, and the panel must not imply otherwise.
 
         Re-opening a live key ends the old group first. That can only happen if
         a caller leaked one (the extension opens and closes in the same
@@ -315,6 +340,7 @@ class SubagentProgressBridge:
             # S10: the panel and the aggregate exist only at N >= 2. At N == 1
             # every surface stays byte-identical to P2.
             active=expected >= PANEL_MIN_CHILDREN,
+            tasks=tuple(tasks),
         )
 
     def adopt(self, spawn_id: str, key: str, *, index: int) -> None:
@@ -404,7 +430,36 @@ class SubagentProgressBridge:
             # An empty aggregate means "nothing publishable yet"; writing it
             # would still cost the two-space join at ``chrome.py:1108``.
             self._set_row(group_status_key(group.key), text)
-        self._set_widget(group.key, format_panel(group.snapshots))
+        self._set_widget(
+            group.key,
+            format_panel(group.snapshots, tasks=group.tasks, width=self._panel_width()),
+        )
+
+    def _panel_width(self) -> int:
+        """The columns the panel is actually painting into.
+
+        ``panel.py`` is pure and cannot see a terminal — it is the module whose
+        docstring promises no UI handle — so the width is measured HERE, at the one
+        place that already holds a live UI binding, and passed in. It only ever
+        narrows: ``format_panel`` caps whatever arrives at ``PANEL_ROW_MAX_CHARS``,
+        so a wide screen is unchanged and a narrow one stops being told it has 78
+        columns.
+
+        DEGRADES TO THE OLD CONSTANT, never raises and never returns nothing. A
+        headless run, a UI without a chrome, a chrome whose output cannot be sized
+        before it runs — each yields the 78 the panel used before this existed,
+        which is the behaviour ADR-0199 shipped.
+        """
+
+        from aelix_coding_agent.tui.width import terminal_columns
+
+        chrome = getattr(self._ui(), "chrome", None)
+        if chrome is None:
+            return PANEL_ROW_MAX_CHARS
+        try:
+            return terminal_columns(chrome, max_width=PANEL_ROW_MAX_CHARS)
+        except Exception:  # noqa: BLE001 — an unsizeable output is not a render error
+            return PANEL_ROW_MAX_CHARS
 
     def clear(self) -> None:
         """Drop every row and panel we own — the ``session_shutdown`` /
@@ -466,7 +521,7 @@ class SubagentProgressBridge:
         statusline — or panel — update must never be able to fail a delegation.
 
         ``set_widget(key, content)`` with no options places the widget
-        ``above_editor`` (``tui/context.py:955-970`` → ``chrome.set_widget(...,
+        ``above_editor`` (``tui/context.py:1063-1078`` → ``chrome.set_widget(...,
         above=True)``), which is the placement S10 asked for; passing
         ``ExtensionWidgetOptions`` for the default would only add an import of a
         product-core type this file does not otherwise need.

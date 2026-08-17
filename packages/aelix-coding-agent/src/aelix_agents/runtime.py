@@ -146,7 +146,7 @@ END a delegation (``subagent_contract.py:66``, and see the "terminal" note at
 ``:239``).
 
 DELIBERATELY A SECOND COPY of ``progress._TERMINAL_STATES``
-(``progress.py:95``) rather than an import of another module's private name: the
+(``progress.py:97``) rather than an import of another module's private name: the
 row lifecycle is owned HERE and the renderer must not be this module's
 dependency. ``test_print_channel_spawn`` asserts the two sets are equal, so the
 copy cannot drift."""
@@ -866,7 +866,7 @@ class _SubagentRuntimeImpl:
             # Published non-terminal, that snapshot makes
             # ``SubagentProgressBridge`` take its live branch and WRITE a
             # statusline row nothing will ever clear, and leak the id in
-            # ``_tools`` (``progress.py:287-291``) — "a statusline segment
+            # ``_tools`` (``progress.py:298-302``) — "a statusline segment
             # outliving the delegation that owns it is a lie the user cannot
             # dismiss", in that module's own words.
             #

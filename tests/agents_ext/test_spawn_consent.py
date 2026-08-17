@@ -112,7 +112,7 @@ class _SelectSpy:
 
     Records every ``(title, options)`` pair and returns whatever ``answers``
     yields — including ``None``, which is what Esc produces
-    (``tui/context.py:409``).
+    (``tui/context.py:453``).
     """
 
     def __init__(self, *answers: object) -> None:
@@ -362,7 +362,7 @@ async def test_task_newlines_are_collapsed() -> None:
 
 
 async def test_esc_declines() -> None:
-    """``select`` returns ``None`` on Esc (``tui/context.py:409``)."""
+    """``select`` returns ``None`` on Esc (``tui/context.py:453``)."""
 
     spy = _SelectSpy(None)
     ctx = _FakeCtx(has_ui=True, ui=spy)
@@ -1255,7 +1255,7 @@ async def test_agents_run_renders_the_single_task_body_unchanged(
 # hole. ``build_consent_title`` interpolated ``cwd``, ``resolved.name`` and
 # ``resolved.source_path`` with plain f-strings; ``ctx.ui.select`` splits the
 # composed title on ``\n`` into rows AND ANSI-parses it
-# (``tui/context.py:115-132``); and ``resolve_child_cwd``
+# (``tui/context.py:140-218``); and ``resolve_child_cwd``
 # (``print_channel.py:406``) validated only containment and is-a-directory,
 # while POSIX permits every byte but ``/`` and NUL in a path component. A
 # directory created with plain ``os.makedirs`` was therefore enough to render a

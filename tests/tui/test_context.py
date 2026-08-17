@@ -995,3 +995,139 @@ async def test_set_usage_stats_repaints_only_on_a_real_change() -> None:
         # Any one field changing is a real change.
         ctx.set_usage_stats(100, 50, 0.30)
         assert len(painted) == 2
+
+
+# === the multi-line statusline is TWO rows, and that shape is pinned =========
+#
+# WP-8 shipped three rows and nothing asserted it, so when this was cut to two
+# the whole tui suite stayed green — the same "a shipped shape with no gate"
+# pattern #147 turned up. These tests are that gate.
+
+
+class _MultilineStore:
+    """A statusline store fixed to multiline mode (no disk, no agent dir)."""
+
+    def __init__(self, enabled: list[str] | None = None) -> None:
+        from aelix_coding_agent.tui.statusline_store import StatuslineConfig
+
+        self._cfg = StatuslineConfig(
+            enabled=enabled if enabled is not None else [], multiline=True
+        )
+
+    def load(self):  # noqa: ANN201 — duck-typed, matches StatuslineStore.load
+        return self._cfg
+
+
+@asynccontextmanager
+async def _multiline_footer(
+    footer: AelixFooterData, *, enabled: list[str], **kwargs
+) -> AsyncGenerator[tuple[AelixTUIContext, AelixChrome]]:
+    with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
+        console = Console(file=io.StringIO(), force_terminal=True, width=100)
+        chrome = AelixChrome(console=console)
+        ctx = AelixTUIContext(
+            chrome,
+            footer,
+            statusline_store=_MultilineStore(enabled),  # type: ignore[arg-type]
+            **kwargs,
+        )
+        yield ctx, chrome
+
+
+async def test_multiline_statusline_is_two_rows_not_three() -> None:
+    """The common case — one directory, the default posture — costs TWO rows.
+
+    SABOTAGE: split ``current-dir`` back into a row of its own in
+    ``_MULTILINE_ROWS``. The row count goes to three and this fails. Chrome rows
+    are subtracted from the scrollback the user is reading, which is why the
+    count is asserted and not just the contents.
+    """
+
+    footer = _FixedBranchFooter("main")
+    async with _multiline_footer(
+        footer,
+        enabled=["model", "git-branch", "current-dir", "permission-mode"],
+        model_provider=lambda: "gpt-5.6-luna",
+        cwd="/workspaces/aelix-ai",
+        permission_badge_provider=lambda: None,
+    ) as (_ctx, chrome):
+        rows = chrome._footer_line.split("\n")
+        assert len(rows) == 2, rows
+        assert "✱ gpt-5.6-luna" in rows[0] and "⎇ main" in rows[0]
+        assert "📂 /workspaces/aelix-ai" in rows[1]
+
+
+async def test_multiline_statusline_keeps_the_permission_badge_leading() -> None:
+    """ADR-0159: the security-visible segment leads its row — still true at two.
+
+    SABOTAGE: put ``current-dir`` before ``permission-mode`` in that row tuple.
+    The badge stops being the first thing on the line the eye lands on, and this
+    fails. Merging two rows is exactly the change that could lose the invariant
+    quietly, since nothing else in the suite asserts it for the multi-line path.
+    """
+
+    from aelix_coding_agent.builtin.permission_mode import DEFAULT_BADGE
+
+    footer = _FixedBranchFooter("main")
+    async with _multiline_footer(
+        footer,
+        enabled=["model", "current-dir", "permission-mode"],
+        model_provider=lambda: "gpt-5.6-luna",
+        cwd="/workspaces/aelix-ai",
+        # ADR-0159: the badge is omitted entirely when no posture is wired, so a
+        # provider has to be present for there to be anything to lead with.
+        permission_badge_provider=lambda: None,
+    ) as (_ctx, chrome):
+        second = chrome._footer_line.split("\n")[1]
+        assert DEFAULT_BADGE in second, second
+        assert second.index(DEFAULT_BADGE) < second.index("📂"), second
+
+
+# === review finding: the merged statusline row must not clip the live signals ===
+
+
+async def test_the_merged_statusline_row_drops_the_path_before_the_live_signals() -> None:
+    """The chrome row is height-1 and CLIPPED at the terminal, which is the very
+    thing multi-line mode exists to stop.
+
+    ``current-dir`` is the one segment with no bound, so it decides whether the
+    row overflows. MEASURED at 80 columns with
+    ``cwd=…/aelix-coding-agent/src/aelix_coding_agent``: the composed row is 106
+    cells against 79 on the glass, and with the directory in the MIDDLE the two
+    segments pushed off the end were ``⏵⏵ all`` and ``⋯ 3 queued`` — the only live
+    and transient signals on the footer. Ordered this way the overflow eats the
+    path instead. The cwd is named because the cell count depends on it.
+
+    RENDERED, NOT READ OFF THE TUPLE. The first version asserted four things about
+    ``_MULTILINE_ROWS[1]`` and never built a context, so it could not see the
+    rendered row disagreeing with it: extension statuses are not registry segments
+    and joined the row AFTER it was composed, which put the path back in the
+    middle and made the extension's own status the thing the clip took. The tuple
+    assertions stay — ADR-0159's leading badge is a property of the ordering
+    itself — but the row is what the invariant is about.
+    """
+
+    from aelix_coding_agent.tui.context import AelixTUIContext
+
+    row = AelixTUIContext._MULTILINE_ROWS[1]
+    assert row[0] == "permission-mode"  # ADR-0159: the badge leads its row
+    assert row[-1] == "current-dir", row
+    assert row.index("steering") < row.index("current-dir")
+    assert row.index("pending-queued") < row.index("current-dir")
+
+    footer = _FixedBranchFooter("main")
+    footer.set_status("lsp", "lsp: 3 diagnostics")
+    async with _multiline_footer(
+        footer,
+        enabled=["permission-mode", "steering", "pending-queued", "current-dir"],
+        cwd="/workspaces/aelix-ai/packages/aelix-coding-agent/src/aelix_coding_agent",
+        permission_badge_provider=lambda: "⚠",
+        mode_provider=lambda: "all",
+        pending_provider=lambda: 3,
+    ) as (_ctx, chrome):
+        rendered = chrome._footer_line.split("\n")[-1]
+
+    path_at = rendered.index("/workspaces/aelix-ai/packages")
+    for live in ("⏵⏵", "3 queued", "lsp: 3 diagnostics"):
+        assert live in rendered, (live, rendered)
+        assert rendered.index(live) < path_at, (live, rendered)

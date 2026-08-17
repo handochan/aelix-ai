@@ -525,14 +525,21 @@ def _spy_commits(chrome: AelixChrome) -> list[str]:
     orig_many = chrome.print_above_many
 
     def _plain(renderable: object) -> str:
-        # Sprint 6h₂₅ (ADR-0153) — the user echo is now a Rich Group (leading
-        # blank line + bold-cyan echo via render_user_message). Flatten a Group
-        # into its rows' plain text and drop the leading/trailing blank rows so
-        # the echo reads as the bare ``» text`` line (matches the pre-helper
-        # capture shape these tests assert on).
+        # Sprint 6h₂₅ (ADR-0153) — the user echo is a Rich Group (blank line +
+        # echo via render_user_message). Flatten a Group into its rows' plain
+        # text and drop the leading/trailing blank rows so the echo reads as the
+        # bare ``» text`` line (the capture shape these tests assert on).
         rows = getattr(renderable, "renderables", None)
         if rows is not None:
             return "\n".join(_plain(r) for r in rows).strip("\n")
+        # #48 — that echo row is now a ``Padding`` (the full-width bar), which
+        # wraps ONE child under ``.renderable``, not a list under
+        # ``.renderables``. Without this hop the spy fell through to ``str()``
+        # and recorded a repr, so every assertion on ``» text`` failed while the
+        # TUI was in fact rendering correctly.
+        inner = getattr(renderable, "renderable", None)
+        if inner is not None:
+            return _plain(inner)
         text = getattr(renderable, "plain", None)
         return text if isinstance(text, str) else str(renderable)
 
@@ -569,6 +576,74 @@ async def test_run_tui_echoes_user_prompt_into_transcript() -> None:
         await asyncio.wait_for(task, timeout=5)
     # The user's own line is echoed (role-marked) before the assistant reply.
     assert any(c == "» what is 2+2" for c in commits)
+
+
+def _plain_of(renderable: object) -> str:
+    """The same Group / Constrain / Padding unwrap ``_spy_commits`` performs."""
+
+    rows = getattr(renderable, "renderables", None)
+    if rows is not None:
+        return "\n".join(_plain_of(r) for r in rows).strip("\n")
+    inner = getattr(renderable, "renderable", None)
+    if inner is not None:
+        return _plain_of(inner)
+    text = getattr(renderable, "plain", None)
+    return text if isinstance(text, str) else str(renderable)
+
+
+async def test_run_tui_echo_bar_is_capped_at_the_render_width() -> None:
+    """The live echo path passes a width — measured on what it COMMITS.
+
+    ``render_user_message`` takes ``width=None`` to mean unbounded, which the
+    unit tests in ``test_event_renderer.py`` rely on. A production caller that
+    silently kept that default would leave the bar painting the full terminal
+    under 120-cell prose — the defect the parameter exists for — and no unit test
+    would notice, because the helper would be doing exactly what it was asked.
+
+    So this asserts on the renderable that reached ``print_above``, rendered to a
+    200-column console. It cannot be satisfied by the presence of a keyword.
+    """
+
+    from tests.tui.test_event_renderer import _bar_rows
+
+    captured: list[object] = []
+    async with _harness_chrome() as (runtime, chrome, pipe):
+        # BOTH entry points. The output pump batches through
+        # ``print_above_many`` (the flicker fix), so a spy on ``print_above``
+        # alone captured nothing and this test timed out rather than failing —
+        # which is the same near-miss ``_spy_commits`` documents above.
+        orig_single = chrome.print_above
+        orig_many = chrome.print_above_many
+
+        def _spy_one(renderable: object, *a: object, **k: object) -> None:
+            captured.append(renderable)
+            return orig_single(renderable, *a, **k)  # type: ignore[arg-type]
+
+        def _spy_many(renderables: object, *a: object, **k: object) -> None:
+            captured.extend(list(renderables))  # type: ignore[call-overload]
+            return orig_many(renderables, *a, **k)  # type: ignore[arg-type]
+
+        chrome.print_above = _spy_one  # type: ignore[method-assign]
+        chrome.print_above_many = _spy_many  # type: ignore[method-assign]
+        task = _launch(runtime, chrome)
+        await _wait(lambda: chrome.app.is_running)
+        # ``.strip()`` is load-bearing: ``parse_input_line`` strips the line, so a
+        # fixture with a trailing space never equals what lands in ``prompts``
+        # and the wait below times out on the WRONG condition — the bar was in
+        # fact rendering correctly the whole time.
+        long_turn = ("please refactor the width helper so it stops baking a fixed 80 " * 3).strip()
+        pipe.send_text(long_turn + "\n")
+        await _wait(lambda: runtime.harness.prompts == [(long_turn, "interactive")])
+        await _wait(lambda: any(_plain_of(c).startswith("» please") for c in captured))
+        pipe.send_text("/quit\n")
+        await asyncio.wait_for(task, timeout=5)
+
+    echoes = [c for c in captured if _plain_of(c).startswith("» please")]
+    assert echoes, "the echo never reached the chrome"
+    rows = _bar_rows(echoes[0], 200)
+    assert rows, "the committed echo painted nothing"
+    for text, cells in rows:
+        assert cells <= 120, f"committed bar painted {cells} cells: {text!r}"
 
 
 async def test_run_tui_does_not_echo_bash_command_or_empty(
@@ -734,6 +809,372 @@ async def test_run_tui_resume_picker_excludes_active_switches_and_replays() -> N
     assert repo.list_cwds == ["."]  # listed cwd-scoped
     # active.jsonl excluded; #1 = the newest remaining (new.jsonl), not active.
     assert runtime.switch_calls == ["/s/new.jsonl"]
+
+
+async def test_run_tui_resume_rows_describe_the_session_and_carry_a_detail(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``/resume`` rows say what the session was about, and the cursor row says more.
+
+    The picker used to offer ``{created} · {short-id}`` — an identifier, not a
+    description — and that label function had no test at all. This drives the real
+    command against real session files and reads the arguments ``select`` was
+    actually handed, including invoking the ``detail`` callback the way the modal
+    does, because the two failure modes worth catching are a label built from the
+    wrong source and a ``detail`` indexed against the wrong list (it receives an
+    index into the FILTERED options, which here is ``choices`` minus the active
+    session — off by one if it were indexed against the repo's list).
+    """
+
+    import json
+
+    from aelix_coding_agent.tui.context import AelixTUIContext
+
+    def _write(name: str, first: str, last: str) -> str:
+        path = tmp_path / name
+        lines = [
+            json.dumps(
+                {"type": "session", "version": 3, "id": name, "timestamp": "2026-05-27T14:00:00Z"}
+            )
+        ]
+        for text in (first, last):
+            lines.append(
+                json.dumps(
+                    {
+                        "id": text[:4],
+                        "timestamp": "2026-05-27T14:05:00Z",
+                        "type": "message",
+                        "message": {"role": "user", "content": [{"type": "text", "text": text}]},
+                    }
+                )
+            )
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return str(path)
+
+    active_path = _write("active", "active first", "active last")
+    newer_path = _write("newer", "port the retry backoff", "ship it")
+    older_path = _write("older", "draw a coloured rule", "looks good")
+    metas = [
+        _ResumeMeta("aaaaaaaa", active_path, "2026-05-27T15:00"),  # active → excluded
+        _ResumeMeta("bbbbbbbb", newer_path, "2026-05-27T14:00"),
+        _ResumeMeta("cccccccc", older_path, "2026-05-27T13:00"),
+    ]
+    repo = _ResumeRepo(metas)
+    active = _ResumeSession(active_path, [])
+    target = _ResumeSession(newer_path, [])
+    runtime = _ResumeRuntime(FakeHarness(), repo, active, target=target)
+
+    seen: dict[str, object] = {}
+    real_select = AelixTUIContext.select
+
+    async def _spy_select(self, title, options, opts=None, detail=None, initial_index=0):  # type: ignore[no-untyped-def]
+        seen["title"] = title
+        seen["options"] = list(options)
+        seen["detail"] = [detail(i) if detail else None for i in range(len(options))]
+        return options[0]
+
+    monkeypatch.setattr(AelixTUIContext, "select", _spy_select)
+    try:
+        with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
+            chrome = AelixChrome()
+            task = asyncio.ensure_future(
+                run_tui(runtime, cwd=".", chrome=chrome, install_signal_handlers=False)  # type: ignore[arg-type]
+            )
+            await _wait(lambda: chrome.app.is_running)
+            pipe.send_text("/resume\n")
+            await _wait(lambda: bool(runtime.switch_calls))
+            pipe.send_text("/quit\n")
+            await asyncio.wait_for(task, timeout=5)
+    finally:
+        monkeypatch.setattr(AelixTUIContext, "select", real_select)
+
+    options = seen["options"]
+    assert isinstance(options, list) and len(options) == 2  # active one excluded
+    # The row describes the session; the id it used to show is not in it.
+    assert "port the retry backoff" in options[0]
+    assert "draw a coloured rule" in options[1]
+    assert "bbbbbbbb" not in options[0]
+    # The detail is indexed against the SAME list the labels were built from.
+    details = seen["detail"]
+    assert isinstance(details, list)
+    assert any("ship it" in line for line in details[0])  # type: ignore[union-attr]
+    assert any("looks good" in line for line in details[1])  # type: ignore[union-attr]
+    assert runtime.switch_calls == [newer_path]
+
+
+async def test_run_tui_resume_rows_fit_inside_the_picker_rule(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A row wider than the frame's rule makes the panel read as broken.
+
+    ``_picker_frame`` clamps its rule to ``_PICK_MAX_WIDTH``; the label width was
+    read from the TERMINAL. Measured, a 120-column terminal produced 114-cell rows
+    inside a 78-cell rule, so the session list hung 36 columns past the coloured
+    boundary this same branch added in order to make that boundary visible.
+    """
+
+    import json
+
+    from aelix_coding_agent.tui.context import _PICK_MAX_WIDTH, AelixTUIContext
+    from prompt_toolkit.utils import get_cwidth
+
+    path = tmp_path / "s.jsonl"
+    path.write_text(
+        json.dumps({"type": "session", "version": 3, "id": "s", "timestamp": "2026-05-27T14:00:00Z"})
+        + "\n"
+        + json.dumps(
+            {
+                "id": "e0",
+                "timestamp": "2026-05-27T14:05:00Z",
+                "type": "message",
+                "message": {
+                    "role": "user",
+                    "content": [{"type": "text", "text": "port the retry backoff " * 20}],
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    metas = [
+        _ResumeMeta("aaaaaaaa", str(tmp_path / "active.jsonl"), "2026-05-27T15:00"),
+        _ResumeMeta("bbbbbbbb", str(path), "2026-05-27T14:00"),
+    ]
+    runtime = _ResumeRuntime(
+        FakeHarness(), _ResumeRepo(metas),
+        _ResumeSession(str(tmp_path / "active.jsonl"), []),
+        target=_ResumeSession(str(path), []),
+    )
+
+    seen: dict[str, object] = {}
+    real_select = AelixTUIContext.select
+
+    async def _spy(self, title, options, opts=None, detail=None, initial_index=0):  # type: ignore[no-untyped-def]
+        seen["options"] = list(options)
+        seen["detail"] = detail(0) if detail else []
+        return options[0]
+
+    monkeypatch.setattr(AelixTUIContext, "select", _spy)
+    # A WIDE terminal, forced at the seam. ``DummyOutput`` reports the 80-column
+    # fallback, and at 80 the cap and the bug give the same answer — the first
+    # version of this test set ``COLUMNS`` instead and a sabotage removing the
+    # prefix allowance stayed green, because ``min(74, 78)`` and ``min(74, 76)``
+    # are both 74. The overhang only exists above ~84 columns.
+    monkeypatch.setattr(tui_shell, "terminal_columns", lambda *a, **k: 200)
+    try:
+        with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
+            chrome = AelixChrome()
+            task = asyncio.ensure_future(
+                run_tui(runtime, cwd=".", chrome=chrome, install_signal_handlers=False)  # type: ignore[arg-type]
+            )
+            await _wait(lambda: chrome.app.is_running)
+            pipe.send_text("/resume\n")
+            await _wait(lambda: bool(runtime.switch_calls))
+            pipe.send_text("/quit\n")
+            await asyncio.wait_for(task, timeout=5)
+    finally:
+        monkeypatch.setattr(AelixTUIContext, "select", real_select)
+
+    # THE ROW, NOT THE LABEL. ``select`` renders each option as ``▸ <label>`` or
+    # two spaces plus the label and sizes the frame from ``_visible_len + 2``,
+    # then ``_picker_frame`` clamps the rule to ``_PICK_MAX_WIDTH``. Measuring the
+    # label alone let a 2-cell overhang through — the first version of this test
+    # did exactly that, and a sabotage removing the prefix allowance stayed green.
+    _SELECT_ROW_PREFIX = 2
+    for row in seen["options"]:  # type: ignore[union-attr]
+        width = get_cwidth(row) + _SELECT_ROW_PREFIX
+        assert width <= _PICK_MAX_WIDTH, (width, row)
+    for row in seen["detail"]:  # type: ignore[union-attr]
+        assert get_cwidth(row) <= _PICK_MAX_WIDTH, (get_cwidth(row), row)
+
+
+async def test_run_tui_resume_disambiguates_without_leaving_the_rule_or_the_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two sessions that start the same way get an id, and the id is a field too.
+
+    The collision branch is the ONE place a row grows after being sized, and it was
+    the one place a header-derived field went in raw. Both halves matter and only
+    this fixture reaches either: the labels must actually collide, which needs two
+    sessions with the same age AND the same opening message.
+
+    ``\\x9b`` IS a CSI — the one-byte spelling of ``\\x1b[`` — and the picker BODY
+    is deliberately not sanitised by ``_picker_frame``, because those rows are
+    normally the module's own styling. A session folder can arrive with a
+    repository, so the id is not the module's own.
+    """
+
+    import json
+
+    from aelix_coding_agent.tui.context import _PICK_MAX_WIDTH, AelixTUIContext
+    from prompt_toolkit.utils import get_cwidth
+
+    def _session(name: str) -> str:
+        path = tmp_path / name
+        path.write_text(
+            json.dumps(
+                {"type": "session", "version": 3, "id": "s", "timestamp": "2026-05-27T14:00:00Z"}
+            )
+            + "\n"
+            + json.dumps(
+                {
+                    "id": "e0",
+                    "timestamp": "2026-05-27T14:05:00Z",
+                    "type": "message",
+                    "message": {
+                        "role": "user",
+                        "content": [{"type": "text", "text": "port the retry backoff " * 20}],
+                    },
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        return str(path)
+
+    first, second = _session("one.jsonl"), _session("two.jsonl")
+    metas = [
+        _ResumeMeta("aaaaaaaa", str(tmp_path / "active.jsonl"), "2026-05-27T15:00"),
+        _ResumeMeta("be\x9b31mfore", first, "2026-05-27T14:00"),
+        _ResumeMeta("af\x9b0mter", second, "2026-05-27T14:00"),
+    ]
+    runtime = _ResumeRuntime(
+        FakeHarness(), _ResumeRepo(metas),
+        _ResumeSession(str(tmp_path / "active.jsonl"), []),
+        target=_ResumeSession(first, []),
+    )
+
+    seen: dict[str, object] = {}
+    real_select = AelixTUIContext.select
+
+    async def _spy(self, title, options, opts=None, detail=None, initial_index=0):  # type: ignore[no-untyped-def]
+        seen["options"] = list(options)
+        return options[0]
+
+    monkeypatch.setattr(AelixTUIContext, "select", _spy)
+    monkeypatch.setattr(tui_shell, "terminal_columns", lambda *a, **k: 200)
+    try:
+        with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
+            chrome = AelixChrome()
+            task = asyncio.ensure_future(
+                run_tui(runtime, cwd=".", chrome=chrome, install_signal_handlers=False)  # type: ignore[arg-type]
+            )
+            await _wait(lambda: chrome.app.is_running)
+            pipe.send_text("/resume\n")
+            await _wait(lambda: bool(runtime.switch_calls))
+            pipe.send_text("/quit\n")
+            await asyncio.wait_for(task, timeout=5)
+    finally:
+        monkeypatch.setattr(AelixTUIContext, "select", real_select)
+
+    rows = seen["options"]
+    # Positive control: without a collision this test would assert nothing, and
+    # two identical labels are exactly what the fixture is built to produce.
+    assert any("(" in row and ")" in row for row in rows), rows  # type: ignore[union-attr]
+    for row in rows:  # type: ignore[union-attr]
+        assert "\x9b" not in row, repr(row)
+        assert get_cwidth(row) + 2 <= _PICK_MAX_WIDTH, (get_cwidth(row), row)
+
+
+async def test_run_tui_resume_disambiguates_duplicate_ids_inside_the_rule(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two shapes the first disambiguation fix left open, both inside the budget.
+
+    IDENTICAL IDS ARE ORDINARY. ``short_field`` caps the id at eight cells, so two
+    ids sharing a prefix collide again — and ``cp session.jsonl
+    session.backup.jsonl``, or any sync tool, produces ids that are simply equal.
+    ``jsonl_repo`` validates an id only as a non-empty ``str`` and never rejects a
+    duplicate. The old fallback appended ``" ·"`` in a loop nothing budgeted:
+    MEASURED through the real ``/resume``, four same-id sessions drew an 82-cell
+    row inside the 78-cell rule and forty drew 154. That loop is main's, but
+    main's label was ~29 cells, so it took ~26 duplicates to overrun there; this
+    branch's fuller label is what made the first extra duplicate do it.
+
+    A WIDE ID COSTS MORE CELLS THAN CHARACTERS. The budget was reduced by
+    ``len(suffix)`` while ``short_field`` caps in CELLS, so four Hangul characters
+    reserved 4 against a cost of 8 and TWO sessions drew an 82-cell row.
+
+    Six sessions, so the ordinal runs past ``#1`` and the loop's own growth is
+    measured rather than assumed.
+    """
+
+    import json
+
+    from aelix_coding_agent.tui.context import _PICK_MAX_WIDTH, AelixTUIContext
+    from prompt_toolkit.utils import get_cwidth
+
+    def _session(name: str) -> str:
+        path = tmp_path / name
+        path.write_text(
+            json.dumps(
+                {"type": "session", "version": 3, "id": "s", "timestamp": "2026-05-27T14:00:00Z"}
+            )
+            + "\n"
+            + json.dumps(
+                {
+                    "id": "e0",
+                    "timestamp": "2026-05-27T14:05:00Z",
+                    "type": "message",
+                    "message": {
+                        "role": "user",
+                        "content": [{"type": "text", "text": "port the retry backoff " * 20}],
+                    },
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        return str(path)
+
+    for label, session_id in (("identical", "0f3ab9c1-7e22-4d0a"), ("wide", "한국어한국어한국어")):
+        paths = [_session(f"{label}-{index}.jsonl") for index in range(6)]
+        metas = [
+            _ResumeMeta("aaaaaaaa", str(tmp_path / f"{label}-active.jsonl"), "2026-05-27T15:00"),
+            *(_ResumeMeta(session_id, path, "2026-05-27T14:00") for path in paths),
+        ]
+        runtime = _ResumeRuntime(
+            FakeHarness(), _ResumeRepo(metas),
+            _ResumeSession(str(tmp_path / f"{label}-active.jsonl"), []),
+            target=_ResumeSession(paths[0], []),
+        )
+
+        seen: dict[str, object] = {}
+        real_select = AelixTUIContext.select
+
+        async def _spy(  # type: ignore[no-untyped-def]
+            self, title, options, opts=None, detail=None, initial_index=0, _seen=seen
+        ):
+            _seen["options"] = list(options)
+            return options[0]
+
+        monkeypatch.setattr(AelixTUIContext, "select", _spy)
+        monkeypatch.setattr(tui_shell, "terminal_columns", lambda *a, **k: 200)
+        try:
+            with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
+                chrome = AelixChrome()
+                task = asyncio.ensure_future(
+                    run_tui(runtime, cwd=".", chrome=chrome, install_signal_handlers=False)  # type: ignore[arg-type]
+                )
+                await _wait(lambda c=chrome: c.app.is_running)
+                pipe.send_text("/resume\n")
+                await _wait(lambda r=runtime: bool(r.switch_calls))
+                pipe.send_text("/quit\n")
+                await asyncio.wait_for(task, timeout=5)
+        finally:
+            monkeypatch.setattr(AelixTUIContext, "select", real_select)
+
+        rows = seen["options"]
+        # ``choices`` excludes the ACTIVE session, so one fewer than ``metas``.
+        expected = len(metas) - 1
+        assert len(rows) == expected, (label, len(rows))  # type: ignore[arg-type]
+        assert len(set(rows)) == expected, (label, rows)  # type: ignore[arg-type]
+        for row in rows:  # type: ignore[union-attr]
+            assert get_cwidth(row) + 2 <= _PICK_MAX_WIDTH, (label, get_cwidth(row), row)
+        # The ordinal, not trailing punctuation: the rows must differ by something
+        # a user can read, and the old fallback differed only by ``" ·"``.
+        assert any("#" in row for row in rows), (label, rows)  # type: ignore[union-attr]
+        assert not any(row.endswith(" ·") for row in rows), (label, rows)  # type: ignore[union-attr]
 
 
 async def test_run_tui_resume_empty_choices_does_not_switch() -> None:

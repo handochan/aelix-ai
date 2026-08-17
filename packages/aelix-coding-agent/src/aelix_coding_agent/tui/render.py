@@ -29,7 +29,9 @@ from typing import TYPE_CHECKING, Any
 
 from aelix_ai.messages import AssistantMessage
 from rich.cells import cell_len, set_cell_size
-from rich.console import Group
+from rich.console import Group, RenderableType
+from rich.constrain import Constrain
+from rich.padding import Padding
 from rich.text import Text
 
 from .stream import StreamRenderer, markdown_lines, plain_lines
@@ -279,14 +281,53 @@ def _render_diff(
 # Sprint 6h₂₅ (ADR-0153, TUI v2 quick-wins WP-6 trivial tier) — shared user-echo
 # vocabulary. Human input was the weakest visual element (monochrome ``» text``
 # with no separation, buried among colored tool cards / diffs / thinking). The
-# trivial-tier lift = ONE helper every human-input site shares: a leading blank
-# line for separation + a bold-cyan echo that stands out. (The full-width
-# background bubble — WP-6 medium tier — is deferred.)
+# trivial-tier lift was ONE helper every human-input site shares: a leading blank
+# line for separation + a bold-cyan echo that stands out.
+#
+# #48 lands the medium tier that comment deferred — the full-width background
+# bar. Padding + blank lines were still only NEGATIVE space, so a human turn read
+# as "a gap" rather than as its own object, and a wrapped one lost even that.
 _USER_MESSAGE_LABELS: dict[str, str] = {
     "prompt": "» ",
     "steer": "Steering: ",
     "follow_up": "Follow-up: ",
 }
+
+#: The user-echo bar. AN EXPLICIT FOREGROUND **AND** BACKGROUND, deliberately.
+#:
+#: The rest of this module names a colour and lets the terminal supply the
+#: ground (``bold cyan``, ``dim``, …), which is only safe while the ground is
+#: whatever the user already reads text on. A bar owns its ground, so BOTH
+#: halves have to be stated.
+#:
+#: Cyan because that is already aelix's colour — the tool-card marker and header
+#: are cyan, so the bar reads as part of the same product rather than as a
+#: foreign stripe. It stays the terminal's OWN cyan (ANSI 46, not a 256/truecolor
+#: shade), so it tracks the user's theme and survives the colour-system degrade
+#: Rich does on a poorer terminal. Only the text is pinned, to black.
+#:
+#: ``reverse`` was the other candidate and was REJECTED on measurement. Rich
+#: emits it as ``1;7;36``: foreground cyan plus SGR 7, and the terminal then
+#: swaps, so the TEXT becomes the terminal's own background colour. On a dark
+#: theme that is dark-on-cyan and fine; on a light one it is near-white on cyan,
+#: which is the low-contrast case. It delegates half the pair to the user's
+#: theme, and it is the half that can go wrong. "Cannot clash" was true of hue
+#: and not of contrast.
+#:
+#: It is NOT routed through ``tui/themes.py``. That registry is the
+#: EXTENSION-facing surface (``context.py`` hands it to widget factories); no
+#: renderer in this module has ever consulted it, and its roles are
+#: foreground-only. Wiring the transcript renderer to it is real work and is what
+#: #58 (auto light/dark) is actually about — doing it here, for one line, would
+#: leave the other twenty hardcoded styles behind and claim a theme integration
+#: that does not exist.
+#:
+#: MEASURED through the commit path (``chrome.print_above`` →
+#: ``chrome._console.print``): the SGR survives, pyte reads the cells back, and
+#: with ``Padding`` every wrapped row is covered edge to edge. Piped output and
+#: ``NO_COLOR`` drop it entirely — the text and its ``» `` marker still carry the
+#: turn there, which is why the marker was not replaced by the bar.
+_USER_ECHO_STYLE = "bold black on cyan"
 
 # Sprint 6h₃₂ — the tool-call header marker. A bold filled ``●`` (replacing the
 # thin ``⚙`` gear) reads at a glance against the dim result card below it; the
@@ -295,25 +336,127 @@ _USER_MESSAGE_LABELS: dict[str, str] = {
 _TOOL_MARKER = "●"
 
 
-def render_user_message(text: str, kind: str = "prompt") -> Group:
+#: C0 and DEL and C1, minus the newline, mapped to a space rather than deleted so
+#: a word boundary survives. C1 is in the set because ``\x9b`` IS a CSI — the
+#: one-byte spelling of ``\x1b[`` — which is the same reason
+#: ``aelix_agents/panel._CONTROL_KILL`` and ``cli/session_labels._clean`` carry it.
+#: The newline is spared because a multi-line paste is meant to be several rows of
+#: one bar.
+#:
+#: THE TAB IS SPARED FOR THE SAME REASON AND IT WAS NOT, AT FIRST. Mapping it to a
+#: space made every nesting level of a tab-indented paste — a Makefile, Go, tab
+#: indented C — render as ONE column, and the loss is permanent: the echo is
+#: replayed from the session file on every ``/resume``. Neither harm this map
+#: exists for is a property of ``\t``. MEASURED at width 60: Rich expands the tab
+#: to its 8-column stop BEFORE writing, so the spaces are painted INSIDE the
+#: background run, no raw ``\t`` reaches the terminal in either arm, and every bar
+#: row is still exactly the full width. What ``\x1b`` and ``\x9b`` do — end the
+#: run and change the terminal's colour state — a tab does not do.
+_ECHO_CONTROL_MAP = {
+    codepoint: " "
+    for codepoint in (*range(0x00, 0x20), 0x7F, *range(0x80, 0xA0))
+    if codepoint not in (0x09, 0x0A)
+}
+
+
+#: Below this the ``Padding`` inset leaves no columns for text, so constraining
+#: to it renders an empty bar rather than a narrow one.
+_ECHO_MIN_CONSTRAIN = 2
+
+
+def _strip_controls(text: str) -> str:
+    """Replace every control character except ``\n`` and ``\t`` with a space.
+
+    The echo is the one renderer here that puts a caller's bytes on the terminal
+    unchanged, and the bar made that visible: an escape inside the text ends the
+    background run and reaches the glass. See :func:`render_user_message`, and
+    :data:`_ECHO_CONTROL_MAP` for why the tab is not one of those.
+    """
+
+    return text.translate(_ECHO_CONTROL_MAP)
+
+
+def render_user_message(text: str, kind: str = "prompt", *, width: int | None = None) -> Group:
     """Build the canonical echo for a human turn (Sprint 6h₂₅, ADR-0153).
 
     Every site that echoes the user's own input — the live prompt, the replayed
     transcript, and steer / follow-up injections — routes through this helper so
-    they share ONE visual language: the echo line is wrapped in blank lines ABOVE
-    AND BELOW (vertical padding that fences the human turn off from the colored
-    tool cards / diffs / streamed answer it sits between) and styled to STAND OUT
-    (bold cyan). Sprint 6h₃₂ added the trailing blank — a single LEADING blank
-    (the ADR-0153 original) was too subtle when the turn landed mid-stream.
+    they share ONE visual language. The turn is a full-width bar
+    (:data:`_USER_ECHO_STYLE`), still fenced by a blank line above and below.
+
+    #48 — WHY A BAR AND NOT MORE PADDING. ADR-0153 gave the echo a leading blank
+    and bold cyan; Sprint 6h₃₂ added the trailing blank because one was "too
+    subtle when the turn landed mid-stream". Both rounds bought separation with
+    NEGATIVE space, and negative space is what a human turn was already made of —
+    it read as a gap between coloured tool cards rather than as an object. The
+    bar gives it its own ground, which is the one property none of the
+    surrounding renderers use (tool cards colour their marker, diffs their
+    gutter, reasoning is dim italic — all on the terminal's ground).
+
+    ``Padding`` rather than a padded :class:`Text`: MEASURED, a manually
+    right-padded ``Text`` covers only the FIRST row once the line wraps, leaving
+    a ragged bar; ``Padding`` with a style fills every wrapped row edge to edge.
+    The ``(0, 1)`` inset keeps the glyphs off the terminal's left column.
 
     ``kind`` selects the leading marker: ``"prompt"`` keeps the ``» `` chevron;
     ``"steer"`` / ``"follow_up"`` use a distinct ``Steering: `` / ``Follow-up: ``
-    label but the SAME padding + bold-cyan visual language. An unknown kind
-    degrades to the prompt chevron.
+    label inside the SAME bar. An unknown kind degrades to the prompt chevron.
+
+    ``width`` BOUNDS THE PAINTED BAR, and the first version of this shipped
+    without it. ``Padding`` resolves its width at print time from the console it
+    is printed to, and ``chrome._console`` is a bare :class:`~rich.console.Console`
+    — raw terminal columns — while every other renderer here is laid out against
+    ``terminal_columns(...)``, which is capped at 120 (ADR-0219). MEASURED on the
+    shipped build: the bar was 40 / 80 / 120 / **200** cells at those console
+    widths, i.e. on a wide terminal a 200-cell band under 120-cell prose.
+
+    :class:`~rich.constrain.Constrain` bounds the PAINT, not just the text —
+    measured on the emitted SGR rather than on line length, because a wrapper
+    that narrowed the text and let the padding fill the console would buy
+    nothing. It only ever caps: at 40, 80 and 120 columns the output is
+    byte-identical to the unbounded form.
+
+    ``None`` means unbounded and exists for the many tests that construct this
+    directly. Every production caller passes a width, and
+    ``test_run_tui_smoke.py`` pins that end to end on the COMMITTED bytes, so a
+    caller that silently falls back to the default is caught by what reaches the
+    terminal rather than by the presence of a keyword.
+
+    THE TEXT IS STRIPPED OF CONTROLS FIRST, and the bar is what made that
+    necessary. ``Text`` does not interpret escapes but it does not remove them
+    either, so a paste went to the terminal verbatim. MEASURED at width 40 with
+    ``error: \\x1b[31mFAILED\\x1b[0m in test_x`` pasted in: 23 of the 40 cells were
+    painted and 17 were NOT — the reset in the middle of the user's own text ended
+    the bar's background — and the raw ``\\x1b[31m`` reached the glass, changing
+    the terminal's colour state from inside a row this renderer claims to own.
+    ``\\x9b``, the one-byte CSI, did the same. Stripped, that paste paints all 40
+    and the escape shows as the literal characters it is. (An earlier draft of
+    this paragraph reported 17 as the painted count; 17 is the complement.)
+
+    Pasting coloured build output into a coding agent is ordinary input, so this
+    is not a hostile-input defence first — it is a "the bar is one solid object"
+    defence. It is BOTH, though: the same text is persisted to the session file
+    and replayed by ``/resume``, and a session folder can arrive with a repository
+    rather than being written by this user.
+
+    ``\\n`` SURVIVES. A multi-line paste is meant to be several rows of one bar,
+    which is what ``Padding`` gives it; deleting the newlines would join the
+    lines into a run-on instead.
     """
 
     label = _USER_MESSAGE_LABELS.get(kind, _USER_MESSAGE_LABELS["prompt"])
-    return Group(Text(""), Text(f"{label}{text}", style="bold cyan"), Text(""))
+    bar: RenderableType = Padding(
+        Text(f"{label}{_strip_controls(text)}"), (0, 1), style=_USER_ECHO_STYLE
+    )
+    if width is not None and width > _ECHO_MIN_CONSTRAIN:
+        # Below this the ``(0, 1)`` inset alone is the whole budget and Constrain
+        # renders an empty bar — measured, two blank rows where the turn used to
+        # be. A terminal that narrow is already unusable; losing the echo of your
+        # own input to a width CAP is a defect the cap introduced, so it does not
+        # apply there and the console's own width takes over, which is what this
+        # rendered before the cap existed.
+        bar = Constrain(bar, width)
+    return Group(Text(""), bar, Text(""))
 
 
 def render_tool_call_line(tool_name: str, summary: str) -> Text:
@@ -445,7 +588,7 @@ class EventRenderer:
         # reasoning is painted live, so turning the setting ON has to take the
         # already-painted window down. Doing that in the setter covers all three
         # writers — the startup seed, /settings live-apply and Ctrl+T
-        # (shell.py:596, 1051, 2151) — without asking each to remember.
+        # (shell.py:608, 1051, 2151) — without asking each to remember.
         self._hide_thinking: bool = False
         self._hidden_thinking_label: str = "Thinking…"
         # Aelix-original DISPLAY gate: when True, the persisted compaction-summary
@@ -570,6 +713,23 @@ class EventRenderer:
             self._commit(Text(f"✖ {message}", style="bold red"))
 
     # === helpers ===========================================================
+
+    def render_width(self) -> int:
+        """The width every renderer in this module lays out against, live.
+
+        Public because ``tui/shell.py`` echoes the user's own turn from two sites
+        this class does not own — the live prompt and a steer / follow-up
+        injection — and those need the SAME number, not a second derivation of
+        it. ``run_tui`` builds this renderer with
+        ``width=lambda: terminal_columns(chrome, max_width=render_width_cap)``
+        (issue #166), so reading it here is reading the one source rather than
+        recomputing a matching one that can drift from it.
+
+        A live ioctl per call, deliberately: callers resolve it once per thing
+        they lay out, the same way :meth:`replay` does for a whole repaint.
+        """
+
+        return self._width_of()
 
     def _card_line_width(self) -> int:
         """Cells a tool-card / diff line may occupy at the current width.
@@ -760,7 +920,7 @@ class EventRenderer:
             return
         if self._text_stream is not None:
             # The answer owns the live window once it starts streaming, and both
-            # write the same last-writer-wins sink (shell.py:3052). A provider
+            # write the same last-writer-wins sink (shell.py:3147). A provider
             # that resumes reasoning after answer text — openai-completions
             # replays it on the same content_index — would otherwise flip the
             # window between the answer being typed and a reasoning fragment.
@@ -1026,8 +1186,10 @@ class EventRenderer:
                         )
                     else:
                         # Sprint 6h₂₅ (ADR-0153) — shared user-echo vocabulary so a
-                        # replayed transcript echoes input identically to a live turn.
-                        self._commit(render_user_message(text))
+                        # replayed transcript echoes input identically to a live
+                        # turn. ``replay_width`` is the same measure the rest of
+                        # this repaint uses, resolved once above.
+                        self._commit(render_user_message(text, width=replay_width))
             elif role == "assistant":
                 for block in getattr(msg, "content", []) or []:
                     btype = getattr(block, "type", None)

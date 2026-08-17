@@ -478,7 +478,7 @@ async def _member(
             # minute in frontmatter (``agents/profile.py:398``) would silently
             # get ten — times up to eight children — while ``mode="single"``,
             # which passes ``pending.call.timeout_ms`` straight through
-            # (``extension.py:1024``), still honoured it. Same profile, two modes,
+            # (``extension.py:1030``), still honoured it. Same profile, two modes,
             # two clocks.
             requested_ms = (
                 batch.call.timeout_ms

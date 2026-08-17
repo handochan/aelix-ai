@@ -82,6 +82,31 @@ _PICK_FILTER = "\x1b[1;36m"  # bold cyan — the live filter value
 _PICK_MIN_WIDTH = 28
 _PICK_MAX_WIDTH = 78
 
+# GitHub #48 ask 1 — the panel RULE, which used to be :data:`_PICK_DIM`. SGR 2 is
+# the faintest attribute a terminal has, and it was carrying the one element
+# whose entire job is to say where the panel starts and stops; the owner's report
+# was that an opened panel does not separate from the transcript around it.
+#
+# Cyan and not bold cyan: :data:`_PICK_SEL` is ``\x1b[1;36m`` and belongs to the
+# HIGHLIGHTED ROW, which has to stay the single brightest thing on screen. A rule
+# in the same style gives the eye two winners. Plain ANSI 36 is 4-bit, so it
+# survives a terminal with no truecolor and follows the user's own palette.
+#
+# The glyph is a constant because the choice between ``─`` and a heavier ``━`` is
+# taste, not correctness — the rest of this codebase (the banner box,
+# ``model_detail_lines``) draws ``─``, so that is the default.
+_PICK_RULE = "\x1b[36m"  # cyan — the top/bottom rule
+_PICK_RULE_CHAR = "─"
+
+#: C0, DEL and C1 minus the newline, mapped to a space, for the picker TITLE.
+#: C1 is in the set because ``\x9b`` is a one-byte CSI; the newline is spared
+#: because a multi-row title is a supported shape (spawn consent passes nine).
+_TITLE_CONTROL_MAP = {
+    codepoint: " "
+    for codepoint in (*range(0x00, 0x20), 0x7F, *range(0x80, 0xA0))
+    if codepoint != 0x0A
+}
+
 
 def _filter_line(value: str, placeholder: str | None = None) -> str:
     """A standalone filter affordance: dim ``Filter:`` label + bright typed VALUE.
@@ -113,20 +138,103 @@ def _filter_counter_suffix(value: str) -> str:
 
 
 def _picker_frame(title: str, body: list[str], hint: str, content_width: int) -> ANSI:
-    """Frame a picker body: bold title + top/bottom dividers + dim hint (ADR-0163).
+    """Frame a picker body: title on a coloured rule, body, rule, dim hint.
 
     ``body`` rows are already styled by the caller (the current row colored, the
     counter/detail dimmed). ``content_width`` is the widest PLAIN content line so
-    the dividers span the panel. Returns :class:`ANSI` so the escapes render.
+    the rules span the panel. Returns :class:`ANSI` so the escapes render.
+
+    GitHub #48 ask 1. ADR-0163 shipped this as a bold title on its own line above
+    a DIM divider, and the title then reads as ordinary transcript text: the only
+    thing marking the top of the panel was the faintest attribute the terminal
+    has. A single-row title now rides the top rule — ``── Settings ─────`` — so
+    the boundary and the label are one object rather than two weak ones.
+
+    THAT ALSO REMOVES A ROW, WHICH IS THE SAFE DIRECTION. The modal does not
+    scroll, it BOTTOM-TRUNCATES: ``build()`` returns one ``Window`` with
+    ``wrap_lines`` False and no ``get_cursor_position``, so prompt-toolkit has
+    nothing to scroll to, and ``_CappedContainer`` clamps the height
+    (``tui/overlay.py:221-231``). ADR-0199 measured that at eight members the
+    hint, the closing rule, the counter and the last option — which
+    ``consent.build_options`` guarantees is ``Cancel`` — are simply not drawn.
+
+    A MULTI-ROW TITLE KEEPS THE OLD SHAPE, and that is load-bearing rather than
+    tidy. The spawn-consent dialog passes a NINE-row title
+    (``tests/agents_ext/test_spawn_consent.py:1292`` pins ``title.count("\\n")
+    == 8``) and ``aelix_agents/consent.py`` writes its height budget down as
+    ``title_rows + option_rows + 4``, gated by
+    ``tests/agents_ext/test_batch_consent.py:344``. Nine rows cannot ride a rule,
+    and quietly changing that arithmetic is how ``Cancel`` goes off screen.
+    MEASURED against the shipped helper: single-row title 8 rows → 7, nine-row
+    title 16 rows → 16, and the top rule is exactly as wide as the bottom one at
+    every content width, Hangul titles included.
     """
 
+    # THE TITLE IS SANITISED; the BODY is not, and the asymmetry is NARROWER than
+    # it looks. Body rows do arrive already styled by this module — the cursor row
+    # is ``_PICK_SEL``, the counter is dim — but ``select`` also interpolates the
+    # caller's OPTION strings into them, so "the body is our own styling" is true
+    # of the wrapper and not of what it wraps. That gap is pre-existing (it is
+    # unchanged from ``main``) and is not closed here; it is named so the next
+    # reader does not take the asymmetry for a proof of safety.
+    #
+    # WHAT IT ACTUALLY BUYS, measured rather than assumed — this comment has
+    # carried a wrong version of it twice. The map deletes the CONTROL BYTES, so
+    # no escape SEQUENCE is ever assembled from a caller's title; what remains is
+    # the payload's printable tail, and it lands as ordinary text (``[31m``,
+    # ``]0;PWNED``). Visible junk in a label is a caller getting what it asked
+    # for. A live escape in a frame this module claims to own is not.
+    #
+    # WHAT IT DOES NOT BUY, and two earlier drafts said it did:
+    #
+    # * The window title. No OSC reaches a terminal from here with or without the
+    #   map — driven through the real frame onto a pyte screen, ``screen.title``
+    #   stays ``''``, against a control that reads ``'REAL'`` from a genuine OSC
+    #   fed to the same emulator.
+    # * The rules agreeing. They already agree: both are drawn from the one
+    #   ``width`` number below, so they are equal in every escape class and in both
+    #   title placements — measured +0 for plain, SGR, OSC, CSI-non-``m``, one-byte
+    #   C1 and DCS. The "32 cells against 40" an earlier draft reported does not
+    #   reproduce in either direction.
+    #
+    # The width IS mis-measured, and that is a separate, smaller thing:
+    # ``_visible_len`` strips SGR only, so an escaped title under-counts and the
+    # frame sizes itself from the wrong number. Both rules then share that wrong
+    # number, which is why the frame stays square while the title can still
+    # overflow its own line — the degradation the ``fits`` check below documents.
+    #
+    # Newlines survive: the spawn-consent dialog's title is nine rows.
+    title = title.translate(_TITLE_CONTROL_MAP)
     width = max(_PICK_MIN_WIDTH, min(content_width, _PICK_MAX_WIDTH))
-    divider = f"{_PICK_DIM}{'─' * width}{_PICK_RST}"
+    rule = f"{_PICK_RULE}{_PICK_RULE_CHAR * width}{_PICK_RST}"
+    # A title only rides the rule if it LEAVES one. ``width`` is clamped to
+    # :data:`_PICK_MAX_WIDTH` while the title is not bounded at all —
+    # ``ExtensionUIContext.select`` takes whatever an extension passes — so a
+    # long enough label would make the TOP rule overrun the bottom one by its own
+    # excess. On its own line it overflows exactly as it does today, which is a
+    # clipped title; in the rule it would be a visibly broken frame.
+    fits = title and "\n" not in title and _visible_len(title) + 6 <= width
+    if fits:
+        # ``── title ────``: two lead cells, a space either side of the label,
+        # and the rest of the rule. Measured in CELLS — a Hangul title is twice
+        # its length in columns, and a top rule that disagreed with the bottom
+        # one by half its label would be worse than the dim rule it replaces.
+        # ``max(0, …)`` is not catching a live case: the ``+ 6`` above already
+        # guarantees at least two trailing cells. It is here so that a future
+        # edit to that condition degrades to a short rule rather than to a rule
+        # with no tail — ``"─" * -164`` is silently ``""``, not an error.
+        tail = _PICK_RULE_CHAR * max(0, width - 4 - _visible_len(title))
+        head = [
+            f"{_PICK_RULE}{_PICK_RULE_CHAR * 2} {_PICK_RST}"
+            f"{_PICK_BOLD}{title}{_PICK_RST}"
+            f"{_PICK_RULE} {tail}{_PICK_RST}"
+        ]
+    else:
+        head = [f"{_PICK_BOLD}{title}{_PICK_RST}", rule]
     lines = [
-        f"{_PICK_BOLD}{title}{_PICK_RST}",
-        divider,
+        *head,
         *body,
-        divider,
+        rule,
         f"{_PICK_DIM}{hint}{_PICK_RST}",
     ]
     return ANSI("\n".join(lines))
@@ -1117,16 +1225,67 @@ class AelixTUIContext:
                 values[segment.id] = value
         return values
 
-    # WP-8 (Feature 5) — the mockup-A grouped row layout: each row lists the
-    # segment ids it carries, in render order. Empty rows (no enabled, non-empty
-    # segment) are omitted. ``permission-mode`` stays the LEADING segment of its
-    # row (ADR-0159). Extension statuses join the LAST row.
+    # WP-8 (Feature 5) — the grouped row layout: each row lists the segment ids
+    # it carries, in render order. Empty rows (no enabled, non-empty segment) are
+    # omitted. ``permission-mode`` stays the LEADING segment of its row
+    # (ADR-0159). Extension statuses join the LAST row.
+    #
+    # TWO rows, not the three WP-8 shipped. ``current-dir`` had a row to itself
+    # and ``permission-mode`` another, so the common case — one directory, the
+    # default posture — spent two chrome rows on about thirty cells:
+    #
+    #     ✱ gpt-5.6-luna  ·  🧠 high  ·  ⎇ main  ·  ◔ 24% · 96.4K/400K
+    #     📂 /workspaces/aelix-ai
+    #     ● default
+    #
+    # The chrome is subtracted from the scrollback the user is actually reading,
+    # so a row costs more than it looks. Merged with ``permission-mode`` FIRST:
+    # ADR-0159 requires the badge to lead its row, and it is the security-visible
+    # segment, so it keeps the position the eye lands on. The pairing is also the
+    # honest one — both answer "where am I and what am I allowed to do", while
+    # row 1 answers "what am I talking to".
+    #
+    # ``current-dir`` GOES LAST, and that ordering is the whole of a defect this
+    # merge introduced and then had to fix. The chrome row is height-1 and is
+    # CLIPPED at the terminal, which is the very thing multi-line mode exists to
+    # stop — and ``current-dir`` is the one segment with no bound, so it decides
+    # whether the row overflows.
+    #
+    # MEASURED through the real chrome onto a pyte screen at 80 columns, with
+    # ``cwd=/workspaces/aelix-ai/packages/aelix-coding-agent/src/aelix_coding_agent``
+    # and the four segments below enabled. The cwd is named because the number
+    # depends on it, and an earlier draft of this comment reported 95 cells for an
+    # unnamed one:
+    #
+    #     path in the middle  composed 106 cells → 79 on glass, LOST ``⏵⏵ all``
+    #                         and ``⋯ 3 queued`` — the only LIVE and TRANSIENT
+    #                         signals on the whole footer
+    #     path last (this)    composed 106 cells → 79 on glass, LOST only the
+    #                         path's tail
+    #
+    # With one extension status published the composed row is 129 cells in both
+    # orderings, and the ordering decides whether the extension's own status
+    # survives too: it does here, and does not with the path in front of it.
+    #
+    # So the overflow eats the path — the segment a user can already see in their
+    # own shell prompt, and the one whose tail is the most guessable. That is a
+    # TRADE for the row this merge saves, not a free win: on ``main``, where
+    # ``current-dir`` had a row to itself, this path rendered whole.
     _MULTILINE_ROWS: tuple[tuple[str, ...], ...] = (
         ("model", "thinking-level", "git-branch", "context-remaining",
          "input-tokens", "output-tokens", "cost"),
-        ("current-dir",),
-        ("permission-mode", "steering", "pending-queued"),
+        ("permission-mode", "steering", "pending-queued", "current-dir"),
     )
+
+    _UNBOUNDED_TAIL_SEGMENTS = frozenset({"current-dir"})
+    """Segments the ordering above puts last, and that anything merged into a row
+    LATER has to be inserted in front of.
+
+    The tuple order alone is not the rendered order: extension statuses are not
+    registry segments and join the last row after it is composed, so appending
+    them to the joined string put the path back in the middle and the clip ate the
+    extension's own status instead. Naming the segment here is what lets
+    ``_refresh_footer`` keep the promise the tuple makes."""
 
     def _refresh_footer(self) -> None:
         if self._footer_factory is not None:
@@ -1156,19 +1315,38 @@ class AelixTUIContext:
         if self._statusline_multiline():
             # WP-8 (Feature 5) — grouped multi-line block (mockup A). Each row
             # joins its enabled+non-empty segments by ``  ·  ``; empty rows are
-            # omitted; extension statuses join the last rendered row's tail.
-            rows: list[str] = []
+            # omitted; extension statuses join the last rendered row.
+            #
+            # BEFORE THE UNBOUNDED SEGMENT, NOT AFTER IT. Joining the row first and
+            # appending the extension tail to the string put ``current-dir`` back
+            # in the MIDDLE, which is the one position ``_MULTILINE_ROWS`` orders
+            # it out of: MEASURED at 80 columns with one extension status and a
+            # realistically nested cwd, the merged row is 132 cells and what the
+            # height-1 clip took was the extension's status, entirely. Composing
+            # the row as cells and inserting at the path keeps the promise the
+            # ordering makes — the path is the segment that overflows.
+            composed: list[list[str]] = []
+            composed_ids: list[list[str]] = []
             for row_ids in self._MULTILINE_ROWS:
-                cells = [values[sid] for sid in row_ids if sid in values]
-                if cells:
-                    rows.append("  ·  ".join(cells))
+                present = [sid for sid in row_ids if sid in values]
+                if present:
+                    composed.append([values[sid] for sid in present])
+                    composed_ids.append(present)
             if ext_statuses:
-                ext_row = "  ·  ".join(ext_statuses)
-                if rows:
-                    rows[-1] = f"{rows[-1]}  ·  {ext_row}"
+                if composed:
+                    cells, ids = composed[-1], composed_ids[-1]
+                    at = next(
+                        (
+                            index
+                            for index, sid in enumerate(ids)
+                            if sid in self._UNBOUNDED_TAIL_SEGMENTS
+                        ),
+                        len(cells),
+                    )
+                    cells[at:at] = ext_statuses
                 else:
-                    rows.append(ext_row)
-            self.chrome.set_footer_block(rows)
+                    composed.append(list(ext_statuses))
+            self.chrome.set_footer_block(["  ·  ".join(cells) for cells in composed])
             return
 
         # Single-line (default): the canonical registry order joined by ``  ·  ``.

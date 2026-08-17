@@ -49,6 +49,16 @@ def _renderer() -> tuple[EventRenderer, list[Any], list[str]]:
 def _plain(renderable: Any) -> str:
     if hasattr(renderable, "renderables"):  # rich Group → flatten its rows
         return "".join(_plain(child) for child in renderable.renderables)
+    # #48 — the user echo is a ``Constrain`` around a ``Padding`` around the
+    # ``Text``, and both wrap ONE child under ``.renderable`` rather than a list
+    # under ``.renderables``. Without this hop the helper fell through to
+    # ``str()`` and every replay assertion read
+    # ``<rich.constrain.Constrain object at 0x…>`` while the renderer was in fact
+    # correct — a failure of the instrument, in the same shape as the one the
+    # ``Padding`` hop in ``test_run_tui_smoke.py`` was added for.
+    inner = getattr(renderable, "renderable", None)
+    if inner is not None:
+        return _plain(inner)
     return renderable.plain if hasattr(renderable, "plain") else str(renderable)
 
 
@@ -834,40 +844,339 @@ def _group_rows(group: Any) -> list[Any]:
     return list(getattr(group, "renderables", []))
 
 
-def test_render_user_message_blank_line_chevron_and_cyan() -> None:
+def _echo_text(group: Any) -> str:
+    """The label+body of a user echo, out of whatever renderable carries it."""
+
+    inner = getattr(_group_rows(group)[1], "renderable", None)
+    return getattr(inner, "plain", "")
+
+
+def _painted_rows(group: Any, width: int) -> list[tuple[str, int]]:
+    """Render *group*; return ``(text, painted_cells)`` for each emitted line.
+
+    Measured off the EMITTED ESCAPE STREAM, deliberately, not off a pyte screen.
+    pyte inserts a phantom blank row after any line that exactly fills the width
+    — verified with no Rich in the loop: feeding ``"A" * 10 + "\\n" + "BBB"`` to a
+    10-wide ``pyte.Screen`` yields ``['AAAAAAAAAA', '', 'BBB']`` — and a
+    full-width bar puts EVERY row on that boundary. Asserting row positions
+    through pyte would report a bar split in two while the bytes are continuous.
+    """
+
+    import io
+    import re
+
+    from aelix_coding_agent.tui.render import _USER_ECHO_STYLE
+    from rich.console import Console
+    from rich.text import Text
+
+    def _render(renderable: object) -> str:
+        buf = io.StringIO()
+        # ``height`` IS LOAD-BEARING, not decoration. On a dumb terminal rich
+        # DISCARDS a declared width unless a height is declared with it — MEASURED,
+        # ``Console(width=40, force_terminal=True)`` reports ``console.width == 80``
+        # under ``TERM=dumb`` or ``TERM=unknown`` and 40 under anything else. Every
+        # assertion below is about a bar spanning a width, so a silently doubled
+        # console is not a harness detail: it is the measurement failing while the
+        # test name still claims it. Eight tests in this file failed under those two
+        # TERM values for exactly this reason.
+        Console(
+            file=buf, width=width, height=24, force_terminal=True, color_system="truecolor"
+        ).print(renderable)
+        return buf.getvalue()
+
+    # SELF-CALIBRATING, so this stays a test about COVERAGE and not about the
+    # colour. Which SGR the bar emits is a taste decision that has already moved
+    # once (blue → cyan); that every cell of every row is inside it is the
+    # invariant. Hardcoding the code would fail the next time the colour changes
+    # and say nothing about the property under test.
+    bar_sgr = re.findall(r"\x1b\[([0-9;]*)m", _render(Text("X", style=_USER_ECHO_STYLE)))
+    assert bar_sgr, "the echo style emits no SGR — is colour disabled here?"
+    bar_codes = bar_sgr[0]
+
+    rows: list[tuple[str, int]] = []
+    for line in _render(group).split("\n")[:-1]:
+        plain = re.sub(r"\x1b\[[0-9;]*m", "", line)
+        painted = 0
+        on = False
+        i = 0
+        while i < len(line):
+            m = re.match(r"\x1b\[([0-9;]*)m", line[i:])
+            if m:
+                on = m.group(1) == bar_codes
+                i += m.end()
+                continue
+            painted += 1 if on else 0
+            i += 1
+        rows.append((plain, painted))
+    return rows
+
+
+def _render_group_to_ansi(group: Any, width: int) -> str:
+    """The bytes a terminal would receive, escapes included."""
+
+    import io
+
+    from rich.console import Console
+
+    buf = io.StringIO()
+    # ``height`` for the same reason as ``_painted_rows`` above: without it a dumb
+    # TERM silently widens this console to 80 and the declared width is a fiction.
+    Console(
+        file=buf, width=width, height=24, force_terminal=True, color_system="truecolor"
+    ).print(group)
+    return buf.getvalue()
+
+
+def _bar_rows(group: Any, width: int) -> list[tuple[str, int]]:
+    return [(t, n) for t, n in _painted_rows(group, width) if t.strip()]
+
+
+def test_render_user_message_is_a_bar_that_spans_the_width() -> None:
+    """#48 — the echo owns its ground, and owns ALL of it.
+
+    SABOTAGE: put the middle row back to ``Text(..., style=_USER_ECHO_STYLE)``.
+    Rich then paints only the glyph run, the trailing cells keep the terminal's
+    own ground, and the ragged right edge fails the width assertion. That is the
+    whole difference between a bar and coloured text.
+    """
+
     from aelix_coding_agent.tui.render import render_user_message
 
     group = render_user_message("hello there")
     rows = _group_rows(group)
-    # Sprint 6h₃₂ — blank lines ABOVE and BELOW fence the echo off (the single
-    # leading blank of ADR-0153 was too subtle).
+    # Sprint 6h₃₂ — blank lines ABOVE and BELOW still fence the echo off.
     assert len(rows) == 3
-    assert rows[0].plain == ""  # leading blank
-    assert rows[2].plain == ""  # trailing blank
-    # The middle row keeps the ``» `` chevron and is styled bold cyan (stands out).
-    assert rows[1].plain == "» hello there"
-    assert "bold cyan" in str(rows[1].style)
+    assert rows[0].plain == ""
+    assert rows[2].plain == ""
+    assert _echo_text(group) == "» hello there"
+
+    body = _bar_rows(group, 40)
+    assert body
+    for text, cells in body:
+        assert cells == 40, f"row {text!r} painted {cells}/40 cells — not a bar"
+
+
+def test_render_user_message_bar_survives_wrapping() -> None:
+    """A long turn is ONE bar, not a painted first row and a bare remainder.
+
+    SABOTAGE: the same one. A manually right-padded ``Text`` covers the first
+    row and leaves every continuation row unpainted — measured before choosing
+    ``Padding``, which is the reason the helper uses it.
+    """
+
+    from aelix_coding_agent.tui.render import render_user_message
+
+    long_turn = "fix the retry loop in the harness and add a test for it as well"
+    body = _bar_rows(render_user_message(long_turn), 32)
+    assert len(body) >= 2, "the fixture no longer wraps; widen the input"
+    for text, cells in body:
+        assert cells == 32, f"wrapped row {text!r} painted {cells}/32 cells"
+
+
+def test_render_user_message_bar_is_capped_at_the_render_width() -> None:
+    """The bar may not be wider than the prose it sits above.
+
+    ``Padding`` resolves its width at print time from the console, and
+    ``chrome._console`` is a bare ``Console`` — raw terminal columns — while every
+    other renderer is laid out against ``terminal_columns(...)``, capped at 120
+    (ADR-0219). MEASURED on the first shipped version of the bar: 40 / 80 / 120 /
+    **200** cells at those console widths, i.e. a 200-cell band under 120-cell
+    prose.
+
+    Asserted on the PAINT rather than on line length: a wrapper that narrowed the
+    text and let the padding keep filling the console would satisfy a length
+    check and change nothing on screen.
+    """
+
+    from aelix_coding_agent.tui.render import render_user_message
+
+    long_turn = "please refactor the width helper so it stops baking a fixed 80 " * 3
+    body = _bar_rows(render_user_message(long_turn, width=120), 200)
+    assert body
+    for text, cells in body:
+        assert cells == 120, f"row {text!r} painted {cells} cells on a 200-col console"
+
+
+def test_render_user_message_width_only_ever_caps() -> None:
+    """A narrow terminal must be untouched by the cap.
+
+    ``Constrain`` is a ceiling, not a target — at 40, 80 and 120 columns the bar
+    still spans the console. Without this, a "fix" that pinned every bar to 120
+    would pass the test above and leave a 40-column terminal with a bar three
+    times its width.
+    """
+
+    from aelix_coding_agent.tui.render import render_user_message
+
+    long_turn = "please refactor the width helper so it stops baking a fixed 80 " * 3
+    for console in (40, 80, 120):
+        body = _bar_rows(render_user_message(long_turn, width=120), console)
+        assert body
+        for text, cells in body:
+            assert cells == console, f"{text!r} painted {cells}/{console}"
+
+
+def test_replay_user_echo_is_capped_at_the_renderers_width() -> None:
+    """A repainted transcript is bounded by the RENDERER, not by the console.
+
+    ``replay`` resolves ``_width_of()`` once for the whole repaint; the echo has
+    to be laid out against that number like every other block, or a ``/resume``
+    on a wide terminal repaints 120-cell prose under full-terminal bars.
+
+    Caught by a sabotage — dropping ``width=`` from the replay call left every
+    other test green.
+    """
+
+    from aelix_ai.messages import TextContent, UserMessage
+
+    commits: list[Any] = []
+    renderer = EventRenderer(commit=commits.append, set_tail=lambda _s: None, width=100)
+    renderer.replay([UserMessage(content=[TextContent(text="what is 2+2 " * 20)])])
+
+    echoes = [c for c in commits if "what is 2+2" in _plain(c)]
+    assert echoes, "replay committed no user echo"
+    rows = _bar_rows(echoes[0], 200)
+    assert rows
+    for text, cells in rows:
+        assert cells == 100, f"replayed bar painted {cells}/100: {text!r}"
+
+
+def test_every_production_echo_call_passes_a_width() -> None:
+    """``width=None`` means unbounded, and every production caller must not take it.
+
+    The unit tests above rely on that default, so it cannot be removed — which
+    makes "a caller forgot" a silent, shipped defect rather than a failure. Two
+    sabotages proved that concretely: dropping ``width=`` from the steer /
+    follow-up echo and from replay left the entire suite green, because the
+    helper was doing exactly what it was asked.
+
+    This is a SHAPE gate and is deliberately paired with, not a substitute for,
+    the behavioural caps above: it also covers a caller nobody has written yet.
+    """
+
+    import ast
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2] / "packages"
+    offenders: list[str] = []
+    for path in root.rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            name = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
+            if name != "render_user_message":
+                continue
+            if not any(kw.arg == "width" for kw in node.keywords):
+                offenders.append(f"{path.name}:{node.lineno}")
+    assert not offenders, f"render_user_message called without width= at {offenders}"
+
+
+def test_an_escape_in_the_echoed_turn_does_not_tear_the_bar() -> None:
+    """Pasting coloured build output into a coding agent is ordinary input.
+
+    ``Text`` does not interpret escapes but it does not remove them either, so the
+    paste went to the terminal verbatim. MEASURED at width 40 with
+    ``error: \x1b[31mFAILED\x1b[0m in test_x``: 23 of the 40 cells were painted
+    and 17 were NOT — the user's own reset ended the bar's background mid-row —
+    and the raw ``\x1b[31m`` reached the glass. ``\x9b``, the one-byte CSI, did
+    the same. Stripped, that paste paints all 40, which is what the last assertion
+    below reads. (An earlier draft of this paragraph reported 17 as the PAINTED
+    count; 17 is the complement, re-measured on a pyte replay of both arms.)
+
+    It is also an untrusted-input path: the same text is persisted to the session
+    file and replayed by ``/resume``, and a session folder can arrive with a
+    repository rather than being written by this user.
+    """
+
+    from aelix_coding_agent.tui.render import render_user_message
+
+    for text in (
+        "error: \x1b[31mFAILED\x1b[0m in test_x",
+        "before\x1bafter",
+        "before\x9b31mafter",
+        "first\rsecond",
+    ):
+        group = render_user_message(text, width=40)
+        rendered = _render_group_to_ansi(group, 40)
+        assert "\x1b[31m" not in rendered, repr(text)
+        assert "\x9b" not in rendered, repr(text)
+        for row_text, cells in _bar_rows(group, 40):
+            assert cells == 40, (text, row_text, cells)
+
+
+def test_a_multi_line_paste_is_still_several_rows_of_one_bar() -> None:
+    """The newline is one of two controls that survive, because a multi-line paste
+    is meant to be several rows of one bar rather than a run-on."""
+
+    from aelix_coding_agent.tui.render import render_user_message
+
+    body = _bar_rows(render_user_message("first line\nsecond line", width=40), 40)
+    assert len(body) == 2, body
+    assert all(cells == 40 for _t, cells in body), body
+
+
+def test_a_tab_indented_paste_keeps_its_indentation() -> None:
+    """The tab is the other one, and the first version of the strip took it.
+
+    Mapping ``\\t`` to a space rendered every nesting level of a Makefile, of Go,
+    of tab-indented C as ONE column — and the echo is replayed from the session
+    file, so the flattening is permanent rather than cosmetic. Neither harm the
+    strip exists for is a property of a tab: Rich expands it to its 8-column stop
+    BEFORE writing, so the spaces are painted inside the background run, no raw
+    ``\\t`` reaches the terminal, and the bar stays whole. The last two assertions
+    are what say so, and they are why sparing it is safe rather than a trade.
+    """
+
+    from aelix_coding_agent.tui.render import render_user_message
+
+    group = render_user_message("run this:\n\tmake build\n\t\tCC=gcc", width=60)
+    rows = _bar_rows(group, 60)
+    assert len(rows) == 3, rows
+
+    # Nesting is VISIBLE: the deeper line starts further in than the shallower one,
+    # and both start further in than the unindented one. Column counts rather than
+    # a substring, because one collapsed space is still "indented" by a substring.
+    indents = [len(row_text) - len(row_text.lstrip(" ")) for row_text, _c in rows]
+    assert indents[0] < indents[1] < indents[2], (indents, rows)
+    assert indents[2] - indents[1] >= 8, (indents, rows)
+
+    rendered = _render_group_to_ansi(group, 60)
+    assert "\t" not in rendered, repr(rendered)  # Rich expanded it, not us
+    assert all(cells == 60 for _t, cells in rows), rows  # the bar is still whole
+
+
+def test_the_echo_survives_a_width_too_narrow_to_constrain() -> None:
+    """At 1 or 2 columns the ``(0, 1)`` inset IS the whole budget, and constraining
+    to it renders an empty bar — two blank rows where the turn used to be. Losing
+    the echo to a width CAP is a defect the cap introduced, so it does not apply
+    there."""
+
+    from aelix_coding_agent.tui.render import render_user_message
+
+    for width in (1, 2):
+        assert _echo_text(render_user_message("hi", width=width)) == "» hi"
 
 
 def test_render_user_message_steer_and_follow_up_labels_same_visual() -> None:
     from aelix_coding_agent.tui.render import render_user_message
 
-    steer = _group_rows(render_user_message("go left", kind="steer"))
-    follow = _group_rows(render_user_message("then commit", kind="follow_up"))
+    steer = render_user_message("go left", kind="steer")
+    follow = render_user_message("then commit", kind="follow_up")
     # Distinct labels...
-    assert steer[1].plain == "Steering: go left"
-    assert follow[1].plain == "Follow-up: then commit"
-    # ...but the SAME visual language: leading blank line + bold cyan.
-    for rows in (steer, follow):
-        assert rows[0].plain == ""
-        assert "bold cyan" in str(rows[1].style)
+    assert _echo_text(steer) == "Steering: go left"
+    assert _echo_text(follow) == "Follow-up: then commit"
+    # ...but the SAME visual language: fenced by blanks, and inside the bar.
+    for group in (steer, follow):
+        assert _group_rows(group)[0].plain == ""
+        body = _bar_rows(group, 40)
+        assert body and all(n == 40 for _, n in body), body
 
 
 def test_render_user_message_unknown_kind_degrades_to_prompt() -> None:
     from aelix_coding_agent.tui.render import render_user_message
 
-    rows = _group_rows(render_user_message("oops", kind="mystery"))
-    assert rows[1].plain == "» oops"
+    assert _echo_text(render_user_message("oops", kind="mystery")) == "» oops"
 
 
 # === Sprint 6h₃₂ — shared tool-call header helper ==========================

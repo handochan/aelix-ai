@@ -8,7 +8,7 @@ the public extension API.
 
 FOUR REGISTRATIONS, and the ORDER of the whole extension matters more than the
 order of these. ``cli/entry.py`` APPENDS this extension after ``Guardrail`` and
-``Permission`` (``entry.py:1363-1365`` documents Guardrail-first as a security
+``Permission`` (``entry.py:1422-1424`` documents Guardrail-first as a security
 invariant — DO NOT REORDER), so under the kernel's first-block-wins reduction
 our ``tool_call`` handler runs LAST: a guardrail hard-deny and a permission
 denial both win over us, and neither can be softened by anything here.
@@ -182,7 +182,7 @@ class AgentsExtension:
     whose clamp is ``plan`` — an unwired host gets READ-ONLY children.
 
     This paragraph used to add "(that is the literal call site in
-    ``entry.py``)". It is not: ``entry.py:2158-2173`` passes ``posture``,
+    ``entry.py``)". It is not: ``entry.py:2199-2214`` passes ``posture``,
     ``agent_dir``, ``cwd`` and ``project_trusted``. The bare form is what the
     test suite builds — reason enough for the defaults to stay conservative —
     but the correction matters because it is also why a NEW field is INERT in
@@ -700,7 +700,7 @@ class AgentsExtension:
         ``tasks`` is the frozen tuple from :func:`~aelix_agents.tool.parse_agent_call`
         and ``mode`` its topology; both are handed to
         :func:`~aelix_agents.consent.request_spawn_consent_batch`, which renders
-        EVERY member or refuses the call outright (``consent.py:1282-1288``). The
+        EVERY member or refuses the call outright (``consent.py:1287-1293``). The
         pre-filter below is unchanged and is still asked of ONE profile, ONE
         clamp and ONE predicate — which is exactly what S3's one-profile-per-call
         rule buys and why a single :class:`SpawnGrant` can still describe the
@@ -847,7 +847,7 @@ class AgentsExtension:
 
         ANY OPEN BATCH GROUP GOES WITH IT, and it goes through ``bridge.clear()``
         rather than a second ``end_group`` loop here: ``clear`` already ends every
-        open group before dropping the remaining rows (``progress.py:409-422``),
+        open group before dropping the remaining rows (``progress.py:464-477``),
         which is the only ordering that also blanks the widget panel. A teardown
         that raced ``_execute``'s ``finally`` would otherwise leave an aggregate
         row on a statusline whose delegation no longer exists.
@@ -966,7 +966,7 @@ class AgentsExtension:
         # (``progress._Group.active`` reads the same constant).
         #
         # A group of one is inactive, so it renders nothing — but ``end_group``
-        # clears the aggregate row unconditionally (``progress.py:351-355``), i.e. it
+        # clears the aggregate row unconditionally (``progress.py:377-381``), i.e. it
         # would issue one ``set_status(subagent:group:<id>, None)`` for a row that
         # was never written. S10's floor is that a SINGLE delegation keeps P2's
         # surfaces byte-identical, and a UI write P2 never made is not
@@ -986,7 +986,7 @@ class AgentsExtension:
             # group by the time it has to decide between an aggregate row and a
             # per-child one. ``adopt`` is idempotent and ignores an unknown key,
             # which is why it is called on every frame rather than only the first
-            # (``progress.py:320-339``).
+            # (``progress.py:346-365``).
             if grouped and bridge is not None:
                 with contextlib.suppress(Exception):
                     bridge.adopt(progress.id, key, index=index)
@@ -1008,7 +1008,13 @@ class AgentsExtension:
         # behind by a cancelled turn is a lie the user cannot dismiss and that
         # ``set_status`` has no "clear all" verb to remove.
         if grouped and bridge is not None:
-            bridge.begin_group(key, expected=total)
+            # ``tasks`` is index-aligned with the members the executor
+            # creates, which is the same index ``_on_event`` adopts with —
+            # so the panel can name what each row is DOING without a new
+            # ``SubagentProgress`` field (ADR-0199 §3.6 forbids one).
+            bridge.begin_group(
+                key, expected=total, tasks=tuple(pending.call.tasks)
+            )
         try:
             if pending.call.mode == "single":
                 # UNCHANGED FROM P2, deliberately: one child, ``spawn_granted``

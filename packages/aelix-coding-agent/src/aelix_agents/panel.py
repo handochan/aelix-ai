@@ -37,6 +37,8 @@ from __future__ import annotations
 import time
 from typing import TYPE_CHECKING
 
+from rich.cells import cell_len
+
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
@@ -75,7 +77,13 @@ tracks which group last wrote the slot, so an end_group for a group that does
 not own it cannot blank someone else's panel."""
 
 AGGREGATE_MAX_CHARS = 78
-"""Hard ceiling on surface 1, in characters.
+"""Hard ceiling on surface 1, in terminal CELLS.
+
+The name says CHARS and the unit is cells; the name is kept because it is public
+and the rename is not worth a breaking change, but the unit moved when the panel
+stopped counting codepoints — a Hangul syllable is one character and two cells,
+and it was the character count that let a row through at twice its promised
+width.
 
 78 and not 80: the aggregate is one segment among several on a shared height-1
 row (``chrome.py:1097-1108`` joins them with two spaces), so the last two
@@ -94,7 +102,9 @@ ONLY — the tool card (surface 2) prints the name in full, because that is the
 permanent transcript record and byte-identity with P2 is a requirement there."""
 
 PANEL_ROW_MAX_CHARS = 78
-"""Hard ceiling on ONE panel row, in characters (finding F2, HIGH).
+"""Hard ceiling on ONE panel row, in terminal CELLS (finding F2, HIGH).
+
+Same note as :data:`AGGREGATE_MAX_CHARS`: the NAME says chars, the unit is cells.
 
 The same number and the same reason as :data:`AGGREGATE_MAX_CHARS`: 80 columns
 less the two the surrounding join spends. The panel needed its own name rather
@@ -118,6 +128,33 @@ newlines because "this is a fixed height=1 chrome row" (``chrome.py:1097-1099``)
 the statusline was defended at the far end and the widget is not."""
 
 _ELLIPSIS = "…"
+
+_ZERO_WIDTH_SLACK = 4
+"""Codepoints per cell :func:`_flatten` carries before it stops measuring and
+slices. Only zero-width input can reach it — one visible codepoint is at least
+one cell — so it bounds the pathological case without taking the ellipsis away
+from the ordinary one."""
+
+_MAX_INPUT_CHARS = 8192
+"""Ceiling on what :func:`_flatten` will even LOOK at, before the two width caps.
+
+The whitespace collapse and the ``translate`` are both linear in the input, and
+``_flatten`` runs on every publish for every member of a batch — the runtime
+publishes after every reduced stdout line. A child that sends a megabyte in
+``current_tool`` should not buy a megabyte of work per frame.
+
+WHERE THE COST ACTUALLY IS, re-measured because an earlier draft of this
+paragraph put it in the wrong step. At 200 000 characters the collapse is
+0.2-1.9 ms across every input shape tried; the expensive steps are the two after
+it, and only for non-ASCII, where ``translate`` takes the general per-character
+path: 76 ms for ``translate`` and 144 ms for ``cell_len`` on 200 000 combining
+acutes, against 0.3 ms and 3.8 ms for the same length in ASCII. So this bound is
+worth having, and it is the flood of zero-width marks it is worth having against.
+
+Generous rather than tight (a hundred times the widest row this module draws) so
+it can only ever bite input that was already going to be truncated to nothing
+visible. It is a work bound, not a width bound: the two width caps below are
+what make the OUTPUT safe."""
 
 _CONTROL_KILL = dict.fromkeys(
     [*range(0x00, 0x20), 0x7F, *range(0x80, 0xA0)]
@@ -151,12 +188,129 @@ def _flatten(value: str, *, limit: int) -> str:
     what bounds the ROW COUNT), then delete controls (which is what bounds what
     the terminal will obey), then bound the width — measured on the flattened
     string, so the limit counts what is drawn.
+
+    ``limit`` IS IN CELLS, AND THAT IS THE WHOLE OF THIS FUNCTION'S SECOND
+    FINDING. It counted codepoints, which is not what a terminal draws: a Hangul
+    syllable or an emoji occupies two columns and one character, so the two
+    diverge by a factor of two on exactly the input a hostile child would pick.
+    MEASURED before the fix, with ``current_tool`` set to ``"한" * 60`` on eight
+    members: every row came out at 78 characters — inside the ceiling, so nothing
+    was dropped — and 125 CELLS, wrapping at 80 columns into 17 screen rows
+    against a :data:`PANEL_MAX_ROWS` of 9. That ceiling is not layout: the
+    docstring beside it explains it exists because the widget is the one surface
+    with no downstream bound, so an over-long list pushes the transcript and the
+    input line off screen. A 2x breach of it is reachable from child stdout.
+
+    ``rich.cells`` rather than a private measure: ``tui/render.py`` draws with
+    ``cell_len``/``set_cell_size`` and ``tool.py`` — which imports THIS
+    function — already fixed its own half of the same finding (M1) against those
+    primitives. Sharing them is what makes the budget and the draw agree.
+
+    BOTH UNITS, BECAUSE NEITHER IS A BOUND ON ITS OWN. Counting codepoints let a
+    Hangul row through at twice its promised width, which is the finding above.
+    Counting CELLS alone is worse: ``cell_len`` returns 0 for a combining mark,
+    so a string of them has no width at all and a cell cap never fires. MEASURED
+    on the cells-only version: 200 000 combining acutes went in and 200 000 came
+    out, cell width 0, against a limit of 78 — a hard character cap replaced by
+    no cap. That row reaches ``chrome._render_widget_lines``, which has no bound
+    of its own, and the repaint it causes is measured in tens of seconds.
+
+    So the codepoint cap comes FIRST and the cell cap narrows what survives it.
+    The input is bounded before any of that work: the whitespace collapse and the
+    translate are linear in the input, and this runs on every publish for every
+    member of a batch.
     """
 
+    # STRIP BEFORE SLICING. The slice is a work bound, not a width bound, and
+    # running it before the whitespace collapse let leading blanks consume the
+    # whole window: MEASURED, 9 000 spaces followed by ``read_file`` rendered as
+    # the empty string — the field deleted rather than bounded. ``strip`` scans
+    # from the ends only, so it is cheaper than the ``split`` that follows it and
+    # cheaper than what this function did before the bound existed.
+    value = value.strip()
+    if len(value) > _MAX_INPUT_CHARS:
+        value = value[:_MAX_INPUT_CHARS]
     flat = " ".join(value.split()).translate(_CONTROL_KILL)
-    if len(flat) <= limit:
-        return flat
-    return flat[: limit - 1] + _ELLIPSIS
+    # The zero-width backstop, SLACK rather than equal to ``limit``: a slice at
+    # exactly the budget would leave the cell cap below with nothing to do and
+    # would return an over-long row unmarked. Only zero-width input can reach it,
+    # since one visible codepoint is at least one cell. Slicing by codepoint never
+    # splits a codepoint; it can orphan a combining mark from its base, which is
+    # cosmetic, and this arm is only reached by input that was never legitimate.
+    clipped = len(flat) > limit * _ZERO_WIDTH_SLACK
+    if clipped:
+        flat = flat[: limit * _ZERO_WIDTH_SLACK]
+    # THE ELLIPSIS IS INSIDE ``limit`` ON BOTH ARMS. Returning ``flat + _ELLIPSIS``
+    # against ``limit`` rather than one less was a cell over whenever the codepoint
+    # slice landed exactly on the budget — reachable at four codepoints per cell,
+    # a base character carrying three combining marks. A row one cell past
+    # :data:`PANEL_ROW_MAX_CHARS` is the same overhang the closing clamp in
+    # :func:`_composed_row` exists to catch, and this is the half that promises it.
+    if cell_len(flat) <= limit - (cell_len(_ELLIPSIS) if clipped else 0):
+        return flat + _ELLIPSIS if clipped else flat
+    return _cut_to_cells(flat, max(0, limit - 1)) + _ELLIPSIS
+
+def _cut_to_cells(text: str, cells: int) -> str:
+    """Truncate to at most ``cells`` columns, EXACTLY, by accumulation.
+
+    ``rich.cells.set_cell_size`` is not exact for a string that begins with
+    U+200D ZERO WIDTH JOINER. MEASURED: ``set_cell_size("\\u200d" * 2 + "a" * 79,
+    39)`` returns a string measuring 40 cells, not 39 — so ``_flatten`` handed
+    back ``limit + 1`` for that input while believing the library had bounded it.
+    An odd number of leading joiners undershoots by one; an even number of two or
+    more overshoots by one.
+
+    ZWJ SPECIFICALLY, not zero-width generally, and the distinction is worth the
+    word: swept over the same shapes, U+200B, U+0301, U+FE0F, U+200E and U+00AD
+    are all exact. ZWJ is the one that makes rich's grapheme spans disagree with
+    its own measure of the whole. A reader hardening "zero-width" input would be
+    guarding five characters that were never broken, and might well conclude the
+    guard was unnecessary when three of them tested clean.
+    Nothing else in this module noticed, because the closing clamp in
+    :func:`_composed_row` calls the same function.
+
+    THE SHAPE THAT BROKE IT IS NOT THE SHAPE THE FIRST SWEEP TESTED. That sweep
+    used a base character carrying three combining marks — zero-width AFTER a
+    visible glyph — and found no violation. The failing input is zero-width
+    BEFORE any glyph, which is the same class and a different position. Counting
+    the result here rather than trusting a helper is what makes the bound hold for
+    both, and for whatever the next shape turns out to be.
+
+    AND ``cell_len`` IS NOT ADDITIVE, which the accumulate loop alone gets wrong in
+    the other direction. It measures grapheme clusters, so the sum over characters
+    and the measure of the whole disagree — MEASURED: ``❤️`` (U+2764 U+FE0F) is 1
+    by the sum and 2 as a string, and ``👩‍💻`` is 4 by the sum and 2 as a string.
+    Accumulating with the per-character number therefore UNDER-counts a
+    variation-selector sequence, and a first version of this function returned 9
+    cells against a budget of 5 for a row of hearts. So the loop places the cut and
+    the whole-string measure then confirms it, shrinking while it must. The shrink
+    is bounded by the budget — the prefix summed to at most ``cells``, so at most
+    ``cells`` characters were under-counted — and it terminates because the empty
+    string measures zero.
+
+    ``cli/session_labels.truncate_cells`` accumulates without this second step and
+    is nonetheless correct, because it measures with ``prompt_toolkit``'s
+    ``get_cwidth``, which IS additive over these sequences (measured: per-character
+    sum equals the whole for every shape above). Two renderers, two width
+    libraries; the loop that is right for one is not right for the other.
+    """
+
+    if cells <= 0:
+        return ""
+    if cell_len(text) <= cells:
+        return text
+    out: list[str] = []
+    used = 0
+    for char in text:
+        width = cell_len(char)
+        if used + width > cells:
+            break
+        out.append(char)
+        used += width
+    while out and cell_len("".join(out)) > cells:
+        out.pop()
+    return "".join(out)
+
 
 _STATE_LABELS: dict[str, str] = {
     "starting": "running",
@@ -182,7 +336,7 @@ members finish."""
 def _format_tokens(tokens: int) -> str:
     """Compact token count for surfaces 1 and 3.
 
-    Mirrors ``progress._format_tokens`` (``progress.py:147-150``) rather than
+    Mirrors ``progress._format_tokens`` (``progress.py:158-161``) rather than
     importing it — the same call ``aggregate._format_count`` makes
     (``aggregate.py:145-155``) and for the same reason: these are three
     renderers with three different unit conventions, and a shared helper would
@@ -226,6 +380,9 @@ def _state_counts(snapshots: Sequence[SubagentProgress | None]) -> list[str]:
 
 def format_aggregate_status(
     snapshots: Sequence[SubagentProgress | None],
+    *,
+    extra_head: str = "",
+    cap: int = AGGREGATE_MAX_CHARS,
 ) -> str:
     """S10 surface 1 — ONE statusline row for the whole batch.
 
@@ -253,6 +410,28 @@ def format_aggregate_status(
     reachable only by a pathological count set (five non-zero classes at a wide
     profile name) and exists so this function can promise a bound rather than
     hope for one.
+
+    ``extra_head`` appends one term to the head, and ONLY :func:`format_panel`
+    passes it — the panel states the batch model there because it took that
+    column away from the rows. The default is empty, so the STATUSLINE row this
+    same function produces is byte-identical to what it always was: there are
+    four characters of headroom under :data:`AGGREGATE_MAX_CHARS` at S10's own
+    worked example and a model term does not fit in them. Being a parameter
+    rather than a second function is what keeps the two surfaces unable to state
+    a different fact.
+
+    IT IS APPENDED UNCONDITIONALLY, and that is the second correction this pair
+    has needed. Making it conditional on the counts still fitting looked like the
+    careful choice and was measured to be the expensive one: with one queued
+    member the head-plus-counts join lands at 77 cells against a cap of 76, so
+    the model was dropped here — and the panel's only fallback is to let every
+    row carry it again, which spends 28 cells on a string identical down the
+    whole column to save 31 in the header. Position is what protects it: the term
+    sits between the profile and the counts, so the right-to-left tail drop and
+    the closing truncation reach the COUNTS first, and the panel's rows state
+    every member's state anyway. The statusline surface, which has no rows and
+    where the counts are the whole substance, passes no ``extra_head`` and is
+    untouched by this.
     """
 
     total = len(snapshots)
@@ -260,9 +439,18 @@ def format_aggregate_status(
     if total == 0 or not live:
         return ""
 
-    text = " · ".join(
-        [f"agent {_short_profile(live[0].profile)} ×{total}", *_state_counts(snapshots)]
-    )
+    head = f"agent {_short_profile(live[0].profile)} ×{total}"
+    counts = _state_counts(snapshots)
+    if extra_head:
+        # BEFORE THE COUNTS, WHICH IS WHAT MAKES IT SURVIVE. Everything that
+        # shortens this row — the tail loop below and the closing truncation —
+        # takes from the right, so a term appended here is the last thing either
+        # can reach. That ordering replaces a fit test that measured
+        # head-plus-counts against the cap: the test was true for a bare model id
+        # and false for a provider-scoped one, and its false arm cost more than it
+        # saved (see the docstring).
+        head = f"{head} · {_flatten(extra_head, limit=_MAX_PROFILE_CHARS * 2)}"
+    text = " · ".join([head, *counts])
 
     tail = [f"{max(item.elapsed_ms for item in live) / 1000:.0f}s"]
     tokens = max(item.tokens for item in live)
@@ -273,15 +461,21 @@ def format_aggregate_status(
         tail.append(f"${cost:.4f}")
     for segment in tail:
         candidate = f"{text} · {segment}"
-        if len(candidate) > AGGREGATE_MAX_CHARS:
+        # CELLS, like :func:`_flatten`. ``_short_profile`` bounds the profile to
+        # 16 CELLS, so a Hangul name is eight characters wide and sixteen columns
+        # wide; measuring this join with ``len`` undercounts by that difference
+        # and admits a row past the ceiling onto a shared height-1 statusline.
+        # ASCII is unaffected — ``cell_len`` and ``len`` agree there — so this
+        # changes nothing for a batch whose profile is spelled in ASCII.
+        if cell_len(candidate) > cap:
             # Left-to-right, so the drop is always a suffix: losing the cost
             # while keeping the elapsed reads as terseness; the reverse reads as
             # a bug.
             break
         text = candidate
 
-    if len(text) > AGGREGATE_MAX_CHARS:
-        return text[: AGGREGATE_MAX_CHARS - 1] + _ELLIPSIS
+    if cell_len(text) > cap:
+        return _cut_to_cells(text, cap - 1) + _ELLIPSIS
     return text
 
 
@@ -346,21 +540,118 @@ def format_card(snapshots: Sequence[SubagentProgress | None]) -> str:
     )
 
 
-def _panel_row(snapshot: SubagentProgress | None) -> str:
+def _batch_model(snapshots: Sequence[SubagentProgress | None]) -> str:
+    """The one model the whole batch runs under, or ``""`` if they disagree.
+
+    Mirrors :func:`_batch_profile`. One ``agent()`` call is one profile and one
+    model across N tasks (S3), so in practice this is every published member's
+    ``model`` — but ``model`` is read off each CHILD's own ``message_end``, so
+    two children of one profile CAN report different strings (a provider
+    fallback, a mid-batch alias resolution). Disagreement returns ``""`` and the
+    rows carry their own model again, because a header claiming one model for a
+    batch running two is worse than a repeated column.
+    """
+
+    models = {s.model for s in snapshots if s is not None and s.model}
+    return next(iter(models)) if len(models) == 1 else ""
+
+
+_PANEL_DIM = "\x1b[2m"
+_PANEL_RST = "\x1b[0m"
+_GUTTER = "▌ "
+"""The panel's left edge, dim. Two visible cells, budgeted for below.
+
+``chrome._render_widget_lines`` ANSI-parses the joined lines
+(``chrome.py:1163-1167``), so raw SGR is the module's own vocabulary here — the
+same raw-escape convention ``tui/context.py`` uses — and no import is needed,
+which keeps this module's declared purity.
+
+APPLIED AFTER :func:`_flatten`, NEVER BEFORE. ``_flatten`` deletes C0, which
+includes ESC, so an escape handed to it is silently stripped; and it collapses
+whitespace, which would eat the column padding. Every untrusted PART is
+flattened on its own and the row is assembled from the results, so the width
+bound is arithmetic rather than a final pass — with a cell-accurate clamp at the
+end as the backstop, because arithmetic is a thing one gets wrong."""
+
+_TASK_MIN_CELLS = 8
+"""Never squeeze the job label below this. A label cut to two characters is a
+column that costs width and says nothing."""
+
+_NUMBERS_MIN_CELLS = 12
+"""What the job-label column must leave for the numbers half of a row.
+
+The label column is a FIXED cost paid BEFORE the state, so it is the thing that
+decides whether the state is visible at all. The numbers begin with the state
+word — ``_panel_row`` puts it first — so this reserve is really "always leave
+room for the state and a hint of the elapsed": the widest state string is
+``starting`` at 8 cells, and 12 holds it plus the ellipsis and the start of the
+next term.
+
+A RESERVE RATHER THAN A CEILING, and that replaces a constant cap of 24 cells
+that was measured on the wrong axis. The cap was chosen at a 40-column terminal,
+where it let 2 of 4 rows keep a full state word against 0 of 4 at 28 and above.
+What was never measured is what it cost everywhere else: a batch fanned out over
+one verb — ``port the retry backoff to google`` / ``… to openai`` / ``… to
+azure`` / ``… to vertex``, 32 cells each — truncates to a common 24-cell prefix,
+so all four rows render the SAME string and the panel stops answering the
+question it was added to answer. MEASURED on that batch: 1 distinct label at the
+cap, 4 without it. Sizing from the labels and reserving for the numbers keeps all
+four, and it keeps the state too, because the batch model moved off the rows for
+good and gave the numbers back 28 cells (see :func:`format_aggregate_status`).
+
+The 40-column terminal still loses the tail of the numbers, which is the
+degradation ``_composed_row`` documents and left-packing exists to bound. The cap
+did not fix that case either — it bought a partial word on half the rows and paid
+for it at every width."""
+
+
+def _panel_row(
+    snapshot: SubagentProgress | None,
+    *,
+    hide_model: bool = False,
+    state_first: bool = False,
+) -> str:
     if snapshot is None:
         return "queued"
     # ``state`` is a product-core literal (``subagent_contract.py:66``) and the
-    # numbers are numbers; ``current_tool`` AND ``model`` are the CHILD's own
-    # bytes — both read off its stdout — and are the two fields here an attacker
-    # writes, so both go through :func:`_flatten`. ``model`` leads the row (S10
-    # Option A): it is the same for every member of a one-profile batch, so the
-    # column is naturally uniform-width and the ``· state ·`` that follows lines
-    # up across rows — the "light alignment" that survives the mandatory flatten,
-    # which collapses any padding whitespace anyway.
+    # numbers are numbers; ``current_tool``, ``model`` AND ``task`` are strings
+    # this module does not author — the first two are the CHILD's own bytes, read
+    # off its stdout, and the third is the PARENT model's tool-call argument — so
+    # all three go through :func:`_flatten`.
+    #
+    # THIS FUNCTION NO LONGER RENDERS A WHOLE ROW when the panel has job labels:
+    # :func:`format_panel` routes those through :func:`_composed_row`, which lays
+    # the label out in its own column and uses what this returns as the numbers
+    # half. The name is kept because the no-tasks path — every existing caller,
+    # and N == 1 — is byte-identical to what it always produced.
+    #
+    # ``model`` is dropped when the batch agrees on one, because a column
+    # identical on every row identifies nothing; :func:`_batch_model` states it
+    # once in the header instead. When the members DISAGREE ``hide_model`` is
+    # False and the per-row term comes back, since a header claiming one model
+    # for a batch running two is worse than a repeated column.
+    #
+    # STATE FIRST ONLY WHEN THERE IS A LABEL COLUMN AHEAD OF IT. Main puts the
+    # model first (S10 "Option A") and that costs nothing there, because the whole
+    # 78 cells belong to this string. With a job-label column the numbers half gets
+    # only what the label leaves, and a 28-cell provider-scoped id spends that
+    # remainder before the state word is ever reached — MEASURED with members
+    # DISAGREEING (so the model cannot leave the rows) and 35-cell labels, 2 of 4
+    # rows showed their state at 78, 80, 100 AND 120 columns alike, flat, because
+    # the budget is fixed and a wider terminal does not help. State-first is 4 of 4
+    # at every one of them.
+    #
+    # Scoped to the tasks path so the no-tasks rows stay byte-identical to main,
+    # which is a contract this module states twice and a test pins. Measured on
+    # that path, model-first costs nothing: main and HEAD are the same row counts
+    # at every width, because there is no column competing for the budget.
     parts: list[str] = []
-    if snapshot.model:
+    if state_first:
+        parts.append(snapshot.state)
+    if snapshot.model and not hide_model:
         parts.append(_flatten(snapshot.model, limit=PANEL_ROW_MAX_CHARS))
-    parts.append(snapshot.state)
+    if not state_first:
+        parts.append(snapshot.state)
     if snapshot.current_tool:
         parts.append(_flatten(snapshot.current_tool, limit=PANEL_ROW_MAX_CHARS))
     parts.append(f"{snapshot.elapsed_ms / 1000:.0f}s")
@@ -371,36 +662,176 @@ def _panel_row(snapshot: SubagentProgress | None) -> str:
     return " · ".join(parts)
 
 
-def format_panel(snapshots: Sequence[SubagentProgress | None]) -> list[str]:
+def _label_column(tasks: Sequence[str], room: int) -> int:
+    """Cells the job-label column occupies, shared by every row of one panel.
+
+    From the LABELS, never from the numbers, and that is the whole design. The
+    labels are fixed for the life of a group — they are the submitted tasks — so a
+    column sized from them is stable, while one sized from the numbers moves every
+    time a member's elapsed time gains a digit and drags every other row's label
+    with it.
+
+    Sizing from the numbers also made the label budget shrink as a child got
+    busier: four distinct tasks collapsed to a common prefix at exactly the moment
+    work started and the user needed to tell the rows apart.
+
+    The only ceiling is :data:`_NUMBERS_MIN_CELLS` — the room the numbers keep —
+    because a ceiling that bites BELOW the labels a batch really submits causes
+    that same collapse permanently instead of only while a child is busy.
+    """
+
+    widest = max((cell_len(_flatten(t, limit=room)) for t in tasks), default=0)
+    reserved = max(_TASK_MIN_CELLS, room - _NUMBERS_MIN_CELLS - 2)
+    return max(_TASK_MIN_CELLS, min(widest, reserved, room))
+
+
+def _composed_row(
+    index: int, total: int, task: str, numbers: str, column: int, budget: int
+) -> str:
+    """``▌ [k/N] <job label>   <state · tool · numbers>`` in one bounded row.
+
+    LEFT-PACKED, NOT PADDED TO THE FULL BUDGET, and that is a correction. The
+    first version right-aligned the numbers against
+    :data:`PANEL_ROW_MAX_CHARS`, which made EVERY row exactly 78 cells — measured
+    over 20 000 composed rows, the observed width set was literally ``[78]``. The
+    widget window is ``Window(..., dont_extend_height=True)`` with ``wrap_lines``
+    left False (``chrome.py:693``), so a row wider than the terminal is CLIPPED,
+    not wrapped, and the clip takes the right-hand end. Measured through the real
+    chrome at 72 columns, a queued member rendered as ``▌ [4/4] write the ADR``
+    with the word ``queued`` gone entirely, while main's left-packed rows read
+    ``[4/4] queued`` intact all the way down to 30. ``tui/width.py`` records this
+    exact failure once already and says "never return more than the terminal
+    has"; there is deliberately no minimum-width floor anywhere under ``tui/``,
+    so a sub-78-column terminal is a supported configuration.
+
+    So the label column is padded — that is what keeps the numbers aligned across
+    rows — and the row then ENDS. A narrow terminal now loses the tail of the
+    numbers, the same degradation main had, instead of losing all of them.
+
+    The width bound is arithmetic: each untrusted part is :func:`_flatten`ed to
+    its own share and the row is assembled from the results, because a final
+    flatten would collapse the padding this layout is made of. The closing clamp
+    is the backstop for that arithmetic, and it counts cells rather than slicing.
+    """
+
+    prefix = f"[{index + 1}/{total}] "
+    room = max(0, budget - cell_len(_GUTTER) - cell_len(prefix))
+    label = _flatten(task, limit=max(_TASK_MIN_CELLS, min(column, room)))
+    numbers = _flatten(numbers, limit=max(0, room - column - 2))
+    pad = " " * max(1, column - cell_len(label) + 2)
+    body = f"{prefix}{label}{pad}{_PANEL_DIM}{numbers}{_PANEL_RST}"
+    visible = cell_len(prefix) + cell_len(label) + len(pad) + cell_len(numbers)
+    if visible > budget - cell_len(_GUTTER):
+        body = _cut_to_cells(
+            f"{prefix}{label}{pad}{numbers}", max(0, budget - cell_len(_GUTTER))
+        )
+    return f"{_PANEL_DIM}{_GUTTER}{_PANEL_RST}{body}"
+
+
+def format_panel(
+    snapshots: Sequence[SubagentProgress | None],
+    *,
+    tasks: Sequence[str] = (),
+    width: int = PANEL_ROW_MAX_CHARS,
+) -> list[str]:
     """S10 surface 3 — the widget panel, or ``[]`` below :data:`PANEL_MIN_CHILDREN`.
 
-    The header is :func:`format_aggregate_status` itself rather than a second
-    spelling of the same facts, so the panel and the statusline can never
-    disagree. The rows drop the profile name — it is in the header and it is the
+    The header is :func:`format_aggregate_status` PLUS the batch's one model, and
+    the rows carry each member's ``tasks`` entry where the model used to be.
+    Without that the panel answers "how many are running" and never "which one is
+    doing what": the profile is one per call, the model is one per call, and the
+    submitted task was the only differing field — and it was not plumbed here.
+
+    THE MODEL MOVED TO THE HEADER RATHER THAN BEING DROPPED. It cannot go into
+    :func:`format_aggregate_status` itself: that string is ALSO the shared
+    height-1 statusline row, bounded by :data:`AGGREGATE_MAX_CHARS`, and S10's
+    own worked example is already 74 of those 78 characters. So the panel builds
+    its own header line from the same parts, one model term longer, and the
+    statusline is untouched — the panel and the statusline still cannot state a
+    DIFFERENT fact, which is what "never disagree" was protecting.
+
+    ``tasks`` is index-aligned and optional: an empty one renders exactly what
+    this function rendered before, which is what every existing caller and the
+    N == 1 path get.
+
+    The rows drop the profile name — it is in the header and it is the
     same for every member (S3) — and spend the width on per-child state instead.
 
     Returning ``[]`` is the caller's signal to write nothing; ``set_widget`` with
     an empty list would still allocate the window.
 
     BOUNDED IN BOTH DIMENSIONS, AND THAT IS SECURITY, NOT LAYOUT (F2, HIGH).
-    Every row is :func:`_flatten`ed to :data:`PANEL_ROW_MAX_CHARS` and the list
-    is bounded to :data:`PANEL_MAX_ROWS`, because the far end applies neither:
+    Every row is :func:`_flatten`ed to ``width`` and the list is bounded to
+    :data:`PANEL_MAX_ROWS`, because the far end applies neither:
     ``chrome._render_widget_lines`` ANSI-parses ``"\\n".join(lines)`` into a
     window with no height cap. The width bound is applied to the WHOLE row, after
     the ``[k/N] `` prefix, so the number this function promises is the number of
     columns it uses.
+
+    ``width`` IS THE TERMINAL'S, CAPPED AT :data:`PANEL_ROW_MAX_CHARS`, and the
+    caller supplies it — this module cannot see a terminal and does not import
+    ``tui/width.py``. It only ever narrows: the panel stays a 78-cell ribbon on a
+    200-column screen, deliberately, because a batch panel is a summary and not a
+    table. What it fixes is the other end. The job-label column was sized against
+    the fixed 78 while the window paints into whatever the terminal has, so at 30
+    to 60 columns a long label took cells the terminal did not have and the state
+    word went with them. MEASURED against ``main`` on a pyte screen, member rows
+    still showing a state word, 35-cell labels: main 1/4 1/4 4/4 4/4 at 30/40/50/60
+    columns against 0/4 0/4 2/4 4/4 here — a regression this branch introduced and
+    that no constant can fix, because the right number is the terminal's.
+
+    A RESIZE BETWEEN PUBLISHES LEAVES THE LAST WIDTH IN PLACE, and that is
+    acceptable rather than ignored: the panel is only on screen while a batch is
+    running, and the runtime republishes on every reduced stdout line from every
+    member, so a stale width lives for one frame. Worse, it degrades to exactly
+    what this parameter replaced — rows measured against 78 and clipped by the
+    window — which is the behaviour shipped for the whole of ADR-0199.
     """
 
     total = len(snapshots)
     if total < PANEL_MIN_CHILDREN:
         return []
-    header = format_aggregate_status(snapshots)
-    lines = [header] if header else []
-    lines.extend(
-        _flatten(f"[{index + 1}/{total}] {_panel_row(snapshot)}",
-                 limit=PANEL_ROW_MAX_CHARS)
-        for index, snapshot in enumerate(snapshots)
+    budget = min(width, PANEL_ROW_MAX_CHARS)
+    model = _batch_model(snapshots) if tasks else ""
+    column = _label_column(
+        tasks, max(0, budget - cell_len(_GUTTER) - len(f"[{total}/{total}] "))
+    ) if tasks else 0
+    # The gutter costs two cells the aggregate does not know about, so the panel
+    # header is budgeted two narrower. Passed as a CAP rather than clamped after,
+    # so the existing "drop a whole trailing number" logic does the shortening
+    # instead of a cut landing mid-``$0.00…``.
+    header = format_aggregate_status(
+        snapshots,
+        extra_head=model,
+        cap=min(budget, AGGREGATE_MAX_CHARS) - (cell_len(_GUTTER) if tasks else 0),
     )
+    # THE ROWS HIDE THE MODEL ONLY IF THE HEADER ACTUALLY SHOWED IT — READ OFF
+    # THE HEADER, never assumed from "a batch model exists". Assuming it was a
+    # hole: while the header appended the model conditionally, a provider-scoped
+    # id made the header drop it AND the rows suppress it, and the panel named no
+    # model at all (MEASURED at 15 and 32 characters: header=False, rows=False).
+    # The append is unconditional now, so this is True whenever there is a batch
+    # model — but it is still a test, because that is the property that failed and
+    # a constant here would stop noticing if the header changes again.
+    #
+    # Against the SAME expression the header builds, not against the raw string: a
+    # model wider than the head's flatten limit appears there truncated, and the
+    # header still names it, so the rows must still drop it.
+    shown_in_header = bool(model) and (
+        _flatten(model, limit=_MAX_PROFILE_CHARS * 2) in header
+    )
+    lines: list[str] = []
+    if header:
+        lines.append(f"{_PANEL_DIM}{_GUTTER}{_PANEL_RST}{header}" if tasks else header)
+    for index, snapshot in enumerate(snapshots):
+        task = tasks[index] if index < len(tasks) else ""
+        numbers = _panel_row(snapshot, hide_model=shown_in_header, state_first=bool(task))
+        if not task:
+            # Byte-for-byte what this function rendered before ``tasks`` existed.
+            lines.append(_flatten(f"[{index + 1}/{total}] {numbers}", limit=budget))
+            continue
+        lines.append(_composed_row(index, total, task, numbers, column, budget))
+
     if len(lines) > PANEL_MAX_ROWS:
         # Only reachable from a caller that submitted more members than
         # ``tool.py`` admits, i.e. a bug — but a silently SHORTER panel reads as
@@ -436,7 +867,7 @@ class PartialThrottle:
     * :data:`PARTIAL_MIN_INTERVAL_MS` has elapsed since the last emission.
 
     …and never when the rendered text is identical to the last emitted text.
-    That final dedup mirrors the statusline half (``progress.py:441-443``): a
+    That final dedup mirrors the statusline half (``progress.py:496-498``): a
     frame that would repaint the same bytes is a kernel ``Task`` bought for
     nothing (H10), and it cannot lose information by construction.
     """

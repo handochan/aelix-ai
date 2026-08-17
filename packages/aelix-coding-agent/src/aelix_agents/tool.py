@@ -631,14 +631,14 @@ CELLS, NOT CHARACTERS, and the distinction is the whole of finding M1. A CJK
 ideograph or an emoji occupies two cells and one character, so the two counts
 diverge by a factor of two on exactly the input a hostile child would choose.
 This module measured characters while ``tui/render.py`` measured cells
-(``rich.cells.cell_len`` / ``set_cell_size``, ``render.py:160-163``): a 60-CJK
+(``rich.cells.cell_len`` / ``set_cell_size``, ``render.py:162-165``): a 60-CJK
 model flattened to 40 characters — inside the budget, so nothing was dropped —
 and 80 cells, so the renderer cut INSIDE the model term and took the status and
 the posture with it. See :func:`_usage_line`.
 
 NOT a policy this module chose. ``tui/render.py``'s ``_truncate_lines`` caps
 every card line at ``max_line_width = 76`` cells and appends ``…``
-(``render.py:144-164``), and that number is FIXED: it does not grow with the
+(``render.py:146-166``), and that number is FIXED: it does not grow with the
 terminal, so a wider window buys this line nothing. Measured on a real
 delegation at both 120 and 200 columns, the footer came out identically cut at
 76 cells, losing its last field.
@@ -808,7 +808,7 @@ def _usage_field(value: object) -> str:
 def _squeeze(value: str, cells: int) -> str:
     """``value`` in at most ``cells`` terminal cells, ellipsised if it was cut.
 
-    ``set_cell_size`` is the renderer's own primitive (``render.py:161``), so a
+    ``set_cell_size`` is the renderer's own primitive (``render.py:163``), so a
     term this function shortens is shortened exactly as far as the renderer would
     have measured it — no off-by-one between the budget and the draw.
     """

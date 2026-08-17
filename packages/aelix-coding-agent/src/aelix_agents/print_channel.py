@@ -420,7 +420,7 @@ def resolve_child_cwd(cwd: str | None, parent_cwd: str) -> str:
     component, so a model-chosen ``cwd`` may contain ``\\n`` and ``\\x1b`` — and
     the value this function returns is interpolated verbatim into the consent
     dialog, which ``ctx.ui.select`` both newline-splits into rows and ANSI-parses
-    (``tui/context.py:115-132``). A 150-byte directory name was demonstrated to
+    (``tui/context.py:140-218``). A 150-byte directory name was demonstrated to
     render a wholly forged, benign-looking dialog while the real permission row
     and the real tasks sat hidden behind SGR 8. ``consent.py``'s
     :func:`~aelix_agents.consent._sanitize_field` is the fix and is sufficient on
@@ -543,7 +543,7 @@ def build_child_env(
     env[DEPTH_ENV_VAR] = str(depth)
 
     # Belt-and-braces with ``stdin=DEVNULL``. An INHERITED ``"0"`` means "wait
-    # forever" (``cli/entry.py:301-310``), and a child that waits forever on a
+    # forever" (``cli/entry.py:308-317``), and a child that waits forever on a
     # stdin nobody will ever write to is a delegation that only ends at the
     # timeout.
     env["AELIX_STDIN_TIMEOUT"] = "1"
@@ -954,7 +954,7 @@ class PrintChannel:
                     cwd=plan.cwd,
                     env=env,
                     # MANDATORY. An inherited stdin costs +30 s per delegation
-                    # (``_read_piped_stdin``, ``cli/entry.py:299-354``) and any
+                    # (``_read_piped_stdin``, ``cli/entry.py:306-361``) and any
                     # bytes that do arrive are PREPENDED to the task message.
                     stdin=asyncio.subprocess.DEVNULL,
                     stdout=asyncio.subprocess.PIPE,
@@ -963,7 +963,7 @@ class PrintChannel:
                     limit=STREAM_LIMIT_BYTES,
                     # Without it the child joins the PARENT's process group, so
                     # one Ctrl+C SIGINTs every subagent at once with no envelope
-                    # — and neither parent (``tui/shell.py:1713-1730``) nor child
+                    # — and neither parent (``tui/shell.py:1800-1817``) nor child
                     # (``modes/print_mode.py:114-131``) installs a SIGINT
                     # handler, so there is nothing to convert that into a result.
                     start_new_session=True,
