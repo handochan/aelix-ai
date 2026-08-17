@@ -25,6 +25,7 @@ from aelix_coding_agent.cli.session_labels import (
     session_age,
     session_choice_label,
     session_detail_lines,
+    short_field,
     truncate_cells,
 )
 from prompt_toolkit.utils import get_cwidth
@@ -421,3 +422,32 @@ def test_the_activity_window_reaches_past_one_large_record(tmp_path: Path) -> No
     )
     path = _write(tmp_path, _header(), _user("the task"), big)
     assert last_activity(path) == "2026-08-16T09:00:00.000Z"
+
+
+# === second review round: the trailer is untrusted too ========================
+
+
+def test_the_header_derived_trailer_is_cleaned_like_the_message(tmp_path: Path) -> None:
+    """``created_at`` and ``id`` come off the session file's first line.
+
+    A supplied sessions folder controls them exactly as it controls the message
+    text, and the first version of this cleaned the message halves and not these.
+    MEASURED: an ``id`` of ``\x1b[31mID\x1b[0m`` reached both the picker detail
+    panel and the stderr startup menu with the ESC intact — and stderr has no ANSI
+    parser in front of it.
+    """
+
+    evil = JsonlSessionMetadata(
+        id="\x1b[31mID\x1b[0m",
+        created_at="2026-08-01T09:00\x9b31m",
+        cwd="/w",
+        path=str(tmp_path / "gone.jsonl"),
+    )
+    for line in session_detail_lines(evil):
+        assert "\x1b" not in line, repr(line)
+        assert "\x9b" not in line, repr(line)
+
+
+def test_short_field_cleans_and_caps() -> None:
+    assert "\x1b" not in short_field("\x1b[31mabcdef", 8)
+    assert get_cwidth(short_field("한" * 40, 8)) <= 8

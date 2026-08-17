@@ -8,10 +8,10 @@ cwd, which asks the FILESYSTEM a question only the PROMPT can answer. Discovery
 knows neither of the two things the callers need:
 
 * it does not know about ``--no-context-files`` / ``-nc``. That gate lives one
-  level up, at ``cli/entry.py:1228``, so discovery happily hands back text that
+  level up, at ``cli/entry.py:1230``, so discovery happily hands back text that
   was never injected into anything; and
 * it does not know its own output is ALREADY inside the system prompt the caller
-  is separately counting — ``cli/entry.py:1229-1231`` appends the chunk to
+  is separately counting — ``cli/entry.py:1231-1233`` appends the chunk to
   ``options.append_system_prompt`` and ``harness/core.py:596-602`` joins those
   onto the base prompt with ``"\\n\\n"``.
 
@@ -56,7 +56,7 @@ def _discover_without_re_warning(cwd: str) -> str:
     Discovery is not a pure read: it prints a ``Warning:`` line to stderr for
     every context file it truncated or dropped against the 32 KiB budget
     (``cli/agent_context.py:1250-1261``). The injection path at
-    ``cli/entry.py:1229`` has already called it once and those warnings have
+    ``cli/entry.py:1231`` has already called it once and those warnings have
     already been printed, so a second copy is duplicate noise — measured at 115
     bytes re-emitted per banner render on a single oversized ``AGENTS.md``.
 

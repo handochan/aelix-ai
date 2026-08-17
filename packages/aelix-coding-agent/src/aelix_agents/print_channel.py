@@ -963,7 +963,7 @@ class PrintChannel:
                     limit=STREAM_LIMIT_BYTES,
                     # Without it the child joins the PARENT's process group, so
                     # one Ctrl+C SIGINTs every subagent at once with no envelope
-                    # — and neither parent (``tui/shell.py:1748-1765``) nor child
+                    # — and neither parent (``tui/shell.py:1754-1771``) nor child
                     # (``modes/print_mode.py:114-131``) installs a SIGINT
                     # handler, so there is nothing to convert that into a result.
                     start_new_session=True,

@@ -756,6 +756,56 @@ def test_the_header_keeps_its_state_counts_when_the_model_will_not_fit() -> None
         assert cell_len(header) <= AGGREGATE_MAX_CHARS, (model, cell_len(header))
 
 
+# === second review round: the fixes' own holes ================================
+
+
+def test_the_model_is_shown_by_somebody_at_every_id_length() -> None:
+    """The rows hide the model only if the HEADER actually showed it.
+
+    Keying that on "a batch model exists" was a hole: the header appends the
+    model only when the state counts still fit, so at any realistic
+    provider-scoped id the header dropped it AND the rows suppressed it and the
+    panel named no model at all. MEASURED at 15 and 32 characters before the fix:
+    header=False, rows=False.
+    """
+
+    for model in ("gpt-5", "claude-opus-4-8", "openai/gpt-5.6-luna-preview-2026"):
+        snapshots: list[SubagentProgress | None] = [
+            _member(0, model=model, state="error"),
+            _member(1, model=model, state="stopped"),
+            _member(2, model=model, state="done"),
+            None,
+        ]
+        lines = _panel(snapshots, tasks=_JOBS)
+        in_header = model in lines[0]
+        in_rows = any(model in row for row in lines[1:])
+        assert in_header or in_rows, (model, lines)
+        # and never both — that is the duplication the header move removed
+        assert not (in_header and in_rows), (model, lines)
+
+
+def test_leading_whitespace_cannot_delete_a_field() -> None:
+    """``_MAX_INPUT_CHARS`` is a WORK bound, not a width bound.
+
+    Slicing before the whitespace collapse let leading blanks consume the whole
+    window: MEASURED, 9 000 spaces followed by ``read_file`` rendered as the empty
+    string — the field deleted rather than bounded.
+    """
+
+    assert _flatten(" " * 9_000 + "read_file", limit=PANEL_ROW_MAX_CHARS) == "read_file"
+    assert _flatten("\t" * 9_000 + "grep", limit=PANEL_ROW_MAX_CHARS) == "grep"
+
+
+def test_the_input_bound_still_bounds_the_work() -> None:
+    """The fix above must not have removed the bound it was loosening."""
+
+    import time
+
+    start = time.perf_counter()
+    _flatten("x" * 4_000_000, limit=PANEL_ROW_MAX_CHARS)
+    assert (time.perf_counter() - start) * 1000 < 200
+
+
 def test_a_group_of_one_keeps_p2s_per_child_row_and_no_panel() -> None:
     """S10: at N == 1 every surface is byte-identical to P2. The group is still
     opened and closed so the extension's ``try``/``finally`` is symmetric."""
@@ -1266,7 +1316,7 @@ def test_the_row_builder_is_safe_on_its_own_not_only_via_format_panel() -> None:
     ``_panel_row`` changes nothing that :func:`format_panel` can observe: the
     mutation survives every test above. It is still worth having and still worth
     pinning. ``_panel_row`` is the function that touches the child's bytes
-    (``panel.py:437-459``, the site the finding names), and the next consumer of a
+    (``panel.py:444-466``, the site the finding names), and the next consumer of a
     per-child row — a card variant, a future surface — will call it rather than
     re-deriving it, and must inherit the bound rather than have to remember it.
     """

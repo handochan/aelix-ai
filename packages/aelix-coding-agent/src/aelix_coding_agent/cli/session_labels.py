@@ -28,7 +28,7 @@ COST, measured over those same 224 sessions (0.70 / 0.12 / 0.09 ms per file):
 ===========================================================  ========
 first user message — head scan, stops at the first hit         156 ms
 last user message — 128 KB tail window                          27 ms
-newest entry timestamp — 8 KB tail window                       20 ms
+newest entry timestamp — 128 KB tail window                     20 ms
 ===========================================================  ========
 
 which is why this needs neither pi's concurrency-10 loader nor its progress
@@ -291,7 +291,7 @@ def _clean(text: str) -> str:
     return " ".join(cleaned.split())
 
 
-def truncate_cells(text: str, cells: int) -> str:
+def truncate_cells(text: str, cells: int, *, marker: str = "…") -> str:
     """Truncate ``text`` to ``cells`` TERMINAL COLUMNS, appending ``…`` if cut.
 
     Columns, not codepoints: a Hangul or CJK character occupies two cells, so
@@ -324,8 +324,8 @@ def truncate_cells(text: str, cells: int) -> str:
     if clipped:
         text = text[: cells * _ZERO_WIDTH_SLACK]
     if get_cwidth(text) <= cells:
-        return text + "…" if clipped else text
-    budget = cells - 1  # room for the ellipsis
+        return text + marker if clipped else text
+    budget = cells - get_cwidth(marker)  # room for the marker, if there is one
     out: list[str] = []
     used = 0
     for ch in text:
@@ -334,7 +334,7 @@ def truncate_cells(text: str, cells: int) -> str:
             break
         out.append(ch)
         used += width
-    return "".join(out) + "…"
+    return "".join(out) + marker
 
 
 def session_choice_label(meta: object, now: float, *, width: int = 78) -> str:
@@ -350,6 +350,23 @@ def session_choice_label(meta: object, now: float, *, width: int = 78) -> str:
     message = (first_user_message(path) if path else None) or _NO_MESSAGES
     room = max(10, width - _AGE_CELLS - 2)
     return f"{age:>{_AGE_CELLS}}  {truncate_cells(_clean(message), room)}"
+
+
+def short_field(value: str, cells: int) -> str:
+    """A header-derived identifier, cleaned and capped, for display.
+
+    ``created_at`` and ``id`` come off the session file's first line, so they are
+    the same untrusted text the message body is — and the ``--resume`` startup
+    menu prints to STDERR, which has no ANSI parser in front of it and hands the
+    bytes straight to the terminal.
+
+    NO ELLIPSIS. These are identifiers, not prose: the eight characters are a
+    usable prefix for ``--resume <id>``, and spending one of them on a ``…`` makes
+    them seven. Cleaning this by routing it through the prose truncator turned
+    ``abcdef12`` into ``abcdef1…``, which two existing tests caught immediately.
+    """
+
+    return truncate_cells(_clean(value), cells, marker="")
 
 
 def session_detail_lines(meta: object, *, width: int = 78) -> list[str]:
@@ -369,8 +386,14 @@ def session_detail_lines(meta: object, *, width: int = 78) -> list[str]:
     last = last_user_message(path) if path else None
     if last:
         lines.append(f"  last: {truncate_cells(_clean(last), max(10, width - 8))}")
-    started = (getattr(meta, "created_at", "") or "").replace("T", " ")[:16]
-    short_id = (getattr(meta, "id", "") or "")[:8]
+    # THE TRAILER IS HEADER-DERIVED AND THEREFORE UNTRUSTED TOO. ``created_at``
+    # and ``id`` are read straight out of the session file's first line, so a
+    # supplied sessions folder controls them exactly as it controls the message
+    # text above — and the first version of this cleaned the message halves and
+    # not these. Measured: an ``id`` of ``\x1b[31mID\x1b[0m`` reached the picker
+    # and the stderr menu with the ESC intact.
+    started = short_field((getattr(meta, "created_at", "") or "").replace("T", " "), 16)
+    short_id = short_field(getattr(meta, "id", "") or "", 8)
     trailer = "  ·  ".join(part for part in (started, short_id) if part)
     if trailer:
         lines.append(f"  {trailer}")
@@ -385,5 +408,6 @@ __all__ = [
     "session_age",
     "session_choice_label",
     "session_detail_lines",
+    "short_field",
     "truncate_cells",
 ]

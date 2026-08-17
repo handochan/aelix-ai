@@ -70,7 +70,7 @@ re-discovering the crash.
    (and the box-drawing in the TUI chrome) will mojibake or raise
    `UnicodeEncodeError` on `print`. Cheap to fix, worth doing early — it will
    otherwise look like a hundred unrelated failures.
-8. **Ctrl+G external editor.** `tui/shell.py:2433` falls back to `vi`,
+8. **Ctrl+G external editor.** `tui/shell.py:2439` falls back to `vi`,
    which does not exist on stock Windows. `notepad` is the fallback there.
 9. **`Operating System :: OS Independent` classifiers** — untouched on purpose;
    that is a tag-time decision owned elsewhere.

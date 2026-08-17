@@ -955,7 +955,12 @@ async def test_run_tui_resume_rows_fit_inside_the_picker_rule(
         return options[0]
 
     monkeypatch.setattr(AelixTUIContext, "select", _spy)
-    monkeypatch.setenv("COLUMNS", "200")
+    # A WIDE terminal, forced at the seam. ``DummyOutput`` reports the 80-column
+    # fallback, and at 80 the cap and the bug give the same answer — the first
+    # version of this test set ``COLUMNS`` instead and a sabotage removing the
+    # prefix allowance stayed green, because ``min(74, 78)`` and ``min(74, 76)``
+    # are both 74. The overhang only exists above ~84 columns.
+    monkeypatch.setattr(tui_shell, "terminal_columns", lambda *a, **k: 200)
     try:
         with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
             chrome = AelixChrome()
@@ -970,8 +975,15 @@ async def test_run_tui_resume_rows_fit_inside_the_picker_rule(
     finally:
         monkeypatch.setattr(AelixTUIContext, "select", real_select)
 
+    # THE ROW, NOT THE LABEL. ``select`` renders each option as ``▸ <label>`` or
+    # two spaces plus the label and sizes the frame from ``_visible_len + 2``,
+    # then ``_picker_frame`` clamps the rule to ``_PICK_MAX_WIDTH``. Measuring the
+    # label alone let a 2-cell overhang through — the first version of this test
+    # did exactly that, and a sabotage removing the prefix allowance stayed green.
+    _SELECT_ROW_PREFIX = 2
     for row in seen["options"]:  # type: ignore[union-attr]
-        assert get_cwidth(row) <= _PICK_MAX_WIDTH, (get_cwidth(row), row)
+        width = get_cwidth(row) + _SELECT_ROW_PREFIX
+        assert width <= _PICK_MAX_WIDTH, (width, row)
     for row in seen["detail"]:  # type: ignore[union-attr]
         assert get_cwidth(row) <= _PICK_MAX_WIDTH, (get_cwidth(row), row)
 

@@ -754,7 +754,13 @@ async def run_tui(
         # that boundary visible. The row must never be wider than the rule.
         label_width = min(
             terminal_columns(out_chrome, max_width=render_width_cap["value"]) - 6,
-            _PICK_MAX_WIDTH,
+            # MINUS THE ROW PREFIX. ``select`` renders each option as ``▸ <label>``
+            # or two spaces plus the label, and sizes the frame from
+            # ``_visible_len(option) + 2`` — then ``_picker_frame`` clamps the rule
+            # to ``_PICK_MAX_WIDTH``. A label AT that cap therefore produces an
+            # 80-cell body row inside a 78-cell rule. Measured: 2 cells of
+            # overhang, which is what was left after the first fix took 36 off.
+            _PICK_MAX_WIDTH - 2,
         )
         labels: list[str] = []
         by_label: dict[str, object] = {}
@@ -1426,7 +1432,7 @@ async def run_tui(
 
         if model_registry is None:
             # ``run_tui`` declares ``model_registry`` optional and the sole
-            # production caller (``entry.py:2965``) always passes one, so this is
+            # production caller (``entry.py:2967``) always passes one, so this is
             # a test-only shape — but ``find_initial_model`` takes it REQUIRED and
             # dereferences it, and the except below would have shown the user the
             # resulting `'NoneType' object has no attribute …` verbatim. Say the
@@ -2882,11 +2888,11 @@ def _build_banner(harness: AgentHarness, cwd: str) -> object:
     # "AGENTS.md" whenever a file existed. Two defects, both measured:
     #
     #   (1) It cannot see ``--no-context-files`` / ``-nc``. That gate lives at
-    #       ``cli/entry.py:1228``, ABOVE discovery, so the banner announced
+    #       ``cli/entry.py:1230``, ABOVE discovery, so the banner announced
     #       project context to a session whose prompt carried none.
     #   (2) Calling discovery a second time RE-EMITTED its stderr budget warnings
     #       (115 bytes per render on one oversized AGENTS.md) — a duplicate of
-    #       what ``entry.py:1229`` already printed at startup, and one that
+    #       what ``entry.py:1231`` already printed at startup, and one that
     #       interpolates the absolute path RAW: over a directory named
     #       ``proj\x1b]0;pwned\x07…`` both the ESC and the BEL reached stderr.
     #

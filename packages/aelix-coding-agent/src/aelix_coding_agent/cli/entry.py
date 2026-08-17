@@ -76,7 +76,7 @@ from aelix_coding_agent.agents.prompt import compose_system_prompt
 from aelix_coding_agent.builtin.guardrail import GuardrailExtension
 from aelix_coding_agent.builtin.permission import PermissionExtension
 from aelix_coding_agent.builtin.permission_mode import PermissionMode, PermissionPosture
-from aelix_coding_agent.cli.session_labels import session_choice_label
+from aelix_coding_agent.cli.session_labels import session_choice_label, short_field
 from aelix_coding_agent.core.runnable_models import is_runnable, unsupported_message
 from aelix_coding_agent.extensions.loader import (
     discover_and_load_extensions,
@@ -587,7 +587,9 @@ async def _prompt_resume_choice(
     lines = ["Resume which session? (newest first)"]
     for idx, meta in enumerate(shown, start=1):
         label = _resume_choice_label(meta, now, width=max(20, width))
-        short_id = (getattr(meta, "id", "") or "")[:8]
+        # Cleaned, not merely sliced: this line goes to STDERR, which has no ANSI
+        # parser in front of it, and ``id`` is read from the session file header.
+        short_id = short_field(getattr(meta, "id", "") or "", 8)
         lines.append(f"  [{idx:>2}] {label}  {short_id}" if short_id else f"  [{idx:>2}] {label}")
     if len(sessions) > len(shown):
         lines.append(

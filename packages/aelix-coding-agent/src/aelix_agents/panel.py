@@ -214,6 +214,13 @@ def _flatten(value: str, *, limit: int) -> str:
     member of a batch.
     """
 
+    # STRIP BEFORE SLICING. The slice is a work bound, not a width bound, and
+    # running it before the whitespace collapse let leading blanks consume the
+    # whole window: MEASURED, 9 000 spaces followed by ``read_file`` rendered as
+    # the empty string — the field deleted rather than bounded. ``strip`` scans
+    # from the ends only, so it is cheaper than the ``split`` that follows it and
+    # cheaper than what this function did before the bound existed.
+    value = value.strip()
     if len(value) > _MAX_INPUT_CHARS:
         value = value[:_MAX_INPUT_CHARS]
     flat = " ".join(value.split()).translate(_CONTROL_KILL)
@@ -496,7 +503,9 @@ CHOSEN BY MEASUREMENT, not by taste. At a 40-column terminal, with the widget
 window clipping rather than wrapping, the number of member rows still showing
 their state was 0 of 4 at caps of 34, 30 and 28, and 2 of 4 at 24. At 50 columns
 every cap showed all four. 24 is the only value that buys anything where it is
-scarce, and it still holds a task like "audit width.py for baked wid…".
+scarce, and it still holds a task like "audit width.py for b…" — 24 cells, which
+is what the cap says and what an earlier draft of this sentence got wrong by
+five.
 
 Below it the column shrinks to the widest label the batch actually has, because a
 group's labels are the submitted tasks and never change while it is open."""
@@ -652,12 +661,18 @@ def format_panel(
         extra_head=model,
         cap=AGGREGATE_MAX_CHARS - (cell_len(_GUTTER) if tasks else 0),
     )
+    # THE ROWS HIDE THE MODEL ONLY IF THE HEADER ACTUALLY SHOWED IT. Keying this
+    # on "a batch model exists" instead was a hole: the header appends the model
+    # only when the state counts still fit, so at any realistic provider-scoped id
+    # the header dropped it AND the rows suppressed it and the panel named no
+    # model at all. MEASURED at 15 and 32 characters: header=False, rows=False.
+    shown_in_header = bool(model) and model in header
     lines: list[str] = []
     if header:
         lines.append(f"{_PANEL_DIM}{_GUTTER}{_PANEL_RST}{header}" if tasks else header)
     for index, snapshot in enumerate(snapshots):
         task = tasks[index] if index < len(tasks) else ""
-        numbers = _panel_row(snapshot, hide_model=bool(model))
+        numbers = _panel_row(snapshot, hide_model=shown_in_header)
         if not task:
             # Byte-for-byte what this function rendered before ``tasks`` existed.
             lines.append(
