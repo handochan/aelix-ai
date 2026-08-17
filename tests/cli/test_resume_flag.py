@@ -189,6 +189,24 @@ async def test_a_number_past_the_page_does_not_open_an_unlisted_session(
     assert await _prompt_with(monkeypatch, "1", sessions) is sessions[0]
 
 
+async def test_the_startup_menu_prints_the_id_it_tells_you_to_use(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The footer says to reach an older session with ``--resume <id>``.
+
+    That advice cannot be followed if no id is printed anywhere — and the
+    in-session picker's detail panel, which is where the id went, does not exist
+    on this stderr menu. It also breaks the tie when two sessions open with the
+    same sentence, which is the common case for a habitual first prompt.
+    """
+
+    sessions = [_meta("aaaaaaaa1111"), _meta("bbbbbbbb2222")]
+    await _prompt_with(monkeypatch, "", sessions)
+    menu = capsys.readouterr().err
+    assert "aaaaaaaa" in menu
+    assert "bbbbbbbb" in menu
+
+
 async def test_a_short_list_prints_no_older_footer(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

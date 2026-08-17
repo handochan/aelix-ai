@@ -903,6 +903,18 @@ def _painted_rows(group: Any, width: int) -> list[tuple[str, int]]:
     return rows
 
 
+def _render_group_to_ansi(group: Any, width: int) -> str:
+    """The bytes a terminal would receive, escapes included."""
+
+    import io
+
+    from rich.console import Console
+
+    buf = io.StringIO()
+    Console(file=buf, width=width, force_terminal=True, color_system="truecolor").print(group)
+    return buf.getvalue()
+
+
 def _bar_rows(group: Any, width: int) -> list[tuple[str, int]]:
     return [(t, n) for t, n in _painted_rows(group, width) if t.strip()]
 
@@ -1046,6 +1058,59 @@ def test_every_production_echo_call_passes_a_width() -> None:
             if not any(kw.arg == "width" for kw in node.keywords):
                 offenders.append(f"{path.name}:{node.lineno}")
     assert not offenders, f"render_user_message called without width= at {offenders}"
+
+
+def test_an_escape_in_the_echoed_turn_does_not_tear_the_bar() -> None:
+    """Pasting coloured build output into a coding agent is ordinary input.
+
+    ``Text`` does not interpret escapes but it does not remove them either, so the
+    paste went to the terminal verbatim. MEASURED at width 40 with
+    ``error: \x1b[31mFAILED\x1b[0m in test_x``: only 17 of the 40 cells were
+    painted — the user's own reset ended the bar's background mid-row — and the
+    raw ``\x1b[31m`` reached the glass. ``\x9b``, the one-byte CSI, did the same.
+
+    It is also an untrusted-input path: the same text is persisted to the session
+    file and replayed by ``/resume``, and a session folder can arrive with a
+    repository rather than being written by this user.
+    """
+
+    from aelix_coding_agent.tui.render import render_user_message
+
+    for text in (
+        "error: \x1b[31mFAILED\x1b[0m in test_x",
+        "before\x1bafter",
+        "before\x9b31mafter",
+        "first\rsecond",
+    ):
+        group = render_user_message(text, width=40)
+        rendered = _render_group_to_ansi(group, 40)
+        assert "\x1b[31m" not in rendered, repr(text)
+        assert "\x9b" not in rendered, repr(text)
+        for row_text, cells in _bar_rows(group, 40):
+            assert cells == 40, (text, row_text, cells)
+
+
+def test_a_multi_line_paste_is_still_several_rows_of_one_bar() -> None:
+    """The newline is the one control that survives, because a multi-line paste is
+    meant to be several rows of one bar rather than a run-on."""
+
+    from aelix_coding_agent.tui.render import render_user_message
+
+    body = _bar_rows(render_user_message("first line\nsecond line", width=40), 40)
+    assert len(body) == 2, body
+    assert all(cells == 40 for _t, cells in body), body
+
+
+def test_the_echo_survives_a_width_too_narrow_to_constrain() -> None:
+    """At 1 or 2 columns the ``(0, 1)`` inset IS the whole budget, and constraining
+    to it renders an empty bar — two blank rows where the turn used to be. Losing
+    the echo to a width CAP is a defect the cap introduced, so it does not apply
+    there."""
+
+    from aelix_coding_agent.tui.render import render_user_message
+
+    for width in (1, 2):
+        assert _echo_text(render_user_message("hi", width=width)) == "» hi"
 
 
 def test_render_user_message_steer_and_follow_up_labels_same_visual() -> None:

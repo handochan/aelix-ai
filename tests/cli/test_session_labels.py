@@ -17,6 +17,7 @@ from pathlib import Path
 
 from aelix_agent_core.session.storage import JsonlSessionMetadata
 from aelix_coding_agent.cli.session_labels import (
+    _ZERO_WIDTH_SLACK,
     first_user_message,
     format_age,
     last_activity,
@@ -348,3 +349,75 @@ def test_detail_of_a_missing_file_never_raises(tmp_path: Path) -> None:
     assert session_detail_lines(_meta(str(tmp_path / "gone.jsonl"), created="")) == [
         "  abcdef12"
     ]
+
+
+# === review findings: a cell count is not a bound, and C1 is a CSI ============
+
+
+def test_a_zero_width_flood_is_still_truncated() -> None:
+    """``get_cwidth`` returns 0 for a combining mark, so a cell budget never fires.
+
+    MEASURED on the cells-only version: 200 000 combining acutes in, 200 000 out,
+    against a budget of 74. That label reaches a picker row and a stderr menu
+    line, and the repaint it causes is measured in tens of seconds — with the key
+    handler unable to run to cancel it.
+    """
+
+    flood = "\u0301" * 200_000
+    out = truncate_cells(flood, 74)
+    # BOTH units. The codepoint cap is slack so an ordinary over-long label keeps
+    # its ``…``; the contract is "bounded", not "bounded at the cell budget".
+    assert len(out) <= 74 * _ZERO_WIDTH_SLACK + 1, len(out)
+    assert get_cwidth(out) <= 74
+
+
+def test_a_zero_width_flood_in_a_session_file_is_still_one_bounded_row(
+    tmp_path: Path,
+) -> None:
+    """End to end, because the bound that matters is the one on the rendered row."""
+
+    path = _write(tmp_path, _header(), _user("\u0301" * 200_000))
+    label = session_choice_label(_meta(path), 1e9, width=78)
+    assert len(label) <= 200, len(label)
+    assert get_cwidth(label) <= 78
+    assert "\n" not in label
+
+
+def test_the_c1_csi_does_not_survive_into_a_label(tmp_path: Path) -> None:
+    """``\x9b`` IS a CSI — the one-byte spelling of ``\x1b[`` — and
+    prompt-toolkit's ANSI parser honours it.
+
+    A session JSONL is attacker-influenceable: a user can be handed a repository
+    whose sessions folder came with it. ``aelix_agents/panel._CONTROL_KILL``
+    already carries C1 for exactly this reason and its docstring says so; this
+    module was written from pi's ``/[\x00-\x1f\x7f]/g`` and did not.
+    """
+
+    path = _write(tmp_path, _header(), _user("before\x9b31mafter"))
+    label = session_choice_label(_meta(path), 1e9)
+    detail = " ".join(session_detail_lines(_meta(path)))
+    for rendered in (label, detail):
+        assert "\x9b" not in rendered, repr(rendered)
+        assert "\x1b" not in rendered, repr(rendered)
+    assert "before" in label and "after" in label
+
+
+def test_the_activity_window_reaches_past_one_large_record(tmp_path: Path) -> None:
+    """An assistant turn carrying a tool result is ONE JSONL record, and a read of
+    a large file puts the whole file in it.
+
+    An 8 KB window lands mid-record, finds no timestamp, and the age silently
+    falls back to ``created_at`` — always in the stale direction, with no marker
+    to say it was guessed.
+    """
+
+    big = json.dumps(
+        {
+            "id": "e9",
+            "timestamp": "2026-08-16T09:00:00.000Z",
+            "type": "message",
+            "message": {"role": "assistant", "content": [{"type": "text", "text": "x" * 60_000}]},
+        }
+    )
+    path = _write(tmp_path, _header(), _user("the task"), big)
+    assert last_activity(path) == "2026-08-16T09:00:00.000Z"

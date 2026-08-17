@@ -77,7 +77,13 @@ tracks which group last wrote the slot, so an end_group for a group that does
 not own it cannot blank someone else's panel."""
 
 AGGREGATE_MAX_CHARS = 78
-"""Hard ceiling on surface 1, in characters.
+"""Hard ceiling on surface 1, in terminal CELLS.
+
+The name says CHARS and the unit is cells; the name is kept because it is public
+and the rename is not worth a breaking change, but the unit moved when the panel
+stopped counting codepoints — a Hangul syllable is one character and two cells,
+and it was the character count that let a row through at twice its promised
+width.
 
 78 and not 80: the aggregate is one segment among several on a shared height-1
 row (``chrome.py:1097-1108`` joins them with two spaces), so the last two
@@ -96,7 +102,9 @@ ONLY — the tool card (surface 2) prints the name in full, because that is the
 permanent transcript record and byte-identity with P2 is a requirement there."""
 
 PANEL_ROW_MAX_CHARS = 78
-"""Hard ceiling on ONE panel row, in characters (finding F2, HIGH).
+"""Hard ceiling on ONE panel row, in terminal CELLS (finding F2, HIGH).
+
+Same note as :data:`AGGREGATE_MAX_CHARS`: the NAME says chars, the unit is cells.
 
 The same number and the same reason as :data:`AGGREGATE_MAX_CHARS`: 80 columns
 less the two the surrounding join spends. The panel needed its own name rather
@@ -120,6 +128,26 @@ newlines because "this is a fixed height=1 chrome row" (``chrome.py:1097-1099``)
 the statusline was defended at the far end and the widget is not."""
 
 _ELLIPSIS = "…"
+
+_ZERO_WIDTH_SLACK = 4
+"""Codepoints per cell :func:`_flatten` carries before it stops measuring and
+slices. Only zero-width input can reach it — one visible codepoint is at least
+one cell — so it bounds the pathological case without taking the ellipsis away
+from the ordinary one."""
+
+_MAX_INPUT_CHARS = 8192
+"""Ceiling on what :func:`_flatten` will even LOOK at, before the two width caps.
+
+The whitespace collapse and the ``translate`` are both linear in the input, and
+``_flatten`` runs on every publish for every member of a batch — the runtime
+publishes after every reduced stdout line. A child that sends a megabyte in
+``current_tool`` should not buy a megabyte of work per frame; measured, 200 000
+characters cost ~70 ms in the collapse alone.
+
+Generous rather than tight (a hundred times the widest row this module draws) so
+it can only ever bite input that was already going to be truncated to nothing
+visible. It is a work bound, not a width bound: the two width caps below are
+what make the OUTPUT safe."""
 
 _CONTROL_KILL = dict.fromkeys(
     [*range(0x00, 0x20), 0x7F, *range(0x80, 0xA0)]
@@ -170,11 +198,36 @@ def _flatten(value: str, *, limit: int) -> str:
     ``cell_len``/``set_cell_size`` and ``tool.py`` — which imports THIS
     function — already fixed its own half of the same finding (M1) against those
     primitives. Sharing them is what makes the budget and the draw agree.
+
+    BOTH UNITS, BECAUSE NEITHER IS A BOUND ON ITS OWN. Counting codepoints let a
+    Hangul row through at twice its promised width, which is the finding above.
+    Counting CELLS alone is worse: ``cell_len`` returns 0 for a combining mark,
+    so a string of them has no width at all and a cell cap never fires. MEASURED
+    on the cells-only version: 200 000 combining acutes went in and 200 000 came
+    out, cell width 0, against a limit of 78 — a hard character cap replaced by
+    no cap. That row reaches ``chrome._render_widget_lines``, which has no bound
+    of its own, and the repaint it causes is measured in tens of seconds.
+
+    So the codepoint cap comes FIRST and the cell cap narrows what survives it.
+    The input is bounded before any of that work: the whitespace collapse and the
+    translate are linear in the input, and this runs on every publish for every
+    member of a batch.
     """
 
+    if len(value) > _MAX_INPUT_CHARS:
+        value = value[:_MAX_INPUT_CHARS]
     flat = " ".join(value.split()).translate(_CONTROL_KILL)
+    # The zero-width backstop, SLACK rather than equal to ``limit``: a slice at
+    # exactly the budget would leave the cell cap below with nothing to do and
+    # would return an over-long row unmarked. Only zero-width input can reach it,
+    # since one visible codepoint is at least one cell. Slicing by codepoint never
+    # splits a codepoint; it can orphan a combining mark from its base, which is
+    # cosmetic, and this arm is only reached by input that was never legitimate.
+    clipped = len(flat) > limit * _ZERO_WIDTH_SLACK
+    if clipped:
+        flat = flat[: limit * _ZERO_WIDTH_SLACK]
     if cell_len(flat) <= limit:
-        return flat
+        return flat + _ELLIPSIS if clipped else flat
     return set_cell_size(flat, max(0, limit - 1)) + _ELLIPSIS
 
 _STATE_LABELS: dict[str, str] = {
@@ -292,9 +345,19 @@ def format_aggregate_status(
         return ""
 
     head = f"agent {_short_profile(live[0].profile)} ×{total}"
+    counts = _state_counts(snapshots)
     if extra_head:
-        head += f" · {_flatten(extra_head, limit=_MAX_PROFILE_CHARS * 2)}"
-    text = " · ".join([head, *_state_counts(snapshots)])
+        # ONLY IF THE SUBSTANCE STILL FITS. The head and the state counts are
+        # documented above as never dropped, so appending an unconditional term
+        # to the head does not shorten the head — it truncates the COUNTS. With a
+        # 24-character provider-scoped model id that silently cost the elapsed,
+        # the tokens and the cost; at 31 it cost a state count, and the count it
+        # reached first was ``1 failed``. The model is the droppable half of this
+        # pair, so it is the half that gets tested.
+        widened = f"{head} · {_flatten(extra_head, limit=_MAX_PROFILE_CHARS * 2)}"
+        if cell_len(" · ".join([widened, *counts])) <= cap:
+            head = widened
+    text = " · ".join([head, *counts])
 
     tail = [f"{max(item.elapsed_ms for item in live) / 1000:.0f}s"]
     tokens = max(item.tokens for item in live)
@@ -418,34 +481,48 @@ bound is arithmetic rather than a final pass — with a cell-accurate clamp at t
 end as the backstop, because arithmetic is a thing one gets wrong."""
 
 _TASK_MIN_CELLS = 8
-"""Never squeeze the job label below this, even if the numbers are wide. A label
-cut to two characters is a column that costs width and says nothing."""
+"""Never squeeze the job label below this. A label cut to two characters is a
+column that costs width and says nothing."""
+
+_TASK_COL_MAX_CELLS = 24
+"""Ceiling on the shared job-label column.
+
+The column is a FIXED cost paid before the state and the numbers, and this module
+cannot see the terminal — ``PANEL_ROW_MAX_CHARS`` is a constant and ``tui/width.py``
+is deliberately not importable from here. So the cap is what decides at which
+terminal width the state disappears behind the labels.
+
+CHOSEN BY MEASUREMENT, not by taste. At a 40-column terminal, with the widget
+window clipping rather than wrapping, the number of member rows still showing
+their state was 0 of 4 at caps of 34, 30 and 28, and 2 of 4 at 24. At 50 columns
+every cap showed all four. 24 is the only value that buys anything where it is
+scarce, and it still holds a task like "audit width.py for baked wid…".
+
+Below it the column shrinks to the widest label the batch actually has, because a
+group's labels are the submitted tasks and never change while it is open."""
 
 
-def _panel_row(
-    snapshot: SubagentProgress | None,
-    *,
-    task: str = "",
-    hide_model: bool = False,
-) -> str:
+def _panel_row(snapshot: SubagentProgress | None, *, hide_model: bool = False) -> str:
     if snapshot is None:
-        return f"{_flatten(task, limit=PANEL_ROW_MAX_CHARS)} · queued" if task else "queued"
+        return "queued"
     # ``state`` is a product-core literal (``subagent_contract.py:66``) and the
     # numbers are numbers; ``current_tool``, ``model`` AND ``task`` are strings
     # this module does not author — the first two are the CHILD's own bytes, read
     # off its stdout, and the third is the PARENT model's tool-call argument — so
     # all three go through :func:`_flatten`.
     #
-    # ``task`` takes the place ``model`` used to lead from, and the reason is the
-    # reason the old comment gave for putting ``model`` there: "it is the same
-    # for every member of a one-profile batch, so the column is naturally
-    # uniform-width". A column identical on every row identifies nothing, which
-    # is precisely what the owner asked the panel to show. The model is not lost
-    # — :func:`_batch_model` states it once in the header — and when the members
-    # DISAGREE ``hide_model`` is False and the old per-row term comes back.
+    # THIS FUNCTION NO LONGER RENDERS A WHOLE ROW when the panel has job labels:
+    # :func:`format_panel` routes those through :func:`_composed_row`, which lays
+    # the label out in its own column and uses what this returns as the numbers
+    # half. The name is kept because the no-tasks path — every existing caller,
+    # and N == 1 — is byte-identical to what it always produced.
+    #
+    # ``model`` is dropped when the batch agrees on one, because a column
+    # identical on every row identifies nothing; :func:`_batch_model` states it
+    # once in the header instead. When the members DISAGREE ``hide_model`` is
+    # False and the per-row term comes back, since a header claiming one model
+    # for a batch running two is worse than a repeated column.
     parts: list[str] = []
-    if task:
-        parts.append(_flatten(task, limit=PANEL_ROW_MAX_CHARS))
     if snapshot.model and not hide_model:
         parts.append(_flatten(snapshot.model, limit=PANEL_ROW_MAX_CHARS))
     parts.append(snapshot.state)
@@ -459,32 +536,61 @@ def _panel_row(
     return " · ".join(parts)
 
 
-def _composed_row(index: int, total: int, task: str, numbers: str) -> str:
-    """``▌ [k/N] <job label>      <state · tool · numbers>`` in one bounded row.
+def _label_column(tasks: Sequence[str], room: int) -> int:
+    """Cells the job-label column occupies, shared by every row of one panel.
 
-    The job label is left-aligned from a FIXED column (the index prefix never
-    changes width within a batch) and the numbers are flush RIGHT against the row
-    budget, so only the whitespace between them moves as a child progresses.
-    Aligning the numbers to the widest row instead would make every OTHER row's
-    label jump whenever one member's elapsed time gained a digit.
+    From the LABELS, never from the numbers, and that is the whole design. The
+    labels are fixed for the life of a group — they are the submitted tasks — so a
+    column sized from them is stable, while one sized from the numbers moves every
+    time a member's elapsed time gains a digit and drags every other row's label
+    with it.
 
-    The width bound is arithmetic — each untrusted part is :func:`_flatten`ed to
-    its own share, then the row is assembled from the results, because a final
+    Sizing from the numbers also made the label budget shrink as a child got
+    busier: four distinct tasks collapsed to a common prefix at exactly the moment
+    work started and the user needed to tell the rows apart.
+    """
+
+    widest = max((cell_len(_flatten(t, limit=room)) for t in tasks), default=0)
+    return max(_TASK_MIN_CELLS, min(widest, _TASK_COL_MAX_CELLS, room))
+
+
+def _composed_row(index: int, total: int, task: str, numbers: str, column: int) -> str:
+    """``▌ [k/N] <job label>   <state · tool · numbers>`` in one bounded row.
+
+    LEFT-PACKED, NOT PADDED TO THE FULL BUDGET, and that is a correction. The
+    first version right-aligned the numbers against
+    :data:`PANEL_ROW_MAX_CHARS`, which made EVERY row exactly 78 cells — measured
+    over 20 000 composed rows, the observed width set was literally ``[78]``. The
+    widget window is ``Window(..., dont_extend_height=True)`` with ``wrap_lines``
+    left False (``chrome.py:693``), so a row wider than the terminal is CLIPPED,
+    not wrapped, and the clip takes the right-hand end. Measured through the real
+    chrome at 72 columns, a queued member rendered as ``▌ [4/4] write the ADR``
+    with the word ``queued`` gone entirely, while main's left-packed rows read
+    ``[4/4] queued`` intact all the way down to 30. ``tui/width.py`` records this
+    exact failure once already and says "never return more than the terminal
+    has"; there is deliberately no minimum-width floor anywhere under ``tui/``,
+    so a sub-78-column terminal is a supported configuration.
+
+    So the label column is padded — that is what keeps the numbers aligned across
+    rows — and the row then ENDS. A narrow terminal now loses the tail of the
+    numbers, the same degradation main had, instead of losing all of them.
+
+    The width bound is arithmetic: each untrusted part is :func:`_flatten`ed to
+    its own share and the row is assembled from the results, because a final
     flatten would collapse the padding this layout is made of. The closing clamp
-    is the backstop for that arithmetic; it uses ``set_cell_size`` rather than a
-    slice so it, too, counts what the terminal draws.
+    is the backstop for that arithmetic, and it counts cells rather than slicing.
     """
 
     prefix = f"[{index + 1}/{total}] "
     room = PANEL_ROW_MAX_CHARS - cell_len(_GUTTER) - cell_len(prefix)
-    numbers = _flatten(numbers, limit=max(0, room - _TASK_MIN_CELLS - 2))
-    label = _flatten(task, limit=max(_TASK_MIN_CELLS, room - cell_len(numbers) - 2))
-    gap = max(1, room - cell_len(label) - cell_len(numbers))
-    body = f"{prefix}{label}{' ' * gap}{_PANEL_DIM}{numbers}{_PANEL_RST}"
-    visible = cell_len(prefix) + cell_len(label) + gap + cell_len(numbers)
+    label = _flatten(task, limit=max(_TASK_MIN_CELLS, min(column, room)))
+    numbers = _flatten(numbers, limit=max(0, room - column - 2))
+    pad = " " * max(1, column - cell_len(label) + 2)
+    body = f"{prefix}{label}{pad}{_PANEL_DIM}{numbers}{_PANEL_RST}"
+    visible = cell_len(prefix) + cell_len(label) + len(pad) + cell_len(numbers)
     if visible > PANEL_ROW_MAX_CHARS - cell_len(_GUTTER):
         body = set_cell_size(
-            f"{prefix}{label}{' ' * gap}{numbers}",
+            f"{prefix}{label}{pad}{numbers}",
             PANEL_ROW_MAX_CHARS - cell_len(_GUTTER),
         )
     return f"{_PANEL_DIM}{_GUTTER}{_PANEL_RST}{body}"
@@ -534,6 +640,9 @@ def format_panel(
     if total < PANEL_MIN_CHILDREN:
         return []
     model = _batch_model(snapshots) if tasks else ""
+    column = _label_column(
+        tasks, PANEL_ROW_MAX_CHARS - cell_len(_GUTTER) - len(f"[{total}/{total}] ")
+    ) if tasks else 0
     # The gutter costs two cells the aggregate does not know about, so the panel
     # header is budgeted two narrower. Passed as a CAP rather than clamped after,
     # so the existing "drop a whole trailing number" logic does the shortening
@@ -555,7 +664,7 @@ def format_panel(
                 _flatten(f"[{index + 1}/{total}] {numbers}", limit=PANEL_ROW_MAX_CHARS)
             )
             continue
-        lines.append(_composed_row(index, total, task, numbers))
+        lines.append(_composed_row(index, total, task, numbers, column))
 
     if len(lines) > PANEL_MAX_ROWS:
         # Only reachable from a caller that submitted more members than

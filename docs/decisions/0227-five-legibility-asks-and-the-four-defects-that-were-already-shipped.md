@@ -18,9 +18,9 @@ premises about how to fix them.
 
 ## What was asked, and what each turned out to be
 
-**A panel does not separate from the transcript around it.** Measured cause: the eleven
-in-flow modals — `/settings`, `/model`, `/thinking`, `/login`, `/trust`, `/resume`,
-`/scoped-models`, `/statusline`, `/stats`, `/extension`, spawn consent — are all one
+**A panel does not separate from the transcript around it.** Measured cause: the twelve
+in-flow modals — `/settings`, `/model`, `/thinking`, `/login`, `/logout`, `/trust`,
+`/resume`, `/scoped-models`, `/statusline`, `/stats`, `/extension`, spawn consent — are one
 function, `tui/context.py`'s `_picker_frame`, and its top and bottom dividers carried
 `_PICK_DIM`. That is SGR 2, the faintest attribute a terminal has, on the one element
 whose entire job is to say where the panel starts and stops. The rule is now cyan and a
@@ -143,6 +143,75 @@ failures about a box this work does not touch.
 
 Each was found because the probe was built to report why it found nothing, rather than to
 report nothing.
+
+## An adversarial review found twenty-four more, and eight were mine
+
+The branch was reviewed before merging by 33 agents over six independent lenses,
+each finding then handed to a skeptic whose job was to REFUTE it. 27 claims, 24
+survived. Recording them here rather than quietly fixing them, because the
+pattern in them is the useful part: **the changes above replaced bounds that
+worked with bounds that read better.**
+
+**Two cell-width caps were not caps at all.** ``cell_len`` and ``get_cwidth``
+both return 0 for a combining mark, so a string made of them has no width and a
+cell budget never fires. MEASURED against the shipped branch: 200 000 combining
+acutes went into ``panel._flatten`` at a limit of 78 and 200 000 came out, and the
+same into ``session_labels.truncate_cells`` at 74. The commit above congratulates
+itself for replacing a character count with a cell count; what it actually did on
+that input was replace a hard cap with none. Both now bound in BOTH units, and
+the codepoint backstop is deliberately SLACK rather than equal to the budget —
+setting it equal silently removed the ``…`` from every ordinary truncation, which
+a pre-existing test caught immediately.
+
+**A new module was written without C1.** ``session_labels._clean`` was ported from
+pi's ``/[\x00-\x1f\x7f]/g`` and kept its exact set. ``\x9b`` IS a CSI — the
+one-byte spelling of ``\x1b[`` — which ``panel._CONTROL_KILL`` in this same repo
+already carries, with a docstring saying why. A session JSONL is
+attacker-influenceable, so the label was an escape-injection path.
+
+**The user echo shipped the same hole.** ``Text`` does not interpret escapes but
+does not remove them either. MEASURED at width 40 with a pasted
+``error: \x1b[31mFAILED\x1b[0m in test_x``: 17 of 40 cells painted, the user's own
+reset ending the bar mid-row, and the raw escape reaching the glass. Pasting
+coloured build output into a coding agent is ordinary input; the same text is also
+persisted and replayed by ``/resume``.
+
+**And the picker title.** ``ExtensionUIContext.select`` takes whatever an
+extension passes, and an OSC title both SET THE TERMINAL'S WINDOW TITLE and made
+the top rule 32 visible cells against the bottom rule's 40 — because
+``_visible_len`` strips SGR only while prompt-toolkit consumes every escape. The
+title is sanitised now; the BODY deliberately is not, because those rows are this
+module's own styling.
+
+**Ask 1 broke itself in ask 5.** ``/resume`` sized its rows from the terminal
+while ``_picker_frame`` clamps its rule to 78: measured, a 120-column terminal put
+114-cell rows inside a 78-cell rule, so the session list hung 36 columns past the
+coloured boundary this branch added in order to make that boundary visible.
+
+**The panel row was padded to the ceiling, and the widget window clips.** Over
+20 000 composed rows the observed width set was literally ``[78]``. ``Window`` is
+built without ``wrap_lines``, so a row wider than the terminal is CUT, and the cut
+takes the right-hand end: at 72 columns a queued member rendered as
+``▌ [4/4] write the ADR`` with the word ``queued`` gone, where main's left-packed
+rows read ``[4/4] queued`` intact down to 30. The column is now sized from the
+LABELS — which are fixed for the life of a group — and the row then ends. The same
+budget-sharing also made four distinct job labels converge to a common prefix the
+moment work started, because the label's share shrank as the numbers grew.
+
+**Two more, smaller.** Appending the model to a head documented as "never
+dropped" did not shorten the head, it truncated the state COUNTS — at a
+31-character model id the count it reached first was ``1 failed``; the model is
+now included only if the substance still fits. And merging ``current-dir`` into
+the permission row put the only UNBOUNDED segment in the middle of a height-1 row
+that clips: measured at 80 columns with a nested cwd the row is 95 cells and the
+two segments pushed off were ``⏵⏵`` steering and ``⋯ N queued``, the only live
+signals on the footer. The path goes last now.
+
+**The citation gate agreed with a lie.** Nine citations naming ``_picker_frame``
+carried an anchor locked to a line inside ``_filter_line``, so ``--fix`` would have
+moved a wrong pointer to new coordinates — verbatim the failure ADR-0224 measured
+at 24% of the corpus. Those nine were re-derived BY HAND from the prose; the rest,
+whose anchors were correct, mechanically.
 
 ## Rejected alternatives
 

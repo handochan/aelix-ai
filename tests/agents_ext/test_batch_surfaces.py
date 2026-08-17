@@ -19,6 +19,7 @@ from typing import Any
 
 from aelix_agents.panel import (
     _ELLIPSIS,
+    _ZERO_WIDTH_SLACK,
     AGGREGATE_MAX_CHARS,
     PANEL_MAX_ROWS,
     PANEL_MIN_CHILDREN,
@@ -26,6 +27,7 @@ from aelix_agents.panel import (
     PANEL_WIDGET_KEY,
     PARTIAL_MIN_INTERVAL_MS,
     PartialThrottle,
+    _flatten,
     _panel_row,
     format_aggregate_status,
     format_card,
@@ -637,6 +639,123 @@ def test_a_four_member_group_carries_its_tasks_through_the_real_bridge() -> None
         assert job[:20] in _visible(written[index + 1])
 
 
+# === review findings: bounds that were not bounds, and a row that was all 78 ===
+
+
+def test_a_zero_width_flood_is_still_bounded() -> None:
+    """A cell count is NOT a bound, and the cells-only version had none.
+
+    ``cell_len`` returns 0 for a combining mark, so a string made of them has no
+    width and a cell cap never fires. MEASURED on the cells-only version: 200 000
+    combining acutes in, 200 000 out, against a limit of 78 — a hard character cap
+    replaced by no cap at all, on a row that reaches a widget window with no bound
+    of its own. Both units, codepoints first.
+    """
+
+    flood = "\u0301" * 200_000
+    out = _flatten(flood, limit=PANEL_ROW_MAX_CHARS)
+    # BOTH units. The codepoint cap is slack — the ellipsis has to survive for
+    # ordinary input — so the contract is "bounded", not "bounded at the cell
+    # budget": 200 000 in, a few hundred out, and never more than the budget in
+    # CELLS.
+    assert len(out) <= PANEL_ROW_MAX_CHARS * _ZERO_WIDTH_SLACK + 1, len(out)
+    assert cell_len(out) <= PANEL_ROW_MAX_CHARS
+
+    rows = format_panel(
+        [_member(k, state="running", current_tool=flood) for k in range(8)],
+        tasks=tuple(flood for _ in range(8)),
+    )
+    assert len(rows) <= PANEL_MAX_ROWS
+    for row in rows:
+        plain = _visible(row)
+        assert len(plain) <= PANEL_ROW_MAX_CHARS * _ZERO_WIDTH_SLACK * 3, len(plain)
+        assert cell_len(plain) <= PANEL_ROW_MAX_CHARS
+
+
+def test_flatten_does_not_do_unbounded_work_per_frame() -> None:
+    """The collapse and the translate are linear in the INPUT, and this runs on
+    every publish for every member. A megabyte of ``current_tool`` must not buy a
+    megabyte of work per repaint."""
+
+    import time
+
+    payload = "x" * 4_000_000
+    start = time.perf_counter()
+    _flatten(payload, limit=PANEL_ROW_MAX_CHARS)
+    elapsed_ms = (time.perf_counter() - start) * 1000
+    assert elapsed_ms < 200, f"{elapsed_ms:.0f} ms for one flatten"
+
+
+def test_rows_are_content_length_not_padded_to_the_ceiling() -> None:
+    """The widget window CLIPS rather than wraps, so a row padded to the ceiling
+    loses its right-hand half on a narrower terminal.
+
+    MEASURED on the first version: over 20 000 composed rows the observed width
+    set was literally ``[78]``, and through the real chrome at 72 columns a queued
+    member rendered as ``▌ [4/4] write the ADR`` with the word ``queued`` gone,
+    while main's left-packed rows read ``[4/4] queued`` intact down to 30 columns.
+    ``tui/width.py`` deliberately has no minimum-width floor, so a sub-78-column
+    terminal is a supported configuration.
+    """
+
+    rows = [
+        _visible(line)
+        for line in format_panel(_four(), tasks=("a", "bb", "ccc", "write the ADR"))[1:]
+    ]
+    widths = {cell_len(r) for r in rows}
+    assert widths != {PANEL_ROW_MAX_CHARS}, "every row is the full ceiling again"
+    # the queued row is the short one, and it is the one clipping used to eat
+    assert cell_len(rows[-1]) < PANEL_ROW_MAX_CHARS - 10, rows[-1]
+    assert rows[-1].rstrip().endswith("queued")
+
+
+def test_the_job_column_is_sized_from_the_labels_not_the_numbers() -> None:
+    """Labels are fixed for the life of a group; the numbers change every frame.
+
+    Sizing the column from the numbers made the label budget shrink as a child got
+    busier, so four distinct tasks converged to a common prefix at exactly the
+    moment work started — and it made every other row's label jump whenever one
+    member's elapsed time gained a digit.
+    """
+
+    jobs = ("alpha task one", "alpha task two", "alpha task three", "alpha task four")
+    idle = _panel([_member(k, state="starting") for k in range(4)], tasks=jobs)[1:]
+    busy = _panel(
+        [
+            _member(k, state="running", current_tool="read", elapsed_ms=999_000,
+                    tokens=987_654, cost=99.9999)
+            for k in range(4)
+        ],
+        tasks=jobs,
+    )[1:]
+    for idle_row, busy_row in zip(idle, busy, strict=True):
+        idle_label = idle_row.split("] ", 1)[1].rstrip()
+        busy_label = busy_row.split("] ", 1)[1]
+        assert busy_label.startswith(idle_label.split("  ")[0]), (idle_row, busy_row)
+    assert len({r.split("] ", 1)[1].split("  ")[0] for r in busy}) == 4
+
+
+def test_the_header_keeps_its_state_counts_when_the_model_will_not_fit() -> None:
+    """The head and the counts are documented as never dropped, so appending the
+    model unconditionally did not shorten the head — it truncated the COUNTS.
+
+    MEASURED: with a 24-character provider-scoped model id the elapsed, tokens and
+    cost were silently gone; at 31 characters a state count went, and the count it
+    reached first was ``1 failed``.
+    """
+
+    for model in ("gpt-5", "claude-opus-4-8", "openai/gpt-5.6-luna-preview-2026"):
+        snapshots: list[SubagentProgress | None] = [
+            _member(0, model=model, state="error"),
+            _member(1, model=model, state="stopped"),
+            _member(2, model=model, state="done"),
+            None,
+        ]
+        header = _visible(format_panel(snapshots, tasks=_JOBS)[0])
+        assert "1 failed" in header, (model, header)
+        assert cell_len(header) <= AGGREGATE_MAX_CHARS, (model, cell_len(header))
+
+
 def test_a_group_of_one_keeps_p2s_per_child_row_and_no_panel() -> None:
     """S10: at N == 1 every surface is byte-identical to P2. The group is still
     opened and closed so the extension's ``try``/``finally`` is symmetric."""
@@ -1147,7 +1266,7 @@ def test_the_row_builder_is_safe_on_its_own_not_only_via_format_panel() -> None:
     ``_panel_row`` changes nothing that :func:`format_panel` can observe: the
     mutation survives every test above. It is still worth having and still worth
     pinning. ``_panel_row`` is the function that touches the child's bytes
-    (``panel.py:374-396``, the site the finding names), and the next consumer of a
+    (``panel.py:437-459``, the site the finding names), and the next consumer of a
     per-child row — a card variant, a future surface — will call it rather than
     re-deriving it, and must inherit the bound rather than have to remember it.
     """

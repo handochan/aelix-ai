@@ -1081,3 +1081,26 @@ async def test_multiline_statusline_keeps_the_permission_badge_leading() -> None
         second = chrome._footer_line.split("\n")[1]
         assert DEFAULT_BADGE in second, second
         assert second.index(DEFAULT_BADGE) < second.index("📂"), second
+
+
+# === review finding: the merged statusline row must not clip the live signals ===
+
+
+def test_the_merged_statusline_row_drops_the_path_before_the_live_signals() -> None:
+    """The chrome row is height-1 and CLIPPED at the terminal, which is the very
+    thing multi-line mode exists to stop.
+
+    ``current-dir`` is the one segment with no bound, so it decides whether the
+    row overflows. MEASURED at 80 columns with a realistically nested cwd the
+    merged row is 95 cells; with the directory in the MIDDLE the two segments
+    pushed off the end were ``⏵⏵`` steering and ``⋯ N queued`` — the only live and
+    transient signals on the footer. Ordered this way the overflow eats the path.
+    """
+
+    from aelix_coding_agent.tui.context import AelixTUIContext
+
+    row = AelixTUIContext._MULTILINE_ROWS[1]
+    assert row[0] == "permission-mode"  # ADR-0159: the badge leads its row
+    assert row[-1] == "current-dir", row
+    assert row.index("steering") < row.index("current-dir")
+    assert row.index("pending-queued") < row.index("current-dir")

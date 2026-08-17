@@ -177,3 +177,43 @@ def test_an_empty_title_keeps_the_bare_rule() -> None:
     rows = _rows("", _BODY, _HINT, 40)
     assert _visible_len(rows[0]) == 0  # the old empty-bold line
     assert set(rows[1].replace("\x1b[36m", "").replace("\x1b[0m", "")) == {"─"}
+
+
+# === review finding: the title is a caller's string, and callers include extensions
+
+
+def test_a_control_character_in_the_title_never_reaches_the_frame() -> None:
+    """``ExtensionUIContext.select`` takes whatever an extension passes.
+
+    MEASURED with an OSC title (``Set\x1b]0;pwned\x07tings``): the escape reached
+    the output — which SETS THE TERMINAL'S WINDOW TITLE — and made the top rule 32
+    visible cells against the bottom rule's 40, because ``_visible_len`` strips
+    SGR only while prompt-toolkit's ANSI parser consumes every escape.
+
+    The BODY is deliberately not sanitised: those rows arrive already styled by
+    this module (``_PICK_SEL`` on the cursor row, dim on the counter).
+    """
+
+    rows = _rows("Set\x1b]0;pwned\x07tings", _BODY, _HINT, 40)
+    joined = "".join(rows)
+    assert "\x1b]" not in joined
+    assert "\x07" not in joined
+    assert "\x9b" not in joined
+    assert _visible_len(rows[0]) == _visible_len(rows[-2]) == 40
+    assert "Settings" in rows[0].replace(" ", "") or "Set" in rows[0]
+
+
+def test_a_c1_csi_in_the_title_is_removed() -> None:
+    """``\x9b`` is the one-byte CSI and prompt-toolkit honours it."""
+
+    rows = _rows("before\x9b31mafter", _BODY, _HINT, 40)
+    assert "\x9b" not in "".join(rows)
+    assert _visible_len(rows[0]) == _visible_len(rows[-2])
+
+
+def test_sanitising_the_title_does_not_flatten_a_multi_row_one() -> None:
+    """The newline survives: the spawn-consent dialog's title is nine rows and its
+    height budget is gated on that."""
+
+    rows = _rows(_NINE_ROW_TITLE, _BODY, _HINT, 40)
+    assert len(rows) == 9 + 1 + len(_BODY) + 1 + 1

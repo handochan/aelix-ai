@@ -69,7 +69,10 @@ from aelix_coding_agent.tui.completion import (
     DescriptorCommandCompleter,
     FileMentionCompleter,
 )
-from aelix_coding_agent.tui.context import AelixTUIContext
+from aelix_coding_agent.tui.context import (
+    _PICK_MAX_WIDTH,
+    AelixTUIContext,
+)
 from aelix_coding_agent.tui.descriptors import (
     DescriptorRegistry,
     DescriptorRenderer,
@@ -743,7 +746,16 @@ async def run_tui(
         # with the session's short id, which is the thing that actually
         # distinguishes them, rather than the old repeated " ·" padding.
         now = time.time()
-        label_width = terminal_columns(out_chrome, max_width=render_width_cap["value"]) - 6
+        # BOUNDED BY THE FRAME THAT WILL DRAW IT, not by the terminal. The first
+        # version read ``terminal_columns(...) - 6`` alone, and ``_picker_frame``
+        # clamps its rule to ``_PICK_MAX_WIDTH``: measured, a 120-column terminal
+        # produced 114-cell rows inside a 78-cell rule, so the session list hung
+        # 36 columns past the coloured boundary this same branch added to make
+        # that boundary visible. The row must never be wider than the rule.
+        label_width = min(
+            terminal_columns(out_chrome, max_width=render_width_cap["value"]) - 6,
+            _PICK_MAX_WIDTH,
+        )
         labels: list[str] = []
         by_label: dict[str, object] = {}
         for meta in choices:
@@ -1414,7 +1426,7 @@ async def run_tui(
 
         if model_registry is None:
             # ``run_tui`` declares ``model_registry`` optional and the sole
-            # production caller (``entry.py:2957``) always passes one, so this is
+            # production caller (``entry.py:2965``) always passes one, so this is
             # a test-only shape — but ``find_initial_model`` takes it REQUIRED and
             # dereferences it, and the except below would have shown the user the
             # resulting `'NoneType' object has no attribute …` verbatim. Say the
@@ -2870,11 +2882,11 @@ def _build_banner(harness: AgentHarness, cwd: str) -> object:
     # "AGENTS.md" whenever a file existed. Two defects, both measured:
     #
     #   (1) It cannot see ``--no-context-files`` / ``-nc``. That gate lives at
-    #       ``cli/entry.py:1220``, ABOVE discovery, so the banner announced
+    #       ``cli/entry.py:1228``, ABOVE discovery, so the banner announced
     #       project context to a session whose prompt carried none.
     #   (2) Calling discovery a second time RE-EMITTED its stderr budget warnings
     #       (115 bytes per render on one oversized AGENTS.md) — a duplicate of
-    #       what ``entry.py:1221`` already printed at startup, and one that
+    #       what ``entry.py:1229`` already printed at startup, and one that
     #       interpolates the absolute path RAW: over a directory named
     #       ``proj\x1b]0;pwned\x07…`` both the ESC and the BEL reached stderr.
     #

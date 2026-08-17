@@ -98,6 +98,15 @@ _PICK_MAX_WIDTH = 78
 _PICK_RULE = "\x1b[36m"  # cyan — the top/bottom rule
 _PICK_RULE_CHAR = "─"
 
+#: C0, DEL and C1 minus the newline, mapped to a space, for the picker TITLE.
+#: C1 is in the set because ``\x9b`` is a one-byte CSI; the newline is spared
+#: because a multi-row title is a supported shape (spawn consent passes nine).
+_TITLE_CONTROL_MAP = {
+    codepoint: " "
+    for codepoint in (*range(0x00, 0x20), 0x7F, *range(0x80, 0xA0))
+    if codepoint != 0x0A
+}
+
 
 def _filter_line(value: str, placeholder: str | None = None) -> str:
     """A standalone filter affordance: dim ``Filter:`` label + bright typed VALUE.
@@ -161,6 +170,17 @@ def _picker_frame(title: str, body: list[str], hint: str, content_width: int) ->
     every content width, Hangul titles included.
     """
 
+    # THE TITLE IS SANITISED; the BODY is not, and the asymmetry is deliberate.
+    # Body rows arrive already styled by the caller — the cursor row is
+    # ``_PICK_SEL``, the counter is dim — so their escapes are this module's own.
+    # The title is a caller's string and ``ExtensionUIContext.select`` takes
+    # whatever an extension passes. MEASURED: a title carrying an OSC
+    # (``\x1b]0;…\x07``) both SET THE TERMINAL'S WINDOW TITLE and made the top
+    # rule 32 visible cells against the bottom rule's 40, because
+    # :func:`_visible_len` strips SGR only while prompt-toolkit's ANSI parser
+    # consumes every escape. Newlines survive: the spawn-consent dialog's title
+    # is nine rows.
+    title = title.translate(_TITLE_CONTROL_MAP)
     width = max(_PICK_MIN_WIDTH, min(content_width, _PICK_MAX_WIDTH))
     rule = f"{_PICK_RULE}{_PICK_RULE_CHAR * width}{_PICK_RST}"
     # A title only rides the rule if it LEAVES one. ``width`` is clamped to
@@ -1200,10 +1220,22 @@ class AelixTUIContext:
     # segment, so it keeps the position the eye lands on. The pairing is also the
     # honest one — both answer "where am I and what am I allowed to do", while
     # row 1 answers "what am I talking to".
+    #
+    # ``current-dir`` GOES LAST, and that ordering is the whole of a defect this
+    # merge introduced and then had to fix. The chrome row is height-1 and is
+    # CLIPPED at the terminal, which is the very thing multi-line mode exists to
+    # stop — and ``current-dir`` is the one segment with no bound, so it decides
+    # whether the row overflows. MEASURED at 80 columns with a realistically
+    # nested cwd: the merged row is 95 cells, and with the directory in the
+    # middle the two segments pushed off the end were ``⏵⏵`` steering and
+    # ``⋯ N queued``, the only LIVE and TRANSIENT signals on the whole footer.
+    # Ordered this way the overflow eats the path instead — the segment a user
+    # can already see in their own shell prompt, and the one whose tail is the
+    # most guessable.
     _MULTILINE_ROWS: tuple[tuple[str, ...], ...] = (
         ("model", "thinking-level", "git-branch", "context-remaining",
          "input-tokens", "output-tokens", "cost"),
-        ("permission-mode", "current-dir", "steering", "pending-queued"),
+        ("permission-mode", "steering", "pending-queued", "current-dir"),
     )
 
     def _refresh_footer(self) -> None:

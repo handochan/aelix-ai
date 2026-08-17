@@ -336,6 +336,35 @@ _USER_ECHO_STYLE = "bold black on cyan"
 _TOOL_MARKER = "●"
 
 
+#: C0 and DEL and C1, minus the newline, mapped to a space rather than deleted so
+#: a word boundary survives. C1 is in the set because ``\x9b`` IS a CSI — the
+#: one-byte spelling of ``\x1b[`` — which is the same reason
+#: ``aelix_agents/panel._CONTROL_KILL`` and ``cli/session_labels._clean`` carry it.
+#: The newline is spared because a multi-line paste is meant to be several rows of
+#: one bar.
+_ECHO_CONTROL_MAP = {
+    codepoint: " "
+    for codepoint in (*range(0x00, 0x20), 0x7F, *range(0x80, 0xA0))
+    if codepoint != 0x0A
+}
+
+
+#: Below this the ``Padding`` inset leaves no columns for text, so constraining
+#: to it renders an empty bar rather than a narrow one.
+_ECHO_MIN_CONSTRAIN = 2
+
+
+def _strip_controls(text: str) -> str:
+    """Replace every control character except ``\n`` with a space.
+
+    The echo is the one renderer here that puts a caller's bytes on the terminal
+    unchanged, and the bar made that visible: an escape inside the text ends the
+    background run and reaches the glass. See :func:`render_user_message`.
+    """
+
+    return text.translate(_ECHO_CONTROL_MAP)
+
+
 def render_user_message(text: str, kind: str = "prompt", *, width: int | None = None) -> Group:
     """Build the canonical echo for a human turn (Sprint 6h₂₅, ADR-0153).
 
@@ -381,13 +410,38 @@ def render_user_message(text: str, kind: str = "prompt", *, width: int | None = 
     ``test_run_tui_smoke.py`` pins that end to end on the COMMITTED bytes, so a
     caller that silently falls back to the default is caught by what reaches the
     terminal rather than by the presence of a keyword.
+
+    THE TEXT IS STRIPPED OF CONTROLS FIRST, and the bar is what made that
+    necessary. ``Text`` does not interpret escapes but it does not remove them
+    either, so a paste went to the terminal verbatim. MEASURED at width 40 with
+    ``error: \\x1b[31mFAILED\\x1b[0m in test_x`` pasted in: only 17 of the 40 cells
+    were painted — the reset in the middle of the user's own text ended the bar's
+    background — and the raw ``\\x1b[31m`` reached the glass, changing the
+    terminal's colour state from inside a row this renderer claims to own.
+    ``\\x9b``, the one-byte CSI, did the same.
+
+    Pasting coloured build output into a coding agent is ordinary input, so this
+    is not a hostile-input defence first — it is a "the bar is one solid object"
+    defence. It is BOTH, though: the same text is persisted to the session file
+    and replayed by ``/resume``, and a session folder can arrive with a repository
+    rather than being written by this user.
+
+    ``\\n`` SURVIVES. A multi-line paste is meant to be several rows of one bar,
+    which is what ``Padding`` gives it; deleting the newlines would join the
+    lines into a run-on instead.
     """
 
     label = _USER_MESSAGE_LABELS.get(kind, _USER_MESSAGE_LABELS["prompt"])
     bar: RenderableType = Padding(
-        Text(f"{label}{text}"), (0, 1), style=_USER_ECHO_STYLE
+        Text(f"{label}{_strip_controls(text)}"), (0, 1), style=_USER_ECHO_STYLE
     )
-    if width is not None:
+    if width is not None and width > _ECHO_MIN_CONSTRAIN:
+        # Below this the ``(0, 1)`` inset alone is the whole budget and Constrain
+        # renders an empty bar — measured, two blank rows where the turn used to
+        # be. A terminal that narrow is already unusable; losing the echo of your
+        # own input to a width CAP is a defect the cap introduced, so it does not
+        # apply there and the console's own width takes over, which is what this
+        # rendered before the cap existed.
         bar = Constrain(bar, width)
     return Group(Text(""), bar, Text(""))
 
@@ -521,7 +575,7 @@ class EventRenderer:
         # reasoning is painted live, so turning the setting ON has to take the
         # already-painted window down. Doing that in the setter covers all three
         # writers — the startup seed, /settings live-apply and Ctrl+T
-        # (shell.py:602, 1051, 2151) — without asking each to remember.
+        # (shell.py:605, 1051, 2151) — without asking each to remember.
         self._hide_thinking: bool = False
         self._hidden_thinking_label: str = "Thinking…"
         # Aelix-original DISPLAY gate: when True, the persisted compaction-summary
@@ -853,7 +907,7 @@ class EventRenderer:
             return
         if self._text_stream is not None:
             # The answer owns the live window once it starts streaming, and both
-            # write the same last-writer-wins sink (shell.py:3083). A provider
+            # write the same last-writer-wins sink (shell.py:3095). A provider
             # that resumes reasoning after answer text — openai-completions
             # replays it on the same content_index — would otherwise flip the
             # window between the answer being typed and a reasoning fragment.

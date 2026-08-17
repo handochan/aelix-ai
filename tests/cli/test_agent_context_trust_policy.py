@@ -151,7 +151,7 @@ async def _run(
 
     Returns the captured ``options``, the ``harness``, its assembled
     ``system_prompt``, the RESOLVED ``app_mode`` and the exit code. Stopping
-    inside ``create_agent_session_runtime`` (``entry.py:2841``) means no turn,
+    inside ``create_agent_session_runtime`` (``entry.py:2849``) means no turn,
     no network and no TUI, while everything upstream — trust resolution,
     extension discovery, skill loading, the prompt assembly — is the production
     path.

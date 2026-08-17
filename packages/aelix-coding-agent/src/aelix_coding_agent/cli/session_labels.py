@@ -16,11 +16,12 @@ no session names, so the first user message carries the label alone.
 
 WHY THE FIRST MESSAGE, when the last one is what was asked for: measured across
 the 224 real sessions in this repo's session folder, the last user turn is
-usually not what the session was about — the twenty most recently active ones
-end in ``source .venv/bin/activate``, ``docs``, ``hi``, or nothing, because a
-session ends on a short follow-up. The first user turn states the task. The last
-message is not dropped: :func:`session_detail_lines` shows it for the row the
-cursor is on, which ``select(detail=...)`` already evaluates lazily per render.
+usually not what the session was about, because a session ends on a short
+follow-up. Of the twenty most recently active, EIGHTEEN end in a bare shell line,
+a one-line follow-up like "이어서 진행하세요", or no user text at all; the two
+that do not are synthetic benchmark prompts. The first user turn states the task.
+The last message is not dropped: :func:`session_detail_lines` shows it for the
+row the cursor is on, which ``select(detail=...)`` evaluates lazily per render.
 
 COST, measured over those same 224 sessions (0.70 / 0.12 / 0.09 ms per file):
 
@@ -59,11 +60,26 @@ _HEAD_WINDOW = 64 * 1024
 #: preview, never to a wrong one.
 _TAIL_WINDOW = 128 * 1024
 
-#: The tail window for :func:`last_activity`. Only the final line is wanted.
-_ACTIVITY_WINDOW = 8 * 1024
+#: The tail window for :func:`last_activity`. Only the final line is wanted — but
+#: "the final line" is not small. An assistant turn carrying a tool result is one
+#: JSONL record, and a ``read`` of a large file puts the whole file in it, so an
+#: 8 KB window lands mid-record and finds no timestamp at all. That miss is
+#: SILENT and it degrades in the stale direction: the age falls back to
+#: ``created_at``, so a session worked in four hours ago is listed as ``12h`` with
+#: nothing to say it was guessed. Sized to match :data:`_TAIL_WINDOW`, which was
+#: itself measured against the real record sizes in this repo's session folder.
+_ACTIVITY_WINDOW = 128 * 1024
 
-#: Cell width of the age column, including its trailing separator.
+#: Cell width of the age COLUMN ALONE. The two-space separator that follows it is
+#: added by :func:`session_choice_label` on top of this, not counted inside it —
+#: four cells holds ``59m`` and ``12mo`` right-aligned.
 _AGE_CELLS = 4
+
+#: How many codepoints per cell :func:`truncate_cells` will carry before it stops
+#: measuring and starts slicing. Only zero-width input can reach it — one visible
+#: codepoint is at least one cell — so it bounds the pathological case without
+#: taking the ellipsis away from the ordinary one.
+_ZERO_WIDTH_SLACK = 4
 
 _NO_MESSAGES = "(no messages)"
 
@@ -202,8 +218,12 @@ def format_age(when: float | None, now: float) -> str:
 
     A verbatim port of pi ``formatSessionDate``
     (``modes/interactive/components/session-selector.js:22-40``), thresholds
-    included. An unknown or future ``when`` renders ``now`` rather than a
-    negative age — a clock skew must not produce ``-3m``.
+    included.
+
+    A FUTURE ``when`` renders ``now`` rather than a negative age — a clock skew
+    must not produce ``-3m``. An UNKNOWN one renders ``?``, which is a different
+    thing and deliberately so: a session whose age could not be read must not be
+    indistinguishable from one touched a second ago.
     """
 
     if when is None:
@@ -246,13 +266,28 @@ def session_age(meta: object, now: float) -> str:
 
 
 def _clean(text: str) -> str:
-    """Collapse control characters to spaces (pi's ``/[\\x00-\\x1f\\x7f]/g``).
+    """Collapse C0, DEL **and C1** to spaces; then collapse whitespace runs.
 
-    A pasted multi-line prompt would otherwise break the one-row-per-session
-    contract that both pickers depend on.
+    pi's own filter is ``/[\\x00-\\x1f\\x7f]/g``, which is where this started, and
+    it is not enough here. **U+009B IS A CSI** — the one-byte spelling of
+    ``\\x1b[`` — and prompt-toolkit's ANSI parser honours it, so a session file
+    carrying it paints colour into the ``/resume`` picker and into the stderr
+    startup menu on any terminal that decodes 8-bit controls. The set is the same
+    one ``aelix_agents/panel._CONTROL_KILL`` uses, and that module's docstring
+    already spells out why C1 belongs in it; this module was written without it.
+
+    A session JSONL is attacker-influenceable — a user can be handed a repository
+    whose sessions folder came with it — so the label is untrusted text, not the
+    user's own prose.
+
+    The whitespace collapse is what keeps the one-row-per-session contract both
+    pickers depend on: a pasted multi-line prompt would otherwise be many rows.
     """
 
-    cleaned = "".join(" " if ch < " " or ch == "\x7f" else ch for ch in text)
+    cleaned = "".join(
+        " " if ch < " " or ch == "\x7f" or "\x80" <= ch <= "\x9f" else ch
+        for ch in text
+    )
     return " ".join(cleaned.split())
 
 
@@ -264,14 +299,32 @@ def truncate_cells(text: str, cells: int) -> str:
     a Korean prompt — the same measure ``tui/context.py`` sizes its dividers by.
     Imported lazily because this module is reachable from the headless CLI path,
     which has no other reason to load prompt-toolkit.
+
+    BOTH UNITS, BECAUSE A CELL COUNT IS NOT A BOUND. ``get_cwidth`` returns 0 for
+    a combining mark, so a string made of them has no width and the early return
+    hands it straight back. MEASURED on the cells-only version: 200 000 combining
+    acutes in, 200 000 out, against a budget of 74. That label reaches a picker
+    row and a stderr menu line; the repaint it causes is measured in tens of
+    seconds and the key handler cannot run to cancel it. The codepoint cap runs
+    first and the cell loop narrows what survives it.
     """
 
     from prompt_toolkit.utils import get_cwidth
 
     if cells <= 0:
         return ""
+    # Zero-width backstop, deliberately SLACK rather than equal to ``cells``. A
+    # slice at exactly the budget made every over-long ASCII label return without
+    # its ``…`` — the cell loop below never ran, because the sliced text already
+    # measured inside the budget. Slack keeps the cut marked while still bounding
+    # a string that is all combining marks. A codepoint slice never splits a
+    # codepoint; it can orphan a mark from its base, which is cosmetic, and this
+    # arm is only reached by input no session legitimately contains.
+    clipped = len(text) > cells * _ZERO_WIDTH_SLACK
+    if clipped:
+        text = text[: cells * _ZERO_WIDTH_SLACK]
     if get_cwidth(text) <= cells:
-        return text
+        return text + "…" if clipped else text
     budget = cells - 1  # room for the ellipsis
     out: list[str] = []
     used = 0

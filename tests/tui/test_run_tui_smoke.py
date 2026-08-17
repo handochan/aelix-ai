@@ -902,6 +902,80 @@ async def test_run_tui_resume_rows_describe_the_session_and_carry_a_detail(
     assert runtime.switch_calls == [newer_path]
 
 
+async def test_run_tui_resume_rows_fit_inside_the_picker_rule(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A row wider than the frame's rule makes the panel read as broken.
+
+    ``_picker_frame`` clamps its rule to ``_PICK_MAX_WIDTH``; the label width was
+    read from the TERMINAL. Measured, a 120-column terminal produced 114-cell rows
+    inside a 78-cell rule, so the session list hung 36 columns past the coloured
+    boundary this same branch added in order to make that boundary visible.
+    """
+
+    import json
+
+    from aelix_coding_agent.tui.context import _PICK_MAX_WIDTH, AelixTUIContext
+    from prompt_toolkit.utils import get_cwidth
+
+    path = tmp_path / "s.jsonl"
+    path.write_text(
+        json.dumps({"type": "session", "version": 3, "id": "s", "timestamp": "2026-05-27T14:00:00Z"})
+        + "\n"
+        + json.dumps(
+            {
+                "id": "e0",
+                "timestamp": "2026-05-27T14:05:00Z",
+                "type": "message",
+                "message": {
+                    "role": "user",
+                    "content": [{"type": "text", "text": "port the retry backoff " * 20}],
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    metas = [
+        _ResumeMeta("aaaaaaaa", str(tmp_path / "active.jsonl"), "2026-05-27T15:00"),
+        _ResumeMeta("bbbbbbbb", str(path), "2026-05-27T14:00"),
+    ]
+    runtime = _ResumeRuntime(
+        FakeHarness(), _ResumeRepo(metas),
+        _ResumeSession(str(tmp_path / "active.jsonl"), []),
+        target=_ResumeSession(str(path), []),
+    )
+
+    seen: dict[str, object] = {}
+    real_select = AelixTUIContext.select
+
+    async def _spy(self, title, options, opts=None, detail=None, initial_index=0):  # type: ignore[no-untyped-def]
+        seen["options"] = list(options)
+        seen["detail"] = detail(0) if detail else []
+        return options[0]
+
+    monkeypatch.setattr(AelixTUIContext, "select", _spy)
+    monkeypatch.setenv("COLUMNS", "200")
+    try:
+        with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
+            chrome = AelixChrome()
+            task = asyncio.ensure_future(
+                run_tui(runtime, cwd=".", chrome=chrome, install_signal_handlers=False)  # type: ignore[arg-type]
+            )
+            await _wait(lambda: chrome.app.is_running)
+            pipe.send_text("/resume\n")
+            await _wait(lambda: bool(runtime.switch_calls))
+            pipe.send_text("/quit\n")
+            await asyncio.wait_for(task, timeout=5)
+    finally:
+        monkeypatch.setattr(AelixTUIContext, "select", real_select)
+
+    for row in seen["options"]:  # type: ignore[union-attr]
+        assert get_cwidth(row) <= _PICK_MAX_WIDTH, (get_cwidth(row), row)
+    for row in seen["detail"]:  # type: ignore[union-attr]
+        assert get_cwidth(row) <= _PICK_MAX_WIDTH, (get_cwidth(row), row)
+
+
 async def test_run_tui_resume_empty_choices_does_not_switch() -> None:
     # Only the active session exists → no other sessions → no switch; REPL lives.
     metas = [_ResumeMeta("aaaaaaaa", "/s/active.jsonl", "2026-05-27T15:00")]

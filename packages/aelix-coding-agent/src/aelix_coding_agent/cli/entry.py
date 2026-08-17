@@ -577,10 +577,18 @@ async def _prompt_resume_choice(
 
     shown = sessions[:_RESUME_MENU_LIMIT]
     now = time.time()
-    width = max(40, shutil.get_terminal_size(fallback=(80, 24)).columns - 8)
+    # The short id STAYS on this menu, unlike the in-session picker. There it
+    # lives in the per-highlight detail panel; here there is no such panel, and
+    # the footer below tells the user to reach an older session with
+    # ``--resume <id>`` — advice that cannot be followed if no id is ever
+    # printed. It also breaks the tie when two sessions open with the same
+    # sentence, which is the common case for anyone with a habitual first prompt.
+    width = max(40, shutil.get_terminal_size(fallback=(80, 24)).columns - 8) - 10
     lines = ["Resume which session? (newest first)"]
     for idx, meta in enumerate(shown, start=1):
-        lines.append(f"  [{idx:>2}] {_resume_choice_label(meta, now, width=width)}")
+        label = _resume_choice_label(meta, now, width=max(20, width))
+        short_id = (getattr(meta, "id", "") or "")[:8]
+        lines.append(f"  [{idx:>2}] {label}  {short_id}" if short_id else f"  [{idx:>2}] {label}")
     if len(sessions) > len(shown):
         lines.append(
             f"  … and {len(sessions) - len(shown)} older — open one with --resume <id>"
