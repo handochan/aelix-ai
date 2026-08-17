@@ -793,7 +793,7 @@
    "\"\"\":func:`_sanitize_field` for a PATH — elides the MIDDLE, and that is security.",
    "",
    "Same three properties; only the truncation differs, and the difference is not",
-   "cosmetic. The modal does not wrap (``tui/context.py:451-454``), so an",
+   "cosmetic. The modal does not wrap (``tui/context.py:475-478``), so an",
    "over-long ``Directory:`` row is clipped by the terminal at column 80 WITH NO",
    "MARKER — the human sees a plausible prefix and cannot tell there is more.",
    "Containment (``print_channel.resolve_child_cwd``) only guarantees the child"
@@ -2701,7 +2701,7 @@
   "packages/aelix-coding-agent/src/aelix_coding_agent/tui/commands.py:2189-2189": [
    "BuiltinCommand(\"trust\", \"Decide project trust for this folder\", _trust_handler),"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/context.py:1039-1054": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/context.py:1063-1078": [
    "def set_widget(",
    "self,",
    "key: str,",
@@ -2721,7 +2721,7 @@
    "",
    "GitHub #48 ask 1. ADR-0163 shipped this as a bold title on its own line above"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/context.py:351-358": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/context.py:375-382": [
    "async def select(",
    "self,",
    "title: str,",
@@ -2731,17 +2731,17 @@
    "initial_index: int = 0,",
    ") -> str | None:"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/context.py:395-395": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/context.py:419-419": [
    "state: dict[str, Any] = {"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/context.py:429-429": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/context.py:453-453": [
    "detail_lines: list[str] = []"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/context.py:429-430": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/context.py:453-454": [
    "detail_lines: list[str] = []",
    "if detail is not None:"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/context.py:451-454": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/context.py:475-478": [
    "for i in range(start, end):",
    "text = items[i][1]",
    "if i == idx:",

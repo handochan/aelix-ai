@@ -871,8 +871,16 @@ def _painted_rows(group: Any, width: int) -> list[tuple[str, int]]:
 
     def _render(renderable: object) -> str:
         buf = io.StringIO()
+        # ``height`` IS LOAD-BEARING, not decoration. On a dumb terminal rich
+        # DISCARDS a declared width unless a height is declared with it — MEASURED,
+        # ``Console(width=40, force_terminal=True)`` reports ``console.width == 80``
+        # under ``TERM=dumb`` or ``TERM=unknown`` and 40 under anything else. Every
+        # assertion below is about a bar spanning a width, so a silently doubled
+        # console is not a harness detail: it is the measurement failing while the
+        # test name still claims it. Eight tests in this file failed under those two
+        # TERM values for exactly this reason.
         Console(
-            file=buf, width=width, force_terminal=True, color_system="truecolor"
+            file=buf, width=width, height=24, force_terminal=True, color_system="truecolor"
         ).print(renderable)
         return buf.getvalue()
 
@@ -911,7 +919,11 @@ def _render_group_to_ansi(group: Any, width: int) -> str:
     from rich.console import Console
 
     buf = io.StringIO()
-    Console(file=buf, width=width, force_terminal=True, color_system="truecolor").print(group)
+    # ``height`` for the same reason as ``_painted_rows`` above: without it a dumb
+    # TERM silently widens this console to 80 and the declared width is a fiction.
+    Console(
+        file=buf, width=width, height=24, force_terminal=True, color_system="truecolor"
+    ).print(group)
     return buf.getvalue()
 
 

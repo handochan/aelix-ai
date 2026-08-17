@@ -217,3 +217,71 @@ def test_sanitising_the_title_does_not_flatten_a_multi_row_one() -> None:
 
     rows = _rows(_NINE_ROW_TITLE, _BODY, _HINT, 40)
     assert len(rows) == 9 + 1 + len(_BODY) + 1 + 1
+
+
+def test_the_title_sanitiser_removes_escapes_and_leaves_the_frame_square() -> None:
+    """Exactly what the map buys, on the glass — no more and no less.
+
+    The comment this pins carried a wrong measurement twice, so each claim here is
+    one the harness re-derives.
+
+    IT REMOVES THE CONTROL BYTES, so no escape SEQUENCE can be assembled from a
+    caller's title. What remains is the payload's printable tail as ordinary text
+    (``[31m``, ``]0;PWNED``) — visible junk in a label is a caller getting what it
+    asked for; a live escape in this frame is not.
+
+    IT DOES NOT MAKE THE RULES AGREE, because they already do: both come from the
+    one ``width`` number, so they are equal in every escape class and in BOTH
+    title placements (riding the rule and on its own line). Measured +0
+    throughout. An earlier draft reported "32 cells against 40"; that does not
+    reproduce in either direction.
+
+    AND NO OSC EVER SET A WINDOW TITLE, before the map or after. The control at
+    the end proves the emulator would have noticed if one had.
+    """
+
+    import pyte
+    from aelix_coding_agent.tui.context import _picker_frame, _visible_len
+    from prompt_toolkit.formatted_text import ANSI, to_formatted_text
+
+    hint = "↑/↓ move · type to filter · Enter select · Esc cancel"
+    body = ["  option one"]
+
+    def paint(row: str) -> str:
+        return "".join(text for _style, text, *_ in to_formatted_text(ANSI(row)))
+
+    for base in (
+        "Resume session",  # short: the title rides the top rule
+        "Choose a session to resume from this project folder and its history",
+    ):
+        for name, title in {
+            "plain": base,
+            "sgr": base + "\x1b[31m",
+            "osc": base + "\x1b]0;PWNED\x07",
+            "csi": base + "\x1b[9A\x1b[40D",
+            "c1": base + "\x9b31m",
+            "dcs": base + "\x1bPq\x1b\\",
+        }.items():
+            width = max(_visible_len(title), _visible_len(hint), _visible_len(body[0]))
+            rows = _picker_frame(title, body, hint, width).value.split("\n")
+            joined = "".join(rows)
+            # No control byte survives, so nothing downstream can parse one.
+            for control in ("\x1b", "\x9b", "\x07"):
+                assert control not in paint(joined), (base[:12], name, control)
+            # The two rules agree. Which row holds the top one depends on whether
+            # the title rode it, so find it rather than assume an index.
+            rules = [r for r in rows if set(paint(r).strip()) <= {"─"} and "─" in paint(r)]
+            top = rules[0] if rules else rows[1]
+            assert len(paint(top)) == len(paint(rows[-2])), (
+                base[:12], name, len(paint(top)), len(paint(rows[-2]))
+            )
+
+    # CONTROL: the emulator used above genuinely reads OSC titles, so "no title was
+    # set" is a measurement and not a blind spot.
+    screen = pyte.Screen(80, 10)
+    pyte.Stream(screen).feed("hi\x1b]0;REAL\x07")
+    assert screen.title == "REAL"
+    screen = pyte.Screen(80, 10)
+    frame = _picker_frame("Settings\x1b]0;PWNED\x07", body, hint, 40)
+    pyte.Stream(screen).feed(paint(frame.value))
+    assert screen.title == ""

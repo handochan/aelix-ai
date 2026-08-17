@@ -62,7 +62,7 @@ the hook already validated and every member's task is on screen, whereas the mem
 covered LATER calls whose tasks and directories nobody had seen. The price is
 that the dialog now has a HEIGHT BUDGET it can exceed — ``ctx.ui.select``
 composes title and options into one non-wrapping, non-scrolling ``Window``
-(``tui/context.py:140-218``, ``:451-454``) and ``tui/overlay.py``'s
+(``tui/context.py:140-218``, ``:475-478``) and ``tui/overlay.py``'s
 ``_CappedContainer`` bottom-truncates it (``overlay.py:221-231``), so a tall
 enough batch would push ``Cancel`` off screen. :func:`batch_dialog_fits` measures
 the composition against the live terminal and a call that would not fit is
@@ -142,7 +142,7 @@ BATCH_TASK_PREVIEW_CHARS = 72
 """Per-member task budget in a MULTI-task dialog (P3 §3.7).
 
 Deliberately NOT :data:`TASK_PREVIEW_CHARS`, and deliberately smaller. The modal
-does not wrap (``tui/context.py:451-454`` builds its ``Window`` with
+does not wrap (``tui/context.py:475-478`` builds its ``Window`` with
 ``wrap_lines`` left at its default ``False``), so on an 80-column terminal a
 300-character preview would render as ONE row of which about 72 characters are
 visible and the remainder is INVISIBLY clipped — the silent drop S4 forbids, and
@@ -373,7 +373,7 @@ def _sanitize_field(value: object, *, limit: int = DIALOG_FIELD_CHARS) -> str:
        no hidden text and no cursor movement;
     3. bounded to :data:`DIALOG_FIELD_CHARS` — one VISIBLE row, so the row that
        was counted is the row that is read. The modal does not wrap
-       (``tui/context.py:451-454``), so without this an over-long field is
+       (``tui/context.py:475-478``), so without this an over-long field is
        clipped invisibly.
     """
 
@@ -387,7 +387,7 @@ def _sanitize_path(value: object, *, limit: int = DIALOG_FIELD_CHARS) -> str:
     """:func:`_sanitize_field` for a PATH — elides the MIDDLE, and that is security.
 
     Same three properties; only the truncation differs, and the difference is not
-    cosmetic. The modal does not wrap (``tui/context.py:451-454``), so an
+    cosmetic. The modal does not wrap (``tui/context.py:475-478``), so an
     over-long ``Directory:`` row is clipped by the terminal at column 80 WITH NO
     MARKER — the human sees a plausible prefix and cannot tell there is more.
     Containment (``print_channel.resolve_child_cwd``) only guarantees the child
@@ -872,7 +872,7 @@ def build_options(clamped: PermissionMode, *, may_widen: bool) -> list[str]:
 #     ``get_cursor_position``, so prompt-toolkit has nothing to scroll TO: the
 #     overflow is BOTTOM TRUNCATION. ``select``'s own ``viewport = 8`` (``:303``)
 #     scrolls the OPTIONS list and does nothing for a tall title.
-#   * ``body`` is the option rows plus one counter row (``tui/context.py:395``).
+#   * ``body`` is the option rows plus one counter row (``tui/context.py:419``).
 #   * ``_CappedContainer.preferred_height`` clamps the lot to ``_modal_cap``
 #     (``tui/overlay.py:221-231``).
 #
@@ -884,7 +884,7 @@ def build_options(clamped: PermissionMode, *, may_widen: bool) -> list[str]:
 # which is why this has never bitten. A naive 8-task batch is 16 + 3 + 4 = 23:
 # the bottom four rows — the hint, the closing divider, the counter, and the LAST
 # OPTION, which ``build_options`` guarantees is ``Cancel`` — are simply not
-# drawn. It bites from N >= 5. Esc still works (``tui/context.py:429-430``), but a
+# drawn. It bites from N >= 5. Esc still works (``tui/context.py:453-454``), but a
 # ``down, Enter`` from a row that was never on screen would grant AUTO_ACCEPT to
 # eight children unseen. That is verbatim the failure S4 calls non-negotiable.
 #
@@ -1060,7 +1060,7 @@ async def _ask(ui: Any, title: str, options: list[str]) -> str | None:
     except Exception:  # noqa: BLE001 — deny on error, never allow
         return None
     if not isinstance(answer, str):
-        # ``None`` is Esc (``tui/context.py:351-358``). Anything else is a
+        # ``None`` is Esc (``tui/context.py:375-382``). Anything else is a
         # misbehaving implementation, and it is treated identically.
         return None
     return answer

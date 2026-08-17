@@ -170,16 +170,40 @@ def _picker_frame(title: str, body: list[str], hint: str, content_width: int) ->
     every content width, Hangul titles included.
     """
 
-    # THE TITLE IS SANITISED; the BODY is not, and the asymmetry is deliberate.
-    # Body rows arrive already styled by the caller — the cursor row is
-    # ``_PICK_SEL``, the counter is dim — so their escapes are this module's own.
-    # The title is a caller's string and ``ExtensionUIContext.select`` takes
-    # whatever an extension passes. MEASURED: a title carrying an OSC
-    # (``\x1b]0;…\x07``) both SET THE TERMINAL'S WINDOW TITLE and made the top
-    # rule 32 visible cells against the bottom rule's 40, because
-    # :func:`_visible_len` strips SGR only while prompt-toolkit's ANSI parser
-    # consumes every escape. Newlines survive: the spawn-consent dialog's title
-    # is nine rows.
+    # THE TITLE IS SANITISED; the BODY is not, and the asymmetry is NARROWER than
+    # it looks. Body rows do arrive already styled by this module — the cursor row
+    # is ``_PICK_SEL``, the counter is dim — but ``select`` also interpolates the
+    # caller's OPTION strings into them, so "the body is our own styling" is true
+    # of the wrapper and not of what it wraps. That gap is pre-existing (it is
+    # unchanged from ``main``) and is not closed here; it is named so the next
+    # reader does not take the asymmetry for a proof of safety.
+    #
+    # WHAT IT ACTUALLY BUYS, measured rather than assumed — this comment has
+    # carried a wrong version of it twice. The map deletes the CONTROL BYTES, so
+    # no escape SEQUENCE is ever assembled from a caller's title; what remains is
+    # the payload's printable tail, and it lands as ordinary text (``[31m``,
+    # ``]0;PWNED``). Visible junk in a label is a caller getting what it asked
+    # for. A live escape in a frame this module claims to own is not.
+    #
+    # WHAT IT DOES NOT BUY, and two earlier drafts said it did:
+    #
+    # * The window title. No OSC reaches a terminal from here with or without the
+    #   map — driven through the real frame onto a pyte screen, ``screen.title``
+    #   stays ``''``, against a control that reads ``'REAL'`` from a genuine OSC
+    #   fed to the same emulator.
+    # * The rules agreeing. They already agree: both are drawn from the one
+    #   ``width`` number below, so they are equal in every escape class and in both
+    #   title placements — measured +0 for plain, SGR, OSC, CSI-non-``m``, one-byte
+    #   C1 and DCS. The "32 cells against 40" an earlier draft reported does not
+    #   reproduce in either direction.
+    #
+    # The width IS mis-measured, and that is a separate, smaller thing:
+    # ``_visible_len`` strips SGR only, so an escaped title under-counts and the
+    # frame sizes itself from the wrong number. Both rules then share that wrong
+    # number, which is why the frame stays square while the title can still
+    # overflow its own line — the degradation the ``fits`` check below documents.
+    #
+    # Newlines survive: the spawn-consent dialog's title is nine rows.
     title = title.translate(_TITLE_CONTROL_MAP)
     width = max(_PICK_MIN_WIDTH, min(content_width, _PICK_MAX_WIDTH))
     rule = f"{_PICK_RULE}{_PICK_RULE_CHAR * width}{_PICK_RST}"
