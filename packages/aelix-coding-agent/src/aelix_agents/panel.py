@@ -37,7 +37,7 @@ from __future__ import annotations
 import time
 from typing import TYPE_CHECKING
 
-from rich.cells import cell_len, set_cell_size
+from rich.cells import cell_len
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -248,7 +248,60 @@ def _flatten(value: str, *, limit: int) -> str:
     # :func:`_composed_row` exists to catch, and this is the half that promises it.
     if cell_len(flat) <= limit - (cell_len(_ELLIPSIS) if clipped else 0):
         return flat + _ELLIPSIS if clipped else flat
-    return set_cell_size(flat, max(0, limit - 1)) + _ELLIPSIS
+    return _cut_to_cells(flat, max(0, limit - 1)) + _ELLIPSIS
+
+def _cut_to_cells(text: str, cells: int) -> str:
+    """Truncate to at most ``cells`` columns, EXACTLY, by accumulation.
+
+    ``rich.cells.set_cell_size`` is not exact for a string that begins with
+    zero-width characters. MEASURED: ``set_cell_size("\\u200d" * 2 + "a" * 79, 39)``
+    returns a string measuring 40 cells, not 39 — so ``_flatten`` handed back
+    ``limit + 1`` for that input while believing the library had bounded it.
+    Nothing else in this module noticed, because the closing clamp in
+    :func:`_composed_row` calls the same function.
+
+    THE SHAPE THAT BROKE IT IS NOT THE SHAPE THE FIRST SWEEP TESTED. That sweep
+    used a base character carrying three combining marks — zero-width AFTER a
+    visible glyph — and found no violation. The failing input is zero-width
+    BEFORE any glyph, which is the same class and a different position. Counting
+    the result here rather than trusting a helper is what makes the bound hold for
+    both, and for whatever the next shape turns out to be.
+
+    AND ``cell_len`` IS NOT ADDITIVE, which the accumulate loop alone gets wrong in
+    the other direction. It measures grapheme clusters, so the sum over characters
+    and the measure of the whole disagree — MEASURED: ``❤️`` (U+2764 U+FE0F) is 1
+    by the sum and 2 as a string, and ``👩‍💻`` is 4 by the sum and 2 as a string.
+    Accumulating with the per-character number therefore UNDER-counts a
+    variation-selector sequence, and a first version of this function returned 9
+    cells against a budget of 5 for a row of hearts. So the loop places the cut and
+    the whole-string measure then confirms it, shrinking while it must. The shrink
+    is bounded by the budget — the prefix summed to at most ``cells``, so at most
+    ``cells`` characters were under-counted — and it terminates because the empty
+    string measures zero.
+
+    ``cli/session_labels.truncate_cells`` accumulates without this second step and
+    is nonetheless correct, because it measures with ``prompt_toolkit``'s
+    ``get_cwidth``, which IS additive over these sequences (measured: per-character
+    sum equals the whole for every shape above). Two renderers, two width
+    libraries; the loop that is right for one is not right for the other.
+    """
+
+    if cells <= 0:
+        return ""
+    if cell_len(text) <= cells:
+        return text
+    out: list[str] = []
+    used = 0
+    for char in text:
+        width = cell_len(char)
+        if used + width > cells:
+            break
+        out.append(char)
+        used += width
+    while out and cell_len("".join(out)) > cells:
+        out.pop()
+    return "".join(out)
+
 
 _STATE_LABELS: dict[str, str] = {
     "starting": "running",
@@ -413,7 +466,7 @@ def format_aggregate_status(
         text = candidate
 
     if cell_len(text) > cap:
-        return set_cell_size(text, cap - 1) + _ELLIPSIS
+        return _cut_to_cells(text, cap - 1) + _ELLIPSIS
     return text
 
 
@@ -635,7 +688,7 @@ def _composed_row(index: int, total: int, task: str, numbers: str, column: int) 
     body = f"{prefix}{label}{pad}{_PANEL_DIM}{numbers}{_PANEL_RST}"
     visible = cell_len(prefix) + cell_len(label) + len(pad) + cell_len(numbers)
     if visible > PANEL_ROW_MAX_CHARS - cell_len(_GUTTER):
-        body = set_cell_size(
+        body = _cut_to_cells(
             f"{prefix}{label}{pad}{numbers}",
             PANEL_ROW_MAX_CHARS - cell_len(_GUTTER),
         )

@@ -203,6 +203,60 @@ def test_a_missing_file_degrades_and_never_raises(tmp_path: Path) -> None:
     assert last_activity(missing) is None
 
 
+def test_one_malformed_record_costs_one_row_and_not_the_whole_session_list(
+    tmp_path: Path,
+) -> None:
+    """A wrongly-TYPED field inside a well-formed record, which is the gap.
+
+    Every shape here was guarded type by type — the record is checked, the message
+    is checked, the block is checked — and the ``text`` VALUE was taken on trust.
+    A block of ``{"type": "text", "text": 123}`` therefore reached ``str.join``
+    and raised ``TypeError``, and because the pickers call this in a LOOP over
+    every session, one malformed record in one file took away the user's entire
+    session list, the good sessions with it — at exactly the moment they were
+    trying to recover work.
+
+    A session file is appended to by an agent process that can be killed
+    mid-write, and it can arrive with a cloned repository, so "we wrote it, so the
+    shape is ours" is not available to this module.
+
+    The last block asserts the blanket, not just the one type: an object whose
+    metadata raises on attribute access must still produce a row.
+    """
+
+    good = _write(tmp_path, _header(), _user("the good session"), name="good.jsonl")
+    bad = _write(
+        tmp_path,
+        _header(),
+        json.dumps(
+            {
+                "id": "e1",
+                "timestamp": "2026-08-01T09:01:00.000Z",
+                "type": "message",
+                "message": {"role": "user", "content": [{"type": "text", "text": 123}]},
+            }
+        ),
+        name="bad.jsonl",
+    )
+
+    assert first_user_message(bad) is None
+    # The good row survives the bad one — the property the loop actually needs.
+    assert "the good session" in session_choice_label(_meta(good), 1e9, width=78)
+    assert "(no messages)" in session_choice_label(_meta(bad), 1e9, width=78)
+
+    class _Hostile:
+        @property
+        def path(self) -> str:
+            raise RuntimeError("metadata that fights back")
+
+        created_at = "2026-08-01T09:00:00"
+        id = "abcdef1234"
+
+    label = session_choice_label(_Hostile(), 1e9, width=78)
+    assert "(no messages)" in label, label
+    assert "\n" not in label
+
+
 def test_control_characters_are_collapsed_so_a_row_stays_one_row(
     tmp_path: Path,
 ) -> None:

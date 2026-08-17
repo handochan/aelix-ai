@@ -45,9 +45,12 @@ starting at one column. The information is identical.
 from __future__ import annotations
 
 import json
+import logging
 import os
 from datetime import datetime
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 #: The head window that :func:`first_user_message` scans. The first user turn is
 #: the second or third line of a session file (the header is line one), so this
@@ -85,7 +88,20 @@ _NO_MESSAGES = "(no messages)"
 
 
 def _text_of(message: dict[str, Any]) -> str:
-    """The joined ``text`` blocks of a message payload (pi ``extractTextContent``)."""
+    """The joined ``text`` blocks of a message payload (pi ``extractTextContent``).
+
+    THE ``text`` VALUE IS CHECKED, not assumed. Every other shape here is guarded —
+    the record, the message, the block — and this one field was taken on trust, so
+    a block of ``{"type": "text", "text": 123}`` reached ``str.join`` and raised
+    ``TypeError``. That is not a local failure: it propagates out of
+    :func:`first_user_message` and :func:`session_choice_label`, whose docstring
+    promises it "degrades … never raises", and out through BOTH resume pickers —
+    so ONE malformed record in ONE session file took away the user's whole list of
+    sessions, including the good ones. A session file is written by an agent
+    process that can be killed mid-write and can arrive with a cloned repository;
+    "the writer is us, so the shape is ours" is exactly the assumption this module
+    is not allowed to make.
+    """
 
     content = message.get("content")
     if isinstance(content, str):
@@ -93,9 +109,11 @@ def _text_of(message: dict[str, Any]) -> str:
     if not isinstance(content, (list, tuple)):
         return ""
     parts = [
-        block.get("text", "")
+        block["text"]
         for block in content
-        if isinstance(block, dict) and block.get("type") == "text"
+        if isinstance(block, dict)
+        and block.get("type") == "text"
+        and isinstance(block.get("text"), str)
     ]
     return " ".join(p for p in parts if p).strip()
 
@@ -350,13 +368,29 @@ def session_choice_label(meta: object, now: float, *, width: int = 78) -> str:
     ``width`` is the total cell budget for the row; the message is truncated to
     what is left after the age column. Fully defensive: an odd metadata shape or
     an unreadable file degrades to the age and ``(no messages)``, never raises.
+
+    AND THE BLANKET IS THE POINT, not belt-and-braces. Every guard inside is
+    type-by-type — this shape, then that shape — which means the promise above
+    only holds for the shapes someone thought of. It did not hold: a text block
+    carrying a NUMBER reached ``str.join`` and raised ``TypeError``, and because
+    this function is called in a loop over every session, one malformed record in
+    one file took the user's entire session list away, good sessions included.
+    That is the failure mode worth spending a bare ``except`` on. The blast radius
+    of a wrong label is one row reading ``(no messages)``; the blast radius of an
+    escaped exception is the whole feature, at exactly the moment the user is
+    trying to recover work.
     """
 
-    age = session_age(meta, now)
-    path = getattr(meta, "path", "") or ""
-    message = (first_user_message(path) if path else None) or _NO_MESSAGES
-    room = max(10, width - _AGE_CELLS - 2)
-    return f"{age:>{_AGE_CELLS}}  {truncate_cells(_clean(message), room)}"
+    age = "?"
+    try:
+        age = session_age(meta, now)
+        path = getattr(meta, "path", "") or ""
+        message = (first_user_message(path) if path else None) or _NO_MESSAGES
+        room = max(10, width - _AGE_CELLS - 2)
+        return f"{age:>{_AGE_CELLS}}  {truncate_cells(_clean(message), room)}"
+    except Exception:  # noqa: BLE001 — see the docstring: one bad file, one bad row
+        logger.debug("session label failed for %r", meta, exc_info=True)
+        return f"{age:>{_AGE_CELLS}}  {_NO_MESSAGES}"
 
 
 def short_field(value: str, cells: int) -> str:

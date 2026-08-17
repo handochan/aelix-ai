@@ -706,6 +706,54 @@ def test_the_ellipsis_is_inside_the_budget_not_added_to_it() -> None:
     assert cell_len(marked) == 20, marked
 
 
+def test_the_cell_bound_holds_for_the_shapes_the_first_sweep_did_not_cover() -> None:
+    """POSITION and GRAPHEME, the two axes the sweep above misses.
+
+    That sweep puts its zero-width characters AFTER a visible glyph, and every
+    input it builds is one codepoint per column plus combining marks. Two shapes
+    it therefore cannot reach both broke the bound, and an external review found
+    them:
+
+    * ZERO-WIDTH FIRST. ``rich.cells.set_cell_size`` is not exact for a string
+      that begins with zero-width characters — MEASURED,
+      ``set_cell_size("\\u200d" * 2 + "a" * 79, 39)`` returns 40 cells — so
+      ``_flatten`` returned ``limit + 1`` while believing the library had bounded
+      it. 176 (limit, input) pairs violated the bound.
+    * GRAPHEME CLUSTERS. ``cell_len`` measures clusters, so it is NOT additive
+      over characters: ``❤️`` is 1 by the per-character sum and 2 as a string.
+      An accumulate loop that trusts the sum therefore under-counts, and the first
+      fix for the point above returned 9 cells against a budget of 5 for a row of
+      hearts. The measure of the WHOLE result is the only thing that settles it.
+
+    Both axes are swept here, and the ordinary case is asserted alongside so a
+    "fix" that simply truncates harder cannot pass.
+    """
+
+    zero_width = ("‍", "​", "️", "́", "͏")
+    clusters = ("❤️", "👩‍💻", "🇺🇸", "👨‍👩‍👧‍👦", "🏳️‍🌈", "é")
+
+    for limit in range(1, 90):
+        for mark in zero_width:
+            for count in (1, 2, 3, 5, 9, 17):
+                for tail in (0, 1, 50, 200):
+                    for text in (
+                        mark * count + "a" * tail,  # LEADING — the failing shape
+                        "a" * tail + mark * count,
+                        "".join("a" + mark * count for _ in range(max(1, tail // 4))),
+                    ):
+                        got = cell_len(_flatten(text, limit=limit))
+                        assert got <= limit, (limit, repr(mark), count, tail, got)
+        for cluster in clusters:
+            for count in (1, 3, 10, 40):
+                for text in (cluster * count, "a" * 20 + cluster * count, ("a" + cluster) * count):
+                    got = cell_len(_flatten(text, limit=limit))
+                    assert got <= limit, (limit, cluster, count, got)
+
+    # Control: ordinary input is untouched and an ordinary cut is still marked.
+    assert _flatten("read_file", limit=78) == "read_file"
+    assert _flatten("x" * 100, limit=20).endswith(_ELLIPSIS)
+
+
 def test_flatten_does_not_do_unbounded_work_per_frame(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1415,7 +1463,7 @@ def test_the_row_builder_is_safe_on_its_own_not_only_via_format_panel() -> None:
     ``_panel_row`` changes nothing that :func:`format_panel` can observe: the
     mutation survives every test above. It is still worth having and still worth
     pinning. ``_panel_row`` is the function that touches the child's bytes
-    (``panel.py:468-490``, the site the finding names), and the next consumer of a
+    (``panel.py:521-543``, the site the finding names), and the next consumer of a
     per-child row — a card variant, a future surface — will call it rather than
     re-deriving it, and must inherit the bound rather than have to remember it.
     """
