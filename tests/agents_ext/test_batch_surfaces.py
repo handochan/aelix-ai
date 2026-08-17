@@ -741,10 +741,13 @@ def test_a_zero_width_flood_is_still_bounded() -> None:
     # LITERALS, NOT ``PANEL_ROW_MAX_CHARS * _ZERO_WIDTH_SLACK``. Writing the bound
     # in terms of the constant that sets it made it unfalsifiable: with
     # ``_ZERO_WIDTH_SLACK`` raised to 100 000 this file still passed while
-    # ``_flatten`` handed back all 200 000 codepoints — the assertion grew with
-    # the thing it was meant to constrain. The cell half cannot carry the test
-    # alone either, since a combining mark measures zero and ``0 <= 78`` holds for
-    # any output whatsoever.
+    # ``_flatten`` handed back 8 192 codepoints — ``_MAX_INPUT_CHARS`` caps the
+    # input first here, so the slack never reaches the full 200 000, and the
+    # assertion still grew with the thing it was meant to constrain. (The same
+    # sabotage against ``session_labels.truncate_cells``, which has no input cap,
+    # does hand back all 200 000 — see ``tests/cli/test_session_labels.py``.) The
+    # cell half cannot carry the test alone either, since a combining mark
+    # measures zero and ``0 <= 78`` holds for any output whatsoever.
     assert len(out) <= 313, len(out)  # 78 cells x 4 codepoints, ellipsis included
     assert cell_len(out) <= PANEL_ROW_MAX_CHARS
 
@@ -935,69 +938,223 @@ def test_the_job_column_is_sized_from_the_labels_not_the_numbers() -> None:
     assert len({r.split("] ", 1)[1].split("  ")[0] for r in busy}) == 4
 
 
-def test_the_panel_names_the_batch_model_once_at_every_id_length() -> None:
-    """The header states the model and the rows drop it — for EVERY id length.
+def _named_model(text: str, model: str) -> str:
+    """The longest prefix of ``model`` that ``text`` actually shows.
 
-    Two failures live at this seam and they are each other's fallback, so both
-    arms have to be gated at once.
+    The panel may state the model whole or truncated, so "is the model here"
+    cannot be a substring test on the whole id. Derived from the id itself rather
+    than from the module's own truncator, which would make the check agree with
+    the code by construction.
 
-    Appending the model unconditionally to the head truncates the trailing
-    numbers and eventually a state count. Making the append conditional on the
-    counts fitting fixed that and cost more than it saved: at any provider-scoped
-    id the header dropped the model AND the rows suppressed it, so the panel named
-    it nowhere; and once the rows stopped suppressing it, a batch with one queued
-    member put a 28-cell string identical down the whole column onto every row.
-
-    The resolution is positional — the model sits between the profile and the
-    counts, and everything that shortens this row takes from the right — so the
-    gate is: the model is in the header at every length, and on no row.
-
-    THE COUNT ASSERTED IS THE LAST ONE THE TRUNCATION REACHES. The first version
-    asserted ``1 failed``, which is the SECOND of four and therefore the last to
-    disappear: true in both arms at every id length tested, while ``1 queued``
-    separates them.
+    THE PREFIX HAS TO IDENTIFY THE MODEL. The first version accepted any prefix
+    at all, and ``c`` is a prefix of ``claude-opus-4-8`` that appears in every row
+    of English prose — the check reported the model on rows that never mentioned
+    it. The floor is the whole id or 8 cells, whichever is shorter: 8 separates
+    ``claude-o…`` from ``openai/g…`` and from ``gpt-5``.
     """
 
-    for model in ("gpt-5", "claude-opus-4-8", "openai/gpt-5.6-luna-preview-2026"):
+    floor = min(cell_len(model), 8)
+    for size in range(len(model), 0, -1):
+        prefix = model[:size]
+        if cell_len(prefix) >= floor and prefix in text:
+            return prefix
+    return ""
+
+
+_MODEL_IDS = (
+    "gpt-5",
+    "claude-opus-4-8",
+    "openai/gpt-5.6-luna-preview-2026",
+    "github-copilot-enterprise/gpt-5.6-luna-preview-2026-08",
+)
+"""5, 15, 32 and 54 cells — a bare id, a vendor id, a provider-scoped one and one
+past the ceiling.
+
+THE FOURTH IS WHY THIS IS A TUPLE AND NOT THREE. 32 is exactly
+``_MAX_PROFILE_CHARS * 2``, the widest term the head will ever hold, so a sweep
+that stopped there never asked what happens ABOVE the bound — the docstring said
+"every id length" while its longest fixture sat on the boundary and one character
+further would have falsified it."""
+
+
+def test_the_counts_survive_the_model_but_not_a_head_wider_than_the_cap() -> None:
+    """Where the bound runs out, pinned — because the docstring says where.
+
+    Sizing the model against the counts stops the MODEL displacing one. It cannot
+    stop the head and the counts THEMSELVES exceeding the cap, and the sentence
+    written for the fix first claimed otherwise, which is the same overclaim the
+    fix was correcting. MEASURED at cap 76 with all five classes non-zero: a
+    5-cell profile survives to 495 members and is cut at 4 995; a 16-cell profile
+    name is over at 5.
+
+    The 16-cell arm is the cheap one and is what this pins. Both shapes need a
+    batch S3 does not produce — one ``agent()`` call is a handful of tasks — so
+    this is a documented limit, not a defect: the test exists so the limit cannot
+    move without somebody noticing.
+    """
+
+    def batch(profile: str) -> list[SubagentProgress | None]:
+        states = ("running", "done", "error", "stopped")
+        return [
+            _member(index, profile=profile, state=state, model="gpt-5")
+            for index, state in enumerate(states)
+        ] + [None]
+
+    narrow = format_aggregate_status(batch("scout"), extra_head=_MODEL_IDS[3], cap=76)
+    for count in ("1 running", "1 done", "1 failed", "1 stopped", "1 queued"):
+        assert count in narrow, (count, narrow)
+    # The model is what went, not a count — the whole point of the rule.
+    assert not _named_model(narrow, _MODEL_IDS[3]), narrow
+
+    # ``가`` is two cells, so eight of them is the 16-cell ceiling _short_profile
+    # allows. Nothing is left for the counts and the closing truncation reaches
+    # them; this arm is the limit, asserted so it stays a known one.
+    wide = format_aggregate_status(batch("가" * 8), extra_head=_MODEL_IDS[3], cap=76)
+    assert cell_len(wide) <= 76, cell_len(wide)
+    assert "1 queued" not in wide, wide
+
+
+def test_when_the_counts_leave_no_room_the_rows_carry_the_model() -> None:
+    """The drop branch, which is the one arm nothing else in this file reaches.
+
+    At five non-zero count classes the head and the counts are 69 of the panel's
+    76 cells, so there is no term left worth spending. The model is then omitted
+    from the header — NOT shown as a stub — and the rows have to name it, which is
+    the fallback the whole ``shown_in_header`` seam exists to keep honest.
+
+    Two mutations escaped every other gate here and both land on this one: keying
+    the rows off "a batch model exists" (the header drops it, the rows suppress
+    it, nobody names it) and dropping the floor (the header shows ``gith`` and the
+    rows suppress it, so the panel names four characters).
+    """
+
+    model = "github-copilot/gpt-5.6-codex"
+    wide: list[SubagentProgress | None] = [
+        _member(index, model=model, state="running") for index in range(5)
+    ]
+    wide += [
+        _member(5, model=model, state="done"),
+        _member(6, model=model, state="error"),
+        _member(7, model=model, state="stopped"),
+        None,
+    ]
+    jobs = tuple(f"job number {index}" for index in range(9))
+    lines = _panel(wide, tasks=jobs)
+    header, rows = lines[0], lines[1:]
+
+    assert "1 queued" in header, header
+    assert not _named_model(header, model), header
+    # Positive control: the rows really are the task path, so a suppressed model
+    # would be a suppression and not simply a row that never carried one.
+    assert "job number 0" in rows[0], rows[0]
+    assert _named_model(rows[0], model), rows[0]
+
+
+def test_a_disagreeing_batch_still_states_every_member_s_state() -> None:
+    """The rows put the state FIRST, so the model is what the row's budget cuts.
+
+    ``_batch_model`` returns ``""`` when two children report different strings —
+    a provider fallback, or an alias resolved mid-batch — and the rows carry their
+    own model again. Ordered model-then-state, a 28-cell provider-scoped id ate
+    the whole numbers half: MEASURED at 80, 120 and 200 columns, 0 of 4 rows
+    showed any state word, and the rows read ``… github-copilot/gpt…``.
+
+    ``state_first`` is what fixed it and nothing pinned it, which is how this gate
+    came to be written after the fact rather than with the fix.
+    """
+
+    mixed: list[SubagentProgress | None] = [
+        # What ``runtime._publish`` produces mid-fan-out: the first member has a
+        # resolved ``state.model`` and the rest still carry ``spawn_model``.
+        _member(0, model="github-copilot/gpt-5.6-codex", state="starting"),
+        _member(1, model="gpt-5.6-codex", state="running", current_tool="grep"),
+        _member(2, model="gpt-5.6-codex", state="done"),
+        None,
+    ]
+    for width in (80, 120, 200):
+        lines = [_visible(line) for line in format_panel(mixed, tasks=_JOBS, width=width)]
+        rows = lines[1:]
+        assert len(rows) == 4, (width, lines)
+        for row, word in zip(rows, ("starting", "running", "done", "queued"), strict=True):
+            assert word in row, (width, word, row)
+        # Positive control on the premise: the members really do disagree, so the
+        # header names no model and the rows are the only surface that can.
+        assert not _named_model(lines[0], "gpt-5.6-codex"), lines[0]
+
+
+def test_the_panel_keeps_every_state_count_at_every_id_length() -> None:
+    """The counts are the substance and the model is what gets cut, not them.
+
+    Three rules have been tried at this seam. Appending the model only when the
+    WHOLE term fits dropped it outright at any provider-scoped id, and the panel's
+    fallback put a 31-cell string identical down the whole column onto every row.
+    Appending it UNCONDITIONALLY was supposed to be protected by position — the
+    term sits before the counts and everything that shortens the row takes from
+    the right — but the closing truncation reaches the counts anyway: MEASURED
+    with ``github-copilot/gpt-5.6-codex`` and three count classes, the header read
+    ``… · 2 running · 1 done · 1 queu…``.
+
+    The rule now is that the model is sized against what the counts leave. So the
+    gate is the counts, at every id length, spelled in full.
+    """
+
+    for model in _MODEL_IDS:
         snapshots: list[SubagentProgress | None] = [
             _member(0, model=model, state="error"),
             _member(1, model=model, state="stopped"),
             _member(2, model=model, state="done"),
             None,
         ]
-        lines = [_visible(line) for line in format_panel(snapshots, tasks=_JOBS)]
-        header, rows = lines[0], lines[1:]
-        assert model in header, (model, header)
+        header = _visible(format_panel(snapshots, tasks=_JOBS)[0])
         assert cell_len(header) <= AGGREGATE_MAX_CHARS, (model, cell_len(header))
-        for row in rows:
-            assert model not in row, (model, row)
+        for count in ("1 done", "1 failed", "1 stopped", "1 queued"):
+            assert count in header, (model, count, header)
+        # AND IN THAT ORDER — profile, model, counts. Position used to be what
+        # protected the counts, so the ordering was gated by everything else here;
+        # sizing the model against them protects them instead, and moving the term
+        # to the end now passes every other assertion in this file. It is still a
+        # deliberate choice — the header reads "who is running" before "how many" —
+        # so it gets an assertion of its own rather than inheriting one.
+        shown = _named_model(header, model)
+        assert header.index(shown) < header.index("1 done"), (model, header)
 
-    # And the counts are what the model displaces, not the other way round: at the
-    # shortest id every count survives beside it.
-    short = [
-        _member(0, model="gpt-5", state="error"),
-        _member(1, model="gpt-5", state="stopped"),
-        _member(2, model="gpt-5", state="done"),
+    # AND AT FIVE COUNT CLASSES, where the header ran out first and
+    # ``PANEL_MAX_ROWS`` dropped the queued member's own row, so the word appeared
+    # NOWHERE in the panel — the misreading ``_queued_line`` exists to prevent.
+    wide: list[SubagentProgress | None] = [
+        _member(index, model="gpt-5", state="running") for index in range(5)
+    ]
+    wide += [
+        _member(5, model="gpt-5", state="done"),
+        _member(6, model="gpt-5", state="error"),
+        _member(7, model="gpt-5", state="stopped"),
         None,
     ]
-    header = _visible(format_panel(short, tasks=_JOBS)[0])
-    assert "1 queued" in header, header
+    lines = [_visible(line) for line in format_panel(wide, tasks=_JOBS)]
+    assert "1 queued" in lines[0], lines[0]
+    # Positive control: the row that would otherwise say it really is off the end.
+    assert not any("queued" in row for row in lines[1:]), lines
 
 
 # === second review round: the fixes' own holes ================================
 
 
 def test_the_model_is_shown_by_somebody_at_every_id_length() -> None:
-    """The rows hide the model only if the HEADER actually showed it.
+    """Exactly one surface names the model — never nobody, never both.
 
-    Keying that on "a batch model exists" was a hole: the header appends the
-    model only when the state counts still fit, so at any realistic
+    Keying "the rows may drop it" on "a batch model exists" was a hole: the header
+    appended the model only when the state counts still fit, so at a
     provider-scoped id the header dropped it AND the rows suppressed it and the
-    panel named no model at all. MEASURED at 15 and 32 characters before the fix:
-    header=False, rows=False.
+    panel named no model at all.
+
+    Reading the answer back OUT of the rendered header closed that and opened a
+    narrower one, which is why this test no longer asks for the whole id: the
+    header may show the model TRUNCATED, a substring test calls that absent, and
+    both surfaces then spend the width on it. Asserted on the longest prefix each
+    surface shows, so a truncated header still counts as "named".
     """
 
-    for model in ("gpt-5", "claude-opus-4-8", "openai/gpt-5.6-luna-preview-2026"):
+    for model in _MODEL_IDS:
         snapshots: list[SubagentProgress | None] = [
             _member(0, model=model, state="error"),
             _member(1, model=model, state="stopped"),
@@ -1005,11 +1162,14 @@ def test_the_model_is_shown_by_somebody_at_every_id_length() -> None:
             None,
         ]
         lines = _panel(snapshots, tasks=_JOBS)
-        in_header = model in lines[0]
-        in_rows = any(model in row for row in lines[1:])
+        in_header = _named_model(lines[0], model)
+        in_rows = [row for row in lines[1:] if _named_model(row, model)]
         assert in_header or in_rows, (model, lines)
-        # and never both — that is the duplication the header move removed
         assert not (in_header and in_rows), (model, lines)
+        # WORTH READING, not merely present: a header that showed ``o…`` would
+        # satisfy the line above while telling the user nothing.
+        if in_header:
+            assert cell_len(in_header) >= min(cell_len(model), 12), (model, lines)
 
 
 def test_leading_whitespace_cannot_delete_a_field() -> None:
@@ -1544,9 +1704,17 @@ def test_the_row_builder_is_safe_on_its_own_not_only_via_format_panel() -> None:
     ``_panel_row`` changes nothing that :func:`format_panel` can observe: the
     mutation survives every test above. It is still worth having and still worth
     pinning. ``_panel_row`` is the function that touches the child's bytes
-    (``panel.py:530-552``, the site the finding names), and the next consumer of a
+    (``panel.py:743-757``, the site the finding names), and the next consumer of a
     per-child row — a card variant, a future surface — will call it rather than
     re-deriving it, and must inherit the bound rather than have to remember it.
+
+    THIS CITATION WAS WRONG FROM THE DAY IT WAS WRITTEN, in the way a mechanical
+    repair cannot see. It named lines 530 to 552 of this module, which on ``main``
+    are the tail of ``format_card`` and the head of ``_batch_model`` — a different
+    function from the one the sentence names. The drift checker offered to
+    relocate it by the text it had cited, which would have moved it to another
+    slice of ``format_card``: still wrong, and locked as correct. Re-derived from
+    the function instead.
     """
 
     row = _panel_row(_hostile(0))

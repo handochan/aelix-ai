@@ -28,7 +28,8 @@ from aelix_coding_agent.tui.chrome import AelixChrome
 _MODEL = "github-copilot/gpt-5.6-codex"
 
 # A fan-out over one verb, which is the ordinary shape of a batch and the one the
-# constant column cap collapsed: 32 cells each, differing only in the last word.
+# constant column cap collapsed: 32/32/31/32 cells, differing only in the last
+# word.
 _JOBS = (
     "port the retry backoff to google",
     "port the retry backoff to openai",
@@ -81,10 +82,18 @@ async def test_the_panel_rows_stay_distinct_on_the_glass() -> None:
     """The whole point of the job column: four rows a user can tell apart.
 
     A constant 24-cell cap on the column returned four labels truncated to the
-    same 24-cell prefix — measured, ONE distinct label for this batch — and the
-    row was 47 cells on an 80-column terminal, so the elision bought nothing. The
-    cap is gone; the column is sized from the labels and reserves room for the
-    numbers instead.
+    same 24-cell prefix — measured, ONE distinct label for this batch. The cap is
+    gone; the column is sized from the labels and reserves room for the numbers
+    instead.
+
+    THE CAP WAS NOT BUYING EMPTY SPACE, and an earlier draft of this docstring
+    said it was ("the row was 47 cells on an 80-column terminal, so the elision
+    bought nothing"). MEASURED on this fixture at 80 columns, the capped build's
+    rows were 78/78/78/40 cells — full width. What the elision bought was the
+    numbers: those rows carried ``running · read_file · 33s · 12.3k tok ·
+    $0.0372`` where these carry ``running · read_file · 33s · 12.3k t…``. Four
+    distinct labels are worth the tail of the numbers; a row that cannot be told
+    from the row above it is not.
     """
 
     display, panel_rows = await _panel_on_screen(80)
@@ -103,9 +112,26 @@ async def test_the_panel_rows_stay_distinct_on_the_glass() -> None:
     # The state survives beside the labels, because the batch model left the rows.
     for row in members:
         assert any(word in row for word in _STATE_WORDS), row
-    assert _MODEL in header, header
+
+    # THE HEADER NAMES THE MODEL, POSSIBLY TRUNCATED. It is sized against what the
+    # state counts leave, so a 28-cell provider-scoped id lands here as
+    # ``github-copilot/gpt-5.6-cod…`` — asserting the whole id would fail on a
+    # header that is doing exactly what it promises. The prefix has to be long
+    # enough to identify the model, and the counts have to survive whole.
+    shown = next(
+        (_MODEL[:size] for size in range(len(_MODEL), 0, -1) if _MODEL[:size] in header),
+        "",
+    )
+    assert len(shown) >= 12, (shown, header)
+    for count in ("2 running", "1 done", "1 queued"):
+        assert count in header, (count, header)
     for row in members:
-        assert _MODEL not in row, row
+        # 8 characters, not one: ``g`` is a prefix of this id and of half the
+        # English on the screen, so a shorter floor would report the model on rows
+        # that never mention it.
+        assert not any(
+            _MODEL[:size] in row for size in range(len(_MODEL), 7, -1)
+        ), row
 
 
 async def test_a_narrow_terminal_loses_the_numbers_and_keeps_the_jobs() -> None:

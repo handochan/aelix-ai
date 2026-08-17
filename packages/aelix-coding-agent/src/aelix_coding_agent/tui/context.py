@@ -1321,7 +1321,7 @@ class AelixTUIContext:
             # appending the extension tail to the string put ``current-dir`` back
             # in the MIDDLE, which is the one position ``_MULTILINE_ROWS`` orders
             # it out of: MEASURED at 80 columns with one extension status and a
-            # realistically nested cwd, the merged row is 132 cells and what the
+            # realistically nested cwd, the merged row is 129 cells and what the
             # height-1 clip took was the extension's status, entirely. Composing
             # the row as cells and inserting at the path keeps the promise the
             # ordering makes — the path is the segment that overflows.
