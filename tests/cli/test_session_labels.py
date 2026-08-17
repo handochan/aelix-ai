@@ -17,7 +17,6 @@ from pathlib import Path
 
 from aelix_agent_core.session.storage import JsonlSessionMetadata
 from aelix_coding_agent.cli.session_labels import (
-    _ZERO_WIDTH_SLACK,
     first_user_message,
     format_age,
     last_activity,
@@ -368,18 +367,66 @@ def test_a_zero_width_flood_is_still_truncated() -> None:
     out = truncate_cells(flood, 74)
     # BOTH units. The codepoint cap is slack so an ordinary over-long label keeps
     # its ``…``; the contract is "bounded", not "bounded at the cell budget".
-    assert len(out) <= 74 * _ZERO_WIDTH_SLACK + 1, len(out)
+    #
+    # A LITERAL, NOT ``74 * _ZERO_WIDTH_SLACK``. Expressed in terms of the
+    # constant that sets it, this assertion grew with the thing it constrains:
+    # with the slack raised to 100 000 it still passed while ``truncate_cells``
+    # handed back all 200 000 codepoints. The cell half is no help on its own \u2014
+    # a combining mark measures zero, so ``0 <= 74`` holds for any output at all.
+    assert len(out) <= 297, len(out)  # 74 cells x 4 codepoints, plus the ellipsis
     assert get_cwidth(out) <= 74
+
+
+def test_the_marker_is_inside_the_budget_not_added_to_it() -> None:
+    """The codepoint backstop marks its cut, and the mark has to fit the budget.
+
+    Returning ``text + marker`` measured against ``cells`` rather than against
+    ``cells - width(marker)`` was one cell over whenever the codepoint slice landed
+    exactly on the budget — reachable at four codepoints per cell, a base
+    character carrying three combining marks. END TO END that produced a 79-cell
+    row inside the 78-cell picker rule, which is the overhang the caller sizes
+    this function to prevent.
+
+    A SWEEP, because the overhang only appears where the slice and the budget
+    coincide; one hand-picked pair is as likely to miss it as to find it.
+    """
+
+    for cells in range(1, 90):
+        for n in range(1, 90):
+            text = ("a" + "́" * 3) * n + "a"
+            assert get_cwidth(truncate_cells(text, cells)) <= cells, (cells, n)
+            assert get_cwidth(truncate_cells(text, cells, marker="")) <= cells
+
+    # Control: the cheap way to satisfy a width sweep is to stop marking the cut.
+    marked = truncate_cells("x" * 100, 20)
+    assert marked.endswith("…"), marked
+    assert get_cwidth(marked) == 20, marked
+    # and the markerless caller (the short session id) keeps every cell it has
+    assert truncate_cells("abcdef12", 8, marker="") == "abcdef12"
 
 
 def test_a_zero_width_flood_in_a_session_file_is_still_one_bounded_row(
     tmp_path: Path,
 ) -> None:
-    """End to end, because the bound that matters is the one on the rendered row."""
+    """End to end, because the bound that matters is the one on the rendered row.
 
-    path = _write(tmp_path, _header(), _user("\u0301" * 200_000))
+    THE FLOOD MUST FIT THE HEAD WINDOW OR IT NEVER REACHES THE TRUNCATOR. At
+    200 000 marks ``json.dumps`` escapes each one to six ASCII bytes, so the
+    record is 1.2 MB against a 64 KB :data:`_HEAD_WINDOW` and the reader gives up
+    mid-JSON: ``first_user_message`` returned ``None`` and the row under test was
+    the constant ``(no messages)`` \u2014 19 cells, byte-identical with the bound and
+    without it, satisfying every assertion here by accident. 10 000 marks is 60 KB
+    and does fit, which is why this count is SMALLER than the unit test's above
+    rather than larger.
+
+    The first assertion is the positive control for exactly that: it fails if the
+    fixture ever stops reaching the code path again.
+    """
+
+    path = _write(tmp_path, _header(), _user("\u0301" * 10_000))
     label = session_choice_label(_meta(path), 1e9, width=78)
-    assert len(label) <= 200, len(label)
+    assert "(no messages)" not in label, label
+    assert len(label) <= 320, len(label)
     assert get_cwidth(label) <= 78
     assert "\n" not in label
 

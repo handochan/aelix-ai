@@ -950,7 +950,7 @@
    "# IDENTITY-SCOPED (finding B7). ``bind_subagents(None)`` would",
    "# null the slot for whatever runtime happens to hold it, which"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/panel.py:444-466": [
+  "packages/aelix-coding-agent/src/aelix_agents/panel.py:468-490": [
    "if total == 0:",
    "return \"\"",
    "if total == 1:",
@@ -2814,7 +2814,7 @@
   "packages/aelix-coding-agent/src/aelix_coding_agent/tui/render.py:163-163": [
    "``_truncate_lines`` below has always measured cells; this makes the file"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/render.py:534-560": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/render.py:536-562": [
    "# printed a terminal-outcome line for the message that just ended, so",
    "# ``_render_turn_abort`` does not print a SECOND line for the same abort.",
    "# Scoped to the message_end -> turn_end adjacency it guards: cleared on",
@@ -2824,7 +2824,7 @@
    "# /expand support (ADR-0121) — full, untruncated tool-result bodies kept",
    "# by sequential id so ``/expand N`` can recover the text a truncated card"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:128-144": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:129-145": [
    "def _reload_rebuild_enabled() -> bool:",
    "\"\"\"Issue #24 / #53 — full factory-rebuild ``/reload`` (go-live default, ADR-0177).",
    "",
@@ -2834,7 +2834,7 @@
    "DEFAULT-ON after the multi-lens adversarial review. Set ``AELIX_RELOAD_REBUILD``",
    "to a falsy value (``0``/``false``/``no``/``off``) as a kill-switch to fall back"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:1754-1771": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:1766-1783": [
    "signals_installed: list[int] = []",
    "if install_signal_handlers and sys.platform != \"win32\":",
    "",
@@ -2844,28 +2844,28 @@
    "# dispose, restore terminal). Avoids sys.exit from a detached task,",
    "# which bypassed teardown and left the terminal in raw mode."
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:2276-2276": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:2288-2288": [
    "renderer.hide_thinking = not renderer.hide_thinking"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:2439-2439": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:2451-2451": [
    "editor = os.environ.get(\"VISUAL\") or os.environ.get(\"EDITOR\") or \"vi\""
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:2524-2524": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:2536-2536": [
    "runtime_host.harness.runtime.bind_ui(context)"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3101-3101": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3113-3113": [
    "chrome.set_widget(\"__stream__\", ansi.split(\"\\n\") if ansi else None, above=True)"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3188-3188": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3200-3200": [
    "if _reload_rebuild_enabled():"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3188-3191": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3200-3203": [
    "if _reload_rebuild_enabled():",
    "await runtime_host.reload()",
    "else:",
    "await harness.reload_resources()"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3221-3238": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3233-3250": [
    "if parsed.kind == \"prompt\" and parsed.text.startswith(\"/\"):",
    "command = match_command(parsed.text, command_ctx.commands)",
    "if command is not None and command.handler is not None:",
@@ -2875,10 +2875,10 @@
    "args = parsed.text[len(\"/\" + slash_word(parsed.text)) :].strip()",
    "await command.handler(command_ctx, args)"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:605-605": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:606-606": [
    "renderer.hide_thinking = settings_manager.get_hide_thinking_block()"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:902-902": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:914-914": [
    "result = await runtime_host.fork(target_id, position=\"before\")"
   ],
   "packages/aelix-coding-agent/src/aelix_coding_agent/tui/stream.py:155-158": [

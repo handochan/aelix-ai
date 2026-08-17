@@ -988,6 +988,94 @@ async def test_run_tui_resume_rows_fit_inside_the_picker_rule(
         assert get_cwidth(row) <= _PICK_MAX_WIDTH, (get_cwidth(row), row)
 
 
+async def test_run_tui_resume_disambiguates_without_leaving_the_rule_or_the_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two sessions that start the same way get an id, and the id is a field too.
+
+    The collision branch is the ONE place a row grows after being sized, and it was
+    the one place a header-derived field went in raw. Both halves matter and only
+    this fixture reaches either: the labels must actually collide, which needs two
+    sessions with the same age AND the same opening message.
+
+    ``\\x9b`` IS a CSI — the one-byte spelling of ``\\x1b[`` — and the picker BODY
+    is deliberately not sanitised by ``_picker_frame``, because those rows are
+    normally the module's own styling. A session folder can arrive with a
+    repository, so the id is not the module's own.
+    """
+
+    import json
+
+    from aelix_coding_agent.tui.context import _PICK_MAX_WIDTH, AelixTUIContext
+    from prompt_toolkit.utils import get_cwidth
+
+    def _session(name: str) -> str:
+        path = tmp_path / name
+        path.write_text(
+            json.dumps(
+                {"type": "session", "version": 3, "id": "s", "timestamp": "2026-05-27T14:00:00Z"}
+            )
+            + "\n"
+            + json.dumps(
+                {
+                    "id": "e0",
+                    "timestamp": "2026-05-27T14:05:00Z",
+                    "type": "message",
+                    "message": {
+                        "role": "user",
+                        "content": [{"type": "text", "text": "port the retry backoff " * 20}],
+                    },
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        return str(path)
+
+    first, second = _session("one.jsonl"), _session("two.jsonl")
+    metas = [
+        _ResumeMeta("aaaaaaaa", str(tmp_path / "active.jsonl"), "2026-05-27T15:00"),
+        _ResumeMeta("be\x9b31mfore", first, "2026-05-27T14:00"),
+        _ResumeMeta("af\x9b0mter", second, "2026-05-27T14:00"),
+    ]
+    runtime = _ResumeRuntime(
+        FakeHarness(), _ResumeRepo(metas),
+        _ResumeSession(str(tmp_path / "active.jsonl"), []),
+        target=_ResumeSession(first, []),
+    )
+
+    seen: dict[str, object] = {}
+    real_select = AelixTUIContext.select
+
+    async def _spy(self, title, options, opts=None, detail=None, initial_index=0):  # type: ignore[no-untyped-def]
+        seen["options"] = list(options)
+        return options[0]
+
+    monkeypatch.setattr(AelixTUIContext, "select", _spy)
+    monkeypatch.setattr(tui_shell, "terminal_columns", lambda *a, **k: 200)
+    try:
+        with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
+            chrome = AelixChrome()
+            task = asyncio.ensure_future(
+                run_tui(runtime, cwd=".", chrome=chrome, install_signal_handlers=False)  # type: ignore[arg-type]
+            )
+            await _wait(lambda: chrome.app.is_running)
+            pipe.send_text("/resume\n")
+            await _wait(lambda: bool(runtime.switch_calls))
+            pipe.send_text("/quit\n")
+            await asyncio.wait_for(task, timeout=5)
+    finally:
+        monkeypatch.setattr(AelixTUIContext, "select", real_select)
+
+    rows = seen["options"]
+    # Positive control: without a collision this test would assert nothing, and
+    # two identical labels are exactly what the fixture is built to produce.
+    assert any("(" in row and ")" in row for row in rows), rows  # type: ignore[union-attr]
+    for row in rows:  # type: ignore[union-attr]
+        assert "\x9b" not in row, repr(row)
+        assert get_cwidth(row) + 2 <= _PICK_MAX_WIDTH, (get_cwidth(row), row)
+
+
 async def test_run_tui_resume_empty_choices_does_not_switch() -> None:
     # Only the active session exists → no other sessions → no switch; REPL lives.
     metas = [_ResumeMeta("aaaaaaaa", "/s/active.jsonl", "2026-05-27T15:00")]

@@ -1065,9 +1065,12 @@ def test_an_escape_in_the_echoed_turn_does_not_tear_the_bar() -> None:
 
     ``Text`` does not interpret escapes but it does not remove them either, so the
     paste went to the terminal verbatim. MEASURED at width 40 with
-    ``error: \x1b[31mFAILED\x1b[0m in test_x``: only 17 of the 40 cells were
-    painted — the user's own reset ended the bar's background mid-row — and the
-    raw ``\x1b[31m`` reached the glass. ``\x9b``, the one-byte CSI, did the same.
+    ``error: \x1b[31mFAILED\x1b[0m in test_x``: 23 of the 40 cells were painted
+    and 17 were NOT — the user's own reset ended the bar's background mid-row —
+    and the raw ``\x1b[31m`` reached the glass. ``\x9b``, the one-byte CSI, did
+    the same. Stripped, that paste paints all 40, which is what the last assertion
+    below reads. (An earlier draft of this paragraph reported 17 as the PAINTED
+    count; 17 is the complement, re-measured on a pyte replay of both arms.)
 
     It is also an untrusted-input path: the same text is persisted to the session
     file and replayed by ``/resume``, and a session folder can arrive with a

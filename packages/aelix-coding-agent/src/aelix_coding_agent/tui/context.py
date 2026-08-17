@@ -1238,6 +1238,16 @@ class AelixTUIContext:
         ("permission-mode", "steering", "pending-queued", "current-dir"),
     )
 
+    _UNBOUNDED_TAIL_SEGMENTS = frozenset({"current-dir"})
+    """Segments the ordering above puts last, and that anything merged into a row
+    LATER has to be inserted in front of.
+
+    The tuple order alone is not the rendered order: extension statuses are not
+    registry segments and join the last row after it is composed, so appending
+    them to the joined string put the path back in the middle and the clip ate the
+    extension's own status instead. Naming the segment here is what lets
+    ``_refresh_footer`` keep the promise the tuple makes."""
+
     def _refresh_footer(self) -> None:
         if self._footer_factory is not None:
             component = self._footer_factory(self._tui, self._theme, self._footer)
@@ -1266,19 +1276,38 @@ class AelixTUIContext:
         if self._statusline_multiline():
             # WP-8 (Feature 5) — grouped multi-line block (mockup A). Each row
             # joins its enabled+non-empty segments by ``  ·  ``; empty rows are
-            # omitted; extension statuses join the last rendered row's tail.
-            rows: list[str] = []
+            # omitted; extension statuses join the last rendered row.
+            #
+            # BEFORE THE UNBOUNDED SEGMENT, NOT AFTER IT. Joining the row first and
+            # appending the extension tail to the string put ``current-dir`` back
+            # in the MIDDLE, which is the one position ``_MULTILINE_ROWS`` orders
+            # it out of: MEASURED at 80 columns with one extension status and a
+            # realistically nested cwd, the merged row is 132 cells and what the
+            # height-1 clip took was the extension's status, entirely. Composing
+            # the row as cells and inserting at the path keeps the promise the
+            # ordering makes — the path is the segment that overflows.
+            composed: list[list[str]] = []
+            composed_ids: list[list[str]] = []
             for row_ids in self._MULTILINE_ROWS:
-                cells = [values[sid] for sid in row_ids if sid in values]
-                if cells:
-                    rows.append("  ·  ".join(cells))
+                present = [sid for sid in row_ids if sid in values]
+                if present:
+                    composed.append([values[sid] for sid in present])
+                    composed_ids.append(present)
             if ext_statuses:
-                ext_row = "  ·  ".join(ext_statuses)
-                if rows:
-                    rows[-1] = f"{rows[-1]}  ·  {ext_row}"
+                if composed:
+                    cells, ids = composed[-1], composed_ids[-1]
+                    at = next(
+                        (
+                            index
+                            for index, sid in enumerate(ids)
+                            if sid in self._UNBOUNDED_TAIL_SEGMENTS
+                        ),
+                        len(cells),
+                    )
+                    cells[at:at] = ext_statuses
                 else:
-                    rows.append(ext_row)
-            self.chrome.set_footer_block(rows)
+                    composed.append(list(ext_statuses))
+            self.chrome.set_footer_block(["  ·  ".join(cells) for cells in composed])
             return
 
         # Single-line (default): the canonical registry order joined by ``  ·  ``.

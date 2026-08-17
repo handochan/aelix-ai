@@ -17,9 +17,10 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+from aelix_agents import panel as panel_module
 from aelix_agents.panel import (
     _ELLIPSIS,
-    _ZERO_WIDTH_SLACK,
     AGGREGATE_MAX_CHARS,
     PANEL_MAX_ROWS,
     PANEL_MIN_CHILDREN,
@@ -658,7 +659,15 @@ def test_a_zero_width_flood_is_still_bounded() -> None:
     # ordinary input — so the contract is "bounded", not "bounded at the cell
     # budget": 200 000 in, a few hundred out, and never more than the budget in
     # CELLS.
-    assert len(out) <= PANEL_ROW_MAX_CHARS * _ZERO_WIDTH_SLACK + 1, len(out)
+    #
+    # LITERALS, NOT ``PANEL_ROW_MAX_CHARS * _ZERO_WIDTH_SLACK``. Writing the bound
+    # in terms of the constant that sets it made it unfalsifiable: with
+    # ``_ZERO_WIDTH_SLACK`` raised to 100 000 this file still passed while
+    # ``_flatten`` handed back all 200 000 codepoints — the assertion grew with
+    # the thing it was meant to constrain. The cell half cannot carry the test
+    # alone either, since a combining mark measures zero and ``0 <= 78`` holds for
+    # any output whatsoever.
+    assert len(out) <= 313, len(out)  # 78 cells x 4 codepoints, ellipsis included
     assert cell_len(out) <= PANEL_ROW_MAX_CHARS
 
     rows = format_panel(
@@ -668,22 +677,71 @@ def test_a_zero_width_flood_is_still_bounded() -> None:
     assert len(rows) <= PANEL_MAX_ROWS
     for row in rows:
         plain = _visible(row)
-        assert len(plain) <= PANEL_ROW_MAX_CHARS * _ZERO_WIDTH_SLACK * 3, len(plain)
+        assert len(plain) <= 939, len(plain)  # at most three flattened parts
         assert cell_len(plain) <= PANEL_ROW_MAX_CHARS
 
 
-def test_flatten_does_not_do_unbounded_work_per_frame() -> None:
-    """The collapse and the translate are linear in the INPUT, and this runs on
-    every publish for every member. A megabyte of ``current_tool`` must not buy a
-    megabyte of work per repaint."""
+def test_the_ellipsis_is_inside_the_budget_not_added_to_it() -> None:
+    """The codepoint backstop marks its cut, and the mark has to fit the budget.
 
-    import time
+    Returning ``flat + _ELLIPSIS`` measured against ``limit`` rather than one less
+    was a cell over whenever the codepoint slice happened to land exactly on the
+    budget — reachable at four codepoints per cell, i.e. a base character carrying
+    three combining marks. One cell past :data:`PANEL_ROW_MAX_CHARS` is a row
+    hanging outside the frame that sized itself to that number.
 
-    payload = "x" * 4_000_000
-    start = time.perf_counter()
-    _flatten(payload, limit=PANEL_ROW_MAX_CHARS)
-    elapsed_ms = (time.perf_counter() - start) * 1000
-    assert elapsed_ms < 200, f"{elapsed_ms:.0f} ms for one flatten"
+    A SWEEP, because the overhang only appears where the slice and the budget
+    coincide: a single hand-picked pair is as likely to miss it as to find it.
+    """
+
+    for limit in range(1, 90):
+        for n in range(1, 90):
+            text = ("a" + "́" * 3) * n + "a"
+            assert cell_len(_flatten(text, limit=limit)) <= limit, (limit, n)
+
+    # Control: the cheap way to satisfy the sweep is to stop marking the cut, and
+    # ordinary over-long input must still say that it was cut.
+    marked = _flatten("x" * 100, limit=20)
+    assert marked.endswith(_ELLIPSIS), marked
+    assert cell_len(marked) == 20, marked
+
+
+def test_flatten_does_not_do_unbounded_work_per_frame(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The translate is linear in the INPUT, and this runs on every publish for
+    every member. A megabyte of ``current_tool`` must not buy a megabyte of work.
+
+    COUNTED, NOT TIMED, and on the shape that is actually expensive. The first
+    version wrapped a wall clock around ``"x" * 4_000_000`` and asserted under
+    200 ms: the bound could be DELETED outright and it still passed in 12 ms,
+    because a whitespace-free ASCII run is the cheapest input there is — one
+    ``split`` token, then an ASCII ``translate`` fast path that consults the table
+    once per DISTINCT byte. Non-ASCII takes the general path, where every
+    character is a real lookup; that is the input this constant exists for.
+
+    The observation is the lookup count itself, via a counting mapping. Asserting
+    EQUALITY against the literal bound makes the test its own positive control: a
+    broken instrument reads 0 and fails as loudly as an absent bound reads
+    400 000.
+    """
+
+    class _Counting(dict):  # type: ignore[type-arg]
+        lookups = 0
+
+        def __getitem__(self, key: object) -> object:
+            type(self).lookups += 1
+            return super().__getitem__(key)
+
+    monkeypatch.setattr(
+        panel_module, "_CONTROL_KILL", _Counting(panel_module._CONTROL_KILL)
+    )
+    out = _flatten("́" * 400_000, limit=PANEL_ROW_MAX_CHARS)
+
+    assert _Counting.lookups == 8192, (
+        f"{_Counting.lookups} characters reached translate; the work bound is 8192"
+    )
+    assert cell_len(out) <= PANEL_ROW_MAX_CHARS
 
 
 def test_rows_are_content_length_not_padded_to_the_ceiling() -> None:
@@ -716,9 +774,22 @@ def test_the_job_column_is_sized_from_the_labels_not_the_numbers() -> None:
     busier, so four distinct tasks converged to a common prefix at exactly the
     moment work started — and it made every other row's label jump whenever one
     member's elapsed time gained a digit.
+
+    LABELS LONGER THAN THE BUDGET UNDER TEST, which the first version got wrong.
+    It used 14-16 cell labels against a numbers-derived budget of 23 and a
+    label-derived column of 24 — both wider than every label, so nothing was ever
+    truncated and the numbers-first arm passed unchanged. These share a 26-cell
+    prefix and run to 32, so the two arms produce different strings: sized from
+    the numbers all four read ``port the retry backoff…``, sized from the labels
+    they keep the word that tells them apart.
     """
 
-    jobs = ("alpha task one", "alpha task two", "alpha task three", "alpha task four")
+    jobs = (
+        "port the retry backoff to google",
+        "port the retry backoff to openai",
+        "port the retry backoff to azure",
+        "port the retry backoff to vertex",
+    )
     idle = _panel([_member(k, state="starting") for k in range(4)], tasks=jobs)[1:]
     busy = _panel(
         [
@@ -735,13 +806,27 @@ def test_the_job_column_is_sized_from_the_labels_not_the_numbers() -> None:
     assert len({r.split("] ", 1)[1].split("  ")[0] for r in busy}) == 4
 
 
-def test_the_header_keeps_its_state_counts_when_the_model_will_not_fit() -> None:
-    """The head and the counts are documented as never dropped, so appending the
-    model unconditionally did not shorten the head — it truncated the COUNTS.
+def test_the_panel_names_the_batch_model_once_at_every_id_length() -> None:
+    """The header states the model and the rows drop it — for EVERY id length.
 
-    MEASURED: with a 24-character provider-scoped model id the elapsed, tokens and
-    cost were silently gone; at 31 characters a state count went, and the count it
-    reached first was ``1 failed``.
+    Two failures live at this seam and they are each other's fallback, so both
+    arms have to be gated at once.
+
+    Appending the model unconditionally to the head truncates the trailing
+    numbers and eventually a state count. Making the append conditional on the
+    counts fitting fixed that and cost more than it saved: at any provider-scoped
+    id the header dropped the model AND the rows suppressed it, so the panel named
+    it nowhere; and once the rows stopped suppressing it, a batch with one queued
+    member put a 28-cell string identical down the whole column onto every row.
+
+    The resolution is positional — the model sits between the profile and the
+    counts, and everything that shortens this row takes from the right — so the
+    gate is: the model is in the header at every length, and on no row.
+
+    THE COUNT ASSERTED IS THE LAST ONE THE TRUNCATION REACHES. The first version
+    asserted ``1 failed``, which is the SECOND of four and therefore the last to
+    disappear: true in both arms at every id length tested, while ``1 queued``
+    separates them.
     """
 
     for model in ("gpt-5", "claude-opus-4-8", "openai/gpt-5.6-luna-preview-2026"):
@@ -751,9 +836,23 @@ def test_the_header_keeps_its_state_counts_when_the_model_will_not_fit() -> None
             _member(2, model=model, state="done"),
             None,
         ]
-        header = _visible(format_panel(snapshots, tasks=_JOBS)[0])
-        assert "1 failed" in header, (model, header)
+        lines = [_visible(line) for line in format_panel(snapshots, tasks=_JOBS)]
+        header, rows = lines[0], lines[1:]
+        assert model in header, (model, header)
         assert cell_len(header) <= AGGREGATE_MAX_CHARS, (model, cell_len(header))
+        for row in rows:
+            assert model not in row, (model, row)
+
+    # And the counts are what the model displaces, not the other way round: at the
+    # shortest id every count survives beside it.
+    short = [
+        _member(0, model="gpt-5", state="error"),
+        _member(1, model="gpt-5", state="stopped"),
+        _member(2, model="gpt-5", state="done"),
+        None,
+    ]
+    header = _visible(format_panel(short, tasks=_JOBS)[0])
+    assert "1 queued" in header, header
 
 
 # === second review round: the fixes' own holes ================================
@@ -1316,7 +1415,7 @@ def test_the_row_builder_is_safe_on_its_own_not_only_via_format_panel() -> None:
     ``_panel_row`` changes nothing that :func:`format_panel` can observe: the
     mutation survives every test above. It is still worth having and still worth
     pinning. ``_panel_row`` is the function that touches the child's bytes
-    (``panel.py:444-466``, the site the finding names), and the next consumer of a
+    (``panel.py:468-490``, the site the finding names), and the next consumer of a
     per-child row — a card variant, a future surface — will call it rather than
     re-deriving it, and must inherit the bound rather than have to remember it.
     """

@@ -171,10 +171,12 @@ attacker-influenceable, so the label was an escape-injection path.
 
 **The user echo shipped the same hole.** ``Text`` does not interpret escapes but
 does not remove them either. MEASURED at width 40 with a pasted
-``error: \x1b[31mFAILED\x1b[0m in test_x``: 17 of 40 cells painted, the user's own
-reset ending the bar mid-row, and the raw escape reaching the glass. Pasting
-coloured build output into a coding agent is ordinary input; the same text is also
-persisted and replayed by ``/resume``.
+``error: \x1b[31mFAILED\x1b[0m in test_x``: 23 of 40 cells painted and 17 not, the
+user's own reset ending the bar mid-row, and the raw escape reaching the glass.
+Pasting coloured build output into a coding agent is ordinary input; the same text
+is also persisted and replayed by ``/resume``. (This paragraph said "17 painted"
+in three places — here, ``render.py`` and a commit message — until the round-three
+review re-ran it. 17 is the complement.)
 
 **And the picker title.** ``ExtensionUIContext.select`` takes whatever an
 extension passes, and an OSC title both SET THE TERMINAL'S WINDOW TITLE and made
@@ -200,18 +202,96 @@ moment work started, because the label's share shrank as the numbers grew.
 
 **Two more, smaller.** Appending the model to a head documented as "never
 dropped" did not shorten the head, it truncated the state COUNTS — at a
-31-character model id the count it reached first was ``1 failed``; the model is
-now included only if the substance still fits. And merging ``current-dir`` into
-the permission row put the only UNBOUNDED segment in the middle of a height-1 row
-that clips: measured at 80 columns with a nested cwd the row is 95 cells and the
-two segments pushed off were ``⏵⏵`` steering and ``⋯ N queued``, the only live
-signals on the footer. The path goes last now.
+31-character model id the count it reached first was ``1 failed``. And merging
+``current-dir`` into the permission row put the only UNBOUNDED segment in the
+middle of a height-1 row that clips: measured at 80 columns with a nested cwd the
+row is 95 cells and the two segments pushed off were ``⏵⏵`` steering and
+``⋯ N queued``, the only live signals on the footer. The path goes last now.
+(Both of these needed a second correction; see the round-three section.)
 
 **The citation gate agreed with a lie.** Nine citations naming ``_picker_frame``
 carried an anchor locked to a line inside ``_filter_line``, so ``--fix`` would have
 moved a wrong pointer to new coordinates — verbatim the failure ADR-0224 measured
 at 24% of the corpus. Those nine were re-derived BY HAND from the prose; the rest,
 whose anchors were correct, mechanically.
+
+## Round three: the fixes' fixes, and five gates that gated nothing
+
+Two review lenses ran late — one that sabotages every new test in a throwaway copy
+of the sources, and one that re-measures every number in the prose. Between them
+they found a product REGRESSION that survived two rounds of review, five gates that
+could not fail, and four sentences that were simply not true.
+
+**The job column's cap made every row of a fan-out read the same.** A constant
+24-cell ceiling was chosen from one measurement at a 40-column terminal, where it
+let 2 of 4 rows keep a full state word against 0 of 4 at 28 and above. What was
+never measured is its cost at every other width. A batch fanned out over one verb
+— ``port the retry backoff to google`` / ``… openai`` / ``… azure`` / ``… vertex``,
+32 cells each — truncates to a common 24-cell prefix, so all four rows render the
+SAME string. MEASURED: **1 distinct label with the cap, 4 without it**, on an
+80-column terminal where 31 columns sat empty while the labels were elided. The
+cap is gone; the column is sized from the labels and reserves 12 cells for the
+numbers, which is where the state word lives.
+
+**And the reason the state was scarce was not the labels.** Chasing the cap turned
+up the real consumer: with one QUEUED member the header's model term lands at 77
+cells against a cap of 76, so the previous round's "only if the substance still
+fits" guard dropped it — and the panel's only fallback is to let every row carry
+the model again, spending 28 cells on a string identical down the whole column to
+save 31 in the header. The model is appended unconditionally now. Position is what
+protects it: it sits between the profile and the counts, and everything that
+shortens that row takes from the right, so the truncation reaches the COUNTS
+first — which the panel's own rows already state, member by member.
+
+**Both codepoint backstops returned one cell more than they promised.** With four
+codepoints per cell — a base character carrying three combining marks — the slice
+can land exactly on the budget, and both functions then appended their ellipsis
+OUTSIDE it. End to end that produced a 79-cell row inside the 78-cell picker rule,
+verbatim the overhang the branch added the rule to make visible. A sweep over
+every budget from 1 to 89 now runs in both test files.
+
+**Five of the eighteen new gates could not fail.** Each in a different shape, and
+the shapes are the point:
+
+* a bound with **no coverage at all** — deleting ``_MAX_INPUT_CHARS`` outright left
+  1602 tests green, because the test fed ``"x" * 4_000_000``: a whitespace-free
+  ASCII run is the cheapest input there is, and its 12 ms sat 17× under a 200 ms
+  threshold. Counted rather than timed now, on a non-ASCII flood, with an EQUALITY
+  against the literal bound so a broken instrument fails as loudly as an absent one;
+* a **fixture that never reached the code path** — 200 000 combining marks are
+  1.2 MB of JSON-escaped bytes against a 64 KB head window, so the reader gave up
+  mid-record and the row under test was the constant ``(no messages)``, identical
+  in both arms. The count is now 10 000, and the first assertion is that the
+  fallback string is absent;
+* an **input outside the observable band** — 14-cell labels against a 23-cell and a
+  24-cell budget, both wider than every label, so nothing was ever truncated and
+  the arm under test passed unchanged;
+* an assertion on **the last token a truncation would ever reach** — ``1 failed`` is
+  the second of four counts and the cut comes from the right, so it was true in
+  both arms at every id length; and the companion cell bound was ``78 <= 78``;
+* two bounds **expressed in terms of the constant they constrain** — with
+  ``_ZERO_WIDTH_SLACK`` raised to 100 000 both flood tests still passed while the
+  functions handed back all 200 000 codepoints.
+
+**And an ordering invariant that held in the tuple and not on the screen.** The
+gate for "``current-dir`` goes last" read ``_MULTILINE_ROWS[1]`` and never built a
+context. Extension statuses are not registry segments; they join the last row
+AFTER it is composed, so appending them to the joined string put the unbounded path
+back in the middle. Measured on the glass at 80 columns, what the clip took was the
+extension's own status, entirely. They are inserted before the path now, and the
+gate renders a row.
+
+**Phase C now has a live-glass file.** ``tests/tui/test_phase_c_live_glass.py``
+paints the panel and the merged footer through the real chrome and reads them back
+off a pyte screen, because both surfaces are decided by a CLIP rather than by a
+return value: a formatter can return four distinct labels and the terminal can
+still show four identical ones. Fifteen sabotages — eleven against the source,
+four against the glass — all RED.
+
+**One of my own probes reported a false finding**, again. ``verify_round2.py``
+hard-coded the pre-fix example string, so it reported 29 cells against a cap of 24
+where the code already said 21: measuring the wrong build, which is the same
+mistake as trusting a gate that never ran against the broken one.
 
 ## Rejected alternatives
 

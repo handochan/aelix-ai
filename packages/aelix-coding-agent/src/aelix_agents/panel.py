@@ -141,8 +141,15 @@ _MAX_INPUT_CHARS = 8192
 The whitespace collapse and the ``translate`` are both linear in the input, and
 ``_flatten`` runs on every publish for every member of a batch — the runtime
 publishes after every reduced stdout line. A child that sends a megabyte in
-``current_tool`` should not buy a megabyte of work per frame; measured, 200 000
-characters cost ~70 ms in the collapse alone.
+``current_tool`` should not buy a megabyte of work per frame.
+
+WHERE THE COST ACTUALLY IS, re-measured because an earlier draft of this
+paragraph put it in the wrong step. At 200 000 characters the collapse is
+0.2-1.9 ms across every input shape tried; the expensive steps are the two after
+it, and only for non-ASCII, where ``translate`` takes the general per-character
+path: 76 ms for ``translate`` and 144 ms for ``cell_len`` on 200 000 combining
+acutes, against 0.3 ms and 3.8 ms for the same length in ASCII. So this bound is
+worth having, and it is the flood of zero-width marks it is worth having against.
 
 Generous rather than tight (a hundred times the widest row this module draws) so
 it can only ever bite input that was already going to be truncated to nothing
@@ -233,7 +240,13 @@ def _flatten(value: str, *, limit: int) -> str:
     clipped = len(flat) > limit * _ZERO_WIDTH_SLACK
     if clipped:
         flat = flat[: limit * _ZERO_WIDTH_SLACK]
-    if cell_len(flat) <= limit:
+    # THE ELLIPSIS IS INSIDE ``limit`` ON BOTH ARMS. Returning ``flat + _ELLIPSIS``
+    # against ``limit`` rather than one less was a cell over whenever the codepoint
+    # slice landed exactly on the budget — reachable at four codepoints per cell,
+    # a base character carrying three combining marks. A row one cell past
+    # :data:`PANEL_ROW_MAX_CHARS` is the same overhang the closing clamp in
+    # :func:`_composed_row` exists to catch, and this is the half that promises it.
+    if cell_len(flat) <= limit - (cell_len(_ELLIPSIS) if clipped else 0):
         return flat + _ELLIPSIS if clipped else flat
     return set_cell_size(flat, max(0, limit - 1)) + _ELLIPSIS
 
@@ -344,6 +357,19 @@ def format_aggregate_status(
     worked example and a model term does not fit in them. Being a parameter
     rather than a second function is what keeps the two surfaces unable to state
     a different fact.
+
+    IT IS APPENDED UNCONDITIONALLY, and that is the second correction this pair
+    has needed. Making it conditional on the counts still fitting looked like the
+    careful choice and was measured to be the expensive one: with one queued
+    member the head-plus-counts join lands at 77 cells against a cap of 76, so
+    the model was dropped here — and the panel's only fallback is to let every
+    row carry it again, which spends 28 cells on a string identical down the
+    whole column to save 31 in the header. Position is what protects it: the term
+    sits between the profile and the counts, so the right-to-left tail drop and
+    the closing truncation reach the COUNTS first, and the panel's rows state
+    every member's state anyway. The statusline surface, which has no rows and
+    where the counts are the whole substance, passes no ``extra_head`` and is
+    untouched by this.
     """
 
     total = len(snapshots)
@@ -354,16 +380,14 @@ def format_aggregate_status(
     head = f"agent {_short_profile(live[0].profile)} ×{total}"
     counts = _state_counts(snapshots)
     if extra_head:
-        # ONLY IF THE SUBSTANCE STILL FITS. The head and the state counts are
-        # documented above as never dropped, so appending an unconditional term
-        # to the head does not shorten the head — it truncates the COUNTS. With a
-        # 24-character provider-scoped model id that silently cost the elapsed,
-        # the tokens and the cost; at 31 it cost a state count, and the count it
-        # reached first was ``1 failed``. The model is the droppable half of this
-        # pair, so it is the half that gets tested.
-        widened = f"{head} · {_flatten(extra_head, limit=_MAX_PROFILE_CHARS * 2)}"
-        if cell_len(" · ".join([widened, *counts])) <= cap:
-            head = widened
+        # BEFORE THE COUNTS, WHICH IS WHAT MAKES IT SURVIVE. Everything that
+        # shortens this row — the tail loop below and the closing truncation —
+        # takes from the right, so a term appended here is the last thing either
+        # can reach. That ordering replaces a fit test that measured
+        # head-plus-counts against the cap: the test was true for a bare model id
+        # and false for a provider-scoped one, and its false arm cost more than it
+        # saved (see the docstring).
+        head = f"{head} · {_flatten(extra_head, limit=_MAX_PROFILE_CHARS * 2)}"
     text = " · ".join([head, *counts])
 
     tail = [f"{max(item.elapsed_ms for item in live) / 1000:.0f}s"]
@@ -491,24 +515,32 @@ _TASK_MIN_CELLS = 8
 """Never squeeze the job label below this. A label cut to two characters is a
 column that costs width and says nothing."""
 
-_TASK_COL_MAX_CELLS = 24
-"""Ceiling on the shared job-label column.
+_NUMBERS_MIN_CELLS = 12
+"""What the job-label column must leave for the numbers half of a row.
 
-The column is a FIXED cost paid before the state and the numbers, and this module
-cannot see the terminal — ``PANEL_ROW_MAX_CHARS`` is a constant and ``tui/width.py``
-is deliberately not importable from here. So the cap is what decides at which
-terminal width the state disappears behind the labels.
+The label column is a FIXED cost paid BEFORE the state, so it is the thing that
+decides whether the state is visible at all. The numbers begin with the state
+word — ``_panel_row`` puts it first — so this reserve is really "always leave
+room for the state and a hint of the elapsed": the widest state string is
+``starting`` at 8 cells, and 12 holds it plus the ellipsis and the start of the
+next term.
 
-CHOSEN BY MEASUREMENT, not by taste. At a 40-column terminal, with the widget
-window clipping rather than wrapping, the number of member rows still showing
-their state was 0 of 4 at caps of 34, 30 and 28, and 2 of 4 at 24. At 50 columns
-every cap showed all four. 24 is the only value that buys anything where it is
-scarce, and it still holds a task like "audit width.py for b…" — 24 cells, which
-is what the cap says and what an earlier draft of this sentence got wrong by
-five.
+A RESERVE RATHER THAN A CEILING, and that replaces a constant cap of 24 cells
+that was measured on the wrong axis. The cap was chosen at a 40-column terminal,
+where it let 2 of 4 rows keep a full state word against 0 of 4 at 28 and above.
+What was never measured is what it cost everywhere else: a batch fanned out over
+one verb — ``port the retry backoff to google`` / ``… to openai`` / ``… to
+azure`` / ``… to vertex``, 32 cells each — truncates to a common 24-cell prefix,
+so all four rows render the SAME string and the panel stops answering the
+question it was added to answer. MEASURED on that batch: 1 distinct label at the
+cap, 4 without it. Sizing from the labels and reserving for the numbers keeps all
+four, and it keeps the state too, because the batch model moved off the rows for
+good and gave the numbers back 28 cells (see :func:`format_aggregate_status`).
 
-Below it the column shrinks to the widest label the batch actually has, because a
-group's labels are the submitted tasks and never change while it is open."""
+The 40-column terminal still loses the tail of the numbers, which is the
+degradation ``_composed_row`` documents and left-packing exists to bound. The cap
+did not fix that case either — it bought a partial word on half the rows and paid
+for it at every width."""
 
 
 def _panel_row(snapshot: SubagentProgress | None, *, hide_model: bool = False) -> str:
@@ -557,10 +589,15 @@ def _label_column(tasks: Sequence[str], room: int) -> int:
     Sizing from the numbers also made the label budget shrink as a child got
     busier: four distinct tasks collapsed to a common prefix at exactly the moment
     work started and the user needed to tell the rows apart.
+
+    The only ceiling is :data:`_NUMBERS_MIN_CELLS` — the room the numbers keep —
+    because a ceiling that bites BELOW the labels a batch really submits causes
+    that same collapse permanently instead of only while a child is busy.
     """
 
     widest = max((cell_len(_flatten(t, limit=room)) for t in tasks), default=0)
-    return max(_TASK_MIN_CELLS, min(widest, _TASK_COL_MAX_CELLS, room))
+    reserved = max(_TASK_MIN_CELLS, room - _NUMBERS_MIN_CELLS - 2)
+    return max(_TASK_MIN_CELLS, min(widest, reserved, room))
 
 
 def _composed_row(index: int, total: int, task: str, numbers: str, column: int) -> str:
@@ -661,12 +698,21 @@ def format_panel(
         extra_head=model,
         cap=AGGREGATE_MAX_CHARS - (cell_len(_GUTTER) if tasks else 0),
     )
-    # THE ROWS HIDE THE MODEL ONLY IF THE HEADER ACTUALLY SHOWED IT. Keying this
-    # on "a batch model exists" instead was a hole: the header appends the model
-    # only when the state counts still fit, so at any realistic provider-scoped id
-    # the header dropped it AND the rows suppressed it and the panel named no
-    # model at all. MEASURED at 15 and 32 characters: header=False, rows=False.
-    shown_in_header = bool(model) and model in header
+    # THE ROWS HIDE THE MODEL ONLY IF THE HEADER ACTUALLY SHOWED IT — READ OFF
+    # THE HEADER, never assumed from "a batch model exists". Assuming it was a
+    # hole: while the header appended the model conditionally, a provider-scoped
+    # id made the header drop it AND the rows suppress it, and the panel named no
+    # model at all (MEASURED at 15 and 32 characters: header=False, rows=False).
+    # The append is unconditional now, so this is True whenever there is a batch
+    # model — but it is still a test, because that is the property that failed and
+    # a constant here would stop noticing if the header changes again.
+    #
+    # Against the SAME expression the header builds, not against the raw string: a
+    # model wider than the head's flatten limit appears there truncated, and the
+    # header still names it, so the rows must still drop it.
+    shown_in_header = bool(model) and (
+        _flatten(model, limit=_MAX_PROFILE_CHARS * 2) in header
+    )
     lines: list[str] = []
     if header:
         lines.append(f"{_PANEL_DIM}{_GUTTER}{_PANEL_RST}{header}" if tasks else header)

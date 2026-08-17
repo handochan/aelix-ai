@@ -323,9 +323,16 @@ def truncate_cells(text: str, cells: int, *, marker: str = "…") -> str:
     clipped = len(text) > cells * _ZERO_WIDTH_SLACK
     if clipped:
         text = text[: cells * _ZERO_WIDTH_SLACK]
-    if get_cwidth(text) <= cells:
-        return text + marker if clipped else text
     budget = cells - get_cwidth(marker)  # room for the marker, if there is one
+    # THE MARKER IS INSIDE THE BUDGET ON BOTH ARMS. Returning ``text + marker``
+    # against ``cells`` rather than against ``budget`` was one cell over whenever
+    # the codepoint slice happened to land exactly on the budget — reachable with
+    # four codepoints per cell, i.e. a base character carrying three combining
+    # marks. MEASURED end to end: a session whose first user message has that
+    # shape produced a 79-cell row inside the 78-cell picker rule, which is
+    # verbatim the overhang the caller sizes this to prevent.
+    if get_cwidth(text) <= (budget if clipped else cells):
+        return text + marker if clipped else text
     out: list[str] = []
     used = 0
     for ch in text:

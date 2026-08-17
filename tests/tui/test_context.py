@@ -1086,7 +1086,7 @@ async def test_multiline_statusline_keeps_the_permission_badge_leading() -> None
 # === review finding: the merged statusline row must not clip the live signals ===
 
 
-def test_the_merged_statusline_row_drops_the_path_before_the_live_signals() -> None:
+async def test_the_merged_statusline_row_drops_the_path_before_the_live_signals() -> None:
     """The chrome row is height-1 and CLIPPED at the terminal, which is the very
     thing multi-line mode exists to stop.
 
@@ -1095,6 +1095,14 @@ def test_the_merged_statusline_row_drops_the_path_before_the_live_signals() -> N
     merged row is 95 cells; with the directory in the MIDDLE the two segments
     pushed off the end were ``⏵⏵`` steering and ``⋯ N queued`` — the only live and
     transient signals on the footer. Ordered this way the overflow eats the path.
+
+    RENDERED, NOT READ OFF THE TUPLE. The first version asserted four things about
+    ``_MULTILINE_ROWS[1]`` and never built a context, so it could not see the
+    rendered row disagreeing with it: extension statuses are not registry segments
+    and joined the row AFTER it was composed, which put the path back in the
+    middle and made the extension's own status the thing the clip took. The tuple
+    assertions stay — ADR-0159's leading badge is a property of the ordering
+    itself — but the row is what the invariant is about.
     """
 
     from aelix_coding_agent.tui.context import AelixTUIContext
@@ -1104,3 +1112,20 @@ def test_the_merged_statusline_row_drops_the_path_before_the_live_signals() -> N
     assert row[-1] == "current-dir", row
     assert row.index("steering") < row.index("current-dir")
     assert row.index("pending-queued") < row.index("current-dir")
+
+    footer = _FixedBranchFooter("main")
+    footer.set_status("lsp", "lsp: 3 diagnostics")
+    async with _multiline_footer(
+        footer,
+        enabled=["permission-mode", "steering", "pending-queued", "current-dir"],
+        cwd="/workspaces/aelix-ai/packages/aelix-coding-agent/src/aelix_coding_agent",
+        permission_badge_provider=lambda: "⚠",
+        mode_provider=lambda: "all",
+        pending_provider=lambda: 3,
+    ) as (_ctx, chrome):
+        rendered = chrome._footer_line.split("\n")[-1]
+
+    path_at = rendered.index("/workspaces/aelix-ai/packages")
+    for live in ("⏵⏵", "3 queued", "lsp: 3 diagnostics"):
+        assert live in rendered, (live, rendered)
+        assert rendered.index(live) < path_at, (live, rendered)

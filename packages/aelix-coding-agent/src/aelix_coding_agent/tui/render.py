@@ -414,11 +414,13 @@ def render_user_message(text: str, kind: str = "prompt", *, width: int | None = 
     THE TEXT IS STRIPPED OF CONTROLS FIRST, and the bar is what made that
     necessary. ``Text`` does not interpret escapes but it does not remove them
     either, so a paste went to the terminal verbatim. MEASURED at width 40 with
-    ``error: \\x1b[31mFAILED\\x1b[0m in test_x`` pasted in: only 17 of the 40 cells
-    were painted — the reset in the middle of the user's own text ended the bar's
-    background — and the raw ``\\x1b[31m`` reached the glass, changing the
-    terminal's colour state from inside a row this renderer claims to own.
-    ``\\x9b``, the one-byte CSI, did the same.
+    ``error: \\x1b[31mFAILED\\x1b[0m in test_x`` pasted in: 23 of the 40 cells were
+    painted and 17 were NOT — the reset in the middle of the user's own text ended
+    the bar's background — and the raw ``\\x1b[31m`` reached the glass, changing
+    the terminal's colour state from inside a row this renderer claims to own.
+    ``\\x9b``, the one-byte CSI, did the same. Stripped, that paste paints all 40
+    and the escape shows as the literal characters it is. (An earlier draft of
+    this paragraph reported 17 as the painted count; 17 is the complement.)
 
     Pasting coloured build output into a coding agent is ordinary input, so this
     is not a hostile-input defence first — it is a "the bar is one solid object"
@@ -575,7 +577,7 @@ class EventRenderer:
         # reasoning is painted live, so turning the setting ON has to take the
         # already-painted window down. Doing that in the setter covers all three
         # writers — the startup seed, /settings live-apply and Ctrl+T
-        # (shell.py:605, 1051, 2151) — without asking each to remember.
+        # (shell.py:606, 1051, 2151) — without asking each to remember.
         self._hide_thinking: bool = False
         self._hidden_thinking_label: str = "Thinking…"
         # Aelix-original DISPLAY gate: when True, the persisted compaction-summary
@@ -907,7 +909,7 @@ class EventRenderer:
             return
         if self._text_stream is not None:
             # The answer owns the live window once it starts streaming, and both
-            # write the same last-writer-wins sink (shell.py:3101). A provider
+            # write the same last-writer-wins sink (shell.py:3113). A provider
             # that resumes reasoning after answer text — openai-completions
             # replays it on the same content_index — would otherwise flip the
             # window between the answer being typed and a reasoning fragment.

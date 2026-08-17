@@ -43,6 +43,7 @@ from aelix_coding_agent.cli.resource_commands import expand_resource_command
 from aelix_coding_agent.cli.session_labels import (
     session_choice_label,
     session_detail_lines,
+    short_field,
 )
 from aelix_coding_agent.extensions import HEADLESS_UI_CONTEXT
 from aelix_coding_agent.extensions.api import MessageRenderOptions
@@ -765,9 +766,20 @@ async def run_tui(
         labels: list[str] = []
         by_label: dict[str, object] = {}
         for meta in choices:
+            # THE DISAMBIGUATOR IS BUDGETED AND SANITISED, like the label it joins.
+            # ``short_field`` is what ``session_labels`` puts every header-derived
+            # field through; a raw ``[:8]`` here would have been the one term on
+            # this row that keeps its control bytes — and the picker BODY is not
+            # sanitised, because those rows are normally this module's own styling.
+            # The 12 cells it costs come out of the label rather than off the end,
+            # since the row is already sized to sit inside the rule.
+            collision = f"  ({short_field(getattr(meta, 'id', '') or '', 8)})"
             label = _format_session_choice(meta, now, width=max(20, label_width))
             if label in by_label:
-                label = f"{label}  ({(getattr(meta, 'id', '') or '')[:8]})"
+                label = _format_session_choice(
+                    meta, now, width=max(20, label_width - len(collision))
+                )
+                label = f"{label}{collision}"
             while label in by_label:  # last resort; ids are already unique
                 label += " ·"
             labels.append(label)
