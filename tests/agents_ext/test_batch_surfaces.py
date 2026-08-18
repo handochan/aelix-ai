@@ -1016,15 +1016,29 @@ def test_the_counts_survive_the_model_but_not_a_head_wider_than_the_cap() -> Non
             for index, state in enumerate(states)
         ] + [None]
 
+    every_count = ("1 running", "1 done", "1 failed", "1 stopped", "1 queued")
+
+    # BESIDE A MODEL THAT IS ACTUALLY THERE. A first version passed a 54-cell id,
+    # which ``_model_term`` drops at five classes — so the row it asserted on was
+    # byte-identical to the same row with ``extra_head=""`` and the counts were
+    # surviving nothing. Five classes leave four cells, so a four-cell id is what
+    # exercises the rule this test is named for.
+    beside = format_aggregate_status(batch("scout"), extra_head="gpt4", cap=76)
+    assert "gpt4" in beside, beside
+    for count in every_count:
+        assert count in beside, (count, beside)
+
+    # And when the id does NOT fit, the model is what goes, not a count.
     narrow = format_aggregate_status(batch("scout"), extra_head=_MODEL_IDS[3], cap=76)
-    for count in ("1 running", "1 done", "1 failed", "1 stopped", "1 queued"):
+    for count in every_count:
         assert count in narrow, (count, narrow)
-    # The model is what went, not a count — the whole point of the rule.
     assert not _named_model(narrow, _MODEL_IDS[3]), narrow
 
     # ``가`` is two cells, so eight of them is the 16-cell ceiling _short_profile
     # allows. Nothing is left for the counts and the closing truncation reaches
-    # them; this arm is the limit, asserted so it stays a known one.
+    # them; this arm is the limit, asserted so it stays a known one. It gates the
+    # closing truncation rather than the model rule — the model is dropped here
+    # too, and saying so is the difference between a limit and a coincidence.
     wide = format_aggregate_status(batch("가" * 8), extra_head=_MODEL_IDS[3], cap=76)
     assert cell_len(wide) <= 76, cell_len(wide)
     assert "1 queued" not in wide, wide
