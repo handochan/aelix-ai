@@ -39,6 +39,7 @@ import webbrowser
 from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
 from aelix_ai.providers._error_hints import describe_provider_error
+from aelix_ai.utils.terminal_text import safe_error_for_terminal, safe_for_terminal
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -225,7 +226,12 @@ async def _run_login_provider(
         # describe_provider_error (issue #99): an extension's authenticate
         # handler typically calls its own endpoint, so it hits the same
         # intercepting proxy as the built-in flows and deserves the same remedy.
-        commit(Text(f"✖ {name} login failed: {describe_provider_error(exc)}", style="bold red"))
+        #
+        # And the same bound (issue #186), for a sharper reason than the built-in
+        # flows have: this text comes from THIRD-PARTY extension code, so the
+        # server that shaped it was chosen by neither aelix nor the user.
+        message = safe_error_for_terminal(describe_provider_error(exc))
+        commit(Text(f"✖ {name} login failed: {message}", style="bold red"))
         return
 
     if credential is None:
@@ -299,10 +305,19 @@ async def _run_oauth(
 
     try:
         await auth_storage.login(provider_id, callbacks)
-    except RuntimeError as exc:
-        # AuthStorage.login raises RuntimeError("Unknown OAuth provider: ...").
-        commit(Text(f"✖ {exc}", style="bold red"))
-        return
+    # 🔴 There used to be an `except RuntimeError` arm here, added for the one
+    # message `AuthStorage.login` raises itself ("Unknown OAuth provider: ..."),
+    # printing `str(exc)` bare. It shadowed this one for EVERY built-in provider:
+    # all eleven raise sites in the Copilot device flow raise `RuntimeError`, as
+    # do the Codex and Anthropic OAuth flows, so no OAuth failure ever reached
+    # `describe_provider_error` — and the arm that catches a TLS wall (#99) was
+    # reachable only for transport exceptions.
+    #
+    # It is gone rather than narrowed: a class-based special case that hides a
+    # whole provider is not worth the twenty characters of prefix it saved, and
+    # `describe_provider_error` is additive — "Unknown OAuth provider: x" still
+    # reads back verbatim, now with the `OAuth login failed:` label the reporter's
+    # paste conspicuously lacked, which is how we pinned their output to this line.
     except Exception as exc:  # noqa: BLE001 — any login failure must degrade
         # describe_provider_error, not str(exc) (issue #99): the device flow
         # reaches github.com but the Copilot policy POST reaches the API host,
@@ -310,7 +325,16 @@ async def _run_oauth(
         # shows up, and where the reporter read it as an auth problem. Bare
         # OpenSSL jargon here names no remedy. Safe drop-in: a non-TLS failure
         # keeps its own message.
-        commit(Text(f"✖ OAuth login failed: {describe_provider_error(exc)}", style="bold red"))
+        #
+        # `safe_for_terminal` on top of it, because `describe_provider_error` does
+        # NOT sanitise — measured: given a 54,906-character body it returns the
+        # same 54,906 characters, and with a cause chain it returns MORE. It is a
+        # TLS-hint appender, so the bound has to be applied here. `keep_newline`
+        # and a line bound rather than a flatten: the #99 remedy this same call
+        # renders is deliberately five lines with an indented `export
+        # SSL_CERT_FILE=...`, and one-row treatment deletes the remedy outright.
+        message = safe_error_for_terminal(describe_provider_error(exc))
+        commit(Text(f"✖ OAuth login failed: {message}", style="bold red"))
         return
 
     commit(Text(f"signed in to {provider_name}", style="green"))
@@ -343,11 +367,28 @@ def _build_oauth_callbacks(
     from rich.text import Text
 
     async def on_auth(info: OAuthAuthInfo) -> None:
-        url = getattr(info, "url", "") or ""
+        # BOTH fields are server-supplied — for Copilot they are the device
+        # flow's ``verification_uri`` and ``user_code``, straight off the JSON
+        # ``github.com`` (or a user-typed GHE host) returned. So this Panel is an
+        # untrusted-text render site on the SUCCESS path: no error is needed to
+        # reach it, and it fires on every single login. Issue #186 does not
+        # mention it; measured, ``\x1b[2J``, an ST-terminated OSC and
+        # ``\x1b[?1049h`` all survive rich's five-code strip and reach the
+        # emulator from here.
+        #
+        # One line each and a short bound: a verification URL and a user code are
+        # both single short tokens, so anything longer or multi-line is already
+        # not the thing this Panel exists to show.
+        # Two values, deliberately. ``url`` is neutered but NOT truncated —
+        # that is what the browser gets, and handing it a clipped URL would
+        # trade a rendering problem for a broken login. ``shown`` is the bounded
+        # one, and only it reaches the Panel.
+        url = safe_for_terminal(getattr(info, "url", "") or "")
+        shown = safe_for_terminal(url, max_chars=300)
         instructions = getattr(info, "instructions", None)
-        body_lines = [f"Open this URL to authorize:\n{url}"]
+        body_lines = [f"Open this URL to authorize:\n{shown}"]
         if instructions:
-            body_lines.append(str(instructions))
+            body_lines.append(safe_for_terminal(str(instructions), max_chars=300))
         commit(
             Panel(
                 Text("\n\n".join(body_lines)),
