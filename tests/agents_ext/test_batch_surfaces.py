@@ -327,7 +327,7 @@ def test_a_hostile_model_cannot_break_a_panel_row() -> None:
 
 def test_the_throttle_drops_mid_stream_frames_but_never_a_state_change() -> None:
     """H10: the kernel appends an ``asyncio.Task`` per ``on_partial`` into a list
-    it never prunes (``loop.py:591``, ``:624``) and ``loop.py`` may not be
+    it never prunes (``loop.py:598``, ``:631``) and ``loop.py`` may not be
     edited, so dropping frames here is the only legal mitigation. What may never
     be dropped is the frame that carries a state change — the last thing the
     user sees must not be stale."""

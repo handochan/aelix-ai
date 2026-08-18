@@ -14,7 +14,7 @@ THE SAME SHAPE ELSEWHERE. ``version`` was the one the docstring defended, but it
 is not the only unbounded author-controlled string in the projection:
 
 * the extension NAME of a manifest-less pack is ``getattr(factory,
-  "__qualname__", …)`` (``loader.py:1862-1865``), and ``__qualname__`` is a
+  "__qualname__", …)`` (``loader.py:1868-1871``), and ``__qualname__`` is a
   plain writable attribute, not an identifier;
 * a registered TOOL name is whatever the author passed to ``register_tool``.
 
