@@ -478,7 +478,7 @@ useful direction. The four fan-out labels are 32/32/31/32 cells, not "32 cells
 each". The 12-cell numbers reserve holds `starting`, the separator and the ellipsis
 — **nothing** of the next term, where the docstring claimed a start of one. The
 batch model on the rows is worth 31 cells, not 28. The merged statusline row is 129
-cells, not 132, and the same file already said 129 eleven lines away. The
+cells, not 132, and the same file already said 129 fifty-eight lines away. The
 `test_context.py` fixture publishes an extension status, so its "106 cells" is the
 row without one. And the flood comment claimed `_flatten` hands back all 200 000
 codepoints under a raised slack; it hands back 8 192, because `_MAX_INPUT_CHARS`
@@ -491,6 +491,55 @@ numbers rather than recovering waste. Per-member cost is the price of four
 distinguishable labels. That is still the right trade for a panel whose purpose is
 to say which member is doing what — but it is a trade, and claiming a free win hid
 a real cost from whoever reads this next.
+
+## Round seven: the round-six fix named the model nowhere
+
+`bd86a7b` went to an adversarial review before it went to `main`, and two lenses
+independently found the same thing: between roughly 40 and 70 columns the panel
+named the model **nowhere**. The header dropped it (`room < _MODEL_MIN_CELLS`) and
+the rows, which the docstring called "the honest fallback", printed four characters.
+Measured across the review's sweep: 4 266 configurations where `bd86a7b` shows no
+model prefix of 8 cells or more anywhere in the panel while `2ba3261` did, and none
+the other way; in 85% of the drop cases the widest prefix any row showed was **≤4
+cells**.
+
+**The fallback never existed.** The label column has already taken the rows' width,
+so the header's remaining room beats a row's at every width from 54 up, and below 52
+a row has TWO cells. What the row was actually spending those cells on:
+
+```
+width 50   rows carry it   running · g…            rows drop it   running · r…
+width 62   rows carry it   running · github-co…    rows drop it   running · read_file…
+```
+
+`read_file` is the answer to "what is this member doing" — the question the panel was
+added to answer, and the owner's third ask. Four characters of a provider name is not
+an answer to anything. So one batch model is now the header's to state or nobody's,
+and the rows spend the cells on the tool. This also deletes the `shown_in_header`
+seam and with it a claim that "asking it twice is cheaper than a scan", which the
+review timed at **3.0-5.2× more expensive**.
+
+**Two gates asserted things that were false.** `test_the_model_is_shown_by_somebody_at_every_id_length`
+pinned "somebody names it" using the default width 78 — the one width where it holds,
+while production passes `tui.width.terminal_columns`. And the ordering assertion
+`header.index(shown) < header.index("1 done")` passes on a header that names no model
+at all, because `str.index("")` is 0. A third, `_named_model`, searched the whole row
+including the job LABEL — so a batch whose task says "migrate the
+github-copilot/gpt-5.6-codex path" reported a model the row had correctly suppressed.
+
+**And the central rule had one gate.** Reverting `_model_term` to "show the whole term
+or nothing" — the rule this ADR says it replaced — left all 70 unit tests green; only
+the pyte-glass test went red. The truncating branch is the fix, and nothing pinned it.
+
+**The boundary sentence was wrong twice.** "Survives to 495 members" was replaced with
+"first cut at 484", and both are samples of a scatter: the spine is the head joined to
+the five counts, the counts are decimal, so their width depends on how the members
+SPLIT across classes and not on how many there are. Measured, some splits of 170 are
+already over the cap and some splits of 600 still fit. The clean statement is at the
+other end — a 16-cell profile name is over at five members — and that is what the
+docstring says now. Also corrected: the `_MODEL_MIN_CELLS` docstring illustrated its
+12-cell floor with `github-copil…`, which is 13 cells and therefore a string the
+constant can never produce.
 
 ## Rejected alternatives
 
@@ -528,11 +577,28 @@ artifact belongs in the scratchpad; the file was removed from the branch's histo
 * **`PANEL_ROW_MAX_CHARS` is a fixed 78**, so the batch panel stays a 78-cell ribbon on a
   200-column screen. The same is true of the aggregate, deliberately, because that one
   shares a row.
+* **Below ~70 columns the panel does not name the batch model at all**, so two batches
+  on different models paint a byte-identical panel there. MEASURED: an
+  `anthropic/claude-opus-4-5` batch and an `anthropic/claude-haiku-4-5` batch are
+  identical at 40 and 60 columns and differ from 78 up. This is the round-seven trade
+  taken deliberately — the alternative measured out as four characters of a provider
+  name on every row, bought with the tool name — but it is a real loss and not a
+  neutral one, and it is the residual most likely to be worth revisiting.
+* **A 28-cell provider-scoped id is never shown in full, at any terminal width.** The
+  panel is a 78-cell ribbon by design, so with three count classes the header's room
+  is 27 cells and `github-copilot/gpt-5.6-codex` loses its last one:
+  `github-copilot/gpt-5.6-cod…` at 78, 120 and 200 alike. One cell, and no width fixes
+  it — only a narrower head or a wider ribbon would.
+* **The production floor is 12 cells and the tests' "does this identify the model"
+  floor is 8.** Both are defensible on their own axis — 12 is what a header term needs
+  to be worth a term, 8 is what a prefix needs to be attributable to an id rather than
+  to prose — but a reader will notice two numbers for one question, and nothing forces
+  them to move together.
 * **Per-member cost is gone from the panel rows**, and the aggregate cost is dropped
   whenever the model term takes its place. Both are consequences of the label column,
   measured and accepted rather than fixed: the alternatives are a cap that makes a
   fan-out's rows identical, or a model repeated at 31 cells down the whole column. A row
-  whose numbers half is ~17 cells reads `running · read · 1…`; the aggregate carries the
+  whose numbers half is 19 cells reads `running · read · 1…`; the aggregate carries the
   batch's cost whenever its own budget reaches it.
 * **The row's numbers half cuts mid-token**, where `format_aggregate_status` drops whole
   trailing terms. `12s` becomes `1…`. The ellipsis marks it, so it is terse rather than

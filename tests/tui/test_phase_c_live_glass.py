@@ -90,8 +90,10 @@ async def test_the_panel_rows_stay_distinct_on_the_glass() -> None:
     said it was ("the row was 47 cells on an 80-column terminal, so the elision
     bought nothing"). MEASURED on this fixture at 80 columns, the capped build's
     rows were 78/78/78/40 cells — full width. What the elision bought was the
-    numbers: those rows carried ``running · read_file · 33s · 12.3k tok ·
-    $0.0372`` where these carry ``running · read_file · 33s · 12.3k t…``. Four
+    numbers: those rows carried the COST — ``done · read_file · 33s · 12.3k tok ·
+    $0.0372`` whole, and ``running · read_file · 33s · 12.3k tok · $0.…`` on the
+    two rows whose state word is three cells longer — where these carry
+    ``running · read_file · 33s · 12.3k t…`` and no cost at all. Four
     distinct labels are worth the tail of the numbers; a row that cannot be told
     from the row above it is not.
     """
