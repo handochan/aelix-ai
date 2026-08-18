@@ -950,7 +950,7 @@
    "# IDENTITY-SCOPED (finding B7). ``bind_subagents(None)`` would",
    "# null the slot for whatever runtime happens to hold it, which"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/panel.py:776-790": [
+  "packages/aelix-coding-agent/src/aelix_agents/panel.py:780-794": [
    "parts: list[str] = []",
    "if state_first:",
    "parts.append(snapshot.state)",

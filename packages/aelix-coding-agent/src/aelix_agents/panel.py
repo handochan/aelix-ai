@@ -415,14 +415,17 @@ MEASURED, ``_flatten`` at limit 12 gives ``github-copi…`` and ``anthropic/c…
 an earlier draft of this line offered ``github-copil…``, which is 13 cells and is
 therefore a string this constant can never produce.
 
-THERE IS NO FALLBACK BELOW IT, and the draft that said there was made this
-constant look cheaper than it is. "The rows carry the model when the head does
-not" is false wherever it matters: the label column has already taken the rows'
-width, so MEASURED against a 28-cell provider-scoped id the header's remaining
-room beats a row's at every width from 54 up, and below 52 a row has two cells.
-Dropping the term here means the panel does not name the model, and
-:func:`format_panel` spends the rows' cells on the tool name instead — which is
-the better answer at a narrow terminal, but it is a CHOICE and not a fallback."""
+THE FALLBACK BELOW IT IS THE ROWS, AND HOW GOOD IT IS DEPENDS ON THE LABELS.
+A draft of this line called it a "real fallback" without qualification and a later
+one denied it existed; both were reading one band as the whole picture. MEASURED
+against a 28-cell provider-scoped id: at five count classes on an 80-column screen
+the rows carry it nearly whole (``running · github-copilot/gpt-5.…``), while at
+three classes on a 50-column one with 32-cell labels they manage ``running · g…``
+and the tool name is what paid for it. The header's remaining room beats a row's
+from 54 columns up, and below 52 a row has two cells.
+
+Dropping the term here therefore hands the question to :func:`format_panel`, not
+to nobody — see the comment there for why the rows take it."""
 
 
 def _model_term(
@@ -518,10 +521,11 @@ def format_aggregate_status(
     :data:`_MODEL_MIN_CELLS`. The term it is shown as is then a truncation the
     reader can SEE rather than a silent one.
 
-    WHEN IT IS OMITTED, NOTHING ELSE NAMES IT, and the first draft of this
-    paragraph claimed the panel's rows did. They cannot: the label column has
-    already taken their width. See :func:`format_panel`, which measures both sides
-    and spends the rows on the tool name instead.
+    WHEN IT IS OMITTED THE PANEL'S ROWS TAKE IT BACK, at whatever width the label
+    column leaves them — see :func:`format_panel`. Two drafts of this paragraph
+    described that as free and then as impossible; it is neither, and the numbers
+    are next to the decision rather than here, because this function is also the
+    statusline and the statusline has no rows.
 
     THE COUNTS ARE STILL NOT UNCONDITIONAL, and saying they were is the mistake
     this paragraph replaced. What changed is that the MODEL can no longer displace
@@ -930,31 +934,44 @@ def format_panel(
     # instead of a cut landing mid-``$0.00…``.
     header_cap = min(budget, AGGREGATE_MAX_CHARS) - (cell_len(_GUTTER) if tasks else 0)
     header = format_aggregate_status(snapshots, extra_head=model, cap=header_cap)
-    # ONE BATCH MODEL IS THE HEADER'S TO STATE, OR NOBODY'S — and that is the
-    # THIRD spelling of this line, chosen by measurement rather than by reasoning
-    # about which surface "should" own it.
+    # THE ROWS HIDE THE MODEL ONLY IF THE HEADER COULD AFFORD IT, decided by the
+    # SAME call the header made rather than by searching the finished string for
+    # the model — a model shown truncated is present under one spelling and absent
+    # under another, and a substring test reads that as "the header did not show
+    # it" and lets both surfaces spend the width.
     #
-    # Reading the answer back out of the rendered header looked careful and was
-    # measurably wrong. When the header cannot afford the model the rows cannot
-    # either, because the label column has already taken theirs: MEASURED on the
-    # four ``port the retry backoff to …`` labels with a 28-cell provider-scoped
-    # id, the header's remaining room beats a row's at every width from 54 up, and
-    # below 52 a row has TWO cells. So the "fallback" that justified letting the
-    # rows carry it prints ``g…`` — and pays for it with the tool name:
+    # SO WHEN THE HEADER DROPS IT, EVERY ROW CARRIES IT. That costs the tail of
+    # the numbers, and how much it costs depends on the LABEL column rather than
+    # on the terminal, which is why it is worth writing down:
     #
-    #     width 50, rows carry it   ``running · g…``
-    #     width 50, rows drop it    ``running · r…``   (``read_file``, truncated)
-    #     width 62, rows carry it   ``running · github-co…``
-    #     width 62, rows drop it    ``running · read_file…``
+    #     80 cols, 5 count classes, 37-cell labels
+    #         rows carry it   ``running · github-copilot/gpt-5.…``
+    #         rows drop it    ``running · read_file · 33s · 12.…``
+    #     62 cols, 3 count classes, 32-cell labels
+    #         rows carry it   ``running · github-co…``
+    #         rows drop it    ``running · read_file…``
+    #     50 cols, same
+    #         rows carry it   ``running · g…``
+    #         rows drop it    ``running · r…``
     #
-    # ``read_file`` is the answer to "what is this member doing", which is the
-    # question this panel was added to answer; four characters of a provider name
-    # is not an answer to anything. So the model goes in the header when it fits
-    # there and NOWHERE when it does not, and the rows spend the cells on the
-    # tool. The rows still carry a model when the members DISAGREE — then it is
-    # the only thing telling two rows apart, and ``_batch_model`` returns ``""``,
-    # so ``model`` is falsy and this is False.
-    hide_model = bool(model)
+    # The header drops the model whenever the state counts leave it under
+    # :data:`_MODEL_MIN_CELLS`, which happens at FIVE count classes on a 200-column
+    # screen just as it does at three on a 50-column one — so this is not only a
+    # narrow-terminal path. What the rows can then do with it is decided by the
+    # LABEL COLUMN and not by the terminal: with 37-cell labels the model comes
+    # back nearly whole at 80 columns, and with this file's 49-cell ones no width
+    # below 76 lets a row show even eight cells of it. So "the rows carry it" is a
+    # fallback that sometimes reads well and sometimes delivers nothing — never
+    # WORSE than dropping it, which is the whole case for taking it.
+    #
+    # Both arms were rendered for the owner, who chose the model: it is a fact a
+    # reader cannot get anywhere else on this surface, while the tool name churns
+    # every few seconds and returns.
+    #
+    # The rows also carry a model when the members DISAGREE — then it is the only
+    # thing telling two rows apart, and ``_batch_model`` returns ``""``, so
+    # ``model`` is falsy, ``_model_term`` returns ``""`` and this is False.
+    hide_model = bool(_model_term(*_head_and_counts(snapshots), model, header_cap))
     lines: list[str] = []
     if header:
         lines.append(f"{_PANEL_DIM}{_GUTTER}{_PANEL_RST}{header}" if tasks else header)

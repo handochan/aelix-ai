@@ -492,7 +492,7 @@ distinguishable labels. That is still the right trade for a panel whose purpose 
 to say which member is doing what — but it is a trade, and claiming a free win hid
 a real cost from whoever reads this next.
 
-## Round seven: the round-six fix named the model nowhere
+## Round seven: who names the batch model when the header cannot
 
 `bd86a7b` went to an adversarial review before it went to `main`, and two lenses
 independently found the same thing: between roughly 40 and 70 columns the panel
@@ -503,21 +503,48 @@ model prefix of 8 cells or more anywhere in the panel while `2ba3261` did, and n
 the other way; in 85% of the drop cases the widest prefix any row showed was **≤4
 cells**.
 
-**The fallback never existed.** The label column has already taken the rows' width,
-so the header's remaining room beats a row's at every width from 54 up, and below 52
-a row has TWO cells. What the row was actually spending those cells on:
+**I first read that as "the fallback does not exist" and rewrote the rule to make
+the rows spend those cells on the tool name instead.** That was wrong on its
+premise. The row fallback's strength is decided by the LABEL COLUMN, not by the
+terminal, and the 85% figure came from one band of one fixture:
 
 ```
-width 50   rows carry it   running · g…            rows drop it   running · r…
-width 62   rows carry it   running · github-co…    rows drop it   running · read_file…
+80 cols, 5 count classes, 37-cell labels
+    rows carry it   running · github-copilot/gpt-5.…
+    rows drop it    running · read_file · 33s · 12.…
+62 cols, 3 count classes, 32-cell labels
+    rows carry it   running · github-co…
+    rows drop it    running · read_file…
+50 cols, same
+    rows carry it   running · g…
+    rows drop it    running · r…
 ```
 
-`read_file` is the answer to "what is this member doing" — the question the panel was
-added to answer, and the owner's third ask. Four characters of a provider name is not
-an answer to anything. So one batch model is now the header's to state or nobody's,
-and the rows spend the cells on the tool. This also deletes the `shown_in_header`
-seam and with it a claim that "asking it twice is cheaper than a scan", which the
-review timed at **3.0-5.2× more expensive**.
+The header drops the model at FIVE count classes on a 200-column screen exactly as
+it does at three on a 50-column one, so this was never only a narrow-terminal path —
+and where the rows are wide the model comes back nearly whole. Measured the other
+way too: with this repo's own 49-cell test labels, no width below 76 lets a row show
+even eight cells of it. **"The rows carry it" sometimes reads well and sometimes
+delivers nothing — but it is never WORSE than dropping it**, which is the whole case
+for taking it.
+
+**Both arms were rendered through the real chrome for the owner, who chose the
+model.** The model is a fact a reader cannot get anywhere else on this surface; the
+tool name churns every few seconds and comes back. So the rows take the model when
+the header cannot afford the term — the `shown_in_header` rule, kept — and what
+changed in this round is everything around it that was asserted without being
+measured.
+
+**"Never nobody" is not an invariant, and asserting it was the third wrong rule at
+this seam.** Keying the rows off "a batch model exists" left a hole where neither
+surface named it. Reading the answer back OUT of the rendered header closed that and
+opened a narrower one: a model shown TRUNCATED is absent to a substring test, so both
+surfaces spend the width. Deciding it from `_model_term` — the same call the header
+made — is the rule. What cannot be asserted on top of it is that somebody always
+names the model: with 49-cell labels nobody does below 76 columns, because by the
+time the header cannot afford the term the rows have already spent their width on
+the label. The gate pins **never both**, and the label-dependence gets a test of its
+own holding both ends.
 
 **Two gates asserted things that were false.** `test_the_model_is_shown_by_somebody_at_every_id_length`
 pinned "somebody names it" using the default width 78 — the one width where it holds,
@@ -599,13 +626,17 @@ artifact belongs in the scratchpad; the file was removed from the branch's histo
 * **`PANEL_ROW_MAX_CHARS` is a fixed 78**, so the batch panel stays a 78-cell ribbon on a
   200-column screen. The same is true of the aggregate, deliberately, because that one
   shares a row.
-* **Below ~70 columns the panel does not name the batch model at all**, so two batches
-  on different models paint a byte-identical panel there. MEASURED: an
-  `anthropic/claude-opus-4-5` batch and an `anthropic/claude-haiku-4-5` batch are
-  identical at 40 and 60 columns and differ from 78 up. This is the round-seven trade
-  taken deliberately — the alternative measured out as four characters of a provider
-  name on every row, bought with the tool name — but it is a real loss and not a
-  neutral one, and it is the residual most likely to be worth revisiting.
+* **When the header drops the model, what the rows can say about it is decided by the
+  LABEL COLUMN and not by the terminal.** With 37-cell labels the row carries it nearly
+  whole at 80 columns; with this repo's 49-cell test labels no width below 76 lets a row
+  show even eight cells of it, and at 50 columns it arrives as `g…` with `read_file`
+  gone. Never worse than dropping it, which is why the rows take it — but "the rows
+  carry it" is a sentence that hides a wide range, and the range is the residual.
+* **The tool name is the price at a narrow terminal.** Below roughly 62 columns a member
+  row spends its whole numbers half on a model prefix too short to identify anything,
+  and `current_tool` — the answer to the ask that created the job column — is what it
+  displaces. The owner chose this with both arms rendered; it is recorded because a
+  choice made once should not have to be re-derived from the code.
 * **How much of a 28-cell id the header shows is decided by the COUNT CLASSES, not by
   the terminal.** The panel is a 78-cell ribbon by design, so widening the terminal
   changes nothing: `github-copilot/gpt-5.6-codex` renders whole at two classes, loses

@@ -1076,7 +1076,7 @@ def test_a_model_that_does_not_fit_whole_is_TRUNCATED_not_dropped() -> None:
     assert "gpt-5" in short and "gpt-5…" not in short, short
 
 
-def test_when_the_counts_leave_no_room_the_model_is_dropped_not_stubbed() -> None:
+def test_when_the_counts_leave_no_room_the_rows_take_the_model_back() -> None:
     """The drop branch, which is the one arm nothing else in this file reaches.
 
     At five non-zero count classes the head and the counts are 69 of the panel's
@@ -1108,12 +1108,12 @@ def test_when_the_counts_leave_no_room_the_model_is_dropped_not_stubbed() -> Non
 
     assert "1 queued" in header, header
     assert not _named_model(header, model), header
-    # Positive control: the rows really are the task path, so "no row names it" is
-    # a suppression and not a row that never had a model to suppress.
+    # Positive control: the rows really are the task path.
     assert "job number 0" in rows[0], rows[0]
-    assert not _named_model(_numbers_half(rows[0]), model), rows[0]
-    # And what the cells went to instead.
-    assert "read_file" in rows[0], rows[0]
+    # AND THE ROWS TAKE IT BACK. These labels are 13 cells, so the numbers half is
+    # wide enough to say it properly — which is the half of this behaviour that
+    # reads well, and the reason the header's drop is not the end of the question.
+    assert _named_model(_numbers_half(rows[0]), model), rows[0]
 
 
 def test_a_disagreeing_batch_still_states_every_member_s_state() -> None:
@@ -1222,48 +1222,43 @@ def _agreeing(model: str) -> list[SubagentProgress | None]:
     ]
 
 
-def test_one_batch_model_is_the_headers_to_state_or_nobodys() -> None:
+def test_exactly_one_surface_names_the_model_at_every_width() -> None:
     """AT EVERY WIDTH, not only at the 78 the default hands out.
 
-    Three rules have stood here and the first two were holes. Keying "the rows may
-    drop it" on "a batch model exists" let the header drop the model while the
-    rows suppressed it, so nothing named it. Reading the answer back out of the
-    rendered header fixed that at 78 and asserted a property that is FALSE from
-    roughly 40 to 70 columns — which is what production passes, since
-    ``progress.py`` hands ``tui.width.terminal_columns`` to ``format_panel``. The
-    gate could not see it because its fixture never varied ``width``.
+    Three rules have stood here. Keying "the rows may drop it" on "a batch model
+    exists" let the header drop the model while the rows suppressed it, so nothing
+    named it. Reading the answer back OUT of the rendered header fixed that at 78
+    and opened a narrower hole: a model shown TRUNCATED is absent to a substring
+    test, so both surfaces spend the width. Deciding it from ``_model_term`` — the
+    same call the header made — is the rule, and it is asserted across seven
+    widths because production passes ``tui.width.terminal_columns`` and the gate
+    that missed all of this never varied ``width``.
 
-    What is true, and what this pins: the rows never carry a model the batch
-    AGREES on, at any width. Below the header's floor the panel does not name the
-    model at all, and the row spends those cells on the tool name — which is the
-    question the panel exists to answer. See :func:`format_panel` for the
-    measurement that chose it.
+    NEVER BOTH is the invariant. "Never nobody" is NOT, and asserting it was the
+    third wrong rule at this seam: MEASURED with this file's 49-cell labels, no
+    surface names the model at any width below 76, because once the header cannot
+    afford the term the rows have already spent their width on the label column.
+    How good the row fallback is depends on the LABELS, not on the terminal —
+    :func:`test_the_rows_take_the_model_back_when_the_header_cannot_afford_it`
+    holds both ends of that.
     """
 
     for model in _MODEL_IDS:
         for width in (30, 40, 50, 60, 70, 78, 120):
             lines = _panel(_agreeing(model), tasks=_JOBS, width=width)
-            named_by_a_row = [
-                row for row in lines[1:] if _named_model(_numbers_half(row), model)
-            ]
-            assert not named_by_a_row, (model, width, lines)
+            in_header = _named_model(lines[0], model)
+            in_rows = [r for r in lines[1:] if _named_model(_numbers_half(r), model)]
+            assert not (in_header and in_rows), (model, width, lines)
 
-    # Positive control on that loop: the members must really be carrying a model,
-    # or "no row names it" is satisfied by there being nothing to name. When they
-    # DISAGREE the rows are the only surface that can tell two apart, and do.
-    mixed = _agreeing("github-copilot/gpt-5.6-codex")
-    mixed[1] = _member(1, model="anthropic/claude-opus-4-8", state="stopped")
-    rows = _panel(mixed, tasks=_JOBS, width=120)[1:]
-    assert any(_named_model(_numbers_half(r), "github-copilot/gpt-5.6-codex") for r in rows), rows
-
-    # And the header does name it where it fits, worth reading rather than as a
-    # stub. ``_MODEL_MIN_CELLS`` counts the ELLIPSIS, so a term at the floor shows
-    # one cell less than the floor — asserting the floor itself failed on
-    # legitimate output (``github-copi…`` is 12 cells, ``github-copi`` is 11).
+    # Positive control on that loop: at the widest width the header is what names
+    # it, so the loop is not being satisfied by the rows every time.
     for model in _MODEL_IDS:
         header = _panel(_agreeing(model), tasks=_JOBS, width=120)[0]
         shown = _named_model(header, model)
         assert shown, (model, header)
+        # WORTH READING. ``_MODEL_MIN_CELLS`` counts the ELLIPSIS, so a term at the
+        # floor shows one cell less than the floor — asserting the floor itself
+        # failed on ``github-copi…``, which is legitimate output.
         assert cell_len(shown) >= min(cell_len(model), 12 - cell_len(_ELLIPSIS)), (
             model,
             shown,
@@ -1271,30 +1266,52 @@ def test_one_batch_model_is_the_headers_to_state_or_nobodys() -> None:
         )
 
 
-def test_a_narrow_panel_spends_the_row_on_the_tool_not_on_four_characters() -> None:
-    """The measurement that chose the rule above, pinned.
+def test_the_rows_take_the_model_back_when_the_header_cannot_afford_it() -> None:
+    """The owner's decision, pinned — and what it costs, in the same test.
 
-    Letting the rows carry a model the header could not afford printed ``g…`` and
-    paid the tool name for it. MEASURED at width 50 with a 28-cell provider-scoped
-    id, the row read ``running · g…`` where it now reads ``running · r…``; at 62,
-    ``running · github-co…`` against ``running · read_file…``.
+    When the state counts leave the header under :data:`_MODEL_MIN_CELLS` the rows
+    carry the model again. How much of it arrives depends on the LABEL column, not
+    on the terminal, so both ends are asserted: at five count classes on an
+    80-column screen the row shows the model nearly whole, and at three classes on
+    a 50-column one it shows a handful of characters and the tool name is gone.
+
+    The narrow end is the cost. It is here rather than in a docstring because a
+    cost nothing exercises is a cost nobody re-measures.
     """
 
     model = "github-copilot/gpt-5.6-codex"
-    snapshots: list[SubagentProgress | None] = [
+
+    # WIDE ROWS: five count classes drop the model from the header even at 80
+    # columns, and the rows have room to say it properly.
+    wide: list[SubagentProgress | None] = [
+        _member(i, model=model, state="running", current_tool="read_file")
+        for i in range(5)
+    ]
+    wide += [
+        _member(5, model=model, state="done", current_tool="read_file"),
+        _member(6, model=model, state="error", current_tool="read_file"),
+        _member(7, model=model, state="stopped", current_tool="read_file"),
+        None,
+    ]
+    jobs = tuple(f"port the retry backoff to provider {i}" for i in range(9))
+    lines = _panel(wide, tasks=jobs, width=80)
+    assert not _named_model(lines[0], model), lines[0]
+    shown = _named_model(_numbers_half(lines[1]), model)
+    assert cell_len(shown) >= 20, (shown, lines[1])
+
+    # NARROW ROWS: the same drop, but the label column has taken the width. The
+    # model arrives as a few characters and ``read_file`` is what it displaced.
+    narrow_snaps: list[SubagentProgress | None] = [
         _member(0, model=model, state="running", current_tool="read_file"),
         _member(1, model=model, state="running", current_tool="read_file"),
         _member(2, model=model, state="done", current_tool="read_file"),
         None,
     ]
-    for width in (50, 62):
-        lines = _panel(snapshots, tasks=_JOBS, width=width)
-        # The header really did drop it — otherwise the rows would be hiding it
-        # for the ordinary reason and this test would prove nothing.
-        assert not _named_model(lines[0], model), (width, lines[0])
-        numbers = _numbers_half(lines[1])
-        assert numbers.startswith("running · r"), (width, numbers)
-        assert not _named_model(numbers, model), (width, numbers)
+    row = _panel(narrow_snaps, tasks=_JOBS, width=50)[1]
+    numbers = _numbers_half(row)
+    assert _named_model(numbers, model) == "", numbers  # too short even to identify
+    assert numbers.startswith("running · g"), numbers
+    assert "read_file" not in row, row
 
 
 def test_leading_whitespace_cannot_delete_a_field() -> None:
@@ -1829,7 +1846,7 @@ def test_the_row_builder_is_safe_on_its_own_not_only_via_format_panel() -> None:
     ``_panel_row`` changes nothing that :func:`format_panel` can observe: the
     mutation survives every test above. It is still worth having and still worth
     pinning. ``_panel_row`` is the function that touches the child's bytes
-    (``panel.py:776-790``, the site the finding names), and the next consumer of a
+    (``panel.py:780-794``, the site the finding names), and the next consumer of a
     per-child row — a card variant, a future surface — will call it rather than
     re-deriving it, and must inherit the bound rather than have to remember it.
 
