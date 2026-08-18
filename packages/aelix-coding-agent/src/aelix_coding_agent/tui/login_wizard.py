@@ -39,6 +39,7 @@ import webbrowser
 from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
 from aelix_ai.providers._error_hints import describe_provider_error
+from aelix_ai.providers._tls_strict import maybe_relax_strict_for_session
 from aelix_ai.utils.terminal_text import safe_error_for_terminal, safe_for_terminal
 
 if TYPE_CHECKING:
@@ -333,6 +334,14 @@ async def _run_oauth(
         # and a line bound rather than a flatten: the #99 remedy this same call
         # renders is deliberately five lines with an indented `export
         # SSL_CERT_FILE=...`, and one-row treatment deletes the remedy outright.
+        # A TLS wall is the ONE login failure aelix can act on rather than only
+        # report: an intercepting proxy's certificate can fail Python 3.13's
+        # strict RFC-5280 checks while the machine trusts its root perfectly
+        # well. This measures that (re-verifying the same host with strict
+        # cleared) before changing anything, so a chain this machine does not
+        # trust is still refused — and `describe_provider_error` below then says
+        # what was done instead of recommending a CA the user already installed.
+        maybe_relax_strict_for_session(exc)
         message = safe_error_for_terminal(describe_provider_error(exc))
         commit(Text(f"✖ OAuth login failed: {message}", style="bold red"))
         return

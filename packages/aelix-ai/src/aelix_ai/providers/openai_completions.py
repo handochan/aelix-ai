@@ -57,6 +57,7 @@ from aelix_ai.providers._stream_close import (
     close_provider_stream,
 )
 from aelix_ai.providers._streaming_json import parse_streaming_json
+from aelix_ai.providers._tls_strict import maybe_relax_strict_for_session
 from aelix_ai.providers._token_estimate import (
     OUTPUT_CAP_MARGIN_TOKENS,
     estimate_payload_tokens,
@@ -1407,6 +1408,13 @@ async def stream_openai_completions(
         reason: Literal["aborted", "error"] = "aborted" if aborted else "error"
         # Append an actionable hint when the opaque "Connection error." is really
         # a corporate-proxy TLS trust failure (buried in the __cause__ chain).
+        # Issue #184 follow-up: a corporate proxy mints certificates on the fly
+        # that can fail Python 3.13's strict RFC-5280 checks even when the OS
+        # trusts its root perfectly well. This MEASURES that before relaxing
+        # anything — a chain this machine does not trust is still refused — and
+        # the harness already retries "Connection error." on its own, so the next
+        # attempt is the one that succeeds.
+        maybe_relax_strict_for_session(exc)
         err_msg = describe_provider_error(exc)
 
         # Pi parity (M-4): scratch state lives off-block in the

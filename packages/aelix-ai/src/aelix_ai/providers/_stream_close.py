@@ -56,7 +56,7 @@ READ from their source, not measured here.
 sentence is about stream lifetime and it stays true. It is NOT a statement about
 the CLIENT the stream was opened on, and reading it as one is the mistake #174
 was filed against: ``anthropic-messages`` releases its stream through the
-``async with`` at ``anthropic.py:594`` and still returns the connection to a
+``async with`` at ``anthropic.py:595`` and still returns the connection to a
 pool nobody ever closes. MEASURED on the unfixed build, 15 turns that COMPLETE
 NORMALLY with no abort anywhere: anthropic ends with 15 live clients and 15
 still-established server connections. The client-lifetime half is what

@@ -357,6 +357,13 @@ async def _poll_for_github_access_token(
                         )
                         last_transient.__cause__ = exc
         except _TRANSIENT_EXCEPTIONS as exc:
+            # An `httpx.ConnectError` here may be a TLS wall rather than a blip.
+            # If it is a strict-only rejection this machine already trusts, this
+            # relaxes it and the loop's own next poll — which is about to happen
+            # anyway — is the retry. Measured before acting; a no-op otherwise.
+            from aelix_ai.providers._tls_strict import maybe_relax_strict_for_session
+
+            maybe_relax_strict_for_session(exc)
             transient = f"{type(exc).__name__}"
             last_transient = RuntimeError(
                 f"Could not reach {urls['access_token_url']} — "

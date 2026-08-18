@@ -135,6 +135,67 @@ def _untrusted_issuer_hint() -> str:
     )
 
 
+#: OpenSSL verify codes that genuinely mean "I could not build a chain to a root
+#: I trust" — the ones ``_untrusted_issuer_hint`` is written for. Everything else,
+#: when strict verification is on, is far more likely to be an RFC-5280 clause
+#: that only Python 3.13 enforces.
+_UNTRUSTED_ISSUER_CODES: frozenset[int] = frozenset(
+    {
+        2,  # X509_V_ERR_UNABLE_TO_GET_ISSUER_CERT
+        18,  # DEPTH_ZERO_SELF_SIGNED_CERT
+        19,  # SELF_SIGNED_CERT_IN_CHAIN
+        20,  # UNABLE_TO_GET_ISSUER_CERT_LOCALLY
+    }
+)
+
+
+def _strict_hint(code: int | None) -> str | None:
+    """The remedy when RFC-5280 strictness — not trust — is what rejected the chain.
+
+    WHY THIS BRANCH EXISTS. Without it, a strict-only rejection fell through to
+    :func:`_untrusted_issuer_hint`, which tells the user to install the corporate
+    CA and to set ``SSL_CERT_FILE``. Measured against a real report: verify code
+    **95** (``Missing Authority Key Identifier``) received *byte-identical* advice
+    to code 20 — on a machine where ``SSL_CERT_FILE`` was ALREADY set to the very
+    path suggested and ``openssl verify`` returned ``0 (ok)``. The advice named
+    the two things the user had already done. That is the issue-#99 failure mode
+    repeating one level up: a remedy that cannot work reads as "you did it wrong".
+
+    Two shapes:
+
+    * aelix already **measured** the rejection (it re-verified the same host with
+      strict cleared and it passed) — then say so, and say what was done about it.
+    * aelix could not measure it (no host on the exception, so no re-check) — then
+      say strict is a *likely* cause and how to confirm, without claiming it.
+    """
+
+    from aelix_ai.providers._tls_strict import session_relaxation, strict_is_enabled
+
+    relaxation = session_relaxation()
+    if relaxation is not None:
+        return (
+            f"{relaxation.describe()} If the request still fails, the cause is "
+            "not certificate strictness."
+        )
+
+    if not strict_is_enabled() or code in _UNTRUSTED_ISSUER_CODES:
+        return None
+
+    return (
+        "TLS certificate verification failed on an RFC 5280 conformance rule, not "
+        "on trust. Python 3.13 turned on strict certificate checking by default; "
+        "Python 3.12, `openssl`, curl and browsers do not enforce it, which is why "
+        "the same host works in every other tool on this machine. Certificates "
+        "minted on the fly by an intercepting proxy commonly fail these rules even "
+        "when their root CA is correctly installed. Confirm with:\n"
+        "  openssl s_client -connect <host>:443 -servername <host> </dev/null "
+        "2>&1 | grep 'Verify return code'\n"
+        "If that reports `0 (ok)`, the CA is trusted and adding another one will "
+        "not help — reinstall aelix on Python 3.12 (`uv tool install --python 3.12 "
+        "--force …`) or report this host so the check can be relaxed for it."
+    )
+
+
 def _causes(exc: BaseException) -> list[BaseException]:
     """The ATTRIBUTION chain: what this error is *about* (cycle-safe).
 
@@ -238,6 +299,11 @@ def _tls_hint(err: BaseException) -> str:
         return _TLS_HOSTNAME_HINT
     if code in _CLOCK_CODES:
         return _TLS_CLOCK_HINT
+
+    strict = _strict_hint(code)
+    if strict is not None:
+        return strict
+
     return _untrusted_issuer_hint()
 
 

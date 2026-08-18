@@ -111,12 +111,22 @@ def _render_trust_store(trust: dict[str, Any], stream: TextIO) -> None:
     problem from an auth problem. It costs four lines when everything is fine.
     """
 
+    # Every value below comes from the environment or from OpenSSL, i.e. from
+    # outside this program. The first version of this block printed them raw —
+    # with `safe_for_terminal` sitting one import away, written in the same
+    # sprint for exactly this class of string. A path or an env var CAN carry
+    # control bytes, and this command is what a user pastes into a bug report.
+    from aelix_ai.utils.terminal_text import safe_for_terminal
+
+    def clean(value: object, limit: int = 300) -> str:
+        return safe_for_terminal(str(value), max_chars=limit)
+
     print(file=stream)
     print("TLS trust:", file=stream)
     state = str(trust["state"])
     rows: list[tuple[str, str]] = [
         ("store", _TRUST_HEADLINE.get(state, state)),
-        ("ssl.SSLContext", str(trust["ssl_context_class"])),
+        ("ssl.SSLContext", clean(trust["ssl_context_class"], 120)),
     ]
     if trust["backend"]:
         rows.append(
@@ -129,7 +139,7 @@ def _render_trust_store(trust: dict[str, Any], stream: TextIO) -> None:
     # state line alone cannot say so.
     cafile = trust["cafile"]
     if cafile:
-        rows.append(("cafile", f"{cafile}" + ("" if trust["cafile_exists"] else "  ← MISSING")))
+        rows.append(("cafile", clean(cafile) + ("" if trust["cafile_exists"] else "  ← MISSING")))
     else:
         rows.append(("cafile", "— (OpenSSL resolved none)"))
     capath = trust["capath"]
@@ -140,7 +150,7 @@ def _render_trust_store(trust: dict[str, Any], stream: TextIO) -> None:
             note = "  ← present but holds no hashed certs, so OpenSSL finds nothing in it"
         else:
             note = "  (hashed certs present)"
-        rows.append(("capath", f"{capath}{note}"))
+        rows.append(("capath", f"{clean(capath)}{note}"))
     else:
         rows.append(("capath", "— (OpenSSL resolved none)"))
 
@@ -151,6 +161,20 @@ def _render_trust_store(trust: dict[str, Any], stream: TextIO) -> None:
         # as "you trust nothing", and that mistake has already shipped here once.
         rows.append(("CAs loaded", f"not reportable — {trust['ca_count_unavailable']}"))
 
+    if trust.get("strict_relaxed_for"):
+        rows.append(
+            ("RFC 5280 strict", f"RELAXED this session (measured on {clean(trust['strict_relaxed_for'], 120)})")
+        )
+    else:
+        rows.append(
+            (
+                "RFC 5280 strict",
+                "ON — Python 3.13+ enforces clauses openssl/curl/browsers do not"
+                if trust.get("strict_verification")
+                else "off",
+            )
+        )
+
     rows.append(
         (
             "interpreter",
@@ -159,14 +183,16 @@ def _render_trust_store(trust: dict[str, Any], stream: TextIO) -> None:
         )
     )
     for name, value in sorted(trust["env_overrides"].items()):
-        rows.append((name, f"{value}  ← overrides the paths above"))
+        rows.append((clean(name, 64), f"{clean(value)}  ← overrides the paths above"))
 
     width = max(len(label) for label, _ in rows)
     for label, value in rows:
         print(f"  {label.ljust(width)}  {value}", file=stream)
 
     if trust["reason"]:
-        print(f"  ! {trust['reason']}", file=stream)
+        print(f"  ! {clean(trust['reason'], 600)}", file=stream)
+    if trust.get("strict_relaxed_reason"):
+        print(f"  ! {clean(trust['strict_relaxed_reason'], 600)}", file=stream)
 
 
 def _render_text(report: dict[str, Any], stream: TextIO) -> None:
