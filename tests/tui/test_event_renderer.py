@@ -2177,3 +2177,234 @@ def test_the_live_window_renders_a_bounded_slice_not_the_whole_block(
     assert max(seen) <= 60 * 14 * 2, f"whole accumulator re-rendered ({max(seen)} chars)"
     # …and the bound costs nothing visible: the window still shows the true tail.
     assert tails[-1] == "".join(real(block, 60, style="dim italic")[-12:])
+
+
+# --- #48 round two: the bar's COLOUR, which had no gate at all ---------------
+#
+# Changing ``_USER_ECHO_STYLE`` from two palette slots to a pinned pair left all
+# 201 tests in this file, ``test_run_tui_smoke.py`` and ``test_phase_c_live_glass``
+# GREEN. Everything here was written to be colour-agnostic on purpose — the
+# ``_painted_rows`` helper above says so — and nothing else looked. So the
+# property that broke for real users was the one property nobody asserted.
+#
+# THESE MEASURE IN A FRESH PROCESS, and that is not fussiness. ``Style._add`` is
+# ``@lru_cache``d on a value-equal key (rich/style.py:732) and the combined style
+# memoises ``_ansi`` WITHOUT keying on the colour system (style.py:712 reads
+# ``self._ansi or self._make_ansi_codes(color_system)``). Render this style once
+# at truecolor and every later console in the process reports truecolor bytes,
+# whatever it was constructed with — MEASURED: after ``Style.parse.cache_clear()``
+# a fresh ``Console(color_system="256")`` still emitted ``38;2``, while calling
+# ``_make_ansi_codes(EIGHT_BIT)`` on the same style returned ``38;5;231;48;5;23``.
+# A same-process ladder would assert one depth three times and call it three.
+
+_ECHO_PROBE = """
+import io, sys
+from rich.console import Console
+from rich.text import Text
+from aelix_coding_agent.tui.render import _USER_ECHO_STYLE
+buf = io.StringIO()
+Console(file=buf, width=8, height=3, force_terminal=True,
+        color_system=sys.argv[1]).print(Text("X", style=_USER_ECHO_STYLE))
+sys.stdout.write(buf.getvalue())
+"""
+
+
+def _echo_sgr(color_system: str) -> list[str]:
+    """The SGR parameters the echo style emits at *color_system*, freshly."""
+
+    import re
+    import subprocess
+    import sys
+
+    out = subprocess.run(
+        [sys.executable, "-c", _ECHO_PROBE, color_system],
+        capture_output=True, text=True, check=True,
+    ).stdout
+    codes = re.findall(r"\x1b\[([0-9;]*)m", out)
+    assert codes, f"the echo style emitted no SGR at {color_system}: {out!r}"
+    return codes[0].split(";")
+
+
+def _hex_of(params: list[str], lead: str) -> str:
+    """The ``38;2;r;g;b`` / ``48;2;r;g;b`` colour in *params*, as a hex string."""
+
+    i = params.index(lead)
+    assert params[i + 1] == "2", f"{lead} is not a truecolor triple: {params}"
+    r, g, b = (int(v) for v in params[i + 2 : i + 5])
+    return f"#{r:02x}{g:02x}{b:02x}"
+
+
+def _cube_hex(n: int) -> str:
+    """The xterm 256 palette value for *n*, for indices 16 and above.
+
+    Indices 0-15 are the reader's theme; 16-255 are fixed by the xterm cube and
+    greyscale ramp, which is exactly why a pinned colour keeps meaning something
+    after the 256 reduction and stops meaning anything after the 16 one.
+    """
+
+    assert n >= 16, f"index {n} is theme data, not a fixed value"
+    if n < 232:
+        n -= 16
+        rung = [0, 95, 135, 175, 215, 255]
+        return f"#{rung[n // 36]:02x}{rung[(n // 6) % 6]:02x}{rung[n % 6]:02x}"
+    v = 8 + (n - 232) * 10
+    return f"#{v:02x}{v:02x}{v:02x}"
+
+
+def _contrast(a: str, b: str) -> float:
+    def lum(h: str) -> float:
+        c = [int(h[i : i + 2], 16) / 255 for i in (1, 3, 5)]
+        f = [x / 12.92 if x <= 0.03928 else ((x + 0.055) / 1.055) ** 2.4 for x in c]
+        return 0.2126 * f[0] + 0.7152 * f[1] + 0.0722 * f[2]
+
+    la, lb = lum(a), lum(b)
+    return (max(la, lb) + 0.05) / (min(la, lb) + 0.05)
+
+
+def test_the_echo_bar_names_a_colour_and_not_a_palette_slot() -> None:
+    """The defect, stated as an invariant: neither end may be the theme's to pick.
+
+    ``bold black on cyan`` emitted ``1;30;46`` — slots 0 and 6 — identically at
+    every colour system, so the bar's legibility was a property of the reader's
+    theme and not of this repository. MEASURED across 24 published schemes, that
+    pair bottoms out at 1.67:1, and at 1.16:1 on the twelve-of-seventeen
+    terminals that render SGR 1 plus a 30-37 foreground with the BRIGHT slot.
+
+    SABOTAGE: any named colour (``bold black on cyan``, ``bold white on blue``)
+    fails on the first assertion; a 256-only pin fails the truecolor one.
+    """
+
+    params = _echo_sgr("truecolor")
+    assert "38" in params and "48" in params, params
+    basic = {*map(str, range(30, 38)), *map(str, range(40, 48)),
+             *map(str, range(90, 98)), *map(str, range(100, 108))}
+    assert not (set(params) & basic), (
+        f"the echo style still names a palette slot: {params}"
+    )
+
+    eight = _echo_sgr("256")
+    for lead in ("38", "48"):
+        i = eight.index(lead)
+        assert eight[i + 1] == "5", eight
+        assert int(eight[i + 2]) >= 16, (
+            f"{lead} reduced to index {eight[i + 2]}, which is theme data: {eight}"
+        )
+
+
+def test_the_echo_bar_clears_AAA_wherever_it_owns_both_ends() -> None:
+    """Contrast read off the EMITTED BYTES, not off the constant.
+
+    A style string can be edited to something legible while the renderer emits
+    something else — the memoised ``_ansi`` above is exactly that failure — so
+    the number has to come from what a terminal would receive.
+
+    Both floors are the ones the pinned depths can actually hold. The 16-colour
+    depth is deliberately NOT asserted: it reduces to ``97;100``, two palette
+    slots again, and MEASURED over every slot pair rich can emit the best any
+    16-colour pair guarantees across those 24 schemes is 3.44:1. Asserting a
+    floor there would be asserting something no choice of hex can deliver.
+    """
+
+    params = _echo_sgr("truecolor")
+    fg, bg = _hex_of(params, "38"), _hex_of(params, "48")
+    assert _contrast(fg, bg) >= 7.0, f"{fg} on {bg} is {_contrast(fg, bg):.2f}:1"
+
+    eight = _echo_sgr("256")
+    f8 = _cube_hex(int(eight[eight.index("38") + 2]))
+    b8 = _cube_hex(int(eight[eight.index("48") + 2]))
+    assert _contrast(f8, b8) >= 4.5, (
+        f"the 256 reduction is {f8} on {b8}, {_contrast(f8, b8):.2f}:1"
+    )
+
+
+def test_the_256_foreground_is_neutral_so_a_reducer_cannot_fold_it_onto_the_ground() -> None:
+    """The tmux trap, as a property rather than as a lookup table.
+
+    Inside tmux ``TERM`` is ``tmux-256color``, so rich resolves 256 even when the
+    outer terminal is truecolor — and when the outer terminal offers only
+    sixteen colours tmux re-picks the nearest slot for each end SEPARATELY.
+    MEASURED against tmux 3.4 with a 16-colour client: cube 195 (``#d7ffff``, a
+    cyan-tinted white) folds to slot 6, and so does a dark teal ground — white
+    text and teal ground both become cyan, 1.00:1, an invisible bar.
+
+    A foreground whose cube value is NEUTRAL cannot land on the ground's hue, so
+    this pins the property rather than the measured table: it keeps holding if
+    tmux changes its table, and it is what makes ``#eef4f4`` (cube 231) safe
+    where ``#e9f0f0`` (cube 195) is not.
+    """
+
+    eight = _echo_sgr("256")
+    fg = _cube_hex(int(eight[eight.index("38") + 2]))
+    r, g, b = (int(fg[i : i + 2], 16) for i in (1, 3, 5))
+    assert r == g == b, (
+        f"the 256 foreground {fg} carries a hue; a 16-colour reducer can fold it "
+        "onto the ground's slot"
+    )
+
+
+def test_no_depth_pairs_SGR_1_with_a_foreground_a_terminal_can_brighten() -> None:
+    """The defect as an invariant, rather than "keep bold" or "drop bold".
+
+    Twelve of seventeen surveyed terminals substitute the bright slot for SGR 1
+    plus a 30-37 foreground; that is what turned ``bold black`` into a mid grey,
+    1.16:1 on Gruvbox Dark. The substitution is range-guarded to slots 0-7 in
+    every implementation checked, so SGR 1 is harmless on a pinned foreground —
+    but rich REDUCES, and whether the reduction lands on a basic slot depends on
+    the ground. A light ground reduces its dark ink to ``30``; a dark ground
+    reduces its light ink to ``97``, already bright and immune.
+
+    So the rule is not about bold. It is: at NO depth may SGR 1 appear beside a
+    30-37 foreground. MEASURED for the shipped pair, adding ``bold`` back takes
+    the ``standard`` leg from 2.82:1 to **1.30:1** (VS Code Light+) — the
+    original bug, in the one path that still speaks in slots.
+
+    SABOTAGE: prefix the style with ``bold ``. Truecolor and 256 stay clean and
+    ``standard`` fires, which is the whole point of checking every depth.
+    """
+
+    for depth in ("truecolor", "256", "standard", "windows"):
+        params = _echo_sgr(depth)
+        if "1" not in params:
+            continue
+        basic_fg = {str(n) for n in range(30, 38)}
+        assert not (set(params) & basic_fg), (
+            f"at {depth} the echo bar emits SGR 1 beside a brightenable "
+            f"foreground: {params}"
+        )
+
+
+def test_the_ground_stays_a_band_against_a_dark_and_a_light_terminal() -> None:
+    """The axis a first pass at this colour ranked seven candidates without.
+
+    Contrast between the text and the ground says whether the words can be read.
+    It says nothing about whether the bar SEPARATES from the transcript around
+    it — and separation is the whole reason #48 exists: the turn read as a gap
+    between coloured tool cards, and the bar was meant to give it its own
+    ground. That property is the ground against the TERMINAL's background, which
+    this renderer does not know and cannot ask for.
+
+    So it is pinned against both extremes instead of against a table of themes.
+    MEASURED over 25 shipped schemes, a ground that clears 1.7:1 at both ends
+    keeps a visible band on every one of them; the dark teal that failed this
+    (``#0f3a3f``, 1.35:1 against ``#1e1e1e``) sat under 1.5:1 on fourteen.
+
+    The style the bar replaced passed this trivially and it is the one thing the
+    palette-slot design got right: its ground was each theme's OWN slot 6, a
+    saturated cyan on that theme's background, so the edge came for free. A
+    pinned ground has to earn it.
+
+    SABOTAGE: any of the dark-teal candidates recorded in ADR-0228 — ``#0a2a2e``,
+    ``#0f3a3f``, ``#26343a`` — fails the dark end.
+    """
+
+    params = _echo_sgr("truecolor")
+    ground = _hex_of(params, "48")
+    # #1e1e1e rather than #000000: the darkest terminal ground is pure black, but
+    # the COMMON one is a near-black, and a floor set against pure black would
+    # pass a ground that vanishes on every real dark theme.
+    for terminal, name in (("#1e1e1e", "a dark terminal"), ("#ffffff", "a light terminal")):
+        edge = _contrast(ground, terminal)
+        assert edge >= 1.7, (
+            f"the ground {ground} is {edge:.2f}:1 against {name} — the words are "
+            "readable and the bar is not a bar"
+        )
