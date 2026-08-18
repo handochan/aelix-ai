@@ -1150,3 +1150,52 @@ async def test_the_url_handed_to_the_browser_is_neutered_but_not_truncated() -> 
     launched = opened[0]
     assert "\x1b" not in launched and "\x9b" not in launched and "\x07" not in launched
     assert launched.endswith(long_tail), "a truncated URL cannot complete the login"
+
+
+async def test_a_relaxed_strict_wall_tells_the_user_the_next_login_will_work() -> None:
+    """The flow that just failed cannot be resumed — a device code is single-use.
+
+    So after aelix measures a strict-TLS wall and clears it, the ONE thing the
+    user needs is "try again"; without it they are told what was fixed and not
+    that they can now use it. ``describe_provider_error`` cannot say this — it is
+    provider-generic and does not know it is being read inside ``/login``.
+
+    SABOTAGE: drop the follow-up line. This goes RED.
+    """
+
+    from aelix_ai.providers import _tls_strict
+
+    def measured_relax(_exc: BaseException) -> object:
+        return _tls_strict.Relaxation(
+            host="api.business.githubcopilot.com",
+            verify_code=95,
+            verify_message="Missing Authority Key Identifier",
+        )
+
+    # 🔴 Patch the NAME login_wizard bound, not the one in `_tls_strict`.
+    # `login_wizard` does `from ... import maybe_relax_strict_for_session` at
+    # module scope, so the two are separate bindings and patching the source
+    # module leaves the caller untouched.
+    with patch(
+        "aelix_coding_agent.tui.login_wizard.maybe_relax_strict_for_session",
+        measured_relax,
+    ):
+        committed = await _drive_oauth_failure(
+            RuntimeError("certificate verify failed: Missing Authority Key Identifier")
+        )
+
+    lines = [_plain(c) for c in committed]
+    assert any("OAuth login failed" in line for line in lines), lines
+    assert any("Run /login again" in line for line in lines), lines
+
+
+async def test_a_login_failure_with_no_relaxation_does_not_promise_a_retry() -> None:
+    """NEGATIVE CONTROL. "Try again" on an unrelated failure is a false promise.
+
+    SABOTAGE: print the follow-up unconditionally. This goes RED.
+    """
+
+    committed = await _drive_oauth_failure(ValueError("network down"))
+    lines = [_plain(c) for c in committed]
+    assert any("OAuth login failed" in line for line in lines)
+    assert not any("Run /login again" in line for line in lines), lines

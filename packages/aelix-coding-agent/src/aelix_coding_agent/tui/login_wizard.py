@@ -341,9 +341,23 @@ async def _run_oauth(
         # cleared) before changing anything, so a chain this machine does not
         # trust is still refused — and `describe_provider_error` below then says
         # what was done instead of recommending a CA the user already installed.
-        maybe_relax_strict_for_session(exc)
+        relaxed = maybe_relax_strict_for_session(exc)
         message = safe_error_for_terminal(describe_provider_error(exc))
         commit(Text(f"✖ OAuth login failed: {message}", style="bold red"))
+        if relaxed is not None:
+            # The flow that just failed cannot be resumed — a device code is
+            # single-use — but the wall that stopped it is down for the rest of
+            # this session. `describe_provider_error` cannot say this: it is
+            # provider-generic and does not know it is being read inside /login.
+            # Without this line the user is told what was fixed and not that
+            # they can now use it.
+            commit(
+                Text(
+                    "  Run /login again — the check that rejected it is relaxed "
+                    "for this session now.",
+                    style="yellow",
+                )
+            )
         return
 
     commit(Text(f"signed in to {provider_name}", style="green"))
