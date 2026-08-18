@@ -137,3 +137,40 @@ async def test_capath_that_exists_but_holds_no_hashed_certs_is_called_out() -> N
     text = stream.getvalue()
 
     assert "holds no hashed certs" in text
+
+
+@pytest.mark.asyncio
+async def test_environment_supplied_paths_are_neutered_before_they_are_printed() -> None:
+    """This block prints strings that came from OUTSIDE the program.
+
+    ``cafile``/``capath`` come from OpenSSL, ``env_overrides`` from the process
+    environment, and the whole point of the block is that a user pastes its
+    output into a bug report. The first version printed all of them raw, with
+    ``safe_for_terminal`` one import away — written in the same sprint, for
+    exactly this class of string.
+
+    SABOTAGE: drop any of the ``clean()`` calls in ``_render_trust_store``. The
+    escape survives to the rendered text and this goes RED.
+    """
+
+    hostile = "/etc/ssl/\x1b[2Jcerts\x9b31m\x1b]0;PWNED\x07"
+    report = await _report()
+    trust = report["trust_store"]
+    assert isinstance(trust, dict)
+    trust["cafile"] = hostile
+    trust["cafile_exists"] = True
+    trust["capath"] = hostile
+    trust["capath_exists"] = True
+    trust["capath_has_hashed_certs"] = True
+    trust["env_overrides"] = {"SSL_CERT_FILE": hostile}
+    trust["reason"] = f"something failed {hostile}"
+
+    stream = io.StringIO()
+    _render_text(report, stream)
+    text = stream.getvalue()
+
+    assert "\x1b" in hostile and "\x9b" in hostile  # positive control
+    for ch in ("\x1b", "\x9b", "\x07"):
+        assert ch not in text, repr(ch)
+    # The inert literal survives, so the path is still recognisable.
+    assert "[2Jcerts" in text

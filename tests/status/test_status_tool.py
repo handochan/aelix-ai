@@ -125,7 +125,7 @@ def test_the_no_argument_schema_survives_the_responses_wire_shape() -> None:
         parameters={}        -> openai_completions      -> {"type":"object","properties":{}}
 
     Only the Chat-Completions path normalises, and only by accident of a falsy
-    ``or`` (``openai_completions.py:504``). The Responses adapter tests
+    ``or`` (``openai_completions.py:505``). The Responses adapter tests
     ``params is None`` (``_openai_responses_shared.py:171``), and ``{}`` is not
     ``None``. So the schema is declared rather than left empty, exactly as
     ``tools/ls.py`` declares it for its all-optional parameters.

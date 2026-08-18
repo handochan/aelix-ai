@@ -575,24 +575,24 @@
    "if same_model:",
    "out.append(block)"
   ],
-  "packages/aelix-ai/src/aelix_ai/providers/anthropic.py:155-156": [
+  "packages/aelix-ai/src/aelix_ai/providers/anthropic.py:156-157": [
    "if not (input_tokens or output_tokens or cache_read or cache_write):",
    "return None"
   ],
-  "packages/aelix-ai/src/aelix_ai/providers/anthropic.py:594-594": [
+  "packages/aelix-ai/src/aelix_ai/providers/anthropic.py:595-595": [
    "async with stream_mgr as sdk_stream:"
   ],
-  "packages/aelix-ai/src/aelix_ai/providers/anthropic.py:872-872": [
+  "packages/aelix-ai/src/aelix_ai/providers/anthropic.py:880-880": [
    "yield ThinkingDeltaEvent("
   ],
-  "packages/aelix-ai/src/aelix_ai/providers/openai_completions.py:1232-1233": [
+  "packages/aelix-ai/src/aelix_ai/providers/openai_completions.py:1233-1234": [
    "if thinking_index is None:",
    "thinking_index = len(output_content)"
   ],
-  "packages/aelix-ai/src/aelix_ai/providers/openai_completions.py:1258-1258": [
+  "packages/aelix-ai/src/aelix_ai/providers/openai_completions.py:1259-1259": [
    "yield ThinkingDeltaEvent("
   ],
-  "packages/aelix-ai/src/aelix_ai/providers/openai_completions.py:1381-1389": [
+  "packages/aelix-ai/src/aelix_ai/providers/openai_completions.py:1382-1390": [
    "output = AssistantMessage(",
    "content=list(output_content),",
    "stop_reason=stop_reason,",
@@ -602,13 +602,13 @@
    "provider=model.provider,",
    "model=model.id,"
   ],
-  "packages/aelix-ai/src/aelix_ai/providers/openai_completions.py:338-338": [
+  "packages/aelix-ai/src/aelix_ai/providers/openai_completions.py:339-339": [
    "transformed = transform_messages("
   ],
-  "packages/aelix-ai/src/aelix_ai/providers/openai_completions.py:504-504": [
+  "packages/aelix-ai/src/aelix_ai/providers/openai_completions.py:505-505": [
    "params = getattr(tool, \"parameters\", None) or {"
   ],
-  "packages/aelix-ai/src/aelix_ai/providers/openai_completions.py:976-983": [
+  "packages/aelix-ai/src/aelix_ai/providers/openai_completions.py:977-984": [
    "return {",
    "\"input\": int(prompt),",
    "\"output\": int(completion),",

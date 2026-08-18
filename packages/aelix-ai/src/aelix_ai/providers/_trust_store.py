@@ -124,6 +124,19 @@ class TrustStoreReport:
     ca_count: int | None = None
     ca_count_unavailable: str | None = None
 
+    strict_verification: bool = False
+    """``VERIFY_X509_STRICT`` — on by default from Python 3.13, off before it.
+
+    Reported because it is the difference between "your CA is missing" and "your
+    CA is fine and only this interpreter objects", and those need opposite
+    actions. A real report turned on exactly this bit.
+    """
+
+    strict_relaxed_for: str | None = None
+    """The host whose measured strict-only rejection relaxed strict this session."""
+
+    strict_relaxed_reason: str | None = None
+
     def as_dict(self) -> dict[str, Any]:
         """A plain JSON-safe mapping, for ``aelix status --json``."""
 
@@ -146,6 +159,9 @@ class TrustStoreReport:
             "certifi_exists": self.certifi_exists,
             "ca_count": self.ca_count,
             "ca_count_unavailable": self.ca_count_unavailable,
+            "strict_verification": self.strict_verification,
+            "strict_relaxed_for": self.strict_relaxed_for,
+            "strict_relaxed_reason": self.strict_relaxed_reason,
         }
 
 
@@ -257,6 +273,14 @@ def describe_trust_store() -> TrustStoreReport:
     backend, version = _truststore_backend()
     paths = ssl.get_default_verify_paths()
     ca_count, ca_unavailable = _ca_count()
+
+    # Read live, like everything else here: `strict_is_enabled` builds a fresh
+    # context, and `session_relaxation` reports only a relaxation that was
+    # actually measured and installed.
+    from aelix_ai.providers._tls_strict import session_relaxation, strict_is_enabled
+
+    strict = strict_is_enabled()
+    relaxation = session_relaxation()
     certifi_path, certifi_exists = _certifi()
 
     overrides = {
@@ -287,6 +311,9 @@ def describe_trust_store() -> TrustStoreReport:
         certifi_exists=certifi_exists,
         ca_count=ca_count,
         ca_count_unavailable=ca_unavailable,
+        strict_verification=strict,
+        strict_relaxed_for=relaxation.host if relaxation else None,
+        strict_relaxed_reason=relaxation.describe() if relaxation else None,
     )
 
 

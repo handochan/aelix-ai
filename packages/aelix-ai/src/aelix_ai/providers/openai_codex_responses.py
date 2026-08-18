@@ -64,6 +64,7 @@ from aelix_ai.providers._openai_responses_shared import (
     process_responses_stream,
 )
 from aelix_ai.providers._sanitize_unicode import sanitize_surrogates
+from aelix_ai.providers._tls_strict import maybe_relax_strict_for_session
 from aelix_ai.providers.openai_completions import BUILTIN_SOURCE_ID
 
 # Reuse the Responses-family options shape + the reasoning/cache helpers so the
@@ -601,6 +602,13 @@ async def stream_openai_codex_responses(
             opts.signal is not None and getattr(opts.signal, "aborted", False)
         )
         reason: Literal["aborted", "error"] = "aborted" if aborted else "error"
+        # Issue #184 follow-up: a corporate proxy mints certificates on the fly
+        # that can fail Python 3.13's strict RFC-5280 checks even when the OS
+        # trusts its root perfectly well. This MEASURES that before relaxing
+        # anything — a chain this machine does not trust is still refused — and
+        # the harness already retries "Connection error." on its own, so the next
+        # attempt is the one that succeeds.
+        maybe_relax_strict_for_session(exc)
         err_msg = describe_provider_error(exc)
         error_output = AssistantMessage(
             content=list(state.content),

@@ -55,6 +55,7 @@ from aelix_ai.providers._github_copilot_headers import (
     has_copilot_vision_input,
 )
 from aelix_ai.providers._stream_close import close_provider_client
+from aelix_ai.providers._tls_strict import maybe_relax_strict_for_session
 from aelix_ai.providers._token_estimate import (
     OUTPUT_CAP_MARGIN_TOKENS,
     estimate_payload_tokens,
@@ -639,7 +640,7 @@ async def stream_anthropic(
             # anthropic turn as same-model and preserve its signed thinking
             # blocks on replay. Without this the shared transform always
             # treats prior thinking as cross-model → downgrades to text →
-            # signatures never travel back. Mirrors openai_completions.py:1381-1389.
+            # signatures never travel back. Mirrors openai_completions.py:1382-1390.
             output = replace(
                 output,
                 content=list(output_content),
@@ -695,6 +696,13 @@ async def stream_anthropic(
         reason: Any = "aborted" if aborted else "error"
         # Append an actionable hint when the failure is a corporate-proxy TLS
         # trust error (self-signed CA in the chain) rather than a plain outage.
+        # Issue #184 follow-up: a corporate proxy mints certificates on the fly
+        # that can fail Python 3.13's strict RFC-5280 checks even when the OS
+        # trusts its root perfectly well. This MEASURES that before relaxing
+        # anything — a chain this machine does not trust is still refused — and
+        # the harness already retries "Connection error." on its own, so the next
+        # attempt is the one that succeeds.
+        maybe_relax_strict_for_session(exc)
         error_msg = describe_provider_error(exc)
         # Snapshot whatever we managed to assemble so observers can see
         # partial content alongside the failure.
@@ -705,7 +713,7 @@ async def stream_anthropic(
             error_message=error_msg,
             # ADR-0190: stamp provenance on the error path too so a partial
             # turn surfaced to observers still carries the same-model markers
-            # (mirrors the success build). openai_completions.py:1381-1389.
+            # (mirrors the success build). openai_completions.py:1382-1390.
             api=model.api,
             provider=model.provider,
             model=model.id,
