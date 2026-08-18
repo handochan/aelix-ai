@@ -210,17 +210,24 @@ async def test_tool_card_max_lines_is_live() -> None:
     assert res.live == ("tool_card_max_lines", "30")  # clamped value, re-read as str
 
 
-# The eleven rows re-measured 2026-07-31 (#111 B-11) to have ZERO production
-# consumers: the value round-trips to settings.json and nothing ever reads it
-# back, this launch or any other. NOT a synonym for "persist-only" —
-# ``features_agents`` is persist-only too but IS consumed, by
+# The TEN rows re-measured 2026-08-18 (#84, was eleven under #111 B-11) to have
+# ZERO production consumers: the value round-trips to settings.json and nothing
+# ever reads it back, this launch or any other. NOT a synonym for
+# "persist-only" — ``features_agents`` is persist-only too but IS consumed, by
 # ``cli/entry.py::_build_harness_options``, so it is absent from this set.
+#
+# ``enable_skill_commands`` LEFT this set under #84: #115 wired it on
+# 2026-08-12 (``tui/shell.py`` -> ``expand_resource_command``) and did not
+# revert its copy, so for twelve days the row worked while its help text said
+# it did not — and ``test_inert_rows_do_not_promise_that_they_apply_next_launch``
+# below asserted the false sentence, pinning the lie green. That is why
+# ``test_the_inert_and_wired_lists_are_measured_not_declared`` now derives both
+# sets from the source instead of trusting these literals.
 INERT_ROWS = {
     "autocomplete_max_visible",
     "show_hardware_cursor",
     "editor_padding_x",
     "quiet_startup",
-    "enable_skill_commands",
     "double_escape_action",
     "tree_filter_mode",
     "image_auto_resize",
@@ -247,7 +254,7 @@ async def test_every_persist_only_row_has_a_live_none() -> None:
 async def test_inert_rows_do_not_promise_that_they_apply_next_launch() -> None:
     """#111 B-11 — the help text of a row nobody reads must not imply it works.
 
-    These eleven all used to end "Persisted; applies next launch", which reads
+    These all used to end "Persisted; applies next launch", which reads
     as "restart and it takes effect". Nothing reads them at any launch, so that
     was a promise the build cannot keep.
 
@@ -269,7 +276,12 @@ async def test_inert_rows_do_not_promise_that_they_apply_next_launch() -> None:
 #: ``render_max_width`` was added to the source comment and to this list in the
 #: same commit precisely because the guard had been iterating only the original
 #: two and would not have covered it.
-WIRED_PERSIST_BLOCK_ROWS = ("features_agents", "tool_card_max_lines", "render_max_width")
+WIRED_PERSIST_BLOCK_ROWS = (
+    "features_agents",
+    "tool_card_max_lines",
+    "render_max_width",
+    "enable_skill_commands",
+)
 
 
 async def test_wired_persist_only_rows_are_not_labelled_inert() -> None:
@@ -303,19 +315,27 @@ async def test_the_wired_list_matches_the_source_comment() -> None:
 
 
 async def test_skill_commands_help_does_not_claim_skills_are_unconsumed() -> None:
-    """Skills are NOT inert — only this flag is.
+    """Skills are NOT inert — only this flag's SURFACE is switchable.
 
     ``load_skills`` runs at startup and ``harness.set_skills`` publishes the
     result, which ``/skills``, the startup banner and rpc_mode's command list
-    all read. Help text saying "the skills carrier has no consumer" would tell
-    users ``--skill`` and ``.aelix/skills`` do nothing. What is genuinely
-    missing is the ``/skill:<name>`` surface (#115).
+    all read — whatever this flag says. Help text implying otherwise would tell
+    users ``--skill`` and ``.aelix/skills`` do nothing.
+
+    UPDATED under #84. This test used to require the literal ``#115`` in the
+    copy, because the copy's job was to point at a surface that did not exist
+    yet. #115 then BUILT that surface (871a6be) without touching either the
+    copy or this assertion, so the pair went on requiring a sentence that had
+    become false. The issue reference is gone; what is asserted now is the part
+    that stays true whichever way the flag points.
     """
     sm = SettingsManager.in_memory({})
     help_text = _rows(sm)["enable_skill_commands"].help
     assert "carrier" not in help_text
     assert "/skill:<name>" in help_text
-    assert "#115" in help_text
+    assert "skills still load" in help_text
+    assert "does not exist" not in help_text
+    assert "not yet" not in help_text
 
 
 # === The false success (A-3) ==================================================
@@ -387,3 +407,135 @@ async def test_render_max_width_clamps_on_write_and_on_read() -> None:
     assert hand_edited.get_render_max_width() == 240
     too_small = SettingsManager.in_memory({"renderMaxWidth": 2})
     assert too_small.get_render_max_width() == 60
+
+
+# === #84 — stop hand-maintaining the honesty claim ==========================
+
+
+#: getter name for every row in the persist-only block, wired or not. The two
+#: sets above are hand-written claims ABOUT these; the test below checks the
+#: claims against the source, which is the only reason to trust either list.
+_PERSIST_BLOCK_GETTERS = {
+    "autocomplete_max_visible": "get_autocomplete_max_visible",
+    "show_hardware_cursor": "get_show_hardware_cursor",
+    "editor_padding_x": "get_editor_padding_x",
+    "quiet_startup": "get_quiet_startup",
+    "enable_skill_commands": "get_enable_skill_commands",
+    "double_escape_action": "get_double_escape_action",
+    "tree_filter_mode": "get_tree_filter_mode",
+    "image_auto_resize": "get_image_auto_resize",
+    "block_images": "get_block_images",
+    "show_terminal_progress": "get_show_terminal_progress",
+    "clear_on_shrink": "get_clear_on_shrink",
+    "features_agents": "get_features_agents",
+    "tool_card_max_lines": "get_tool_card_max_lines",
+    "render_max_width": "get_render_max_width",
+}
+
+#: Where a getter is DEFINED rather than consumed. Excluded so the definition
+#: does not read as its own consumer — the mistake that would make every row
+#: look wired and the whole gate vacuous.
+_NOT_A_CONSUMER = ("aelix_ai/settings/", "tui/settings_rows.py")
+
+
+def _getter_call_sites() -> dict[str, list[str]]:
+    """Every production ``…get_x(…)`` CALL, by getter name.
+
+    AST rather than a substring search, for the reason this repo keeps
+    rediscovering: ``tui/shell.py``'s docstring names
+    ``get_enable_skill_commands()`` in prose, and a grep counts that as a
+    consumer. A row that is inert but mentioned in a comment would then be
+    reported as wired — the exact inversion #84 exists to stop.
+    """
+
+    import ast
+    from pathlib import Path
+
+    repo = Path(__file__).resolve().parents[2]
+    wanted = set(_PERSIST_BLOCK_GETTERS.values())
+    found: dict[str, list[str]] = {name: [] for name in wanted}
+    files = [
+        p
+        for p in [*repo.glob("packages/*/src/**/*.py"), *repo.glob("src/**/*.py")]
+        if not any(part in p.as_posix() for part in _NOT_A_CONSUMER)
+    ]
+    assert len(files) > 150, f"only {len(files)} production files — bad glob"
+    for path in files:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            fn = node.func
+            name = (
+                fn.attr
+                if isinstance(fn, ast.Attribute)
+                else fn.id
+                if isinstance(fn, ast.Name)
+                else None
+            )
+            if name in wanted:
+                found[name].append(f"{path.relative_to(repo)}:{node.lineno}")
+    return found
+
+
+async def test_the_inert_and_wired_lists_are_measured_not_declared() -> None:
+    """The two literal sets above must match what the source actually does.
+
+    #115 wired a row and left it declared inert; nothing failed, because both
+    the declaration and the assertion about it were hand-written from the same
+    stale belief. This derives the answer instead.
+    """
+
+    sites = _getter_call_sites()
+    measured_wired = {
+        key
+        for key, getter in _PERSIST_BLOCK_GETTERS.items()
+        if sites[getter]
+    }
+    measured_inert = set(_PERSIST_BLOCK_GETTERS) - measured_wired
+
+    assert measured_wired == set(WIRED_PERSIST_BLOCK_ROWS), (
+        "WIRED_PERSIST_BLOCK_ROWS disagrees with the source. Newly wired: "
+        f"{sorted(measured_wired - set(WIRED_PERSIST_BLOCK_ROWS))}; no longer "
+        f"wired: {sorted(set(WIRED_PERSIST_BLOCK_ROWS) - measured_wired)}. "
+        "Move the row between the two sets AND fix its help text in the same "
+        "commit — see the block comment in tui/settings_rows.py."
+    )
+    assert measured_inert == INERT_ROWS, (
+        f"INERT_ROWS disagrees with the source: {measured_inert ^ INERT_ROWS}"
+    )
+
+
+async def test_the_call_site_scanner_can_tell_a_call_from_a_mention() -> None:
+    """Positive control for the scanner, both directions.
+
+    A zero from ``_getter_call_sites`` is only evidence if a non-zero is
+    reachable — and the docstring case is not hypothetical, it is live in
+    ``tui/shell.py`` today.
+    """
+
+    sites = _getter_call_sites()
+    # It finds real calls...
+    assert sites["get_features_agents"], "scanner found no call it should find"
+    # ...and it finds ONLY the call in the file that also mentions the name in
+    # prose. shell.py:3183 is a docstring; a substring scan would report 2.
+    skill_sites = sites["get_enable_skill_commands"]
+    assert len(skill_sites) == 1, skill_sites
+    assert "tui/shell.py" in skill_sites[0]
+
+
+async def test_the_wired_row_says_something_true_about_being_off() -> None:
+    """#84's actual beta deliverable, from the reader's side.
+
+    The old copy promised "no /skill:<name> surface exists yet", which stopped
+    being true when #115 shipped. Assert the new copy instead of merely
+    asserting the old one is gone, so a future blanket rewrite has to keep
+    meaning something.
+    """
+
+    sm = SettingsManager.in_memory({})
+    row = _rows(sm)["enable_skill_commands"]
+    assert "not yet wired" not in row.help
+    assert "skills still load" in row.help
+    assert row.live is False
+    assert row.apply_note == "takes effect after you restart aelix"

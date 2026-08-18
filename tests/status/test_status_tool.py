@@ -312,7 +312,7 @@ def test_an_inline_prepended_extension_is_labelled_unclassified() -> None:
 
     ``loader._resolve_factory`` gives an inline factory (every PREPENDED
     built-in) and a manifest-less entry-point pack the SAME derived name —
-    ``__qualname__ or type(...).__name__`` at ``loader.py:1862-1865`` and
+    ``__qualname__ or type(...).__name__`` at ``loader.py:1868-1871`` and
     ``:1870-1873``. The endpoint half is no longer stuck here: since the #101
     M1 review the loader records that tier in ``Extension.source_info`` and it
     reports ``entry_point`` (``tests/status/test_status_scope_entry_point.py``).

@@ -140,20 +140,30 @@ def _resolve_provider(api: str) -> StreamFn:
     return a thin closure that calls ``provider.stream`` to match the
     Phase 1.4 :class:`StreamFn` signature without changing the
     ``stream_simple`` shell.
+
+    WIRING, for whoever hit the raise below while embedding this kernel: the
+    registry is populated by each adapter's ``register_all()`` (e.g.
+    ``aelix_ai.providers.anthropic.register_all()``), or bypassed entirely by
+    passing a ``stream_fn`` straight to the agent loop. That sentence used to
+    live in the exception message, where a first-run user read it instead
+    (#189); a docstring is where the reader it was written for actually looks,
+    and it can never reach a terminal.
     """
 
     provider = _PROVIDERS.get(api)
     if provider is None:
         from aelix_ai.streaming import StreamSimpleError
 
+        # #189 — audience. This text is rendered verbatim to whoever is
+        # watching: ``tui/shell.py`` prints ``f"✖ {exc}"`` for anything that
+        # escapes ``harness.prompt``. So it says what is true and nothing that
+        # only a maintainer of this file could act on. The machine-readable
+        # half is ``self.code``; the wiring half is the docstring above.
         raise StreamSimpleError(
             "no_provider_registered",
             (
-                f"No provider registered for api={api!r}. "
-                "Sprint 6a ships the Anthropic adapter under "
-                "``aelix_ai.providers.anthropic`` — call "
-                "``aelix_ai.providers.anthropic.register_all()`` to wire "
-                "it up, OR pass a mock stream_fn explicitly to the agent loop."
+                f"No provider registered for api={api!r} — this build has no "
+                "adapter for that protocol."
             ),
         )
 

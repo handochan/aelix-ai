@@ -1818,12 +1818,18 @@ async def _resolve_factory(
                 # :func:`_invoke_factory` still builds the Extension (with
                 # manifest attached) and wires the subprocess hooks.
                 return _noop_factory, entry.manifest.plugin.id, entry.manifest
+            # #189 — this reaches both the extension author AND the user who
+            # installed their pack: ``cli/entry.py`` prints it as "Warning:
+            # extension load: {err}" and the ``/extension`` manager lists it.
+            # So it names the capability that created the requirement and the
+            # two ways out, not the sprint that introduced the rule (Sprint
+            # 6h₉b, Sprint 6h₉a fold-in §A — kept here in the comment).
             raise ValueError(
-                f"Manifest for plugin {entry.manifest.plugin.id!r} "
-                f"in {entry.pkg_dir} has no [plugin.entry] python; "
-                f"cannot load (Sprint 6h₉b requires python entry when "
-                f"any of capabilities.ui_tui_trusted / .ui_descriptor / "
-                f".mcp_serve is True — see Sprint 6h₉a fold-in §A)"
+                f"Extension {entry.manifest.plugin.id!r} in {entry.pkg_dir} "
+                f"declares capabilities that need Python code "
+                f"(ui_tui_trusted, ui_descriptor, or mcp_serve) but its "
+                f"manifest has no [plugin.entry] python. Add that entry, or "
+                f"drop those capabilities."
             )
         factory = _factory_from_module(py_entry)
         if entry.ep_ref is not None and isinstance(factory, type):

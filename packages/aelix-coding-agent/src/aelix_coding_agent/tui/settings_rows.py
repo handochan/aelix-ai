@@ -27,12 +27,14 @@ The shell owns the live half (it holds the harness/renderer/context); these
 helpers own the persist half + the canonical cycle orderings + the human-readable
 labels.
 
-The remaining rows are PERSIST-ONLY, and eleven of them are outright INERT: the
+The remaining rows are PERSIST-ONLY, and TEN of them are outright INERT: the
 value round-trips to ``settings.json`` and no production code ever reads it back
-(re-measured 2026-07-31 for #111 B-11 — see the block comment above those rows).
+(re-measured 2026-08-18 for #84 — see the block comment above those rows).
 Their help text says so rather than promising "applies next launch", which was
-never true for them. ``features_agents`` and ``tool_card_max_lines`` sit in the
-same block but ARE wired; do not sweep them into a blanket rewrite.
+never true for them. ``features_agents``, ``tool_card_max_lines``,
+``render_max_width`` and ``enable_skill_commands`` sit in the same block but ARE
+wired; do not sweep them into a blanket rewrite. It was eleven until #115 wired
+``enable_skill_commands`` and left its copy claiming otherwise for twelve days.
 
 SKIPPED: ``markdown.code_block_indent`` — :class:`SettingsManager` exposes
 ``get_code_block_indent`` but NO setter, so a row would be dead/unsettable UI.
@@ -75,8 +77,10 @@ class SettingsRow:
     :param help: one-line description shown in the select detail panel.
     :param live: ``True`` when the change also applies to the live session this
         run (the shell mirrors it); ``False`` = persist-only. Note that
-        ``live=False`` does NOT imply "applies next launch" — for the eleven
-        inert rows (#111 B-11) nothing reads the value at any point.
+        ``live=False`` does NOT imply "applies next launch" — for the ten
+        inert rows (#111 B-11, #84) nothing reads the value at any point, and
+        it also does not imply INERT: ``features_agents`` and
+        ``enable_skill_commands`` are ``live=False`` and genuinely wired.
     :param choices: the ordered enum literals (``enum`` rows only).
     :param int_range: ``(lo, hi)`` advisory range shown in the prompt (``int``
         rows only; the SettingsManager setter is the authoritative clamp).
@@ -186,20 +190,24 @@ def build_settings_rows(sm: SettingsManager) -> list[SettingsRow]:
         # other. Their help text used to promise "Persisted; applies next
         # launch", which is a lie by omission. It now says the value is inert.
         #
-        # Re-measured 2026-07-31 by grepping every getter AND its backing field
-        # across ``packages/*/src`` and ``src/``, excluding the setting's own
-        # definition (settings_manager.py, types.py) and this file. All eleven
-        # of the #111 rows still return ZERO consumers.
+        # Re-measured 2026-08-18 (#84) by grepping every getter AND its backing
+        # field across ``packages/*/src`` and ``src/``, excluding the setting's
+        # own definition (settings_manager.py, types.py) and this file. TEN of
+        # the eleven #111 rows still return ZERO consumers.
         #
-        # The three exceptions in this block, which are genuinely wired and whose
+        # The four exceptions in this block, which are genuinely wired and whose
         # help text is therefore left alone:
-        #   * ``features_agents``      -> cli/entry.py::_build_harness_options
-        #   * ``tool_card_max_lines``  -> tui/shell.py -> render.py (live)
-        #   * ``render_max_width``     -> tui/shell.py -> tui/width.py (live)
+        #   * ``features_agents``       -> cli/entry.py::_build_harness_options
+        #   * ``tool_card_max_lines``   -> tui/shell.py -> render.py (live)
+        #   * ``render_max_width``      -> tui/shell.py -> tui/width.py (live)
+        #   * ``enable_skill_commands`` -> tui/shell.py -> cli/resource_commands.py
         #
         # WHEN YOU WIRE ONE OF THESE UP, revert its help text in the same
         # commit. A row that works but claims to be inert is the same defect
-        # pointing the other way.
+        # pointing the other way — and that is not hypothetical: #115 wired
+        # ``enable_skill_commands`` on 2026-08-12 and left this copy saying "no
+        # /skill:<name> surface exists yet", with a test asserting the sentence
+        # so the claim stayed GREEN while being false. Fixed under #84.
         SettingsRow(
             key="features_agents",
             label="Agent delegation",
@@ -288,19 +296,27 @@ def build_settings_rows(sm: SettingsManager) -> list[SettingsRow]:
             label="Skill commands",
             kind="bool",
             read=lambda s: _on_off(s.get_enable_skill_commands()),
-            # CAREFUL: it is THIS SETTING that is inert, not skills. Skills are
-            # loaded at startup (``cli/entry.py`` ``load_skills`` ->
-            # ``harness.set_skills``) and consumed by ``/skills``, the startup
-            # banner, and rpc_mode's command list. What does not exist is the
-            # ``/skill:<name>`` command surface — and nothing reads this flag
-            # either way (#115). Saying "the skills carrier has no consumer"
-            # would tell users that ``--skill`` and ``.aelix/skills`` do nothing,
-            # which is false and is the inversion this block warns about.
+            # WIRED since #115 (871a6be, 2026-08-12): ``tui/shell.py`` passes
+            # ``get_enable_skill_commands()`` into ``expand_resource_command``,
+            # which returns ``None`` for a ``/skill:`` prefix when it is off —
+            # so the command falls through to the unknown-command hint instead
+            # of expanding. Shaped exactly like ``features_agents``: read once
+            # per ``_input_loop``, hence ``live=False`` plus an ``apply_note``
+            # rather than a live claim.
+            #
+            # CAREFUL, the note that outlived the inertness: it is THIS SETTING
+            # the row speaks for, not skills. Skills load at startup
+            # (``cli/entry.py`` ``load_skills`` -> ``harness.set_skills``) and
+            # feed ``/skills``, the banner and rpc_mode's command list whatever
+            # this flag says. Turning it off disables the ``/skill:<name>``
+            # SURFACE only — wording that says otherwise would tell users
+            # ``--skill`` and ``.aelix/skills`` do nothing, which is false.
             help=(
-                "Enable /skill:<name> dynamic commands. Saved but not yet wired — "
-                "no /skill:<name> surface exists yet (#115). Skills themselves "
-                "still load; /skills lists them."
+                "Enable /skill:<name> dynamic commands. Off disables that "
+                "command surface only — skills still load and /skills still "
+                "lists them. Persisted; applies next launch."
             ),
+            apply_note="takes effect after you restart aelix",
         ),
         SettingsRow(
             key="double_escape_action",

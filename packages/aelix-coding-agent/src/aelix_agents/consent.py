@@ -23,9 +23,9 @@ what actually varies. ``builtin/permission.py`` is deliberately left alone.
 
 WHY THE ``tool_call`` HOOK AND NOT ``execute()``. ``ToolExecutionContext``
 (``aelix_ai/tools.py``) has four fields and no UI; and the kernel runs
-``before_tool_call`` in the SEQUENTIAL prep phase (``loop.py:514-535``, driven
+``before_tool_call`` in the SEQUENTIAL prep phase (``loop.py:521-542``, driven
 from ``:813-823``) while ``execute()`` runs under ``asyncio.gather``
-(``loop.py:893``) with ``tool_execution = "parallel"`` by default
+(``loop.py:900``) with ``tool_execution = "parallel"`` by default
 (``harness/core.py:271``). Two modals from one batch would collide on
 ``tui/chrome.py:524``'s single ``_modal`` slot — ``mount_modal`` overwrites
 unconditionally, the first Future is orphaned, and the turn hangs. The hook

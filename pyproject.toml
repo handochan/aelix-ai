@@ -141,6 +141,8 @@ exclude = [
   "CLAUDE.md",
   "AGENTS.md",
   "aelix-session-*.html",
+  ".env",
+  ".env.local",
 ]
 
 # The sdist is the worse leak of the two: its default file set is the whole repo
@@ -162,7 +164,32 @@ exclude = [
   "CLAUDE.md",
   "AGENTS.md",
   "aelix-session-*.html",
+  ".env",
+  ".env.local",
+  # #190 — BULK, not developer state. The entries above answer "is this the
+  # maintainer's local mess?"; these three answer "does a consumer of the
+  # sdist have any use for it?". Nothing does: `install.sh:147` and
+  # `install.ps1:166` both note the installer downloads wheels only and never
+  # an sdist; `release.yml` builds, hashes, uploads and attaches sdists but
+  # never unpacks one; `ci.yml` runs pytest against the checkout. Measured:
+  # dropping `tests` takes the root sdist from 6,343,886 B / 1,158 members to
+  # 4,791,384 B / 607, and the wheel `uv build` produces FROM that sdist is
+  # byte-identical (21,529 B, same 10 members).
+  "tests",
+  # The citation gate's lockfile — 136 KB embedding 470 verbatim source
+  # snippets, for a gate that only ever runs against a checkout.
+  "citations.lock.json",
+  # An internal work-in-progress memo about the Windows slice.
+  "SLICE-STATUS.md",
 ]
+
+# DELIBERATELY NOT EXCLUDED, so the next reader does not have to re-derive it:
+#   `.env.example`   — 7 KB, zero values on any line. It is the only place the
+#                      supported environment variables are enumerated for a
+#                      human, so it earns its passage.
+#   `docs/`          — 4.8 MB, of which `docs/assets/demo.gif` is 2.0 MB. A
+#                      real candidate for a later trim, but the READMEs link
+#                      into it and that is a separate decision from this one.
 
 [tool.uv.workspace]
 members = ["packages/*"]

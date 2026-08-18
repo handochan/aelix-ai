@@ -1,7 +1,7 @@
 """ADR-0197 §(c)/§(f)/§(l) — ``/agents run <name> <task>`` in the TUI.
 
 ``/agents run`` is a product-core BUILT-IN and it could not be anything else:
-``shell.py:3267-3284`` runs ``match_command`` first and only falls through to
+``shell.py:3276-3293`` runs ``match_command`` first and only falls through to
 ``dispatch.try_execute`` when no built-in claims the leading word, and
 ``extensions/command_dispatch.py::_split_command`` splits an extension command on
 the FIRST SPACE, so an extension command name can never contain one. Spec §6.3's
@@ -799,7 +799,7 @@ async def test_the_confirm_dialog_reuses_the_startup_copy(bench: _Bench) -> None
 def test_builtin_still_shadows_extension() -> None:
     """``/agents run …`` resolves to the built-in ``agents`` command.
 
-    ``shell.py:3267-3284`` consults ``match_command`` first and only reaches
+    ``shell.py:3276-3293`` consults ``match_command`` first and only reaches
     ``dispatch.try_execute`` on a miss, so a built-in always wins the leading
     word — which is the whole reason this branch lives in product-core.
     """

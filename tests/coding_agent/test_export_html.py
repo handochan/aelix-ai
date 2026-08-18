@@ -209,3 +209,95 @@ def test_export_html_returns_resolved_absolute_path(tmp_path: Path) -> None:
         assert Path(path).exists()
     finally:
         os.chdir(cwd)
+
+
+# === #111 B-3 / #138 — the transcript's permissions =========================
+
+
+def test_the_exported_transcript_is_owner_only(tmp_path: Path) -> None:
+    """A rendered session must not be looser than the session it renders.
+
+    MEASURED defect: ``format.py`` ended in a bare
+    ``path.write_text(doc, encoding="utf-8")``, so under a stock 022 umask the
+    HTML landed **0646** — group- and other-readable — in the user's cwd. The
+    source ``.jsonl`` is opened 0600 inside a 0700 directory
+    (``session/fs.py:26-27``) and carries every prompt and every tool result
+    verbatim with no redaction pass, so the exporter was the one place that
+    widened it.
+
+    The control file is what makes the assertion mean something: it is written
+    the way the exporter used to write, in the same directory under the same
+    umask. If the platform or the test runner made 0600 the default, the
+    control would come out 0600 too and this test would be proving nothing.
+    """
+
+    import os
+    import stat
+
+    from aelix_coding_agent._export_html.format import export_html
+
+    previous = os.umask(0o022)
+    try:
+        control = tmp_path / "control.html"
+        control.write_text("<html></html>", encoding="utf-8")
+        assert stat.S_IMODE(control.stat().st_mode) & 0o077, (
+            "the umask control came out owner-only on its own — this test "
+            "cannot distinguish a fix from an environment"
+        )
+
+        out = Path(export_html([], output_path=str(tmp_path / "session.html")))
+        assert stat.S_IMODE(out.stat().st_mode) == 0o600
+
+        # An EXISTING looser file must be tightened, not inherited: O_TRUNC
+        # keeps the old mode, which is how a second export into the same path
+        # would have quietly stayed 0644.
+        stale = tmp_path / "stale.html"
+        stale.write_text("old", encoding="utf-8")
+        os.chmod(stale, 0o644)
+        again = Path(export_html([], output_path=str(stale)))
+        assert stat.S_IMODE(again.stat().st_mode) == 0o600
+    finally:
+        os.umask(previous)
+
+
+def test_the_transcript_is_never_briefly_group_readable(
+    tmp_path: Path, monkeypatch: object
+) -> None:
+    """The property the ``os.open`` mode carries, and ``chmod`` alone cannot.
+
+    FOUND BY SABOTAGE. Reverting the writer to ``path.write_text`` left
+    ``test_the_exported_transcript_is_owner_only`` GREEN, because the
+    belt-and-braces ``os.chmod`` after it still tightened the finished file.
+    The end state was right and the WINDOW was not: the transcript existed at
+    0644 for as long as it took to write, which for a long session is long
+    enough for anything watching the directory.
+
+    Observing the mode from inside a patched ``os.chmod`` is the only way to
+    see that window from a test — by the time the function returns it is
+    closed either way.
+    """
+
+    import os
+    import stat
+
+    from aelix_coding_agent._export_html.format import export_html
+
+    seen: list[int] = []
+    real_chmod = os.chmod
+
+    def _watching_chmod(path: object, mode: int, *a: object, **kw: object) -> None:
+        seen.append(stat.S_IMODE(os.stat(path).st_mode))
+        real_chmod(path, mode, *a, **kw)
+
+    previous = os.umask(0o022)
+    try:
+        monkeypatch.setattr(os, "chmod", _watching_chmod)  # type: ignore[attr-defined]
+        export_html([], output_path=str(tmp_path / "session.html"))
+    finally:
+        os.umask(previous)
+
+    assert seen, "os.chmod was never called — the belt is gone entirely"
+    assert seen[0] == 0o600, (
+        f"the transcript existed at {oct(seen[0])} before chmod tightened it; "
+        "create it at the mode instead of widening and narrowing"
+    )

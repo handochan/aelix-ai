@@ -71,7 +71,7 @@ PANEL_WIDGET_KEY = "aelix-agents:batch"
 
 ONE key, not one per batch, and that is safe rather than lucky: ``agent``
 declares ``execution_mode="sequential"`` (``tool.py:603``), which makes the
-kernel run the whole tool batch sequentially (``loop.py:699-709``), so two
+kernel run the whole tool batch sequentially (``loop.py:706-716``), so two
 ``agent`` calls never have panels open at the same time. ``progress.py`` still
 tracks which group last wrote the slot, so an end_group for a group that does
 not own it cannot blank someone else's panel."""

@@ -9,8 +9,8 @@ live here. The CONSENT DECISION does not — it is taken in the extension's own
 measured reasons, all of which make the hook the only correct location:
 
 1. **``execute()`` is not serialised.** The kernel runs ``before_tool_call`` in
-   the SEQUENTIAL prep phase (``loop.py:514-535``, driven from ``:825-860``) but
-   ``execute`` under ``asyncio.gather`` (``loop.py:893``), with
+   the SEQUENTIAL prep phase (``loop.py:521-542``, driven from ``:832-867``) but
+   ``execute`` under ``asyncio.gather`` (``loop.py:900``), with
    ``tool_execution = "parallel"`` by default (``harness/core.py:271``). Two
    modals from one batch collide on ``tui/chrome.py:524``'s single ``_modal``
    slot: ``mount_modal`` (``:1511``) overwrites unconditionally, the first
@@ -24,7 +24,7 @@ measured reasons, all of which make the hook the only correct location:
    ``ToolCallResult(block=True, reason=…)`` is handled by
    ``harness/hooks.py::_reducer_tool_call`` (``:1419-1439``) — sequential,
    FIRST BLOCK WINS — and the kernel renders it as a model-readable immediate
-   error result (``loop.py:522-535``). An ``execute()`` refusal is just another
+   error result (``loop.py:529-542``). An ``execute()`` refusal is just another
    error string.
 
 :data:`AGENT_TOOL_NAME` is imported from :mod:`aelix_agents.print_channel`
@@ -424,7 +424,7 @@ def parse_agent_call(args: Mapping[str, Any]) -> AgentCall:
     of validating at hook time: the ``tool_call`` hook turns an
     :class:`AgentCallError` into a blocked call (``extension.py:613-616``) and
     the kernel renders it as a model-readable immediate error result
-    (``loop.py:522-535``). An oversize batch is therefore a refused CALL and is
+    (``loop.py:529-542``). An oversize batch is therefore a refused CALL and is
     never trimmed to the first :data:`MAX_PARALLEL_TASKS` (S7 clause 1).
     """
 
@@ -580,7 +580,7 @@ def create_agent_tool(
     ``execution_mode="sequential"`` IS A SECURITY SETTING, not a performance
     one, and mirrors ``tools/bash.py:708``. The kernel's ``_execute_tool_calls``
     downgrades the WHOLE BATCH to sequential when any tool in it declares this
-    (kernel ``types.py:47-56``; ``loop.py:699-709``), which closes the
+    (kernel ``types.py:47-56``; ``loop.py:706-716``), which closes the
     concurrent-modal hazard described in the module docstring at zero
     product-core cost. It is belt-and-braces with the hook location and with
     ``consent.py``'s process-wide lock — and because the description is
