@@ -3194,6 +3194,15 @@ async def _input_loop(
         emit_error=lambda s: output_queue.put_nowait(("commit", Text(s, style="bold red"))),
     )
 
+    # #189 — imported once per loop, not once per turn. Local rather than
+    # module-level for the same reason the other three call sites in this file
+    # are local: ``core.runnable_models`` pulls the provider registry in, and
+    # ``tui.shell`` is imported on paths that must not pay for it.
+    from aelix_coding_agent.core.runnable_models import (
+        is_runnable,
+        unsupported_message,
+    )
+
     while True:
         try:
             line = await chrome.get_input()
@@ -3350,12 +3359,60 @@ async def _input_loop(
         output_queue.put_nowait(
             ("commit", render_user_message(parsed.text, width=renderer.render_width()))
         )
+        # #189 — the ONLY turn-entry point in the product with no runnability
+        # gate. ``/model`` (commands.py), the picker (model_picker.py),
+        # ``/agents use`` (agents/service.py) and print/json mode
+        # (cli/entry.py) all refuse an unrunnable model with an actionable
+        # line; this path drove straight into the loop, where the kernel's
+        # ``No provider registered for api='unknown'`` was the first thing a
+        # first-run user ever read. Same predicate as those four, so the four
+        # answers stay consistent — and ``is_runnable`` fails OPEN (unknown
+        # adapter set ⇒ runnable), so an embedder that registers late is never
+        # blocked by it.
+        turn_model = getattr(harness, "current_model", None)
+        if turn_model is not None and not is_runnable(turn_model):
+            # Two audiences, discriminated exactly as entry.py:2932-2948 and
+            # the first-run wizard already do it: an EMPTY ``get_available()``
+            # is the zero-credential user the wizard just spoke to, and
+            # ``unsupported_message``'s "check the model id and provider
+            # spelling, or define the provider in models.json" is written for
+            # the #98 typo — advice that is actively wrong for someone who
+            # never typed a model id. A NON-EMPTY catalogue means they do have
+            # credentials and picked something this build cannot run.
+            available: list[Any] = []
+            registry = getattr(command_ctx, "model_registry", None)
+            if registry is not None:
+                with contextlib.suppress(Exception):
+                    available = list(registry.get_available())
+            if available:
+                advice = Text(
+                    f"✖ {unsupported_message(turn_model)}\n"
+                    "  Run /model to select a working model.",
+                    style="bold red",
+                )
+            else:
+                advice = Text(
+                    "No provider configured. Run /login to add one.",
+                    style="yellow",
+                )
+            output_queue.put_nowait(("commit", advice))
+            continue
+
         chrome.set_running(True)
         try:
             await harness.prompt(prompt_text, source="interactive")
         except Exception as exc:  # noqa: BLE001 — surface + survive a failed turn
             renderer.finalize()  # commit partial + clear the live stream window
-            output_queue.put_nowait(("commit", Text(f"✖ {exc}", style="bold red")))
+            # #189 — the harness both RENDERS this failure (it synthesises a
+            # message_end the renderer prints) and RE-RAISES it for us, so an
+            # unguarded print here is the second copy of the same line. Compare
+            # the text, not a flag: identical ⇒ already on screen, different ⇒
+            # the renderer never saw this one and we are the only chance to
+            # show it. See ``EventRenderer.take_reported_error``.
+            if renderer.take_reported_error() != str(exc):
+                output_queue.put_nowait(
+                    ("commit", Text(f"✖ {exc}", style="bold red"))
+                )
         finally:
             chrome.set_running(False)
 

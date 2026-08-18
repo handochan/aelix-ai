@@ -633,6 +633,16 @@ class EventRenderer:
         # message_start AND consumed by ``_render_turn_abort``. See that method
         # for why it is a bool rather than the message object.
         self._outcome_reported: bool = False
+        # #189 — the TEXT of the terminal-outcome line this renderer has already
+        # committed for the message that just ended. Distinct from
+        # ``_outcome_reported`` on purpose: that flag is CONSUMED by
+        # ``_render_turn_abort`` on ``turn_end``, which fires before the
+        # exception the harness re-raises reaches ``tui/shell.py`` — so by the
+        # time the shell could ask, the bool is already back to False. This one
+        # is consumed by the shell instead (:meth:`take_reported_error`), and it
+        # holds the text rather than a bool so the shell can suppress ONLY the
+        # duplicate and still print a genuinely different error.
+        self._reported_error: str | None = None
         # /expand support (ADR-0121) — full, untruncated tool-result bodies kept
         # by sequential id so ``/expand N`` can recover the text a truncated card
         # elided. Only TRUNCATED cards get an id (that's when /expand is useful);
@@ -873,6 +883,7 @@ class EventRenderer:
         # _reset_message_state (on_agent_event's ``message_start`` branch), so the
         # flag can never survive into a message it did not come from.
         self._outcome_reported = False
+        self._reported_error = None
 
     def _finalize_text(self) -> None:
         if self._text_stream is not None:
@@ -888,6 +899,36 @@ class EventRenderer:
             detail = message.error_message or f"request {message.stop_reason}"
             self._commit(Text(f"✖ {detail}", style="bold red"))
             self._outcome_reported = True
+            self._reported_error = detail
+
+    def take_reported_error(self) -> str | None:
+        """The terminal-outcome text already committed, read-and-cleared (#189).
+
+        ``tui/shell.py`` wraps ``harness.prompt`` in a catch-and-print so a
+        failed turn cannot kill the REPL. But an exception that escapes the
+        agent loop reaches the glass TWICE: ``harness/core.py`` catches it,
+        synthesises an ``AssistantMessage(stop_reason="error",
+        error_message=str(exc))``, emits the ``message_end`` this renderer
+        prints — and then re-raises the very same exception for the shell to
+        print again. The harness comment there reasons that "the only
+        behavioural delta is the added events"; the added events ARE a second
+        copy, because the TUI already had a renderer for them.
+
+        Returning the TEXT rather than a bool is what makes the suppression
+        safe: the two strings are identical by construction (both are
+        ``str(exc)``), so a mismatch means the shell is holding a DIFFERENT
+        error and must still print it. The failure direction is therefore
+        "print twice", never "print nothing".
+
+        Read-and-clear: a turn whose error was reported but never re-raised
+        (every shipping adapter converts provider failures to an
+        ``AssistantErrorEvent``, which returns normally) must not leave a value
+        behind that suppresses the NEXT turn's genuine error. ``message_start``
+        clears it too, so both ends are covered.
+        """
+
+        text, self._reported_error = self._reported_error, None
+        return text
 
     def _render_turn_abort(self, message: object) -> None:
         """Issue #133 item 2 — a user interrupt must leave a trace.

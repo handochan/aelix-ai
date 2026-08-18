@@ -410,10 +410,17 @@ async def _stream_assistant_response(
                 final = replacement
 
     if final is None:
+        # #189 — this raise escapes to the glass: the TUI prints ``f"✖ {exc}"``
+        # for anything that gets out of ``harness.prompt``, so the message
+        # names what happened rather than which protocol the adapter broke.
+        # THE CONTRACT, for whoever is writing that adapter: every stream must
+        # terminate with ``AssistantDoneEvent``, ``AssistantErrorEvent``, or the
+        # legacy ``AssistantEndEvent``. Reaching here means it terminated with
+        # none of them.
         raise RuntimeError(
-            "stream_fn ended without a terminal event. "
-            "Every stream must terminate with AssistantDoneEvent, "
-            "AssistantErrorEvent, or the legacy AssistantEndEvent."
+            "The model stream ended without a result: it stopped before "
+            "sending a completion, an error, or an end event, so this turn "
+            "produced nothing."
         )
     return final
 
