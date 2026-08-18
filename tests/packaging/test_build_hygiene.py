@@ -147,6 +147,16 @@ _COPY_SKIP = shutil.ignore_patterns(
     "*.egg-info",
     ".claude",
     ".uv-cache",
+    # #190 — the maintainer's REAL credentials. `build_tree` deletes the copy's
+    # `.gitignore` (see the module docstring), which is precisely what stops git
+    # from suppressing this one, and nothing in `_is_developer_state` used to
+    # match it — so every local run of this suite wrote a tarball containing
+    # ANTHROPIC_API_KEY, GH_TOKEN and PYPI_TOKEN into a pytest temp dir, and
+    # every assertion passed. CI never saw it: `actions/checkout` has no `.env`.
+    # Skipped here so the secret never leaves the repo directory at all, and a
+    # FAKE one is planted below so the assertion still has something to catch.
+    ".env",
+    ".env.local",
 )
 
 # Content files that MUST survive every exclusion, keyed by their in-wheel path.
@@ -175,6 +185,8 @@ REQUIRED_EXCLUDES = {
     "CLAUDE.md",
     "AGENTS.md",
     "aelix-session-*.html",
+    ".env",
+    ".env.local",
 }
 
 _UV = shutil.which("uv")
@@ -210,6 +222,11 @@ def _is_developer_state(name: str) -> bool:
         or name.endswith((".pyc", ".pyo"))
         or Path(name).name in {"CLAUDE.md", "AGENTS.md"}
         or (Path(name).name.startswith("aelix-session-") and name.endswith(".html"))
+        # #190 — `.env` / `.env.local` are credentials, not merely local state.
+        # `.env.example` is deliberately NOT here: it carries zero values on any
+        # line and is the only human-readable enumeration of the supported
+        # environment variables, so it ships on purpose.
+        or Path(name).name in {".env", ".env.local"}
     )
 
 
@@ -281,6 +298,12 @@ def build_tree(tmp_path_factory: pytest.TempPathFactory) -> Path:
     _plant(root / "CLAUDE.md", "# probe\n")
     _plant(root / "AGENTS.md", "# probe\n")
     _plant(root / "aelix-session-packaging-probe.html", "<html></html>")
+    # #190 — stand-ins for the real credential files `_COPY_SKIP` now refuses to
+    # copy. Deliberately shaped like the real thing (a `KEY=value` line) so a
+    # future secret-scanning assertion has something to find, and deliberately
+    # fake so this repo never writes a live key to a temp dir.
+    _plant(root / ".env", "ANTHROPIC_API_KEY=sk-probe-not-a-real-key\n")
+    _plant(root / ".env.local", "PYPI_TOKEN=pypi-probe-not-a-real-token\n")
 
     # --- #143: the repo-root `.claude/` tree, which is what the sdist swept in.
     # `.claude/worktrees/<name>/` is a COMPLETE working copy of this repo that
@@ -328,8 +351,18 @@ def test_the_build_tree_really_has_no_gitignore_belt(build_tree: Path) -> None:
         build_tree / ".claude" / "worktrees" / "packaging-probe-session" / "pyproject.toml",
         build_tree / ".uv-cache" / "CACHEDIR.TAG",
         build_tree / "aelix-session-packaging-probe.html",
+        build_tree / ".env",
+        build_tree / ".env.local",
     ):
         assert probe.is_file(), f"scratch probe was not planted: {probe}"
+
+    # The other half of the #190 finding: the REAL one must not have travelled.
+    # `_COPY_SKIP` is what stops it, and a skip that silently stopped working
+    # would leave this test green while the secret sat in /tmp.
+    if (REPO_ROOT / ".env").is_file():
+        assert (build_tree / ".env").read_text() != (
+            REPO_ROOT / ".env"
+        ).read_text(), "the maintainer's real .env was copied into the build tree"
 
 
 @pytest.fixture(scope="module")
@@ -589,3 +622,207 @@ def test_every_build_target_declares_the_exclusions(name: str) -> None:
             f"{name}: [tool.hatch.build.targets.{target_name}] is missing "
             f"exclude patterns {sorted(missing)}"
         )
+
+
+# === #190 — the artifact the release actually publishes ======================
+#
+# WHY A FIFTH FIXTURE RATHER THAN NEW ASSERTIONS ON THE FOUR ABOVE. Those four
+# build from a `copytree` of the LIVE worktree, which is the right source for
+# what they assert (the exclude lists hold without the .gitignore belt) and the
+# wrong source for anything about size or inventory: the same commit measured
+# 6,341,061 B from a clean worktree and 10,325,521 B from a checkout carrying a
+# maintainer's untracked scratch. The module docstring above says exactly this —
+# "HOW BIG IS NOT A FIXED NUMBER" — and it is correct FOR THAT SOURCE. A build
+# seeded from `git ls-files` is a different animal: its file set is a pure
+# function of what is tracked, so "how big" and "what is in it" become stable
+# properties worth asserting.
+#
+# It is also the only fixture here that builds what `release.yml` builds.
+# `actions/checkout` is a fresh clone, so the release artifact contains tracked
+# files and nothing else — which is why #190's headline (10.2 MB, a scraped
+# GOV.UK captcha page, 3.7 MB of abandoned logo drafts) described a dirty local
+# build and not the published tarball. Every one of those files is untracked.
+# The real, tracked overage was `tests/` at 551 members / 24.5% of the tarball.
+
+
+def _tracked_top_level() -> set[str]:
+    out = subprocess.run(
+        ["git", "ls-files"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.split("\n")
+    return {line.split("/", 1)[0] for line in out if line.strip()}
+
+
+# Every top-level entry the published sdist is allowed to contain. An EXACT
+# allow-list, not a "known bad" list: a predicate that enumerates known-bad will
+# always trail the next stray file, and #190 is what that looks like — the
+# existing `_is_developer_state` is a real gate that does exactly what #111 B-7
+# built it for, and it passed a tarball with 551 test files in it because
+# nothing about `tests/` looks like developer state.
+#
+# Measured against history: 14 of these 24 entries were added after the initial
+# commit, on 7 distinct dates over 93 days. So this list needs a one-line edit
+# roughly every two weeks of active development — always alongside a deliberate
+# new top-level file, which is exactly the moment someone should be asked "is
+# this meant to be published?". Files added under `docs/`, `packages/`, `tests/`
+# and friends never touch it.
+ALLOWED_SDIST_TOP_LEVEL = frozenset(
+    {
+        # metadata hatchling generates
+        "PKG-INFO",
+        # the project itself
+        "packages",
+        "src",
+        "pyproject.toml",
+        "uv.lock",
+        ".python-version",
+        # what a consumer reads
+        "README.md",
+        "README.ko.md",
+        "CHANGELOG.md",
+        "LICENSE",
+        "NOTICE",
+        "THIRD-PARTY-NOTICES.md",
+        "TRADEMARK.md",
+        "SECURITY.md",
+        "RELEASING.md",
+        ".env.example",
+        "docs",
+        "site",
+        "sbom",
+        # how it is built, installed and released
+        ".github",
+        ".gitignore",
+        "install.sh",
+        "install.ps1",
+        "scripts",
+    }
+)
+
+# +26% over the artifact measured when this line was written (4,756,148 B), so
+# ordinary growth never trips it. Chosen against the failure it exists to catch
+# rather than against the current number alone: it still fails the pre-#190
+# tarball (6,343,886 B) and the dirty-worktree build (10,308,093 B) that
+# produced the issue's headline. A cap loose enough to admit those would be
+# decorative.
+MAX_SDIST_BYTES = 6_000_000
+
+
+@pytest.fixture(scope="module")
+def release_sdist(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, list[str]]:
+    """The root sdist, built from tracked files only — the release path.
+
+    Seeded with `git ls-files` piped through tar rather than `git archive HEAD`
+    so that UNCOMMITTED edits to tracked files are measured. Otherwise this gate
+    would only ever see the previous commit and could not fail on the change
+    that is being written.
+
+    `.gitignore` is deliberately KEPT here (unlike `build_tree`): the release
+    build has it, so removing it would measure something the release never does.
+    """
+    root = tmp_path_factory.mktemp("release") / "repo"
+    root.mkdir(parents=True)
+    names = subprocess.run(
+        ["git", "ls-files", "-z"],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        check=True,
+    ).stdout
+    tar_out = subprocess.run(
+        ["tar", "--null", "-T", "-", "-cf", "-"],
+        cwd=REPO_ROOT,
+        input=names,
+        capture_output=True,
+        check=True,
+    ).stdout
+    subprocess.run(
+        ["tar", "-x", "-C", str(root)], input=tar_out, capture_output=True, check=True
+    )
+
+    out_dir = root.parent / "dist"
+    _build(["--sdist"], root, out_dir)
+    tarballs = sorted(out_dir.glob("aelix-*.tar.gz"))
+    assert len(tarballs) == 1, f"expected one root sdist, got {tarballs}"
+    with tarfile.open(tarballs[0]) as tf:
+        members = tf.getnames()
+    return tarballs[0], members
+
+
+def test_the_release_sdist_fixture_is_seeded_from_tracked_files_only(
+    release_sdist: tuple[Path, list[str]],
+) -> None:
+    """Guards the guard, the same way `build_tree` does.
+
+    A fixture that silently produced an empty or tiny tarball would make both
+    assertions below pass while measuring nothing.
+    """
+    _, members = release_sdist
+    assert len(members) > 400, f"only {len(members)} members — fixture is broken"
+    for required in (
+        "pyproject.toml",
+        "README.md",
+        "LICENSE",
+        "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py",
+    ):
+        assert any(
+            n.split("/", 1)[1] == required for n in members if "/" in n
+        ), f"the release sdist is missing {required}"
+
+
+def test_the_release_sdist_carries_nothing_it_does_not_declare(
+    release_sdist: tuple[Path, list[str]],
+) -> None:
+    """The inventory assertion #190 asks for."""
+    _, members = release_sdist
+    top = {n.split("/", 1)[1].split("/", 1)[0] for n in members if "/" in n}
+    stray = sorted(top - ALLOWED_SDIST_TOP_LEVEL)
+    assert not stray, (
+        "the published sdist would carry top-level entries nothing declares: "
+        f"{stray}. Either exclude them in [tool.hatch.build.targets.sdist] or "
+        "add them to ALLOWED_SDIST_TOP_LEVEL — deliberately, having decided "
+        "they belong in a permanent public artifact."
+    )
+    # And the three the issue named, by name, so a regression reads as itself
+    # rather than as a nameless allow-list violation.
+    for gone in ("tests", "citations.lock.json", "SLICE-STATUS.md"):
+        assert gone not in top, f"{gone} is back in the published sdist"
+    # `.env.example` ships on purpose; a blanket `.env*` exclusion would take it
+    # with the credentials and this is where that would be noticed.
+    assert ".env.example" in top
+    assert ".env" not in top
+
+
+def test_the_release_sdist_stays_under_the_size_cap(
+    release_sdist: tuple[Path, list[str]],
+) -> None:
+    """The bulk assertion #190 asks for.
+
+    PyPI never allows a filename to be re-uploaded, so the first `0.1.0` sdist
+    is permanent. This is the cheapest possible check that nobody has quietly
+    added a few megabytes to it.
+    """
+    path, _ = release_sdist
+    size = path.stat().st_size
+    assert size <= MAX_SDIST_BYTES, (
+        f"the published sdist is {size:,} B, over the {MAX_SDIST_BYTES:,} B cap. "
+        "Find what grew (`tar -tvzf` and sort by size) before raising this."
+    )
+
+
+def test_the_inventory_check_catches_a_stray(
+    release_sdist: tuple[Path, list[str]],
+) -> None:
+    """The positive control. A clean inventory proves nothing on its own.
+
+    Runs the same set arithmetic the real assertion runs, over the real member
+    list plus one planted name, so a refactor that broke the top-level parse
+    (an off-by-one on the `split`, say) fails here rather than going quietly
+    permissive.
+    """
+    _, members = release_sdist
+    planted = [*members, "aelix-0.1.0b1/uk4414917.html"]
+    top = {n.split("/", 1)[1].split("/", 1)[0] for n in planted if "/" in n}
+    assert sorted(top - ALLOWED_SDIST_TOP_LEVEL) == ["uk4414917.html"]

@@ -47,6 +47,8 @@ exclude = [
   "CLAUDE.md",
   "AGENTS.md",
   "aelix-session-*.html",
+  ".env",
+  ".env.local",
 ]
 
 [tool.hatch.build.targets.sdist]
@@ -63,4 +65,6 @@ exclude = [
   "CLAUDE.md",
   "AGENTS.md",
   "aelix-session-*.html",
+  ".env",
+  ".env.local",
 ]
