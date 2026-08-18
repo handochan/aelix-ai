@@ -3133,13 +3133,31 @@ def _inject_truststore() -> None:
     Best-effort: a missing wheel, an unsupported platform, or a truststore
     backend that cannot reach the platform store must degrade to certifi (the
     previous behavior), never block launch.
+
+    Best-effort is not the same as SILENT, and this used to be both. A bare
+    ``except Exception: pass`` left "truststore is doing its job" and "truststore
+    raised and we swallowed it" with identical observable state, so a user whose
+    system-wide CA had gone invisible saw only an opaque TLS failure at their
+    first model request — and neither they nor we could tell which half they were
+    in. The outcome is now recorded for ``aelix status``. The swallowing itself is
+    unchanged: launch still survives any trust-store defect.
     """
 
+    error: BaseException | None = None
     try:
         import truststore
 
         truststore.inject_into_ssl()
-    except Exception:  # noqa: BLE001 - launch must survive any trust-store defect
+    except Exception as exc:  # noqa: BLE001 - launch must survive any trust-store defect
+        error = exc
+
+    # Guarded separately, and deliberately last: the receipt is a diagnostic, and
+    # a diagnostic that can break launch is worse than the blindness it cures.
+    try:
+        from aelix_ai.providers._trust_store import record_injection
+
+        record_injection(error)
+    except Exception:  # noqa: BLE001 - a receipt must never be the thing that fails
         pass
 
 

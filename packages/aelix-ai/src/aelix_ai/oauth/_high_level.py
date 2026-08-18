@@ -59,8 +59,27 @@ async def get_oauth_api_key_from_credentials(
         try:
             creds = await provider.refresh_token(creds)
         except Exception as exc:
+            # The cause goes in the MESSAGE, not just in ``__cause__``.
+            #
+            # This runs on every stream establishment once a short-lived token
+            # expires, and the harness's own auto-retry classifies by reading
+            # ``str(exc)`` against ``harness/core._RETRYABLE_ERROR_PATTERN``.
+            # Measured, with controls:
+            #
+            #   "Failed to refresh OAuth token for github-copilot"          -> no match
+            #   ...that, plus "502 Bad Gateway from https://api.github.com"  -> matches "502"
+            #   ...plus "401 Unauthorized from https://api.github.com"       -> no match
+            #
+            # So the old message DISCARDED the one token that would have earned a
+            # retry, while a genuine 401 correctly stays terminal either way.
+            #
+            # The trade, stated: the pattern matches a bare "502" anywhere, so a
+            # terminal error whose quoted server body happens to contain such a
+            # number can now be retried a few times before failing. That costs
+            # seconds; the old behaviour cost the turn.
+            detail = str(exc).strip() or type(exc).__name__
             raise RuntimeError(
-                f"Failed to refresh OAuth token for {provider_id}"
+                f"Failed to refresh OAuth token for {provider_id}: {detail[:300]}"
             ) from exc
 
     api_key = provider.get_api_key(creds)

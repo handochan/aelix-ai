@@ -67,6 +67,95 @@ _MIN_INTERVAL_MS: int = 1000
 # 30s timeout on HTTP requests — mirrors the Anthropic flow's pattern.
 _HTTP_TIMEOUT_SECONDS: float = 30.0
 
+# How much of a server body may travel inside an exception message (issue #186).
+#
+# Not a taste call. The body #184's reporter actually received was **54,889
+# characters over 164 lines** — GitHub's "Unicorn" page, most of it a single
+# 45,736-character base64 PNG data URI — and every byte was interpolated raw into
+# a ``RuntimeError`` the TUI printed. At 80 columns that is ~815 rendered rows:
+# the entire transcript, gone.
+#
+# Bounded HERE as well as at the render site, and that is not belt-and-braces:
+# these exceptions also reach logs, ``--print`` output and the JSON modes, none
+# of which pass through the TUI. An unbounded server body inside an exception
+# message makes every future consumer responsible for remembering.
+_ERROR_BODY_MAX_CHARS: int = 512
+
+# Statuses worth trying again during a device-code login (issue #184).
+#
+# 🔴 DELIBERATELY NOT 429, and this is measured rather than argued. GitHub returns
+# device-flow protocol errors — INCLUDING its own poll rate limit — as **HTTP 200
+# with a JSON body**::
+#
+#     bogus device_code  -> 200 OK  {"error": "incorrect_device_code", ...}
+#     bad grant_type     -> 200 OK  {"error": "incorrect_client_credentials", ...}
+#     polling too fast   -> 200 OK  {"error": "slow_down", ...}
+#
+# So a non-2xx 429 from this endpoint is never the documented backoff signal; it
+# is unexplained infrastructure state — edge abuse protection, or the OAuth app's
+# hourly token-request block, which GitHub says leaves you "temporarily blocked".
+# Retrying into an abuse limiter extends the block. ``slow_down`` is already
+# honoured on the 200 path below, where it actually arrives.
+#
+# 409 and 425 are absent too: both come from a provider-stream retry set that is
+# an aelix invention (pi's own set is ``{429,500,502,503,504}`` and off by
+# default), neither has a GitHub OAuth meaning, and retrying an unknown
+# server-side state against a SINGLE-USE device code is not a safe default. 408
+# stays — it is an unambiguous "I did not process your request".
+_TRANSIENT_STATUS: frozenset[int] = frozenset({408, 500, 502, 503, 504})
+
+# Transport failures that say nothing about whether the request was valid.
+_TRANSIENT_EXCEPTIONS: tuple[type[Exception], ...] = (
+    httpx.ConnectError,
+    httpx.ConnectTimeout,
+    httpx.ReadError,
+    httpx.ReadTimeout,
+    httpx.WriteError,
+    httpx.WriteTimeout,
+    httpx.RemoteProtocolError,
+    httpx.PoolTimeout,
+)
+
+# Consecutive transient answers tolerated before the poll gives up. The loop is
+# already bounded by ``expires_in`` (GitHub gives 899s, ~149 polls), so this cap
+# is not what stops a runaway — it is what stops us from spending a user's whole
+# 15-minute window on an endpoint that is simply down.
+_MAX_CONSECUTIVE_TRANSIENT: int = 5
+
+
+def _http_error(response: httpx.Response, url: str) -> RuntimeError:
+    """The one shape for "this endpoint answered, and not with success".
+
+    Three things the previous ``f"{status} {reason}: {text}"`` did not do:
+
+    * **Bound and neuter the body.** ``rich`` strips five control codes and ESC is
+      not among them, so a body carrying ``\\x1b[2J`` erased the transcript —
+      measured on a real pty, not inferred.
+    * **Name the endpoint.** "502 Bad Gateway" alone does not say which of this
+      flow's three hosts failed, and they sit on different networks:
+      ``github.com`` for the device grant, ``api.github.com`` for the Copilot
+      token exchange. A corporate proxy commonly intercepts one and not the other,
+      which is exactly the #99 shape.
+    * **Attribute the quotation.** Neutering stops a body from STEERING the
+      terminal; it does not stop it from LYING. ``server said:`` marks the
+      remainder as the server's words, so a body containing "signed in
+      successfully" cannot be read as ours.
+
+    ``Retry-After`` is quoted, never slept on: GitHub documents values in the
+    hundreds of seconds, and a login flow that freezes for five minutes is a hang.
+    """
+
+    from aelix_ai.utils.terminal_text import safe_for_terminal
+
+    detail = f"{response.status_code} {response.reason_phrase} from {url}"
+    retry_after = response.headers.get("retry-after")
+    if retry_after:
+        detail += f" (Retry-After: {safe_for_terminal(retry_after, max_chars=32)})"
+    body = safe_for_terminal(response.text, max_chars=_ERROR_BODY_MAX_CHARS).strip()
+    if body:
+        detail += f"; server said: {body}"
+    return RuntimeError(detail)
+
 
 def normalize_domain(input_str: str) -> str | None:
     """Pi parity: ``github-copilot.ts:46-55`` ``normalizeDomain``.
@@ -163,9 +252,7 @@ async def _start_device_flow(domain: str) -> dict[str, Any]:
             },
         )
         if response.status_code < 200 or response.status_code >= 300:
-            raise RuntimeError(
-                f"{response.status_code} {response.reason_phrase}: {response.text}"
-            )
+            raise _http_error(response, urls["device_code_url"])
         data = response.json()
 
     if not isinstance(data, dict):
@@ -217,51 +304,100 @@ async def _poll_for_github_access_token(
     interval_ms = max(_MIN_INTERVAL_MS, int(interval_seconds * 1000))
     interval_multiplier = INITIAL_POLL_INTERVAL_MULTIPLIER
     slow_down_responses = 0
+    consecutive_transient = 0
+    last_transient: RuntimeError | None = None
 
     # Sprint 6e W6 (W4 M1): Pi polls in the order ``fetch → check →
     # sleep`` (github-copilot.ts:188-226). The Aelix port originally
     # slept BEFORE the first fetch, which added one interval's worth of
     # latency to every Copilot login. The ordering now matches Pi.
     while int(time.time() * 1000) < deadline_ms:
-        async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT_SECONDS) as client:
-            response = await client.post(
-                urls["access_token_url"],
-                headers={
-                    "Accept": "application/json",
-                    "Content-Type": "application/x-www-form-urlencoded",
-                    "User-Agent": "GitHubCopilotChat/0.35.0",
-                },
-                data={
-                    "client_id": CLIENT_ID,
-                    "device_code": device_code,
-                    "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
-                },
-            )
-            if response.status_code < 200 or response.status_code >= 300:
-                raise RuntimeError(
-                    f"{response.status_code} {response.reason_phrase}: {response.text}"
+        # Issue #184: this loop used to abandon a login on the FIRST non-2xx, and
+        # the reporter's was a 502 — after they had already approved in the
+        # browser. A completed approval is not recoverable by retrying the flow;
+        # the device code is single-use and they must start over. So a transient
+        # answer here FALLS THROUGH to the sleep below rather than raising.
+        #
+        # 🔴 The natural-looking `continue` is a defect, not a style choice: it
+        # skips the sleep and hot-loops GitHub with zero delay, which is how you
+        # earn the abuse limiter this branch is trying to survive.
+        transient: str | None = None
+        raw: Any = None
+        try:
+            async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT_SECONDS) as client:
+                response = await client.post(
+                    urls["access_token_url"],
+                    headers={
+                        "Accept": "application/json",
+                        "Content-Type": "application/x-www-form-urlencoded",
+                        "User-Agent": "GitHubCopilotChat/0.35.0",
+                    },
+                    data={
+                        "client_id": CLIENT_ID,
+                        "device_code": device_code,
+                        "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+                    },
                 )
-            raw = response.json()
-
-        if isinstance(raw, dict) and isinstance(raw.get("access_token"), str):
-            return str(raw["access_token"])
-
-        if isinstance(raw, dict) and isinstance(raw.get("error"), str):
-            error = raw["error"]
-            description = raw.get("error_description")
-            new_interval = raw.get("interval")
-            if error == "authorization_pending":
-                pass  # fall through to the post-iteration sleep.
-            elif error == "slow_down":
-                slow_down_responses += 1
-                if isinstance(new_interval, (int, float)) and new_interval > 0:
-                    interval_ms = int(new_interval) * 1000
+                if response.status_code < 200 or response.status_code >= 300:
+                    error_ = _http_error(response, urls["access_token_url"])
+                    if response.status_code not in _TRANSIENT_STATUS:
+                        raise error_
+                    transient, last_transient = f"HTTP {response.status_code}", error_
                 else:
-                    interval_ms = max(_MIN_INTERVAL_MS, interval_ms + 5000)
-                interval_multiplier = SLOW_DOWN_POLL_INTERVAL_MULTIPLIER
-            else:
-                suffix = f": {description}" if description else ""
-                raise RuntimeError(f"Device flow failed: {error}{suffix}")
+                    try:
+                        raw = response.json()
+                    except ValueError as exc:
+                        # A 2xx whose body is not JSON is edge interposition —
+                        # the same shape as #184's HTML page, arriving with a
+                        # success status. Treated as transient rather than
+                        # escaping as a raw JSONDecodeError traceback.
+                        transient = "non-JSON body on a 2xx"
+                        last_transient = _http_error(
+                            response, urls["access_token_url"]
+                        )
+                        last_transient.__cause__ = exc
+        except _TRANSIENT_EXCEPTIONS as exc:
+            transient = f"{type(exc).__name__}"
+            last_transient = RuntimeError(
+                f"Could not reach {urls['access_token_url']} — "
+                f"{type(exc).__name__}: {exc}"
+            )
+            last_transient.__cause__ = exc
+
+        if transient is not None:
+            consecutive_transient += 1
+            # Consecutive, not cumulative: this loop runs ~149 times over the
+            # 15-minute window GitHub gives a device code, and a cumulative
+            # counter would trip on ordinary background flakiness long before
+            # anything was actually wrong.
+            if consecutive_transient > _MAX_CONSECUTIVE_TRANSIENT and last_transient:
+                raise last_transient
+        else:
+            consecutive_transient = 0
+
+            if isinstance(raw, dict) and isinstance(raw.get("access_token"), str):
+                return str(raw["access_token"])
+
+            if isinstance(raw, dict) and isinstance(raw.get("error"), str):
+                error = raw["error"]
+                description = raw.get("error_description")
+                new_interval = raw.get("interval")
+                if error == "authorization_pending":
+                    pass  # fall through to the post-iteration sleep.
+                elif error == "slow_down":
+                    slow_down_responses += 1
+                    if isinstance(new_interval, (int, float)) and new_interval > 0:
+                        interval_ms = int(new_interval) * 1000
+                    else:
+                        interval_ms = max(_MIN_INTERVAL_MS, interval_ms + 5000)
+                    interval_multiplier = SLOW_DOWN_POLL_INTERVAL_MULTIPLIER
+                else:
+                    # Every other body error is TERMINAL and stays terminal:
+                    # access_denied, expired_token, incorrect_device_code,
+                    # device_flow_disabled. Retrying any of them re-sends a
+                    # single-use code that the server has already ruled on.
+                    suffix = f": {description}" if description else ""
+                    raise RuntimeError(f"Device flow failed: {error}{suffix}")
 
         # Sprint 6e W6 (W4 M1 + P-144): sleep AFTER the fetch+check, Pi
         # parity. ``math.ceil`` matches Pi's ``Math.ceil(intervalMs *
@@ -274,6 +410,14 @@ async def _poll_for_github_access_token(
         wait_ms = min(math.ceil(interval_ms * interval_multiplier), remaining_ms)
         await asyncio.sleep(wait_ms / 1000.0)
 
+    # The deadline won. Say WHY it won, because the three reasons need three
+    # different actions from the user and "Device flow timed out" named none of
+    # them.
+    if consecutive_transient > 0 and last_transient is not None:
+        raise RuntimeError(
+            f"Device flow timed out — the last {consecutive_transient} attempt(s) to "
+            f"reach GitHub failed. {last_transient}"
+        ) from last_transient
     if slow_down_responses > 0:
         raise RuntimeError(
             "Device flow timed out after one or more slow_down responses. "
@@ -319,9 +463,7 @@ async def refresh_github_copilot_token(
             },
         )
         if response.status_code < 200 or response.status_code >= 300:
-            raise RuntimeError(
-                f"{response.status_code} {response.reason_phrase}: {response.text}"
-            )
+            raise _http_error(response, urls["copilot_token_url"])
         raw = response.json()
 
     if not isinstance(raw, dict):
