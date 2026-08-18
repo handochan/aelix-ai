@@ -74,12 +74,12 @@ recommendation was wrong:
 | ground | text | band edge, dark terminals | band edge, light terminals | schemes where the band vanishes |
 | --- | ---: | ---: | ---: | ---: |
 | as shipped (each theme's slot 6) | theme's own | 6.24 | 3.30 | 0/25 |
-| **`#0f3a3f` — my recommendation** | 11.12 | **1.33** | 11.47 | **14/25** |
-| Slate veil `#8fadad` | 7.66 | 6.83 | 2.23 | 0/25 |
-| **Harbour `#83b0b4` — chosen** | 7.73 | 6.90 | 2.20 | 0/25 |
-| Shoal `#74b0b8` | 7.57 | 6.75 | 2.25 | 0/25 |
-| Lagoon `#62b0bc` | 7.40 | 6.60 | 2.30 | 0/25 |
-| Near today `#50b8c8` | 7.90 | 7.05 | 2.16 | 0/25 |
+| **`#0f3a3f` — my recommendation** | 11.12 | **1.33** | 11.85 | **14/25** |
+| Slate veil `#8fadad` | 7.66 | 6.83 | 2.30 | 0/25 |
+| **Harbour `#83b0b4` — chosen** | 7.73 | 6.90 | 2.28 | 0/25 |
+| Shoal `#74b0b8` | 7.57 | 6.75 | 2.33 | 0/25 |
+| Lagoon `#62b0bc` | 7.40 | 6.60 | 2.38 | 0/25 |
+| Near today `#50b8c8` | 7.90 | 7.05 | 2.23 | 0/25 |
 
 A dark ground leaves the words perfectly legible and stops the bar being a bar on the
 fifteen dark terminals in the sample. **The palette-slot design never had that problem,
@@ -119,7 +119,7 @@ columns are the worst of the 24 schemes.
 | Slate veil | `#04171a` | `#8fadad` | 7.66 | 8.78 (`#87afaf`) | 2.82 | 1.67 | 30 | quieter dial position |
 | Shoal | `#04171a` | `#74b0b8` | 7.57 | 8.78 (`#87afaf`) | 2.82 | 1.67 | 68 | louder dial position |
 | Lagoon | `#04171a` | `#62b0bc` | 7.40 | 8.24 (`#5fafaf`) | 2.82 | 1.67 | 90 | louder still |
-| Near today | `#04171a` | `#50b8c8` | 7.90 | 8.60 (`#5fafd7`) | 2.82 | 1.67 | 120 | not "toned down" |
+| Near today | `#04171a` | `#50b8c8` | 7.90 | 8.60 (`#5fafd7`) | **1.67** | 1.67 | 120 | not "toned down"; its ground reduces to slot 6, not slot 7 |
 | Dusty cyan | `#0c2226` | `#a8c8cc` | 9.27 | 13.52 (`#afd7d7`) | 2.82 | 1.67 | 36 | light edge 1.71, 1/25 vanish |
 | Cyan Mist | `#08191c` | `#badede` | 12.51 | 13.52 (`#afd7d7`) | 2.82 | 1.67 | 36 | light edge 1.38, **10/25 vanish** |
 | Deep teal wash | `#eef4f4` | `#0f3a3f` | 11.12 | 7.49 (`#005f5f`) | 2.10 | **1.08** | 48 | **14/25 vanish** |
@@ -229,7 +229,7 @@ this, being byte-identical at every depth.
 
 - **`standard` and tmux-on-16-colour remain palette-dependent** and no colour choice
   changes that. They are recorded above rather than fixed.
-- **The light-terminal edge is 2.20 against the old style's 3.30.** A light band on a
+- **The light-terminal edge is 2.28 against the old style's 3.30.** A light band on a
   white page is inherently a smaller step than on a black one; every candidate that
   improved it gave up more elsewhere.
 - **`tui/themes.py` is still not consulted by this module.** Twenty other styles in

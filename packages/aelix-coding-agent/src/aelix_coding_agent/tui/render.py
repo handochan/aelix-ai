@@ -334,7 +334,7 @@ _USER_MESSAGE_LABELS: dict[str, str] = {
 #: right — its ground is each theme's own slot 6, a saturated cyan on that
 #: theme's background, so a large edge by construction. Keeping the polarity —
 #: dark ink on a light-ish cyan — keeps it: 6.90 median on dark terminals and
-#: 2.20 on light ones, against the old style's 6.24 and 3.30.
+#: 2.28 on light ones, against the old style's 6.24 and 3.30.
 #:
 #: The hue is cyan because that is already aelix's colour — the tool-card marker
 #: and header are cyan, so the bar reads as part of the same product rather than
