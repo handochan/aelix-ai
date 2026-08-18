@@ -378,6 +378,90 @@ def _state_counts(snapshots: Sequence[SubagentProgress | None]) -> list[str]:
     return [f"{count} {label}" for label, count in counts.items() if count]
 
 
+def _head_and_counts(
+    snapshots: Sequence[SubagentProgress | None],
+) -> tuple[str, list[str]]:
+    """``("agent scout ×4", ["2 running", "1 done", "1 queued"])``.
+
+    ``("", [])`` when there is nothing to say — no members, or not one of them has
+    published, so the profile name is not knowable.
+
+    Split out so :func:`format_aggregate_status` can hand the same two strings to
+    :func:`_model_term`, which sizes the model against them. It was briefly called
+    from :func:`format_panel` as well, to decide whether the rows should suppress
+    the model; that question turned out not to need an answer — see the comment
+    there — but this stayed split, because "the head and the counts" is one idea
+    and the width rule reads better naming it.
+    """
+
+    total = len(snapshots)
+    live = [snapshot for snapshot in snapshots if snapshot is not None]
+    if total == 0 or not live:
+        return "", []
+    return f"agent {_short_profile(live[0].profile)} ×{total}", _state_counts(snapshots)
+
+
+_MODEL_MIN_CELLS = 12
+"""Narrowest CUT the batch model is worth showing in the aggregate head.
+
+IT GOVERNS TRUNCATION, NOT PRESENCE, and the first draft of this line said "below
+this the model is not named at all" — which is false for every id short enough to
+fit whole. ``gpt-5`` is five cells and is named in five;
+:func:`_model_term` reaches this floor only once it has to CUT.
+
+12 is the same number :data:`_NUMBERS_MIN_CELLS` uses and for the same reason: it
+is the width at which a truncated string still identifies what it came from.
+MEASURED, ``_flatten`` at limit 12 gives ``github-copi…`` and ``anthropic/c…`` —
+an earlier draft of this line offered ``github-copil…``, which is 13 cells and is
+therefore a string this constant can never produce.
+
+THERE IS NO FALLBACK BELOW IT, and the draft that said there was made this
+constant look cheaper than it is. "The rows carry the model when the head does
+not" is false wherever it matters: the label column has already taken the rows'
+width, so MEASURED against a 28-cell provider-scoped id the header's remaining
+room beats a row's at every width from 54 up, and below 52 a row has two cells.
+Dropping the term here means the panel does not name the model, and
+:func:`format_panel` spends the rows' cells on the tool name instead — which is
+the better answer at a narrow terminal, but it is a CHOICE and not a fallback."""
+
+
+def _model_term(
+    head: str, counts: Sequence[str], model: str, cap: int
+) -> str:
+    """What the head can afford to say about the batch's model, or ``""``.
+
+    THE COUNTS ARE PAID FIRST. They are the substance of this row — a batch
+    statusline that cannot say how many members are queued has stopped doing its
+    job — and they are bounded and few, while the model is one unbounded
+    provider-scoped string. So the model gets the remainder, flattened into it,
+    and is dropped when the remainder is not worth spending.
+
+    SPENDING THE REMAINDER IS FREE. It is by definition what the head and the
+    counts left, so the only thing a term here displaces is the trailing numbers,
+    which are appended afterwards and only while they fit. That is why the floor
+    is about legibility alone (:data:`_MODEL_MIN_CELLS`) and not about what the
+    term costs.
+
+    Also bounded by ``_MAX_PROFILE_CHARS * 2`` regardless of how much room a tiny
+    batch leaves, so the head cannot grow without limit on a wide terminal.
+
+    Returning ``""`` for an empty ``model`` is the statusline's path: that surface
+    passes no model and must be byte-identical to what it always rendered.
+    """
+
+    if not model:
+        return ""
+    flat = _flatten(model, limit=_MAX_PROFILE_CHARS * 2)
+    room = cap - cell_len(" · ".join([head, *counts])) - cell_len(" · ")
+    if cell_len(flat) <= room:
+        # It fits whole. The floor below is about what a CUT one is worth, so it
+        # must not reject a short id that needs no cutting.
+        return flat
+    if room < _MODEL_MIN_CELLS:
+        return ""
+    return _flatten(flat, limit=room)
+
+
 def format_aggregate_status(
     snapshots: Sequence[SubagentProgress | None],
     *,
@@ -404,12 +488,59 @@ def format_aggregate_status(
     the real one — the same rule ``aggregate.roll_up_usage`` follows. ``cost``
     IS a flow and IS summed.
 
-    WIDTH. The head and the state counts are the substance and are never
-    dropped; the trailing numbers are appended only while they fit inside
-    :data:`AGGREGATE_MAX_CHARS`, right to left. The final hard truncation is
-    reachable only by a pathological count set (five non-zero classes at a wide
-    profile name) and exists so this function can promise a bound rather than
-    hope for one.
+    WIDTH. The head and the state counts are the substance; the trailing numbers
+    are appended only while they fit inside :data:`AGGREGATE_MAX_CHARS`, right to
+    left, and the closing truncation is the backstop for the arithmetic.
+
+    THE COUNTS ARE WHAT ``extra_head`` IS SIZED AGAINST, and that is the third
+    correction this pair has needed. Two earlier rules both failed, in opposite
+    directions:
+
+    * conditional on the WHOLE term fitting — with one queued member the
+      head, model and counts join at 77 cells against a cap of 76 — the head and
+      the counts are 46 of those — so a model id
+      that would have fitted truncated was dropped outright and every row carried
+      it again;
+    * appended UNCONDITIONALLY — position was supposed to protect the counts,
+      but the closing truncation reaches them anyway. MEASURED at cap 76 with
+      ``github-copilot/gpt-5.6-codex`` (28 cells) and three count classes:
+      ``… · 2 running · 1 done · 1 queu…`` — a count cut mid-word, and the
+      elapsed, the tokens and the cost gone with it. At nine members with five
+      count classes the truncation ate ``1 queued`` entirely while
+      :data:`PANEL_MAX_ROWS` dropped the queued member's own row, so the word
+      appeared NOWHERE in the panel — the exact misreading :func:`_queued_line`
+      exists to prevent. The docstring at the time claimed the counts were "never
+      dropped" and that the hard truncation was "reachable only by a pathological
+      count set"; both were false in an ordinary batch.
+
+    :func:`_model_term` is the rule now: the model gets the cells the head and the
+    counts leave, truncated to fit, and is omitted entirely below
+    :data:`_MODEL_MIN_CELLS`. The term it is shown as is then a truncation the
+    reader can SEE rather than a silent one.
+
+    WHEN IT IS OMITTED, NOTHING ELSE NAMES IT, and the first draft of this
+    paragraph claimed the panel's rows did. They cannot: the label column has
+    already taken their width. See :func:`format_panel`, which measures both sides
+    and spends the rows on the tool name instead.
+
+    THE COUNTS ARE STILL NOT UNCONDITIONAL, and saying they were is the mistake
+    this paragraph replaced. What changed is that the MODEL can no longer displace
+    one. The closing truncation still reaches them when the head and the counts
+    ALONE exceed the cap, because at that point there is nothing left to give.
+
+    WHAT DECIDES THAT IS THE SPINE — the head joined to the five counts — and not a
+    member count, which is what two earlier drafts of this paragraph both got
+    wrong. The counts are spelled in decimal, so their width depends on how the
+    members SPLIT across the classes and not on how many there are: MEASURED at
+    cap 76 with a 5-cell profile and all five classes non-zero, some splits of 170
+    members are already over while some splits of 600 still fit, so "survives to
+    495" and "first cut at 484" are both samples of a scatter reported as a
+    ceiling. The one clean statement is at the other end: a 16-cell profile name
+    is over at FIVE members (spine 80), because the name alone spends what the
+    counts need. Neither shape reaches a real batch — one ``agent()`` call is a
+    handful of tasks under one profile — but the bound is arithmetic and this
+    docstring should say what governs it rather than quote a number that does
+    not.
 
     ``extra_head`` appends one term to the head, and ONLY :func:`format_panel`
     passes it — the panel states the batch model there because it took that
@@ -418,38 +549,20 @@ def format_aggregate_status(
     four characters of headroom under :data:`AGGREGATE_MAX_CHARS` at S10's own
     worked example and a model term does not fit in them. Being a parameter
     rather than a second function is what keeps the two surfaces unable to state
-    a different fact.
-
-    IT IS APPENDED UNCONDITIONALLY, and that is the second correction this pair
-    has needed. Making it conditional on the counts still fitting looked like the
-    careful choice and was measured to be the expensive one: with one queued
-    member the head-plus-counts join lands at 77 cells against a cap of 76, so
-    the model was dropped here — and the panel's only fallback is to let every
-    row carry it again, which spends 28 cells on a string identical down the
-    whole column to save 31 in the header. Position is what protects it: the term
-    sits between the profile and the counts, so the right-to-left tail drop and
-    the closing truncation reach the COUNTS first, and the panel's rows state
-    every member's state anyway. The statusline surface, which has no rows and
-    where the counts are the whole substance, passes no ``extra_head`` and is
-    untouched by this.
+    a different fact, and the statusline — which has no rows and where the counts
+    are the whole substance — passes no ``extra_head`` and is untouched by this.
     """
 
-    total = len(snapshots)
-    live = [snapshot for snapshot in snapshots if snapshot is not None]
-    if total == 0 or not live:
+    head, counts = _head_and_counts(snapshots)
+    if not head:
         return ""
+    live = [snapshot for snapshot in snapshots if snapshot is not None]
 
-    head = f"agent {_short_profile(live[0].profile)} ×{total}"
-    counts = _state_counts(snapshots)
-    if extra_head:
-        # BEFORE THE COUNTS, WHICH IS WHAT MAKES IT SURVIVE. Everything that
-        # shortens this row — the tail loop below and the closing truncation —
-        # takes from the right, so a term appended here is the last thing either
-        # can reach. That ordering replaces a fit test that measured
-        # head-plus-counts against the cap: the test was true for a bare model id
-        # and false for a provider-scoped one, and its false arm cost more than it
-        # saved (see the docstring).
-        head = f"{head} · {_flatten(extra_head, limit=_MAX_PROFILE_CHARS * 2)}"
+    term = _model_term(head, counts, extra_head, cap)
+    if term:
+        # BEFORE THE COUNTS, so the reader meets the batch's identity first; the
+        # width it is allowed to take was already decided against them.
+        head = f"{head} · {term}"
     text = " · ".join([head, *counts])
 
     tail = [f"{max(item.elapsed_ms for item in live) / 1000:.0f}s"]
@@ -580,24 +693,39 @@ column that costs width and says nothing."""
 _NUMBERS_MIN_CELLS = 12
 """What the job-label column must leave for the numbers half of a row.
 
-The label column is a FIXED cost paid BEFORE the state, so it is the thing that
-decides whether the state is visible at all. The numbers begin with the state
-word — ``_panel_row`` puts it first — so this reserve is really "always leave
-room for the state and a hint of the elapsed": the widest state string is
-``starting`` at 8 cells, and 12 holds it plus the ellipsis and the start of the
-next term.
+The label column is a FIXED cost paid BEFORE the numbers, so it is the thing that
+decides whether the state is visible at all. On the ``tasks`` path the numbers
+begin with the state word — ``_panel_row`` is called with ``state_first`` there,
+which is what makes the state the last thing this reserve can lose. MEASURED at
+limit 12, ``starting · 33s`` renders as ``starting · …``: the widest state word
+is 8 cells and 12 holds it, the separator and the ellipsis. NOTHING of the next
+term survives, and an earlier draft of this paragraph claimed it did.
 
 A RESERVE RATHER THAN A CEILING, and that replaces a constant cap of 24 cells
 that was measured on the wrong axis. The cap was chosen at a 40-column terminal,
 where it let 2 of 4 rows keep a full state word against 0 of 4 at 28 and above.
 What was never measured is what it cost everywhere else: a batch fanned out over
 one verb — ``port the retry backoff to google`` / ``… to openai`` / ``… to
-azure`` / ``… to vertex``, 32 cells each — truncates to a common 24-cell prefix,
-so all four rows render the SAME string and the panel stops answering the
+azure`` / ``… to vertex``, 32/32/31/32 cells — truncates to a common 24-cell
+prefix, so all four rows render the SAME string and the panel stops answering the
 question it was added to answer. MEASURED on that batch: 1 distinct label at the
-cap, 4 without it. Sizing from the labels and reserving for the numbers keeps all
-four, and it keeps the state too, because the batch model moved off the rows for
-good and gave the numbers back 28 cells (see :func:`format_aggregate_status`).
+cap, 4 without it.
+
+WHAT REMOVING THE CAP COSTS, stated rather than claimed away. It is not free
+space that is recovered — MEASURED on that same batch at 80 columns, the capped
+build's rows were 78/78/78/40 cells, not rows with room to spare. The cells the
+elision saved were spent on the numbers, so removing it spends them back: with a
+49-cell label the numbers half is 19 cells and a row reads
+``running · read · 1…`` where the capped build read
+``running · read · 12s · 1.5k tok · $0.0600``. Per-member cost and the tail of
+the elapsed are the price of four labels a user can tell apart, which is the
+trade this phase was asked to make; the batch's cost is still in the header
+whenever the aggregate's own budget reaches it.
+
+The batch model moved off the rows only WHEN THE MEMBERS AGREE — ``_batch_model``
+returns ``""`` when two children report different strings, and then the rows
+carry it again (``_panel_row`` says so in its own comment). It is worth
+31 cells there, not the 28 an earlier draft of this paragraph claimed.
 
 The 40-column terminal still loses the tail of the numbers, which is the
 degradation ``_composed_row`` documents and left-packing exists to bound. The cap
@@ -800,32 +928,39 @@ def format_panel(
     # header is budgeted two narrower. Passed as a CAP rather than clamped after,
     # so the existing "drop a whole trailing number" logic does the shortening
     # instead of a cut landing mid-``$0.00…``.
-    header = format_aggregate_status(
-        snapshots,
-        extra_head=model,
-        cap=min(budget, AGGREGATE_MAX_CHARS) - (cell_len(_GUTTER) if tasks else 0),
-    )
-    # THE ROWS HIDE THE MODEL ONLY IF THE HEADER ACTUALLY SHOWED IT — READ OFF
-    # THE HEADER, never assumed from "a batch model exists". Assuming it was a
-    # hole: while the header appended the model conditionally, a provider-scoped
-    # id made the header drop it AND the rows suppress it, and the panel named no
-    # model at all (MEASURED at 15 and 32 characters: header=False, rows=False).
-    # The append is unconditional now, so this is True whenever there is a batch
-    # model — but it is still a test, because that is the property that failed and
-    # a constant here would stop noticing if the header changes again.
+    header_cap = min(budget, AGGREGATE_MAX_CHARS) - (cell_len(_GUTTER) if tasks else 0)
+    header = format_aggregate_status(snapshots, extra_head=model, cap=header_cap)
+    # ONE BATCH MODEL IS THE HEADER'S TO STATE, OR NOBODY'S — and that is the
+    # THIRD spelling of this line, chosen by measurement rather than by reasoning
+    # about which surface "should" own it.
     #
-    # Against the SAME expression the header builds, not against the raw string: a
-    # model wider than the head's flatten limit appears there truncated, and the
-    # header still names it, so the rows must still drop it.
-    shown_in_header = bool(model) and (
-        _flatten(model, limit=_MAX_PROFILE_CHARS * 2) in header
-    )
+    # Reading the answer back out of the rendered header looked careful and was
+    # measurably wrong. When the header cannot afford the model the rows cannot
+    # either, because the label column has already taken theirs: MEASURED on the
+    # four ``port the retry backoff to …`` labels with a 28-cell provider-scoped
+    # id, the header's remaining room beats a row's at every width from 54 up, and
+    # below 52 a row has TWO cells. So the "fallback" that justified letting the
+    # rows carry it prints ``g…`` — and pays for it with the tool name:
+    #
+    #     width 50, rows carry it   ``running · g…``
+    #     width 50, rows drop it    ``running · r…``   (``read_file``, truncated)
+    #     width 62, rows carry it   ``running · github-co…``
+    #     width 62, rows drop it    ``running · read_file…``
+    #
+    # ``read_file`` is the answer to "what is this member doing", which is the
+    # question this panel was added to answer; four characters of a provider name
+    # is not an answer to anything. So the model goes in the header when it fits
+    # there and NOWHERE when it does not, and the rows spend the cells on the
+    # tool. The rows still carry a model when the members DISAGREE — then it is
+    # the only thing telling two rows apart, and ``_batch_model`` returns ``""``,
+    # so ``model`` is falsy and this is False.
+    hide_model = bool(model)
     lines: list[str] = []
     if header:
         lines.append(f"{_PANEL_DIM}{_GUTTER}{_PANEL_RST}{header}" if tasks else header)
     for index, snapshot in enumerate(snapshots):
         task = tasks[index] if index < len(tasks) else ""
-        numbers = _panel_row(snapshot, hide_model=shown_in_header, state_first=bool(task))
+        numbers = _panel_row(snapshot, hide_model=hide_model, state_first=bool(task))
         if not task:
             # Byte-for-byte what this function rendered before ``tasks`` existed.
             lines.append(_flatten(f"[{index + 1}/{total}] {numbers}", limit=budget))

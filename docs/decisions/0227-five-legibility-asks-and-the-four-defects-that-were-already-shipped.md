@@ -243,11 +243,20 @@ could not fail, and four sentences that were simply not true.
 let 2 of 4 rows keep a full state word against 0 of 4 at 28 and above. What was
 never measured is its cost at every other width. A batch fanned out over one verb
 — ``port the retry backoff to google`` / ``… openai`` / ``… azure`` / ``… vertex``,
-32 cells each — truncates to a common 24-cell prefix, so all four rows render the
-SAME string. MEASURED: **1 distinct label with the cap, 4 without it**, on an
-80-column terminal where 31 columns sat empty while the labels were elided. The
+32/32/31/32 cells — truncates to a common 24-cell prefix, so all four rows render
+the SAME string. MEASURED: **1 distinct label with the cap, 4 without it**. The
 cap is gone; the column is sized from the labels and reserves 12 cells for the
 numbers, which is where the state word lives.
+
+**What the cap was buying was not empty space, and this section said it was.** The
+first draft claimed the capped rows left "31 columns sitting empty while the labels
+were elided". Re-measured on the same fixture at 80 columns, the capped build's
+rows were **78/78/78/40 cells** — full width. The elision was buying the NUMBERS:
+those rows carried ``running · read_file · 33s · 12.3k tok · $0.0372`` where these
+carry ``running · read_file · 33s · 12.3k t…``. Removing the cap is a trade and
+per-member cost is its price. It is still the right way round — four rows a user
+cannot tell apart answer nothing at all — but the ledger belongs in the record,
+and the docstring that claimed a free win now states it.
 
 **And the reason the state was scarce was not the labels.** Chasing the cap turned
 up the real consumer: with one QUEUED member the header's model term lands at 77
@@ -287,7 +296,11 @@ the shapes are the point:
   both arms at every id length; and the companion cell bound was ``78 <= 78``;
 * two bounds **expressed in terms of the constant they constrain** — with
   ``_ZERO_WIDTH_SLACK`` raised to 100 000 both flood tests still passed while the
-  functions handed back all 200 000 codepoints.
+  functions handed back far more than the budget. The number in the comments was
+  wrong on one of the two: ``truncate_cells`` does hand back all 200 000, but
+  ``panel._flatten`` is capped at 8 192 by ``_MAX_INPUT_CHARS`` first, so its
+  sabotage returns 8 192. The gate was still unfalsifiable; the sentence
+  describing it was still not a measurement of that function.
 
 **And an ordering invariant that held in the tuple and not on the screen.** The
 gate for "``current-dir`` goes last" read ``_MULTILINE_ROWS[1]`` and never built a
@@ -398,6 +411,136 @@ it is U+200D specifically. Over-broad prose is not harmless here: a reader harde
 "zero-width" would guard five characters that were never broken and might conclude
 from three clean tests that the guard was pointless.
 
+## Round six, after the merge: the two commits nobody had reviewed
+
+The branch shipped with `b1513bf` and `f288fdf` unreviewed, so a 54-agent adversarial
+pass ran against them after the merge. It returned **19 confirmed findings**. Nine
+were already closed by commits made after the reviewed range — the `/resume`
+collision suffix budgeted in codepoints (four separate findings, all closed by
+`9472e70`), the rows losing their state word when the members disagree, and the
+40-column width regression. What remained is one behaviour and a column of numbers.
+
+**The state counts were not "never dropped", and the docstring said they were.** The
+panel header appends the batch model to the head so the rows can drop it. That append
+was made UNCONDITIONAL in `b1513bf`, on the reasoning that position protects the
+counts: the model sits before them and everything that shortens the row takes from
+the right. The closing truncation takes from the right too. MEASURED at cap 76 with
+`github-copilot/gpt-5.6-codex` and three count classes, the header rendered
+`… · 2 running · 1 done · 1 queu…` — a count cut mid-word, with the elapsed, the
+tokens and the cost gone ahead of it. At nine members and five count classes the cut
+ate `1 queued` entirely while `PANEL_MAX_ROWS` dropped the queued member's own row,
+so **the word appeared nowhere in the panel** — precisely the misreading
+`_queued_line`'s docstring exists to prevent. Two paragraphs of the same docstring
+contradicted each other about this, one claiming the counts are never dropped and the
+other correctly saying the truncation reaches them first.
+
+Both earlier rules were wrong in opposite directions, so the third is neither: the
+model is now sized against what the head and the counts leave (`_model_term`), shown
+truncated when it does not fit whole, and omitted below 12 cells — at which point the
+rows carry it again, which is a fallback rather than a hole. Verified on a pyte glass
+at 40, 80 and 120 columns across all three arms — the header truncating the model, the
+members disagreeing so the rows carry it, and the five-class batch where it is dropped.
+
+**And the sentence I wrote for the fix was the same overclaim as the one it
+replaced.** The new docstring said the counts "really are never dropped". Swept
+before shipping it: the closing truncation still reaches them when the head and the
+counts ALONE exceed the cap — at 76 cells, all five classes non-zero, a 5-cell
+profile survives to 495 members and is cut at 4 995; a 16-cell profile name is over
+at **5**. What the fix actually establishes is narrower and worth stating exactly:
+the MODEL can no longer displace a count. Both remaining shapes need a batch S3 does
+not produce, but the bound is arithmetic and a docstring that promises past it is
+the defect this round was called to fix.
+
+**This was caught only because the harness lied first.** The sabotage driver
+restored `panel.py` from a stale backup, so the "counts intact" sweep ran against a
+build with the unconditional append still in it and reported the fix failing
+everywhere. The probe that found the real boundary now asserts a known-fixed input
+returns the fixed answer BEFORE it measures anything — a build check, not a result
+check. A restore that reports success is not evidence the tree is the tree you
+think it is; the previous rule in this ADR was that a mutation must be confirmed to
+have APPLIED, and its mirror is that a restore must be confirmed to have LANDED.
+
+**And the seam that decided which surface names the model was a substring test.**
+`format_panel` asked "is the model in the rendered header?" — a proxy for the
+arithmetic the header had just done, and one that disagrees with it as soon as the
+header shows the model truncated: the rows read that as absent and both surfaces
+spend the width. It is now the same pure function, called twice. The gate that
+covered this could not see it either; it swept three id lengths whose longest sat
+exactly on the 32-cell ceiling, so it never asked what happens above the bound.
+
+**The `state_first` fix from round five shipped with no gate at all.** It is the fix
+for the highest-severity finding in this round, and nothing in the suite pinned it —
+found by sabotage, not by reading. Gated now, with a positive control that the
+members really do disagree.
+
+**Seven numbers in the prose were wrong**, and one correction was wrong in the
+useful direction. The four fan-out labels are 32/32/31/32 cells, not "32 cells
+each". The 12-cell numbers reserve holds `starting`, the separator and the ellipsis
+— **nothing** of the next term, where the docstring claimed a start of one. The
+batch model on the rows is worth 31 cells, not 28. The merged statusline row is 129
+cells, not 132, and the same file already said 129 fifty-eight lines away. The
+`test_context.py` fixture publishes an extension status, so its "106 cells" is the
+row without one. And the flood comment claimed `_flatten` hands back all 200 000
+codepoints under a raised slack; it hands back 8 192, because `_MAX_INPUT_CHARS`
+caps the input first — the sibling claim about `truncate_cells`, which has no such
+cap, is the one that is true.
+
+The useful correction is the one about empty space: the capped build's rows were
+78/78/78/40 cells, not rows with room to spare, so removing the cap spends the
+numbers rather than recovering waste. Per-member cost is the price of four
+distinguishable labels. That is still the right trade for a panel whose purpose is
+to say which member is doing what — but it is a trade, and claiming a free win hid
+a real cost from whoever reads this next.
+
+## Round seven: the round-six fix named the model nowhere
+
+`bd86a7b` went to an adversarial review before it went to `main`, and two lenses
+independently found the same thing: between roughly 40 and 70 columns the panel
+named the model **nowhere**. The header dropped it (`room < _MODEL_MIN_CELLS`) and
+the rows, which the docstring called "the honest fallback", printed four characters.
+Measured across the review's sweep: 4 266 configurations where `bd86a7b` shows no
+model prefix of 8 cells or more anywhere in the panel while `2ba3261` did, and none
+the other way; in 85% of the drop cases the widest prefix any row showed was **≤4
+cells**.
+
+**The fallback never existed.** The label column has already taken the rows' width,
+so the header's remaining room beats a row's at every width from 54 up, and below 52
+a row has TWO cells. What the row was actually spending those cells on:
+
+```
+width 50   rows carry it   running · g…            rows drop it   running · r…
+width 62   rows carry it   running · github-co…    rows drop it   running · read_file…
+```
+
+`read_file` is the answer to "what is this member doing" — the question the panel was
+added to answer, and the owner's third ask. Four characters of a provider name is not
+an answer to anything. So one batch model is now the header's to state or nobody's,
+and the rows spend the cells on the tool. This also deletes the `shown_in_header`
+seam and with it a claim that "asking it twice is cheaper than a scan", which the
+review timed at **3.0-5.2× more expensive**.
+
+**Two gates asserted things that were false.** `test_the_model_is_shown_by_somebody_at_every_id_length`
+pinned "somebody names it" using the default width 78 — the one width where it holds,
+while production passes `tui.width.terminal_columns`. And the ordering assertion
+`header.index(shown) < header.index("1 done")` passes on a header that names no model
+at all, because `str.index("")` is 0. A third, `_named_model`, searched the whole row
+including the job LABEL — so a batch whose task says "migrate the
+github-copilot/gpt-5.6-codex path" reported a model the row had correctly suppressed.
+
+**And the central rule had one gate.** Reverting `_model_term` to "show the whole term
+or nothing" — the rule this ADR says it replaced — left all 70 unit tests green; only
+the pyte-glass test went red. The truncating branch is the fix, and nothing pinned it.
+
+**The boundary sentence was wrong twice.** "Survives to 495 members" was replaced with
+"first cut at 484", and both are samples of a scatter: the spine is the head joined to
+the five counts, the counts are decimal, so their width depends on how the members
+SPLIT across classes and not on how many there are. Measured, some splits of 170 are
+already over the cap and some splits of 600 still fit. The clean statement is at the
+other end — a 16-cell profile name is over at five members — and that is what the
+docstring says now. Also corrected: the `_MODEL_MIN_CELLS` docstring illustrated its
+12-cell floor with `github-copil…`, which is 13 cells and therefore a string the
+constant can never produce.
+
 ## Rejected alternatives
 
 **Putting the batch model into `format_aggregate_status`'s own output.** That string is
@@ -434,6 +577,33 @@ artifact belongs in the scratchpad; the file was removed from the branch's histo
 * **`PANEL_ROW_MAX_CHARS` is a fixed 78**, so the batch panel stays a 78-cell ribbon on a
   200-column screen. The same is true of the aggregate, deliberately, because that one
   shares a row.
+* **Below ~70 columns the panel does not name the batch model at all**, so two batches
+  on different models paint a byte-identical panel there. MEASURED: an
+  `anthropic/claude-opus-4-5` batch and an `anthropic/claude-haiku-4-5` batch are
+  identical at 40 and 60 columns and differ from 78 up. This is the round-seven trade
+  taken deliberately — the alternative measured out as four characters of a provider
+  name on every row, bought with the tool name — but it is a real loss and not a
+  neutral one, and it is the residual most likely to be worth revisiting.
+* **A 28-cell provider-scoped id is never shown in full, at any terminal width.** The
+  panel is a 78-cell ribbon by design, so with three count classes the header's room
+  is 27 cells and `github-copilot/gpt-5.6-codex` loses its last one:
+  `github-copilot/gpt-5.6-cod…` at 78, 120 and 200 alike. One cell, and no width fixes
+  it — only a narrower head or a wider ribbon would.
+* **The production floor is 12 cells and the tests' "does this identify the model"
+  floor is 8.** Both are defensible on their own axis — 12 is what a header term needs
+  to be worth a term, 8 is what a prefix needs to be attributable to an id rather than
+  to prose — but a reader will notice two numbers for one question, and nothing forces
+  them to move together.
+* **Per-member cost is gone from the panel rows**, and the aggregate cost is dropped
+  whenever the model term takes its place. Both are consequences of the label column,
+  measured and accepted rather than fixed: the alternatives are a cap that makes a
+  fan-out's rows identical, or a model repeated at 31 cells down the whole column. A row
+  whose numbers half is 19 cells reads `running · read · 1…`; the aggregate carries the
+  batch's cost whenever its own budget reaches it.
+* **The row's numbers half cuts mid-token**, where `format_aggregate_status` drops whole
+  trailing terms. `12s` becomes `1…`. The ellipsis marks it, so it is terse rather than
+  wrong, but the two surfaces shorten by different rules and only one of them is
+  written down.
 * **`current_tool` is empty for as long as a child waits on its provider.** It is cleared
   on `turn_start` and set only on `tool_execution_start` (`stream.py:666`, `:673`), so the
   "what is it doing" column was blank for the whole first leg of every child turn. The job

@@ -1098,6 +1098,13 @@ async def test_the_merged_statusline_row_drops_the_path_before_the_live_signals(
     and transient signals on the footer. Ordered this way the overflow eats the
     path instead. The cwd is named because the cell count depends on it.
 
+    106 IS THE ROW WITHOUT AN EXTENSION STATUS, and this fixture publishes one, so
+    the row it actually composes is 129 cells. Both numbers are measured; the
+    docstring used to give only the first, which read as a measurement of this
+    test and was not one. The extension status is here deliberately — it is not a
+    registry segment and joins the row separately, which is the seam the
+    assertions below are about.
+
     RENDERED, NOT READ OFF THE TUPLE. The first version asserted four things about
     ``_MULTILINE_ROWS[1]`` and never built a context, so it could not see the
     rendered row disagreeing with it: extension statuses are not registry segments
