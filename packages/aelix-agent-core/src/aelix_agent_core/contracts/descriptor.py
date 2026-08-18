@@ -59,8 +59,16 @@ class ToolRendererDescPayload(BaseModel):
     view: Literal["table", "grid", "form", "text"]
     title: str | None = None
     columns: list[dict[str, Any]] | None = None
-    rows_path: str | None = None  # JSONPath into tool result for rows
-    text_path: str | None = None  # JSONPath into tool result for text
+    # NOT JSONPath, despite the name these carried since f926bcd (2026-05-22).
+    # The only resolver is ``_dotted_lookup`` in ``tui/descriptors.py``: it
+    # walks nested dicts by ``a.b`` and nothing else — no array indexing, no
+    # wildcards, no filters. A path that uses any of those does not error; the
+    # renderer falls through to the raw content, which is why the wrong name
+    # was survivable and therefore never noticed. ADR-0108 deferred full
+    # JSONPath; #37 decided not to build it, because this surface is runtime
+    # only and has no known consumer that needs more than a dotted key.
+    rows_path: str | None = None
+    text_path: str | None = None
 
 
 class CommandRoutePayload(BaseModel):
