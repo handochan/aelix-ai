@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from typing import Any
 from unittest.mock import patch
 
+import httpx
 import pytest
 from aelix_ai.oauth.github_copilot import (
     CLIENT_ID,
@@ -1182,3 +1183,95 @@ async def test_a_body_that_steers_the_terminal_is_neutered_at_the_raise_site() -
     assert "\x07" not in message
     # The inert literal survives, so an operator can still see what arrived.
     assert "[2Jerased" in message
+
+
+# === the strict-TLS wall lands on the model-enable batch, not the device flow ==
+
+
+async def test_an_all_failed_policy_batch_retries_once_after_a_measured_relaxation() -> None:
+    """The step a real report actually died on.
+
+    Device flow done, browser authorised, token exchanged — and then every
+    policy POST to ``api.business.githubcopilot.com`` rejected by Python 3.13's
+    strict RFC-5280 checks. They run CONCURRENTLY, so all of them fail before
+    anything can react; relaxing at the error handler above fixed the NEXT
+    ``/login``, not that one. And "run it again" costs the user another browser
+    round trip, because a device code is single-use.
+
+    SABOTAGE: delete the retry. The first batch's error is raised and this goes
+    RED — and the call count is what proves a second batch really ran.
+    """
+
+    from aelix_ai.models import get_models
+    from aelix_ai.providers import _tls_strict
+
+    models = get_models(GITHUB_COPILOT_OAUTH_ID)
+    assert models, "guard: the catalog must carry Copilot models"
+
+    state = {"relaxed": False, "calls": 0}
+    wall = httpx.ConnectError(
+        "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: "
+        "Missing Authority Key Identifier"
+    )
+
+    async def blocked_until_relaxed(
+        _token: str, _model_id: str, _domain: str | None = None
+    ) -> bool:
+        state["calls"] += 1
+        if not state["relaxed"]:
+            raise wall
+        return True
+
+    def measured_relax(_exc: BaseException) -> object:
+        # Stands in for the real measurement, which has its own tests against a
+        # real TLS handshake in tests/providers/test_tls_strict.py. What is under
+        # test HERE is the batch control flow around it.
+        state["relaxed"] = True
+        return _tls_strict.Relaxation(
+            host="api.business.githubcopilot.com",
+            verify_code=95,
+            verify_message="Missing Authority Key Identifier",
+        )
+
+    with patch(
+        "aelix_ai.oauth.github_copilot.enable_github_copilot_model",
+        side_effect=blocked_until_relaxed,
+    ), patch.object(_tls_strict, "maybe_relax_strict_for_session", measured_relax):
+        await enable_all_github_copilot_models(_TOKEN_WITH_PROXY, None)
+
+    assert state["calls"] == len(models) * 2, (
+        f"expected two batches of {len(models)}, got {state['calls']}"
+    )
+
+
+async def test_without_a_relaxation_an_all_failed_batch_still_costs_the_token() -> None:
+    """NEGATIVE CONTROL. The retry must not become an unconditional second try.
+
+    A host that is genuinely unreachable is still a login failure: credentials
+    that cannot complete one turn are worse than an honest TLS error.
+
+    SABOTAGE: retry unconditionally instead of on the measured verdict. The call
+    count doubles and this goes RED.
+    """
+
+    from aelix_ai.models import get_models
+    from aelix_ai.providers import _tls_strict
+
+    models = get_models(GITHUB_COPILOT_OAUTH_ID)
+    state = {"calls": 0}
+
+    async def always_down(_t: str, _m: str, _d: str | None = None) -> bool:
+        state["calls"] += 1
+        raise httpx.ConnectError("host is simply down")
+
+    with patch(
+        "aelix_ai.oauth.github_copilot.enable_github_copilot_model",
+        side_effect=always_down,
+    ), patch.object(
+        _tls_strict, "maybe_relax_strict_for_session", lambda _e: None
+    ), pytest.raises(httpx.ConnectError):
+        await enable_all_github_copilot_models(_TOKEN_WITH_PROXY, None)
+
+    assert state["calls"] == len(models), (
+        "no relaxation was measured, so there must be no second batch"
+    )

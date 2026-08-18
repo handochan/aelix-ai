@@ -580,8 +580,17 @@ async def enable_all_github_copilot_models(
     reason. The caller obtains credentials BEFORE this runs and returns them
     AFTER, so raising does discard a valid token — deliberate: those credentials
     cannot complete a single turn on such a network, and an honest TLS error
-    beats a "logged in" that dies at message 1. Re-run /login once the CA is
-    trusted.
+    beats a "logged in" that dies at message 1.
+
+    Before paying that price, an all-failed batch gets ONE measured retry. A
+    real report died exactly here — device flow done, browser authorised, token
+    exchanged, and then all ~19 policy POSTs to ``api.business.githubcopilot.com``
+    rejected by Python 3.13's strict RFC-5280 checks. Because the POSTs run
+    concurrently they all fail before anything can react, so relaxing at the
+    error handler above fixed the NEXT ``/login`` and not that one — and "run it
+    again" here means opening a browser and typing a fresh device code again.
+    The retry fires only when :func:`maybe_relax_strict_for_session` has
+    re-verified the failing host and found the machine already trusts it.
 
     Timeouts never reach here: :func:`enable_github_copilot_model` absorbs them
     as a soft ``False``, so an all-timeout run is a login that enabled nothing
@@ -613,6 +622,27 @@ async def enable_all_github_copilot_models(
     unreachable = [exc for exc in outcomes if exc is not None]
     # ``unreachable`` first: an EMPTY catalog must not read as "all failed"
     # (``len([]) == len([])``) and turn a no-op into a login failure.
+    if unreachable and len(unreachable) == len(outcomes):
+        # ONE retry, and only on measured evidence.
+        #
+        # These POSTs run CONCURRENTLY, so on a strict-TLS wall all ~19 fail in
+        # the same batch before anything can react — relaxing afterwards fixes
+        # the *next* /login and not this one. That is not a cheap ask: the user
+        # has already opened a browser and typed a device code, and the code is
+        # single-use, so "run it again" means doing all of that a second time.
+        #
+        # ``maybe_relax_strict_for_session`` re-verifies the failing host with
+        # strict cleared and returns None unless this machine already trusts the
+        # chain, so this branch cannot fire on a genuinely untrusted CA — it is
+        # the same gate, not a second, looser one.
+        from aelix_ai.providers._tls_strict import maybe_relax_strict_for_session
+
+        if maybe_relax_strict_for_session(unreachable[0]) is not None:
+            outcomes = await asyncio.gather(
+                *(_enable_one(model.id) for model in models)
+            )
+            unreachable = [exc for exc in outcomes if exc is not None]
+
     if unreachable and len(unreachable) == len(outcomes):
         raise unreachable[0]
 
