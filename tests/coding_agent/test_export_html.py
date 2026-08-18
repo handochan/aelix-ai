@@ -258,3 +258,46 @@ def test_the_exported_transcript_is_owner_only(tmp_path: Path) -> None:
         assert stat.S_IMODE(again.stat().st_mode) == 0o600
     finally:
         os.umask(previous)
+
+
+def test_the_transcript_is_never_briefly_group_readable(
+    tmp_path: Path, monkeypatch: object
+) -> None:
+    """The property the ``os.open`` mode carries, and ``chmod`` alone cannot.
+
+    FOUND BY SABOTAGE. Reverting the writer to ``path.write_text`` left
+    ``test_the_exported_transcript_is_owner_only`` GREEN, because the
+    belt-and-braces ``os.chmod`` after it still tightened the finished file.
+    The end state was right and the WINDOW was not: the transcript existed at
+    0644 for as long as it took to write, which for a long session is long
+    enough for anything watching the directory.
+
+    Observing the mode from inside a patched ``os.chmod`` is the only way to
+    see that window from a test — by the time the function returns it is
+    closed either way.
+    """
+
+    import os
+    import stat
+
+    from aelix_coding_agent._export_html.format import export_html
+
+    seen: list[int] = []
+    real_chmod = os.chmod
+
+    def _watching_chmod(path: object, mode: int, *a: object, **kw: object) -> None:
+        seen.append(stat.S_IMODE(os.stat(path).st_mode))
+        real_chmod(path, mode, *a, **kw)
+
+    previous = os.umask(0o022)
+    try:
+        monkeypatch.setattr(os, "chmod", _watching_chmod)  # type: ignore[attr-defined]
+        export_html([], output_path=str(tmp_path / "session.html"))
+    finally:
+        os.umask(previous)
+
+    assert seen, "os.chmod was never called — the belt is gone entirely"
+    assert seen[0] == 0o600, (
+        f"the transcript existed at {oct(seen[0])} before chmod tightened it; "
+        "create it at the mode instead of widening and narrowing"
+    )

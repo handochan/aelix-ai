@@ -826,3 +826,26 @@ def test_the_inventory_check_catches_a_stray(
     planted = [*members, "aelix-0.1.0b1/uk4414917.html"]
     top = {n.split("/", 1)[1].split("/", 1)[0] for n in planted if "/" in n}
     assert sorted(top - ALLOWED_SDIST_TOP_LEVEL) == ["uk4414917.html"]
+
+
+def test_the_predicate_itself_knows_a_credential_file() -> None:
+    """`_is_developer_state` must catch `.env` on its own.
+
+    FOUND BY SABOTAGE. Deleting the `.env` clause from the predicate left every
+    build-based assertion above GREEN, because the pyproject `exclude` lists
+    now stop `.env` before the predicate is ever consulted. Two independent
+    defences, one of them untested — and the untested one is the whole reason
+    the other can be edited safely. So it gets a direct unit test rather than
+    an indirect one through a tarball that cannot reach it.
+
+    `.env.example` is the control in both directions: it must NOT match, or a
+    blanket `.env*` rule would take the only human-readable list of supported
+    environment variables with it.
+    """
+
+    assert _is_developer_state(".env")
+    assert _is_developer_state("aelix-0.1.0b1/.env")
+    assert _is_developer_state("aelix-0.1.0b1/.env.local")
+    assert not _is_developer_state("aelix-0.1.0b1/.env.example")
+    # And the predicate is not simply returning True for everything.
+    assert not _is_developer_state("aelix-0.1.0b1/README.md")
