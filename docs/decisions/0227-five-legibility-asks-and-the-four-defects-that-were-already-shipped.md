@@ -541,6 +541,28 @@ docstring says now. Also corrected: the `_MODEL_MIN_CELLS` docstring illustrated
 12-cell floor with `github-copil…`, which is 13 cells and therefore a string the
 constant can never produce.
 
+## What the two rounds actually bought
+
+Rounds six and seven are written above through their defects, because that is what
+each round was called to fix. The ledger is worth stating on its own, since the
+review's HIGH finding measured only the model axis and read a deliberate trade as a
+pure loss — and a reader of this ADR would otherwise inherit that framing.
+
+Swept over 6 720 configurations (widths 24-78, 2/3/4/5/9 members, 2-5 count classes,
+four model ids, three profile names), `main` today against `2ba3261`, scoring how
+many state-count classes the header spells in full:
+
+| | |
+|---|---|
+| HEAD shows MORE complete counts | **4 298** |
+| HEAD shows FEWER | **0** |
+| equal | 2 422 |
+| configurations with NO complete count at all | 4 300 → **1 520** |
+
+That is what the model term was taking. Against it: below roughly 70 columns the
+panel no longer names the batch model, which the residuals record and which is the
+one place these two rounds are worse than what they replaced.
+
 ## Rejected alternatives
 
 **Putting the batch model into `format_aggregate_status`'s own output.** That string is
@@ -584,11 +606,13 @@ artifact belongs in the scratchpad; the file was removed from the branch's histo
   taken deliberately — the alternative measured out as four characters of a provider
   name on every row, bought with the tool name — but it is a real loss and not a
   neutral one, and it is the residual most likely to be worth revisiting.
-* **A 28-cell provider-scoped id is never shown in full, at any terminal width.** The
-  panel is a 78-cell ribbon by design, so with three count classes the header's room
-  is 27 cells and `github-copilot/gpt-5.6-codex` loses its last one:
-  `github-copilot/gpt-5.6-cod…` at 78, 120 and 200 alike. One cell, and no width fixes
-  it — only a narrower head or a wider ribbon would.
+* **How much of a 28-cell id the header shows is decided by the COUNT CLASSES, not by
+  the terminal.** The panel is a 78-cell ribbon by design, so widening the terminal
+  changes nothing: `github-copilot/gpt-5.6-codex` renders whole at two classes, loses
+  its last cell at three (`github-copilot/gpt-5.6-cod…`), is down to
+  `github-copilot/…` at four and is dropped at five — identically at 78, 120 and 200.
+  A first draft of this bullet said "never shown in full at any width", which is the
+  same mistake as the boundary sentence above: quoting one fixture as a ceiling.
 * **The production floor is 12 cells and the tests' "does this identify the model"
   floor is 8.** Both are defensible on their own axis — 12 is what a header term needs
   to be worth a term, 8 is what a prefix needs to be attributable to an id rather than
