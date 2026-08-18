@@ -3214,3 +3214,80 @@ async def test_a_slow_stale_refresh_cannot_paint_over_a_newer_one(
     # The stale 32.3K reader finished LAST and must have been dropped.
     assert "19K" in labels[-1], f"final label was stale: {labels[-1]!r}"
     assert "32" not in labels[-1]
+
+
+async def test_run_tui_echo_bar_reaches_the_glass_in_the_colour_it_pins() -> None:
+    """#48 round two, read off a terminal emulator rather than off a string.
+
+    Everything else that guards this colour measures the escape stream. That
+    catches a wrong style; it cannot catch the stream being right and the glass
+    being wrong, and the whole complaint that reopened #48 was about glass. So
+    this one drives ``run_tui`` for real, hands the chrome a console whose bytes
+    we keep, and replays those bytes through ``pyte`` to read the CELLS back.
+
+    ``pyte`` is a faithful parser, which bounds what this can prove: it will not
+    reproduce a terminal that substitutes the bright slot for a bold basic
+    colour, nor tmux re-picking the nearest of sixteen on the way out. Those are
+    the two things that broke the old style and NEITHER is visible from here — a
+    green run of this test is evidence that the pinned pair arrives, not that
+    every terminal can render it. The unit gates alongside it are what pin the
+    reduction behaviour.
+    """
+
+    import io
+
+    import pyte
+    from aelix_coding_agent.tui.render import _USER_ECHO_STYLE
+    from rich.console import Console
+
+    buf = io.StringIO()
+    turn = "refactor the retry backoff so the abort path closes the socket"
+    with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
+        # INSIDE the session, like ``_harness_chrome``: the constructor builds the
+        # prompt_toolkit Application, which binds to whichever app session is
+        # ambient at that moment. Built outside, the chrome listens to the real
+        # one and the pipe's keystrokes never arrive — measured, the PROMPT wait
+        # timed out and it read as an echo failure.
+        chrome = AelixChrome(
+            console=Console(file=buf, force_terminal=True, color_system="truecolor", width=80)
+        )
+        runtime = FakeRuntime(FakeHarness())
+        task = _launch(runtime, chrome)
+        await _wait(lambda: chrome.app.is_running)
+        pipe.send_text(turn + "\n")
+        await _wait(lambda: runtime.harness.prompts == [(turn, "interactive")])
+        await _wait(lambda: "» refactor" in buf.getvalue())
+        pipe.send_text("/quit\n")
+        await asyncio.wait_for(task, timeout=5)
+
+    screen = pyte.Screen(80, 24)
+    pyte.Stream(screen).feed(buf.getvalue())
+
+    # The style is the source of the expectation, so this test does not have to
+    # be edited when the colour is; what it pins is that the glass agrees with
+    # the constant, and that the bar covers whole rows.
+    fg, bg = (
+        part.strip().removeprefix("bold ").lstrip("#")
+        for part in _USER_ECHO_STYLE.split(" on ")
+    )
+
+    rows = [y for y in range(24) if any(c.bg == bg for c in screen.buffer[y].values())]
+    assert rows, (
+        "no cell on the glass carries the echo ground — which is the defect this "
+        "test exists for, and also what a broken detector looks like:\n"
+        + "\n".join(f"{y:>2} {screen.display[y]!r}" for y in range(12))
+    )
+    painted = [c for y in rows for c in screen.buffer[y].values() if c.bg == bg]
+    assert len(painted) >= 80, f"only {len(painted)} cells carry the ground"
+    for cell in painted:
+        assert cell.fg == fg, (cell.data, cell.fg)
+    assert any("» refactor" in screen.display[y] for y in rows), screen.display[rows[0]]
+
+    # WHAT THIS DELIBERATELY DOES NOT ASSERT: that each row paints all 80 cells.
+    # The bar is committed to SCROLLBACK while the chrome repaints below it, so
+    # what pyte holds is a screen the two writers share and the bar's rows are
+    # offset by whatever the chrome left on them — measured, the last row of a
+    # wrapped bar starts at column 45. Edge-to-edge coverage is a property of the
+    # emitted stream and ``_painted_rows`` in test_event_renderer.py measures it
+    # there, off the bytes, for exactly this reason. Asserting it here would be
+    # asserting the scroll position, not the bar.

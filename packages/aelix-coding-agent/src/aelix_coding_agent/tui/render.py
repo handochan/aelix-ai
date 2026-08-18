@@ -293,18 +293,90 @@ _USER_MESSAGE_LABELS: dict[str, str] = {
     "follow_up": "Follow-up: ",
 }
 
-#: The user-echo bar. AN EXPLICIT FOREGROUND **AND** BACKGROUND, deliberately.
+#: The user-echo bar. BOTH ENDS PINNED TO A HEX, AND NO ``bold``.
 #:
 #: The rest of this module names a colour and lets the terminal supply the
 #: ground (``bold cyan``, ``dim``, …), which is only safe while the ground is
 #: whatever the user already reads text on. A bar owns its ground, so BOTH
-#: halves have to be stated.
+#: halves have to be stated — and stated as COLOURS, which is the part the first
+#: version of this got wrong.
 #:
-#: Cyan because that is already aelix's colour — the tool-card marker and header
-#: are cyan, so the bar reads as part of the same product rather than as a
-#: foreign stripe. It stays the terminal's OWN cyan (ANSI 46, not a 256/truecolor
-#: shade), so it tracks the user's theme and survives the colour-system degrade
-#: Rich does on a poorer terminal. Only the text is pinned, to black.
+#: IT SHIPPED AS ``bold black on cyan`` AND THAT NAMES NO COLOUR AT ALL. Rich
+#: emits ``\x1b[1;30;46m`` for it, byte-identical at truecolor, 256, standard and
+#: windows: SGR 30 and 46 are palette SLOTS 0 and 6, so what a reader sees is
+#: entirely their theme's choice. The comment this replaces argued that as a
+#: feature — "it tracks the user's theme" — three paragraphs after rejecting
+#: ``reverse`` for delegating half the pair to that same theme. It delegated
+#: both.
+#:
+#: SGR 1 IS THE HALF THAT ACTUALLY BROKE IT. Twelve of seventeen surveyed
+#: terminals render bold plus a basic 30–37 foreground with the BRIGHT slot
+#: instead (xterm ``boldColors`` default true, urxvt, Konsole — where it is not
+#: configurable — mintty, PuTTY, Windows Terminal ``intenseTextStyle: bright``,
+#: ConHost, iTerm2, xterm.js and so VS Code, WezTerm, Tilix, the Linux console);
+#: VTE/GNOME, Alacritty, kitty, foot and Ghostty do not. Where it applies,
+#: ``bold black`` arrives as slot 8 — a mid grey — on a cyan ground. MEASURED
+#: over 24 published schemes: 4.65:1 → **1.16:1** on Gruvbox Dark, 6.14 → 1.42 on
+#: Campbell, 10.61 → 2.02 on xterm. Without bold at all the floor is still
+#: **1.67:1** (Catppuccin Latte), and 11 of 38 scheme rows miss WCAG AA before
+#: bold is considered — eight of them LIGHT schemes.
+#:
+#: THE GROUND IS LIGHT BECAUSE A BAR HAS TO BE A BAND. Contrast says whether the
+#: words can be read; it says nothing about whether the bar separates from the
+#: transcript around it, which is the entire reason #48 exists — the turn read as
+#: "a gap between coloured tool cards" and the bar was meant to give it its own
+#: ground. That is the ground against the TERMINAL's own background, and it is
+#: the axis a first pass at this ranked seven candidates without. MEASURED over
+#: 25 shipped schemes, a dark teal ground (``#0f3a3f``) sits at 1.33:1 median
+#: against the fifteen dark terminals and under 1.5:1 on FOURTEEN of the
+#: twenty-five: the words stay legible and the bar stops being a bar. The
+#: palette-slot design never had that problem, and that is the one thing it got
+#: right — its ground is each theme's own slot 6, a saturated cyan on that
+#: theme's background, so a large edge by construction. Keeping the polarity —
+#: dark ink on a light-ish cyan — keeps it: 6.90 median on dark terminals and
+#: 2.28 on light ones, against the old style's 6.24 and 3.30.
+#:
+#: The hue is cyan because that is already aelix's colour — the tool-card marker
+#: and header are cyan, so the bar reads as part of the same product rather than
+#: as a foreign stripe. It is DESATURATED to about a third of the old ground's
+#: chroma because the bar is up to 120 cells wide and a saturated band that size
+#: is the loudest thing on the screen. Within this family saturation is FREE:
+#: measured from chroma 30 to 120, every step clears 7:1 on the text, reduces to
+#: a teal at 256, and keeps the band visible on all 25 schemes. Chroma 49 is a
+#: taste position on that dial, not a constraint.
+#:
+#: NO ``bold``, AND THAT IS THIS GROUND'S DOING. With a pinned foreground SGR 1
+#: is normally free — ``38;2`` has no palette slot for bold-is-bright to
+#: substitute, and xterm exempts SGR 38 by name. But rich REDUCES, and this pair
+#: reduces to ``30;47``: a BASIC foreground again. Add SGR 1 and the same twelve
+#: terminals turn slot 0 into slot 8, MEASURED at **1.30:1** worst (VS Code
+#: Light+) against 2.82:1 without it. A dark ground would have reduced to slot 15,
+#: already bright and immune; this one does not, so the weight goes.
+#:
+#: WHAT THE PIN DOES **NOT** BUY. Rich still reduces when the terminal admits
+#: less, and the reduced colour is a different colour:
+#:
+#:   truecolor  ``38;2;4;23;26;48;2;131;176;180``  7.73:1, theme-proof
+#:   256        ``38;5;16;48;5;109``               8.78:1, cube values, still teal
+#:   standard   ``30;47``                          slots 0 and 7 — THEME DATA AGAIN
+#:
+#: ``standard`` is reached by ``TERM=xterm``, ``TERM=screen`` and an unset
+#: ``TERM``, and there the worst of the 24 schemes is 2.82:1. That is not a floor;
+#: it is close to the ceiling, because MEASURED over every slot pair rich can
+#: emit, the best any 16-colour pair guarantees is 3.44:1 (slot 15 on slot 0,
+#: worst case Catppuccin Latte) — and that pair is only reachable from a ground
+#: dark enough to stop being a band. Against the old style's 1.16 it is more than
+#: double.
+#:
+#: TMUX REDUCES AGAIN, AND HERE IT LANDS ON THE OLD BAR. Inside tmux ``TERM`` is
+#: ``tmux-256color``, so rich resolves 256 EVEN WHEN THE OUTER TERMINAL IS
+#: TRUECOLOR — the 256 row above is what a large share of users actually see,
+#: which is why the ground was chosen to stay teal there. When the outer terminal
+#: is 16-colour, tmux re-picks the nearest slot for each end SEPARATELY; measured
+#: against tmux 3.4, cube 16 → slot 0 and cube 109 → slot 6, i.e. black on cyan —
+#: byte-for-byte the bar this replaces. A floor rather than a fix, but not a
+#: regression, which is what the dark grounds could not say: their light
+#: foreground and teal ground both folded onto slot 6, 1.00:1, an invisible bar.
 #:
 #: ``reverse`` was the other candidate and was REJECTED on measurement. Rich
 #: emits it as ``1;7;36``: foreground cyan plus SGR 7, and the terminal then
@@ -324,10 +396,21 @@ _USER_MESSAGE_LABELS: dict[str, str] = {
 #:
 #: MEASURED through the commit path (``chrome.print_above`` →
 #: ``chrome._console.print``): the SGR survives, pyte reads the cells back, and
-#: with ``Padding`` every wrapped row is covered edge to edge. Piped output and
-#: ``NO_COLOR`` drop it entirely — the text and its ``» `` marker still carry the
-#: turn there, which is why the marker was not replaced by the bar.
-_USER_ECHO_STYLE = "bold black on cyan"
+#: with ``Padding`` every wrapped row is covered edge to edge. Piped output drops
+#: the colour entirely — the text and its ``» `` marker still carry the turn
+#: there, which is why the marker was not replaced by the bar. ``NO_COLOR`` does
+#: NOT drop it entirely, which an earlier version of this comment claimed:
+#: ``Segment.remove_color`` strips colour and KEEPS attributes. With no attribute
+#: left on this style there is now nothing for it to keep, so the bytes are clean
+#: — but the claim was wrong when it was written and would be wrong again the
+#: moment an attribute came back.
+#:
+#: MEASURING THIS YOURSELF NEEDS A FRESH PROCESS. ``Style._add`` is
+#: ``lru_cache``d on a value-equal key and the combined style memoises ``_ansi``
+#: WITHOUT keying on the colour system, so whichever console renders this style
+#: first decides the bytes every later console in that process reports. The old
+#: style hid this — ``1;30;46`` at every depth — and a pinned one does not.
+_USER_ECHO_STYLE = "#04171a on #83b0b4"
 
 # Sprint 6h₃₂ — the tool-call header marker. A bold filled ``●`` (replacing the
 # thin ``⚙`` gear) reads at a glance against the dim result card below it; the
