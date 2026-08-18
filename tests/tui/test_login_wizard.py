@@ -10,6 +10,7 @@ empty logout / persistence failure) — all without prompt-toolkit.
 from __future__ import annotations
 
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 from aelix_ai.oauth.types import (
@@ -1056,7 +1057,10 @@ async def test_the_oauth_sign_in_panel_sanitises_server_supplied_fields() -> Non
 
     storage = FakeAuthStorage()
     committed: list[object] = []
-    hostile_url = f"https://github.com/login/device{_STEERING_BODY}"
+    # LONG as well as hostile, deliberately. A short payload cannot distinguish
+    # "the Panel is bounded" from "the value happened to be small", and the first
+    # version of this test could not — see the note below the assertions.
+    hostile_url = f"https://github.com/login/device{_STEERING_BODY}{'q' * 900}"
 
     async def select(title: str, options: list[str], *_a: Any, **_k: Any) -> str | None:
         if title == "Add a provider":
@@ -1086,3 +1090,63 @@ async def test_the_oauth_sign_in_panel_sanitises_server_supplied_fields() -> Non
     for sequence in ("[2J", "]0;PWNED", "[?1049h"):
         assert f"\x1b{sequence}" not in out, sequence
     assert "\x9b31m" not in out
+
+    # 🔴 The two assertions above were NOT enough, and a sabotage run proved it:
+    # deleting the display-side call left them green, because the value handed to
+    # the browser is neutered FIRST and the Panel reads from that. So they
+    # measured the browser path and called it the render path.
+    #
+    # These two pin what is actually specific to the Panel:
+    body = _plain(panels[0])
+    assert len(body) < 800, f"the Panel is unbounded ({len(body)} chars)"
+    # ``instructions`` is a SEPARATE field with its own call, and nothing else
+    # sanitises it on the way in.
+    assert "Enter code" in body
+    assert "\x1b" not in body and "\x9b" not in body
+
+
+async def test_the_url_handed_to_the_browser_is_neutered_but_not_truncated() -> None:
+    """Two different consumers, two different treatments — and both are pinned.
+
+    A sabotage run caught this gap: removing the sanitise on the value that
+    reaches ``webbrowser.open`` left the Panel test GREEN, correctly, because the
+    Panel re-sanitises for display. So the browser path had no coverage at all.
+
+    It must be NEUTERED (nothing hands a control-laden string to an OS URL
+    handler) and NOT TRUNCATED (a clipped URL turns a rendering problem into a
+    login that cannot complete).
+
+    SABOTAGE (a): drop the sanitise → the control-byte assertion goes RED.
+    SABOTAGE (b): pass the display-bounded value to the browser → the
+    round-trip assertion goes RED.
+    """
+
+    storage = FakeAuthStorage()
+    opened: list[str] = []
+    long_tail = "q" * 900
+    hostile_url = f"https://github.com/login/device?x={_STEERING_BODY}{long_tail}"
+
+    async def select(title: str, options: list[str], *_a: Any, **_k: Any) -> str | None:
+        if title == "Add a provider":
+            return "Using OAuth (sign in to a subscription / account)"
+        return options[0]
+
+    async def _login(_provider: str, callbacks: OAuthLoginCallbacks) -> None:
+        await callbacks.on_auth(OAuthAuthInfo(url=hostile_url, instructions=None))
+
+    storage.login = _login  # type: ignore[assignment, method-assign]
+
+    with patch("aelix_coding_agent.tui.login_wizard.webbrowser.open", opened.append):
+        await run_login(
+            auth_storage=storage,
+            select=select,
+            prompt_input=_ScriptedInput([]),
+            confirm=_confirm_yes,
+            notify=_notify_sink([]),
+            commit=[].append,
+        )
+
+    assert opened, "the browser launch never happened — the test measures nothing"
+    launched = opened[0]
+    assert "\x1b" not in launched and "\x9b" not in launched and "\x07" not in launched
+    assert launched.endswith(long_tail), "a truncated URL cannot complete the login"
