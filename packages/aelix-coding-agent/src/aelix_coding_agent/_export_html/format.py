@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import html
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -54,6 +55,13 @@ from aelix_coding_agent._export_html.template import _HTML_TEMPLATE, _THEME_CSS
 # ``<pre class="pyg">`` wrapper from :func:`_highlight`. ``cssclass="pyg"``
 # matches the prefix used by :data:`_THEME_CSS` via ``get_style_defs(".pyg")``.
 _HTML_FMT = HtmlFormatter(cssclass="pyg", nowrap=True)
+
+#: The transcript is the session's content in another wrapper, so it takes the
+#: session's permissions: ``session/fs.py`` opens ``.jsonl`` files 0600 inside a
+#: 0700 directory. Same number, stated here rather than imported, because the
+#: kernel constant is about a store this module does not own.
+_EXPORT_FILE_MODE = 0o600
+
 
 
 def _highlight(code: str, lang: str, attrs: Any) -> str:
@@ -140,7 +148,22 @@ def export_html(
         output_path = f"aelix-session-{basename}.html"
     path = Path(output_path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(doc, encoding="utf-8")
+    # #111 B-3 / #138 — OWNER-ONLY, like the session it renders. Measured under
+    # a stock 022 umask, a bare ``write_text`` produced mode 0646: the source
+    # ``.jsonl`` is opened 0600 and its directory 0700
+    # (``session/fs.py:26-27``), and the exporter was quietly widening the SAME
+    # unredacted content — every prompt and every tool result, verbatim — into a
+    # group/other-readable file in the user's cwd. Written before the content so
+    # there is no window in which the bytes exist at the looser mode; ``chmod``
+    # after the fact would still have published them for an instant.
+    fd = os.open(
+        path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, _EXPORT_FILE_MODE
+    )
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle.write(doc)
+    # ``os.open`` honours the umask, so a LOOSER umask cannot widen the file but
+    # an existing file's mode would have survived O_TRUNC. Both are settled here.
+    os.chmod(path, _EXPORT_FILE_MODE)
     return str(path.resolve())
 
 

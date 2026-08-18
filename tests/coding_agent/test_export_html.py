@@ -209,3 +209,52 @@ def test_export_html_returns_resolved_absolute_path(tmp_path: Path) -> None:
         assert Path(path).exists()
     finally:
         os.chdir(cwd)
+
+
+# === #111 B-3 / #138 — the transcript's permissions =========================
+
+
+def test_the_exported_transcript_is_owner_only(tmp_path: Path) -> None:
+    """A rendered session must not be looser than the session it renders.
+
+    MEASURED defect: ``format.py`` ended in a bare
+    ``path.write_text(doc, encoding="utf-8")``, so under a stock 022 umask the
+    HTML landed **0646** — group- and other-readable — in the user's cwd. The
+    source ``.jsonl`` is opened 0600 inside a 0700 directory
+    (``session/fs.py:26-27``) and carries every prompt and every tool result
+    verbatim with no redaction pass, so the exporter was the one place that
+    widened it.
+
+    The control file is what makes the assertion mean something: it is written
+    the way the exporter used to write, in the same directory under the same
+    umask. If the platform or the test runner made 0600 the default, the
+    control would come out 0600 too and this test would be proving nothing.
+    """
+
+    import os
+    import stat
+
+    from aelix_coding_agent._export_html.format import export_html
+
+    previous = os.umask(0o022)
+    try:
+        control = tmp_path / "control.html"
+        control.write_text("<html></html>", encoding="utf-8")
+        assert stat.S_IMODE(control.stat().st_mode) & 0o077, (
+            "the umask control came out owner-only on its own — this test "
+            "cannot distinguish a fix from an environment"
+        )
+
+        out = Path(export_html([], output_path=str(tmp_path / "session.html")))
+        assert stat.S_IMODE(out.stat().st_mode) == 0o600
+
+        # An EXISTING looser file must be tightened, not inherited: O_TRUNC
+        # keeps the old mode, which is how a second export into the same path
+        # would have quietly stayed 0644.
+        stale = tmp_path / "stale.html"
+        stale.write_text("old", encoding="utf-8")
+        os.chmod(stale, 0o644)
+        again = Path(export_html([], output_path=str(stale)))
+        assert stat.S_IMODE(again.stat().st_mode) == 0o600
+    finally:
+        os.umask(previous)

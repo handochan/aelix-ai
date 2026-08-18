@@ -219,7 +219,7 @@ and what the flag does *not* cover.
 
 ## Known limitations (beta)
 
-Three things worth knowing before you point Aelix at something that matters.
+Five things worth knowing before you point Aelix at something that matters.
 
 **A run has no spend ceiling.** There is no iteration cap, no duplicate-call
 detection, and no cumulative token or cost budget — a model that keeps calling
@@ -228,21 +228,52 @@ tools keeps costing money until it finishes or you stop it
 [#6](https://github.com/handochan/aelix-ai/issues/6),
 [#52](https://github.com/handochan/aelix-ai/issues/52)). The backstops that do
 exist are real but none of them bound spend: `Esc` aborts the in-flight turn in
-the TUI, `GuardrailExtension` hard-denies catastrophic commands before any
-permission check, the context is compacted automatically before it overflows,
+the TUI, `GuardrailExtension` hard-denies catastrophic commands issued through
+the built-in tools before any permission check (see the next point for what
+that does not cover), the context is compacted automatically before it
+overflows,
 and `bash` times out after 600 s by default (1 h ceiling on an explicit
 per-call value). Watch long unattended runs, and prefer a model whose per-token
 price you have checked.
 
-**Headless mode auto-approves mutating tools.** `--print`, `--mode json` and
-`--mode rpc` have no terminal to draw an approval dialog on, so `write`, `edit`
-and `bash` execute without asking — that is precisely what makes them
-scriptable, and it is the behaviour the embedding examples above rely on. Two
-guarantees survive: `GuardrailExtension` still hard-denies its patterns, and
-`--permission-mode plan` blocks every mutating tool on the headless path too.
+**Headless mode auto-approves mutating tools, and the two safety nets only
+recognise built-in ones.** `--print`, `--mode json` and `--mode rpc` have no
+terminal to draw an approval dialog on, so `write`, `edit` and `bash` execute
+without asking — that is precisely what makes them scriptable, and it is the
+behaviour the embedding examples above rely on. Both backstops that would
+otherwise catch a dangerous call identify "mutating" by a fixed list of
+built-in tool names (`bash`, `edit`, `write` and their aliases): a tool
+supplied by an MCP server, a skill, or a third-party extension registers under
+its own name — MCP prefixes every tool with its server, so `write_file` arrives
+as `fs__write_file` — is not on that list, and therefore reaches neither
+`GuardrailExtension`'s patterns nor the `--permission-mode plan` block
+([#188](https://github.com/handochan/aelix-ai/issues/188)). Read plan mode as a
+guardrail over the built-in toolset, not as a guarantee that nothing mutates.
 Otherwise a headless run has full write and shell access to the machine it runs
 on, with whatever credentials that machine holds. Give it a container, a
 sandbox, or a checkout you can throw away.
+
+**One session, one terminal.** Session files are append-only JSONL and every
+entry records the id of the entry it follows, but that pointer lives in the
+writing process and nothing locks the file
+([#137](https://github.com/handochan/aelix-ai/issues/137)). Open the same
+session twice — two terminals, or `aelix --continue` twice in one directory —
+and the second writer keeps attaching its turns to the leaf it saw at load
+time, which the first writer has already moved past. Nothing on disk is
+corrupted and every line stays valid JSON, but one terminal's work becomes a
+branch that no later `--resume` or `--continue` walks, so it is simply gone
+from the transcript. Run one terminal per session until this is fixed.
+
+**Transcripts keep everything, forever, unredacted.** Every prompt, every tool
+argument and every tool result is written verbatim into the session JSONL;
+there is no scrubbing pass
+([#138](https://github.com/handochan/aelix-ai/issues/138)). If the agent runs
+`env`, cats a `.env`, or reads a private key, that value is on disk until you
+delete the session. The files themselves are owner-only — `0600` inside a
+`0700` directory, the same as `auth.json`, and `aelix --export` writes its HTML
+with those permissions too — so this is not an exposure to other users of the
+machine. It is an exposure to anything that copies your home directory:
+backups, sync clients, and support bundles carry the raw values with them.
 
 **Delegation is Linux-first, and its spend is not in `/cost`.** Agent delegation
 (`--agents`, `[features] agents`) spawns a real child process, and the process

@@ -23,6 +23,9 @@ prints one. That is why every cross-directory link here is an absolute URL —
   `.aelix/` resources: what it covers, what it deliberately does not
   (`AGENTS.md`), `--approve` / `--no-approve`, `/trust`, and where the answer is
   stored.
+- [tls-and-corporate-ca.md](tls-and-corporate-ca.md) — `CERTIFICATE_VERIFY_FAILED`
+  on a corporate network: reading `aelix status`, installing a private root CA,
+  `SSL_CERT_FILE`, and why Python 3.13 rejects certificates 3.12 accepts.
 - [private-catalog.md](private-catalog.md) — run your own extension catalog:
   generate one from a directory of wheels, register it, and install from it on a
   closed or air-gapped network.
