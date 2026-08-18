@@ -43,6 +43,16 @@ runs ``status`` to find, and only the loader knows. Loading executes the
 extension module — the same code the next ``aelix`` in this directory would
 execute, under the same gate. ``--no-extensions`` skips discovery entirely.
 
+It also reports **which TLS trust store is live** (``trust_store``, #99
+follow-up), and unlike the two above that is pure inspection — it injects
+nothing and alters nothing about the process it is describing, so it is emitted
+under ``--no-extensions`` as well. It is here because ``cli/entry``'s truststore
+injection is best-effort and used to swallow its failures silently, which left
+"the OS store is trusted" and "the injection raised and we ignored it" with
+identical observable state; a user behind a corporate TLS proxy then saw only an
+opaque error at their first model request. Reading it belongs in the one verb
+that already answers "what would run here?".
+
 Shaped after ``cli/docs.py`` and ``cli/extension_install.py``: ``-h``/``--help``
 prints the usage, exit **2** for a usage error, diagnostics on stderr and product
 output on stdout, and no ``rich``/``prompt_toolkit`` import so it runs without
@@ -82,6 +92,83 @@ def _placeholder(value: str | None) -> str:
     return value if value else "—"
 
 
+#: What each ``state`` means to someone reading it at 2am after a TLS failure.
+#: ``degraded`` is the line this whole block exists for: before it, that state was
+#: indistinguishable from ``active`` from outside the process.
+_TRUST_HEADLINE = {
+    "active": "OS certificate store (a CA installed system-wide IS trusted)",
+    "degraded": "certifi only — truststore injection FAILED",
+    "not-attempted": "OpenSSL defaults — truststore was never injected",
+}
+
+
+def _render_trust_store(trust: dict[str, Any], stream: TextIO) -> None:
+    """The TLS block.
+
+    Printed for every ``aelix status``, not behind a flag: someone whose provider
+    requests are dying on a corporate network does not know to ask for it, and
+    "which trust store is live" is the first question that separates a proxy
+    problem from an auth problem. It costs four lines when everything is fine.
+    """
+
+    print(file=stream)
+    print("TLS trust:", file=stream)
+    state = str(trust["state"])
+    rows: list[tuple[str, str]] = [
+        ("store", _TRUST_HEADLINE.get(state, state)),
+        ("ssl.SSLContext", str(trust["ssl_context_class"])),
+    ]
+    if trust["backend"]:
+        rows.append(
+            ("backend", f"{trust['backend']} (truststore {trust['truststore_version'] or '?'})")
+        )
+
+    # cafile and capath are reported even when the state is healthy, because
+    # they are what a REMOTE reader needs: "OS store active" plus a missing
+    # cafile and an unhashed capath is a machine that trusts nothing, and the
+    # state line alone cannot say so.
+    cafile = trust["cafile"]
+    if cafile:
+        rows.append(("cafile", f"{cafile}" + ("" if trust["cafile_exists"] else "  ← MISSING")))
+    else:
+        rows.append(("cafile", "— (OpenSSL resolved none)"))
+    capath = trust["capath"]
+    if capath:
+        if not trust["capath_exists"]:
+            note = "  ← MISSING"
+        elif not trust["capath_has_hashed_certs"]:
+            note = "  ← present but holds no hashed certs, so OpenSSL finds nothing in it"
+        else:
+            note = "  (hashed certs present)"
+        rows.append(("capath", f"{capath}{note}"))
+    else:
+        rows.append(("capath", "— (OpenSSL resolved none)"))
+
+    if trust["ca_count"] is not None:
+        rows.append(("CAs loaded", str(trust["ca_count"])))
+    elif trust["ca_count_unavailable"]:
+        # Never printed as 0. A zero that means "the detector did not fire" reads
+        # as "you trust nothing", and that mistake has already shipped here once.
+        rows.append(("CAs loaded", f"not reportable — {trust['ca_count_unavailable']}"))
+
+    rows.append(
+        (
+            "interpreter",
+            f"Python {trust['python_version']}, {trust['openssl_version']}"
+            + (", uv-managed" if trust["python_is_uv_managed"] else ""),
+        )
+    )
+    for name, value in sorted(trust["env_overrides"].items()):
+        rows.append((name, f"{value}  ← overrides the paths above"))
+
+    width = max(len(label) for label, _ in rows)
+    for label, value in rows:
+        print(f"  {label.ljust(width)}  {value}", file=stream)
+
+    if trust["reason"]:
+        print(f"  ! {trust['reason']}", file=stream)
+
+
 def _render_text(report: dict[str, Any], stream: TextIO) -> None:
     print(f"aelix {report['version']}", file=stream)
     print(file=stream)
@@ -99,6 +186,8 @@ def _render_text(report: dict[str, Any], stream: TextIO) -> None:
     width = max(len(label) for label, _ in rows)
     for label, value in rows:
         print(f"  {label.ljust(width)}  {value}", file=stream)
+
+    _render_trust_store(report["trust_store"], stream)
 
     exts = report.get("discovered_extensions")
     print(file=stream)
@@ -156,6 +245,7 @@ async def _collect(*, discover: bool) -> dict[str, Any]:
     # install it was an ImportError and this command would have died listing a
     # directory. ``extensions/always_on`` is import-clean.
     from aelix_agent_core.contracts import AELIX_API_LEVEL
+    from aelix_ai.providers._trust_store import describe_trust_store
     from aelix_status.snapshot import bounded_emitted_value, summarise_extensions
 
     from aelix_coding_agent.cli.config import VERSION, get_agent_dir
@@ -198,6 +288,10 @@ async def _collect(*, discover: bool) -> dict[str, Any]:
         "manifest_api_level": AELIX_API_LEVEL,
         "session_only": list(SESSION_ONLY),
         "always_on_builtins": sorted(BUILTIN_ALWAYS_ON_NAMES),
+        # Reported under ``--no-extensions`` too: someone diagnosing a TLS wall
+        # has every reason to skip loading extension code, and that is exactly
+        # the run where this block must still answer.
+        "trust_store": describe_trust_store().as_dict(),
     }
 
     if not discover:

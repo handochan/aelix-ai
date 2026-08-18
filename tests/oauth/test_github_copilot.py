@@ -166,13 +166,31 @@ def test_get_github_copilot_base_url_default() -> None:
 
 
 class _FakeResponse:
-    def __init__(self, status_code: int, body: dict[str, Any]) -> None:
+    def __init__(
+        self,
+        status_code: int,
+        body: dict[str, Any],
+        *,
+        headers: dict[str, str] | None = None,
+        text: str | None = None,
+    ) -> None:
         self.status_code = status_code
         self.reason_phrase = "OK" if 200 <= status_code < 300 else "Error"
-        self.text = json.dumps(body)
+        # ``text`` is overridable so a test can hand over a body that is NOT
+        # JSON — an intercepting proxy's HTML page, which is the exact shape
+        # issue #184's reporter received.
+        self.text = json.dumps(body) if text is None else text
+        # A real ``httpx.Response`` ALWAYS carries headers. This fake did not, so
+        # the first production code to read one (``Retry-After``) fell over on
+        # the DOUBLE rather than on anything real. The fake was the incomplete
+        # thing — it grew the attribute, rather than the helper growing a
+        # ``getattr`` guard around an API that cannot actually be missing.
+        self.headers = headers or {}
         self._body = body
 
     def json(self) -> Any:
+        if not self.text.lstrip().startswith(("{", "[")):
+            raise ValueError("Expecting value: line 1 column 1 (char 0)")
         return self._body
 
 
@@ -876,3 +894,291 @@ def test_catalog_has_github_copilot_models() -> None:
     ids = {m.id for m in get_models(GITHUB_COPILOT_OAUTH_ID)}
     assert ids, "catalog lost all github-copilot models"
     assert "gpt-4o" in ids
+
+
+# === issue #184 (a completed approval must survive a transient 5xx) ==========
+# === issue #186 (a server body must not own the terminal) ====================
+
+#: GitHub's real 502 "Unicorn" page, in miniature but at the measured SCALE: the
+#: reporter's body was 54,889 chars over 164 lines, ~45KB of it one base64 PNG.
+_UNICORN = (
+    "<!DOCTYPE html>\n<!--\n\nHello future GitHubber!\n\n-->\n<html>\n<head>\n"
+    "<title>Unicorn! &middot; GitHub</title>\n"
+    + "\n".join(f"<style>.c{i} {{ background: url(data:image/png;base64,{'A' * 400}); }}</style>"
+                for i in range(140))
+    + "\n</html>\n"
+)
+
+#: A body that also tries to STEER the terminal, not merely fill it.
+_HOSTILE_BODY = "\x1b[2Jerased\x1b]0;PWNED\x07\x9b31m"
+
+
+async def _noop_sleep(_n: float) -> None:
+    """Patched over ``asyncio.sleep`` so a retry costs the suite no wall clock.
+
+    Every retry test below patches it. Without that, ``expires_in=3000`` plus a
+    six-attempt cap at a real 1.2× backoff turns one test into seconds of pure
+    tax on a suite this repo has already had to rescue from wall-clock flakiness.
+    """
+
+    return None
+
+
+def _assert_body_is_contained(message: str) -> None:
+    """The three properties every raise site must give a server body."""
+
+    assert len(message) < 1024, f"unbounded body reached the message ({len(message)} chars)"
+    assert "\x1b" not in message and "\x9b" not in message, "an escape survived"
+    assert "server said:" in message, "the quotation is not attributed to the server"
+
+
+async def test_poll_survives_a_transient_502_after_the_user_approved() -> None:
+    """Issue #184, exactly as reported.
+
+    The reporter entered their code, approved in the browser, and got
+    ``502 Bad Gateway`` — the loop abandoned a completed approval on the FIRST
+    non-2xx. A device code is single-use, so there is nothing to recover: they
+    have to start over.
+
+    SABOTAGE: turn the transient branch back into ``raise``. The call-count
+    assertion (not a mock's ``assert_called``) goes RED.
+    """
+
+    client = _SequencedClient(
+        [
+            _FakeResponse(502, {}, text=_UNICORN),
+            _FakeResponse(502, {}, text=_UNICORN),
+            _FakeResponse(200, {"access_token": "GH_AT"}),
+        ]
+    )
+    with patch("aelix_ai.oauth.github_copilot.httpx.AsyncClient", new=client), patch(
+        "aelix_ai.oauth.github_copilot.asyncio.sleep", new=_noop_sleep
+    ):
+        token = await _poll_for_github_access_token(
+            "github.com", "DC", interval_seconds=1, expires_in=300
+        )
+
+    assert token == "GH_AT"
+    assert len(client.calls) == 3, "the two 502s were not retried"
+
+
+async def test_a_transient_answer_waits_instead_of_hot_looping() -> None:
+    """SABOTAGE: replace the fall-through with ``continue``.
+
+    ``continue`` skips the sleep at the bottom of the loop and re-POSTs with ZERO
+    delay — turning one 502 into a request flood against the endpoint whose abuse
+    limiter this branch is trying to survive. The sleep count goes to 0 and this
+    must go RED.
+    """
+
+    client = _SequencedClient(
+        [
+            _FakeResponse(502, {}, text="boom"),
+            _FakeResponse(502, {}, text="boom"),
+            _FakeResponse(200, {"access_token": "GH_AT"}),
+        ]
+    )
+    sleeps: list[float] = []
+
+    async def _track(n: float) -> None:
+        sleeps.append(n)
+
+    with patch("aelix_ai.oauth.github_copilot.httpx.AsyncClient", new=client), patch(
+        "aelix_ai.oauth.github_copilot.asyncio.sleep", side_effect=_track
+    ):
+        await _poll_for_github_access_token(
+            "github.com", "DC", interval_seconds=1, expires_in=300
+        )
+
+    assert len(sleeps) == 2, f"expected a wait after each transient answer, got {sleeps}"
+    assert all(n > 0 for n in sleeps)
+
+
+async def test_the_consecutive_transient_cap_gives_up_and_says_what_failed() -> None:
+    """The window is 15 minutes; a dead endpoint must not consume all of it.
+
+    SABOTAGE: change the cap comparison to ``>=`` (off by one), or drop the cap
+    entirely. The exact call count goes RED either way.
+    """
+
+    client = _SequencedClient([_FakeResponse(503, {}, text=_UNICORN)])
+    with patch("aelix_ai.oauth.github_copilot.httpx.AsyncClient", new=client), patch(
+        "aelix_ai.oauth.github_copilot.asyncio.sleep", new=_noop_sleep
+    ), pytest.raises(RuntimeError) as ei:
+        await _poll_for_github_access_token(
+            "github.com", "DC", interval_seconds=1, expires_in=3000
+        )
+
+    assert len(client.calls) == 6, "cap is 5 consecutive transients, then the 6th raises"
+    _assert_body_is_contained(str(ei.value))
+    assert "503" in str(ei.value)
+
+
+async def test_the_transient_counter_resets_on_any_parsed_success() -> None:
+    """CONSECUTIVE, not cumulative.
+
+    This loop runs ~149 times over a real 899-second window. A cumulative counter
+    would trip on ordinary background flakiness long before anything was wrong.
+
+    SABOTAGE: drop the ``consecutive_transient = 0`` reset. Ten scattered 502s
+    with successful polls between them then exceed the cap and this goes RED.
+    """
+
+    responses: list[_FakeResponse] = []
+    for _ in range(2):
+        responses += [_FakeResponse(502, {}, text="x")] * 4
+        responses.append(_FakeResponse(200, {"error": "authorization_pending"}))
+    responses.append(_FakeResponse(200, {"access_token": "GH_AT"}))
+
+    client = _SequencedClient(responses)
+    with patch("aelix_ai.oauth.github_copilot.httpx.AsyncClient", new=client), patch(
+        "aelix_ai.oauth.github_copilot.asyncio.sleep", new=_noop_sleep
+    ):
+        token = await _poll_for_github_access_token(
+            "github.com", "DC", interval_seconds=1, expires_in=3000
+        )
+
+    assert token == "GH_AT"
+    assert len(client.calls) == len(responses)
+
+
+async def test_429_is_not_retried_and_the_retry_after_is_quoted_not_slept_on() -> None:
+    """SABOTAGE: add 429 to ``_TRANSIENT_STATUS``.
+
+    GitHub answers device-flow protocol errors — including its own poll rate
+    limit — as **HTTP 200 with a JSON body** (measured against the live
+    endpoint). So a non-2xx 429 here is not the documented backoff signal; it is
+    abuse protection, and retrying into it extends the block. The call-count
+    assertion goes RED.
+
+    ``Retry-After`` is quoted so the user can act on it, never slept on: GitHub
+    documents values in the hundreds of seconds and a login flow that freezes for
+    five minutes is a hang.
+    """
+
+    client = _SequencedClient(
+        [
+            _FakeResponse(429, {}, text="slow down", headers={"retry-after": "60"}),
+            _FakeResponse(200, {"access_token": "GH_AT"}),
+        ]
+    )
+    with patch("aelix_ai.oauth.github_copilot.httpx.AsyncClient", new=client), patch(
+        "aelix_ai.oauth.github_copilot.asyncio.sleep", new=_noop_sleep
+    ), pytest.raises(RuntimeError) as ei:
+        await _poll_for_github_access_token(
+            "github.com", "DC", interval_seconds=1, expires_in=300
+        )
+
+    assert len(client.calls) == 1, "429 must be terminal here"
+    assert "Retry-After: 60" in str(ei.value)
+
+
+async def test_a_denied_authorisation_stays_terminal() -> None:
+    """SABOTAGE: route body errors through the transient path.
+
+    ``access_denied`` / ``expired_token`` / ``incorrect_device_code`` are the
+    server's final answer about a SINGLE-USE code. Retrying re-sends something it
+    has already ruled on.
+    """
+
+    client = _SequencedClient(
+        [
+            _FakeResponse(200, {"error": "access_denied", "error_description": "user said no"}),
+            _FakeResponse(200, {"access_token": "GH_AT"}),
+        ]
+    )
+    with patch("aelix_ai.oauth.github_copilot.httpx.AsyncClient", new=client), patch(
+        "aelix_ai.oauth.github_copilot.asyncio.sleep", new=_noop_sleep
+    ), pytest.raises(RuntimeError) as ei:
+        await _poll_for_github_access_token(
+            "github.com", "DC", interval_seconds=1, expires_in=300
+        )
+
+    assert len(client.calls) == 1
+    assert "access_denied" in str(ei.value)
+
+
+async def test_a_2xx_carrying_html_is_treated_as_interposition_not_as_a_crash() -> None:
+    """A success status with a non-JSON body is a proxy answering for GitHub.
+
+    Before: the ``json()`` call escaped as a raw ``JSONDecodeError`` traceback.
+    """
+
+    client = _SequencedClient(
+        [
+            _FakeResponse(200, {}, text=_UNICORN),
+            _FakeResponse(200, {"access_token": "GH_AT"}),
+        ]
+    )
+    with patch("aelix_ai.oauth.github_copilot.httpx.AsyncClient", new=client), patch(
+        "aelix_ai.oauth.github_copilot.asyncio.sleep", new=_noop_sleep
+    ):
+        token = await _poll_for_github_access_token(
+            "github.com", "DC", interval_seconds=1, expires_in=300
+        )
+
+    assert token == "GH_AT"
+    assert len(client.calls) == 2
+
+
+async def test_the_device_code_post_bounds_its_error_body() -> None:
+    """Site 1 of 3. Written per-site rather than parametrised over one helper:
+    a single shared assertion lets a one-site regression hide."""
+
+    assert len(_UNICORN) > 50_000, "guard: the payload must be at the measured scale"
+    with _patch_httpx(_FakeResponse(500, {}, text=_UNICORN)), pytest.raises(
+        RuntimeError
+    ) as ei:
+        await _start_device_flow("github.com")
+
+    _assert_body_is_contained(str(ei.value))
+    assert "/login/device/code" in str(ei.value), "the failing endpoint must be named"
+
+
+async def test_the_poll_bounds_its_error_body_on_a_terminal_status() -> None:
+    """Site 2 of 3."""
+
+    client = _SequencedClient([_FakeResponse(400, {}, text=_UNICORN)])
+    with patch("aelix_ai.oauth.github_copilot.httpx.AsyncClient", new=client), patch(
+        "aelix_ai.oauth.github_copilot.asyncio.sleep", new=_noop_sleep
+    ), pytest.raises(RuntimeError) as ei:
+        await _poll_for_github_access_token(
+            "github.com", "DC", interval_seconds=1, expires_in=300
+        )
+
+    _assert_body_is_contained(str(ei.value))
+    assert "/login/oauth/access_token" in str(ei.value)
+
+
+async def test_the_copilot_token_exchange_bounds_its_error_body() -> None:
+    """Site 3 of 3."""
+
+    with _patch_httpx(_FakeResponse(500, {}, text=_UNICORN)), pytest.raises(
+        RuntimeError
+    ) as ei:
+        await refresh_github_copilot_token("GH_AT")
+
+    _assert_body_is_contained(str(ei.value))
+    assert "copilot_internal/v2/token" in str(ei.value)
+
+
+async def test_a_body_that_steers_the_terminal_is_neutered_at_the_raise_site() -> None:
+    """Bounding is not enough on its own — a 30-byte body can still erase a screen.
+
+    SABOTAGE: bound with a plain slice instead of ``safe_for_terminal``. The
+    escape assertions go RED while the length assertion still passes, which is
+    precisely the fix that would have looked done.
+    """
+
+    assert "\x1b" in _HOSTILE_BODY, "positive control: the payload really is hostile"
+    with _patch_httpx(_FakeResponse(500, {}, text=_HOSTILE_BODY)), pytest.raises(
+        RuntimeError
+    ) as ei:
+        await _start_device_flow("github.com")
+
+    message = str(ei.value)
+    assert "\x1b" not in message
+    assert "\x9b" not in message
+    assert "\x07" not in message
+    # The inert literal survives, so an operator can still see what arrived.
+    assert "[2Jerased" in message

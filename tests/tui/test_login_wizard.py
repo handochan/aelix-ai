@@ -10,6 +10,7 @@ empty logout / persistence failure) — all without prompt-toolkit.
 from __future__ import annotations
 
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 from aelix_ai.oauth.types import (
@@ -455,8 +456,21 @@ async def test_login_oauth_unknown_provider_runtimeerror_degrades() -> None:
         commit=committed.append,
     )
     assert len(storage.login_calls) == 1
-    assert any("Unknown OAuth provider" in _plain(c) for c in committed)
     assert not any("signed in to" in _plain(c) for c in committed)
+
+    # 🔴 THE WHOLE LINE, not a substring.
+    #
+    # This test was a false-green. It was written to guard a dedicated
+    # ``except RuntimeError`` arm that existed for exactly this message — and
+    # measured, DELETING that arm left the test passing, because the fallback arm
+    # also contains "Unknown OAuth provider", just behind a prefix. It could not
+    # tell the two apart, which is the only thing it was for.
+    #
+    # The arm is now gone on purpose: every Copilot device-flow failure is a
+    # ``RuntimeError`` too, so it shadowed an entire provider. Pinning the exact
+    # rendered line is what lets this file notice if the routing changes again.
+    lines = [_plain(c) for c in committed]
+    assert "✖ OAuth login failed: Unknown OAuth provider: x" in lines, lines
 
 
 async def test_login_oauth_generic_failure_degrades() -> None:
@@ -927,3 +941,212 @@ async def test_logout_without_registry_or_settings_touches_only_auth() -> None:
     )
     assert storage.logout_calls == ["openai"]
     assert any("Removed stored credentials for openai" in _plain(c) for c in committed)
+
+
+# === issue #186 — what reaches the TERMINAL, not what reaches ``Text.plain`` ==
+
+
+def _rendered(renderable: object, *, width: int = 80) -> str:
+    """The bytes a real terminal would receive for one committed renderable.
+
+    🔴 ``_plain()`` IS NOT A SUFFICIENT SEAM for this question, and that is the
+    exact false-green shape this repo keeps shipping: ``Text.plain`` hands back
+    the string that was passed IN, so it proves the sanitiser ran and proves
+    nothing about the emulator. ``rich`` strips five control codes — BEL, BS, VT,
+    FF, CR — and ESC, the one-byte C1 CSI (0x9B) and NUL all survive it. So the
+    assertion has to be made on a real ``Console`` write, at a real width, with
+    ``force_terminal`` so ANSI is actually emitted rather than suppressed for a
+    non-tty.
+    """
+
+    import io
+
+    from rich.console import Console
+
+    buf = io.StringIO()
+    Console(file=buf, force_terminal=True, width=width, legacy_windows=False).print(
+        renderable
+    )
+    return buf.getvalue()
+
+
+#: 55 KB over 164 lines is the SCALE the reporter actually received.
+_BIG_BODY = "<!DOCTYPE html>\n" + "\n".join("x" * 340 for _ in range(163))
+#: Small, and far more dangerous: erase-screen, an OSC title, a one-byte CSI.
+_STEERING_BODY = "\x1b[2J\x1b]0;PWNED\x07\x9b31m\x1b[?1049h"
+
+
+async def _drive_oauth_failure(exc: BaseException) -> list[object]:
+    """Run the REAL ``run_login`` OAuth path to the point where ``exc`` is rendered."""
+
+    storage = FakeAuthStorage(login_raises=exc)
+    committed: list[object] = []
+
+    async def select(title: str, options: list[str], *_a: Any, **_k: Any) -> str | None:
+        if title == "Add a provider":
+            return "Using OAuth (sign in to a subscription / account)"
+        return options[0]
+
+    await run_login(
+        auth_storage=storage,
+        select=select,
+        prompt_input=_ScriptedInput([]),
+        confirm=_confirm_yes,
+        notify=_notify_sink([]),
+        commit=committed.append,
+    )
+    return committed
+
+
+async def test_a_55kb_server_body_does_not_reach_the_screen() -> None:
+    """Issue #186 at the measured scale.
+
+    SABOTAGE: drop ``safe_error_for_terminal`` and commit
+    ``describe_provider_error(exc)`` directly. That is what the code did, and it
+    is NOT fixed by routing through ``describe_provider_error`` — measured, that
+    helper returns a 54,906-character input as 54,906 characters, and with a
+    cause chain returns MORE. This must go RED.
+    """
+
+    assert len(_BIG_BODY) > 50_000, "positive control: the payload is at scale"
+
+    committed = await _drive_oauth_failure(RuntimeError(f"502 Bad Gateway: {_BIG_BODY}"))
+    errors = [c for c in committed if "OAuth login failed" in _plain(c)]
+    assert errors, [_plain(c) for c in committed]
+
+    text = _plain(errors[0])
+    assert len(text) < 2_000, f"{len(text)} chars reached the screen"
+    assert text.count("\n") + 1 <= 10
+    assert "more lines omitted" in text, "a clipped body must say it was clipped"
+
+
+async def test_a_steering_server_body_cannot_drive_the_terminal() -> None:
+    """The small-but-hostile case, asserted on real ``Console`` output.
+
+    SABOTAGE (a): sanitise with a table that only strips ``\\x1b`` — the one-byte
+    CSI ``\\x9b`` still reaches the emulator and this goes RED.
+    SABOTAGE (b): assert via ``_plain()`` instead of ``_rendered()`` — that
+    variant stays GREEN under (a), which is why the weaker seam is not used here.
+    """
+
+    assert "\x1b" in _STEERING_BODY and "\x9b" in _STEERING_BODY  # positive control
+
+    committed = await _drive_oauth_failure(RuntimeError(f"500: {_STEERING_BODY}"))
+    errors = [c for c in committed if "OAuth login failed" in _plain(c)]
+    assert errors
+
+    out = _rendered(errors[0])
+    # rich emits its OWN colour SGR for the "bold red" style, so a blanket
+    # "no ESC anywhere" assertion would be measuring rich, not us. Assert on the
+    # sequences the SERVER supplied.
+    for sequence in ("[2J", "]0;PWNED", "[?1049h"):
+        assert f"\x1b{sequence}" not in out, sequence
+    assert "\x9b31m" not in out
+    assert "\x07" not in out
+
+
+async def test_the_oauth_sign_in_panel_sanitises_server_supplied_fields() -> None:
+    """The SUCCESS path — no error required, and it fires on every single login.
+
+    ``on_auth`` renders ``verification_uri`` and the user code straight off the
+    JSON the device-code endpoint returned. Issue #186 does not mention this site
+    at all.
+
+    SABOTAGE: drop the ``safe_for_terminal`` calls in ``on_auth``.
+    """
+
+    storage = FakeAuthStorage()
+    committed: list[object] = []
+    # LONG as well as hostile, deliberately. A short payload cannot distinguish
+    # "the Panel is bounded" from "the value happened to be small", and the first
+    # version of this test could not — see the note below the assertions.
+    hostile_url = f"https://github.com/login/device{_STEERING_BODY}{'q' * 900}"
+
+    async def select(title: str, options: list[str], *_a: Any, **_k: Any) -> str | None:
+        if title == "Add a provider":
+            return "Using OAuth (sign in to a subscription / account)"
+        return options[0]
+
+    async def _login(_provider: str, callbacks: OAuthLoginCallbacks) -> None:
+        await callbacks.on_auth(
+            OAuthAuthInfo(url=hostile_url, instructions=f"Enter code{_STEERING_BODY}")
+        )
+
+    storage.login = _login  # type: ignore[assignment, method-assign]
+
+    await run_login(
+        auth_storage=storage,
+        select=select,
+        prompt_input=_ScriptedInput([]),
+        confirm=_confirm_yes,
+        notify=_notify_sink([]),
+        commit=committed.append,
+    )
+
+    panels = [c for c in committed if "Open this URL" in _plain(c)]
+    assert panels, [_plain(c) for c in committed]
+
+    out = _rendered(panels[0])
+    for sequence in ("[2J", "]0;PWNED", "[?1049h"):
+        assert f"\x1b{sequence}" not in out, sequence
+    assert "\x9b31m" not in out
+
+    # 🔴 The two assertions above were NOT enough, and a sabotage run proved it:
+    # deleting the display-side call left them green, because the value handed to
+    # the browser is neutered FIRST and the Panel reads from that. So they
+    # measured the browser path and called it the render path.
+    #
+    # These two pin what is actually specific to the Panel:
+    body = _plain(panels[0])
+    assert len(body) < 800, f"the Panel is unbounded ({len(body)} chars)"
+    # ``instructions`` is a SEPARATE field with its own call, and nothing else
+    # sanitises it on the way in.
+    assert "Enter code" in body
+    assert "\x1b" not in body and "\x9b" not in body
+
+
+async def test_the_url_handed_to_the_browser_is_neutered_but_not_truncated() -> None:
+    """Two different consumers, two different treatments — and both are pinned.
+
+    A sabotage run caught this gap: removing the sanitise on the value that
+    reaches ``webbrowser.open`` left the Panel test GREEN, correctly, because the
+    Panel re-sanitises for display. So the browser path had no coverage at all.
+
+    It must be NEUTERED (nothing hands a control-laden string to an OS URL
+    handler) and NOT TRUNCATED (a clipped URL turns a rendering problem into a
+    login that cannot complete).
+
+    SABOTAGE (a): drop the sanitise → the control-byte assertion goes RED.
+    SABOTAGE (b): pass the display-bounded value to the browser → the
+    round-trip assertion goes RED.
+    """
+
+    storage = FakeAuthStorage()
+    opened: list[str] = []
+    long_tail = "q" * 900
+    hostile_url = f"https://github.com/login/device?x={_STEERING_BODY}{long_tail}"
+
+    async def select(title: str, options: list[str], *_a: Any, **_k: Any) -> str | None:
+        if title == "Add a provider":
+            return "Using OAuth (sign in to a subscription / account)"
+        return options[0]
+
+    async def _login(_provider: str, callbacks: OAuthLoginCallbacks) -> None:
+        await callbacks.on_auth(OAuthAuthInfo(url=hostile_url, instructions=None))
+
+    storage.login = _login  # type: ignore[assignment, method-assign]
+
+    with patch("aelix_coding_agent.tui.login_wizard.webbrowser.open", opened.append):
+        await run_login(
+            auth_storage=storage,
+            select=select,
+            prompt_input=_ScriptedInput([]),
+            confirm=_confirm_yes,
+            notify=_notify_sink([]),
+            commit=[].append,
+        )
+
+    assert opened, "the browser launch never happened — the test measures nothing"
+    launched = opened[0]
+    assert "\x1b" not in launched and "\x9b" not in launched and "\x07" not in launched
+    assert launched.endswith(long_tail), "a truncated URL cannot complete the login"
