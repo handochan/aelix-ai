@@ -237,7 +237,14 @@ def test_an_unsat_row_never_exceeds_the_absolute_ceiling_at_any_window() -> None
 
 
 def test_every_unsat_catalog_row_lands_under_the_ceiling() -> None:
-    """All 36 UNSAT anthropic-messages rows, not just the blocker."""
+    """All 55 UNSAT anthropic-messages rows, not just the blocker.
+
+    Was 36 before #172. The 19 new ones are all ``vercel-ai-gateway``, whose
+    every row speaks ``anthropic-messages``, and each arrived with upstream's
+    own ``output == context`` — the shape ``xai/grok-4.5`` already shipped. The
+    count assertion sits BEFORE the loop, so a stale number does not weaken
+    this test, it silently stops running it.
+    """
 
     catalog = json.loads((files("aelix_ai") / "models_generated.json").read_text())
     unsat = [
@@ -249,7 +256,7 @@ def test_every_unsat_catalog_row_lands_under_the_ceiling() -> None:
         and row.get("contextWindow")
         and row["maxTokens"] >= row["contextWindow"]
     ]
-    assert len(unsat) == 36, "the UNSAT population moved; re-read the evidence"
+    assert len(unsat) == 55, "the UNSAT population moved; re-read the evidence"
     for provider, model_id, row in unsat:
         model = _model(
             id=model_id, provider=provider, base_url="https://h",
@@ -291,12 +298,12 @@ def test_the_absolute_ceiling_matches_the_evidence_it_was_chosen_from() -> None:
         and row.get("maxTokens")
         and (not row.get("contextWindow") or row["maxTokens"] < row["contextWindow"])
     )
-    # 228 before the two ``claude-opus-5`` rows were added by hand (#172); both
-    # land at 64000/128000, ABOVE p25, so the ceiling was re-derived rather than
-    # nudged — ``sat[57]`` is still ``anthropic/claude-opus-4-0`` at 32000. The
-    # margin is two rows: ``sat[55:57]`` are 24000, so one more satisfiable row
-    # below 32000 moves p25 and this fails, which is the point.
-    assert len(sat) == 230
+    # 228 → 230 when two ``claude-opus-5`` rows were hand-added, → 309 when
+    # #172 added 422. RE-DERIVED at each step rather than nudged, which is the
+    # whole point of asserting the population size first: p25 is now ``sat[77]``
+    # and it is STILL 32000. The margin also stopped being thin — ``sat[74:81]``
+    # are all 32000, where before p25 sat two rows above a pair of 24000s.
+    assert len(sat) == 309
     assert sat[len(sat) // 4] == _UNSAT_ABSOLUTE_OUTPUT_CEILING, (
         "32000 is the p25 of the trustworthy rows; if the catalog moved, "
         "re-derive the ceiling rather than nudging this assertion"
