@@ -93,3 +93,53 @@ def test_the_agent_profiles_guide_still_states_the_exception() -> None:
             f"{path} still claims you always answer, with no exception noted"
         )
         assert "told, not asked" in text, path
+
+
+def test_the_model_is_not_told_a_delegated_agent_is_always_read_only() -> None:
+    """The `agent` tool's own description — the text the MODEL reads.
+
+    It said "A delegated agent is READ-ONLY unless the user explicitly approves
+    more at a prompt". Under a YOLO parent nobody is prompted and the child is
+    not read-only, so that sentence became false for the audience most likely to
+    act on it: a model that believes its children cannot write will not reason
+    about what they might do.
+
+    Gated because a sabotage put the old sentence back and 1554 tests stayed
+    green. Asserted on the CLAIM — the description must not promise that a
+    prompt is the only way a child gets authority.
+    """
+
+    from aelix_agents.tool import _DESCRIPTION_HEAD
+
+    text = _DESCRIPTION_HEAD
+    assert "READ-ONLY unless the user explicitly approves more at a prompt" not in text, (
+        "the agent tool tells the model a prompt is the only route to authority; "
+        "under yolo there is no prompt and the child can write"
+    )
+    assert "READ-ONLY" in text, "the read-only default is still the default"
+    assert "posture" in text, (
+        "the description no longer names the parent's posture as the other way "
+        "a child gets authority"
+    )
+
+
+def test_the_beta_changelog_entry_names_the_yolo_exception() -> None:
+    """The `0.1.0-beta.1` section is what a beta user reads about consent.
+
+    It states, correctly, that the dialog appears only when write authority is
+    at stake — and that sentence needs the exception beside it, because for a
+    YOLO user the dialog does not appear at all. Corrected in place rather than
+    superseded: that section has not shipped, which is the convention `92b3f35`
+    set.
+    """
+
+    text = (REPO_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    beta = text.split("## [0.1.0-beta.1]", 1)[1]
+    anchor = "The delegation consent dialog now appears only when write authority is"
+    assert anchor in beta, "the entry this exception belongs to has moved or gone"
+    entry = beta.split(anchor, 1)[1].split("\n- ", 1)[0]
+    assert "yolo" in entry, (
+        "the beta.1 consent entry no longer names the yolo exception, so it "
+        "promises a dialog that a yolo user never sees"
+    )
+    assert "#196" in entry
