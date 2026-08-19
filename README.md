@@ -21,7 +21,9 @@ Aelix ships today as a terminal agent built on that runtime — its first worklo
 boundary. Read every line it runs, keep it entirely inside your own perimeter, and extend it
 with plain Python functions that import your existing stack — pandas, an internal SDK, a
 warehouse client — directly, in-process: the reason data and ML teams reach for it first.
-And it never phones home.
+And it sends nothing about you anywhere — no telemetry, ever. The one request Aelix makes
+for itself is a daily check for a newer release, which you can turn off in `/settings` or
+skip with `--offline`.
 
 ---
 
@@ -41,9 +43,9 @@ And it never phones home.
   It is **not** on by default: no first-party keys are provisioned yet, so without that flag
   a missing signature is accepted on first use. See [SECURITY.md](SECURITY.md).
 - 🔍 **Auditable & self-hosted.** Fully open source, no telemetry. `--offline` skips the
-  first-use `rg`/`fd` download and the extension-catalog fetch (it does not route model
-  calls — those go to whichever provider you configured). Trust lives in code you can
-  read — the answer to *"why run an agent I didn't write?"*
+  first-use `rg`/`fd` download, the extension-catalog fetch, and the update check (it does
+  not route model calls — those go to whichever provider you configured). Trust lives in
+  code you can read — the answer to *"why run an agent I didn't write?"*
 - 🧩 **Extensible to the core.** A small kernel where even policy, permissions, and guardrails
   are swappable built-in extensions, plus one broad `ExtensionAPI` — tools, slash commands,
   providers, message renderers, themes, and your own `/login` flow (SSO / employee-ID) — with
@@ -191,8 +193,8 @@ catalog Aelix reads by default. It ships empty for the beta and is open for subm
 
 Aelix is built for closed networks and customer-site deployment. `--offline` blocks the
 outbound calls Aelix itself would make — the `rg`/`fd` tool-binary download, the catalog
-fetch, and index-less extension installs — though it does not touch the provider you
-configure, so a closed-network deployment still needs a reachable or self-hosted model
+fetch, index-less extension installs, and the update check — though it does not touch the
+provider you configure, so a closed-network deployment still needs a reachable or self-hosted model
 endpoint. The extension catalog browses and installs from a local copy, trust uses local
 pins (no online revocation checks), and `register_login_provider` lets an extension add
 enterprise SSO / employee-ID auth. Policy and guardrails are enforced as built-in

@@ -19,7 +19,7 @@ runner's real user profile.
 | W2 | `_resolve_shell` win32 arm + `ShellConfig(path, command_flag)`; AUTO mode force-ASK on a shell the bash grammar can't read | `tools/bash.py`, `builtin/bash_classifier.py`, `builtin/permission.py` |
 | W3 | win32-safe process-tree kill at the two owned spawn sites | `tools/_process_tree.py`, `tools/bash.py`, `tools/_subprocess.py` |
 | W4 | RPC stdin thread-pump (`connect_read_pipe` is `NotImplementedError` on Windows) | `rpc/rpc_mode.py` |
-| W5 | `install.ps1` at parity with `install.sh`'s checksum gate — **unexecuted** | `install.ps1`, `tests/packaging/test_install_ps1_parity.py` |
+| W5 | `install.ps1` at parity with `install.sh`'s checksum gate — **unexecuted** | `install.ps1`, `tests/packaging_gate/test_install_ps1_parity.py` |
 
 Two facts were measured rather than assumed, and both shaped the design:
 
@@ -70,7 +70,7 @@ re-discovering the crash.
    (and the box-drawing in the TUI chrome) will mojibake or raise
    `UnicodeEncodeError` on `print`. Cheap to fix, worth doing early — it will
    otherwise look like a hundred unrelated failures.
-8. **Ctrl+G external editor.** `tui/shell.py:2485` falls back to `vi`,
+8. **Ctrl+G external editor.** `tui/shell.py:2559` falls back to `vi`,
    which does not exist on stock Windows. `notepad` is the fallback there.
 9. **`Operating System :: OS Independent` classifiers** — untouched on purpose;
    that is a tag-time decision owned elsewhere.
@@ -88,7 +88,7 @@ than treating the first green as a milestone — several items above are
 is worse than no leg. Items 3, 6, 7 and 8 in particular fail quietly.
 
 `install.ps1` remains the weakest link: it has never been executed anywhere.
-`tests/packaging/test_install_ps1_parity.py` only proves it has not *drifted*
+`tests/packaging_gate/test_install_ps1_parity.py` only proves it has not *drifted*
 from `install.sh` — same env vars, same checksum gate, same `uv` flags. It
 cannot prove the script runs. A Windows leg should execute it end to end
 before anyone recommends it.
@@ -102,5 +102,5 @@ entry in SHA256SUMS and install `aelix[extras]==<VER>`, so only the
 checksum-verified wheel can satisfy the requirement and a same-named PyPI
 release can no longer outrank it. The version comes from the wheel FILENAME,
 never the tag — a tag is `v0.1.0-beta.1` while PEP 440 normalizes the same
-release to `0.1.0b1`. `tests/packaging/test_install_ps1_parity.py` fails if
+release to `0.1.0b1`. `tests/packaging_gate/test_install_ps1_parity.py` fails if
 EITHER installer drops the pin.

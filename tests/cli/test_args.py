@@ -680,15 +680,24 @@ def test_print_help_lists_every_extension_subcommand() -> None:
 
 
 def test_print_help_offline_line_does_not_overclaim() -> None:
-    """`--offline` reaches exactly three sites (the rg/fd download, the
-    catalog fetch, index-less pypi installs) and does NOT make provider/LLM
+    """`--offline` reaches exactly FOUR sites and does NOT make provider/LLM
     calls offline. The help line used to say "startup network operations",
-    which reads as air-gap mode."""
+    which reads as air-gap mode.
+
+    The fourth is the launch-time update check. It was three until that shipped,
+    and the count in this docstring is the only place the arithmetic was ever
+    written down — so the enumeration is now ASSERTED rather than described.
+    A new outbound call that forgets this line turns the help text into an
+    undercount, which is the same class of defect the test was written for.
+    """
     buf = io.StringIO()
     print_help(buf)
     text = buf.getvalue()
     assert "--offline" in text
     assert "startup network operations" not in text
+    for site in ("rg/fd", "catalog fetch", "pypi installs", "update check"):
+        assert site in text, f"--offline help does not mention {site}"
+    assert "NOT affected" in text
 
 
 def test_print_help_says_path_for_skill_and_extension() -> None:

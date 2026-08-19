@@ -31,6 +31,13 @@ dependencies = [
   "aelix-agent-core==0.1.0b1",
   "pygments>=2.18",
   "markdown-it-py>=3.0",
+  # The update check compares a PEP 440 version against a release tag, and the
+  # two are the SAME release spelled differently (`0.1.0b1` vs `v0.1.0-beta.1`).
+  # A string compare is wrong in four of the eight orderings that matter and
+  # would announce an update the user already has, on every launch. Declared
+  # rather than assumed: `packaging` is present in a dev checkout only because
+  # pytest requires it, so an `install.sh` user would not have had it.
+  "packaging>=23",
   "mcp>=1.27,<2",
   "Pillow>=11.0,<12.0",
   # WP-0 (ADR-0158) — tree-sitter-bash AUTO-mode safety classifier. Prebuilt
@@ -124,7 +131,7 @@ packages = [
 #     aelix_coding_agent/examples/echo/aelix-plugin.toml
 #     aelix_coding_agent/examples/echo/echo.py
 #     aelix_coding_agent/extensions/api.py
-# tests/packaging/test_build_hygiene.py builds this wheel for real and asserts
+# tests/packaging_gate/test_build_hygiene.py builds this wheel for real and asserts
 # both directions — those four present, `.omc`/`__pycache__` absent. It builds
 # from a copy of the repo with .gitignore DELETED, because with .gitignore in
 # place the belt suppresses the planted scratch on its own and the assertion

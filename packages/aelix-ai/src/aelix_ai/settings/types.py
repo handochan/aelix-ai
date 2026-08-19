@@ -236,6 +236,18 @@ class Settings:
     shell_command_prefix: str | None = None
     npm_command: list[str] | None = None
     collapse_changelog: bool | None = None
+    # AELIX-ORIGINAL, not a pi key. Pi gates its version check on the
+    # ``PI_SKIP_VERSION_CHECK`` env var; ``cli/entry.py`` argues against adding
+    # any new environment name (every ``os.environ`` read is a consumer a
+    # hostile cwd ``.env`` may try to drive), so the off switch is a setting.
+    # ``None`` means "not configured" and reads as ON — see
+    # ``SettingsManager.get_check_for_updates``.
+    #
+    # Distinct from the telemetry decision recorded below: this sends nothing
+    # about the user. It is a GET of a static public file; the server learns an
+    # IP and nothing else. It creates no sink, and it must never acquire one —
+    # no version, no OS, no install id in the request.
+    check_for_updates: bool | None = None
     # NOTE (#111 B-2): Pi's ``enableInstallTelemetry`` is deliberately NOT
     # ported. Aelix has no telemetry sink of any kind, so carrying the key
     # advertised a capability that does not exist. An existing settings.json
@@ -342,6 +354,7 @@ SETTINGS_PY_TO_JSON: Final[dict[str, str]] = {
     "shell_command_prefix": "shellCommandPrefix",
     "npm_command": "npmCommand",
     "collapse_changelog": "collapseChangelog",
+    "check_for_updates": "checkForUpdates",
     "packages": "packages",
     "extension_sources": "extensionSources",
     "extensions": "extensions",

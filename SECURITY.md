@@ -158,6 +158,17 @@ consent very much is:
   preferred, and `--offline` (or `PI_OFFLINE=1`) skips the download entirely.
   These archives are **not** checksum-pinned by Aelix; they are fetched over HTTPS
   from the upstream project's release assets.
+- **One request is made about Aelix itself: the update check.** At most once a
+  day, an interactive launch fetches
+  `https://handochan.github.io/aelix-ai/latest-version.json` — a static file on
+  this project's own GitHub Pages site — and prints the upgrade command if a
+  newer release exists. The request is a plain unauthenticated GET carrying no
+  version, no operating system, no identifier of any kind; the server learns an
+  IP address and nothing else. It creates no telemetry sink and must never
+  acquire one. Redirects off HTTPS are refused, the response is size-capped, and
+  every failure is silent. Turn it off in `/settings` ("Check for updates") or
+  skip it with `--offline` / `PI_OFFLINE=1`. Nothing is downloaded or executed
+  by the check — installing the update is a command you run yourself.
 
 Reports we do want, among others: a way to escape or bypass the permission gate in
 an interactive session, path-traversal out of the workspace, credential or

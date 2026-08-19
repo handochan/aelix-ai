@@ -21,7 +21,7 @@ plant ``docs/stale-guide.md`` under the package with no counterpart in
 
 WHAT THIS FILE DOES NOT PROVE. Reading the source tree says nothing about
 packaging — the bundled files could be excluded from the wheel and every
-assertion here would still pass. ``tests/packaging/test_docs_bundle.py`` builds
+assertion here would still pass. ``tests/packaging_gate/test_docs_bundle.py`` builds
 a real wheel and asserts against its namelist. Both, or neither is worth much.
 """
 
@@ -87,7 +87,7 @@ def test_no_guide_hides_in_a_subdirectory() -> None:
     """``docs/guides/`` is FLAT, and the flatness is load-bearing (#101 L1).
 
     Every glob in this pipeline — this file, `scripts/sync_bundled_docs.py`,
-    `tests/packaging/test_docs_bundle.py`, `help.registry.topics` — is `*.md`,
+    `tests/packaging_gate/test_docs_bundle.py`, `help.registry.topics` — is `*.md`,
     not `**/*.md`. So a guide written one directory down was skipped in
     complete silence. Measured on this tree with `docs/guides/advanced/
     nested-guide.md` planted:

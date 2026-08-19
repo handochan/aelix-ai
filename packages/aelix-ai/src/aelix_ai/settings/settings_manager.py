@@ -883,6 +883,26 @@ class SettingsManager:
         self._mark_modified("last_changelog_version")
         self._save()
 
+    # --- checkForUpdates (AELIX-ORIGINAL; pi uses PI_SKIP_VERSION_CHECK) ---
+    def get_check_for_updates(self) -> bool:
+        """Whether the launch path may look for a newer release.
+
+        DEFAULTS ON. Opt-in was considered and rejected on the merits: a user
+        who never finds the setting never learns the next beta exists, which is
+        the entire problem the check was added to solve. It is disclosed in both
+        READMEs, gated by ``--offline`` / ``PI_OFFLINE``, and switchable here.
+        """
+
+        value = self._settings.check_for_updates
+        return True if value is None else bool(value)
+
+    def set_check_for_updates(self, enabled: bool) -> None:
+        """Persist the update-check switch (global scope)."""
+
+        self._global_settings.check_for_updates = bool(enabled)
+        self._mark_modified("check_for_updates")
+        self._save()
+
     # --- sessionDir (Pi `:576-588`) ---
     def get_session_dir(self) -> str | None:
         """Pi parity: ``settings-manager.ts::getSessionDir`` (line 576-588).

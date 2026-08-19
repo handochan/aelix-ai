@@ -195,12 +195,13 @@ def build_settings_rows(sm: SettingsManager) -> list[SettingsRow]:
         # own definition (settings_manager.py, types.py) and this file. TEN of
         # the eleven #111 rows still return ZERO consumers.
         #
-        # The four exceptions in this block, which are genuinely wired and whose
+        # The five exceptions in this block, which are genuinely wired and whose
         # help text is therefore left alone:
         #   * ``features_agents``       -> cli/entry.py::_build_harness_options
         #   * ``tool_card_max_lines``   -> tui/shell.py -> render.py (live)
         #   * ``render_max_width``      -> tui/shell.py -> tui/width.py (live)
         #   * ``enable_skill_commands`` -> tui/shell.py -> cli/resource_commands.py
+        #   * ``check_for_updates``      -> tui/shell.py::_start_update_check
         #
         # WHEN YOU WIRE ONE OF THESE UP, revert its help text in the same
         # commit. A row that works but claims to be inert is the same defect
@@ -221,6 +222,22 @@ def build_settings_rows(sm: SettingsManager) -> list[SettingsRow]:
             # loaded for this process or they are not. A ``live=True`` here would
             # promise a mid-session effect that nothing delivers, i.e. exactly the
             # inert-row failure #84 shipped 11 of.
+            live=False,
+        ),
+        SettingsRow(
+            key="check_for_updates",
+            label="Check for updates",
+            kind="bool",
+            read=lambda s: _on_off(s.get_check_for_updates()),
+            help=(
+                "Look for a newer Aelix release at launch and print the upgrade "
+                "command. Sends nothing about you — a plain GET of a public "
+                "file. Persisted; applies next launch."
+            ),
+            apply_note="takes effect after you restart aelix",
+            # Read once, by ``tui/shell.py::_start_update_check``, before the
+            # banner paints. ``live=True`` would promise a mid-session effect
+            # that nothing delivers — the #84 defect, pointing the usual way.
             live=False,
         ),
         SettingsRow(

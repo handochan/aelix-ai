@@ -30,12 +30,13 @@ async def test_build_rows_count_and_keys() -> None:
     # The planned settable rows (code-block-indent SKIPPED — no setter); +1 for
     # the Issue #66 ``tool_card_max_lines`` row + the hide_compaction_summary row
     # + the ADR-0197 (P2) ``features_agents`` delegation row + the issue #166
-    # ``render_max_width`` ceiling.
+    # ``render_max_width`` ceiling + the ``check_for_updates`` switch.
     assert "code_block_indent" not in keys
     assert "tool_card_max_lines" in keys
     assert "features_agents" in keys
     assert "render_max_width" in keys
-    assert len(rows) == 21
+    assert "check_for_updates" in keys
+    assert len(rows) == 22
     # Live-effect rows come first (roadmap appendix O ordering).
     assert keys[:7] == [
         "theme",
@@ -281,6 +282,7 @@ WIRED_PERSIST_BLOCK_ROWS = (
     "tool_card_max_lines",
     "render_max_width",
     "enable_skill_commands",
+    "check_for_updates",
 )
 
 
@@ -430,6 +432,7 @@ _PERSIST_BLOCK_GETTERS = {
     "features_agents": "get_features_agents",
     "tool_card_max_lines": "get_tool_card_max_lines",
     "render_max_width": "get_render_max_width",
+    "check_for_updates": "get_check_for_updates",
 }
 
 #: Where a getter is DEFINED rather than consumed. Excluded so the definition
@@ -518,7 +521,7 @@ async def test_the_call_site_scanner_can_tell_a_call_from_a_mention() -> None:
     # It finds real calls...
     assert sites["get_features_agents"], "scanner found no call it should find"
     # ...and it finds ONLY the call in the file that also mentions the name in
-    # prose. shell.py:3183 is a docstring; a substring scan would report 2.
+    # prose. shell.py:3271 is a docstring; a substring scan would report 2.
     skill_sites = sites["get_enable_skill_commands"]
     assert len(skill_sites) == 1, skill_sites
     assert "tui/shell.py" in skill_sites[0]
