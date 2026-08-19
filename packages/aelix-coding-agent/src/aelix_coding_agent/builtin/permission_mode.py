@@ -123,9 +123,9 @@ MODE_META: dict[PermissionMode, ModeMeta] = {
         badge_text="⚠ yolo",
         badge_style="bold red",
         description=(
-            "Yolo — edits and shell commands run WITHOUT a prompt. Guardrail "
-            "still blocks catastrophic patterns (rm -rf, fork-bomb, .env/.git "
-            "writes)."
+            "Yolo — edits, shell commands and delegated subagents run WITHOUT "
+            "a prompt. Guardrail still blocks catastrophic patterns (rm -rf, "
+            "fork-bomb, .env/.git writes)."
         ),
         block_reason="",
     ),

@@ -274,6 +274,21 @@ class SpawnGrant:
     constructor — ``extension.py:771-778``, this module's own ``_grant`` — is
     unchanged."""
 
+    disclosure: str = ""
+    """What to TELL the user, when nobody was asked and the child can still write.
+
+    Set only where :func:`disclosure_is_required` says so — the YOLO cells that
+    stopped prompting on 2026-08-19 (#196). Empty everywhere else, including
+    every read-only spawn that has always been silent and every spawn a human
+    actually answered.
+
+    It rides on the grant rather than being emitted here because BOTH doors
+    reach a grant and only one of them reaches this module: ``_grant_for``'s
+    pre-filter returns its own :class:`SpawnGrant` without calling
+    :func:`request_spawn_consent_batch` at all, so a disclosure emitted inside
+    this file would be skipped on the model door — the exact door that matters.
+    One producer per grant, one consumer, nothing to keep in agreement."""
+
 
 DIALOG_ROW_CHARS = 80
 """What "one visible row" means. The narrowest terminal §3.7 assumes.
@@ -528,7 +543,11 @@ def _may_widen(
 
 
 def consent_is_required(
-    resolved: ResolvedProfile, clamped: PermissionMode, *, has_ui: bool
+    resolved: ResolvedProfile,
+    clamped: PermissionMode,
+    parent: PermissionMode,
+    *,
+    has_ui: bool,
 ) -> bool:
     """Is there anything to ask a human about this spawn? THE SINGLE SOURCE OF TRUTH.
 
@@ -539,6 +558,41 @@ def consent_is_required(
     ``not grants_write_authority(want) and approval_mode != "ask"`` while the
     dialog read ``grants_write_authority(clamped) or _may_widen(...)`` — and
     agreeing "by inspection" is exactly how a gate drifts open on one door.
+
+    A YOLO PARENT IS NOT ASKED (owner decision, 2026-08-19; #196). This
+    REVERSES one cell of finding OC-1, whose reasoning was "shift+tab was
+    consent to the PARENT's tool calls, with a tool card on screen — not consent
+    to an unattended child process the model just chose". What changed is not
+    the reasoning but the measurement of the widget it produced: under a YOLO
+    parent ``build_options`` renders exactly two rows —
+    ``["Run with the inherited posture (yolo)", "Cancel"]`` — the same arity and
+    the same absence of a substantive second answer as the dialog the
+    2026-07-27 amendment abolished, and ADR-0197's own test condemns it: "a
+    dialog whose only substantive answer is 'yes' is not a gate; it is practice
+    at dismissing gates". A YOLO user meets that widget on every delegation and
+    nowhere else, because it is the only prompt YOLO does not suppress.
+
+    ONLY YOLO, and the asymmetry is the point. ``auto-accept-edits`` says
+    auto-accept EDITS and ``auto`` says route bash through the classifier;
+    neither says "do not ask me about anything", so both keep prompting and the
+    ``grants_write_authority`` half is untouched for them. YOLO's own docstring
+    is unambiguous — "skip the permission PROMPT for all mutating tools ... YOLO
+    bypasses the prompt, NOT the floor" — and this is the last prompt that was
+    not skipped.
+
+    WHAT THIS COSTS, STATED RATHER THAN HIDDEN. Measured: an
+    ``auto-accept-edits`` or ``auto`` child is refused a write to ``.aelix/``
+    and a ``yolo`` child is not, so a delegated YOLO child can author the
+    parent's next identity or project extension. This dialog was the only
+    moment in the product where a human learned BEFORE the fact that a
+    ``yolo``-posture child was about to exist, and R7's accounting does not
+    cover the gap: its largest bound is the clamp, and under YOLO the clamp
+    bounds nothing. :func:`disclosure_is_required` is what replaces it — not a
+    prompt, but not silence either.
+
+    Everything else holds: the clamp, the guardrail floor inside the child, the
+    delegation caps, the statusline row, the headless downgrade, the ceiling
+    that no dialog ever hands out ``yolo``, and the project-scope widening ban.
 
     Two disjuncts, and they answer different questions:
 
@@ -565,8 +619,57 @@ def consent_is_required(
     and it offers exactly ["Run read-only (plan)", "Cancel"].
     """
 
+    if parent is PermissionMode.YOLO:
+        return False
     return grants_write_authority(clamped) or _may_widen(
         resolved, clamped, has_ui=has_ui
+    )
+
+
+def disclosure_is_required(parent: PermissionMode, clamped: PermissionMode) -> bool:
+    """Was a write-capable spawn allowed through WITHOUT anyone being asked?
+
+    Exactly the gap :func:`consent_is_required`'s YOLO early-out opens, and
+    nothing else. Deliberately NOT "whenever the dialog did not fire": the
+    common case — a read-only child from a profile that declared nothing — has
+    always spawned silently and announcing it would put a line in the
+    transcript on every delegation, which is the scrollback equivalent of the
+    click-through trainer the dialog was removed for.
+
+    ``grants_write_authority(clamped)`` rather than ``clamped is
+    PermissionMode.YOLO`` because a YOLO parent with an ``approval_mode: auto``
+    profile clamps to ``auto-accept-edits``, which is a child that can still
+    write without asking; and because a ``deny`` profile clamps to ``plan``
+    under any parent, which is a child that cannot, and never needed the
+    dialog either.
+    """
+
+    return parent is PermissionMode.YOLO and grants_write_authority(clamped)
+
+
+def build_disclosure_line(
+    resolved: ResolvedProfile, clamped: PermissionMode, *, task_count: int
+) -> str:
+    """The one line that replaces the dialog. Never blocks, never asks.
+
+    EVERY INTERPOLATED VALUE IS SANITISED, for the same reason
+    :func:`build_consent_title` sanitises: the profile name comes from a
+    filename and the path from disk, so both are strings an attacker can put
+    ``\n`` and ``\x1b`` into, and this text lands in a Rich-rendered
+    transcript. :func:`_sanitize_field` is the shared spelling.
+
+    The task text is NOT here. It is model-authored, it is the longest and
+    least trustworthy thing in the batch, and a one-line disclosure that wraps
+    is a one-line disclosure that pushes the rest of the turn off screen. The
+    COUNT is what a human needs to reconcile this line against what happens
+    next.
+    """
+
+    plural = "" if task_count == 1 else "s"
+    return (
+        f"delegating to {_sanitize_field(resolved.name)} at {clamped.value} "
+        f"— {task_count} task{plural}, from "
+        f"{_sanitize_field(resolved.source_path)}"
     )
 
 
@@ -1163,12 +1266,23 @@ async def request_spawn_consent(
             mode=mode,
             widened=widened,
             consented=consented,
+            disclosure=(
+                build_disclosure_line(resolved, mode, task_count=1)
+                if consented and has_ui and disclosure_is_required(parent, mode)
+                else ""
+            ),
         )
 
     if not has_ui:
+        # NO disclosure here even under YOLO: ``disclosure_is_required`` is
+        # about a human who was not asked, and headless has no human to tell.
+        # ``build_disclosure_line`` would compose a string nothing renders —
+        # every ``ui.*`` raises in print/json/rpc mode (``headless_ui.py``) —
+        # and the honest record of a headless spawn is the ``subagent_*``
+        # events, which fire either way.
         return _grant(clamped, widened=False, consented=True)
 
-    if not consent_is_required(resolved, clamped, has_ui=has_ui):
+    if not consent_is_required(resolved, clamped, parent, has_ui=has_ui):
         # NOTHING IS AT STAKE — no dialog. The child cannot mutate anything
         # (:func:`grants_write_authority`, walked off the real ladder) and no
         # answer could change that — either the profile never declared it needs
@@ -1335,6 +1449,15 @@ async def request_spawn_consent_batch(
             widened=widened,
             consented=consented,
             reason=reason,
+            # ONE line for the whole call, carrying the member COUNT — the same
+            # arithmetic decision S4 already made for the dialog it replaces:
+            # a batch is one decision about one tool call, so it is one
+            # disclosure, not N.
+            disclosure=(
+                build_disclosure_line(resolved, granted, task_count=len(tasks))
+                if consented and has_ui and disclosure_is_required(parent, granted)
+                else ""
+            ),
         )
 
     if not has_ui:
@@ -1344,7 +1467,7 @@ async def request_spawn_consent_batch(
         # the clamp whatever N is.
         return _grant(clamped, widened=False, consented=True)
 
-    if not consent_is_required(resolved, clamped, has_ui=has_ui):
+    if not consent_is_required(resolved, clamped, parent, has_ui=has_ui):
         # THE COMMON CASE, AND IT COSTS NOTHING. A DEFAULT parent clamps to
         # ``plan``, ``grants_write_authority`` is False and a non-declaring
         # profile cannot be widened, so a fan-out of eight read-only children
@@ -1431,6 +1554,8 @@ __all__ = [
     "build_consent_title",
     "build_options",
     "consent_is_required",
+    "disclosure_is_required",
+    "build_disclosure_line",
     "contains_control_chars",
     "request_spawn_consent",
     "request_spawn_consent_batch",

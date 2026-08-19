@@ -61,7 +61,8 @@ Aelix ships two bundled starters: **`explorer`**, a read-only investigator
 **`general-purpose`**, a full-toolset worker that reads, edits, and runs commands
 to take on a task whole. Both are `leaf` profiles (they do not delegate further)
 and both inherit your approval policy, so a delegated child's edits and commands
-go through the same consent you are under. Delegation is off by default; enable
+go through the same consent you are under — including `yolo`, where that means
+no prompt at all. Delegation is off by default; enable
 it as described above.
 
 Writing `~/.aelix/agent/agents/explorer.md` replaces the bundled `explorer`
@@ -144,7 +145,17 @@ a third generation regardless of what it declares. Tracked in
 **`approval_mode` cannot grant authority by itself.** A child is always clamped
 to at most the parent's own posture. What `approval_mode: auto` does is *declare*
 that the profile needs to write, which is what lets the spawn-consent dialog
-offer you the choice to widen it. You are still the one who answers.
+offer you the choice to widen it. You are still the one who answers — with one
+exception, below.
+
+**In `yolo` posture you are told, not asked.** `yolo` means "run mutating tools
+without a prompt", and a delegation is the one thing it used to prompt for
+anyway. It no longer does: a write-capable child starts immediately and the tool
+card names it — the profile, the posture it runs at, the file it came from, and
+how many tasks were handed to it. Nothing else changes; the child is still
+clamped to your posture, still hard-blocked by the guardrail, still bounded by
+the delegation caps, and still shown in the status line while it runs. Every
+other posture — including `auto-accept-edits` and `auto` — still asks.
 
 ## How the child authenticates
 

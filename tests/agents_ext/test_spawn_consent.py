@@ -45,9 +45,12 @@ from aelix_agents.consent import (
     TASK_PREVIEW_CHARS,
     SpawnGrant,
     build_consent_title,
+    build_disclosure_line,
     build_options,
     contains_control_chars,
+    disclosure_is_required,
     request_spawn_consent,
+    request_spawn_consent_batch,
 )
 from aelix_agents.posture import (
     child_permission_mode,
@@ -83,7 +86,9 @@ be added without a decision.
 _NON_DECLARING = ("inherit", "deny")
 
 
-def _dialog_expected(clamp: PermissionMode, scope: str, approval: str) -> bool:
+def _dialog_expected(
+    clamp: PermissionMode, scope: str, approval: str, parent: PermissionMode
+) -> bool:
     """Should a spawn at ``clamp`` from a ``scope`` profile open a dialog?
 
     Written out here rather than imported so these tests state the POLICY
@@ -97,14 +102,36 @@ def _dialog_expected(clamp: PermissionMode, scope: str, approval: str) -> bool:
     ``approval`` became a parameter with the 2026-07-27 second amendment. Before
     it, widening was a property of the (scope, clamp) pair alone — which is
     exactly the rule that made a read-only ``inherit`` delegation render a modal.
+
+    ``parent`` became one with #196 (2026-08-19), and it is checked FIRST because
+    it overrides both disjuncts. A YOLO parent is never asked. The measurement
+    behind it: under YOLO ``build_options`` renders exactly
+    ``["Run with the inherited posture (yolo)", "Cancel"]`` — two rows, no
+    widening rung, no substantive second answer — which is the same widget the
+    2026-07-27 amendment abolished elsewhere, and it was the ONLY prompt a YOLO
+    user ever saw. The 12 cells this moves are all ``parent=yolo``; every other
+    parent, including the other two write-capable ones, is untouched.
+
+    This is written as a POSITIVE statement of the new policy rather than as
+    ``parent is not YOLO and (...)`` bolted on, because these tests exist to say
+    what the product promises, and "a YOLO parent is not asked" is now one of
+    the promises.
     """
 
+    if parent is PermissionMode.YOLO:
+        return False
     may_widen = (
         approval in _DECLARING
         and scope != "project"
         and posture_rank(PermissionMode.AUTO_ACCEPT) > posture_rank(clamp)
     )
     return grants_write_authority(clamp) or may_widen
+
+
+#: The parents that can still open a dialog. YOLO left this list at #196 — it is
+#: NOT a parent that was dropped to make a test pass, and any test that narrows
+#: to this constant must say which invariant it is preserving.
+_PROMPTING_PARENTS = [p for p in _PARENTS if p is not PermissionMode.YOLO]
 
 
 class _SelectSpy:
@@ -396,13 +423,13 @@ async def test_a_raising_dialog_declines_and_never_allows() -> None:
     spy.raises = NotImplementedError("headless binding")
     ctx = _FakeCtx(has_ui=True, ui=spy)
     grant = await request_spawn_consent(
-        ctx, _resolved(), "t", PermissionMode.YOLO, cwd="/w"
+        ctx, _resolved(), "t", PermissionMode.AUTO_ACCEPT, cwd="/w"
     )
     assert grant.consented is False
     assert grant.widened is False
 
 
-@pytest.mark.parametrize("parent", _PARENTS)
+@pytest.mark.parametrize("parent", _PROMPTING_PARENTS)
 async def test_a_nonsense_answer_declines(parent: PermissionMode) -> None:
     """Anything that is not one of the rendered options is treated as Esc.
 
@@ -497,7 +524,7 @@ async def test_project_scope_never_offers_widening(parent: PermissionMode) -> No
     # ``approval_mode: auto`` is the strongest DECLARATION a profile can make, so
     # this is the sharpest form of the ban: even a repo file that asks for write
     # authority in as many words gets no widening option.
-    if not _dialog_expected(clamp, "project", "auto"):
+    if not _dialog_expected(clamp, "project", "auto", parent):
         # Read-only + unwidenable → no question to ask, and the spawn proceeds
         # at the clamp. Cancel was queued and never consumed.
         assert spy.calls == []
@@ -546,7 +573,7 @@ async def test_widening_ceiling_is_auto_accept_edits(
     grant = await request_spawn_consent(ctx, resolved, "t", parent, cwd="/w")
 
     clamp = child_permission_mode(approval, parent, scope, has_ui=True)
-    if not _dialog_expected(clamp, scope, approval):
+    if not _dialog_expected(clamp, scope, approval, parent):
         assert spy.calls == []
         assert grant.widened is False
         assert grant.mode is clamp
@@ -584,11 +611,18 @@ async def test_widening_not_offered_when_it_would_be_a_noop() -> None:
 
 
 async def test_widening_not_offered_above_the_ceiling() -> None:
-    """A YOLO parent with ``inherit`` clamps to YOLO — nothing to raise."""
+    """An AUTO parent with ``inherit`` clamps to AUTO — nothing to raise.
+
+    Was a YOLO parent until #196, which stopped asking a YOLO parent anything.
+    ``auto`` is the other clamp strictly ABOVE the ``auto-accept-edits``
+    ceiling, so the property under test — a dialog never offers to raise a
+    child that is already above what it may grant — is asserted over the same
+    shape.
+    """
 
     spy = _SelectSpy(CANCEL_OPTION)
     ctx = _FakeCtx(has_ui=True, ui=spy)
-    await request_spawn_consent(ctx, _resolved(), "t", PermissionMode.YOLO, cwd="/w")
+    await request_spawn_consent(ctx, _resolved(), "t", PermissionMode.AUTO, cwd="/w")
     assert len(spy.calls[0][1]) == 2
 
 
@@ -760,8 +794,9 @@ async def test_a_non_declaring_read_only_profile_renders_no_dialog(
 
     clamp = child_permission_mode(approval, parent, scope, has_ui=True)
     assert grant.widened is False
-    if grants_write_authority(clamp):
-        # The other half of the rule, untouched by this amendment.
+    if grants_write_authority(clamp) and parent is not PermissionMode.YOLO:
+        # The other half of the rule, untouched by the 2026-07-27 amendment and
+        # narrowed by #196 to the parents that still ask.
         assert len(spy.calls) == 1
         assert spy.calls[0][1] == build_options(clamp, may_widen=False)
         return
@@ -850,7 +885,7 @@ async def test_deny_never_widens(parent: PermissionMode, scope: str) -> None:
     assert grant.consented is True
 
 
-@pytest.mark.parametrize("parent", [PermissionMode.AUTO_ACCEPT, PermissionMode.YOLO])
+@pytest.mark.parametrize("parent", [PermissionMode.AUTO_ACCEPT, PermissionMode.AUTO])
 @pytest.mark.parametrize("scope", ["user", "project", "explicit"])
 async def test_a_write_capable_clamp_always_prompts(
     parent: PermissionMode, scope: str
@@ -952,12 +987,31 @@ async def test_the_prompt_decision_matches_the_rule_over_the_whole_matrix(
     grant = await request_spawn_consent(ctx, resolved, "t", parent, cwd="/w")
 
     clamp = child_permission_mode(approval, parent, scope, has_ui=True)
-    expected = _dialog_expected(clamp, scope, approval)
+    expected = _dialog_expected(clamp, scope, approval, parent)
     assert bool(spy.calls) is expected, (parent, scope, approval, clamp)
     if not expected:
-        # The skipped cells are exactly the harmless ones: a child that cannot
-        # mutate, launched at the clamp, with nothing a human could have added.
-        assert grants_write_authority(clamp) is False
+        # THE SKIPPED CELLS SPLIT IN TWO AT #196, and saying so is the whole
+        # honesty of this test. Until then every skipped cell was harmless — a
+        # child that could not mutate, with nothing a human could have added —
+        # and this line asserted exactly that. A YOLO parent breaks it on
+        # purpose: those cells ARE write-capable and are skipped anyway, which
+        # is the trade the owner took. So the assertion does not weaken to
+        # accommodate it; it forks, and the write-capable arm has to produce a
+        # DISCLOSURE. A YOLO spawn that were silent as well as unprompted would
+        # fail here.
+        if parent is PermissionMode.YOLO and grants_write_authority(clamp):
+            assert grant.disclosure, (
+                "a write-capable YOLO spawn was neither asked about nor "
+                "disclosed"
+            )
+            assert resolved.name in grant.disclosure
+            assert clamp.value in grant.disclosure
+        else:
+            assert grants_write_authority(clamp) is False
+            assert grant.disclosure == "", (
+                "a read-only spawn produced a disclosure — that puts a line in "
+                "the transcript on every ordinary delegation"
+            )
         assert grant.mode is clamp
         assert grant.widened is False
         assert grant.consented is True
@@ -1087,7 +1141,7 @@ def test_grant_is_frozen() -> None:
 # land quietly.
 
 
-@pytest.mark.parametrize("parent", _PARENTS)
+@pytest.mark.parametrize("parent", _PROMPTING_PARENTS)
 async def test_no_fourth_option_is_ever_offered(parent: PermissionMode) -> None:
     """Two or three options, for every parent posture. Never four.
 
@@ -1148,7 +1202,7 @@ def test_build_options_takes_no_remember_flag() -> None:
     assert set(params) == {"clamped", "may_widen"}
 
 
-@pytest.mark.parametrize("parent", _PARENTS)
+@pytest.mark.parametrize("parent", _PROMPTING_PARENTS)
 async def test_approving_one_spawn_never_suppresses_the_next(
     parent: PermissionMode,
 ) -> None:
@@ -1472,7 +1526,7 @@ async def test_the_user_typed_door_shows_the_model_it_will_launch() -> None:
     runtime = _SubagentRuntimeImpl(
         host=SubagentHost(
             cwd=lambda: str(Path.cwd()),
-            posture=lambda: PermissionMode.YOLO,
+            posture=lambda: PermissionMode.AUTO_ACCEPT,
             consent_context=lambda: ctx,
             model=_Parent,
         )
@@ -1503,7 +1557,7 @@ async def test_a_profile_with_no_model_shows_the_one_it_will_inherit() -> None:
     runtime = _SubagentRuntimeImpl(
         host=SubagentHost(
             cwd=lambda: str(Path.cwd()),
-            posture=lambda: PermissionMode.YOLO,
+            posture=lambda: PermissionMode.AUTO_ACCEPT,
             consent_context=lambda: ctx,
             model=_Parent,
         )
@@ -1512,3 +1566,194 @@ async def test_a_profile_with_no_model_shows_the_one_it_will_inherit() -> None:
     await runtime.spawn(_declaring(), "go")
 
     assert "Model:      claude-sonnet-4-5" in spy.calls[0][0].splitlines()
+
+
+# --- #196: a YOLO parent is told, not asked ---------------------------------
+#
+# THE DECISION THIS REVERSES, so nobody has to go looking for it. Finding OC-1
+# is filed under "owner-settled, do not re-litigate": "shift+tab was consent to
+# the PARENT's tool calls, with a tool card on screen — not consent to an
+# unattended child process the model just chose." The 2026-07-27 amendment then
+# named this cell and kept it prompting, calling it "the owner's headline case".
+#
+# What changed on 2026-08-19 is the measurement of the widget, not the
+# reasoning. Under a YOLO parent ``build_options`` renders exactly two rows and
+# neither is a substantive second answer, which is the shape ADR-0197 itself
+# condemns: "a dialog whose only substantive answer is 'yes' is not a gate; it
+# is practice at dismissing gates." A YOLO user met it on every delegation and
+# nowhere else — it was the one prompt YOLO did not suppress.
+#
+# The trade is REAL and is not papered over here: measured, an
+# ``auto-accept-edits`` or ``auto`` child is refused a write to ``.aelix/`` and
+# a ``yolo`` child is not, so a delegated YOLO child can author the parent's
+# next identity or project extension. The disclosure is what replaces the
+# dialog, and the tests below treat "no prompt" and "no disclosure" as two
+# different failures.
+
+
+@pytest.mark.parametrize("approval", ["inherit", "ask", "auto", "deny"])
+@pytest.mark.parametrize("scope", ["user", "project", "explicit", "bundled"])
+async def test_a_yolo_parent_is_never_prompted(approval: str, scope: str) -> None:
+    """Every cell, so this cannot hold case-by-case and drift in the middle."""
+
+    spy = _SelectSpy(CANCEL_OPTION)
+    ctx = _FakeCtx(has_ui=True, ui=spy)
+    grant = await request_spawn_consent(
+        ctx,
+        _resolved(scope=scope, approval_mode=approval),
+        "t",
+        PermissionMode.YOLO,
+        cwd="/w",
+    )
+
+    assert spy.calls == []
+    assert grant.consented is True
+    assert grant.widened is False
+    assert grant.mode is child_permission_mode(
+        approval, PermissionMode.YOLO, scope, has_ui=True
+    )
+
+
+@pytest.mark.parametrize("approval", ["inherit", "ask", "auto"])
+async def test_a_write_capable_yolo_spawn_is_disclosed(approval: str) -> None:
+    """Not asked is not the same as not told, and this is the difference.
+
+    The line has to be USEFUL, not merely present: a human reading it must be
+    able to tell which profile ran, at what posture, and from which file — the
+    file being the one thing in it the model cannot influence.
+    """
+
+    ctx = _FakeCtx(has_ui=True, ui=_SelectSpy(CANCEL_OPTION))
+    resolved = _resolved(approval_mode=approval)
+    grant = await request_spawn_consent(
+        ctx, resolved, "t", PermissionMode.YOLO, cwd="/w"
+    )
+
+    assert grant.disclosure
+    assert resolved.name in grant.disclosure
+    assert grant.mode.value in grant.disclosure
+    assert resolved.source_path in grant.disclosure
+    assert "1 task" in grant.disclosure
+    assert "\n" not in grant.disclosure, "a one-line disclosure must be one line"
+
+
+async def test_a_read_only_yolo_child_is_not_disclosed() -> None:
+    """``approval_mode: deny`` clamps to ``plan`` under any parent.
+
+    It never opened a dialog and it does not need a line either — announcing
+    every ordinary delegation is the scrollback version of the click-through
+    trainer the dialog was removed for.
+    """
+
+    ctx = _FakeCtx(has_ui=True, ui=_SelectSpy(CANCEL_OPTION))
+    grant = await request_spawn_consent(
+        ctx, _resolved(approval_mode="deny"), "t", PermissionMode.YOLO, cwd="/w"
+    )
+
+    assert grant.mode is PermissionMode.PLAN
+    assert grant.disclosure == ""
+
+
+@pytest.mark.parametrize("parent", _PROMPTING_PARENTS)
+async def test_no_other_parent_produces_a_disclosure(parent: PermissionMode) -> None:
+    """The caption belongs to the cells that stopped asking, and to no others.
+
+    A parent that still opens a dialog has already told the human everything
+    this line would; a second copy in the transcript is noise.
+    """
+
+    spy = _SelectSpy(CANCEL_OPTION)
+    ctx = _FakeCtx(has_ui=True, ui=spy)
+    grant = await request_spawn_consent(
+        ctx, _resolved(approval_mode="auto"), "t", parent, cwd="/w"
+    )
+    assert grant.disclosure == ""
+
+
+async def test_headless_yolo_is_not_disclosed_because_there_is_nobody_to_tell() -> None:
+    """A headless parent already consents on its own (§(e)); it always did.
+
+    Composing a line here would put a string nothing renders onto the grant —
+    every ``ui.*`` raises in print/json/rpc mode — and imply a human was
+    informed when none exists. The honest record of a headless spawn is the
+    ``subagent_*`` event stream, which fires either way.
+    """
+
+    ctx = _FakeCtx(has_ui=False)
+    grant = await request_spawn_consent(
+        ctx, _resolved(), "t", PermissionMode.YOLO, cwd="/w"
+    )
+    assert grant.consented is True
+    assert grant.disclosure == ""
+
+
+async def test_a_hostile_profile_cannot_forge_rows_in_the_disclosure() -> None:
+    """Same threat as ``build_consent_title``, same answer.
+
+    The profile name comes from a filename and the path from disk, so both are
+    strings an attacker controls, and this text lands in a Rich-rendered
+    transcript. A newline would let it invent a second line; an escape byte
+    would let it repaint.
+    """
+
+    resolved = _resolved(
+        name="scout\n\x1b[31mFAKE: approved by the user",
+        source_path="/tmp/x\n\x1b[0m/evil.md",
+    )
+    line = build_disclosure_line(resolved, PermissionMode.YOLO, task_count=2)
+
+    assert "\n" not in line
+    assert not contains_control_chars(line)
+    assert "2 tasks" in line
+
+
+async def test_a_batch_gets_one_disclosure_carrying_the_count() -> None:
+    """Decision S4's arithmetic, applied to the thing that replaced the dialog.
+
+    A batch was always ONE decision about ONE tool call. It is therefore one
+    line, and the number in it is what lets a human reconcile the line against
+    the children that then appear.
+    """
+
+    spy = _SelectSpy(CANCEL_OPTION)
+    ctx = _FakeCtx(has_ui=True, ui=spy)
+    grant = await request_spawn_consent_batch(
+        ctx,
+        _resolved(),
+        ("a", "b", "c", "d"),
+        PermissionMode.YOLO,
+        cwd="/w",
+        mode="parallel",
+    )
+
+    assert spy.calls == []
+    assert grant.consented is True
+    assert grant.disclosure.count("\n") == 0
+    assert "4 tasks" in grant.disclosure
+
+
+@pytest.mark.parametrize("parent", _PARENTS)
+@pytest.mark.parametrize("approval", ["inherit", "ask", "auto", "deny"])
+def test_the_disclosure_predicate_covers_exactly_the_cells_that_stopped_asking(
+    parent: PermissionMode, approval: str
+) -> None:
+    """The two rules are complements over the write-capable cells, by construction.
+
+    Written as an equivalence rather than as two independent expectations: the
+    failure this guards against is a future edit that widens one without the
+    other, leaving either a spawn that is neither asked about nor disclosed, or
+    a line printed next to a dialog that already said it.
+    """
+
+    clamp = child_permission_mode(approval, parent, "user", has_ui=True)
+    asked = _dialog_expected(clamp, "user", approval, parent)
+    told = disclosure_is_required(parent, clamp)
+
+    assert not (asked and told), "asked AND told is two copies of one decision"
+    if grants_write_authority(clamp):
+        assert asked or told, (
+            f"a write-capable child at {clamp.value} under a {parent.value} "
+            "parent is neither asked about nor disclosed"
+        )
+    else:
+        assert not told

@@ -63,7 +63,9 @@ from aelix_agents.aggregate import render_batch_result
 from aelix_agents.batch import run_batch
 from aelix_agents.consent import (
     SpawnGrant,
+    build_disclosure_line,
     consent_is_required,
+    disclosure_is_required,
     request_spawn_consent_batch,
 )
 from aelix_agents.panel import PANEL_MIN_CHILDREN, PartialThrottle
@@ -767,7 +769,14 @@ class AgentsExtension:
             resolved.scope,
             has_ui=has_ui,
         )
-        if not consent_is_required(resolved, want, has_ui=has_ui):
+        if not consent_is_required(resolved, want, parent, has_ui=has_ui):
+            # THE DISCLOSURE IS COMPOSED HERE TOO, and that is not duplication
+            # of a decision — it is the same predicate, asked once per grant,
+            # by whichever branch produced the grant. This pre-filter RETURNS
+            # rather than falling through to ``request_spawn_consent_batch``,
+            # so a disclosure composed only inside ``consent.py`` would be
+            # skipped on exactly this door: the model door, where the model
+            # chose the profile, the tasks and the directory.
             return SpawnGrant(
                 profile=resolved.name,
                 source_path=resolved.source_path,
@@ -775,6 +784,11 @@ class AgentsExtension:
                 mode=want,
                 widened=False,
                 consented=True,
+                disclosure=(
+                    build_disclosure_line(resolved, want, task_count=len(tasks))
+                    if has_ui and disclosure_is_required(parent, want)
+                    else ""
+                ),
             )
         # No memo argument, and there is no memo to pass: P2 asks EVERY time
         # (ADR-0197:613-616). The model-driven door is the one that must never
@@ -958,7 +972,15 @@ class AgentsExtension:
         # ``expected=total`` from the first frame, so members still parked on the
         # batch semaphore render as ``queued`` instead of appearing one by one —
         # a card that silently shows 2 of 4 rows reads as "two tasks were dropped".
-        throttle = PartialThrottle(total)
+        # THE DISCLOSURE RIDES THE CARD (#196). Under a YOLO parent no dialog
+        # fires any more, so this line is the whole of what a human is told
+        # before an unattended write-capable child starts. The tool card is the
+        # only surface from this side of the band that is DURABLE: ``notify``
+        # is a 3-second status toast (``tui/context.py:985-991``), ``set_status``
+        # is a height-1 row that is cleared when the child ends, and neither
+        # leaves anything in scrollback to find afterwards. ``grant.disclosure``
+        # is empty for every other spawn, so every other card is unchanged.
+        throttle = PartialThrottle(total, header=pending.grant.disclosure)
         bridge = self._progress
         # NO GROUP BELOW :data:`PANEL_MIN_CHILDREN`, and the threshold is READ
         # from ``panel`` rather than spelled ``> 1`` here so there is exactly one
@@ -1000,6 +1022,19 @@ class AgentsExtension:
                 return
             with contextlib.suppress(Exception):
                 ctx.on_partial(format_partial(card))
+
+        # BEFORE THE FACT, not after it. The card would otherwise not appear
+        # until the first child produced a snapshot, and "the human learns a
+        # yolo child exists" is only worth anything if it happens before the
+        # child does something. ``throttle.card()`` with no snapshots yet is the
+        # header alone; every later frame carries it too, because
+        # ``on_partial`` REPLACES rather than appends. Guarded by the header
+        # being non-empty so that no delegation that shipped before #196 gains
+        # a partial it did not have — that is what
+        # ``test_events_and_statusline.py`` pins.
+        if pending.grant.disclosure and ctx.on_partial is not None:
+            with contextlib.suppress(Exception):
+                ctx.on_partial(format_partial(throttle.card()))
 
         # OPENED BEFORE THE FIRST CHILD, CLOSED IN A ``finally``, exactly once
         # each. The ``finally`` is load-bearing on the failure path: ``run_batch``

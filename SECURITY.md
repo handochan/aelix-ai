@@ -66,6 +66,22 @@ consent very much is:
   so the built-in permission gate falls through to allow
   (`builtin/permission.py`, `headless_default = "allow"`). Do not point a headless
   Aelix at untrusted input on a machine you care about.
+- **In `yolo` posture a delegated subagent starts without a confirmation, at a
+  posture that can write.** Every other posture opens a spawn-consent dialog
+  when the child would be write-capable; `yolo` does not, because `yolo` means
+  "no prompt for mutating tools" and a delegation was the only prompt it had
+  left. The child is announced on the tool card instead — profile, posture,
+  source file, task count — before it runs and for the whole run.
+
+  Worth spelling out, because it is the sharpest edge of that choice: a `yolo`
+  child is **not** subject to the `.aelix/` write refusal that binds
+  `auto-accept-edits` and `auto` children, so it can author the parent's next
+  agent profile or project extension. What still binds it: it can never exceed
+  the parent's own posture, the guardrail hard-blocks catastrophic patterns
+  inside it, and the per-prompt and per-session delegation caps apply. If that
+  trade is not one you want, do not delegate from `yolo` — or turn delegation
+  off entirely in `/settings`
+  ([ADR-0231](docs/decisions/0231-a-yolo-parent-is-told-not-asked.md)).
 - **`AGENTS.md` project context is loaded regardless of project trust, and no mode
   asks you first.** Aelix walks from the working directory up to the *filesystem
   root*, reads every `AGENTS.md` it finds, and puts the text into the system prompt.

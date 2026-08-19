@@ -18,6 +18,31 @@ and `.../releases/tag/vX` link would 404. Add them with the first pushed tag.
 
 ## [Unreleased]
 
+### Changed
+
+- **`yolo` no longer asks before delegating — it tells you.** Choosing `yolo`
+  means "run mutating tools without a prompt", and a delegation was the one
+  thing it still prompted for: on every `agent` call, a dialog whose only two
+  options were "Run with the inherited posture (yolo)" and "Cancel". That is a
+  confirmation with no real answer, which is the shape this project already
+  removed everywhere else because it teaches you to dismiss the prompts that do
+  matter. It now starts the child immediately and puts one line at the top of
+  the tool card instead — the profile, the posture it runs at, the file it came
+  from, and how many tasks it was given — before the child does anything, and
+  it stays there for the whole run.
+
+  This SUPERSEDES the entry below beginning "The delegation consent dialog now
+  appears only when write authority is actually at stake", which remains true
+  of every other posture. `auto-accept-edits` and `auto` still ask.
+
+  What does not change: the child is still clamped to at most your own posture,
+  the guardrail still hard-blocks catastrophic patterns inside it, the
+  per-prompt and per-session delegation caps still apply, the status line still
+  shows it running, and a *project-local* profile still cannot widen itself.
+  What you lose is the chance to say "Cancel" to one specific spawn before it
+  starts; Ctrl+C and shift+tab are still live. See ADR-0231 and
+  [#196](https://github.com/handochan/aelix-ai/issues/196).
+
 ### Added
 
 - **Aelix tells you when a newer release exists.** At most once a day, an
