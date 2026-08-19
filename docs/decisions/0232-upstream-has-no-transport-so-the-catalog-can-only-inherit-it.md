@@ -132,10 +132,36 @@ Lowering a context window without touching the output cap produced
 are clamped, and the gate pins the two pre-existing offenders (both upstream's own bad
 data) so a third fails.
 
+## What this is NOT, and why #172 stays open
+
+The issue asks for two mechanisms and this is one of them. Build-time generation is
+here; the **runtime remote catalog overlay** is not — no `models-store.json`, no
+ETag/304 revalidation, no four-hour freshness window, nothing that lets a model
+become selectable without shipping a release. Its acceptance criterion is
+untouched: *"A current model added to the remote catalog can become selectable
+without an Aelix package release."*
+
+That gap is worth more than it looks. MEASURED on this machine: `aelix
+--list-models` reports 418 OpenRouter models against the 335 in the catalog. The
+extra 83 come from a hand-maintained `~/.aelix/agent/models.json` — the very
+workaround the issue lists as the reason it was filed. Someone is already paying
+this cost by hand.
+
+Two narrower limits, both deliberate:
+
+- **One upstream source, not four.** The issue records pi's generator combining
+  models.dev with OpenRouter's, Vercel's and NVIDIA's own `/models` endpoints.
+  This reads models.dev alone. Those three providers are among the largest
+  additions here, but by way of models.dev's mirror of them, which can lag.
+- **It cannot add a provider.** Only models, and only to providers we already
+  ship. A new provider needs auth, an env var, an adapter and a resolver default
+  — none of which upstream metadata contains.
+
 ## Consequences
 
-- `#172` is closed for coverage. The refresh is a script with a scored rule, not a
-  hand-edit, and re-running it is `python scripts/refresh_catalog.py --fetch --apply`.
+- `#172` stays OPEN for the runtime overlay. What closes here is the coverage:
+  refreshing is `python scripts/refresh_catalog.py --fetch --apply` with a scored
+  rule and a printed skip list, not a hand-edit.
 - Nothing here runs in CI or at import. The catalog is committed data; the gate that
   guards it needs no network.
 - `test_catalog_corrections_are_pinned.py` keeps its role unchanged — it pins values
