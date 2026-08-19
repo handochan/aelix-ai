@@ -210,3 +210,41 @@ async def test_the_answer_is_cached_so_the_next_launch_is_free(
 
     cache = json.loads((_isolated / "update_check.json").read_text(encoding="utf-8"))
     assert "last_checked_at" in cache
+
+
+async def test_the_launch_path_survives_a_check_that_RAISES(
+    _isolated: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The SECOND layer, sabotaged on its own.
+
+    ``check_for_update`` promises never to raise and
+    ``_commit_update_notice`` promises to swallow anything that does. Two
+    promises, and the test above only ever exercised the first: with the
+    launch path's ``except`` turned into ``raise``, all seven tests here stayed
+    green, because the failure never got that far. A layered defence has to be
+    broken one layer at a time or the outer layer is measuring the inner one.
+
+    So this test makes the TASK ITSELF fail — the shape that reaches the
+    launch path when a future edit to the check stops swallowing something.
+    """
+
+    import aelix_coding_agent.update_check as uc
+
+    def explode(**_kwargs: Any) -> Any:
+        raise RuntimeError("the check itself blew up")
+
+    monkeypatch.setattr(uc, "check_for_update", explode)
+
+    async with _harness_chrome() as (runtime, chrome, pipe):
+        commits = _spy_commits(chrome)
+        task = _launch(runtime, chrome, _Settings())
+        await _wait(lambda: chrome.app.is_running)
+        pipe.send_text("still here\n")
+        await _wait(lambda: runtime.harness.prompts == [("still here", "interactive")])
+        pipe.send_text("/quit\n")
+        code = await asyncio.wait_for(task, timeout=5)
+
+    assert code == 0
+    shown = "\n".join(commits)
+    for noise in ("blew up", "RuntimeError", "Traceback", "is available"):
+        assert noise not in shown, f"a raising check leaked {noise!r} to the user"

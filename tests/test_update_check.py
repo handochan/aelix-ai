@@ -348,16 +348,33 @@ def test_a_second_launch_inside_the_interval_does_not_touch_the_network(
 def test_a_source_tree_run_is_never_notified(tmp_path: Path) -> None:
     """``cli/config.py`` reports ``0.0.0-dev`` when there is no distribution —
     i.e. a contributor. It sorts below everything, so without this guard the
-    check would nag on every launch of every checkout."""
+    check would nag on every launch of every checkout.
+
+    THE SENTINEL COUNTS, IT DOES NOT RAISE. This test used to prove nothing:
+    its ``fetch`` raised ``AssertionError`` to mean "must not be called", and
+    ``check_for_update`` catches every exception from ``fetch`` on purpose
+    (offline is not an error to report). So with the guard deleted the fetch
+    ran, its complaint was swallowed, the feed came back ``None`` and the
+    function returned ``None`` anyway — green, for the wrong reason. Measured
+    by deleting the guard: 38 passed. An exception is never a usable sentinel
+    inside a function whose contract is to swallow exceptions.
+    """
+
+    calls: list[int] = []
 
     def fetch() -> dict:
-        raise AssertionError("must not be called")
+        calls.append(1)
+        return _feed(_rel("9.9.9", False))
 
     assert (
         check_for_update(
             current_version="0.0.0-dev", fetch=fetch, now=1.0, agent_dir=tmp_path
         )
         is None
+    )
+    assert calls == [], "a source checkout consulted the network"
+    assert not (tmp_path / "update_check.json").exists(), (
+        "a source checkout left a cache file behind"
     )
 
 
@@ -390,3 +407,147 @@ def test_offline_is_read_from_the_names_that_already_exist(
     # Strict truthiness, mirroring cli/extension_install.py: "0" reads as OFF.
     monkeypatch.setenv(var, "0")
     assert not is_offline()
+
+
+# === the transport, which had no test until a sabotage round said so =======
+#
+# Every promise below was made in prose — in the module docstring, in the
+# commit message, in SECURITY.md — and none of them was asserted. A sabotage
+# round removed the byte cap, made the redirect handler `pass`, and deleted the
+# non-HTTPS check on the final URL; all three left 38 tests green.
+
+
+class _FakeResponse:
+    """The two attributes ``default_fetch`` actually consults."""
+
+    def __init__(self, body: bytes, url: str) -> None:
+        self._body = body
+        self.url = url
+
+    def read(self, amount: int | None = None) -> bytes:
+        return self._body if amount is None else self._body[:amount]
+
+    def __enter__(self) -> _FakeResponse:
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        return None
+
+
+def _opener_returning(response: _FakeResponse) -> Any:
+    class _Opener:
+        def open(self, _req: Any, timeout: float | None = None) -> _FakeResponse:
+            return response
+
+    return lambda *_handlers: _Opener()
+
+
+def test_a_feed_larger_than_the_cap_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A hostile or broken host must not be able to stream into memory.
+
+    Reads ``MAX_FEED_BYTES + 1`` and rejects on the extra byte, so the cap is
+    enforced on what was READ rather than on what a ``Content-Length`` header
+    claimed — a header is the attacker's to write.
+    """
+
+    from aelix_coding_agent import update_check as uc
+
+    body = b'{"schemaVersion": 1, "pad": "' + b"x" * uc.MAX_FEED_BYTES + b'"}'
+    monkeypatch.setattr(
+        uc.urllib.request, "build_opener", _opener_returning(
+            _FakeResponse(body, "https://example.invalid/feed.json")
+        )
+    )
+    with pytest.raises(ValueError, match="larger than the cap"):
+        uc.default_fetch("https://example.invalid/feed.json")
+
+
+def test_a_feed_inside_the_cap_is_read(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The control for the test above: without it, a cap of zero would pass."""
+
+    from aelix_coding_agent import update_check as uc
+
+    monkeypatch.setattr(
+        uc.urllib.request, "build_opener", _opener_returning(
+            _FakeResponse(b'{"schemaVersion": 1}', "https://example.invalid/feed.json")
+        )
+    )
+    assert uc.default_fetch("https://example.invalid/feed.json") == {"schemaVersion": 1}
+
+
+def test_a_response_that_ended_on_plain_http_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The belt to the redirect handler's braces.
+
+    ``install.sh``'s downloader is ``curl -fSL`` with no ``--proto-redir``, and
+    a local probe confirmed it follows HTTPS -> HTTP and returns the plaintext
+    body. The Python side refuses that, and refuses it twice: in the handler,
+    and again on the URL the response actually came from.
+    """
+
+    from aelix_coding_agent import update_check as uc
+
+    monkeypatch.setattr(
+        uc.urllib.request, "build_opener", _opener_returning(
+            _FakeResponse(b'{"schemaVersion": 1}', "http://evil.invalid/feed.json")
+        )
+    )
+    with pytest.raises(ValueError, match="non-HTTPS"):
+        uc.default_fetch("https://example.invalid/feed.json")
+
+
+def test_the_redirect_handler_refuses_to_leave_https() -> None:
+    """The handler itself, not the path that installs it."""
+
+    from aelix_coding_agent import update_check as uc
+
+    handler = uc._HttpsOnlyRedirect()
+    req = uc.urllib.request.Request("https://example.invalid/feed.json")
+    with pytest.raises(ValueError, match="insecure redirect"):
+        handler.redirect_request(req, None, 302, "Found", {}, "http://evil.invalid/x")
+
+
+def test_the_redirect_handler_allows_https_to_https() -> None:
+    """The control: a handler that refused everything would also pass above."""
+
+    from aelix_coding_agent import update_check as uc
+
+    handler = uc._HttpsOnlyRedirect()
+    req = uc.urllib.request.Request("https://example.invalid/feed.json")
+    result = handler.redirect_request(
+        req, None, 302, "Found", {}, "https://example.invalid/moved.json"
+    )
+    assert result is not None
+
+
+# === the command, which is the one that can destroy an install =============
+
+
+def test_no_install_method_is_ever_advised_to_reinstall_from_pypi() -> None:
+    """MEASURED, and the reason this feature detects instead of guessing.
+
+    ``uv tool install aelix@latest`` is what uv itself suggests, and running it
+    resolves the PyPI name reservation, finds no entry points and REMOVES the
+    tool — the user's aelix is gone. ``pip install aelix`` lands in the same
+    place. Every command this module can emit is checked against that shape,
+    for every method, including ones added later.
+    """
+
+    forbidden = ("aelix@latest", "install aelix", "uninstall")
+    for method in InstallMethod:
+        command = upgrade_command(method, "v9.9.9")
+        if command is None:
+            continue
+        for shape in forbidden:
+            assert shape not in command, (
+                f"{method.value} would be advised {command!r}, which contains "
+                f"{shape!r} — the shape that uninstalls aelix"
+            )
+
+
+def test_the_methods_that_cannot_be_upgraded_safely_get_no_command() -> None:
+    """A guess here uninstalls someone. Silence is the correct answer."""
+
+    assert upgrade_command(InstallMethod.CHECKOUT, "v9.9.9") is None
+    assert upgrade_command(InstallMethod.UNKNOWN, "v9.9.9") is None
