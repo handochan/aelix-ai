@@ -285,6 +285,80 @@ def _drive_compaction_indicator(chrome: AelixChrome, state: dict[str, Any], etyp
             state["active"] = False
 
 
+def _start_update_check(settings_manager: SettingsManager | None) -> asyncio.Task[Any] | None:
+    """Kick off the launch-time update check, or return ``None`` to skip it.
+
+    Three gates, in the order that costs least: the setting (an explicit off),
+    ``--offline``/``PI_OFFLINE`` (the posture the READMEs promise blocks every
+    request aelix makes for itself), and a source-tree run, which has no release
+    to be behind. Never raises — a check that cannot start is simply no check.
+    """
+
+    try:
+        from aelix_coding_agent.cli.config import VERSION
+        from aelix_coding_agent.update_check import (
+            check_for_update,
+            default_fetch,
+            is_offline,
+        )
+
+        if settings_manager is not None and not settings_manager.get_check_for_updates():
+            return None
+        if is_offline():
+            return None
+        return asyncio.create_task(
+            asyncio.to_thread(
+                check_for_update,
+                current_version=VERSION,
+                fetch=default_fetch,
+                now=time.time(),
+            )
+        )
+    except Exception:  # noqa: BLE001 — never let this keep a user out of the REPL
+        return None
+
+
+async def _commit_update_notice(
+    task: asyncio.Task[Any] | None, commit: Callable[[object], None]
+) -> None:
+    """Say one line if a newer release exists. Say nothing otherwise.
+
+    SILENT ON EVERY FAILURE — offline, DNS, timeout, a 404, malformed JSON, an
+    unparseable version. Each of those is "no information", and a startup
+    complaint about a failed *check* is worse than no check at all. It is also
+    silent when the check simply has not finished: the answer is cached for the
+    next launch, and holding the REPL for a version number is not a trade worth
+    making.
+    """
+
+    if task is None:
+        return
+    try:
+        from aelix_coding_agent.update_check import FETCH_TIMEOUT_S
+
+        notice = await asyncio.wait_for(asyncio.shield(task), timeout=FETCH_TIMEOUT_S)
+    except Exception:  # noqa: BLE001
+        return
+    if notice is None:
+        return
+    try:
+        rel = notice.release
+        lines = [
+            Text(
+                f"✨ Aelix {rel.version} is available (you have {notice.current}).",
+                style="cyan",
+            )
+        ]
+        if notice.command:
+            lines.append(Text(f"   {notice.command}", style="bold"))
+        lines.append(Text(f"   {rel.url}", style="dim"))
+        from rich.console import Group
+
+        commit(Group(*lines))
+    except Exception:  # noqa: BLE001
+        return
+
+
 async def run_tui(
     runtime_host: AgentSessionRuntime,
     *,
@@ -2617,6 +2691,12 @@ async def run_tui(
             )
         chrome_task = asyncio.create_task(out_chrome.run())
         pump_task = asyncio.create_task(_output_pump(output_queue, out_chrome))
+        # Started BEFORE the banner and awaited (briefly) after the transcript
+        # replay, so the fetch overlaps painting instead of delaying it. It must
+        # not be inline: ``_commit`` only QUEUES and the pump is a task, so a
+        # synchronous hold here paints NOTHING — not even the banner — which is
+        # the same trap the replay chunking below exists for.
+        update_task = _start_update_check(settings_manager)
         _commit(_build_banner(runtime_host.harness, cwd))
         # Issue #165 — the STARTUP analogue of the /resume repaint. #122 already
         # seeds ``harness.state.messages`` (``cli/entry.py``'s
@@ -2670,6 +2750,14 @@ async def run_tui(
                     style="green",
                 )
             )
+        # The update notice. Placed HERE — after the banner and any transcript
+        # replay, before the first-run wizard — for three measured reasons:
+        # stderr written before ``run_tui`` paints is erased by the chrome's
+        # repaint (``cli/entry.py`` records that for the #98 warning); the
+        # banner is rebuilt by ``/new``, so a notice baked into it would
+        # re-announce itself; and this block is straight-line and reachable
+        # from nowhere else, so it is once-per-process by construction.
+        await _commit_update_notice(update_task, _commit)
         # Issue #23 — first-run onboarding. Straight-line and reachable from
         # nowhere else, so it is once-per-process by construction: /new,
         # /resume and /fork rebuild the harness but never re-enter run_tui.

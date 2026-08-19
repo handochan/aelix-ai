@@ -752,9 +752,9 @@ Misc:
   --export <path>                 Export the current session to HTML
   --list-models [pattern]         List available models (optional filter)
   --offline                       Skip the rg/fd binary download, the extension
-                                  catalog fetch, and index-less pypi installs
-                                  (same as PI_OFFLINE=1). Provider/LLM calls are
-                                  NOT affected.
+                                  catalog fetch, index-less pypi installs, and
+                                  the update check (same as PI_OFFLINE=1).
+                                  Provider/LLM calls are NOT affected.
   --help, -h                      Show this help
   --version, -v                   Show version ({VERSION})
 

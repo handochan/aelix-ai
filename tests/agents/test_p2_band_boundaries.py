@@ -51,7 +51,7 @@ _SPAWN_ALLOWLIST = (
 # ``create_subprocess_exec`` / ``subprocess.Popen`` / ``os.fork``.
 #
 # Matched on the DOTTED path, not the final attribute: product-core already has
-# six unrelated ``.fork(...)`` calls (session forking — ``tui/shell.py:948``,
+# six unrelated ``.fork(...)`` calls (session forking — ``tui/shell.py:1022``,
 # ``rpc/rpc_mode.py:1475``, ``extensions/command_context.py:116``), so a
 # bare-name match would fire on them and this gate would have to be weakened
 # the first time it ran. Receiverless spellings are accepted for the two names
@@ -98,6 +98,14 @@ _PRODUCT_CORE_CAP_ALLOWLIST = frozenset(
         "MAX_METADATA_BYTES",  # cli/extension_catalog.py — #68 index generator, a
         # decompression-bomb OOM guard on a dist's METADATA read; same category as
         # its three siblings above, NOT a delegation cap (governance-reviewed).
+        "MAX_FEED_BYTES",  # update_check.py — the same posture toward a remote
+        # document as the four catalog constants above: a read bound on ONE
+        # first-party JSON file so a broken or hostile host cannot stream
+        # forever. Not a delegation cap, and nothing in ``aelix_agents`` can act
+        # on it. Amended deliberately rather than renamed: the ADR-0201 note
+        # below rejects both the leading underscore and the euphemism, and the
+        # escape it chose instead (make it the extension's number) has no
+        # meaning for a constant no extension participates in.
         "DEFAULT_MAX_BYTES",  # tools/_truncate.py — pre-P2, tool output
         "DEFAULT_MAX_LINES",  # tools/_truncate.py — pre-P2, tool output
         "GREP_MAX_LINE_LENGTH",  # tools/_truncate.py — pre-P2, tool output

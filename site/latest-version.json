@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "_comment": "Read by aelix's launch-time update check. Published to GitHub Pages from site/. Update this in the same commit that bumps the package versions -- tests/test_latest_version_feed.py enforces it.",
+  "latest": {
+    "version": "0.1.0b1",
+    "tag": "v0.1.0-beta.1",
+    "prerelease": true,
+    "url": "https://github.com/handochan/aelix-ai/releases/tag/v0.1.0-beta.1"
+  },
+  "latestStable": null
+}

@@ -104,7 +104,24 @@ is needed for subsequent releases.
    `## [X.Y.Z] - YYYY-MM-DD` section, and refresh the compare/links at the
    bottom.
 
-3. **Refresh compliance artifacts** — the SBOM is versioned, so regenerate it
+3. **Update the update-check feed** — `site/latest-version.json` is what tells
+   every already-installed user that this release exists. It is published to
+   GitHub Pages from `site/`, so it goes live when this commit lands on `main` —
+   before the tag, which is the right order: the file may name a release whose
+   tag is minutes away, and nobody is offered a download by it (the notice
+   prints a command; it installs nothing).
+
+   Set `latest` to this release. For a stable release set `latestStable` to the
+   same values; for a prerelease leave `latestStable` on the newest stable, so a
+   user already on a stable is not offered a beta.
+
+   `tests/test_latest_version_feed.py` fails until this matches the version in
+   `pyproject.toml`, so it cannot be skipped by accident — deliberately, because
+   forgetting it fails SILENTLY in production: the check just keeps reporting
+   the previous release, and "no update available" is also what a correct check
+   says most of the time.
+
+4. **Refresh compliance artifacts** — the SBOM is versioned, so regenerate it
    after the version bump and commit it with the release:
 
    ```bash
@@ -117,7 +134,7 @@ is needed for subsequent releases.
    you touched any of those files at the repo root, re-copy them into
    `packages/*/` before committing.
 
-4. **Verify locally**:
+5. **Verify locally**:
 
    ```bash
    uv sync --all-packages
@@ -130,10 +147,10 @@ is needed for subsequent releases.
    done; done
    ```
 
-5. **Commit** the version bump + changelog on the default branch (via PR; CI
+6. **Commit** the version bump + changelog on the default branch (via PR; CI
    must be green).
 
-6. **Tag and push**:
+7. **Tag and push**:
 
    ```bash
    git tag vX.Y.Z
@@ -211,7 +228,12 @@ beta — it only becomes required for the first GA tag (`v0.1.0`).
      `aelix-agent-core==` pins.
    - `packages/aelix-server/pyproject.toml` — `version` (workspace coherence).
 
-2. **Verify locally** (same commands as the GA flow):
+2. **Update `site/latest-version.json`** exactly as in step 3 of the GA flow —
+   `latest` gets this beta, `latestStable` keeps the newest stable (or stays
+   `null` while none has shipped). This is what tells an existing beta user that
+   the next beta exists, so it matters more here than anywhere.
+
+3. **Verify locally** (same commands as the GA flow):
 
    ```bash
    uv sync --all-packages
@@ -220,16 +242,16 @@ beta — it only becomes required for the first GA tag (`v0.1.0`).
    uv build --all-packages
    ```
 
-3. **Commit** on the default branch (via PR; CI green).
+4. **Commit** on the default branch (via PR; CI green).
 
-4. **Tag with the hyphenated pre-release form and push**:
+5. **Tag with the hyphenated pre-release form and push**:
 
    ```bash
    git tag v0.1.0-beta.1
    git push origin v0.1.0-beta.1
    ```
 
-5. **Verify the Release + installer**:
+6. **Verify the Release + installer**:
 
    - `release.yml` ran `build` + `github-release`, and **skipped** `publish`.
    - The GitHub Release `v0.1.0-beta.1` is marked **Pre-release** and carries

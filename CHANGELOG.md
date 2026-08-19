@@ -20,6 +20,27 @@ and `.../releases/tag/vX` link would 404. Add them with the first pushed tag.
 
 ### Added
 
+- **Aelix tells you when a newer release exists.** At most once a day, an
+  interactive launch reads a static file on this project's own GitHub Pages
+  site and, if there is something newer, prints one line naming the version and
+  **the upgrade command for how you actually installed it** — re-running
+  `install.sh`, `uv tool upgrade`, or `pipx upgrade`, whichever applies. A git
+  checkout is detected and left alone.
+
+  There is no universal upgrade command, and the wrong one is destructive:
+  `uv tool install aelix@latest` — uv's own suggested remedy — resolves the
+  PyPI name reservation, finds no entry points, and **removes the tool**, so a
+  user who follows it loses their install. That is why the command is detected
+  rather than printed from a constant.
+
+  The request carries no version, no operating system, and no identifier: the
+  server learns an IP address and nothing else. It creates no telemetry sink.
+  Turn it off in `/settings` → *Check for updates*, or skip it with `--offline`
+  / `PI_OFFLINE=1`. Every failure — offline, DNS, timeout, a malformed
+  response — is silent, because a startup complaint about a failed *check* is
+  worse than no check. Nothing is downloaded or executed; installing the update
+  is a command you run yourself.
+
 - **A bundled `general-purpose` agent profile.** Alongside the read-only
   `explorer`, a default install now ships a full-toolset worker that can read,
   edit, and run commands to take on a delegated task whole — so basic
