@@ -124,7 +124,7 @@ packages = [
 #     aelix_coding_agent/examples/echo/aelix-plugin.toml
 #     aelix_coding_agent/examples/echo/echo.py
 #     aelix_coding_agent/extensions/api.py
-# tests/packaging/test_build_hygiene.py builds this wheel for real and asserts
+# tests/packaging_gate/test_build_hygiene.py builds this wheel for real and asserts
 # both directions — those four present, `.omc`/`__pycache__` absent. It builds
 # from a copy of the repo with .gitignore DELETED, because with .gitignore in
 # place the belt suppresses the planted scratch on its own and the assertion

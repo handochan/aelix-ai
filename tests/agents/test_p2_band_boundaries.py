@@ -263,7 +263,7 @@ def test_kernel_has_no_subagent_surface() -> None:
 # the band rule isolates delegation POLICY, and build-file selection is not
 # policy. It adds no import, no runtime behaviour and no delegation surface —
 # ``test_kernel_has_no_subagent_surface`` is unaffected and still passes.
-# tests/packaging/test_build_hygiene.py is the standing guard.
+# tests/packaging_gate/test_build_hygiene.py is the standing guard.
 #
 # LISTED SEPARATELY ON PURPOSE. This entry is path-based, so a second hunk in an
 # already-allowlisted file passes the gate silently. The list is the record of

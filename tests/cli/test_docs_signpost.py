@@ -19,7 +19,7 @@ present — each one re-derives from disk the fact the block asserts:
 The PACKAGING half — that ``aelix_coding_agent/docs/*.md`` is really in the
 wheel, and that ``bundled_docs_dir()`` resolves in an installed layout and not
 only in this checkout — is not re-derived here. It is already asserted against a
-built wheel by ``tests/packaging/test_docs_bundle.py``
+built wheel by ``tests/packaging_gate/test_docs_bundle.py``
 (``::test_every_guide_is_in_the_wheel``,
 ``::test_the_docs_resolve_from_an_INSTALLED_layout_not_the_source_tree``), and
 this block emits the path that same function returns. A third wheel build for

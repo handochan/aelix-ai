@@ -67,7 +67,7 @@ aelix = "aelix_coding_agent.cli.entry:main_sync"
 # live worktree the belt gets there first: strip every pattern below and a
 # planted `.omc/state/agent-replay-*.jsonl` STILL does not reach the wheel,
 # because .gitignore already excluded it. That is why
-# tests/packaging/test_build_hygiene.py builds from a COPY OF THE REPO WITH
+# tests/packaging_gate/test_build_hygiene.py builds from a COPY OF THE REPO WITH
 # .gitignore DELETED — building in place would measure the belt and keep
 # reporting a clean artifact long after these lists had been mangled. Measured
 # both ways: belt-less + no excludes -> 7 planted paths leak into the wheel;
@@ -82,7 +82,7 @@ aelix = "aelix_coding_agent.cli.entry:main_sync"
 # aelix-coding-agent wheel and are cited by ABSOLUTE PATH by the #117
 # self-extension signpost. A pattern like `*.md`, `*.toml` or `*.json` would drop
 # them silently and the installed agent would name files that are not on disk.
-# tests/packaging/test_build_hygiene.py builds for real and fails if it happens.
+# tests/packaging_gate/test_build_hygiene.py builds for real and fails if it happens.
 #
 # #143 — `.claude` joined the list, and it is the entry with the sharpest teeth.
 # Claude Code keeps its per-checkout state under `.claude/`, including

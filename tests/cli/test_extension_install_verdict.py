@@ -1292,7 +1292,7 @@ def test_absent_hint_names_paths_that_exist() -> None:
     assert (repo_root / in_repo / "pyproject.toml").is_file()
 
     # The spelling an INSTALLED user has: hatchling ships every file under the
-    # package directory, and tests/packaging/test_build_hygiene.py builds the
+    # package directory, and tests/packaging_gate/test_build_hygiene.py builds the
     # wheel for real — this asserts the same tree the hint names is really there.
     assert installed in EI._ABSENT_HINT
     package_root = Path(EI.__file__).resolve().parents[1]
