@@ -330,3 +330,186 @@ def test_a_model_that_cannot_call_a_tool_is_not_offered() -> None:
     assert rc.is_eligible({"tool_call": True, "limit": {"context": 0, "output": 1}})
     assert rc.is_eligible({"tool_call": True, "limit": {"context": 1, "output": 0}})
     assert rc.is_eligible({"tool_call": True, "limit": {"context": 1, "output": 1}}) is None
+
+
+# ── the row builder itself, which the catalog cannot vouch for ─────────
+#
+# MEASURED, and the reason this section exists: five separate sabotages of
+# ``build_row`` — deleting both clamps, the Copilot cost zeroing, the Copilot
+# context normalisation, and the modality narrowing — left the whole file GREEN.
+# Every one of those properties was asserted against the SHIPPED catalog, which
+# already has the right values written into it. So the tests proved the data was
+# correct and said nothing about the code that will write the next batch.
+# A refresh six months from now would have produced priced Copilot rows with
+# 1M-token windows and passed.
+
+_TRANSPORT = ("openai-completions", "https://api.example", None, None)
+
+
+def _upstream(**overrides: Any) -> dict[str, Any]:
+    row = {
+        "name": "Example",
+        "tool_call": True,
+        "reasoning": True,
+        "modalities": {"input": ["text", "image", "pdf", "video"]},
+        "cost": {"input": 1.0, "output": 2.0, "cache_read": 0.5, "cache_write": 0.25},
+        "limit": {"context": 200000, "output": 32000},
+    }
+    row.update(overrides)
+    return row
+
+
+def test_an_output_cap_above_the_context_window_is_clamped_on_the_way_in() -> None:
+    """Upstream ships rows like this — ``Inkling-Small`` is 1048576 in 524288."""
+
+    row = rc.build_row(
+        "acme",
+        "m",
+        _upstream(limit={"context": 100, "output": 999}),
+        _TRANSPORT,
+        {},
+    )
+    assert row["maxTokens"] == 100, "the cap escaped its window"
+    assert row["contextWindow"] == 100
+
+
+def test_a_copilot_row_is_never_priced_however_upstream_prices_it() -> None:
+    """A seat is a subscription; `/cost` would report money nobody spent."""
+
+    row = rc.build_row(
+        "github-copilot",
+        "m",
+        _upstream(cost={"input": 5.0, "output": 25.0, "cache_read": 0.5}),
+        _TRANSPORT,
+        {"sibling": {"api": "openai-completions", "baseUrl": "u", "contextWindow": 128000}},
+    )
+    assert row["cost"] == {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0}
+
+
+def test_a_copilot_row_takes_the_seats_window_not_the_models() -> None:
+    """models.dev serves 1000000 for models Copilot caps far lower."""
+
+    siblings = {
+        "a": {"api": "openai-completions", "baseUrl": "u", "contextWindow": 128000},
+        "b": {"api": "openai-completions", "baseUrl": "u", "contextWindow": 128000},
+    }
+    row = rc.build_row(
+        "github-copilot",
+        "m",
+        _upstream(limit={"context": 1000000, "output": 64000}),
+        _TRANSPORT,
+        siblings,
+    )
+    assert row["contextWindow"] == 128000, "upstream's window survived the seat cap"
+    assert row["maxTokens"] == 64000
+
+
+def test_the_copilot_normalisation_cannot_leave_a_cap_outside_its_window() -> None:
+    """The defect the clamp exists for, at the line that causes it.
+
+    Lowering the window without touching the output cap is what gave
+    ``github-copilot/kimi-k3`` a 131072-token cap inside a 128000-token window.
+    Distinct from the general clamp above: upstream's own numbers are coherent
+    here (1048576 / 131072) and it is OUR normalisation that breaks them.
+    """
+
+    row = rc.build_row(
+        "github-copilot",
+        "kimi-k3",
+        _upstream(limit={"context": 1048576, "output": 131072}),
+        _TRANSPORT,
+        {"a": {"api": "openai-completions", "baseUrl": "u", "contextWindow": 128000}},
+    )
+    assert row["contextWindow"] == 128000
+    assert row["maxTokens"] == 128000, "the clamp did not follow the normalisation"
+
+
+def test_the_copilot_window_comes_from_the_rows_on_its_OWN_wire() -> None:
+    """Copilot serves three wires at three different caps, so the peer scan filters.
+
+    MEASURED: a version of this test whose peers were all one wire passed with
+    the filter deleted, because there was nothing for it to confuse. Here Claude
+    sits at 200000 on ``anthropic-messages`` and everything else at 128000 on
+    ``openai-completions`` — exactly the shipped shape — so an unfiltered scan
+    hands a Gemini row Claude's window.
+    """
+
+    siblings = {
+        "claude-opus-5": {
+            "api": "anthropic-messages",
+            "baseUrl": "u",
+            "contextWindow": 200000,
+        },
+        "gemini-3.5-flash": {
+            "api": "openai-completions",
+            "baseUrl": "u",
+            "contextWindow": 128000,
+        },
+    }
+    row = rc.build_row(
+        "github-copilot",
+        "gemini-3.7-flash",
+        _upstream(limit={"context": 1000000, "output": 64000}),
+        _TRANSPORT,
+        siblings,
+    )
+    assert row["contextWindow"] == 128000, "the row took a window from a model on a different wire"
+
+
+def test_when_one_wires_own_rows_disagree_the_widest_of_them_wins() -> None:
+    """Copilot's ``openai-responses`` rows are split 264000/400000.
+
+    Not a tie-break worth agonising over, but it IS live code, and the branch
+    that runs when a wire disagrees with itself had no test at all.
+    """
+
+    siblings = {
+        "gpt-5-mini": {"api": "openai-responses", "baseUrl": "u", "contextWindow": 264000},
+        "gpt-5.5": {"api": "openai-responses", "baseUrl": "u", "contextWindow": 400000},
+    }
+    row = rc.build_row(
+        "github-copilot",
+        "gpt-5.4-nano",
+        _upstream(limit={"context": 1050000, "output": 128000}),
+        ("openai-responses", "https://api.example", None, None),
+        siblings,
+    )
+    assert row["contextWindow"] == 400000
+
+
+def test_a_copilot_row_with_no_convention_to_follow_is_refused() -> None:
+    """Better no row than one whose window we invented."""
+
+    with pytest.raises(ValueError, match="Copilot context convention"):
+        rc.build_row("github-copilot", "m", _upstream(), _TRANSPORT, {})
+
+
+@pytest.mark.parametrize(
+    ("upstream_modalities", "expected"),
+    [
+        (["text", "image", "pdf", "video"], ["text", "image"]),
+        (["text", "pdf"], ["text"]),
+        (["text"], ["text"]),
+    ],
+)
+def test_upstream_modalities_are_narrowed_to_the_two_this_catalog_uses(
+    upstream_modalities: list[str], expected: list[str]
+) -> None:
+    """A third value would reach readers written against exactly two."""
+
+    row = rc.build_row(
+        "acme", "m", _upstream(modalities={"input": upstream_modalities}), _TRANSPORT, {}
+    )
+    assert row["input"] == expected
+
+
+def test_the_metadata_comes_from_upstream_and_the_transport_does_not() -> None:
+    """The split that makes the whole approach safe, asserted in one place."""
+
+    transport = ("anthropic-messages", "https://h", '{"X":"y"}', '{"q":true}')
+    row = rc.build_row("acme", "m", _upstream(), transport, {})
+    assert (row["api"], row["baseUrl"]) == ("anthropic-messages", "https://h")
+    assert row["headers"] == {"X": "y"} and row["compat"] == {"q": True}
+    assert row["cost"] == {"input": 1.0, "output": 2.0, "cacheRead": 0.5, "cacheWrite": 0.25}
+    assert (row["contextWindow"], row["maxTokens"]) == (200000, 32000)
+    assert row["provider"] == "acme" and row["id"] == "m"
