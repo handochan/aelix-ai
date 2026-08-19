@@ -58,6 +58,14 @@ and `.../releases/tag/vX` link would 404. Add them with the first pushed tag.
 
 ### Added
 
+- **A stale `uv.lock` now fails the build instead of a stranger's install.**
+  A dependency added to a `pyproject.toml` without re-running `uv lock` used to
+  pass every test — the suite imports from a dev environment where the package
+  was already present, and nothing in the repository read the lock at all. The
+  cost landed on whoever built from a clean checkout, as a missing module at
+  import time. The gate compares the lock against all five manifests in both
+  directions and names `uv lock` as the fix. See ADR-0233.
+
 - **Aelix tells you when a newer release exists.** At most once a day, an
   interactive launch reads a static file on this project's own GitHub Pages
   site and, if there is something newer, prints one line naming the version and
