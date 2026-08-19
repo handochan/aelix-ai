@@ -15,14 +15,14 @@ the child stream produces out to two places:
   :mod:`aelix_agents.panel`).
 
 THE GROUP IS OPENED WITH A COUNT, NEVER WITH IDS (ADR-0199 §3.6). ``spawn_id``
-is minted inside ``runtime._run`` (``runtime.py:799``) — after ``spawn_granted``
+is minted inside ``runtime._run`` (``runtime.py:827``) — after ``spawn_granted``
 has already been entered, and for members 5-8 of an 8-task batch not until
 wave 2 — so nothing can hand this object a list of ids when the batch starts.
 Membership arrives instead through :meth:`SubagentProgressBridge.adopt`, which
 the executor's per-member ``on_event`` closure calls with the index it was
 created with. That is exact rather than heuristic because ``runtime._publish``
 fans each snapshot out as ``for tap in (on_event, self.host.on_progress)``
-(``runtime.py:948-952``) with no ``await`` between them: the per-spawn callback
+(``runtime.py:976-980``) with no ``await`` between them: the per-spawn callback
 ALWAYS runs before this session-wide tap for the same snapshot, so there is no
 window in which a member's id reaches :meth:`__call__` unadopted. An id that
 never gets adopted is not an error — it correctly falls back to its own
@@ -102,6 +102,24 @@ final publish, so this is the last chance to clear the statusline."""
 
 def status_key(spawn_id: str) -> str:
     return f"{STATUS_KEY_PREFIX}{spawn_id}"
+
+
+#: The disclosure row's infix. Distinct from the group's so a batch under a YOLO
+#: parent writes a disclosure row AND an aggregate row rather than one clobbering
+#: the other, and so ``clear()``'s prefix sweep still reaches both.
+DISCLOSURE_KEY_INFIX = "disclose:"
+
+
+def disclosure_status_key(key: str) -> str:
+    """The row that says a child is starting at a posture nobody was asked about.
+
+    Keyed by the CALL (the parent tool-call id, or a ``/agents run`` id) rather
+    than by spawn id, for the same reason :func:`group_status_key` is: one
+    ``agent`` call is one decision and therefore one row, whether it starts one
+    child or eight (#196, ADR-0231).
+    """
+
+    return f"{STATUS_KEY_PREFIX}{DISCLOSURE_KEY_INFIX}{key}"
 
 
 def group_status_key(group_key: str) -> str:
@@ -347,7 +365,7 @@ class SubagentProgressBridge:
         """Bind a member's freshly minted spawn id to (group, submitted index).
 
         Called from the executor's per-member ``on_event`` closure, which runs
-        BEFORE this bridge sees the same snapshot (``runtime.py:948-952``), so by
+        BEFORE this bridge sees the same snapshot (``runtime.py:976-980``), so by
         the time :meth:`__call__` is reached the membership is already known.
         Idempotent: the closure calls it on every snapshot, not only the first,
         because "the first" is not a fact the closure can cheaply know.
@@ -460,6 +478,32 @@ class SubagentProgressBridge:
             return terminal_columns(chrome, max_width=PANEL_ROW_MAX_CHARS)
         except Exception:  # noqa: BLE001 — an unsizeable output is not a render error
             return PANEL_ROW_MAX_CHARS
+
+    def announce(self, key: str, text: str | None) -> None:
+        """Write (``text``) or withdraw (``None``) one call's disclosure row.
+
+        WHY A STATUS ROW AND NOT THE TRANSCRIPT. Measured with a positive
+        control: feeding ``tool_execution_update`` — what ``ctx.on_partial``
+        produces — through the real ``EventRenderer`` yields ZERO commits,
+        because ``tui/render.py`` no-ops that event; the same harness commits a
+        line for ``tool_execution_start``. Nothing in the extension band can
+        reach the transcript before a child runs: ``ExtensionUIContext`` has no
+        commit verb, and adding one is a product-core contract change. So the
+        pre-spawn surface is this row, and the PERMANENT record is the tool
+        card's own footer, which already names the posture
+        (``tool._usage_line`` renders ``[agent scout · … · yolo · …]``).
+
+        Goes through the same ``_set_row`` / ``_clear_row`` as every other row
+        here, which means the same live-``ui`` guard, the same headless no-op
+        and the same ``suppress`` — a delegation must not die of a statusline
+        write (caveat 3).
+        """
+
+        row = disclosure_status_key(key)
+        if text is None:
+            self._clear_row(row)
+        else:
+            self._set_row(row, text)
 
     def clear(self) -> None:
         """Drop every row and panel we own — the ``session_shutdown`` /

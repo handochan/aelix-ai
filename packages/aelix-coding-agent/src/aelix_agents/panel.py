@@ -10,7 +10,7 @@ THE UNIT IS A LIST OF PER-CHILD SNAPSHOTS, INDEXED BY SUBMITTED POSITION.
 ``snapshots[k] is None`` means member ``k`` has published nothing yet — it is
 parked on the batch semaphore (``batch.MAX_CONCURRENCY``) and has no spawn id at
 all, because ``spawn_id = _new_id()`` is minted inside ``runtime._run``
-(``runtime.py:799``). That is precisely why the UI group is opened with a COUNT
+(``runtime.py:827``). That is precisely why the UI group is opened with a COUNT
 (``progress.SubagentProgressBridge.begin_group(key, expected=…)``) rather than
 with ids: without the count there is nothing to render the ``queued`` term from.
 
@@ -59,7 +59,7 @@ flushes PLUS the forced flushes on every ``current_tool`` transition (two per
 child tool call) — call it ~2 000 per child, so the worst legal fan-out
 (8 children × 10 min) holds on the order of 16 000 completed kernel Tasks
 instead of an unbounded number. Today the runtime publishes after EVERY reduced
-stdout line (``runtime.py:804-805``), which for a chatty child is hundreds per
+stdout line (``runtime.py:832-833``), which for a chatty child is hundreds per
 turn."""
 
 PANEL_MIN_CHILDREN = 2
@@ -336,7 +336,7 @@ members finish."""
 def _format_tokens(tokens: int) -> str:
     """Compact token count for surfaces 1 and 3.
 
-    Mirrors ``progress._format_tokens`` (``progress.py:158-161``) rather than
+    Mirrors ``progress._format_tokens`` (``progress.py:176-179``) rather than
     importing it — the same call ``aggregate._format_count`` makes
     (``aggregate.py:145-155``) and for the same reason: these are three
     renderers with three different unit conventions, and a shared helper would
@@ -1019,27 +1019,47 @@ class PartialThrottle:
     * :data:`PARTIAL_MIN_INTERVAL_MS` has elapsed since the last emission.
 
     …and never when the rendered text is identical to the last emitted text.
-    That final dedup mirrors the statusline half (``progress.py:496-498``): a
+    That final dedup mirrors the statusline half (``progress.py:540-542``): a
     frame that would repaint the same bytes is a kernel ``Task`` bought for
     nothing (H10), and it cannot lose information by construction.
     """
 
-    __slots__ = ("_interval_ms", "_last_emit_s", "_last_text", "_now", "_snapshots")
+    __slots__ = (
+        "_header",
+        "_interval_ms",
+        "_last_emit_s",
+        "_last_text",
+        "_now",
+        "_snapshots",
+    )
 
     def __init__(
         self,
         expected: int,
         *,
+        header: str = "",
         now: Callable[[], float] = time.monotonic,
         interval_ms: int = PARTIAL_MIN_INTERVAL_MS,
     ) -> None:
         """:param expected: how many members the batch submitted — the length of
         the snapshot table, so members still parked on the semaphore render as
         ``queued`` from the first frame instead of appearing one by one.
+        :param header: a line to carry ABOVE the table on every frame. Empty for
+        every delegation that shipped before #196, which is what keeps
+        :func:`format_card`'s byte-identical ``N == 1`` guarantee intact — the
+        header is prepended HERE rather than inside ``format_card`` precisely so
+        that function stays a pure function of the snapshots and its pin does
+        not have to learn about consent.
+
+        It is on every frame rather than emitted once because ``on_partial``
+        REPLACES the card, it does not append: a disclosure emitted as its own
+        partial would be overwritten by the first progress frame, ~200ms later,
+        and the user would be told once for a fifth of a second.
         :param now: monotonic seconds. Injectable so the tests pin the interval
         deterministically rather than sleeping.
         """
 
+        self._header = header
         self._snapshots: list[SubagentProgress | None] = [None] * max(expected, 0)
         self._now = now
         self._interval_ms = interval_ms
@@ -1056,9 +1076,17 @@ class PartialThrottle:
 
     def card(self) -> str:
         """The card as it stands right now, with no throttling and no state
-        change. For a caller that needs a final frame after the batch returns."""
+        change. For a caller that needs a final frame after the batch returns —
+        and for the FIRST frame, before any child has produced a snapshot, which
+        is how a header reaches the user before the work starts rather than
+        after it."""
 
-        return format_card(self._snapshots)
+        return self._with_header(format_card(self._snapshots))
+
+    def _with_header(self, text: str) -> str:
+        if not self._header:
+            return text
+        return f"{self._header}\n{text}" if text else self._header
 
     def record(self, index: int, progress: SubagentProgress) -> str | None:
         """Ingest one member snapshot; return the card to emit, or ``None``.
@@ -1066,7 +1094,7 @@ class PartialThrottle:
         ``index`` is the member's SUBMITTED position, bound into the executor's
         per-member ``on_event`` closure at member creation (§3.6) — never
         inferred from the spawn id, which does not exist until ``_run`` mints it
-        (``runtime.py:799``).
+        (``runtime.py:827``).
         """
 
         if index < 0:
@@ -1093,7 +1121,7 @@ class PartialThrottle:
         ):
             return None
 
-        text = format_card(self._snapshots)
+        text = self._with_header(format_card(self._snapshots))
         if text == self._last_text:
             return None
         self._last_text = text

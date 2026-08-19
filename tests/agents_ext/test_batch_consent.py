@@ -669,8 +669,16 @@ async def test_an_answer_nobody_was_shown_is_a_decline() -> None:
     spy = _SelectSpy("<<< user pressed something weird >>>")
     ctx = _FakeCtx(has_ui=True, ui=spy)
 
+    # AUTO_ACCEPT rather than YOLO since #196: a YOLO parent opens no dialog at
+    # all now, so it can no longer be used to reach the allow-list. The property
+    # under test is unchanged and so is the door — one answer, eight children.
     grant = await request_spawn_consent_batch(
-        ctx, _declaring(), _TASKS_8, PermissionMode.YOLO, cwd="/w", mode="parallel"
+        ctx,
+        _declaring(),
+        _TASKS_8,
+        PermissionMode.AUTO_ACCEPT,
+        cwd="/w",
+        mode="parallel",
     )
 
     assert grant.consented is False
@@ -984,7 +992,7 @@ async def test_a_bare_string_is_a_typeerror_not_23_dialog_rows() -> None:
 
     An earlier draft re-typed the single-task ``task`` parameter to
     ``Sequence[str]``. ``str`` SATISFIES that annotation, so
-    ``/agents run scout "review the auth module"`` (``runtime.py:506-509`` passes
+    ``/agents run scout "review the auth module"`` (``runtime.py:514-517`` passes
     a bare ``str``) would have type-checked green and rendered *"Delegate 23
     tasks…"* with one row per CHARACTER — on the one door a human typed. The
     signatures were kept single-task for that reason, and the batch door guards

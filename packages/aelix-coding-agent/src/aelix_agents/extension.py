@@ -63,7 +63,9 @@ from aelix_agents.aggregate import render_batch_result
 from aelix_agents.batch import run_batch
 from aelix_agents.consent import (
     SpawnGrant,
+    build_disclosure_line,
     consent_is_required,
+    disclosure_is_required,
     request_spawn_consent_batch,
 )
 from aelix_agents.panel import PANEL_MIN_CHILDREN, PartialThrottle
@@ -378,6 +380,7 @@ class AgentsExtension:
             model_registry=self._host_model_registry,
             model=self._host_model,
             on_progress=self._publish_progress,
+            on_disclosure=self._publish_disclosure,
         )
 
     def _host_cwd(self) -> str:
@@ -502,6 +505,19 @@ class AgentsExtension:
         bridge = self._progress
         if bridge is not None:
             bridge(progress)
+
+    def _publish_disclosure(self, key: str, text: str | None) -> None:
+        """Route one call's #196 disclosure row to the statusline bridge.
+
+        Wired onto :attr:`SubagentHost.on_disclosure` as well as called
+        directly, so the ``/agents run`` door — which lives in ``runtime`` and
+        never sees this object — reaches the same row writer as the model door.
+        """
+
+        bridge = self._progress
+        if bridge is not None:
+            with contextlib.suppress(Exception):
+                bridge.announce(key, text)
 
     # ── the roster ────────────────────────────────────────────────
 
@@ -637,7 +653,7 @@ class AgentsExtension:
 
         # THE PER-PROMPT BUDGET IS A CALL-LEVEL REFUSAL, AND IT IS TAKEN HERE —
         # BEFORE THE GRANT (ADR-0199 §3.5.2.1). The budget is charged per CHILD,
-        # inside ``runtime._run``'s admission block (``runtime.py:790-798``),
+        # inside ``runtime._run``'s admission block (``runtime.py:818-826``),
         # i.e. AFTER a dialog has already shown the human all N tasks. Without
         # this check a second eight-task call in one prompt would start four
         # children and hand back four budget-exhausted envelopes for the rest: a
@@ -767,7 +783,14 @@ class AgentsExtension:
             resolved.scope,
             has_ui=has_ui,
         )
-        if not consent_is_required(resolved, want, has_ui=has_ui):
+        if not consent_is_required(resolved, want, parent, has_ui=has_ui):
+            # THE DISCLOSURE IS COMPOSED HERE TOO, and that is not duplication
+            # of a decision — it is the same predicate, asked once per grant,
+            # by whichever branch produced the grant. This pre-filter RETURNS
+            # rather than falling through to ``request_spawn_consent_batch``,
+            # so a disclosure composed only inside ``consent.py`` would be
+            # skipped on exactly this door: the model door, where the model
+            # chose the profile, the tasks and the directory.
             return SpawnGrant(
                 profile=resolved.name,
                 source_path=resolved.source_path,
@@ -775,6 +798,11 @@ class AgentsExtension:
                 mode=want,
                 widened=False,
                 consented=True,
+                disclosure=(
+                    build_disclosure_line(resolved, want, task_count=len(tasks))
+                    if has_ui and disclosure_is_required(parent, want)
+                    else ""
+                ),
             )
         # No memo argument, and there is no memo to pass: P2 asks EVERY time
         # (ADR-0197:613-616). The model-driven door is the one that must never
@@ -800,7 +828,7 @@ class AgentsExtension:
         row, asked from the door that takes the decision — this hook holds the
         ``resolved`` profile and the live parent model, and the runtime it would
         otherwise borrow the method from may legitimately be ``None`` here (the
-        seam is released on teardown, ``extension.py:830-839``).
+        seam is released on teardown, ``extension.py:844-853``).
 
         Swallows everything: a dialog that cannot name the model must still be a
         dialog. The row is simply omitted, exactly as it is for a child that will
@@ -847,7 +875,7 @@ class AgentsExtension:
 
         ANY OPEN BATCH GROUP GOES WITH IT, and it goes through ``bridge.clear()``
         rather than a second ``end_group`` loop here: ``clear`` already ends every
-        open group before dropping the remaining rows (``progress.py:464-477``),
+        open group before dropping the remaining rows (``progress.py:508-521``),
         which is the only ordering that also blanks the widget panel. A teardown
         that raced ``_execute``'s ``finally`` would otherwise leave an aggregate
         row on a statusline whose delegation no longer exists.
@@ -948,7 +976,7 @@ class AgentsExtension:
         # THE PER-CALL CLOSURE IS WHAT GROUPS ALL THREE S10 SURFACES, and it is
         # what makes ADR-0199 §3.6's "no new ``SubagentProgress`` field" answer
         # implementable. ``spawn_id`` is minted INSIDE ``runtime._run``
-        # (``runtime.py:799``) — after ``spawn_granted`` has been entered, and for
+        # (``runtime.py:827``) — after ``spawn_granted`` has been entered, and for
         # members 5-8 of an eight-task batch not until wave 2 — so nothing can
         # hand the bridge a list of ids up front. The INDEX, by contrast, is bound
         # at member creation by the executor (``batch.py:_member``'s ``_tap``), so
@@ -966,7 +994,7 @@ class AgentsExtension:
         # (``progress._Group.active`` reads the same constant).
         #
         # A group of one is inactive, so it renders nothing — but ``end_group``
-        # clears the aggregate row unconditionally (``progress.py:377-381``), i.e. it
+        # clears the aggregate row unconditionally (``progress.py:395-399``), i.e. it
         # would issue one ``set_status(subagent:group:<id>, None)`` for a row that
         # was never written. S10's floor is that a SINGLE delegation keeps P2's
         # surfaces byte-identical, and a UI write P2 never made is not
@@ -980,13 +1008,13 @@ class AgentsExtension:
         def _on_event(index: int, progress: SubagentProgress) -> None:
             # ADOPT FIRST, EMIT SECOND. ``runtime._publish`` fans each snapshot
             # out as ``for tap in (on_event, self.host.on_progress)``
-            # (``runtime.py:948-952``) with no ``await`` between them, so THIS
+            # (``runtime.py:976-980``) with no ``await`` between them, so THIS
             # callback always runs before the session-wide bridge tap sees the
             # same snapshot: adopting here means the bridge already knows the id's
             # group by the time it has to decide between an aggregate row and a
             # per-child one. ``adopt`` is idempotent and ignores an unknown key,
             # which is why it is called on every frame rather than only the first
-            # (``progress.py:346-365``).
+            # (``progress.py:364-383``).
             if grouped and bridge is not None:
                 with contextlib.suppress(Exception):
                     bridge.adopt(progress.id, key, index=index)
@@ -1000,6 +1028,26 @@ class AgentsExtension:
                 return
             with contextlib.suppress(Exception):
                 ctx.on_partial(format_partial(card))
+
+        # THE DISCLOSURE ROW (#196), WRITTEN BEFORE ANY CHILD EXISTS. Under a
+        # YOLO parent no dialog fires, so this is the whole of what a human is
+        # told before an unattended write-capable child starts — and "before"
+        # is the only part that is not already covered, because the tool card's
+        # own footer already names the posture AFTER the fact
+        # (``tool._usage_line``).
+        #
+        # NOT ``ctx.on_partial``, which was the first attempt and is INVISIBLE:
+        # measured with a positive control, feeding ``tool_execution_update``
+        # through the real ``EventRenderer`` produces zero commits while
+        # ``tool_execution_start`` through the same harness produces one —
+        # ``tui/render.py`` no-ops that event and nothing else in the product
+        # consumes it.
+        #
+        # Cleared in the SAME ``finally`` that closes the group, for the reason
+        # written there: a row left behind by a cancelled turn is a lie the
+        # user cannot dismiss and ``set_status`` has no "clear all" verb.
+        if pending.grant.disclosure:
+            self._publish_disclosure(key, pending.grant.disclosure)
 
         # OPENED BEFORE THE FIRST CHILD, CLOSED IN A ``finally``, exactly once
         # each. The ``finally`` is load-bearing on the failure path: ``run_batch``
@@ -1068,6 +1116,18 @@ class AgentsExtension:
         finally:
             if grouped and bridge is not None:
                 bridge.end_group(key)
+            # GUARDED ON THE SAME CONDITION AS THE WRITE, and it has to be:
+            # ``_clear_row`` pops its own bookkeeping and then calls
+            # ``ui.set_status(key, None)`` UNCONDITIONALLY, so an unguarded
+            # withdraw writes a status key for every delegation that never had
+            # a disclosure. Measured — it broke
+            # ``test_statusline_row_set_and_cleared``'s "one key per child".
+            #
+            # Withdrawing when we DID write is not optional: the child is gone,
+            # and a row that outlives it says a yolo child is running when none
+            # is.
+            if pending.grant.disclosure:
+                self._publish_disclosure(key, None)
 
 
 def _error(message: str) -> ToolResult:

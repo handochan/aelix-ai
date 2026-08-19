@@ -18,6 +18,34 @@ and `.../releases/tag/vX` link would 404. Add them with the first pushed tag.
 
 ## [Unreleased]
 
+### Changed
+
+- **`yolo` no longer asks before delegating — it tells you.** Choosing `yolo`
+  means "run mutating tools without a prompt", and a delegation was the one
+  thing it still prompted for: on every `agent` call, a dialog whose only two
+  options were "Run with the inherited posture (yolo)" and "Cancel". That is a
+  confirmation with no real answer, which is the shape this project already
+  removed everywhere else because it teaches you to dismiss the prompts that do
+  matter. It now starts the child immediately and writes one line to the status
+  line instead — the profile, the posture it runs at, the file it came from, and
+  how many tasks it was given — before the child does anything, for as long as
+  it runs, and cleared when it finishes. The finished tool card already names
+  the posture in its `[agent … · yolo · …]` footer, so that is the part that
+  stays in your transcript.
+
+  `auto-accept-edits` and `auto` still ask. The `0.1.0-beta.1` section's own
+  entry is corrected in place rather than superseded — that section has not
+  shipped, and correcting an unreleased line rather than recording a removal is
+  the convention `92b3f35` set for exactly this case.
+
+  What does not change: the child is still clamped to at most your own posture,
+  the guardrail still hard-blocks catastrophic patterns inside it, the
+  per-prompt and per-session delegation caps still apply, the status line still
+  shows it running, and a *project-local* profile still cannot widen itself.
+  What you lose is the chance to say "Cancel" to one specific spawn before it
+  starts; Ctrl+C and shift+tab are still live. See ADR-0231 and
+  [#196](https://github.com/handochan/aelix-ai/issues/196).
+
 ### Added
 
 - **Aelix tells you when a newer release exists.** At most once a day, an
@@ -460,6 +488,13 @@ earlier published version.
   bounded by the per-prompt and per-session delegation caps and shown in the
   status line. Running a *project-local* agent profile still takes its own
   explicit confirmation, which is unchanged. See ADR-0197 §(i) and residual R7.
+
+  **`yolo` is the exception, and the only one** (#196, ADR-0231): there no
+  dialog appears at all, because `yolo` means "run mutating tools without a
+  prompt" and a delegation was the last prompt it had. The child is named in
+  the status line while it runs instead — profile, posture, source file, task
+  count — and the finished tool card's `[agent … · yolo · …]` footer records
+  the posture afterwards.
 - **A profile's `approval_mode:` now decides whether a delegation may be widened
   at the dialog.** `auto` and `ask` declare that the agent needs write authority,
   so their dialog offers "Allow file edits for this run (auto-accept-edits)";

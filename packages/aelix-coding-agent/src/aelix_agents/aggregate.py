@@ -15,7 +15,7 @@ THE OTHER RENDERER IS NOT TOUCHED. There are two: this one plus
 no batch rendering and gets none.
 
 "FAILED" AND "NEVER STARTED" ARE DIFFERENT FACTS AND ARE RENDERED DIFFERENTLY.
-A member refused by ``_admit_live`` (``runtime.py:446-451``), by the per-prompt
+A member refused by ``_admit_live`` (``runtime.py:454-459``), by the per-prompt
 budget, or by the batch's own wall-clock budget produced NO CHILD AT ALL. A model
 that cannot tell "this ran and failed" from "this never ran" will report the work
 as done. The classification is supplied by the executor at the point it creates
@@ -145,7 +145,7 @@ def roll_up_usage(results: Iterable[SubagentResult]) -> SubagentUsage:
 def _format_count(value: int) -> str:
     """Compact token counts for the ``[total]`` line only.
 
-    Mirrors ``progress._format_tokens`` (``progress.py:158-161``) rather than
+    Mirrors ``progress._format_tokens`` (``progress.py:176-179``) rather than
     importing it: that helper appends its own ``" tok"`` unit, which this line
     does not want (it reads ``… in / … out``). The threshold and the one decimal
     place are kept identical so a batch total and a statusline row never disagree

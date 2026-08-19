@@ -407,7 +407,7 @@ def test_the_throttle_records_every_snapshot_even_when_it_drops_the_emit() -> No
 def test_an_unchanged_card_is_never_re_emitted() -> None:
     """A frame that repaints the same bytes is a kernel ``Task`` bought for
     nothing, and it cannot lose information by construction — the same dedup the
-    statusline half already does (``progress.py:496-498``)."""
+    statusline half already does (``progress.py:540-542``)."""
 
     clock = _Clock()
     throttle = PartialThrottle(1, now=clock)
