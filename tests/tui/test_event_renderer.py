@@ -956,6 +956,73 @@ def test_render_user_message_is_a_bar_that_spans_the_width() -> None:
         assert cells == 40, f"row {text!r} painted {cells}/40 cells — not a bar"
 
 
+def test_the_echo_band_is_three_painted_rows_and_the_fences_are_not(
+) -> None:
+    """The BAND'S HEIGHT, which nothing measured until it changed.
+
+    MEASURED, and the reason this test exists rather than a comment: with the
+    height ungated, raising the vertical inset from ``0`` to ``5`` — an
+    ELEVEN-row band under every user turn — left all 202 tests in this file and
+    ``test_run_tui_smoke.py`` green. The width had three tests and the colour
+    got its own after ADR-0228; the height had none.
+
+    Counted on rows that are PAINTED, not on rows that contain text.
+    ``_bar_rows`` filters with ``t.strip()``, which is right for "does every
+    wrapped row span the width" and is exactly why it cannot see this: the two
+    new rows are blank, so a filter on text drops the thing under test.
+
+    Both directions fail here. Dropping back to ``(0, 1)`` gives one painted
+    row; any larger inset gives more than three.
+    """
+
+    from aelix_coding_agent.tui.render import render_user_message
+
+    rows = _painted_rows(render_user_message("hello there"), 40)
+    painted = [(text, cells) for text, cells in rows if cells]
+
+    assert len(painted) == 3, (
+        f"the echo band is {len(painted)} painted rows, not 3: {painted}"
+    )
+    top, middle, bottom = painted
+    assert top[0].strip() == "", f"the top edge row carries text: {top[0]!r}"
+    assert bottom[0].strip() == "", f"the bottom edge row carries text: {bottom[0]!r}"
+    assert middle[0].strip() == "» hello there"
+    for text, cells in painted:
+        assert cells == 40, f"band row {text!r} painted {cells}/40 cells"
+
+    # THE FENCES ARE STILL NEGATIVE SPACE (6h₃₂). If the padding had replaced
+    # them rather than been added inside the ground, the band would touch the
+    # renderer above and below it — which is the one thing the blank lines were
+    # added to prevent.
+    assert rows[0][1] == 0, "the leading fence is painted; it should be a gap"
+    assert any(cells == 0 for _, cells in rows[len(painted) + 1 :]), (
+        "no unpainted row after the band — the trailing fence is gone"
+    )
+
+
+def test_the_echo_band_edge_rows_survive_wrapping(
+) -> None:
+    """A wrapped turn is still ONE band with exactly one edge row each side.
+
+    The failure this guards against is a padding applied per WRAPPED LINE rather
+    than per renderable, which would interleave blank painted rows through the
+    text and turn a three-row band into a striped one.
+    """
+
+    from aelix_coding_agent.tui.render import render_user_message
+
+    long_turn = "fix the retry loop in the harness and add a test for it as well"
+    rows = [(t, c) for t, c in _painted_rows(render_user_message(long_turn), 32) if c]
+    assert len(rows) >= 4, "the fixture no longer wraps; widen the input"
+
+    blanks = [i for i, (text, _) in enumerate(rows) if not text.strip()]
+    assert blanks == [0, len(rows) - 1], (
+        f"blank painted rows at {blanks} — the band is striped, not fenced"
+    )
+    for text, cells in rows:
+        assert cells == 32, f"band row {text!r} painted {cells}/32 cells"
+
+
 def test_render_user_message_bar_survives_wrapping() -> None:
     """A long turn is ONE bar, not a painted first row and a bare remainder.
 

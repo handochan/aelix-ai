@@ -20,6 +20,16 @@ and `.../releases/tag/vX` link would 404. Add them with the first pushed tag.
 
 ### Changed
 
+- **Your own turns are a thicker band.** The echo bar that marks a human turn
+  now carries one painted row above and below the text, so the turn reads as an
+  object with a top and a bottom edge rather than as a single coloured line. The
+  blank lines that fence it off from the renderer above and below are unchanged
+  — the new rows go *inside* the bar's own ground, not outside it.
+
+  The cost is vertical: a turn is five rows instead of three, a fifth of an
+  80x24 screen. That is the trade, and it is why this is a deliberate change
+  rather than a tidy-up.
+
 - **`yolo` no longer asks before delegating — it tells you.** Choosing `yolo`
   means "run mutating tools without a prompt", and a delegation was the one
   thing it still prompted for: on every `agent` call, a dialog whose only two
