@@ -464,8 +464,9 @@ def render_user_message(text: str, kind: str = "prompt", *, width: int | None = 
 
     Every site that echoes the user's own input — the live prompt, the replayed
     transcript, and steer / follow-up injections — routes through this helper so
-    they share ONE visual language. The turn is a full-width bar
-    (:data:`_USER_ECHO_STYLE`), still fenced by a blank line above and below.
+    they share ONE visual language. The turn is a full-width, THREE-ROW bar
+    (:data:`_USER_ECHO_STYLE`) — the text with one painted row above and one
+    below — still fenced by an unpainted blank line outside it.
 
     #48 — WHY A BAR AND NOT MORE PADDING. ADR-0153 gave the echo a leading blank
     and bold cyan; Sprint 6h₃₂ added the trailing blank because one was "too
@@ -476,10 +477,26 @@ def render_user_message(text: str, kind: str = "prompt", *, width: int | None = 
     surrounding renderers use (tool cards colour their marker, diffs their
     gutter, reasoning is dim italic — all on the terminal's ground).
 
+    THE VERTICAL INSET IS NOT A THIRD ROUND OF THAT (2026-08-19, owner). The two
+    failed rounds bought separation by making the GAP bigger; this makes the
+    OBJECT bigger, because the rows go inside the ground rather than outside it.
+    A blank line above the bar reads as more of the same nothing that already
+    surrounds every renderer here; a painted row above the text reads as the
+    top edge of a thing. The unpainted fences from 6h₃₂ stay where they are, so
+    the band does not touch the card above or below it.
+
+    THE PRICE, MEASURED: a human turn is five emitted rows instead of three, of
+    which three are painted. On an 80x24 terminal that is a fifth of the screen
+    per turn, and it is the reason this is an owner decision rather than a
+    tidy-up.
+
     ``Padding`` rather than a padded :class:`Text`: MEASURED, a manually
     right-padded ``Text`` covers only the FIRST row once the line wraps, leaving
-    a ragged bar; ``Padding`` with a style fills every wrapped row edge to edge.
-    The ``(0, 1)`` inset keeps the glyphs off the terminal's left column.
+    a ragged bar; ``Padding`` with a style fills every wrapped row edge to edge —
+    the padded rows included, which is what makes the top and bottom edges span
+    the width instead of ending where the text does. The ``(1, 1)`` inset keeps
+    the glyphs off the terminal's left column and gives the band its two edge
+    rows.
 
     ``kind`` selects the leading marker: ``"prompt"`` keeps the ``» `` chevron;
     ``"steer"`` / ``"follow_up"`` use a distinct ``Steering: `` / ``Follow-up: ``
@@ -529,10 +546,11 @@ def render_user_message(text: str, kind: str = "prompt", *, width: int | None = 
 
     label = _USER_MESSAGE_LABELS.get(kind, _USER_MESSAGE_LABELS["prompt"])
     bar: RenderableType = Padding(
-        Text(f"{label}{_strip_controls(text)}"), (0, 1), style=_USER_ECHO_STYLE
+        Text(f"{label}{_strip_controls(text)}"), (1, 1), style=_USER_ECHO_STYLE
     )
     if width is not None and width > _ECHO_MIN_CONSTRAIN:
-        # Below this the ``(0, 1)`` inset alone is the whole budget and Constrain
+        # Below this the ``(1, 1)`` inset's HORIZONTAL half alone is the whole
+        # budget and Constrain
         # renders an empty bar — measured, two blank rows where the turn used to
         # be. A terminal that narrow is already unusable; losing the echo of your
         # own input to a width CAP is a defect the cap introduced, so it does not

@@ -2831,15 +2831,15 @@
   "packages/aelix-coding-agent/src/aelix_coding_agent/tui/render.py:163-163": [
    "``_truncate_lines`` below has always measured cells; this makes the file"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/render.py:630-656": [
-   "# printed a terminal-outcome line for the message that just ended, so",
-   "# ``_render_turn_abort`` does not print a SECOND line for the same abort.",
-   "# Scoped to the message_end -> turn_end adjacency it guards: cleared on",
-   "# message_start AND consumed by ``_render_turn_abort``. See that method",
-   "# for why it is a bool rather than the message object.",
-   "self._outcome_reported: bool = False",
-   "# #189 — the TEXT of the terminal-outcome line this renderer has already",
-   "# committed for the message that just ended. Distinct from"
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/render.py:742-774": [
+   "def on_agent_event(self, event: AgentEvent) -> None:",
+   "if event.type == \"message_start\":",
+   "self._reset_message_state()",
+   "elif event.type == \"message_update\":",
+   "self._on_stream_event(event.assistant_message_event)",
+   "elif event.type == \"message_end\":",
+   "# Terminal failures arrive here as a MessageEndEvent whose message",
+   "# carries stop_reason ∈ {\"error\",\"aborted\"} (loop.py:385-410)."
   ],
   "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:1022-1022": [
    "result = await runtime_host.fork(target_id, position=\"before\")"
