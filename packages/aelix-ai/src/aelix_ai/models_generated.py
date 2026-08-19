@@ -1,8 +1,10 @@
 """Pi parity: ``packages/ai/src/models.generated.ts`` (SHA 734e08e).
 
-Sprint 6g₁ (ADR-0067, P-197/P-203) ships the FULL 32-provider catalog
-(~942 models) loaded from ``models_generated.json`` at module import.
-Replaces the Sprint 6f₁ 13-model seed.
+Sprint 6g₁ (ADR-0067, P-197/P-203) shipped the FULL 32-provider catalog
+loaded from ``models_generated.json`` at module import, replacing the
+Sprint 6f₁ 13-model seed. It is now 35 providers and 1427 models: #15 added
+three providers, and #172 (ADR-0232) added 422 models from upstream through
+``scripts/refresh_catalog.py``, which appends and never rewrites.
 
 The :data:`MODELS` dict shape contract (``dict[provider, dict[model_id,
 Model]]``) is binding and downstream code MUST NOT break it.

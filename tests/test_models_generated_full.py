@@ -20,7 +20,7 @@ def test_full_catalog_provider_count_is_35() -> None:
 
 
 def test_full_catalog_total_model_count_at_least_200() -> None:
-    """Pi parity: P-204 estimates ~200+ models. Actual is ~942."""
+    """Pi parity: P-204 estimates ~200+ models. Actual is 1427 (ADR-0232)."""
 
     total = sum(len(per_provider) for per_provider in MODELS.values())
     assert total >= 200

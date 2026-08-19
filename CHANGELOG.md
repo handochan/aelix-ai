@@ -58,6 +58,25 @@ and `.../releases/tag/vX` link would 404. Add them with the first pushed tag.
 
 ### Added
 
+- **422 more models, including the ones released this month.** The catalog had
+  not been refreshed since it was ported: of the models upstream lists with a
+  2026-04 release date it carried 63%, and of the 2026-08 ones, 5%. It now
+  ships 1427 models across the same 35 providers — `grok-4.6`, `qwen3.8`,
+  `deepseek-v4-flash-0731`, `deepseek-v4-pro-0813`, `glm-5.3`, `kimi-k3` and
+  the rest, each on the providers that actually serve it.
+
+  Nothing that was already in the catalog changed. The refresh
+  (`scripts/refresh_catalog.py`) can only append — the values a maintainer
+  corrected by hand are not something it is careful about, they are outside
+  what it can write.
+
+  401 upstream models were deliberately left out. 325 of them cannot call a
+  tool, and this is a coding agent: a model that cannot call a tool cannot edit
+  a file, and offering it would sell you a session that fails on its first
+  action. The other 76 have no transport we could establish without guessing,
+  and a model that appears in `/model` and then cannot reach its provider is
+  worse than one that is absent. See ADR-0232.
+
 - **Aelix tells you when a newer release exists.** At most once a day, an
   interactive launch reads a static file on this project's own GitHub Pages
   site and, if there is something newer, prints one line naming the version and
