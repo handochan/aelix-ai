@@ -170,6 +170,30 @@ substituted-text fence, the disclosure row, and `_may_widen` constraint 6 removi
 widening rung — are all untouched by this. What a YOLO chain loses is a modal whose
 other option was "run at the posture you already chose".
 
+## Two sentences that stayed false for a commit, and one caveat
+
+Found by review after the change had landed, not by the tests:
+
+* **`tool.py`'s `agent` description — the text the MODEL reads** — still said
+  *"A delegated agent is READ-ONLY unless the user explicitly approves more at a
+  prompt."* Under YOLO nobody is prompted and the child is not read-only. That
+  is the worst audience for a false sentence: a model that believes its children
+  cannot write will not reason about what they might do. It now names the
+  parent's own posture as the other route to authority.
+* **The CHANGELOG's "This SUPERSEDES the entry below" framing** contradicted this
+  repo's own convention. The entry it superseded sits in
+  `## [0.1.0-beta.1] — not yet released` and the repo has no tags; `92b3f35` set
+  the rule for exactly this case — an unreleased line is CORRECTED in place, and
+  `[Unreleased]` carries the note for anyone tracking main.
+
+And one caveat on the safety fact this decision turns on. The `.aelix/` write
+refusal that binds `auto-accept-edits` and `auto` children — and that a `yolo`
+child escapes — is confirmed by executing the real Guardrail + Permission
+ladder. But it rests entirely on `headless_default="block"` at branch (d).
+There is no `.aelix`-specific denial and no guardrail rule covering it, so the
+protection evaporates the moment that one field is not set. That is worth
+knowing before anyone cites it as a boundary.
+
 ## What did not change
 
 The clamp; the guardrail hard floor inside the child; `MAX_DELEGATIONS_PER_PROMPT` and
@@ -201,6 +225,18 @@ And the row itself is now driven END TO END rather than asserted as a field — 
 delegation through the real extension, reading the statusline the product writes, with
 `_FakeUI` extended to record every value a key ever held. The last point is the one that
 matters: a row that is written and then correctly cleared ends at `None`, which an
-end-state assertion cannot tell apart from a row that was never written. `MODE_META[YOLO]`
-and SECURITY.md's Scope entry have a gate of their own for the same reason — reverting
-the mode description left 1788 tests green.
+end-state assertion cannot tell apart from a row that was never written. `MODE_META[YOLO]`,
+SECURITY.md's Scope entry, the `agent` tool's model-facing description and the beta.1
+CHANGELOG entry all have gates of their own, each pinned on the CLAIM rather than the
+phrasing — reverting the mode description had left 1788 tests green, and restoring the
+model-facing sentence left 1554.
+
+Three sabotage rounds. Round one: 16/19 RED, and the three that were green were the
+disclosure on the MODEL door, the pre-spawn emission, and the mode description — i.e.
+everything about whether a user would actually be told. Round two, against the
+rewritten mechanism: 10/13 RED, the green ones being `/agents run` (no coverage at
+all), the headless guard's inner layer, and a SECURITY.md assertion that a stray
+occurrence of the word `yolo` elsewhere in the section was satisfying. Round three:
+every one of those RED. One green in round three was a weak sabotage of mine rather
+than a hole — it edited a heading and left the claim standing; removing the paragraph
+is RED.
