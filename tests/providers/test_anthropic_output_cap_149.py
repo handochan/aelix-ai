@@ -291,7 +291,12 @@ def test_the_absolute_ceiling_matches_the_evidence_it_was_chosen_from() -> None:
         and row.get("maxTokens")
         and (not row.get("contextWindow") or row["maxTokens"] < row["contextWindow"])
     )
-    assert len(sat) == 228
+    # 228 before the two ``claude-opus-5`` rows were added by hand (#172); both
+    # land at 64000/128000, ABOVE p25, so the ceiling was re-derived rather than
+    # nudged — ``sat[57]`` is still ``anthropic/claude-opus-4-0`` at 32000. The
+    # margin is two rows: ``sat[55:57]`` are 24000, so one more satisfiable row
+    # below 32000 moves p25 and this fails, which is the point.
+    assert len(sat) == 230
     assert sat[len(sat) // 4] == _UNSAT_ABSOLUTE_OUTPUT_CEILING, (
         "32000 is the p25 of the trustworthy rows; if the catalog moved, "
         "re-derive the ceiling rather than nudging this assertion"

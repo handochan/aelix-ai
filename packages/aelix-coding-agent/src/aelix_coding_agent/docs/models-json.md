@@ -33,7 +33,7 @@ The top level is a single required `providers` object keyed by provider id:
           "name": "My Model (large)",
           "contextWindow": 128000,
           "maxTokens": 8192,
-          "cost": { "input": 0.5, "output": 1.5 }
+          "cost": { "input": 0.5, "output": 1.5, "cacheRead": 0, "cacheWrite": 0 }
         }
       ]
     }
@@ -67,8 +67,62 @@ provider that only adds `modelOverrides` (or `headers`/`compat`) does not.
 
 `id` is required on a model definition. Other fields: `name`, `baseUrl`, `api`,
 `reasoning` (boolean), `thinkingLevelMap`, `input`, `cost`, `contextWindow`,
-`maxTokens`, `headers`, `compat`. `cost` is required on a new model definition
-(but optional inside `modelOverrides`).
+`maxTokens`, `headers`, `compat`.
+
+**`cost` is all-or-nothing.** You may omit it entirely, but if you include it,
+all four of `input`, `output`, `cacheRead` and `cacheWrite` are required — a
+`cost` with only `input` and `output` is a schema error, and a schema error
+makes Aelix discard the **whole file**, not just that model. (This page's own
+examples got that wrong until it was measured; they are correct above.)
+
+### What you get if you leave a field out
+
+Omitted fields do **not** inherit from a sibling model on the same provider.
+`api` and `baseUrl` come from the provider, but everything else falls back to a
+flat default — which is how `{ "id": "claude-opus-5" }` on the built-in
+`anthropic` provider silently gives you this:
+
+| field | you get | the real Claude Opus 4.8 entry |
+|---|---|---|
+| `contextWindow` | 128000 | 1000000 |
+| `maxTokens` | 16384 | 128000 |
+| `reasoning` | `false` | `true` |
+| `input` | `["text"]` | `["text", "image"]` |
+| `cost` | all zero | 5.0 / 25.0 / 0.5 / 6.25 |
+
+Nothing warns you. The model appears in `/model` and runs, but the context meter
+is wrong by 8×, thinking is off, images are refused, and `/cost` reports nothing.
+So when you add a current flagship, spell the whole entry out:
+
+```json
+{
+  "providers": {
+    "anthropic": {
+      "models": [
+        {
+          "id": "claude-opus-5",
+          "name": "Claude Opus 5",
+          "reasoning": true,
+          "input": ["text", "image"],
+          "contextWindow": 1000000,
+          "maxTokens": 128000,
+          "cost": {
+            "input": 5.0,
+            "output": 25.0,
+            "cacheRead": 0.5,
+            "cacheWrite": 6.25
+          }
+        }
+      ]
+    }
+  }
+}
+```
+
+Because `anthropic` is a **built-in** provider, `api` and `baseUrl` are
+inherited and your existing credentials are reused — you are adding a row to a
+catalog, not defining a provider. Copy the numbers from the vendor's own
+documentation; `aelix --list-models` will show the model once the file loads.
 
 ## `apiKey` indirection
 
@@ -99,7 +153,7 @@ The same indirection applies to each value in a `headers` map.
         "X-Trace": "on"
       },
       "models": [
-        { "id": "fast", "cost": { "input": 0, "output": 0 } }
+        { "id": "fast", "cost": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0 } }
       ]
     }
   }

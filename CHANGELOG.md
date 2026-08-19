@@ -41,6 +41,14 @@ and `.../releases/tag/vX` link would 404. Add them with the first pushed tag.
   worse than no check. Nothing is downloaded or executed; installing the update
   is a command you run yourself.
 
+- **Four current flagship models are selectable** — `claude-opus-5` on both
+  `anthropic` and `github-copilot`, and `gemini-3.6-flash` / `gemini-3.7-flash`
+  on `google`. Added by hand from the canonical source, following the
+  conventions the catalog already encodes: the Copilot row keeps the documented
+  200K seat cap and zero cost (a Copilot seat is a subscription, not metered),
+  while the direct Anthropic row keeps its full 1M context. A refresh pipeline
+  is still open (#172).
+
 - **A bundled `general-purpose` agent profile.** Alongside the read-only
   `explorer`, a default install now ships a full-toolset worker that can read,
   edit, and run commands to take on a delegated task whole — so basic
@@ -183,6 +191,17 @@ and `.../releases/tag/vX` link would 404. Add them with the first pushed tag.
   as is `--no-skills`.
 
 ### Fixed
+
+- **`models.json`'s own documentation no longer breaks the file it describes.**
+  Two of the guide's three examples carried a `cost` with only `input` and
+  `output`, while the validator requires all four keys — and a schema error
+  makes Aelix discard the **whole** `models.json`, not just that model. The
+  guide ships inside the wheel, so the broken example was being distributed.
+  The prose was also backwards (it said `cost` was required; in fact omitting
+  it succeeds and a *partial* `cost` fails), and the page now states what you
+  silently get for every field you leave out — a minimal entry for a flagship
+  model yields an 8x-too-small context window, reasoning off, and no image
+  support, with no warning.
 
 - **`aelix -p "..."` no longer stalls ~30s on an inherited but idle stdin
   pipe.** Any piped stdin promotes the run to print mode, and the print path
