@@ -200,9 +200,9 @@ _DESCRIPTION_HEAD = (
     "Each one runs to completion and returns ONE summary. There is no "
     "conversation: a child cannot ask you a question and you cannot steer it "
     "mid-run, so every task must be complete on its own. A delegated agent is "
-    "READ-ONLY unless the user explicitly approves more at a prompt, and it can "
-    "never hold a tool you do not hold, delegate further, or run outside your "
-    "working directory.\n"
+    "READ-ONLY unless the user's own permission posture already grants more, or "
+    "they approve more at a prompt, and it can never hold a tool you do not "
+    "hold, delegate further, or run outside your working directory.\n"
     "\n"
     "ONE call carries ONE profile and one or more tasks:\n"
     '- mode="single" (the default): pass \'task\'. One child.\n'

@@ -607,6 +607,20 @@ async def test_a_host_whose_model_getter_raises_still_spawns(tmp_path: Path) -> 
     assert {p.model for p in seen} == {None}
 
 
+async def _hook_once(bench: Any) -> None:
+    """Fire one ``tool_call`` hook so the extension holds a live context."""
+
+    from aelix_agent_core.harness.hooks import ToolCallHookEvent
+    from aelix_agents.tool import AGENT_TOOL_NAME
+
+    await bench.hook(
+        ToolCallHookEvent(
+            tool_call_id="prime",
+            tool_name=AGENT_TOOL_NAME,
+            args={"profile": "nope", "task": "t"},
+        )
+    )
+
 # === #196: the disclosure row, driven end to end ==============================
 #
 # THESE EXIST BECAUSE A SABOTAGE ROUND FOUND THE GAP. Deleting the disclosure
@@ -690,3 +704,80 @@ def test_the_disclosure_key_cannot_collide_with_a_childs_own_row() -> None:
 
     assert disclosure_status_key("abc") != status_key("abc")
     assert disclosure_status_key("abc").startswith(STATUS_KEY_PREFIX)
+
+
+async def test_the_agents_run_door_also_writes_a_disclosure_row(
+    tmp_path: Path,
+) -> None:
+    """THE OTHER DOOR, and a sabotage found it unguarded.
+
+    ``/agents run`` lives in ``runtime`` and never sees ``AgentsExtension``, so
+    it reaches the row through ``SubagentHost.on_disclosure``. Deleting that one
+    wiring line left 1552 tests green — every one of them was watching the model
+    door.
+
+    A human typed this one, so they already know the profile and the task; what
+    the removed modal uniquely told them is the POSTURE, which is what the row
+    carries.
+    """
+
+    _write_profile(tmp_path / "agent" / "agents" / "scout.md", "scout")
+    bench = _bench(
+        tmp_path,
+        posture=PermissionMode.YOLO,
+        has_ui=True,
+        channel=_EmittingChannel(),  # type: ignore[arg-type]
+    )
+    runtime = bench.ext.runtime
+    assert runtime is not None
+    # PRIME THE LIVE CONTEXT, exactly as a real session does. ``host.consent_context``
+    # reads ``AgentsExtension._ctx``, which only a hook sets — without this the
+    # door sees no UI, consents headlessly and correctly writes nothing, and this
+    # test would pass for the wrong reason forever.
+    await _hook_once(bench)
+    resolved = runtime.resolve_profile("scout", allow_project=False)
+    result = await runtime.spawn(resolved, "go")
+
+    assert result.status != "declined"
+    assert bench.ui.calls == [], "a YOLO parent was prompted on the typed door"
+
+    disclosure = [k for k in bench.ui.status if "disclose:" in k]
+    assert len(disclosure) == 1, (
+        f"/agents run wrote no disclosure row: {sorted(bench.ui.status)}"
+    )
+    written = [t for t in bench.ui.writes[disclosure[0]] if t]
+    assert written and "yolo" in written[0] and "scout" in written[0], written
+    assert bench.ui.status[disclosure[0]] is None, "the row outlived the child"
+
+
+async def test_the_grant_itself_carries_no_disclosure_headlessly(
+    tmp_path: Path,
+) -> None:
+    """The INNER layer of the headless guard, broken on its own.
+
+    ``test_a_headless_yolo_delegation_writes_no_row`` cannot see this: the
+    bridge's own ``_ui()`` guard returns ``None`` headlessly, so deleting the
+    ``has_ui`` term from ``_grant_for`` composes a misleading string onto the
+    grant and the row still never appears. Green, and one layer thinner than it
+    looks — measured, that sabotage left 365 tests passing.
+
+    The grant is what a host reads, so an empty string there is the claim.
+    """
+
+    _write_profile(tmp_path / "agent" / "agents" / "scout.md", "scout")
+    bench = _bench(
+        tmp_path,
+        posture=PermissionMode.YOLO,
+        channel=_EmittingChannel(),  # type: ignore[arg-type]
+    )
+    grant = await bench.ext._grant_for(  # noqa: SLF001 — the seam under test
+        bench.ctx,
+        bench.ext.runtime.resolve_profile("scout", allow_project=False),  # type: ignore[union-attr]
+        ("go",),
+        cwd=str(tmp_path / "project"),
+        mode="single",
+    )
+    assert grant.consented is True
+    assert grant.disclosure == "", (
+        "a headless grant carries a disclosure string nothing can render"
+    )

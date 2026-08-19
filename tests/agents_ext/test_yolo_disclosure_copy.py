@@ -47,10 +47,27 @@ def test_security_md_scope_names_the_yolo_delegation_trade() -> None:
     """
 
     text = (REPO_ROOT / "SECURITY.md").read_text(encoding="utf-8")
-    assert "`yolo`" in text
-    assert ".aelix/" in text
-    scope = text.split("## Scope", 1)[1]
-    assert "yolo" in scope.lower(), "the yolo trade is not in the Scope list"
+    scope = text.split("## Scope", 1)[1].split("\n## ", 1)[0]
+
+    # PINNED ON THE CLAIM, NOT ON THE WORD. The first spelling of this test
+    # asserted `"yolo" in scope`, and a sabotage that deleted the whole bullet
+    # left it GREEN — `yolo` appears elsewhere in the section. What has to be
+    # there is the SENTENCE: a delegated child starts unconfirmed, and the
+    # `.aelix/` refusal that binds the other write-capable postures does not
+    # bind this one.
+    bullet = [
+        para
+        for para in scope.split("\n- **")
+        if "yolo" in para.lower() and "subagent" in para.lower()
+    ]
+    assert bullet, "the yolo delegation trade is not in the Scope list at all"
+    claim = bullet[0]
+    assert ".aelix/" in claim, (
+        "the Scope entry no longer says a yolo child escapes the .aelix/ write "
+        "refusal — which is the sharpest edge of the #196 trade and the reason "
+        "the entry exists"
+    )
+    assert "without a confirmation" in claim or "no confirmation" in claim
 
 
 def test_the_agent_profiles_guide_still_states_the_exception() -> None:
