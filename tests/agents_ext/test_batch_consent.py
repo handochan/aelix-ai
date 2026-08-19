@@ -992,7 +992,7 @@ async def test_a_bare_string_is_a_typeerror_not_23_dialog_rows() -> None:
 
     An earlier draft re-typed the single-task ``task`` parameter to
     ``Sequence[str]``. ``str`` SATISFIES that annotation, so
-    ``/agents run scout "review the auth module"`` (``runtime.py:506-509`` passes
+    ``/agents run scout "review the auth module"`` (``runtime.py:514-517`` passes
     a bare ``str``) would have type-checked green and rendered *"Delegate 23
     tasks…"* with one row per CHARACTER — on the one door a human typed. The
     signatures were kept single-task for that reason, and the batch door guards

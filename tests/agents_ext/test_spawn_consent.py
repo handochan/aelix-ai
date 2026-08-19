@@ -1241,7 +1241,7 @@ async def test_approving_one_spawn_never_suppresses_the_next(
 # earlier draft of that work re-typed THIS function's ``task`` parameter to
 # ``Sequence[str]`` instead of adding a second entry point — and ``str``
 # SATISFIES ``Sequence[str]``, so ``/agents run scout "review the auth module"``
-# (``runtime.py:539-544`` passes a bare ``str``) would have type-checked green
+# (``runtime.py:547-552`` passes a bare ``str``) would have type-checked green
 # while the renderer iterated the string: *"Delegate 23 tasks to agent 'scout'?"*
 # with the rows ``[1/23] r``, ``[2/23] e``, … — 23 rows on the one door a human
 # typed, past the height budget, with ``Cancel`` clipped off the bottom by
@@ -1274,7 +1274,7 @@ async def test_agents_run_renders_the_single_task_body_unchanged(
     """THE USER-TYPED DOOR, driven end to end — the one nothing covered.
 
     ``runtime.spawn`` passes a bare ``str`` to :func:`request_spawn_consent`
-    (``runtime.py:539-544``). This test renders that dialog through the real
+    (``runtime.py:547-552``). This test renders that dialog through the real
     runtime with a live UI and a widenable profile — the case P3's batch work had
     to leave untouched — and answers ``Cancel``, so no child process is created:
     the assertion is about what was on SCREEN, not about a spawn.

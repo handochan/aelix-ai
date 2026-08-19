@@ -289,8 +289,8 @@ headless parent (`--print`, `--mode json`, `--mode rpc`) has no terminal to draw
 the spawn-consent dialog on, so it consents on its own: the child still cannot
 exceed the parent's own posture or tool grant, but no human is asked. The same
 is true interactively in `yolo` posture, which is what `yolo` means — there the
-delegation is announced on the tool card instead, naming the profile, the
-posture and the task count, without blocking. And a
+delegation is announced in the status line while it runs, naming the profile,
+the posture and the task count, without blocking. And a
 child's tokens are billed to the provider without ever entering the parent's
 session, so `/cost` reports the parent only — read each delegation's own
 `[agent … in / … out]` footer for what a child spent.

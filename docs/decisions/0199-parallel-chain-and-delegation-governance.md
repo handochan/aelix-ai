@@ -862,8 +862,22 @@ no UI handle, no process, and the only clock is an injected one).
    is a **max** here too, for the same reason as §(i); `cost` is a flow and is
    summed. Lifetime: the turn.
 2. **Tool card — N lines, one per child**, through `ctx.on_partial`
-   (`panel.py:252-273`). This is the **permanent** record: it stays in the
-   transcript after the turn ends. At `N == 1` the output is P2's
+   (`panel.py:252-273`). ~~This is the **permanent** record: it stays in the
+   transcript after the turn ends.~~
+
+   > **CORRECTION (2026-08-19, #196 / ADR-0231).** That sentence is false, and
+   > it was measured false with a positive control: feeding the
+   > `tool_execution_update` event that `ctx.on_partial` produces through the
+   > real `EventRenderer` yields **zero** commits, while `tool_execution_start`
+   > through the same harness yields one. `tui/render.py` explicitly no-ops
+   > `tool_execution_update` and nothing else in the product consumes it, so
+   > this surface renders **nothing** in the shipped TUI. What actually stays in
+   > the transcript is the FINAL `ToolResult` — `render_subagent_result`, whose
+   > `_usage_line` footer is where the posture and the per-child usage are read
+   > from. The throttle, the `[k/N]` prefixes and the `queued` rows are all real
+   > and all reach the MODEL, which is the audience this surface actually has.
+
+   At `N == 1` the output is P2's
    `_partial_text` **byte for byte**, with no index prefix (`panel.py:215-227`);
    at `N >= 2` every line carries `[k/N]` in submitted order, and a member still
    parked on the semaphore is rendered as `queued` rather than omitted — a card

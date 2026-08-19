@@ -271,7 +271,7 @@ class SpawnGrant:
 
     STILL ONE PROFILE, ONE MODE, ONE DECISION (S3): this adds a caption to the
     decision, not a second decision. Trailing and defaulted so every existing
-    constructor — ``extension.py:771-778``, this module's own ``_grant`` — is
+    constructor — ``extension.py:785-792``, this module's own ``_grant`` — is
     unchanged."""
 
     disclosure: str = ""
@@ -776,7 +776,7 @@ def _reject_str_batch(tasks: object) -> None:
     dialog. This is not defensive padding: an earlier draft of P3 re-typed
     :func:`request_spawn_consent`'s ``task`` parameter to ``Sequence[str]``, and
     because ``str`` satisfies that annotation, ``/agents run scout "review the
-    auth module"`` (``runtime.py:539-542``, which passes a bare ``str``) would
+    auth module"`` (``runtime.py:547-550``, which passes a bare ``str``) would
     have type-checked green and rendered *"Delegate 23 tasks to agent 'scout'?"*
     with the rows ``[1/23] r``, ``[2/23] e``, … — 23 rows on the one door a human
     typed, blowing the §3.7 height budget and clipping ``Cancel`` off screen. The

@@ -96,6 +96,12 @@ class _FakeUI:
         self._answers = list(answers)
         self.calls: list[tuple[str, list[str]]] = []
         self.status: dict[str, str | None] = {}
+        #: EVERY value each key ever held, in order. ``status`` keeps only the
+        #: LAST one, and a row that is written and then correctly cleared ends
+        #: at ``None`` — indistinguishable from a row that was never written.
+        #: The repo has been caught by exactly that asymmetry before: an
+        #: end-state assertion cannot see the WINDOW.
+        self.writes: dict[str, list[str | None]] = {}
 
     async def select(
         self, title: str, options: list[str], opts: object = None
@@ -105,6 +111,7 @@ class _FakeUI:
 
     def set_status(self, key: str, text: str | None) -> None:
         self.status[key] = text
+        self.writes.setdefault(key, []).append(text)
 
 
 class _RecordingChannel:
@@ -725,7 +732,7 @@ async def test_the_prompt_budget_is_charged_PER_CHILD_not_per_call(
     """S6 — fan-out must not multiply the ceiling by :data:`MAX_PARALLEL_TASKS`.
 
     ``self._delegations_this_prompt += 1`` fires once per ``spawn_granted``
-    (``runtime.py:798``), i.e. once per CHILD. Charging per CALL instead would
+    (``runtime.py:826``), i.e. once per CHILD. Charging per CALL instead would
     turn twelve delegations per prompt into 12 × 8 = **96 child processes**, each
     a full ``-m aelix_coding_agent`` holding the parent's API keys — which is the
     measured failure the budget exists to stop (0 dialogs / 200 processes) with a
@@ -1079,7 +1086,7 @@ async def test_the_p2_argument_shape_is_unchanged(tmp_path: Path) -> None:
 #
 # Each of these asserts ``bench.channel.plans == []``. That is the whole claim:
 # ``parse_agent_call`` runs inside the ``tool_call`` HOOK, so its refusal reaches
-# the model as a blocked call (``extension.py:613-616``) rendered by the kernel
+# the model as a blocked call (``extension.py:627-630``) rendered by the kernel
 # as an immediate error result (``loop.py:529-542``) — no consent dialog, no
 # ``PendingSpawn``, no ``create_subprocess_exec``. A refusal that came back from
 # ``execute()`` instead would already have cost a process.

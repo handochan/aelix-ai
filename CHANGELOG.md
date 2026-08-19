@@ -26,10 +26,12 @@ and `.../releases/tag/vX` link would 404. Add them with the first pushed tag.
   options were "Run with the inherited posture (yolo)" and "Cancel". That is a
   confirmation with no real answer, which is the shape this project already
   removed everywhere else because it teaches you to dismiss the prompts that do
-  matter. It now starts the child immediately and puts one line at the top of
-  the tool card instead — the profile, the posture it runs at, the file it came
-  from, and how many tasks it was given — before the child does anything, and
-  it stays there for the whole run.
+  matter. It now starts the child immediately and writes one line to the status
+  line instead — the profile, the posture it runs at, the file it came from, and
+  how many tasks it was given — before the child does anything, for as long as
+  it runs, and cleared when it finishes. The finished tool card already names
+  the posture in its `[agent … · yolo · …]` footer, so that is the part that
+  stays in your transcript.
 
   This SUPERSEDES the entry below beginning "The delegation consent dialog now
   appears only when write authority is actually at stake", which remains true

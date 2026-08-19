@@ -319,6 +319,14 @@ class SubagentHost:
     on_progress: Callable[[SubagentProgress], None] | None = None
     """Host-wide progress tap (the extension's event-bus + statusline bridge).
     Called in ADDITION to any per-spawn ``on_event``, never instead of it."""
+    on_disclosure: Callable[[str, str | None], None] | None = None
+    """``(call_key, text_or_None)`` — the #196 disclosure row.
+
+    A separate hook rather than a reuse of :attr:`on_progress` because it is not
+    a snapshot: it is written BEFORE any child exists and therefore before there
+    is a ``SubagentProgress`` to carry it. ``None`` (the default, and every host
+    that predates #196) makes both doors silent, which is correct for a host
+    with no statusline to write to."""
 
 
 @dataclass
@@ -563,18 +571,38 @@ class _SubagentRuntimeImpl:
                 profile=resolved.name,
                 permission_mode=grant.mode.value,
             )
-        return await self._run(
-            grant,
-            resolved,
-            task,
-            child_cwd=child_cwd,
-            timeout_ms=timeout_ms,
-            on_event=on_event,
-            # THE USER-TYPED DOOR IS UNBUDGETED. A human typing ``/agents run``
-            # is already the gate, and rate-limiting them would be theatre —
-            # see :data:`MAX_DELEGATIONS_PER_PROMPT`.
-            charge_budget=False,
-        )
+        # #196 — THE OTHER DOOR. Under a YOLO parent no dialog fires here
+        # either, and this door is not reached from ``AgentsExtension``, so a
+        # disclosure written only there would leave ``/agents run`` silent. The
+        # key is minted per call for the same reason the model door uses the
+        # tool-call id: one command is one row, and two concurrent
+        # ``/agents run`` invocations must not fight over it.
+        #
+        # A human typed this one, so they already know the profile and the task
+        # — what the removed dialog uniquely told them is the POSTURE the child
+        # will run at, which is what the line carries.
+        announce = self.host.on_disclosure
+        disclosure_key = f"run:{_new_id()}"
+        if grant.disclosure and announce is not None:
+            with contextlib.suppress(Exception):
+                announce(disclosure_key, grant.disclosure)
+        try:
+            return await self._run(
+                grant,
+                resolved,
+                task,
+                child_cwd=child_cwd,
+                timeout_ms=timeout_ms,
+                on_event=on_event,
+                # THE USER-TYPED DOOR IS UNBUDGETED. A human typing
+                # ``/agents run`` is already the gate, and rate-limiting them
+                # would be theatre — see :data:`MAX_DELEGATIONS_PER_PROMPT`.
+                charge_budget=False,
+            )
+        finally:
+            if grant.disclosure and announce is not None:
+                with contextlib.suppress(Exception):
+                    announce(disclosure_key, None)
 
     async def spawn_granted(
         self,
@@ -866,7 +894,7 @@ class _SubagentRuntimeImpl:
             # Published non-terminal, that snapshot makes
             # ``SubagentProgressBridge`` take its live branch and WRITE a
             # statusline row nothing will ever clear, and leak the id in
-            # ``_tools`` (``progress.py:298-302``) — "a statusline segment
+            # ``_tools`` (``progress.py:316-320``) — "a statusline segment
             # outliving the delegation that owns it is a lie the user cannot
             # dismiss", in that module's own words.
             #

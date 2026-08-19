@@ -150,9 +150,11 @@ exception, below.
 
 **In `yolo` posture you are told, not asked.** `yolo` means "run mutating tools
 without a prompt", and a delegation is the one thing it used to prompt for
-anyway. It no longer does: a write-capable child starts immediately and the tool
-card names it — the profile, the posture it runs at, the file it came from, and
-how many tasks were handed to it. Nothing else changes; the child is still
+anyway. It no longer does: a write-capable child starts immediately and the
+status line names it while it runs — the profile, the posture it runs at, the
+file it came from, and how many tasks were handed to it. When it finishes, the
+tool card's own `[agent … · yolo · …]` footer is what stays in the transcript.
+Nothing else changes; the child is still
 clamped to your posture, still hard-blocked by the guardrail, still bounded by
 the delegation caps, and still shown in the status line while it runs. Every
 other posture — including `auto-accept-edits` and `auto` — still asks.

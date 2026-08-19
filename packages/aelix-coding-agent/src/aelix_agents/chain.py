@@ -28,7 +28,7 @@ element.
 
 THE SUBSTITUTED TEXT IS NOT HUMAN-APPROVED, AND THIS MODULE SAYS SO (§3.1.1).
 The consent grant is taken once, in the hook, BEFORE step 1 exists
-(``extension.py:669-671``, frozen into ``PendingSpawn`` at ``:683-685``), and
+(``extension.py:683-685``, frozen into ``PendingSpawn`` at ``:697-699``), and
 ``build_consent_title`` renders the task verbatim (``consent.py:573-630``) — so
 what the human read on screen for step 2 is the literal string ``{previous}``.
 What actually reaches child *k ≥ 2* is text minted mid-call by a child process

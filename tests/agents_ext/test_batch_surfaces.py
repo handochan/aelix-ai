@@ -407,7 +407,7 @@ def test_the_throttle_records_every_snapshot_even_when_it_drops_the_emit() -> No
 def test_an_unchanged_card_is_never_re_emitted() -> None:
     """A frame that repaints the same bytes is a kernel ``Task`` bought for
     nothing, and it cannot lose information by construction — the same dedup the
-    statusline half already does (``progress.py:496-498``)."""
+    statusline half already does (``progress.py:540-542``)."""
 
     clock = _Clock()
     throttle = PartialThrottle(1, now=clock)
@@ -1868,81 +1868,3 @@ def test_the_row_builder_is_safe_on_its_own_not_only_via_format_panel() -> None:
     assert len(_panel_row(_member(0, current_tool="x" * 5000))) <= (
         PANEL_ROW_MAX_CHARS + 40
     )
-
-
-# --- #196: the disclosure header rides the card -----------------------------
-#
-# A YOLO parent no longer opens a spawn-consent dialog, so this header is the
-# whole of what a human is told before an unattended write-capable child starts.
-# The tool card is the only surface reachable from this side of the band that is
-# DURABLE: ``ctx.ui.notify`` is a 3-second status toast
-# (``tui/context.py:985-991``) and ``set_status`` is a height-1 row cleared when
-# the child ends — neither leaves anything in scrollback to find afterwards.
-
-
-_HEADER = "delegating to scout at yolo — 3 tasks, from /home/a/.aelix/agents/scout.md"
-
-
-def test_a_card_with_no_header_is_unchanged() -> None:
-    """The control, and the reason the header lives on the throttle rather than
-    inside ``format_card``: every delegation that shipped before #196 passes an
-    empty header, so ``format_card``'s byte-identical guarantee is untouched and
-    does not have to learn about consent."""
-
-    plain = PartialThrottle(1, now=_Clock())
-    plain.record(0, _reading(0, elapsed_ms=4_200))
-    assert plain.card() == "agent scout [running] · read · 4s"
-
-
-def test_the_header_leads_the_card_and_survives_every_later_frame() -> None:
-    """``on_partial`` REPLACES the card, it does not append.
-
-    A disclosure emitted as its own one-off partial would be overwritten by the
-    first progress frame ~200ms later and the user would have been told for a
-    fifth of a second. So it is on every frame, and this is the assertion that
-    it still is after the table fills.
-    """
-
-    clock = _Clock()
-    throttle = PartialThrottle(2, header=_HEADER, now=clock)
-
-    # Before any child has produced a snapshot: the header alone, above a table
-    # of queued members. This is the frame the extension emits BEFORE the work
-    # starts, which is the only reason the disclosure is worth anything.
-    first = throttle.card()
-    assert first.startswith(_HEADER + "\n")
-    assert "[queued]" in first
-
-    clock.seconds += 10
-    emitted = throttle.record(0, _reading(0, elapsed_ms=4_200))
-    assert emitted is not None
-    assert emitted.startswith(_HEADER + "\n")
-    assert "agent scout [running]" in emitted
-
-    clock.seconds += 10
-    later = throttle.record(1, _reading(1, elapsed_ms=9_000))
-    assert later is not None
-    assert later.startswith(_HEADER + "\n"), (
-        "the disclosure fell off a later frame — a user who looks at the card "
-        "after the first second would see no posture at all"
-    )
-
-
-def test_the_header_does_not_defeat_the_no_op_dedup() -> None:
-    """``record`` suppresses an emit when the text is unchanged.
-
-    Comparing the card WITHOUT the header would have been the subtle bug: two
-    frames whose tables differ only in a way the header hides would collapse
-    into one. Comparing WITH it is what this pins.
-    """
-
-    clock = _Clock()
-    throttle = PartialThrottle(1, header=_HEADER, now=clock)
-    clock.seconds += 10
-    assert throttle.record(0, _reading(0, elapsed_ms=4_000)) is not None
-    clock.seconds += 10
-    assert throttle.record(0, _reading(0, elapsed_ms=4_000)) is None, (
-        "an identical frame was re-emitted"
-    )
-    clock.seconds += 10
-    assert throttle.record(0, _reading(0, elapsed_ms=9_000)) is not None

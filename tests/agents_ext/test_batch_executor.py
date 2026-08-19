@@ -429,7 +429,7 @@ async def test_the_budget_is_charged_per_child_and_across_calls(
     Charging per CALL would give ``MAX_DELEGATIONS_PER_PROMPT ×
     MAX_PARALLEL_TASKS`` = 96 children per user prompt, against a measured
     pre-cap failure of 0 dialogs / 200 processes
-    (``test_tool_and_security.py:683-699``). Two batches of four in one prompt
+    (``test_tool_and_security.py:690-706``). Two batches of four in one prompt
     must therefore leave four, not ten.
     """
 
@@ -1287,8 +1287,8 @@ async def test_tightening_the_parent_mid_batch_tightens_the_next_wave(
 ) -> None:
     """§3.9. shift+tab is the ONLY mid-turn lever S11 leaves the user.
 
-    ``_host_posture()`` is a live getter (``extension.py:392-398``) but it is read
-    once per call, inside ``_grant_for`` (``extension.py:762``), and baked into
+    ``_host_posture()`` is a live getter (``extension.py:393-399``) but it is read
+    once per call, inside ``_grant_for`` (``extension.py:778``), and baked into
     ``grant.mode``. shift+tab meanwhile stays bound during a running turn — its
     binding is gated only on ``Condition(lambda: self._input_has_focus() and not
     self.is_modal_open())`` (``chrome.py:967-970``). Under P2 the resulting window
@@ -1469,7 +1469,7 @@ async def test_loosening_the_parent_mid_batch_cannot_raise_a_widened_wave(
     A widened grant is a CEILING the human set once. The parent loosening to
     ``yolo`` mid-batch is not a second grant, so wave 2 stays at
     ``auto-accept-edits``: structurally guaranteed because ``_live_floor``'s
-    return is rank-MINed by ``runtime._tighten`` (``runtime.py:955-966``) and can
+    return is rank-MINed by ``runtime._tighten`` (``runtime.py:983-994``) and can
     only ever lower a member. Pinned anyway — the guarantee is one ``min`` away
     from being a ``max``.
     """
@@ -1543,7 +1543,7 @@ async def test_every_batch_member_is_launched_unable_to_delegate(
     cannot be read off a recording channel. And the one L1-reachable statement
     ("set ``AELIX_SUBAGENT_DEPTH=1`` and the batch is blocked at the hook") merely
     re-tests the parent-side guard already covered at
-    ``test_tool_and_security.py:664-676``.
+    ``test_tool_and_security.py:671-683``.
 
     So it is asserted at the argv/env layer, per member: ``--no-agents``
     (``print_channel.py:516``, unconditional, so it survives any settings gate)
@@ -1579,7 +1579,7 @@ async def test_every_member_snapshot_carries_the_members_submitted_index(
     """The index is BOUND AT MEMBER CREATION, never inferred from an id.
 
     ``SubagentProgress`` carries no batch id and gains none (§3.6), and
-    ``spawn_id = _new_id()`` is minted INSIDE ``_run`` (``runtime.py:799``) —
+    ``spawn_id = _new_id()`` is minted INSIDE ``_run`` (``runtime.py:827``) —
     for members 5-8 not until wave 2 — so no design that opens a group with a
     list of ids is implementable. Binding the index at creation is what makes the
     grouping deterministic instead of an adoption heuristic.

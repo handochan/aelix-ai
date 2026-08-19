@@ -87,7 +87,7 @@ outside its domain.
 
 So the modal is replaced rather than deleted.
 
-## The disclosure, and why it is on the tool card
+## The disclosure, and the route that did not work
 
 One line, composed by `build_disclosure_line`, carried on the `SpawnGrant`:
 
@@ -95,44 +95,69 @@ One line, composed by `build_disclosure_line`, carried on the `SpawnGrant`:
 delegating to scout at yolo — 3 tasks, from /home/alice/.aelix/agents/scout.md
 ```
 
-Four decisions in it worth recording.
+**The first implementation of this was inert, and the round that caught it is the
+reason this section exists.** It rode `ctx.on_partial` — the agent tool's own
+card — on the strength of ADR-0199 §(l) surface 2, which calls that card *"the
+permanent record: it stays in the transcript after the turn ends"*. That
+sentence is false. Measured with a positive control: feeding the
+`tool_execution_update` event `ctx.on_partial` produces through the real
+`EventRenderer` yields **zero** commits, while `tool_execution_start` through the
+same harness yields one. `tui/render.py` explicitly no-ops that event and nothing
+else in the product consumes it. ADR-0199 now carries the correction inline.
 
-**It is on the TOOL CARD, because that is the only durable surface reachable from this
-side of the band.** `ctx.ui.notify` is a 3-second status toast (`tui/context.py`);
-`set_status` is a height-1 row cleared when the child ends; neither leaves anything in
-scrollback. `ExtensionContext` has no method that commits to the transcript, and adding
-one is a public-API change this did not need: `ctx.on_partial` already streams the
-agent tool's own card, so the disclosure rides it as a persistent header.
+The tests did not catch it because they all asserted the `SpawnGrant.disclosure`
+FIELD and the throttle's header string — never that a user would see anything.
+The sabotage round said the same thing independently: *"never emit the pre-run
+frame"* left 1548 tests green.
 
-**It is on every frame, not emitted once.** `on_partial` REPLACES the card rather than
-appending, so a one-off partial would be overwritten by the first progress frame ~200ms
-later and the user would have been told for a fifth of a second. It is also emitted
-once BEFORE the children start, from `throttle.card()` with an empty snapshot table —
-"the human learns a yolo child exists" is only worth something before the child acts.
+**What it uses instead: a statusline row**, written through the same
+`SubagentProgressBridge` that already owns every other row here, so it inherits
+the live-`ui` read (finding OC-7), the headless no-op and the `suppress` that
+keeps a delegation from dying of a statusline write.
 
-**The header lives on `PartialThrottle`, not inside `format_card`.** `format_card`'s
-`N == 1` output is byte-identical to what P2 shipped and a test pins it; keeping the
-function a pure function of the snapshots means that pin does not have to learn about
-consent. Every non-YOLO delegation passes an empty header and its card is unchanged.
+Five decisions in it worth recording.
+
+**Pre-spawn is the only part that was missing.** The finished tool card's own
+footer already names the posture — `_usage_line` renders
+`[agent scout · … · yolo · …]` — so a post-hoc transcript line would have
+duplicated a shipped surface. What the removed modal uniquely provided was the
+moment BEFORE the child runs, and that is what the row supplies: written before
+the group opens, cleared in the same `finally` that closes it.
+
+**Nothing in the extension band can reach the transcript before a child runs.**
+`ExtensionUIContext` has no commit verb; `ctx.append_entry` writes a session
+entry that renders only on replay; `_commit_update_notice` is a `run_tui`
+closure. Adding one would be a product-core contract change, i.e. a band
+decision. This change did not need one.
 
 **It fires only where the child can write.** `disclosure_is_required` is
-`parent is YOLO and grants_write_authority(clamped)` — so a `deny` profile, which
-clamps to `plan` and never opened a dialog, gets no line either. Announcing every
-ordinary delegation would be the scrollback version of the click-through trainer the
-dialog was removed for.
+`parent is YOLO and grants_write_authority(clamped)` — so a `deny` profile,
+which clamps to `plan` and never opened a dialog, gets no row either.
+Announcing every ordinary delegation would be the statusline version of the
+click-through trainer the dialog was removed for.
 
-The profile name and source path are sanitised with the same `_sanitize_field` the
-consent title uses: both come from disk, both land in a Rich-rendered transcript, and a
-newline would let a hostile profile invent a second line.
+**The withdraw is guarded on the same condition as the write.** `_clear_row`
+pops its own bookkeeping and then calls `ui.set_status(key, None)`
+*unconditionally*, so an unguarded withdraw writes a status key for every
+delegation that never had a disclosure. Measured — it broke
+`test_statusline_row_set_and_cleared`'s "one key per child", which is a shipped
+test doing exactly its job.
 
-**It is composed at both producers.** `_grant_for`'s pre-filter RETURNS its own
-`SpawnGrant` without ever calling `request_spawn_consent_batch`, so a disclosure
-composed only inside `consent.py` would be skipped on exactly the model door — the one
-where the model chose the profile, the tasks and the directory.
+**Both doors emit it.** `_grant_for`'s pre-filter RETURNS its own `SpawnGrant`
+without ever calling `request_spawn_consent_batch`, and `/agents run` lives in
+`runtime` and never sees `AgentsExtension` at all. So `SubagentHost` gained an
+`on_disclosure` hook, the extension wires it to the same bridge writer, and the
+`/agents run` path announces and withdraws around its own `_run`. Deleting the
+model door's emit left 1548 tests green before the end-to-end tests below
+existed.
 
-**Headless gets no disclosure.** A headless parent already consents on its own (§(e))
-and always did; there is nobody to tell, every `ui.*` raises in print/json/rpc mode, and
-the honest record there is the `subagent_*` event stream.
+The profile name and source path are sanitised with the same `_sanitize_field`
+the consent title uses: both come from disk, both land in a rendered row, and a
+newline would let a hostile profile invent a second one.
+
+**Headless gets no row.** A headless parent already consents on its own (§(e))
+and always did; there is nobody to tell, every `ui.*` raises in print/json/rpc
+mode, and the honest record there is the `subagent_*` event stream.
 
 ## Chain is included, and the counter-argument is answered
 
@@ -171,3 +196,11 @@ is visible as a decision rather than as a shrinking parametrisation.
 
 The complement is pinned directly: over the whole lattice, a write-capable child is
 either asked about or disclosed, and never both.
+
+And the row itself is now driven END TO END rather than asserted as a field — a real
+delegation through the real extension, reading the statusline the product writes, with
+`_FakeUI` extended to record every value a key ever held. The last point is the one that
+matters: a row that is written and then correctly cleared ends at `None`, which an
+end-state assertion cannot tell apart from a row that was never written. `MODE_META[YOLO]`
+and SECURITY.md's Scope entry have a gate of their own for the same reason — reverting
+the mode description left 1788 tests green.

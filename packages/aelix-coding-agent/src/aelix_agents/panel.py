@@ -10,7 +10,7 @@ THE UNIT IS A LIST OF PER-CHILD SNAPSHOTS, INDEXED BY SUBMITTED POSITION.
 ``snapshots[k] is None`` means member ``k`` has published nothing yet — it is
 parked on the batch semaphore (``batch.MAX_CONCURRENCY``) and has no spawn id at
 all, because ``spawn_id = _new_id()`` is minted inside ``runtime._run``
-(``runtime.py:799``). That is precisely why the UI group is opened with a COUNT
+(``runtime.py:827``). That is precisely why the UI group is opened with a COUNT
 (``progress.SubagentProgressBridge.begin_group(key, expected=…)``) rather than
 with ids: without the count there is nothing to render the ``queued`` term from.
 
@@ -59,7 +59,7 @@ flushes PLUS the forced flushes on every ``current_tool`` transition (two per
 child tool call) — call it ~2 000 per child, so the worst legal fan-out
 (8 children × 10 min) holds on the order of 16 000 completed kernel Tasks
 instead of an unbounded number. Today the runtime publishes after EVERY reduced
-stdout line (``runtime.py:804-805``), which for a chatty child is hundreds per
+stdout line (``runtime.py:832-833``), which for a chatty child is hundreds per
 turn."""
 
 PANEL_MIN_CHILDREN = 2
@@ -336,7 +336,7 @@ members finish."""
 def _format_tokens(tokens: int) -> str:
     """Compact token count for surfaces 1 and 3.
 
-    Mirrors ``progress._format_tokens`` (``progress.py:158-161``) rather than
+    Mirrors ``progress._format_tokens`` (``progress.py:176-179``) rather than
     importing it — the same call ``aggregate._format_count`` makes
     (``aggregate.py:145-155``) and for the same reason: these are three
     renderers with three different unit conventions, and a shared helper would
@@ -1019,7 +1019,7 @@ class PartialThrottle:
     * :data:`PARTIAL_MIN_INTERVAL_MS` has elapsed since the last emission.
 
     …and never when the rendered text is identical to the last emitted text.
-    That final dedup mirrors the statusline half (``progress.py:496-498``): a
+    That final dedup mirrors the statusline half (``progress.py:540-542``): a
     frame that would repaint the same bytes is a kernel ``Task`` bought for
     nothing (H10), and it cannot lose information by construction.
     """
@@ -1094,7 +1094,7 @@ class PartialThrottle:
         ``index`` is the member's SUBMITTED position, bound into the executor's
         per-member ``on_event`` closure at member creation (§3.6) — never
         inferred from the spawn id, which does not exist until ``_run`` mints it
-        (``runtime.py:799``).
+        (``runtime.py:827``).
         """
 
         if index < 0:

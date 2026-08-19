@@ -70,8 +70,9 @@ consent very much is:
   posture that can write.** Every other posture opens a spawn-consent dialog
   when the child would be write-capable; `yolo` does not, because `yolo` means
   "no prompt for mutating tools" and a delegation was the only prompt it had
-  left. The child is announced on the tool card instead — profile, posture,
-  source file, task count — before it runs and for the whole run.
+  left. The child is announced in the status line instead — profile, posture,
+  source file, task count — before it runs and for as long as it runs; the
+  finished tool card's footer is what records the posture afterwards.
 
   Worth spelling out, because it is the sharpest edge of that choice: a `yolo`
   child is **not** subject to the `.aelix/` write refusal that binds

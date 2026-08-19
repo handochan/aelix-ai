@@ -1561,7 +1561,7 @@ async def test_the_last_snapshot_of_a_delegation_is_always_terminal(
     Published non-terminal, that last snapshot makes
     ``SubagentProgressBridge.__call__`` take its LIVE branch — it WRITES a
     per-child row nothing will ever clear and leaks the id in ``_tools``
-    (``progress.py:298-302``). The registry row is already gone by then, so
+    (``progress.py:316-320``). The registry row is already gone by then, so
     ``stop`` / ``status`` cannot clear it either.
 
     The real ``write_prompt_file`` is what is patched, rather than a fake channel

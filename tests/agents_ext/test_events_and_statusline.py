@@ -28,10 +28,12 @@ from typing import Any
 from aelix_agents.progress import (
     STATUS_KEY_PREFIX,
     SubagentProgressBridge,
+    disclosure_status_key,
     format_status_row,
     status_key,
 )
 from aelix_agents.stream import _StreamState
+from aelix_coding_agent.builtin.permission_mode import PermissionMode
 from aelix_coding_agent.subagent_contract import (
     SUBAGENT_END,
     SUBAGENT_START,
@@ -603,3 +605,88 @@ async def test_a_host_whose_model_getter_raises_still_spawns(tmp_path: Path) -> 
 
     assert result.ok is True
     assert {p.model for p in seen} == {None}
+
+
+# === #196: the disclosure row, driven end to end ==============================
+#
+# THESE EXIST BECAUSE A SABOTAGE ROUND FOUND THE GAP. Deleting the disclosure
+# from `AgentsExtension._grant_for` — the MODEL door, the one where the model
+# chose the profile, the tasks and the directory — left 1548 tests green. So did
+# never emitting it at all. Both holes had the same shape: everything asserted
+# the `SpawnGrant.disclosure` FIELD and nothing asserted that a user would ever
+# see it.
+#
+# The first implementation was worse than untested, it was inert: it rode
+# `ctx.on_partial`, and `tui/render.py` no-ops `tool_execution_update`. Measured
+# with a positive control — the same `EventRenderer` commits a line for
+# `tool_execution_start` and zero for `tool_execution_update`. So these tests
+# drive a REAL delegation and read the statusline the product actually writes.
+
+
+async def test_a_yolo_delegation_writes_a_disclosure_row_and_clears_it(
+    tmp_path: Path,
+) -> None:
+    """The MODEL door, end to end, through the real extension.
+
+    Two assertions and they fail differently: a missing key means the user was
+    never told, and a key still holding text means a row outlived the child that
+    owned it — which claims a yolo child is running when none is.
+    """
+
+    bench = _bench(
+        tmp_path,
+        posture=PermissionMode.YOLO,
+        has_ui=True,
+        channel=_EmittingChannel(),  # type: ignore[arg-type]
+    )
+    await _delegate(bench, tmp_path)
+
+    disclosure = [k for k in bench.ui.status if "disclose:" in k]
+    assert len(disclosure) == 1, (
+        f"expected exactly one disclosure row, got {sorted(bench.ui.status)}"
+    )
+    assert bench.ui.status[disclosure[0]] is None, "the row outlived the child"
+
+    # It was WRITTEN before it was cleared — a key that only ever held None
+    # would satisfy the assertion above while telling the user nothing.
+    assert any(
+        text and "yolo" in text and "scout" in text
+        for text in bench.ui.writes.get(disclosure[0], [])
+    ), bench.ui.writes.get(disclosure[0])
+
+
+async def test_a_default_posture_delegation_writes_no_disclosure_row(
+    tmp_path: Path,
+) -> None:
+    """The control. Every other posture opens a dialog instead, and a row next
+    to a dialog is two copies of one decision."""
+
+    bench = _bench(
+        tmp_path, has_ui=True, channel=_EmittingChannel()  # type: ignore[arg-type]
+    )
+    await _delegate(bench, tmp_path)
+
+    assert [k for k in bench.ui.status if "disclose:" in k] == []
+
+
+async def test_a_headless_yolo_delegation_writes_no_row(tmp_path: Path) -> None:
+    """No UI, nobody to tell — and every ``ui.*`` raises there anyway."""
+
+    bench = _bench(
+        tmp_path,
+        posture=PermissionMode.YOLO,
+        channel=_EmittingChannel(),  # type: ignore[arg-type]
+    )
+    await _delegate(bench, tmp_path)
+
+    assert [k for k in bench.ui.status if "disclose:" in k] == []
+
+
+def test_the_disclosure_key_cannot_collide_with_a_childs_own_row() -> None:
+    """Both are written into the same height-1 status line, and ``set_status``
+    is keyed: two writers sharing a key would silently replace each other."""
+
+    from aelix_agents.progress import status_key
+
+    assert disclosure_status_key("abc") != status_key("abc")
+    assert disclosure_status_key("abc").startswith(STATUS_KEY_PREFIX)
