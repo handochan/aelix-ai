@@ -2,16 +2,22 @@
   <img src="https://raw.githubusercontent.com/handochan/aelix-ai/main/docs/assets/brand/lockup-stacked.png" width="360" alt="Aelix — A×X 마크와 Aelix 워드마크">
 </p>
 
-**당신만의 에이전트 세계를, 파이썬 생태계 위에.**
+<p align="center">
+  <strong>당신만의 에이전트 세계를, 파이썬 생태계 위에.</strong>
+</p>
+
+<p align="center">
+  <a href="README.md">English README →</a>
+</p>
+
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache_2.0-blue.svg" alt="License: Apache 2.0"></a>
+  <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-3.11+-blue.svg" alt="Python 3.11+"></a>
+</p>
 
 Aelix는 작은 코어입니다. 플러그인과 확장이 생태계이고, 확장은 그냥 파이썬 함수입니다 —
 이미 쓰고 있는 스택이 그대로 에이전트의 도구가 됩니다. 직접 호스팅하고, 모든 코드를
 감사하고, 이미 지불하고 있는 모델 예산 위에서 돌립니다.
-
-[English README →](README.md)
-
-[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
-[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/)
 
 <p align="center">
   <img src="docs/assets/demo.gif" width="100%" alt="Aelix 데모 — 에이전트가 DuckDB 확장을 my_ext.py에 직접 작성하고, /reload로 재시작 없이 핫리로드한 뒤, 바로 다음 프롬프트에서 in-process로 실행">
