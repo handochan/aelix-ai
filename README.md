@@ -2,16 +2,22 @@
   <img src="https://raw.githubusercontent.com/handochan/aelix-ai/main/docs/assets/brand/lockup-stacked.png" width="360" alt="Aelix — the A×X mark above the Aelix wordmark">
 </p>
 
-**Your own agent world — built on the Python ecosystem.**
+<p align="center">
+  <strong>Your own agent world — built on the Python ecosystem.</strong>
+</p>
+
+<p align="center">
+  <a href="README.ko.md">한국어 README →</a>
+</p>
+
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache_2.0-blue.svg" alt="License: Apache 2.0"></a>
+  <a href="https://www.python.org/"><img src="https://img.shields.io/badge/python-3.11+-blue.svg" alt="Python 3.11+"></a>
+</p>
 
 Aelix is a small core. The plugins and extensions are the ecosystem, and an extension is
 just a Python function — so the stack you already work in becomes the agent's toolbox.
 Self-hosted, auditable, and running on the model budgets you already pay for.
-
-[한국어 README →](README.ko.md)
-
-[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
-[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/)
 
 <p align="center">
   <img src="docs/assets/demo.gif" width="100%" alt="Aelix demo — the agent writes a DuckDB query tool into my_ext.py, /reload hot-loads it without restarting, and the next prompt runs it in-process against a Parquet file">
