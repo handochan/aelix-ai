@@ -102,7 +102,7 @@ async def run_login(
 
     # Issue #77 — extension-contributed login providers appear in the method
     # list AFTER the three built-ins; picking one runs its custom auth handler
-    # (e.g. a corporate 'telnaut' whose sign-in prompts for an employee number).
+    # (e.g. a 'selfhosted' provider whose sign-in prompts for an access token).
     ext_login_labels, ext_login_by_label = _collect_login_providers()
 
     method = await select(
@@ -203,7 +203,7 @@ async def _run_login_provider(
     Hands the extension's ``authenticate`` handler a :class:`LoginContext` (the
     same masked ``select`` / ``prompt`` / ``confirm`` / ``notify`` dialogs the
     built-in sub-flows use) so it can collect whatever credentials it needs — a
-    corporate 'telnaut' asks for an employee number here — then persists the
+    'selfhosted' provider asks for an endpoint-issued access token here — then persists the
     returned credential under the provider id via ``auth_storage`` (the extension
     never touches the protected auth store itself). A ``None`` return is a clean
     cancel; any handler exception degrades to a red line, never crashing the REPL.

@@ -67,9 +67,9 @@ def test_unsupported_message_explains_an_unresolved_api(monkeypatch) -> None:
     """
 
     monkeypatch.setattr(_REGISTRY, lambda: {"openai-completions": object()})
-    model = types.SimpleNamespace(id="tn-1", api="unknown", provider="telnaut")
+    model = types.SimpleNamespace(id="sh-1", api="unknown", provider="selfhosted")
     msg = rm.unsupported_message(model)
-    assert "tn-1" in msg and "telnaut" in msg  # the unresolvable pair
+    assert "sh-1" in msg and "selfhosted" in msg  # the unresolvable pair
     assert "could not be resolved" in msg
     assert "uses the 'unknown' API" not in msg  # the old misdescription
 
@@ -123,10 +123,10 @@ def test_absent_base_url_attribute_is_still_runnable(monkeypatch) -> None:
 def test_populated_base_url_is_runnable(monkeypatch) -> None:
     monkeypatch.setattr(_REGISTRY, lambda: {"openai-completions": object()})
     model = types.SimpleNamespace(
-        id="tn-1",
+        id="sh-1",
         api="openai-completions",
-        provider="telnaut",
-        base_url="https://telnaut.example/v1",
+        provider="selfhosted",
+        base_url="https://selfhosted.example/v1",
     )
     assert rm.is_runnable(model) is True
 
@@ -149,7 +149,7 @@ def test_unresolved_api_is_reported_before_the_missing_base_url(monkeypatch) -> 
     """
 
     monkeypatch.setattr(_REGISTRY, lambda: {"anthropic-messages": object()})
-    bare = types.SimpleNamespace(id="tn-1", api="unknown", provider="", base_url="")
+    bare = types.SimpleNamespace(id="sh-1", api="unknown", provider="", base_url="")
     msg = rm.unsupported_message(bare)
     assert "could not be resolved" in msg
     assert "base URL" not in msg

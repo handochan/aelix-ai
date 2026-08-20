@@ -53,3 +53,38 @@ def _no_default_catalog(monkeypatch):
     """
 
     monkeypatch.setenv("AELIX_DEFAULT_CATALOG", "")
+
+
+@pytest.fixture(autouse=True)
+def _restore_api_registry():
+    """Undo per-test writes to the PROCESS-GLOBAL api-provider registry.
+
+    ``aelix_ai.api_registry._PROVIDERS`` is module state that outlives a test.
+    Two shapes of test write to it and neither cleans up: anything that runs a
+    real extension ``setup(aelix)`` registering a custom wire adapter (the
+    shipped ``examples/selfhosted`` example does exactly this, through
+    ``register_api_adapter``), and anything that drives a harness reload —
+    ``reset_api_providers()`` is CLEAR-ONLY by design (``api_registry.py:120``;
+    aelix has no lazy provider cache to re-fill, each provider package registers
+    itself on import), so it empties the built-ins and nothing puts them back.
+
+    Combine the two and a later test sees a registry holding ONLY the
+    extension's adapter. MEASURED before this fixture existed:
+    ``pytest tests/test_extension_login_provider.py tests/cli/test_entry_router.py``
+    failed with ``supported: selfhosted-openai`` where the assertion wanted
+    ``No API key found for`` — the built-in adapters were simply gone. Order
+    dependent, so it hid from any run that happened not to pair them.
+
+    Snapshot-and-restore rather than clear-and-rebuild: whatever was registered
+    when the test started is what it gets back, so this cannot itself become the
+    thing that decides which adapters exist.
+    """
+
+    from aelix_ai import api_registry
+
+    before = dict(api_registry._PROVIDERS)  # noqa: SLF001 — the state being guarded
+    try:
+        yield
+    finally:
+        api_registry._PROVIDERS.clear()  # noqa: SLF001
+        api_registry._PROVIDERS.update(before)  # noqa: SLF001

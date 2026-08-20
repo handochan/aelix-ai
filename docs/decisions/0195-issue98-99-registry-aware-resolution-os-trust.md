@@ -161,7 +161,8 @@ But three product defects made it undiagnosable:
 - #98's three triggers are closed by one change, though only (C) and (D) RESOLVE;
   (A) is correctly gated instead. #100 is closed on two layers: `resolve_model` no
   longer produces the model, and `is_runnable` refuses a hostless one even if it did.
-- Verified end-to-end: with `telnaut` declared in `models.json`, the real CLI went
+- Verified end-to-end: with `selfhosted` declared in `models.json` [this provider id
+  was renamed after this ADR was written; the run itself used the old id], the real CLI went
   from the internal `api='unknown'` error to resolving `openai-completions` +
   the declared host and reaching a genuine DNS lookup.
 - `tests/cli/test_runtime_bootstrap.py`'s `test_resolve_model_unknown_provider_is_bare`

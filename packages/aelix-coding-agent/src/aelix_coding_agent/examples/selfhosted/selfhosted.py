@@ -1,24 +1,26 @@
-"""Telnaut — a worked corporate custom-provider extension (#77).
+"""Self-hosted endpoint — a worked custom-provider extension (#77).
 
 Demonstrates the full "bring your own provider + login screen + custom wire
-protocol" pattern an in-house team would use to add a private provider that
-deviates from vanilla OpenAI in three ways an OpenAI-compatible config can't
-express:
+protocol" pattern a team uses to add an OpenAI-compatible inference endpoint it
+RUNS ITSELF, on its own network, when that endpoint deviates from vanilla
+OpenAI in three ways an OpenAI-compatible config can't express:
 
   1. the MODEL is baked into the URL (``base_url = https://host/v1/<model>``),
-  2. an employee number (사번) rides in the standard OpenAI ``user`` field,
-  3. TLS verification is disabled (``httpx.AsyncClient(verify=False)``, self-signed
-     internal CA).
+     so the request body must not repeat it,
+  2. the endpoint's scheduler wants an extra body field (``queue``) that no
+     config key can name,
+  3. TLS against a PRIVATE CA bundle, which no config key can point httpx at
+     (``SELFHOSTED_CA_BUNDLE=/path/ca.pem``; unset means ordinary system trust).
 
 The key move: a small CUSTOM StreamFn builds its own ``openai.AsyncOpenAI`` (with
-the ``verify=False`` http client + per-model ``base_url``) and DELEGATES to the
-built-in openai-completions provider via ``replace(opts, client=...)`` — reusing
+its own http client — private CA bundle + per-model ``base_url``) and DELEGATES to
+the built-in openai-completions provider via ``replace(opts, client=...)`` — reusing
 all of aelix's SSE parsing / event mapping / param assembly. Three pieces:
 
 - ``register_api_adapter(api, stream_fn)`` — the custom wire adapter (this file).
 - ``register_provider(name, ProviderConfigInput(models=...))`` — the Models that
   route to that api (so they appear in ``/model``).
-- ``register_login_provider(...)`` — the employee-number ``/login`` method.
+- ``register_login_provider(...)`` — the access-token ``/login`` method.
 
 AND ONE RULE THIS EXAMPLE EXISTS TO TEACH: A CLIENT YOU BUILD IS A CLIENT YOU
 CLOSE (#174). ``stream_simple`` is called once per request, so a stream_fn that
@@ -34,6 +36,8 @@ garbage collector happens to run.
 from __future__ import annotations
 
 import contextlib
+import os
+import ssl
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
@@ -46,15 +50,23 @@ from aelix_coding_agent.model_registry import ProviderConfigInput
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
-_PROVIDER_ID = "telnaut"
-_TELNAUT_API = "telnaut-openai"  # our custom wire-protocol id (not "openai-completions")
+_PROVIDER_ID = "selfhosted"
+_SELFHOSTED_API = "selfhosted-openai"  # our custom wire-protocol id (not "openai-completions")
 _MODEL_ID = "gpt5mini"
 # The model rides in the URL; the built-in openai adapter appends "/chat/completions".
-_BASE_URL = f"https://llm.telnaut.internal/v1/{_MODEL_ID}"
+_BASE_URL = f"https://llm.internal.example/v1/{_MODEL_ID}"
+# (3) Where to find the CA bundle that signs the endpoint's certificate. Read
+# from the environment, not hardcoded: httpx validates the path AT CONSTRUCTION
+# and raises FileNotFoundError for a missing file, so a baked-in path would
+# break every user (and every test) who has not created that exact file.
+_CA_BUNDLE_ENV = "SELFHOSTED_CA_BUNDLE"
+# (2) The scheduling queue this endpoint expects in the body. Interactive turns
+# are meant to jump ahead of batch jobs; there is no aelix config key for it.
+_QUEUE = "interactive"
 
 
-async def _telnaut_stream(model: Model, context: Any, opts: Any) -> AsyncIterator[Any]:
-    """Custom wire adapter: verify=False client + model-in-URL + 사번 as ``user``.
+async def _selfhosted_stream(model: Model, context: Any, opts: Any) -> AsyncIterator[Any]:
+    """Custom wire adapter: private-CA client + model-in-URL + an extra body field.
 
     Delegates the actual streaming to the built-in openai-completions provider by
     injecting a custom ``AsyncOpenAI`` (so all SSE/event logic is reused), and
@@ -66,26 +78,47 @@ async def _telnaut_stream(model: Model, context: Any, opts: Any) -> AsyncIterato
     from aelix_ai.providers.openai_completions import OPENAI_COMPLETIONS_PROVIDER
     from openai import AsyncOpenAI
 
-    # The employee number (사번) is what the /login flow stored as the credential,
-    # so it arrives as opts.api_key. A real deployment might split "empno:token"
+    # The access token is what the /login flow stored as the credential, so it
+    # arrives as opts.api_key. A real deployment might mint a short-lived token
     # or read a separate service key — adjust to your endpoint.
-    employee_no = opts.api_key or ""
+    access_token = opts.api_key or ""
+
+    # (3) TLS against the endpoint's own CA. llm.internal.example is served from
+    # a private CA that is not in the system trust store, and no aelix config
+    # key can hand httpx a bundle path — that is what makes this custom client
+    # necessary. Unset, this is verify=True, i.e. ordinary system trust.
+    # NOT verify=False: that would accept ANY certificate, from anyone, which is
+    # not the right answer even on a network you run yourself — the fix for a
+    # private CA is to TRUST that CA, not to stop checking.
+    #
+    # An SSLContext, not the bundle path: MEASURED on httpx 0.28.1, passing the
+    # path as a string still works but emits `DeprecationWarning: verify=<str>
+    # is deprecated`, naming this exact replacement. Both spellings validate the
+    # file EAGERLY (a missing path raises FileNotFoundError right here, not at
+    # the first request), which is why the path is read from the environment
+    # rather than baked in.
+    #
+    # Note this ADDS a trust anchor, it does not pin one: aelix injects
+    # truststore at startup, whose handshake path also calls
+    # set_default_verify_paths(), so the public roots stay trusted too.
+    ca_bundle = os.environ.get(_CA_BUNDLE_ENV)
+    verify = ssl.create_default_context(cafile=ca_bundle) if ca_bundle else True
 
     client = AsyncOpenAI(
-        # (3) TLS verification off. This is NOT a shortcut around a cert error:
-        # llm.telnaut.internal is served from a private CA that is not in the
-        # system trust store, and no aelix config key can express that. It also
-        # means this stream_fn accepts ANY certificate, so it must stay scoped
-        # to the internal host in _BASE_URL — never point it at the internet.
-        # (If your CA *can* be handed to httpx, prefer `verify="/path/ca.pem"`.)
-        http_client=httpx.AsyncClient(verify=False),
+        http_client=httpx.AsyncClient(verify=verify),
         base_url=getattr(model, "base_url", "") or None,  # (1) model is in the URL
-        api_key=employee_no or "unused",
+        api_key=access_token or "unused",
     )
 
     def _payload(params: dict[str, Any], _model: Model) -> dict[str, Any]:
-        if employee_no:
-            params["user"] = employee_no  # (2) 사번 → standard OpenAI ``user`` field
+        # (2) The extra field, through ``extra_body`` — the openai SDK validates
+        # its keyword arguments and a non-OpenAI one raises before anything
+        # reaches the wire (MEASURED on openai 1.109.1: a top-level ``queue``
+        # gives "AsyncCompletions.create() got an unexpected keyword argument
+        # 'queue'", the turn ends in an error event and the server sees zero
+        # requests). ``extra_body`` is merged verbatim into the JSON body, so
+        # the field arrives; existing entries are kept, not overwritten.
+        params["extra_body"] = {**(params.get("extra_body") or {}), "queue": _QUEUE}
         params["model"] = ""  # the model is in the URL, not the body
         return params
 
@@ -121,41 +154,41 @@ async def _telnaut_stream(model: Model, context: Any, opts: Any) -> AsyncIterato
 
 
 async def _authenticate(ctx: LoginContext) -> str | None:
-    """Custom ``/login`` flow: employee number → the stored credential."""
+    """Custom ``/login`` flow: an endpoint-issued access token → the credential."""
 
-    employee_no = await ctx.prompt("사번을 입력하세요 (employee number)")
-    if not employee_no or not employee_no.strip():
+    token = await ctx.prompt("Paste the access token from your endpoint's console", password=True)
+    if not token or not token.strip():
         return None
-    ctx.notify(f"Telnaut: signed in as employee {employee_no.strip()}", kind="info")
-    return employee_no.strip()
+    ctx.notify("Self-hosted endpoint: access token stored", kind="info")
+    return token.strip()
 
 
 def setup(aelix: ExtensionAPI) -> None:
-    """Register the custom adapter + provider models + the employee-number login."""
+    """Register the custom adapter + provider models + the access-token login."""
 
     # 1. The custom wire adapter (survives /reload via bind_api_adapters replay).
-    aelix.register_api_adapter(_TELNAUT_API, _telnaut_stream)
+    aelix.register_api_adapter(_SELFHOSTED_API, _selfhosted_stream)
 
     # 2. The provider + its models, routed to the custom api id so /model lists them.
     aelix.register_provider(
         _PROVIDER_ID,
         ProviderConfigInput(
-            name="Telnaut (사내)",
+            name="Self-hosted endpoint",
             models={
                 _MODEL_ID: Model(
                     id=_MODEL_ID,
-                    name="Telnaut gpt5mini",
+                    name="Self-hosted gpt5mini",
                     provider=_PROVIDER_ID,
-                    api=_TELNAUT_API,
+                    api=_SELFHOSTED_API,
                     base_url=_BASE_URL,
                 ),
             },
         ),
     )
 
-    # 3. The employee-number /login method (#77).
+    # 3. The access-token /login method (#77).
     aelix.register_login_provider(
-        LoginProvider(id=_PROVIDER_ID, name="Telnaut (사내)", authenticate=_authenticate)
+        LoginProvider(id=_PROVIDER_ID, name="Self-hosted endpoint", authenticate=_authenticate)
     )
 
 

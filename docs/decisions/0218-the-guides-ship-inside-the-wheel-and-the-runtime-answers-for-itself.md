@@ -97,8 +97,13 @@ aelix_coding_agent/cli/extension_install.py:2338
 aelix_coding_agent/examples/INDEX.md:21, :115
 aelix_coding_agent/examples/starter/README.md:39
 aelix_coding_agent/examples/starter/pyproject.toml:22
-aelix_coding_agent/examples/telnaut/__init__.py:8
+aelix_coding_agent/examples/selfhosted/__init__.py:9
 ```
+
+(The last entry's example was renamed to `examples/selfhosted/` long after this grep was run, so
+the path above is the current one, not the one the grep printed. The hit itself is the same
+sentence; the rewrite moved it from line 8 to line 9 and the file from 9 lines to 10, and the
+number above was re-derived rather than carried over. The hit COUNT is unchanged.)
 
 `extension_install.py:2338` is the sharpest of them: it is the hint printed when an installed
 user's pack goes inert, and its single reader is a user with no checkout. The same grep over the

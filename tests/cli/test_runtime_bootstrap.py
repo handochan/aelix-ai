@@ -169,10 +169,10 @@ def test_resolve_model_bare_id_unambiguous_in_registry_resolves(
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     monkeypatch.delenv("OPENROUTER_DEFAULT_MODEL", raising=False)
     registry = _FakeRegistry(
-        [Model(id="tn-1", provider="telnaut", api="openai-completions")]
+        [Model(id="sh-1", provider="selfhosted", api="openai-completions")]
     )
-    m = resolve_model("tn-1", None, registry)
-    assert m.provider == "telnaut" and m.api == "openai-completions"
+    m = resolve_model("sh-1", None, registry)
+    assert m.provider == "selfhosted" and m.api == "openai-completions"
 
 
 def test_resolve_model_bare_id_ambiguous_across_providers_refuses_to_guess(
@@ -214,22 +214,22 @@ def test_resolve_model_registry_only_provider_resolves_api(
     registry = _FakeRegistry(
         [
             Model(
-                id="tn-1",
-                provider="telnaut",
+                id="sh-1",
+                provider="selfhosted",
                 api="openai-completions",
-                base_url="https://telnaut.example/v1",
+                base_url="https://selfhosted.example/v1",
             )
         ]
     )
-    m = resolve_model("tn-1", "telnaut", registry)
-    assert m.provider == "telnaut" and m.api == "openai-completions"
-    assert m.base_url == "https://telnaut.example/v1"
+    m = resolve_model("sh-1", "selfhosted", registry)
+    assert m.provider == "selfhosted" and m.api == "openai-completions"
+    assert m.base_url == "https://selfhosted.example/v1"
 
 
 def test_resolve_model_registry_miss_stays_bare(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     monkeypatch.delenv("OPENROUTER_DEFAULT_MODEL", raising=False)
-    m = resolve_model("nope", "telnaut", _FakeRegistry([]))
+    m = resolve_model("nope", "selfhosted", _FakeRegistry([]))
     assert m.api == "unknown"
 
 
@@ -248,7 +248,7 @@ def test_resolve_model_broken_registry_degrades_instead_of_raising(
         def get_all(self) -> list[Model]:
             raise RuntimeError("boom")
 
-    assert resolve_model("x", "telnaut", _Broken()).api == "unknown"
+    assert resolve_model("x", "selfhosted", _Broken()).api == "unknown"
     assert resolve_model("x", None, _Broken()).api == "unknown"
 
 

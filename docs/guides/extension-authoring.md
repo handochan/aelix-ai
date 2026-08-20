@@ -173,9 +173,10 @@ the same as registering it. What each family actually does at runtime:
 
 ## Custom providers with their own `/login` method
 
-An extension can add a private provider — say a corporate `telnaut` — and give it
-its **own entry in the `/login` method list** with a custom credential flow (e.g.
-"enter your employee number"). Two calls, sharing one id:
+An extension can add a private provider — say a `selfhosted` OpenAI-compatible
+endpoint your team runs on its own network — and give it its **own entry in the
+`/login` method list** with a custom credential flow (e.g. "paste the access token
+your endpoint's console issued"). Two calls, sharing one id:
 
 - `register_provider(id, ProviderConfigInput(...))` wires the provider for turns:
   which wire protocol it speaks (`api`), its `base_url`, and its `models` (which
@@ -193,23 +194,22 @@ from aelix_coding_agent.model_registry import ProviderConfigInput
 from aelix_ai.streaming import Model
 
 async def _authenticate(ctx: LoginContext) -> str | None:
-    employee_no = await ctx.prompt("사번을 입력하세요")     # employee number
-    if not employee_no:
+    token = await ctx.prompt(                                # masked
+        "Paste the access token from your endpoint's console", password=True)
+    if not token or not token.strip():
         return None                                          # None = cancel
-    passcode = await ctx.prompt("passcode", password=True)   # masked
-    if not passcode:
-        return None
-    return exchange_for_token(employee_no, passcode)         # your corporate auth
+    ctx.notify("Self-hosted endpoint: access token stored", kind="info")
+    return token.strip()                                     # becomes the credential
 
 def setup(aelix):
-    aelix.register_provider("telnaut", ProviderConfigInput(
-        name="Telnaut",
-        models={"telnaut-large": Model(
-            id="telnaut-large", provider="telnaut",
-            api="openai-completions", base_url="https://llm.telnaut.internal/v1")},
+    aelix.register_provider("selfhosted", ProviderConfigInput(
+        name="Self-hosted endpoint",
+        models={"selfhosted-large": Model(
+            id="selfhosted-large", provider="selfhosted",
+            api="openai-completions", base_url="https://llm.internal.example/v1")},
     ))
     aelix.register_login_provider(LoginProvider(
-        id="telnaut", name="Telnaut (사내)", authenticate=_authenticate))
+        id="selfhosted", name="Self-hosted endpoint", authenticate=_authenticate))
 ```
 
 Notes and limits:
@@ -228,8 +228,8 @@ Notes and limits:
 ### When config isn't enough — a custom wire adapter
 
 If the endpoint deviates from what `ProviderConfigInput` can express — the model
-in the URL path, non-OpenAI request fields, or a custom `httpx` client (e.g.
-`verify=False` for a self-signed internal CA) — register a custom **StreamFn**
+in the URL path, non-OpenAI request fields, or a custom `httpx` client (e.g. a
+private CA bundle for an endpoint you host yourself) — register a custom **StreamFn**
 `(Model, Context, SimpleStreamOptions) -> AsyncIterator[event]` under your own
 `api` id with `register_api_adapter(api, stream_fn)`. A `Model` whose `api` equals
 that id then routes to your function.
@@ -240,19 +240,33 @@ The easiest StreamFn builds its own `openai.AsyncOpenAI` (with whatever
 
 ```python
 import contextlib
+import os
+import ssl
 from dataclasses import replace
 import httpx
 from openai import AsyncOpenAI
 from aelix_ai.providers.openai_completions import OPENAI_COMPLETIONS_PROVIDER
+from aelix_ai.streaming import Model
+from aelix_coding_agent.model_registry import ProviderConfigInput
 
-async def telnaut_stream(model, context, opts):
+# Point this at the CA bundle that signs your endpoint's certificate. Read it
+# from the environment, never hardcode it: the context validates the path AT
+# CONSTRUCTION and raises FileNotFoundError if the file is missing, so a baked-in
+# path breaks every user who has not created that exact file. Unset = system trust.
+_CA_BUNDLE_ENV = "SELFHOSTED_CA_BUNDLE"
+
+async def selfhosted_stream(model, context, opts):
+    ca_bundle = os.environ.get(_CA_BUNDLE_ENV)            # custom TLS; unset = verify=True
+    verify = ssl.create_default_context(cafile=ca_bundle) if ca_bundle else True
     client = AsyncOpenAI(
-        http_client=httpx.AsyncClient(verify=False),      # custom TLS
+        http_client=httpx.AsyncClient(verify=verify),
         base_url=getattr(model, "base_url", "") or None,  # model baked into the URL
         api_key=opts.api_key or "",
     )
     def payload(params, _m):
-        params["user"] = opts.api_key      # e.g. an employee number in a standard field
+        # a non-OpenAI body field no config key can name (see extra_body, below)
+        params["extra_body"] = {**(params.get("extra_body") or {}), "queue": "interactive"}
+        params["model"] = ""               # the model is in the URL, not the body
         return params
     try:
         async for ev in OPENAI_COMPLETIONS_PROVIDER.stream_simple(
@@ -264,9 +278,10 @@ async def telnaut_stream(model, context, opts):
             await client.close()               # AsyncOpenAI: close(), not aclose()
 
 def setup(aelix):
-    aelix.register_api_adapter("telnaut-openai", telnaut_stream)
-    aelix.register_provider("telnaut", ProviderConfigInput(models={"gpt5mini": Model(
-        id="gpt5mini", api="telnaut-openai", base_url="https://host/v1/gpt5mini")}))
+    aelix.register_api_adapter("selfhosted-openai", selfhosted_stream)
+    aelix.register_provider("selfhosted", ProviderConfigInput(models={"gpt5mini": Model(
+        id="gpt5mini", api="selfhosted-openai",
+        base_url="https://llm.internal.example/v1/gpt5mini")}))
 ```
 
 **Close the client you build.** Your StreamFn runs once per request, so a client
@@ -292,13 +307,24 @@ would replace the user's clean cancel with a bogus provider error.
 is reset on reload; the harness rebuild replays your registration). Unlike the
 built-in adapters, custom body keys must be OpenAI-valid or go inside
 `extra_body` — the OpenAI SDK rejects unknown top-level kwargs. This is a real,
-supported extension surface (no fork), but it does run your networking code:
-`verify=False` disables certificate checks — it accepts *any* certificate, not
-just your internal CA's — so scope it to trusted internal hosts, and prefer
-`verify="/path/to/ca.pem"` when you can hand httpx the CA instead.
+supported extension surface (no fork), but it does run your networking code, so
+get the TLS right: hand httpx the **CA bundle** that signs your endpoint's
+certificate, as `verify=ssl.create_default_context(cafile=...)`, read from an
+environment variable so the path is the operator's to set — that is the deviation
+no aelix config key can express, and it is why you need your own client at all.
+Pass a context rather than the path: `verify="/path/ca.pem"` still works on httpx
+0.28 but is deprecated, and the warning names this replacement. Do **not** reach
+for `verify=False`: it does not "trust your internal CA", it stops checking
+certificates altogether and accepts *any* certificate from anyone on the path,
+including on a network you run yourself. Either spelling resolves the file **at
+construction** and raises `FileNotFoundError` when it is absent, so a hardcoded
+bundle path fails at import time for everyone who lacks that exact file — fall
+back to system trust (`verify=True`) when the variable is unset. Note this *adds*
+a trust anchor rather than pinning one: aelix injects truststore at startup, and
+its handshake path also loads the platform's default roots.
 
 A complete worked example ships at
-`aelix_coding_agent/examples/telnaut/telnaut.py`. Load it like any extension —
+`aelix_coding_agent/examples/selfhosted/selfhosted.py`. Load it like any extension —
 point `--extension` at the file, drop it in a project-local `.aelix/extensions/`,
 or install it as a package (see [Loading an extension](#loading-an-extension)).
 

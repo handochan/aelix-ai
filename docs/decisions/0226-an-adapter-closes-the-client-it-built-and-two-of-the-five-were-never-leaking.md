@@ -140,7 +140,9 @@ principle they belong in a cleanup path.
    Threshold is `established <= 1`, not `== 0`, so the gate accepts both candidate designs and
    does not silently prejudge a decision the owner could revisit.
 
-6. **The shipped example that taught the leak is fixed.** `examples/telnaut/telnaut.py` built an
+6. **The shipped example that taught the leak is fixed.** `examples/selfhosted/selfhosted.py`
+   [the example was renamed after this ADR was written; the path shown is the
+   current one, not the one this ADR was written against] built an
    `AsyncOpenAI` per request and never closed it; `docs/guides/extension-authoring.md` and its
    wheel-bundled twin reproduce that block almost verbatim, and `register_api_adapter`'s
    docstring recommends the pattern. Neither close-per-request nor reuse reaches a

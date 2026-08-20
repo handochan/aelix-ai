@@ -323,17 +323,17 @@ async def test_never_fires_for_an_extension_registered_provider(
     registry = ModelRegistry(auth, None)
     assert _call(registry) is True, "baseline: nothing configured yet"
     registry.register_provider(
-        "telnaut",
+        "selfhosted",
         ProviderConfigInput(
-            name="Telnaut",
+            name="Self-hosted endpoint",
             api_key="sk-ext",
             models={
-                "telnaut-1": Model(
-                    id="telnaut-1",
-                    name="Telnaut 1",
+                "selfhosted-1": Model(
+                    id="selfhosted-1",
+                    name="Self-hosted 1",
                     api="openai-completions",
-                    provider="telnaut",
-                    base_url="https://telnaut.example/v1",
+                    provider="selfhosted",
+                    base_url="https://selfhosted.example/v1",
                     reasoning=False,
                     input=["text"],
                     cost=ModelCost(
