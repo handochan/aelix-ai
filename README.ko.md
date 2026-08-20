@@ -22,7 +22,7 @@ Aelix는 작은 코어입니다. 플러그인과 확장이 생태계이고, 확�
 <p align="center">
   <img src="docs/assets/demo.gif" width="100%" alt="Aelix 데모 — 에이전트가 DuckDB 확장을 my_ext.py에 직접 작성하고, /reload로 재시작 없이 핫리로드한 뒤, 바로 다음 프롬프트에서 in-process로 실행">
 </p>
-<p align="center"><em>에이전트가 스스로를 확장합니다: <code>duckdb_query</code> 툴을 <code>my_ext.py</code>에 직접 작성하고, <code>/reload</code>로 재시작 없이 핫리로드한 뒤, 바로 다음 프롬프트에서 in-process로 실행합니다. 대기 구간은 빨리감기 처리했습니다.</em></p>
+<p align="center"><em>에이전트가 스스로를 확장합니다: <code>duckdb_query</code> 툴을 <code>my_ext.py</code>에 직접 작성하고, <code>/reload</code>로 재시작 없이 핫리로드한 뒤, 바로 다음 프롬프트에서 in-process로 실행합니다. 대기 구간은 잘라냈고, 2배속으로 재생됩니다.</em></p>
 
 ---
 

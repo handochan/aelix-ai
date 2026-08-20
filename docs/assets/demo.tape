@@ -22,6 +22,13 @@
 #      overlay stream, so true idle dedups cleanly); extend the last frame
 #      ~45 links for a 3s closing hold.
 #   5. bar.png: 1200x680 #171717 + three 14px traffic-light dots (PIL) in seq/.
+#   5b. Speed: the encode below writes 40ms frames. Halve the frame count
+#      (keep every 2nd) for the 2x playback the README caption claims, then
+#      re-append ~60 copies of the final frame so the DuckDB result table holds
+#      for ~2.4s — a uniform speed-up races past the one frame a reader came for.
+#      Dropping frames rather than shortening the delay is deliberate: several
+#      renderers clamp a sub-20ms GIF delay up to 100ms, which would make a
+#      "faster" GIF play slower.
 #   6. Encode (two-pass palette):
 #      ffmpeg -y -framerate 15 -start_number 1 -i seq/frame-text-%05d.png \
 #        -framerate 15 -start_number 1 -i seq/frame-cursor-%05d.png \
