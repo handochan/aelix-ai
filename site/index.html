@@ -58,6 +58,30 @@
     --btn-fg-hover: var(--ink);
   }
 
+  /* The terminal card is DARK-LOCKED in both themes. It is a picture of a
+     terminal running the real ANSI banner; re-tinting it for a light page
+     would show something Aelix never prints. Its own tokens, so the theme
+     roles cannot reach inside it.
+
+     This block sits ABOVE the light @media on purpose. A media query carries
+     no specificity, so a :root placed BELOW it would win for a light reader
+     and quietly undo the light palette -- keeping every :root that is not the
+     light block above it is what makes "the light block wins" true rather
+     than merely intended. */
+  :root {
+    --term-bg: #05080C;
+    --term-line: #1E2A34;
+    --term-dot: #22303A;
+    --term-dim: #7E97A1;
+    /* the banner's own ANSI ramp, as the terminal prints it */
+    --term-a1: #c8ffff;
+    --term-a2: #64f2fe;
+    --term-a3: #00dcf0;
+    --term-a4: #00b4d8;
+    --term-a5: #0082c8;
+    --term-a6: #005faf;
+  }
+
   /* ---- Roles: light ground --------------------------------------------
      Not a second design — the same roles re-pointed, each value solved to
      the dark side's measured ratio so neither ground is the poor relation.
@@ -85,17 +109,6 @@
       --btn-bg-hover: #0A566B;
       --btn-fg-hover: var(--paper);
     }
-  }
-
-  /* The terminal card is DARK-LOCKED in both themes. It is a picture of a
-     terminal running the real ANSI banner; re-tinting it for a light page
-     would show something Aelix never prints. Its own tokens, so the theme
-     roles cannot reach inside it. */
-  :root {
-    --term-bg: #05080C;
-    --term-line: #1E2A34;
-    --term-dot: #22303A;
-    --term-dim: #7E97A1;
   }
 
   * { box-sizing: border-box; }
@@ -162,12 +175,16 @@
   .feat .more a:hover, .feat .more a:focus-visible { border-bottom-color: var(--accent); }
   .feat .more .note { color: var(--fg-muted); }
 
-  .term { background: var(--term-bg); border: 1px solid var(--term-line); border-radius: 12px; overflow-x: auto; }
+  /* color-scheme too, not only the fills: it is what the UA paints this
+     scroll container's scrollbar with, and the page now says 'light dark'.
+     Without this the card gets a pale scrollbar across its near-black foot. */
+  .term { background: var(--term-bg); border: 1px solid var(--term-line);
+    border-radius: 12px; overflow-x: auto; color-scheme: dark; }
   .term .bar { display: flex; gap: 7px; padding: 12px 16px; border-bottom: 1px solid var(--term-line); }
   .term .dot { width: 11px; height: 11px; border-radius: 50%; background: var(--term-dot); }
   .term pre { margin: 0; padding: 24px 28px; font-family: var(--mono); font-size: 13px; line-height: 1.35; }
-  .t1 { color: #c8ffff; } .t2 { color: #64f2fe; } .t3 { color: #00dcf0; }
-  .t4 { color: #00b4d8; } .t5 { color: #0082c8; } .t6 { color: #005faf; }
+  .t1 { color: var(--term-a1); } .t2 { color: var(--term-a2); } .t3 { color: var(--term-a3); }
+  .t4 { color: var(--term-a4); } .t5 { color: var(--term-a5); } .t6 { color: var(--term-a6); }
   .tt { color: var(--paper); font-weight: 700; } .td { color: var(--term-dim); } .tp { color: var(--glow); }
 
   footer { border-top: 1px solid var(--border); padding: 32px 0 56px; margin-top: 40px;
