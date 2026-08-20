@@ -38,7 +38,7 @@ from aelix_coding_agent.extensions.loader import (
 # points the model at echo by absolute path and calls it "worked example, read
 # this one" — #114 is about making the documented way to RUN it work.
 ECHO_REF = "aelix_coding_agent.examples.echo.echo"
-TELNAUT_REF = "aelix_coding_agent.examples.telnaut.telnaut"
+SELFHOSTED_REF = "aelix_coding_agent.examples.selfhosted.selfhosted"
 
 _MANIFEST_PATH = (
     Path(loader_mod.__file__).resolve().parents[1]
@@ -95,14 +95,14 @@ async def test_shipped_echo_example_loads_by_dotted_module_path(
 
 
 @pytest.mark.asyncio
-async def test_shipped_telnaut_example_loads_by_dotted_module_path(
+async def test_shipped_selfhosted_example_loads_by_dotted_module_path(
     tmp_path: Path,
 ) -> None:
     cwd, agent_dir = _isolated(tmp_path)
-    result = await _via_cli_path([TELNAUT_REF], cwd=cwd, agent_dir=agent_dir)
+    result = await _via_cli_path([SELFHOSTED_REF], cwd=cwd, agent_dir=agent_dir)
 
     assert result.errors == []
-    assert [e.name for e in result.extensions] == [TELNAUT_REF]
+    assert [e.name for e in result.extensions] == [SELFHOSTED_REF]
 
 
 @pytest.mark.asyncio
@@ -128,7 +128,7 @@ async def test_module_callable_colon_form_works_from_the_cli_path(
     "ref",
     [
         ECHO_REF,
-        TELNAUT_REF,
+        SELFHOSTED_REF,
         f"{ECHO_REF}:setup",
         # The FAILING half. Divergence on the error path reopens #114 just as
         # surely as divergence on the load path, and it is where the two

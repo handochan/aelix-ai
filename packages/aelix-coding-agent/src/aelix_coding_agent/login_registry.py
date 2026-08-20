@@ -1,10 +1,10 @@
 """Extension-contributed login providers (Issue #77).
 
 An extension can add its OWN entry to the interactive ``/login`` method list —
-e.g. a corporate provider ``telnaut`` whose sign-in is "enter your employee
-number" — by registering a :class:`LoginProvider`. When the user picks it in the
-wizard, its :attr:`LoginProvider.authenticate` handler runs, driving whatever
-custom credential prompts it wants through a :class:`LoginContext` (the SAME
+e.g. a ``selfhosted`` provider whose sign-in is "paste the access token your
+endpoint's console issued" — by registering a :class:`LoginProvider`. When the
+user picks it in the wizard, its :attr:`LoginProvider.authenticate` handler runs,
+driving whatever custom prompts it wants through a :class:`LoginContext` (the SAME
 masked ``select`` / ``prompt`` / ``confirm`` / ``notify`` dialogs the built-in
 sub-flows use), and returns the credential string. The wizard then persists it
 via ``auth_storage`` under the provider id — the extension never touches the

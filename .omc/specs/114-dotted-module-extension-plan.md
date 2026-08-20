@@ -35,8 +35,9 @@ extensions: ['aelix_coding_agent.examples.echo.echo']  errors: []   # library AP
 
 Same string, opposite outcomes — a CLI/library divergence, not merely a missing feature.
 
-Neither shipped example (`examples/echo`, `examples/telnaut`) is registered as an entry point either,
-so today they can be read but **never run**.
+Neither shipped example (`examples/echo`, `examples/selfhosted`) is registered as an entry point
+either, so today they can be read but **never run**.
+[The second example's directory was renamed to `examples/selfhosted` after this plan was written.]
 
 ## 2. The fix, and its one real ambiguity
 
@@ -107,7 +108,7 @@ any run.
 Acceptance:
 
 - [ ] `aelix -e aelix_coding_agent.examples.echo.echo --print …` loads the extension, `errors == []`
-- [ ] Same for `examples.telnaut.telnaut`
+- [ ] Same for `examples.selfhosted.selfhosted` [this module was renamed after the plan was written]
 - [ ] CLI and `load_extensions([same_string])` agree — pin the equivalence, since divergence is the bug
 - [ ] `-e ./some/ext.py`, `-e /abs/ext.py`, `-e some_dir/`, `-e mypkg.ext` **that exists on disk** all
       behave exactly as before (path wins)

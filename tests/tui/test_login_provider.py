@@ -1,8 +1,8 @@
 """Issue #77 — extension login providers in the ``/login`` wizard.
 
 Covers the process-global ``login_registry`` and the wizard integration: an
-extension-registered provider (e.g. a corporate 'telnaut' whose sign-in asks for
-an employee number) appears in the ``/login`` method list, and picking it runs
+extension-registered provider (e.g. a 'selfhosted' endpoint whose sign-in asks
+for an access token) appears in the ``/login`` method list, and picking it runs
 its custom ``authenticate`` handler and persists the returned credential. Also
 covers the API-key sub-flow unioning extension-registered provider ids.
 """
@@ -78,9 +78,11 @@ def test_registry_register_get_unregister() -> None:
     async def _auth(_ctx):
         return "x"
 
-    register_login_provider(LoginProvider(id="telnaut", name="Telnaut", authenticate=_auth))
-    assert [p.id for p in get_login_providers()] == ["telnaut"]
-    unregister_login_provider("telnaut")
+    register_login_provider(
+        LoginProvider(id="selfhosted", name="Self-hosted endpoint", authenticate=_auth)
+    )
+    assert [p.id for p in get_login_providers()] == ["selfhosted"]
+    unregister_login_provider("selfhosted")
     assert get_login_providers() == []
 
 
@@ -91,8 +93,8 @@ def test_registry_last_write_wins() -> None:
     async def _b(_ctx):
         return "b"
 
-    register_login_provider(LoginProvider(id="telnaut", name="First", authenticate=_a))
-    register_login_provider(LoginProvider(id="telnaut", name="Second", authenticate=_b))
+    register_login_provider(LoginProvider(id="selfhosted", name="First", authenticate=_a))
+    register_login_provider(LoginProvider(id="selfhosted", name="Second", authenticate=_b))
     providers = get_login_providers()
     assert len(providers) == 1 and providers[0].name == "Second"
 
@@ -108,23 +110,27 @@ def test_registry_ignores_provider_without_id() -> None:
     assert get_login_providers() == []
 
 
-# === run_login integration (the telnaut / 사번 flow) =========================
+# === run_login integration (the selfhosted / access-token flow) ==============
 
 
 async def test_login_provider_appears_and_stores_credential() -> None:
     captured: dict[str, Any] = {}
 
-    async def telnaut_auth(ctx):
-        captured["emp"] = await ctx.prompt("사번을 입력하세요")
-        captured["pw"] = await ctx.prompt("비밀번호", password=True)
-        return f"{captured['emp']}:{captured['pw']}"
+    async def selfhosted_auth(ctx):
+        captured["endpoint"] = await ctx.prompt("Endpoint host")
+        captured["token"] = await ctx.prompt(
+            "Paste the access token from your endpoint's console", password=True
+        )
+        return f"{captured['endpoint']}:{captured['token']}"
 
     register_login_provider(
-        LoginProvider(id="telnaut", name="Telnaut (사내)", authenticate=telnaut_auth)
+        LoginProvider(
+            id="selfhosted", name="Self-hosted endpoint", authenticate=selfhosted_auth
+        )
     )
     auth = _FakeAuth()
     select, prompt_input, confirm, notify, commit, _ = _wizard_fakes(
-        pick="Telnaut (사내)", answers=["10231", "secret"]
+        pick="Self-hosted endpoint", answers=["llm.internal.example", "secret"]
     )
     await run_login(
         auth_storage=auth,
@@ -134,18 +140,20 @@ async def test_login_provider_appears_and_stores_credential() -> None:
         notify=notify,
         commit=commit,
     )
-    assert auth.stored == {"telnaut": "10231:secret"}
-    assert captured == {"emp": "10231", "pw": "secret"}
+    assert auth.stored == {"selfhosted": "llm.internal.example:secret"}
+    assert captured == {"endpoint": "llm.internal.example", "token": "secret"}
 
 
 async def test_login_provider_cancel_stores_nothing() -> None:
     async def _auth(ctx):
         return None  # user cancelled the custom flow
 
-    register_login_provider(LoginProvider(id="telnaut", name="Telnaut", authenticate=_auth))
+    register_login_provider(
+        LoginProvider(id="selfhosted", name="Self-hosted endpoint", authenticate=_auth)
+    )
     auth = _FakeAuth()
     select, prompt_input, confirm, notify, commit, _ = _wizard_fakes(
-        pick="Telnaut", answers=[]
+        pick="Self-hosted endpoint", answers=[]
     )
     await run_login(
         auth_storage=auth, select=select, prompt_input=prompt_input,
@@ -156,29 +164,33 @@ async def test_login_provider_cancel_stores_nothing() -> None:
 
 async def test_login_provider_handler_exception_degrades() -> None:
     async def _auth(_ctx):
-        raise RuntimeError("corporate SSO down")
+        raise RuntimeError("token service unavailable")
 
-    register_login_provider(LoginProvider(id="telnaut", name="Telnaut", authenticate=_auth))
+    register_login_provider(
+        LoginProvider(id="selfhosted", name="Self-hosted endpoint", authenticate=_auth)
+    )
     auth = _FakeAuth()
     select, prompt_input, confirm, notify, commit, committed = _wizard_fakes(
-        pick="Telnaut", answers=[]
+        pick="Self-hosted endpoint", answers=[]
     )
     await run_login(
         auth_storage=auth, select=select, prompt_input=prompt_input,
         confirm=confirm, notify=notify, commit=commit,
     )
     assert auth.stored == {}
-    assert any("login failed" in c and "corporate SSO down" in c for c in committed)
+    assert any("login failed" in c and "token service unavailable" in c for c in committed)
 
 
 async def test_login_provider_empty_credential_stores_nothing() -> None:
     async def _auth(_ctx):
         return "   "  # whitespace only
 
-    register_login_provider(LoginProvider(id="telnaut", name="Telnaut", authenticate=_auth))
+    register_login_provider(
+        LoginProvider(id="selfhosted", name="Self-hosted endpoint", authenticate=_auth)
+    )
     auth = _FakeAuth()
     select, prompt_input, confirm, notify, commit, committed = _wizard_fakes(
-        pick="Telnaut", answers=[]
+        pick="Self-hosted endpoint", answers=[]
     )
     await run_login(
         auth_storage=auth, select=select, prompt_input=prompt_input,
@@ -226,7 +238,7 @@ async def test_two_providers_same_name_are_dedup_labeled() -> None:
 async def test_api_key_flow_unions_registered_provider_ids() -> None:
     class _FakeRegistry:
         def get_registered_providers(self) -> dict[str, Any]:
-            return {"telnaut": object()}
+            return {"selfhosted": object()}
 
     auth = _FakeAuth()
     offered: list[str] = []
@@ -235,10 +247,10 @@ async def test_api_key_flow_unions_registered_provider_ids() -> None:
         if msg == "Add a provider":
             return _METHOD_API_KEY
         offered.extend(options)  # the provider list
-        return "telnaut"
+        return "selfhosted"
 
     async def prompt_input(_msg: str, *, placeholder=None, password=False) -> str | None:
-        return "sk-telnaut"
+        return "sk-selfhosted"
 
     async def confirm(*_a):
         return True
@@ -258,5 +270,5 @@ async def test_api_key_flow_unions_registered_provider_ids() -> None:
         commit=commit,
         model_registry=_FakeRegistry(),
     )
-    assert "telnaut" in offered
-    assert auth.stored == {"telnaut": "sk-telnaut"}
+    assert "selfhosted" in offered
+    assert auth.stored == {"selfhosted": "sk-selfhosted"}

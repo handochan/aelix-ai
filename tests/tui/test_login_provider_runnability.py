@@ -244,7 +244,7 @@ def test_hint_for_an_all_dead_end_set_still_blames_the_build() -> None:
     """The case where the old literal is TRUE, kept so the fix cannot
     over-correct into never blaming the build again."""
 
-    rows = [_model(api="telnaut-proprietary")]
+    rows = [_model(api="selfhosted-proprietary")]
     assert (
         rm.provider_block_hint({rm.BLOCKED_NO_ADAPTER, rm.BLOCKED_UNRESOLVED_API}, rows)
         == "nothing it offers can run in this build"
@@ -274,7 +274,7 @@ def test_block_sample_picks_a_row_that_argues_for_the_label() -> None:
 
     apis = {"openai-completions"}
     fixable = _model(id="fixable", api="openai-completions", base_url="")
-    dead = _model(id="dead", api="telnaut-proprietary")
+    dead = _model(id="dead", api="selfhosted-proprietary")
     rows = [fixable, dead]
     assert rm.provider_block_sample(rows, recoverable=False, apis=apis) is dead
     assert rm.provider_block_sample(rows, recoverable=True, apis=apis) is fixable
@@ -338,8 +338,8 @@ def test_a_runnable_provider_label_is_untouched(real_adapters) -> None:
 def test_provider_with_no_catalog_rows_is_not_annotated(real_adapters) -> None:
     """#77: an extension may register a provider whose models arrive later."""
 
-    labels, blocked = _build_provider_labels(["telnaut"], model_registry=None)
-    assert labels == ["telnaut"]
+    labels, blocked = _build_provider_labels(["selfhosted"], model_registry=None)
+    assert labels == ["selfhosted"]
     assert blocked == {}
 
 
@@ -360,18 +360,18 @@ class _FakeRegistry:
 def test_extension_provider_is_evaluated_from_the_live_registry(real_adapters) -> None:
     """#77 + #151: evaluation happens at picker-BUILD time, against the live
     registry — an import-time constant could not see a provider an extension
-    registered during startup. Here 'telnaut' exists ONLY in the registry."""
+    registered during startup. Here 'selfhosted' exists ONLY in the registry."""
 
     registry = _FakeRegistry(
         [
-            _model(id="telnaut-1", provider="telnaut", api="telnaut-proprietary"),
-            _model(id="telnaut-2", provider="telnaut", api="telnaut-proprietary"),
+            _model(id="selfhosted-1", provider="selfhosted", api="selfhosted-proprietary"),
+            _model(id="selfhosted-2", provider="selfhosted", api="selfhosted-proprietary"),
         ],
-        registered=("telnaut",),
+        registered=("selfhosted",),
     )
-    labels, blocked = _build_provider_labels(["telnaut", "openrouter"], registry)
-    assert blocked["telnaut"][0] == rm.BLOCKED_NO_ADAPTER
-    assert labels[0] == "telnaut  (unusable: no adapter in this build)"
+    labels, blocked = _build_provider_labels(["selfhosted", "openrouter"], registry)
+    assert blocked["selfhosted"][0] == rm.BLOCKED_NO_ADAPTER
+    assert labels[0] == "selfhosted  (unusable: no adapter in this build)"
     # A provider the registry does not know still falls back to the bundled
     # catalog, so the built-ins keep their verdicts.
     assert labels[1] == "openrouter"
@@ -402,28 +402,28 @@ def test_all_fixable_mixed_provider_reads_needs_setup(real_adapters) -> None:
         [
             _model(
                 id="ext-a",
-                provider="telnaut",
+                provider="selfhosted",
                 api="openai-completions",
-                base_url="https://gw.test/{TELNAUT_ACCOUNT_ID}/v1",
+                base_url="https://gw.test/{SELFHOSTED_ACCOUNT_ID}/v1",
             ),
-            _model(id="ext-b", provider="telnaut", api="openai-completions", base_url=""),
+            _model(id="ext-b", provider="selfhosted", api="openai-completions", base_url=""),
         ],
-        registered=("telnaut",),
+        registered=("selfhosted",),
     )
-    labels, blocked = _build_provider_labels(["telnaut"], registry)
+    labels, blocked = _build_provider_labels(["selfhosted"], registry)
 
     # The LABEL is the assertion that matters — it is what the user reads, and it
     # is what the sentinel-driven version got wrong.
     assert labels[0] == (
-        "telnaut  (needs setup: set TELNAUT_ACCOUNT_ID; no base URL configured)"
+        "selfhosted  (needs setup: set SELFHOSTED_ACCOUNT_ID; no base URL configured)"
     )
     assert "unusable" not in labels[0]
-    entry = blocked["telnaut"]
+    entry = blocked["selfhosted"]
     assert entry[0] == rm.BLOCKED_MIXED  # the summary is unchanged...
     assert entry[2] is True  # ...but the verdict no longer comes from it
     # The panel argues for the SAME conclusion the label states.
-    panel = " ".join(_make_block_detail(["telnaut"], blocked)(0))
-    assert "TELNAUT_ACCOUNT_ID" in panel
+    panel = " ".join(_make_block_detail(["selfhosted"], blocked)(0))
+    assert "SELFHOSTED_ACCOUNT_ID" in panel
     assert entry[1].id == "ext-a"
 
 
@@ -433,7 +433,7 @@ def test_genuinely_mixed_provider_reads_unusable_but_names_the_subset(
     """#156 REWROTE THIS TEST, and its old assertion WAS the defect.
 
     It required the label to read exactly
-    ``"telnaut  (unusable: nothing it offers can run in this build)"``. This
+    ``"selfhosted  (unusable: nothing it offers can run in this build)"``. This
     provider is MIXED — ``ext-a`` is blocked by ``no-host`` (a missing
     ``baseUrl``, which the user can set) and ``ext-b`` by ``no-adapter`` (which
     they cannot) — so that sentence is false about ``ext-a``. The equivalent
@@ -452,25 +452,25 @@ def test_genuinely_mixed_provider_reads_unusable_but_names_the_subset(
 
     registry = _FakeRegistry(
         [
-            _model(id="ext-a", provider="telnaut", api="openai-completions", base_url=""),
-            _model(id="ext-b", provider="telnaut", api="telnaut-proprietary"),
+            _model(id="ext-a", provider="selfhosted", api="openai-completions", base_url=""),
+            _model(id="ext-b", provider="selfhosted", api="selfhosted-proprietary"),
         ],
-        registered=("telnaut",),
+        registered=("selfhosted",),
     )
-    labels, blocked = _build_provider_labels(["telnaut"], registry)
+    labels, blocked = _build_provider_labels(["selfhosted"], registry)
 
-    assert labels[0].startswith("telnaut  (unusable: ")
+    assert labels[0].startswith("selfhosted  (unusable: ")
     assert "nothing it offers can run in this build" not in labels[0]
     assert "some models" in labels[0]
     assert "no adapter in this build" in labels[0]
 
-    entry = blocked["telnaut"]
+    entry = blocked["selfhosted"]
     assert entry[0] == rm.BLOCKED_MIXED
     # The sample is still the row that CANNOT be configured away — a panel
     # reading "set an explicit baseUrl" under "unusable" would send the user
     # hunting for a knob that fixes one row and leaves the provider as dead.
     assert entry[1].id == "ext-b"
-    panel = " ".join(_make_block_detail(["telnaut"], blocked)(0))
+    panel = " ".join(_make_block_detail(["selfhosted"], blocked)(0))
     assert "no adapter for" in panel
     assert "baseUrl" not in panel
     # Index access survives the widening — that is what the NamedTuple buys.
@@ -490,15 +490,15 @@ def test_all_dead_end_provider_keeps_the_build_wording(real_adapters) -> None:
 
     registry = _FakeRegistry(
         [
-            _model(id="ext-a", provider="telnaut", api="telnaut-proprietary"),
-            _model(id="ext-b", provider="telnaut", api="also-not-an-api"),
+            _model(id="ext-a", provider="selfhosted", api="selfhosted-proprietary"),
+            _model(id="ext-b", provider="selfhosted", api="also-not-an-api"),
         ],
-        registered=("telnaut",),
+        registered=("selfhosted",),
     )
-    labels, blocked = _build_provider_labels(["telnaut"], registry)
+    labels, blocked = _build_provider_labels(["selfhosted"], registry)
 
     assert "some models" not in labels[0]
-    entry = blocked["telnaut"]
+    entry = blocked["selfhosted"]
     assert entry.recoverable is False
     assert entry.partial is False
 

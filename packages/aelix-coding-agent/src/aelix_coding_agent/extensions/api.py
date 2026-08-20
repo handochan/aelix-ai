@@ -1866,8 +1866,8 @@ class ExtensionAPI:
         ``provider`` is a :class:`aelix_coding_agent.login_registry.LoginProvider`
         (duck-typed: ``id`` / ``name`` / ``authenticate``). When the user picks it
         in ``/login``, its async ``authenticate`` handler runs a custom credential
-        flow (e.g. a corporate 'telnaut' prompting for an employee number) and the
-        wizard persists the returned credential under ``id``. Pair with
+        flow (e.g. a 'selfhosted' provider prompting for the access token its own
+        console issued) and the wizard persists that credential under ``id``. Pair with
         :meth:`register_provider` so the same id resolves an adapter for turns.
 
         Queued for replay on every harness (re)build AND best-effort fanned out to
@@ -1900,8 +1900,8 @@ class ExtensionAPI:
         """Register a CUSTOM wire-protocol adapter under a custom ``api`` id (#77).
 
         For an endpoint the built-in ``openai-completions`` config can't express —
-        e.g. a corporate 'telnaut' that needs ``verify=False``, the model baked
-        into the URL, or non-OpenAI fields — supply a :data:`StreamFn`
+        e.g. a 'selfhosted' endpoint whose TLS needs your own CA bundle, the model
+        baked into the URL, or non-OpenAI fields — supply a :data:`StreamFn`
         ``(Model, Context, SimpleStreamOptions) -> AsyncIterator[event]``. A
         ``Model`` whose ``api`` equals this id then routes to your stream_fn.
         The easiest stream_fn builds a custom ``openai.AsyncOpenAI`` (with its own
@@ -1920,7 +1920,7 @@ class ExtensionAPI:
         ``aclose`` and their ``close()`` is a coroutine, ``httpx.AsyncClient`` is
         ``aclose()`` only, and ``google.genai.Client`` needs ``client.aio.aclose()``
         (its plain ``close()`` is sync and leaves the async pool open). Worked
-        example: ``aelix_coding_agent/examples/telnaut/telnaut.py``; prose:
+        example: ``aelix_coding_agent/examples/selfhosted/selfhosted.py``; prose:
         ``aelix docs extension-authoring``.
 
         Queued + fanned out to the process-global api registry now, and REPLAYED

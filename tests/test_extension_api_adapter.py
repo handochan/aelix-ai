@@ -1,8 +1,8 @@
 """Issue #77 follow-up — ExtensionAPI.register_api_adapter (custom wire adapters).
 
 An extension can register a custom StreamFn under its own ``api`` id (for an
-endpoint the built-in openai-completions config can't express — verify=False,
-model-in-URL, non-OpenAI fields). Covers queue + immediate fan-out + the
+endpoint the built-in openai-completions config can't express — a private CA
+bundle, model-in-URL, non-OpenAI body fields). Covers queue + immediate fan-out + the
 reload-survival replay (reset_api_providers wipes the process-global registry;
 the harness rebuild's bind_api_adapters re-applies).
 """
@@ -15,7 +15,7 @@ import pytest
 from aelix_ai import api_registry
 from aelix_coding_agent.extensions.api import Extension, ExtensionAPI, _ExtensionRuntime
 
-_TEST_API = "telnaut-openai-test"
+_TEST_API = "selfhosted-openai-test"
 
 
 @pytest.fixture(autouse=True)
@@ -75,7 +75,7 @@ def test_registered_adapter_resolves_for_its_api() -> None:
     assert getattr(provider, "source_id", None) == "aelix-ext-api-adapter"
 
 
-def test_telnaut_example_registers_custom_adapter() -> None:
+def test_selfhosted_example_registers_custom_adapter() -> None:
     from aelix_coding_agent.login_registry import (
         get_login_providers,
         reset_login_providers,
@@ -84,12 +84,12 @@ def test_telnaut_example_registers_custom_adapter() -> None:
     reset_login_providers()
     try:
         api, rt = _api()
-        from aelix_coding_agent.examples.telnaut.telnaut import setup
+        from aelix_coding_agent.examples.selfhosted.selfhosted import setup
 
         setup(api)
-        assert "telnaut-openai" in api_registry.get_registered_providers()  # custom adapter
-        assert any(n == "telnaut" for n, _ in rt.pending_provider_registrations)  # /model
-        assert "telnaut" in [p.id for p in get_login_providers()]  # /login
+        assert "selfhosted-openai" in api_registry.get_registered_providers()  # custom adapter
+        assert any(n == "selfhosted" for n, _ in rt.pending_provider_registrations)  # /model
+        assert "selfhosted" in [p.id for p in get_login_providers()]  # /login
     finally:
         with contextlib.suppress(Exception):
             reset_login_providers()

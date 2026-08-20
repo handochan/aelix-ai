@@ -32,7 +32,7 @@ def _api() -> tuple[ExtensionAPI, _ExtensionRuntime]:
     return ExtensionAPI(Extension(name="t"), rt), rt
 
 
-def _provider(id_: str = "telnaut", name: str = "Telnaut") -> LoginProvider:
+def _provider(id_: str = "selfhosted", name: str = "Self-hosted endpoint") -> LoginProvider:
     return LoginProvider(id=id_, name=name, authenticate=_auth)
 
 
@@ -43,17 +43,17 @@ def test_register_login_provider_queues_and_fans_out() -> None:
     # Queued for replay on the next harness (re)build...
     assert provider in rt.pending_login_provider_registrations
     # ...and visible immediately in the process-global registry.
-    assert [p.id for p in get_login_providers()] == ["telnaut"]
+    assert [p.id for p in get_login_providers()] == ["selfhosted"]
 
 
 def test_unregister_login_provider_queues_and_removes() -> None:
     api, rt = _api()
     api.register_login_provider(_provider())
-    api.unregister_login_provider("telnaut")
-    assert "telnaut" in rt.pending_login_provider_unregistrations
+    api.unregister_login_provider("selfhosted")
+    assert "selfhosted" in rt.pending_login_provider_unregistrations
     # The pending registration was dropped so replay order stays clean.
     assert all(
-        getattr(p, "id", None) != "telnaut"
+        getattr(p, "id", None) != "selfhosted"
         for p in rt.pending_login_provider_registrations
     )
     assert get_login_providers() == []
@@ -67,16 +67,16 @@ def test_bind_login_registries_replays_queue() -> None:
     reset_login_providers()
     assert get_login_providers() == []
     rt.bind_login_registries()
-    assert [p.id for p in get_login_providers()] == ["telnaut"]
+    assert [p.id for p in get_login_providers()] == ["selfhosted"]
     assert rt.pending_login_provider_registrations == []  # queue drained
 
 
-def test_telnaut_example_registers_both_surfaces() -> None:
+def test_selfhosted_example_registers_both_surfaces() -> None:
     # The shipped worked example must keep registering a login provider (for
-    # /login) AND a turn provider (for /model), sharing the id 'telnaut'.
-    from aelix_coding_agent.examples.telnaut.telnaut import setup
+    # /login) AND a turn provider (for /model), sharing the id 'selfhosted'.
+    from aelix_coding_agent.examples.selfhosted.selfhosted import setup
 
     api, rt = _api()
     setup(api)
-    assert "telnaut" in [p.id for p in get_login_providers()]
-    assert any(name == "telnaut" for name, _ in rt.pending_provider_registrations)
+    assert "selfhosted" in [p.id for p in get_login_providers()]
+    assert any(name == "selfhosted" for name, _ in rt.pending_provider_registrations)

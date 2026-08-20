@@ -760,11 +760,11 @@ async def test_interactive_warns_but_still_launches_on_unrunnable_model(
     # A NON-EMPTY, uncatalogued provider → api="unknown". A ``not model.provider``
     # emptiness check is blind to this, which is why the gate uses is_runnable.
     code = await _async_main(
-        ["--no-session", "--provider", "telnaut", "--model", "tn-1"]
+        ["--no-session", "--provider", "selfhosted", "--model", "sh-1"]
     )
     assert code == 0  # launched anyway
     err = capsys.readouterr().err
-    assert "tn-1" in err  # names the offending model
+    assert "sh-1" in err  # names the offending model
     assert "/model" in err  # names the cure
 
 
@@ -816,11 +816,11 @@ async def test_print_mode_refuses_unrunnable_uncatalogued_provider(
     monkeypatch.delenv("OPENROUTER_DEFAULT_MODEL", raising=False)
 
     code = await _async_main(
-        ["--no-session", "--print", "--provider", "telnaut", "--model", "tn-1"]
+        ["--no-session", "--print", "--provider", "selfhosted", "--model", "sh-1"]
     )
     assert code == 1
     err = capsys.readouterr().err
-    assert "tn-1" in err
+    assert "sh-1" in err
     # Not the cryptic internal error the run used to die on mid-turn.
     assert "No provider registered for api=" not in err
     assert "providers.md" not in err

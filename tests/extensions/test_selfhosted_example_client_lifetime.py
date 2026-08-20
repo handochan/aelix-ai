@@ -1,16 +1,17 @@
-"""The shipped telnaut example closes the client it builds (#174).
+"""The shipped selfhosted example closes the client it builds (#174).
 
-WHY A TEST FOR AN EXAMPLE. ``examples/telnaut/telnaut.py`` is the repository's
-worked answer to "how do I add a private provider", and the extension-authoring
-guide reproduces it almost line for line. Before this file it demonstrated the
-exact defect #174 is about: a fresh ``AsyncOpenAI`` (wrapping a fresh
-``httpx.AsyncClient``) per request, handed to the built-in adapter through
-``replace(opts, client=...)`` and never closed. The built-in adapter will not
-close it for you — it only closes clients it created itself, deliberately, so
-that an injected client survives for its owner's next turn — so the example's
-own ``finally`` is the only thing that releases it. An example that teaches the
-bug is worse than no example, and the ``finally`` that fixes it is one line that
-a later edit can drop in silence. Hence a gate.
+WHY A TEST FOR AN EXAMPLE. ``examples/selfhosted/selfhosted.py`` is the
+repository's worked answer to "how do I point aelix at an OpenAI-compatible
+endpoint I run myself", and the extension-authoring guide reproduces it almost
+line for line. Before this file it demonstrated the exact defect #174 is about:
+a fresh ``AsyncOpenAI`` (wrapping a fresh ``httpx.AsyncClient``) per request,
+handed to the built-in adapter through ``replace(opts, client=...)`` and never
+closed. The built-in adapter will not close it for you — it only closes clients
+it created itself, deliberately, so that an injected client survives for its
+owner's next turn — so the example's own ``finally`` is the only thing that
+releases it. An example that teaches the bug is worse than no example, and the
+``finally`` that fixes it is one line that a later edit can drop in silence.
+Hence a gate.
 
 WHAT IS MEASURED, AND WHY NOT FILE DESCRIPTORS. #174's headline number ("FDs
 3 -> 23 over 15 turns") is not reproducible: the per-request client is a
@@ -40,6 +41,15 @@ CONSTRUCT-ONLY WOULD BE A FALSE GREEN for the connection half: building a client
 without issuing a request costs zero connections and zero FDs — the cost is per
 CONNECTION. That is why this drives a real request against a real socket instead
 of instantiating the client and asserting on it.
+
+THE CA BUNDLE ENV VAR. The example reads the ``verify=`` argument for its own
+``httpx.AsyncClient`` from ``SELFHOSTED_CA_BUNDLE`` and falls back to system
+trust when that is unset. The autouse fixture below scrubs the variable so this
+gate does not depend on the developer's shell: httpx 0.28.1 raises
+``FileNotFoundError`` AT CONSTRUCTION for a ``verify=`` path that does not
+exist, which would take the whole file down before it measured anything. Unset,
+the example constructs ``verify=True``, which costs nothing against the
+plain-HTTP 127.0.0.1 server here and leaves the client count unchanged.
 """
 
 from __future__ import annotations
@@ -54,7 +64,7 @@ import httpx
 import pytest
 from aelix_ai.messages import TextContent, UserMessage
 from aelix_ai.streaming import Context, Model, SimpleStreamOptions
-from aelix_coding_agent.examples.telnaut import telnaut
+from aelix_coding_agent.examples.selfhosted import selfhosted
 
 #: Turns per arm. Small — the property is "zero survive", not "fewer survive",
 #: so a big N buys nothing but wall clock.
@@ -64,6 +74,22 @@ N = 4
 #: ABSENCE claim on the fixed build, where the close is synchronous and the
 #: handler's ``readuntil`` raises within microseconds.
 _SETTLE_S = 2.0
+
+#: The variable the example reads its CA bundle path from.
+_CA_BUNDLE_ENV = "SELFHOSTED_CA_BUNDLE"
+
+
+@pytest.fixture(autouse=True)
+def _unset_ca_bundle(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin the example to ``verify=True`` regardless of the developer's shell.
+
+    See the module docstring: a ``SELFHOSTED_CA_BUNDLE`` left over in the
+    environment and pointing at a file that is not there raises
+    ``FileNotFoundError`` inside ``httpx.AsyncClient.__init__``, and this gate
+    would error out before reaching a single assertion.
+    """
+
+    monkeypatch.delenv(_CA_BUNDLE_ENV, raising=False)
 
 
 def _sse(payload: dict[str, Any]) -> str:
@@ -203,8 +229,8 @@ def _model(base_url: str) -> Model:
     return Model(
         id="gpt5mini",
         name="t",
-        provider="telnaut",
-        api="telnaut-openai",
+        provider="selfhosted",
+        api="selfhosted-openai",
         base_url=base_url,
     )
 
@@ -229,7 +255,7 @@ async def test_the_example_closes_each_client_it_builds_over_completed_turns() -
             try:
                 completed = 0
                 for _ in range(N):
-                    async for _event in telnaut._telnaut_stream(
+                    async for _event in selfhosted._selfhosted_stream(
                         _model(base_url), _context(), _opts()
                     ):
                         pass
@@ -275,7 +301,9 @@ async def test_the_example_closes_its_client_when_the_turn_is_aborted() -> None:
             try:
                 aborted = 0
                 for _ in range(N):
-                    agen = telnaut._telnaut_stream(_model(base_url), _context(), _opts())
+                    agen = selfhosted._selfhosted_stream(
+                        _model(base_url), _context(), _opts()
+                    )
                     async for _event in agen:
                         break  # abandon it parked at the stream_fn's own yield
                     await agen.aclose()
