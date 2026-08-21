@@ -221,6 +221,59 @@ def test_unreadable_archives_are_skipped_not_fatal(tmp_path: Path) -> None:
     assert [e["name"] for e in _entries(document)] == ["good-ext"]
 
 
+def test_non_ascii_metadata_is_read_verbatim(tmp_path: Path) -> None:
+    """A non-ASCII Summary must survive the read as text, not kill the scan.
+
+    ``BytesParser`` returns an ``email.header.Header`` (not a ``str``) for any header
+    carrying a non-ASCII byte, and _clean_display's regex raised TypeError on it — so
+    ONE intranet pack with a Korean summary, or aelix's own wheels (their summaries
+    carry an em dash), aborted the whole ``index`` command with a traceback. The
+    assertion is on the exact text because ``str(header)`` "works" while returning
+    mojibake.
+    """
+    _wheel(tmp_path, "notes-ext", "1.0.0", summary="사내 공용 메모 확장 — 팀 전용")
+    _sdist(tmp_path, "legacy-ext", "2.0.0", summary="사내 배포용 레거시 팩")
+
+    found = {a.name: a for a in ec.scan_artifacts(tmp_path)}
+
+    assert found["notes-ext"].summary == "사내 공용 메모 확장 — 팀 전용"
+    assert found["legacy-ext"].summary == "사내 배포용 레거시 팩"
+
+
+def test_non_ascii_homepage_is_read_verbatim(tmp_path: Path) -> None:
+    """The same trap sits on every header the indexer reads, not just Summary."""
+    _wheel(
+        tmp_path,
+        "notes-ext",
+        "1.0.0",
+        summary="ASCII only",
+        homepage="https://intranet.acme.test/확장/notes",
+    )
+
+    entry = _entries(ec.build_index_catalog(ec.scan_artifacts(tmp_path)))[0]
+
+    assert entry["homepage"] == "https://intranet.acme.test/확장/notes"
+
+
+def test_cli_indexes_a_non_ascii_wheelhouse(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """End to end: the command exits 0, skips nothing, and the text round-trips."""
+    _wheel(tmp_path, "notes-ext", "1.0.0", summary="사내 공용 메모 확장")
+
+    rc = ei.run_extension_command(["index", str(tmp_path), "--name", "사내 카탈로그"])
+
+    assert rc == 0
+    assert "Skipped" not in capsys.readouterr().out
+    payload = (tmp_path / "catalog.json").read_text(encoding="utf-8")
+    document = json.loads(payload)
+    assert document["name"] == "사내 카탈로그"
+    assert _entries(document)[0]["description"] == "사내 공용 메모 확장"
+    # The emitted document must still satisfy the parser ``discover`` uses.
+    catalog = ec.parse_catalog(payload.encode("utf-8"), location=str(tmp_path))
+    assert catalog.entries[0].description == "사내 공용 메모 확장"
+
+
 def test_scan_is_not_recursive(tmp_path: Path) -> None:
     """A neighbouring build tree must not be swept in."""
     _wheel(tmp_path, "top-ext", "1.0.0")

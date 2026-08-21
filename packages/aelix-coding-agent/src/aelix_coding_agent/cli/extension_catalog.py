@@ -949,16 +949,25 @@ def read_artifact(path: Path) -> IndexedArtifact | None:
     """
 
     import hashlib  # noqa: PLC0415 — only the index path pays this import
-    from email.parser import BytesParser  # noqa: PLC0415
+    from email import message_from_string  # noqa: PLC0415
 
     try:
         raw = _read_metadata_bytes(path)
+        # Core metadata is UTF-8 (PEP 566), and it is decoded BEFORE the parse
+        # deliberately. ``BytesParser`` hands back an ``email.header.Header`` — not a
+        # ``str`` — for any header carrying a non-ASCII byte, and _clean_display's regex
+        # then raises TypeError: a pack whose Summary held Korean text (or an em dash,
+        # which aelix's own wheels carry) took the WHOLE ``index`` command down with a
+        # traceback, skipping nothing. ``str(header)`` is not the fix — it re-encodes the
+        # unknown-8bit payload and yields mojibake. The parse sits INSIDE the try for the
+        # same reason the read does: this function's contract is that an unreadable
+        # archive is skipped and counted, never fatal to the scan.
+        meta = message_from_string(raw.decode("utf-8", "replace")) if raw else None
     except Exception:  # noqa: BLE001 — a corrupt archive skips, never aborts the scan
         return None
-    if not raw:
+    if meta is None:
         return None
 
-    meta = BytesParser().parsebytes(raw)
     name = _clean_display(meta.get("Name"))
     if not name:
         return None
