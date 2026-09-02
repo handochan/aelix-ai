@@ -12,12 +12,22 @@ agent 생태계의 장단점을 비교하면서 구현합니다. 이 문서는 �
 
 ### pi agent
 
-pi agent는 Aelix의 가장 직접적인 구현 기준입니다.
+pi agent는 Aelix의 primary reference입니다.
 
-Aelix의 목표는 pi agent를 Python으로 거의 완벽에 가깝게 구현하는 것입니다.
-다만 pi agent의 날것에 가까운 유연성을 그대로 가져오는 데서 끝나지 않고,
-permission system과 최소 guardrail을 built-in extension으로 포함해 더 안정적인
-기반에서 시작합니다.
+Aelix는 pi agent를 Python으로 재구현해 왔고, 그 포팅은 A 단계 종료(ADR-0086)로
+닫혔습니다. **이제 목표는 parity가 아닙니다** — pi agent는 따라가야 할 기준이 아니라
+*검증된 참조 구현*이며, divergence는 ADR을 요구하지 않습니다(ADR-0235).
+
+문제가 생기거나 새 표면을 설계할 때는 pi agent의 **최신** 코드와 이슈를 먼저
+확인합니다. 상당 부분이 그것의 포팅이므로 같은 문제를 이미 풀어 놓았을 가능성이
+높습니다. 다만 명세가 아니라 증거로 읽습니다.
+
+기존 ADR이 인용하는 SHA 핀(`734e08e`, ADR-0034)은 그 인용들이 해석되는 앵커로
+남아 있으며, 현재 작업이 맞춰야 할 버전이 아닙니다.
+
+포팅 범위에서 pi agent와 의도적으로 달랐던 부분은 그대로입니다: permission system과
+최소 guardrail을 built-in extension으로 포함해 더 안정적인 기반에서 시작합니다
+(ADR-0004).
 
 참조 관점:
 
@@ -94,7 +104,7 @@ deepsight-ai는 이미 구현 중이던 내부 프로젝트이며, Aelix를 다�
 
 ## 참조 원칙
 
-- pi agent는 primary reference로 둡니다.
+- pi agent는 primary reference로 두되, parity 대상이 아니라 검증된 참조 구현으로 다룹니다(ADR-0235).
 - 다른 프로젝트는 그대로 복제하기보다 특정 설계 관점별로 비교합니다.
 - deepsight-ai의 기능을 무비판적으로 이식하지 않습니다. 복잡도가 커진 원인을 먼저 분리합니다.
 - reference에서 가져온 결정은 필요하면 `decisions/`에 ADR로 남깁니다.

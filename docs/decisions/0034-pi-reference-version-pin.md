@@ -15,6 +15,12 @@ line moved 20 lines down, breaking the audit chain.
 
 ## Decision
 
+> **Role change (2026-09-03, ADR-0235).** 이 핀은 더 이상 *Aelix가 맞춰야 할
+> 버전*이 아니다. `734e08e`를 인용하는 ADR 158개와 테스트 파일 60개가 해석되는
+> **앵커**로 남는다. 따라서 정리 목적으로 옮기거나 지우면 안 된다. 아래 update
+> policy는 위반된 것이 아니라 무의미해졌다 — 현재 작업은 고정된 Pi에 자신을
+> 견주지 않는다. 이 ADR은 superseded가 아니며, 인용 앵커로서 계속 Accepted다.
+
 Pin Pi to a specific commit SHA per sprint.
 
 **Current pin: `earendil-works/pi@734e08edf82ff315bc3d96472a6ebfa69a1d8016`**
