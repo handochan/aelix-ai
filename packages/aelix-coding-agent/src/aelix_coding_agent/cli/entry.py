@@ -90,6 +90,7 @@ from aelix_coding_agent.extensions.loader import (
 from aelix_coding_agent.mcp import McpClientManager
 from aelix_coding_agent.subagent_contract import MAX_SUBAGENT_DEPTH, subagent_depth
 from aelix_coding_agent.tools import ALL_TOOL_NAMES, create_all_tools
+from aelix_coding_agent.util.stdio import harden_stdio, read_all_text
 
 from .agent_context import build_system_prompt, discover_context_files
 from .args import Args, parse_args, print_help
@@ -359,7 +360,11 @@ async def _read_piped_stdin(*, required: bool = True) -> str | None:
                         file=sys.stderr,
                     )
                 return None
-    data = await asyncio.to_thread(sys.stdin.read)
+    # N-3 (#110 P7): decode from BYTES, UTF-8 first and the code page second.
+    # A plain ``sys.stdin.read()`` uses the locale codec, so a UTF-8 prompt on
+    # a Korean/Japanese Windows console died with UnicodeDecodeError — and
+    # simply forcing UTF-8 would corrupt a genuinely cp949-encoded file.
+    data = await asyncio.to_thread(read_all_text, sys.stdin)
     stripped = data.strip()
     return stripped or None
 
@@ -3164,13 +3169,20 @@ def _inject_truststore() -> None:
 def main_sync() -> None:
     """Sync entry for ``[project.scripts] aelix = '...:main_sync'``.
 
-    Trusts the OS certificate store, loads a cwd ``.env`` + registers provider
+    Hardens the std streams against a non-UTF-8 code page (N-3, issue #110 P7),
+    trusts the OS certificate store, loads a cwd ``.env`` + registers provider
     adapters (real-turn enablement; done here rather than in :func:`_async_main`
     so tests/embedders that call ``_async_main`` directly stay side-effect-free),
     then wraps :func:`_async_main` in :func:`asyncio.run` and forwards the exit
     code.
+
+    :func:`~aelix_coding_agent.util.stdio.harden_stdio` runs FIRST: it must
+    reconfigure ``sys.stdin`` before :func:`_read_piped_stdin` performs the
+    first read, and every diagnostic the later steps can emit already needs an
+    encodable stdout.
     """
 
+    harden_stdio()
     _inject_truststore()
     load_dotenv()
     register_providers()

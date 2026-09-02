@@ -377,7 +377,7 @@ async def test_stdin_is_devnull(tmp_path: Path) -> None:
     """Pins the +30 s landmine.
 
     An INHERITED stdin sends the child into ``_read_piped_stdin``
-    (``cli/entry.py:254-364``), which blocks for the whole
+    (``cli/entry.py:255-365``), which blocks for the whole
     ``AELIX_STDIN_TIMEOUT`` on a pipe nobody will write to — and any bytes that
     DO arrive are prepended to the task message.
     """
@@ -2084,7 +2084,7 @@ def test_env_mcp_config_cleared() -> None:
 
 
 def test_env_pins_the_stdin_timeout() -> None:
-    """An INHERITED ``"0"`` means WAIT FOREVER (``cli/entry.py:309-317``)."""
+    """An INHERITED ``"0"`` means WAIT FOREVER (``cli/entry.py:310-318``)."""
 
     env = build_child_env(_profile(), base={"AELIX_STDIN_TIMEOUT": "0"})
     assert env["AELIX_STDIN_TIMEOUT"] == "1"

@@ -8,6 +8,7 @@ Launches uvicorn programmatically against the module-level
 from __future__ import annotations
 
 import uvicorn
+from aelix_coding_agent.util.stdio import harden_stdio
 
 from aelix_server.config import ServerConfig
 
@@ -25,6 +26,16 @@ def main() -> None:
 
 
 def main_sync() -> None:
-    """Console-script target (``[project.scripts] aelix-server``)."""
+    """Console-script target (``[project.scripts] aelix-server``).
 
+    Hardens the std streams first, for the same reason as the ``aelix`` CLI
+    (N-3, issue #110 P7). NOT measured on Windows, and deliberately stated
+    without a failure claim: uvicorn's access log goes through ``logging``,
+    whose ``StreamHandler.emit`` catches ``UnicodeEncodeError`` and prints
+    ``--- Logging error ---`` instead, so a non-ASCII request path buries the
+    log rather than killing the daemon. Writes that do NOT go through
+    ``logging`` have no such catch.
+    """
+
+    harden_stdio()
     main()

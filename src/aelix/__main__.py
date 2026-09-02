@@ -51,6 +51,7 @@ from aelix_ai.streaming import (
 )
 from aelix_coding_agent.examples.echo.echo import echo_tool
 from aelix_coding_agent.rpc import run_rpc_mode
+from aelix_coding_agent.util.stdio import harden_stdio
 
 
 def _make_mock_stream_fn() -> Any:
@@ -324,6 +325,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
 
 
 def main(argv: list[str] | None = None) -> None:
+    harden_stdio()
     args = _parse_args(argv)
 
     # Sprint 6e (Phase 4.5): dispatch the ``auth`` subcommand first.

@@ -151,7 +151,7 @@ async def _run(
 
     Returns the captured ``options``, the ``harness``, its assembled
     ``system_prompt``, the RESOLVED ``app_mode`` and the exit code. Stopping
-    inside ``create_agent_session_runtime`` (``entry.py:2864``) means no turn,
+    inside ``create_agent_session_runtime`` (``entry.py:2869``) means no turn,
     no network and no TUI, while everything upstream — trust resolution,
     extension discovery, skill loading, the prompt assembly — is the production
     path.
@@ -358,7 +358,7 @@ async def test_every_app_mode_produces_the_same_context_chunk(
     Issue #121 is worded as though a headless run (``-p`` / ``--mode json`` /
     ``--mode rpc``) were the risky case, which implies the modes differ. They
     do not: ``_resolve_append_chunks`` is reached from one factory for all four
-    ``resolve_app_mode`` outcomes (``entry.py:138-154``), so this test encodes
+    ``resolve_app_mode`` outcomes (``entry.py:139-155``), so this test encodes
     that the mode is NOT a variable. If someone later special-cases headless,
     three of these four go red at once.
 

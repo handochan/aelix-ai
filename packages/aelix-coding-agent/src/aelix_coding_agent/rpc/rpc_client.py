@@ -162,7 +162,7 @@ class RpcClientOptions:
     running flags nobody chose.
 
     The default argv is ``python -m aelix --mode rpc``, which points at the
-    umbrella package's **mock-echo demo** (``src/aelix/__main__.py:143-147``),
+    umbrella package's **mock-echo demo** (``src/aelix/__main__.py:144-148``),
     not the real CLI. Any caller wanting a real child must use this field;
     ``cli_path`` is not an escape, it splices in as a bare script path.
     """
