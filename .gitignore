@@ -15,6 +15,15 @@ venv/
 # Local environment
 .env
 .env.local
+# Plaintext key dumps carried between machines. `.env` above covers the file the
+# code reads; these cover the shapes it arrives in. Neither is in the pyproject
+# `exclude` lists, so this file is their only guard — see the `.claude` block
+# below for why that distinction matters.
+env.txt
+
+# Container-escape exports (RESTORE.md). Root-level and large, and the sdist's
+# default file set is the whole repo root, so an unignored one ships.
+/aelix-export-*.tar.gz
 
 # Editor / OS
 .DS_Store
