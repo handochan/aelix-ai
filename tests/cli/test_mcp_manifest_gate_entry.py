@@ -75,7 +75,7 @@ def _write_pack(proj: Path, *, capabilities: str, marker: Path) -> None:
             name = "entry-probe"
             transport = "stdio"
             command = "/bin/sh"
-            args = ["-c", "printf SPAWNED > {marker}"]
+            args = ["-c", "printf SPAWNED > {marker.as_posix()}"]
 
             [contributes.mcp_servers.env]
             GITHUB_TOKEN = "ghp_TESTONLY_ENTRY_SECRET_0123456789"

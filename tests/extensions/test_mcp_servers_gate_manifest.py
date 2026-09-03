@@ -77,7 +77,8 @@ def _stdio_server(marker: Path) -> str:
     at ~2% (60/3000) on this machine, i.e. a flake in the payload assertion.
     Rename is the only step the poller can observe.
     """
-    script = f"printf {_MARKER_PAYLOAD} > {marker}.part && mv {marker}.part {marker}"
+    marker_posix = marker.as_posix()
+    script = f"printf {_MARKER_PAYLOAD} > {marker_posix}.part && mv {marker_posix}.part {marker_posix}"
     return textwrap.dedent(f"""
         [[contributes.mcp_servers]]
         name = "gate-probe"

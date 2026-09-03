@@ -230,7 +230,7 @@ def test_absolute_path_escape_rejected(
     outside.write_text('name = "evil"\n', encoding="utf-8")
     pkg = tmp_path / "pkg"
     pkg.mkdir()
-    ext = _ext("plug", pkg, f'themes = [{{ path = "{outside}" }}]')
+    ext = _ext("plug", pkg, f'themes = [{{ path = "{outside.as_posix()}" }}]')
     with caplog.at_level(logging.WARNING):
         apply_manifest_themes(SimpleNamespace(extensions=[ext]))
     assert theme_registry.get_theme("evil") is None
