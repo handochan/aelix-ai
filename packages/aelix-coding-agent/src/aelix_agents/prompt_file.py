@@ -208,12 +208,20 @@ def _pid_is_live_win32(pid: int) -> bool:
 
     import ctypes  # noqa: PLC0415 — windows-only, keep it off the POSIX path
 
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+    # Both suppressions are about the CHECKER, not about doubt at runtime:
+    # ``WinDLL`` and ``get_last_error`` exist only on windows, and the type
+    # gate analyses this file as Linux. The guard in :func:`_pid_is_live` is
+    # what makes the branch unreachable elsewhere; pyright cannot narrow into
+    # a separate function, so it has to be told.
+    kernel32 = ctypes.WinDLL(  # pyright: ignore[reportAttributeAccessIssue]
+        "kernel32", use_last_error=True
+    )
     handle = kernel32.OpenProcess(_SYNCHRONIZE, False, pid)
     if not handle:
         # Only "no such pid" is proof of death. ACCESS_DENIED and friends mean
         # a process exists and is not ours — LIVE, per the contract above.
-        return ctypes.get_last_error() != _ERROR_INVALID_PARAMETER
+        last_error = ctypes.get_last_error()  # pyright: ignore[reportAttributeAccessIssue]
+        return last_error != _ERROR_INVALID_PARAMETER
     try:
         return kernel32.WaitForSingleObject(handle, 0) != _WAIT_OBJECT_0
     finally:
