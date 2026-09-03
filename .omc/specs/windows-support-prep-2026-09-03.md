@@ -68,11 +68,15 @@
   (마지막은 `SLICE-STATUS.md` 목록에도 없던 사이트). 해법은 이미 있다 —
   W3의 `tools/_process_tree.kill_process_tree`.
 - **#203** 🔴 **프로세스 kill 테스트 2건이 Linux 밖에서 공허하게 통과한다.** §4 참조.
-- **#204** 🔴 **AUTO 모드가 Windows에서 ASK로 강등된다** — `permission.py:624`가
-  `is_classifiable_shell`로 게이트하고 `_CLASSIFIABLE_SHELLS`에 PowerShell·`cmd`가 없다.
-  강등 자체는 **옳다**: bash 문법에 PowerShell을 먹이면 `Remove-Item -Recurse -Force C:\`가
-  ALLOW로 나온다(미탐지가 아니라 **적극적 오권한 부여**, `bash_classifier.py:77-87` 주석).
-  해법은 문법 확장이 아니라 **PowerShell/cmd 전용 분류기**이고 별도 트랙 규모다.
+- **#204** 🔴 **AUTO의 ALLOW 판정이 Windows에서 ASK로 강등된다**(DENY는 셸 검사 전에
+  그대로 나간다) — `permission.py`의 `_auto_classify_bash`가 `is_classifiable_shell`로
+  게이트하고 `_CLASSIFIABLE_SHELLS`에 PowerShell·`cmd`가 없다.
+  강등 자체는 **옳다** — 다만 `Remove-Item`류가 ALLOW로 새서가 아니다(그런 이름은 분류
+  테이블에 없어 ASK로 떨어진다, 실측). 진짜 오권한은 반대 모양이었다: `date`·`sort`처럼
+  **테이블이 읽기 전용으로 아는 이름**의 인자를 ALLOW 티어가 안 읽어, cmd 하
+  `date 01-01-2030`(시계 변경)·`sort in.txt /o out.txt`(파일 쓰기)가 **0be16cd 이전엔**
+  ALLOW로 샜다. 해법은 문법 확장이 아니라 **PowerShell/cmd 전용 분류기**
+  (`bash_classifier.py:83-95`, `0be16cd`).
 
 ## 4. 베이스라인 — macOS에서 실측
 

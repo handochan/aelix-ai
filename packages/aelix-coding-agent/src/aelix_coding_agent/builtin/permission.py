@@ -639,13 +639,22 @@ class PermissionExtension:
 
         #104 — the verdict is only honoured for a shell the grammar actually
         describes. The tool runs the command through
-        :func:`~aelix_coding_agent.tools.bash._resolve_shell`, which on Windows
-        resolves PowerShell or ``cmd``; the bash grammar reads those command
-        lines as harmless words and returns ALLOW, so an unqualified verdict
-        would auto-run ``Remove-Item -Recurse -Force`` without a prompt. When
-        the resolved shell is outside the grammar's competence the ALLOW is
-        downgraded to ASK. DENY is deliberately still honoured — a bash-shaped
-        destructive command is worth blocking whatever the shell.
+        :func:`~aelix_coding_agent.tools.bash._resolve_shell`, which on
+        Windows resolves PowerShell or ``cmd``. A destructive cmdlet name
+        like ``Remove-Item`` matches no table and already falls to the
+        unknown-command ASK — that was never the mis-permissioning. The real
+        gap was the opposite shape: a KNOWN read-only name (``date``, ``sort``)
+        whose arguments the ALLOW tier did not read, and whose meaning changes
+        under cmd. ``0be16cd`` narrowed those three names to flag-only /
+        no-``/``-argument forms; the shell gate covers whatever else of that
+        shape the bash tables still hold. When the resolved shell is outside
+        the grammar's competence the ALLOW is downgraded to ASK. DENY is
+        deliberately still honoured — a bash-shaped destructive command (e.g.
+        ``rm foo.txt``, DENYed outright even under PowerShell where ``rm``
+        aliases ``Remove-Item``) is worth blocking whatever the shell. A
+        design pass on #204 proposed dropping
+        that pre-check; it stays until a PowerShell-aware classifier can
+        replace it — tightening now, loosening with its compensating control.
         """
 
         try:

@@ -1,11 +1,17 @@
 """AUTO mode must not auto-allow through a shell the bash grammar can't read (#104).
 
 The classifier binds the tree-sitter BASH grammar and nothing else. Its verdict
-was previously honoured whatever shell the bash tool would actually spawn, so
-on Windows — where ``_resolve_shell`` now resolves PowerShell or ``cmd`` — a
-PowerShell command line parsed as a run of harmless words and came back ALLOW.
-That is mis-permissioning, not a missed detection: ``Remove-Item -Recurse
--Force C:\\`` would have run with no prompt.
+was previously honoured whatever shell the bash tool would actually spawn. A
+destructive cmdlet name like ``Remove-Item -Recurse -Force C:\\`` was never the
+risk — it matches no table and already falls to the unknown-command ASK. The
+real mis-permissioning was the opposite shape: a KNOWN read-only name (``date``,
+``sort``) whose arguments the ALLOW tier did not read, and whose meaning changes
+under cmd (``date <value>`` sets the clock; ``sort /O <file>`` writes a file).
+``0be16cd`` narrowed those names; the gate below is the backstop for the same
+shape. ALLOW is the only tier whose name-alone decision is permissive (DENY
+and ASK also match on the bare name, but in the fail-safe direction), so on
+Windows — where ``_resolve_shell`` now resolves PowerShell or ``cmd`` — that
+tier's verdict is no longer trustworthy and gets downgraded to ASK.
 
 These tests RUN on Linux. The resolved shell is injected at the seam the
 permission gate uses, so the Windows verdicts are asserted rather than skipped.
@@ -133,7 +139,13 @@ async def test_windows_shell_forces_ask_instead_of_auto_allow(
 
 
 async def test_powershell_removal_is_not_silently_allowed(resolved_shell) -> None:
-    """The concrete damage case: the bash grammar sees only harmless words."""
+    """Unknown-command ASK still prompts under a non-bash shell.
+
+    ``Remove-Item -Recurse -Force C:\\`` matches no classifier table and
+    already resolves to ASK on its own (see bash_classifier.py:83-95); this
+    only confirms that verdict still reaches the user under PowerShell rather
+    than being coerced into anything else.
+    """
 
     resolved_shell(_POWERSHELL)
     ctx = _FakeCtx()

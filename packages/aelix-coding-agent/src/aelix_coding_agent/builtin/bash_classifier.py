@@ -416,10 +416,11 @@ def _classify_git(command: Any) -> Verdict:
 _READ_ONLY_ONLY_WHEN_BARE = frozenset({"date", "hostname", "sort"})
 """``_READ_ONLY`` names that are read-only by virtue of the PROGRAM, not the word.
 
-The ALLOW tier decides on the command name alone — every other tier inspects
-arguments. That asymmetry is sound only while the name maps to the POSIX
-program. It does not on Windows, and these three were measured returning ALLOW
-for a mutation:
+The ALLOW tier decides on the command name alone, and it is the only tier whose
+name-alone decision is permissive (``_DENY_COMMANDS`` / ``_ALWAYS_ASK_COMMANDS``
+match the bare name too, but fail-safe). That asymmetry is sound only while the
+name maps to the POSIX program. It does not on Windows, and these three were
+measured returning ALLOW for a mutation:
 
 * ``date 01-01-2030`` — cmd's ``date <value>`` SETS THE SYSTEM CLOCK. Not
   only Windows: BSD ``date`` takes the new time as a positional too.
