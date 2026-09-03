@@ -219,7 +219,10 @@ def _simulate_win32(monkeypatch: pytest.MonkeyPatch) -> None:
     """Make the module see Windows: no ``os.fchmod``, ``sys.platform`` win32."""
 
     monkeypatch.setattr(fs_mod.sys, "platform", "win32", raising=True)
-    monkeypatch.delattr(fs_mod.os, "fchmod", raising=True)
+    # raising=False: on a real windows runner the attribute is already gone,
+    # and a delattr that insists on removing it turns the regression guard
+    # into a failure on the one platform it guards.
+    monkeypatch.delattr(fs_mod.os, "fchmod", raising=False)
 
 
 async def test_write_file_on_windows_does_not_die_on_missing_fchmod(
@@ -266,14 +269,25 @@ async def test_append_file_on_windows_does_not_die_on_missing_fchmod(
 
 
 async def test_the_guard_is_platform_scoped_not_a_blanket_disable(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The POSIX tightening must survive the Windows fix.
 
     A guard written as a bare ``suppress(AttributeError)`` or an unconditional
     early return would pass both cases above while quietly retiring Track S2 on
     the platform that has mode bits. This is the case that would catch that.
+
+    Asserts the *call*, not the resulting mode. Reading the mode back would pin
+    this case to POSIX — windows reports 0o666 and cannot be made to say 0o600 —
+    and a case that fails on windows is exactly what this file already has ten
+    of. Spying keeps it meaningful on every runner.
     """
+
+    calls: list[int] = []
+    monkeypatch.setattr(fs_mod.sys, "platform", "linux", raising=True)
+    monkeypatch.setattr(
+        fs_mod.os, "fchmod", lambda _fd, mode: calls.append(mode), raising=False
+    )
 
     target = tmp_path / "sessions" / "s.jsonl"
     target.parent.mkdir(parents=True)
@@ -282,4 +296,4 @@ async def test_the_guard_is_platform_scoped_not_a_blanket_disable(
 
     await LocalFileSystem().append_file(str(target), "{}\n")
 
-    assert _mode(target) == SESSION_FILE_MODE
+    assert calls == [SESSION_FILE_MODE]
