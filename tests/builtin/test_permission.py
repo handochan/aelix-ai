@@ -712,3 +712,160 @@ async def test_auto_mode_dangerous_bash_blocks_without_prompt() -> None:
     result = await perm._on_tool_call(_bash_event("rm -rf /"), ctx)  # type: ignore[arg-type]
     assert result is not None and result.block
     assert ui.select_calls == 0  # classifier DENY → no prompt
+
+
+# ============================================================
+# WINDOWS PARITY — a rule key must not carry the authoring platform's separator
+# ============================================================
+#
+# The bug: both key builders read ``os.path.normpath(path.replace("\\", "/"))``.
+# The ``.replace`` folds to ``/`` and ``os.path`` — bound to ``ntpath`` on
+# Windows — converts every one straight back, so ``write:src/a.py`` on POSIX and
+# ``write:src\a.py`` on Windows are different strings for the same file.
+#
+# NO ``skipif`` HERE, on purpose (same reasoning as
+# ``tests/cli/test_stdio_encoding_win32.py``): a guard that only runs on the
+# platform CI cannot run is not a guard. The Windows-ness of this failure is
+# entirely in two module-level bindings, so injecting them reproduces it exactly
+# on every platform:
+#
+#   * ``permission.os`` -> an ``os`` stand-in whose ``.path`` is ``ntpath``,
+#     which is what ``os.path`` IS on Windows; and
+#   * ``permission.fnmatch`` -> the Windows behaviour of ``fnmatch.fnmatch``,
+#     which normcases BOTH sides first (``ntpath.normcase`` lowercases and turns
+#     ``/`` into ``\``). Injecting the match side too means these cases pin the
+#     whole path, not just the key builders.
+
+import ntpath  # noqa: E402
+from fnmatch import fnmatchcase  # noqa: E402
+
+from aelix_coding_agent.builtin import permission  # noqa: E402
+
+
+class _NtOs:
+    """The ``os`` surface the two key builders touch, with Windows semantics."""
+
+    path = ntpath
+    sep = ntpath.sep
+
+
+def _nt_fnmatch(name: str, pat: str) -> bool:
+    """``fnmatch.fnmatch`` as CPython runs it on Windows: normcase, then match."""
+
+    return fnmatchcase(ntpath.normcase(name), ntpath.normcase(pat))
+
+
+def _as_windows(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Drive the permission module's path logic under Windows semantics."""
+
+    monkeypatch.setattr(permission, "os", _NtOs)
+    monkeypatch.setattr(permission, "fnmatch", _nt_fnmatch)
+
+
+def test_rule_key_is_identical_on_both_path_flavours(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CONSEQUENCE 1 — the key is the same string whoever built it.
+
+    Measured before the fix, with ``_NtOs`` injected::
+
+        _rule_key("write", {"path": "src/a.py"}) -> 'write:src\\a.py'
+
+    so a grant authored on POSIX could never match the same file on Windows.
+    Both SPELLINGS of the input must also land on one key, because the two
+    platforms hand the tool different ones for the same file.
+    """
+
+    host = permission._rule_key("write", {"path": "src/a.py"})
+    assert host == "write:src/a.py"
+
+    _as_windows(monkeypatch)
+    assert permission._rule_key("write", {"path": "src/a.py"}) == host
+    assert permission._rule_key("write", {"path": r"src\a.py"}) == host
+    assert "\\" not in host
+
+
+def test_session_directory_grant_does_not_degrade_on_windows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CONSEQUENCE 2 — "approve this directory" must not become "approve this file".
+
+    ``_session_wildcard`` finds the parent with ``norm.rsplit("/", 1)``. A
+    backslashed ``norm`` contains no ``/``, so ``parent`` came out ``""`` and the
+    function fell through to the bare-filename EXACT pin. Measured before the
+    fix, with ``_NtOs`` injected::
+
+        _session_wildcard("write", {"path": "src/app/main.py"})
+            -> 'write:src\\app\\main.py'      (not 'write:src/app/*')
+
+    which re-prompts on every other file in the directory the user just
+    approved — a silent downgrade of the grant they were shown.
+    """
+
+    _as_windows(monkeypatch)
+    grant = permission._session_wildcard("write", {"path": "src/app/main.py"})
+    assert grant == "write:src/app/*"
+
+    perm = PermissionExtension()
+    perm._session_allows.add(grant)
+    assert perm._is_session_allowed(
+        permission._rule_key("write", {"path": "src/app/util.py"})
+    )
+    # ...and the Windows spelling of that same sibling, which is what the tool
+    # actually receives there.
+    assert perm._is_session_allowed(
+        permission._rule_key("write", {"path": r"src\app\util.py"})
+    )
+
+
+def test_grant_string_is_byte_identical_across_platforms(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The STRING a grant would be persisted as does not depend on who wrote it.
+
+    ``_session_allows`` is in-memory and ``session_shutdown``-cleared today, so
+    nothing reaches disk yet — but the rule key is the thing a ``settings.json``
+    grant would be, and a key carrying the authoring platform's separator cannot
+    travel between machines.
+
+    Asserted on the STRINGS rather than on ``_is_session_allowed``, because a
+    match-side assertion would not have pinned this. Measured: on Windows
+    ``fnmatch.fnmatch`` normcases both sides through ``ntpath.normcase``, which
+    folds ``/`` to ``\\`` in the PATTERN too — so a POSIX-authored
+    ``write:src/app/*`` does still match an nt-spelled candidate even with the
+    bug present. That accident covers only wildcard grants; it does nothing for
+    the exact pins, and nothing for a grant that has to survive as text.
+    """
+
+    posix_grant = permission._session_wildcard("write", {"path": "src/app/main.py"})
+    _as_windows(monkeypatch)
+    nt_grant = permission._session_wildcard("write", {"path": r"src\app\main.py"})
+    assert nt_grant == posix_grant == "write:src/app/*"
+
+
+def test_traversal_escape_still_blocked_on_windows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The WP-0 #3 defence must survive the fix, in BOTH path flavours.
+
+    Collapsing ``..`` is what ``normpath`` is for and every flavour does it, so
+    the old code was fail-CLOSED rather than a hole. Pinned here so a future
+    change to the canonicalisation cannot quietly trade the defence for the
+    portability.
+    """
+
+    _as_windows(monkeypatch)
+    perm = PermissionExtension()
+    perm._session_allows.add(
+        permission._session_wildcard("write", {"path": "src/app/main.py"})
+    )
+    for escape in ("src/app/../../etc/passwd", r"src\app\..\..\etc\passwd"):
+        assert permission._rule_key("write", {"path": escape}) == "write:etc/passwd"
+        assert not perm._is_session_allowed(
+            permission._rule_key("write", {"path": escape})
+        )
+    # A grant synthesized FROM an escaping path must not become a directory
+    # wildcard over the escaped-to location's parent either.
+    assert not permission._session_wildcard(
+        "write", {"path": "../../etc/passwd"}
+    ).endswith("/*")

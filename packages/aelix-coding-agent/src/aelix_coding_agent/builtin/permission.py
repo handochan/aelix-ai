@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import asyncio
 import os.path
+import posixpath
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from fnmatch import fnmatch
@@ -172,6 +173,52 @@ def _extension_redirect(args: dict[str, Any], cwd: str) -> tuple[str, str, str] 
     return None
 
 
+def _canonical_path(path: str) -> str:
+    r"""Canonicalise a write target into the PLATFORM-INDEPENDENT form rule keys use.
+
+    ``posixpath.normpath`` and not ``os.path.normpath``, and the difference is
+    the whole point. Both sites below used to read
+    ``os.path.normpath(path.replace("\\", "/"))``, where the ``.replace`` folds
+    to ``/`` and ``os.path`` — bound to :mod:`ntpath` on Windows — converts every
+    one straight back::
+
+        ntpath.normpath("src/a.py")     -> "src\a.py"
+        posixpath.normpath("src/a.py")  -> "src/a.py"
+
+    Two things broke, both measured:
+
+    1. RULE KEYS WERE PLATFORM-DEPENDENT. ``write:src/a.py`` on POSIX and
+       ``write:src\a.py`` on Windows are different strings, so a grant is only
+       ever matched by a process running the same OS as the one that made it.
+       Nothing persists these keys today (``_session_allows`` is in-memory and
+       cleared on ``session_shutdown``), but the moment one is written to a
+       ``settings.json`` that travels between machines the key must not carry
+       the authoring platform's separator with it.
+    2. DIRECTORY GRANTS SILENTLY DEGRADED TO SINGLE-FILE GRANTS.
+       :func:`_session_wildcard` splits the canonical form on ``/`` to find the
+       parent. With a backslashed ``norm`` there is no ``/``, so ``parent`` came
+       out ``""`` and the function fell into the bare-filename branch: "yes, for
+       this session" on ``src/app/main.py`` stored ``write:src\app\main.py``
+       instead of ``write:src/app/*``, and every sibling file in the approved
+       directory re-prompted.
+
+    THE TRAVERSAL DEFENCE IS UNAFFECTED, which is why the old form was
+    fail-closed rather than a hole — the collapse of ``..`` is what
+    ``normpath`` is for and both flavours do it::
+
+        ntpath.normpath("src/app/../../etc/passwd")     -> "etc\passwd"
+        posixpath.normpath("src/app/../../etc/passwd")  -> "etc/passwd"
+
+    Still a pure string canonicalisation — no filesystem access. The separate
+    ``os.path`` use in :func:`_is_auto_allowable_write` is deliberately NATIVE
+    and must stay that way: it feeds ``realpath`` and an ``os.sep`` containment
+    test against a real path on the running machine, which is the opposite
+    problem to this one.
+    """
+
+    return posixpath.normpath(path.replace("\\", "/"))
+
+
 def _rule_key(tool_name: str, args: dict[str, Any]) -> str:
     """Build the exact, TOOL-NAMESPACED rule key a call is matched against.
 
@@ -190,9 +237,10 @@ def _rule_key(tool_name: str, args: dict[str, Any]) -> str:
         # Canonicalise the candidate path BEFORE matching so a traversal
         # candidate (``src/app/../../etc/passwd``) collapses to its real target
         # (``etc/passwd``) and can NOT fnmatch a ``write:src/app/*`` directory
-        # grant (finding WP-0 #3 — fnmatch ``*`` spans ``/``). normpath is a
-        # pure string canonicalisation (no filesystem access).
-        norm = os.path.normpath(path.replace("\\", "/"))
+        # grant (finding WP-0 #3 — fnmatch ``*`` spans ``/``). See
+        # :func:`_canonical_path` for why the canonical form is POSIX-shaped on
+        # every platform.
+        norm = _canonical_path(path)
         return f"write:{norm}"
     return f"tool:{tool_name}"
 
@@ -239,9 +287,14 @@ def _session_wildcard(tool_name: str, args: dict[str, Any]) -> str:
         path = _path_from_args(args)
         if not path:
             return f"write:{tool_name}"
-        # Canonicalise the SAME way ``_rule_key`` does so the stored grant aligns
-        # with the normalised candidate keys it is matched against.
-        norm = os.path.normpath(path.replace("\\", "/"))
+        # Canonicalise through the SAME helper ``_rule_key`` uses so the stored
+        # grant aligns with the normalised candidate keys it is matched against.
+        # The split below is on ``/`` and only ``/``, which is exactly why the
+        # canonical form may not carry a native separator: a backslashed ``norm``
+        # has no ``/``, so ``parent`` came out empty and this fell through to the
+        # bare-filename EXACT pin — a directory grant degrading to a single-file
+        # one, silently. See :func:`_canonical_path`.
+        norm = _canonical_path(path)
         parent = norm.rsplit("/", 1)[0] if "/" in norm else ""
         if not parent:
             return f"write:{norm}"
