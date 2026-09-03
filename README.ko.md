@@ -59,6 +59,22 @@ curl -fsSL https://raw.githubusercontent.com/handochan/aelix-ai/main/install.sh 
 > **기존 설치를 지웁니다.** 위 설치 스크립트를 쓰시고, 업그레이드도 같은 줄을 다시 실행하세요.
 > 첫 GA 릴리즈가 올라가면 이 명령들이 진짜를 받아옵니다.
 
+## 플랫폼 지원
+
+**macOS와 Linux를 지원합니다. Windows는 지원하지 않으며, 베타는 그런 척하지 않습니다.**
+CI는 `ubuntu-latest`에서 Python 3.11/3.12로 전체 스위트를 돌리고, 개발은 macOS에서 이뤄집니다.
+
+`windows-latest` 레그가 있긴 하지만 참고용입니다 — 보고만 하고 차단하지 않습니다. `a49e664`
+기준 **9,271건 중 238건이 실패**합니다. POSIX 가드 하나가 빠져 있던 것을 고친 뒤 433건에서
+줄어든 숫자입니다. 실패는 실제이고 종류도 다양합니다: POSIX mode 비트를 단언하는 테스트,
+`/`를 가정하는 경로, Windows 기본값이 UTF-8이 아닌 파일 읽기 인코딩, 그리고 아직 Windows
+등가물이 없는 프로세스 처리(`os.killpg`, `signal.SIGKILL`). 특히 위임(delegation)은 POSIX 전용입니다.
+
+Windows에서 Aelix가 실행되고 쓸모 있게 동작할 수도 있습니다. 다만 그중 무엇도 검증되지
+않았고, 릴리즈가 거기에 걸려 있지 않으며, 거기서 회귀가 나도 CI는 실패하지 않습니다.
+포팅 현황은 [#110](https://github.com/handochan/aelix-ai/issues/110), 표기와 CI 레그는
+[#103](https://github.com/handochan/aelix-ai/issues/103)에서 추적합니다.
+
 ## 빠른 시작
 
 ```bash

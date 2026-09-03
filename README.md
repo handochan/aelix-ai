@@ -60,6 +60,24 @@ to upgrade; `uv tool uninstall aelix` to remove.
 > will **delete an existing install**. Use the installer above; re-run it to upgrade. Once the
 > first GA release is published these commands resolve the real thing.
 
+## Platform support
+
+**macOS and Linux are supported. Windows is not, and the beta does not pretend otherwise.**
+CI runs the full suite on `ubuntu-latest` against Python 3.11 and 3.12, and development happens
+on macOS.
+
+A `windows-latest` leg exists and is advisory — it reports, it does not gate. At `a49e664` it
+stands at **238 failing tests out of 9,271**, down from 433 once a single missing POSIX guard
+was fixed. The failures are real and varied: tests that assert POSIX mode bits, paths that
+assume `/`, a file-read encoding that is not UTF-8 by default on Windows, and process plumbing
+(`os.killpg`, `signal.SIGKILL`) with no Windows equivalent yet. Delegation in particular is
+POSIX-only.
+
+Aelix may well start on Windows and do useful work. Nothing about that is verified, no release
+is gated on it, and a regression there will not fail CI. Track the port in
+[#110](https://github.com/handochan/aelix-ai/issues/110); the labelling and the CI leg are
+[#103](https://github.com/handochan/aelix-ai/issues/103).
+
 ## Quick start
 
 ```bash
