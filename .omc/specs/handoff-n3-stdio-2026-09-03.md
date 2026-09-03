@@ -49,15 +49,42 @@ git rev-parse --short origin/main       # e6a346d 가 아니면 아래 전부 �
 
 1. 🔴 **"errors가 strict만 아니면 보존해도 된다"는 틀렸다.**
    `surrogateescape`는 **디코드에서는 total이지만 인코드에서는 raise한다** — cp949 스트림에
-   `"█"` 쓰면 `UnicodeEncodeError`. 실측했다. 그리고 그게 **CPython의 Windows stdio 기본값**이다.
-   그대로 보존했으면 macOS·Linux 테스트는 전부 통과하면서 **정작 이 모듈이 존재하는 이유인
-   Windows에서만 여전히 깨졌을 것이다.** 지금은 방향별로 "raise할 수 있는가"를 묻는다
+   `"█"` 쓰면 `UnicodeEncodeError`. 실측했다. 자기가 만든 surrogate만 왕복시키고 진짜로
+   인코드 불가능한 문자에는 raise한다. 지금은 방향별로 "raise할 수 있는가"를 묻는다
    (`_TOTAL_ENCODE_ERRORS` / `_TOTAL_DECODE_ERRORS`).
+
+   **왜 이게 Windows에서 치명적인가 — 출처를 달아 둔다.** CPython
+   `Python/initconfig.c::config_get_stdio_errors`가 `#else`(= `MS_WINDOWS`) 가지에서
+   **무조건** `surrogateescape`를 돌려준다. 주석 그대로 *"On Windows, always use
+   surrogateescape by default"*. 3.11·3.12 양쪽에서 동일하다(소스 확인).
+
+   여기서 콘솔과 리다이렉트를 갈라 봐야 정확하다:
+
+   | Windows stdout | encoding | errors | 이 모듈의 처리 |
+   |---|---|---|---|
+   | 콘솔 | `utf-8` (`_WindowsConsoleIO`, PEP 528) | surrogateescape | `_is_utf8` 조기 반환 → **no-op** |
+   | **리다이렉트(= CI)** | **ANSI 코드페이지** (cp949 등) | **surrogateescape** | **여기가 고치는 가지** |
+
+   즉 옛 규칙("strict만 아니면 보존")은 **정확히 CI 경로에서** surrogateescape를 보존했을
+   것이고, 그러면 인코드는 여전히 raise한다. macOS·Linux 테스트는 전부 green인 채로
+   **N-3이 존재하는 이유인 그 경로만 계속 깨진다.**
+   (`sys.stderr`는 항상 `backslashreplace`라 애초에 위험하지 않았다.)
+
+   ⚠️ **실기 Windows에서 관측한 것이 아니다 — CPython 소스에서 읽은 것이다.**
+   첫 `windows-latest` 실행이 확인해 줘야 한다. 이 세션의 macOS 측정값은 참고만:
+   로케일 미설정/`C`에서는 surrogateescape, `LC_ALL=en_US.UTF-8`에서는 strict, `-X utf8`에서는
+   surrogateescape — 즉 **macOS의 surrogateescape는 UTF-8 모드(PEP 540)에서 온 것이지
+   "어디서나 기본값"이 아니다.** 이 구분을 놓치면 위 표가 통째로 무너진다.
 
 2. 🔴 **stdin 코덱을 "UTF-8 먼저"로 고르면 안 된다.**
    짧은 코드페이지 문자열이 그 자체로 유효한 UTF-8일 수 있다:
    `cp949 "책"` = `c3 a5` = 유효한 UTF-8 `"å"`, `cp949 "짜"` = `c2 a5` = `"¥"`.
    초안의 테스트는 **하필 UTF-8로 무효한 문구**를 골라서 통과했다.
+
+   🔴 **이 실패 모드는 크래시가 아니라 조용한 오염이다.** UTF-8 먼저 시도해도 raise하지
+   않는다 — 한글 대신 그럴듯한 라틴 문자를 돌려주고 그대로 모델에 넘어간다. **원래 버그보다
+   나쁘다**(원래는 최소한 시끄럽게 죽었다). 그리고 **"죽지 않는다"만 검사하는 fixture로는
+   원리상 잡히지 않는다.** #203과 정확히 같은 모양이다.
    지금은 **선언된 인코딩 먼저, UTF-8 나중**이다. 이 순서가 함수를 *strictly additive*로
    만든다 — 전에 디코드되던 입력은 전부 동일하게 디코드되고, **전에 죽던 입력만** 새 경로를
    탄다. 반대 방향엔 이 위험이 없다: UTF-8 한글은 cp949로 무효다(`0xec`는 적법한 lead가 아님).
@@ -105,7 +132,11 @@ git rev-parse --short origin/main       # e6a346d 가 아니면 아래 전부 �
 
 오너 승인을 받아 **되돌리지 않고 그 위에 얹었다.** 원본은 보존돼 있다:
 
-- 패치: `git stash create` → `40ce1b21d97669a3936577a4154dadfd9fefc6a9`
+- **태그 `wip/harden-stdio-unattributed` → `40ce1b2`** ← 이걸 써라.
+  ⚠️ `git stash create`가 뱉는 SHA는 **dangling commit**이라 아무도 참조하지 않으면
+  `git gc`가 수거한다. 그래서 태그로 고정했다. 로컬 lightweight 태그라 `git push`로는
+  안 올라간다 — 원격에도 남기려면 `git push origin wip/harden-stdio-unattributed`.
+  (세션 scratchpad에 뜬 `.patch` 파일은 임시 디렉터리라 durable하지 않다.)
 - 그 구현이 가진 결함 5건(리다이렉트 시 UTF-8 아님 / stdin 미커버 / citation 게이트 red /
   `python -m aelix` 기동 2배 / 테스트 0)은 전부 이번 커밋에서 해소했다.
 

@@ -64,12 +64,25 @@ _RECONFIGURE_ERRORS = (AttributeError, ValueError, LookupError, OSError)
 # would silently drop a BOM the environment explicitly asked for.
 _UTF8_NAMES = frozenset({"utf-8", "utf-8-sig"})
 
-# Handlers that CANNOT raise, per direction. "Not strict" is NOT the test:
+# Handlers that CANNOT raise, PER DIRECTION. "Not strict" is NOT the test:
 # ``surrogateescape`` is total on DECODE but raises on ENCODE for any ordinary
-# unencodable character — measured, ``"█"`` on a cp949 stream. That distinction
-# is load-bearing here, because CPython's Windows default for the std streams
-# is ``surrogateescape``, so preserving it blindly would leave the exact
-# platform this module exists for still crashing.
+# unencodable character — measured, ``"█"`` on a cp949 stream. It round-trips
+# only the surrogates it created itself.
+#
+# That distinction is load-bearing on the one path this module exists for.
+# CPython's ``Python/initconfig.c::config_get_stdio_errors`` returns
+# ``surrogateescape`` unconditionally under ``MS_WINDOWS`` ("On Windows, always
+# use surrogateescape by default" — verbatim, unchanged in 3.11 and 3.12), so a
+# REDIRECTED Windows stdout carries the ANSI code page *with surrogateescape*.
+# Preserving it there — exactly the CI path — would keep the encode raising
+# while every POSIX test stayed green. (A Windows CONSOLE is unaffected either
+# way: PEP 528 reports ``utf-8``, so the early return above fires. ``stderr``
+# was never at risk; it defaults to ``backslashreplace``.)
+#
+# Read from CPython source, NOT observed on a Windows host — the first
+# ``windows-latest`` run is what confirms it. On darwin ``surrogateescape``
+# comes from UTF-8 mode (PEP 540), not from being a universal default:
+# ``LC_ALL=en_US.UTF-8`` yields ``strict`` here.
 _TOTAL_ENCODE_ERRORS = frozenset(
     {"replace", "backslashreplace", "xmlcharrefreplace", "namereplace", "ignore"}
 )
