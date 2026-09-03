@@ -149,15 +149,16 @@ git rev-parse --short origin/main       # e6a346d 가 아니면 아래 전부 �
 확인). 유력 후보는 이 레포에 스코프된 **Codex 에이전트**(`PATH=.../aelix-ai/.venv/bin`인
 `codex app-server` 프로세스 5개+) 또는 **VS Code 직접 편집**이다.
 
-오너 승인을 받아 **되돌리지 않고 그 위에 얹었다.** 원본은 보존돼 있다:
+오너 승인을 받아 **되돌리지 않고 그 위에 얹었다.** 원본은 재작성 동안 태그로 붙잡아뒀다가
+**오너 판단으로 폐기했다(2026-09-03).** 태그(`wip/harden-stdio-unattributed`)도 patch 파일도
+더 이상 없다 — 찾지 마라. 이전 판의 이 문단은 그 태그를 쓰라고 지시했다. 그 지시는 죽었다.
 
-- **태그 `wip/harden-stdio-unattributed` → `40ce1b2`** ← 이걸 써라.
-  ⚠️ `git stash create`가 뱉는 SHA는 **dangling commit**이라 아무도 참조하지 않으면
-  `git gc`가 수거한다. 그래서 태그로 고정했다. 로컬 lightweight 태그라 `git push`로는
-  안 올라간다 — 원격에도 남기려면 `git push origin wip/harden-stdio-unattributed`.
-  (세션 scratchpad에 뜬 `.patch` 파일은 임시 디렉터리라 durable하지 않다.)
+- 폐기해도 됐던 이유: 30줄짜리였고, 아래 결함 5건을 안고 있었고, `util/stdio.py`
+  (270줄 + win32 테스트 27개)로 완전히 대체됐다. 남길 값어치가 있던 건 바이트가 아니라
+  **무엇을 의도했는가**이고, 그건 이 문단이 기록한다.
 - 그 구현이 가진 결함 5건(리다이렉트 시 UTF-8 아님 / stdin 미커버 / citation 게이트 red /
   `python -m aelix` 기동 2배 / 테스트 0)은 전부 이번 커밋에서 해소했다.
+- ⚠️ **원 작성자가 나타나면 이 문단이 유일한 기록이다.** 원본 diff는 복구할 수 없다.
 
 **교훈:** 이 레포에서 `git status`는 세션 시작 시점의 스냅샷일 뿐이다. 팬아웃 전후로 다시 봐라.
 
