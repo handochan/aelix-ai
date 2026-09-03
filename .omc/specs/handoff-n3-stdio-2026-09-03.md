@@ -71,10 +71,29 @@ git rev-parse --short origin/main       # e6a346d 가 아니면 아래 전부 �
    (`sys.stderr`는 항상 `backslashreplace`라 애초에 위험하지 않았다.)
 
    ⚠️ **실기 Windows에서 관측한 것이 아니다 — CPython 소스에서 읽은 것이다.**
-   첫 `windows-latest` 실행이 확인해 줘야 한다. 이 세션의 macOS 측정값은 참고만:
-   로케일 미설정/`C`에서는 surrogateescape, `LC_ALL=en_US.UTF-8`에서는 strict, `-X utf8`에서는
-   surrogateescape — 즉 **macOS의 surrogateescape는 UTF-8 모드(PEP 540)에서 온 것이지
-   "어디서나 기본값"이 아니다.** 이 구분을 놓치면 위 표가 통째로 무너진다.
+   첫 `windows-latest` 실행이 확인해 줘야 한다.
+
+   🔴 **그리고 트리거 자체는 Windows 전용이 아니다 — 이 문서의 첫 판본이 틀렸다.**
+   같은 함수가 surrogateescape에 도달하는 경로는 **셋**이다: UTF-8 모드(PEP 540),
+   레거시 `C`/`POSIX` 로케일, 그리고 **PEP 538 coercion target** — 여기에 `C.UTF-8`이
+   들어간다. **`C.UTF-8`은 대부분의 컨테이너·CI 이미지의 기본 로케일이다.**
+   이 기계에서 실측:
+
+   | env | `utf8_mode` | `stdout.errors` |
+   |---|---|---|
+   | ambient (`LANG=C.UTF-8`) | **0** | **surrogateescape** |
+   | `LC_ALL=en_US.UTF-8` | 0 | strict |
+   | `LC_ALL=C` | 1 | surrogateescape |
+
+   즉 옛 규칙은 **평범한 Linux CI에서도** raise하는 핸들러를 보존했을 것이다. 거기서
+   드러나지 않았던 이유는 단 하나 — **UTF-8 스트림은 뭐든 인코드되니 raise 지점에
+   도달하지 않는다.** 조건이 **둘** 겹쳐야 터지고, Windows가 대는 건 두 번째뿐이다:
+
+   1. total이 아닌 핸들러가 보존됨 — CI에서 거의 보편적
+   2. 실제로 실패할 수 있는 코덱 — 레거시 코드페이지
+
+   **첫 판본은 1번을 Windows 고유로 적었다. 아니다.** 고친 규칙은 처음 생각했던 것보다
+   더 많은 플랫폼에서 유효하다.
 
 2. 🔴 **stdin 코덱을 "UTF-8 먼저"로 고르면 안 된다.**
    짧은 코드페이지 문자열이 그 자체로 유효한 UTF-8일 수 있다:

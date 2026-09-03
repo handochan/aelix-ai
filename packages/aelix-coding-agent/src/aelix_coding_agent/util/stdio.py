@@ -69,20 +69,31 @@ _UTF8_NAMES = frozenset({"utf-8", "utf-8-sig"})
 # unencodable character — measured, ``"█"`` on a cp949 stream. It round-trips
 # only the surrogates it created itself.
 #
-# That distinction is load-bearing on the one path this module exists for.
-# CPython's ``Python/initconfig.c::config_get_stdio_errors`` returns
-# ``surrogateescape`` unconditionally under ``MS_WINDOWS`` ("On Windows, always
-# use surrogateescape by default" — verbatim, unchanged in 3.11 and 3.12), so a
-# REDIRECTED Windows stdout carries the ANSI code page *with surrogateescape*.
-# Preserving it there — exactly the CI path — would keep the encode raising
-# while every POSIX test stayed green. (A Windows CONSOLE is unaffected either
-# way: PEP 528 reports ``utf-8``, so the early return above fires. ``stderr``
-# was never at risk; it defaults to ``backslashreplace``.)
+# A non-strict default is NOT exotic and NOT Windows-only.
+# ``Python/initconfig.c::config_get_stdio_errors`` reaches ``surrogateescape``
+# by three separate routes: UTF-8 mode (PEP 540), the legacy C/POSIX locale,
+# and any PEP 538 locale-coercion target — which includes ``C.UTF-8``, the
+# default locale in most container and CI images. Measured here: ambient
+# ``LANG=C.UTF-8`` gives ``utf8_mode=0`` and ``errors=surrogateescape``, while
+# ``LC_ALL=en_US.UTF-8`` gives ``strict``.
 #
-# Read from CPython source, NOT observed on a Windows host — the first
-# ``windows-latest`` run is what confirms it. On darwin ``surrogateescape``
-# comes from UTF-8 mode (PEP 540), not from being a universal default:
-# ``LC_ALL=en_US.UTF-8`` yields ``strict`` here.
+# So "preserve anything that is not strict" would have preserved a raising
+# handler on ordinary Linux CI too. It stayed invisible there only because a
+# UTF-8 stream encodes everything and never reaches the raise. TWO conditions
+# must coincide, and only the second is Windows-shaped:
+#
+#   1. a preserved non-total handler  — near-universal in CI
+#   2. a codec that can actually fail — a legacy code page
+#
+# Windows supplies (2). Its ``#else`` arm returns ``surrogateescape``
+# unconditionally ("On Windows, always use surrogateescape by default" —
+# verbatim, unchanged in 3.11 and 3.12), so a REDIRECTED Windows stdout carries
+# the ANSI code page *with* it. A Windows CONSOLE is unaffected: PEP 528
+# reports ``utf-8`` and the early return above fires. ``stderr`` was never at
+# risk; it defaults to ``backslashreplace``.
+#
+# The Windows half is read from CPython source, NOT observed on a Windows host
+# — the first ``windows-latest`` run is what confirms it.
 _TOTAL_ENCODE_ERRORS = frozenset(
     {"replace", "backslashreplace", "xmlcharrefreplace", "namereplace", "ignore"}
 )
