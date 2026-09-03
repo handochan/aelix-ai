@@ -190,6 +190,46 @@ def _signal_child(proc: Any, sig: int) -> None:
         os.kill(pid, sig)
 
 
+def _kill_signal() -> int:
+    """The signal that terminates unconditionally on THIS platform.
+
+    ``signal.SIGKILL`` does not exist on Windows, and :func:`kill_tree` named
+    it unguarded. ``AttributeError`` is no subclass of ``OSError``, so the
+    ``contextlib.suppress`` around the ``os.kill`` did not catch it either and
+    it escaped the handler whose entire job is to make a child stop existing.
+    The first ``windows-latest`` run died in :func:`kill_tree`'s descendant
+    loop, on ``AttributeError: module 'signal' has no attribute 'SIGKILL'``
+    (#103).
+
+    ``SIGTERM`` there is NOT a softening, and that is the only thing that makes
+    the substitution honest. Windows ``os.kill`` does not deliver signals at
+    all: every value except ``CTRL_C_EVENT`` and ``CTRL_BREAK_EVENT`` reaches
+    ``TerminateProcess(handle, sig)``, which the target cannot catch, block or
+    handle. The escalation is as absolute there as SIGKILL is here.
+
+    WHAT IS STILL MISSING ON WINDOWS is one step earlier, and no signal choice
+    here can reach it. :func:`reap`'s FIRST leg is ``os.kill`` too, so the
+    *cooperative* SIGTERM is already that same uncatchable ``TerminateProcess``:
+    the child never runs its ``_signal_cleanup_and_exit``, the grace buys
+    nothing, and since that cleanup is what reaps its ``bash`` grandchildren —
+    ``descendant_pids`` returns ``[]`` with no ``/proc`` to walk — the
+    grandchildren are orphaned by the first signal, before this function is
+    ever consulted. Closing that needs process-group or job-object isolation at
+    the SPAWN site, which Windows silently declines (CPython names the
+    parameter ``unused_start_new_session``). That is #202, not this.
+
+    Decided on ``sys.platform`` rather than ``hasattr(signal, "SIGKILL")``,
+    matching ``session/fs.py`` and :func:`pdeathsig_preexec`: pyright narrows
+    it, which also retires the ``reportAttributeAccessIssue`` the two lines
+    below raised on the windows type gate, and it keeps a platform decision
+    looking like one instead of like an inference from a missing name.
+    """
+
+    if sys.platform == "win32":
+        return signal.SIGTERM
+    return signal.SIGKILL
+
+
 def kill_tree(proc: Any, descendants: Sequence[int] = ()) -> None:
     """SIGKILL ``descendants`` (deepest first) and then the child itself.
 
@@ -201,12 +241,17 @@ def kill_tree(proc: Any, descendants: Sequence[int] = ()) -> None:
 
     Does NOT wait. The caller must still await the process, or the exit status
     is never collected and a zombie leaks (see :func:`reap`).
+
+    The signal comes from :func:`_kill_signal` rather than being the literal
+    ``signal.SIGKILL`` it reads as: that name does not exist on Windows, and
+    naming it here is what made this function raise there.
     """
 
+    sig = _kill_signal()
     for pid in descendants:
         with contextlib.suppress(ProcessLookupError, PermissionError, OSError):
-            os.kill(pid, signal.SIGKILL)
-    _signal_child(proc, signal.SIGKILL)
+            os.kill(pid, sig)
+    _signal_child(proc, sig)
 
 
 async def reap(

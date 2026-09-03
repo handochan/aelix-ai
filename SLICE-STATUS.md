@@ -44,11 +44,19 @@ re-discovering the crash.
    `aelix_agents/rpc_channel.py:438` pass `preexec_fn=pdeathsig`, which is
    POSIX-only and raises on Windows. **Owned by another track** — explicitly
    out of scope here, and untouched.
-2. **`reaper.py:208` (`os.kill(pid, signal.SIGKILL)`).** The third kill site.
-   It lives at `packages/aelix-coding-agent/src/aelix_agents/reaper.py`, i.e.
-   under `aelix_agents/`, so it belongs to the same other track. Verified by
-   path and left alone. W3's `tools/_process_tree.kill_process_tree` is the
-   helper it should adopt.
+2. **The third kill site in `aelix_agents/reaper.py` — LANDED.** `kill_tree`
+   named `signal.SIGKILL`, which does not exist on Windows, so the escalation
+   raised `AttributeError` inside the handler that exists to do the killing.
+   It now takes its signal from `reaper._kill_signal()`: `SIGTERM` on win32,
+   which is not a downgrade — Windows `os.kill` is `TerminateProcess(handle,
+   sig)` for every value that is not a console control event.
+   It did **not** adopt W3's `kill_process_tree`, and that was decided rather
+   than skipped. `reap`'s *first* leg is `os.kill` too, so on Windows the
+   "cooperative" SIGTERM already terminates the tree root uncatchably and
+   orphans its descendants before any escalation runs; a `taskkill /T` here
+   would arrive after the root it must walk from is gone. Closing that needs
+   process-group or job-object isolation at the spawn site, which Windows
+   silently declines (#202), not a different signal in the reaper.
 3. **`#46` cross-process locking.** *Correction to the original brief:* both
    `fcntl` sites are already `None`-guarded
    (`aelix_ai/settings/storage.py:198`, `aelix_ai/oauth/auth_storage.py:177`),
