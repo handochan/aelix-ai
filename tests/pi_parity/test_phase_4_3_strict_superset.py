@@ -34,7 +34,7 @@ _FIXTURES = Path(__file__).parent / "fixtures"
 
 
 def _load_fixture() -> dict:
-    return json.loads((_FIXTURES / "pi_oauth_734e08e.json").read_text())
+    return json.loads((_FIXTURES / "pi_oauth_734e08e.json").read_text(encoding="utf-8"))
 
 
 # === §A — OAuth provider registry (Sprint 6e: 3 of 3 live) ===

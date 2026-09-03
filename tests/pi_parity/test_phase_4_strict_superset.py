@@ -101,7 +101,7 @@ def test_12_streaming_event_variants_exist() -> None:
     assert len(classes) == 12
 
     fixture = json.loads(
-        (_FIXTURES / "pi_assistant_message_events_734e08e.json").read_text()
+        (_FIXTURES / "pi_assistant_message_events_734e08e.json").read_text(encoding="utf-8")
     )
     pi_types = {v["type"] for v in fixture["variants"]}
     aelix_types = {cls().type for cls in classes}  # type: ignore[call-arg]

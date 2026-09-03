@@ -167,7 +167,7 @@ def _emit_scope_text() -> str:
     parts: list[str] = []
     for path in _EMIT_SCOPE_FILES:
         if path.exists():
-            parts.append(path.read_text())
+            parts.append(path.read_text(encoding="utf-8"))
     return "\n".join(parts)
 
 
@@ -180,14 +180,14 @@ def _has_emit_site(source: str, class_name: str) -> bool:
 
 
 def test_fixture_pi_sha_pin() -> None:
-    fixture = json.loads(_FIXTURE.read_text())
+    fixture = json.loads(_FIXTURE.read_text(encoding="utf-8"))
     assert fixture["pi_sha"] == "734e08edf82ff315bc3d96472a6ebfa69a1d8016"
 
 
 def test_all_loop_agent_events_have_emit_site() -> None:
     """All 10 Pi loop ``AgentEvent`` projections must emit in runtime code."""
 
-    fixture = json.loads(_FIXTURE.read_text())
+    fixture = json.loads(_FIXTURE.read_text(encoding="utf-8"))
     loop_names = list(fixture["agent_event_names"])
     assert len(loop_names) == 10
     source = _emit_scope_text()
@@ -224,7 +224,7 @@ def test_phase_2_1_harness_own_events_have_emit_site() -> None:
 def test_deferred_allowlist_covers_all_remaining_pi_own_events() -> None:
     """Every Pi own-event is EITHER emitted today OR explicitly deferred."""
 
-    fixture = json.loads(_FIXTURE.read_text())
+    fixture = json.loads(_FIXTURE.read_text(encoding="utf-8"))
     pi_own = set(fixture["harness_own_event_names"])
     emitted = set(_HARNESS_OWN_EMIT_SUBSTRINGS.keys())
     deferred = set(DEFERRED_ALLOWLIST.keys())

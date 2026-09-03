@@ -61,7 +61,7 @@ def _camel_to_snake(name: str) -> str:
 
 def test_all_7_pi_tools_have_aelix_factories() -> None:
     fixture = json.loads(
-        (_FIXTURES / "pi_coding_tools_734e08e.json").read_text()
+        (_FIXTURES / "pi_coding_tools_734e08e.json").read_text(encoding="utf-8")
     )
     pi_names = set(fixture["tool_names"])
     assert pi_names == ALL_TOOL_NAMES, (
@@ -111,7 +111,7 @@ def test_three_phase_3_2_events_emit_sites_active() -> None:
 
 def test_8_tool_typed_call_variants_registered() -> None:
     fixture = json.loads(
-        (_FIXTURES / "pi_tool_call_event_variants_734e08e.json").read_text()
+        (_FIXTURES / "pi_tool_call_event_variants_734e08e.json").read_text(encoding="utf-8")
     )
     aelix_call = {
         BashToolCallHookEvent,
@@ -163,7 +163,9 @@ def test_narrow_helpers_present() -> None:
 
 def test_ecc_full_pi_surface_6_methods() -> None:
     fixture = json.loads(
-        (_FIXTURES / "pi_extension_command_context_methods_734e08e.json").read_text()
+        (_FIXTURES / "pi_extension_command_context_methods_734e08e.json").read_text(
+            encoding="utf-8"
+        )
     )
     members = set(dir(ExtensionCommandContext))
     for pi_method in fixture["methods"]:

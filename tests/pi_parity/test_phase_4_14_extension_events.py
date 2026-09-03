@@ -63,7 +63,7 @@ _FIXTURE = (
 
 
 def _load_fixture() -> dict[str, Any]:
-    return json.loads(_FIXTURE.read_text())
+    return json.loads(_FIXTURE.read_text(encoding="utf-8"))
 
 
 # === Closure invariant 1 — HookEventName widening ===============================

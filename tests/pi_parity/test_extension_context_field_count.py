@@ -29,7 +29,7 @@ def _camel_to_snake(name: str) -> str:
 
 
 def _load_fixture() -> dict:
-    return json.loads(_FIXTURE.read_text())
+    return json.loads(_FIXTURE.read_text(encoding="utf-8"))
 
 
 def test_fixture_pi_sha_pin() -> None:

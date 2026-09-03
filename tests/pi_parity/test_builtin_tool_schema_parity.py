@@ -114,7 +114,7 @@ async def test_edit_camelcase_payload_binds(tmp_path):
         {"path": "x.txt", "edits": [{"oldText": "world", "newText": "aelix"}]},
     )
     assert result.is_error is False
-    assert f.read_text() == "hello aelix\n"
+    assert f.read_text(encoding="utf-8") == "hello aelix\n"
 
 
 async def test_edit_snake_case_payload_no_longer_binds(tmp_path):
@@ -127,7 +127,7 @@ async def test_edit_snake_case_payload_no_longer_binds(tmp_path):
         {"path": "x.txt", "edits": [{"old_text": "world", "new_text": "aelix"}]},
     )
     assert result.is_error is True
-    assert f.read_text() == "hello world\n"  # unchanged — no silent write
+    assert f.read_text(encoding="utf-8") == "hello world\n"  # unchanged — no silent write
 
 
 async def test_grep_ignorecase_payload_binds(tmp_path):

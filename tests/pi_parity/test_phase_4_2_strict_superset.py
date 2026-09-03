@@ -71,7 +71,7 @@ PI_TOTAL_KNOWN_APIS = 9
 
 def _load_fixture() -> dict:
     return json.loads(
-        (_FIXTURES / "pi_openai_completions_734e08e.json").read_text()
+        (_FIXTURES / "pi_openai_completions_734e08e.json").read_text(encoding="utf-8")
     )
 
 

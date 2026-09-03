@@ -50,7 +50,7 @@ _PHASE_2_2_SESSION_EVENT_CLASSES = (
 
 
 def _harness_core_text() -> str:
-    return (_RUNTIME_ROOT / "harness" / "core.py").read_text()
+    return (_RUNTIME_ROOT / "harness" / "core.py").read_text(encoding="utf-8")
 
 
 def test_deferred_allowlist_contains_zero_phase_2_2_entries() -> None:

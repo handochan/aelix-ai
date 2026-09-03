@@ -26,7 +26,7 @@ _FIXTURE = (
 
 
 def _load_fixture() -> dict[str, list[str]]:
-    return json.loads(_FIXTURE.read_text())
+    return json.loads(_FIXTURE.read_text(encoding="utf-8"))
 
 
 def test_hook_event_name_literal_matches_pi_734e08e() -> None:

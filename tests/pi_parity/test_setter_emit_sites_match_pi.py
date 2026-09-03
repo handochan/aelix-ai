@@ -121,7 +121,7 @@ async def _call_setter(h: AgentHarness, aelix_name: str) -> None:
 async def test_setter_emit_sites_match_pi_734e08e() -> None:
     """For every Pi setter, Aelix emits exactly the same own-event set."""
 
-    fixture = json.loads(_FIXTURE.read_text())
+    fixture = json.loads(_FIXTURE.read_text(encoding="utf-8"))
     expected: dict[str, list[str]] = {
         pi_name: spec["emits"] for pi_name, spec in fixture["setters"].items()
     }

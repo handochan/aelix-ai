@@ -45,7 +45,7 @@ _FIXTURES = Path(__file__).parent / "fixtures"
 
 def _load_fixture() -> dict:
     return json.loads(
-        (_FIXTURES / "pi_agent_session_runtime_734e08e.json").read_text()
+        (_FIXTURES / "pi_agent_session_runtime_734e08e.json").read_text(encoding="utf-8")
     )
 
 

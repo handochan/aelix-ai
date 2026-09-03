@@ -65,7 +65,7 @@ _FIXTURES = Path(__file__).parent / "fixtures"
 
 
 def _load_fixture() -> dict:
-    return json.loads((_FIXTURES / "pi_get_commands_734e08e.json").read_text())
+    return json.loads((_FIXTURES / "pi_get_commands_734e08e.json").read_text(encoding="utf-8"))
 
 
 # === §A — Deferred / Supported counts move (P-219) ============================

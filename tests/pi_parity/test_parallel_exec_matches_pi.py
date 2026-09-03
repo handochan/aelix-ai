@@ -43,7 +43,7 @@ FIXTURE_PATH = Path(__file__).parent / "fixtures" / "pi_parallel_exec_semantics_
 
 
 def _load_fixture() -> dict[str, Any]:
-    return json.loads(FIXTURE_PATH.read_text())
+    return json.loads(FIXTURE_PATH.read_text(encoding="utf-8"))
 
 
 def _make_mock_stream(turn_finals: list[AssistantMessage]) -> Any:
