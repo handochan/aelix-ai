@@ -56,6 +56,14 @@ DENY를 반환해서 PowerShell `rm foo.txt`가 프롬프트 없이 하드 차�
 **제품 결함은 현재 0건이다.** 137건 AssertionError 전수 분류에서 제품 버그는 3건이었고 전부
 착륙했다(`c888052`, `ba1e21a`, `785ccf5`). 나머지는 테스트 부채이고, 이슈가 없어서 추적이 안 된다.
 
+> 🔴 **정정 (2026-09-04)** — 위 "0건"은 **반증됐다.** 141건 전수 재분류(run 33755783029, `9cd7e53`)에서
+> 제품 결함 3건이 새로 확인됐고 전부 AssertionError 안에 있었다: `extension_catalog.py`
+> `_file_url_to_path`가 `file:///C:/…`의 드라이브 문자를 잃어 모든 로컬 카탈로그 fetch가 죽음(17건, **#205**);
+> `help/registry.py`가 `Path` 객체를 정렬해 Windows에서 README가 맨 앞을 벗어남(**#208**);
+> `extension_install.py`의 `{target!r}`가 사용자 메시지의 백슬래시를 두 배로(**#208**). 네 번째 제품 표면은
+> `RpcClient.stop()`에 win32 분기가 없음(**#207**, #202와 같은 줄). 아래 클러스터 표도 실측치로 대체됐다 —
+> `handoff-windows-clusters-2026-09-04.md` §1.
+
 | 클러스터 | 건수 | 성격 |
 | --- | ---: | --- |
 | 자식 환경에서 `SystemRoot` 제거 → `WinError 10106` | 14 | **가장 싼 승리.** 자식이 `import asyncio`에서 죽는다. `_child_env()`가 `{PATH, PI_OFFLINE, PYTHONUNBUFFERED, PYTHONPATH}`만 만든다. `grep -rn SYSTEMROOT` → 0건 |
