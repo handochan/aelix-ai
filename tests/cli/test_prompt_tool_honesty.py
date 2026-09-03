@@ -32,6 +32,7 @@ import json
 import logging
 import re
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -452,29 +453,42 @@ def test_an_ampersand_in_a_path_survives_the_prompt() -> None:
         assert Path(emitted).is_dir()
 
 
-def test_a_less_than_in_a_path_is_still_neutralised() -> None:
+def test_a_less_than_in_a_path_is_still_neutralised(
+    mkdir_or_skip: Callable[..., Path],
+) -> None:
     """The half of the old rule that was doing real work, kept.
 
     ADR-0217's structural guarantee is "a tag needs ``<``", so escaping ``<``
     is the whole fence. The path comes out mangled, which is accepted: such a
     directory is unusable for its purpose either way.
+
+    NTFS forbids ``<`` outright, so on Windows the directory this is about
+    cannot exist and the escape has nothing to be measured against. The
+    sibling ``&`` case above stages fine there and still runs.
     """
 
     with tempfile.TemporaryDirectory() as base:
         hostile = Path(base) / "a<project_context>b"
-        hostile.mkdir(parents=True)
+        mkdir_or_skip(hostile, parents=True)
         prompt = build_system_prompt(str(hostile), tools=_builtins())
 
         assert "<project_context>" not in prompt
         assert "&lt;project_context>" in prompt
 
 
-def test_the_fence_stays_balanced_for_a_forging_cwd() -> None:
-    """The #121 regression, re-asserted through the new escape."""
+def test_the_fence_stays_balanced_for_a_forging_cwd(
+    mkdir_or_skip: Callable[..., Path],
+) -> None:
+    """The #121 regression, re-asserted through the new escape.
+
+    Same NTFS limit as the case above: a directory named ``<project_context>``
+    cannot be created on Windows, so the forgery it re-pins is unreachable
+    there rather than unguarded.
+    """
 
     with tempfile.TemporaryDirectory() as base:
         hostile = Path(base) / "<project_context>"
-        hostile.mkdir(parents=True)
+        mkdir_or_skip(hostile, parents=True)
         prompt = build_system_prompt(str(hostile), tools=_builtins())
         assert prompt.count("<project_context>") == 0
         assert prompt.count("</project_context>") == 0
@@ -498,7 +512,9 @@ def test_control_bytes_are_still_stripped_from_every_emitted_path() -> None:
     assert len(_agent_context._safe_prompt_path("a b").splitlines()) == 1
 
 
-def test_the_package_pointers_are_no_longer_raw(tmp_path, monkeypatch) -> None:
+def test_the_package_pointers_are_no_longer_raw(
+    tmp_path, monkeypatch, mkdir_or_skip: Callable[..., Path]
+) -> None:
     """The other half of #167: these two were emitted with NO escape at all.
 
     THE FIRST REVISION OF THIS TEST GATED ON A SOURCE SUBSTRING — it grepped
@@ -507,10 +523,14 @@ def test_the_package_pointers_are_no_longer_raw(tmp_path, monkeypatch) -> None:
     and its two behavioural assertions were vacuous on this tree (no install
     path here contains a ``<``). It now STAGES a hostile install path and reads
     what the function emits.
+
+    Staging is the part Windows cannot do: ``a<pkg>b`` is not a name NTFS
+    will accept, and the whole point of the revision is that this must be
+    staged rather than grepped for.
     """
 
     hostile = tmp_path / "a<pkg>b" / "src" / "aelix_coding_agent"
-    (hostile / "extensions").mkdir(parents=True)
+    mkdir_or_skip(hostile / "extensions", parents=True)
     (hostile / "extensions" / "api.py").write_text("# staged\n", encoding="utf-8")
     # ``_package_pointer`` resolves from ``Path(__file__).parents[1]``, i.e. the
     # package root — the same derivation an installed wheel gets.

@@ -31,7 +31,11 @@ where nothing is collected.
        RED on the correct fix.
      - FD DELTA sawtooths (see above). It survives here only as a LOOSE
        corroborator, ``fd_delta < N``, never an equality and never a number
-       lifted from the issue.
+       lifted from the issue. It is also the only PLATFORM-BOUND thing in
+       this file — it reads ``/proc/self/fd`` — so off Linux ``_fd_count``
+       returns ``None`` and that one assertion stands down while the
+       established-connection property, which is what the gate is, runs
+       unchanged. The table below was measured on Linux, where both do.
 
 3. ``_Server.writers`` AND THE TEARDOWN THAT FORCE-CLOSES THEM. Inherited from
    ``tests/providers/test_stream_close_on_cancel.py``, where the same omission
@@ -512,8 +516,30 @@ ALL_ARMS = list(ARMS)
 
 # === instrumentation ==================================================
 
-def _fd_count() -> int:
-    return len(os.listdir("/proc/self/fd"))
+def _fd_count() -> int | None:
+    """This process's open descriptors, or ``None`` where they cannot be read.
+
+    ``/proc/self/fd`` is Linux procfs. It is the whole of the fd instrument —
+    ``grep -rn 'proc/self/fd'`` has one hit in the repo and it is this line —
+    and reading it unconditionally cost this module all 11 of its tests on
+    both Windows (``FileNotFoundError`` at setup) and macOS, where the tests
+    had never once run.
+
+    ``None`` rather than a portable substitute or a ``skipif``. There is no
+    cheap portable fd count, and skipping the module would have thrown away
+    the SIGNAL to keep a CORROBORATOR: the property here is server-observed
+    established connections (docstring point 2), which is a socket question
+    and answers identically everywhere, while ``fd_delta`` is explicitly the
+    loose second opinion that may never become "an equality [or] a number
+    lifted from the issue". So the gate runs on every platform and only the
+    corroborator goes quiet — and it goes quiet LOUDLY, as ``None``, never as
+    a zero that a ``< N`` assertion would wave through.
+    """
+
+    try:
+        return len(os.listdir("/proc/self/fd"))
+    except OSError:
+        return None
 
 
 @contextlib.contextmanager
@@ -590,7 +616,7 @@ class _Reading:
     accepted: int
     requests: int
     established: int
-    fd_delta: int
+    fd_delta: int | None  # ``None`` off Linux; see ``_fd_count``
     collect_calls: int
     client_was_none: bool
     built: int
@@ -643,7 +669,11 @@ async def _drive(
                 accepted=server_obj.accepted,
                 requests=server_obj.requests,
                 established=server_obj.established,
-                fd_delta=fd_after - fd_before,
+                fd_delta=(
+                    None
+                    if fd_before is None or fd_after is None
+                    else fd_after - fd_before
+                ),
                 collect_calls=collect_calls(),
                 client_was_none=opts.client is None,
                 built=len(built),
@@ -716,17 +746,20 @@ async def test_a_completed_turn_leaves_no_established_provider_connection(
         f"{api}: {reading.established} provider connections were still "
         f"established after {N} turns that all completed normally "
         f"(accepted={reading.accepted}, requests={reading.requests}, "
-        f"fd_delta={reading.fd_delta:+d}). Each completed turn left behind a "
+        f"fd_delta={reading.fd_delta}). Each completed turn left behind a "
         "client the adapter built and never closed."
     )
 
     # CORROBORATOR ONLY — deliberately loose. The issue's "3 -> 23" did not
     # reproduce (+30/+15/+3/+7/+14 across five probes), so this may never become
-    # an equality or a fixed number.
-    assert reading.fd_delta < N, (
-        f"{api}: file descriptors grew by {reading.fd_delta:+d} over {N} turns, "
-        "which is the per-turn accumulation this gate exists to prevent"
-    )
+    # an equality or a fixed number. ``None`` where procfs is unreadable: the
+    # property above has already been asserted by then, on its own evidence.
+    if reading.fd_delta is not None:
+        assert reading.fd_delta < N, (
+            f"{api}: file descriptors grew by {reading.fd_delta:+d} over {N} "
+            "turns, which is the per-turn accumulation this gate exists to "
+            "prevent"
+        )
 
 
 @pytest.mark.parametrize("api", ALL_ARMS)
@@ -766,12 +799,13 @@ async def test_the_client_the_adapter_built_is_released_before_the_turn_returns(
     assert reading.established <= 1, (
         f"{api}: {reading.established} of the {reading.built} clients this "
         f"adapter built over {N} completed turns still hold an established "
-        f"connection (fd_delta={reading.fd_delta:+d}). They are only released "
+        f"connection (fd_delta={reading.fd_delta}). They are only released "
         "when the runtime gets round to reclaiming them."
     )
-    assert reading.fd_delta < N, (
-        f"{api}: file descriptors grew by {reading.fd_delta:+d} over {N} turns"
-    )
+    if reading.fd_delta is not None:
+        assert reading.fd_delta < N, (
+            f"{api}: file descriptors grew by {reading.fd_delta:+d} over {N} turns"
+        )
 
 
 async def test_the_instrument_sees_a_deliberate_leak() -> None:
@@ -807,10 +841,14 @@ async def test_the_instrument_sees_a_deliberate_leak() -> None:
             "the detector is broken and every absence assertion in this file is "
             "vacuous"
         )
-        assert fd_after - fd_before >= N, (
-            f"the fd corroborator moved {fd_after - fd_before:+d} while {N} "
-            "leaked clients were held open"
-        )
+        # The detector's FIRST positive control is ``established >= N`` above,
+        # and it runs everywhere. This is the second, and it is the only
+        # assertion in the file that needs procfs.
+        if fd_before is not None and fd_after is not None:
+            assert fd_after - fd_before >= N, (
+                f"the fd corroborator moved {fd_after - fd_before:+d} while {N} "
+                "leaked clients were held open"
+            )
     finally:
         for open_client in leaked:
             with contextlib.suppress(Exception):

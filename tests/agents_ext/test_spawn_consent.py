@@ -1379,6 +1379,13 @@ async def test_the_p2_door_end_to_end_cannot_be_forged() -> None:
     assert "read the README" not in title
 
 
+# ``mkdir_or_skip`` (``tests/conftest.py``) is left UNANNOTATED in this file,
+# alone among the four that use it. Typing it costs a ``collections.abc``
+# import at the top, and ``tui/context.py``'s citation into this file is
+# anchored on line 1292, which is BLANK — an anchor `check_citations.py`
+# cannot relocate, so any insertion above it turns the gate red by hand. That
+# citation is wrong today and was wrong before this change; re-deriving it is
+# an edit to a file this change does not own.
 @pytest.mark.parametrize(
     "component",
     [
@@ -1390,7 +1397,7 @@ async def test_the_p2_door_end_to_end_cannot_be_forged() -> None:
     ],
 )
 def test_resolve_child_cwd_refuses_a_directory_that_can_steer_the_terminal(
-    tmp_path: Path, component: str
+    tmp_path: Path, component: str, mkdir_or_skip
 ) -> None:
     """The BELT (F1). ``consent`` sanitising is the fix; this is the second lock.
 
@@ -1402,29 +1409,50 @@ def test_resolve_child_cwd_refuses_a_directory_that_can_steer_the_terminal(
 
     Contained and a real directory, so the ONLY thing this test can be failing
     on is the character check.
+
+    The payload is the DIRECTORY NAME, and that is where this parts company
+    with Windows: NTFS rejects ``\\x00``–``\\x1f`` in a name, so four of the
+    five cases cannot be staged there at all and ``mkdir_or_skip`` drops them.
+    The fifth is not one of them — ``\\x9b`` is 0x9B, a perfectly legal
+    filename byte — so the C1 arm, the one a byte-oriented reading of
+    "control character" is likeliest to miss, still runs on Windows.
     """
 
-    (tmp_path / component).mkdir()
+    mkdir_or_skip(tmp_path / component)
 
     with pytest.raises(ValueError, match="control character"):
         resolve_child_cwd(component, str(tmp_path))
 
 
+@pytest.mark.parametrize(
+    "component",
+    [
+        "sub dir",
+        "sub.dir-2",
+        "서브디렉터리",
+        "a'b\"c",
+    ],
+)
 def test_resolve_child_cwd_still_accepts_an_ordinary_directory(
-    tmp_path: Path,
+    tmp_path: Path, component: str, mkdir_or_skip
 ) -> None:
     """The belt must not become a new refusal path for legitimate delegation.
 
     Awkward-but-legal names — spaces, dots, unicode — are NOT control characters
     and must still resolve, or the check would be a functional regression dressed
     as a fix.
+
+    One name per case rather than one loop over four, because "legal" is a
+    property of the FILESYSTEM and not of the check: NTFS forbids ``"``, so
+    the last name cannot be staged on Windows while the other three can. A
+    loop would have taken the whole test down with the one name it could not
+    create, and reported the three that did pass as skipped.
     """
 
-    for component in ("sub dir", "sub.dir-2", "서브디렉터리", "a'b\"c"):
-        (tmp_path / component).mkdir()
-        assert resolve_child_cwd(component, str(tmp_path)) == str(
-            (tmp_path / component).resolve()
-        )
+    mkdir_or_skip(tmp_path / component)
+    assert resolve_child_cwd(component, str(tmp_path)) == str(
+        (tmp_path / component).resolve()
+    )
 
 
 # === the dialog names the model (live QA, 2026-08-07) =========================

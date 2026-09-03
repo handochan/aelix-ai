@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -273,7 +274,7 @@ def test_banner_does_not_re_emit_the_context_budget_warnings(tmp_path: Path) -> 
 
 
 def test_banner_keeps_control_bytes_from_a_hostile_cwd_off_the_terminal(
-    tmp_path: Path,
+    tmp_path: Path, mkdir_or_skip: Callable[..., Path]
 ) -> None:
     """Neither the rendered banner nor its stderr may carry raw control bytes.
 
@@ -281,10 +282,14 @@ def test_banner_keeps_control_bytes_from_a_hostile_cwd_off_the_terminal(
     named ``proj\\x1b]0;pwned\\x07\\x1b[31mZ``: the re-emitted budget warning
     interpolated the path raw into stderr, and the panel's ``cwd:`` row rendered
     the path raw into the banner itself (Rich strips BEL but passes ESC through).
+
+    The "POSIX permits every byte" premise :data:`HOSTILE_DIR` rests on is
+    what makes this unrunnable on Windows: NTFS rejects ESC and BEL in a
+    name, so the hostile cwd cannot be created and the leak this pins cannot
+    be reached by this route there.
     """
 
-    root = tmp_path / HOSTILE_DIR
-    root.mkdir()
+    root = mkdir_or_skip(tmp_path / HOSTILE_DIR)
     (root / "AGENTS.md").write_text("x" * 40_000, encoding="utf-8")
 
     from aelix_coding_agent.tui.shell import _build_banner

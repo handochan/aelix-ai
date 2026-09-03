@@ -18,6 +18,9 @@ function-scoped ``monkeypatch``, last write wins).
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from pathlib import Path
+
 import pytest
 from aelix_coding_agent.util import tools_manager as _tm
 
@@ -88,3 +91,51 @@ def _restore_api_registry():
     finally:
         api_registry._PROVIDERS.clear()  # noqa: SLF001
         api_registry._PROVIDERS.update(before)  # noqa: SLF001
+
+
+@pytest.fixture
+def mkdir_or_skip() -> Callable[..., Path]:
+    """Stage a directory whose NAME is the attack payload, or skip that payload.
+
+    Several security gates in this suite put the payload in a path COMPONENT —
+    C0/C1 control bytes, ``<``, ``>``, ``"`` — because that is how the payload
+    really arrives. The premise is stated in the code under test and in every
+    one of those tests: "POSIX permits every byte but ``/`` and NUL in a path
+    component" (``print_channel.py:419``), so a ``git clone`` or an unpacked
+    tarball creates such a directory and no privilege is needed.
+
+    That premise is FALSE on NTFS, which rejects ``\\x00``–``\\x1f`` and
+    ``<>:"/\\|?*`` in a name outright. The fixture cannot be constructed, so
+    every one of those cases died in setup with ``OSError: [WinError 123]`` —
+    14 of them on the first Windows run.
+
+    SKIPPING IS RIGHT HERE, AND THE REPO'S USUAL RULE IS NOT. The rule is
+    ``tests/cli/test_stdio_encoding_win32.py``'s: do not gate on the platform,
+    inject the condition and run everywhere, because "a test that only runs on
+    the platform we cannot run on is not a regression guard". That argument
+    needs a condition to inject. Here the OPERATING SYSTEM refuses to create the
+    input, so the defence is genuinely unreachable rather than merely untested,
+    which is the case ``tests/oauth/test_auth_storage.py:64`` and
+    ``tests/agents_ext/test_child_trust_argv.py:189`` already skip for.
+
+    PER PAYLOAD, NOT PER TEST. NTFS accepts plenty of what these tables carry —
+    ``\\x9b`` (the one-byte CSI) is a legal filename byte, and so are ``&``,
+    ``'`` and every non-ASCII component in them. A blanket ``skipif`` on the
+    test would throw that Windows coverage away, and would go on throwing away
+    whatever payload someone adds next. Attempting the ``mkdir`` and skipping on
+    the refusal keeps each legal payload running and needs no table of which
+    bytes which filesystem allows.
+    """
+
+    def _mkdir(path: Path, *, parents: bool = False) -> Path:
+        try:
+            path.mkdir(parents=parents)
+        except OSError as exc:
+            pytest.skip(
+                f"the filesystem refuses this payload as a directory name ({exc}) — "
+                "the POSIX path-component premise this case rests on does not hold "
+                "here, so the defence is unreachable, not unverified"
+            )
+        return path
+
+    return _mkdir

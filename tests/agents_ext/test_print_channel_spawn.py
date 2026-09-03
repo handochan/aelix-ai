@@ -24,7 +24,7 @@ forks a session-leader grandchild. A real aelix child cannot be made to produce
 any of those on demand. The four tests that DO launch ``-m aelix_coding_agent``
 are the ones whose subject is aelix's own behaviour (project trust, skills).
 
-HERMETICITY (finding I10): ``tests/conftest.py:25-34``'s download guard is an
+HERMETICITY (finding I10): ``tests/conftest.py:28-37``'s download guard is an
 in-process ``monkeypatch.setattr`` and does NOT reach a child interpreter. Every
 real-aelix child below therefore gets an EXPLICIT environment — ``HOME``,
 ``XDG_CONFIG_HOME`` and ``AELIX_CODING_AGENT_DIR`` under ``tmp_path``,
