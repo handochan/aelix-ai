@@ -523,11 +523,11 @@
    "\"\"\"",
    ""
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/session/fs.py:26-27": [
+  "packages/aelix-agent-core/src/aelix_agent_core/session/fs.py:27-28": [
    "SESSION_FILE_MODE = 0o600",
    "SESSION_DIR_MODE = 0o700"
   ],
-  "packages/aelix-agent-core/src/aelix_agent_core/session/fs.py:56-80": [
+  "packages/aelix-agent-core/src/aelix_agent_core/session/fs.py:57-81": [
    "class FileSystem(Protocol):",
    "\"\"\"Pi ``FileSystem`` (``types.ts:273-323``).",
    "",

@@ -12,6 +12,7 @@ from __future__ import annotations
 import contextlib
 import os
 import shutil
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Protocol, runtime_checkable
@@ -158,7 +159,20 @@ class LocalFileSystem:
         migrates them, on the next write, without a separate upgrade
         step. Gated on ``fstat`` so the common (already-0600) case costs
         one cheap syscall and no ``chmod``.
+
+        No-ops on Windows, deliberately. ``os.fchmod`` does not exist
+        there, and the group/other bits this migrates do not either —
+        access is an ACL question that has no mode-bit equivalent, so
+        there is nothing for this function to tighten. Returning early
+        is not merely defensive: the previous form raised
+        ``AttributeError``, which ``suppress(OSError)`` does NOT catch
+        (``AttributeError`` is no subclass of it), so every session
+        write and append died on Windows. That single line was 200 of
+        the 433 failures in the first windows CI run (#103 P0-b).
         """
+
+        if sys.platform == "win32":
+            return
 
         with contextlib.suppress(OSError):
             if os.fstat(fd).st_mode & 0o077:

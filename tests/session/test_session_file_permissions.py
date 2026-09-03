@@ -18,6 +18,7 @@ from aelix_agent_core.session import (
     JsonlSessionRepo,
     LocalFileSystem,
 )
+from aelix_agent_core.session import fs as fs_mod
 from aelix_agent_core.session.entries import MessageEntry
 from aelix_agent_core.session.fs import SESSION_DIR_MODE, SESSION_FILE_MODE
 from aelix_ai.messages import TextContent, UserMessage
@@ -203,3 +204,82 @@ async def test_real_session_lands_owner_only_end_to_end(tmp_path: Path) -> None:
 
     assert _mode(metadata.path) == SESSION_FILE_MODE
     assert _mode(Path(metadata.path).parent) == SESSION_DIR_MODE
+
+
+# --- Windows: the tighten has no mode bits to tighten (#103 P0-b) -------------
+#
+# No ``skipif``: this pins an AttributeError, and the attribute is missing
+# because of what ``sys.platform`` says, so deleting ``os.fchmod`` and saying
+# "win32" reproduces it exactly on POSIX. A case that only runs on the runner we
+# do not have is not a regression guard — same reasoning as
+# ``tests/cli/test_stdio_encoding_win32.py``.
+
+
+def _simulate_win32(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make the module see Windows: no ``os.fchmod``, ``sys.platform`` win32."""
+
+    monkeypatch.setattr(fs_mod.sys, "platform", "win32", raising=True)
+    monkeypatch.delattr(fs_mod.os, "fchmod", raising=True)
+
+
+async def test_write_file_on_windows_does_not_die_on_missing_fchmod(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`suppress(OSError)` never caught this — AttributeError is not an OSError.
+
+    Before the guard, every session write raised on Windows: 200 of the 433
+    failures in the first ``windows-latest`` CI run came through here.
+
+    The target must already be loose. On POSIX a fresh ``os.open(..., 0o600)``
+    lands at 0600, ``st_mode & 0o077`` is 0, and ``fchmod`` is never reached —
+    the case would pass with the guard removed and pin nothing. Windows has no
+    such luck: it ignores the mode argument to ``os.open`` entirely, so real
+    session files there are always loose by this test and always reached the
+    missing attribute. Seeding 0644 is what makes POSIX ask the question
+    Windows cannot avoid.
+    """
+
+    _simulate_win32(monkeypatch)
+    fs = LocalFileSystem()
+    target = tmp_path / "sessions" / "s.jsonl"
+    target.parent.mkdir(parents=True)
+    target.write_text("stale\n", encoding="utf-8")
+    os.chmod(target, 0o644)
+
+    await fs.write_file(str(target), '{"role":"user"}\n')
+
+    assert target.read_text(encoding="utf-8") == '{"role":"user"}\n'
+
+
+async def test_append_file_on_windows_does_not_die_on_missing_fchmod(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _simulate_win32(monkeypatch)
+    fs = LocalFileSystem()
+    target = tmp_path / "sessions" / "s.jsonl"
+    target.parent.mkdir(parents=True)
+    target.write_text("first\n", encoding="utf-8")
+
+    await fs.append_file(str(target), "second\n")
+
+    assert target.read_text(encoding="utf-8") == "first\nsecond\n"
+
+
+async def test_the_guard_is_platform_scoped_not_a_blanket_disable(
+    tmp_path: Path,
+) -> None:
+    """The POSIX tightening must survive the Windows fix.
+
+    A guard written as a bare ``suppress(AttributeError)`` or an unconditional
+    early return would pass both cases above while quietly retiring Track S2 on
+    the platform that has mode bits. This is the case that would catch that.
+    """
+
+    target = tmp_path / "sessions" / "s.jsonl"
+    target.parent.mkdir(parents=True)
+    target.write_text("{}\n", encoding="utf-8")
+    os.chmod(target, 0o644)
+
+    await LocalFileSystem().append_file(str(target), "{}\n")
+
+    assert _mode(target) == SESSION_FILE_MODE

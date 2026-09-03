@@ -151,7 +151,7 @@ def export_html(
     # #111 B-3 / #138 — OWNER-ONLY, like the session it renders. Measured under
     # a stock 022 umask, a bare ``write_text`` produced mode 0646: the source
     # ``.jsonl`` is opened 0600 and its directory 0700
-    # (``session/fs.py:26-27``), and the exporter was quietly widening the SAME
+    # (``session/fs.py:27-28``), and the exporter was quietly widening the SAME
     # unredacted content — every prompt and every tool result, verbatim — into a
     # group/other-readable file in the user's cwd. Written before the content so
     # there is no window in which the bytes exist at the looser mode; ``chmod``

@@ -221,7 +221,7 @@ def test_the_exported_transcript_is_owner_only(tmp_path: Path) -> None:
     ``path.write_text(doc, encoding="utf-8")``, so under a stock 022 umask the
     HTML landed **0646** — group- and other-readable — in the user's cwd. The
     source ``.jsonl`` is opened 0600 inside a 0700 directory
-    (``session/fs.py:26-27``) and carries every prompt and every tool result
+    (``session/fs.py:27-28``) and carries every prompt and every tool result
     verbatim with no redaction pass, so the exporter was the one place that
     widened it.
 
