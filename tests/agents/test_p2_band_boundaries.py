@@ -402,6 +402,22 @@ _KERNEL_CHANGE_ALLOWLIST = frozenset(
         "packages/aelix-agent-core/src/aelix_agent_core/session/entries.py",
         # ADR-0212, #144 — documentation only; see the note above.
         "packages/aelix-agent-core/README.md",
+        # ADR-0236. The skills loader read a skill's identity off its path with
+        # three helpers that split on a literal "/", so on Windows the parent
+        # directory name came out empty and ``_validate_name`` rejected EVERY
+        # skill in every tier — packaged, project and user — with `name "x" does
+        # not match parent directory ""`. The subsystem was not degraded there,
+        # it was off. This is the case this gate's own docstring anticipates
+        # ("repairing a pi-parity regression the kernel itself claims in a
+        # comment to implement"), and ADR-0069 had already booked it as
+        # "P-230 (Windows path normalisation — Linux-target sprint)", so the
+        # defective code IS the kernel's skills loader and the fix can live
+        # nowhere else. Three private path helpers and one import line; no
+        # ``aelix_agents`` import, no spawn site, no cap, no consent path and no
+        # registry surface — ``test_kernel_has_no_subagent_surface`` is
+        # unaffected and still passes. A platform created the requirement;
+        # delegation did not.
+        "packages/aelix-agent-core/src/aelix_agent_core/harness/skills.py",
     }
 )
 

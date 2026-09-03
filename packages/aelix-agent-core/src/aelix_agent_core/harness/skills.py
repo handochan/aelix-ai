@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import Literal
 
 import pathspec
@@ -498,45 +498,80 @@ def _validate_description(description: str | None) -> list[str]:
     return errors
 
 
-# === Path helpers — Pi env-path equivalents using stdlib ====================
+# === Path helpers — Pi env-path equivalents, read on either separator ======
+#
+# Pi's ``dirnameEnvPath`` / ``basenameEnvPath`` split on a literal ``/``
+# because they address an ExecutionEnv path — the POSIX-shaped virtual path
+# space Pi keeps so one loader can run in a browser and in Node. ADR-0069
+# dropped that abstraction ("Pi ``ExecutionEnv`` → :mod:`pathlib` directly.
+# Pi's ``ExecutionEnv`` exists for browser/Node interop; Aelix is
+# Python-only"), so what reaches these helpers is a NATIVE filesystem path
+# and the POSIX-only split outlived the path space it was written for. The
+# same ADR booked the consequence in its Not-done list, as "P-230 (Windows
+# path normalisation — Linux-target sprint)".
+#
+# Measured on darwin before this fix, on the path a Windows install actually
+# hands the loader — C:\Users\me\...\skills\extending-aelix\SKILL.md:
+# _dirname answered "/", _basename of that answered "", and _validate_name
+# rejected every skill in every tier with `name "extending-aelix" does not
+# match parent directory ""`.
+#
+# They split on BOTH separators rather than deferring to :mod:`os.path`, for
+# the reason tools/bash.shell_basename already gives: the caller may be
+# reasoning about a Windows path while running on POSIX, where
+# ``posixpath.dirname`` hands back the whole C:\... string — and a case that
+# can only run on the platform we cannot run on is not a regression guard.
+# Forward slashes go through unchanged, so the wire string the parity tests
+# pin is byte-for-byte what it was.
+_SEPARATORS = "/\\"
 
 
 def _dirname(path: str) -> str:
-    """Pi parity: ``dirnameEnvPath`` — strip trailing slashes, drop the
-    last segment."""
+    """Pi parity: ``dirnameEnvPath`` — strip trailing separators, drop the
+    last segment. The slice is taken from the ORIGINAL string, so a native
+    path keeps its own separators on the way out."""
 
-    normalized = path.rstrip("/")
-    if "/" not in normalized:
+    normalized = path.rstrip(_SEPARATORS)
+    # ``replace`` is length-preserving, so the index it finds indexes
+    # ``normalized`` too.
+    index = normalized.replace("\\", "/").rfind("/")
+    if index <= 0:
         return "/"
-    slash_index = normalized.rfind("/")
-    if slash_index <= 0:
-        return "/"
-    return normalized[:slash_index]
+    return normalized[:index]
 
 
 def _basename(path: str) -> str:
-    """Pi parity: ``basenameEnvPath`` — strip trailing slashes, take the
+    """Pi parity: ``basenameEnvPath`` — strip trailing separators, take the
     last segment."""
 
-    normalized = path.rstrip("/")
-    slash_index = normalized.rfind("/")
-    if slash_index == -1:
-        return normalized
-    return normalized[slash_index + 1 :]
+    return path.rstrip(_SEPARATORS).replace("\\", "/").rsplit("/", 1)[-1]
 
 
-def _relative_path(root: Path, target: Path) -> str:
-    """Pi parity: ``relativeEnvPath`` — relative path string from
-    ``root`` to ``target`` using forward slashes; empty when target ==
-    root."""
+def _relative_path(root: PurePath, target: PurePath) -> str:
+    """The ignore-matching path for ``target``: relative to ``root``, POSIX.
 
-    root_str = str(root).rstrip("/")
-    target_str = str(target).rstrip("/")
-    if target_str == root_str:
+    Pi parity: ``relativeEnvPath``. Two path spaces meet in this one
+    function and only one of them is native. Relativising ``target`` against
+    ``root`` is a filesystem question — on Windows it has to know that
+    ``C:\\a`` is the parent of ``C:\\a\\b`` — while the string that comes
+    out is a LOGICAL path handed to :mod:`pathspec`, whose ``gitwildmatch``
+    patterns are ``/``-separated on every platform and which
+    :func:`_add_ignore_rules` prefixes with ``/`` to scope a nested ignore
+    file to its own subtree. So the relativising is done by :mod:`pathlib`
+    and the emitting by :meth:`PurePath.as_posix`.
+
+    The string surgery this replaces looked for ``f"{root}/"`` at the head
+    of ``str(target)``, never found it on Windows, and returned the whole
+    absolute path — which no pattern matched, so ``.gitignore`` / ``.ignore``
+    / ``.fdignore`` were read, prefixed, and then honoured by nobody.
+    """
+
+    if target == root:
         return ""
-    if target_str.startswith(f"{root_str}/"):
-        return target_str[len(root_str) + 1 :]
-    return target_str.lstrip("/")
+    try:
+        return target.relative_to(root).as_posix()
+    except ValueError:
+        return str(target).replace("\\", "/").lstrip("/")
 
 
 __all__ = [
