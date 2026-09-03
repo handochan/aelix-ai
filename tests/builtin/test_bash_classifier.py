@@ -36,6 +36,18 @@ _CASES: dict[str, Verdict] = {
     'echo "rm -rf /"': Verdict.ALLOW,  # EVASION: quoted — not a real rm
     # ASK — unknown command / dynamic name / non-protected redirect / control flow
     "frobnicate --x": Verdict.ASK,
+    # ASK — a read-only NAME whose arguments make it a mutator (#204).
+    # These measured ALLOW before the narrowing; every one is a real mutation
+    # under some shell we may spawn. The bare and flag-only forms must stay
+    # ALLOW or the narrowing has cost more than it bought.
+    "date 01-01-2030": Verdict.ASK,  # cmd: sets the system clock
+    "sort in.txt /o out.txt": Verdict.ASK,  # cmd: /O writes, no redirect node
+    "hostname newname": Verdict.ASK,  # renames the machine, any platform
+    "date": Verdict.ALLOW,
+    "date -u": Verdict.ALLOW,
+    "date +%Y": Verdict.ALLOW,
+    "sort in.txt": Verdict.ALLOW,
+    "hostname": Verdict.ALLOW,
     "$(echo rm) -rf /": Verdict.ASK,  # EVASION: dynamic command name
     "echo hi > out.txt": Verdict.ASK,  # write to a non-protected path
     "git push": Verdict.ASK,  # write-ish git subcommand

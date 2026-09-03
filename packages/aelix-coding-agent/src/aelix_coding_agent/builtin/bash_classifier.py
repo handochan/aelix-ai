@@ -78,13 +78,21 @@ _SHELLS = frozenset({"sh", "bash", "zsh", "dash", "ksh", "fish"})
 # NAME, which is all this classifier reads, so they stay in.
 #
 # ``fish`` is deliberately OUT (its syntax diverges far enough that the
-# extracted name can be wrong), and so is every Windows shell (#104): fed a
-# PowerShell or ``cmd`` command line, the bash grammar does not recognise
-# ``Remove-Item -Recurse -Force C:\`` or ``del /s /q`` as anything dangerous —
-# it parses them as unremarkable words and yields ALLOW. That is active
-# MIS-permissioning rather than a missed detection, which is why
-# :func:`is_classifiable_shell` gates the verdict instead of the grammar being
-# taught new syntax.
+# extracted name can be wrong), and so is every Windows shell (#104).
+#
+# The reason, CORRECTED — the example this comment carried for a long time is
+# false, and it was copied into #204, ``permission.py``, two test docstrings
+# and two specs. ``Remove-Item -Recurse -Force C:\`` and ``del /s /q C:\Windows``
+# do NOT yield ALLOW: they match no table, so they fall through to the
+# unknown-command ASK below. Measured, not assumed.
+#
+# The mis-permissioning is real but it is elsewhere, and it is the opposite
+# shape — not an unknown destructive NAME, but a KNOWN read-only name whose
+# arguments nobody reads. ``date 01-01-2030`` sets the clock under cmd,
+# ``sort in.txt /o out.txt`` writes a file with no redirect node. Both measured
+# ALLOW before ``_READ_ONLY_ONLY_WHEN_BARE`` narrowed them. So the ALLOW tier
+# is where a dialect actually changes the answer, and gating the shell is a
+# stopgap for that, not for a name the grammar never claimed to know.
 _CLASSIFIABLE_SHELLS = frozenset({"bash", "sh", "dash", "ksh", "mksh", "zsh"})
 
 
@@ -366,6 +374,8 @@ def _classify_simple_command(command: Any) -> Verdict:
     if name in _ALWAYS_ASK_COMMANDS:
         return Verdict.ASK
     if name in _READ_ONLY:
+        if name in _READ_ONLY_ONLY_WHEN_BARE:
+            return _classify_bare_only_read_only(command, name)
         return Verdict.ALLOW
     # Unknown command → ASK (never silent-allow).
     return Verdict.ASK
@@ -400,6 +410,52 @@ def _classify_git(command: Any) -> Verdict:
             continue
         return Verdict.ALLOW if literal in _GIT_READ_ONLY else Verdict.ASK
     # Bare ``git`` with no subcommand → harmless usage text.
+    return Verdict.ALLOW
+
+
+_READ_ONLY_ONLY_WHEN_BARE = frozenset({"date", "hostname", "sort"})
+"""``_READ_ONLY`` names that are read-only by virtue of the PROGRAM, not the word.
+
+The ALLOW tier decides on the command name alone — every other tier inspects
+arguments. That asymmetry is sound only while the name maps to the POSIX
+program. It does not on Windows, and these three were measured returning ALLOW
+for a mutation:
+
+* ``date 01-01-2030`` — cmd's ``date <value>`` SETS THE SYSTEM CLOCK. Not
+  only Windows: BSD ``date`` takes the new time as a positional too.
+* ``sort in.txt /o out.txt`` — cmd's ``sort`` has a ``/O`` output-file flag, so
+  it writes an arbitrary path with no redirect node for ``_redirect_verdict``
+  to see.
+* ``hostname newname`` — renames the machine, on every platform.
+
+This is a narrowing, not a dialect classifier. It cannot know which shell will
+run the line, so it refuses the shapes that are mutations under ANY of them.
+See #204 for the router that would let the answer depend on the dialect.
+"""
+
+
+def _classify_bare_only_read_only(command: Any, name: str) -> Verdict:
+    """ALLOW only for a form that cannot mutate under any shell we may spawn.
+
+    ``date``/``hostname``: flags are read-only (``date -u``, ``date +%Y``); a
+    positional is the new value. ``sort``: a ``/``-leading argument is cmd's
+    ``/O`` family, and separating that from a POSIX absolute input path needs
+    the dialect. So ``sort /etc/hosts`` ASKs on POSIX too — the cost of
+    strictest-wins (ADR-0158) when the dialect is unknown, and the reason this
+    is a stopgap rather than the fix.
+    """
+
+    for arg in _command_args(command):
+        literal = _node_literal(arg)
+        if literal is None:
+            # Dynamic — cannot prove it is not the mutating form.
+            return Verdict.ASK
+        if name == "sort":
+            if literal.startswith("/"):
+                return Verdict.ASK
+            continue
+        if not literal.startswith(("-", "+")):
+            return Verdict.ASK
     return Verdict.ALLOW
 
 
