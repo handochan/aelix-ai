@@ -29,11 +29,17 @@ concurrency:
 
 jobs:
   test:
-    name: lint + test (py${{ matrix.python-version }})
-    runs-on: ubuntu-latest
+    name: lint + test (${{ matrix.os }}, py${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    # #103 P0-b: the windows leg is a MEASUREMENT, not a gate. Scope
+    # continue-on-error to that leg only — a bare job-level `true` would
+    # make the ubuntu failures advisory too and silently retire the gate
+    # this workflow exists to be.
+    continue-on-error: ${{ matrix.os == 'windows-latest' }}
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-latest, windows-latest]
         python-version: ["3.11", "3.12"]
 
     steps:
