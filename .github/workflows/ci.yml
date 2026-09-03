@@ -76,6 +76,11 @@ jobs:
       # negative assertions, so silence there is a narrowing regression in the
       # hook API. See ADR-0213.
       - name: Type gate (pyright)
+        # #103 P0-b: on windows this gate aborted the leg at step 6 of 7, so
+        # pytest never ran and the measurement produced no test numbers at
+        # all. Advisory here for the same reason the job is advisory there —
+        # windows reports, it does not gate. ubuntu still blocks on both.
+        continue-on-error: ${{ matrix.os == 'windows-latest' }}
         run: uv run python scripts/check_types.py
 
       - name: Test gate (pytest)
