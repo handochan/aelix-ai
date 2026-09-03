@@ -88,7 +88,7 @@ from aelix_agents.reaper import (
     DEFAULT_GRACE_SECONDS,
     descendant_pids,
     kill_tree,
-    pdeathsig,
+    pdeathsig_preexec,
     reap,
 )
 from aelix_agents.stream import LineAssembler, _StreamState, reduce_line
@@ -967,7 +967,11 @@ class PrintChannel:
                     # (``modes/print_mode.py:114-131``) installs a SIGINT
                     # handler, so there is nothing to convert that into a result.
                     start_new_session=True,
-                    preexec_fn=pdeathsig,  # noqa: PLW1509 — see reaper.pdeathsig
+                    # ``None`` on Windows, where subprocess REJECTS the
+                    # argument outright. ``start_new_session`` above is
+                    # not so loud — Windows accepts and ignores it, so the
+                    # group isolation it documents is absent there (#202).
+                    preexec_fn=pdeathsig_preexec(),  # noqa: PLW1509
                 )
             except Exception as exc:  # noqa: BLE001 — a failed spawn is a RESULT
                 row.state = "error"

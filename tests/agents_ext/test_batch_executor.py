@@ -981,7 +981,7 @@ async def test_cancelling_the_batch_delivers_to_every_member_in_flight(
     the executor's own frame, and ``return_exceptions=False``. With ``True`` a
     member's ``CancelledError`` would be captured as a RESULT and this frame
     would never propagate — bypassing the second-Ctrl+C escalation at
-    ``print_channel.py:1190-1193``.
+    ``print_channel.py:1194-1197``.
 
     Delivery is necessary and NOT sufficient — the L2 test below asserts the
     children are actually DEAD, which is the P2 finding (B1) being guarded.
@@ -1020,7 +1020,7 @@ def test_the_executors_cancellation_contract_is_pinned_in_source() -> None:
     ``CancelledError`` becomes an envelope, ``gather`` hands that envelope back
     as a RESULT, ``run_batch`` returns normally — and the user's Ctrl+C is
     swallowed by the delegation it was aimed at, bypassing the second-Ctrl+C
-    escalation at ``print_channel.py:1190-1193``.
+    escalation at ``print_channel.py:1194-1197``.
 
     So they are pinned SYNTACTICALLY, for the same reason the admission window
     above is: the property is syntactic, the failure it prevents is not
@@ -1778,7 +1778,7 @@ async def test_l2_cancelling_the_batch_kills_every_child_it_started(
     while leaking processes — so a delivery-only assertion passes straight
     through it. This one records each child's real pid and asserts every one of
     them is gone, which covers the detached-sibling case, the leaked-permit case
-    and the second-Ctrl+C path at ``print_channel.py:1190-1193`` at once.
+    and the second-Ctrl+C path at ``print_channel.py:1194-1197`` at once.
     """
 
     marker_dir = tmp_path / "markers"

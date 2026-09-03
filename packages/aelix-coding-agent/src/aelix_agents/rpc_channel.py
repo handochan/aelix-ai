@@ -99,7 +99,7 @@ from aelix_agents.reaper import (
     DEFAULT_GRACE_SECONDS,
     descendant_pids,
     kill_tree,
-    pdeathsig,
+    pdeathsig_preexec,
     reap,
 )
 from aelix_agents.stream import MAX_LINE_BYTES, _StreamState, reduce_event
@@ -384,7 +384,7 @@ class RpcChannel:
             # ``subagent_start``/``subagent_end`` pairs for a single child, on
             # the channels a dashboard subscribes to. ``PrintChannel`` holds the
             # same invariant by cancelling its pumps next to its own
-            # ``_eager_abort`` (``print_channel.py:1102-1109``); this channel
+            # ``_eager_abort`` (``print_channel.py:1106-1113``); this channel
             # cannot, because the accumulator above still has to read.
             # ``runtime._run``'s ``finally`` publishes the ONE terminal snapshot
             # itself, so this channel's contract is: non-terminal snapshots only.
@@ -435,7 +435,9 @@ class RpcChannel:
                     env_base=self._env_builder(profile),
                     # The parent-death signal. It lives in this band, which is
                     # why product-core exposes a seam instead of a default.
-                    preexec_fn=pdeathsig,
+                    # ``None`` on Windows: subprocess rejects a non-None
+                    # ``preexec_fn`` there and the spawn never happens.
+                    preexec_fn=pdeathsig_preexec(),
                     reader_limit=STREAM_LIMIT_BYTES,
                     # The same 64 KiB window the print channel keeps. The
                     # client's own 10 MiB default would be handed to the

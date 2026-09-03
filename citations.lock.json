@@ -991,7 +991,7 @@
    "PermissionMode.YOLO: PermissionMode.YOLO,",
    "}"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:1102-1109": [
+  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:1106-1113": [
    "except asyncio.CancelledError:",
    "self._eager_abort(proc, row)",
    "# The pumps must not outlive an aborted run: they hold the child's",
@@ -1001,13 +1001,13 @@
    "pumps.cancel()",
    "raise"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:1190-1193": [
+  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:1194-1197": [
    "Detached so a cancellation of THIS task cannot cancel the kill;",
    "registry-owned so ``stop_all`` still joins it; and re-cancellation",
    "escalates to SIGKILL immediately rather than waiting out a grace whose",
    "only purpose was to let a cooperative child clean up."
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:1214-1216": [
+  "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:1218-1220": [
    "except asyncio.CancelledError:",
    "self._eager_abort(proc, row)",
    "raise"
@@ -1100,7 +1100,7 @@
    "try:"
   ],
   "packages/aelix-coding-agent/src/aelix_agents/print_channel.py:970-970": [
-   "preexec_fn=pdeathsig, # noqa: PLW1509 — see reaper.pdeathsig"
+   "# ``None`` on Windows, where subprocess REJECTS the"
   ],
   "packages/aelix-coding-agent/src/aelix_agents/progress.py:176-179": [
    "def _format_tokens(tokens: int) -> str:",
@@ -1172,7 +1172,7 @@
    "DEFAULT_GRACE_SECONDS = 5.0"
   ],
   "packages/aelix-coding-agent/src/aelix_agents/rpc_channel.py:438-438": [
-   "preexec_fn=pdeathsig,"
+   "# ``None`` on Windows: subprocess rejects a non-None"
   ],
   "packages/aelix-coding-agent/src/aelix_agents/runtime.py:143-143": [
    "_TERMINAL_STATES = frozenset({\"done\", \"error\", \"stopped\"})"

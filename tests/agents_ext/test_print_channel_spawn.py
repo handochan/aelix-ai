@@ -907,7 +907,7 @@ async def test_a_wedged_child_that_closed_its_stdio_still_times_out(
     except BaseException:
         # A failed precondition must not leak the child: cancel the run, which
         # takes ``run``'s ``except asyncio.CancelledError`` abort leg
-        # (print_channel.py:1102-1109) and kills the tree.
+        # (print_channel.py:1106-1113) and kills the tree.
         run.cancel()
         with contextlib.suppress(BaseException):
             await run

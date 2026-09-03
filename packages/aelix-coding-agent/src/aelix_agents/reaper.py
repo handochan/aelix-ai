@@ -75,7 +75,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Callable, Sequence
 
 DEFAULT_GRACE_SECONDS = 5.0
 """SIGTERM → SIGKILL grace. Long enough for the child's own
@@ -299,10 +299,37 @@ def pdeathsig() -> None:
         pass
 
 
+def pdeathsig_preexec() -> Callable[[], None] | None:
+    """The ``preexec_fn`` a delegation spawn should pass: the hook, or nothing.
+
+    ``pdeathsig`` is already inert off Linux, so this is not about what the
+    hook *does*. It is about whether the argument can be passed at all:
+    ``subprocess`` REJECTS a non-None ``preexec_fn`` on Windows before it
+    creates anything ("preexec_fn is not supported on Windows platforms",
+    CPython ``subprocess.py``). Both delegation channels wrap the spawn in
+    ``except Exception`` and turn a failure into an error envelope, so that
+    ValueError did not surface as a crash — every delegation simply came back
+    "error" and 52 of the 238 remaining ``windows-latest`` failures were
+    downstream of it (#200).
+
+    A function rather than a module constant so a case can drive the branch by
+    patching ``sys.platform``, per this repo's no-``skipif`` convention.
+
+    Note what this does NOT fix: the sibling ``start_new_session=True`` is
+    accepted on Windows and silently ignored — CPython names the parameter
+    ``unused_start_new_session`` there — so the process-group isolation both
+    call sites document is absent on Windows rather than merely degraded.
+    That is #202, not this.
+    """
+
+    return None if sys.platform == "win32" else pdeathsig
+
+
 __all__ = [
     "DEFAULT_GRACE_SECONDS",
     "descendant_pids",
     "kill_tree",
     "pdeathsig",
+    "pdeathsig_preexec",
     "reap",
 ]
