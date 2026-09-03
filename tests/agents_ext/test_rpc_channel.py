@@ -34,6 +34,7 @@ from aelix_agents.print_channel import (
     build_child_env,
 )
 from aelix_agents.progress import SubagentProgressBridge
+from aelix_agents.prompt_file import _pid_is_live
 from aelix_agents.rpc_channel import (
     RpcChannel,
     build_rpc_child_argv,
@@ -172,11 +173,16 @@ def _channel(script: str, *, grace: float = 5.0) -> RpcChannel:
 
 
 async def _alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except OSError:
-        return False
-    return True
+    """Liveness WITHOUT ``os.kill(pid, 0)`` — on windows that is not a probe.
+
+    Signal 0 is ``CTRL_C_EVENT`` and CPython routes it to
+    ``GenerateConsoleCtrlEvent``, so the "check" delivers a real console Ctrl+C
+    to a process sharing our console. Measured on a runner: the call returns
+    normally and the target dies. Delegating to the product helper keeps one
+    correct answer in the repo instead of a fourth copy of the wrong one.
+    """
+
+    return _pid_is_live(pid)
 
 
 # === argv: what the child is actually launched with =========================

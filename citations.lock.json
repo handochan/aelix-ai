@@ -1163,7 +1163,7 @@
   "packages/aelix-coding-agent/src/aelix_agents/progress.py:97-97": [
    "_TERMINAL_STATES = frozenset({\"done\", \"error\", \"stopped\"})"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/prompt_file.py:129-131": [
+  "packages/aelix-coding-agent/src/aelix_agents/prompt_file.py:130-132": [
    "directory = Path(tempfile.mkdtemp(prefix=f\"{_DIR_PREFIX}{os.getpid()}-\"))",
    "path = directory / f\"prompt-{_safe_stem(name)}.md\"",
    "fd = os.open(path, os.O_CREAT | os.O_WRONLY | os.O_EXCL, 0o600)"

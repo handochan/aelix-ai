@@ -326,7 +326,7 @@ async def _run_parallel(batch: _Batch) -> tuple[list[MemberOutcome], int]:
     is reachable, not theoretical: ``PrintChannel.run`` writes the prompt file
     OUTSIDE its own ``try`` (``print_channel.py:930`` vs ``:931``) and
     ``write_prompt_file`` does ``mkdtemp`` + ``os.open``
-    (``prompt_file.py:129-131``), so a full ``/tmp``, an ``EMFILE`` or a yanked
+    (``prompt_file.py:130-132``), so a full ``/tmp``, an ``EMFILE`` or a yanked
     ``TMPDIR`` raises ``OSError`` straight out — and four concurrent children each
     writing a prompt directory is precisely the load that makes it fire.
 

@@ -56,6 +56,7 @@ from aelix_agents.print_channel import (
     build_child_argv,
     build_child_env,
 )
+from aelix_agents.prompt_file import _pid_is_live
 from aelix_agents.runtime import (
     MAX_DELEGATIONS_PER_PROMPT,
     MAX_LIVE_CHILDREN,
@@ -258,7 +259,7 @@ class _ExplodingChannel(_RecordingChannel):
     Models the reachable §3.5.1 path: ``PrintChannel.run`` writes the prompt file
     OUTSIDE its own ``try`` (``print_channel.py:930`` vs ``:931``) and
     ``write_prompt_file`` does ``mkdtemp`` + ``os.open``
-    (``prompt_file.py:129-131``), so a full ``/tmp``, an ``EMFILE`` or a yanked
+    (``prompt_file.py:130-132``), so a full ``/tmp``, an ``EMFILE`` or a yanked
     ``TMPDIR`` raises straight out of a method whose docstring says it never
     raises except on cancellation.
     """
@@ -1681,13 +1682,16 @@ async def _await_markers(marker_dir: Path, count: int, *, timeout: float = 30.0)
 
 
 def _alive(pid: int) -> bool:
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:  # pragma: no cover — recycled into another uid
-        return True
-    return True
+    """Liveness WITHOUT ``os.kill(pid, 0)`` — on windows that is not a probe.
+
+    Signal 0 is ``CTRL_C_EVENT`` and CPython routes it to
+    ``GenerateConsoleCtrlEvent``, so the "check" delivers a real console Ctrl+C
+    to a process sharing our console. Measured on a runner: the call returns
+    normally and the target dies. Delegating to the product helper keeps one
+    correct answer in the repo instead of a fourth copy of the wrong one.
+    """
+
+    return _pid_is_live(pid)
 
 
 async def test_l2_four_real_processes_overlap_and_eight_envelopes_come_back(

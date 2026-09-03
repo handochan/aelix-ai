@@ -59,6 +59,7 @@ import os
 import re
 import shutil
 import stat
+import sys
 import tempfile
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -154,10 +155,34 @@ def remove_prompt_dir(prompt: PromptFile | None) -> None:
 
 
 def _pid_is_live(pid: int) -> bool:
-    """Best-effort liveness. Errs toward LIVE, i.e. toward not deleting."""
+    """Best-effort liveness. Errs toward LIVE, i.e. toward not deleting.
+
+    ``os.kill(pid, 0)`` is the POSIX idiom and it is NOT one on Windows.
+    ``CTRL_C_EVENT`` is 0, and CPython's ``os_kill_impl`` routes signal 0 to
+    ``GenerateConsoleCtrlEvent`` rather than to any liveness check — so the
+    "probe" delivers a real console Ctrl+C. Measured on a ``windows-latest``
+    runner: ``os.kill(child.pid, 0)`` returned normally and the child, an
+    otherwise idle ``time.sleep(30)``, was dead a second later. A predicate
+    that asks whether a process is alive must not be the reason it stops
+    being alive.
+
+    This runs from ``sweep_stale_prompt_dirs`` on every delegation-parent
+    startup, against pids read off directory names in the temp dir. Those pids
+    are stale by definition and Windows recycles them, so on that platform the
+    old form could interrupt an unrelated process that happened to inherit the
+    number and shares our console.
+
+    The Windows branch asks the kernel instead: a process object is signalled
+    exactly when the process has exited, so ``WaitForSingleObject(h, 0)``
+    returning ``WAIT_OBJECT_0`` means dead. ``ERROR_INVALID_PARAMETER`` from
+    ``OpenProcess`` is "no such pid"; anything else (``ERROR_ACCESS_DENIED``
+    for another user's process) keeps the errs-toward-LIVE contract.
+    """
 
     if pid <= 0:
         return True
+    if sys.platform == "win32":
+        return _pid_is_live_win32(pid)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -168,6 +193,31 @@ def _pid_is_live(pid: int) -> bool:
     except OSError:  # pragma: no cover — defensive
         return True
     return True
+
+
+#: ``OpenProcess`` access mask that needs no privilege beyond "may I wait on
+#: this object" — deliberately not ``PROCESS_QUERY_INFORMATION``, which a
+#: protected or higher-integrity process would refuse.
+_SYNCHRONIZE = 0x0010_0000
+_WAIT_OBJECT_0 = 0x0000_0000
+_ERROR_INVALID_PARAMETER = 87
+
+
+def _pid_is_live_win32(pid: int) -> bool:
+    """Liveness via the process object, never via a console control event."""
+
+    import ctypes  # noqa: PLC0415 — windows-only, keep it off the POSIX path
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+    handle = kernel32.OpenProcess(_SYNCHRONIZE, False, pid)
+    if not handle:
+        # Only "no such pid" is proof of death. ACCESS_DENIED and friends mean
+        # a process exists and is not ours — LIVE, per the contract above.
+        return ctypes.get_last_error() != _ERROR_INVALID_PARAMETER
+    try:
+        return kernel32.WaitForSingleObject(handle, 0) != _WAIT_OBJECT_0
+    finally:
+        kernel32.CloseHandle(handle)
 
 
 def sweep_stale_prompt_dirs(root: str | os.PathLike[str] | None = None) -> list[str]:
