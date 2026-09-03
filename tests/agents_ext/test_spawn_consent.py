@@ -8,7 +8,7 @@ no real TUI is involved — the modal's rendering is explicitly out of scope
 
 The gate exists because the shipped one is EMPTY: ``"agent"`` is not in
 ``builtin/permission.py``'s ``_MUTATING``, so a model-driven ``agent`` call is
-silently allowed at ``permission.py:502-504``. Adding it there is not the fix —
+silently allowed at ``permission.py:555-557``. Adding it there is not the fix —
 ``_rule_key`` falls through to an args-blind ``f"tool:{tool_name}"``, so one
 "allow this session" would approve every profile against every task.
 

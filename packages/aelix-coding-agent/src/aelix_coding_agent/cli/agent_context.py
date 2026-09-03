@@ -379,7 +379,7 @@ def _docs_signpost(active_tool_names: set[str]) -> str:
     but it needs the ``bash`` tool, and ``bash`` is in
     ``builtin/permission.py`` ``_MUTATING`` (measured: ``'bash' in _MUTATING``
     -> ``True``, ``'read' in _MUTATING`` -> ``False``). PLAN mode blocks every
-    mutating tool at ``permission.py:497``, which sits ABOVE the read-only
+    mutating tool at ``permission.py:550``, which sits ABOVE the read-only
     short-circuit at ``:441`` — so in the one mode where the user has explicitly
     asked the agent to look and not touch, an ``aelix docs`` pointer is a
     pointer the model cannot follow. ``read`` on an absolute path works in every
@@ -712,8 +712,8 @@ def _extension_signpost(cwd_abs: str, active_tool_names: set[str]) -> str:
         # bash tool. ``-E`` costs three characters and makes the command the
         # model is handed actually run. Verified 48/10/38 identically in all
         # three engines the model can reach: real ``/bin/grep -E`` via the bash
-        # tool, ripgrep via ``tools/grep.py:219``, and the Python ``re``
-        # fallback at ``tools/grep.py:272-274``. The ``-E`` sits outside the
+        # tool, ripgrep via ``tools/grep.py:311``, and the Python ``re``
+        # fallback at ``tools/grep.py:364-366``. The ``-E`` sits outside the
         # quotes so the quoted pattern is still copy-pastable verbatim into the
         # grep TOOL's ``pattern`` argument, which takes no flags.
         #
@@ -777,7 +777,7 @@ def _extension_signpost(cwd_abs: str, active_tool_names: set[str]) -> str:
     #   plan                BLOCK         BLOCK         BLOCK
     #
     # i.e. it prompts in 3 of those 15 cells. YOLO returns at branch (e)
-    # (``permission.py:518-519``) BEFORE the write check, and a headless run
+    # (``permission.py:571-572``) BEFORE the write check, and a headless run
     # (``-p`` / ``--mode json`` / ``--mode rpc``) has no approver at all —
     # branch (d) at ``:486-489`` allows (or, for a delegated child, blocks).
     # The prompt is reached only via branch (h) at ``:491-498``, because
@@ -796,7 +796,7 @@ def _extension_signpost(cwd_abs: str, active_tool_names: set[str]) -> str:
     # surfaces no prompt comes at all. Comment and text now agree on "may ask".
     #
     # MINOR 3 (truth audit): a DECLINE is not the only refusal. The table shows
-    # BLOCK for every plan-mode cell (``permission.py:497-500``, which returns
+    # BLOCK for every plan-mode cell (``permission.py:550-553``, which returns
     # above the read-only short-circuit so it binds headless too) and for a
     # delegated headless child on default / auto-accept-edits / auto
     # (``:486-489``, ``headless_default == "block"``). Those are policy, not a

@@ -1168,9 +1168,6 @@
    "path = directory / f\"prompt-{_safe_stem(name)}.md\"",
    "fd = os.open(path, os.O_CREAT | os.O_WRONLY | os.O_EXCL, 0o600)"
   ],
-  "packages/aelix-coding-agent/src/aelix_agents/reaper.py:208-208": [
-   "os.kill(pid, signal.SIGKILL)"
-  ],
   "packages/aelix-coding-agent/src/aelix_agents/reaper.py:80-80": [
    "DEFAULT_GRACE_SECONDS = 5.0"
   ],
@@ -1569,7 +1566,7 @@
   "packages/aelix-coding-agent/src/aelix_coding_agent/agents/service.py:281-281": [
    "self.parsed.__dict__.update(copy.deepcopy(self.baseline).__dict__)"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/builtin/permission.py:175-197": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/builtin/permission.py:222-244": [
    "def _rule_key(tool_name: str, args: dict[str, Any]) -> str:",
    "\"\"\"Build the exact, TOOL-NAMESPACED rule key a call is matched against.",
    "",
@@ -1579,7 +1576,7 @@
    "spaces, so an un-namespaced ``src/*`` would match a bash ``src/foo.sh ...``).",
    "\"\"\""
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/builtin/permission.py:492-500": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/builtin/permission.py:545-553": [
    "# (b) PLAN mode blocks ALL mutating tools — even on the headless / print /",
    "# rpc path (this check is placed ABOVE the read-only short-circuit and",
    "# the ``not has_ui`` ALLOW branch so the plan-mode guarantee holds on",
@@ -1589,29 +1586,29 @@
    "return ToolCallResult(",
    "block=True, reason=MODE_META[PermissionMode.PLAN].block_reason"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/builtin/permission.py:497-497": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/builtin/permission.py:550-550": [
    "if mode == PermissionMode.PLAN and is_mutating:"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/builtin/permission.py:497-500": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/builtin/permission.py:550-553": [
    "if mode == PermissionMode.PLAN and is_mutating:",
    "return ToolCallResult(",
    "block=True, reason=MODE_META[PermissionMode.PLAN].block_reason",
    ")"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/builtin/permission.py:502-504": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/builtin/permission.py:555-557": [
    "# (a) Read-only tools are silently allowed (all modes; PLAN handled above).",
    "if not is_mutating:",
    "return None"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/builtin/permission.py:503-504": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/builtin/permission.py:556-557": [
    "if not is_mutating:",
    "return None"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/builtin/permission.py:518-519": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/builtin/permission.py:571-572": [
    "if mode == PermissionMode.YOLO:",
    "return None"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/builtin/permission.py:527-532": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/builtin/permission.py:580-585": [
    "if (",
    "mode == PermissionMode.AUTO_ACCEPT",
    "and not is_bash",
@@ -1619,13 +1616,13 @@
    "):",
    "return None"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/builtin/permission.py:566-569": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/builtin/permission.py:619-622": [
    "if not ctx.has_ui:",
    "if self.headless_default == \"block\":",
    "return ToolCallResult(block=True, reason=_HEADLESS_BLOCK_REASON)",
    "return None"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/builtin/permission.py:571-578": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/builtin/permission.py:624-631": [
    "# (h) DEFAULT (and AUTO_ACCEPT bash / AUTO-ask bash) → the 4-option prompt.",
    "# Serialize prompts so parallel tool calls never race two modals.",
    "async with self._lock:",
@@ -1635,10 +1632,10 @@
    "return None",
    "return await self._prompt(event, ctx)"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/builtin/permission.py:573-573": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/builtin/permission.py:626-626": [
    "async with self._lock:"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/builtin/permission.py:76-76": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/builtin/permission.py:77-77": [
    "_MUTATING = _BASH_TOOLS | _WRITE_TOOLS"
   ],
   "packages/aelix-coding-agent/src/aelix_coding_agent/builtin/permission_mode.py:71-77": [
@@ -2582,10 +2579,10 @@
   "packages/aelix-coding-agent/src/aelix_coding_agent/tools/bash.py:708-708": [
    "execution_mode=\"sequential\","
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tools/grep.py:219-219": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tools/grep.py:311-311": [
    "cmd.extend([pattern, base])"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tools/grep.py:272-274": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tools/grep.py:364-366": [
    "needle = re.escape(pattern) if literal else pattern",
    "try:",
    "rx = re.compile(needle, flags)"

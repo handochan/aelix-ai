@@ -8,15 +8,15 @@ Protocol in ``subagent_contract.py`` deliberately carries no grant parameter
 ``test_product_core_never_prompts_for_spawn_consent``).
 
 THE PROBLEM IS AN EMPTY GATE, NOT UX. Measured on the shipped ladder:
-``_MUTATING`` (``builtin/permission.py:76``) is
+``_MUTATING`` (``builtin/permission.py:77``) is
 ``['bash','create_file','edit','execute_command','sh','shell','write','write_file']``
 — ``"agent"`` is NOT in it, so an ``agent`` tool call falls into the
-non-mutating branch at ``permission.py:503-504`` and is **silently allowed**.
+non-mutating branch at ``permission.py:556-557`` and is **silently allowed**.
 Delegation is today the one action a model can take that starts a whole second
 agent with real authority and asks nobody.
 
 WHY NOT JUST ADD ``"agent"`` TO ``_MUTATING``. ``_rule_key``
-(``permission.py:175-197``) falls through to an args-blind ``f"tool:{tool_name}"``
+(``permission.py:222-244``) falls through to an args-blind ``f"tool:{tool_name}"``
 at ``:116``. One "allow for this session" would then approve EVERY profile
 against EVERY task for the rest of the run. The gate has to live here, keyed on
 what actually varies. ``builtin/permission.py`` is deliberately left alone.
@@ -102,7 +102,7 @@ if TYPE_CHECKING:
 # ``tool_call`` hook (see the module docstring), so this only has to cover the
 # second door — ``/agents run``, which is a REPL command — and any future
 # caller that has not read this file. The precedent is
-# ``builtin/permission.py:573``'s ``async with self._lock`` around its own
+# ``builtin/permission.py:626``'s ``async with self._lock`` around its own
 # modal. Module scope is correct: the resource being protected is the TUI's
 # single ``_modal`` slot, which is also process-wide.
 #

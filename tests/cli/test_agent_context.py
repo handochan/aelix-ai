@@ -579,8 +579,8 @@ async def test_emitted_api_grep_command_actually_RUNS_in_every_surface() -> None
     three engines a model can actually reach:
 
       (a) real ``/bin/grep`` via the shipped bash tool,
-      (b) ripgrep via the shipped grep tool (``tools/grep.py:219``),
-      (c) the grep tool's Python ``re`` fallback (``tools/grep.py:272-274``).
+      (b) ripgrep via the shipped grep tool (``tools/grep.py:311``),
+      (c) the grep tool's Python ``re`` fallback (``tools/grep.py:364-366``).
 
     All three must agree, exit clean, and surface ``register_tool`` (the call
     the block is mostly about) AND the ``def on(`` hook surface.
@@ -810,7 +810,7 @@ async def test_prompt_does_not_claim_dot_aelix_writes_ALWAYS_prompt(tmp_path) ->
     ``<cwd>/.aelix/extensions/x.py`` falsifies "always" in most cells — this
     test re-derives the table rather than trusting the prose:
 
-    - YOLO returns at branch (e) (``permission.py:518-519``) BEFORE the write
+    - YOLO returns at branch (e) (``permission.py:571-572``) BEFORE the write
       check, so no prompt in ANY surface.
     - Headless (``-p`` / ``--mode json`` / ``--mode rpc``) has no approver at
       all: branch (d) (``:486-489``) allows outright.
@@ -901,9 +901,9 @@ async def test_prompt_covers_a_policy_BLOCK_and_not_only_a_user_decline(
 
     - PLAN mode blocks every mutating tool on EVERY surface — the check sits
       above the read-only short-circuit precisely so it binds headless too
-      (``permission.py:492-500``).
+      (``permission.py:545-553``).
     - A DELEGATED headless child blocks on default / auto-accept-edits / auto
-      (``permission.py:566-569``, ``headless_default == "block"``).
+      (``permission.py:619-622``, ``headless_default == "block"``).
 
     Told only about declines, an agent that meets a BLOCK has no instruction
     covering it — the case where "try another way" is most tempting and most
