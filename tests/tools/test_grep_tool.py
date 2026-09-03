@@ -5,7 +5,11 @@ from __future__ import annotations
 import pytest
 from aelix_ai.tools import ToolExecutionContext
 from aelix_coding_agent.tools import create_grep_tool
-from aelix_coding_agent.tools.grep import GrepToolDetails
+from aelix_coding_agent.tools.grep import (
+    GrepToolDetails,
+    _relativize_rg_line,
+    _try_ripgrep,
+)
 
 
 async def _exec(tool, args):
@@ -226,15 +230,19 @@ async def test_grep_rg_match_count_cap_drops_excess(tmp_path, monkeypatch):
     second match's block (pi ``matchCount`` semantics) — NOT a mid-block slice."""
 
     base = str(tmp_path)
+    # rg does NOT put a space after the lineno separator — ``formatBlock`` does,
+    # which is the transform under test. The context lines carried that space
+    # pre-formatted until the relativization fix, and so passed by substring even
+    # while being emitted verbatim with their absolute path.
     stdout = "\n".join(
         [
-            f"{base}/a.txt-1- before",
+            f"{base}/a.txt-1-before",
             f"{base}/a.txt:2:MATCH one",
-            f"{base}/a.txt-3- after",
+            f"{base}/a.txt-3-after",
             "--",
-            f"{base}/b.txt-9- before",
+            f"{base}/b.txt-9-before",
             f"{base}/b.txt:10:MATCH two",
-            f"{base}/b.txt-11- after",
+            f"{base}/b.txt-11-after",
         ]
     ) + "\n"
     _stub_rg(monkeypatch, stdout)
@@ -243,6 +251,7 @@ async def test_grep_rg_match_count_cap_drops_excess(tmp_path, monkeypatch):
     text = result.content[0].text
     assert "a.txt:2: MATCH one" in text
     assert "a.txt-1- before" in text and "a.txt-3- after" in text  # context kept
+    assert base not in text  # no absolute prefix on any line, context included
     assert "MATCH two" not in text  # second match dropped by the match cap
     assert not text.split("\n\n[")[0].rstrip().endswith("--")  # dangling sep stripped
     assert "[1 matches limit reached." in text
@@ -265,6 +274,172 @@ async def test_grep_rg_match_count_cap_keeps_all_under_limit(tmp_path, monkeypat
     text = result.content[0].text
     assert "a.txt:2: MATCH one" in text and "b.txt:10: MATCH two" in text
     assert "matches limit reached" not in text
+
+
+# --- rg line relativization: Windows shapes, run on every platform ----------
+#
+# No ``skipif`` here, for the reason ``tests/cli/test_stdio_encoding_win32.py``
+# states in its docstring: ``_relativize_rg_line`` is a pure string transform
+# over rg's stdout, so a Windows-shaped line is constructible on Linux and macOS
+# and a case that only runs on the platform we cannot run on is not a regression
+# guard. Measured on darwin BEFORE the fix, with the drive-letter case from
+# ``.omc/specs/windows-support-prep-2026-09-03.md`` §8:
+#
+#     >>> _relativize_rg_line(r"C:\Users\me\proj\src\app.txt:12:hit",
+#     ...                     r"C:\Users\me\proj", is_directory=True)
+#     ('C:\\Users\\me\\proj\\src\\app.txt:12:hit', False)
+#
+# want ``('src/app.txt:12: hit', True)``. Two causes, both in four lines:
+# ``line.find(":")`` returned 1 — the DRIVE-LETTER colon — so the candidate path
+# was ``"C"`` and matched neither branch; and the branch it had to match tested
+# ``base + "/"``, a literal forward-slash join that no ``\``-separated Windows
+# base can ever satisfy. The same left-scan broke POSIX too: any ``-`` in the
+# base (this repo lives in ``…/aelix-ai/…``) captured the ``-`` scan and left
+# every CONTEXT line absolute.
+#
+# The spec writes that example with ``src\app.py``; these fixtures say
+# ``app.txt`` on purpose. ``scripts/check_citations.py`` reads any
+# ``<stem>.py`` followed by a colon and a line number as a citation, and that
+# stem resolves to ``aelix-server/src/aelix_server/app.py`` — the examples
+# would be locked and drift-checked as if they cited that file. A sample path
+# that carries a line number must not end in ``.py``.
+
+_WIN_BASE = r"C:\Users\me\proj"
+
+
+@pytest.mark.parametrize(
+    ("line", "base", "expected"),
+    [
+        # The contract pinned in the spec's reproduction command.
+        (rf"{_WIN_BASE}\src\app.txt:12:hit", _WIN_BASE, ("src/app.txt:12: hit", True)),
+        # Context lines relativize too — they are what the POSIX ``-`` scan lost.
+        (rf"{_WIN_BASE}\src\app.txt-11-ctx", _WIN_BASE, ("src/app.txt-11- ctx", False)),
+        # rg echoes the search path as given and joins walked entries with the
+        # platform separator, so ONE path can carry both separators.
+        (r"C:/proj\sub\a.txt:3:x", "C:/proj", ("sub/a.txt:3: x", True)),
+        # A drive root is already separator-terminated; rg adds no second one.
+        (r"C:\a.txt:1:x", "C:\\", ("a.txt:1: x", True)),
+        # UNC: no drive letter, two leading separators. Nothing here parses the
+        # front of the path, so the shape is simply never looked at.
+        (
+            r"\\server\share\sub\a.txt:7:unc",
+            r"\\server\share",
+            ("sub/a.txt:7: unc", True),
+        ),
+        (r"\\server\share\a.txt-6-ctx", r"\\server\share", ("a.txt-6- ctx", False)),
+        # The POSIX face of the same defect: a hyphen in the BASE.
+        ("/tmp/aelix-ai/src/a.txt-3-ctx", "/tmp/aelix-ai", ("src/a.txt-3- ctx", False)),
+        # A hyphen-and-digits FILE name cannot fool a match line: the ``:N:``
+        # shape is preferred, and ``-01-`` is not that shape.
+        (
+            "/p/_posts/2024-01-15-post.md:12:hit",
+            "/p",
+            ("_posts/2024-01-15-post.md:12: hit", True),
+        ),
+        # A colon in the CONTENT cannot fool it either: the scan starts after
+        # the base and takes the first ``:digits:``, which is the real field.
+        (rf"{_WIN_BASE}\a.txt:5:at 09:30:00", _WIN_BASE, ("a.txt:5: at 09:30:00", True)),
+        # Not under base at all (rg cannot emit this, but the guard is the
+        # reason a mis-parse degrades to verbatim instead of to garbage).
+        ("/other/x.txt:1:y", "/p", ("/other/x.txt:1:y", False)),
+        # A sibling whose name merely starts with the base's is not swallowed:
+        # the boundary is a separator check, not a string prefix.
+        ("/tmp/foobar/x.txt:1:y", "/tmp/foo", ("/tmp/foobar/x.txt:1:y", False)),
+        ("--", _WIN_BASE, ("--", False)),  # group separator carries no path
+    ],
+    ids=[
+        "win-drive-match",
+        "win-drive-context",
+        "win-mixed-separators",
+        "win-drive-root-base",
+        "unc-match",
+        "unc-context",
+        "posix-hyphen-in-base-context",
+        "hyphen-digit-filename-match",
+        "colon-in-content-match",
+        "outside-base-verbatim",
+        "sibling-prefix-not-swallowed",
+        "group-separator",
+    ],
+)
+def test_relativize_rg_line_directory_base(line, base, expected):
+    """Directory searches: the ``base`` prefix is consumed as a known literal."""
+
+    assert _relativize_rg_line(line, base, is_directory=True) == expected
+
+
+@pytest.mark.parametrize(
+    ("line", "base", "expected"),
+    [
+        (rf"{_WIN_BASE}\b.txt:1:only", rf"{_WIN_BASE}\b.txt", ("b.txt:1: only", True)),
+        (rf"{_WIN_BASE}\b.txt-9-ctx", rf"{_WIN_BASE}\b.txt", ("b.txt-9- ctx", False)),
+        (
+            r"\\server\share\b.txt:1:unc",
+            r"\\server\share\b.txt",
+            ("b.txt:1: unc", True),
+        ),
+        # Content that looks exactly like another rg line cannot move the
+        # boundary: for a single-file search the boundary IS ``len(base)``.
+        (
+            rf"{_WIN_BASE}\b.txt:1:C:\other\p.txt:9:x",
+            rf"{_WIN_BASE}\b.txt",
+            ("b.txt:1: C:\\other\\p.txt:9:x", True),
+        ),
+        # A different file than the one searched: verbatim, and NOT a match.
+        (rf"{_WIN_BASE}\other.txt:1:x", rf"{_WIN_BASE}\b.txt", (rf"{_WIN_BASE}\other.txt:1:x", False)),
+    ],
+    ids=[
+        "win-single-file-match",
+        "win-single-file-context",
+        "unc-single-file",
+        "content-looks-like-an-rg-line",
+        "path-is-not-the-file-searched",
+    ],
+)
+def test_relativize_rg_line_file_base(line, base, expected):
+    """Single-file searches (rg ``-H``): rg prints exactly the path it was
+    handed, so the field boundary is known and never searched for."""
+
+    assert _relativize_rg_line(line, base, is_directory=False) == expected
+
+
+async def test_try_ripgrep_windows_base_relativizes_and_caps_on_matches(monkeypatch):
+    """The whole rg branch over a Windows drive-letter base: every emitted line
+    is relative, no absolute prefix survives, and the cap still counts ``:N:``
+    match lines rather than ``-N-`` context lines."""
+
+    base = _WIN_BASE
+    stdout = (
+        "\n".join(
+            [
+                rf"{base}\src\app.txt-11-before",
+                rf"{base}\src\app.txt:12:MATCH one",
+                rf"{base}\src\app.txt-13-after",
+                "--",
+                rf"{base}\src\other.txt:20:MATCH two",
+            ]
+        )
+        + "\n"
+    )
+    _stub_rg(monkeypatch, stdout)
+    out, limit_reached, _trimmed = await _try_ripgrep(
+        "MATCH",
+        base,
+        rg_path="/fake/rg",
+        glob=None,
+        ignore_case=False,
+        literal=False,
+        context=1,
+        limit=1,
+        is_directory=True,
+    )
+    assert out.split("\n") == [
+        "src/app.txt-11- before",
+        "src/app.txt:12: MATCH one",
+        "src/app.txt-13- after",
+    ]
+    assert limit_reached is True  # the 2nd ``:20:`` match tripped the cap
+    assert "C:" not in out  # no absolute prefix leaks into the model's view
 
 
 # --- Lane B cancellation: _try_ripgrep re-raises CancelledError -------------

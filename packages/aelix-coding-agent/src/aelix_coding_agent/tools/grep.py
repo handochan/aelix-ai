@@ -115,6 +115,88 @@ _GREP_PARAMETERS_SCHEMA: dict[str, Any] = {
 # (``:N: text`` / ``-N- text``); the digit guard avoids mangling odd lines.
 _RG_REMAINDER_RE = re.compile(r"^([:-])(\d+)([:-])(.*)$", re.DOTALL)
 
+# Separators an rg-printed path can carry. ``os.sep`` alone is NOT enough: rg
+# echoes the search path exactly as it was given and joins walked entries onto
+# it with the platform separator, so a Windows base handed in as ``C:/proj``
+# comes back as ``C:/proj\sub\a.txt`` — both separators inside one path. Both
+# are therefore accepted on every platform, which is also what lets the Windows
+# shapes be tested off Windows (they are pure string transforms).
+_PATH_SEPS = ("/", "\\")
+_PATH_SEP_CHARS = "".join(_PATH_SEPS)  # for ``str.rstrip``
+
+# The field triple that follows the path: ``:N:`` on a MATCH line, ``-N-`` on a
+# CONTEXT line. Both separators of a triple are always the SAME character, so
+# the two shapes are searched separately rather than as ``[:-]\d+[:-]`` — that
+# looser shape would accept a ``:`` in the path meeting a ``-`` lineno.
+_MATCH_FIELD_RE = re.compile(r":\d+:")
+_CONTEXT_FIELD_RE = re.compile(r"-\d+-")
+# The same triple anchored at position 0, for the single-file search where the
+# printed path IS ``base`` and the boundary is known rather than searched for.
+_FIELD_AT_START_RE = re.compile(r"^([:-])\d+\1")
+
+
+def _basename(path: str) -> str:
+    """Last component of ``path``, splitting on BOTH separators.
+
+    ``os.path.basename`` is platform-flavoured — on POSIX it does not treat
+    ``\\`` as a separator and hands back a whole Windows path unchanged, which
+    is precisely the bug this module has to survive. Cost of the symmetry: a
+    POSIX file whose *name* contains a literal backslash renders as if that
+    backslash were a directory boundary. Windows correctness wins that trade.
+    """
+
+    for sep in _PATH_SEPS:
+        path = path.rpartition(sep)[2]
+    return path
+
+
+def _after_base_prefix(line: str, base: str) -> str | None:
+    """Strip the leading ``base`` DIRECTORY prefix off an rg output line.
+
+    rg prints ``<base><sep><relative>``: it echoes the search path it was handed
+    and joins the walked entry onto it, so the path prefix is a *known literal*
+    and is consumed by string equality — never re-discovered by scanning. That
+    is what makes the drive-letter colon in ``C:\\Users\\me\\proj`` a non-event:
+    it is inside the consumed prefix before any separator search begins.
+
+    Returns the text after the prefix (relative path + ``<sep>lineno<sep>content``
+    remainder), or ``None`` when the line does not sit under ``base``.
+
+    ``base`` is allowed to be separator-terminated — a drive root ``C:\\``,
+    POSIX ``/``, or a UNC share root — where rg appends no second separator.
+    """
+
+    stem = base.rstrip(_PATH_SEP_CHARS)
+    if not line.startswith(stem):
+        return None
+    rest = line[len(stem) :]
+    # A real path boundary, not ``base + "/"``: the next character must be a
+    # separator, which also rejects a sibling whose name merely starts with the
+    # base's (``/tmp/foo`` must not swallow ``/tmp/foobar/x.txt``).
+    if rest[:1] not in _PATH_SEPS:
+        return None
+    return rest[1:]
+
+
+def _split_path_field(rest: str) -> tuple[str, str, bool] | None:
+    """Split ``<relpath><sep>lineno<sep>content`` into its path and remainder.
+
+    Returns ``(relative_path, remainder, is_match)`` or ``None`` when no field
+    triple is present. The MATCH shape ``:N:`` is preferred over the CONTEXT
+    shape ``-N-`` wherever each first occurs, because a hyphen is ordinary in a
+    file name and a colon is not — ``_posts/2024-01-15-post.md:12:hit`` must
+    split at ``:12:`` and not at ``-01-``. Only the relative tail is searched;
+    everything in ``base`` was already consumed by :func:`_after_base_prefix`.
+    """
+
+    m = _MATCH_FIELD_RE.search(rest)
+    if m is not None:
+        return rest[: m.start()], rest[m.start() :], True
+    m = _CONTEXT_FIELD_RE.search(rest)
+    if m is not None:
+        return rest[: m.start()], rest[m.start() :], False
+    return None
+
 
 def _space_after_lineno(remainder: str) -> str:
     """Pi parity ``formatBlock``: add the space before content in an rg
@@ -139,39 +221,49 @@ def _relativize_rg_line(
     context / ``--`` separator → not a match) — used by :func:`_try_ripgrep` to
     cap on MATCH count (pi's ``matchCount``), not raw line count. When ``base``
     is a directory, strip the ``base`` prefix (relative+POSIX, no ``./``); when
-    ``base`` is a file (or the match is outside ``base``), fall back to the
-    basename — matching pi's ``path.relative`` / ``path.basename``.
+    ``base`` is a file, render its basename — matching pi's ``path.relative`` /
+    ``path.basename``.
+
+    The path is NEVER found by scanning left for the first ``:``/``-``: it is
+    the ``base`` that was handed to rg, consumed as a literal prefix. Scanning
+    is what broke this on Windows, where ``line.find(":")`` on
+    ``C:\\Users\\me\\proj\\src\\app.txt:12:hit`` returns the drive-letter colon at
+    index 1 and every hit is then emitted with its full absolute path; and on
+    POSIX too, where any ``-`` in the base (``…/aelix-ai/…``) captured the
+    ``-``-scan and left every CONTEXT line absolute. Consuming ``base`` first
+    makes both classes unreachable — no character inside the base, drive letter
+    or hyphen or UNC's leading ``\\\\``, can be mistaken for a field separator.
+    What remains searchable is only the relative tail, and only for the exact
+    ``<sep>digits<sep>`` shape (see :func:`_split_path_field`).
+
+    A line that does not fit any of that is returned verbatim and reported as a
+    NON-match: over-counting the cap would drop real matches, so an unparsed
+    line must never consume a slot.
     """
 
     if line == "--":
         return line, False
-    # rg emits ``path:lineno:content`` for matches and ``path-lineno-content``
-    # for context lines. Split off the leading absolute path on the first
-    # separator that follows the (possibly ``:``-containing on Windows) path.
-    for sep in (":", "-"):
-        idx = line.find(sep)
-        if idx <= 0:
-            continue
-        candidate = line[:idx]
-        is_match = sep == ":"
-        # Only treat the prefix as a path when it actually points under/at base.
-        if is_directory:
-            if candidate == base or candidate.startswith(base + "/"):
-                rel = relativize_to_posix(candidate, base)
-                return rel + _space_after_lineno(line[idx:]), is_match
-        else:
-            if candidate == base:
-                return (
-                    os.path.basename(candidate) + _space_after_lineno(line[idx:]),
-                    is_match,
-                )
-    # Unrecognized shape: keep verbatim and treat as NON-match for counting.
-    # Match lines (``:``-separated lineno) parse reliably via the ``:`` branch
-    # above (paths almost never contain ``:``); the only lines that reach here
-    # are context lines whose ``-``-separated lineno collides with a ``-`` in
-    # the path. Counting them as matches would over-count and drop real matches,
-    # so they must NOT count toward the match cap.
-    return line, False
+    if is_directory:
+        rest = _after_base_prefix(line, base)
+        if rest is None:
+            return line, False
+        split = _split_path_field(rest)
+        if split is None:
+            return line, False
+        rel, remainder, is_match = split
+        # POSIX-ise the relative path only; the content after the lineno keeps
+        # its backslashes.
+        return rel.replace("\\", "/") + _space_after_lineno(remainder), is_match
+    # Single-file search: rg was handed one file and ``-H``, so the path it
+    # prints IS ``base``. The boundary is at ``len(base)`` — known, not
+    # searched — which makes this branch unfoolable by any path content.
+    if not line.startswith(base):
+        return line, False
+    remainder = line[len(base) :]
+    m = _FIELD_AT_START_RE.match(remainder)
+    if m is None:
+        return line, False
+    return _basename(base) + _space_after_lineno(remainder), m.group(1) == ":"
 
 
 async def _try_ripgrep(
