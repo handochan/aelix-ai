@@ -247,10 +247,13 @@ def _title_of(path: Path) -> str:
 
 
 def topics() -> list[Topic]:
-    """Every bundled guide, sorted by name.
+    """Every bundled guide, sorted by topic name (the stem).
 
-    ``README`` sorts to the front of the ASCII ordering, which is the right
-    place for it — it is the index.
+    Sorted by the NAME STRING, never by the ``Path`` objects themselves:
+    ``PurePath`` comparison is case-folded on the Windows flavour, which put
+    ``agent-profiles`` ahead of ``README`` there (#208). On the stem
+    ``README`` sorts to the front of the ASCII ordering on every platform,
+    which is the right place for it — it is the index.
     """
 
     docs = bundled_docs_dir()
@@ -258,7 +261,7 @@ def topics() -> list[Topic]:
         return []
     return [
         Topic(name=p.stem, path=p, title=_title_of(p))
-        for p in sorted(docs.glob("*.md"))
+        for p in sorted(docs.glob("*.md"), key=lambda p: p.stem)
     ]
 
 

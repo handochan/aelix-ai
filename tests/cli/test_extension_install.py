@@ -2001,6 +2001,27 @@ def test_no_backend_install_abort_names_target_and_remedy(
     assert "no usable package installer" in err
 
 
+def test_no_backend_abort_quotes_a_windows_path_without_escaping_it(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """#208: the refused target is printed literally, not through ``repr()``.
+
+    ``f"{target!r}"`` escapes every backslash, so a Windows target came back as
+    ``'C:\\\\Users\\\\x\\\\ext'`` — not a string the user could compare against
+    what they typed or paste back into a shell. Platform-independent: the
+    doubling is a property of ``repr()``, not of the OS, so a backslash-bearing
+    target reproduces it anywhere.
+    """
+    target = r"C:\Users\x\ext"
+    _force_env(monkeypatch, pip=False, uv=None)
+    code = install_extension(target, yes=True)
+    assert code == 2
+    err = capsys.readouterr().err
+    assert target in err  # verbatim, backslashes intact
+    assert "\\\\" not in err  # and not doubled anywhere
+    assert f"cannot install '{target}'" in err  # still quoted, same quotes
+
+
 def test_no_backend_remove_abort_names_extension_and_distribution(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

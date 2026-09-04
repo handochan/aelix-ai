@@ -14,8 +14,9 @@ from __future__ import annotations
 import shutil
 import subprocess
 import sys
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
+import pytest
 from aelix_coding_agent.help import (
     ALIASES,
     NEAR_MISS_FILES,
@@ -24,6 +25,7 @@ from aelix_coding_agent.help import (
     near_miss,
     packaged_path,
     read_topic,
+    registry,
     resolve_topic,
     search_topics,
     topic_names,
@@ -56,6 +58,63 @@ def test_topics_are_derived_from_the_files_on_disk() -> None:
     on_disk = sorted(p.stem for p in bundled_docs_dir().glob("*.md"))
     assert topic_names() == on_disk
     assert len(on_disk) >= 7
+
+
+class _WindowsDoc(PureWindowsPath):
+    """A bundled doc filename that compares the way it does on Windows.
+
+    ``PurePath.__lt__`` is case-FOLDED on the Windows flavour and byte-wise on
+    the POSIX one, so a sort of ``Path`` objects orders the same nine filenames
+    differently on the two platforms. Wrapping the names in this class injects
+    the Windows comparison into a test that runs everywhere — the repo's
+    standing alternative to ``skipif`` (precedent:
+    ``tests/cli/test_stdio_encoding_win32.py``).
+
+    ``open()`` raises ``OSError`` because these are names, not files;
+    ``registry._title_of`` catches that and falls back to the stem, which is all
+    this test looks at.
+    """
+
+    def open(self, *args: object, **kwargs: object) -> object:
+        raise OSError("not a real file")
+
+
+class _FakeDocsDir:
+    """Stands in for ``bundled_docs_dir()``: a directory of ``_WindowsDoc``."""
+
+    def __init__(self, names: list[str]) -> None:
+        self._names = names
+
+    def is_dir(self) -> bool:
+        return True
+
+    def glob(self, pattern: str) -> list[_WindowsDoc]:
+        assert pattern == "*.md"
+        return [_WindowsDoc(n) for n in self._names]
+
+
+def test_readme_leads_the_topics_under_windows_path_comparison(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#208: the listing must open with ``README`` on Windows too.
+
+    Two halves. First, the bug is real: sorting the REAL bundled filenames the
+    way the old code did — ``sorted(paths)`` — under Windows comparison drops
+    ``README`` into the middle, so this is not a hypothetical ordering. Second,
+    ``topics()`` fed those very objects still leads with ``README``, because it
+    now sorts by the stem string instead of by the path object.
+    """
+    names = [p.name for p in bundled_docs_dir().glob("*.md")]
+    assert "README.md" in names
+
+    # The old ordering, reproduced: case-folded, so lowercase names come first.
+    old_order = [p.stem for p in sorted(_WindowsDoc(n) for n in names)]
+    assert old_order[0] != "README"
+    assert old_order.index("README") > 0
+
+    monkeypatch.setattr(registry, "bundled_docs_dir", lambda: _FakeDocsDir(names))
+    assert topic_names()[0] == "README"
+    assert [t.name for t in topics()] == sorted(PureWindowsPath(n).stem for n in names)
 
 
 def test_a_new_guide_becomes_a_topic_with_no_code_change(tmp_path: Path) -> None:

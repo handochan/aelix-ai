@@ -1220,7 +1220,10 @@ def install_extension(
     backend = resolve_install_backend(runner)
     if backend is None:
         print(
-            _backend_missing_message(verb.lower(), f"{target!r} (source: {kind})"),
+            # Quoted by hand, NOT with !r: repr() escapes a Windows path's
+            # backslashes, so the path the user sees does not match the one they
+            # typed (#208). Same quotes, literal text.
+            _backend_missing_message(verb.lower(), f"'{target}' (source: {kind})"),
             file=sys.stderr,
         )
         return _EXIT_DIDNT_RUN
