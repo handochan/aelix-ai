@@ -6,12 +6,15 @@ and internal attribute allowlist.
 
 from __future__ import annotations
 
+import os
+import subprocess
 from typing import Any
 
 import pytest
 from aelix_agent_core.harness.hooks import ToolCallResult
 from aelix_agent_core.types import AgentTool
 from aelix_ai.tools import ToolExecutionContext, ToolResult
+from aelix_coding_agent.extensions import api as api_mod
 from aelix_coding_agent.extensions.api import (
     Extension,
     ExtensionAPI,
@@ -53,6 +56,31 @@ def _make_ctx(runtime: _ExtensionRuntime | None = None) -> ExtensionContext:
         get_active_tools=lambda: ["tool_a"],
         get_system_prompt=lambda: "system",
     )
+
+
+async def test_exec_timeout_uses_contained_process_runner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    api, _, _ = _make_api()
+    calls: list[tuple[list[str], dict[str, object]]] = []
+
+    def run_contained(argv: list[str], **kwargs: object) -> object:
+        calls.append((argv, kwargs))
+        raise subprocess.TimeoutExpired(argv, kwargs["timeout"], output=b"partial")
+
+    monkeypatch.setattr(api_mod, "run_contained", run_contained)
+    result = await api.exec("tool", ["arg"], cwd="work", timeout_ms=250)
+
+    assert result == api_mod.ExecResult(
+        stdout="partial", stderr="", code=124, killed=True
+    )
+    assert calls[0][0] == ["tool", "arg"]
+    assert calls[0][1]["capture_output"] is True
+    assert calls[0][1]["text"] is True
+    assert calls[0][1]["cwd"] == "work"
+    assert calls[0][1]["env"] == dict(os.environ)
+    assert calls[0][1]["timeout"] == 0.25
+    assert calls[0][1]["check"] is False
 
 
 async def _noop_execute(args: dict[str, Any], ctx: ToolExecutionContext) -> ToolResult:

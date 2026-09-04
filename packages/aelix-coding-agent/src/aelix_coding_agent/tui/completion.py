@@ -47,6 +47,8 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 
 from prompt_toolkit.completion import Completer, Completion
 
+from aelix_coding_agent.tools._process_tree import run_contained
+
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Mapping
 
@@ -247,7 +249,7 @@ def _fd_enumerate(fd_bin: str, base: Path) -> list[str] | None:
         argv += ["--exclude", excluded]
     argv += ["--max-results", str(_TREE_ENUM_CAP)]
     try:
-        proc = subprocess.run(  # noqa: S603 — fixed argv, no shell, no user input
+        proc = run_contained(  # noqa: S603 — fixed argv, no shell, no user input
             argv,
             cwd=str(base),
             capture_output=True,

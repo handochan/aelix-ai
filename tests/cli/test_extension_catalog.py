@@ -185,6 +185,25 @@ def test_fetch_git_via_injected_runner() -> None:
     assert [e.name for e in cat.entries] == ["git-ext"]
 
 
+def test_default_git_runner_uses_contained_process(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[list[str], dict[str, object]]] = []
+
+    def run_contained(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        calls.append((argv, kwargs))
+        return subprocess.CompletedProcess(argv, 0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(ec, "run_contained", run_contained)
+    result = ec._default_git_runner(["git", "clone", "--depth", "1", "url", "dest"])
+
+    assert result.returncode == 0
+    assert calls == [
+        (
+            ["git", "clone", "--depth", "1", "url", "dest"],
+            {"capture_output": True, "check": False, "timeout": ec.GIT_CLONE_TIMEOUT},
+        )
+    ]
+
+
 def test_fetch_git_clone_failure_raises() -> None:
     def git_runner(argv: list[str]) -> subprocess.CompletedProcess[bytes]:
         return subprocess.CompletedProcess(argv, 128, stdout=b"", stderr=b"fatal: repo not found")

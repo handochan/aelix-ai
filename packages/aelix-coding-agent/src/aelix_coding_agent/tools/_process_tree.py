@@ -14,11 +14,12 @@ leader and ``proc.kill()`` would terminate it alone and orphan its descendants.
 ``taskkill /T /F`` walks the real parent/child tree, which is the property the
 POSIX ``killpg`` was there for.
 
-EXPERIMENTAL. The win32 arm now RUNS on the ``windows-latest`` leg — including
-the case that deletes ``os.killpg``, ``os.getpgid`` and ``signal.SIGKILL``, which
-is what proves the POSIX body is never reached there. ``taskkill`` itself is
-still stubbed in every case, so the shell-out has never been executed anywhere.
-See ``SLICE-STATUS.md``.
+The win32 arm runs on the ``windows-latest`` leg — including the case that
+deletes ``os.killpg``, ``os.getpgid`` and ``signal.SIGKILL``, which proves the
+POSIX body is never reached there. The contained-runner regression also
+exercises a real descendant holding an inherited stdout pipe, while the
+``taskkill`` invocation remains unit-tested with a stub. See
+``SLICE-STATUS.md``.
 """
 
 from __future__ import annotations
@@ -28,8 +29,96 @@ import os
 import signal
 import subprocess
 import sys
+from typing import Any
 
-__all__ = ["kill_process_tree"]
+__all__ = ["kill_process_tree", "run_contained"]
+
+
+# A descendant can inherit stdout/stderr from the direct child.  After the
+# direct child is killed, an unbounded ``communicate()`` can therefore wait for
+# that descendant's pipe handle forever.  Every timeout cleanup below is
+# explicitly bounded so a broken or partial containment mechanism cannot turn a
+# timeout into a hang.
+_REAP_TIMEOUT = 2.0
+
+
+def run_contained(
+    args: list[str],
+    *,
+    cwd: str | None = None,
+    env: dict[str, str] | None = None,
+    capture_output: bool = False,
+    text: bool = False,
+    timeout: float | None = None,
+    check: bool = False,
+) -> subprocess.CompletedProcess[Any]:
+    """Run a command with process-tree containment and bounded timeout cleanup.
+
+    This is the synchronous counterpart to :func:`run_cancellable`.  It keeps
+    the ``subprocess.run``-compatible result and exception behaviour needed by
+    the synchronous extension catalog and TUI callers, while fixing the
+    Windows timeout trap: ``subprocess.run(timeout=...)`` kills only the direct
+    child and then performs an unbounded ``communicate()``.
+
+    ``start_new_session`` gives POSIX a private process group.  Windows ignores
+    that flag, so :func:`kill_process_tree` uses ``taskkill /T /F`` there.
+    ``TimeoutExpired`` is re-raised after the tree has been asked to die and
+    the direct child has had only a bounded reap window.
+    """
+
+    stdout_pipe = subprocess.PIPE if capture_output else None
+    stderr_pipe = subprocess.PIPE if capture_output else None
+    proc = subprocess.Popen(
+        args,
+        cwd=cwd,
+        env=env,
+        stdout=stdout_pipe,
+        stderr=stderr_pipe,
+        text=text,
+        start_new_session=True,
+    )
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired as exc:
+        # Cleanup must never mask the original timeout.  kill_process_tree is
+        # best-effort by contract; the suppress is also useful for unusual test
+        # doubles and stripped environments.
+        with contextlib.suppress(Exception):
+            kill_process_tree(proc.pid)
+
+        stdout = exc.output
+        stderr = exc.stderr
+        try:
+            reaped_stdout, reaped_stderr = proc.communicate(timeout=_REAP_TIMEOUT)
+        except subprocess.TimeoutExpired as reap_exc:
+            # A descendant may still own a pipe even after the tree kill was
+            # attempted.  Kill the direct child as a final bounded fallback,
+            # reap its exit status without touching the pipes, and close our
+            # handles so this function cannot wait indefinitely.
+            if reap_exc.output is not None:
+                stdout = reap_exc.output
+            if reap_exc.stderr is not None:
+                stderr = reap_exc.stderr
+            with contextlib.suppress(OSError):
+                proc.kill()
+            with contextlib.suppress(subprocess.TimeoutExpired, OSError):
+                proc.wait(timeout=_REAP_TIMEOUT)
+            for stream in (proc.stdout, proc.stderr):
+                if stream is not None:
+                    with contextlib.suppress(OSError):
+                        stream.close()
+        else:
+            stdout = reaped_stdout if reaped_stdout is not None else stdout
+            stderr = reaped_stderr if reaped_stderr is not None else stderr
+
+        raise subprocess.TimeoutExpired(
+            args, timeout if timeout is not None else 0.0, output=stdout, stderr=stderr
+        ) from exc
+
+    completed = subprocess.CompletedProcess(args, proc.returncode, stdout, stderr)
+    if check:
+        completed.check_returncode()
+    return completed
 
 
 def kill_process_tree(pid: int, *, platform: str | None = None) -> None:

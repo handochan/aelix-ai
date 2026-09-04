@@ -51,6 +51,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlparse
 
+from aelix_coding_agent.tools._process_tree import run_contained
+
 __all__ = [
     "CATALOG_CACHE_FILENAME",
     "DEFAULT_CATALOG_ENV",
@@ -469,7 +471,7 @@ def _default_opener(url: str, timeout: float) -> bytes:
 def _default_git_runner(argv: list[str]) -> subprocess.CompletedProcess[bytes]:
     # A wall-clock timeout so a hung remote surfaces as TimeoutExpired (translated
     # to a CatalogError in _git_clone_bytes) instead of blocking discover forever.
-    return subprocess.run(  # noqa: S603 — argv list, no shell
+    return run_contained(  # noqa: S603 — argv list, no shell
         argv, capture_output=True, check=False, timeout=GIT_CLONE_TIMEOUT
     )
 
