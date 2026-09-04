@@ -1,4 +1,4 @@
-# 다음 세션 핸드오프 — windows 141 → 5, 이슈 14건 닫음 (2026-09-04)
+# 다음 세션 핸드오프 — windows 141 → 0, 레그 게이트 승격, 이슈 17건 닫음 (2026-09-04)
 
 `handoff-209-205-2026-09-04.md`의 후속. 한 세션에서 `handoff-windows-clusters-2026-09-04.md` §1의 클러스터를 #207·#206만 남기고 전부 닫았다(#211 포함, 10건). 전부 windows 레그 실측으로 닫았고, 각 이슈 코멘트에 run/job ID와 `comm` 명령이 있다.
 
@@ -6,19 +6,22 @@
 
 | | |
 | --- | --- |
-| `main` | `56f618e` (#206까지; 배치 A = #219 → #218 → #203 → #206 순서로 ff). push 됨. #207은 worktree `/tmp/wt-207` 브랜치 `fix/207-rpc-lifecycle-win32`에서 Workflow 진행 중이었다 |
+| `main` | `58a8b5e` (#207 `beffc2f` → #103 세 커밋 `76e6fc4` `9e59cd4` `58a8b5e`). push 됨. worktree 전부 정리됨 |
 | 로컬 스위트 | `175532a`에서 **9387 passed / 12 skipped / 0 failed** — darwin `/tmp` realpath 실패가 #210으로 사라져 이 세션에서 처음 완전 초록 |
 | windows 실측 궤적 (py3.11) | 141 → 125(#209) → 109(+#205) → 106(#208) → 101(#213) → 96(#214) → 96(#216) → 94(#215) → 77(#210) → 65(#212) → 51(#211) → 배치 A 병렬: 38(#219)·35(#218)·32(#206) 각자 → **main `56f618e` 합산 5 failed / 9337 passed / 67 skipped** (run 33850722642 · job 100952662483; py3.12 레그도 5). 남은 5건 = #207 그대로, tabbed flake는 #206 폴링으로 소멸 |
-| 닫은 이슈 | #209 #205 #208 #213 #214 #216 #215 #210 #212 #211 + 배치 A: #218 #219 #203 #206 (14건) |
-| 남은 클러스터 | **#207**(rpc 5) — 오너 결정 (a): (1)(2)(3)(5) win32 skip + (4) `os.fork` 픽스처를 Popen으로 포팅. Windows soft-kill 자체는 #202 트랙 |
+| 닫은 이슈 | #209 #205 #208 #213 #214 #216 #215 #210 #212 #211 + 배치 A: #218 #219 #203 #206 + #207 #103 **#109** (17건) |
+| windows 레그 | **게이트**(`continue-on-error` 제거). run 33856112601 @ `58a8b5e`: windows py3.11/3.12 type gate 0 errors + 9338 passed / 71 skipped, 잡 success. 연속 3회 clean |
 
 ## 1. 바로 시작할 것
 
-1. **#207 마무리** — `/tmp/wt-207`의 Workflow 결과(있으면) 확인 → 커밋 → push → 레그 측정(기준: main 5건, job 100952662483) → rebase/ff/close. 초록이면 **windows 레그 0 failed**.
-2. **#103 CI 게이트 승격** — `.github/workflows/ci.yml`의 windows `continue-on-error: true` 두 곳(잡 레벨 `:38`, pyright 스텝 `:83`)을 내린다. 그 전에 windows 레그를 main에서 2~3회 더 돌려 flake 0을 확인(tabbed는 #206으로 소멸했지만 다른 flake가 있는지). pyright 스텝은 windows에서 실제로 통과하는지 로그 확인 필요(“advisory” 상태라 아무도 안 봤다).
-3. 그 다음은 오너 정의의 ②③: #106 `install.ps1` 실기 잡, #204 PowerShell/cmd 분류기(ADR-0237) — 배치 B/C. #202는 #207 (a) 결정으로 나중.
+오너 정의(#110)의 ①은 끝났다. 남은 ②③은 파일이 안 겹치니 **한 배치에 병렬**:
 
-잔여 5건의 정본 목록: `gh api repos/handochan/aelix-ai/actions/jobs/100952662483/logs`에서 `FAILED tests/` grep (전부 #207의 5개 id).
+1. **#106 `install.ps1` 실기 e2e** — windows-latest 잡을 하나 붙여 스크립트를 실제로 실행(릴리스 다운로드·SHA256SUMS·uv 설치까지). 실행 이력 0이라 첫 run에서 무엇이 나올지 모른다 — 측정 먼저.
+2. **#204 PowerShell/cmd 분류기** — ADR-0237(본문이 번호를 예약해 둠) → 설계 → 구현 → 테스트 → `uv run aelix`로 라이브. 가장 긴 막대(2~3세션). bash 문법기에 PowerShell을 먹이면 `Remove-Item -Recurse -Force C:\`가 ALLOW로 나오는 문제라 **문법 확장이 아니라 별도 분류기**.
+3. **#200 확인 후 닫기** — `rpc_client.py:395`의 `preexec_fn` 가드 + #209 이후 real-child 테스트 통과가 근거. 실제로 위임 스폰이 Windows에서 되는지 한 번 확인.
+4. 그 뒤 #202(+#207 (1)(2) 재활성화), #107, #108 F-3~6, #46, #201.
+
+주의: 이제 windows 레그가 **게이트**다. 새 `fcntl`/`/`/`select()`가 main에 못 들어간다 — 반대로 Windows-model pyright도 게이트라 `pty`/`termios`/`fcntl` 이름을 쓰면 `# pyright: ignore[reportAttributeAccessIssue]`(f8654ce·76e6fc4 형태)가 필요하다.
 
 ## 2. 이 레포에서 이번에 물린 것 (이전 handoff §4에 더해)
 
@@ -32,7 +35,10 @@
 6. **skip 결정은 오너에게 묻는다**(#215 → (c), #211 → 초안). 둘 다 `tests/conftest.py`의 "genuinely unreachable rather than merely untested" carve-out에 해당하고, 적용은 **PER PAYLOAD**(테스트가 아니라 단언 단위). 새 마커: `escalation_reachable`(`test_print_channel_spawn.py`), `posix_modes_only`/`assert_mode`(`tests/posix_modes.py`).
 7. **`tests/tui/test_context.py::test_tabbed_*` 두 테스트는 run마다 다르게 flaky**(#206 코멘트에 표). 실패 목록 diff의 ±1~2는 이것.
 8. **windows 러너 사실(실측)**: PATH에 Git-Bash `bash.exe` 있음(#216 skip 안 탐, skipped 61 그대로), `_resolve_shell`은 pwsh로 해석(#212 `test_win32_prefers_pwsh` 초록), `python3`도 있음(#212 본문 추정 → 훅 테스트가 `sys.executable`로 바뀌어 더는 의존 안 함).
-9. **Codex는 9/7 14:29까지 usage limit.** 이 세션의 10개 변경 전부 Codex 교차 리뷰 없이 Claude 2-lane(opus 반박 + sonnet 실행)만. 각 이슈 코멘트에 명시.
+9. **Codex는 9/7 14:29까지 usage limit.** 이 세션의 변경 전부 Codex 교차 리뷰 없이 Claude 2-lane(opus 반박 + sonnet 실행)만. 각 이슈 코멘트에 명시.
+10. **반박 리뷰어가 문서의 거짓 주장을 잡았다** — #103 README 초안 "type gate was clean at beffc2f"(실제로는 15 errors, `continue-on-error`가 step 결론을 success로 가려 검증된 것처럼 보였음). advisory 스텝의 `gh run view` conclusion은 믿지 말고 로그의 `FAIL:`을 볼 것.
+11. **Windows 러너의 pyright는 호스트 플랫폼 모델로 돈다.** POSIX 전용 이름 15건이 거기서만 error. `pythonPlatform=Linux`로 덮지 않기로 했다(ci.yml 주석) — Windows arm의 타입 오류를 잡는 유일한 게이트라서.
+12. **`docs/guides/*.md`는 wheel에 번들된다.** 고치면 `uv run python scripts/sync_bundled_docs.py`로 사본을 재동기화해야 `test_docs_bundle_sync`가 통과한다.
 
 ## 3. 반증된 것 — 다시 믿지 말 것
 
