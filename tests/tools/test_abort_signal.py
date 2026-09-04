@@ -22,6 +22,8 @@ import pytest
 from aelix_coding_agent.tools._abort import AbortSignal
 from aelix_coding_agent.tools.bash import ExecExitResult, create_local_bash_operations
 
+from tests.process_probe import STATE_GONE, STATE_ZOMBIE, await_dead_or_zombie
+
 # ---------------------------------------------------------------------------
 # AbortSignal unit tests
 # ---------------------------------------------------------------------------
@@ -155,26 +157,22 @@ async def test_bash_exec_signal_abort_kills_process_group(tmp_path: Path) -> Non
     result = await asyncio.wait_for(task, timeout=5.0)
     assert result.exit_code is None
 
-    # Poll /proc/<pid>/status until the child is dead (Z/X) or fully reaped.
-    deadline = asyncio.get_event_loop().time() + 3.0
-    last_state = "unknown"
-    while asyncio.get_event_loop().time() < deadline:
-        proc_status = f"/proc/{child_pid}/status"
-        if not os.path.exists(proc_status):
-            last_state = "gone"
-            break
-        with open(proc_status) as f:
-            for line in f:
-                if line.startswith("State:"):
-                    last_state = line.split()[1]
-                    break
-        if last_state in ("Z", "X", "gone"):
-            break
-        await asyncio.sleep(0.05)
+    # Poll until the child is gone or a zombie.
+    #
+    # #203 — this poll used to read the ABSENCE of ``/proc/<pid>/status`` as
+    # "fully reaped, definitely dead".  macOS and Windows have no procfs, so
+    # off Linux it took that branch on its first iteration and asserted
+    # nothing.  ``await_dead_or_zombie`` asks a real question per platform
+    # (``os.kill(pid, 0)`` on POSIX, ``OpenProcess``/``GetExitCodeProcess`` on
+    # win32 — where signal 0 is a kill, not a probe) and resolves "cannot
+    # tell" to ALIVE, so a child that outlived the abort fails below on every
+    # platform.
+    last_state = await await_dead_or_zombie(child_pid, timeout=3.0)
 
-    assert last_state in ("Z", "X", "gone"), (
+    assert last_state in (STATE_GONE, STATE_ZOMBIE), (
         f"Child process {child_pid} still in state '{last_state}' "
-        f"after signal abort (expected Z/X/gone — group kill failed?)"
+        f"after signal abort (expected {STATE_GONE}/{STATE_ZOMBIE} — "
+        f"group kill failed?)"
     )
 
 

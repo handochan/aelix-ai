@@ -17,6 +17,8 @@ import sys
 import pytest
 from aelix_coding_agent.tools._subprocess import run_cancellable
 
+from tests.process_probe import STATE_GONE, STATE_ZOMBIE, await_dead_or_zombie
+
 # ---------------------------------------------------------------------------
 # Success path
 # ---------------------------------------------------------------------------
@@ -130,9 +132,16 @@ async def test_run_cancellable_cancellation_kills_child():
 
     Note: after SIGKILL the child becomes a zombie (state Z) until the parent
     reaps it via wait().  ``os.kill(pid, 0)`` succeeds on zombies (the PID
-    still exists in the process table), so we check ``/proc/<pid>/status``
-    for the ``Z`` (zombie) state instead — a zombie is effectively dead and
-    cannot accept new signals or consume CPU.
+    still exists in the process table), so gone AND zombie both count as dead
+    — that distinction, and the platform question underneath it, live in
+    ``tests.process_probe``.
+
+    #203 — this poll used to read the ABSENCE of ``/proc/<pid>/status`` as
+    "fully reaped, definitely dead".  There is no procfs on macOS or Windows,
+    so off Linux it took that branch on the first iteration and the test
+    passed no matter what the child was doing.  ``await_dead_or_zombie`` asks
+    a real question on every platform and resolves "cannot tell" to ALIVE, so
+    a surviving child now fails the assertion below everywhere.
     """
     import tempfile
 
@@ -158,36 +167,23 @@ async def test_run_cancellable_cancellation_kills_child():
         await task
 
     # Verify the child is dead (gone or zombie, not running/sleeping).
-    # Poll /proc/<pid>/status until the state is Z/X or the file disappears,
-    # with a short timeout to avoid hanging.  SIGKILL delivery + kernel
+    # A missing pid file is a spawn failure, not a pass — asserting it keeps
+    # the check below from being skipped into green.
+    assert os.path.exists(pid_file), "Child never wrote its PID — spawn failed?"
+    try:
+        with open(pid_file) as _pf:
+            child_pid = int(_pf.read().strip())
+    finally:
+        with contextlib.suppress(OSError):
+            os.unlink(pid_file)
+
+    # Poll with a short timeout to avoid hanging: SIGKILL delivery + kernel
     # scheduling can take a few milliseconds.
-    if os.path.exists(pid_file):
-        try:
-            with open(pid_file) as _pf:
-                child_pid = int(_pf.read().strip())
-            deadline = asyncio.get_event_loop().time() + 2.0
-            last_state = "unknown"
-            while asyncio.get_event_loop().time() < deadline:
-                proc_status = f"/proc/{child_pid}/status"
-                if not os.path.exists(proc_status):
-                    # Process fully reaped — definitely dead.
-                    last_state = "gone"
-                    break
-                with open(proc_status) as f:
-                    for line in f:
-                        if line.startswith("State:"):
-                            last_state = line.split()[1]
-                            break
-                if last_state in ("Z", "X", "gone"):
-                    break
-                await asyncio.sleep(0.05)
-            assert last_state in ("Z", "X", "gone"), (
-                f"Child process {child_pid} still in state '{last_state}' "
-                f"after SIGKILL (expected Z/X/gone)"
-            )
-        finally:
-            with contextlib.suppress(OSError):
-                os.unlink(pid_file)
+    last_state = await await_dead_or_zombie(child_pid, timeout=2.0)
+    assert last_state in (STATE_GONE, STATE_ZOMBIE), (
+        f"Child process {child_pid} still in state '{last_state}' "
+        f"after SIGKILL (expected {STATE_GONE}/{STATE_ZOMBIE})"
+    )
 
 
 # ---------------------------------------------------------------------------
