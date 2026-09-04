@@ -14,9 +14,7 @@ rather than one.
 from __future__ import annotations
 
 import asyncio
-import stat
 import sys
-from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -31,47 +29,43 @@ _ECHO_SERVER = Path(__file__).with_name("_echo_server.py")
 _ROUNDS = 8
 
 
-def _executable(path: Path, body: str) -> str:
-    path.write_text(body)
-    path.chmod(path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP)
-    return str(path)
+# Every launcher is argv for the current interpreter, never a `#!/bin/sh`
+# script: CreateProcess does not read shebangs and rejected those with
+# `[WinError 193] %1 is not a valid Win32 application` (#218).
 
 
 @pytest.fixture(scope="module")
-def good_command(tmp_path_factory: pytest.TempPathFactory) -> Iterator[str]:
+def good_command() -> list[str]:
     """A healthy stdio MCP server (the shared echo fixture)."""
-    d = tmp_path_factory.mktemp("good_server")
-    yield _executable(
-        d / "echo.sh", f'#!/bin/sh\nexec "{sys.executable}" "{_ECHO_SERVER}" "$@"\n'
-    )
+    return [sys.executable, str(_ECHO_SERVER)]
 
 
 @pytest.fixture(scope="module")
-def dying_command(tmp_path_factory: pytest.TempPathFactory) -> Iterator[str]:
+def dying_command() -> list[str]:
     """Spawns fine, then exits at once — the missing-binary shape of failure.
 
     Note this is a *successful* spawn. The pre-existing partial-failure test
     uses `command=None`, which is rejected during config validation and never
     reaches a transport, so it never exercised this path.
     """
-    d = tmp_path_factory.mktemp("dying_server")
-    yield _executable(d / "dies_immediately.sh", "#!/bin/sh\nexit 0\n")
+    return [sys.executable, "-c", "raise SystemExit(0)"]
 
 
 @pytest.fixture(scope="module")
-def stalling_command(tmp_path_factory: pytest.TempPathFactory) -> Iterator[str]:
+def stalling_command() -> list[str]:
     """Spawns and stays alive but never answers, parking us in the handshake."""
-    d = tmp_path_factory.mktemp("stalling_server")
-    yield _executable(d / "stalls.sh", "#!/bin/sh\nsleep 30\n")
+    return [sys.executable, "-c", "import time; time.sleep(30)"]
 
 
-def _stdio(name: str, command: str) -> McpServerContrib:
-    return McpServerContrib(name=name, transport="stdio", command=command)
+def _stdio(name: str, command: list[str]) -> McpServerContrib:
+    return McpServerContrib(
+        name=name, transport="stdio", command=command[0], args=command[1:]
+    )
 
 
 @pytest.mark.asyncio
 async def test_dying_server_does_not_abort_the_others(
-    good_command: str, dying_command: str
+    good_command: list[str], dying_command: list[str]
 ) -> None:
     """The healthy server connects even when a dying one is in the same batch.
 
@@ -105,7 +99,7 @@ async def test_dying_server_does_not_abort_the_others(
 
 
 @pytest.mark.asyncio
-async def test_dying_server_reports_a_connection_error(dying_command: str) -> None:
+async def test_dying_server_reports_a_connection_error(dying_command: list[str]) -> None:
     """On its own, a dying server raises McpConnectionError — never CancelledError."""
     for _ in range(_ROUNDS):
         conn = McpServerConnection(_stdio("bad", dying_command))
@@ -118,7 +112,7 @@ async def test_dying_server_reports_a_connection_error(dying_command: str) -> No
 
 
 @pytest.mark.asyncio
-async def test_outer_cancellation_still_propagates(stalling_command: str) -> None:
+async def test_outer_cancellation_still_propagates(stalling_command: list[str]) -> None:
     """A real cancellation of the caller must not be reported as a dead server.
 
     The guard that converts a dying child's cancellation into an error must not

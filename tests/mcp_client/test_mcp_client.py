@@ -5,17 +5,17 @@ as a subprocess to exercise the full `McpServerConnection` lifecycle —
 transport open, `initialize` handshake, `list_tools`, `call_tool` (text +
 `isError`), and clean `AsyncExitStack` teardown (no zombie subprocesses).
 
-Because `McpServerContrib` (6h₉a) has no `args` field (v2 deferred), the echo
-server is launched via a single-command wrapper script (no args), matching the
-real connection path which always passes `args=[]`.
+The echo server is launched as `command=sys.executable, args=[<server>.py]` —
+the argv the SDK hands to exec/CreateProcess unchanged on either OS. It used to
+be a `#!/bin/sh` wrapper script (`McpServerContrib` had no `args` field back in
+6h₉a); CreateProcess does not read shebangs, so that launcher died on Windows
+with `[WinError 193] %1 is not a valid Win32 application` (#218).
 """
 
 from __future__ import annotations
 
 import os
-import stat
 import sys
-from collections.abc import Iterator
 from pathlib import Path
 
 import mcp.types as mcp_types
@@ -39,24 +39,15 @@ _ECHO_SERVER = Path(__file__).with_name("_echo_server.py")
 
 
 @pytest.fixture(scope="session")
-def echo_command(tmp_path_factory: pytest.TempPathFactory) -> Iterator[str]:
-    """A single-command launcher (no args) that runs the stdio echo server.
+def echo_command() -> list[str]:
+    """Argv running the stdio echo server under the current interpreter."""
+    return [sys.executable, str(_ECHO_SERVER)]
 
-    McpServerContrib has no `args` field (v2 deferred), so we wrap the
-    interpreter + server path in a tiny executable shell script and point
-    `command` at that script directly.
-    """
-    script_dir = tmp_path_factory.mktemp("echo_launcher")
-    launcher = script_dir / "echo_server.sh"
-    launcher.write_text(
-        f'#!/bin/sh\nexec "{sys.executable}" "{_ECHO_SERVER}" "$@"\n'
+
+def _stdio_contrib(name: str, command: list[str]) -> McpServerContrib:
+    return McpServerContrib(
+        name=name, transport="stdio", command=command[0], args=command[1:]
     )
-    launcher.chmod(launcher.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP)
-    yield str(launcher)
-
-
-def _stdio_contrib(name: str, command: str) -> McpServerContrib:
-    return McpServerContrib(name=name, transport="stdio", command=command)
 
 
 # === 1. import-shadow guard ===========================================
@@ -77,7 +68,7 @@ def test_mcp_sdk_importable() -> None:
 
 
 @pytest.mark.asyncio
-async def test_stdio_connect_initialize(echo_command: str) -> None:
+async def test_stdio_connect_initialize(echo_command: list[str]) -> None:
     async with McpServerConnection(_stdio_contrib("echo", echo_command)) as conn:
         assert conn.connected is True
         assert conn.server_info is not None
@@ -86,7 +77,7 @@ async def test_stdio_connect_initialize(echo_command: str) -> None:
 
 
 @pytest.mark.asyncio
-async def test_list_tools(echo_command: str) -> None:
+async def test_list_tools(echo_command: list[str]) -> None:
     async with McpServerConnection(_stdio_contrib("echo", echo_command)) as conn:
         tools = await conn.list_tools()
         names = {t.name for t in tools}
@@ -95,7 +86,7 @@ async def test_list_tools(echo_command: str) -> None:
 
 
 @pytest.mark.asyncio
-async def test_call_tool_text_result(echo_command: str) -> None:
+async def test_call_tool_text_result(echo_command: list[str]) -> None:
     async with McpServerConnection(_stdio_contrib("echo", echo_command)) as conn:
         result = await conn.call_tool("echo", {"text": "hi"})
         assert isinstance(result, mcp_types.CallToolResult)
@@ -109,7 +100,7 @@ async def test_call_tool_text_result(echo_command: str) -> None:
 
 
 @pytest.mark.asyncio
-async def test_call_tool_is_error(echo_command: str) -> None:
+async def test_call_tool_is_error(echo_command: list[str]) -> None:
     # `boom` raises server-side; FastMCP maps it to isError=True (NOT a
     # transport exception). The mapper must surface is_error, not raise.
     async with McpServerConnection(_stdio_contrib("echo", echo_command)) as conn:
@@ -120,7 +111,7 @@ async def test_call_tool_is_error(echo_command: str) -> None:
 
 
 @pytest.mark.asyncio
-async def test_disconnect_idempotent(echo_command: str) -> None:
+async def test_disconnect_idempotent(echo_command: list[str]) -> None:
     conn = McpServerConnection(_stdio_contrib("echo", echo_command))
     await conn.connect()
     await conn.disconnect()
@@ -131,7 +122,7 @@ async def test_disconnect_idempotent(echo_command: str) -> None:
 
 
 @pytest.mark.asyncio
-async def test_connect_idempotent(echo_command: str) -> None:
+async def test_connect_idempotent(echo_command: list[str]) -> None:
     conn = McpServerConnection(_stdio_contrib("echo", echo_command))
     await conn.connect()
     session_before = conn._session  # noqa: SLF001 — assert no re-spawn
@@ -141,7 +132,7 @@ async def test_connect_idempotent(echo_command: str) -> None:
 
 
 @pytest.mark.asyncio
-async def test_async_context_manager(echo_command: str) -> None:
+async def test_async_context_manager(echo_command: list[str]) -> None:
     contrib = _stdio_contrib("echo", echo_command)
     async with McpServerConnection(contrib) as conn:
         assert conn.connected is True
@@ -230,7 +221,7 @@ def test_mcp_tools_to_agent_tools_batch() -> None:
 
 
 @pytest.mark.asyncio
-async def test_agent_tool_execute_calls_call_tool(echo_command: str) -> None:
+async def test_agent_tool_execute_calls_call_tool(echo_command: list[str]) -> None:
     async with McpServerConnection(_stdio_contrib("echo", echo_command)) as conn:
         tools = await conn.list_tools()
         echo_tool = next(t for t in tools if t.name == "echo")
@@ -265,7 +256,7 @@ def test_content_blocks_image_mapping() -> None:
 
 
 @pytest.mark.asyncio
-async def test_manager_connect_all_partial_failure(echo_command: str) -> None:
+async def test_manager_connect_all_partial_failure(echo_command: list[str]) -> None:
     good = _stdio_contrib("good", echo_command)
     bad = McpServerContrib(name="bad", transport="stdio", command=None)
     manager = McpClientManager([good, bad])
@@ -281,7 +272,7 @@ async def test_manager_connect_all_partial_failure(echo_command: str) -> None:
 
 @pytest.mark.asyncio
 async def test_manager_collect_agent_tools_namespaced(
-    echo_command: str,
+    echo_command: list[str],
 ) -> None:
     s1 = _stdio_contrib("alpha", echo_command)
     s2 = _stdio_contrib("beta", echo_command)
@@ -297,7 +288,7 @@ async def test_manager_collect_agent_tools_namespaced(
 
 
 @pytest.mark.asyncio
-async def test_manager_disconnect_all(echo_command: str) -> None:
+async def test_manager_disconnect_all(echo_command: list[str]) -> None:
     manager = McpClientManager([_stdio_contrib("a", echo_command)])
     await manager.connect_all()
     assert manager.connections["a"].connected is True
@@ -306,7 +297,7 @@ async def test_manager_disconnect_all(echo_command: str) -> None:
 
 
 @pytest.mark.asyncio
-async def test_manager_call_tool_with_retry_stdio(echo_command: str) -> None:
+async def test_manager_call_tool_with_retry_stdio(echo_command: list[str]) -> None:
     manager = McpClientManager([_stdio_contrib("a", echo_command)])
     try:
         await manager.connect_all()
@@ -317,7 +308,7 @@ async def test_manager_call_tool_with_retry_stdio(echo_command: str) -> None:
 
 
 @pytest.mark.asyncio
-async def test_manager_unknown_server_raises(echo_command: str) -> None:
+async def test_manager_unknown_server_raises(echo_command: list[str]) -> None:
     manager = McpClientManager([_stdio_contrib("a", echo_command)])
     with pytest.raises(McpConnectionError, match="unknown MCP server"):
         await manager.call_tool_with_retry("nope", "echo", {})
@@ -357,7 +348,7 @@ def test_env_none_default_inherit(monkeypatch: pytest.MonkeyPatch) -> None:
     import asyncio
 
     # empty env → None
-    asyncio.run(_run(_stdio_contrib("e", "/bin/true")))
+    asyncio.run(_run(_stdio_contrib("e", ["/bin/true"])))
     assert captured["params"].env is None
 
     # non-empty env → merged with os.environ

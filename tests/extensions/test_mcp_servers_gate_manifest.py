@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import gc
+import sys
 import textwrap
 import tomllib
 from pathlib import Path, PurePath, PureWindowsPath
@@ -69,30 +70,45 @@ def _manifest(
     """).strip()
 
 
+def _marker_script(marker: str) -> str:
+    """The probe body: write ``marker`` and publish it ATOMICALLY.
+
+    Writing straight to ``marker`` creates and truncates it before the payload
+    lands, leaving a window in which ``exists()`` is already true but
+    ``read_text()`` returns ``""`` — measured at ~2% (60/3000) on this machine,
+    i.e. a flake in the payload assertion. The rename is the only step the
+    poller can observe.
+
+    Single-quoted throughout: this string is interpolated into a TOML *basic*
+    (double-quoted) string.
+    """
+    return (
+        "import os;"
+        f"f=open('{marker}.part','w');"
+        f"f.write('{_MARKER_PAYLOAD}');"
+        "f.close();"
+        f"os.replace('{marker}.part','{marker}')"
+    )
+
+
 def _stdio_server(marker: PurePath) -> str:
     """A stdio server whose ``command`` proves execution by side effect.
 
-    The marker is written to a scratch path and ``mv``'d into place, so it is
-    published ATOMICALLY. Writing straight to ``marker`` makes ``sh`` create
-    and truncate it before ``printf`` fills it, leaving a window in which
-    ``exists()`` is already true but ``read_text()`` returns ``""`` — measured
-    at ~2% (60/3000) on this machine, i.e. a flake in the payload assertion.
-    Rename is the only step the poller can observe.
+    The probe is ``sys.executable -c <script>``, not ``/bin/sh -c``: the SDK
+    hands ``command``/``args`` to CreateProcess unchanged, and Windows has no
+    ``/bin/sh`` (#218).
     """
-    # ``as_posix()`` because this lands inside a TOML *basic* (double-quoted)
-    # string: a Windows ``tmp_path`` would put ``C:\\Users\\...`` there and the
-    # ``\\U`` would be read as a unicode escape ("Invalid hex value", #214).
-    # Windows accepts forward slashes at the API level, so nothing else moves.
-    posix_marker = marker.as_posix()
-    script = (
-        f"printf {_MARKER_PAYLOAD} > {posix_marker}.part "
-        f"&& mv {posix_marker}.part {posix_marker}"
-    )
+    # ``as_posix()`` for both interpolated paths, because they land inside a
+    # TOML *basic* (double-quoted) string: a Windows ``tmp_path`` would put
+    # ``C:\\Users\\...`` there and the ``\\U`` would be read as a unicode escape
+    # ("Invalid hex value", #214). Windows accepts forward slashes at the API
+    # level, so nothing else moves.
+    script = _marker_script(marker.as_posix())
     return textwrap.dedent(f"""
         [[contributes.mcp_servers]]
         name = "gate-probe"
         transport = "stdio"
-        command = "/bin/sh"
+        command = "{Path(sys.executable).as_posix()}"
         args = ["-c", "{script}"]
     """).strip()
 
@@ -213,14 +229,11 @@ def test_stdio_server_survives_a_windows_shaped_tmp_path() -> None:
 
     # Anti-vacuity FIRST: the trap must still be a trap.
     with pytest.raises(tomllib.TOMLDecodeError, match="Invalid hex value"):
-        tomllib.loads(f'args = ["-c", "printf {_MARKER_PAYLOAD} > {win}.part"]')
+        tomllib.loads(f'args = ["-c", "{_marker_script(str(win))}"]')
 
     parsed = tomllib.loads(_manifest(capabilities="", server=_stdio_server(win)))
     (server,) = parsed["contributes"]["mcp_servers"]
-    assert server["args"] == [
-        "-c",
-        f"printf {_MARKER_PAYLOAD} > {posix}.part && mv {posix}.part {posix}",
-    ]
+    assert server["args"] == ["-c", _marker_script(posix)]
 
 
 async def test_stdio_server_without_shell_exec_never_spawns(
