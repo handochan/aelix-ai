@@ -21,6 +21,8 @@ from aelix_coding_agent.builtin.permission_mode import PermissionMode
 from aelix_coding_agent.rpc.rpc_client import RpcClient, RpcClientOptions
 from aelix_coding_agent.subagent_contract import ResolvedProfile
 
+from tests.env_sandbox import child_env
+
 
 def _resolved() -> ResolvedProfile:
     profile = AgentProfile(
@@ -182,20 +184,17 @@ async def test_the_real_rpc_child_answers_the_client_it_ships_with(
     request id, so a pass proves framing, dispatch AND correlation.
     """
 
-    import os
     from pathlib import Path
 
     home = Path(str(tmp_path)) / "home"
     (home / ".config").mkdir(parents=True, exist_ok=True)
     (home / "agent").mkdir(parents=True, exist_ok=True)
-    env = {
-        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
-        "PYTHONPATH": os.environ.get("PYTHONPATH", ""),
-        "HOME": str(home),
-        "XDG_CONFIG_HOME": str(home / ".config"),
-        "AELIX_CODING_AGENT_DIR": str(home / "agent"),
-        "PI_OFFLINE": "1",
-    }
+    env = child_env(
+        home,
+        XDG_CONFIG_HOME=str(home / ".config"),
+        AELIX_CODING_AGENT_DIR=str(home / "agent"),
+        PI_OFFLINE="1",
+    )
     client = RpcClient(
         RpcClientOptions(
             argv=[

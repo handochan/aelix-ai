@@ -60,7 +60,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import sys
 import textwrap
 from pathlib import Path
@@ -68,6 +67,8 @@ from typing import Any
 
 import pytest
 from aelix_agents.stream import LineAssembler
+
+from tests.env_sandbox import child_env
 
 # The child script. Written out and executed as a separate interpreter, so what
 # is asserted below is what a parent would actually read off fd 1.
@@ -183,7 +184,7 @@ _CHILD = textwrap.dedent(
 )
 
 
-def _child_env() -> dict[str, str]:
+def _child_env(tmp_path: Path) -> dict[str, str]:
     """A child interpreter that can import aelix and can reach no network.
 
     ``tests/conftest.py``'s download guard is an in-process
@@ -192,15 +193,7 @@ def _child_env() -> dict[str, str]:
     means no provider is ever reached, and no API key is passed.
     """
 
-    env = {
-        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
-        "PI_OFFLINE": "1",
-        "PYTHONUNBUFFERED": "1",
-    }
-    pythonpath = os.environ.get("PYTHONPATH")
-    if pythonpath:
-        env["PYTHONPATH"] = pythonpath
-    return env
+    return child_env(tmp_path / "home", PI_OFFLINE="1", PYTHONUNBUFFERED="1")
 
 
 async def _run_child(tmp_path: Path, *args: str) -> tuple[list[dict[str, Any]], int]:
@@ -220,7 +213,7 @@ async def _run_child(tmp_path: Path, *args: str) -> tuple[list[dict[str, Any]], 
         str(script),
         *args,
         cwd=str(tmp_path),
-        env=_child_env(),
+        env=_child_env(tmp_path),
         stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,

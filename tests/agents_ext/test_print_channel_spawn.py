@@ -70,6 +70,8 @@ from aelix_coding_agent.agents.profile import AgentProfile
 from aelix_coding_agent.builtin.permission_mode import PermissionMode
 from aelix_coding_agent.subagent_contract import DEPTH_ENV_VAR, ResolvedProfile
 
+from tests.env_sandbox import child_env
+
 linux_only = pytest.mark.skipif(
     sys.platform != "linux", reason="process-group / PDEATHSIG semantics are Linux"
 )
@@ -313,14 +315,12 @@ def _hermetic_env(tmp_path: Path) -> dict[str, str]:
     home = tmp_path / "home"
     (home / ".config").mkdir(parents=True, exist_ok=True)
     (home / "agent").mkdir(parents=True, exist_ok=True)
-    return {
-        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
-        "PYTHONPATH": os.environ.get("PYTHONPATH", ""),
-        "HOME": str(home),
-        "XDG_CONFIG_HOME": str(home / ".config"),
-        "AELIX_CODING_AGENT_DIR": str(home / "agent"),
-        "PI_OFFLINE": "1",
-    }
+    return child_env(
+        home,
+        XDG_CONFIG_HOME=str(home / ".config"),
+        AELIX_CODING_AGENT_DIR=str(home / "agent"),
+        PI_OFFLINE="1",
+    )
 
 
 async def _wait_for_pid(row: RunningChild, timeout: float = 10.0) -> int:

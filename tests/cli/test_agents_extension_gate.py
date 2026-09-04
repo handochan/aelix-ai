@@ -29,6 +29,7 @@ child (finding I10), so that test sets ``HOME`` / ``XDG_CONFIG_HOME`` /
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import textwrap
@@ -44,6 +45,8 @@ from aelix_coding_agent.builtin.permission import PermissionExtension
 from aelix_coding_agent.cli import entry
 from aelix_coding_agent.cli.args import Args
 from aelix_coding_agent.subagent_contract import DEPTH_ENV_VAR
+
+from tests.env_sandbox import child_env
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 _SRC_DIRS = (
@@ -338,17 +341,16 @@ def _run_probe(tmp_path: Path, depth: str) -> list[str]:
     agent_dir.mkdir(exist_ok=True)
     work = tmp_path / f"work-{depth}"
     work.mkdir(exist_ok=True)
-    env = {
-        "PATH": "/usr/bin:/bin",
-        "PYTHONPATH": ":".join(str(p) for p in _SRC_DIRS),
-        # I10 — the autouse download guard is in-process only, so the child gets
-        # its hermeticity from an explicit env instead.
-        "HOME": str(home),
-        "XDG_CONFIG_HOME": str(home / ".config"),
-        "AELIX_CODING_AGENT_DIR": str(agent_dir),
-        "PI_OFFLINE": "1",
-        DEPTH_ENV_VAR: depth,
-    }
+    # I10 — the autouse download guard is in-process only, so the child gets
+    # its hermeticity from an explicit env instead.
+    env = child_env(
+        home,
+        PYTHONPATH=os.pathsep.join(str(p) for p in _SRC_DIRS),
+        XDG_CONFIG_HOME=str(home / ".config"),
+        AELIX_CODING_AGENT_DIR=str(agent_dir),
+        PI_OFFLINE="1",
+        **{DEPTH_ENV_VAR: depth},
+    )
     proc = subprocess.run(  # noqa: S603 — fixed argv, no shell
         [sys.executable, "-c", textwrap.dedent(_CHILD_PROBE)],
         capture_output=True,

@@ -39,7 +39,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import sys
 import textwrap
 from pathlib import Path
@@ -53,6 +52,8 @@ from aelix_coding_agent.builtin.permission import PermissionExtension
 from aelix_coding_agent.builtin.permission_mode import PermissionMode, PermissionPosture
 from aelix_coding_agent.cli.args import parse_args
 from aelix_coding_agent.subagent_contract import ResolvedProfile
+
+from tests.env_sandbox import child_env
 
 pytestmark = pytest.mark.skipif(
     sys.platform == "win32", reason="real-child spawn semantics are POSIX"
@@ -194,16 +195,14 @@ class _Fixture:
         value a real child needs is spelled out here.
         """
 
-        return {
-            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
-            "PYTHONPATH": os.environ.get("PYTHONPATH", ""),
-            "HOME": str(self.home),
-            "XDG_CONFIG_HOME": str(self.home / ".config"),
-            "AELIX_CODING_AGENT_DIR": str(self.agent_dir),
-            "PI_OFFLINE": "1",
-            "STUB_KEY": "not-a-real-key",
-            "PROBE_WRITE_TARGET": str(self.target),
-        }
+        return child_env(
+            self.home,
+            XDG_CONFIG_HOME=str(self.home / ".config"),
+            AELIX_CODING_AGENT_DIR=str(self.agent_dir),
+            PI_OFFLINE="1",
+            STUB_KEY="not-a-real-key",
+            PROBE_WRITE_TARGET=str(self.target),
+        )
 
     def profile(self, *, tools: tuple[str, ...] | None) -> AgentProfile:
         return AgentProfile(

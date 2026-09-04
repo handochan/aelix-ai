@@ -24,12 +24,13 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import sys
 from pathlib import Path
 from typing import Any
 
 import pytest
+
+from tests.env_sandbox import child_env
 
 # A full CLI boot (settings, model registry, extension scan) is an order of
 # magnitude slower than the in-process tests beside it.
@@ -44,17 +45,13 @@ def _child_env(tmp_path: Path) -> dict[str, str]:
     of the suite isolates through (``cli/config.py:36``).
     """
 
-    env = {
-        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
-        "HOME": str(tmp_path / "home"),
-        "PYTHONUNBUFFERED": "1",
-        "AELIX_CODING_AGENT_DIR": str(tmp_path / "agent"),
-        "AELIX_SETTINGS_PATH": str(tmp_path / "settings.json"),
-        "NO_COLOR": "1",
-    }
-    if (pythonpath := os.environ.get("PYTHONPATH")) is not None:
-        env["PYTHONPATH"] = pythonpath
-    return env
+    return child_env(
+        tmp_path / "home",
+        PYTHONUNBUFFERED="1",
+        AELIX_CODING_AGENT_DIR=str(tmp_path / "agent"),
+        AELIX_SETTINGS_PATH=str(tmp_path / "settings.json"),
+        NO_COLOR="1",
+    )
 
 
 class RpcChild:
