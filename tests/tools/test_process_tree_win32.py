@@ -27,14 +27,19 @@ remaining ``AttributeError`` failures on the first ``windows-latest`` leg.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import signal
 import subprocess
+import sys
+import time
 from typing import Any
 
 import pytest
 from aelix_coding_agent.tools import _process_tree
-from aelix_coding_agent.tools._process_tree import kill_process_tree
+from aelix_coding_agent.tools._process_tree import kill_process_tree, run_contained
+
+from tests.process_probe import STATE_GONE, STATE_ZOMBIE, probe_state
 
 # The value only has to be the SAME one production and these assertions see.
 # On POSIX this is ``signal.SIGKILL`` itself and lending it back is a no-op; on
@@ -94,6 +99,97 @@ def test_win32_survives_a_missing_taskkill(monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setattr(subprocess, "run", boom)
 
     kill_process_tree(4321, platform="win32")  # must not raise
+
+
+def test_run_contained_timeout_reap_is_bounded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pipe that never closes cannot make timeout cleanup unbounded."""
+
+    class _FakeProcess:
+        pid = 4321
+        returncode = -9
+        stdout = None
+        stderr = None
+
+        def __init__(self) -> None:
+            self.communicate_calls: list[float | None] = []
+            self.killed = False
+
+        def communicate(self, *, timeout: float | None = None) -> tuple[bytes, bytes]:
+            self.communicate_calls.append(timeout)
+            if len(self.communicate_calls) == 1:
+                raise subprocess.TimeoutExpired(
+                    ["fake"], timeout, output=b"partial", stderr=b"err"
+                )
+            raise subprocess.TimeoutExpired(
+                ["fake"], timeout, output=b"still-open", stderr=b"still-err"
+            )
+
+        def kill(self) -> None:
+            self.killed = True
+
+        def wait(self, *, timeout: float | None = None) -> int:
+            assert timeout == _process_tree._REAP_TIMEOUT
+            return self.returncode
+
+    fake = _FakeProcess()
+    killed: list[int] = []
+    monkeypatch.setattr(_process_tree.subprocess, "Popen", lambda *a, **k: fake)
+    monkeypatch.setattr(_process_tree, "kill_process_tree", killed.append)
+
+    with pytest.raises(subprocess.TimeoutExpired) as exc_info:
+        run_contained(["fake"], capture_output=True, timeout=0.01)
+
+    assert killed == [4321]
+    assert fake.killed
+    assert fake.communicate_calls == [0.01, _process_tree._REAP_TIMEOUT]
+    assert exc_info.value.output == b"still-open"
+    assert exc_info.value.stderr == b"still-err"
+
+
+def test_run_contained_timeout_kills_descendant_holding_stdout(tmp_path) -> None:
+    """The regression must cover a real descendant, not only a mocked timeout."""
+
+    pid_file = tmp_path / "grandchild.pid"
+    script = (
+        "import subprocess, sys, time; "
+        f"pid_file = {str(pid_file)!r}; "
+        "grandchild = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)']); "
+        "open(pid_file, 'w', encoding='ascii').write(str(grandchild.pid)); "
+        "print('ready', flush=True); "
+        "time.sleep(30)"
+    )
+
+    started = time.monotonic()
+    try:
+        with pytest.raises(subprocess.TimeoutExpired):
+            run_contained(
+                [sys.executable, "-c", script], capture_output=True, timeout=0.5
+            )
+        elapsed = time.monotonic() - started
+        assert elapsed < 5.0, f"timeout cleanup took too long: {elapsed:.2f}s"
+
+        deadline = time.monotonic() + 3.0
+        while not pid_file.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert pid_file.exists(), "child never recorded its descendant PID"
+        grandchild_pid = int(pid_file.read_text(encoding="ascii"))
+
+        state = probe_state(grandchild_pid)
+        while state not in (STATE_GONE, STATE_ZOMBIE) and time.monotonic() < deadline:
+            time.sleep(0.05)
+            state = probe_state(grandchild_pid)
+        assert state in (STATE_GONE, STATE_ZOMBIE), (
+            f"descendant {grandchild_pid} survived timeout cleanup: {state}"
+        )
+    finally:
+        # The test's process tree should already be gone.  If setup failed before
+        # the helper could contain it, clean up only the recorded descendant.
+        if pid_file.exists():
+            with contextlib.suppress(OSError, ValueError):
+                leftover_pid = int(pid_file.read_text(encoding="ascii"))
+                kill_process_tree(leftover_pid)
 
 
 # === POSIX is unchanged =====================================================

@@ -441,7 +441,7 @@ def test_fd_enumerate_builds_safe_argv(monkeypatch: Any, tmp_path: Path) -> None
         assert kwargs.get("timeout")  # a timeout is always set
         return _Proc()
 
-    monkeypatch.setattr(completion_mod.subprocess, "run", _fake_run)
+    monkeypatch.setattr(completion_mod, "run_contained", _fake_run)
     out = _fd_enumerate("fd", tmp_path)
     assert out == ["src/foo.py", "README.md", "src/deep"]
     # No user-controlled pattern in the argv (injection-free).
@@ -532,7 +532,7 @@ def test_fd_failure_falls_back_to_walk(monkeypatch: Any, tmp_path: Path) -> None
     def _boom(*a: Any, **k: Any) -> None:
         raise completion_mod.subprocess.TimeoutExpired(cmd="fd", timeout=2.0)
 
-    monkeypatch.setattr(completion_mod.subprocess, "run", _boom)
+    monkeypatch.setattr(completion_mod, "run_contained", _boom)
     assert [c.text for c in _file_complete(tmp_path, "@widhel")] == [
         "@src/deep/widget_helper.py"
     ]

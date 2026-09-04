@@ -102,6 +102,8 @@ from aelix_agent_core.harness.hooks import (
 from aelix_agent_core.types import AgentTool
 from aelix_ai.streaming import Model, StreamFn
 
+from aelix_coding_agent.tools._process_tree import run_contained
+
 from .ext_ui import ExtensionUIContext
 from .headless_ui import HEADLESS_UI_CONTEXT
 
@@ -2043,7 +2045,7 @@ class ExtensionAPI:
         killed = False
         try:
             proc = await asyncio.to_thread(
-                subprocess.run,
+                run_contained,
                 [command, *args],
                 capture_output=True,
                 text=True,
