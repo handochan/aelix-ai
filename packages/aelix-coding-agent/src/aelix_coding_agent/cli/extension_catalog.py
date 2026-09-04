@@ -49,7 +49,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from urllib.parse import unquote, urlparse
+from urllib.parse import urlparse
 
 __all__ = [
     "CATALOG_CACHE_FILENAME",
@@ -584,7 +584,16 @@ def _file_url_to_path(location: str) -> Path:
             f"file:// catalog with a remote host is not supported: {location} "
             "(use a local path, an https URL, or a git source)"
         )
-    return Path(unquote(parsed.path))
+    # url2pathname (NOT urllib.parse.unquote) — it percent-decodes like unquote on
+    # POSIX but on Windows delegates to nturl2path, which strips the slash in front
+    # of the drive letter. Plain unquote left `/C:/x`, which WindowsPath reads as a
+    # drive-less relative path, so every file:// catalog fetch missed (issue #205).
+    # nturl2path raises OSError on a second colon (`/C:/a:b`); that stays inside
+    # the CatalogError contract so one bad stored spec degrades its own row.
+    try:
+        return Path(urllib.request.url2pathname(parsed.path))
+    except OSError as exc:
+        raise CatalogError(f"malformed file:// catalog URL: {location} ({exc})") from exc
 
 
 def _fetch_sidecar_https(location: str, opener: Opener, timeout: float) -> bytes | None:

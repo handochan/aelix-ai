@@ -383,6 +383,37 @@ def test_cli_out_path_writes_elsewhere(tmp_path: Path) -> None:
     assert json.loads(out.read_text())["extensions"][0]["name"] == "notes-ext"
 
 
+def test_cli_register_hint_prints_a_valid_file_uri(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Issue #205 — the ``source add`` line the command tells the user to run must
+    be a real ``file://`` URI. Built by hand it was ``file://`` + the path, which on
+    Windows gives ``file://C:\\…``: urlparse() reads the whole tail as a netloc and
+    the catalog is refused as a remote host."""
+
+    from urllib.parse import urlparse
+    from urllib.request import url2pathname
+
+    _wheel(tmp_path, "notes-ext", "1.0.0")
+    # A space in the output directory pins the other half of the same defect on
+    # POSIX too: the hand-built form pasted it in raw, ``as_uri()`` escapes it.
+    out = tmp_path / "pub lished" / "catalog.json"
+
+    assert ei.run_extension_command(["index", str(tmp_path), "--out", str(out)]) == 0
+
+    line = next(
+        ln for ln in capsys.readouterr().out.splitlines() if "source add" in ln
+    )
+    url = line.split("--catalog ", 1)[1].strip()
+    assert "%20" in url and " " not in url
+    parsed = urlparse(url)
+    assert parsed.scheme == "file"
+    assert parsed.netloc == ""
+    assert Path(url2pathname(parsed.path)) == out.resolve()
+    # And the consumer of that URL — the catalog fetcher — agrees.
+    assert ec._file_url_to_path(url) == out.resolve()
+
+
 def test_cli_empty_directory_is_a_valid_empty_catalog(tmp_path: Path) -> None:
     rc = ei.run_extension_command(["index", str(tmp_path)])
 

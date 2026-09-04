@@ -2889,7 +2889,10 @@ def _cmd_index(args: list[str]) -> int:
         print(f"Skipped {skipped} archive(s) with no readable metadata.")
     if count:
         print("Register it with:")
-        print(f"  aelix extension source add --catalog file://{target.resolve()}")
+        # as_uri(), not "file://" + path: on Windows the hand-built form yields
+        # file://C:\... — two slashes, so urlparse() reads the whole tail as a
+        # netloc and the printed command is refused as a remote host (issue #205).
+        print(f"  aelix extension source add --catalog {target.resolve().as_uri()}")
     return 0
 
 

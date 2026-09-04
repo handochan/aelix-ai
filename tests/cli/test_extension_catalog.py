@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -580,6 +581,68 @@ def test_fetch_file_url_remote_host_refused(tmp_path: Path) -> None:
     f.write_text(_catalog_doc({"name": "local", "source": "pypi-local"}), encoding="utf-8")
     cat = ec.fetch_catalog(f.as_uri())  # file:///abs/path/catalog.json
     assert [e.name for e in cat.entries] == ["local"]
+
+
+def test_file_url_to_path_restores_a_windows_drive_letter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Issue #205 — the conversion goes through ``url2pathname``, not a bare
+    ``unquote``. On win32 that is live; everywhere else ``urllib.request``'s
+    posix ``url2pathname`` is swapped for the nt one (exactly what CPython binds
+    when ``os.name == "nt"``, 3.11/3.12), so reverting to ``unquote`` goes red on
+    every platform, not only on the advisory windows leg."""
+
+    import nturl2path  # the win32 binding of urllib.request.url2pathname (<3.14)
+    import urllib.request
+    from pathlib import PureWindowsPath
+
+    url_path = "/C:/Users/me/catalog.json"
+
+    # What the old ``Path(unquote(...))`` produced on Windows: ``C:`` demoted to a
+    # plain segment, so the read missed every time.
+    assert PureWindowsPath(url_path).drive == ""
+    assert not PureWindowsPath(url_path).is_absolute()
+
+    if sys.platform != "win32":
+        monkeypatch.setattr(urllib.request, "url2pathname", nturl2path.url2pathname)
+    path = ec._file_url_to_path("file://" + url_path)
+    assert PureWindowsPath(path).drive == "C:"
+    assert PureWindowsPath(path) == PureWindowsPath(r"C:\Users\me\catalog.json")
+    if sys.platform == "win32":
+        assert path.is_absolute()
+
+
+def test_file_url_to_path_keeps_a_malformed_url_inside_catalog_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``nturl2path`` raises ``OSError`` on a second colon; ``fetch_all``'s "never
+    raises for a single bad source" contract needs that to surface as
+    ``CatalogError`` rather than a traceback."""
+
+    import nturl2path
+    import urllib.request
+
+    if sys.platform != "win32":
+        monkeypatch.setattr(urllib.request, "url2pathname", nturl2path.url2pathname)
+    with pytest.raises(ec.CatalogError, match="malformed file://"):
+        ec._file_url_to_path("file:///C:/dir/a:b/catalog.json")
+
+
+def test_file_url_to_path_percent_decodes_and_round_trips_a_spaced_path(
+    tmp_path: Path,
+) -> None:
+    """``url2pathname`` keeps the percent-decoding ``unquote`` did — checked on the
+    helper and end-to-end through a directory whose name needs escaping."""
+
+    assert ec._file_url_to_path("file:///a/b%20c/catalog.json").parent.name == "b c"
+
+    d = tmp_path / "cat alog"
+    d.mkdir()
+    f = d / "catalog.json"
+    f.write_text(_catalog_doc({"name": "spaced", "source": "pypi-spaced"}), encoding="utf-8")
+    assert "%20" in f.as_uri()
+    cat = ec.fetch_catalog(f.as_uri())
+    assert [e.name for e in cat.entries] == ["spaced"]
 
 
 def test_https_only_redirect_rejects_http_downgrade() -> None:
