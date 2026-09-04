@@ -14,6 +14,8 @@ from aelix_coding_agent.models_json import validate_models_config
 from aelix_coding_agent.tui import login_wizard as lw
 from rich.text import Text
 
+from tests.posix_modes import assert_mode
+
 
 # ── _fetch_openai_model_ids ────────────────────────────────────────────
 class _FakeResp:
@@ -276,7 +278,7 @@ def test_write_models_json_is_schema_valid(tmp_path) -> None:
     assert [m["id"] for m in prov["models"]] == ["m1", "m2"]  # sorted
     assert prov["apiKey"] == "sk-secret"  # written so the loader accepts it
     # The file holds a secret → owner-only (mirrors auth.json's 0600).
-    assert (p.stat().st_mode & 0o777) == 0o600
+    assert_mode(p, 0o600)
 
 
 def test_write_models_json_merges_existing(tmp_path) -> None:

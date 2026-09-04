@@ -20,6 +20,8 @@ from pathlib import Path
 import pytest
 from aelix_coding_agent.util import tools_manager as tm
 
+from tests.posix_modes import POSIX_MODES
+
 
 def _make_targz(dest: Path, arcname: str, content: bytes) -> None:
     with tarfile.open(dest, "w:gz") as tf:
@@ -203,8 +205,10 @@ async def test_ensure_tool_download_nested_targz(monkeypatch, tmp_path):
     path = await tm.ensure_tool("rg")
     assert path == str(bin_dir / "rg")
     assert Path(path).read_bytes() == content
-    # chmod 755 (Pi parity make-executable).
-    assert os.stat(path).st_mode & stat.S_IXUSR
+    # chmod 755 (Pi parity make-executable). NTFS has no execute bit (#211);
+    # the nested layout and the byte-for-byte content above still hold there.
+    if POSIX_MODES:
+        assert os.stat(path).st_mode & stat.S_IXUSR
 
 
 async def test_ensure_tool_download_recursive_discovery(monkeypatch, tmp_path):

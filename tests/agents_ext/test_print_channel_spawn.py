@@ -71,6 +71,7 @@ from aelix_coding_agent.builtin.permission_mode import PermissionMode
 from aelix_coding_agent.subagent_contract import DEPTH_ENV_VAR, ResolvedProfile
 
 from tests.env_sandbox import child_env
+from tests.posix_modes import POSIX_MODES
 
 linux_only = pytest.mark.skipif(
     sys.platform != "linux", reason="process-group / PDEATHSIG semantics are Linux"
@@ -1913,8 +1914,11 @@ async def test_prompt_file_mode_is_0600(tmp_path: Path) -> None:
         return [sys.executable, "-c", _HAPPY]
 
     await PrintChannel(argv_builder=_build).run(_plan(tmp_path))
-    assert stat.S_IMODE(seen["mode"]) == 0o600  # pyright: ignore[reportArgumentType]
-    assert stat.S_IMODE(seen["dir_mode"]) == 0o700  # pyright: ignore[reportArgumentType]
+    # The modes were recorded from a path that is unlinked by now, so this is
+    # the ``POSIX_MODES`` guard rather than ``assert_mode`` (#211).
+    if POSIX_MODES:
+        assert stat.S_IMODE(seen["mode"]) == 0o600  # pyright: ignore[reportArgumentType]
+        assert stat.S_IMODE(seen["dir_mode"]) == 0o700  # pyright: ignore[reportArgumentType]
     assert seen["body"] == _profile().body
     assert not seen["path"].exists()
 

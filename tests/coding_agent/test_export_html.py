@@ -20,6 +20,8 @@ from aelix_ai.messages import (
 )
 from aelix_coding_agent._export_html import export_html
 
+from tests.posix_modes import assert_mode, posix_modes_only
+
 
 def test_export_html_empty_messages_returns_path(tmp_path: Path) -> None:
     """Pi parity: ``[]`` messages → still produces a valid document."""
@@ -246,7 +248,7 @@ def test_the_exported_transcript_is_owner_only(tmp_path: Path) -> None:
         )
 
         out = Path(export_html([], output_path=str(tmp_path / "session.html")))
-        assert stat.S_IMODE(out.stat().st_mode) == 0o600
+        assert_mode(out, 0o600)
 
         # An EXISTING looser file must be tightened, not inherited: O_TRUNC
         # keeps the old mode, which is how a second export into the same path
@@ -255,11 +257,12 @@ def test_the_exported_transcript_is_owner_only(tmp_path: Path) -> None:
         stale.write_text("old", encoding="utf-8")
         os.chmod(stale, 0o644)
         again = Path(export_html([], output_path=str(stale)))
-        assert stat.S_IMODE(again.stat().st_mode) == 0o600
+        assert_mode(again, 0o600)
     finally:
         os.umask(previous)
 
 
+@posix_modes_only
 def test_the_transcript_is_never_briefly_group_readable(
     tmp_path: Path, monkeypatch: object
 ) -> None:

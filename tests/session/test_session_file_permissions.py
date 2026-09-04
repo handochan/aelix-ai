@@ -23,6 +23,8 @@ from aelix_agent_core.session.entries import MessageEntry
 from aelix_agent_core.session.fs import SESSION_DIR_MODE, SESSION_FILE_MODE
 from aelix_ai.messages import TextContent, UserMessage
 
+from tests.posix_modes import assert_mode, posix_modes_only
+
 
 def _mode(path: str | Path) -> int:
     return stat.S_IMODE(Path(path).stat().st_mode)
@@ -36,8 +38,8 @@ async def test_write_file_creates_owner_only_file_and_dir(
 
     await fs.write_file(str(target), "{}\n")
 
-    assert _mode(target) == SESSION_FILE_MODE
-    assert _mode(target.parent) == SESSION_DIR_MODE
+    assert_mode(target, SESSION_FILE_MODE)
+    assert_mode(target.parent, SESSION_DIR_MODE)
 
 
 async def test_append_file_creates_owner_only_file(tmp_path: Path) -> None:
@@ -46,10 +48,11 @@ async def test_append_file_creates_owner_only_file(tmp_path: Path) -> None:
 
     await fs.append_file(str(target), "{}\n")
 
-    assert _mode(target) == SESSION_FILE_MODE
-    assert _mode(target.parent) == SESSION_DIR_MODE
+    assert_mode(target, SESSION_FILE_MODE)
+    assert_mode(target.parent, SESSION_DIR_MODE)
 
 
+@posix_modes_only
 async def test_create_dir_is_owner_only(tmp_path: Path) -> None:
     fs = LocalFileSystem()
     target = tmp_path / "sessions"
@@ -59,6 +62,7 @@ async def test_create_dir_is_owner_only(tmp_path: Path) -> None:
     assert _mode(target) == SESSION_DIR_MODE
 
 
+@posix_modes_only
 async def test_preexisting_0644_file_is_tightened_on_append(
     tmp_path: Path,
 ) -> None:
@@ -77,6 +81,7 @@ async def test_preexisting_0644_file_is_tightened_on_append(
     assert target.read_text(encoding="utf-8") == "first\nsecond\n"
 
 
+@posix_modes_only
 async def test_preexisting_loose_dir_is_tightened(tmp_path: Path) -> None:
     fs = LocalFileSystem()
     session_dir = tmp_path / "loose"
@@ -105,9 +110,10 @@ async def test_copy_file_does_not_inherit_loose_source_mode(
 
     await fs.copy_file(str(source), str(destination))
 
-    assert _mode(destination) == SESSION_FILE_MODE
+    assert_mode(destination, SESSION_FILE_MODE)
 
 
+@posix_modes_only
 async def test_copy_file_is_owner_only_before_content_lands(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -179,7 +185,7 @@ async def test_copy_file_tightens_preexisting_loose_destination(
 
     await fs.copy_file(str(source), str(destination))
 
-    assert _mode(destination) == SESSION_FILE_MODE
+    assert_mode(destination, SESSION_FILE_MODE)
     assert destination.read_text(encoding="utf-8") == "{}\n"
 
 
@@ -202,8 +208,8 @@ async def test_real_session_lands_owner_only_end_to_end(tmp_path: Path) -> None:
         )
     )
 
-    assert _mode(metadata.path) == SESSION_FILE_MODE
-    assert _mode(Path(metadata.path).parent) == SESSION_DIR_MODE
+    assert_mode(metadata.path, SESSION_FILE_MODE)
+    assert_mode(Path(metadata.path).parent, SESSION_DIR_MODE)
 
 
 # --- Windows: the tighten has no mode bits to tighten (#103 P0-b) -------------
