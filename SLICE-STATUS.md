@@ -59,7 +59,7 @@ re-discovering the crash.
    silently declines (#202), not a different signal in the reaper.
 3. **`#46` cross-process locking.** *Correction to the original brief:* both
    `fcntl` sites are already `None`-guarded
-   (`aelix_ai/settings/storage.py:198`, `aelix_ai/oauth/auth_storage.py:177`),
+   (`aelix_ai/settings/storage.py:204`, `aelix_ai/oauth/auth_storage.py:184`),
    so they do **not** crash on Windows. They silently `return None` — no lock
    is taken and the cross-process write-safety guarantee is quietly lost. The
    fix is `msvcrt.locking` on the win32 arm; the risk is corruption under

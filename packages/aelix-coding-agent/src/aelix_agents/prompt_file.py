@@ -254,7 +254,12 @@ def sweep_stale_prompt_dirs(root: str | os.PathLike[str] | None = None) -> list[
     base = Path(root) if root is not None else Path(tempfile.gettempdir())
     me = os.getpid()
     try:
-        uid = os.getuid()
+        # About the CHECKER, not about doubt at runtime: on a windows host
+        # pyright analyses this file as Windows, where ``os`` carries no
+        # ``getuid``. The ``except AttributeError`` below IS the runtime guard —
+        # that missing attribute is exactly what it catches — but pyright flags
+        # the access itself, before any handler can matter.
+        uid = os.getuid()  # pyright: ignore[reportAttributeAccessIssue]
     except AttributeError:  # pragma: no cover — non-POSIX
         uid = None
     removed: list[str] = []

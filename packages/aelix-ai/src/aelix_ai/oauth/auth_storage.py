@@ -44,6 +44,13 @@ from aelix_ai.oauth.types import (
 # TODO(Sprint 6d): Windows cross-process locking via ``msvcrt.locking``.
 # For Sprint 6c, Windows users get in-process locking only; concurrent
 # Aelix CLI invocations on Windows may race on auth.json writes.
+#
+# The ``# pyright: ignore[reportAttributeAccessIssue]`` on every ``_fcntl.*``
+# use below is about the CHECKER, not about doubt at runtime: on a windows
+# host pyright analyses this file as Windows, where ``fcntl`` carries no
+# ``flock``/``LOCK_EX``/``LOCK_UN``. This try/except is the runtime guard —
+# ``_fcntl`` is :data:`None` there and every call site returns before touching
+# it — but pyright cannot narrow a module-level ``None`` across functions.
 try:
     import fcntl as _fcntl  # type: ignore[import-not-found]
 except ImportError:  # pragma: no cover — Windows / non-POSIX
@@ -181,7 +188,7 @@ class AuthStorage:
         # have a stable fd to flock against.
         fd = os.open(self._path, os.O_RDWR | os.O_CREAT, 0o600)
         try:
-            _fcntl.flock(fd, _fcntl.LOCK_EX)
+            _fcntl.flock(fd, _fcntl.LOCK_EX)  # pyright: ignore[reportAttributeAccessIssue]
         except BaseException:
             # Sprint 6c W6 (W4 M5): broadened from ``OSError`` to
             # ``BaseException`` so ``KeyboardInterrupt`` / ``SystemExit``
@@ -198,7 +205,7 @@ class AuthStorage:
             return
         try:
             if _fcntl is not None:
-                _fcntl.flock(fd, _fcntl.LOCK_UN)
+                _fcntl.flock(fd, _fcntl.LOCK_UN)  # pyright: ignore[reportAttributeAccessIssue]
         finally:
             with contextlib.suppress(OSError):
                 os.close(fd)

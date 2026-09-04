@@ -42,6 +42,12 @@ from typing import Protocol, runtime_checkable
 
 from aelix_ai.settings.types import SettingsScope
 
+# The ``# pyright: ignore[reportAttributeAccessIssue]`` on every ``_fcntl.*``
+# use below is about the CHECKER, not about doubt at runtime: on a windows host
+# pyright analyses this file as Windows, where ``fcntl`` carries no
+# ``flock``/``LOCK_EX``/``LOCK_UN``. This try/except is the runtime guard —
+# ``_fcntl`` is :data:`None` there and every call site returns before touching
+# it — but pyright cannot narrow a module-level ``None`` across functions.
 try:
     import fcntl as _fcntl  # type: ignore[import-not-found]
 except ImportError:  # pragma: no cover — Windows / non-POSIX
@@ -200,7 +206,7 @@ class FileSettingsStorage:
         self._ensure_parent_dir(path)
         fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
         try:
-            _fcntl.flock(fd, _fcntl.LOCK_EX)
+            _fcntl.flock(fd, _fcntl.LOCK_EX)  # pyright: ignore[reportAttributeAccessIssue]
         except BaseException:
             os.close(fd)
             raise
@@ -212,7 +218,7 @@ class FileSettingsStorage:
             return
         try:
             if _fcntl is not None:
-                _fcntl.flock(fd, _fcntl.LOCK_UN)
+                _fcntl.flock(fd, _fcntl.LOCK_UN)  # pyright: ignore[reportAttributeAccessIssue]
         finally:
             with contextlib.suppress(OSError):
                 os.close(fd)

@@ -47,6 +47,14 @@ The handover itself is pinned by the sabotage-verified tests in
 
 from __future__ import annotations
 
+# POSIX-only diagnostic: it drives a real pty, which Windows has no equivalent
+# of. These three imports ARE the runtime guard — on Windows ``fcntl`` does not
+# exist and ``pty`` fails importing ``termios``, so the script dies here with an
+# ImportError and never reaches ``main``. A ``sys.platform`` bail-out below them
+# would be unreachable, so the honest form is the import wall plus the
+# ``# pyright: ignore[reportAttributeAccessIssue]`` markers at the use sites:
+# those are about the CHECKER — on a windows host pyright analyses this file as
+# Windows and loses ``pty.openpty`` / ``fcntl.ioctl`` / ``termios.TIOCSWINSZ``.
 import argparse
 import asyncio
 import contextlib
@@ -197,8 +205,12 @@ def main() -> int:
     env["AELIX_OFFLINE"] = "1"  # no catalog fetch; the probe provider is enough
     env.pop("COLUMNS", None)
 
-    master, slave = pty.openpty()
-    fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", args.rows, args.cols, 0, 0))
+    master, slave = pty.openpty()  # pyright: ignore[reportAttributeAccessIssue]
+    fcntl.ioctl(  # pyright: ignore[reportAttributeAccessIssue]
+        slave,
+        termios.TIOCSWINSZ,  # pyright: ignore[reportAttributeAccessIssue]
+        struct.pack("HHHH", args.rows, args.cols, 0, 0),
+    )
     proc = subprocess.Popen(
         [sys.executable, "-m", "aelix_coding_agent", "--model", "retryprobe/held-model"],
         stdin=slave, stdout=slave, stderr=slave, env=env, cwd=repo, close_fds=True,
