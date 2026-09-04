@@ -62,21 +62,31 @@ to upgrade; `uv tool uninstall aelix` to remove.
 
 ## Platform support
 
-**macOS and Linux are supported. Windows is not, and the beta does not pretend otherwise.**
-CI runs the full suite on `ubuntu-latest` against Python 3.11 and 3.12, and development happens
-on macOS.
+**macOS and Linux are supported. Windows is not — the test suite passes there, and that is
+not the same claim.** CI runs the full suite on `ubuntu-latest` and `windows-latest` against
+Python 3.11 and 3.12, and development happens on macOS.
 
-A `windows-latest` leg exists and is advisory — it reports, it does not gate. At `a49e664` it
-stands at **238 failing tests out of 9,271**, down from 433 once a single missing POSIX guard
-was fixed. The failures are real and varied: tests that assert POSIX mode bits, paths that
-assume `/`, a file-read encoding that is not UTF-8 by default on Windows, and process plumbing
-(`os.killpg`, `signal.SIGKILL`) with no Windows equivalent yet. Delegation in particular is
-POSIX-only.
+The `windows-latest` leg **gates** as of 2026-09-04 — it can fail the build like any other leg.
+It opened at 433 failing tests and was advisory while that number came down; at `beffc2f`
+(run 33853043685) it is **0 failed, 9,338 passed, 71 skipped** on both Python versions. The type
+gate was still red there on 15 POSIX-only names that only pyright's Windows model sees; those
+are suppressed at their sites now, and `continue-on-error` came off with them: a new `fcntl`
+import or a hardcoded `/` join now fails CI instead of landing green.
 
-Aelix may well start on Windows and do useful work. Nothing about that is verified, no release
-is gated on it, and a regression there will not fail CI. Track the port in
-[#110](https://github.com/handochan/aelix-ai/issues/110); the labelling and the CI leg are
-[#103](https://github.com/handochan/aelix-ai/issues/103).
+A green suite is not a supported platform. None of the following is verified:
+
+- No release is gated on a Windows **runtime** check. Nobody has started `aelix` on Windows and
+  watched it do a turn.
+- `install.ps1` has never been executed, not once —
+  [#106](https://github.com/handochan/aelix-ai/issues/106).
+- AUTO permission mode is unusable: there is no PowerShell/cmd classifier, so every command
+  demotes to ASK — [#204](https://github.com/handochan/aelix-ai/issues/204).
+- Killing a delegated child orphans its descendants; Windows has no process group —
+  [#202](https://github.com/handochan/aelix-ai/issues/202).
+
+So Windows regressions in the suite are now caught, and nothing beyond the suite is. Track the
+port in [#110](https://github.com/handochan/aelix-ai/issues/110); the labelling and the CI leg
+are [#103](https://github.com/handochan/aelix-ai/issues/103).
 
 ## Quick start
 

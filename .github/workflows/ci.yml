@@ -31,11 +31,12 @@ jobs:
   test:
     name: lint + test (${{ matrix.os }}, py${{ matrix.python-version }})
     runs-on: ${{ matrix.os }}
-    # #103 P0-b: the windows leg is a MEASUREMENT, not a gate. Scope
-    # continue-on-error to that leg only — a bare job-level `true` would
-    # make the ubuntu failures advisory too and silently retire the gate
-    # this workflow exists to be.
-    continue-on-error: ${{ matrix.os == 'windows-latest' }}
+    # #103 P0-b: the windows leg GATES since 2026-09-04. It was advisory
+    # while it was a measurement; run 33853043685 (beffc2f) closed that at
+    # 0 failed / 9338 passed / 71 skipped on py3.11 and py3.12, down from the
+    # 433 it opened at. Leaving `continue-on-error` on now would mean the next
+    # `fcntl` import lands green — the exact regression this leg was added to
+    # stop. A green leg that cannot fail is not a measurement either.
     strategy:
       fail-fast: false
       matrix:
@@ -75,12 +76,16 @@ jobs:
       # `scripts/pyright_spike.py` STILL fails — its three inverse cases are
       # negative assertions, so silence there is a narrowing regression in the
       # hook API. See ADR-0213.
+      #
+      # #103 P0-b: this step was advisory on windows because it aborted that
+      # leg at step 6 of 7 and the measurement produced no test numbers at
+      # all. It gates on both platforms since 2026-09-04. Its 15 errors were
+      # POSIX-only names (`fcntl.flock`, `os.getuid`, `pty.openpty`) seen only
+      # because `pythonPlatform` follows the HOST; they are suppressed at the
+      # sites now. Do NOT pin `pythonPlatform` to Linux to make this quiet —
+      # that turns this run into a duplicate of the ubuntu one and hides the
+      # Windows-model type errors it is here to catch.
       - name: Type gate (pyright)
-        # #103 P0-b: on windows this gate aborted the leg at step 6 of 7, so
-        # pytest never ran and the measurement produced no test numbers at
-        # all. Advisory here for the same reason the job is advisory there —
-        # windows reports, it does not gate. ubuntu still blocks on both.
-        continue-on-error: ${{ matrix.os == 'windows-latest' }}
         run: uv run python scripts/check_types.py
 
       - name: Test gate (pytest)

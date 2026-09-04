@@ -61,17 +61,29 @@ curl -fsSL https://raw.githubusercontent.com/handochan/aelix-ai/main/install.sh 
 
 ## 플랫폼 지원
 
-**macOS와 Linux를 지원합니다. Windows는 지원하지 않으며, 베타는 그런 척하지 않습니다.**
-CI는 `ubuntu-latest`에서 Python 3.11/3.12로 전체 스위트를 돌리고, 개발은 macOS에서 이뤄집니다.
+**macOS와 Linux를 지원합니다. Windows는 지원하지 않습니다 — 테스트 스위트가 통과하는 것과
+지원하는 것은 다른 주장입니다.** CI는 `ubuntu-latest`와 `windows-latest`에서 Python 3.11/3.12로
+전체 스위트를 돌리고, 개발은 macOS에서 이뤄집니다.
 
-`windows-latest` 레그가 있긴 하지만 참고용입니다 — 보고만 하고 차단하지 않습니다. `a49e664`
-기준 **9,271건 중 238건이 실패**합니다. POSIX 가드 하나가 빠져 있던 것을 고친 뒤 433건에서
-줄어든 숫자입니다. 실패는 실제이고 종류도 다양합니다: POSIX mode 비트를 단언하는 테스트,
-`/`를 가정하는 경로, Windows 기본값이 UTF-8이 아닌 파일 읽기 인코딩, 그리고 아직 Windows
-등가물이 없는 프로세스 처리(`os.killpg`, `signal.SIGKILL`). 특히 위임(delegation)은 POSIX 전용입니다.
+`windows-latest` 레그는 2026-09-04부터 **차단합니다** — 다른 레그와 똑같이 빌드를 실패시킵니다.
+433건 실패로 시작해 그 숫자가 내려오는 동안은 참고용이었고, `beffc2f`(런 33853043685) 기준
+두 Python 버전 모두 **실패 0건, 통과 9,338건, 스킵 71건**입니다. 타입 게이트는 거기서 아직
+빨간색이었습니다 — pyright의 Windows 모델에서만 보이는 POSIX 전용 이름 15건이고, 지금은 각
+지점에서 억제했습니다. `continue-on-error`도 그것들과 함께 뗐습니다: 이제 새로 들어오는
+`fcntl` import나 하드코딩된 `/` 결합은 초록으로 머지되지 않고 CI를 실패시킵니다.
 
-Windows에서 Aelix가 실행되고 쓸모 있게 동작할 수도 있습니다. 다만 그중 무엇도 검증되지
-않았고, 릴리즈가 거기에 걸려 있지 않으며, 거기서 회귀가 나도 CI는 실패하지 않습니다.
+스위트가 초록인 것이 지원 플랫폼이라는 뜻은 아닙니다. 아래 중 검증된 것은 하나도 없습니다.
+
+- Windows **런타임** 확인에 걸린 릴리즈가 없습니다. Windows에서 `aelix`를 띄워 한 턴이
+  도는 것을 본 사람이 아직 없습니다.
+- `install.ps1`은 한 번도 실행된 적이 없습니다 —
+  [#106](https://github.com/handochan/aelix-ai/issues/106).
+- AUTO 권한 모드는 쓸 수 없습니다. PowerShell/cmd 분류기가 없어서 모든 명령이 ASK로
+  강등됩니다 — [#204](https://github.com/handochan/aelix-ai/issues/204).
+- 위임한 자식을 죽이면 그 자손이 고아로 남습니다. Windows에는 프로세스 그룹이 없습니다 —
+  [#202](https://github.com/handochan/aelix-ai/issues/202).
+
+즉 스위트 안의 Windows 회귀는 이제 잡히고, 스위트 밖의 것은 여전히 잡히지 않습니다.
 포팅 현황은 [#110](https://github.com/handochan/aelix-ai/issues/110), 표기와 CI 레그는
 [#103](https://github.com/handochan/aelix-ai/issues/103)에서 추적합니다.
 
