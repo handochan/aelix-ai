@@ -95,6 +95,25 @@ escalation_reachable = pytest.mark.skipif(
     escalation_unreachable,
     reason="SIGTERM->SIGKILL escalation is unreachable on win32: os.kill is TerminateProcess (#215, #202)",
 )
+# #207: a SIBLING of the marker above rather than a reuse of it, because what
+# is unavailable here is the FIXTURE, not the escalation. :func:`_wedged_argv`
+# plants the child's SIGTERM disposition pre-``exec`` with ``/bin/sh -c
+# "trap '' TERM; exec ..."``; Windows has neither ``/bin/sh`` (measured:
+# ``[WinError 2] The system cannot find the file specified``, so the spawn dies
+# before the state under test exists) nor the concept of an ignore disposition
+# that survives ``exec``. The OS physically refuses to CONSTRUCT the
+# precondition, which is the same carve-out ``tests/conftest.py``
+# (``_no_real_tool_downloads``' docstring, "SKIPPING IS RIGHT HERE") makes;
+# precedent ``tests/oauth/test_auth_storage.py:64``. No product change can make
+# this fixture buildable, so unlike the ``escalation_reachable`` sites this one
+# is not waiting on #202.
+sigterm_ignoring_fixture_buildable = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason=(
+        "the fixture cannot be built on win32: no /bin/sh, and no SIG_IGN "
+        "disposition that survives exec for `trap '' TERM` to plant (#207)"
+    ),
+)
 
 # === Stub children ============================================================
 
@@ -892,6 +911,7 @@ async def _await_readiness(
     )
 
 
+@sigterm_ignoring_fixture_buildable
 async def test_a_wedged_child_that_closed_its_stdio_still_times_out(
     tmp_path: Path,
 ) -> None:

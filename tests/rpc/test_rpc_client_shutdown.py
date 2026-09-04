@@ -12,6 +12,7 @@ import sys
 import textwrap
 import time
 
+import pytest
 from aelix_coding_agent.rpc.rpc_client import RpcClient, RpcClientOptions
 
 
@@ -77,6 +78,22 @@ class _SigtermIgnoreClient(RpcClient):
         return [sys.executable, "-c", _SIGTERM_IGNORE_STUB]
 
 
+# WHOLE-TEST SKIP, because the grace IS the assertion — ``elapsed >= grace`` is
+# the subject, and on win32 there is no grace to be under. ``Popen.terminate()``
+# there is ``TerminateProcess(handle, 1)`` (CPython's win32 arm even aliases
+# ``kill = terminate``), so ``signal.SIG_IGN`` in the stub above buys the child
+# nothing: it dies on the first attempt and SIGKILL is never reached (measured
+# on windows-latest: ``stop()`` returned in 0.062 s against the 0.300 s grace).
+# ``RpcClient.stop()`` has no win32 branch at all today. REMOVE THIS SKIP when
+# #202 lands a real Windows soft-kill stage on ``stop()``'s
+# ``terminate()``/``kill()`` lines; this test is then rewritten on top of it.
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason=(
+        "Windows TerminateProcess is uncatchable; there is no SIGTERM grace to "
+        "observe (#207 → #202)"
+    ),
+)
 async def test_stop_escalates_to_sigkill_when_sigterm_ignored() -> None:
     """A server that ignores SIGTERM is killed via SIGKILL after the grace."""
 

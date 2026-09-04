@@ -57,19 +57,54 @@ _DYING_STUB = textwrap.dedent(
     """
 )
 
-# A stub that forks a grandchild INHERITING stdout/stderr and then idles. This
+# A stub that spawns a grandchild INHERITING stdout/stderr and then idles. This
 # is the only shape that reproduced the ``stop()`` stall: measured, a live child
 # plus a live pipe-holder made ``stop()`` pay its whole SIGTERM grace even
 # though ``returncode`` was already set, because ``proc.wait()`` does not
 # resolve until every pipe disconnects. Without the grandchild all four
 # variations return in 0.00 s and the bug is invisible.
+#
+# THE GRANDCHILD IS A ``subprocess.Popen``, NOT ``os.fork()`` (#207). The
+# property under test — "a descendant still holding fd 1/2 keeps
+# ``proc.wait()`` from resolving" — is about INHERITED PIPE HANDLES, not about
+# how the descendant came to exist, and ``os.fork`` does not exist on Windows
+# at all (measured there: ``RpcServerExited ... AttributeError: module 'os' has
+# no attribute 'fork'``, raised out of ``client.start()``, so the stall path
+# this file exists to pin was never even entered).
+#
+# THE ``stdin=0, stdout=1, stderr=2`` IS LOAD-BEARING, do not drop it back to a
+# bare ``Popen([...])``. On POSIX the two spell the same thing, but on win32
+# they do not, and the bare form would make this test pass VACUOUSLY there.
+# Read out of CPython's ``subprocess`` win32 arm: ``_get_handles`` opens with
+# ``if stdin is None and stdout is None and stderr is None: return (-1,) * 6``,
+# so ``_execute_child`` computes ``use_std_handles = -1 not in (...)`` -> False,
+# never sets ``STARTF_USESTDHANDLES``, never builds a ``handle_list``, leaves
+# ``close_fds`` True, and calls ``CreateProcess(..., int(not close_fds), ...)``
+# — i.e. ``bInheritHandles=FALSE``. The client hands the child ``stdout=PIPE``/
+# ``stderr=PIPE``, so those are pipe handles rather than console handles and a
+# ``bInheritHandles=FALSE`` grandchild receives none of them: no holder, no
+# stall, nothing asserted. Passing the fds as ints instead takes the
+# ``isinstance(x, int)`` -> ``msvcrt.get_osfhandle`` -> ``_make_inheritable``
+# path, which DOES set ``STARTF_USESTDHANDLES`` and a ``handle_list``. (That
+# win32 chain is read from the CPython source, not measured here; the windows
+# leg is what will confirm it.)
+#
+# Measured on darwin, the two forms are interchangeable — ``lsof`` shows the
+# grandchild holding fds 0/1/2 as PIPEs either way, and both reproduce the bug
+# identically: stubbing the polling ``_await_exit`` back out to
+# ``await proc.wait()`` makes ``stop()`` pay the full grace (1.002 s and
+# 1.001 s against a 1.000 s grace) while the real product returns in 0.052 s.
+# The control matters as much as the fixture: with NO grandchild the regressed
+# ``stop()`` still returns in 0.001 s, which is what proves the grandchild is
+# the precondition and this test is not passing for free.
 _PIPE_HOLDER_STUB = textwrap.dedent(
     """
-    import os, sys, time
+    import subprocess, sys, time
 
-    if os.fork() == 0:
-        time.sleep(30)
-        os._exit(0)
+    subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)"],
+        stdin=0, stdout=1, stderr=2,
+    )
 
     sys.stderr.write("holder ready\\n")
     sys.stderr.flush()

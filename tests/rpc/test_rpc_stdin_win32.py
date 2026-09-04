@@ -111,6 +111,23 @@ async def test_win32_uses_the_thread_pump_not_connect_read_pipe(
     thread.join(timeout=5)
 
 
+# The only test in this file that fails on windows-latest, and it fails because
+# it forces the POSIX arm onto a REAL ProactorEventLoop with a REAL
+# ``os.pipe()``: IOCP cannot register a non-overlapped anonymous pipe handle
+# (``OSError [WinError 6] The handle is invalid``, and CPython 3.11's asyncio
+# then raises ``AttributeError: _empty_waiter`` on the way out). Skipping costs
+# no coverage: ``test_posix_arm_would_fail_on_windows`` below pins the same
+# property with a mocked ``connect_read_pipe`` and PASSES on windows, and
+# ``_open_stdin_reader`` falls back to the real ``sys.platform``, so no actual
+# Windows user reaches this arm.
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason=(
+        "IOCP cannot register a non-overlapped anonymous pipe handle; the "
+        "sibling test_posix_arm_would_fail_on_windows pins the property with a "
+        "mock and passes there"
+    ),
+)
 async def test_posix_still_uses_connect_read_pipe(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

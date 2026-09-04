@@ -132,6 +132,22 @@ def test_the_guard_is_still_wired_into_both_doors() -> None:
 # === The rpc client's worst-case teardown ===================================
 
 
+# WHOLE-TEST SKIP, because the grace IS the assertion: both halves below
+# (``elapsed <= worst_case`` and ``elapsed >= grace``) measure a SIGTERM grace
+# window that does not exist on win32. There ``Popen.terminate()`` is
+# ``TerminateProcess(handle, 1)``, which no child can catch or ignore, so the
+# ``SIG_IGN`` stub dies on the first attempt and the escalation this test
+# exists to pin never happens (measured on windows-latest: 0.047 s against a
+# 1.000 s grace). REMOVE THIS SKIP when #202 lands a real Windows soft-kill
+# stage on ``stop()``'s ``terminate()``/``kill()`` lines; this test is then
+# rewritten on top of it.
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason=(
+        "Windows TerminateProcess is uncatchable; there is no SIGTERM grace to "
+        "observe (#207 → #202)"
+    ),
+)
 async def test_stop_is_bounded_by_the_documented_worst_case() -> None:
     """SIGTERM grace + the final reap, and nothing open-ended.
 
