@@ -3,18 +3,73 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 from aelix_ai.tools import ToolExecutionContext
 from aelix_coding_agent.tools import create_edit_tool
+
+
+def _write(path: Path, text: str) -> None:
+    """Write a fixture with platform-independent bytes (issue #213).
+
+    ``Path.write_text`` defaults to the locale encoding (cp1252 on the
+    windows-latest runner) and to universal-newline text mode (LF is
+    translated to CRLF on Windows). The edit tool reads raw bytes and
+    decodes UTF-8 by design, so an unpinned fixture breaks before the tool
+    ever runs. Every fixture write in this file goes through here.
+    """
+
+    path.write_text(text, encoding="utf-8", newline="")
 
 
 async def _exec(tool, args):
     return await tool.execute(args, ToolExecutionContext(tool_call_id="t1"))
 
 
+def test_fixture_writer_survives_windows_write_text_defaults(tmp_path, monkeypatch):
+    """Guard for #213 — the condition is injected, not skipped.
+
+    Asserting the bytes of an already-pinned write proves nothing here: on
+    POSIX the locale IS UTF-8 and ``os.linesep`` IS LF, so stripping ``_write``
+    down to a bare ``path.write_text(text)`` leaves such a test green
+    (measured). So the Windows condition is injected instead — a
+    ``Path.write_text`` whose *defaults* are cp1252 and CRLF, which is what
+    the windows-latest runner has. Same style as
+    ``tests/cli/test_stdio_encoding_win32.py``: no ``skipif``, because a test
+    that only runs on the platform we cannot run on is not a regression guard.
+    """
+
+    real_write_text = Path.write_text
+
+    def windows_defaults(self, data, encoding=None, errors=None, newline=None):
+        return real_write_text(
+            self,
+            data,
+            encoding="cp1252" if encoding is None else encoding,
+            errors=errors,
+            newline="\r\n" if newline is None else newline,
+        )
+
+    monkeypatch.setattr(Path, "write_text", windows_defaults)
+
+    text = "say “hi”\nsecond line\n"
+
+    # The injection must be live, or this test goes vacuous again: an UNPINNED
+    # write under it reproduces the exact bytes issue #213 measured on CI —
+    # which the edit tool then decodes to 'say �hi�'.
+    unpinned = tmp_path / "unpinned.txt"
+    unpinned.write_text(text)
+    assert unpinned.read_bytes() == b"say \x93hi\x94\r\nsecond line\r\n"
+
+    # _write pins both, so fuzzy matching sees the curly quotes it expects.
+    pinned = tmp_path / "fixture.txt"
+    _write(pinned, text)
+    assert pinned.read_bytes() == text.encode("utf-8")
+
+
 async def test_edit_single_change(tmp_path):
     f = tmp_path / "e.txt"
-    f.write_text("hello world\n")
+    _write(f, "hello world\n")
     tool = create_edit_tool(str(tmp_path))
     result = await _exec(
         tool,
@@ -26,7 +81,7 @@ async def test_edit_single_change(tmp_path):
 
 async def test_edit_multiple_changes(tmp_path):
     f = tmp_path / "e.txt"
-    f.write_text("aaa bbb ccc")
+    _write(f, "aaa bbb ccc")
     tool = create_edit_tool(str(tmp_path))
     result = await _exec(
         tool,
@@ -44,7 +99,7 @@ async def test_edit_multiple_changes(tmp_path):
 
 async def test_edit_old_text_not_unique(tmp_path):
     f = tmp_path / "e.txt"
-    f.write_text("dup dup")
+    _write(f, "dup dup")
     tool = create_edit_tool(str(tmp_path))
     result = await _exec(
         tool,
@@ -55,7 +110,7 @@ async def test_edit_old_text_not_unique(tmp_path):
 
 async def test_edit_old_text_not_found(tmp_path):
     f = tmp_path / "e.txt"
-    f.write_text("present")
+    _write(f, "present")
     tool = create_edit_tool(str(tmp_path))
     result = await _exec(
         tool,
@@ -72,7 +127,7 @@ async def test_edit_missing_path():
 
 async def test_edit_missing_edits(tmp_path):
     f = tmp_path / "e.txt"
-    f.write_text("x")
+    _write(f, "x")
     tool = create_edit_tool(str(tmp_path))
     result = await _exec(tool, {"path": "e.txt"})
     assert result.is_error is True
@@ -82,7 +137,7 @@ async def test_edit_no_change_is_error(tmp_path):
     # Pi parity: a replacement that produces identical content is an ERROR
     # (getNoChangeError), not a silent no-op.
     f = tmp_path / "e.txt"
-    f.write_text("same\n")
+    _write(f, "same\n")
     tool = create_edit_tool(str(tmp_path))
     result = await _exec(
         tool,
@@ -106,7 +161,7 @@ async def test_edit_preserves_crlf_line_endings(tmp_path):
 
 async def test_edit_concurrent_serialised_by_file_lock(tmp_path):
     f = tmp_path / "lock.txt"
-    f.write_text("aaa bbb")
+    _write(f, "aaa bbb")
     tool = create_edit_tool(str(tmp_path))
 
     async def edit1():
@@ -140,7 +195,7 @@ async def test_edit_content_is_success_message_not_diff(tmp_path):
     # Pi parity: result CONTENT is "Successfully replaced N block(s) in {path}."
     # (raw path); the diff lives in details, not content.
     f = tmp_path / "e.txt"
-    f.write_text("hello world\n")
+    _write(f, "hello world\n")
     tool = create_edit_tool(str(tmp_path))
     result = await _exec(
         tool, {"path": "e.txt", "edits": [{"oldText": "world", "newText": "aelix"}]}
@@ -157,7 +212,7 @@ async def test_edit_matches_original_content_not_running_buffer(tmp_path):
     # original but would VANISH if edit 1 ("a"->"X") were applied first to a
     # running buffer. Original-content matching makes both resolve.
     f = tmp_path / "e.txt"
-    f.write_text("a_ab_z")
+    _write(f, "a_ab_z")
     tool = create_edit_tool(str(tmp_path))
     result = await _exec(
         tool,
@@ -175,7 +230,7 @@ async def test_edit_matches_original_content_not_running_buffer(tmp_path):
 
 async def test_edit_overlap_detected(tmp_path):
     f = tmp_path / "e.txt"
-    f.write_text("abcdef")
+    _write(f, "abcdef")
     tool = create_edit_tool(str(tmp_path))
     result = await _exec(
         tool,
@@ -194,7 +249,7 @@ async def test_edit_overlap_detected(tmp_path):
 async def test_edit_fuzzy_smart_quotes(tmp_path):
     # Pi parity fuzzy fallback: ASCII oldText matches smart-quoted file content.
     f = tmp_path / "e.txt"
-    f.write_text("say “hi”\n")  # curly quotes in file
+    _write(f, "say “hi”\n")  # curly quotes in file
     tool = create_edit_tool(str(tmp_path))
     result = await _exec(
         tool, {"path": "e.txt", "edits": [{"oldText": 'say "hi"', "newText": "X"}]}
@@ -204,7 +259,7 @@ async def test_edit_fuzzy_smart_quotes(tmp_path):
 
 async def test_edit_not_found_pi_message(tmp_path):
     f = tmp_path / "e.txt"
-    f.write_text("present\n")
+    _write(f, "present\n")
     tool = create_edit_tool(str(tmp_path))
     result = await _exec(
         tool, {"path": "e.txt", "edits": [{"oldText": "absent", "newText": "x"}]}
@@ -216,7 +271,7 @@ async def test_edit_not_found_pi_message(tmp_path):
 async def test_edit_legacy_top_level_oldtext_newtext(tmp_path):
     # Pi parity prepareArguments: legacy top-level oldText/newText folds into edits.
     f = tmp_path / "e.txt"
-    f.write_text("legacy here\n")
+    _write(f, "legacy here\n")
     tool = create_edit_tool(str(tmp_path))
     result = await _exec(tool, {"path": "e.txt", "oldText": "legacy", "newText": "L"})
     assert result.is_error is False
@@ -228,7 +283,7 @@ async def test_edit_diff_context_correct_on_line_shifting_edit(tmp_path):
     # the OLD-file index/number so a line-count-changing edit does NOT reappear
     # inserted text as phantom context or drop/crash on trailing lines.
     f = tmp_path / "f.py"
-    f.write_text("def f():\n    x = 1\n    return x\n# tail1\n# tail2\n")
+    _write(f, "def f():\n    x = 1\n    return x\n# tail1\n# tail2\n")
     tool = create_edit_tool(str(tmp_path))
     result = await _exec(
         tool,
@@ -254,7 +309,7 @@ async def test_edit_duplicate_detected_across_fuzzy_equivalents(tmp_path):
     # ASCII match + a smart-quote-equivalent match BOTH count -> uniqueness guard
     # fires (no silent edit of one of two semantically-identical occurrences).
     f = tmp_path / "e.txt"
-    f.write_text('say "foo" and “foo”\n')  # one ASCII, one curly-quoted
+    _write(f, 'say "foo" and “foo”\n')  # one ASCII, one curly-quoted
     tool = create_edit_tool(str(tmp_path))
     result = await _exec(
         tool, {"path": "e.txt", "edits": [{"oldText": '"foo"', "newText": "X"}]}
@@ -267,7 +322,7 @@ async def test_edit_non_list_edits_string_not_spread_into_chars(tmp_path):
     # Regression (ADR-0138 review): a non-parseable `edits` string is discarded,
     # not spread into single-char edits; legacy top-level oldText/newText applies.
     f = tmp_path / "e.txt"
-    f.write_text("X here\n")
+    _write(f, "X here\n")
     tool = create_edit_tool(str(tmp_path))
     result = await _exec(
         tool, {"path": "e.txt", "edits": "NOT JSON", "oldText": "X", "newText": "Y"}
@@ -281,7 +336,7 @@ async def test_edit_edits_as_json_string(tmp_path):
     import json
 
     f = tmp_path / "e.txt"
-    f.write_text("json mode\n")
+    _write(f, "json mode\n")
     tool = create_edit_tool(str(tmp_path))
     result = await _exec(
         tool,
@@ -299,7 +354,8 @@ async def test_edit_fuzzy_preserves_untouched_lines_verbatim(tmp_path):
     # (ASCII oldText vs curly-quoted file content) with one exact edit; the
     # untouched lines carry trailing whitespace that MUST be preserved.
     f = tmp_path / "mix.txt"
-    f.write_text(
+    _write(
+        f,
         "keep me   \n"  # untouched, trailing spaces
         "target “x”\n"  # fuzzy target (curly double quotes in file)
         "also keep\t\n"  # untouched, trailing tab
