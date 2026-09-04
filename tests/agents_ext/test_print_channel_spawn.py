@@ -75,6 +75,21 @@ from tests.env_sandbox import child_env
 linux_only = pytest.mark.skipif(
     sys.platform != "linux", reason="process-group / PDEATHSIG semantics are Linux"
 )
+# #215 (owner decision 2026-09-04, option c): the SIGTERM→SIGKILL escalation
+# cannot be REACHED on Windows, so a test that asserts it happened has nothing
+# to measure there. ``os.kill`` is ``TerminateProcess`` on win32 — the first,
+# "cooperative" leg is already unconditional, a SIGTERM-ignoring child dies in
+# ~60 ms (measured on the same runner:
+# ``tests/rpc/test_rpc_client_shutdown.py::test_stop_escalates_to_sigkill_when_sigterm_ignored``),
+# and ``reaper._kill_signal()`` returns SIGTERM there by design (its docstring;
+# #202 owns the semantics). The choice of signal itself is unit-tested without
+# a process in ``tests/agents_ext/test_reaper_kill_signal_win32.py``. Not an
+# injected-condition test because the condition is a kernel primitive, not a
+# value a test can swap in.
+escalation_reachable = pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="SIGTERM→SIGKILL escalation is unreachable on win32: os.kill is TerminateProcess (#215, #202)",
+)
 
 # === Stub children ============================================================
 
@@ -1011,6 +1026,7 @@ async def test_reaping_an_already_exited_child_reports_its_real_exit_code(
     assert codes == [0] * 12, f"exit statuses lost to a behind-the-back reap: {codes}"
 
 
+@escalation_reachable
 async def test_reap_still_escalates_after_the_signal_change(tmp_path: Path) -> None:
     """The kill path must not have been softened by the ``os.kill`` switch."""
 
@@ -1177,6 +1193,7 @@ def test_pdeathsig_sigkill_would_orphan_every_bash_grandchild(tmp_path: Path) ->
     )
 
 
+@escalation_reachable
 async def test_sigterm_then_sigkill(tmp_path: Path) -> None:
     """A child that ignores SIGTERM is escalated after the grace.
 
