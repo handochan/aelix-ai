@@ -203,8 +203,23 @@ def _panel_to_ansi(title: str, body: Any, width: int) -> list[str]:
         # ``export_text``; ``file`` only ever sees ``write``/``flush``, which
         # ``_NullFile`` implements. The cast states that narrower contract
         # instead of dressing the stub up as a full ``IO[str]``.
+        #
+        # ``legacy_windows=False`` is PINNED (issue #206). Left to auto-detect,
+        # rich reads the flag off the PROCESS stdout once and caches it
+        # (``rich/console.py:562-577``), so on Windows without the VT bit — a
+        # legacy conhost, or CI where pytest captures stdout to a pipe — every
+        # ROUNDED box here silently becomes SQUARE (``rich/box.py:79`` +
+        # ``LEGACY_WINDOWS_SUBSTITUTIONS`` at ``:405``): ``╭╮╰╯`` → ``┌┐└┘``.
+        # This console never reaches a console host (it records into
+        # ``_NullFile``), and rich's Win32 API renderer is gated on the file
+        # having a std-stream ``fileno`` (``console.py:2071-2078``), so pinning
+        # the flag here restores the corners (and, on a legacy conhost, changes
+        # which SGR bytes land in the buffer) — it cannot emit raw ANSI at a
+        # terminal that would not understand it. The live console in
+        # ``chrome.py`` writes to the real terminal and is deliberately NOT
+        # pinned for exactly that reason.
         console = Console(
-            width=width, record=True, file=cast("IO[str]", _NullFile())
+            width=width, record=True, file=cast("IO[str]", _NullFile()), legacy_windows=False
         )
         console.print(Panel(body, title=title, expand=False, width=width))
         text = console.export_text(styles=True)

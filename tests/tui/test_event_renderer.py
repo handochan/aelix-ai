@@ -879,8 +879,21 @@ def _painted_rows(group: Any, width: int) -> list[tuple[str, int]]:
         # console is not a harness detail: it is the measurement failing while the
         # test name still claims it. Eight tests in this file failed under those two
         # TERM values for exactly this reason.
+        # ``legacy_windows`` IS LOAD-BEARING FOR THE SAME REASON (issue #206).
+        # Auto-detected it is True wherever Windows reports no VT bit — which is
+        # every CI run, since pytest captures stdout to a pipe — and rich then
+        # subtracts one column from a console that declares BOTH width and height
+        # (``rich/console.py:1011-1012``). That is this helper's own ``height=24``
+        # biting it: nine assertions in this file came back 39/40, 31/32, 59/60 on
+        # the windows leg. The PRODUCT consoles declare width only and never lose
+        # a column, so this pins the harness, not a product defect.
         Console(
-            file=buf, width=width, height=24, force_terminal=True, color_system="truecolor"
+            file=buf,
+            width=width,
+            height=24,
+            force_terminal=True,
+            color_system="truecolor",
+            legacy_windows=False,
         ).print(renderable)
         return buf.getvalue()
 
@@ -921,8 +934,15 @@ def _render_group_to_ansi(group: Any, width: int) -> str:
     buf = io.StringIO()
     # ``height`` for the same reason as ``_painted_rows`` above: without it a dumb
     # TERM silently widens this console to 80 and the declared width is a fiction.
+    # ``legacy_windows`` likewise (issue #206): with a height declared, an
+    # auto-detected True costs this console one column on the windows leg.
     Console(
-        file=buf, width=width, height=24, force_terminal=True, color_system="truecolor"
+        file=buf,
+        width=width,
+        height=24,
+        force_terminal=True,
+        color_system="truecolor",
+        legacy_windows=False,
     ).print(group)
     return buf.getvalue()
 

@@ -18,6 +18,7 @@ assertion below it is not vacuous: it documents exactly what regresses if the
 from __future__ import annotations
 
 import asyncio
+import io
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -464,3 +465,112 @@ def test_a_raising_console_accessor_is_ignored() -> None:
 def test_the_ceiling_still_applies_after_the_min() -> None:
     chrome = _FakeChrome(400, scrollback_columns=300)
     assert terminal_columns(chrome) == _MAX_RENDER_WIDTH  # type: ignore[arg-type]
+
+
+# === legacy-windows box substitution (issue #206) ============================
+#
+# rich replaces ROUNDED with SQUARE whenever ``ConsoleOptions.legacy_windows``
+# is set (``rich/box.py:79`` → ``LEGACY_WINDOWS_SUBSTITUTIONS`` at ``:405``), and
+# it decides that flag ONCE per process off the STDOUT handle's VT bit
+# (``rich/console.py:562-577``), caching the answer. Under CI — pytest captures
+# stdout to a pipe — and on a legacy conhost that answer is True, so every
+# ``╭╮╰╯`` in the approval dialog came back ``┌┐└┘`` and the corner assertions
+# above went red on the windows leg.
+#
+# NO ``skipif``. The flag is a rich-level cache, not a syscall, so injecting the
+# legacy state reproduces the substitution exactly on darwin and linux — the same
+# reasoning ``tests/cli/test_stdio_encoding_win32.py`` documents for code pages.
+# A test that only runs on the platform we cannot run on is not a guard.
+#
+# WIDTH IS DELIBERATELY NOT ASSERTED. The −1 rich applies for legacy Windows only
+# lands on a console that declares width AND height (``console.py:1011-1012``);
+# every product console declares width alone, so no width is lost. Measured:
+# ``Console(width=40, legacy_windows=True).width == 40``.
+
+
+@pytest.fixture
+def legacy_windows_rich(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Put rich in the state a legacy Windows console host produces."""
+
+    from rich import console as rich_console
+    from rich._windows import WindowsConsoleFeatures
+
+    monkeypatch.setattr(rich_console, "WINDOWS", True)
+    # The features are memoised in this module global; seeding it is what keeps
+    # the fixture from touching ctypes (which does not exist off Windows).
+    monkeypatch.setattr(
+        rich_console,
+        "_windows_console_features",
+        WindowsConsoleFeatures(vt=False, truecolor=False),
+    )
+    assert rich_console.detect_legacy_windows() is True  # the injection took
+
+
+def test_the_injected_legacy_state_really_downgrades_a_default_console(
+    legacy_windows_rich: None,
+) -> None:
+    """Not vacuous: an UNPINNED console under this fixture loses its corners."""
+
+    from rich.console import Console
+    from rich.panel import Panel
+
+    console = Console(width=40, record=True, file=io.StringIO())
+    console.print(Panel("body", title="t", expand=False, width=40))
+    out = console.export_text(styles=False)
+    assert "╭" not in out and "╮" not in out  # ROUNDED → SQUARE
+    assert "┌" in out  # ...substituted, not dropped
+
+
+def test_the_approval_dialog_keeps_its_rounded_corners_on_legacy_windows(
+    legacy_windows_rich: None,
+) -> None:
+    """The product pin (``approval_dialog.py``'s ``legacy_windows=False``).
+
+    This is the guard for the seven ``tests/tui/`` corner failures: with the pin
+    reverted this fails here, on every OS, instead of only on the windows leg.
+    """
+
+    from aelix_coding_agent.tui.approval_dialog import ApprovalRequest, build_approval_view
+
+    lines = build_approval_view(ApprovalRequest("bash", {"command": "echo hi"}, "bash"), width=60)
+    joined = "\n".join(lines)
+    assert "Run shell command?" in joined  # the dialog really did render
+    assert "╭" in joined and "╮" in joined  # top corners survived the downgrade
+    assert "╰" in joined and "╯" in joined  # ...and the bottom ones
+
+
+def test_the_buffer_widgets_keep_their_rounded_corners_on_legacy_windows(
+    legacy_windows_rich: None,
+) -> None:
+    """The same pin on the ``StringIO`` console in ``widgets.py``."""
+
+    from aelix_coding_agent.tui.widgets import RichComponent
+    from rich.panel import Panel
+
+    joined = "\n".join(RichComponent(Panel("body", title="t", width=40)).render(40))
+    assert "╭" in joined and "╮" in joined
+    assert "╰" in joined and "╯" in joined
+
+
+def test_the_streamed_text_path_is_unaffected_either_way(
+    legacy_windows_rich: None,
+) -> None:
+    """``stream.py``'s two consoles carry the same pin — with NOTHING to show.
+
+    Stated because the pin would otherwise look like an untested claim.
+    ``plain_lines``/``markdown_lines`` render ``Text`` and ``Markdown``, and
+    MEASURED, neither reaches a box the substitution map touches: rich draws a
+    markdown table with ``box.SIMPLE`` (``rich/markdown.py``), and ``SIMPLE`` is
+    not a key of ``LEGACY_WINDOWS_SUBSTITUTIONS`` (only ``ROUNDED``,
+    ``HEAVY*`` and ``MINIMAL_HEAVY_HEAD``/``SIMPLE_HEAVY`` are). So the pin
+    there is POLICY — all four buffer consoles on one rule — not a fix, and
+    this test pins the "no visible change" half of that honestly.
+    """
+
+    from aelix_coding_agent.tui.stream import markdown_lines
+    from rich import box
+
+    assert box.SIMPLE not in box.LEGACY_WINDOWS_SUBSTITUTIONS
+    joined = "".join(markdown_lines("| a | b |\n| - | - |\n| 1 | 2 |\n", 40))
+    assert "a" in joined and "1" in joined  # it rendered
+    assert not (set(joined) & set("╭╮╰╯┌┐└┘┏┓"))  # ...with no box either way

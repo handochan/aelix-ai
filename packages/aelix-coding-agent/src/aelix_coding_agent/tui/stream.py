@@ -48,7 +48,19 @@ def plain_lines(text: str, width: int, *, style: str = "") -> list[str]:
     if not text:
         return []
     buf = io.StringIO()
-    Console(file=buf, force_terminal=True, width=width).print(
+    # ``legacy_windows=False`` pinned as in ``approval_dialog._panel_to_ansi``
+    # (issue #206): rich auto-detects that flag ONCE off the process stdout
+    # (``rich/console.py:562-577``) and a missing Windows VT bit then rewrites
+    # ROUNDED boxes to SQUARE anywhere in the process. This console only ever
+    # writes into a ``StringIO`` whose ANSI is re-parsed downstream
+    # (``render.py``'s ``Text.from_ansi`` → ``chrome.print_above``), so pinning
+    # is free here. HONEST SCOPE: nothing on THIS path draws a substituted box
+    # today — measured, rich renders markdown tables with ``box.SIMPLE``, which
+    # is not in ``LEGACY_WINDOWS_SUBSTITUTIONS``. It is here so all four buffer
+    # consoles carry one rule and a future Panel cannot regress silently.
+    # NOT applied to ``chrome.py``'s live console, which writes to the real
+    # terminal and would then emit raw ANSI at a host that cannot read it.
+    Console(file=buf, force_terminal=True, width=width, legacy_windows=False).print(
         Text(text, style=style), end=""
     )
     return buf.getvalue().splitlines(keepends=True)
@@ -74,7 +86,13 @@ def markdown_lines(text: str, width: int) -> list[str]:
     if not text:
         return []
     buf = io.StringIO()
-    Console(file=buf, force_terminal=True, width=width).print(Markdown(text), end="")
+    # ``legacy_windows=False`` pinned for the reason given in
+    # :func:`plain_lines` above (issue #206) — same honest scope: markdown
+    # tables render with ``box.SIMPLE`` today, so this is the one-rule pin,
+    # not a fix for a box that currently downgrades.
+    Console(file=buf, force_terminal=True, width=width, legacy_windows=False).print(
+        Markdown(text), end=""
+    )
     return buf.getvalue().splitlines(keepends=True)
 
 

@@ -639,7 +639,7 @@ class EventRenderer:
         # reasoning the user just asked to hide stayed welded above the prompt.
         self._thinking_tail_shown: bool = False
         # Adaptive throttle, mirroring ``StreamRenderer``'s governor
-        # (stream.py:155-158). ``_THINKING_TAIL_MIN_DELAY`` is a FLOOR, not the
+        # (stream.py:173-176). ``_THINKING_TAIL_MIN_DELAY`` is a FLOOR, not the
         # interval: if a push ever gets expensive the gap widens with it, so the
         # renderer can never spend an unbounded share of the turn inside its own
         # repaint. Reset per block, like ``_thinking_tail_when``.
@@ -1086,7 +1086,7 @@ class EventRenderer:
             self._thinking_tail_source(width), width, style="dim italic"
         )
         render_time = self._time() - started
-        # The governor ``StreamRenderer`` has had since 6h₂₄ (stream.py:155-158):
+        # The governor ``StreamRenderer`` has had since 6h₂₄ (stream.py:173-176):
         # hold the gap at ten times the render it just paid for. With the slice
         # above this should never leave the floor — which is the point. It is the
         # backstop that keeps ANY future renderer that is not O(1) in block size

@@ -63,7 +63,12 @@ class RichComponent:
 
     def render(self, width: int) -> list[str]:
         buf = io.StringIO()
-        console = Console(file=buf, force_terminal=True, width=width)
+        # ``legacy_windows=False`` pinned for the same reason as
+        # ``approval_dialog._panel_to_ansi`` (issue #206): auto-detection reads
+        # the process stdout, so a missing Windows VT bit downgrades every
+        # ROUNDED box to SQUARE even though this console only ever writes into
+        # a ``StringIO``. Not applied to ``chrome.py``'s live console.
+        console = Console(file=buf, force_terminal=True, width=width, legacy_windows=False)
         console.print(self._renderable, end="")
         return buf.getvalue().splitlines()
 

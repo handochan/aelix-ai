@@ -377,6 +377,27 @@ async def _wait_float(chrome: AelixChrome, *, timeout: float = 3.0) -> None:
     raise AssertionError("modal not mounted")
 
 
+async def _wait_rendered(rendered: list[str], name: str, *, timeout: float = 2.0) -> None:
+    """Wait until tab *name*'s render closure has fired.
+
+    Issue #206: the ``test_tabbed_*`` tests below used to sleep a fixed 0.1s and
+    then assert the paint had landed. That is a bet on the runner's speed, and on
+    the slower windows leg it lost in four separate CI runs (``assert 'A' in []``)
+    with no tui change anywhere in the diffs. Same shape as :func:`_wait_float`
+    above: poll the observable on a 5 ms tick, fail loudly on a real timeout.
+    POSIX cost is strictly LOWER — the first paint lands within a tick or two,
+    where the old code always paid the full sleep.
+    """
+
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while loop.time() < deadline:
+        if name in rendered:
+            return
+        await asyncio.sleep(0.005)
+    raise AssertionError(f"tab {name!r} never rendered within {timeout}s (saw {rendered})")
+
+
 async def test_select_supports_more_than_nine_options() -> None:
     # Sprint 6h₂₄: the 9-option cap is gone — arrow keys (or type-to-filter)
     # handle any list size. Here we filter for "o11" → only "o11" remains →
@@ -462,14 +483,21 @@ async def _footer_chrome(
     footer: AelixFooterData,
     *,
     model_provider=None,
+    mode_provider=None,
     cwd=None,
     mode: str = "default",
+    width: int = 80,
 ) -> AsyncGenerator[tuple[AelixTUIContext, AelixChrome]]:
     with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
-        console = Console(file=io.StringIO(), force_terminal=True, width=80)
+        console = Console(file=io.StringIO(), force_terminal=True, width=width)
         chrome = AelixChrome(console=console)
         ctx = AelixTUIContext(
-            chrome, footer, model_provider=model_provider, cwd=cwd, mode=mode
+            chrome,
+            footer,
+            model_provider=model_provider,
+            mode_provider=mode_provider,
+            cwd=cwd,
+            mode=mode,
         )
         yield ctx, chrome
 
@@ -512,12 +540,20 @@ async def test_footer_hides_steering_segment_when_provider_returns_none() -> Non
     # When the mode_provider returns None (harness lacks steering_mode), the
     # footer must fall back to the hidden "one-at-a-time" sentinel — never a stray
     # "⏵⏵ default" (ADR-0159, review MEDIUM).
+    # Goes through ``_footer_chrome`` like every sibling above (issue #206).
+    # Building ``AelixChrome`` bare-handed skipped the ``create_app_session``
+    # this file's helper sets up, so ``_build_app`` fell through to
+    # ``create_output()`` → ``Win32Output`` → ``NoConsoleScreenBufferError`` on
+    # the windows leg. Nothing here is about rendering width; 200 is kept only
+    # so the assertion cannot pass by truncation, and ``mode`` is spelled out
+    # because the helper's own default ("default") is a DIFFERENT hidden string
+    # from the sentinel this test is named after.
     footer = _FixedBranchFooter("main")
-    console = Console(file=io.StringIO(), force_terminal=True, width=200)
-    chrome = AelixChrome(console=console)
-    ctx = AelixTUIContext(chrome, footer, mode_provider=lambda: None)
-    ctx._refresh_footer()
-    assert "⏵⏵" not in chrome._footer_line
+    async with _footer_chrome(
+        footer, mode_provider=lambda: None, mode="one-at-a-time", width=200
+    ) as (ctx, chrome):
+        ctx._refresh_footer()
+        assert "⏵⏵" not in chrome._footer_line
 
 
 async def test_footer_omits_model_segment_when_provider_returns_none() -> None:
@@ -639,13 +675,11 @@ async def test_tabbed_tab_key_advances_active_tab() -> None:
             )
         )
         await _wait_float(chrome)
-        await asyncio.sleep(0.1)  # let the first paint fire
         # First render shows tab A (index 0).
-        assert "A" in rendered
+        await _wait_rendered(rendered, "A")
         rendered.clear()
         pipe.send_text("\t")  # Tab → advance to B
-        await asyncio.sleep(0.15)
-        assert "B" in rendered  # the second tab's render fired
+        await _wait_rendered(rendered, "B")  # the second tab's render fired
         pipe.send_text("\x1b")
         await asyncio.wait_for(fut, timeout=5)
 
@@ -947,14 +981,12 @@ async def test_tabbed_tab_switch_works_while_filter_active() -> None:
             )
         )
         await _wait_float(chrome)
-        await asyncio.sleep(0.1)  # let the first paint fire
-        assert "A" in rendered  # tab A rendered first
+        await _wait_rendered(rendered, "A")  # tab A rendered first
         pipe.send_text("fmt")  # type into tab 0's live filter
         await asyncio.sleep(0.1)
         rendered.clear()
         pipe.send_text("\t")  # Tab → advance to B despite the active filter
-        await asyncio.sleep(0.15)
-        assert "B" in rendered  # the second tab's render fired
+        await _wait_rendered(rendered, "B")  # the second tab's render fired
         pipe.send_text("\x1b")  # Esc closes
         assert await asyncio.wait_for(fut, timeout=5) is None
 
