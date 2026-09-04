@@ -1,5 +1,15 @@
 # Windows EXPERIMENTAL slice — status and remaining work
 
+> **Superseded in part (2026-09-04).** The `windows-latest` leg this document
+> calls "future" and "decision-gated" exists and **gates** since `#103` landed:
+> run 33853043685 at `beffc2f` was 0 failed / 9338 passed / 71 skipped on
+> py3.11 and py3.12, down from 433 at the first run. The burndown it predicted
+> is recorded issue by issue (#205–#219, #203, #109 comments). The "Remaining"
+> list below is kept as the record of what was known before the leg ran; items
+> that survived it are #202, #204, #106, #107, #108, #46, #201 on the board.
+> Windows is still not a supported platform — the suite passing is not that
+> claim (README, "Platform support").
+
 Branch: `feat/windows-experimental-slice` (Scenario C — parallel, tag-optional).
 
 **Windows is not a supported platform.** This slice lands the parts that are
