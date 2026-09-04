@@ -2993,7 +2993,7 @@
    "raise RuntimeError(\"network disabled in tests\")",
    ""
   ],
-  "tests/extensions/test_ep_manifest.py:1085-1085": [
+  "tests/extensions/test_ep_manifest.py:1117-1117": [
    "assert \"sk-super-secret-value\" not in repr(res)"
   ],
   "tests/extensions/test_hooks_gate_manifest.py:273-273": [

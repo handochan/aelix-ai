@@ -273,7 +273,10 @@ def test_user_scope_extensions_allowed() -> None:
 
     assert result.profile is not None
     assert "scope_forbidden" not in _errors(result)
-    assert result.profile.extensions == ("/w/agents/x.py",)
+    # ``_parse_path_list`` resolves against ``Path(file_path).parent`` and
+    # returns ``str(path)``, so the expectation is built the same way rather
+    # than spelled with POSIX separators the parser never emits on Windows.
+    assert result.profile.extensions == (str(Path("/w/agents") / "x.py"),)
 
 
 def test_invalid_thinking_is_error() -> None:

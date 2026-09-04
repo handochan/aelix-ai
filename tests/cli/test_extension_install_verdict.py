@@ -1171,11 +1171,6 @@ def test_attributed_dists_covers_new_upgraded_and_named() -> None:
         # turn every ssh clone into a different URL and lose the match.
         ("git+ssh://git@h/r.git", "git", "ssh://git@h/r.git"),
         ("git+ssh://git@h/r.git@v1", "git", "ssh://git@h/r.git"),
-        # A ``file:`` URL is compared as a PATH: the two sides are written by
-        # different code and need not agree on percent-encoding or a trailing /.
-        ("git+file:///a/b", "git", "/a/b"),
-        ("git+file:///a/b/", "git", "/a/b"),
-        ("git+file:///a/b%20c", "git", "/a/b c"),
         # pypi has no PEP 610 record at all — and its bare name IS the dist name.
         ("somepack==1.0", "pypi", None),
     ],
@@ -1184,6 +1179,32 @@ def test_target_source_key_normalisation(
     target: str, kind: EI.TargetKind, expected: str | None
 ) -> None:
     assert EI._target_source_key(target, kind) == expected
+
+
+@pytest.mark.parametrize(
+    ("target", "path"),
+    [
+        # A ``file:`` URL is compared as a PATH: the two sides are written by
+        # different code and need not agree on percent-encoding or a trailing /.
+        ("git+file:///a/b", "/a/b"),
+        ("git+file:///a/b/", "/a/b"),
+        ("git+file:///a/b%20c", "/a/b c"),
+    ],
+)
+def test_target_source_key_of_a_file_url_normalises_the_path(
+    target: str, path: str
+) -> None:
+    """The ``file:`` cases live apart because their expectation is not a literal.
+
+    ``_url_fs_key`` runs ``os.path.realpath``, so the expectation has to run it
+    too — on a platform with drive letters a driveless absolute path gains the
+    CURRENT drive, which is the normalisation working, not a defect. It is
+    computed in the body rather than in ``parametrize``: parameters are built at
+    collection time, before the autouse ``chdir(tmp_path)`` above, and the two
+    cwds can sit on different drives.
+    """
+
+    assert EI._target_source_key(target, "git") == os.path.realpath(path)
 
 
 def test_target_source_key_of_a_directory_is_its_resolved_path(tmp_path: Path) -> None:

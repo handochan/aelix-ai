@@ -211,7 +211,10 @@ def test_config_from_env_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
     assert config.cwd == "/tmp/work"
     assert config.model == "claude"
     assert config.provider == "anthropic"
-    assert config.schemas_dir == Path("/tmp/schemas")
+    # ``from_env`` stores ``Path(override).resolve()``, so the expectation is
+    # resolved the same way: on macOS ``/tmp`` is a symlink to ``/private/tmp``
+    # and on Windows a driveless absolute path picks up the current drive.
+    assert config.schemas_dir == Path("/tmp/schemas").resolve()
 
 
 def test_config_from_env_invalid_port(monkeypatch: pytest.MonkeyPatch) -> None:

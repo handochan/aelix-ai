@@ -32,6 +32,7 @@ from aelix_coding_agent.extensions.ep_manifest import (
     MANIFESTS_GROUP,
     EpApiLevelRefusal,
     EpOutcome,
+    _fence,
     resolve_entry_point_manifest,
 )
 
@@ -393,6 +394,18 @@ def test_misplaced_names_the_offending_path(site: Path) -> None:
 
 
 def test_fenced_absolute_record_entry(site: Path, tmp_path: Path) -> None:
+    """A RECORD entry naming a real file OUTSIDE the dist root is refused.
+
+    Which fence rule catches it is platform-dependent and NOT the point: on
+    POSIX ``tmp_path.as_posix()`` is absolute to ``PurePosixPath`` and rule 1
+    fires; on Windows it starts with a drive letter (``C:/…``), so
+    ``PurePosixPath`` sees it as relative and the ``is_relative_to(root)``
+    rule fires instead. Both are refusals of the same entry, so this test
+    pins the outcome and the fact that the reason NAMES the offending entry.
+    ``test_fence_refuses_a_posix_absolute_entry_by_the_absolute_rule`` pins
+    rule 1 by name.
+    """
+
     outside = tmp_path / "outside"
     outside.mkdir()
     (outside / MANIFEST).write_text(
@@ -415,7 +428,26 @@ def test_fenced_absolute_record_entry(site: Path, tmp_path: Path) -> None:
 
     assert res.outcome is EpOutcome.FENCED
     assert res.manifest is None
-    assert "is an absolute path" in res.reason
+    assert repr((outside / MANIFEST).as_posix()) in res.reason
+
+
+def test_fence_refuses_a_posix_absolute_entry_by_the_absolute_rule(tmp_path: Path) -> None:
+    """The FIRST fence rule (``PurePosixPath(rel).is_absolute()``) pinned by name.
+
+    It cannot be reached through the full resolver on Windows: a drive-letter
+    path is not absolute to ``PurePosixPath``, and a genuinely driveless
+    ``/…`` entry cannot be made to exist (3.12's ``Distribution.files`` drops
+    entries that do not exist, so such a RECORD line never reaches the fence).
+    ``_fence`` refuses on rule 1 before touching the filesystem, so calling it
+    directly keeps this rule covered on every platform.
+    """
+
+    entry = f"/outside/{MANIFEST}"
+
+    path, refusal = _fence(tmp_path, entry)
+
+    assert path is None
+    assert refusal == f"RECORD entry {entry!r} is an absolute path"
 
 
 def test_fenced_dotdot_record_entry(site: Path, tmp_path: Path) -> None:

@@ -25,7 +25,7 @@ WHAT DEPENDED ON THE VERBOSE REPR: nothing. Searched for ``repr()`` /
 ``str()`` / f-string interpolation of an ``Extension`` across ``packages/`` and
 ``tests/`` before changing it; the only hits were ``_ManifestEntry`` (already
 redacted, ``tests/extensions/test_hooks_gate_manifest.py:273``) and
-``resolve_entry_point_manifest``'s result (``test_ep_manifest.py:1085``). The
+``resolve_entry_point_manifest``'s result (``test_ep_manifest.py:1117``). The
 loader's own error paths label entries by plugin id or by path, never by the
 loaded ``Extension``.
 """

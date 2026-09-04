@@ -971,9 +971,28 @@ def test_signpost_token_cost_stays_bounded() -> None:
     against the block growing into a chapter; it is not a style police.
     """
 
+    def signpost_for(cwd: str) -> str:
+        """The block exactly as ``build_system_prompt`` builds it for ``cwd``.
+
+        It never hands the signpost the raw cwd — it passes
+        ``_safe_prompt_path(Path(os.path.abspath(cwd)))`` — so re-normalising
+        here is what keeps the two sides comparable wherever ``abspath`` is not
+        the identity: a RELATIVE cwd on any platform, and a driveless absolute
+        path on Windows, where the current drive is legitimately prepended.
+        """
+
+        return _agent_context._extension_signpost(
+            _agent_context._safe_prompt_path(Path(os.path.abspath(cwd))),
+            _ALL_TOOL_NAMES_SET,
+        )
+
     prompt = build_system_prompt("/some/project", tools=_all_builtin_tools())
-    block = _agent_context._extension_signpost("/some/project", _ALL_TOOL_NAMES_SET)
+    block = signpost_for("/some/project")
     assert block in prompt
+    # The same claim with a relative cwd, which fails on EVERY platform if the
+    # expectation stops going through ``abspath``.
+    rel_prompt = build_system_prompt("some/project", tools=_all_builtin_tools())
+    assert signpost_for("some/project") in rel_prompt
 
     emitted_paths = [
         line.split(": ", 1)[1].strip()

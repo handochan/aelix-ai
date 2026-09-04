@@ -646,7 +646,9 @@ async def test_the_dialog_shows_the_contained_cwd_not_the_requested_one(
 
     contained = str((bench.cwd / "sub").resolve())
     title = bench.ui.calls[0][0]
-    shown = f"{bench.cwd.name}/sub"
+    # ``contained`` came out of ``resolve()``, so the tail has to be spelled
+    # with the SAME separator the platform's Path produced.
+    shown = str(Path(bench.cwd.name) / "sub")
     # The parent component proves the RESOLUTION happened: the model asked for
     # the relative ``"sub"`` and the human is shown where that landed.
     assert contained.endswith(shown)

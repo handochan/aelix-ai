@@ -317,8 +317,14 @@ def test_unclassifiable_or_path_shaped_entries_keep_the_path_reading(
     ],
 )
 def test_module_shaped_entries_are_classified_as_modules(
-    entry: str, tmp_path: Path
+    entry: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # ``c:setup`` is the module reading only where a drive-relative path cannot
+    # exist, so the OS this case means is injected rather than inherited from the
+    # host — on Windows the ambient ``_OS_NAME`` is ``nt`` and the deliberate path
+    # reading (pinned below in
+    # ``test_drive_relative_path_is_a_path_only_when_running_on_windows``) fires.
+    monkeypatch.setattr(loader_mod, "_OS_NAME", "posix")
     assert _is_module_ref(entry, cwd=tmp_path) is True
 
 
@@ -355,6 +361,7 @@ def test_drive_relative_path_is_a_path_only_when_running_on_windows(
     of this test — including any built by pytest's failure reporting if an
     assertion below failed.
     """
+    monkeypatch.setattr(loader_mod, "_OS_NAME", "posix")
     assert _is_module_ref("C:ext", cwd=tmp_path) is True
 
     monkeypatch.setattr(loader_mod, "_OS_NAME", "nt")

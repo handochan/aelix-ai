@@ -121,7 +121,7 @@ def test_the_subdirectory_guard_is_not_vacuous(tmp_path: Path) -> None:
     (guides / "advanced" / "nested.md").write_text("# nested\n", encoding="utf-8")
 
     found = _sync_script().nested_guides(guides)
-    assert [str(p) for p in found] == ["advanced/nested.md"]
+    assert [p.as_posix() for p in found] == ["advanced/nested.md"]
 
 
 def test_the_sync_script_refuses_a_nested_guide_rather_than_skipping_it(
@@ -145,7 +145,9 @@ def test_the_sync_script_refuses_a_nested_guide_rather_than_skipping_it(
     assert module.main() == 1
     captured = capsys.readouterr()
     assert captured.out == "", "a refusal must not look like a successful sync"
-    assert "advanced/nested.md" in captured.err
+    # ``main()`` names the file with ``str(p)`` — native separator — so the
+    # expectation is built the same way rather than assumed to be POSIX.
+    assert str(Path("advanced") / "nested.md") in captured.err
     assert not bundled.exists(), "nothing was copied under a refusal"
 
 

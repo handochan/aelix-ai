@@ -36,7 +36,7 @@ def test_untrusted_project_drops_project_local_dir() -> None:
 def test_no_skills_drops_all_defaults_keeps_explicit() -> None:
     args = Args(skills=["/abs/custom-skill"], no_skills=True)
     dirs = [str(d) for d in _resolve_skill_dirs(args, "/work/proj", True)]
-    assert dirs == ["/abs/custom-skill"]
+    assert dirs == [str(Path("/abs/custom-skill"))]
 
 
 def test_explicit_relative_skill_resolved_against_cwd() -> None:
@@ -48,4 +48,4 @@ def test_explicit_relative_skill_resolved_against_cwd() -> None:
 def test_explicit_skill_md_path_scans_its_parent() -> None:
     args = Args(skills=["/abs/my-skill/SKILL.md"], no_skills=True)
     dirs = [str(d) for d in _resolve_skill_dirs(args, "/work/proj", True)]
-    assert dirs == ["/abs/my-skill"]
+    assert dirs == [str(Path("/abs/my-skill"))]

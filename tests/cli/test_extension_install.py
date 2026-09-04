@@ -2182,9 +2182,17 @@ def test_pip_config_candidate_order_is_pips_own(
         "PIP_CONFIG_FILE": "/tmp/explicit.conf",
     }
     paths = _REAL_PIP_CONFIG_CANDIDATES(env)
+    # pip names the file after the platform, so the SITE entry must be spelled the
+    # same way the function spells it — not pinned to the POSIX basename.
+    basename = "pip.ini" if sys.platform == "win32" else "pip.conf"
     assert paths[-1] == "/tmp/explicit.conf"
-    assert paths[-2] == os.path.join(sys.prefix, "pip.conf")
-    if sys.platform != "win32":
+    assert paths[-2] == os.path.join(sys.prefix, basename)
+    if sys.platform == "win32":
+        # pip's USER kind on Windows is legacy ``~/pip`` then ``%APPDATA%/pip``; the
+        # XDG variables set above are POSIX-only and must not contribute at all.
+        assert os.path.join(os.path.expanduser("~"), "pip", basename) in paths
+        assert not [p for p in paths if p.startswith(("/etc", "/home/u"))]
+    else:
         assert "/etc/pip.conf" in paths
         assert "/home/u/.config/pip/pip.conf" in paths
         assert paths.index("/etc/pip.conf") < paths.index(

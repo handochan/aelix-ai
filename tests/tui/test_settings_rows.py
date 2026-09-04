@@ -477,7 +477,9 @@ def _getter_call_sites() -> dict[str, list[str]]:
                 else None
             )
             if name in wanted:
-                found[name].append(f"{path.relative_to(repo)}:{node.lineno}")
+                found[name].append(
+                    f"{path.relative_to(repo).as_posix()}:{node.lineno}"
+                )
     return found
 
 

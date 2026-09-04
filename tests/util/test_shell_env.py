@@ -18,15 +18,26 @@ def test_get_bin_dir_under_agent_dir():
 
 
 def test_get_shell_env_prepends_bin_dir(monkeypatch):
-    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    # ``get_shell_env`` splits/joins on ``os.pathsep`` (";" on Windows), so the
+    # fixture has to be assembled the same way or it stays one opaque entry.
+    monkeypatch.setenv("PATH", os.pathsep.join(["/usr/bin", "/bin"]))
     env = get_shell_env()
     entries = env["PATH"].split(os.pathsep)
     assert entries[0] == get_bin_dir()
     assert "/usr/bin" in entries and "/bin" in entries
 
 
+def test_get_shell_env_uses_the_platform_path_separator(monkeypatch):
+    # Inject the Windows separator instead of skipping: the split/join contract
+    # is what breaks a ":"-joined fixture, and it is observable on any host.
+    monkeypatch.setattr(os, "pathsep", ";")
+    monkeypatch.setenv("PATH", os.pathsep.join(["/usr/bin", "/bin"]))
+    env = get_shell_env()
+    assert env["PATH"].split(os.pathsep) == [get_bin_dir(), "/usr/bin", "/bin"]
+
+
 def test_get_shell_env_idempotent(monkeypatch):
-    monkeypatch.setenv("PATH", f"{get_bin_dir()}:/usr/bin")
+    monkeypatch.setenv("PATH", os.pathsep.join([get_bin_dir(), "/usr/bin"]))
     env = get_shell_env()
     # Already present → not duplicated.
     assert env["PATH"].split(os.pathsep).count(get_bin_dir()) == 1
