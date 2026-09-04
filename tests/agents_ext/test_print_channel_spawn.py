@@ -76,19 +76,23 @@ linux_only = pytest.mark.skipif(
     sys.platform != "linux", reason="process-group / PDEATHSIG semantics are Linux"
 )
 # #215 (owner decision 2026-09-04, option c): the SIGTERM→SIGKILL escalation
-# cannot be REACHED on Windows, so a test that asserts it happened has nothing
+# cannot be REACHED on Windows, so an assertion that it happened has nothing
 # to measure there. ``os.kill`` is ``TerminateProcess`` on win32 — the first,
-# "cooperative" leg is already unconditional, a SIGTERM-ignoring child dies in
-# ~60 ms (measured on the same runner:
-# ``tests/rpc/test_rpc_client_shutdown.py::test_stop_escalates_to_sigkill_when_sigterm_ignored``),
-# and ``reaper._kill_signal()`` returns SIGTERM there by design (its docstring;
-# #202 owns the semantics). The choice of signal itself is unit-tested without
-# a process in ``tests/agents_ext/test_reaper_kill_signal_win32.py``. Not an
-# injected-condition test because the condition is a kernel primitive, not a
-# value a test can swap in.
+# "cooperative" leg is already unconditional (``reaper._kill_signal()``'s
+# docstring; #202 owns the semantics), and a SIGTERM-ignoring child dies well
+# inside the grace: on windows-latest run 33755783029,
+# ``tests/rpc/test_rpc_client_shutdown.py::test_stop_escalates_to_sigkill_when_sigterm_ignored``
+# (which asserts ``elapsed >= grace``, grace 0.3 s) reported ``stop()`` back in
+# 0.062 s. The choice of signal itself is unit-tested without a process in
+# ``tests/agents_ext/test_reaper_kill_signal_win32.py``. This is the
+# "genuinely unreachable rather than merely untested" case ``tests/conftest.py``
+# (``_no_real_tool_downloads``' docstring, "SKIPPING IS RIGHT HERE") carves
+# out of the inject-don't-skip rule — and, per the same doctrine, it is applied
+# PER ASSERTION where the rest of a test still measures something on win32.
+escalation_unreachable = sys.platform == "win32"
 escalation_reachable = pytest.mark.skipif(
-    sys.platform == "win32",
-    reason="SIGTERM→SIGKILL escalation is unreachable on win32: os.kill is TerminateProcess (#215, #202)",
+    escalation_unreachable,
+    reason="SIGTERM->SIGKILL escalation is unreachable on win32: os.kill is TerminateProcess (#215, #202)",
 )
 
 # === Stub children ============================================================
@@ -1193,7 +1197,6 @@ def test_pdeathsig_sigkill_would_orphan_every_bash_grandchild(tmp_path: Path) ->
     )
 
 
-@escalation_reachable
 async def test_sigterm_then_sigkill(tmp_path: Path) -> None:
     """A child that ignores SIGTERM is escalated after the grace.
 
@@ -1208,7 +1211,10 @@ async def test_sigterm_then_sigkill(tmp_path: Path) -> None:
         channel.run(_plan(tmp_path, timeout_ms=1500)), 40
     )
     assert result.status == "timeout"
-    assert result.exit_code == -signal.SIGKILL
+    # The timeout envelope above and the partial summary below hold on every
+    # platform; only the escalation leg is unreachable on win32 (#215).
+    if not escalation_unreachable:
+        assert result.exit_code == -signal.SIGKILL
     assert result.summary == "i will not die politely"
 
 
