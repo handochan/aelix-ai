@@ -407,8 +407,17 @@ async def test_yolo_allows_mutating_no_prompt() -> None:
 async def test_auto_classifier_allow_ask_deny(monkeypatch: pytest.MonkeyPatch) -> None:
     # Pin $SHELL: since #104 the ALLOW arm is only honoured for a shell the
     # bash grammar describes, so a developer running under fish or PowerShell
-    # would otherwise see this test's first assertion flip to a prompt.
-    monkeypatch.setenv("SHELL", "/bin/bash")
+    # would otherwise see this test's first assertion flip to a prompt. It has
+    # to be a bash that EXISTS: the win32 resolver ignores a $SHELL that is not
+    # on disk and falls back to PowerShell, which the gate then demotes to ASK
+    # (#216 — a literal "/bin/bash" was exactly that on windows-latest).
+    import shutil
+    from pathlib import Path
+
+    sh = shutil.which("bash") or "/bin/bash"
+    if not Path(sh).exists():
+        pytest.skip("no bash available")
+    monkeypatch.setenv("SHELL", sh)
     perm = PermissionExtension(posture=_posture(PermissionMode.AUTO))
     ui = _FakeUI(select_return="No")  # the ASK path would block
     ctx = _FakeCtx(has_ui=True, ui=ui)
