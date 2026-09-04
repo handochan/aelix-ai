@@ -14,6 +14,7 @@ Covers the 25 scenarios enumerated in the Sprint 6h₉e spec §7:
 
 from __future__ import annotations
 
+import sys
 import textwrap
 from pathlib import Path
 
@@ -73,6 +74,22 @@ def _outcome(
     )
 
 
+def _py_command(tmp_path: Path, body: str, *, name: str = "hook_child.py") -> str:
+    """Write ``body`` to a temp .py file and return a shell command that runs it.
+
+    ``run_hook_subprocess`` takes a shell command *string* and dispatches it
+    through ``create_subprocess_shell`` — cmd.exe on Windows, which neither
+    tokenises single quotes nor expands ``$VAR``. A script path invoked with
+    ``sys.executable`` carries no shell syntax at all, so the same command
+    string runs on every platform. Both paths are double-quoted because
+    ``tmp_path`` and the interpreter path may contain spaces.
+    """
+
+    script = tmp_path / name
+    script.write_text(textwrap.dedent(body).strip() + "\n", encoding="utf-8")
+    return f'"{sys.executable}" "{script}"'
+
+
 def _write_hook_plugin(
     parent: Path,
     *,
@@ -128,19 +145,19 @@ async def test_run_subprocess_echo_stdin_to_stdout() -> None:
     assert outcome.timed_out is False
 
 
-async def test_run_subprocess_exit0_with_json_stdout() -> None:
+async def test_run_subprocess_exit0_with_json_stdout(tmp_path: Path) -> None:
     """#2 — exit 0 with JSON on stdout."""
 
-    cmd = """python3 -c 'print(\"{\\"decision\\": \\"block\\"}\")'"""
+    cmd = _py_command(tmp_path, 'print(\'{"decision": "block"}\')')
     outcome = await run_hook_subprocess(cmd, "", timeout_ms=2000)
     assert outcome.exit_code == 0
     assert '"decision"' in outcome.stdout
 
 
-async def test_run_subprocess_exit2_with_stderr() -> None:
+async def test_run_subprocess_exit2_with_stderr(tmp_path: Path) -> None:
     """#3 — exit 2 with stderr captured; not timed out."""
 
-    cmd = """python3 -c 'import sys; sys.stderr.write("nope"); sys.exit(2)'"""
+    cmd = _py_command(tmp_path, 'import sys; sys.stderr.write("nope"); sys.exit(2)')
     outcome = await run_hook_subprocess(cmd, "", timeout_ms=2000)
     assert outcome.exit_code == 2
     assert "nope" in outcome.stderr
@@ -170,10 +187,10 @@ async def test_run_subprocess_nonexistent_command_no_raise() -> None:
     assert outcome.timed_out is False
 
 
-async def test_run_subprocess_stdout_cap() -> None:
+async def test_run_subprocess_stdout_cap(tmp_path: Path) -> None:
     """#6 — stdout capped at 10k chars."""
 
-    cmd = """python3 -c 'import sys; sys.stdout.write("x" * 20000)'"""
+    cmd = _py_command(tmp_path, 'import sys; sys.stdout.write("x" * 20000)')
     outcome = await run_hook_subprocess(cmd, "", timeout_ms=5000)
     assert outcome.exit_code == 0
     assert len(outcome.stdout) == 10_000
@@ -468,12 +485,16 @@ async def test_e2e_subprocess_deny_composes_with_reducer(tmp_path: Path) -> None
 async def test_run_subprocess_aelix_project_dir_injected(tmp_path: Path) -> None:
     """#26 — AELIX_PROJECT_DIR is set in the child env to the cwd value."""
 
-    outcome = await run_hook_subprocess(
-        'printf "%s" "$AELIX_PROJECT_DIR"',
-        "",
-        timeout_ms=2000,
-        cwd=str(tmp_path),
+    cmd = _py_command(
+        tmp_path,
+        """
+        import os
+        import sys
+
+        sys.stdout.write(os.environ["AELIX_PROJECT_DIR"])
+        """,
     )
+    outcome = await run_hook_subprocess(cmd, "", timeout_ms=2000, cwd=str(tmp_path))
     assert outcome.exit_code == 0
     assert str(tmp_path) in outcome.stdout
 

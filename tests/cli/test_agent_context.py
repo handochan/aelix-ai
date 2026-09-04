@@ -600,13 +600,18 @@ async def test_emitted_api_grep_command_actually_RUNS_in_every_surface() -> None
     # (a) THE BASH TOOL — the surface the emitted command is literally written
     # for. Exit status is asserted, because the BRE failure was a non-zero exit
     # with an error message, not a silent empty result.
+    # The hint runs UNMODIFIED — no ``; echo RC=$?`` tacked on. That
+    # instrumentation was the test's own, and it was shell-specific: in
+    # PowerShell ``$?`` is a bool, so it printed ``RC=True`` and the assertion
+    # failed on a command that had actually succeeded (issue #212). The tool
+    # already reports the exit status structurally, so read that instead — what
+    # executes is now exactly the string we ship.
     bash_tool = create_bash_tool(str(Path(api).parent))
-    bash_out = _text(
-        await bash_tool.execute(
-            {"command": f"{command} {api}; echo RC=$?"}, ToolExecutionContext()
-        )
+    bash_result = await bash_tool.execute(
+        {"command": f"{command} {api}"}, ToolExecutionContext()
     )
-    assert "RC=0" in bash_out, bash_out
+    bash_out = _text(bash_result)
+    assert bash_result.details.exit_code == 0, bash_out
     assert "Unmatched" not in bash_out, bash_out
     bash_hits = [ln for ln in bash_out.splitlines() if "def " in ln]
 
@@ -684,12 +689,14 @@ async def test_the_shipped_BRE_form_of_the_hint_would_have_failed() -> None:
 
     bash_tool = create_bash_tool(str(Path(api).parent))
     result = await bash_tool.execute(
-        {"command": f"grep '{pattern}' {api}; echo RC=$?"}, ToolExecutionContext()
+        {"command": f"grep '{pattern}' {api}"}, ToolExecutionContext()
     )
     bre_out = "".join(c.text for c in result.content if hasattr(c, "text"))
 
-    # BRE cannot parse it: unbalanced ``\(``, non-zero exit, zero hits.
-    assert "RC=0" not in bre_out, bre_out
+    # BRE cannot parse it: unbalanced ``\(``, non-zero exit, zero hits. Read
+    # the exit status from the tool, as the positive twin above does — a
+    # ``; echo RC=$?`` prints ``RC=True`` under pwsh and would pass vacuously.
+    assert result.details.exit_code != 0, bre_out
     assert "def register_tool(" not in bre_out
 
 

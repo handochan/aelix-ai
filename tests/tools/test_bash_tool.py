@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import sys
 from pathlib import Path
 
 from aelix_ai.tools import ToolExecutionContext
@@ -60,7 +62,11 @@ async def test_bash_nonzero_exit_appends_status(tmp_path):
     # ``echo`` emits a trailing newline, which is part of the captured body
     # (pi keeps it in ``snapshot.content``); appendStatus then adds ``\n\n``.
     result = await _exec(tool, {"command": "echo before; exit 3"})
-    text = result.content[0].text
+    # The line ending is the SHELL's, not the tool's: pwsh (what ``_resolve_shell``
+    # picks on Windows) emits ``before\r\n``. Normalise before comparing so the
+    # assertion is about appendStatus's ``\n\n`` join, not about CRLF. Whether the
+    # tool itself should normalise is a separate product decision (issue #212).
+    text = result.content[0].text.replace("\r\n", "\n")
     assert text == "before\n\n\nCommand exited with code 3"
 
 
@@ -378,9 +384,17 @@ async def test_bash_spawn_hook_injects_env(tmp_path):
         return ctx
 
     tool = create_bash_tool(str(tmp_path), {"spawn_hook": hook})
-    result = await _exec(
-        tool, {"command": "echo $INJECTED_BY_HOOK"}, cwd=str(tmp_path)
+    # Only the COMMAND STRING is platform-dependent: ``_resolve_shell`` picks
+    # pwsh on Windows, where an environment variable is ``$env:NAME`` and a bare
+    # ``$NAME`` is an undefined PS variable that expands to nothing (silently
+    # yielding ``(no output)``). One test, one assertion — the injection itself
+    # is what is under test and it is identical on both shells.
+    echo_var = (
+        "echo $env:INJECTED_BY_HOOK"
+        if sys.platform == "win32"
+        else "echo $INJECTED_BY_HOOK"
     )
+    result = await _exec(tool, {"command": echo_var}, cwd=str(tmp_path))
     assert "yes" in result.content[0].text
 
 
@@ -398,7 +412,9 @@ async def test_bash_spawn_hook_receives_shell_env_path(tmp_path):
 
     tool = create_bash_tool(str(tmp_path), {"spawn_hook": hook})
     await _exec(tool, {"command": "true"}, cwd=str(tmp_path))
-    assert get_bin_dir() in seen["path"].split(":")
+    # ``os.pathsep``, not ":": the product joins with it (``get_shell_env``) and
+    # on Windows ":" is inside every drive letter.
+    assert get_bin_dir() in seen["path"].split(os.pathsep)
 
 
 async def test_bash_shell_path_missing_raises(tmp_path):

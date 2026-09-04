@@ -35,6 +35,18 @@ def _executable(directory: Path, name: str) -> Path:
     return exe
 
 
+def _on_path(directory: Path, name: str) -> Path:
+    """A PATH probe target that ``shutil.which(name)`` can actually find here.
+
+    Windows' ``shutil.which`` only tries ``name + PATHEXT`` candidates and
+    never the bare name, so an extensionless fixture is unreachable there and
+    the win32 arm slides on to ``%COMSPEC%``. On POSIX the bare name is the
+    only candidate, so the extension has to follow the running platform.
+    """
+
+    return _executable(directory, f"{name}.exe" if sys.platform == "win32" else name)
+
+
 # === the bug: win32 had no arm and fell through the POSIX chain =============
 
 
@@ -58,23 +70,27 @@ def test_win32_never_resolves_a_posix_shell(tmp_path: Path) -> None:
 
 def test_win32_prefers_pwsh(tmp_path: Path) -> None:
     bin_dir = tmp_path / "bin"
-    pwsh = _executable(bin_dir, "pwsh")
+    pwsh = _on_path(bin_dir, "pwsh")
 
     resolved = _resolve_shell(
         {"PATH": str(bin_dir), "COMSPEC": r"C:\Windows\system32\cmd.exe"},
         platform="win32",
     )
 
-    assert resolved == ShellConfig(str(pwsh), "-Command")
+    # Compared as ``Path``: on Windows ``which`` echoes back PATHEXT's own
+    # casing (``pwsh.EXE``), and only path equality is case-insensitive there.
+    assert Path(resolved.path) == pwsh
+    assert resolved.command_flag == "-Command"
 
 
 def test_win32_falls_back_to_windows_powershell(tmp_path: Path) -> None:
     bin_dir = tmp_path / "bin"
-    powershell = _executable(bin_dir, "powershell")
+    powershell = _on_path(bin_dir, "powershell")
 
     resolved = _resolve_shell({"PATH": str(bin_dir)}, platform="win32")
 
-    assert resolved == ShellConfig(str(powershell), "-Command")
+    assert Path(resolved.path) == powershell
+    assert resolved.command_flag == "-Command"
 
 
 def test_win32_falls_back_to_comspec_with_the_cmd_flag(tmp_path: Path) -> None:
@@ -123,10 +139,29 @@ def test_win32_honours_a_real_shell_from_the_env(tmp_path: Path) -> None:
 # === POSIX is unchanged =====================================================
 
 
-def test_posix_chain_is_unchanged(tmp_path: Path) -> None:
-    assert sys.platform != "win32"
-    assert _resolve_shell({"SHELL": "/usr/bin/fish"}) == ShellConfig("/usr/bin/fish", "-c")
-    assert _resolve_shell({}) == ShellConfig("/bin/bash")
+def test_posix_chain_is_unchanged(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``platform="linux"`` is injected exactly as the win32 arm injects win32.
+
+    The old body opened with ``assert sys.platform != "win32"``, which turned
+    red the moment the suite started running on a real Windows box — a guard,
+    not an assertion about the POSIX chain.
+    """
+
+    assert _resolve_shell({"SHELL": "/usr/bin/fish"}, platform="linux") == ShellConfig(
+        "/usr/bin/fish", "-c"
+    )
+    # The ``/bin/bash`` step probes the real filesystem, which no ``platform=``
+    # argument can move: pin it so the chain — not the host — decides. Compare
+    # via ``as_posix()``, not ``str()``: on Windows ``str(Path("/bin/bash"))``
+    # is ``\\bin\\bash``, so a ``str()`` predicate never fires there and the
+    # chain falls through to ``shutil.which("bash")`` — which finds Git-Bash on
+    # windows-latest and cannot be pinned from here (it probes via
+    # ``os.path.exists``, not ``Path.exists``). What is asserted is therefore
+    # the chain's ORDERING, not the presence of a real ``/bin/bash``.
+    monkeypatch.setattr(
+        Path, "exists", lambda self, **_kw: self.as_posix() == "/bin/bash"
+    )
+    assert _resolve_shell({}, platform="linux") == ShellConfig("/bin/bash")
 
 
 def test_explicit_shell_path_still_validates(tmp_path: Path) -> None:

@@ -17,7 +17,6 @@ import asyncio
 import dataclasses
 import json
 import os
-import shlex
 import sys
 import textwrap
 import time
@@ -851,12 +850,14 @@ async def test_a_long_turn_is_not_buffered_for_a_caller_that_discards_it(
     )
 
 
-# Speaks, then dies, inside the startup grace. ``/bin/sh`` and not
-# ``sys.executable``: a Python child's ~25 ms boot is a coin flip against the
-# 100 ms window on a loaded box, which is the exact race that makes
+# Speaks, then dies, inside the startup grace. ``sys.executable`` and not
+# ``/bin/sh``: Windows has no POSIX shell at that path, so the spawn failed
+# outright there and ``exit_code`` came back ``None`` instead of 9 (#212). A
+# Python child's ~25 ms boot is a coin flip against pi's 100 ms window on a
+# loaded box — the exact race that makes
 # ``test_start_raises_a_typed_error_when_the_child_dies_in_the_grace`` a
-# pre-existing flake. This one boots in ~2 ms and the grace is widened below,
-# so ``start`` is guaranteed to be the thing that observes the death.
+# pre-existing flake — so the grace is widened to 2 s below and ``start`` is
+# still guaranteed to be the thing that observes the death.
 _GRACE_EVENTS = (
     {"type": "agent_start"},
     {
@@ -876,12 +877,16 @@ _GRACE_EVENTS = (
 # path (the framing budget is patched down to 1 000 in the test). It is FIRST so
 # the drop provably happens inside the grace, and the two real events behind it
 # prove the reader resynced at the next newline rather than losing the turn.
+_GRACE_LINES = ("Q" * 2000, *(json.dumps(event) for event in _GRACE_EVENTS))
 _BOOT_AND_DIE = (
-    "printf '%s\\n' "
-    + shlex.quote("Q" * 2000)
-    + " "
-    + " ".join(shlex.quote(json.dumps(event)) for event in _GRACE_EVENTS)
-    + "; printf 'boot traceback\\n' >&2; exit 9"
+    "import sys\n"
+    "sys.stdout.write("
+    + repr("".join(f"{line}\n" for line in _GRACE_LINES))
+    + ")\n"
+    "sys.stdout.flush()\n"
+    'sys.stderr.write("boot traceback\\n")\n'
+    "sys.stderr.flush()\n"
+    "sys.exit(9)\n"
 )
 
 
@@ -927,7 +932,7 @@ async def test_the_child_that_dies_in_the_startup_grace_is_still_heard(
     monkeypatch.setattr(RpcClient, "STARTUP_GRACE_MS", 2_000)
     monkeypatch.setattr("aelix_agents.rpc_channel.MAX_LINE_BYTES", 1_000)
     channel = RpcChannel(
-        grace=0.5, argv_builder=lambda *a, **k: ["/bin/sh", "-c", _BOOT_AND_DIE]
+        grace=0.5, argv_builder=lambda *a, **k: [sys.executable, "-c", _BOOT_AND_DIE]
     )
     row = RunningChild(id="sub-test", profile="scout")
     result = await channel.run(_plan(tmp_path, timeout_ms=10_000), child=row)
