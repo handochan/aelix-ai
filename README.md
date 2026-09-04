@@ -90,14 +90,26 @@ either: it now runs end to end in CI on `windows-latest`, under both pwsh and Wi
   Windows `_resolve_shell` feed a real `pwsh`/`cmd` path into the gate end to end. What
   `windows-latest` uniquely proves is that the PowerShell grammar wheel installs, loads and
   parses there. Nobody has watched the prompt not appear.
-- Killing a delegated child orphans its descendants; Windows has no process group —
-  [#202](https://github.com/handochan/aelix-ai/issues/202).
+- Killing a delegated child no longer orphans its descendants — at three of the spawn sites,
+  and on Windows more completely than on POSIX. The RPC delegation channel, subprocess hooks
+  and `models.json`'s `!command` now put their child in a job object on Windows and a process
+  group on POSIX and end the tree rather than the root
+  ([#202](https://github.com/handochan/aelix-ai/issues/202),
+  [ADR-0238](docs/decisions/0238-the-kill-reached-the-child-and-the-tree-is-what-had-to-die.md)).
+  A job holds every descendant; a POSIX process group does not hold one that made its own
+  session — every tool child, every MCP server — and those remain the reaper's job.
+  The evidence is the suite again, and here it is real processes: the tests spawn a grandchild,
+  tear the tree down and assert the grandchild is gone, and `windows-latest` is the only leg
+  where the job object and `taskkill.exe` actually run. The print channel and the reaper are
+  **not** converted and still orphan every descendant on Windows —
+  [#220](https://github.com/handochan/aelix-ai/issues/220).
 
-So Windows regressions in the suite are caught, the installer runs for real, and AUTO mode no
-longer demotes; process-group cleanup and a human actually driving it on a Windows host are
-what's left. Track the port in [#110](https://github.com/handochan/aelix-ai/issues/110) — its
-bar is suite-green + `install.ps1` executed + #204's AUTO mode, and all three now hold on the
-suite's evidence, which is the narrower claim described above; the labelling and the CI leg are
+So Windows regressions in the suite are caught, the installer runs for real, AUTO mode no
+longer demotes, and an aborted delegation takes its tree with it; process-group cleanup at the
+print channel and a human actually driving it on a Windows host are what's left. Track the port
+in [#110](https://github.com/handochan/aelix-ai/issues/110) — its bar is suite-green +
+`install.ps1` executed + #204's AUTO mode, and all three now hold on the suite's evidence, which
+is the narrower claim described above; the labelling and the CI leg are
 [#103](https://github.com/handochan/aelix-ai/issues/103).
 
 ## Quick start

@@ -145,6 +145,7 @@ import asyncio
 import contextlib
 import dataclasses
 import json
+import os
 import signal
 import sys
 import threading
@@ -1865,17 +1866,38 @@ async def _handle_command(
 
 
 def _thread_pumped_stdin_reader(
-    stream: Any,
+    fd: int,
 ) -> tuple[asyncio.StreamReader, threading.Thread]:
-    """Feed an :class:`asyncio.StreamReader` from a blocking stream on a thread.
+    """Feed an :class:`asyncio.StreamReader` from descriptor ``fd`` on a thread.
 
-    The Windows arm of :func:`_open_stdin_reader` (#107). Reads with
-    ``readline`` rather than a fixed-size ``read``: on a pipe or console a
-    ``BufferedReader.read(n)`` blocks until *n* bytes arrive or EOF, which
-    would stall the RPC wire until 4 KiB of commands had accumulated. The
-    protocol is JSONL, so a line is exactly the right unit.
+    The Windows arm of :func:`_open_stdin_reader` (#107).
 
-    The thread is a daemon because a blocking ``readline`` on stdin cannot be
+    IT TAKES A DESCRIPTOR AND READS IT WITH ``os.read`` — never a stream object
+    and never ``readline`` (#202). The first form of this pump called
+    ``sys.stdin.buffer.readline()`` on the daemon thread. That holds the
+    ``BufferedReader``'s lock for as long as the read blocks — which is
+    forever, since nothing writes to an rpc child's stdin to release it — and
+    CPython's finalizer must take that same lock to close ``sys.stdin``.
+    Measured on ``windows-latest`` the first time an rpc child was allowed to
+    shut down cooperatively at all (before #202 it was always
+    ``TerminateProcess``'d and never reached finalization)::
+
+        Fatal Python error: _enter_buffered_busy: could not acquire lock for
+        <_io.BufferedReader name='<stdin>'> at interpreter shutdown, possibly
+        due to daemon threads
+
+    followed by ``abort()`` and exit status ``0xC0000005`` — an orderly
+    ``SIGBREAK`` shutdown that ran to completion and then crashed on the way
+    out. ``os.read`` on the descriptor takes no Python-level lock, so the
+    thread can stay parked in ``ReadFile`` while the interpreter exits.
+
+    ``os.read`` also answers the reason ``readline`` was chosen in #107: a
+    ``BufferedReader.read(n)`` blocks until *n* bytes or EOF, but the raw
+    ``ReadFile`` underneath returns as soon as ANY bytes are available, so a
+    single short JSONL line is delivered while the pipe is still open; the
+    line framing is the reader's job (``JsonlLineReader``), not this thread's.
+
+    The thread is a daemon because a blocking read on stdin cannot be
     interrupted — a non-daemon thread would hold the interpreter open at exit.
     """
 
@@ -1884,12 +1906,15 @@ def _thread_pumped_stdin_reader(
 
     def _pump() -> None:
         try:
-            for line in iter(stream.readline, b""):
-                loop.call_soon_threadsafe(reader.feed_data, line)
+            while True:
+                chunk = os.read(fd, 65536)
+                if not chunk:
+                    break
+                loop.call_soon_threadsafe(reader.feed_data, chunk)
         except Exception:  # noqa: BLE001 — a broken stdin is an EOF, not a crash
             pass
         finally:
-            # RuntimeError: the loop closed while we were blocked in readline.
+            # RuntimeError: the loop closed while we were blocked in the read.
             with contextlib.suppress(RuntimeError):
                 loop.call_soon_threadsafe(reader.feed_eof)
 
@@ -1913,7 +1938,7 @@ async def _open_stdin_reader(
     """
 
     if (platform if platform is not None else sys.platform) == "win32":
-        return _thread_pumped_stdin_reader(getattr(sys.stdin, "buffer", sys.stdin))
+        return _thread_pumped_stdin_reader(sys.stdin.fileno())
     loop = asyncio.get_running_loop()
     reader = asyncio.StreamReader()
     protocol = asyncio.StreamReaderProtocol(reader)
@@ -2148,6 +2173,29 @@ async def run_rpc_mode(
                 # asyncio.run() in the main thread handles SIGINT via
                 # KeyboardInterrupt regardless.
                 pass
+        if sys.platform == "win32":
+            # The Windows twin of the SIGTERM handler above (#202, ADR-0238).
+            # ``CTRL_BREAK_EVENT`` is the one console event a parent can aim at
+            # our process group without also terminating us — ``terminate()``
+            # there is ``TerminateProcess``, which no handler can see — and
+            # :meth:`RpcClient.stop` sends exactly it. CPython delivers it as
+            # ``SIGBREAK`` on the main thread, and the proactor loop's wakeup fd
+            # (``BaseProactorEventLoop.__init__``) is what makes that prompt
+            # rather than "whenever the loop next runs Python bytecode".
+            #
+            # ``signal.signal``, not ``loop.add_signal_handler``: the proactor
+            # loop raises ``NotImplementedError`` from the latter for every
+            # signal.
+            try:
+                previous = signal.signal(
+                    signal.SIGBREAK,
+                    lambda *_: loop.call_soon_threadsafe(shutdown_event.set),
+                )
+                installed_handlers.append((signal.SIGBREAK, previous))
+            except ValueError:
+                # Not the main thread. Nothing else can install one either, so
+                # the client's grace elapses into its hard kill.
+                pass
 
     # === Stdin reader =========================================================
 
@@ -2246,13 +2294,22 @@ async def run_rpc_mode(
         # Restore signal handlers.
         if install_signal_handlers:
             for sig, previous in installed_handlers:
-                try:
-                    loop = asyncio.get_running_loop()
-                    loop.remove_signal_handler(sig)
-                    if callable(previous):
+                # TWO suppressed steps, not one try around both. On win32
+                # ``remove_signal_handler`` raises ``NotImplementedError``
+                # BEFORE the restore, so a single try skipped the restore for
+                # every handler this run installed there (#202).
+                with contextlib.suppress(NotImplementedError, RuntimeError, ValueError):
+                    asyncio.get_running_loop().remove_signal_handler(sig)
+                # ``previous is not None``, not ``callable(previous)``:
+                # ``getsignal`` answers ``SIG_DFL`` for a signal nobody had
+                # installed a Python handler for — which is the ordinary case
+                # here — and that is an ``int``, so the old guard skipped the
+                # restore in exactly the runs that needed it. ``None`` is the
+                # one answer that means there is nothing to restore (the
+                # handler was not set from Python).
+                if previous is not None:
+                    with contextlib.suppress(NotImplementedError, RuntimeError, ValueError):
                         signal.signal(sig, previous)
-                except (NotImplementedError, RuntimeError, ValueError):
-                    pass
         # Pi parity: ``await runtimeHost.dispose()`` (Pi
         # ``rpc-mode.ts`` end-of-run teardown). Sprint 6h₄b routes
         # through :meth:`AgentSessionRuntime.dispose` which fires

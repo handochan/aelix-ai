@@ -6,10 +6,13 @@
 > py3.11 and py3.12, down from 433 at the first run. The burndown it predicted
 > is recorded issue by issue (#205–#219, #203, #109 comments). The "Remaining"
 > list below is kept as the record of what was known before the leg ran; items
-> that survived it are #202, #107, #108, #46, #201 on the board. #106 and #204
+> that survived it are #107, #108, #46, #201 on the board. #106 and #204
 > closed on 2026-09-04: `install.ps1` now runs end to end in CI (the
 > `install.ps1 e2e` jobs), and W2's blanket force-ASK is gone, replaced by
-> per-dialect classifiers (ADR-0237).
+> per-dialect classifiers (ADR-0237). #202 closed on 2026-09-05: the three
+> teardown sites outside `aelix_agents/` end a process TREE — a Job Object on
+> Windows, a process group on POSIX (ADR-0238). The `aelix_agents` half of it
+> is #220 and is still open, so items 1 and 2 below are amended, not struck.
 > Windows is still not a supported platform — the suite passing is not that
 > claim (README, "Platform support").
 
@@ -30,7 +33,7 @@ runner's real user profile.
 | --- | --- | --- |
 | W1 | `HOME`-only test sandboxing → `sandbox_home` (HOME + USERPROFILE + HOMEDRIVE/HOMEPATH + APPDATA/LOCALAPPDATA), 25 sites across 9 files | `tests/env_sandbox.py`, `tests/test_env_sandbox_windows.py` |
 | W2 | `_resolve_shell` win32 arm + `ShellConfig(path, command_flag)`; AUTO mode force-ASK on a shell the bash grammar can't read — the force-ASK half is **superseded by #204 / ADR-0237**, which routes PowerShell and `cmd` to classifiers of their own instead of downgrading them | `tools/bash.py`, `builtin/bash_classifier.py`, `builtin/permission.py`, `builtin/shell_classifiers/` |
-| W3 | win32-safe process-tree kill at the two owned spawn sites | `tools/_process_tree.py`, `tools/bash.py`, `tools/_subprocess.py` |
+| W3 | win32-safe process-tree kill at the two owned spawn sites. The body moved to `aelix_ai/utils/_process_tree.py` in #202 so the `aelix-ai` sites could share it; `tools/_process_tree.py` is a re-export shim and `bash.py` / `_subprocess.py` are unchanged | `packages/aelix-ai/src/aelix_ai/utils/_process_tree.py`, `tools/_process_tree.py`, `tools/bash.py`, `tools/_subprocess.py` |
 | W4 | RPC stdin thread-pump (`connect_read_pipe` is `NotImplementedError` on Windows) | `rpc/rpc_mode.py` |
 | W5 | `install.ps1` at parity with `install.sh`'s checksum gate, now executed end to end by the `install.ps1 e2e (pwsh)` / `install.ps1 e2e (powershell)` CI jobs (#106) | `install.ps1`, `.github/workflows/ci.yml`, `tests/packaging_gate/test_install_ps1_parity.py` |
 
@@ -41,8 +44,12 @@ Two facts were measured rather than assumed, and both shaped the design:
   blocking prerequisite: on Windows the old fixtures sandboxed nothing.
 - **Windows has no process group here.** CPython's Windows `_execute_child`
   names the parameter `unused_start_new_session`, so `start_new_session=True`
-  is silently ignored and `proc.kill()` would orphan descendants. Hence
-  `taskkill /T /F` rather than a `kill` on the child.
+  is silently ignored and `proc.kill()` would orphan descendants. Hence a Job
+  Object, with `taskkill /T /F` as the fallback (#202). W3 shipped the
+  `taskkill` half alone, and that half is incomplete for a reason Pi measured
+  before we did (#9129): `taskkill /T` follows LIVE parent links, so it cannot
+  walk to a descendant whose parent has already exited — it kills the layers it
+  can see, exits 0, and the leaves keep running. A job holds them regardless.
 
 A third fact shaped the *tests*: `shutil.which` itself branches on
 `sys.platform` and then calls `_winapi`, which is `None` off Windows. So
@@ -68,8 +75,19 @@ re-discovering the crash.
    "cooperative" SIGTERM already terminates the tree root uncatchably and
    orphans its descendants before any escalation runs; a `taskkill /T` here
    would arrive after the root it must walk from is gone. Closing that needs
-   process-group or job-object isolation at the spawn site, which Windows
-   silently declines (#202), not a different signal in the reaper.
+   process-group or job-object isolation at the spawn site, not a different
+   signal in the reaper. Windows silently declines `start_new_session`; it does
+   **not** decline a job object (#202 / #220).
+
+   **Amended (2026-09-05).** The isolation now exists: #202 built
+   `aelix_ai.utils._process_tree` — a Job Object on Windows, a process group on
+   POSIX — and adopted it at the three sites outside `aelix_agents/`
+   (ADR-0238). The reasoning above about `taskkill /T` arriving after a dead
+   root still stands; the isolation clause did not, and is corrected in place —
+   what Windows declines is `start_new_session`, and a job object is precisely
+   what it accepts. This item is now missing only its adopter. Doing it here,
+   together with `print_channel.py`'s spawn and the `SIGBREAK` handler
+   `print_mode.py` still lacks, is **#220**.
 3. **`#46` cross-process locking.** *Correction to the original brief:* both
    `fcntl` sites are already `None`-guarded
    (`aelix_ai/settings/storage.py:204`, `aelix_ai/oauth/auth_storage.py:184`),
@@ -99,6 +117,17 @@ re-discovering the crash.
     `proc.kill()`. These do *not* crash on Windows, but with no process group
     they end only the direct child and orphan its descendants. Lower severity
     than W3; same remedy.
+
+    **Superseded (2026-09-05).** Both adopted `aelix_ai.utils._process_tree` in
+    #202, and so did `oauth/_resolve_config.py`, which this item never named.
+    "Lower severity than W3" was wrong in one direction: on POSIX, where W3's
+    sites were already contained, `rpc_client.stop()` left a grandchild alive
+    on the owner's own macOS box (`grandchild alive after stop(): True`). What
+    each site does now differs: `subprocess_hooks` soft-kills the group;
+    `rpc_client.stop()` soft-kills the child and escalates to the group only if
+    the child survives the grace (that is the POSIX shape — on Windows
+    `CTRL_BREAK_EVENT` is group-wide by construction); `!command` has no
+    cooperative rung at all and goes straight to the hard kill. ADR-0238.
 
 ## Then: the CI leg itself
 

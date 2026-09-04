@@ -19,18 +19,37 @@ the budget it was given.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import ctypes
 import os
+import signal
+import subprocess
 import sys
 import textwrap
 import time
+from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 import pytest
+from aelix_ai.utils._process_tree import (
+    ProcessTree,
+    _retained_handle,
+    kill_process_tree,
+)
+from aelix_coding_agent.rpc import rpc_client as rpc_client_module
 from aelix_coding_agent.rpc._jsonl import JsonlLineReader
 from aelix_coding_agent.rpc.rpc_client import (
     RpcClient,
     RpcClientOptions,
     RpcServerExited,
+)
+
+from tests.process_probe import (
+    STATE_GONE,
+    STATE_ZOMBIE,
+    await_dead_or_zombie,
+    is_dead_or_zombie,
 )
 
 # A stub that boots, announces itself on stderr, then exits with a chosen code
@@ -97,20 +116,81 @@ _DYING_STUB = textwrap.dedent(
 # The control matters as much as the fixture: with NO grandchild the regressed
 # ``stop()`` still returns in 0.001 s, which is what proves the grandchild is
 # the precondition and this test is not passing for free.
+#
+# IT REPORTS THE PID IT SPAWNED, like ``_ORPHANING_STUB`` below, and every case
+# that runs it reaps that pid on the way out. It did not before, and the cost
+# was measured: a bare ``pytest -q tests/rpc`` left three orphaned
+# ``python -c "import time; time.sleep(30)"`` with ``ppid=1`` for half a minute,
+# on ``main`` and on this branch alike (review posix2/F7). The leak is not a
+# product bug — ``stop()``'s soft ``SIGTERM`` goes to the ROOT, so a cooperative
+# child's leftovers are deliberately not signalled on POSIX (ADR-0238) — which
+# is exactly why the CLEANUP has to be the test's own job.
 _PIPE_HOLDER_STUB = textwrap.dedent(
     """
-    import subprocess, sys, time
+    import json, subprocess, sys, time
 
-    subprocess.Popen(
+    child = subprocess.Popen(
         [sys.executable, "-c", "import time; time.sleep(30)"],
         stdin=0, stdout=1, stderr=2,
     )
+    sys.stdout.write(json.dumps({"type": "grandchild", "pid": child.pid}) + "\\n")
+    sys.stdout.flush()
 
     sys.stderr.write("holder ready\\n")
     sys.stderr.flush()
     for line in sys.stdin:
         pass
     time.sleep(30)
+    """
+)
+
+# No grandchild at all: the two spy cases below are about what the CLIENT did at
+# spawn time, and a pipe-holder would only add a sleeper to clean up.
+_IDLE_STUB = textwrap.dedent(
+    """
+    import sys, time
+    sys.stderr.write("idle ready\\n")
+    sys.stderr.flush()
+    for line in sys.stdin:
+        pass
+    time.sleep(30)
+    """
+)
+
+# A stub that survives the soft signal AND leaves a grandchild behind. The
+# grandchild takes no group of its own, so on POSIX it sits in the child's
+# process group and on win32 it inherits the job — i.e. it is reachable by
+# exactly the two mechanisms #202 added and by neither ``proc.kill()`` nor
+# ``TerminateProcess``.
+#
+# DEVNULL on all three streams, unlike ``_PIPE_HOLDER_STUB`` above: this case is
+# about the KILL reaching a descendant, and a pipe-holding grandchild would also
+# stall the client's stderr pump after the child is gone, which is a different
+# defect and would only muddy the timing.
+_ORPHANING_STUB = textwrap.dedent(
+    """
+    import json, signal, subprocess, sys, time
+
+    def seen(*_):
+        sys.stderr.write("signal seen\\n")
+        sys.stderr.flush()
+
+    for name in ("SIGTERM", "SIGBREAK"):
+        s = getattr(signal, name, None)
+        if s is not None:
+            signal.signal(s, seen)
+
+    child = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(60)"],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    sys.stdout.write(json.dumps({"type": "grandchild", "pid": child.pid}) + "\\n")
+    sys.stdout.flush()
+
+    while True:
+        time.sleep(0.05)
     """
 )
 
@@ -137,6 +217,84 @@ def _dying_client(*, code: int, delay: float) -> RpcClient:
     return RpcClient(
         RpcClientOptions(argv=[sys.executable, "-c", _DYING_STUB], env_base=env)
     )
+
+
+def _taskkill_argv0s() -> tuple[str, str]:
+    """The two argv[0]s to try on win32, in the product resolver's order.
+
+    ``System32`` is not always on ``PATH`` and a bare ``taskkill`` then fails
+    ``ENOENT`` (Pi #6596/#8560, which is why ``_taskkill_tree`` resolves the
+    path at all). A cleanup helper is the worst place to inherit that: its
+    ``suppress`` would make the miss invisible and the sleeper would outlive the
+    leg anyway (review win-leg/F8).
+    """
+
+    root = os.environ.get("SYSTEMROOT") or r"C:\Windows"
+    return os.path.join(root, "System32", "taskkill.exe"), "taskkill"
+
+
+def _reap(pid: int) -> None:
+    """Kill ``pid`` if it is still there. Cleanup only — never an assertion.
+
+    Deliberately ROOT-ONLY: a test that leaks a pid must not have its cleanup
+    reach for a process GROUP or a job, which is the mechanism under test in
+    this file.
+    """
+
+    with contextlib.suppress(Exception):
+        if pid <= 0 or is_dead_or_zombie(pid):
+            return
+        if sys.platform == "win32":
+            for argv0 in _taskkill_argv0s():
+                try:
+                    subprocess.run(
+                        [argv0, "/F", "/PID", str(pid)],
+                        capture_output=True,
+                        check=False,
+                        timeout=5,
+                    )
+                except FileNotFoundError:
+                    continue
+                return
+        else:
+            os.kill(pid, signal.SIGKILL)  # pyright: ignore[reportAttributeAccessIssue]
+
+
+@pytest.fixture
+def strays() -> Iterator[list[int]]:
+    """Pids the case is responsible for, killed on the way out either way.
+
+    A fixture rather than a ``finally`` because the pid becomes known before the
+    first assertion, and a case that fails there has to clean up too.
+    """
+
+    pids: list[int] = []
+    yield pids
+    for pid in pids:
+        _reap(pid)
+
+
+async def _await_reported_grandchild(client: RpcClient, seen: list[dict]) -> int:
+    """Block until a stub reports the pid it spawned, and return it."""
+
+    for _ in range(200):
+        if seen:
+            break
+        await asyncio.sleep(0.05)
+    assert seen and seen[0].get("type") == "grandchild", (
+        f"the stub never reported its grandchild; stderr: {client.get_stderr()!r}"
+    )
+    return int(seen[0]["pid"])
+
+
+def _pipe_holder_client(seen: list[dict], **options: Any) -> RpcClient:
+    """A client on ``_PIPE_HOLDER_STUB`` whose grandchild report is captured."""
+
+    client = RpcClient(
+        RpcClientOptions(argv=[sys.executable, "-c", _PIPE_HOLDER_STUB], **options)
+    )
+    client.on_event(seen.append)
+    return client
 
 
 # === Child-death detection ==================================================
@@ -236,25 +394,103 @@ async def test_start_raises_a_typed_error_when_the_child_dies_in_the_grace(
 # === Containment ============================================================
 
 
-@pytest.mark.skipif(not hasattr(os, "getpgid"), reason="POSIX process groups only")
-async def test_the_child_gets_its_own_process_group() -> None:
+async def test_the_child_gets_its_own_process_group(strays: list[int]) -> None:
     """Without this one Ctrl+C SIGINTs every rpc child at once.
 
     Neither an interactive parent nor an rpc child installs a SIGINT handler,
     so nothing would convert that into a response or an envelope.
+
+    The ``skipif`` this used to carry is gone (#202): ``start_new_session`` was
+    silently IGNORED on win32 — CPython's ``_execute_child`` names the parameter
+    ``unused_start_new_session`` — so there was nothing there to assert. There
+    is now, and it is a stronger claim than the POSIX one: a Job Object holds
+    every descendant, a process group only the ones that did not ``setsid``.
+    Both arms also assert ``contained``, which is what guards the one thing
+    ``IsProcessInJob`` alone cannot rule out — the runner already being inside a
+    job of its own, whose TRUE would mask a failed assignment.
     """
 
-    client = RpcClient(RpcClientOptions(argv=[sys.executable, "-c", _PIPE_HOLDER_STUB]))
+    seen: list[dict] = []
+    client = _pipe_holder_client(seen)
     await client.start()
     try:
+        strays.append(await _await_reported_grandchild(client, seen))
         proc = client.process
         assert proc is not None
-        assert os.getpgid(proc.pid) != os.getpgid(0)
+        tree = client._tree
+        assert tree is not None
+        assert tree.contained is True
+
+        if sys.platform == "win32":
+            assert tree.job is not None
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel32.IsProcessInJob.argtypes = [
+                ctypes.c_void_p,
+                ctypes.c_void_p,
+                ctypes.POINTER(ctypes.c_int),
+            ]
+            kernel32.IsProcessInJob.restype = ctypes.c_int
+            member = ctypes.c_int()
+            handle = _retained_handle(proc)
+            assert handle is not None
+            assert kernel32.IsProcessInJob(handle, tree.job, ctypes.byref(member)) != 0
+            assert member.value == 1
+        else:
+            assert tree.job is None
+            assert os.getpgid(proc.pid) != os.getpgid(0)
+            assert os.getpgid(proc.pid) == proc.pid
     finally:
         await client.stop()
 
 
+async def test_stop_ends_a_descendant_the_child_left_behind() -> None:
+    """The headline of #202, and it FAILS ON MAIN on every leg.
+
+    ``stop()`` used to be ``proc.terminate()`` then ``proc.kill()`` — both aimed
+    at the root and at nothing else — so a delegation aborted mid-turn left every
+    descendant of its child running. Measured with ``main`` 39549b9's ``stop()``
+    body re-imposed over this one: the grandchild is still ``alive`` when the
+    5 s poll below gives up.
+
+    The escalation path is deliberately the subject rather than the success
+    path: the child survives the soft signal, so what reaches the grandchild is
+    the group kill on POSIX and the job on win32, which is the one shape both
+    platforms share. ``close()`` is a release on POSIX and kills nothing there.
+    """
+
+    seen: list[dict] = []
+    client = RpcClient(RpcClientOptions(argv=[sys.executable, "-c", _ORPHANING_STUB]))
+    client.on_event(seen.append)
+    await client.start()
+    grandchild = 0
+    try:
+        for _ in range(200):
+            if seen:
+                break
+            await asyncio.sleep(0.05)
+        assert seen and seen[0].get("type") == "grandchild", (
+            f"the stub never reported its grandchild; stderr: {client.get_stderr()!r}"
+        )
+        grandchild = int(seen[0]["pid"])
+        # The premise. A grandchild that was already dead would make the
+        # assertion below pass for free.
+        assert not is_dead_or_zombie(grandchild)
+
+        await client.stop()
+
+        state = await await_dead_or_zombie(grandchild, timeout=5.0)
+        assert state in (STATE_GONE, STATE_ZOMBIE), (
+            f"the grandchild is {state} five seconds after stop() — the kill "
+            "reached the child and stopped there, which is the #202 defect"
+        )
+    finally:
+        # Never leave a 60 s sleeper behind when the assertion above failed.
+        if grandchild > 0 and not is_dead_or_zombie(grandchild):
+            kill_process_tree(grandchild)
+
+
 async def test_stop_does_not_wait_out_the_grace_when_a_descendant_holds_the_pipes(
+    strays: list[int],
 ) -> None:
     """The measured stall, pinned.
 
@@ -262,10 +498,17 @@ async def test_stop_does_not_wait_out_the_grace_when_a_descendant_holds_the_pipe
     exit waiters only once every pipe is disconnected, so a grandchild holding
     fd 1/2 kept ``stop()`` blocked for the whole SIGTERM grace on a child that
     had already died. Polling ``returncode`` is the independent signal.
+
+    The grandchild SURVIVES this ``stop()`` on POSIX, by design: the soft signal
+    goes to the root and the child takes it, so the group is never signalled and
+    ``close()`` is a release. That is the survivor the ``strays`` fixture ends
+    (review posix2/F7) — it is cleanup, not an assertion.
     """
 
-    client = RpcClient(RpcClientOptions(argv=[sys.executable, "-c", _PIPE_HOLDER_STUB]))
+    seen: list[dict] = []
+    client = _pipe_holder_client(seen)
     await client.start()
+    strays.append(await _await_reported_grandchild(client, seen))
     for _ in range(100):
         if "holder ready" in client.get_stderr():
             break
@@ -279,6 +522,87 @@ async def test_stop_does_not_wait_out_the_grace_when_a_descendant_holds_the_pipe
         f"stop() took {elapsed:.2f}s; the whole point is that it no longer "
         f"pays the {grace:.2f}s SIGTERM grace for a child that already died"
     )
+
+
+async def test_the_tree_is_attached_before_the_first_await(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The ordering invariant four docstrings assert and nothing checked.
+
+    ``ProcessTree.attach`` has to run between ``create_subprocess_exec``
+    returning and the first ``await`` after it, because on win32 only
+    descendants created AFTER ``AssignProcessToJobObject`` inherit membership —
+    a late attach silently contains a DIFFERENT tree. It is invisible on POSIX
+    (the pgid is the same either way) and no windows-leg case observes ordering,
+    so moving the attach past ``start()``'s 100 ms startup grace left the whole
+    suite green (review MUT-5).
+
+    THE PROXY FOR "NO AWAIT HAS HAPPENED" is that nothing ``start()`` schedules
+    after the spawn exists yet: the stdout pump and the exit watcher are both
+    created below the attach, so both being ``None`` at attach time means no
+    suspension point came between.
+    """
+
+    real_attach = rpc_client_module.ProcessTree.attach
+    at_attach: list[tuple[object, object]] = []
+
+    def _spy(pid: int, **kwargs: Any) -> ProcessTree:
+        at_attach.append((client._stdout_reader_task, client._exit_watcher_task))
+        return real_attach(pid, **kwargs)
+
+    monkeypatch.setattr(rpc_client_module.ProcessTree, "attach", _spy)
+
+    client = RpcClient(RpcClientOptions(argv=[sys.executable, "-c", _IDLE_STUB]))
+    await client.start()
+    try:
+        assert at_attach, "ProcessTree.attach was never called by start()"
+        reader_task, watcher_task = at_attach[0]
+        assert reader_task is None and watcher_task is None, (
+            "the tree was attached after a task was scheduled, so an await ran "
+            f"between the spawn and the attach: {at_attach[0]!r}"
+        )
+    finally:
+        await client.stop()
+
+
+async def test_the_rpc_site_asks_for_kill_on_close(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``kill_on_close`` is a PER-SITE policy, and this is the site that wants it.
+
+    The flag is pinned as a ``ProcessTree`` parameter by the primitive's own
+    tests, but nothing pinned what a CALL SITE passes: flipping this one to
+    ``False`` left the whole suite green on both legs (review MUT-6). It is
+    load-bearing here because this client owns exactly one child per task — on
+    win32 ``CloseHandle(job)`` is then what ends a leftover the cooperative
+    ``stop()`` never signalled, and what makes the child die with its parent.
+    Subprocess hooks and ``!command`` ask for the opposite and have their own
+    pins.
+    """
+
+    real_attach = rpc_client_module.ProcessTree.attach
+    seen_kwargs: dict[str, Any] = {}
+
+    def _spy(pid: int, **kwargs: Any) -> ProcessTree:
+        seen_kwargs.update(kwargs)
+        return real_attach(pid, **kwargs)
+
+    monkeypatch.setattr(rpc_client_module.ProcessTree, "attach", _spy)
+
+    client = RpcClient(RpcClientOptions(argv=[sys.executable, "-c", _IDLE_STUB]))
+    await client.start()
+    try:
+        assert seen_kwargs.get("kill_on_close") is True, (
+            "the rpc site stopped asking for kill_on_close; on win32 that is "
+            f"the leftovers and the parent-death guarantee. kwargs: {seen_kwargs!r}"
+        )
+        # The handle seam rides along: passing the one the stdlib already
+        # retains is what keeps ``assign`` from re-deriving one with
+        # ``OpenProcess`` and being refused ``ACCESS_DENIED``. ``None`` here is
+        # correct on POSIX and would be a real defect on win32.
+        assert "handle" in seen_kwargs
+    finally:
+        await client.stop()
 
 
 # === The injection seams ====================================================
@@ -338,7 +662,9 @@ async def test_env_base_can_DELETE_an_inherited_key() -> None:
 
 
 @pytest.mark.skipif(os.name != "posix", reason="preexec_fn is POSIX-only")
-async def test_preexec_fn_runs_in_the_child(tmp_path: Path) -> None:
+async def test_preexec_fn_runs_in_the_child(
+    tmp_path: Path, strays: list[int]
+) -> None:
     """The seam that lets a caller install a parent-death signal.
 
     It has to be a seam rather than a default because the implementation lives
@@ -351,13 +677,11 @@ async def test_preexec_fn_runs_in_the_child(tmp_path: Path) -> None:
     def _preexec() -> None:
         marker.write_text("ran")
 
-    client = RpcClient(
-        RpcClientOptions(
-            argv=[sys.executable, "-c", _PIPE_HOLDER_STUB], preexec_fn=_preexec
-        )
-    )
+    seen: list[dict] = []
+    client = _pipe_holder_client(seen, preexec_fn=_preexec)
     await client.start()
     try:
+        strays.append(await _await_reported_grandchild(client, seen))
         assert marker.exists(), "preexec_fn never ran in the forked child"
     finally:
         await client.stop()

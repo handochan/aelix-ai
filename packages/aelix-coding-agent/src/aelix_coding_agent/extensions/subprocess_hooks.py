@@ -53,6 +53,11 @@ from aelix_agent_core.harness.hooks import (
     HookHandler,
     ToolCallResult,
 )
+from aelix_ai.utils._process_tree import (
+    ProcessTree,
+    _retained_handle,
+    containment_spawn_kwargs,
+)
 
 from aelix_coding_agent.extensions.loader import ExtensionManifestError
 
@@ -131,9 +136,25 @@ async def run_hook_subprocess(
     failure (e.g. ``OSError`` from ``create_subprocess_shell``); the caller
     catches it and fails open.
 
-    On timeout: teardown via the rpc_client pattern — ``terminate()`` →
-    bounded ``wait()`` → ``kill()`` → bounded ``wait()`` — and return an
-    outcome with ``timed_out=True`` / ``exit_code=124``.
+    The child is spawned into a tree (:class:`aelix_ai.utils._process_tree.ProcessTree`,
+    #202 / ADR-0238): a process group of its own on POSIX, a Job Object on
+    Windows. Before #202 the timeout path signalled only the shell, so
+    ``sh -c "sleep 6 | cat"`` left ``sleep`` and ``cat`` running and on Windows
+    the command ``cmd.exe /c`` had launched was orphaned every time. On timeout
+    the teardown is soft (group ``SIGTERM`` / ``CTRL_BREAK_EVENT``) → bounded
+    ``wait()`` → hard (``killpg(SIGKILL)`` / ``taskkill /T /F`` + the job) →
+    bounded ``wait()``, returning ``timed_out=True`` / ``exit_code=124``. A soft
+    signal ``soft_kill`` could not SEND skips the grace outright — there is
+    nothing to wait for — and goes straight to the hard rung.
+
+    Cancellation anywhere in that ladder — in ``communicate()`` OR in either of
+    the teardown's waits — hard-kills the tree before the
+    :class:`asyncio.CancelledError` propagates; ``close()`` in the ``finally``
+    is a release and signals nothing on POSIX.
+
+    The tree is attached with ``kill_on_close=False``: a hook is allowed to
+    background a helper and exit 0, and ``close()`` must not take that away
+    (revision 1 of the spec did, measured).
     """
 
     # env: full inherited environment + caller overrides. AELIX_PROJECT_DIR is
@@ -153,58 +174,111 @@ async def run_hook_subprocess(
             stderr=asyncio.subprocess.PIPE,
             cwd=cwd,
             env=proc_env,
+            # process_group=0 on POSIX (a new group in the SAME session, so a
+            # hook that wants the terminal keeps it), CREATE_NEW_PROCESS_GROUP
+            # on Windows. Both give the teardown below something to aim at.
+            **containment_spawn_kwargs(),
         )
     except OSError as exc:
         raise SubprocessHookError(
             f"failed to spawn subprocess hook {command!r}: {exc}"
         ) from exc
 
+    # Attach BEFORE the first await: on win32 the job is assigned here and only
+    # descendants created after the assignment inherit membership.
+    tree = ProcessTree.attach(proc.pid, handle=_retained_handle(proc))
+
     timeout_s = timeout_ms / 1000.0
     try:
-        stdout_b, stderr_b = await asyncio.wait_for(
-            proc.communicate(input=payload.encode()),
-            timeout=timeout_s,
-        )
-    except TimeoutError:
-        # Teardown (model: rpc_client.py stop()): terminate → bounded wait →
-        # kill → bounded wait, suppressing ProcessLookupError / TimeoutError.
-        # The child is reliably reaped here. A PytestUnraisableExceptionWarning:
-        # "Event loop is closed" may appear in tests — that is the known CPython
-        # asyncio subprocess transport __del__ artifact (OS pipes close when the
-        # process dies), NOT a resource leak.
-        with contextlib.suppress(ProcessLookupError):
-            proc.terminate()
         try:
-            await asyncio.wait_for(proc.wait(), timeout=1.0)
-        except TimeoutError:
-            with contextlib.suppress(ProcessLookupError):
-                proc.kill()
-            with contextlib.suppress(TimeoutError):
-                await asyncio.wait_for(proc.wait(), timeout=5.0)
+            try:
+                stdout_b, stderr_b = await asyncio.wait_for(
+                    proc.communicate(input=payload.encode()),
+                    timeout=timeout_s,
+                )
+            except TimeoutError:
+                # Teardown: soft to the whole tree → bounded wait → hard. A
+                # PytestUnraisableExceptionWarning: "Event loop is closed" may
+                # appear in tests — the known CPython asyncio subprocess
+                # transport __del__ artifact (OS pipes close when the process
+                # dies), NOT a leak. Worst case on win32 is a cmd.exe batch job
+                # answering CTRL_BREAK with its Y/N prompt and burning the whole
+                # 1.0 s grace: ~0.2 + 1.0 + the kill for
+                # test_run_subprocess_timeout, still inside its < 2.0 s bound.
+                escalate = False
+                if proc.returncode is None:
+                    # The shell forwards nothing to its pipeline, so signal the
+                    # group rather than the shell (#202).
+                    #
+                    # ``returncode is None`` does NOT prove the pid is still
+                    # unreaped: asyncio's child watcher calls ``waitpid`` on its
+                    # own thread and a LATER loop callback copies the status into
+                    # ``returncode`` (measured — review posix2/F4). The honest
+                    # bound on a stale number here is that callback latency plus
+                    # the grace below, not "the pid cannot have been reused".
+                    # It is still safe: a NON-EMPTY process group's id cannot be
+                    # recycled while any member lives (POSIX §3.293; Linux pins
+                    # it through ``attach_pid(PIDTYPE_PGID)``), and an empty one
+                    # has nothing to kill (``killpg`` → ``ESRCH``). The residual
+                    # case — the number recycled AND its new holder having made
+                    # itself a group leader, inside that window — is accepted and
+                    # stated in ADR-0238.
+                    #
+                    # ``soft_kill`` reports whether the signal was SENT. ``False``
+                    # means nothing reached the tree (no attached console on
+                    # win32, ``ESRCH`` on POSIX), so the grace below would buy
+                    # nothing: skip it and escalate at once (review win-leg/F2).
+                    escalate = not tree.soft_kill(whole_group=True)
+                if not escalate:
+                    try:
+                        await asyncio.wait_for(proc.wait(), timeout=1.0)
+                    except TimeoutError:
+                        escalate = True
+                if escalate:
+                    tree.hard_kill()
+                    with contextlib.suppress(TimeoutError):
+                        await asyncio.wait_for(proc.wait(), timeout=5.0)
+                return HookSubprocessOutcome(
+                    exit_code=_TIMEOUT_EXIT_CODE,
+                    stdout="",
+                    stderr=f"<hook timed out after {timeout_ms}ms>",
+                    timed_out=True,
+                )
+        except asyncio.CancelledError:
+            # A cancelled hook must not leave its tree behind — and the
+            # cancellation can arrive anywhere in the ladder above, not only in
+            # ``communicate()``. This handler sits OUTSIDE the timeout teardown
+            # for that reason: with it nested beside the teardown, a cancel that
+            # landed during the 1.0 s grace or the 5.0 s hard wait escaped it and
+            # left the whole hook tree running (measured — review posix2/F6),
+            # because ``finally`` only calls ``close()``, which is a release and
+            # signals nothing on POSIX. Nothing waits on the child after this, so
+            # there is no grace to spend: kill hard and let the cancellation
+            # continue.
+            tree.hard_kill()
+            raise
+
+        stdout = stdout_b.decode("utf-8", errors="replace")
+        stderr = stderr_b.decode("utf-8", errors="replace")
+        if len(stdout) > _STDOUT_CAP:
+            _log.debug(
+                "subprocess hook stdout truncated from %d to %d chars",
+                len(stdout),
+                _STDOUT_CAP,
+            )
+            stdout = stdout[:_STDOUT_CAP]
+
+        # proc.returncode is set after communicate() completes.
         return HookSubprocessOutcome(
-            exit_code=_TIMEOUT_EXIT_CODE,
-            stdout="",
-            stderr=f"<hook timed out after {timeout_ms}ms>",
-            timed_out=True,
+            exit_code=proc.returncode if proc.returncode is not None else -1,
+            stdout=stdout,
+            stderr=stderr,
+            timed_out=False,
         )
-
-    stdout = stdout_b.decode("utf-8", errors="replace")
-    stderr = stderr_b.decode("utf-8", errors="replace")
-    if len(stdout) > _STDOUT_CAP:
-        _log.debug(
-            "subprocess hook stdout truncated from %d to %d chars",
-            len(stdout),
-            _STDOUT_CAP,
-        )
-        stdout = stdout[:_STDOUT_CAP]
-
-    # proc.returncode is set after communicate() completes.
-    return HookSubprocessOutcome(
-        exit_code=proc.returncode if proc.returncode is not None else -1,
-        stdout=stdout,
-        stderr=stderr,
-        timed_out=False,
-    )
+    finally:
+        # Release, never a kill: on POSIX close() signals nothing, and the tree
+        # was attached with kill_on_close=False so on win32 it does not either.
+        tree.close()
 
 
 # === Serialization (stdin envelope — snake_case) ===

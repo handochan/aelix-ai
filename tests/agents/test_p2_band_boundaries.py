@@ -52,7 +52,7 @@ _SPAWN_ALLOWLIST = (
 #
 # Matched on the DOTTED path, not the final attribute: product-core already has
 # six unrelated ``.fork(...)`` calls (session forking — ``tui/shell.py:1022``,
-# ``rpc/rpc_mode.py:1475``, ``extensions/command_context.py:116``), so a
+# ``rpc/rpc_mode.py:1476``, ``extensions/command_context.py:116``), so a
 # bare-name match would fire on them and this gate would have to be weakened
 # the first time it ran. Receiverless spellings are accepted for the two names
 # that can legitimately be imported directly.
@@ -67,7 +67,7 @@ _SPAWN_CALL_SUFFIXES = (
 _SPAWN_CALL_EXACT = frozenset({"create_subprocess_exec", "Popen", "fork"})
 
 # KNOWN GAP, stated rather than hidden: ``asyncio.create_subprocess_shell`` is
-# NOT in the set. ``extensions/subprocess_hooks.py:149`` already calls it and is
+# NOT in the set. ``extensions/subprocess_hooks.py:170`` already calls it and is
 # outside the allowlist, so including it would make this gate red on arrival.
 # The P2 spawner uses ``create_subprocess_exec`` (argv, never a shell string),
 # so the gate covers the real drift path; widening it means first re-homing or

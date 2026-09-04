@@ -469,7 +469,7 @@ def build_child_argv(
     """The child's exact command line — §(l).
 
     ``[sys.executable, "-m", "aelix_coding_agent", …]`` and nothing else.
-    Specifically NOT ``-m aelix``, which ``rpc/rpc_client.py:952`` does and which
+    Specifically NOT ``-m aelix``, which ``rpc/rpc_client.py:1073`` does and which
     is a live bug (``aelix`` is the umbrella meta-package demo), and NOT the
     ``aelix`` console script, which in a worktree resolves to the OTHER tree's
     editable install.
@@ -968,9 +968,9 @@ class PrintChannel:
                     # handler, so there is nothing to convert that into a result.
                     start_new_session=True,
                     # ``None`` on Windows, where subprocess REJECTS the
-                    # argument outright. ``start_new_session`` above is
-                    # not so loud — Windows accepts and ignores it, so the
-                    # group isolation it documents is absent there (#202).
+                    # argument outright. ``start_new_session`` above is not so loud —
+                    # Windows accepts and ignores it. #202 built the primitive
+                    # (``aelix_ai.utils._process_tree``); adopting it here is #220.
                     preexec_fn=pdeathsig_preexec(),  # noqa: PLW1509
                 )
             except Exception as exc:  # noqa: BLE001 — a failed spawn is a RESULT

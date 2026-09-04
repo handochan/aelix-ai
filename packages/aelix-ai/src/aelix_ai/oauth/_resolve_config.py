@@ -19,9 +19,17 @@ the env-var NAME as the API key.
 
 from __future__ import annotations
 
+import contextlib
 import os
 import subprocess
 import threading
+from typing import cast
+
+from aelix_ai.utils._process_tree import (
+    ProcessTree,
+    _retained_handle,
+    containment_spawn_kwargs,
+)
 
 # Pi's ``execSync`` enforces an implicit ~1 MB ``maxBuffer`` (throws
 # ``ENOBUFS`` on overflow) and a 10 s timeout. Python's ``subprocess`` has
@@ -40,58 +48,111 @@ def _run_shell_command(cmd: str) -> tuple[int, str] | None:
     ``(returncode, stdout_text)`` or :data:`None` on a spawn error,
     timeout, or output-cap overflow — so a runaway producer can no longer
     OOM/hang the host. ``stderr`` is discarded (only stdout is consumed).
+
+    CONTAINMENT (#202, ADR-0238). ``proc.kill()`` reached the shell and nothing
+    else: measured on ``main`` 39549b9, ``sh -c "a | b"`` keeps every stage of
+    the pipeline in the shell's group, so a timed-out ``!command`` left them
+    running (``sh -c "sleep 5"`` hid it — one command is ``exec``'d, so killing
+    the shell IS killing it), and on Windows an MSYS ``sh.exe`` is an exec stub
+    whose death orphans the command outright. The spawn now asks for a tree of
+    its own and both kill sites end the tree
+    (:mod:`aelix_ai.utils._process_tree`).
+
+    The kwarg is ``process_group=0`` and NOT ``start_new_session=True``: this is
+    the site where credential helpers run (``gpg``, ``pass``, pinentry) and they
+    open ``/dev/tty``. ``setsid`` drops the controlling terminal — measured
+    under a real pty, the helper answers ``sh: /dev/tty: Device not
+    configured``. ``setpgid(0, 0)`` gives a new group inside the SAME session,
+    which keeps the terminal and which ``killpg`` reaches identically.
     """
 
     try:
-        proc = subprocess.Popen(  # noqa: S602 — intentional Pi-parity shell exec.
-            ["sh", "-c", cmd],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            stdin=subprocess.DEVNULL,
+        # The cast is about the CHECKER. ``containment_spawn_kwargs()`` is a
+        # ``dict[str, Any]``, and unpacking one costs pyright its ability to
+        # discriminate ``Popen``'s text/bytes overloads: it settles on
+        # ``Popen[str]`` (measured — ``text=False`` does not steer it back), and
+        # the byte-counting reader below would then read as a type error instead
+        # of as the output cap it is. At runtime ``stdout=PIPE`` with no
+        # ``text``/``encoding`` is bytes, which is what the cast asserts.
+        proc = cast(
+            "subprocess.Popen[bytes]",
+            subprocess.Popen(  # noqa: S602 — intentional Pi-parity shell exec.
+                ["sh", "-c", cmd],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL,
+                **containment_spawn_kwargs(),
+            ),
         )
     except (OSError, ValueError):
         return None
 
-    chunks: list[bytes] = []
-    overflow = False
-
-    def _read() -> None:
-        nonlocal overflow
-        total = 0
-        stream = proc.stdout
-        if stream is None:
-            return
-        while True:
-            chunk = stream.read(65536)
-            if not chunk:
-                break
-            total += len(chunk)
-            if total > _MAX_OUTPUT_BYTES:
-                overflow = True
-                break
-            chunks.append(chunk)
-
-    reader = threading.Thread(target=_read, daemon=True)
-    reader.start()
-    reader.join(_COMMAND_TIMEOUT)
-
-    if reader.is_alive() or overflow:
-        # Timed out, or exceeded the output cap — kill and fail.
-        proc.kill()
-        proc.wait()
-        reader.join(1.0)
-        return None
-
+    # Attached before anything is read, because on win32 only descendants
+    # created AFTER the job assignment inherit membership. ``kill_on_close``
+    # stays False: a ``!command`` that deliberately backgrounds a helper keeps
+    # it when the command itself succeeds, as it does today on every platform.
+    tree = ProcessTree.attach(proc.pid, handle=_retained_handle(proc))
     try:
-        # stdout hit EOF, so the child has (almost) finished; bound the
-        # reap so a process that closes stdout but lingers can't hang us.
-        proc.wait(timeout=1.0)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.wait()
-        return None
+        chunks: list[bytes] = []
+        overflow = False
 
-    return proc.returncode, b"".join(chunks).decode("utf-8", errors="replace")
+        def _read() -> None:
+            nonlocal overflow
+            total = 0
+            stream = proc.stdout
+            if stream is None:
+                return
+            while True:
+                chunk = stream.read(65536)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > _MAX_OUTPUT_BYTES:
+                    overflow = True
+                    break
+                chunks.append(chunk)
+
+        reader = threading.Thread(target=_read, daemon=True)
+        reader.start()
+        reader.join(_COMMAND_TIMEOUT)
+
+        if reader.is_alive() or overflow:
+            # Timed out, or exceeded the output cap — kill and fail. Straight to
+            # the hard kill: there is no grace stage here to escalate from, and
+            # the producer we are killing is by definition not answering.
+            tree.hard_kill()
+            # BOUNDED, because ``hard_kill`` is best-effort on win32: with no
+            # job (a failed attach) and no resolvable ``taskkill.exe`` it is a
+            # no-op that does not raise, and the bare ``proc.wait()`` this
+            # replaced then blocked forever on a command that is by definition
+            # hung — synchronously, in whatever thread resolved the config
+            # (review win-leg/F3). Dropping the ``TerminateProcess`` leg is what
+            # made that reachable; a kill that could not kill must cost a
+            # timeout, not the thread. ``TimeoutExpired`` is a
+            # ``SubprocessError``, not an ``OSError``.
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                proc.wait(timeout=5.0)
+            reader.join(1.0)
+            return None
+
+        try:
+            # stdout hit EOF, so the child has (almost) finished; bound the
+            # reap so a process that closes stdout but lingers can't hang us.
+            proc.wait(timeout=1.0)
+        except subprocess.TimeoutExpired:
+            tree.hard_kill()
+            # Bounded for the same reason as the reap above (win-leg/F3): a
+            # win32 ``hard_kill`` with no job and no ``taskkill.exe`` is a
+            # silent no-op, and this path already returns ``None``.
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                proc.wait(timeout=5.0)
+            return None
+
+        return proc.returncode, b"".join(chunks).decode("utf-8", errors="replace")
+    finally:
+        # Release, not a kill: POSIX signals nothing here and win32 only closes
+        # the job handle, which ends nothing without ``kill_on_close``.
+        tree.close()
 
 
 def resolve_config_value(

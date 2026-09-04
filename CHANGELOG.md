@@ -305,6 +305,41 @@ and `.../releases/tag/vX` link would 404. Add them with the first pushed tag.
 
 ### Fixed
 
+- **A timed-out hook or an aborted delegation no longer leaves its command
+  running.** Both teardown ladders ended the process they had spawned, and that
+  process is routinely the least interesting thing in the tree: a `sh` holding a
+  pipeline, a `cmd.exe` waiting on the command it launched, an RPC child whose
+  grandchildren are the actual work. On POSIX it leaked whenever the shell
+  forked — `sh -c "sleep 6 | cat"` left `sh`, `sleep` and `cat` behind, while
+  `sh -c "sleep 5"` was fine because `sh` execs and there is nothing to leave.
+  On Windows it leaked every time at all three sites, because
+  `start_new_session=True` is accepted and silently ignored there (CPython names
+  the parameter `unused_start_new_session`). The delegation case was measured on
+  macOS, not Windows: aborting a turn ran the whole
+  `terminate()` → 1s → `kill()` → 5s ladder and the child's grandchild was still
+  running when it finished. The RPC delegation channel, subprocess hooks and
+  `models.json`'s `!command` now put their child in a process group on POSIX and
+  a Job Object on Windows, and end the tree instead of the root. A hook that
+  deliberately backgrounds a helper and returns 0 still keeps it — only the
+  timeout and cancellation paths kill.
+
+  `!command` also keeps its controlling terminal, which is what a credential
+  helper needs: the new sites ask for a process group inside the same session
+  rather than a new session, because a child of a new session that opens the
+  terminal gets `sh: /dev/tty: Device not configured` — measured with a shell
+  under a real pty, and `!command` is the site where `gpg` / `pass` and pinentry
+  run.
+
+  On Windows the delegated child can now be asked to stop at all: it is spawned
+  in its own console process group, `stop()` sends `CTRL_BREAK_EVENT`, and the
+  child answers it the way it answers SIGTERM elsewhere. Letting it exit on its
+  own also surfaced a crash nobody could reach before — the child's stdin
+  reader held a lock the interpreter needs at shutdown — which is fixed in the
+  same change. See ADR-0238 and
+  [#202](https://github.com/handochan/aelix-ai/issues/202). The print channel and
+  the reaper are not converted yet
+  ([#220](https://github.com/handochan/aelix-ai/issues/220)).
+
 - **`models.json`'s own documentation no longer breaks the file it describes.**
   Two of the guide's three examples carried a `cost` with only `input` and
   `output`, while the validator requires all four keys — and a schema error

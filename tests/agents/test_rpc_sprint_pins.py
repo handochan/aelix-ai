@@ -12,6 +12,7 @@ import asyncio
 import inspect
 import sys
 import time
+import warnings
 
 import pytest
 from aelix_agents.consent import SpawnGrant
@@ -132,37 +133,39 @@ def test_the_guard_is_still_wired_into_both_doors() -> None:
 # === The rpc client's worst-case teardown ===================================
 
 
-# WHOLE-TEST SKIP, because the grace IS the assertion: both halves below
-# (``elapsed <= worst_case`` and ``elapsed >= grace``) measure a SIGTERM grace
-# window that does not exist on win32. There ``Popen.terminate()`` is
-# ``TerminateProcess(handle, 1)``, which no child can catch or ignore, so the
-# ``SIG_IGN`` stub dies on the first attempt and the escalation this test
-# exists to pin never happens (measured on windows-latest: 0.047 s against a
-# 1.000 s grace). REMOVE THIS SKIP when #202 lands a real Windows soft-kill
-# stage on ``stop()``'s ``terminate()``/``kill()`` lines; this test is then
-# rewritten on top of it.
-@pytest.mark.skipif(
-    sys.platform == "win32",
-    reason=(
-        "Windows TerminateProcess is uncatchable; there is no SIGTERM grace to "
-        "observe (#207 → #202)"
-    ),
-)
 async def test_stop_is_bounded_by_the_documented_worst_case() -> None:
-    """SIGTERM grace + the final reap, and nothing open-ended.
+    """The soft-kill grace + the final reap, and nothing open-ended.
 
     Both halves are needed and neither is obvious from the code: a child that
-    ignores SIGTERM costs ``SHUTDOWN_SIGTERM_TIMEOUT_MS`` before the escalation,
-    and the post-SIGKILL reap is bounded at 5 s so an unkillable child cannot
-    hold the caller forever. A delegation channel calls this on every teardown
-    path, so an unbounded leg here is an unbounded leg there.
+    survives the soft signal costs ``SHUTDOWN_SIGTERM_TIMEOUT_MS`` before the
+    escalation, and the reap after the hard kill is bounded at 5 s so an
+    unkillable child cannot hold the caller forever. A delegation channel calls
+    this on every teardown path, so an unbounded leg here is an unbounded leg
+    there.
+
+    RUNS ON WINDOWS AGAIN (#202 closed #207 (2)). It was skipped there because
+    ``Popen.terminate()`` is ``TerminateProcess(handle, 1)``, uncatchable, so a
+    ``SIG_IGN`` stub died on the first attempt and no grace elapsed (measured on
+    windows-latest: 0.047 s against a 1.000 s grace). ``stop()`` now sends
+    ``CTRL_BREAK_EVENT``, which arrives as ``SIGBREAK`` and IS catchable, so the
+    stub below installs a real HANDLER for whichever of the two names the
+    platform has. The ``signal seen`` breadcrumb is what separates "delivered
+    and survived" from "delivered nothing and the timeout expired" — without it
+    ``elapsed >= grace`` passes either way.
     """
 
     stub = (
         "import signal, sys, time\n"
-        "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+        'def seen(*_):\n'
+        '    sys.stderr.write("signal seen\\n"); sys.stderr.flush()\n'
+        'for name in ("SIGTERM", "SIGBREAK"):\n'
+        "    s = getattr(signal, name, None)\n"
+        "    if s is not None: signal.signal(s, seen)\n"
         'sys.stderr.write("armed\\n"); sys.stderr.flush()\n'
-        "while True: time.sleep(0.5)\n"
+        # 0.05 s chunks, not 0.5 s: on Windows the handler runs when the main
+        # thread next reaches a bytecode boundary, so this is the breadcrumb's
+        # latency bound and it has to fit inside the grace.
+        "while True: time.sleep(0.05)\n"
     )
     client = RpcClient(RpcClientOptions(argv=[sys.executable, "-c", stub]))
     await client.start()
@@ -172,6 +175,26 @@ async def test_stop_is_bounded_by_the_documented_worst_case() -> None:
         await asyncio.sleep(0.05)
     assert "armed" in client.get_stderr(), "the stub never armed its handler"
 
+    tree = client._tree
+    assert tree is not None
+    # Count the escalation instead of inferring it from the clock. Measured
+    # (review MUT-1): delete ``tree.hard_kill()`` from ``stop()`` and the two
+    # timing assertions below still hold — the grace is paid in full, and
+    # ``stop()``'s trailing ``transport.close()`` reaches ``Popen.kill()`` and
+    # ends the root anyway. The mutated run came within 4 ms of the 6 s bound
+    # instead of breaking it, which is how close "still green" was. An INSTANCE
+    # attribute, so the class stays clean for every other client in this run;
+    # it delegates, so the child dies the way production kills it.
+    hard_kills = 0
+    real_hard_kill = tree.hard_kill
+
+    def _counting_hard_kill() -> None:
+        nonlocal hard_kills
+        hard_kills += 1
+        real_hard_kill()
+
+    tree.hard_kill = _counting_hard_kill  # type: ignore[method-assign]
+
     started = time.monotonic()
     await client.stop()
     elapsed = time.monotonic() - started
@@ -180,6 +203,14 @@ async def test_stop_is_bounded_by_the_documented_worst_case() -> None:
     assert elapsed <= worst_case, f"stop() took {elapsed:.2f}s, over {worst_case:.2f}s"
     # And it really did have to escalate — otherwise this pins nothing.
     assert elapsed >= RpcClient.SHUTDOWN_SIGTERM_TIMEOUT_MS / 1000.0
+    assert hard_kills == 1, (
+        f"hard_kill ran {hard_kills} times, not once — the bound this test "
+        "measures was not the soft grace plus a real escalation"
+    )
+    assert "signal seen" in client.get_stderr(), (
+        "the grace elapsed but the child never saw the soft signal; that is a "
+        f"missing delivery, not a survived one. stderr: {client.get_stderr()!r}"
+    )
 
 
 # === The rpc wire, against the REAL child ===================================
@@ -198,6 +229,13 @@ async def test_the_real_rpc_child_answers_the_client_it_ships_with(
 
     ``get_state`` is the probe because it has no side effects and echoes its
     request id, so a pass proves framing, dispatch AND correlation.
+
+    THE ``stop()`` HALF IS THE ONLY TEST OF THE CHILD-SIDE SIGNAL HANDLERS
+    (``rpc_mode.install_signal_handlers``). Every other shutdown test drives a
+    stub that installs its own. A real child answering under the grace with
+    status 0 is the POSIX ``SIGTERM`` handler on ubuntu/macOS and, on
+    windows-latest, the ``SIGBREAK`` handler #202 added next to it — nothing
+    else in the suite exercises either.
     """
 
     from pathlib import Path
@@ -231,10 +269,119 @@ async def test_the_real_rpc_child_answers_the_client_it_ships_with(
         )
     )
     await client.start()
+    proc = client.process
+    assert proc is not None
     try:
         state = await client.get_state()
         # A real child with no model configured still starts and answers; the
         # session id is the proof that a real harness is behind the wire.
         assert state.session_id
     finally:
+        started = time.monotonic()
         await client.stop()
+        elapsed = time.monotonic() - started
+
+    # ITS OWN BOUND, not the product constant. What ``stop()`` is timed over
+    # here is the whole cooperative shutdown: the soft signal, the child's
+    # Python-level handler, ``loop.call_soon_threadsafe``, ``run_rpc_mode``'s
+    # return, the full runtime dispose, ``_await_exit``'s 50 ms polling
+    # quantum, ``_teardown_tasks()`` and ``transport.close()``. On
+    # windows-latest that chain additionally pays CTRL_BREAK delivery on a
+    # separate thread and a handler that runs at the main thread's next
+    # bytecode boundary — the leg with the most to do and the one nobody has
+    # measured (review win-leg/F4). 3.0 s says "far below the escalation", not
+    # "a millisecond budget"; a 1.05 s orderly shutdown on a busy runner used
+    # to report the opposite of what ``returncode == 0`` proves. The escalation
+    # it must stay clear of is ``SHUTDOWN_SIGTERM_TIMEOUT_MS`` + the 5 s reap.
+    assert elapsed < 3.0, (
+        f"the real child took {elapsed:.3f}s to go — far enough over the "
+        "cooperative path to suspect it did not answer the soft signal"
+    )
+    # Status 0 is the child's own orderly return out of ``run_rpc_mode``, and
+    # this is the real delivery proof: a hard kill cannot produce it on either
+    # platform.
+    assert proc.returncode == 0, (
+        f"the real child exited {proc.returncode} after a {elapsed:.3f}s stop(); "
+        "the shutdown path did not run its teardown. The child's stderr tail is "
+        "the only diagnostic a remote leg can hand back, so it rides along: "
+        f"{client.get_stderr()[-2000:]!r}"
+    )
+
+
+class _PatientClient(RpcClient):
+    """A grace long enough that only a child that NEVER answers gets hard-killed.
+
+    The conformance test above times the whole cooperative shutdown against a
+    3 s bound and needs ``returncode == 0``; when the windows leg answered
+    ``exited 1`` (``TerminateJobObject``'s code) that single number could not say
+    whether the console event was undeliverable, the child's handler never ran
+    under the proactor loop, or its orderly teardown merely outran the 1 s
+    Pi-parity grace on a slow runner. This client gives the child 20 s so the
+    three are told apart: a hard kill here means the soft stage does not work at
+    all; a clean exit says how long the teardown really takes.
+    """
+
+    SHUTDOWN_SIGTERM_TIMEOUT_MS = 20_000
+
+
+async def test_the_real_rpc_child_exits_cleanly_given_a_generous_grace(
+    tmp_path: object,
+) -> None:
+    """Diagnostic twin of the conformance test: same child, 20 s grace.
+
+    Passes wherever the soft signal reaches the child and its handler runs; the
+    measured shutdown time is emitted as a warning so it shows in a ``-q`` CI
+    log without a failing assertion. If THIS fails on a leg, the cooperative
+    stage does not exist there and ADR-0238's claim narrows; if only the 3 s
+    conformance bound fails, the teardown is slow, not absent.
+    """
+
+    from pathlib import Path
+
+    home = Path(str(tmp_path)) / "home"
+    (home / ".config").mkdir(parents=True, exist_ok=True)
+    (home / "agent").mkdir(parents=True, exist_ok=True)
+    env = child_env(
+        home,
+        XDG_CONFIG_HOME=str(home / ".config"),
+        AELIX_CODING_AGENT_DIR=str(home / "agent"),
+        PI_OFFLINE="1",
+    )
+    client = _PatientClient(
+        RpcClientOptions(
+            argv=[
+                sys.executable,
+                "-m",
+                "aelix_coding_agent",
+                "--mode",
+                "rpc",
+                "--no-session",
+                "--no-extensions",
+                "--no-agents",
+            ],
+            cwd=str(tmp_path),
+            env_base=env,
+            send_timeout_ms=180_000,
+        )
+    )
+    await client.start()
+    proc = client.process
+    assert proc is not None
+    try:
+        state = await client.get_state()
+        assert state.session_id
+    finally:
+        started = time.monotonic()
+        await client.stop()
+        elapsed = time.monotonic() - started
+
+    warnings.warn(
+        f"real rpc child orderly shutdown on {sys.platform}: {elapsed:.3f}s, "
+        f"returncode={proc.returncode}",
+        stacklevel=1,
+    )
+    assert proc.returncode == 0, (
+        f"the real child exited {proc.returncode} after {elapsed:.3f}s against a "
+        "20 s grace — the soft signal never produced an orderly exit. stderr tail: "
+        f"{client.get_stderr()[-2000:]!r}"
+    )

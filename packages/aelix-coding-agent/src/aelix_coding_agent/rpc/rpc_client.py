@@ -37,12 +37,35 @@ restores, and the distinction belongs in the ADR:
    child dies — a bad ``--tools`` name, no API key, an import error, an
    OOM-kill — all land outside the 100 ms window.
 
-2. **Containment** (``start_new_session``, the ``preexec_fn`` seam). Without
-   ``start_new_session`` the child joins the PARENT's process group, so one
+2. **Containment** (``containment_spawn_kwargs``, the ``preexec_fn`` seam).
+   Without a group of its own the child joins the PARENT's process group, so one
    Ctrl+C SIGINTs every rpc child at once and nothing converts that into a
    response. The death signal itself is a POLICY the caller injects, because
    the implementation lives in the bundled extension and product-core may not
    import it (ADR-0197 §(a), the import-direction gate).
+
+   #202 made that containment reach the whole TREE and gave it a Windows twin
+   (``aelix_ai.utils._process_tree``, ADR-0238). POSIX is unchanged in shape —
+   ``start_new_session=True`` — and :meth:`RpcClient.stop`'s soft stage is still
+   a ``SIGTERM`` at the ROOT. ``killpg`` is the ESCALATION, so a descendant the
+   child left behind dies with the group only when the child did NOT take the
+   soft hint. On the cooperative path nothing group-wide is sent at all and a
+   non-``setsid`` leftover of the child survives on POSIX — ``close()`` is a
+   release there, never a kill. Measured: a pipe-holding grandchild outlives
+   ``stop()``, on ``main`` and here alike (review posix2/F2). On Windows
+   ``start_new_session`` was silently ignored (CPython names the parameter
+   ``unused_start_new_session``) and ``terminate()`` was an uncatchable
+   ``TerminateProcess`` that orphaned every descendant, every time; the child is
+   now spawned ``CREATE_NEW_PROCESS_GROUP`` so :meth:`RpcClient.stop`'s
+   ``CTRL_BREAK_EVENT`` has an address, and held by a Job Object. The tree is
+   attached with ``kill_on_close=True`` — this client owns exactly one child per
+   task, so releasing the tree is the same event as being done with it, and it
+   is what ends there the leftovers POSIX keeps. That also makes the child die
+   with its parent on Windows — the same guarantee Linux gives when the caller
+   injects ``pdeathsig`` through the ``preexec_fn`` seam, and one POSIX
+   otherwise has no way to offer. Subprocess hooks and ``!command`` ask for the
+   opposite, because a hook may background a helper deliberately and exit 0
+   over it.
 
 3. **The argv/env/stderr seams.** ``RpcClientOptions`` grew ``argv`` and
    ``env_base`` so a caller can supply a COMPLETE command line and a COMPLETE
@@ -85,6 +108,13 @@ import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
+
+from aelix_ai.utils._process_tree import (
+    ProcessTree,
+    _retained_handle,
+    containment_spawn_kwargs,
+    kill_process_tree,
+)
 
 from aelix_coding_agent.rpc._jsonl import (
     JsonlLineReader,
@@ -278,6 +308,11 @@ class RpcClient:
     def __init__(self, options: RpcClientOptions | None = None) -> None:
         self._options = options or RpcClientOptions()
         self._proc: asyncio.subprocess.Process | None = None
+        # Assigned in the same statement group as ``_proc`` and never later: on
+        # win32 only descendants created AFTER the job assignment inherit
+        # membership, so a late attach would contain a different tree than the
+        # one that was spawned (#202).
+        self._tree: ProcessTree | None = None
         self._stdout_reader_task: asyncio.Task[None] | None = None
         self._stderr_reader_task: asyncio.Task[None] | None = None
         self._exit_watcher_task: asyncio.Task[None] | None = None
@@ -398,6 +433,15 @@ class RpcClient:
             # the contract on this seam is that the callable is
             # async-signal-safe.
             spawn_kwargs["preexec_fn"] = opts.preexec_fn  # noqa: PLW1509
+        # AELIX-ORIGINAL. Without it the child joins the PARENT's process
+        # group, so a single Ctrl+C SIGINTs every rpc child at once — and
+        # neither an interactive parent nor an rpc child installs a SIGINT
+        # handler, so nothing converts that into a response or an envelope.
+        # Measured safe against the whole rpc suite before it was adopted.
+        # ``new_session=True`` is ``start_new_session`` on POSIX, unchanged; on
+        # win32 it is ``CREATE_NEW_PROCESS_GROUP``, which is the group
+        # :meth:`stop`'s ``CTRL_BREAK_EVENT`` is addressed to (#202).
+        spawn_kwargs.update(containment_spawn_kwargs(new_session=True))
 
         self._exited = asyncio.Event()
         self._stopping = False
@@ -408,13 +452,15 @@ class RpcClient:
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            # AELIX-ORIGINAL. Without it the child joins the PARENT's process
-            # group, so a single Ctrl+C SIGINTs every rpc child at once — and
-            # neither an interactive parent nor an rpc child installs a SIGINT
-            # handler, so nothing converts that into a response or an envelope.
-            # Measured safe against the whole rpc suite before it was adopted.
-            start_new_session=True,
             **spawn_kwargs,
+        )
+        # BEFORE the first ``await``, per :meth:`ProcessTree.attach`: on win32
+        # the job is created and assigned here, and only descendants spawned
+        # after the assignment inherit membership. ``handle`` is the one the
+        # transport already retains, so the assignment never has to re-derive
+        # one from the pid and cannot be refused ``ACCESS_DENIED`` (#202).
+        self._tree = ProcessTree.attach(
+            self._proc.pid, kill_on_close=True, handle=_retained_handle(self._proc)
         )
 
         proc_stdout = self._proc.stdout
@@ -450,6 +496,11 @@ class RpcClient:
             returncode = self._proc.returncode
             stderr_snapshot = self.get_stderr()
             await self._teardown_tasks()
+            # The child is already gone, but the job handle is not: release it
+            # here or the only thing that ever would is the finalizer.
+            if self._tree is not None:
+                self._tree.close()
+            self._tree = None
             self._proc = None
             raise RpcServerExited(
                 f"RPC server exited prematurely with code {returncode}. "
@@ -461,19 +512,52 @@ class RpcClient:
     async def stop(self) -> None:
         """Pi parity: ``rpc-client.ts:88-122`` (``stop``).
 
-        SIGTERM → wait 1 s → SIGKILL. ``pending_requests`` are cleared so
-        callers awaiting :meth:`send` see ``CancelledError`` propagate.
+        Soft → grace → hard, per platform (``aelix_ai.utils._process_tree``,
+        #202). POSIX: ``SIGTERM`` at the ROOT → wait 1 s → ``killpg(SIGKILL)``.
+        The group kill belongs to the ESCALATION ONLY — a child that takes the
+        soft hint is never signalled group-wide, so its non-``setsid``
+        leftovers survive here and ``close()`` does not touch them (review
+        posix2/F2, posix2/F3). Windows: ``CTRL_BREAK_EVENT``, which is
+        group-wide by construction → wait 1 s → ``taskkill /T /F`` plus
+        ``TerminateJobObject``, and ``close()`` ends the rest because this tree
+        asked for ``kill_on_close``. ``pending_requests`` are cleared so callers
+        awaiting :meth:`send` see ``CancelledError`` propagate.
+
+        NOT ``proc.terminate()`` / ``proc.kill()``. Both begin with
+        ``Popen.send_signal``'s ``self.poll()`` — a ``waitpid(WNOHANG)`` that
+        can reap a just-exited child out from under asyncio's watcher, which
+        then reports 255 (measured in ``reaper._signal_child``: ``{255: 60}``).
+        The soft and hard stages signal by pid/pgid instead. The trailing
+        ``transport.close()`` below still reaches ``Popen.poll()`` and
+        ``Popen.kill()`` (CPython ``asyncio/base_subprocess.py``), but that is
+        asyncio's own last resort rather than this method's escalation: it can
+        only fire for a child that outlived BOTH waits, by which point the reap
+        race costs nothing (review posix2/F8, MUT-8).
         """
 
         proc = self._proc
         if proc is None:
             return
 
+        tree = self._tree
         self._stopping = True
         self._fail_pending(RpcClientError("rpc", "RPC server stopped"))
 
-        with contextlib.suppress(ProcessLookupError):
-            proc.terminate()
+        # ``returncode`` read immediately before the soft kill with no ``await``
+        # in between. THE BOOL IS LOAD-BEARING: ``soft_kill`` returns whether
+        # the signal was actually SENT, and a signal that was not sent has
+        # nothing to wait for — no attached console on win32
+        # (``GenerateConsoleCtrlEvent`` fails, which is the runner shape #202's
+        # review flagged), or ``ESRCH`` because the child went in the gap. In
+        # both of those the grace below would buy a full second of nothing, so
+        # the escalation is taken immediately instead (review win-leg/F2).
+        # Staying ``False`` when the child is ALREADY reaped is deliberate too:
+        # nothing was attempted, so ``_await_exit`` answers True on its first
+        # poll and the escalation is skipped, which is what keeps a dead child's
+        # teardown free.
+        soft_kill_refused = False
+        if proc.returncode is None and tree is not None:
+            soft_kill_refused = not tree.soft_kill()
         # POLL ``returncode``, NEVER ``await proc.wait()``. Measured: with a
         # descendant holding the child's stdout/stderr, ``wait()`` does not
         # resolve until those pipes disconnect, so ``stop()`` paid the FULL
@@ -481,9 +565,38 @@ class RpcClient:
         # ``returncode`` was set the whole time. Without a holder both shapes
         # return in 0.00 s, which is why the bug survived: only the pipe-holder
         # case is slow, and only that case reproduces it.
-        if not await self._await_exit(self.SHUTDOWN_SIGTERM_TIMEOUT_MS / 1000.0):
-            with contextlib.suppress(ProcessLookupError):
-                proc.kill()
+        if soft_kill_refused or not await self._await_exit(
+            self.SHUTDOWN_SIGTERM_TIMEOUT_MS / 1000.0
+        ):
+            # Deliberately NOT guarded by root liveness: leader dead and
+            # descendants alive is the exact shape the group/job kill exists
+            # for, and a guard would skip it.
+            #
+            # WHAT BOUNDS THE STALE-NUMBER HAZARD IS THE GROUP, NOT THE POLL.
+            # An older comment here claimed "the last 50 ms poll saw
+            # ``returncode is None``", which is not a bound: asyncio's child
+            # watcher calls ``waitpid`` on its own thread and a LATER loop
+            # callback copies the status into ``returncode``, so the kernel can
+            # have released the pid while ``returncode`` still reads ``None``
+            # (measured: a loop blocked 1.5 s read ``None`` for a pid that was
+            # already gone). The honest window is (watcher reap → loop callback
+            # latency) + the grace. What actually holds is that a NON-EMPTY
+            # process group's id cannot be reused while any member lives
+            # (POSIX.1 §3.293; Linux holds it through
+            # ``attach_pid(PIDTYPE_PGID)``), and an empty one has nothing to
+            # kill — ``killpg`` answers ``ESRCH``. The residual case (empty
+            # group, number recycled, and its new holder having made itself a
+            # group leader inside that window) is accepted and stated in
+            # ADR-0238 (review posix2/F4).
+            if tree is not None:
+                tree.hard_kill()
+            else:
+                # Reachable only if ``attach`` itself raised out of ``start``,
+                # which leaves ``_proc`` set and no tree behind it. Nothing in
+                # the product can make it raise; the pid-only kill is here so
+                # that shape degrades to a root-and-group kill rather than to
+                # an ``AttributeError`` during teardown.
+                kill_process_tree(proc.pid)
             # W4 m9 — bound the final reap so a stuck child can't block
             # ``stop()`` forever. 5s is enough for a normal exit and
             # leaves the failure path observable via stderr capture.
@@ -501,6 +614,14 @@ class RpcClient:
             if transport is not None:
                 transport.close()
 
+        # A RELEASE, not a kill: on POSIX this signals nothing at all (the gap
+        # between a child's reap and this call is seconds at the delegation
+        # caller, which is precisely when an empty group's number is free for
+        # somebody else). On win32 it is ``CloseHandle(job)``, and because this
+        # tree asked for ``kill_on_close`` it also ends whatever is left.
+        if tree is not None:
+            tree.close()
+        self._tree = None
         self._proc = None
         # The reader is deliberately NOT dropped: ``dropped_lines`` has to
         # survive teardown or the delegation envelope, which is built after the

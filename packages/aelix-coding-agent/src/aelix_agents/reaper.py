@@ -215,8 +215,11 @@ def _kill_signal() -> int:
     ``descendant_pids`` returns ``[]`` with no ``/proc`` to walk — the
     grandchildren are orphaned by the first signal, before this function is
     ever consulted. Closing that needs process-group or job-object isolation at
-    the SPAWN site, which Windows silently declines (CPython names the
-    parameter ``unused_start_new_session``). That is #202, not this.
+    the SPAWN site, which Windows silently declines for ``start_new_session``
+    (CPython names the parameter ``unused_start_new_session``). #202 built the
+    primitive that Windows does not decline — ``aelix_ai.utils._process_tree``,
+    a Job Object there and a process group here; adopting it at this spawn site
+    is #220, not this.
 
     Decided on ``sys.platform`` rather than ``hasattr(signal, "SIGKILL")``,
     matching ``session/fs.py`` and :func:`pdeathsig_preexec`: pyright narrows
@@ -364,7 +367,8 @@ def pdeathsig_preexec() -> Callable[[], None] | None:
     accepted on Windows and silently ignored — CPython names the parameter
     ``unused_start_new_session`` there — so the process-group isolation both
     call sites document is absent on Windows rather than merely degraded.
-    That is #202, not this.
+    #202 built the primitive (``aelix_ai.utils._process_tree``, a Job Object on
+    Windows); adopting it at this spawn site is #220, not this.
     """
 
     return None if sys.platform == "win32" else pdeathsig

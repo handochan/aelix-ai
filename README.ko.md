@@ -89,12 +89,23 @@ curl -fsSL https://raw.githubusercontent.com/handochan/aelix-ai/main/install.sh 
   경로를 게이트까지 끝에서 끝으로 흘리는 테스트는 없습니다. `windows-latest`가 유일하게
   증명하는 것은 PowerShell 문법 휠이 거기서 설치되고 로드되고 파싱된다는 사실입니다.
   프롬프트가 뜨지 않는 것을 눈으로 본 사람은 아직 없습니다.
-- 위임한 자식을 죽이면 그 자손이 고아로 남습니다. Windows에는 프로세스 그룹이 없습니다 —
-  [#202](https://github.com/handochan/aelix-ai/issues/202).
+- 위임한 자식을 죽여도 이제 그 자손이 고아로 남지 않습니다 — 스폰 지점 세 곳에서는, 그리고
+  POSIX보다 Windows에서 더 완전하게. RPC 위임 채널, subprocess hook, `models.json`의
+  `!command`는 이제 자식을 Windows에서는 job object에, POSIX에서는 프로세스 그룹에 넣고
+  루트가 아니라 트리를 끝냅니다
+  ([#202](https://github.com/handochan/aelix-ai/issues/202),
+  [ADR-0238](docs/decisions/0238-the-kill-reached-the-child-and-the-tree-is-what-had-to-die.md)).
+  job은 모든 자손을 잡지만, POSIX 프로세스 그룹은 자기 세션을 만든 자손 — 모든 tool 자식,
+  모든 MCP 서버 — 은 잡지 못하고, 그것들은 여전히 reaper의 몫입니다.
+  근거는 또 스위트지만 여기서는 진짜 프로세스입니다: 테스트가 손자를 띄우고, 트리를 내리고,
+  손자가 사라졌는지 확인합니다. job object와 `taskkill.exe`가 실제로 실행되는 레그는
+  `windows-latest`뿐입니다. print 채널과 reaper는 **전환하지 않았고** Windows에서 여전히 모든
+  자손을 고아로 남깁니다 — [#220](https://github.com/handochan/aelix-ai/issues/220).
 
 즉 스위트 안의 Windows 회귀는 잡히고, 설치 스크립트도 실제로 돌고, AUTO 모드도 더 이상 강등되지
-않습니다. 남은 것은 프로세스 그룹 정리와 Windows 호스트에서 사람이 직접 돌려 보는 일입니다. 포팅
-현황은 [#110](https://github.com/handochan/aelix-ai/issues/110)에서 추적합니다 — 그 기준은 스위트
+않으며, 중단된 위임은 자기 트리를 데리고 갑니다. 남은 것은 print 채널의 프로세스 그룹 정리와
+Windows 호스트에서 사람이 직접 돌려 보는 일입니다. 포팅 현황은
+[#110](https://github.com/handochan/aelix-ai/issues/110)에서 추적합니다 — 그 기준은 스위트
 초록 + `install.ps1` 실행 + #204의 AUTO 모드이고, 셋 다 이제 스위트의 근거 위에서 충족됩니다(위에
 적은 대로 그 근거는 들리는 것보다 좁습니다). 표기와 CI 레그는
 [#103](https://github.com/handochan/aelix-ai/issues/103)에서 추적합니다.

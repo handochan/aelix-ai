@@ -330,7 +330,7 @@ class RpcChannel:
             #
             # THE ACCUMULATOR STOPS AT THE STREAM'S TERMINATOR. ``agent_end`` is
             # the event ``prompt_and_wait`` itself waits on
-            # (``rpc_client.py:868-871``), so a line after it is by definition
+            # (``rpc_client.py:989-992``), so a line after it is by definition
             # not this turn's data — and folding one in is last-write-wins on
             # ``summary``, ``stop_reason`` and ``error_message``, plus an
             # unconditional ``turns += 1`` and a ``tokens`` LEVEL overwrite.

@@ -168,7 +168,7 @@ async def test_rpc_child_boots_and_serves_a_command_sequence(tmp_path: Path) -> 
 
     Phase 1 is the regression guard for the ``cli/entry.py`` fix: before it, the
     child died during boot with ``RuntimeError: repo and fs must not be supplied
-    when runtime_host is explicit`` (``rpc/rpc_mode.py:2043-2046``) and this first
+    when runtime_host is explicit`` (``rpc/rpc_mode.py:2068-2071``) and this first
     request never got an answer.
     """
 
