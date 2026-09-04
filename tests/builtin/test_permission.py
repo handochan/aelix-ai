@@ -409,8 +409,11 @@ async def test_auto_classifier_allow_ask_deny(monkeypatch: pytest.MonkeyPatch) -
     # bash grammar describes, so a developer running under fish or PowerShell
     # would otherwise see this test's first assertion flip to a prompt. It has
     # to be a bash that EXISTS: the win32 resolver ignores a $SHELL that is not
-    # on disk and falls back to PowerShell, which the gate then demotes to ASK
-    # (#216 — a literal "/bin/bash" was exactly that on windows-latest).
+    # on disk and falls back to PowerShell (#216 — a literal "/bin/bash" was
+    # exactly that on windows-latest). Since #204 / ADR-0237 that fallback is
+    # no longer a blanket demotion, but the answer here is still ASK, measured:
+    # ``classify_for_shell("ls -la", "…powershell.exe")`` is ASK because
+    # ``-la`` prefixes nothing in the PowerShell parameter allowlist.
     import shutil
     from pathlib import Path
 

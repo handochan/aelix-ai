@@ -17,6 +17,7 @@ from aelix_coding_agent.builtin.bash_classifier import (
     classifier_available,
     classify,
 )
+from aelix_coding_agent.builtin.shell_classifiers.dialect import Dialect
 
 
 def test_grammar_loaded() -> None:
@@ -36,10 +37,10 @@ _CASES: dict[str, Verdict] = {
     'echo "rm -rf /"': Verdict.ALLOW,  # EVASION: quoted — not a real rm
     # ASK — unknown command / dynamic name / non-protected redirect / control flow
     "frobnicate --x": Verdict.ASK,
-    # ASK — a read-only NAME whose arguments make it a mutator (#204).
-    # These measured ALLOW before the narrowing; every one is a real mutation
-    # under some shell we may spawn. The bare and flag-only forms must stay
-    # ALLOW or the narrowing has cost more than it bought.
+    # ASK — a read-only NAME whose arguments make it a mutator (#204). Each is
+    # a mutation under some shell we may spawn, and the default dialect is
+    # UNKNOWN, which refuses a token that writes under ANY of them. The bare
+    # and flag-only forms below must stay ALLOW or the rule costs more than it buys.
     "date 01-01-2030": Verdict.ASK,  # cmd: sets the system clock
     "sort in.txt /o out.txt": Verdict.ASK,  # cmd: /O writes, no redirect node
     "hostname newname": Verdict.ASK,  # renames the machine, any platform
@@ -132,8 +133,147 @@ def test_grammar_unavailable_asks_everything(monkeypatch: pytest.MonkeyPatch) ->
     assert bash_classifier.classifier_available() is False
 
 
+# === #204 / ADR-0237: a dialect owns its switch syntax ======================
+#
+# ``_CASES`` above keeps calling ``classify(command)`` with NO dialect argument
+# and stays byte-identical; everything below asserts that the pins are a
+# property of the rule and not an artefact of the default.
+
+_PINNED_ASKS = ("date 01-01-2030", "sort in.txt /o out.txt", "hostname newname")
+
+
+@pytest.mark.parametrize("dialect", list(Dialect))
+@pytest.mark.parametrize("command", _PINNED_ASKS)
+def test_pinned_asks_hold_under_every_dialect(command: str, dialect: Dialect) -> None:
+    """Criterion 2, re-run across all four members rather than the default alone.
+
+    ``sort in.txt /o out.txt`` is the one case that would break under a POSIX
+    DEFAULT, and its POSIX ALLOW is asserted here rather than skipped: under a
+    real POSIX shell ``/o`` is a (nonexistent) input path, ``sort`` errors, and
+    that is the honest answer. Which is exactly why the default is ``UNKNOWN``
+    and not ``POSIX`` (ADR-0237) — the gate does not know which shell will run
+    the line, so it refuses a token that writes under any of them.
+    """
+
+    posix_reads_it_as_a_path = (
+        dialect is Dialect.POSIX and command == "sort in.txt /o out.txt"
+    )
+    expected = Verdict.ALLOW if posix_reads_it_as_a_path else Verdict.ASK
+    assert classify(command, dialect=dialect) is expected
+
+
+def test_posix_dialect_restores_absolute_path_reads() -> None:
+    """Criterion 5: ``sort /etc/hosts`` is a READ, and POSIX can say so.
+
+    ``0be16cd`` refused it — measured ASK on ``main`` c6d424c — because a
+    ``/``-leading token is cmd's ``/O`` family and separating that from a POSIX
+    absolute input path needs the dialect. It now has one. ``pwsh`` gets the
+    same answer: PowerShell's own parser has no ``/`` switch syntax, so a
+    ``/``-leading token there is a path too.
+    """
+
+    assert classify("sort /etc/hosts", dialect=Dialect.POSIX) is Verdict.ALLOW
+    assert classify("sort /etc/hosts", dialect=Dialect.POWERSHELL) is Verdict.ALLOW
+    assert classify("sort /etc/hosts", dialect=Dialect.CMD) is Verdict.ASK
+    assert classify("sort /etc/hosts", dialect=Dialect.UNKNOWN) is Verdict.ASK
+    # The cost that recovery does NOT pay back: under POSIX a ``/o`` really is
+    # a (nonexistent) input path and ``sort`` errors. Harmless, and the honest
+    # answer — the pin above keeps every other dialect refusing it.
+    assert classify("sort in.txt /o out.txt", dialect=Dialect.POSIX) is Verdict.ALLOW
+
+
+# Every one of these measured ALLOW on ``main`` c6d424c while mutating. Six
+# auto-allowed writes plus one that EXECUTES an arbitrary program on each temp
+# file — found while validating criterion 5, all inside the very function
+# ``0be16cd`` added to prevent them.
+_MEASURED_AUTO_ALLOWED_MUTATIONS = (
+    "sort -o out.txt in.txt",  # writes out.txt
+    "sort -oout.txt in.txt",  # GNU attached-value short form
+    "sort --output=out.txt in.txt",
+    "sort --output out.txt in.txt",
+    "sort --compress-program=/tmp/x in.txt",  # EXECUTES /tmp/x
+    "date --set=2030-01-01",  # sets the system clock
+    "hostname -b",  # --boot: sets the hostname
+)
+
+
+@pytest.mark.parametrize("dialect", list(Dialect))
+@pytest.mark.parametrize("command", _MEASURED_AUTO_ALLOWED_MUTATIONS)
+def test_auto_allowed_mutations_are_refused_under_every_dialect(
+    command: str, dialect: Dialect
+) -> None:
+    assert classify(command, dialect=dialect) is Verdict.ASK
+
+
+# Reads, not writes — and refused anyway, because each turns ONE argument into
+# an unbounded set of reads. That is the identical hazard, in the identical
+# words, that ``shell_classifiers.cmd`` refuses ``findstr /f:``/``/g:`` for, and
+# two classifiers stating opposite rules for the same shape is how a table
+# drifts. Both were ALLOW while ``--files0-from`` and ``--random-source`` sat in
+# ``_SORT_POSIX.long_ok``.
+_UNBOUNDED_READS = ("sort --files0-from=list", "sort --random-source=/dev/x")
+
+
+@pytest.mark.parametrize("dialect", list(Dialect))
+@pytest.mark.parametrize("command", _UNBOUNDED_READS)
+def test_unbounded_reads_are_refused_under_every_dialect(
+    command: str, dialect: Dialect
+) -> None:
+    assert classify(command, dialect=dialect) is Verdict.ASK
+
+
+# Measured ALLOW on c6d424c and read-only. This is the precision the allowlist
+# inversion has to KEEP: refusing these would trade six real mutations for a
+# gate nobody can use.
+_PRESERVED_ALLOWS = (
+    "sort -n in.txt",
+    "sort -u in.txt",
+    "sort -k2 in.txt",
+    "sort -V in.txt",  # short options are case-sensitive; -V is --version-sort
+    "sort -S 10M in.txt",
+    "date -Iseconds",
+    "date -R",
+    "date --utc",
+    "hostname -f",
+    "hostname -s",
+)
+
+
+@pytest.mark.parametrize("dialect", [Dialect.POSIX, Dialect.UNKNOWN])
+@pytest.mark.parametrize("command", _PRESERVED_ALLOWS)
+def test_preserved_allows_survive_the_allowlist_inversion(
+    command: str, dialect: Dialect
+) -> None:
+    assert classify(command, dialect=dialect) is Verdict.ALLOW
+
+
+def test_a_homoglyph_dash_can_only_make_a_token_stricter() -> None:
+    """U+2013 EN DASH is a real switch dash to PowerShell, and to nothing else.
+
+    ``CharTraits.cs:12-15`` / ``:254-259``, consumed at ``tokenizer.cs:4745-4749``
+    (PowerShell v7.4.6). So ``hostname –b`` has to be refused as ``--boot``. But
+    a genuine POSIX shell does NOT normalise, and there ``date –u`` is a
+    positional — which is what ``date`` sets its clock from. Normalising is
+    therefore used only to REFUSE, never to admit: both stay ASK, which is also
+    both of their measured verdicts on c6d424c.
+    """
+
+    for dialect in Dialect:
+        assert classify("hostname –b", dialect=dialect) is Verdict.ASK
+        assert classify("date –u", dialect=dialect) is Verdict.ASK
+
+
 def test_module_reimport_is_clean() -> None:
-    # Defensive: re-importing must not raise (the module builds the parser once
-    # at import inside a try/except).
+    """Re-importing must not raise (the parser is built once, inside try/except).
+
+    KEEP THIS LAST IN THE FILE. ``importlib.reload`` re-executes the module in
+    its existing namespace, so ``Verdict`` is rebound to a NEW class object
+    while every already-imported test module still holds the old one, and
+    ``verdict is Verdict.ALLOW`` starts answering False across module
+    boundaries. Everything above compares identity and must therefore run
+    first; the sibling files that run after this one compare by VALUE, which
+    is what ``IntEnum`` is for.
+    """
+
     importlib.reload(bash_classifier)
     assert hasattr(bash_classifier, "classify")

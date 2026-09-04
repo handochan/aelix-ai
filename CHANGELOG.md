@@ -20,6 +20,28 @@ and `.../releases/tag/vX` link would 404. Add them with the first pushed tag.
 
 ### Changed
 
+- **Seven `sort`/`date`/`hostname` spellings stop being auto-approved, and one
+  read starts.** AUTO mode decided whether a command was read-only by looking at
+  the *shape* of its arguments — a `-` in front meant "flag", a `/` in front
+  meant "writes". Both premises are false on POSIX, and the measurement that
+  ended them was taken on a developer machine, not a Windows one:
+  `sort -o out.txt in.txt`, `sort -oout.txt in.txt`,
+  `sort --output=out.txt in.txt`, `sort --output out.txt in.txt`,
+  `date --set=2030-01-01` and `hostname -b` all ran without asking you, and each
+  writes a file or sets the system clock. So did
+  `sort --compress-program=/tmp/x`, which executes `/tmp/x` on every temporary
+  file. All of them prompt now. `sort --files0-from=` and `sort --random-source=`
+  prompt too, for the reason this gate already refuses `findstr /f:`: one
+  argument becomes an unbounded set of reads.
+
+  Going the other way, `sort /etc/hosts` is auto-approved again under a shell
+  that resolved to `bash`. It is a plain read, and it was refused only because
+  `/etc/hosts` looks like a `cmd` switch to a rule that could not tell which
+  shell it was reading for. Under `fish`, or when the shell cannot be resolved
+  at all, it still prompts — the same "assume nothing" answer, now stated as a
+  default instead of guessed at. See ADR-0237 and
+  [#204](https://github.com/handochan/aelix-ai/issues/204).
+
 - **Your own turns are a thicker band.** The echo bar that marks a human turn
   now carries one painted row above and below the text, so the turn reads as an
   object with a top and a bottom edge rather than as a single coloured line. The
@@ -57,6 +79,32 @@ and `.../releases/tag/vX` link would 404. Add them with the first pushed tag.
   [#196](https://github.com/handochan/aelix-ai/issues/196).
 
 ### Added
+
+- **AUTO mode can read PowerShell and `cmd`, so it stops prompting for every
+  line on Windows.** Until now the gate parsed every command with a *bash*
+  grammar and then, on any shell that grammar does not describe, downgraded its
+  own verdict to a prompt. That is why nothing was ever mis-run there — and also
+  why AUTO on Windows was indistinguishable from not shipping it. `pwsh`,
+  `powershell` and `cmd.exe` now get a classifier that reads their own syntax:
+  `Get-ChildItem`, `dir`, `type a.txt`, `echo hello` and `date /t` run without a
+  prompt, while `Remove-Item -Recurse -Force C:\`, `del /s /q C:\Windows`,
+  `date 01-01-2030`, `iex`, `Set-ExecutionPolicy Bypass` and a redirect into
+  `C:\Windows` are blocked outright rather than merely asked about.
+
+  Reading is not the same claim as harmless to read: `type`, `Get-Content`,
+  `Select-String` and `findstr` still prompt when the target is a credential
+  store — `.ssh`, `.aws`, `.gnupg`, `.docker`, `.kube`, `.azure`, gcloud,
+  Terraform, `gh`, `.git-credentials`, `.env`/`.env.local`, a private key — or a
+  UNC path, where the read itself is an outbound SMB connection to whatever host
+  the command names.
+
+  The bash classifier's DENY is kept underneath as a floor, so `rm -rf /`,
+  `find . -delete` and `curl … | sh` still block under every shell — including
+  the ones this adds. The ALLOW lists are deliberately incomplete: an unlisted
+  name, an unread argument or an unparsable line costs a prompt, which is the
+  direction that is safe to be wrong in. Windows remains EXPERIMENTAL — this is
+  covered by tests, and nobody has yet run it on a real Windows box. See
+  ADR-0237 and [#204](https://github.com/handochan/aelix-ai/issues/204).
 
 - **422 more models, including the ones released this month.** The catalog had
   not been refreshed since it was ported: of the models upstream lists with a

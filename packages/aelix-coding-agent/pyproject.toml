@@ -48,6 +48,19 @@ dependencies = [
   # platform → sdist build skipped), so the other four postures are unaffected.
   "tree-sitter>=0.25,<0.26",
   "tree-sitter-bash>=0.25,<0.26",
+  # #204 (ADR-0237) — the PowerShell half of the same gate. Airbus CERT's
+  # grammar, MIT, cp310-abi3 wheels for macos x86_64/arm64, manylinux and
+  # musllinux x86_64/aarch64, win_amd64 and win_arm64; `uv pip install
+  # --dry-run --only-binary :all:` said "Would install 1 package" for all 8
+  # platform × python combinations, and it loads at ABI 15 under the
+  # `tree-sitter<0.26` pin above, so no pin moves.
+  #
+  # `tree-sitter-batch` is REJECTED for cmd and must not be helpfully added:
+  # every parse WITHOUT a trailing newline is has_error=True — including bare
+  # `dir` (MISSING "program_token1") — which under ADR-0158's
+  # has_error → ASK doctrine ASKs on 100% of the inputs a shell tool actually
+  # sends. cmd gets the hand-written tokenizer in `shell_classifiers/cmd.py`.
+  "tree-sitter-powershell>=0.26,<0.27",
   # #67 (ADR-0189) — Ed25519 detached-signature provenance for extension packs.
   # Promoted from an incidental transitive dep (via google-auth) to a DIRECT dep:
   # the extension signing/verification path imports it, so a clean install must

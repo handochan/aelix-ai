@@ -81,16 +81,24 @@ either: it now runs end to end in CI on `windows-latest`, under both pwsh and Wi
 
 - No release is gated on a Windows **runtime** check. Nobody has started `aelix` on Windows and
   watched it do a turn.
-- AUTO permission mode is unusable: there is no PowerShell/cmd classifier, so every command
-  demotes to ASK — [#204](https://github.com/handochan/aelix-ai/issues/204).
+- AUTO permission mode has never been driven by a human on a Windows host. It is no longer
+  unusable there — [#204](https://github.com/handochan/aelix-ai/issues/204) gave PowerShell and
+  `cmd` classifiers of their own ([ADR-0237](docs/decisions/0237-a-dialect-owns-its-switch-syntax-and-the-gate-read-every-shell-with-bashs.md)),
+  so a command is read with the switch syntax of the shell that will run it instead of demoting
+  to ASK. The evidence is the suite, and it is narrower than it sounds: every dialect test
+  injects the resolved shell, so both sides run on every leg and no test lets an unpatched
+  Windows `_resolve_shell` feed a real `pwsh`/`cmd` path into the gate end to end. What
+  `windows-latest` uniquely proves is that the PowerShell grammar wheel installs, loads and
+  parses there. Nobody has watched the prompt not appear.
 - Killing a delegated child orphans its descendants; Windows has no process group —
   [#202](https://github.com/handochan/aelix-ai/issues/202).
 
-So Windows regressions in the suite are caught and the installer runs for real; AUTO mode and
-process-group cleanup are what's left. Track the port in
-[#110](https://github.com/handochan/aelix-ai/issues/110) — its bar is suite-green +
-`install.ps1` executed + #204's AUTO mode, and the first two now hold; the labelling and the CI
-leg are [#103](https://github.com/handochan/aelix-ai/issues/103).
+So Windows regressions in the suite are caught, the installer runs for real, and AUTO mode no
+longer demotes; process-group cleanup and a human actually driving it on a Windows host are
+what's left. Track the port in [#110](https://github.com/handochan/aelix-ai/issues/110) — its
+bar is suite-green + `install.ps1` executed + #204's AUTO mode, and all three now hold on the
+suite's evidence, which is the narrower claim described above; the labelling and the CI leg are
+[#103](https://github.com/handochan/aelix-ai/issues/103).
 
 ## Quick start
 

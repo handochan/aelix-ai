@@ -7,6 +7,12 @@
   classifier drives), ADR-0004 (`GuardrailExtension` — the regex first-block-wins floor retained as
   defense in depth). Roadmap: `.omc/specs/tui-v2-overhaul-roadmap.md` (overrides the earlier
   "auto mode = defer" note, which predated the install/soundness proof).
+- **Extended by:** ADR-0237 (#204). This ADR answers with one grammar for one dialect; ADR-0237
+  makes the RESOLVED shell an input, adds PowerShell and `cmd` classifiers beside this one, and
+  keeps this classifier's DENY as a floor under them. Nothing here is retracted — the bash path
+  is unchanged except that a known read-only name's ARGUMENTS are now read with the resolved
+  dialect's switch syntax, which is what stopped `sort in.txt /o out.txt` from being an ALLOW
+  under `cmd`.
 
 ## Context
 

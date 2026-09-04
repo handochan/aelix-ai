@@ -80,15 +80,24 @@ curl -fsSL https://raw.githubusercontent.com/handochan/aelix-ai/main/install.sh 
 
 - Windows **런타임** 확인에 걸린 릴리즈가 없습니다. Windows에서 `aelix`를 띄워 한 턴이
   도는 것을 본 사람이 아직 없습니다.
-- AUTO 권한 모드는 쓸 수 없습니다. PowerShell/cmd 분류기가 없어서 모든 명령이 ASK로
-  강등됩니다 — [#204](https://github.com/handochan/aelix-ai/issues/204).
+- AUTO 권한 모드를 Windows 호스트에서 사람이 직접 돌려 본 적이 없습니다. 더 이상 쓸 수 없는
+  상태는 아닙니다 — [#204](https://github.com/handochan/aelix-ai/issues/204)에서 PowerShell과
+  `cmd`가 각자의 분류기를 갖게 됐고([ADR-0237](docs/decisions/0237-a-dialect-owns-its-switch-syntax-and-the-gate-read-every-shell-with-bashs.md)),
+  명령은 ASK로 강등되는 대신 실제로 그것을 실행할 셸의 스위치 문법으로 읽힙니다. 근거는
+  스위트뿐이고, 들리는 것보다 좁습니다: 방언 테스트는 전부 해석된 셸을 주입하므로 모든
+  레그에서 양쪽을 다 돌리고, 패치되지 않은 Windows `_resolve_shell`이 진짜 `pwsh`/`cmd`
+  경로를 게이트까지 끝에서 끝으로 흘리는 테스트는 없습니다. `windows-latest`가 유일하게
+  증명하는 것은 PowerShell 문법 휠이 거기서 설치되고 로드되고 파싱된다는 사실입니다.
+  프롬프트가 뜨지 않는 것을 눈으로 본 사람은 아직 없습니다.
 - 위임한 자식을 죽이면 그 자손이 고아로 남습니다. Windows에는 프로세스 그룹이 없습니다 —
   [#202](https://github.com/handochan/aelix-ai/issues/202).
 
-즉 스위트 안의 Windows 회귀는 잡히고 설치 스크립트도 실제로 돕니다. 남은 것은 AUTO 모드와
-프로세스 그룹 정리입니다. 포팅 현황은 [#110](https://github.com/handochan/aelix-ai/issues/110)에서
-추적합니다 — 그 기준은 스위트 초록 + `install.ps1` 실행 + #204의 AUTO 모드이고, 앞의 둘은 이제
-충족됩니다. 표기와 CI 레그는 [#103](https://github.com/handochan/aelix-ai/issues/103)에서 추적합니다.
+즉 스위트 안의 Windows 회귀는 잡히고, 설치 스크립트도 실제로 돌고, AUTO 모드도 더 이상 강등되지
+않습니다. 남은 것은 프로세스 그룹 정리와 Windows 호스트에서 사람이 직접 돌려 보는 일입니다. 포팅
+현황은 [#110](https://github.com/handochan/aelix-ai/issues/110)에서 추적합니다 — 그 기준은 스위트
+초록 + `install.ps1` 실행 + #204의 AUTO 모드이고, 셋 다 이제 스위트의 근거 위에서 충족됩니다(위에
+적은 대로 그 근거는 들리는 것보다 좁습니다). 표기와 CI 레그는
+[#103](https://github.com/handochan/aelix-ai/issues/103)에서 추적합니다.
 
 ## 빠른 시작
 

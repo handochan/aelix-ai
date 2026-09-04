@@ -6,7 +6,10 @@
 > py3.11 and py3.12, down from 433 at the first run. The burndown it predicted
 > is recorded issue by issue (#205–#219, #203, #109 comments). The "Remaining"
 > list below is kept as the record of what was known before the leg ran; items
-> that survived it are #202, #204, #106, #107, #108, #46, #201 on the board.
+> that survived it are #202, #107, #108, #46, #201 on the board. #106 and #204
+> closed on 2026-09-04: `install.ps1` now runs end to end in CI (the
+> `install.ps1 e2e` jobs), and W2's blanket force-ASK is gone, replaced by
+> per-dialect classifiers (ADR-0237).
 > Windows is still not a supported platform — the suite passing is not that
 > claim (README, "Platform support").
 
@@ -26,7 +29,7 @@ runner's real user profile.
 | Item | What | Where |
 | --- | --- | --- |
 | W1 | `HOME`-only test sandboxing → `sandbox_home` (HOME + USERPROFILE + HOMEDRIVE/HOMEPATH + APPDATA/LOCALAPPDATA), 25 sites across 9 files | `tests/env_sandbox.py`, `tests/test_env_sandbox_windows.py` |
-| W2 | `_resolve_shell` win32 arm + `ShellConfig(path, command_flag)`; AUTO mode force-ASK on a shell the bash grammar can't read | `tools/bash.py`, `builtin/bash_classifier.py`, `builtin/permission.py` |
+| W2 | `_resolve_shell` win32 arm + `ShellConfig(path, command_flag)`; AUTO mode force-ASK on a shell the bash grammar can't read — the force-ASK half is **superseded by #204 / ADR-0237**, which routes PowerShell and `cmd` to classifiers of their own instead of downgrading them | `tools/bash.py`, `builtin/bash_classifier.py`, `builtin/permission.py`, `builtin/shell_classifiers/` |
 | W3 | win32-safe process-tree kill at the two owned spawn sites | `tools/_process_tree.py`, `tools/bash.py`, `tools/_subprocess.py` |
 | W4 | RPC stdin thread-pump (`connect_read_pipe` is `NotImplementedError` on Windows) | `rpc/rpc_mode.py` |
 | W5 | `install.ps1` at parity with `install.sh`'s checksum gate, now executed end to end by the `install.ps1 e2e (pwsh)` / `install.ps1 e2e (powershell)` CI jobs (#106) | `install.ps1`, `.github/workflows/ci.yml`, `tests/packaging_gate/test_install_ps1_parity.py` |

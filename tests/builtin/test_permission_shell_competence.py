@@ -8,10 +8,23 @@ real mis-permissioning was the opposite shape: a KNOWN read-only name (``date``,
 ``sort``) whose arguments the ALLOW tier did not read, and whose meaning changes
 under cmd (``date <value>`` sets the clock; ``sort /O <file>`` writes a file).
 ``0be16cd`` narrowed those names; the gate below is the backstop for the same
-shape. ALLOW is the only tier whose name-alone decision is permissive (DENY
-and ASK also match on the bare name, but in the fail-safe direction), so on
-Windows — where ``_resolve_shell`` now resolves PowerShell or ``cmd`` — that
-tier's verdict is no longer trustworthy and gets downgraded to ASK.
+shape. ALLOW is the only tier whose name-alone decision is permissive (DENY and
+ASK also match on the bare name, but in the fail-safe direction), so a verdict
+the bash grammar produced for a shell it does not describe was not merely
+unknown, it was misleading — and the ALLOW got downgraded to ASK.
+
+**#204 replaced that downgrade for PowerShell and ``cmd``, and this module's
+tests were rewritten around the replacement.** ``permission.py:685-711`` now
+reads the DIALECT off the resolved shell: ``pwsh``/``powershell``/``cmd`` get
+their own classifier with the bash DENY kept as a floor and ``competent`` set
+outright, so ``is_classifiable_shell`` is never consulted for them and ``dir``
+under ``cmd.exe`` reaches ALLOW (``test_cmd_read_only_internals_are_auto_allowed``
+below). The downgrade is still the whole story for every OTHER unreadable
+shell — ``fish``, and anything unresolvable — which
+``test_dialect_dispatch.py::test_an_unknown_dialect_shell_keeps_todays_precheck``
+pins, and ``is_classifiable_shell`` still means what it meant
+(``test_windows_and_exotic_shells_are_not_classifiable`` below): a claim about a
+grammar, not about a platform.
 
 These tests RUN on Linux. The resolved shell is injected at the seam the
 permission gate uses, so the Windows verdicts are asserted rather than skipped.
@@ -128,7 +141,15 @@ async def test_a_version_suffixed_posix_shell_still_auto_allows(
 async def test_windows_shell_forces_ask_instead_of_auto_allow(
     resolved_shell, shell: str
 ) -> None:
-    """``ls -la`` classifies ALLOW, but the shell that would run it isn't bash."""
+    """``ls -la`` classifies ALLOW to the BASH grammar, and still prompts here.
+
+    The assertion is unchanged by #204; the REASON is now different per shell
+    rather than one blanket downgrade, and after slice 3 no shell here reaches
+    the downgrade at all — each dialect classifier answers for itself. Under
+    PowerShell ``ls`` resolves to ``Get-ChildItem`` and ``-la`` prefixes no
+    allowlisted parameter. Under ``cmd`` there is no ``ls`` name in any tier,
+    so it falls to the unknown-name ASK. Both are ASK on their own merits.
+    """
 
     resolved_shell(shell)
     ctx = _FakeCtx()
@@ -139,12 +160,16 @@ async def test_windows_shell_forces_ask_instead_of_auto_allow(
 
 
 async def test_powershell_removal_is_not_silently_allowed(resolved_shell) -> None:
-    """Unknown-command ASK still prompts under a non-bash shell.
+    """The verdict got STRONGER: a block with no prompt, not a prompt (#204).
 
-    ``Remove-Item -Recurse -Force C:\\`` matches no classifier table and
-    already resolves to ASK on its own (see bash_classifier.py:83-95); this
-    only confirms that verdict still reaches the user under PowerShell rather
-    than being coerced into anything else.
+    The name stays true and the body had to change. Its old claim —
+    ``Remove-Item -Recurse -Force C:\\`` "matches no classifier table" — was a
+    fact about this repo when only the bash grammar existed (the corrected
+    comment at bash_classifier.py:86-98 records that it really did fall to the
+    unknown-command ASK, and that the mis-permissioning was elsewhere). Since
+    slice 2 of #204 there IS a table that matches it: a recursive-force delete
+    whose target is a drive root is DENY under the PowerShell dialect, so the
+    user is never asked to approve it.
     """
 
     resolved_shell(_POWERSHELL)
@@ -155,7 +180,66 @@ async def test_powershell_removal_is_not_silently_allowed(resolved_shell) -> Non
     )
 
     assert result is not None and result.block
-    assert ctx.ui.select_calls == 1
+    assert ctx.ui.select_calls == 0  # blocked outright, never prompted
+
+
+async def test_cmd_read_only_internals_are_auto_allowed(resolved_shell) -> None:
+    """AUTO mode stops prompting for ``dir`` under ``cmd`` — #204's deliverable.
+
+    ``ask`` on ``main`` c6d424c, for a reason that was never about ``dir``:
+    ``is_classifiable_shell("cmd.exe")`` is False, so the ALLOW tier's verdict
+    was downgraded whatever it said. Slice 3 gives ``cmd`` a grammar of its own
+    and the downgrade stops being the answer.
+    """
+
+    resolved_shell(_CMD)
+    ctx = _FakeCtx()
+
+    assert await _perm()._on_tool_call(_bash_event("dir"), ctx) is None  # type: ignore[arg-type]
+    assert ctx.ui.select_calls == 0
+
+
+async def test_cmd_recursive_delete_is_not_silently_allowed(resolved_shell) -> None:
+    """``del /s /q C:\\Windows`` blocks with no prompt (#204).
+
+    The counterpart of ``test_powershell_removal_is_not_silently_allowed``, and
+    it corrects the same false premise: this command never DID auto-allow — it
+    matched no table and fell to the unknown-command ASK (the corrected comment
+    at ``bash_classifier.py:86-98``). What changed is that there is now a table
+    that matches it, so the user is never asked to approve it. ``del x`` without
+    ``/s`` stays a prompt, deliberately (#204 F13).
+    """
+
+    resolved_shell(_CMD)
+    ctx = _FakeCtx()
+    result = await _perm()._on_tool_call(
+        _bash_event(r"del /s /q C:\Windows"),  # type: ignore[arg-type]
+        ctx,
+    )
+
+    assert result is not None and result.block
+    assert ctx.ui.select_calls == 0
+
+
+@pytest.mark.parametrize("shell", [_PWSH, _CMD])
+async def test_a_posix_deny_still_blocks_under_both_windows_dialects(
+    resolved_shell, shell: str
+) -> None:
+    """Criterion 4, end to end and on BOTH new dialects.
+
+    ``rm`` is not a cmd name and ``rm -rf /`` is ASK to the cmd classifier, so
+    the block here comes from the bash classifier's DENY kept as a FLOOR in
+    ``_auto_classify_bash``. That floor is the compensating control the whole
+    loosening is conditioned on: the dialect classifiers may raise ASK to ALLOW
+    and may ADD verdicts, and can never lower a DENY.
+    """
+
+    resolved_shell(shell)
+    ctx = _FakeCtx()
+    result = await _perm()._on_tool_call(_bash_event("rm -rf /"), ctx)  # type: ignore[arg-type]
+
+    assert result is not None and result.block
+    assert ctx.ui.select_calls == 0
 
 
 async def test_deny_is_still_honoured_on_a_non_bash_shell(resolved_shell) -> None:
