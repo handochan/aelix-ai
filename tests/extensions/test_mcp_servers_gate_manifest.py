@@ -27,8 +27,10 @@ import asyncio
 import contextlib
 import gc
 import textwrap
-from pathlib import Path
+import tomllib
+from pathlib import Path, PurePath, PureWindowsPath
 
+import pytest
 from aelix_agent_core.contracts import parse_manifest_toml
 from aelix_coding_agent.extensions.loader import (
     gate_manifest_mcp_contribs,
@@ -67,7 +69,7 @@ def _manifest(
     """).strip()
 
 
-def _stdio_server(marker: Path) -> str:
+def _stdio_server(marker: PurePath) -> str:
     """A stdio server whose ``command`` proves execution by side effect.
 
     The marker is written to a scratch path and ``mv``'d into place, so it is
@@ -77,7 +79,15 @@ def _stdio_server(marker: Path) -> str:
     at ~2% (60/3000) on this machine, i.e. a flake in the payload assertion.
     Rename is the only step the poller can observe.
     """
-    script = f"printf {_MARKER_PAYLOAD} > {marker}.part && mv {marker}.part {marker}"
+    # ``as_posix()`` because this lands inside a TOML *basic* (double-quoted)
+    # string: a Windows ``tmp_path`` would put ``C:\\Users\\...`` there and the
+    # ``\\U`` would be read as a unicode escape ("Invalid hex value", #214).
+    # Windows accepts forward slashes at the API level, so nothing else moves.
+    posix_marker = marker.as_posix()
+    script = (
+        f"printf {_MARKER_PAYLOAD} > {posix_marker}.part "
+        f"&& mv {posix_marker}.part {posix_marker}"
+    )
     return textwrap.dedent(f"""
         [[contributes.mcp_servers]]
         name = "gate-probe"
@@ -188,6 +198,29 @@ async def _wait_for_marker(marker: Path, timeout: float = 2.0) -> bool:
             return True
         await asyncio.sleep(0.02)
     return marker.exists()
+
+
+def test_stdio_server_survives_a_windows_shaped_tmp_path() -> None:
+    """#214 guard, platform-independent (``PureWindowsPath`` needs no Windows).
+
+    On a Windows runner ``tmp_path`` is ``C:\\Users\\runneradmin\\...``; raw
+    interpolation into the TOML basic string makes ``\\U`` a unicode escape,
+    the loader drops the manifest before the gate, and the two tests below
+    stop measuring the gate at all.
+    """
+    win = PureWindowsPath(r"C:\Users\runneradmin\AppData\Local\Temp\x\spawned.marker")
+    posix = "C:/Users/runneradmin/AppData/Local/Temp/x/spawned.marker"
+
+    # Anti-vacuity FIRST: the trap must still be a trap.
+    with pytest.raises(tomllib.TOMLDecodeError, match="Invalid hex value"):
+        tomllib.loads(f'args = ["-c", "printf {_MARKER_PAYLOAD} > {win}.part"]')
+
+    parsed = tomllib.loads(_manifest(capabilities="", server=_stdio_server(win)))
+    (server,) = parsed["contributes"]["mcp_servers"]
+    assert server["args"] == [
+        "-c",
+        f"printf {_MARKER_PAYLOAD} > {posix}.part && mv {posix}.part {posix}",
+    ]
 
 
 async def test_stdio_server_without_shell_exec_never_spawns(

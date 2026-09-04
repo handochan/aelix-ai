@@ -22,7 +22,8 @@ from __future__ import annotations
 
 import sys
 import textwrap
-from pathlib import Path
+import tomllib
+from pathlib import Path, PurePath, PureWindowsPath
 
 import pytest
 from aelix_coding_agent.cli import entry as entry_mod
@@ -50,11 +51,17 @@ def _isolated_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return tmp_path
 
 
-def _write_pack(proj: Path, *, capabilities: str, marker: Path) -> None:
-    pkg = proj / ".aelix" / "extensions" / "mcp-entry-plug"
-    pkg.mkdir(parents=True)
-    pkg.joinpath("aelix-plugin.toml").write_text(
-        textwrap.dedent(f"""
+def _pack_toml(*, capabilities: str, marker: PurePath) -> str:
+    """The manifest text ``_write_pack`` lands on disk.
+
+    ``marker.as_posix()`` because it is interpolated into a TOML *basic*
+    (double-quoted) string: a Windows ``tmp_path`` would put ``C:\\Users\\...``
+    there and the ``\\U`` would be read as a unicode escape, so ``tomllib``
+    rejects the whole manifest before the gate under test runs (#214). Windows
+    accepts forward slashes at the API level, so ``marker.exists()`` and the
+    ``sh`` redirect are unaffected.
+    """
+    return textwrap.dedent(f"""
             [plugin]
             id = "mcp-entry-plug"
             name = "MCP Entry Plugin"
@@ -75,13 +82,20 @@ def _write_pack(proj: Path, *, capabilities: str, marker: Path) -> None:
             name = "entry-probe"
             transport = "stdio"
             command = "/bin/sh"
-            args = ["-c", "printf SPAWNED > {marker}"]
+            args = ["-c", "printf SPAWNED > {marker.as_posix()}"]
 
             [contributes.mcp_servers.env]
             GITHUB_TOKEN = "ghp_TESTONLY_ENTRY_SECRET_0123456789"
 
             {capabilities}
-        """).strip(),
+        """).strip()
+
+
+def _write_pack(proj: Path, *, capabilities: str, marker: Path) -> None:
+    pkg = proj / ".aelix" / "extensions" / "mcp-entry-plug"
+    pkg.mkdir(parents=True)
+    pkg.joinpath("aelix-plugin.toml").write_text(
+        _pack_toml(capabilities=capabilities, marker=marker),
         encoding="utf-8",
     )
 
@@ -113,6 +127,28 @@ async def _run(
     # test here.
     await entry_mod._async_main([*_ARGV, "--approve"])
     return seen
+
+
+def test_pack_toml_survives_a_windows_shaped_tmp_path() -> None:
+    """#214 guard, platform-independent (``PureWindowsPath`` needs no Windows).
+
+    On a Windows runner ``tmp_path`` is ``C:\\Users\\runneradmin\\...``; raw
+    interpolation into the TOML basic string makes ``\\U`` a unicode escape,
+    the loader drops the whole manifest with a WARNING, and both gate tests
+    below then pass/fail for a reason that has nothing to do with the gate.
+    """
+    win = PureWindowsPath(r"C:\Users\runneradmin\AppData\Local\Temp\x\spawned.marker")
+
+    # Anti-vacuity FIRST: the trap must still be a trap.
+    with pytest.raises(tomllib.TOMLDecodeError, match="Invalid hex value"):
+        tomllib.loads(f'args = ["-c", "printf SPAWNED > {win}"]')
+
+    parsed = tomllib.loads(_pack_toml(capabilities="", marker=win))
+    (server,) = parsed["contributes"]["mcp_servers"]
+    assert server["args"] == [
+        "-c",
+        "printf SPAWNED > C:/Users/runneradmin/AppData/Local/Temp/x/spawned.marker",
+    ]
 
 
 async def test_entry_refuses_ungated_manifest_mcp_server_and_says_so(

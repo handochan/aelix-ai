@@ -10,7 +10,8 @@ from __future__ import annotations
 
 import logging
 import textwrap
-from pathlib import Path
+import tomllib
+from pathlib import Path, PurePath, PureWindowsPath
 from types import SimpleNamespace
 
 import pytest
@@ -62,6 +63,18 @@ def _manifest(themes_toml: str) -> PluginManifest:
             {themes_toml}
         """).strip()
     )
+
+
+def _abs_theme_entry(path: PurePath) -> str:
+    """A ``contributes.themes`` entry naming an ABSOLUTE path.
+
+    ``as_posix()`` because the path lands inside a TOML *basic* (double-quoted)
+    string: a Windows ``tmp_path`` would put ``C:\\Users\\...`` there and the
+    ``\\U`` would be read as a unicode escape, so ``tomllib`` rejects the whole
+    manifest before the traversal fence under test runs (#214). Windows accepts
+    forward slashes at the API level, so the fence still sees the same file.
+    """
+    return f'themes = [{{ path = "{path.as_posix()}" }}]'
 
 
 def _ext(name: str, pkg_dir: Path | None, themes_toml: str) -> Extension:
@@ -230,11 +243,37 @@ def test_absolute_path_escape_rejected(
     outside.write_text('name = "evil"\n', encoding="utf-8")
     pkg = tmp_path / "pkg"
     pkg.mkdir()
-    ext = _ext("plug", pkg, f'themes = [{{ path = "{outside}" }}]')
+    ext = _ext("plug", pkg, _abs_theme_entry(outside))
     with caplog.at_level(logging.WARNING):
         apply_manifest_themes(SimpleNamespace(extensions=[ext]))
     assert theme_registry.get_theme("evil") is None
     assert "escapes the plugin directory" in caplog.text
+
+
+def test_abs_theme_entry_survives_a_windows_shaped_tmp_path() -> None:
+    """#214 guard, platform-independent (``PureWindowsPath`` needs no Windows).
+
+    On a Windows runner ``tmp_path`` is ``C:\\Users\\runneradmin\\...``; raw
+    interpolation into a TOML basic string makes ``\\U`` a unicode escape and
+    ``tomllib`` throws away the whole manifest, so the traversal fence in
+    ``test_absolute_path_escape_rejected`` never ran there.
+    """
+    win = PureWindowsPath(r"C:\Users\runneradmin\AppData\Local\Temp\x\outside.toml")
+
+    # Anti-vacuity FIRST: the trap this guard exists for must still be a trap,
+    # otherwise the assertions below could go green for the wrong reason.
+    with pytest.raises(tomllib.TOMLDecodeError, match="Invalid hex value"):
+        tomllib.loads(f'themes = [{{ path = "{win}" }}]')
+
+    parsed = tomllib.loads(_abs_theme_entry(win))
+    assert parsed["themes"] == [
+        {"path": "C:/Users/runneradmin/AppData/Local/Temp/x/outside.toml"}
+    ]
+    # And it survives the real manifest parser, not just bare tomllib.
+    manifest = _manifest(_abs_theme_entry(win))
+    assert manifest.contributes.themes[0].path == (
+        "C:/Users/runneradmin/AppData/Local/Temp/x/outside.toml"
+    )
 
 
 def test_symlink_escape_rejected(
