@@ -90,3 +90,125 @@ jobs:
 
       - name: Test gate (pytest)
         run: uv run pytest -p no:cacheprovider -q
+
+  # install.ps1 has no coverage that executes it (#106). Its only gate was
+  # tests/packaging_gate/test_install_ps1_parity.py, which is regex over text —
+  # it proves the script has not DRIFTED from install.sh, never that it runs.
+  # This job runs the documented one-liner end to end against the published
+  # release, on both Windows hosts, and GATES from the first green run: an
+  # advisory leg here would let a broken installer ship green, which is the
+  # exact failure #103's comment above describes.
+  #
+  # Deliberately NOT astral-sh/setup-uv. `grep -iE '\buv\b|astral'` over
+  # actions/runner-images images/windows/Windows2025-Readme.md (windows-latest
+  # → Windows Server 2025) and Windows2022-Readme.md returns Miniconda/Pipx and
+  # nothing else, so uv is absent and install.ps1's Step 2 bootstrap runs for
+  # real. The "uv must be absent" step below asserts that premise instead of
+  # assuming it — the day GitHub adds uv to the image, the bootstrap branch goes
+  # dead in CI and this job must say so rather than quietly measuring half of
+  # Step 2. The second install pass covers the other half.
+  #
+  # The first execution (run 33862346729, commit 74008b6) came back red on BOTH
+  # hosts, on install.ps1's own Step 2, and neither defect was reachable by the
+  # regex parity test: on pwsh, `(Invoke-WebRequest ...).Content` was a byte[]
+  # because the astral.sh 200 carries no Content-Type; on Windows PowerShell
+  # 5.1, an em dash inside a string became a smart quote under ANSI decoding
+  # and the file would not parse at all. Both are fixed in install.ps1 in this
+  # same commit. That run is the whole argument for this job.
+  install-ps1-e2e:
+    name: install.ps1 e2e (${{ matrix.shell }})
+    runs-on: windows-latest
+    # The documented one-liner spells `powershell`, i.e. Windows PowerShell 5.1
+    # — the host whose default SecurityProtocol can still be TLS 1.0 and whose
+    # Invoke-WebRequest wants the IE engine, which is why install.ps1 Step 0's
+    # `SecurityProtocol` TLS 1.2 opt-in and the `-UseBasicParsing` flag in
+    # `Get-File` exist. pwsh (7.6.5 on the image) is the host a developer more
+    # likely has. Neither one alone tests the promise.
+    strategy:
+      fail-fast: false
+      matrix:
+        shell: [powershell, pwsh]
+    # `shell:` on an individual step does NOT appear in the Actions context
+    # availability table (only steps.env/if/name/run/with/... do), and
+    # actionlint confirms it: `${{ matrix.shell }}` there resolves against no
+    # context at all. `defaults.run.shell` DOES list `matrix`, so the matrix
+    # selection lives here once instead of on every step.
+    defaults:
+      run:
+        shell: ${{ matrix.shell }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        # Shallow on purpose: this job executes one file at the tip. The
+        # fetch-depth: 0 in the test job is for the merge-base gate, which does
+        # not run here.
+
+      - name: Record the host
+        run: |
+          $PSVersionTable | Format-List | Out-String | Write-Host
+          Write-Host "ExecutionPolicy: $(Get-ExecutionPolicy -List | Out-String)"
+
+      - name: uv must be ABSENT (the Step 2 bootstrap is the point)
+        run: |
+          $uv = Get-Command uv -ErrorAction SilentlyContinue
+          if ($uv) {
+            Write-Host "::error::uv is preinstalled at $($uv.Source). install.ps1 Step 2's bootstrap arm is now dead in CI and only the 'uv already installed' arm is measured. Strip it from PATH in this step, or record in this job's comment that the bootstrap is no longer covered."
+            exit 1
+          }
+          Write-Host "uv absent - install.ps1 Step 2 will bootstrap it."
+
+      # The documented invocation, from the CHECKED-OUT file. `irm <url> | iex`
+      # would fetch main and test the wrong bytes: a branch that breaks
+      # install.ps1 has to go red on that branch. `-Raw` is load-bearing —
+      # without it Get-Content emits a string[] and the pipeline hands iex ONE
+      # LINE AT A TIME, which evaluates each line in its own parse and breaks
+      # every multi-line try/function/if in the file. `irm` returns one string;
+      # `-Raw` is its faithful analogue.
+      #
+      # Nothing else belongs in this step. install.ps1 aborts with `exit 1`
+      # (Stop-WithError), iex runs in the caller's scope, so that exit
+      # terminates the HOST — which is what a user gets from
+      # `powershell -c "irm ... | iex"`, and what makes the step's own process
+      # exit code 1 without depending on $LASTEXITCODE propagation. Any command
+      # placed after the pipe here would be unreachable on the failure path.
+      #
+      # No `-Encoding` on Get-Content, deliberately, and it is what makes this
+      # leg STRICTER than the documented one-liner. Windows PowerShell 5.1
+      # decodes a BOM-less file as the ANSI code page (CP1252 on this image);
+      # pwsh 7 defaults to UTF-8, and `irm` is handed `charset=utf-8` by
+      # raw.githubusercontent.com, so both of those decode install.ps1
+      # correctly whatever bytes it holds. Pinning utf8 here would blind the
+      # leg to the exact defect it found on its first run: a UTF-8 em dash in a
+      # string whose 0x94 byte is a smart quote in CP1252, which closed the
+      # string early and broke the parse (run 33862346729, job 100989402525).
+      # install.ps1 is ASCII-only now and
+      # tests/packaging_gate/test_install_ps1_parity.py holds it there; this
+      # step is the half of that gate that runs on a host which cares.
+      - name: Install (pass 1 - uv bootstrap arm)
+        env:
+          # 60/hr unauthenticated is PER IP and the runner pool shares
+          # addresses; install.sh's Step 3 `die` message already names this as the usual 403.
+          # install.ps1 sends it as Bearer to api.github.com only — Get-File
+          # carries no header, so it never reaches objects.githubusercontent.com.
+          GITHUB_TOKEN: ${{ github.token }}
+        run: Get-Content -Raw install.ps1 | Invoke-Expression
+
+      - name: Assert what the script promised (pass 1)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: '& ./.github/scripts/assert-install-ps1.ps1'
+
+      # Step 2's OTHER arm. uv is on PATH now, so this pass takes
+      # `if (Test-Have 'uv')` — dead code in every other run of this job — and
+      # it is also the "re-run to upgrade" path getting-started.md documents,
+      # whose idempotence install.ps1 Step 5's `--force` comment claims.
+      - name: Install (pass 2 - uv-already-present arm, idempotence)
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: Get-Content -Raw install.ps1 | Invoke-Expression
+
+      - name: Assert what the script promised (pass 2)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: '& ./.github/scripts/assert-install-ps1.ps1'

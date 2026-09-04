@@ -71,16 +71,24 @@ of 60 requests/hour can make the release lookup fail. Set `GITHUB_TOKEN`, or pin
 ### Windows (experimental)
 
 Windows is **not a supported platform** — Linux and macOS are. The test suite
-passes on `windows-latest` and that leg gates CI as of 2026-09-04, but that is
-a claim about the suite, not about the agent: nothing beyond the suite is
-verified there (see the README's Platform support section for what is not).
+passes on `windows-latest` and that leg gates CI as of 2026-09-04, and the
+`install.ps1` script itself is verified beyond the suite too, but neither is
+a claim about the agent (see the README's Platform support section for what
+is still not verified).
 The repository root carries an `install.ps1` that mirrors `install.sh` step for
-step (same release download, same SHA256SUMS gate, same `uv` install), and it
-has never been executed by CI ([#106](https://github.com/handochan/aelix-ai/issues/106)):
+step (same release download, same SHA256SUMS gate, same `uv` install). It now
+runs end to end in CI on `windows-latest`, under both pwsh and Windows
+PowerShell 5.1 (the `install.ps1 e2e (pwsh)` / `install.ps1 e2e (powershell)`
+jobs in `.github/workflows/ci.yml`) —
+[#106](https://github.com/handochan/aelix-ai/issues/106):
 
 ```powershell
 powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/handochan/aelix-ai/main/install.ps1 | iex"
 ```
+
+CI runs the checked-out script through the same `| iex` path under both pwsh 7
+and Windows PowerShell 5.1; the fetch from raw.githubusercontent.com and the
+`-ExecutionPolicy Bypass` flag above are not part of that measurement.
 
 Known gaps are tracked in `SLICE-STATUS.md` at the repository root. If you want
 Aelix on Windows today, WSL2 is the path that actually works: install there

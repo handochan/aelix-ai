@@ -1,13 +1,16 @@
 """``install.ps1`` must not drift from ``install.sh`` (#106).
 
 The Windows installer cannot be executed here — there is no PowerShell on the
-Linux CI box, and no windows-latest leg yet — so it is unverifiable by running
-it. What IS verifiable, and what actually matters for a script whose job is a
-security gate, is that it still makes the same promises as the POSIX installer:
-the same configuration surface, the same checksum gate, the same uv invocation.
+Linux CI box — so it is unverifiable by running it. What IS verifiable, and what
+actually matters for a script whose job is a security gate, is that it still
+makes the same promises as the POSIX installer: the same configuration surface,
+the same checksum gate, the same uv invocation.
 
-These tests are a drift alarm, not a substitute for executing the script. The
-remaining risk is recorded in SLICE-STATUS.md.
+These tests are a drift alarm, not a substitute for executing the script, and
+the ``install.ps1 e2e`` job in .github/workflows/ci.yml now does the executing
+on both Windows hosts. Its first run (33862346729) found two defects that every
+assertion in this file passed straight over — the byte[] response body and the
+CP1252 em dash below — which is the calibration for how much this file proves.
 """
 
 from __future__ import annotations
@@ -205,3 +208,55 @@ def test_cleanup_is_in_a_finally(ps1: str) -> None:
     """The temp dir holds downloaded wheels; a failed install must not leave them."""
 
     assert re.search(r"finally\s*\{[^}]*Remove-Item", ps1, re.DOTALL) is not None
+
+
+# === encoding: the .ps1 files must mean the same thing to every host ========
+
+
+_PS1_FILES = [_PS1, _REPO_ROOT / ".github" / "scripts" / "assert-install-ps1.ps1"]
+
+
+@pytest.mark.parametrize("path", _PS1_FILES, ids=lambda p: p.name)
+def test_ps1_is_ascii_only(path: Path) -> None:
+    """Windows PowerShell 5.1 parses a BOM-less .ps1 as the ANSI code page.
+
+    Both files ship without a BOM, so on the ``powershell`` leg of the
+    ``install.ps1 e2e`` job they are decoded as CP1252 rather than as UTF-8.
+    There the three bytes of a UTF-8 em dash end in 0x94, which CP1252 maps to
+    U+201D RIGHT DOUBLE QUOTATION MARK -- a character the PowerShell tokenizer
+    accepts as a double quote. The em dash that sat inside install.ps1's Step 4
+    error string therefore CLOSED that string early and the whole file failed
+    to parse: run 33862346729, job 100989402525, the first execution of this
+    script on a Windows host. Reproduced by decoding the file as cp1252 and
+    handing it to the pwsh 7.6.5 parser, which reports the runner's two errors
+    verbatim (MissingEndCurlyBrace, MissingCatchOrFinally).
+
+    Nothing before that run could have caught it. ``irm <url> | iex`` decodes
+    correctly because raw.githubusercontent.com sends ``charset=utf-8``, and
+    pwsh's Get-Content defaults to UTF-8; only a 5.1 host reading the bytes off
+    disk sees it. ASCII-only removes the class instead of the instance.
+
+    ``install.sh`` is deliberately exempt and keeps its em dashes: sh is
+    byte-oriented and never re-decodes its own source.
+    """
+
+    offenders = [
+        (lineno, line)
+        for lineno, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
+        if any(ord(ch) > 127 for ch in line)
+    ]
+    assert not offenders, f"{path.name} is not ASCII: {offenders}"
+
+
+@pytest.mark.parametrize("path", _PS1_FILES, ids=lambda p: p.name)
+def test_ps1_has_no_bom(path: Path) -> None:
+    """A BOM is the other fix for the above, and a worse one.
+
+    It makes 5.1 decode correctly, but it is invisible, does not survive an
+    editor that "helpfully" strips it, and would put U+FEFF at the front of the
+    string ``irm`` hands to ``iex``. ASCII-only is the rule that is enforced;
+    this asserts a BOM was not smuggled in beside it, which would make that
+    rule untested in practice.
+    """
+
+    assert not path.read_bytes().startswith(b"\xef\xbb\xbf")

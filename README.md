@@ -73,20 +73,24 @@ gate was still red there on 15 POSIX-only names that only pyright's Windows mode
 are suppressed at their sites now, and `continue-on-error` came off with them: a new `fcntl`
 import or a hardcoded `/` join now fails CI instead of landing green.
 
-A green suite is not a supported platform. None of the following is verified:
+A green suite is not a supported platform. `install.ps1` is no longer part of what's unverified
+either: it now runs end to end in CI on `windows-latest`, under both pwsh and Windows PowerShell
+5.1 (the `install.ps1 e2e (pwsh)` / `install.ps1 e2e (powershell)` jobs in
+`.github/workflows/ci.yml`) —
+[#106](https://github.com/handochan/aelix-ai/issues/106). What's still unverified:
 
 - No release is gated on a Windows **runtime** check. Nobody has started `aelix` on Windows and
   watched it do a turn.
-- `install.ps1` has never been executed, not once —
-  [#106](https://github.com/handochan/aelix-ai/issues/106).
 - AUTO permission mode is unusable: there is no PowerShell/cmd classifier, so every command
   demotes to ASK — [#204](https://github.com/handochan/aelix-ai/issues/204).
 - Killing a delegated child orphans its descendants; Windows has no process group —
   [#202](https://github.com/handochan/aelix-ai/issues/202).
 
-So Windows regressions in the suite are now caught, and nothing beyond the suite is. Track the
-port in [#110](https://github.com/handochan/aelix-ai/issues/110); the labelling and the CI leg
-are [#103](https://github.com/handochan/aelix-ai/issues/103).
+So Windows regressions in the suite are caught and the installer runs for real; AUTO mode and
+process-group cleanup are what's left. Track the port in
+[#110](https://github.com/handochan/aelix-ai/issues/110) — its bar is suite-green +
+`install.ps1` executed + #204's AUTO mode, and the first two now hold; the labelling and the CI
+leg are [#103](https://github.com/handochan/aelix-ai/issues/103).
 
 ## Quick start
 

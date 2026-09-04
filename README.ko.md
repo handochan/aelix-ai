@@ -72,20 +72,23 @@ curl -fsSL https://raw.githubusercontent.com/handochan/aelix-ai/main/install.sh 
 지점에서 억제했습니다. `continue-on-error`도 그것들과 함께 뗐습니다: 이제 새로 들어오는
 `fcntl` import나 하드코딩된 `/` 결합은 초록으로 머지되지 않고 CI를 실패시킵니다.
 
-스위트가 초록인 것이 지원 플랫폼이라는 뜻은 아닙니다. 아래 중 검증된 것은 하나도 없습니다.
+스위트가 초록인 것이 지원 플랫폼이라는 뜻은 아닙니다. `install.ps1`도 이제 검증되지 않은
+쪽에서 빠집니다 — pwsh와 Windows PowerShell 5.1 양쪽에서 `windows-latest` CI로 end to end
+실행됩니다 (`.github/workflows/ci.yml`의 `install.ps1 e2e (pwsh)` / `install.ps1 e2e
+(powershell)` 잡) —
+[#106](https://github.com/handochan/aelix-ai/issues/106). 아래는 여전히 검증되지 않았습니다.
 
 - Windows **런타임** 확인에 걸린 릴리즈가 없습니다. Windows에서 `aelix`를 띄워 한 턴이
   도는 것을 본 사람이 아직 없습니다.
-- `install.ps1`은 한 번도 실행된 적이 없습니다 —
-  [#106](https://github.com/handochan/aelix-ai/issues/106).
 - AUTO 권한 모드는 쓸 수 없습니다. PowerShell/cmd 분류기가 없어서 모든 명령이 ASK로
   강등됩니다 — [#204](https://github.com/handochan/aelix-ai/issues/204).
 - 위임한 자식을 죽이면 그 자손이 고아로 남습니다. Windows에는 프로세스 그룹이 없습니다 —
   [#202](https://github.com/handochan/aelix-ai/issues/202).
 
-즉 스위트 안의 Windows 회귀는 이제 잡히고, 스위트 밖의 것은 여전히 잡히지 않습니다.
-포팅 현황은 [#110](https://github.com/handochan/aelix-ai/issues/110), 표기와 CI 레그는
-[#103](https://github.com/handochan/aelix-ai/issues/103)에서 추적합니다.
+즉 스위트 안의 Windows 회귀는 잡히고 설치 스크립트도 실제로 돕니다. 남은 것은 AUTO 모드와
+프로세스 그룹 정리입니다. 포팅 현황은 [#110](https://github.com/handochan/aelix-ai/issues/110)에서
+추적합니다 — 그 기준은 스위트 초록 + `install.ps1` 실행 + #204의 AUTO 모드이고, 앞의 둘은 이제
+충족됩니다. 표기와 CI 레그는 [#103](https://github.com/handochan/aelix-ai/issues/103)에서 추적합니다.
 
 ## 빠른 시작
 

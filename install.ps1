@@ -1,20 +1,23 @@
-# Aelix installer for Windows — EXPERIMENTAL.
+# Aelix installer for Windows -- EXPERIMENTAL.
 #
 #   powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/handochan/aelix-ai/main/install.ps1 | iex"
 #
-# EXPERIMENTAL (#106). Windows support is a parallel, unreleased track: this
-# script has never been executed on a Windows host by CI or by the maintainers,
-# and the agent itself still has known Windows gaps (see SLICE-STATUS.md).
-# Treat a successful install as the beginning of the test, not the end of it.
-# The supported platforms today are Linux and macOS, via install.sh.
+# EXPERIMENTAL (#106). Windows support is a parallel, unreleased track. This
+# script now runs end to end in CI on windows-latest, under both pwsh and
+# Windows PowerShell 5.1 (the `install.ps1 e2e (pwsh)` / `install.ps1 e2e
+# (powershell)` jobs in .github/workflows/ci.yml; see #106), but that is not
+# the same claim as "Windows is supported" -- see #110 for that bar -- and the agent itself
+# still has known Windows gaps (see SLICE-STATUS.md). Treat a successful
+# install as the beginning of the test, not the end of it. The supported
+# platforms today are Linux and macOS, via install.sh.
 #
 # It mirrors install.sh step for step: download the release wheels from the
 # GitHub Release, verify each one against the published SHA256SUMS manifest (a
-# hard security gate — any mismatch aborts), then install the `aelix` CLI with
+# hard security gate -- any mismatch aborts), then install the `aelix` CLI with
 # uv PINNED to the exact version that manifest named. Third-party dependencies
 # resolve from PyPI as usual; the four first-party wheels come from the
 # checksum-verified download (uv --find-links, never --no-index). The pin is
-# what makes the gate binding rather than advisory — see Step 5.
+# what makes the gate binding rather than advisory -- see Step 5.
 #
 # Configuration (all optional, via environment):
 #   AELIX_VERSION  Pin an exact release tag (e.g. v0.1.0-beta.1). Default:
@@ -25,7 +28,7 @@
 #                  for inline image rendering.
 #                  DIVERGENCE from install.sh: there, a set-but-empty
 #                  AELIX_EXTRAS installs the bare CLI. Windows cannot express
-#                  that — assigning '' to an environment variable DELETES it,
+#                  that -- assigning '' to an environment variable DELETES it,
 #                  so an empty value is indistinguishable from unset and falls
 #                  back to `tui`. For the bare CLI, install `aelix` yourself:
 #                  `uv tool install --force --find-links <dir> aelix`.
@@ -33,11 +36,26 @@
 #   UV_VERSION     Optional pin for the uv bootstrap (Astral installer).
 #   GITHUB_TOKEN   Optional; sent as a Bearer token on GitHub API calls to
 #                  avoid the 60/hr unauthenticated rate limit.
+#
+# ASCII ONLY, on purpose. Do not reintroduce em dashes, box drawing or
+# ellipses; the rest of this repo uses them freely, this one file cannot. It
+# ships without a BOM, and Windows PowerShell 5.1 decodes a BOM-less script as
+# the ANSI code page rather than as UTF-8. On the runner that is CP1252, where
+# the third byte of a UTF-8 em dash, 0x94, decodes to U+201D RIGHT DOUBLE
+# QUOTATION MARK, a character the PowerShell tokenizer accepts as a double
+# quote. The em dash that used to sit inside Step 4's error string therefore
+# CLOSED that string early and the parse collapsed into "Missing closing brace
+# in statement block", pointing at the outer try below: job 100989402525, the
+# first execution of this file on a Windows host. pwsh 7 was
+# unaffected because Get-Content defaults to UTF-8 there, and so is
+# `irm <url> | iex` because raw.githubusercontent.com sends charset=utf-8,
+# which is why nothing before that run caught it.
+# tests/packaging_gate/test_install_ps1_parity.py holds the invariant.
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-# ── Step 0: preamble ────────────────────────────────────────────────────────
+# -- Step 0: preamble --------------------------------------------------------
 $AelixVersion = if ($env:AELIX_VERSION) { $env:AELIX_VERSION } else { '' }
 $AelixExtras  = if ($null -ne $env:AELIX_EXTRAS) { $env:AELIX_EXTRAS } else { 'tui' }
 $AelixRepo    = if ($env:AELIX_REPO) { $env:AELIX_REPO } else { 'handochan/aelix-ai' }
@@ -82,7 +100,7 @@ try {
         Invoke-RestMethod -Uri $Url -Headers $headers -UseBasicParsing
     }
 
-    # ── Step 1: prerequisites ───────────────────────────────────────────────
+    # -- Step 1: prerequisites -----------------------------------------------
     # Nothing to check that install.sh checks: Invoke-WebRequest replaces
     # curl/wget and Get-FileHash replaces sha256sum, both built in since
     # PowerShell 4. The one hard requirement is the PowerShell version itself.
@@ -90,7 +108,7 @@ try {
         Stop-WithError "need PowerShell 5.1 or newer (found $($PSVersionTable.PSVersion))."
     }
 
-    # ── Step 2: uv bootstrap (idempotent) ───────────────────────────────────
+    # -- Step 2: uv bootstrap (idempotent) -----------------------------------
     if (Test-Have 'uv') {
         Write-Log "uv already installed ($((Get-Command uv).Source))."
     } else {
@@ -102,7 +120,18 @@ try {
             # under -ExecutionPolicy Bypass on the OUTER script. This is also
             # the form Astral documents for Windows. Same trust model as
             # install.sh, which pipes the same vendor's script into `sh`.
-            $uvScript = (Invoke-WebRequest -Uri 'https://astral.sh/uv/install.ps1' -UseBasicParsing).Content
+            #
+            # Invoke-RestMethod, NOT (Invoke-WebRequest ...).Content. The 200
+            # that ends the astral.sh redirect chain carries NO Content-Type
+            # header at all (`curl -sSIL https://astral.sh/uv/install.ps1`), so
+            # PowerShell cannot tell the body is text and IWR hands .Content
+            # back as a byte[]; Invoke-Expression then refuses it with "Cannot
+            # convert 'System.Byte[]' to the type 'System.String' required by
+            # parameter 'Command'". That is how this script died on its first
+            # real Windows execution: job 100989402205, pwsh 7.6.5. IRM
+            # decodes the same headerless body to a String, measured
+            # on pwsh 7.6.5, and `irm | iex` is the form Astral documents.
+            $uvScript = Invoke-RestMethod -Uri 'https://astral.sh/uv/install.ps1' -UseBasicParsing
         } catch {
             Stop-WithError "failed to download the uv installer: $($_.Exception.Message)"
         }
@@ -124,7 +153,7 @@ try {
         }
     }
 
-    # ── Step 3: resolve the release tag ─────────────────────────────────────
+    # -- Step 3: resolve the release tag -------------------------------------
     if ($AelixVersion) {
         $tag = $AelixVersion
         Write-Log "using pinned release tag: $tag"
@@ -144,7 +173,7 @@ try {
         Write-Log "newest release tag: $tag"
     }
 
-    # ── Step 4: download + verify (the integrity gate) ──────────────────────
+    # -- Step 4: download + verify (the integrity gate) ----------------------
     $base = "https://github.com/$AelixRepo/releases/download/$tag"
 
     Write-Log 'downloading SHA256SUMS...'
@@ -152,7 +181,7 @@ try {
     try {
         Get-File -Url "$base/SHA256SUMS" -OutFile $sumsPath
     } catch {
-        Stop-WithError "SHA256SUMS not found for '$tag' at $base — is the Release published? $($_.Exception.Message)"
+        Stop-WithError "SHA256SUMS not found for '$tag' at $base -- is the Release published? $($_.Exception.Message)"
     }
 
     # Parse `<hex>  <name>` into a name -> hash map (sha256sum's two-space form).
@@ -189,12 +218,12 @@ try {
         Write-Log "verified $name"
     }
 
-    # ── Step 5: install (hybrid: local verified wheels + PyPI for the rest) ──
+    # -- Step 5: install (hybrid: local verified wheels + PyPI for the rest) --
     # The version pin below is LOAD-BEARING, not cosmetic. --find-links only
     # ADDS candidates; the PyPI index stays enabled (third-party deps need it),
     # and uv then resolves the best candidate across BOTH sources. Requesting
     # the bare name `aelix` therefore lets a PyPI release of that name outrank
-    # the local wheels — and the SHA256SUMS gate in Step 4 would have verified
+    # the local wheels -- and the SHA256SUMS gate in Step 4 would have verified
     # artifacts that this very command discards. Pinning to the exact version
     # named by the verified manifest is what closes that gap: only the
     # checksum-verified wheel can satisfy `==$version`.
@@ -203,8 +232,8 @@ try {
     # is `v0.1.0-beta.1` while PEP 440 normalizes the same release to
     # `0.1.0b1`, so the tag is not a usable version specifier. The
     # meta-package wheel is `aelix-<VER>-py3-none-any.whl`; its siblings escape
-    # the hyphen in their distribution name to an underscore (`aelix_ai-…`,
-    # `aelix_agent_core-…`, `aelix_coding_agent-…`), so an `aelix-` prefix
+    # the hyphen in their distribution name to an underscore (`aelix_ai-...`,
+    # `aelix_agent_core-...`, `aelix_coding_agent-...`), so an `aelix-` prefix
     # matches the meta-package alone. A PEP 440 version can never itself
     # contain a hyphen, which is what makes the `-`-delimited split
     # unambiguous.
@@ -232,7 +261,7 @@ try {
         Stop-WithError "uv tool install failed for '$target'."
     }
 
-    # ── Step 6: post-install smoke + PATH hint ──────────────────────────────
+    # -- Step 6: post-install smoke + PATH hint ------------------------------
     if (Test-Have 'aelix') {
         & aelix --version
         if ($LASTEXITCODE -ne 0) {

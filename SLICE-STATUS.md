@@ -29,7 +29,7 @@ runner's real user profile.
 | W2 | `_resolve_shell` win32 arm + `ShellConfig(path, command_flag)`; AUTO mode force-ASK on a shell the bash grammar can't read | `tools/bash.py`, `builtin/bash_classifier.py`, `builtin/permission.py` |
 | W3 | win32-safe process-tree kill at the two owned spawn sites | `tools/_process_tree.py`, `tools/bash.py`, `tools/_subprocess.py` |
 | W4 | RPC stdin thread-pump (`connect_read_pipe` is `NotImplementedError` on Windows) | `rpc/rpc_mode.py` |
-| W5 | `install.ps1` at parity with `install.sh`'s checksum gate — **unexecuted** | `install.ps1`, `tests/packaging_gate/test_install_ps1_parity.py` |
+| W5 | `install.ps1` at parity with `install.sh`'s checksum gate, now executed end to end by the `install.ps1 e2e (pwsh)` / `install.ps1 e2e (powershell)` CI jobs (#106) | `install.ps1`, `.github/workflows/ci.yml`, `tests/packaging_gate/test_install_ps1_parity.py` |
 
 Two facts were measured rather than assumed, and both shaped the design:
 
@@ -105,11 +105,14 @@ than treating the first green as a milestone — several items above are
 "silently wrong" rather than "loudly broken", and a green leg that skips them
 is worse than no leg. Items 3, 6, 7 and 8 in particular fail quietly.
 
-`install.ps1` remains the weakest link: it has never been executed anywhere.
-`tests/packaging_gate/test_install_ps1_parity.py` only proves it has not *drifted*
-from `install.sh` — same env vars, same checksum gate, same `uv` flags. It
-cannot prove the script runs. A Windows leg should execute it end to end
-before anyone recommends it.
+**Superseded (2026-09-04).** `install.ps1` is no longer unexecuted: the
+`install.ps1 e2e (pwsh)` / `install.ps1 e2e (powershell)` jobs in
+`.github/workflows/ci.yml` run it end to end on `windows-latest`, under both
+pwsh and Windows PowerShell 5.1, and gate CI (#106).
+`tests/packaging_gate/test_install_ps1_parity.py`
+still only proves the script has not *drifted* from `install.sh` — same env
+vars, same checksum gate, same `uv` flags — but the e2e job now proves the
+script itself runs, which the drift check alone could not.
 
 **CLOSED — the unpinned-version hole.** This slice originally shipped
 `install.ps1` reproducing `install.sh`'s lack of a package-version pin, flagged
