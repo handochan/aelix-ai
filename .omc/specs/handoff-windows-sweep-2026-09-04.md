@@ -1,22 +1,23 @@
-# 다음 세션 핸드오프 — windows 141 → 65(→ #211 대기), 이슈 10건 닫음 (2026-09-04)
+# 다음 세션 핸드오프 — windows 141 → 51, 이슈 10건 닫음 (2026-09-04)
 
-`handoff-209-205-2026-09-04.md`의 후속. 한 세션에서 `handoff-windows-clusters-2026-09-04.md` §1의 클러스터를 #207·#206만 남기고 전부 닫았다. 전부 windows 레그 실측으로 닫았고, 각 이슈 코멘트에 run/job ID와 `comm` 명령이 있다.
+`handoff-209-205-2026-09-04.md`의 후속. 한 세션에서 `handoff-windows-clusters-2026-09-04.md` §1의 클러스터를 #207·#206만 남기고 전부 닫았다(#211 포함, 10건). 전부 windows 레그 실측으로 닫았고, 각 이슈 코멘트에 run/job ID와 `comm` 명령이 있다.
 
 ## 0. 기준점
 
 | | |
 | --- | --- |
-| `main` | `cadd0e0` (#212까지, push 됨). #211은 브랜치 `fix/211-mode-bits-ntfs` @ `4d52235` — **windows 레그 대기 중이었다.** 결과가 안 와 있으면 `gh run list --branch fix/211-mode-bits-ntfs`로 확인하고 65건 목록(`job 100921676929`)과 `comm` |
+| `main` | #211까지 ff 됨(이 문서 커밋의 부모가 #211 커밋). push 됨 |
 | 로컬 스위트 | `175532a`에서 **9387 passed / 12 skipped / 0 failed** — darwin `/tmp` realpath 실패가 #210으로 사라져 이 세션에서 처음 완전 초록 |
-| windows 실측 궤적 (py3.11) | 141 → 125(#209) → 109(+#205) → 106(#208) → 101(#213) → 96(#214) → 96(#216, flake 교체) → 94(#215) → 77(#210) → **65(#212)** → #211 기대 51 |
-| 닫은 이슈 | #209 #205 #208 #213 #214 #216 #215 #210 #212 (+#211 측정 후) |
+| windows 실측 궤적 (py3.11) | 141 → 125(#209) → 109(+#205) → 106(#208) → 101(#213) → 96(#214) → 96(#216, flake 교체) → 94(#215) → 77(#210) → 65(#212) → **51(#211, run 33842373606 · job 100927113633 · 9281 passed · 67 skipped)** |
+| 닫은 이슈 | #209 #205 #208 #213 #214 #216 #215 #210 #212 #211 |
 | 남은 클러스터 | **#206**(tui 17: rich legacy_windows·NoConsoleScreenBuffer + tabbed flaky) → **#207**(rpc 5, #202와 같은 줄) → #109 코멘트 (a) `#!/bin/sh` MCP 런처 15건·(c) `cwd="/tmp"` 12건 |
 
 ## 1. 바로 시작할 것
 
-1. **#211 마무리** — 브랜치 CI 결과 확인. 기대: 65 → 51, skipped 62 → 67(5건 skip). 초록이면 `git checkout main && git merge --ff-only fix/211-mode-bits-ntfs && git push`, 이슈 코멘트(다른 이슈 코멘트 형식 그대로) + close. 빨강이면 실패 블록을 읽는다 — 시뮬레이션은 상수만 뒤집은 것이라 `os.fchmod` 부재는 재현 못 했다(커밋 메시지에 적음).
-2. **#109 코멘트 (a)/(c) 버킷**(27건 → 이제 (a) 15, (c) 12) — 이슈가 아직 없다. `tests/mcp_client/`의 `#!/bin/sh` 런처를 `sys.executable` 기반으로, `cwd="/tmp"` spawn을 `tmp_path`로. #214에서 `test_stdio_server_with_shell_exec_still_spawns`가 (a)로 이관됐다.
-3. 그 다음 #206 → #207(#202와 함께 설계).
+1. **#109 코멘트 (a)/(c) 버킷**(27건 → 이제 (a) 15, (c) 12) — 이슈가 아직 없다. `tests/mcp_client/`의 `#!/bin/sh` 런처를 `sys.executable` 기반으로, `cwd="/tmp"` spawn을 `tmp_path`로. #214에서 `test_stdio_server_with_shell_exec_still_spawns`가 (a)로 이관됐다.
+2. 그 다음 #206 → #207(#202와 함께 설계).
+
+잔여 51건의 정본 목록: `gh api repos/handochan/aelix-ai/actions/jobs/100927113633/logs`에서 `FAILED tests/` grep.
 
 ## 2. 이 레포에서 이번에 물린 것 (이전 handoff §4에 더해)
 
