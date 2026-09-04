@@ -12,6 +12,7 @@ Esc-path abort kills in-flight bash subprocesses, not just the Python task.
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 import pytest
 from aelix_agent_core.harness.core import AgentHarness, AgentHarnessOptions
@@ -23,7 +24,7 @@ from aelix_coding_agent.tools.bash import create_local_bash_operations
 # ---------------------------------------------------------------------------
 
 
-async def test_bash_exec_cancel_kills_group_and_propagates() -> None:
+async def test_bash_exec_cancel_kills_group_and_propagates(tmp_path: Path) -> None:
     """task.cancel() while exec is running kills the child and re-raises CancelledError.
 
     This is the Esc-path: harness cancels the turn task which propagates into
@@ -34,7 +35,7 @@ async def test_bash_exec_cancel_kills_group_and_propagates() -> None:
     chunks: list[bytes] = []
 
     task = asyncio.create_task(
-        ops.exec("sleep 30", "/tmp", on_data=chunks.append)
+        ops.exec("sleep 30", str(tmp_path), on_data=chunks.append)
     )
     # Give the process time to start.
     await asyncio.sleep(0.1)
@@ -44,7 +45,7 @@ async def test_bash_exec_cancel_kills_group_and_propagates() -> None:
         await asyncio.wait_for(asyncio.shield(task), timeout=5.0)
 
 
-async def test_bash_exec_cancel_with_signal_still_propagates() -> None:
+async def test_bash_exec_cancel_with_signal_still_propagates(tmp_path: Path) -> None:
     """task.cancel() while a watcher is running still re-raises CancelledError.
 
     When both a signal watcher task *and* an outer task cancel arrive, the
@@ -57,7 +58,7 @@ async def test_bash_exec_cancel_with_signal_still_propagates() -> None:
     chunks: list[bytes] = []
 
     task = asyncio.create_task(
-        ops.exec("sleep 30", "/tmp", on_data=chunks.append, signal=sig)
+        ops.exec("sleep 30", str(tmp_path), on_data=chunks.append, signal=sig)
     )
     await asyncio.sleep(0.1)
     task.cancel()
@@ -66,13 +67,13 @@ async def test_bash_exec_cancel_with_signal_still_propagates() -> None:
         await asyncio.wait_for(asyncio.shield(task), timeout=5.0)
 
 
-async def test_bash_exec_cancel_exit_code_is_none() -> None:
+async def test_bash_exec_cancel_exit_code_is_none(tmp_path: Path) -> None:
     """Cancelled exec reports exit_code=None (same as signal-kill path)."""
     ops = create_local_bash_operations()
     chunks: list[bytes] = []
 
     task = asyncio.create_task(
-        ops.exec("sleep 30", "/tmp", on_data=chunks.append)
+        ops.exec("sleep 30", str(tmp_path), on_data=chunks.append)
     )
     await asyncio.sleep(0.1)
     task.cancel()
@@ -293,7 +294,7 @@ async def test_harness_abort_fires_signals_and_cancels_turn_task() -> None:
     assert h.phase == "idle"
 
 
-async def test_bash_exec_cancel_unwinds_promptly() -> None:
+async def test_bash_exec_cancel_unwinds_promptly(tmp_path: Path) -> None:
     """Cancelled exec() unwinds fully within a tight deadline.
 
     Proves that ``finally: await drain_task`` does not deadlock the cancel
@@ -304,7 +305,7 @@ async def test_bash_exec_cancel_unwinds_promptly() -> None:
     chunks: list[bytes] = []
 
     task = asyncio.create_task(
-        ops.exec("sleep 30", "/tmp", on_data=chunks.append)
+        ops.exec("sleep 30", str(tmp_path), on_data=chunks.append)
     )
     # Give the child time to start.
     await asyncio.sleep(0.1)

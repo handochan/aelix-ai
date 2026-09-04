@@ -14,6 +14,9 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+import shlex
+import sys
+from pathlib import Path
 
 import pytest
 from aelix_coding_agent.tools._abort import AbortSignal
@@ -67,7 +70,7 @@ async def test_abort_signal_wait_woken_by_abort() -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_bash_exec_signal_abort_kills_child() -> None:
+async def test_bash_exec_signal_abort_kills_child(tmp_path: Path) -> None:
     """Aborting via AbortSignal kills the subprocess group and returns exit_code=None."""
 
     ops = create_local_bash_operations()
@@ -77,7 +80,7 @@ async def test_bash_exec_signal_abort_kills_child() -> None:
     async def _exec_task() -> ExecExitResult:
         return await ops.exec(
             "sleep 30",
-            "/tmp",
+            str(tmp_path),
             on_data=chunks.append,
             signal=sig,
         )
@@ -92,24 +95,35 @@ async def test_bash_exec_signal_abort_kills_child() -> None:
     assert result.exit_code is None, "Aborted exec must return exit_code=None"
 
 
-async def test_bash_exec_signal_abort_kills_process_group() -> None:
-    """Signal abort kills the entire process GROUP including grandchildren.
+async def test_bash_exec_signal_abort_kills_process_group(tmp_path: Path) -> None:
+    """Signal abort kills the process the shell handed the command to.
 
-    Strategy: run ``sh -c 'echo $$; sleep 30'`` — the shell prints its own
-    PID to stdout (captured via on_data), then spawns a grandchild ``sleep``.
-    After sig.abort() we verify the shell process (and therefore the whole
-    group, since start_new_session=True puts it in its own pgid) is dead or
-    zombie.  This proves _kill_group uses os.killpg (group-level kill), not
-    just a direct-child kill — matching the pattern proven in
+    Strategy: the shell runs a Python child that writes its own PID to a file
+    and then sleeps.  After sig.abort() we verify that child is dead or zombie.
+    Measured (POSIX): bash execs the single simple command, so the recorded
+    PID IS the direct child and the pgid leader — the old ``sh -c 'echo $$ …'``
+    form had the same shape.  What this pins is that the abort reaches the
+    process holding the command, through ``_kill_group``; the group-vs-direct
+    distinction is proven in
     test_subprocess_helper.py::test_run_cancellable_cancellation_kills_child.
+
+    The child is ``sys.executable`` rather than ``sh -c 'echo $$ …'`` because
+    ``exec`` hands ``command`` to the resolved shell, which is pwsh on Windows
+    — no ``sh`` and no ``$$``.  The two shells quote a command differently:
+    pwsh needs the call operator to run a quoted path (``& "C:/…/python.exe"``),
+    bash needs ``shlex.quote``; the script and pid-file arguments are
+    double-quoted, which both accept.
     """
     import tempfile
 
     pid_file = tempfile.mktemp(suffix=".pid")  # noqa: S306 — test-only
-    # The shell prints its PID to the pid_file then sleeps, spawning
-    # a grandchild sleep as well.
+    interpreter = (
+        f'& "{sys.executable}"' if sys.platform == "win32" else shlex.quote(sys.executable)
+    )
     command = (
-        f"sh -c 'echo $$ > {pid_file}; sleep 30'"
+        f'{interpreter} -c "import os, sys, time; '
+        f"open(sys.argv[1], 'w').write(str(os.getpid())); "
+        f'time.sleep(30)" "{pid_file}"'
     )
 
     ops = create_local_bash_operations()
@@ -117,7 +131,7 @@ async def test_bash_exec_signal_abort_kills_process_group() -> None:
     chunks: list[bytes] = []
 
     task = asyncio.create_task(
-        ops.exec(command, "/tmp", on_data=chunks.append, signal=sig)
+        ops.exec(command, str(tmp_path), on_data=chunks.append, signal=sig)
     )
 
     # Wait for the pid_file to appear (child is up and running).
@@ -169,14 +183,14 @@ async def test_bash_exec_signal_abort_kills_process_group() -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_bash_exec_cancel_propagates_cancelled_error() -> None:
+async def test_bash_exec_cancel_propagates_cancelled_error(tmp_path: Path) -> None:
     """Cancelling the exec task must NOT swallow CancelledError."""
 
     ops = create_local_bash_operations()
     chunks: list[bytes] = []
 
     task = asyncio.create_task(
-        ops.exec("sleep 30", "/tmp", on_data=chunks.append)
+        ops.exec("sleep 30", str(tmp_path), on_data=chunks.append)
     )
 
     await asyncio.sleep(0.1)
@@ -186,14 +200,14 @@ async def test_bash_exec_cancel_propagates_cancelled_error() -> None:
         await asyncio.wait_for(asyncio.shield(task), timeout=5.0)
 
 
-async def test_bash_exec_cancel_returns_none_exit_code() -> None:
+async def test_bash_exec_cancel_returns_none_exit_code(tmp_path: Path) -> None:
     """After cancel the task result (if collected) should have exit_code=None."""
 
     ops = create_local_bash_operations()
     chunks: list[bytes] = []
 
     task = asyncio.create_task(
-        ops.exec("sleep 30", "/tmp", on_data=chunks.append)
+        ops.exec("sleep 30", str(tmp_path), on_data=chunks.append)
     )
 
     await asyncio.sleep(0.1)
@@ -203,14 +217,14 @@ async def test_bash_exec_cancel_returns_none_exit_code() -> None:
         await asyncio.wait_for(asyncio.shield(task), timeout=5.0)
 
 
-async def test_bash_exec_normal_path_unaffected() -> None:
+async def test_bash_exec_normal_path_unaffected(tmp_path: Path) -> None:
     """The normal exec path (no signal, no cancel) must be byte-identical to before."""
 
     ops = create_local_bash_operations()
     chunks: list[bytes] = []
 
     result = await asyncio.wait_for(
-        ops.exec("echo aelix-abort-test", "/tmp", on_data=chunks.append),
+        ops.exec("echo aelix-abort-test", str(tmp_path), on_data=chunks.append),
         timeout=5.0,
     )
     output = b"".join(chunks).decode()
@@ -218,14 +232,14 @@ async def test_bash_exec_normal_path_unaffected() -> None:
     assert "aelix-abort-test" in output
 
 
-async def test_bash_exec_no_signal_no_watcher() -> None:
+async def test_bash_exec_no_signal_no_watcher(tmp_path: Path) -> None:
     """Passing signal=None must not start a watcher — normal path unchanged."""
 
     ops = create_local_bash_operations()
     chunks: list[bytes] = []
 
     result = await asyncio.wait_for(
-        ops.exec("echo ok", "/tmp", on_data=chunks.append, signal=None),
+        ops.exec("echo ok", str(tmp_path), on_data=chunks.append, signal=None),
         timeout=5.0,
     )
     assert result.exit_code == 0
@@ -238,6 +252,7 @@ async def test_bash_exec_no_signal_no_watcher() -> None:
 
 async def test_bash_exec_abort_with_process_already_gone_still_returns(
     monkeypatch,
+    tmp_path: Path,
 ) -> None:
     """If _kill_group gets ProcessLookupError (process already gone), exec() still returns.
 
@@ -257,7 +272,7 @@ async def test_bash_exec_abort_with_process_already_gone_still_returns(
     # then fire the signal.  _kill_group will encounter ProcessLookupError
     # (no process to kill) — must be silently ignored.
     task = asyncio.create_task(
-        ops.exec("true", "/tmp", on_data=chunks.append, signal=sig)
+        ops.exec("true", str(tmp_path), on_data=chunks.append, signal=sig)
     )
     # Let the process finish naturally first.
     await asyncio.sleep(0.2)
@@ -271,6 +286,7 @@ async def test_bash_exec_abort_with_process_already_gone_still_returns(
 
 async def test_bash_exec_cancel_watcher_teardown_catches_exception(
     monkeypatch,
+    tmp_path: Path,
 ) -> None:
     """Watcher teardown ``except (asyncio.CancelledError, Exception): pass`` contains exceptions.
 
@@ -293,7 +309,7 @@ async def test_bash_exec_cancel_watcher_teardown_catches_exception(
 
     # Register a signal watcher so the watcher_task code path is exercised.
     task = asyncio.create_task(
-        ops.exec("sleep 30", "/tmp", on_data=chunks.append, signal=sig)
+        ops.exec("sleep 30", str(tmp_path), on_data=chunks.append, signal=sig)
     )
     await asyncio.sleep(0.1)
 
