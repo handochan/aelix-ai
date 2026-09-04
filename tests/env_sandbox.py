@@ -86,41 +86,48 @@ def sandbox_home(monkeypatch: pytest.MonkeyPatch, home: str | os.PathLike[str]) 
     return Path(home)
 
 
-# What a Windows child needs from the parent to boot at all. Each is copied
-# only when the parent has it, so on POSIX the loop is a no-op and no test
-# needs a platform guard. ``SystemRoot`` is the one #209 measured (WinError
-# 10106 without it); the rest are the conventional companions — ``TEMP``/``TMP``
-# for ``tempfile``, ``PATHEXT`` because 3.11's ``shutil.which`` has no default
-# for it, ``ComSpec`` for anything that shells out. Deliberately *not*
-# ``os.environ.get(key, "")``: an empty ``%SystemRoot%`` is not the same as an
-# absent one to CreateProcess, and an empty string would be planted on POSIX.
-_WINDOWS_BOOT_KEYS = (
+# What a child needs from the parent to boot at all. Each is copied only when
+# the parent has it non-empty, so keys foreign to the running platform are
+# simply absent and no test needs a platform guard. ``SystemRoot`` is the one
+# #209 measured (WinError 10106 without it); the rest are the conventional
+# companions — ``TEMP``/``TMP``/``TMPDIR`` for ``tempfile`` (the first two are
+# Windows, the third is what POSIX actually sets), ``PATHEXT`` because the
+# parent's value is wider than ``shutil._WIN_DEFAULT_PATHEXT`` (the py
+# launcher adds ``.PY``/``.PYW``), ``COMSPEC`` for anything that shells out —
+# spelled upper-case because that is how ``tools/bash.py`` reads it.
+# Deliberately minimal: grow it as the Windows leg measures, not by guessing.
+# Deliberately *not* ``os.environ.get(key, "")``: an empty ``%SystemRoot%`` is
+# not the same as an absent one to CreateProcess, and an empty string would be
+# planted on POSIX.
+_CHILD_BOOT_KEYS = (
     "SystemRoot",
     "SystemDrive",
     "windir",
-    "ComSpec",
+    "COMSPEC",
     "PATHEXT",
     "TEMP",
     "TMP",
+    "TMPDIR",
 )
 
 
-def child_env(home: str | os.PathLike[str], **extra: str) -> dict[str, str]:
+def child_env(home: str | os.PathLike[str], /, **extra: str) -> dict[str, str]:
     """A hermetic ``env=`` for a REAL child interpreter.
 
-    Carries the parent's ``PATH`` (and ``PYTHONPATH`` when set), the full
+    Carries the parent's ``PATH`` (and ``PYTHONPATH`` when non-empty), the full
     :func:`home_env` for ``home``, and whatever the platform needs to boot a
-    Python child (``_WINDOWS_BOOT_KEYS``). Nothing else crosses — no API keys,
+    Python child (``_CHILD_BOOT_KEYS``). Nothing else crosses — no API keys,
     no developer ``~`` — so the child's hermeticity is stated rather than
     inherited. ``extra`` is applied last and wins, so a test can override
     ``PATH`` or add its own seams (``AELIX_CODING_AGENT_DIR``, ``PI_OFFLINE``).
+    ``home`` is positional-only so an ``extra`` named ``home`` cannot collide.
     """
 
     env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin")}
     if pythonpath := os.environ.get("PYTHONPATH"):
         env["PYTHONPATH"] = pythonpath
     env.update(home_env(home))
-    for key in _WINDOWS_BOOT_KEYS:
+    for key in _CHILD_BOOT_KEYS:
         if value := os.environ.get(key):
             env[key] = value
     env.update(extra)

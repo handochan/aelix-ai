@@ -22,8 +22,11 @@ opaque wrappers.
 
 The last test is a REAL child interpreter. ``tests/conftest.py``'s autouse
 download guard is an in-process ``monkeypatch.setattr`` and does not reach a
-child (finding I10), so that test sets ``HOME`` / ``XDG_CONFIG_HOME`` /
-``AELIX_CODING_AGENT_DIR`` under ``tmp_path`` and ``PI_OFFLINE=1`` explicitly.
+child (finding I10), so that test builds its env with
+``tests.env_sandbox.child_env`` — a sandboxed home, ``XDG_CONFIG_HOME`` /
+``AELIX_CODING_AGENT_DIR`` under ``tmp_path``, ``PI_OFFLINE=1`` — and inherits
+the parent's ``PATH`` like the other real-child beds do (the old
+``/usr/bin:/bin`` pin was not a Windows PATH at all).
 """
 
 from __future__ import annotations
