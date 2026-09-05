@@ -774,7 +774,7 @@ async def test_the_kill_leg_reserve_is_per_step_for_chain_and_flat_for_parallel(
 ) -> None:
     """Why the two modes reserve differently, made observable.
 
-    A member that hits its deadline runs ``reap(grace=5.0)`` (``reaper.py:111``)
+    A member that hits its deadline runs ``reap(grace=5.0)`` (``reaper.py:118``)
     plus the bounded ``POST_EXIT_DRAIN_SECONDS = 2.0``
     (``print_channel.py:149``). In parallel those legs OVERLAP, so one reserve
     covers the wave; in a chain they are strictly sequential, so an eight-step

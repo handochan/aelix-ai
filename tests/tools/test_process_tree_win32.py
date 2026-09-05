@@ -14,9 +14,9 @@ without them — the attribute lookups raise before any of the three runs.
 
 Lending them asserts the arm's SHAPE, which is all these cases ever asserted
 about it. It claims nothing about that arm being available on Windows: it is
-not reachable there at all. ``platform`` defaults to ``sys.platform`` and
-neither production caller (``bash.py``, ``_subprocess.py``) passes one, so the
-early return takes every real Windows call to ``taskkill``.
+not reachable there at all. ``platform`` defaults to ``sys.platform`` and the
+one production caller left does not pass one, so the early return takes every
+real Windows call to ``taskkill``.
 
 No ``skipif`` in either direction, per ``tests/cli/test_stdio_encoding_win32.py``:
 a case that only runs on one runner is not a regression guard. The first form of
@@ -24,15 +24,30 @@ this file was POSIX-bound anyway, through ``monkeypatch.setattr(os, "getpgid")``
 alone — which raises when the attribute is absent — and that cost four of the
 remaining ``AttributeError`` failures on the first ``windows-latest`` leg.
 
-WHAT #202 CHANGED HERE. The body moved to ``aelix_ai.utils._process_tree`` and
-``aelix_coding_agent.tools._process_tree`` is a re-export shim, so the old
-``monkeypatch.setattr(_process_tree.sys, ...)`` had nothing to patch — the
-platform is now driven through ``sys`` itself, which is the same module object
-the implementation reads. ``argv[0]`` is resolved from ``%SystemRoot%`` (Pi
-``7af2d27d``), so the argv cases run both environment arms. And every win32 case
-asserts ``os.kill`` was NOT called: on Windows ``os.kill`` is
+WHAT #202 CHANGED HERE. The body moved to ``aelix_ai.utils._process_tree``, so
+the old ``monkeypatch.setattr(_process_tree.sys, ...)`` had nothing to patch —
+the platform is now driven through ``sys`` itself, which is the same module
+object the implementation reads. ``argv[0]`` is resolved from ``%SystemRoot%``
+(Pi ``7af2d27d``), so the argv cases run both environment arms. And every win32
+case asserts ``os.kill`` was NOT called: on Windows ``os.kill`` is
 ``TerminateProcess``, the root-only kill this whole area exists to stop using —
 revision 1 of #202's design still had a TerminateProcess leg and it is gone.
+
+WHAT #222 CHANGED HERE, AND WHY THE FILE STAYS. #202 left
+``aelix_coding_agent/tools/_process_tree.py`` behind as a re-export shim so the
+two tool spawn sites kept their import path; #222 gave both of them a
+``ProcessTree`` instead, the shim's last reason to exist went with them, and it
+is deleted — hence the import above now names the primitive directly. The two
+cases that asserted the shim was wired to those sites
+(``test_bash_kill_group_delegates`` / ``test_subprocess_helper_delegates``) went
+with it: they asserted an identity between two module attributes, which is not
+something a site can be wrong about any more, and the site-level assertions that
+replace them are ``tests/tools/test_bash_tool_containment.py`` and
+``tests/tools/test_subprocess_helper.py``'s tree cases. What is asserted below
+is the pid-only entry point itself, which #222 did NOT delete: it is the
+degradation in ``rpc_client.stop()`` for a client whose ``attach`` raised out of
+``start``, and it is still the shape that would crash with ``AttributeError`` on
+Windows if the POSIX body were reached there.
 """
 
 from __future__ import annotations
@@ -44,8 +59,7 @@ import sys
 from typing import Any
 
 import pytest
-from aelix_coding_agent.tools import _process_tree
-from aelix_coding_agent.tools._process_tree import kill_process_tree
+from aelix_ai.utils._process_tree import kill_process_tree
 
 # The value only has to be the SAME one production and these assertions see.
 # On POSIX this is ``signal.SIGKILL`` itself and lending it back is a no-op; on
@@ -193,7 +207,15 @@ def test_win32_survives_a_taskkill_that_never_returns(
 def test_posix_kills_the_process_group_of_a_child_that_leads_one(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The ordinary shape: both spawn sites pass ``start_new_session=True``."""
+    """The ordinary shape: the spawn asked for a session of its own.
+
+    Every caller this function ever had spawns through
+    ``containment_spawn_kwargs(new_session=True)`` or the literal
+    ``start_new_session=True`` it expands to on POSIX, so the child leads the
+    group and ``getpgid(pid) == pid``. Since #222 the caller reaching here is
+    ``rpc_client.stop()``'s degradation rather than the two tool sites, but the
+    spawn shape — and therefore this assertion — is the same one.
+    """
 
     calls: list[tuple[int, int]] = []
 
@@ -243,12 +265,18 @@ def test_posix_a_zombie_leader_falls_back_to_the_pid_as_pgid(
     """Darwin raises ``ProcessLookupError`` for a zombie leader (#202, measured).
 
     Its group is alive and holding descendants, so giving up here would refuse
-    the kill in exactly the case the group kill exists for. Both spawn sites use
-    ``start_new_session=True``, so the number is the group the spawn asked for;
-    ``bash.py`` calls before any reap and the zombie really does pin it, while
-    ``_subprocess.py::run_cancellable`` calls after asyncio has already reaped
-    the child (measured, review posix2/F1) and is bounded instead by the group
-    itself — pinned while any member lives, ``ESRCH`` when it is empty.
+    the kill in exactly the case the group kill exists for. The caller spawned
+    with a session of its own, so the number is the group the spawn asked for.
+
+    What used to stand here was a contrast between the two tool callers —
+    ``bash.py`` calling before any reap, where the zombie really does pin the
+    number, and ``_subprocess.py::run_cancellable`` calling after asyncio's
+    watcher already reaped the child (measured, #202 review posix2/F1). Since
+    #222 neither of them reaches this function: both hold a ``ProcessTree``
+    whose pgid was captured at the spawn. The one caller left,
+    ``rpc_client.stop()``'s degradation, is an asyncio spawn site too, so what
+    bounds the fallback here is the group itself — pinned while any member
+    lives, ``ESRCH`` when it is empty.
     """
 
     calls: list[tuple[int, int]] = []
@@ -319,18 +347,3 @@ def test_default_platform_is_sys_platform(
     assert killed == [77]  # the second call must not have reached killpg
     assert shelled == [_expected_argv(system_root, 78)]
     assert terminations == []
-
-
-# === the two call sites are wired to it =====================================
-
-
-def test_bash_kill_group_delegates() -> None:
-    from aelix_coding_agent.tools import bash as bash_mod
-
-    assert bash_mod.kill_process_tree is _process_tree.kill_process_tree
-
-
-def test_subprocess_helper_delegates() -> None:
-    from aelix_coding_agent.tools import _subprocess as sub_mod
-
-    assert sub_mod.kill_process_tree is _process_tree.kill_process_tree

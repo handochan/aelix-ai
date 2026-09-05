@@ -51,10 +51,13 @@ which ends the remaining members only for a tree attached with
 two reasons: one child per task, so releasing the tree IS being done with it,
 and on Windows the closing handle is the only parent-death backstop there is),
 ``False`` for subprocess hooks and ``!command``, which keep today's
-success-path behaviour on every platform, and ``False`` for every
+success-path behaviour on every platform, ``False`` for every
 :func:`run_contained` site — an extension's ``exec``, the catalog ``git
-clone``, the ``fd`` tree scan (#221): a command that exits 0 after
-backgrounding a helper keeps the helper, exactly as it does today.
+clone``, the ``fd`` tree scan (#221) — and ``False`` for the two tool spawn
+sites that took a tree in #222, ``tools/bash.py``'s
+``_LocalBashOperations.exec`` and ``tools/_subprocess.py::run_cancellable``.
+All of those share one rule: a command that exits 0 after backgrounding a
+helper keeps the helper, exactly as it does today.
 
 THE ASSIGNMENT WINDOW. Between ``CreateProcess`` and ``AssignProcessToJobObject``
 the child runs unheld. On the asyncio spawn the window spans the transport's
@@ -118,9 +121,27 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import IO, Any, Protocol, cast
 
+# The private names are exported deliberately (#222): ``tools/bash.py`` builds
+# the same drain this module runs for :func:`run_contained` — the reader, the
+# idle-rule state, the kill ladder and the four constants those two agree on —
+# out of these parts, on the event loop instead of on the calling thread. They
+# stay underscored because they remain this module's internals rather than an
+# API: the list says which internals a second caller now shares, not that a
+# third is invited to assemble a third drain. Which is why ``_start_reader`` is
+# NOT here (#222 review M-14): it is :func:`run_contained`'s own two-line
+# constructor and no second caller imports it — ``tools/bash.py`` builds its
+# ``_PipeReader`` directly because it needs the callbacks. The rule is "exactly
+# what the sites import", so a name nobody imports would make the list a wish.
 __all__ = [
     "AbortHandle",
+    "EXIT_DRAIN_SECONDS",
+    "INTERRUPT_REAP_SECONDS",
+    "KILL_DRAIN_SECONDS",
     "ProcessTree",
+    "REAP_GRACE_SECONDS",
+    "_PipeReader",
+    "_ReadState",
+    "_end_the_tree",
     "_retained_handle",
     "containment_spawn_kwargs",
     "kill_process_tree",
@@ -429,9 +450,20 @@ def _taskkill_tree(pid: int) -> None:
     SYNCHRONOUS callers on the second-Ctrl+C path — ``PrintChannel._eager_abort``
     and ``RpcChannel._eager_abort`` are ``@staticmethod``s called from inside
     ``except asyncio.CancelledError`` handlers — so this now runs a process
-    spawn to completion on the event-loop thread. Accepted deliberately: the
-    same cost is already paid on the loop by ``RpcClient.stop`` and the hook
-    timeout ladder, and the alternative to a bounded stall is a leaked tree.
+    spawn to completion on the event-loop thread. #222 adds FIVE more, at TWO
+    files and all on the loop thread: ``tools/bash.py``'s
+    ``_LocalBashOperations.exec`` reaches :func:`_end_the_tree` — whose first
+    rung is ``hard_kill`` — from its timeout leg, its abort watcher's leg and
+    its ``CancelledError`` leg, and ``tools/_subprocess.py``'s
+    ``run_cancellable`` calls ``hard_kill`` directly from its timeout leg and
+    its ``CancelledError`` leg.
+    That is not new cost at those five places — ``main`` spawned
+    ``taskkill.exe`` from the same five legs through the pid-only
+    :func:`kill_process_tree` (reasoned from the site, not measured on win32;
+    the leg's own stopwatch is where a number for it comes from). Accepted
+    deliberately: the same cost is already paid on the loop by
+    ``RpcClient.stop`` and the hook timeout ladder, and the alternative to a
+    bounded stall is a leaked tree.
     It is bounded at 5 s per attempt by ``timeout=``: a ``taskkill.exe`` that
     never returns must cost a stalled escalation, not a frozen loop.
     ``TimeoutExpired`` is a :exc:`subprocess.SubprocessError` and not an
@@ -722,13 +754,17 @@ class ProcessTree:
 def kill_process_tree(pid: int, *, platform: str | None = None) -> None:
     """Forcibly terminate ``pid`` and every process descended from it (#105).
 
-    The pid-only entry point, kept for its two spawn-site callers
-    ``tools/bash.py`` and ``tools/_subprocess.py``, which hold no
-    :class:`ProcessTree` — and reached once more from ``rpc_client.stop()``, as
-    the degradation for a client whose ``attach`` itself raised. Best-effort and
-    never raises: an already-dead child is the goal state, not an error, and
-    callers invoke this from abort/timeout paths where an exception would mask
-    the original cause.
+    The pid-only entry point, down to ONE caller since #222: it is the
+    degradation in ``rpc_client.stop()`` for a client whose ``attach`` itself
+    raised out of ``start``, leaving ``_proc`` set with no tree behind it.
+    The two spawn sites it was kept for — ``tools/bash.py``'s
+    ``_LocalBashOperations.exec`` and ``tools/_subprocess.py::run_cancellable``
+    — hold a :class:`ProcessTree` now and kill through it, which is what buys
+    them the win32 half a pid cannot address (a job holds a member whose parent
+    has already exited; ``taskkill /T`` does not). Best-effort and never raises:
+    an already-dead child is the goal state, not an error, and the one caller
+    invokes this from a teardown path where an exception would mask the
+    original cause.
 
     POSIX: ``killpg`` on the child's group, and ONLY when that group is the
     child's own. ``getpgid(pid) != pid`` means the caller did not pass the spawn
@@ -741,14 +777,15 @@ def kill_process_tree(pid: int, *, platform: str | None = None) -> None:
 
     ``ProcessLookupError`` from ``getpgid`` falls back to ``killpg(pid, ...)``
     rather than giving up: Darwin raises it for a ZOMBIE leader whose group is
-    alive and still holding descendants (measured). The callers differ in what
-    that fallback is aimed at, and the difference is worth stating rather than
-    averaging: ``bash.py``'s call sites run BEFORE any reap
-    (``bash.py:300-330`` — ``wait(timeout)`` raised, or the abort watcher
-    fired), so the zombie is genuinely still pinning the number, while
-    ``_subprocess.py::run_cancellable`` runs AFTER asyncio's watcher has already
-    reaped the child (measured), up to the caller's whole timeout later — 30 s
-    for grep/find. What bounds the fallback anyway is that it only ever
+    alive and still holding descendants (measured). What used to stand here was
+    a contrast between the two tool callers — ``bash.py``'s legs run BEFORE any
+    reap, ``_subprocess.py::run_cancellable``'s AFTER asyncio's watcher took the
+    child (measured) — and neither of them reaches this function since #222.
+    The one caller left is at an asyncio spawn site too, so the zombie is not
+    what pins the number here: ``rpc_client.stop()`` reads
+    ``returncode is None`` before it escalates, and this module's own
+    PID/PGID-hazard paragraph records that this does NOT prove the pid is
+    unreaped there. What bounds the fallback anyway is that it only ever
     addresses the group number the spawn asked for: a non-empty group keeps its
     id while any member lives (POSIX.1 §3.293; Linux
     ``attach_pid(PIDTYPE_PGID)``), and an empty one has nothing to kill —
@@ -863,8 +900,12 @@ class _ReadState:
     Shared by both readers and by :func:`run_contained`. ``last_chunk_at``
     is written ONLY by the reader threads (one attribute store, atomic under
     the GIL — there is no invariant spanning two fields to protect, so there
-    is no lock); ``exited_at`` ONLY by :func:`run_contained`, once when the
-    root exits and once more at the reap on the timeout path.
+    is no lock); ``exited_at`` only by the CALLER, never by a reader —
+    :func:`run_contained` writes it once when the root exits and once more at
+    the reap on the timeout path, and since #222 the bash tool's
+    ``_LocalBashOperations.exec`` writes it from its three kill legs (timeout,
+    abort watcher, ``CancelledError``) through a ``_mark_the_kill`` that stamps
+    only the first of them.
     """
 
     #: When a reader last appended a chunk. Initialised to the spawn instant so
@@ -875,7 +916,7 @@ class _ReadState:
 
 
 class _PipeReader(threading.Thread):
-    """One daemon thread draining one pipe into a list of chunks.
+    """One daemon thread draining one pipe into a list of chunks, or a callback.
 
     WHY THREADS AND NOT ``select``. Windows anonymous pipes cannot be
     ``select``ed and have no non-blocking mode, which is why CPython's own
@@ -897,15 +938,47 @@ class _PipeReader(threading.Thread):
     +2 threads +2 fds per call, STACKING across calls. :meth:`detach` is what
     ends that half without ending the read — see its docstring for why the read
     itself must go on.
+
+    TWO CONSUMERS, NEVER BOTH (#222). :func:`run_contained` collects the whole
+    output at the end of a synchronous call and takes ``chunks``; the bash
+    tool's ``exec`` streams to a model as the bytes arrive and takes
+    ``on_chunk``. **With an ``on_chunk`` this reader does not append to
+    ``chunks`` at all** — the callback IS the consumer, and holding the bytes
+    twice was measured on 200 MB of output at 535 MB peak RSS against 285 MB
+    (#222 critique SCOPE-6). So ``chunks`` stays empty there and
+    :func:`_collected` on such a reader answers ``b""``; that is the invariant,
+    not an accident to be repaired by re-adding the append.
+
+    ``on_eof`` fires ONCE, after the last ``on_chunk``, on every way out of
+    :meth:`run` — EOF, the ``except (OSError, ValueError)`` leg, and an
+    exception that leg does not catch. The bash site's bounded drain waits on
+    an ``asyncio.Event`` that callback sets, and a reader that ended through
+    its ``except`` leg never sets ``eof`` (#221 review HC5), so a callback tied
+    to the EOF path alone would leave that drain waiting out its whole cap.
+    Both callbacks run on THIS thread: a body that touches a loop must post to
+    it (``call_soon_threadsafe``) and must not raise back into here — a closed
+    loop raises ``RuntimeError``, which is not in the caught set and would
+    reach ``threading.excepthook``.
     """
 
-    def __init__(self, stream: IO[bytes], state: _ReadState) -> None:
+    def __init__(
+        self,
+        stream: IO[bytes],
+        state: _ReadState,
+        *,
+        on_chunk: Callable[[bytes], None] | None = None,
+        on_eof: Callable[[], None] | None = None,
+    ) -> None:
         super().__init__(daemon=True)
         self._stream = stream
         self._state = state
-        #: Everything read so far. Appended by this thread, read by the caller;
-        #: ``list.append`` is atomic under the GIL and the caller copies before
-        #: joining, so a chunk in flight is either wholly in or wholly out.
+        self._on_chunk = on_chunk
+        self._on_eof = on_eof
+        #: Everything read so far, and EMPTY for the whole life of a reader
+        #: with an ``on_chunk`` (see the class docstring). Appended by this
+        #: thread, read by the caller; ``list.append`` is atomic under the GIL
+        #: and the caller copies before joining, so a chunk in flight is either
+        #: wholly in or wholly out.
         self.chunks: list[bytes] = []
         #: ``True`` once the pipe reported EOF — every writer closed its end.
         self.eof = False
@@ -914,6 +987,9 @@ class _PipeReader(threading.Thread):
         #: invariant spanning two fields — the same GIL argument
         #: :class:`_ReadState` makes, so no lock (#221 review site-exec-1).
         self._detached = False
+        #: Whether ``on_eof`` has been called. Only :meth:`_fire_eof` writes it,
+        #: only this thread reads it.
+        self._eof_fired = False
 
     def run(self) -> None:
         stream = self._stream
@@ -923,6 +999,7 @@ class _PipeReader(threading.Thread):
         # correctness.
         read1 = cast("Callable[[int], bytes] | None", getattr(stream, "read1", None))
         read = read1 if read1 is not None else stream.read
+        on_chunk = self._on_chunk
         try:
             while True:
                 chunk = read(_READ_CHUNK_BYTES)
@@ -934,9 +1011,14 @@ class _PipeReader(threading.Thread):
                     # ``return``: the holder must never be stalled on a full
                     # 64 KiB pipe by a call that has already gone home. The
                     # idle timer is not stamped either — the ``_ReadState``
-                    # this shares belongs to a call that has returned.
+                    # this shares belongs to a call that has returned. And the
+                    # test is ABOVE the callback deliberately: a delivery from
+                    # here would reach a caller that has already returned.
                     continue
-                self.chunks.append(chunk)
+                if on_chunk is not None:
+                    on_chunk(chunk)
+                else:
+                    self.chunks.append(chunk)
                 self._state.last_chunk_at = time.monotonic()
         except (OSError, ValueError):
             # Ends SILENTLY (#221 review WIN-7). A closed or broken pipe here is
@@ -949,17 +1031,41 @@ class _PipeReader(threading.Thread):
             # portable.
             with contextlib.suppress(Exception):
                 stream.close()
+            # ONE call site for the three exits, because the ``finally`` IS all
+            # three: the EOF ``return``, the caught ``(OSError, ValueError)``
+            # and anything else on its way out. After the close, so a waiter
+            # this wakes finds a reader with nothing left to do. The
+            # ``_eof_fired`` guard makes "exactly once" a property of the
+            # object rather than of this being the only place that calls it.
+            self._fire_eof()
+
+    def _fire_eof(self) -> None:
+        """Call ``on_eof``, at most once. Runs on the reader thread."""
+
+        if self._eof_fired:
+            return
+        self._eof_fired = True
+        if self._on_eof is not None:
+            self._on_eof()
 
     def detach(self) -> None:
         """Keep draining this pipe, but stop RETAINING what comes out of it.
 
-        Called from :func:`run_contained`'s ``finally`` on every reader it
-        started, and NOWHERE ELSE — the payload (``CompletedProcess`` or the
-        ``TimeoutExpired``) is built by :func:`_collected` before that
-        ``finally`` runs, and a clear from inside :func:`_drain` would race it
-        and, on the timeout path, deterministically empty the output
+        Called from a ``finally``, on every reader the call started, and only
+        from there. Two callers since #222: :func:`run_contained`'s, and the
+        bash tool's ``exec``, whose own ``finally`` sits inside the one that
+        closes its tree (#222 critique ASYNC-4 measured what skipping it costs
+        when a single Esc lands during the drain — 14.9 GB retained against
+        0 MB). What must NOT move is the placement relative to the payload: the
+        ``CompletedProcess``/``TimeoutExpired`` here is built by
+        :func:`_collected` before that ``finally`` runs, and a clear from
+        inside :func:`_drain` would race it and, on the timeout path,
+        deterministically empty the output
         ``test_an_exited_root_with_a_pipe_holder_is_a_success_and_keeps_the_tail``
-        preserves (#221 review site-exec-1).
+        preserves (#221 review site-exec-1). At the bash site the same rule
+        reads differently and lands in the same place: there the bytes have
+        already been delivered by ``on_chunk``, so the ``chunks`` this clears
+        are empty and what the flag ends is the delivery, not a payload.
 
         WHY THE READ GOES ON. The thread cannot be unblocked — that is this
         module's stated leak, and ``CancelSynchronousIo`` is the win32-only
@@ -971,7 +1077,12 @@ class _PipeReader(threading.Thread):
         RETAINED AFTERWARDS IS AT MOST ONE IN-FLIGHT CHUNK
         (:data:`_READ_CHUNK_BYTES`): the flag is set before the list is
         replaced, so the only chunk that can still land is one whose ``if
-        self._detached`` test was already past when this ran. Idempotent.
+        self._detached`` test was already past when this ran. **The same bound,
+        and not a stronger one, is what a reader with an ``on_chunk`` promises**:
+        one delivery already past that test can still run after this returns.
+        At the bash site that is why the callback posts to the loop and the
+        loop-side body checks its own flag — this method cannot make the
+        promise "nothing after the call returns" on its own. Idempotent.
         """
 
         self._detached = True
@@ -1060,9 +1171,15 @@ def _end_the_tree(tree: ProcessTree, proc: subprocess.Popen[bytes], *, reap: flo
     THE BELT IS NOT REDUNDANT, and its safety is per-platform (#221 review
     WIN-5). ``hard_kill`` does not touch ``Popen`` state, so this is always
     entered with ``returncode is None`` even when the root is already dead
-    (measured). POSIX — ``Popen.kill`` is ``send_signal(SIGKILL)``, which polls
-    first (bpo-38630): the poll reaps the zombie and no second signal is sent,
-    so a recycled pid cannot be hit. win32 — ``Popen.kill`` IS ``terminate``,
+    (measured). POSIX — the invariant is that NOTHING ELSE REAPS THIS PID and
+    the belt is issued BEFORE any reap, so the number still names our child when
+    the signal goes out (#222 design §A.4; the critique measured 150/150 with a
+    co-waiter). ``send_signal``'s bpo-38630 poll is NOT what protects this call
+    site and the docstring used to claim it was: measured 200/200, the poll does
+    not reap and a second ``os.kill`` IS issued while a ``to_thread(proc.wait)``
+    worker holds ``_waitpid_lock`` — which is exactly the shape the bash tool's
+    three legs are in. Safe, for the invariant above, not for the poll.
+    win32 — ``Popen.kill`` IS ``terminate``,
     does NOT poll, and calls ``TerminateProcess`` on the RETAINED handle
     (``class Handle(int)``, ``__del__ = Close``), so the number cannot have been
     recycled while we hold it; on an already-exited process the call raises

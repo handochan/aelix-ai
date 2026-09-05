@@ -32,17 +32,23 @@ Two defences, and BOTH are required:
 
 WHY A ``/proc`` WALK AND NOT ``os.killpg`` (finding I2). An earlier draft
 justified the group kill with *"the child's own ``bash`` tool children must die
-too"*. That is factually wrong: ``tools/bash.py:278`` uses
-``subprocess.Popen(..., start_new_session=True)`` and ``tools/_subprocess.py:78``
-uses ``create_subprocess_exec(..., start_new_session=True)``, so a grandchild is
-the leader of its OWN group and ``killpg`` on the child's group cannot reach it.
-The descendant walk can.
+too"*. That is factually wrong: ``tools/bash.py:332`` and
+``tools/_subprocess.py:106`` both spawn through
+``containment_spawn_kwargs(new_session=True)`` — which is the
+``start_new_session=True`` those two lines used to spell literally, and still is
+on POSIX — so a grandchild is the leader of its OWN group and ``killpg`` on the
+child's group cannot reach it. The descendant walk can.
 
 On the COOPERATIVE SIGTERM leg the walk is redundant — the child's own
-``_signal_cleanup_and_exit`` → ``dispose()`` → ``abort()`` →
-``bash.py:325-330`` ``_kill_group`` already reaps its grandchildren. The
-escalation leg exists precisely for the child that does NOT cooperate, which is
-also the child whose grandchildren nobody else will clean up.
+``_signal_cleanup_and_exit`` → ``dispose()`` → ``abort()`` → ``bash.py:472-487``
+already reaps its grandchildren. That last hop was a ``_kill_group(proc.pid)``
+until #222 and is the bash tool's own ``ProcessTree`` now, so on Windows it
+reaches a grandchild whose intermediate parent already exited (a job does;
+``taskkill /T`` follows live parent links only). On POSIX it is still a group
+kill and still cannot name a ``setsid`` grandchild, which is why nothing below
+changed. The escalation leg exists precisely for the child that does NOT
+cooperate, which is also the child whose grandchildren nobody else will clean
+up.
 
 ON WINDOWS THERE IS NEITHER (#220). ``descendant_pids`` returns ``[]`` with no
 ``/proc`` to read and ``os.kill`` delivers no catchable signal, so both legs are
@@ -103,9 +109,10 @@ if TYPE_CHECKING:
     # tree — ``closed``, ``soft_kill()`` and ``hard_kill()`` — so a test can hand
     # ``reap`` a three-method stub and no ctypes/``_KernelApi`` is ever built.
     # ``aelix_agents`` imports the private module directly, as ``rpc/rpc_client.py``
-    # and ``extensions/subprocess_hooks.py`` already do; the
-    # ``aelix_coding_agent/tools/_process_tree.py`` shim is not a route, because it
-    # re-exports ``kill_process_tree`` alone.
+    # and ``extensions/subprocess_hooks.py`` already do. There is no other route:
+    # the ``aelix_coding_agent/tools/_process_tree.py`` shim that re-exported
+    # ``kill_process_tree`` alone was deleted in #222, when the two tool spawn
+    # sites it existed for stopped calling that function and took a tree instead.
     from aelix_ai.utils._process_tree import ProcessTree
 
 DEFAULT_GRACE_SECONDS = 5.0

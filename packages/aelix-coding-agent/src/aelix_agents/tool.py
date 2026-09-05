@@ -578,7 +578,7 @@ def create_agent_tool(
     """Build the ``agent`` tool.
 
     ``execution_mode="sequential"`` IS A SECURITY SETTING, not a performance
-    one, and mirrors ``tools/bash.py:708``. The kernel's ``_execute_tool_calls``
+    one, and mirrors ``tools/bash.py:950``. The kernel's ``_execute_tool_calls``
     downgrades the WHOLE BATCH to sequential when any tool in it declares this
     (kernel ``types.py:47-56``; ``loop.py:706-716``), which closes the
     concurrent-modal hazard described in the module docstring at zero

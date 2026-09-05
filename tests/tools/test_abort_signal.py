@@ -3,10 +3,17 @@
 Covers:
 - :class:`~aelix_coding_agent.tools._abort.AbortSignal` API contract.
 - :meth:`~aelix_coding_agent.tools.bash._LocalBashOperations.exec` with
-  signal abort: the child process group is killed and exit_code is None.
+  signal abort: the child's tree is killed and exit_code is None.
 - :meth:`~aelix_coding_agent.tools.bash._LocalBashOperations.exec` with
-  asyncio.CancelledError: the child group is killed and CancelledError
-  propagates (is NOT swallowed).
+  asyncio.CancelledError: the tree is killed and CancelledError propagates
+  (is NOT swallowed).
+
+Since #222 the kill at both legs is a :class:`~aelix_ai.utils._process_tree.ProcessTree`
+ladder rather than the pid-only ``_kill_group`` these cases were written
+against (that one-line delegate is deleted). The cases below are unchanged
+because their SUBJECT is unchanged — the abort ends the command and the label
+comes back right; what the ladder buys beyond the pid is asserted against real
+trees in ``test_bash_tool_containment.py``.
 """
 
 from __future__ import annotations
@@ -105,9 +112,10 @@ async def test_bash_exec_signal_abort_kills_process_group(tmp_path: Path) -> Non
     Measured (POSIX): bash execs the single simple command, so the recorded
     PID IS the direct child and the pgid leader — the old ``sh -c 'echo $$ …'``
     form had the same shape.  What this pins is that the abort reaches the
-    process holding the command, through ``_kill_group``; the group-vs-direct
-    distinction is proven in
-    test_subprocess_helper.py::test_run_cancellable_cancellation_kills_child.
+    process holding the command, through the watcher's ``_end_the_tree`` ladder
+    (``_kill_group`` until #222); that the ladder reaches a DESCENDANT whose own
+    parent has already exited is asserted in test_bash_tool_containment.py, by
+    ``test_the_abort_signal_ends_a_tree_whose_middle_parent_already_exited``.
 
     The child is ``sys.executable`` rather than ``sh -c 'echo $$ …'`` because
     ``exec`` hands ``command`` to the resolved shell, which is pwsh on Windows
@@ -244,7 +252,7 @@ async def test_bash_exec_no_signal_no_watcher(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# bash exec — _kill_group failure during abort must be contained
+# bash exec — a kill against a process that is already gone must be contained
 # ---------------------------------------------------------------------------
 
 
@@ -252,13 +260,15 @@ async def test_bash_exec_abort_with_process_already_gone_still_returns(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
-    """If _kill_group gets ProcessLookupError (process already gone), exec() still returns.
+    """If the kill lands on a process that already exited, exec() still returns.
 
-    This covers the ``except (ProcessLookupError, PermissionError): return`` guard
-    inside _kill_group.  We use a short-lived command (``true``) that exits quickly,
-    then fire the signal after a delay — _kill_group will get ProcessLookupError
-    because the process is already dead.  exec() must return normally with exit_code=None
-    (signal-aborted path overrides the actual exit code) and must NOT raise.
+    This covers the ``suppress(OSError)`` around every rung of the ladder
+    (``ProcessTree.hard_kill``, the ``proc.kill()`` belt, the bounded reap) —
+    ``except (ProcessLookupError, PermissionError): return`` inside
+    ``_kill_group`` until #222.  We use a short-lived command (``true``) that
+    exits quickly, then fire the signal after a delay, so the kill has nothing
+    to reach.  exec() must return normally with exit_code=None (signal-aborted
+    path overrides the actual exit code) and must NOT raise.
     """
     import aelix_coding_agent.tools.bash as _bash_mod
 
@@ -267,7 +277,7 @@ async def test_bash_exec_abort_with_process_already_gone_still_returns(
     chunks: list[bytes] = []
 
     # Run a command that exits quickly; wait long enough for it to finish,
-    # then fire the signal.  _kill_group will encounter ProcessLookupError
+    # then fire the signal.  The ladder will encounter ProcessLookupError
     # (no process to kill) — must be silently ignored.
     task = asyncio.create_task(
         ops.exec("true", str(tmp_path), on_data=chunks.append, signal=sig)
@@ -289,13 +299,13 @@ async def test_bash_exec_cancel_watcher_teardown_catches_exception(
     """Watcher teardown ``except (asyncio.CancelledError, Exception): pass`` contains exceptions.
 
     The watcher task cancellation in the finally block uses a broad except so that
-    any exception raised inside ``_watch_signal`` (e.g. from _kill_group) is contained
-    and does NOT mask the outer CancelledError.  We verify this by asserting that
-    exec() with a quick-exiting process + cancel still propagates CancelledError
-    (not an unrelated exception from the watcher).
+    any exception raised inside ``_watch_signal`` (e.g. from its ``_end_the_tree``
+    ladder) is contained and does NOT mask the outer CancelledError.  We verify
+    this by asserting that exec() with a quick-exiting process + cancel still
+    propagates CancelledError (not an unrelated exception from the watcher).
 
-    Note: we cannot inject a RuntimeError into _kill_group and simultaneously expect
-    exec() to return (the unreaped process would cause drain_task to hang).  Instead
+    Note: we cannot inject a RuntimeError into the ladder and simultaneously expect
+    exec() to return (the unreaped process would hold the drain open).  Instead
     we validate the containment contract by checking CancelledError propagates when
     the watcher encounters ProcessLookupError (process already dead before kill).
     """

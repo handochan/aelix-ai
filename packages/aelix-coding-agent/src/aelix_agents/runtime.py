@@ -745,7 +745,7 @@ class _SubagentRuntimeImpl:
             while self._children:
                 # ABORT THE WHOLE WAVE, THEN JOIN IT — not abort-join per child.
                 # ``abort_child`` signals and ``reap`` waits out a 5 s grace
-                # (``reaper.py:111``), so joining child *k* before child *k+1* has
+                # (``reaper.py:118``), so joining child *k* before child *k+1* has
                 # even been signalled would serialise N graces into N × 5 s of
                 # teardown.
                 wave = list(self._children.values())

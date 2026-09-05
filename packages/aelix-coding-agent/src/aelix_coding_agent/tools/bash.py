@@ -15,16 +15,28 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 from aelix_agent_core.types import AgentTool
 from aelix_ai.messages import TextContent
 from aelix_ai.tools import ToolExecutionContext, ToolResult
+from aelix_ai.utils._process_tree import (
+    EXIT_DRAIN_SECONDS,
+    INTERRUPT_REAP_SECONDS,
+    KILL_DRAIN_SECONDS,
+    REAP_GRACE_SECONDS,
+    ProcessTree,
+    _end_the_tree,
+    _PipeReader,
+    _ReadState,
+    _retained_handle,
+    containment_spawn_kwargs,
+)
 
-from aelix_coding_agent.tools._process_tree import kill_process_tree
 from aelix_coding_agent.tools._truncate import (
     DEFAULT_MAX_BYTES,
     DEFAULT_MAX_LINES,
@@ -225,7 +237,15 @@ class BashToolDetails:
 
 
 class BashOperations(Protocol):
-    """Pi parity ``BashOperations`` Protocol — swap surface for SSH/remote."""
+    """Pi parity ``BashOperations`` Protocol — swap surface for SSH/remote.
+
+    ``on_data`` MUST NOT RAISE. All three in-repo callers pass
+    ``chunks.append`` and cannot, but the contract is worth stating because it
+    stopped being enforceable by the call stack in #222: the local
+    implementation delivers from a loop callback, so an exception out of
+    ``on_data`` reaches ``loop.call_exception_handler`` (a logged
+    "Exception in callback") instead of the caller's ``await``.
+    """
 
     async def exec(
         self,
@@ -240,7 +260,7 @@ class BashOperations(Protocol):
 
 
 class _LocalBashOperations:
-    """Local default — subprocess.Popen w/ session group kill on abort.
+    """Local default — ``subprocess.Popen`` w/ a :class:`ProcessTree` kill on abort.
 
     Pi parity ``createLocalBashOperations({ shellPath })`` — an explicit
     ``shell_path`` (from settings) is validated and used in preference to the
@@ -269,25 +289,161 @@ class _LocalBashOperations:
         # $SHELL → /bin/bash → bash-on-PATH → /bin/sh. See ``_resolve_shell``.
         shell = _resolve_shell(env_dict, self._shell_path)
         try:
-            proc = subprocess.Popen(  # noqa: S603
-                [shell.path, shell.command_flag, command],
-                cwd=cwd,
-                env=env_dict,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                start_new_session=True,
+            # The cast is about the CHECKER, and it is ``run_contained``'s:
+            # unpacking a ``dict[str, Any]`` costs pyright the text/bytes
+            # overload discrimination and it settles on ``Popen[str]``. At
+            # runtime ``PIPE`` with no ``text``/``encoding`` is bytes.
+            proc = cast(
+                "subprocess.Popen[bytes]",
+                subprocess.Popen(  # noqa: S603
+                    [shell.path, shell.command_flag, command],
+                    cwd=cwd,
+                    env=env_dict,
+                    # #222 §A.5, and Pi's ``stdio: ["ignore", "pipe", "pipe"]``.
+                    # The child used to inherit Aelix's stdin, where under
+                    # ``start_new_session=True`` it does NOT stop on SIGTTIN —
+                    # it has no controlling terminal, so the kernel's
+                    # background-group test never applies. What happened
+                    # instead was invisible: measured, a ``!cat`` typed into
+                    # the TUI took the user's keystroke (the child got
+                    # ``'secret\n'``, the TUI's own ``read`` got ``b''``) and
+                    # never returned, and a child that called ``tcsetattr``
+                    # left ECHO off after it exited. On POSIX ``DEVNULL`` +
+                    # ``setsid`` makes the child non-interactive (``cat``
+                    # prints nothing and exits 0; ``git commit`` without
+                    # ``-m`` fails with "Aborting commit due to empty commit
+                    # message." — the string measured 2026-09-06 from git
+                    # itself, not the paraphrase this comment used to quote).
+                    # On win32
+                    # ``containment_spawn_kwargs`` returns only
+                    # ``CREATE_NEW_PROCESS_GROUP``, so the child keeps Aelix's
+                    # console: a real stdin reader gets EOF from ``NUL``, but a
+                    # program that reads ``CONIN$`` directly (git credential
+                    # prompts) or ``Read-Host`` still prompts there and still
+                    # costs the whole timeout — and only when
+                    # ``default_timeout != 0`` (see :data:`_DEFAULT_TIMEOUT`).
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    # ``new_session=True`` is today's ``start_new_session=True``
+                    # spelled through the primitive, so every tool child still
+                    # makes its own session on POSIX and gains a process group
+                    # (and, below, a job) on win32.
+                    **containment_spawn_kwargs(new_session=True),
+                ),
             )
         except (FileNotFoundError, NotADirectoryError) as exc:
             on_data(f"[bash] failed to spawn: {exc}\n".encode())
             return ExecExitResult(exit_code=127)
 
-        async def _drain() -> None:
-            assert proc.stdout is not None
-            while True:
-                chunk = await asyncio.to_thread(proc.stdout.read, 4096)
-                if not chunk:
-                    break
+        loop = asyncio.get_running_loop()
+        # The reader thread's two channels into this coroutine: ``eof`` is what
+        # the drain waits on, ``state`` is the clock the post-kill idle rule is
+        # measured from (``last_chunk_at`` stamped by the reader,
+        # ``exited_at`` by whichever leg kills first).
+        eof = asyncio.Event()
+        state = _ReadState(last_chunk_at=time.monotonic())
+        # Read on the LOOP thread by ``_deliver`` and cleared there too, in the
+        # teardown below: it is what makes "no ``on_data`` after ``exec``
+        # returns" true of the SITE. :meth:`_PipeReader.detach` cannot promise
+        # it on its own — one delivery already past its ``_detached`` test can
+        # still be in flight — and the callers join ``chunks`` with no await
+        # (``create_bash_tool``'s ``execute``, ``cli/repl.py``, ``rpc_mode``).
+        delivering = True
+
+        def _post(callback: Callable[..., None], *args: Any) -> None:
+            """Run ``callback`` on the loop. Called from the reader thread.
+
+            ``call_soon_threadsafe`` raises ``RuntimeError`` on a CLOSED loop,
+            which :meth:`_PipeReader.run`'s ``except (OSError, ValueError)``
+            does not catch — measured in the #222 critique as a
+            ``threading.excepthook`` traceback printed out of a TUI. The
+            repo's other daemon→loop pump suppresses the same
+            (``rpc_mode.py``'s print pump), and a detached reader outliving
+            its call is exactly the shape that reaches a closed loop.
+            """
+
+            with contextlib.suppress(RuntimeError):
+                loop.call_soon_threadsafe(callback, *args)
+
+        def _deliver(chunk: bytes) -> None:
+            """Hand one chunk to ``on_data``, on the loop, while still delivering.
+
+            AN ``on_data`` THAT RAISES NO LONGER REACHES THE CALLER, and that is
+            a real change of shape from ``main``'s ``to_thread`` read, where the
+            exception came out of the ``await`` (#222 critique POSIX-3).
+            Delivery is a loop CALLBACK now, so a raise ends in
+            ``loop.call_exception_handler`` — logged, not propagated — and
+            ``exec`` returns normally with the rest of the output. Unreachable
+            in-repo: all three callers pass ``chunks.append``
+            (``create_bash_tool``'s ``execute``, ``cli/repl.py``,
+            ``rpc_mode.py``), which is why this is stated rather than belted;
+            :class:`BashOperations` carries the contract for a caller outside
+            the repo.
+            """
+
+            if delivering:
                 on_data(chunk)
+
+        try:
+            # BEFORE any await, so on win32 the job is assigned while the
+            # window in which a descendant can escape it is one statement wide
+            # (ADR-0238 §B.4). ``kill_on_close=False``: a command that exits 0
+            # after backgrounding a daemon keeps it (Pi #8225).
+            tree = ProcessTree.attach(proc.pid, handle=_retained_handle(proc))
+            assert proc.stdout is not None  # ``stdout=PIPE`` above
+            # NOT ``asyncio.to_thread(proc.stdout.read, …)`` any more (#222
+            # §A.2-3). After a kill whose pipe is held by a process OUTSIDE the
+            # tree — a ``setsid`` descendant on POSIX — that read can be
+            # neither cancelled nor abandoned: the default executor's threads
+            # are not daemons, and measured, an abandoned read held
+            # ``asyncio.run`` for the escapee's whole 30 s, after which the
+            # stdlib path is ``THREAD_JOIN_TIMEOUT = 300`` and then an
+            # unbounded ``_python_exit`` join. ``_wait`` below keeps its
+            # ``to_thread`` because it blocks on the ROOT only, which the
+            # ``proc.kill()`` belt in ``_end_the_tree`` always ends.
+            reader = _PipeReader(
+                proc.stdout,
+                state,
+                on_chunk=lambda chunk: _post(_deliver, chunk),
+                on_eof=lambda: _post(eof.set),
+            )
+            reader.start()
+        except BaseException:
+            # A spawned child must never be left running by an exception
+            # between the spawn and the first guarded statement (#221 review
+            # posix-runner-1). ``tree`` is exactly what may be unbound here, so
+            # this cannot be ``_end_the_tree``; the root is what there is to
+            # end, and on POSIX ``Popen.kill`` polls first, so it cannot reach
+            # a recycled pid. No reap: this runs on the loop thread and the
+            # zombie is collected by the stdlib's ``_active`` sweep at the next
+            # spawn — a bounded ``proc.wait`` here would stall the loop for a
+            # child that is already dead.
+            with contextlib.suppress(OSError):
+                proc.kill()
+            raise
+
+        def _mark_the_kill() -> None:
+            """Stamp the kill instant, for whichever leg gets there first.
+
+            :attr:`_ReadState.exited_at` is documented as exactly that instant
+            and it is what arms the post-kill drain below; the three legs
+            (timeout, abort watcher, ``CancelledError``) can overlap, and the
+            first one's clock is the honest origin for the idle rule.
+
+            CALLED AFTER THE LADDER at all three legs, never before it, exactly
+            as ``run_contained`` stamps at the reap and not at the
+            ``TimeoutExpired`` (``_process_tree.py``'s timeout leg,
+            ``state.exited_at`` after :func:`_end_the_tree`). Stamping first
+            would fold the kill's OWN cost into the 0.1 s idle window the drain
+            then measures from here: inert on POSIX, where the ladder is 1.6 ms,
+            but on win32 ``hard_kill`` shells out to ``taskkill.exe`` under a 5 s
+            bound, so the window would already be spent when the first byte the
+            kill released arrives and the idle rule would collapse to zero arms.
+            """
+
+            if state.exited_at is None:
+                state.exited_at = time.monotonic()
 
         # Track whether the timeout (not the abort signal) triggered the kill,
         # so the bash tool can label the result correctly (issue #11).
@@ -299,7 +455,14 @@ class _LocalBashOperations:
                 return await asyncio.to_thread(proc.wait, timeout)
             except subprocess.TimeoutExpired:
                 _timed_out = True
-                _kill_group(proc.pid)
+                # ONE call, not ``hard_kill()`` and then this: ``_end_the_tree``
+                # BEGINS with ``hard_kill``, and two of them are two
+                # ``taskkill.exe`` spawns on win32 (#222 critique WIN32-12).
+                # Its ``proc.wait(reap)`` deliberately races the ``to_thread``
+                # worker this coroutine is on; safe under ``_waitpid_lock``
+                # (critique: 20/20 trials, both returned ``-9``).
+                _end_the_tree(tree, proc, reap=REAP_GRACE_SECONDS)
+                _mark_the_kill()
                 return None
 
         # Track whether the abort signal (not timeout) triggered a kill so we
@@ -307,37 +470,129 @@ class _LocalBashOperations:
         _signal_aborted = False
 
         async def _watch_signal() -> None:
-            """Kill the process group when the abort signal fires."""
+            """End the tree when the abort signal fires.
+
+            The stamp is after the ladder here too, and it still precedes the
+            drain that reads it: from ``signal.wait()`` returning to the stamp
+            there is no ``await``, so the whole leg runs to completion on the
+            loop thread before ``_wait``'s ``to_thread`` callback can resume the
+            coroutine below — including ``_end_the_tree``'s blocking
+            ``proc.wait(reap)``, which holds the loop rather than yielding it.
+            """
             nonlocal _signal_aborted
             assert signal is not None  # watcher only started when signal is set
             await signal.wait()
             _signal_aborted = True
-            _kill_group(proc.pid)
+            _end_the_tree(tree, proc, reap=INTERRUPT_REAP_SECONDS)
+            _mark_the_kill()
 
-        drain_task = asyncio.create_task(_drain())
+        async def _drain_past_the_kill(exited_at: float) -> None:
+            """``_drain``'s idle rule, awaited instead of polled.
+
+            Same three ends as the synchronous one in
+            ``aelix_ai/utils/_process_tree.py`` and the same two constants: EOF,
+            or the pipe idle for :data:`EXIT_DRAIN_SECONDS` measured from
+            ``max(last_chunk_at, exited_at)``, or the absolute cap one
+            :data:`KILL_DRAIN_SECONDS` past the kill. A flat cap without the
+            idle rule would cost Esc a flat 1.0 s where ``run_contained`` costs
+            ~0.1 s (#221 review TP4/PI-2 measured that mistake), and
+            ``not reader.is_alive()`` is the third end because a reader that
+            ended through its ``except`` leg is done whatever ``eof`` says
+            (#221 HC5). There is no poll: a 5 ms one costs 0.71 % of a core and
+            ~163 loop wakeups/s for the holder's whole life.
+            """
+
+            cap = exited_at + KILL_DRAIN_SECONDS
+            while not eof.is_set() and reader.is_alive():
+                armed_at = max(state.last_chunk_at, exited_at)
+                remaining = min(cap, armed_at + EXIT_DRAIN_SECONDS) - time.monotonic()
+                if remaining <= 0:
+                    break
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(eof.wait(), remaining)
+            # ONE turn of the loop before the caller detaches (#222 critique
+            # POSIX-1/WIN32-1/ASYNC-1). The chunk callbacks and the EOF callback
+            # share the loop's FIFO, so waiting on ``eof`` cannot resume before
+            # every earlier chunk has been delivered — but a ``wait_for`` that
+            # TIMED OUT resumes with callbacks still queued behind it. The
+            # 15-in-250 loss that rule comes from was measured on the POLLED
+            # shape; deleting this yield reddened nothing here in 40 rounds.
+            await asyncio.sleep(0)
+
+        async def _drain_to_the_end() -> None:
+            exited_at = state.exited_at
+            if exited_at is None:
+                # The root exited on its own: wait for EOF, unbounded, exactly
+                # as ``main``'s ``await drain_task`` did. A backgrounded helper
+                # holding stdout therefore still holds this call open — a
+                # product decision left out of #222 deliberately (§H) and
+                # pinned by ``test_bash_tool_containment.py``'s exit-path case
+                # so the follow-up's change is visible.
+                await eof.wait()
+                return
+            await _drain_past_the_kill(exited_at)
+
         watcher_task: asyncio.Task[None] | None = None
         if signal is not None and hasattr(signal, "wait"):
             watcher_task = asyncio.create_task(_watch_signal())
+        # FOUR ``finally``s, innermost first, and the ORDER is the contract:
+        # watcher → drain → detach → close, which is ``main``'s order and is
+        # restored here after the branch's first shape put the watcher two
+        # levels out (#222 pre-merge review F1).
+        #
+        # THE WATCHER IS DISARMED FIRST because it must not be able to fire
+        # DURING the drain. Measured with it armed there (abort at t=1.0 s into
+        # an rc-0 command that had backgrounded a 20 s helper): ``main`` returns
+        # ``exit_code=0`` with the helper alive, the branch returned
+        # ``exit_code=None`` at 1.01 s with the helper killed and the output
+        # after the abort lost — i.e. an abort landing in the post-exit drain
+        # killed exactly the tree ``kill_on_close=False`` exists to keep, and on
+        # win32 ``hard_kill`` is ``taskkill /T /F`` + ``TerminateJobObject``,
+        # which reaches such a helper even through a process group of its own.
+        # Whether an abort in that window SHOULD do anything is #230's to
+        # decide; it is not this issue's to decide by accident.
+        #
+        # THE DETACH IS OUTSIDE THE DRAIN because the drain is the only
+        # cancellable step: with the two in one block a single Esc landing
+        # during the drain skipped the detach and re-opened #221 site-exec-1's
+        # retention — 14.9 GB against 0 MB after 2 s of a chatty holder.
+        #
+        # ``close()`` IS OUTERMOST and is never skipped: a ``CancelledError``
+        # raised in an inner ``finally`` propagates into the enclosing ``try``
+        # (measured under 2x and 3x cancels). It also has to stay outside the
+        # watcher, because ``hard_kill`` early-returns on a closed tree, so a
+        # ``close()`` that beat the watcher would turn a firing abort into a
+        # silent no-op.
         try:
             try:
-                exit_code = await _wait()
-            except asyncio.CancelledError:
-                # Esc-path: the harness cancelled our turn task.  Kill
-                # the child group so it does not become an orphan, then
-                # re-raise after the finally drain so the caller sees the
-                # cancellation.
-                _kill_group(proc.pid)
-                exit_code = None
-                raise
+                try:
+                    try:
+                        exit_code = await _wait()
+                    except asyncio.CancelledError:
+                        # Esc-path: the harness cancelled our turn task. End the
+                        # tree so it does not become an orphan, then re-raise
+                        # after the drain so the caller sees the cancellation.
+                        _end_the_tree(tree, proc, reap=INTERRUPT_REAP_SECONDS)
+                        _mark_the_kill()
+                        raise
+                    finally:
+                        if watcher_task is not None:
+                            watcher_task.cancel()
+                            # Swallow the watcher's own cancellation (and any
+                            # teardown error) — the outer turn cancellation is
+                            # captured and re-raised at the ``except
+                            # asyncio.CancelledError`` above.
+                            with contextlib.suppress(asyncio.CancelledError, Exception):
+                                await watcher_task
+                finally:
+                    await _drain_to_the_end()
+            finally:
+                reader.detach()
+                delivering = False
         finally:
-            if watcher_task is not None:
-                watcher_task.cancel()
-                # Swallow the watcher's own cancellation (and any teardown
-                # error) — the outer turn cancellation is captured and
-                # re-raised at the ``except asyncio.CancelledError`` above.
-                with contextlib.suppress(asyncio.CancelledError, Exception):
-                    await watcher_task
-            await drain_task
+            # A release, never a kill: ``kill_on_close=False``. POSIX signals
+            # nothing here; win32 closes the job handle.
+            tree.close()
         # Pi parity: signal-kill and timeout-kill both report exit_code=None.
         if _signal_aborted:
             exit_code = None
@@ -346,19 +601,6 @@ class _LocalBashOperations:
         return ExecExitResult(
             exit_code=exit_code, timed_out=_timed_out and not _signal_aborted
         )
-
-
-def _kill_group(pid: int) -> None:
-    """Send SIGKILL to the process group (Pi parity detached spawn cleanup).
-
-    #105 — on Windows there is neither an ``os.killpg`` nor a ``SIGKILL`` to
-    reference, so this delegates to
-    :func:`~aelix_coding_agent.tools._process_tree.kill_process_tree`, which
-    keeps the POSIX body verbatim and reaps the tree with ``taskkill`` on
-    win32.
-    """
-
-    kill_process_tree(pid)
 
 
 def create_local_bash_operations(

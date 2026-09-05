@@ -312,20 +312,25 @@ def test_kill_process_tree_ends_a_live_child_for_real(strays: list[int]) -> None
 def test_kill_process_tree_reaches_the_group_of_a_zombie_leader(
     strays: list[int],
 ) -> None:
-    """Unreaped leader, live descendant — the shape ``bash.py``'s callers are in.
+    """Unreaped leader, live descendant — the shape the ONE caller left is in.
 
-    ``bash.py`` calls this after ``wait(timeout)`` raised or the abort watcher
-    fired, so THERE the child has not been reaped.
-    ``_subprocess.py::run_cancellable`` is the other caller and is not in this
-    shape at all: asyncio's watcher has already reaped its child by the time it
-    calls (measured, review posix2/F1). What holds either way is that the
-    fallback addresses only the group number the spawn asked for — pinned while
-    any member lives, ``ESRCH`` when the group is empty. On Linux
-    ``getpgid`` still resolves through a zombie; on Darwin it raises
-    ``ProcessLookupError`` (measured), which is why the pid is used as the pgid
-    instead of giving up. On win32 there is no group and ``taskkill /T`` needs a
-    live root, so the descendant survives — a documented limitation of the
-    pid-only path, and the reason #222 wants a job here too.
+    Since #222 that caller is ``rpc_client.stop()``'s degradation, for a client
+    whose ``attach`` itself raised: an asyncio spawn site, where
+    ``returncode is None`` does not prove the pid is unreaped (the primitive's
+    PID/PGID paragraph), so it can arrive here either side of the reap. The two
+    tool sites that used to call — ``bash.py``'s ``exec`` and
+    ``run_cancellable`` — hold a :class:`ProcessTree` now and never reach this
+    function. What holds either way is that the fallback addresses only the
+    group number the spawn asked for — pinned while any member lives, ``ESRCH``
+    when the group is empty. On Linux ``getpgid`` still resolves through a
+    zombie; on Darwin it raises ``ProcessLookupError`` (measured), which is why
+    the pid is used as the pgid instead of giving up. On win32 there is no
+    group and ``taskkill /T`` needs a live root, so the descendant survives —
+    which is exactly why that degradation is a degradation, and what a tree
+    buys at a site that has one. This case pins the pid-only path only; the
+    site-level assertion for the tool children is
+    ``tests/tools/test_bash_tool_containment.py``'s timeout-with-an-exited-
+    intermediate-parent case.
     """
 
     proc = subprocess.Popen(

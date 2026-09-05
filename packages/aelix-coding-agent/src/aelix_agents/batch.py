@@ -99,7 +99,7 @@ a MESSAGE (``chrome.py:784-790``) and the queue drains only after the turn.
 
 IT IS A CEILING ON THE MEMBERS' TIMEOUTS, NOT ON THE CALL'S WALL CLOCK. A member
 that hits its deadline then runs its kill legs — ``reap(grace=5.0)``
-(``reaper.py:111``) plus the bounded post-kill drain ``POST_EXIT_DRAIN_SECONDS =
+(``reaper.py:118``) plus the bounded post-kill drain ``POST_EXIT_DRAIN_SECONDS =
 2.0`` (``print_channel.py:149``). :data:`KILL_LEG_RESERVE_MS` is subtracted so the
 ceiling is honoured rather than approximately honoured; the honest outer bound is
 this number plus at most one kill leg for whatever was in flight when it fired."""
@@ -632,7 +632,7 @@ def _kill_leg_reserve_ms(mode: SubagentMode, steps_left: int) -> int:
     """Wall clock held back so a timing-out member's kill legs fit under the cap.
 
     A member that hits its deadline does not stop there: ``reap`` waits
-    ``DEFAULT_GRACE_SECONDS = 5.0`` (``reaper.py:111``) and then drains for a
+    ``DEFAULT_GRACE_SECONDS = 5.0`` (``reaper.py:118``) and then drains for a
     bounded ``POST_EXIT_DRAIN_SECONDS = 2.0`` (``print_channel.py:149``).
 
     In PARALLEL those legs overlap, so one reserve covers the whole wave. In a

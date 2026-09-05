@@ -303,6 +303,18 @@ and `.../releases/tag/vX` link would 404. Add them with the first pushed tag.
   error. The positive forms `--theme` and `--prompt-template` are unaffected,
   as is `--no-skills`.
 
+- **`aelix_coding_agent.tools._process_tree`.** It was a re-export shim, left
+  behind when the containment primitive moved to `aelix_ai.utils._process_tree`
+  so that the `aelix-ai` sites could share it (#202). Its last three importers
+  — the `bash` tool, the `rg`/`fd` helper and the win32 process-tree test
+  (`tests/tools/test_process_tree_win32.py`) — name the primitive directly now
+  (#222); the remaining references were prose (`reaper.py`, ADR-0238,
+  `SLICE-STATUS.md`) and moved with it. The path is private and undocumented,
+  so no supported surface changes; this line exists because it was still
+  importable, and an out-of-tree caller that reached for it deserves a written
+  signal rather than an `ImportError` to bisect. `kill_process_tree` itself is
+  unchanged and is still exported from `aelix_ai.utils._process_tree`.
+
 ### Fixed
 
 - **A plain `uv sync` now produces an environment the whole test suite can run
@@ -395,6 +407,62 @@ and `.../releases/tag/vX` link would 404. Add them with the first pushed tag.
   replacement instead of strictly under the locale codec, where a single
   undecodable byte raised out of the completer. See
   [#221](https://github.com/handochan/aelix-ai/issues/221) and ADR-0238.
+
+- **A `bash` tool call that runs past its timeout — or that you stop with Esc —
+  now takes its whole tree with it, and comes back at once instead of waiting
+  out whatever the command left behind.** The tool spawned its command into a
+  session of its own on macOS and Linux and a plain process group on Windows,
+  and then killed by pid: `killpg` here, `taskkill /T /F` there. On Windows that
+  is the leak Pi measured before we did (#9129). `taskkill /T` follows *live*
+  parent links only, and MSYS `bash` runs each stage of a pipeline through a
+  short-lived subshell, so by the time the kill lands the leaves have a dead
+  parent — `taskkill` ends the layers it can still see, exits 0, and
+  `find`/`xargs`/`head` keep running. At this site that is worse than a leak:
+  the tool reads the command's output until the pipe closes, and the survivors
+  are holding the pipe, so **the tool call itself did not return**, past its own
+  timeout. The command goes into a job object there now, which holds every
+  descendant regardless of whether its parent is still alive, and the `rg`/`fd`
+  helper behind the `grep` and `find` tools took the same change. As with the
+  rest of this work, the Windows half is reasoned from CPython's and Pi's source
+  and measured only by the suite — `windows-latest` is the one leg where a job
+  object or `taskkill.exe` actually runs.
+
+  On macOS and Linux the group kill already reached a pipeline, and what you get
+  instead is **the wait**. A descendant that made a session of its own is
+  outside the group by definition and survives the kill — that is what a process
+  group is — and the tool was then waiting for *it* to close the command's
+  output pipe. Measured: a command whose helper called `setsid` and slept 8 s
+  returned at **8.02 s** under a 1.0 s timeout, and at 8.02 s and 8.03 s when it
+  was stopped with Esc or by a cancelled turn. After a kill the output is now
+  drained only until it falls idle for 0.1 s, and never for longer than 1 s from
+  the kill — the same rule and the same constants the contained runner from #221
+  uses — so stopping a stuck command costs about 0.1 s rather than the life of
+  whatever it left behind. The trailing output of a descendant still writing
+  after the idle window is cut: the command was killed, and its bytes are a
+  courtesy. A command that exits **successfully** after backgrounding a helper is
+  deliberately unchanged and still waits for that helper to close the pipe;
+  changing it would change what a model sees, so it is a product decision and it
+  is [#232](https://github.com/handochan/aelix-ai/issues/232).
+
+  **The command's stdin is `/dev/null` now, not the terminal Aelix was started
+  from** — the contract `aelix.exec(...)` took in #221, and what Pi does at this
+  site. The child already had no controlling terminal, so it never stopped for
+  input the way a background job does; it *competed* with the TUI for your
+  keystrokes instead (measured: the child received what you typed and Aelix's
+  own reader got nothing) and it could turn your terminal's echo off and leave
+  it off after exiting. `!cat` typed into the TUI never returned, and ate the
+  next key on its way. It now reads nothing and exits 0, and `git commit` with
+  no `-m` fails with "Aborting commit due to empty commit message." instead of
+  opening an editor you cannot see.
+  **Both of those are macOS and Linux sentences.** On Windows there is no
+  session to take away — the containment there is a new process group plus a job
+  object — so the command keeps the console Aelix was started from: a program
+  that reads its stdin gets EOF from `NUL`, but one that opens `CONIN$` directly
+  (git's credential prompts) or calls `Read-Host` still prompts on that console,
+  and an unanswered prompt still costs the command's whole timeout — when there
+  is one, since a configured timeout of `0` means unbounded. That half needs a
+  human at a Windows console and is **unverified**, not fixed. See ADR-0238 and
+  [#222](https://github.com/handochan/aelix-ai/issues/222).
 
 - **`models.json`'s own documentation no longer breaks the file it describes.**
   Two of the guide's three examples carried a `cost` with only `input` and

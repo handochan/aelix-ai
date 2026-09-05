@@ -1,6 +1,6 @@
 # 0238. The kill reached the child, and the tree is what had to die
 
-Status: Accepted (2026-09-05; **#220 amendment 2026-09-05** — adopted at the four `aelix_agents` sites: the print-channel spawn, the reaper's win32 legs, `rpc_channel`'s `_reap`/`_eager_abort`, and `print_mode`'s handler block; **#221 amendment 2026-09-05** — the three `subprocess.run(timeout=)` sites adopt `run_contained`)
+Status: Accepted (2026-09-05; **#220 amendment 2026-09-05** — adopted at the four `aelix_agents` sites: the print-channel spawn, the reaper's win32 legs, `rpc_channel`'s `_reap`/`_eager_abort`, and `print_mode`'s handler block; **#221 amendment 2026-09-05** — the three `subprocess.run(timeout=)` sites adopt `run_contained`; **#222 amendment 2026-09-05** — the two tool spawn sites adopt it: `_LocalBashOperations.exec` and `run_cancellable`)
 Date: 2026-09-05
 Supersedes/relates: ADR-0197 (the `aelix_agents` reaper, whose finding I2 —
 "a `/proc` walk and not `os.killpg`" — this ADR **reconciles rather than
@@ -91,7 +91,9 @@ Nothing to port for the headline case.
 `packages/aelix-ai/src/aelix_ai/utils/_process_tree.py`. `aelix-ai` is the
 bottom of the import direction and `_resolve_config.py` already lives there.
 `aelix_coding_agent/tools/_process_tree.py` becomes a re-export shim so
-`bash.py`, `_subprocess.py` and their tests keep their imports.
+`bash.py`, `_subprocess.py` and their tests keep their imports. (#222 deleted
+it: those imports point at the primitive now — the amendment under
+"Consequences".)
 
 **POSIX: the tree is the process group we created.** Spawn with
 `start_new_session=True` (the rpc child, unchanged) or `process_group=0` (hooks
@@ -203,14 +205,25 @@ The rpc child keeps `start_new_session=True` — it has no terminal to want.
 
 **A process group does not contain a descendant that called `setsid()`.** That
 is not a defect of this design; it is what a process group is. Every tool child
-of the rpc child is a session leader of its own (`bash.py:278`,
-`_subprocess.py:78`), and so is every MCP stdio server
-(`mcp/client/stdio/__init__.py:256`). A hook shell and a `!command` shell are
-**not** — `process_group=0` is `setpgid(0, 0)`, which is why they keep the
-session and its tty — but each leads a group of its own, so they are outside the
-rpc child's group all the same. The group we now kill therefore holds the child
-and its non-`setsid` descendants — for the shipped child, that is a pipe-holder
-and nothing else.
+of the rpc child is a session leader of its own
+(`_LocalBashOperations.exec`, `run_cancellable` — named by function because
+#222 rewrote both spawns and this file's line numbers are ungated), and so is
+every MCP stdio server
+(`mcp/client/stdio/__init__.py:256`). A hook shell and `models.json`'s
+`!command` shell are **not** — `process_group=0` is `setpgid(0, 0)`, which is
+why they keep the session and its tty — but each leads a group of its own, so
+they are outside the rpc child's group all the same. The group we now kill
+therefore holds the child and its non-`setsid` descendants — for the shipped
+child, that is a pipe-holder and nothing else.
+
+**Two different spawns are spelled `!command`, and only one of them is in that
+sentence.** The credential helper in `models.json` is the `process_group=0`
+shell, on purpose, because it runs `gpg`/`pass`/pinentry
+(`oauth/_resolve_config.py`). The TUI's `!command` is the
+`_LocalBashOperations.exec` named above and has been a session leader all along
+— `start_new_session=True` at `bash.py` predates #222 — which is why the
+`stdin` paragraph of the #222 amendment below is about a child that has no
+controlling terminal to lose.
 
 This is the same fact ADR-0197 recorded as finding I2 (`reaper.py:33-38`),
 where it retired the claim that a group kill reaches the child's `bash`
@@ -244,6 +257,10 @@ id stays pinned for as long as any member lives (POSIX.1 §3.293; Linux holds th
 reference via `attach_pid(PIDTYPE_PGID)`), so either a descendant is still there
 and the number is still that group's, or the group is empty and `killpg` returns
 `ESRCH` with nothing to hit. What remains is the residual recorded below.
+(Both tool callers named in that paragraph are gone since #222 — the two
+measurements stand as the record of why the fallback is written this way, and
+`RpcClient.stop()`'s degradation is the only route left into the pid-only
+entry point.)
 
 ## The hazard this accepts
 
@@ -344,10 +361,19 @@ against its `< 2.0` bound. The bound is unchanged.
   `_process_tree.py` — so a timeout ends the command's tree instead of its root
   and the unbounded `communicate()` after the kill on Windows is gone. What it
   cost is in the amendment under "Consequences" below.
-- **#222 — `tools/bash.py` / `tools/_subprocess.py` adopting `ProcessTree`**,
-  so the bash tool gets a job object instead of `taskkill` on Windows. That is
-  the #9129 shape exactly, and it is the one place in the tree where the shape
-  is a user-visible hang rather than a leaked process.
+- **#222 — the two tool spawn sites: landed 2026-09-05.** Both are converted,
+  and they are named here by function for the reason the two bullets above
+  give: `tools/bash.py`'s `_LocalBashOperations.exec` and
+  `tools/_subprocess.py`'s `run_cancellable` now spawn with
+  `containment_spawn_kwargs(new_session=True)`, attach a `ProcessTree` before
+  the first `await`, and kill through it — so the bash tool gets a job object
+  on Windows instead of `taskkill /T` alone.
+  That is the #9129 shape exactly, and it is the one place in the tree where
+  the shape is a user-visible hang rather than a leaked process. The pid-only
+  `kill_process_tree` keeps one caller, `RpcClient.stop()`'s degradation;
+  `bash.py`'s `_kill_group` and the `tools/_process_tree.py` re-export shim are
+  gone. What it cost — and the drain bound that POSIX turned out to need — is
+  in the amendment under "Consequences" below.
 
 The README's "Platform support" still says which half is contained and which
 is not, but the split now falls elsewhere: after #220 the Windows verdict is
@@ -652,3 +678,124 @@ empty, so only the group kill of the paragraph below reaches anything there.
   is SIGKILLed. [#228](https://github.com/handochan/aelix-ai/issues/228) carries it; the WeakSet-of-live-trees
   mitigation proposed in `print_mode`'s signal block is that issue's design and
   not this one's.
+- **The two tool spawn sites hold a tree, and the bash tool's drain got a bound
+  (amendment, 2026-09-05).** #222 converted the last two teardown paths in this
+  repository that addressed a pid: `_LocalBashOperations.exec` and
+  `run_cancellable`. Both spawn through
+  `containment_spawn_kwargs(new_session=True)` — the `setsid` they already asked
+  for, plus `CREATE_NEW_PROCESS_GROUP` on win32 — and attach a `ProcessTree`
+  (`kill_on_close=False`) **before the first `await`**, so every kill leg runs
+  the ladder the other sites run: `hard_kill()`, then `proc.kill()` as a belt,
+  then a bounded reap. **The bound differs per site, because the legs do**:
+  `exec` has three (timeout, abort, cancel) and reaps through `_end_the_tree`
+  at `REAP_GRACE_SECONDS` on the timeout leg and `INTERRUPT_REAP_SECONDS` on
+  the other two, matching `run_contained`; `run_cancellable` has no abort leg
+  at all — nothing signals `rg`/`fd` — and its two legs keep the flat
+  `wait_for(proc.wait(), 2)` they already carried, so the primitive's reap
+  constants do not appear there. `finally: tree.close()` is a release, not a
+  kill, at both — a command that exits 0 after backgrounding a helper keeps the
+  helper, as at the hook sites.
+  **On win32 the verdict for the tool children is now whole**, and this is the
+  site where that mattered most: a job holds a descendant whose parent has
+  already exited, which is exactly what `taskkill /T` cannot walk to (Pi #9129),
+  and `exec` reads stdout **to EOF** — so the MSYS pipeline whose subshells
+  `taskkill` killed keeps the pipe open and the tool call does not return, past
+  its own timeout. That is the ADR's own "user-visible hang rather than a leaked
+  process". It is reasoned from CPython's and Pi's source, as every win32 claim
+  in this file is; the leg's numbers go in `.omc/specs/222-progress-2026-09-05.md`.
+
+  **The POSIX-visible half of #222 is the drain bound, and without it the issue
+  would have been inert on the platform development happens on.** Measured on
+  `main` 86c750d: with a `setsid` python holding the bash child's stdout,
+  `exec` under a 1.0 s timeout returned at **8.02 s** — the escapee's own life,
+  not ours — and at 8.02 s and 8.03 s on the abort-signal and `CancelledError`
+  legs. The group kill ended `sh` and `sleep` at 1 s and then the drain waited
+  7 s for the escapee's copy of the pipe. The kill still does not reach that
+  escapee — a `setsid` descendant is outside the group, which is what a process
+  group is, and the walk is still the reaper's job — so what changed is the
+  **wait**. After whichever leg kills first writes `_ReadState.exited_at`, the
+  post-kill drain runs `run_contained`'s rule rather than a fourth one written
+  from scratch: the `EXIT_DRAIN_SECONDS = 0.1` idle timer re-armed from
+  `max(last_chunk_at, exited_at)`, under an absolute cap of
+  `exited_at + KILL_DRAIN_SECONDS = 1.0`. Esc with a surviving holder now costs
+  ~0.1 s and at most 1 s. A flat cap without the idle rule would have cost a
+  flat 1.0 s where `run_contained` costs ~0.1 s, and #221 already recorded that
+  identical mistake costing a flat 5 s and buying zero bytes. The price is the
+  one `run_contained` states: a descendant still writing after the idle window
+  has its output cut. The command was killed; its bytes are a courtesy.
+
+  **The success path's drain is deliberately left unbounded, and this amendment
+  does not decide it.** A root that exits 0 after backgrounding a pipe-holder
+  still holds `exec` until that holder closes the pipe — measured 4.02 s for a
+  4 s helper, where Pi returns ~0.1 s after the exit (`waitForChildProcess`,
+  Pi #5303). Adopting Pi's rule here is a product decision, because a model
+  would then see `exit 0` before output the helper had not written yet, so it is
+  [#232](https://github.com/handochan/aelix-ai/issues/232)'s
+  and not this one's; a test pins today's behaviour so that issue's change is
+  visible rather than silent. [#230](https://github.com/handochan/aelix-ai/issues/230)'s
+  policy question — an abort landing inside the post-exit drain — exists at this
+  site too, and #222 preserves today's behaviour there rather than pre-deciding
+  it.
+
+  **The drain also moved off `asyncio.to_thread`, for a reason that outranks the
+  tool call.** An abandoned `to_thread(proc.stdout.read, …)` can be neither
+  cancelled nor dropped — the default executor's threads are not daemons — so
+  measured, it held `asyncio.run` for the escapee's whole 30 s, with
+  `THREAD_JOIN_TIMEOUT = 300` and then an unbounded `_python_exit` join behind
+  it: "the tool call hangs" becomes "Aelix cannot exit". The replacement is the
+  daemon `_PipeReader` #221 already paid for, given `on_chunk` / `on_eof`
+  callbacks that post to the loop under `suppress(RuntimeError)` (a closed loop
+  must not raise into a reader thread; `rpc_mode`'s daemon→loop pump already
+  suppresses the same). Two properties are pinned rather than left to timing: a
+  reader with an `on_chunk` **retains nothing**, because the callback is the
+  consumer (measured on 200 MB of output — 535 MB peak RSS holding it twice
+  against 285 MB holding it once), and chunks and EOF travel the **same**
+  `call_soon_threadsafe` FIFO, so the waiter cannot resume before every earlier
+  chunk callback has run — measured 0/4000 lost against 9/3000 to 15/250 for a
+  draft that polled an `eof` flag instead. `_wait` keeps its
+  `to_thread(proc.wait, timeout)`: it blocks on the **root** only, which the
+  belt always ends, which is what makes that belt load-bearing for interpreter
+  exit and not only for the reap.
+
+  **`stdin` is `DEVNULL` at the bash site now, and the first half of that
+  sentence is a POSIX sentence.** Pi spawns `stdio: ["ignore", "pipe", "pipe"]`;
+  an earlier draft justified copying it with "the child gets `SIGTTIN` and the
+  group stops", which is measurably wrong **here** — under
+  `start_new_session=True` the child has no controlling terminal, so the
+  kernel's background-group test never applies (measured on a real ctty pty:
+  the setsid child is `Ss`, a `process_group=0` child is `T`). What was actually
+  happening is worse for being invisible: the child **competed with the TUI's
+  own reader for keystrokes** (measured — the child got `'secret\n'`, the TUI's
+  `read` got `b''`) and could `tcsetattr` the user's terminal (measured — ECHO
+  turned off, and left off after the child exited). `!command` in the TUI runs
+  this exact `exec` with no timeout and no abort signal, so `!cat` never
+  returned and ate the next keystroke on the way. On POSIX `DEVNULL` + `setsid`
+  makes the child non-interactive: `cat` prints nothing and exits 0, `git
+  commit` without `-m` fails with "Aborting commit due to empty commit
+  message." (git's own wording, measured — earlier drafts of this paragraph
+  paraphrased it as "no message", which git never prints). **On win32 there is
+  no session to take away** — `containment_spawn_kwargs` returns only
+  `CREATE_NEW_PROCESS_GROUP` — so the child keeps Aelix's console. A real stdin
+  reader gets EOF from `NUL` there, but a program that reads `CONIN$` directly
+  (git's credential prompts) or `Read-Host` still prompts on that console and
+  still costs the whole timeout, and only when `default_timeout != 0`
+  (`bash.py` documents `0` as Pi's unbounded mode). That half needs a human at a
+  Windows console: it is **unverified**, and the README says so rather than
+  claiming it fixed. `run_cancellable` takes no `stdin=` change — `rg` and `fd`
+  never read stdin — and the asymmetry is stated in that module's docstring
+  rather than left to be wondered about.
+
+  **What is accepted, listed rather than discovered later.** On win32 the bash
+  child no longer sees a console Ctrl+C, as at every other containment site
+  since #220; the cancel and abort legs end it, and that leg is now a job kill
+  rather than a `taskkill`. On POSIX a `setsid` descendant still survives the
+  kill — what changed is that it no longer hangs the tool. A detached reader
+  still keeps one daemon thread and one fd alive until the holder closes the
+  pipe, #221's stated leak, now at a fourth site; it keeps reading so the holder
+  is never wedged on a full pipe. And every rung of the ladder runs on the
+  event-loop thread: measured 1.6 ms on POSIX (two syscalls plus a reap, worst
+  heartbeat gap 12 ms = the sleep quantum), while on win32 it is the ≤5 s
+  `taskkill` spawn this site already ran on the loop at the same three places,
+  plus the reap only when both the job kill and the `TerminateProcess` belt
+  failed. The `to_thread` remedy was rejected in #220 review round 2 for opening
+  an unshielded suspension point and is not re-adopted here.

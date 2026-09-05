@@ -119,12 +119,27 @@ either: it now runs end to end in CI on `windows-latest`, under both pwsh and Wi
   CPython's source and measured only by the suite: `subprocess.run` follows its kill with an
   unbounded `communicate()` there, so the call never returned while any descendant still held
   the pipe; the new real-process test is the case that would hang on `main`.
+  The **bash tool's own children** are contained now too
+  ([#222](https://github.com/handochan/aelix-ai/issues/222)): the command a tool call runs goes
+  into a job object on Windows and a process group on POSIX, and a timeout, Esc or a cancelled
+  turn each end the tree rather than the root. Windows is why that issue existed — `taskkill
+  /T` follows *live* parent links only, so an MSYS pipeline whose per-stage subshells have
+  already exited survives it, and because the tool reads the command's output until the pipe
+  closes, those survivors held the tool call open past its own timeout. A job holds them
+  regardless. The tool's child also gets `/dev/null` for stdin now instead of your terminal, so
+  it can no longer take a keystroke you meant for Aelix or leave your terminal with echo turned
+  off — both measured on macOS, where `!cat` in the TUI used to do exactly that and never
+  return. **That last part is a macOS/Linux sentence.** On Windows there is no session to take
+  away: the child keeps the console Aelix was started from, so a program that reads `CONIN$`
+  directly (git's credential prompts) or calls `Read-Host` can still prompt there and still
+  burn the command's whole timeout. Nobody has watched that at a Windows console — it is
+  unverified, not fixed.
 
 So Windows regressions in the suite are caught, the installer runs for real, AUTO mode no
-longer demotes, and an aborted delegation takes its tree with it at every one of its spawn
-sites; the bash tool's own children
-([#222](https://github.com/handochan/aelix-ai/issues/222)) and a human actually driving it on a
-Windows host are what's left. Track the port
+longer demotes, and an aborted delegation and a timed-out tool command each take their tree
+with them at every one of their spawn sites; what's left is a human actually driving it on a
+Windows host — including the `CONIN$` / `Read-Host` prompt above, which no test on the leg can
+reach. Track the port
 in [#110](https://github.com/handochan/aelix-ai/issues/110) — its bar is suite-green +
 `install.ps1` executed + #204's AUTO mode, and all three now hold on the suite's evidence, which
 is the narrower claim described above; the labelling and the CI leg are

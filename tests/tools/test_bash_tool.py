@@ -2,16 +2,22 @@
 
 from __future__ import annotations
 
+import io
 import os
+import shlex
+import subprocess
 import sys
 from pathlib import Path
 
 from aelix_ai.tools import ToolExecutionContext
+from aelix_ai.utils._process_tree import containment_spawn_kwargs
+from aelix_coding_agent.tools import bash as bash_module
 from aelix_coding_agent.tools import create_bash_tool
 from aelix_coding_agent.tools._truncate import DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES
 from aelix_coding_agent.tools.bash import (
     BashToolDetails,
     ExecExitResult,
+    _resolve_shell,
     create_local_bash_operations,
 )
 
@@ -443,3 +449,153 @@ async def test_bash_shell_path_valid_used(tmp_path):
     tool = create_bash_tool(str(tmp_path), {"shell_path": sh})
     result = await _exec(tool, {"command": "echo viashell"}, cwd=str(tmp_path))
     assert "viashell" in result.content[0].text
+
+
+# ---------------------------------------------------------------------------
+# #222 — what the spawn asks the OS for, and where the kill is dispatched
+# ---------------------------------------------------------------------------
+
+
+class _FakePopen:
+    """Just enough ``Popen`` for the dispatch: an exited root and an EOF pipe.
+
+    The pid is one no host can hand out — Linux caps ``pid_t`` at 2**22 and
+    darwin far lower — because the REAL :meth:`ProcessTree.attach` runs on it
+    (that call is half of what this case pins) and a pid that resolved would
+    make the tree an address for somebody else's group.
+    """
+
+    def __init__(self, argv, **kwargs):
+        self.argv = argv
+        self.kwargs = kwargs
+        self.pid = 2**30
+        self.stdout = io.BytesIO(b"hello\n")
+        self.returncode = 0
+
+    def wait(self, timeout=None):
+        return 0
+
+    def kill(self):  # pragma: no cover — the success path never belts
+        raise AssertionError("the success path must not kill")
+
+
+async def test_the_spawn_asks_for_containment_and_devnull_stdin(tmp_path, monkeypatch):
+    """#222 §A.1/§A.5: the kwargs, computed rather than transcribed.
+
+    The right-hand side calls :func:`containment_spawn_kwargs` instead of
+    spelling ``start_new_session=True``, so the assertion follows the primitive
+    onto whichever platform it runs on — ``{"start_new_session": True}`` here,
+    ``{"creationflags": CREATE_NEW_PROCESS_GROUP}`` on the windows leg, where
+    the VALUE itself is pinned by
+    ``tests/process_tree/test_run_contained.py::test_spawn_kwargs_and_stdio``.
+
+    ``stdin=DEVNULL`` is asserted HERE on both legs because
+    ``test_bash_tool_containment.py``'s behavioural stdin case can only
+    discriminate on POSIX: win32 takes an inherited stdin from
+    ``GetStdHandle(STD_INPUT_HANDLE)``, not from fd 0, so a planted fd 0 does
+    not reach a win32 child (#222 critique TESTS-9/WIN32-13).
+    """
+
+    spawned: list[_FakePopen] = []
+
+    def fake_popen(argv, **kwargs):
+        proc = _FakePopen(argv, **kwargs)
+        spawned.append(proc)
+        return proc
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    env = {"PATH": os.environ.get("PATH", ""), "SHELL": "/bin/sh"}
+    ops = create_local_bash_operations()
+    chunks: list[bytes] = []
+    result = await ops.exec("echo hi", str(tmp_path), on_data=chunks.append, env=env)
+
+    assert result.exit_code == 0
+    assert b"".join(chunks) == b"hello\n"
+    assert len(spawned) == 1
+    shell = _resolve_shell(env)
+    assert spawned[0].argv == [shell.path, shell.command_flag, "echo hi"]
+    assert spawned[0].kwargs == {
+        "cwd": str(tmp_path),
+        "env": env,
+        "stdin": subprocess.DEVNULL,
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.STDOUT,
+        **containment_spawn_kwargs(new_session=True),
+    }
+
+
+async def test_the_win32_kill_is_the_job_and_the_taskkill_and_never_killpg(tmp_path, monkeypatch):
+    """The win32 ladder, driven from a POSIX box through the primitive's seams.
+
+    ``_LocalBashOperations.exec`` has no ``platform=`` of its own and is not
+    getting one in #222 (§H): under a patched ``sys.platform`` ``_resolve_shell``
+    crashes in ``shutil.which`` before the spawn is even reached (#222 critique
+    WIN32-8). ``ProcessTree.attach`` DOES have ``platform=``/``api=``, and it is
+    the only thing between the site and the kill, so the win32 arm is driven
+    there.
+
+    ``os.killpg`` is deleted from the interpreter for the duration: the
+    assertion is then falsifiable rather than tautological — a site that took
+    the POSIX branch would raise ``AttributeError`` instead of quietly passing.
+    """
+
+    from aelix_ai.utils import _process_tree
+
+    calls: list[str] = []
+
+    class _RecordingApi:
+        def create_job(self, *, kill_on_close: bool) -> int:
+            calls.append("create_job")
+            return 4242
+
+        def assign(self, job: int, pid: int, handle: int | None) -> None:
+            calls.append("assign")
+
+        def terminate_job(self, job: int) -> None:
+            calls.append("terminate_job")
+
+        def close_handle(self, job: int) -> None:
+            calls.append("close_handle")
+
+        def ctrl_break(self, pid: int) -> None:  # pragma: no cover — hard only
+            calls.append("ctrl_break")
+
+        def taskkill(self, pid: int) -> None:
+            calls.append("taskkill")
+
+    real_attach = _process_tree.ProcessTree.attach
+
+    def attach_as_win32(pid, **kwargs):
+        kwargs.pop("platform", None)
+        kwargs.pop("api", None)
+        return real_attach(pid, platform="win32", api=_RecordingApi(), **kwargs)
+
+    monkeypatch.setattr(
+        bash_module, "ProcessTree", type("Win32Tree", (), {"attach": attach_as_win32})
+    )
+    monkeypatch.delattr(os, "killpg", raising=False)
+
+    interpreter = (
+        f'& "{sys.executable}"' if sys.platform == "win32" else shlex.quote(sys.executable)
+    )
+    # ``aelix222`` in the argv so a leak is greppable; the belt below is what
+    # actually ends this child, since the recording api kills nothing.
+    #
+    # 2 s AND NOT 30: on the windows leg pwsh does not exec-replace, so the
+    # ``proc.kill()`` belt reaches pwsh alone and the python under it outlives
+    # the case by whatever this number says. The recording api's ``taskkill``
+    # and ``terminate_job`` are strings in a list, not kills. Two seconds is
+    # four times the 0.5 s timeout — enough that the timeout is what fires —
+    # and a stray that ends by itself before the next case starts.
+    command = f'{interpreter} -c "import time; time.sleep(2)" "aelix222"'
+    ops = create_local_bash_operations()
+    chunks: list[bytes] = []
+    result = await ops.exec(command, str(tmp_path), on_data=chunks.append, timeout=0.5)
+
+    assert result.timed_out is True
+    assert result.exit_code is None
+    # taskkill FIRST (it walks live parent links while the root is still alive),
+    # the job second (it holds the members whose parent has already exited —
+    # the Pi #9129 leaves), and the release last.
+    assert calls == ["create_job", "assign", "taskkill", "terminate_job", "close_handle"]

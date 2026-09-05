@@ -36,7 +36,7 @@ runner's real user profile.
 | --- | --- | --- |
 | W1 | `HOME`-only test sandboxing → `sandbox_home` (HOME + USERPROFILE + HOMEDRIVE/HOMEPATH + APPDATA/LOCALAPPDATA), 25 sites across 9 files | `tests/env_sandbox.py`, `tests/test_env_sandbox_windows.py` |
 | W2 | `_resolve_shell` win32 arm + `ShellConfig(path, command_flag)`; AUTO mode force-ASK on a shell the bash grammar can't read — the force-ASK half is **superseded by #204 / ADR-0237**, which routes PowerShell and `cmd` to classifiers of their own instead of downgrading them | `tools/bash.py`, `builtin/bash_classifier.py`, `builtin/permission.py`, `builtin/shell_classifiers/` |
-| W3 | win32-safe process-tree kill at the two owned spawn sites. The body moved to `aelix_ai/utils/_process_tree.py` in #202 so the `aelix-ai` sites could share it; `tools/_process_tree.py` is a re-export shim and `bash.py` / `_subprocess.py` are unchanged | `packages/aelix-ai/src/aelix_ai/utils/_process_tree.py`, `tools/_process_tree.py`, `tools/bash.py`, `tools/_subprocess.py` |
+| W3 | win32-safe process-tree kill at the two owned spawn sites. The body moved to `aelix_ai/utils/_process_tree.py` in #202 so the `aelix-ai` sites could share it, leaving `tools/_process_tree.py` as a re-export shim; **#222 (2026-09-05) finished it** — both sites now attach a `ProcessTree` after the spawn and kill through it (a Job Object on win32), `bash.py`'s `_kill_group` and the shim are deleted | `packages/aelix-ai/src/aelix_ai/utils/_process_tree.py`, `tools/bash.py`, `tools/_subprocess.py` |
 | W4 | RPC stdin thread-pump (`connect_read_pipe` is `NotImplementedError` on Windows) | `rpc/rpc_mode.py` |
 | W5 | `install.ps1` at parity with `install.sh`'s checksum gate, now executed end to end by the `install.ps1 e2e (pwsh)` / `install.ps1 e2e (powershell)` CI jobs (#106) | `install.ps1`, `.github/workflows/ci.yml`, `tests/packaging_gate/test_install_ps1_parity.py` |
 
@@ -53,6 +53,11 @@ Two facts were measured rather than assumed, and both shaped the design:
   before we did (#9129): `taskkill /T` follows LIVE parent links, so it cannot
   walk to a descendant whose parent has already exited — it kills the layers it
   can see, exits 0, and the leaves keep running. A job holds them regardless.
+  **#222 (2026-09-05) gave these two sites the job**, so the `taskkill` half is
+  the belt that can still walk a live parent link and no longer the whole kill.
+  At the `bash` tool that mattered more than a leak: the tool reads the
+  command's output until the pipe closes, and the leaves `taskkill` could not
+  reach were holding it, so the tool call did not return past its own timeout.
 
 A third fact shaped the *tests*: `shutil.which` itself branches on
 `sys.platform` and then calls `_winapi`, which is `None` off Windows. So
@@ -113,8 +118,14 @@ re-discovering the crash.
    (`containment_spawn_kwargs(new_session=True)` plus a `kill_on_close=True`
    tree) and `print_mode.py` grew the `SIGBREAK` handler that gives the
    cooperative leg something to reach. ADR-0238's "What stays open" is amended
-   accordingly; what is left there is #222 (#221's three
-   `subprocess.run(timeout=)` sites landed on 2026-09-05 as `run_contained`).
+   accordingly, and nothing is left under it: #221's three
+   `subprocess.run(timeout=)` sites landed on 2026-09-05 as `run_contained`,
+   and #222 landed the last two adopters the same day — `bash.py`'s
+   `_LocalBashOperations.exec` and `_subprocess.py`'s `run_cancellable` hold a
+   tree, so the bash tool gets a job object on Windows instead of the
+   `taskkill /T` this slice's W3 shipped alone — `hard_kill` still runs
+   `taskkill /T /F` first and the job is what reaches the leaves `/T` cannot
+   walk to — and `tools/_process_tree.py` is deleted.
 3. **`#46` cross-process locking.** *Correction to the original brief:* both
    `fcntl` sites are already `None`-guarded
    (`aelix_ai/settings/storage.py:204`, `aelix_ai/oauth/auth_storage.py:184`),

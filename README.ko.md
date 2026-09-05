@@ -118,11 +118,25 @@ curl -fsSL https://raw.githubusercontent.com/handochan/aelix-ai/main/install.sh 
   잽니다: 거기서는 `subprocess.run`이 kill 뒤에 bound 없는 `communicate()`를
   부르므로 자손이 파이프를 쥐고 있는 한 호출이 돌아오지 않았습니다. 새 실제
   프로세스 테스트가 `main`에서 멈춰 버릴 바로 그 케이스입니다.
+  **bash 도구가 띄운 자식들**도 이제 봉쇄됩니다
+  ([#222](https://github.com/handochan/aelix-ai/issues/222)). tool call이 돌리는 명령이
+  Windows에서는 job object에, POSIX에서는 프로세스 그룹에 들어가고, 타임아웃·Esc·취소된 턴이
+  각각 루트가 아니라 트리를 끝냅니다. 이 이슈가 존재한 이유가 Windows입니다 — `taskkill /T`는
+  *살아 있는* 부모 링크만 따라가므로 단계마다 서브셸을 쓰는 MSYS 파이프라인은 그 서브셸이
+  이미 죽은 뒤라 살아남고, 도구는 파이프가 닫힐 때까지 명령의 출력을 읽으므로 그 생존자들이
+  tool call을 자기 타임아웃 너머까지 붙잡고 있었습니다. job은 그것들을 그냥 잡습니다.
+  도구의 자식은 이제 터미널 대신 `/dev/null`을 stdin으로 받습니다. 그래서 Aelix에게 친 키
+  입력을 가로채거나 터미널의 echo를 꺼 놓은 채 끝나는 일이 더는 없습니다 — 둘 다 macOS에서
+  쟀고, TUI의 `!cat`이 정확히 그러면서 영영 돌아오지 않았습니다. **마지막 대목은 macOS/Linux
+  문장입니다.** Windows에는 뺏을 세션이 없어서 자식이 Aelix를 띄운 콘솔을 그대로 물고 있고,
+  `CONIN$`를 직접 읽는 프로그램(git의 자격 증명 프롬프트)이나 `Read-Host`는 거기서 여전히
+  프롬프트를 띄우고 명령의 타임아웃을 통째로 태울 수 있습니다. 그 장면을 Windows 콘솔에서
+  본 사람은 아직 없습니다 — 고쳐진 것이 아니라 검증되지 않은 것입니다.
 
 즉 스위트 안의 Windows 회귀는 잡히고, 설치 스크립트도 실제로 돌고, AUTO 모드도 더 이상 강등되지
-않으며, 중단된 위임은 어느 스폰 지점에서든 자기 트리를 데리고 갑니다. 남은 것은 bash 도구가
-띄운 자식들([#222](https://github.com/handochan/aelix-ai/issues/222))과 Windows 호스트에서
-사람이 직접 돌려 보는 일입니다. 포팅 현황은
+않으며, 중단된 위임도 타임아웃을 넘긴 도구 명령도 어느 스폰 지점에서든 자기 트리를 데리고
+갑니다. 남은 것은 Windows 호스트에서 사람이 직접 돌려 보는 일입니다 — 위에 적은 `CONIN$` /
+`Read-Host` 프롬프트를 포함해서, 레그의 어떤 테스트도 거기까지 닿지 못합니다. 포팅 현황은
 [#110](https://github.com/handochan/aelix-ai/issues/110)에서 추적합니다 — 그 기준은 스위트
 초록 + `install.ps1` 실행 + #204의 AUTO 모드이고, 셋 다 이제 스위트의 근거 위에서 충족됩니다(위에
 적은 대로 그 근거는 들리는 것보다 좁습니다). 표기와 CI 레그는

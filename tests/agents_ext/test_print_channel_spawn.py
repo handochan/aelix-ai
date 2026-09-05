@@ -350,10 +350,12 @@ _GRANDCHILD_BODY = (
 def _grandchild_stub(marker: Path) -> str:
     """A child that forks a SESSION-LEADER grandchild, exactly like ``bash``.
 
-    ``tools/bash.py:278`` uses ``start_new_session=True``, so a grandchild is
-    the leader of its OWN process group and ``os.killpg`` on the child's group
-    cannot reach it (finding I2). The grandchild records its pid so the test can
-    check it independently.
+    ``tools/bash.py:332`` spawns through
+    ``containment_spawn_kwargs(new_session=True)`` — ``start_new_session=True``
+    on POSIX, before and after #222 — so a grandchild is the leader of its OWN
+    process group and ``os.killpg`` on the child's group cannot reach it
+    (finding I2). The grandchild records its pid so the test can check it
+    independently.
     """
 
     return _stub(
@@ -1335,10 +1337,14 @@ def test_pdeathsig_is_sigterm_and_that_is_a_measured_choice(
     that BLOCKS SIGTERM (pthread_sigmask) -> state='S (sleeping)'`` three seconds
     after the parent was SIGKILLed). That half is real. The proposed fix is not:
     SIGKILL denies the child its own cleanup, and the child's cleanup is the
-    ONLY thing that reaches its ``bash`` grandchildren — ``tools/bash.py:278``
-    and ``tools/_subprocess.py:78`` both pass ``start_new_session=True``, so each
+    ONLY thing that reaches its ``bash`` grandchildren — ``tools/bash.py:332``
+    and ``tools/_subprocess.py:106`` both spawn through
+    ``containment_spawn_kwargs(new_session=True)``, which on POSIX is the
+    ``start_new_session=True`` both lines used to spell literally, so each
     grandchild leads its own group and nothing outside the child can find them
-    once the child is gone.
+    once the child is gone. (#222 gave both sites a ``ProcessTree`` as well, but
+    that tree belongs to the CHILD's interpreter and dies with it — it changes
+    nothing about what this parent can reach.)
 
     Measured directly, parent SIGKILLed, child forks a session-leader grandchild
     and cleans it up on SIGTERM::
@@ -1383,7 +1389,10 @@ _PDEATH_CHILD = textwrap.dedent(
 
     def _bye(*_a):
         # What a REAL aelix child does on SIGTERM:
-        # _signal_cleanup_and_exit -> dispose() -> abort() -> bash.py _kill_group.
+        # _signal_cleanup_and_exit -> dispose() -> abort() -> the bash tool's
+        # abort watcher (bash.py:472-487), which since #222 ends a ProcessTree
+        # instead of calling the _kill_group this stub imitates. On POSIX that
+        # is still killpg(pgid, SIGKILL), which is why the stub still stands.
         try:
             os.killpg(os.getpgid(kid.pid), signal.SIGKILL)
         except Exception:
@@ -1581,9 +1590,10 @@ async def test_double_cancellation_still_kills(tmp_path: Path) -> None:
 async def test_bash_grandchild_killed_on_sigkill_leg(tmp_path: Path) -> None:
     """FINDING I2 — ``os.killpg`` cannot reach a session-leader grandchild.
 
-    ``tools/bash.py:278`` and ``tools/_subprocess.py:78`` both pass
-    ``start_new_session=True``, so every tool subprocess the child starts is the
-    leader of its own group. On the COOPERATIVE leg the child's own
+    ``tools/bash.py:332`` and ``tools/_subprocess.py:106`` both spawn through
+    ``containment_spawn_kwargs(new_session=True)`` — ``start_new_session=True``
+    on POSIX — so every tool subprocess the child starts is the leader of its
+    own group. On the COOPERATIVE leg the child's own
     ``_signal_cleanup_and_exit`` reaps them; this test covers the child that does
     NOT cooperate, which is also the child whose grandchildren nobody else will
     clean up.
