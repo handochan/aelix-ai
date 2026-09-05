@@ -578,12 +578,9 @@ def _extension_signpost(cwd_abs: str, active_tool_names: set[str]) -> str:
         # One clause naming the trigger costs ~11 words and removes that pull.
         "Extending yourself (when the user asks to add a tool/command/hook to "
         "Aelix itself):\n",
-        # ``register_flag`` is DELIBERATELY not advertised. The registration call
-        # itself works, but its user-facing half does not exist: issue #92 —
-        # extension flags never reach the first-build runtime because
-        # ``parsed.unknown_flags`` is not threaded into ``flag_values``, so no CLI
-        # invocation can ever set one. Naming a surface the user cannot drive is
-        # the same overclaim this block exists to remove. Re-add it when #92 lands.
+        # ``register_flag`` is DELIBERATELY not advertised. The surface is new:
+        # issue #92 wired ``parsed.unknown_flags`` into first-build
+        # ``flag_values``, and advertising it is a separate product decision.
         #
         # "FOR THAT FILE" ADDED IN #101, 14 chars. The clause used to read "— no
         # manifest, no JSON, no build step, nothing to install", which is true of
