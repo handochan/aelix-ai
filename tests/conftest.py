@@ -101,7 +101,7 @@ def mkdir_or_skip() -> Callable[..., Path]:
     C0/C1 control bytes, ``<``, ``>``, ``"`` — because that is how the payload
     really arrives. The premise is stated in the code under test and in every
     one of those tests: "POSIX permits every byte but ``/`` and NUL in a path
-    component" (``print_channel.py:419``), so a ``git clone`` or an unpacked
+    component" (``print_channel.py:450``), so a ``git clone`` or an unpacked
     tarball creates such a directory and no privilege is needed.
 
     That premise is FALSE on NTFS, which rejects ``\\x00``–``\\x1f`` and

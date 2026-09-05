@@ -404,12 +404,22 @@ def test_a_continuation_does_not_steal_a_file_named_after_it() -> None:
 
     base = "packages/aelix-coding-agent/src/aelix_coding_agent"
     ref = f"{base}/reaper_probe.py"
+    # INTERPOLATED, so the fixture and the assertion below cannot drift apart.
+    # They were literals, and twice now ``check_citations.py --fix`` relocated
+    # the one inside ``body`` — it looks like a real citation into a real file —
+    # while leaving the assertion's tuple alone, turning a green gate into a red
+    # test for no product reason. Interpolation also takes this synthetic out of
+    # the gate's sight entirely, which is what it should always have been
+    # (#220 review round 2, fix lane).
+    lead = (221, 228)
+    tail = (314, 315)
     body = (
         '"""doc.\n'
         "\n"
-        "    ``modes/print_mode.py:158-165`` records it, and the acting break\n"
-        "    (``:198-205``) is strictly after the prompt call\n"
-        "    (``:189-193``). Since ``agents/resolver.py:314-315`` makes it so.\n"
+        f"    ``modes/print_mode.py:{lead[0]}-{lead[1]}`` records it, and the\n"
+        "    acting break (``:198-205``) is strictly after the prompt call\n"
+        f"    (``:189-193``). Since ``agents/resolver.py:{tail[0]}-{tail[1]}``\n"
+        "    makes it so.\n"
         '    """\n'
     )
     with tempfile.TemporaryDirectory() as tmp:
@@ -433,12 +443,12 @@ def test_a_continuation_does_not_steal_a_file_named_after_it() -> None:
             cc.REPO = original
 
     stolen = {(c.start, c.end) for c in found if "resolver" in (c.target or "")}
-    assert stolen == {(314, 315)}, (
+    assert stolen == {tail}, (
         f"a bare continuation was attributed to resolver.py: {sorted(stolen)}"
     )
     # The full citation on its own line is still picked up, so this is not
     # passing by scanning nothing.
-    assert (158, 165) in {(c.start, c.end) for c in found}
+    assert lead in {(c.start, c.end) for c in found}
 
 
 def test_a_port_number_is_not_mistaken_for_a_citation() -> None:

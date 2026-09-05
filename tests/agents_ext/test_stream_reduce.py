@@ -71,7 +71,7 @@ def _feed(state: _StreamState, *events: object) -> _StreamState:
 def test_typeless_header_line_does_not_raise() -> None:
     """The FIRST line has no ``type`` key at all.
 
-    ``modes/print_mode.py:173-185`` emits the session metadata dict verbatim
+    ``modes/print_mode.py:236-248`` emits the session metadata dict verbatim
     before any event. ``event["type"]`` would ``KeyError`` on line one of every
     single delegation.
     """
@@ -104,7 +104,7 @@ def test_absent_header_is_fine() -> None:
 def test_unparseable_line_skipped() -> None:
     """Anything in the child can ``print()`` into the same stdout.
 
-    ``print_mode.py:23-26`` explicitly declines pi's ``takeOverStdout``, so an
+    ``print_mode.py:38-41`` explicitly declines pi's ``takeOverStdout``, so an
     extension's or an MCP server's stray print lands in the event stream. It
     must be skipped silently, not raised on and not counted.
     """
@@ -265,7 +265,7 @@ def test_snake_case_fields_read() -> None:
     """THE PI-PORT TRAP.
 
     ``--mode json`` emits raw kernel dataclasses through ``dataclasses.asdict``
-    (``print_mode.py:59-68``), so the wire names are the Python attribute names.
+    (``print_mode.py:74-83``), so the wire names are the Python attribute names.
     A camelCase fixture — pi's spelling — must populate NOTHING at the message
     level, because a parser that reads pi's names produces a stream in which
     every failure looks like a success with an empty summary.

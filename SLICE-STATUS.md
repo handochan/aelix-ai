@@ -12,7 +12,10 @@
 > per-dialect classifiers (ADR-0237). #202 closed on 2026-09-05: the three
 > teardown sites outside `aelix_agents/` end a process TREE — a Job Object on
 > Windows, a process group on POSIX (ADR-0238). The `aelix_agents` half of it
-> is #220 and is still open, so items 1 and 2 below are amended, not struck.
+> followed on 2026-09-05 as #220 — the print-channel spawn, the reaper's Windows
+> legs, `rpc_channel`'s reaper calls and the `SIGBREAK` handler `print_mode`
+> lacked — so items 1 and 2 below are amended in place and marked landed rather
+> than struck.
 > Windows is still not a supported platform — the suite passing is not that
 > claim (README, "Platform support").
 
@@ -60,16 +63,25 @@ re-discovering the crash.
 
 ## Remaining — required before a `windows-latest` leg can be trusted
 
-1. **`preexec_fn` spawn-site guard.** `aelix_agents/print_channel.py:970` and
-   `aelix_agents/rpc_channel.py:438` pass `preexec_fn=pdeathsig`, which is
-   POSIX-only and raises on Windows. **Owned by another track** — explicitly
-   out of scope here, and untouched.
-2. **The third kill site in `aelix_agents/reaper.py` — LANDED.** `kill_tree`
-   named `signal.SIGKILL`, which does not exist on Windows, so the escalation
-   raised `AttributeError` inside the handler that exists to do the killing.
-   It now takes its signal from `reaper._kill_signal()`: `SIGTERM` on win32,
-   which is not a downgrade — Windows `os.kill` is `TerminateProcess(handle,
-   sig)` for every value that is not a console control event.
+1. **`preexec_fn` spawn-site guard — LANDED (#200, `4043d1c`).** Both
+   delegation channels passed `preexec_fn=pdeathsig` to
+   `create_subprocess_exec`, and it is not the hook that Windows refuses: CPython
+   rejects a non-None `preexec_fn` in `Popen.__init__`, before a child exists.
+   Both spawns now go through `reaper.pdeathsig_preexec()`, which hands back the
+   hook on Linux and `None` everywhere else. What made the bug invisible is worth
+   keeping: both call sites wrap the spawn in `except Exception` and turn a
+   failure into an error envelope, which is the right shape for a failed spawn
+   and the wrong shape for an impossible one — nothing crashed, every delegation
+   simply came back `error`, and 52 of the 238 `windows-latest` failures then
+   open were downstream of it. "Owned by another track" above was accurate; the
+   track was #200.
+2. **The third kill site in `aelix_agents/reaper.py` — LANDED (#220).**
+   `kill_tree` named `signal.SIGKILL`, which does not exist on Windows, so the
+   escalation raised `AttributeError` inside the handler that exists to do the
+   killing. It now takes its signal from `reaper._kill_signal()`: `SIGTERM` on
+   win32, which is not a downgrade — Windows `os.kill` is
+   `TerminateProcess(handle, sig)` for every value that is not a console control
+   event.
    It did **not** adopt W3's `kill_process_tree`, and that was decided rather
    than skipped. `reap`'s *first* leg is `os.kill` too, so on Windows the
    "cooperative" SIGTERM already terminates the tree root uncatchably and
@@ -77,7 +89,7 @@ re-discovering the crash.
    would arrive after the root it must walk from is gone. Closing that needs
    process-group or job-object isolation at the spawn site, not a different
    signal in the reaper. Windows silently declines `start_new_session`; it does
-   **not** decline a job object (#202 / #220).
+   **not** decline a job object (#202 built it, #220 adopted it here).
 
    **Amended (2026-09-05).** The isolation now exists: #202 built
    `aelix_ai.utils._process_tree` — a Job Object on Windows, a process group on
@@ -88,6 +100,20 @@ re-discovering the crash.
    what it accepts. This item is now missing only its adopter. Doing it here,
    together with `print_channel.py`'s spawn and the `SIGBREAK` handler
    `print_mode.py` still lacks, is **#220**.
+
+   **Landed (2026-09-05, #220).** `reaper.reap` and `reaper.kill_tree` now take
+   the `ProcessTree` the print channel attaches right after its spawn and, on
+   Windows, drive both legs through it: the cooperative one is a
+   `CTRL_BREAK_EVENT` to the child's own console group, the escalation is
+   `taskkill /T /F` followed by `TerminateJobObject`. The objection above is
+   answered rather than overruled — the job is what carries the escalation to a
+   descendant whose parent is already gone, and `/T` is only the belt that can
+   still walk a live parent link. The other two halves landed with it:
+   `print_channel.py`'s spawn asks for the containment
+   (`containment_spawn_kwargs(new_session=True)` plus a `kill_on_close=True`
+   tree) and `print_mode.py` grew the `SIGBREAK` handler that gives the
+   cooperative leg something to reach. ADR-0238's "What stays open" is amended
+   accordingly; what is left there is #221 and #222.
 3. **`#46` cross-process locking.** *Correction to the original brief:* both
    `fcntl` sites are already `None`-guarded
    (`aelix_ai/settings/storage.py:204`, `aelix_ai/oauth/auth_storage.py:184`),

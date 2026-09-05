@@ -9,17 +9,17 @@ WHAT FEEDS THE NEXT LINK IS ``SubagentResult.summary``, verbatim, including any
 truncation marker. NOT ``details``: ``subagent_contract.py:117-127`` declares
 ``details`` the "UNCAPPED raw material behind ``summary`` … it is NOT sent to the
 model by the ``agent`` tool", and ``envelope._build_details``
-(``envelope.py:238-258``) appends the RAW, unsanitized stderr tail on every
+(``envelope.py:252-272``) appends the RAW, unsanitized stderr tail on every
 failure path — provider SDK logging and SIGTERM tracebacks. Feeding that into
 the next step's task would silently change both the token cost and the
 prompt-injection surface of every chain.
 
 Truncation therefore stays visible by construction: ``cap_summary``
-(``envelope.py:77-109``) appends its marker INSIDE ``summary``, so the next child
+(``envelope.py:91-123``) appends its marker INSIDE ``summary``, so the next child
 literally reads "[Output truncated: … bytes omitted…]". Nothing here strips it.
 
 THE SUBSTITUTION HAPPENS INSIDE THE TASK STRING; IT NEVER TOUCHES ARGV.
-``build_child_argv`` (``print_channel.py:459-517``) documents that the ``"Task: "``
+``build_child_argv`` (``print_channel.py:490-548``) documents that the ``"Task: "``
 prefix ``profile_to_argv`` prepends is load-bearing — ``args.py`` swallows an
 unrecognised ``--`` token into ``parsed.unknown_flags`` with NO diagnostic — so a
 previous summary that begins with ``--`` stays safe only because that prefix is
@@ -54,7 +54,7 @@ MEASURED, not guessed. A single argv element above 131 072 bytes raises
 (measured on this machine: 131 000 → ok, 131 073 → E2BIG; the kernel limit is
 ``MAX_ARG_STRLEN = 32 × PAGE_SIZE`` and 4 KiB is the smallest page size aelix
 targets, so 131 072 is the floor). The task rides argv as exactly one element
-(``print_channel.py:477-482``). 64 KiB is half that floor, which leaves headroom
+(``print_channel.py:508-513``). 64 KiB is half that floor, which leaves headroom
 for the ``"Task: "`` prefix and any future prompt prefix — and it is 28 % above
 ``DEFAULT_OUTPUT_CAP`` (51 200, ``envelope.py:30``), so a chain step that
 forwards a whole uncapped previous summary still fits.

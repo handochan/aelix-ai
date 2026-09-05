@@ -202,7 +202,7 @@ def test_a_summary_that_is_a_json_blob_is_inserted_verbatim() -> None:
 
 
 def test_a_summary_beginning_with_a_double_dash_is_safe_inside_the_task() -> None:
-    """``build_child_argv`` (``print_channel.py:459-517``): the ``"Task: "``
+    """``build_child_argv`` (``print_channel.py:490-548``): the ``"Task: "``
     prefix ``profile_to_argv`` prepends is load-bearing, because ``args.py``
     swallows an unrecognised ``--`` token into ``parsed.unknown_flags`` with no
     diagnostic. This module hands back a TASK STRING, never an argv element, and
@@ -232,7 +232,7 @@ def test_an_empty_summary_still_renders_a_complete_fence() -> None:
 def test_the_truncation_marker_survives_substitution() -> None:
     """§3.1: "a truncated link must stay visibly truncated".
 
-    Built with the REAL ``cap_summary`` (``envelope.py:77-109``) rather than a
+    Built with the REAL ``cap_summary`` (``envelope.py:91-123``) rather than a
     hand-typed marker, so this test fails if the marker's wording ever changes
     without this path being reconsidered.
     """

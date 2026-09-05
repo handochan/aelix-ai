@@ -1,6 +1,6 @@
 # 0238. The kill reached the child, and the tree is what had to die
 
-Status: Accepted (2026-09-05).
+Status: Accepted (2026-09-05; **#220 amendment 2026-09-05** — adopted at the four `aelix_agents` sites: the print-channel spawn, the reaper's win32 legs, `rpc_channel`'s `_reap`/`_eager_abort`, and `print_mode`'s handler block)
 Date: 2026-09-05
 Supersedes/relates: ADR-0197 (the `aelix_agents` reaper, whose finding I2 —
 "a `/proc` walk and not `os.killpg`" — this ADR **reconciles rather than
@@ -320,12 +320,21 @@ against its `< 2.0` bound. The bound is unchanged.
 
 ## What stays open
 
-- **#220 — the `aelix_agents` adoption.** `print_channel.py:969`'s spawn,
-  `rpc_channel.py`'s `_reap`/`_eager_abort`, `reaper.py`'s win32 arm, and
-  `print_mode.py`'s handler block, which is switched off wholesale off POSIX
-  and so cannot receive a `SIGBREAK`. The primitive exists after this ADR; the
-  adoption is one change and it is not this one. The docstrings at those sites
-  say so and name #220.
+- **#220 — the `aelix_agents` adoption: landed 2026-09-05.** All four sites
+  are converted. They are named here by function rather than by line, because
+  this file's line numbers are ungated by design
+  (`scripts/check_citations.py` skips `docs/decisions/`), so nothing in CI
+  would notice one rotting — and this change edits the very line the original
+  bullet pointed at, `print_channel.py:969`, which was the literal
+  `start_new_session=True` it replaces. `PrintChannel.run`'s spawn now
+  passes `containment_spawn_kwargs(new_session=True)` and attaches a
+  `kill_on_close=True` tree before its first `await`; `reaper.reap` and
+  `reaper.kill_tree` take that tree and drive the win32 legs with
+  `soft_kill()` / `hard_kill()` instead of `os.kill`; `RpcChannel`'s `_reap`,
+  `_eager_abort` and `abort_child` read the tree `RpcClient` already attached,
+  carried on the registry row rather than fetched from the client; and
+  `print_mode.run_print_mode` installs a `SIGBREAK` handler on Windows instead
+  of switching the whole handler block off there.
 - **#221 — the `subprocess.run(timeout=)` sites**, with the unbounded
   `communicate()` after the kill on Windows.
 - **#222 — `tools/bash.py` / `tools/_subprocess.py` adopting `ProcessTree`**,
@@ -333,8 +342,11 @@ against its `< 2.0` bound. The bound is unchanged.
   the #9129 shape exactly, and it is the one place in the tree where the shape
   is a user-visible hang rather than a leaked process.
 
-Until #220 lands, the print channel and the reaper still orphan on Windows, and
-the README's "Platform support" says which half is contained and which is not.
+The README's "Platform support" still says which half is contained and which
+is not, but the split now falls elsewhere: after #220 the Windows verdict is
+whole, and what remains is POSIX's — a `setsid` grandchild is outside the group
+on every platform, and on a host with no `/proc` (macOS) the reaper's walk is
+empty, so only the group kill of the paragraph below reaches anything there.
 
 ## Consequences
 
@@ -369,3 +381,69 @@ the README's "Platform support" says which half is contained and which is not.
   deliberately not in that list: `stop()` skips the grace outright when
   `soft_kill` reports the event was not delivered, so its bound survives a
   console-less runner.
+- **What #220's adoption did *not* change (amendment, 2026-09-05).** The POSIX
+  cooperative leg is still `_signal_child(proc, SIGTERM)` to the root and
+  nothing else; the `/proc` descendant walk is still what the escalation runs
+  first and still the only thing that reaches a `setsid` grandchild; and
+  `close()` is still a release that signals nothing at all on POSIX. One POSIX
+  leg *was* added, and it is the only place this ADR's decision moved: after
+  the walk, inside `reap()` and never inside `kill_tree`, the escalation now
+  also calls `tree.hard_kill()` — `killpg(pgid, SIGKILL)`. It exists because
+  `descendant_pids()` is `[]` on a host with no `/proc`, which made the macOS
+  escalation a root-only `SIGKILL`: measured on the owner's box, a child that
+  ignores SIGTERM and spawns a **non-`setsid`** grandchild left that grandchild
+  alive after the walk-and-root kill and lost it to the group kill, and this
+  tree has two spawn sites of exactly that shape — `ExtensionContext.exec` and
+  `tools_manager`'s version probe, both plain `subprocess.run` with neither
+  `start_new_session` nor `process_group`. It is an addition and not a
+  substitution — it runs *after* the walk and addresses only what the walk
+  could not name — so ADR-0197's finding I2 and the reconciliation at the top
+  of this file both stand. It is kept OUT of `kill_tree` for a measured
+  reason: `_drain_after_exit` reaches that function on a delegation's
+  **success** path with a child that is already dead and already reaped, and a
+  `killpg(SIGKILL)` there is the draft `close()` this ADR reverted, which killed
+  helpers a hook had deliberately backgrounded and exited 0 over. The other two
+  callers — `PrintChannel._eager_abort` and `RpcChannel._eager_abort` — reach it
+  with a child that is usually ALIVE (the first Ctrl+C is
+  `turn_task.cancel()`), and only sometimes dead (a cancel that lands inside
+  that drain), so the discriminator is a `returncode` re-read at the call site,
+  not a blanket rule in `kill_tree`. `PrintChannel._eager_abort` therefore takes
+  the group kill too, guarded by that re-read and by "no reaper task is left to
+  escalate" — without it a delegation cancelled before its deadline left a
+  non-`setsid` grandchild alive on macOS (**measured**, #220 review round 2).
+  `RpcChannel._eager_abort` does not: its tree is borrowed and `RpcClient.stop`
+  still owes it a hard leg of its own.
+
+  The bound on the group kill is the GROUP, not the pid, and the earlier
+  drafting of this paragraph got that wrong. "`reap` owns the only
+  `proc.wait()`, so the leader is unreaped" does not hold on asyncio — the child
+  watcher `waitpid`s on its own thread, which this ADR already records above —
+  so `reap()` and `_eager_abort` sit under the same bound as the rpc and hook
+  sites: a non-empty group's id cannot be reused while any member lives, an
+  empty one answers `ESRCH`, and the residual (the number recycled *and* its new
+  holder having made itself a group leader) is the residual accepted below. Two further
+  consequences are recorded rather than left to be re-derived. On win32 a
+  **successful** delegation now ends every surviving job member, because the
+  print row's tree is `kill_on_close=True` and `PrintChannel.run`'s `finally`
+  closes it — deliberate, the same behaviour the rpc child has shipped with
+  since #202, and on POSIX still nothing. And the parent-death question (Q6 of
+  the #220 spec) needed no new decision: it is answered by the
+  `KILL_ON_JOB_CLOSE` bullet under "Windows semantics, stated plainly"
+  (`:151-154` of this file), which is why the print child's tree asks for
+  `kill_on_close` at all — it is that child's only win32 analogue of the Linux
+  `pdeathsig` its spawn already installs.
+- **A decision taken in the owner's absence, recorded here so it can be
+  reversed.** #220 also stopped `print_mode`'s signal path from calling
+  `sys.exit` inside a task: it records `128 + sig` and lets `run_print_mode`
+  return it. That is a user-visible change on POSIX too, in a file outside
+  #220's title, and it was made because without it the Windows observable #220
+  exists to produce does not exist. Measured on `main` 6586f8a: a real
+  `aelix -p` child sent SIGTERM exited **1** with two tracebacks — the
+  `SystemExit(143)` escaped the loop mid-step and `asyncio.run`'s
+  `Runner.close()` replaced it with `RuntimeError: Event loop stopped before
+  Future completed` — and `TerminateJobObject(job, 1)` also reads as 1, so a
+  cooperative `SIGBREAK` exit and a hard job kill would have been
+  indistinguishable except by stderr tail. The code now returns 143 on POSIX
+  (**measured**, `.omc/specs/220-progress-2026-09-05.md` §1) and 149 on Windows
+  — the value `128 + SIGBREAK` implies, still **unmeasured**: the
+  `windows-latest` leg is where it gets a number.

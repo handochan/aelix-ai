@@ -1065,11 +1065,16 @@ while the stream carries `stop_reason: "error"`.
 The summary fallback chain is `error_message` → sanitized stderr tail →
 extracted summary → `"(no output)"`. The **stderr rung is mandatory**: a child
 with no API key exits 1 with **zero stdout bytes**, not even the session header.
-It is sanitized before the model sees it — the SIGTERM path prints
+It is sanitized before the model sees it — the SIGTERM path used to print
 `Task exception was never retrieved` / `future: <Task finished … exception=SystemExit(143)>`,
-which is `_signal_cleanup_and_exit` (`print_mode.py:259-269`) calling
-`sys.exit(128 + sig)` inside a coroutine and is **normal**. The raw text is kept
+which was **normal** rather than an error. The raw text is kept
 on `SubagentResult.details`.
+
+*Amended 2026-09-05 ([#220](https://github.com/handochan/aelix-ai/issues/220)):
+`_signal_cleanup_and_exit` now records `128 + sig` for `run_print_mode` to
+return rather than calling `sys.exit` inside a coroutine, so today's child emits
+none of that noise (measured). The sanitizer stays as a defensive filter — any
+other unretrieved task exception in the child still produces the same shape.*
 
 `details` exists because `summary` is capped at `profile.output_cap` (default
 51 200) on **UTF-8 bytes** and its truncation marker promises "full output

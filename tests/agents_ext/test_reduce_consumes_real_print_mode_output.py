@@ -16,7 +16,7 @@ a child actually runs.
 WHAT IT PROVES, concretely:
 
 * the first line is the session-metadata header and has NO ``type`` key
-  (``print_mode.py:174-185``) — hence ``event.get("type")``, never
+  (``print_mode.py:237-248``) — hence ``event.get("type")``, never
   ``event["type"]``;
 * the wire is snake_case ``dataclasses.asdict`` of the kernel's own event
   dataclasses, NOT pi's camelCase;
@@ -195,7 +195,7 @@ async def test_the_wire_is_snake_case_not_pi_camel_case(
     """THE PI-PORT TRAP, observed on real bytes.
 
     ``--mode json`` emits raw kernel ``AgentEvent`` dataclasses through
-    ``dataclasses.asdict`` (``print_mode.py:158-165``), so the field names are
+    ``dataclasses.asdict`` (``print_mode.py:221-228``), so the field names are
     Python's. A line-for-line port of pi's parser would read ``None`` for every
     field and every failure would look like a success with zero usage.
     """

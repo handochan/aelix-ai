@@ -61,127 +61,19 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
-import textwrap
 from pathlib import Path
 from typing import Any
 
 import pytest
 from aelix_agents.stream import LineAssembler
 
+# ``_CHILD`` lives in ``tests/print_mode_child.py`` since #220, shared with
+# ``tests/agents_ext/test_print_channel_spawn.py`` so the wire contract and the
+# signal-exit-code guard can never drift onto two different children. Its
+# default path — no ``--wedge``, no ``--ready`` — is byte-for-byte what this
+# file always ran.
 from tests.env_sandbox import child_env
-
-# The child script. Written out and executed as a separate interpreter, so what
-# is asserted below is what a parent would actually read off fd 1.
-_CHILD = textwrap.dedent(
-    '''
-    """Driven as a REAL child process by tests/cli/test_print_mode_json_contract.py."""
-
-    import asyncio
-    import sys
-    from collections.abc import AsyncIterator
-
-    from aelix_agent_core.harness.core import AgentHarness, AgentHarnessOptions
-    from aelix_agent_core.runtime import AgentSessionRuntime
-    from aelix_agent_core.session import JsonlSessionRepo, LocalFileSystem
-    from aelix_ai.messages import AssistantMessage, TextContent, ToolCallContent
-    from aelix_ai.streaming import (
-        AssistantEndEvent,
-        AssistantStartEvent,
-        Model,
-    )
-    from aelix_ai.tools import Tool, ToolResult
-    from aelix_coding_agent.modes.print_mode import run_print_mode
-
-    WITH_TOOL = "--with-tool" in sys.argv
-    ERRORED = "--errored" in sys.argv
-
-    _turns = {"n": 0}
-
-
-    def _stream():
-        async def fn(model, context, options) -> AsyncIterator:
-            _turns["n"] += 1
-            yield AssistantStartEvent(partial=AssistantMessage(content=[]))
-            if ERRORED:
-                yield AssistantEndEvent(
-                    message=AssistantMessage(
-                        content=[],
-                        stop_reason="error",
-                        error_message="the provider said no",
-                        usage=None,
-                        provider="stub",
-                        model="stub-1",
-                    )
-                )
-                return
-            if WITH_TOOL and _turns["n"] == 1:
-                yield AssistantEndEvent(
-                    message=AssistantMessage(
-                        content=[
-                            ToolCallContent(
-                                tool_call_id="tc-1",
-                                tool_name="probe",
-                                input={"path": "README.md"},
-                            )
-                        ],
-                        stop_reason="tool_use",
-                        usage={"input": 11, "output": 3},
-                        provider="stub",
-                        model="stub-1",
-                    )
-                )
-                return
-            yield AssistantEndEvent(
-                message=AssistantMessage(
-                    content=[TextContent(text="the complete answer")],
-                    stop_reason="end_turn",
-                    usage={"input": 20, "output": 5, "total_tokens": 25},
-                    provider="stub",
-                    model="stub-1",
-                )
-            )
-
-        return fn
-
-
-    async def _probe(args, ctx):
-        return ToolResult(content=[TextContent(text="probe ran")])
-
-
-    async def main() -> None:
-        harness = AgentHarness(
-            AgentHarnessOptions(
-                model=Model(id="stub-1", provider="stub"),
-                stream_fn=_stream(),
-                tools=[
-                    Tool(
-                        name="probe",
-                        description="A probe.",
-                        parameters={"type": "object"},
-                        execute=_probe,
-                    )
-                ],
-            )
-        )
-
-        async def _noop(_s):
-            return harness
-
-        runtime = AgentSessionRuntime(
-            harness,
-            _noop,
-            repo=JsonlSessionRepo(fs=LocalFileSystem()),
-            fs=LocalFileSystem(),
-        )
-        code = await run_print_mode(
-            runtime, mode="json", messages=[], initial_message="Task: go"
-        )
-        sys.exit(code)
-
-
-    asyncio.run(main())
-    '''
-)
+from tests.print_mode_child import CHILD_SOURCE as _CHILD
 
 
 def _child_env(tmp_path: Path) -> dict[str, str]:

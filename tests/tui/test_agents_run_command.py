@@ -322,7 +322,7 @@ async def test_a_widened_grant_is_visible_in_the_panel(bench: _Bench) -> None:
 
 
 async def test_the_child_model_is_shown_on_the_result_panel(bench: _Bench) -> None:
-    """``SubagentResult.model`` is already populated (``envelope.py:384-385``) but
+    """``SubagentResult.model`` is already populated (``envelope.py:398-399``) but
     P2 named it nowhere. A profile with no ``model:`` runs the persisted default
     at a different price, and before this row the only way to notice was the
     bill — so the grid states ``provider/id`` on its own line."""
@@ -352,7 +352,7 @@ async def test_the_model_row_is_omitted_when_the_child_named_no_model(
 
 def test_a_hostile_child_model_cannot_drive_the_result_grids_terminal() -> None:
     """FINDING 1 (HIGH). ``model``/``provider`` are read off the child's own
-    ``message_end`` verbatim (``stream.py:558-563`` → ``envelope.py:384-385``), so
+    ``message_end`` verbatim (``stream.py:558-563`` → ``envelope.py:398-399``), so
     they are attacker-controlled. Rich ``Text`` blocks MARKUP but writes raw
     content ESC / C1 to the terminal, so a ``\\x1b[2J`` in the model would clear
     the parent's screen and a one-byte ``\\x9b`` would drive its cursor.

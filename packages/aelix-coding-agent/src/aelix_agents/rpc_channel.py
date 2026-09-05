@@ -330,12 +330,12 @@ class RpcChannel:
             #
             # THE ACCUMULATOR STOPS AT THE STREAM'S TERMINATOR. ``agent_end`` is
             # the event ``prompt_and_wait`` itself waits on
-            # (``rpc_client.py:989-992``), so a line after it is by definition
+            # (``rpc_client.py:1007-1010``), so a line after it is by definition
             # not this turn's data — and folding one in is last-write-wins on
             # ``summary``, ``stop_reason`` and ``error_message``, plus an
             # unconditional ``turns += 1`` and a ``tokens`` LEVEL overwrite.
             # ``build_result``'s ``state.stop_reason in ("error", "aborted")``
-            # disjunct (``envelope.py:308-312``) is NOT gated on the caller's
+            # disjunct (``envelope.py:322-326``) is NOT gated on the caller's
             # outcome, so one late line flips a finished, exit-0 delegation to
             # ``ok=False``. Measured on a child that finishes cleanly and then
             # writes one more ``message_end`` after its stdin EOF:
@@ -384,7 +384,7 @@ class RpcChannel:
             # ``subagent_start``/``subagent_end`` pairs for a single child, on
             # the channels a dashboard subscribes to. ``PrintChannel`` holds the
             # same invariant by cancelling its pumps next to its own
-            # ``_eager_abort`` (``print_channel.py:1106-1113``); this channel
+            # ``_eager_abort`` (``print_channel.py:1234-1241``); this channel
             # cannot, because the accumulator above still has to read.
             # ``runtime._run``'s ``finally`` publishes the ONE terminal snapshot
             # itself, so this channel's contract is: non-terminal snapshots only.
@@ -511,6 +511,28 @@ class RpcChannel:
                 return _envelope(outcome="error", error=str(exc))
 
             row.proc = client.process
+            # BORROWED, never owned — ``tree_owned=False`` is what stops §A.6's
+            # closing rules from touching it: :meth:`RpcClient.stop` still owes
+            # this tree a soft -> grace -> hard sequence and closes it itself
+            # (``rpc_client.py:637-642``). Closing it here would disarm both
+            # legs permanently, since ``soft_kill``/``hard_kill`` early-return
+            # on ``closed``.
+            #
+            # It rides on the ROW because the row is the only carrier the three
+            # kill doors share: :class:`RunningChild` has no ``client`` field,
+            # :meth:`_eager_abort` is a ``@staticmethod`` taking only ``row``,
+            # and ``abort_child`` — the door ``runtime.stop`` / ``stop_all`` and
+            # the stop-during-spawn race just below all go through — sees only
+            # the row AND creates the ``row.reaper_task`` that :meth:`_reap`
+            # then reuses. A tree threaded into :meth:`_reap` alone would be
+            # discarded on exactly the path a human drives (#220).
+            row.tree = client.tree
+            # Written out rather than left to the dataclass default, which is
+            # already ``False`` — so this line is a declaration and no mutation
+            # of it alone can be red (#220 review round 2, MUT-7). The
+            # assertions on it in the rpc tests pin the CONTRACT, not this
+            # statement.
+            row.tree_owned = False
             row.state = "running"
             if row.stopped:
                 # The other half of the race: a stop that landed while the
@@ -715,6 +737,16 @@ class RpcChannel:
         registry-owned so ``stop_all`` still joins it. The descendant walk is
         taken here, while the child is provably still alive, which is what
         makes a ``PPid`` index usable at all.
+
+        ``tree=row.tree`` is what the walk cannot be on Windows: without
+        ``/proc`` :func:`descendant_pids` returns ``[]``, so before #220 both of
+        the reaper's legs degraded to a root-only ``TerminateProcess`` — an
+        uncatchable kill that skipped the child's cooperative shutdown and left
+        its descendants to ``RpcClient.stop()`` afterwards. With the tree the
+        legs become ``CTRL_BREAK_EVENT`` to the group and then the job. The row
+        is re-read on every call rather than captured: ``RpcClient.stop()`` nulls
+        its ``_tree``, and a stale reference would dispatch to a closed tree,
+        which signals nothing (#220).
         """
 
         task = row.reaper_task
@@ -725,6 +757,7 @@ class RpcChannel:
                     grace=self._grace,
                     eager_kill=row.eager_kill,
                     descendants=descendant_pids(proc.pid),
+                    tree=row.tree,
                 )
             )
             row.reaper_task = task
@@ -736,13 +769,44 @@ class RpcChannel:
 
     @staticmethod
     def _eager_abort(row: RunningChild) -> None:
-        """Second interrupt: stop waiting, start killing."""
+        """Second interrupt: stop waiting, start killing.
+
+        ``tree=row.tree`` for the same reason as :meth:`_reap`: on Windows the
+        descendant list beside it is empty and the job is the only thing that
+        reaches the tree. The tree is the client's — this method never closes
+        it, and ``row.tree_owned`` is ``False`` on every rpc row so no §A.6 rule
+        does either (#220).
+
+        NO POSIX GROUP KILL HERE, unlike ``PrintChannel._eager_abort``, and the
+        asymmetry is deliberate. The print row owns its tree and nothing else
+        will ever escalate once ``run()`` has returned, so that site has to
+        supply Q1 itself on the cancel path (#220 review round 2, posix2/P2).
+        Here the tree is BORROWED and :meth:`RpcClient.stop` still owes it a
+        soft -> grace -> hard sequence whose hard leg is that same
+        ``killpg`` (``rpc_client.py``), so adding one would pre-empt a teardown
+        this channel does not own. The residual — a cancellation that never
+        reaches ``client.stop()`` (``_shutdown`` has no ``try/finally``, RPC-5)
+        — is recorded in §A.4 and §I as out of scope; ``RpcChannel`` is not
+        wired into the product (``runtime.py`` builds a ``PrintChannel``).
+
+        Stated cost, because this method is SYNCHRONOUS and every caller is
+        inside an ``except asyncio.CancelledError`` on the event-loop thread:
+        on win32 ``hard_kill()`` runs ``subprocess.run(taskkill, timeout=5)``
+        there, where today's ``os.kill`` was instantaneous. Accepted, and it is
+        the stall :meth:`RpcClient.stop` already pays on the loop at the same
+        shape (``rpc_client.py:610``), for the same reason: the alternative to a
+        bounded stall is a leaked tree. Both obvious remedies are worse — a
+        ``terminate_job``-only path for synchronous callers drops the ``/T``
+        walk, and moving the kill onto a thread inside ``reap`` would insert an
+        unshielded suspension point between the kill and the shielded final
+        wait, which is the zombie hole that shield exists to close.
+        """
 
         row.eager_kill = True
         row.state = "stopped"
         proc = row.proc
         if proc is not None:
-            kill_tree(proc, descendant_pids(proc.pid))
+            kill_tree(proc, descendant_pids(proc.pid), tree=row.tree)
 
 
 def _stderr_of(exc: BaseException, client: RpcClient) -> str:

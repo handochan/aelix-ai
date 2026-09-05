@@ -20,11 +20,19 @@ from aelix_agents.envelope import (
 from aelix_agents.stream import _StreamState
 from aelix_coding_agent.subagent_contract import SubagentResult
 
-# The exact noise a cooperative SIGTERM produces. ``print_mode.py``'s
-# ``_signal_cleanup_and_exit`` calls ``sys.exit(128 + sig)`` from inside a
-# coroutine, so asyncio prints this on EVERY successful kill — it is normal, not
-# a diagnosis, and surfacing it to the model as the reason a task was aborted is
-# actively misleading.
+# A sample of the task-borne-exception shape the sanitizer must strip: normal
+# output, not a diagnosis, and surfacing it to the model as the reason a task was
+# aborted is actively misleading.
+#
+# HISTORICAL, and deliberately kept as a sample rather than retired with the
+# behaviour. Until #220 this was literally what a cooperative SIGTERM produced on
+# every kill — ``print_mode.py``'s ``_signal_cleanup_and_exit`` called
+# ``sys.exit(128 + sig)`` from inside a coroutine. It now records the code
+# instead, and a real child's SIGTERM stderr is empty of all this (measured). The
+# frame below therefore names a call site that no longer exists; what it still
+# pins is ``_STDERR_NOISE_RE``, which stays as a defensive filter for any other
+# unretrieved task exception in the child (``envelope.py`` says why). Delete the
+# regex and the two cases below go red.
 _SIGTERM_NOISE = """Task exception was never retrieved
 future: <Task finished name='Task-3' coro=<run() done> exception=SystemExit(143)>
 Traceback (most recent call last):
@@ -338,7 +346,7 @@ def test_successful_run_keeps_its_summary_despite_stderr_noise() -> None:
 
     The stderr rung is gated on failure. Provider SDK / httpx logging and any
     extension ``print(..., file=sys.stderr)`` land in the same pipe —
-    ``print_mode.py:23-26`` declines pi's ``takeOverStdout``, so those bytes are
+    ``print_mode.py:38-41`` declines pi's ``takeOverStdout``, so those bytes are
     NOT redirected. Ungated, one ``DeprecationWarning`` on a perfectly
     successful delegation would replace the child's answer with a log line.
 

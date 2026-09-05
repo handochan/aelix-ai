@@ -99,8 +99,8 @@ a MESSAGE (``chrome.py:784-790``) and the queue drains only after the turn.
 
 IT IS A CEILING ON THE MEMBERS' TIMEOUTS, NOT ON THE CALL'S WALL CLOCK. A member
 that hits its deadline then runs its kill legs — ``reap(grace=5.0)``
-(``reaper.py:80``) plus the bounded post-kill drain ``POST_EXIT_DRAIN_SECONDS =
-2.0`` (``print_channel.py:135``). :data:`KILL_LEG_RESERVE_MS` is subtracted so the
+(``reaper.py:111``) plus the bounded post-kill drain ``POST_EXIT_DRAIN_SECONDS =
+2.0`` (``print_channel.py:149``). :data:`KILL_LEG_RESERVE_MS` is subtracted so the
 ceiling is honoured rather than approximately honoured; the honest outer bound is
 this number plus at most one kill leg for whatever was in flight when it fired."""
 
@@ -308,12 +308,12 @@ async def _run_parallel(batch: _Batch) -> tuple[list[MemberOutcome], int]:
 
     * ``return_exceptions=True`` would capture a member's ``CancelledError`` as a
       RESULT, so this frame would not propagate — which bypasses the
-      second-Ctrl+C escalation at ``print_channel.py:1218-1220`` (``_reap``'s
+      second-Ctrl+C escalation at ``print_channel.py:1373-1375`` (``_reap``'s
       ``except CancelledError: self._eager_abort(proc, row); raise``).
     * No ``ensure_future`` without holding the handle and no ``shield``: a
       detached member is a child nobody can kill, and ``PrintChannel.run``
       documents that ``CancelledError`` is the ONE thing it propagates and that
-      it kills the child eagerly before re-raising (``print_channel.py:866-874``,
+      it kills the child eagerly before re-raising (``print_channel.py:909-917``,
       ``:944-951``).
     * Awaited HERE rather than returned: cancelling the task that owns this frame
       cancels the ``_GatheringFuture``, which is the only path that cancels the
@@ -324,7 +324,7 @@ async def _run_parallel(batch: _Batch) -> tuple[list[MemberOutcome], int]:
     exception immediately and leaves its siblings RUNNING, DETACHED, holding real
     ``-m aelix_coding_agent`` processes with nothing left to reap them. That path
     is reachable, not theoretical: ``PrintChannel.run`` writes the prompt file
-    OUTSIDE its own ``try`` (``print_channel.py:930`` vs ``:931``) and
+    OUTSIDE its own ``try`` (``print_channel.py:973`` vs ``:974``) and
     ``write_prompt_file`` does ``mkdtemp`` + ``os.open``
     (``prompt_file.py:130-132``), so a full ``/tmp``, an ``EMFILE`` or a yanked
     ``TMPDIR`` raises ``OSError`` straight out — and four concurrent children each
@@ -470,7 +470,7 @@ async def _member(
                     _refusal_envelope(batch.resolved, _BATCH_BUDGET_EXHAUSTED)
                 )
             # THE PROFILE'S OWN BUDGET IS THE DEFAULT, NOT ``DEFAULT_TIMEOUT_MS``
-            # — this line mirrors ``print_channel.py:894-898`` exactly, and it
+            # — this line mirrors ``print_channel.py:937-941`` exactly, and it
             # must, because the executor is what makes ``plan.timeout_ms`` non-
             # ``None``. Substituting the module default here would mean the
             # channel's own ``profile.timeout_ms`` fallback is UNREACHABLE for
@@ -632,8 +632,8 @@ def _kill_leg_reserve_ms(mode: SubagentMode, steps_left: int) -> int:
     """Wall clock held back so a timing-out member's kill legs fit under the cap.
 
     A member that hits its deadline does not stop there: ``reap`` waits
-    ``DEFAULT_GRACE_SECONDS = 5.0`` (``reaper.py:80``) and then drains for a
-    bounded ``POST_EXIT_DRAIN_SECONDS = 2.0`` (``print_channel.py:135``).
+    ``DEFAULT_GRACE_SECONDS = 5.0`` (``reaper.py:111``) and then drains for a
+    bounded ``POST_EXIT_DRAIN_SECONDS = 2.0`` (``print_channel.py:149``).
 
     In PARALLEL those legs overlap, so one reserve covers the whole wave. In a
     CHAIN they are strictly sequential, so an eight-step chain that runs into the

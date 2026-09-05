@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import ctypes
 import json
 import os
 import shlex
@@ -46,11 +47,14 @@ import sys
 import tempfile
 import textwrap
 import time
+import warnings
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import pytest
 from aelix_agents import print_channel as pc
+from aelix_agents import reaper as rp
 from aelix_agents.consent import SpawnGrant
 from aelix_agents.envelope import STREAM_ENDED_EARLY
 from aelix_agents.print_channel import (
@@ -66,36 +70,41 @@ from aelix_agents.reaper import descendant_pids, kill_tree, pdeathsig, reap
 from aelix_agents.runtime import _TERMINAL_STATES as _RUNTIME_TERMINAL
 from aelix_agents.runtime import SubagentHost, _SubagentRuntimeImpl
 from aelix_ai.streaming import Model
+from aelix_ai.utils._process_tree import (
+    CREATE_NEW_PROCESS_GROUP,
+    ProcessTree,
+    _retained_handle,
+)
 from aelix_coding_agent.agents.profile import AgentProfile
 from aelix_coding_agent.builtin.permission_mode import PermissionMode
 from aelix_coding_agent.subagent_contract import DEPTH_ENV_VAR, ResolvedProfile
 
 from tests.env_sandbox import child_env
 from tests.posix_modes import POSIX_MODES
+from tests.print_mode_child import CHILD_SOURCE
 
 linux_only = pytest.mark.skipif(
     sys.platform != "linux", reason="process-group / PDEATHSIG semantics are Linux"
 )
-# #215 (owner decision 2026-09-04, option c): the SIGTERM→SIGKILL escalation
-# cannot be REACHED on Windows, so an assertion that it happened has nothing
-# to measure there. ``os.kill`` is ``TerminateProcess`` on win32 — the first,
-# "cooperative" leg is already unconditional (``reaper._kill_signal()``'s
-# docstring; #202 owns the semantics), and a SIGTERM-ignoring child dies well
-# inside the grace: on windows-latest run 33755783029,
-# ``tests/rpc/test_rpc_client_shutdown.py::test_stop_escalates_to_sigkill_when_sigterm_ignored``
-# (which asserts ``elapsed >= grace``, grace 0.3 s) reported ``stop()`` back in
-# 0.062 s. The choice of signal itself is unit-tested without a process in
-# ``tests/agents_ext/test_reaper_kill_signal_win32.py``. This is the
-# "genuinely unreachable rather than merely untested" case ``tests/conftest.py``
-# (``_no_real_tool_downloads``' docstring, "SKIPPING IS RIGHT HERE") carves
-# out of the inject-don't-skip rule — and, per the same doctrine, it is applied
-# PER ASSERTION where the rest of a test still measures something on win32.
-escalation_unreachable = sys.platform == "win32"
-escalation_reachable = pytest.mark.skipif(
-    escalation_unreachable,
-    reason="SIGTERM->SIGKILL escalation is unreachable on win32: os.kill is TerminateProcess (#215, #202)",
-)
-# #207: a SIBLING of the marker above rather than a reuse of it, because what
+# #215's ``escalation_reachable`` marker LIVED HERE AND IS RETIRED (#220).
+#
+# Its premise was true and is no longer: leg 1 on win32 used to be
+# ``os.kill(pid, SIGTERM)`` = ``TerminateProcess``, which nothing can survive,
+# so a SIGTERM-ignoring child died inside the grace and an assertion that the
+# escalation had HAPPENED had nothing to measure there (windows-latest run
+# 33755783029: ``stop()`` back in 0.062 s against a 0.3 s grace). #220 makes leg
+# 1 the tree's ``CTRL_BREAK_EVENT``, and :func:`_sigterm_ignoring_stub` installs
+# a real ``SIGBREAK`` handler that survives it — so the escalation is REACHED on
+# Windows and the two tests below assert it on both platforms.
+#
+# All THREE linked sites went together, deliberately: the module-level
+# ``escalation_unreachable`` bool, the ``escalation_reachable`` marker, and the
+# inline ``if not escalation_unreachable:`` guard inside
+# :func:`test_sigterm_then_sigkill`. Retiring only the marker would have left
+# that guard silently skipping the win32 exit-code assertion — the same test
+# passing while measuring strictly less (#220 §A.8).
+#
+# #207: a SIBLING of the retired marker rather than a reuse of it, because what
 # is unavailable here is the FIXTURE, not the escalation. :func:`_wedged_argv`
 # plants the child's SIGTERM disposition pre-``exec`` with ``/bin/sh -c
 # "trap '' TERM; exec ..."``; Windows has neither ``/bin/sh`` (measured:
@@ -107,6 +116,11 @@ escalation_reachable = pytest.mark.skipif(
 # precedent ``tests/oauth/test_auth_storage.py:64``. No product change can make
 # this fixture buildable, so unlike the ``escalation_reachable`` sites this one
 # is not waiting on #202.
+#
+# #220 RETIRED ``escalation_reachable`` and deliberately did NOT retire this one:
+# what #220 changed is the win32 kill legs, and no change to them can conjure a
+# ``/bin/sh`` or an ignore disposition that survives ``exec``. The precondition
+# is refused by the OS, not by the product.
 sigterm_ignoring_fixture_buildable = pytest.mark.skipif(
     sys.platform == "win32",
     reason=(
@@ -193,17 +207,51 @@ _SLEEPER = _stub(
     """
 )
 
-# Deliberately writes NOTHING to stderr: on a failure outcome the stderr rung of
-# the fallback chain outranks the child's own partial summary, so a chatty stub
-# would silently turn these into stderr assertions.
-_SIGTERM_IGNORING = _stub(
+def _sigterm_ignoring_stub(marker: Path) -> str:
+    """Ignores the soft signal on BOTH platforms and says so, without stderr.
+
+    POSIX: ``SIGTERM -> SIG_IGN``, unchanged (#207's fixture).
+    win32: a real Python ``SIGBREAK`` handler, because that is the disposition
+    the PRODUCT installs (``modes/print_mode.py``, #220) and a ``SIG_IGN`` stub
+    would opt out of the one risk #220 introduces — leg 1 is now a console event
+    a child CAN survive, and a stub that could not survive it would make the
+    escalation untestable again for a new reason.
+
+    The 0.05 s loop is #202-measured: ``time.sleep`` on Windows is not woken by
+    ``CTRL_BREAK_EVENT`` (only the SIGINT event does that), so a 120 s sleep
+    would push the Python-level handler past any grace this suite can afford.
+    BOUNDED at 2400 iterations, like every other stub here: this child ignores
+    the soft signal by construction, so an ``while True`` version outlives any
+    session that dies before its escalation lands — and one interrupted run left
+    four of them alive for 49 minutes on this box (#220 review round 2, fix
+    lane). 120 s is far beyond every grace and deadline in this file.
+
+    The breadcrumb is a FILE, never stderr: this stub writes NOTHING to stderr on
+    purpose, because on a failure outcome the stderr rung of the fallback chain
+    outranks the child's own partial summary, and
+    :func:`test_sigterm_then_sigkill` asserts that summary. It is written from
+    the LOOP on a flag the handler sets, so no I/O runs at delivery time.
     """
-    signal.signal(signal.SIGTERM, signal.SIG_IGN)
-    start()
-    say("i will not die politely")
-    time.sleep(120)
-    """
-)
+
+    return _stub(
+        f"""
+        _hit = {{"v": False}}
+        def _seen(*_a):
+            _hit["v"] = True
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        _brk = getattr(signal, "SIGBREAK", None)
+        if _brk is not None:
+            signal.signal(_brk, _seen)
+        start()
+        say("i will not die politely")
+        _wrote = False
+        for _ in range(2400):
+            if _hit["v"] and not _wrote:
+                open({str(marker)!r}, "w").write("1")
+                _wrote = True
+            time.sleep(0.05)
+        """
+    )
 
 _BIG_STDERR = _stub(
     """
@@ -275,6 +323,30 @@ def _pipe_holding_stub(marker: Path) -> str:
     )
 
 
+# The NON-``setsid`` grandchild's body. On Windows ``start_new_session`` is
+# ignored, so any grandchild sits in the CHILD's ``CREATE_NEW_PROCESS_GROUP``
+# group with the CRT's default SIGBREAK disposition and would die to the SOFT
+# leg; it installs its own handler and sleeps in 0.05 s steps, for the same
+# measured reason :func:`_sigterm_ignoring_stub` does (#220, win32/W7).
+#
+# THAT DOES NOT MAKE THE WIN32 ARM A MUTATION GUARD, and the first drafting of
+# this comment claimed it did. The process that decides whether the escalation
+# runs at all is the CHILD, not the grandchild, and the child here has only a
+# POSIX ``SIGTERM -> SIG_IGN`` — so on Windows it dies to leg 1, ``proc.wait()``
+# resolves inside the grace and ``hard_kill`` is never reached. The grandchild
+# dies anyway, because ``run()``'s ``finally`` closes a ``kill_on_close=True``
+# job and ``JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`` ends every remaining member.
+# So the win32 arm of the sibling test PASSES, and would keep passing with the
+# whole escalation deleted. Darwin is where the mutation guard lives (#220
+# review round 2, W32-2). Read from source; no windows host ran this.
+_GRANDCHILD_BODY = (
+    "import signal, time; "
+    "_b = getattr(signal, 'SIGBREAK', None); "
+    "_b is not None and signal.signal(_b, lambda *_a: None); "
+    "[time.sleep(0.05) for _ in range(2400)]"
+)
+
+
 def _grandchild_stub(marker: Path) -> str:
     """A child that forks a SESSION-LEADER grandchild, exactly like ``bash``.
 
@@ -290,6 +362,36 @@ def _grandchild_stub(marker: Path) -> str:
         kid = subprocess.Popen(
             [sys.executable, "-c", "import time; time.sleep(120)"],
             start_new_session=True,
+        )
+        open({str(marker)!r}, "w").write(str(kid.pid))
+        start()
+        say("grandchild spawned")
+        time.sleep(120)
+        """
+    )
+
+
+def _nonsetsid_grandchild_stub(marker: Path) -> str:
+    """The same, MINUS ``start_new_session`` — so the grandchild stays in the group.
+
+    This is the shape ``extensions/api.py``'s ``ExtensionContext.exec`` and
+    ``util/tools_manager.py``'s version probe really have: ``subprocess.run``
+    with neither ``start_new_session`` nor ``process_group``. It is the only
+    descendant shape ``killpg`` can reach and a ``/proc``-less host cannot name,
+    which makes it the ONE fixture that can measure #220's Q1 (the group kill
+    ``reap`` runs after the descendant walk).
+
+    Its sibling above must stay ``setsid``: a ``setsid`` grandchild is
+    unreachable by ``killpg`` on every platform, so only the walk can kill it,
+    which is what keeps :func:`test_bash_grandchild_killed_on_sigkill_leg` a live
+    mutation guard for the walk. Q1 must not be allowed to mask its deletion.
+    """
+
+    return _stub(
+        f"""
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        kid = subprocess.Popen(
+            [sys.executable, "-c", {_GRANDCHILD_BODY!r}],
         )
         open({str(marker)!r}, "w").write(str(kid.pid))
         start()
@@ -336,16 +438,30 @@ def _plan(tmp_path: Path, **kwargs: Any) -> SpawnPlan:
 
 
 def _stub_channel(
-    script: str, *, grace: float = 5.0, argv: list[str] | None = None
+    script: str,
+    *,
+    grace: float = 5.0,
+    argv: list[str] | None = None,
+    env: dict[str, str] | None = None,
 ) -> PrintChannel:
-    """A channel whose child is an inline script rather than a real aelix."""
+    """A channel whose child is an inline script rather than a real aelix.
+
+    ``env`` is the second injection seam and it exists for exactly one child:
+    the REAL ``print_mode`` one (#220), which imports aelix and would otherwise
+    inherit the runner's own ``HOME``. Every stub child above is stdlib-only and
+    needs nothing (finding I10).
+    """
 
     command = argv if argv is not None else [sys.executable, "-c", script]
 
     def _build(*_args: Any, **_kwargs: Any) -> list[str]:
         return list(command)
 
-    return PrintChannel(grace=grace, argv_builder=_build)
+    if env is None:
+        return PrintChannel(grace=grace, argv_builder=_build)
+    return PrintChannel(
+        grace=grace, argv_builder=_build, env_builder=lambda *_a, **_k: dict(env)
+    )
 
 
 def _hermetic_env(tmp_path: Path) -> dict[str, str]:
@@ -370,6 +486,55 @@ async def _wait_for_pid(row: RunningChild, timeout: float = 10.0) -> int:
             return int(proc.pid)
         await asyncio.sleep(0.01)
     raise AssertionError("the child never started")
+
+
+async def _wait_for_tree(row: RunningChild, timeout: float = 10.0) -> ProcessTree:
+    """The tree the spawn attached, once it exists.
+
+    Sibling of :func:`_wait_for_pid` and needed for the same reason: the row is
+    written by a task the test does not own, so the only correct way to read it
+    is to wait for it.
+    """
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        tree = row.tree
+        if tree is not None:
+            return tree
+        await asyncio.sleep(0.01)
+    raise AssertionError("the spawn never attached a process tree")
+
+
+def _spy_hard_kill(tree: ProcessTree) -> list[tuple[float, float]]:
+    """Wrap the INSTANCE's ``hard_kill``; return the ``(entered, returned)`` log.
+
+    BOTH timestamps, because §D.6/§H.7 ask for the wall time of the win32 leg
+    and a single entry timestamp cannot give it: there ``hard_kill`` runs
+    ``subprocess.run(taskkill, timeout=5)`` synchronously on the event-loop
+    thread and its duration is the recorded open owner question from #202
+    (``_process_tree.py``'s ``_taskkill_tree``). One caller warns it into the
+    ``-q`` log, which is the only channel the windows leg has.
+
+    The BOUND METHOD on this object, never a replacement for ``row.tree``:
+    ``PrintChannel._reap`` builds its ``reap(...)`` call once and the tree is
+    captured by that call, so rebinding the row attribute afterwards is a silent
+    miss that leaves the assertion measuring nothing (#220, tests/T13).
+    ``ProcessTree`` declares no ``__slots__``; the repo already wraps a bound
+    method this way in ``tests/agents/test_rpc_sprint_pins.py``.
+    """
+
+    calls: list[tuple[float, float]] = []
+    real = tree.hard_kill
+
+    def _spy() -> None:
+        started = time.monotonic()
+        try:
+            real()
+        finally:
+            calls.append((started, time.monotonic()))
+
+    tree.hard_kill = _spy  # type: ignore[method-assign]
+    return calls
 
 
 def _alive(pid: int) -> bool:
@@ -437,7 +602,7 @@ async def test_child_is_in_its_own_process_group(tmp_path: Path) -> None:
     """``start_new_session=True`` — one Ctrl+C must not SIGINT every subagent.
 
     The default puts the child in the PARENT's group, and neither parent
-    (``tui/shell.py:1874-1891``) nor child (``modes/print_mode.py:114-131``)
+    (``tui/shell.py:1874-1891``) nor child (``modes/print_mode.py:131-190``)
     installs a SIGINT handler, so a group-wide SIGINT kills every delegation at
     once with no envelope and no partial summary.
     """
@@ -951,7 +1116,7 @@ async def test_a_wedged_child_that_closed_its_stdio_still_times_out(
     except BaseException:
         # A failed precondition must not leak the child: cancel the run, which
         # takes ``run``'s ``except asyncio.CancelledError`` abort leg
-        # (print_channel.py:1106-1113) and kills the tree.
+        # (print_channel.py:1234-1241) and kills the tree.
         run.cancel()
         with contextlib.suppress(BaseException):
             await run
@@ -1051,13 +1216,51 @@ async def test_reaping_an_already_exited_child_reports_its_real_exit_code(
     assert codes == [0] * 12, f"exit statuses lost to a behind-the-back reap: {codes}"
 
 
-@escalation_reachable
 async def test_reap_still_escalates_after_the_signal_change(tmp_path: Path) -> None:
-    """The kill path must not have been softened by the ``os.kill`` switch."""
+    """The kill path must not have been softened — by the ``os.kill`` switch, or by #220.
 
-    channel = _stub_channel(_SIGTERM_IGNORING, grace=0.4)
-    result = await asyncio.wait_for(channel.run(_plan(tmp_path, timeout_ms=800)), 40)
-    assert result.exit_code == -signal.SIGKILL
+    RUNS ON WINDOWS NOW (#220 §A.8). The ``escalation_reachable`` skip this test
+    used to carry rested on leg 1 being ``TerminateProcess``, which no child
+    survives; leg 1 is the tree's ``CTRL_BREAK_EVENT`` now and
+    :func:`_sigterm_ignoring_stub` installs a ``SIGBREAK`` handler that outlives
+    it, so there is an escalation to measure on both platforms.
+
+    THE LOAD-BEARING ASSERTION IS THE SPY, on both arms. The exit code only
+    CORROBORATES:
+
+    * POSIX ``-SIGKILL`` is genuinely mutation-sensitive — a no-op ``kill_tree``
+      makes the sibling test fail at 40 s (measured, #220 tests lane).
+    * win32 ``1`` cannot separate ``TerminateJobObject(job, 1)`` from a child
+      that crashed at finalization (#202 handoff §3-12, measured). What it CAN
+      separate is the tree arm from the tree-less fallback, which reaches
+      ``TerminateProcess(handle, SIGTERM)`` and reports 15.
+
+    On POSIX the spy fires only because Q1 landed — ``reap`` calls
+    ``tree.hard_kill()`` (``killpg``) after the descendant walk. If Q1 is ever
+    reverted this assertion is the thing that must MOVE, not be deleted.
+    """
+
+    marker = tmp_path / "soft-signal.seen"
+    channel = _stub_channel(_sigterm_ignoring_stub(marker), grace=0.4)
+    row = RunningChild(id="sub-escalate", profile="scout")
+    task = asyncio.ensure_future(
+        channel.run(_plan(tmp_path, timeout_ms=800), child=row)
+    )
+    tree = await _wait_for_tree(row)
+    hard_kills = _spy_hard_kill(tree)
+    started = time.monotonic()
+    result = await asyncio.wait_for(task, 40)
+    elapsed = time.monotonic() - started
+    detail = (
+        f"exit_code={result.exit_code} elapsed={elapsed:.3f}s "
+        f"details={result.details!r}"
+    )
+
+    assert len(hard_kills) == 1, f"the escalation never reached the tree: {detail}"
+    if sys.platform == "win32":
+        assert result.exit_code == 1, detail
+    else:
+        assert result.exit_code == -signal.SIGKILL, detail
 
 
 @linux_only
@@ -1089,8 +1292,6 @@ def test_pdeathsig_is_sigterm_and_that_is_a_measured_choice(
     cgroup/pidfd item already deferred to P3, and this test exists so the
     trade-off cannot be flipped by accident.
     """
-
-    import ctypes
 
     calls: list[tuple[Any, ...]] = []
 
@@ -1227,16 +1428,42 @@ async def test_sigterm_then_sigkill(tmp_path: Path) -> None:
     LIVENESS.
     """
 
-    channel = _stub_channel(_SIGTERM_IGNORING, grace=0.5)
-    result = await asyncio.wait_for(
-        channel.run(_plan(tmp_path, timeout_ms=1500)), 40
+    marker = tmp_path / "soft-signal.seen"
+    channel = _stub_channel(_sigterm_ignoring_stub(marker), grace=0.5)
+    row = RunningChild(id="sub-escalate", profile="scout")
+    task = asyncio.ensure_future(
+        channel.run(_plan(tmp_path, timeout_ms=1500), child=row)
     )
-    assert result.status == "timeout"
-    # The timeout envelope above and the partial summary below hold on every
-    # platform; only the escalation leg is unreachable on win32 (#215).
-    if not escalation_unreachable:
-        assert result.exit_code == -signal.SIGKILL
-    assert result.summary == "i will not die politely"
+    tree = await _wait_for_tree(row)
+    hard_kills = _spy_hard_kill(tree)
+    started = time.monotonic()
+    result = await asyncio.wait_for(task, 40)
+    elapsed = time.monotonic() - started
+    detail = (
+        f"exit_code={result.exit_code} elapsed={elapsed:.3f}s "
+        f"details={result.details!r}"
+    )
+
+    assert result.status == "timeout", detail
+    # The spy is the load-bearing half on BOTH platforms; the exit code below
+    # only corroborates it. See the sibling test for why win32's ``1`` cannot
+    # stand on its own, and why the POSIX count exists only because Q1 landed.
+    assert len(hard_kills) == 1, f"the escalation never reached the tree: {detail}"
+    # §D.6/§H.7's stopwatch. On win32 this leg is a ``subprocess.run(taskkill,
+    # timeout=5)`` on the event-loop thread and its duration is a recorded open
+    # owner question from #202; on POSIX it is a ``killpg`` and should be
+    # microseconds. The ``-q`` log carries no durations, so warning is the only
+    # way the number reaches the windows leg's output at all.
+    warnings.warn(
+        f"hard_kill wall time on {sys.platform}: "
+        f"{hard_kills[0][1] - hard_kills[0][0]:.3f}s",
+        stacklevel=1,
+    )
+    if sys.platform == "win32":
+        assert result.exit_code == 1, detail
+    else:
+        assert result.exit_code == -signal.SIGKILL, detail
+    assert result.summary == "i will not die politely", detail
 
 
 @linux_only
@@ -1254,7 +1481,9 @@ async def test_double_cancellation_still_kills(tmp_path: Path) -> None:
     "waited it out" would leave the pid alive well past the assertion window.
     """
 
-    channel = _stub_channel(_SIGTERM_IGNORING, grace=5.0)
+    channel = _stub_channel(
+        _sigterm_ignoring_stub(tmp_path / "soft-signal.seen"), grace=5.0
+    )
     row = RunningChild(id="sub-cancel", profile="scout")
     task = asyncio.ensure_future(
         channel.run(_plan(tmp_path, timeout_ms=1200), child=row)
@@ -1314,7 +1543,7 @@ def test_child_dies_with_parent(tmp_path: Path) -> None:
     """FINDING I1 — ``PR_SET_PDEATHSIG`` on a hard parent death.
 
     Without it the child runs every remaining turn, every LLM call and every
-    tool to completion, reparented to init: ``print_mode.py:158-165``'s ``_emit``
+    tool to completion, reparented to init: ``print_mode.py:221-228``'s ``_emit``
     only RECORDS ``stdout_dead``, and the acting ``break`` (``:198-205``) plus
     the ``raise BrokenPipeError`` (``:208-211``) are both strictly AFTER
     ``await runtime_host.harness.prompt(initial_message)`` (``:189-193``) —
@@ -1546,7 +1775,7 @@ async def test_stop_all_aborts_a_row_that_appears_while_it_is_draining(
 
     The reaper join is used as the injection point because it IS the suspension
     point that releases a queued member in production: ``abort_child`` awaits
-    ``asyncio.shield(reaper_task)`` (``print_channel.py:816-820``).
+    ``asyncio.shield(reaper_task)`` (``print_channel.py:859-863``).
     """
 
     runtime = _SubagentRuntimeImpl(
@@ -1598,11 +1827,11 @@ async def test_the_last_snapshot_of_a_delegation_is_always_terminal(
     """A statusline row that outlives its delegation is undismissable.
 
     ``PrintChannel.run`` writes the prompt file OUTSIDE its own ``try``
-    (``print_channel.py:930``) and ``write_prompt_file`` does ``mkdtemp`` +
+    (``print_channel.py:973``) and ``write_prompt_file`` does ``mkdtemp`` +
     ``os.open``, so a full ``/tmp``, an ``EMFILE`` or a yanked ``TMPDIR`` raises
     straight out of a method that otherwise never raises — before
     ``RunningChild.state`` has moved off its ``"starting"`` default
-    (``print_channel.py:187``). P3 multiplies the trigger by eight: eight
+    (``print_channel.py:201``). P3 multiplies the trigger by eight: eight
     concurrent members each writing a prompt directory is exactly the load that
     fires it.
 
@@ -1949,13 +2178,24 @@ async def test_prompt_file_mode_is_0600(tmp_path: Path) -> None:
         ("ok", _HAPPY, None),
         ("error", _STDERR_ONLY, None),
         ("timeout", _SLEEPER, 600),
-        ("killed", _SIGTERM_IGNORING, 600),
+        # ``None`` because the killed case's stub is built per-test: it plants a
+        # breadcrumb under ``tmp_path``, which does not exist at collection time.
+        ("killed", None, 600),
     ],
 )
 async def test_prompt_file_unlinked_on_every_path(
-    _isolated_tmpdir: Path, tmp_path: Path, case: str, script: str, timeout_ms: int | None
+    _isolated_tmpdir: Path,
+    tmp_path: Path,
+    case: str,
+    script: str | None,
+    timeout_ms: int | None,
 ) -> None:
-    channel = _stub_channel(script, grace=0.3)
+    body = (
+        script
+        if script is not None
+        else _sigterm_ignoring_stub(tmp_path / "soft-signal.seen")
+    )
+    channel = _stub_channel(body, grace=0.3)
     await asyncio.wait_for(channel.run(_plan(tmp_path, timeout_ms=timeout_ms)), 40)
     assert _leaked(_isolated_tmpdir) == [], case
 
@@ -2057,7 +2297,9 @@ async def test_prompt_file_unlinked_when_the_owner_is_cancelled(
     second Ctrl+C that the awaiting coroutine does not.
     """
 
-    channel = _stub_channel(_SIGTERM_IGNORING, grace=5.0)
+    channel = _stub_channel(
+        _sigterm_ignoring_stub(tmp_path / "soft-signal.seen"), grace=5.0
+    )
     row = RunningChild(id="sub-cancel", profile="scout")
     task = asyncio.ensure_future(
         channel.run(_plan(tmp_path, timeout_ms=60_000), child=row)
@@ -2538,3 +2780,1037 @@ async def test_an_unwired_host_forwards_nothing(tmp_path: Path) -> None:
 
     await runtime.spawn(_resolved(), "go")
     assert seen == [None]
+
+
+# === #220 — the spawn attaches a ProcessTree, and every kill leg reaches it ====
+#
+# The four ``aelix_agents`` sites ADR-0238 left unconverted are here: the spawn
+# (containment kwargs + attach), the reaper's legs (through ``row.tree``),
+# ``_drain_after_exit``, and who closes the tree. What each case below can and
+# cannot prove ON THIS HOST is stated in its own body — the win32 arms are
+# genuinely measured only on the windows-latest leg, and saying so is the point.
+
+
+class _StubTree:
+    """Everything the product touches on a tree, and nothing else.
+
+    Three methods and two attributes: ``closed`` is read as an ATTRIBUTE by
+    ``reaper._usable`` (deliberately not ``getattr``-ed), so a stub that forgot
+    it would raise here rather than silently take the POSIX arm. No ctypes, no
+    handles, no ``_KernelApi`` — which is what makes an injected-win32 case
+    constructible off Windows at all.
+    """
+
+    def __init__(self, *, contained: bool = True, closed: bool = False) -> None:
+        self.contained = contained
+        self.closed = closed
+        self.job: int | None = None
+        self.calls: list[str] = []
+
+    def soft_kill(self) -> bool:
+        self.calls.append("soft_kill")
+        return True
+
+    def hard_kill(self) -> None:
+        self.calls.append("hard_kill")
+
+    def close(self) -> None:
+        self.calls.append("close")
+        self.closed = True
+
+
+class _RecordingProc:
+    """A ``create_subprocess_exec`` result that is a process in name only.
+
+    Both pipes are already at EOF and ``returncode`` is already 0, so a run
+    driven against it reaches its envelope without a real child — which is the
+    only way to exercise the spawn's WIN32 kwargs on a POSIX host, where the
+    ``sys.platform`` patch those kwargs are chosen by is process-global and a
+    real ``create_subprocess_exec`` would reject ``creationflags=`` outright.
+    """
+
+    def __init__(self) -> None:
+        self.pid = 4321
+        self.returncode = 0
+        # What ``_retained_handle`` reads first. Non-``None`` so the win32 case
+        # can assert the stdlib's own handle is forwarded rather than left to
+        # ``OpenProcess``, which a hardened process can refuse.
+        self._handle = 0xF00D
+        self.stdout = asyncio.StreamReader()
+        self.stdout.feed_eof()
+        self.stderr = asyncio.StreamReader()
+        self.stderr.feed_eof()
+
+    async def wait(self) -> int:
+        return 0
+
+
+def _fake_attach(record: list[dict[str, Any]], tree: Any) -> Any:
+    """A ``ProcessTree.attach`` replacement that records and hands back ``tree``."""
+
+    def _attach(pid: int, **kwargs: Any) -> Any:
+        record.append({"pid": pid, **kwargs})
+        return tree
+
+    return _attach
+
+
+def _spy_on_attach(
+    monkeypatch: pytest.MonkeyPatch, observe: Callable[[], dict[str, Any]] | None = None
+) -> list[dict[str, Any]]:
+    """DELEGATING spy on the real ``ProcessTree.attach``, on the real platform.
+
+    ``observe`` is read AT CALL TIME, which is the only way to assert what the
+    row looked like at the moment of the attach — after the call returns, the
+    state under test is already gone.
+    """
+
+    record: list[dict[str, Any]] = []
+    real = pc.ProcessTree.attach
+
+    def _attach(pid: int, **kwargs: Any) -> Any:
+        entry: dict[str, Any] = {"pid": pid, **kwargs}
+        if observe is not None:
+            entry.update(observe())
+        record.append(entry)
+        return real(pid, **kwargs)
+
+    monkeypatch.setattr(pc.ProcessTree, "attach", _attach)
+    return record
+
+
+@pytest.mark.parametrize("platform", ["win32", "linux"])
+async def test_the_spawn_asks_for_containment_kwargs_per_platform(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, platform: str
+) -> None:
+    """``containment_spawn_kwargs``, at the call site, both arms — TWO fakes.
+
+    Injected rather than skipped, and the injection is why nothing real may
+    appear in this case: ``print_channel.sys is sys``, so the patch is
+    PROCESS-GLOBAL. Under it a real ``create_subprocess_exec`` on POSIX is handed
+    ``creationflags=`` and raises ``ValueError``, and a real
+    ``ProcessTree.attach`` reaches ``_KernelApi()`` and raises ``AttributeError:
+    module 'ctypes' has no attribute 'WinDLL'`` (both measured, #220). So the
+    spawn and the attach are BOTH faked; the patch is safe precisely because
+    nothing real is in its blast radius.
+
+    The literals are asserted, not ``== containment_spawn_kwargs(...)``: that
+    comparison is a tautology against the very function under exercise and would
+    stay green if the call site stopped passing it at all.
+    """
+
+    seen: dict[str, Any] = {}
+
+    async def _fake_exec(*_argv: Any, **kwargs: Any) -> Any:
+        seen.update(kwargs)
+        return _RecordingProc()
+
+    attaches: list[dict[str, Any]] = []
+    monkeypatch.setattr(pc.sys, "platform", platform)
+    monkeypatch.setattr(pc.asyncio, "create_subprocess_exec", _fake_exec)
+    monkeypatch.setattr(
+        pc.ProcessTree, "attach", _fake_attach(attaches, _StubTree())
+    )
+
+    await _stub_channel(_HAPPY).run(_plan(tmp_path))
+
+    if platform == "win32":
+        assert seen["creationflags"] == CREATE_NEW_PROCESS_GROUP
+        # NOT merely "also passes creationflags": Windows ACCEPTS
+        # ``start_new_session`` and silently ignores it (CPython names the
+        # parameter ``unused_start_new_session``), so a site that passed both
+        # would look right and contain nothing.
+        assert "start_new_session" not in seen
+        # ``preexec_fn`` is rejected outright there, and a non-``None`` one turns
+        # every delegation into an error envelope (#200).
+        assert seen["preexec_fn"] is None
+    else:
+        assert seen["start_new_session"] is True
+        assert "creationflags" not in seen
+    assert [call["pid"] for call in attaches] == [4321]
+    assert attaches[0]["handle"] == 0xF00D, (
+        "the stdlib's retained handle must be forwarded: deriving one with "
+        "OpenProcess can be refused for a process we are entitled to contain"
+    )
+
+
+async def test_the_spawn_attaches_the_tree_before_the_first_await(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The assignment window (ADR-0238 §B.4), asserted from INSIDE the attach.
+
+    On win32 only descendants created AFTER ``AssignProcessToJobObject`` inherit
+    membership, so an attach that waits for anything is an attach that can miss
+    a grandchild. The observable proxies for "before the first await" are the
+    row's own fields: ``proc`` is already published (the spawn returned), the
+    state is still ``starting`` and no reaper exists — all three are written by
+    statements that follow the attach with no ``await`` between them.
+
+    The REAL platform, and a DELEGATING spy: this is the case a global
+    ``sys.platform`` patch cannot express, because under it the real attach
+    raises (see the sibling above).
+    """
+
+    row = RunningChild(id="sub-attach", profile="scout")
+    calls = _spy_on_attach(
+        monkeypatch,
+        lambda: {
+            "proc_published": row.proc is not None,
+            "state": row.state,
+            "reaper_task": row.reaper_task,
+            "tree_before": row.tree,
+        },
+    )
+
+    result = await _stub_channel(_HAPPY).run(_plan(tmp_path), child=row)
+
+    assert result.ok is True
+    assert len(calls) == 1
+    (call,) = calls
+    assert call["proc_published"] is True, "row.proc must be published first"
+    assert call["state"] == "starting"
+    assert call["reaper_task"] is None
+    assert call["tree_before"] is None
+    if sys.platform == "win32":
+        assert call["handle"] is not None
+    else:
+        # POSIX has no handle to have — ``_retained_handle`` returns ``None``
+        # there and the pgid is the address instead. Asserted rather than
+        # skipped so the two platforms' shapes stay written down.
+        assert call["handle"] is None
+
+
+async def test_the_print_site_asks_for_kill_on_close(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """THE PER-SITE POLICY, pinned (#202's MUT-6 lesson: all three were unpinned).
+
+    ``kill_on_close`` only ever means anything on win32, where it makes
+    ``close()`` end whatever is left of the job — which is both this site's
+    parent-death backstop (the analogue of the Linux ``pdeathsig`` beside it) and
+    the reason a SUCCESSFUL delegation now ends surviving job members. Delete
+    ``kill_on_close=True`` from the spawn and this goes red; nothing else in this
+    file would.
+    """
+
+    calls = _spy_on_attach(monkeypatch)
+    result = await _stub_channel(_HAPPY).run(_plan(tmp_path))
+    assert result.ok is True
+    assert [call["kill_on_close"] for call in calls] == [True]
+
+
+async def test_the_child_is_contained(tmp_path: Path) -> None:
+    """``contained`` is TRUE, and the address is the one the platform uses.
+
+    ``test_child_is_in_its_own_process_group`` asserts only that the pgid DIFFERS
+    from the parent's, and it is ``@linux_only``. Nothing pinned ``contained``,
+    and a tree that attached with ``contained=False`` silently degrades
+    ``hard_kill()`` to a root-only ``os.kill`` while every other assertion in
+    this file still passes. It is Q1's precondition too: without it there is no
+    group to ``killpg``.
+
+    Both arms, no skip. POSIX: the child leads its own group. win32: a job holds
+    it, and ``IsProcessInJob`` is the only assertion that catches a SILENTLY
+    failed ``AssignProcessToJobObject`` — every other containment assertion in
+    #220 passes vacuously when ``_attach_win32`` fell back. That arm is
+    UNVERIFIED on this host; the windows-latest leg is its measurement.
+    """
+
+    row = RunningChild(id="sub-contained", profile="scout")
+    channel = _stub_channel(_SLEEPER, grace=0.5)
+    task = asyncio.ensure_future(
+        channel.run(_plan(tmp_path, timeout_ms=30_000), child=row)
+    )
+    try:
+        tree = await _wait_for_tree(row)
+        pid = await _wait_for_pid(row)
+        proc = row.proc
+        assert proc is not None
+        assert tree.contained is True
+
+        if sys.platform == "win32":
+            assert tree.job is not None
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+            kernel32.IsProcessInJob.argtypes = [
+                ctypes.c_void_p,
+                ctypes.c_void_p,
+                ctypes.POINTER(ctypes.c_int),
+            ]
+            kernel32.IsProcessInJob.restype = ctypes.c_int
+            member = ctypes.c_int()
+            handle = _retained_handle(proc)
+            assert handle is not None
+            assert kernel32.IsProcessInJob(handle, tree.job, ctypes.byref(member)) != 0
+            assert member.value == 1
+        else:
+            assert tree.job is None
+            assert os.getpgid(pid) == pid, "the child must LEAD its own group"
+    finally:
+        task.cancel()
+        with contextlib.suppress(BaseException):
+            await task
+
+
+async def test_the_soft_signal_is_delivered_and_survived(tmp_path: Path) -> None:
+    """Leg 1 really arrives, and the stub really outlives it.
+
+    Without this the escalation cases cannot tell "the soft signal was delivered
+    and ignored" from "nothing arrived and the grace simply elapsed" — the exact
+    hole #202 wrote a breadcrumb to close. The breadcrumb is asserted HERE and
+    nowhere else: in the escalation cases the handler races the grace, and a
+    marker assertion there would be a timing bet, not a measurement.
+
+    The two platforms observe different things because the dispositions differ in
+    kind. win32 installs a real Python ``SIGBREAK`` handler — the disposition the
+    PRODUCT installs — so delivery is observable and the file appears. POSIX
+    installs ``SIG_IGN``, which is the KERNEL declining to run any code: there is
+    nothing in-process to observe, and the evidence that the signal was delivered
+    and survived is that the escalation was still needed.
+
+    SO THE POSIX ARM IS A FIXTURE-INTEGRITY GUARD, not a behavioural measurement
+    of #220: ``not marker.exists()`` fails only if the stub grew a handler, and
+    ``exit_code == -SIGKILL`` is what
+    :func:`test_sigterm_then_sigkill` already asserts against the same stub.
+    The win32 arm is the measurement. Counting this file's cases as POSIX
+    coverage of leg 1 would be counting it twice (#220 review round 2,
+    posix2/P5).
+    """
+
+    marker = tmp_path / "soft-signal.seen"
+    channel = _stub_channel(_sigterm_ignoring_stub(marker), grace=3.0)
+    row = RunningChild(id="sub-soft-signal", profile="scout")
+    run = asyncio.ensure_future(
+        channel.run(_plan(tmp_path, timeout_ms=1000), child=row)
+    )
+    # WHAT ``soft_kill`` ITSELF REPORTED, recorded but never asserted on. §D.6
+    # lists "CTRL_BREAK delivery on a runner with no console" as genuinely not
+    # measurable in CI: if the runner has no console, ``ctrl_break`` raises
+    # ``OSError``, ``soft_kill`` returns ``False``, ``reap`` skips the grace and
+    # this case fails on ``marker.exists()`` for a reason that has nothing to do
+    # with the product. The assertion stays hard — a runner that cannot deliver
+    # the event makes every escalation case here measure the wrong thing, and
+    # that must be a red — but the message says which of the two it was
+    # (#220 review round 2, W32-7).
+    sends: list[bool] = []
+    with contextlib.suppress(BaseException):
+        tree = await _wait_for_tree(row)
+        real_soft = tree.soft_kill
+
+        def _soft() -> bool:
+            sent = real_soft()
+            sends.append(sent)
+            return sent
+
+        tree.soft_kill = _soft  # type: ignore[method-assign]
+    result = await asyncio.wait_for(run, 60)
+
+    detail = (
+        f"exit_code={result.exit_code} soft_kill_reported={sends!r} "
+        f"details={result.details!r}"
+    )
+    if sys.platform == "win32":
+        assert marker.exists(), (
+            "the child's SIGBREAK handler never ran: leg 1 delivered nothing, "
+            "so the escalation below measures the wrong thing. "
+            "``soft_kill_reported=[False]`` means this runner has no console "
+            "and GenerateConsoleCtrlEvent raised — a fixture problem, not a "
+            "product one; ``[True]`` means the event went out and the child "
+            f"did not act on it. {detail}"
+        )
+        assert result.exit_code == 1, detail
+    else:
+        assert not marker.exists(), (
+            "SIG_IGN must run no code; a marker here means the stub grew a "
+            "handler and stopped being the fixture #207 built"
+        )
+        assert result.exit_code == -signal.SIGKILL, detail
+
+
+async def test_a_non_setsid_grandchild_dies_on_the_escalation(tmp_path: Path) -> None:
+    """Q1's regression guard — and the only fixture that can measure it.
+
+    The grandchild stays in the CHILD's process group, which is the shape
+    ``extensions/api.py``'s ``ExtensionContext.exec`` and
+    ``util/tools_manager.py``'s version probe really have, and extensions load on
+    the print path. Which leg kills it depends on the host, and that is the whole
+    point:
+
+    * **Linux** — the ``/proc`` walk names it, exactly as it names the ``setsid``
+      grandchild its sibling test uses. Green before #220.
+    * **Darwin** — ``descendant_pids`` is ``[]`` with no ``/proc`` to read, so
+      today's escalation is a root-only ``SIGKILL`` and this grandchild SURVIVES
+      it (measured on ``main``). Only Q1's ``tree.hard_kill()`` — ``killpg`` on
+      the group the spawn contained — can reach it. Delete the ``hard_kill``
+      line from ``reap``'s escalation and this test goes red HERE and nowhere
+      else.
+    * **win32** — the job, and NOT this test's escalation. ``start_new_session``
+      is ignored there, so the grandchild is a job member like everything else,
+      and what ends it is ``run()``'s ``finally`` closing a
+      ``kill_on_close=True`` job rather than anything the reaper did: the child
+      has only a POSIX ``SIG_IGN`` and dies to leg 1, so the grace never
+      elapses. This arm is therefore a containment check, not a mutation guard —
+      delete ``hard_kill`` and it stays green there. Darwin is the arm that
+      bites (#220 review round 2, W32-2). UNVERIFIED on this host; read from
+      source.
+
+    Its ``setsid`` sibling stays ``@linux_only`` and unchanged on purpose: a
+    ``setsid`` grandchild is unreachable by ``killpg`` on every platform, so it
+    remains the live mutation guard for the WALK, which Q1 must not mask.
+    """
+
+    marker = tmp_path / "grandchild.pid"
+    channel = _stub_channel(_nonsetsid_grandchild_stub(marker), grace=0.5)
+    # ONE ``try`` around everything after the spawn, and the pid is read from
+    # inside it. Reading it after the ``wait_for`` left a 120 s grandchild
+    # running on every failure mode that fired before that line — the stray a
+    # post-suite ``ps`` check would find (#220 review round 2, posix2/P4).
+    run = asyncio.ensure_future(channel.run(_plan(tmp_path, timeout_ms=1500)))
+    grandchild: int | None = None
+    try:
+        result = await asyncio.wait_for(run, 60)
+        assert result.status == "timeout"
+        grandchild = int(marker.read_text())
+        assert await _await_death(grandchild, 10.0) < 10.0
+    finally:
+        run.cancel()
+        with contextlib.suppress(BaseException):
+            await run
+        if grandchild is None and marker.exists():
+            with contextlib.suppress(Exception):
+                grandchild = int(marker.read_text())
+        if grandchild is not None:
+            # ``getattr``: ``signal.SIGKILL`` is an ``AttributeError`` on
+            # Windows, which ``suppress`` would swallow into a leaked process.
+            with contextlib.suppress(Exception):
+                os.kill(grandchild, getattr(signal, "SIGKILL", signal.SIGTERM))
+
+
+@pytest.mark.parametrize("platform", ["win32", "linux"])
+async def test_the_drain_after_exit_leg_is_the_job_on_win32_only(
+    monkeypatch: pytest.MonkeyPatch, platform: str
+) -> None:
+    """The squatter eviction, per platform — and the POSIX half is a NEGATIVE.
+
+    win32: the inode walk has no ``/proc`` to read, so the job is the only thing
+    that can reach whoever still holds fd 1/2, and ``os.kill`` must not be
+    reached at all (it would be an uncatchable ``TerminateProcess`` racing
+    ``TerminateJobObject`` for the exit status).
+
+    POSIX: ``hard_kill`` must NOT be called here, and that is load-bearing rather
+    than an omission. This site runs on the delegation SUCCESS path against a
+    group whose leader has already been reaped; a ``killpg(SIGKILL)`` from it is
+    revision 1 of ``ProcessTree.close()`` again, which killed helpers a hook had
+    deliberately backgrounded and exited 0 over. Q1's group kill lives in
+    ``reap`` and only there — move it into ``kill_tree`` and this arm goes red.
+    """
+
+    monkeypatch.setattr(pc, "POST_EXIT_DRAIN_SECONDS", 0.05)
+    monkeypatch.setattr(pc, "pipe_holder_pids", lambda _links: [_SQUATTER_PID])
+    signalled: list[tuple[int, int]] = []
+    monkeypatch.setattr(rp.os, "kill", lambda pid, sig: signalled.append((pid, sig)))
+    # THE LEND COMES WITH THE PLATFORM PATCH, always. ``rp.sys is sys``, so the
+    # patch below is process-global: on windows-latest the "linux" arm really
+    # does route the product into ``_kill_signal()``'s POSIX branch, and
+    # ``signal.SIGKILL`` does not exist there. Inject, do not skip — the POSIX
+    # NEGATIVE (``hard_kill`` must NOT be called on this path) is the P1 guard
+    # and has to run on both legs.
+    monkeypatch.setattr(rp.signal, "SIGKILL", _SIGKILL, raising=False)
+    monkeypatch.setattr(rp.sys, "platform", platform)
+
+    tree = _StubTree()
+    pumps: asyncio.Future[Any] = asyncio.get_running_loop().create_future()
+    await PrintChannel._drain_after_exit(_RecordingProc(), pumps, tree)
+
+    if platform == "win32":
+        assert tree.calls == ["hard_kill"]
+        assert signalled == []
+    else:
+        assert tree.calls == []
+        assert signalled == [(_SQUATTER_PID, _SIGKILL)]
+
+
+_SQUATTER_PID = 2**22 - 1
+"""A pid that cannot exist, used only as a value ``os.kill`` is spied on for."""
+
+_SIGKILL = getattr(signal, "SIGKILL", 9)
+"""``signal.SIGKILL``, or 9 where the NAME does not exist.
+
+Windows has no ``SIGKILL`` attribute at all, so any case here that injects a
+NON-win32 ``sys.platform`` and then lets the product reach
+``reaper._kill_signal()`` errors with ``AttributeError`` on the windows leg —
+which is neither a failure message nor a measurement. The sibling
+``tests/agents_ext/test_reaper_tree_win32.py`` learned this first and lends the
+name back the same way (#220 review round 2, W32-1/SPEC-1).
+"""
+
+
+def _pipe_holding_daemon_stub(marker: Path, pid_file: Path) -> str:
+    """Ignores SIGTERM and leaves a REPARENTED holder of its stdio behind.
+
+    Two properties, and both are needed to build the one window #220's close
+    rule exists for — ``run()`` returning while its DETACHED reaper is still
+    inside a grace with a kill still to come:
+
+    * the holder is double-forked, so its ``PPid`` is 1 and the ``/proc`` walk
+      ``_eager_abort`` takes cannot name it. Without that, Linux would kill it at
+      the cancel and the reaper would resolve immediately;
+    * it inherits fd 1/2 and stays in the child's process GROUP (no ``setsid``),
+      so ``proc.wait()`` does not resolve while it lives — measured, and the
+      reason the grace is bounded by pipe disconnection rather than by the
+      child's exit — and ``killpg`` can still end it.
+
+    So the reaper waits out its whole grace and escalates for real, which is what
+    makes "was the tree still armed when ``hard_kill`` ran" an observable
+    question.
+
+    ON WIN32 THE WINDOW IS BUILT DIFFERENTLY, and the first drafting of this
+    docstring got it wrong: it said "a plain ``Popen`` grandchild holds the pipes
+    and is a job member, which is the same window by the other route". It is
+    not. CPython's Windows ``_get_handles`` early-returns ``(-1,) * 6`` when
+    stdin/stdout/stderr are all ``None``, so ``STARTF_USESTDHANDLES`` is never
+    set, ``close_fds`` stays ``True`` and ``CreateProcess`` gets
+    ``bInheritHandles = 0`` — such a grandchild inherits nothing and holds no
+    pipe. Nor can the double fork be reproduced there at all. And the CHILD, with
+    only a POSIX ``SIGTERM -> SIG_IGN``, dies to leg 1's ``CTRL_BREAK_EVENT`` at
+    the CRT default, so ``proc.wait()`` would resolve inside the grace and the
+    case would fail on ``tree.closed`` or on the ``hard_kill`` count — measured
+    by emulating that shape on a POSIX box: 3 runs, 3 failures, both modes
+    (#220 review round 2, W32-3).
+
+    So win32 keeps the window by keeping the CHILD alive instead, using this
+    file's already-measured recipe: a real Python ``SIGBREAK`` handler plus a
+    0.05 s sleep loop, because ``time.sleep`` on Windows is not woken by
+    ``CTRL_BREAK_EVENT`` (#202, and see :func:`_sigterm_ignoring_stub`). A live
+    child is enough on its own — ``proc.wait()`` cannot resolve while it runs —
+    so no pipe holder is needed or created there, and ``pid_file`` stays
+    unwritten. Guessing at Windows handle inheritance from a POSIX box is
+    exactly the unmeasured claim this repo does not ship.
+    """
+
+    return _stub(
+        f"""
+        _brk = getattr(signal, "SIGBREAK", None)
+        if _brk is not None:
+            signal.signal(_brk, lambda *_a: None)
+        signal.signal(signal.SIGTERM, signal.SIG_IGN)
+        if hasattr(os, "fork"):
+            _mid = os.fork()
+            if _mid == 0:
+                if os.fork() == 0:
+                    open({str(pid_file)!r}, "w").write(str(os.getpid()))
+                    [time.sleep(0.05) for _ in range(2400)]
+                os._exit(0)
+            os.waitpid(_mid, 0)
+        start()
+        say("holding my pipes open")
+        open({str(marker)!r}, "w").write("1")
+        [time.sleep(0.05) for _ in range(2400)]
+        """
+    )
+
+
+async def test_the_tree_is_closed_after_the_reapers_escalation_never_before(
+    tmp_path: Path,
+) -> None:
+    """``close()`` DISARMS both legs — so it must not precede the escalation.
+
+    The order alone is not enough to bite on POSIX, where ``close()`` signals
+    nothing: an early close there produces an identical envelope, exit code and
+    timeline, and its ONLY effect is that ``hard_kill()`` returns at its
+    ``_closed`` guard. So the assertion that carries this test is what
+    ``hard_kill`` SAW — ``tree.closed`` read from inside it — not a flag read
+    from outside afterwards.
+
+    MUTATION: move the close out of the done-callback into ``run()``'s
+    ``finally`` unconditionally. The tree is then disarmed while the detached
+    reaper is still in its grace; ``hard_kill`` becomes a no-op, the pipe-holding
+    daemon is never killed, ``proc.wait()`` never resolves, and this test fails
+    on its ``wait_for`` instead of quietly measuring less.
+
+    Cancellation, not the timeout path, because the timeout path returns with a
+    FINISHED reaper and takes the other arm of the same ``if`` — which
+    :func:`test_the_tree_is_closed_when_a_run_returns_with_no_reaper` covers.
+    """
+
+    ready = tmp_path / "holder.ready"
+    pid_file = tmp_path / "holder.pid"
+    channel = _stub_channel(
+        _pipe_holding_daemon_stub(ready, pid_file), grace=2.0
+    )
+    row = RunningChild(id="sub-close-order", profile="scout")
+    task = asyncio.ensure_future(
+        channel.run(_plan(tmp_path, timeout_ms=1000), child=row)
+    )
+    order: list[str] = []
+    closed_at_hard_kill: list[bool] = []
+    try:
+        tree = await _wait_for_tree(row)
+        real_hk, real_close = tree.hard_kill, tree.close
+
+        def _hk() -> None:
+            order.append("hard_kill")
+            closed_at_hard_kill.append(tree.closed)
+            real_hk()
+
+        def _cl() -> None:
+            order.append("close")
+            real_close()
+
+        tree.hard_kill, tree.close = _hk, _cl  # type: ignore[method-assign]
+
+        # Wait until the deadline has started the reaper, so the cancellation
+        # lands INSIDE the grace — the window the rule is about.
+        deadline = time.monotonic() + 20
+        while time.monotonic() < deadline and row.reaper_task is None:
+            await asyncio.sleep(0.02)
+        assert row.reaper_task is not None, "the deadline never started the reaper"
+
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+        # ``run()`` has returned and its ``finally`` has run. The tree must still
+        # be armed, because the reaper has not escalated yet.
+        assert tree.closed is False, "the tree was disarmed mid-grace"
+
+        await asyncio.wait_for(asyncio.shield(row.reaper_task), 30)
+        # The close is a done-callback, so it is queued behind this await.
+        for _ in range(50):
+            if order and order[-1] == "close":
+                break
+            await asyncio.sleep(0.01)
+    finally:
+        # ``getattr``: ``signal.SIGKILL`` is an ``AttributeError`` on Windows and
+        # ``suppress`` would turn that into a leaked process. There is no
+        # ``pid_file`` on win32 at all — the stub builds the window with a live
+        # CHILD there, not with a holder (#220 review round 2, W32-3/posix2/P4).
+        if pid_file.exists():
+            with contextlib.suppress(Exception):
+                os.kill(
+                    int(pid_file.read_text()),
+                    getattr(signal, "SIGKILL", signal.SIGTERM),
+                )
+        task.cancel()
+        with contextlib.suppress(BaseException):
+            await task
+
+    assert order.count("close") == 1, order
+    assert order[-1] == "close", order
+    # ``>= 1`` and not ``== 1``: a cancelled run reaches ``kill_tree`` from
+    # ``_eager_abort`` twice as well as from the reaper's own escalation, and on
+    # win32 both of those are ``hard_kill``. "Exactly once" is asserted only in
+    # the two TIMEOUT tests.
+    assert order.count("hard_kill") >= 1, order
+    assert all(seen is False for seen in closed_at_hard_kill), closed_at_hard_kill
+    assert row.tree is None, "closing must NULL the row's reference in the same breath"
+
+
+class _LiveProc:
+    """A proc that is still RUNNING — ``returncode is None`` and a pid.
+
+    :class:`_RecordingProc` is the dead-and-reaped shape (``returncode = 0``),
+    which is the other side of the discriminator these cases exist to pin.
+    """
+
+    def __init__(self) -> None:
+        self.pid = 4321
+        self.returncode: int | None = None
+
+
+@pytest.mark.parametrize("platform", ["win32", "linux"])
+def test_the_eager_abort_leg_reaches_the_tree_per_platform(
+    monkeypatch: pytest.MonkeyPatch, platform: str
+) -> None:
+    """``_eager_abort``'s tree wiring — the second-Ctrl+C path, per platform.
+
+    THIS IS THE CHANNEL THE PRODUCT ACTUALLY BUILDS (``runtime.py``), and until
+    #220's review round 2 its ``tree=row.tree`` had no test at all: deleting the
+    keyword left the whole suite green, while the rpc mirror — a channel nothing
+    constructs — was mutation-pinned. Coverage was exactly inverted (MUT-1).
+
+    Driven by calling the ``@staticmethod`` directly rather than through a run,
+    because §D.2's constraint is measured: under a global ``sys.platform`` patch
+    neither a real spawn nor a real attach survives on POSIX. No process is
+    started, so both arms run on every leg.
+
+    win32: the job is the whole kill and ``os.kill`` must not be reached — there
+    it is ``TerminateProcess``, racing ``TerminateJobObject`` for the exit status
+    §A.8 asserts.
+
+    POSIX: ``kill_tree`` runs the walk and the root signal, and Q1's group kill
+    comes from ``_eager_abort`` itself (round 2, posix2/P2) — on macOS the walk
+    is ``[]`` and without it a cancelled delegation leaves a non-``setsid``
+    grandchild alive.
+    """
+
+    monkeypatch.setattr(rp.signal, "SIGKILL", _SIGKILL, raising=False)
+    monkeypatch.setattr(rp.sys, "platform", platform)
+    monkeypatch.setattr(pc, "descendant_pids", lambda _pid: [_SQUATTER_PID])
+    signalled: list[tuple[int, int]] = []
+    monkeypatch.setattr(rp.os, "kill", lambda pid, sig: signalled.append((pid, sig)))
+
+    tree = _StubTree()
+    row = RunningChild(id="sub-eager", profile="scout")
+    row.tree = tree
+    proc = _LiveProc()
+
+    PrintChannel._eager_abort(proc, row)
+
+    assert row.eager_kill is True
+    assert row.state == "stopped"
+    if platform == "win32":
+        # ONE ``hard_kill``, from ``kill_tree``'s win32 arm. A second one from
+        # ``kill_group_if_live`` would be a second ``taskkill.exe`` spawn on the
+        # event-loop thread for nothing.
+        assert tree.calls == ["hard_kill"]
+        assert signalled == []
+    else:
+        assert tree.calls == ["hard_kill"]
+        assert signalled == [(_SQUATTER_PID, _SIGKILL), (proc.pid, _SIGKILL)]
+
+
+async def test_the_eager_aborts_group_kill_is_withheld_from_a_reaped_child(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The P1 doctrine, at the one site that had to re-derive it.
+
+    A cancellation can land INSIDE ``_drain_after_exit``, which runs on the
+    delegation SUCCESS path with a child that is already dead and already
+    reaped. A ``killpg(SIGKILL)`` there is revision 1 of ``ProcessTree.close()``
+    again — it killed helpers a hook had deliberately backgrounded and exited 0
+    over. ``returncode is None``, read on the line of the call with no ``await``
+    in between, is what separates that from the live-child cancel; delete the
+    guard from ``kill_group_if_live`` and this goes red.
+
+    The walk and the root signal still run: ``kill_tree`` has always been safe
+    against a reaped child (``_signal_child`` re-reads ``returncode`` too), and
+    it is the GROUP kill that is new and needs the bound.
+    """
+
+    monkeypatch.setattr(rp.signal, "SIGKILL", _SIGKILL, raising=False)
+    monkeypatch.setattr(rp.sys, "platform", "linux")
+    monkeypatch.setattr(pc, "descendant_pids", lambda _pid: [])
+    monkeypatch.setattr(rp.os, "kill", lambda _pid, _sig: None)
+
+    tree = _StubTree()
+    row = RunningChild(id="sub-eager-dead", profile="scout")
+    row.tree = tree
+    # ``_RecordingProc`` IS the dead-and-reaped shape: ``returncode = 0``.
+    PrintChannel._eager_abort(_RecordingProc(), row)
+    assert tree.calls == [], "a reaped child's group must not be killpg'd"
+
+
+async def test_the_eager_aborts_group_kill_defers_to_a_running_reaper(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """And it is withheld again when a reaper still owns the escalation.
+
+    A live reaper task runs Q1 itself AFTER its grace. Duplicating the group kill
+    here would end the tree BEFORE that grace elapses, which is precisely the
+    window ``run()``'s close rule (§A.6) exists to observe and
+    :func:`test_the_tree_is_closed_after_the_reapers_escalation_never_before`
+    exists to measure — a fix for one finding that silently deleted another
+    test's subject. Drop the ``reaper_task`` condition and that case stops
+    measuring the reaper's escalation.
+    """
+
+    monkeypatch.setattr(rp.signal, "SIGKILL", _SIGKILL, raising=False)
+    monkeypatch.setattr(rp.sys, "platform", "linux")
+    monkeypatch.setattr(pc, "descendant_pids", lambda _pid: [])
+    monkeypatch.setattr(rp.os, "kill", lambda _pid, _sig: None)
+
+    tree = _StubTree()
+    row = RunningChild(id="sub-eager-reaping", profile="scout")
+    row.tree = tree
+    running: asyncio.Task[Any] = asyncio.ensure_future(asyncio.sleep(60))
+    row.reaper_task = running  # type: ignore[assignment]
+    try:
+        PrintChannel._eager_abort(_LiveProc(), row)
+        assert tree.calls == [], "the reaper owns the escalation on this path"
+    finally:
+        running.cancel()
+        with contextlib.suppress(BaseException):
+            await running
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason=(
+        "the leak this measures is the empty POSIX descendant walk; on win32 "
+        "`kill_tree`'s job arm already ends the tree at the same call"
+    ),
+)
+async def test_a_cancelled_delegation_takes_its_non_setsid_grandchild(
+    tmp_path: Path,
+) -> None:
+    """The CANCEL path's own Q1 — the hole round 2 measured (posix2/P2).
+
+    ``test_a_non_setsid_grandchild_dies_on_the_escalation`` drives the TIMEOUT
+    path, where ``reap`` supplies the group kill. Ctrl+C does not go that way:
+    it is ``turn_task.cancel()`` (``batch.py``, ``reaper.py``'s module
+    docstring), and on a delegation that has not reached its deadline there is no
+    reaper task at all — the cancellation lands in ``_stream_and_reap``'s
+    ``except asyncio.CancelledError`` with a LIVE child, ``_eager_abort`` runs
+    ``kill_tree`` with an empty walk on macOS, ``run()``'s ``finally`` closes the
+    tree (a POSIX no-op) and the grandchild is beyond anyone's reach for the rest
+    of the process's life.
+
+    MEASURED on Darwin before the fix: timeout path ``gc_alive=False``, cancel
+    path ``gc_alive=True``, same fixture, same tree. Delete
+    ``kill_group_if_live`` from ``_eager_abort`` and this goes red on macOS —
+    and stays green on Linux, where the ``/proc`` walk already names the
+    grandchild, which is why the sibling timeout case cannot cover it.
+    """
+
+    marker = tmp_path / "grandchild.pid"
+    channel = _stub_channel(_nonsetsid_grandchild_stub(marker), grace=0.5)
+    row = RunningChild(id="sub-cancel-grandchild", profile="scout")
+    # A deadline far beyond the test, so NOTHING builds a reaper: the cancel is
+    # the only kill, which is the shape a first Ctrl+C really has.
+    task = asyncio.ensure_future(
+        channel.run(_plan(tmp_path, timeout_ms=120_000), child=row)
+    )
+    grandchild: int | None = None
+    try:
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline and not marker.exists():
+            await asyncio.sleep(0.02)
+        assert marker.exists(), "the stub never spawned its grandchild"
+        grandchild = int(marker.read_text())
+        assert _alive(grandchild)
+        assert row.reaper_task is None, (
+            "this case is only the cancel path if no reaper was ever built"
+        )
+
+        task.cancel()
+        with contextlib.suppress(BaseException):
+            await task
+        assert await _await_death(grandchild, 10.0) < 10.0
+    finally:
+        task.cancel()
+        with contextlib.suppress(BaseException):
+            await task
+        if grandchild is not None:
+            with contextlib.suppress(Exception):
+                os.kill(grandchild, getattr(signal, "SIGKILL", signal.SIGTERM))
+
+
+async def test_an_attach_failure_degrades_instead_of_abandoning_the_child(
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """R3's degrade path, which had no test at all (MUT-2).
+
+    ``ProcessTree.attach`` gets its OWN ``try`` precisely so an attach failure
+    cannot take the spawn's ``except``, which returns an error envelope for a
+    child that is RUNNING: ``_stream_and_reap`` is never entered, no reaper task
+    is created, ``runtime.py`` pops the row, and the live child is beyond
+    ``stop`` / ``stop_all`` / teardown forever. Narrowing that ``except
+    Exception`` to a type that cannot fire left the whole suite green
+    (measured), so nothing stopped a future edit from letting the raise
+    propagate.
+
+    Neither ``_attach_posix`` nor ``_attach_win32`` can raise on a real platform
+    today — both catch ``OSError`` and ``_retained_handle`` suppresses
+    everything — so the seam is the only way in, and it is the same seam §D.2
+    already patches for the recording attach. No platform patch is needed, so a
+    REAL child is spawned and reaped normally.
+    """
+
+    def _boom(*_args: Any, **_kwargs: Any) -> Any:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(pc.ProcessTree, "attach", _boom)
+    row = RunningChild(id="sub-degrade", profile="scout")
+    with caplog.at_level("WARNING"):
+        result = await asyncio.wait_for(
+            _stub_channel(_HAPPY).run(_plan(tmp_path), child=row), 60
+        )
+
+    assert result.ok is True, f"the delegation must still deliver: {result!r}"
+    assert result.exit_code == 0
+    assert row.tree is None
+    assert row.tree_owned is False, (
+        "an unowned row must not be closed by run()'s finally"
+    )
+    assert any("process-tree attach failed" in r.message for r in caplog.records), (
+        "the one failure with nowhere else to surface must be logged"
+    )
+
+
+async def test_the_tree_is_closed_when_a_run_returns_with_no_reaper(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The OTHER arm: a delegation that simply succeeded.
+
+    ``reaper_task`` is ``None`` on this path — nothing ever needed killing — so
+    the ``finally`` closes directly instead of queueing a done-callback. This is
+    the arm with no coverage at all in #220's first draft: deleting the direct
+    ``tree.close()`` left every other proposed case green, and a leaked
+    ``kill_on_close=True`` job then fires its kill at a nondeterministic GC
+    moment through ``weakref.finalize`` instead of at the end of the delegation.
+
+    AT LEAST once, never exactly once: ``close()`` is idempotent by contract.
+    """
+
+    closes: list[str] = []
+    real = pc.ProcessTree.attach
+
+    def _attach(pid: int, **kwargs: Any) -> Any:
+        tree = real(pid, **kwargs)
+        real_close = tree.close
+
+        def _cl() -> None:
+            closes.append("close")
+            real_close()
+
+        tree.close = _cl  # type: ignore[method-assign]
+        return tree
+
+    monkeypatch.setattr(pc.ProcessTree, "attach", _attach)
+
+    row = RunningChild(id="sub-happy", profile="scout")
+    result = await _stub_channel(_HAPPY).run(_plan(tmp_path), child=row)
+
+    assert result.ok is True
+    assert row.reaper_task is None, "the happy path must never build a reaper"
+    assert closes, "the tree outlived the run that owned it"
+    assert row.tree is None
+
+
+async def test_a_successful_delegation_closes_its_tree_and_signals_nothing_here(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """§A.9's stated consequence, and its POSIX half.
+
+    On win32 closing a ``kill_on_close=True`` job IS a kill, so a successful
+    delegation now ends every surviving job member — a background helper the
+    child deliberately left running dies where today it survives. That is
+    deliberate, it matches the rpc child shipped in #202, and it is stated in the
+    CHANGELOG rather than denied.
+
+    What this case pins on THIS host is the two halves that make that sentence
+    true: the success path really calls ``close()``, and it reaches no kill leg
+    of its own — ``hard_kill`` is never called, so on POSIX ``close()`` remains a
+    release that signals nothing. The win32 consequence follows from those two
+    plus the ``kill_on_close`` site pin; the mechanism itself is ADR-0238's and
+    is measured on the windows leg.
+    """
+
+    trees: list[_StubTree] = []
+    attaches: list[dict[str, Any]] = []
+
+    def _attach(pid: int, **kwargs: Any) -> Any:
+        attaches.append({"pid": pid, **kwargs})
+        tree = _StubTree()
+        trees.append(tree)
+        return tree
+
+    monkeypatch.setattr(pc.ProcessTree, "attach", _attach)
+
+    result = await _stub_channel(_HAPPY).run(_plan(tmp_path))
+
+    assert result.ok is True
+    assert [call["kill_on_close"] for call in attaches] == [True]
+    assert [tree.calls for tree in trees] == [["close"]]
+
+
+async def test_a_real_print_child_reports_the_signal_exit_code(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """THE REAL ``--mode json`` CHILD, soft-killed by the product's own reaper.
+
+    Every other real-signal test in this file drives a purpose-built stub. This
+    one drives ``modes/print_mode.py`` itself, because the thing under test is
+    that file's exit path and no stub can stand in for it.
+
+    IT FAILS ON ``main``, and that is its mutation property. Measured there
+    (``.omc/specs/220-progress-2026-09-05.md`` §1, two runs, both ``-p`` text and
+    ``--mode json``): a real child sent SIGTERM exits **1**, not 143, with two
+    tracebacks on stderr — ``sys.exit(128 + sig)`` raises ``SystemExit`` inside an
+    ``ensure_future``d task, it escapes the loop mid-step, and ``asyncio.run``'s
+    ``Runner.close()`` then raises ``RuntimeError: Event loop stopped before
+    Future completed``, which REPLACES it. Restore that ``sys.exit`` and this
+    test goes red on its exit code and again on its stderr tail.
+
+    The number matters on Windows for a second reason: ``TerminateJobObject(job,
+    1)`` also reads as exit 1 (#202 handoff §3-12, measured), so without a
+    cooperative code that is not 1 the hard kill and the polite exit are
+    indistinguishable except by stderr.
+
+    The deadline is GATED on a breadcrumb the child writes from inside its own
+    stream, not on a guess about interpreter start-up: reaching that line means
+    the signal handlers are installed and a turn is really in flight (S13's
+    lesson). If the child is too slow the gate fails saying so, rather than this
+    test failing on an exit code that measures the wrong thing.
+    """
+
+    script = tmp_path / "print_child.py"
+    script.write_text(CHILD_SOURCE, encoding="utf-8")
+    ready = tmp_path / "child.ready"
+    grace = 15.0
+
+    soft_at: list[float] = []
+    real_reap = pc.reap
+
+    async def _timed_reap(*args: Any, **kwargs: Any) -> int:
+        soft_at.append(time.monotonic())
+        return await real_reap(*args, **kwargs)
+
+    monkeypatch.setattr(pc, "reap", _timed_reap)
+
+    channel = _stub_channel(
+        "",
+        grace=grace,
+        argv=[sys.executable, str(script), "--wedge", "--ready", str(ready)],
+        env=_hermetic_env(tmp_path),
+    )
+    # 30 s, not the 8 s of revision 1: the delegation's own deadline is what
+    # bounds the child's BOOT, because ``_await_readiness`` fails fast the moment
+    # ``run.done()`` and ``run`` completes when the deadline fires — the 60 s
+    # handed to the gate is not the operative budget. A cold windows-latest
+    # runner touching an editable install for the first time, with Defender
+    # reading every ``.py``, is the slow case, and it would fail here with "the
+    # run finished before the child signalled readiness" rather than on an exit
+    # code. The repo's only other real print child budgets 90 s for the same
+    # interpreter (``tests/cli/test_print_mode_json_contract.py``). A slow start
+    # must cost wall time, not a red on a number that measures nothing
+    # (#220 review round 2, W32-6).
+    run = asyncio.ensure_future(channel.run(_plan(tmp_path, timeout_ms=30_000)))
+    try:
+        await _await_readiness(ready, run, timeout=60.0)
+    except BaseException:
+        run.cancel()
+        with contextlib.suppress(BaseException):
+            await run
+        raise
+
+    result = await asyncio.wait_for(run, 120)
+    assert soft_at, "the deadline never reached the reaper"
+    elapsed = time.monotonic() - soft_at[0]
+    tail = f"{result.details or ''}\n{result.summary or ''}"
+    # The windows leg's ``-q`` log carries no durations, so the number has to be
+    # emitted to be recorded at all (the shape of
+    # ``tests/agents/test_rpc_sprint_pins.py``'s orderly-shutdown warning).
+    warnings.warn(
+        f"real print child soft-kill on {sys.platform}: {elapsed:.3f}s, "
+        f"returncode={result.exit_code}",
+        stacklevel=1,
+    )
+
+    detail = f"elapsed={elapsed:.3f}s tail={tail!r}"
+    # 143 = 128 + SIGTERM; 149 = 128 + SIGBREAK. Platform-keyed, never skipped:
+    # each leg asserts the number its own platform's leg 1 produces.
+    expected = 149 if sys.platform == "win32" else 143
+    assert result.exit_code == expected, detail
+    assert elapsed < grace, (
+        f"the child was escalated rather than cooperating: {detail}"
+    )
+    for forbidden in (
+        "Traceback",
+        "SystemExit",
+        "Fatal Python error",
+        "_enter_buffered_busy",
+        "0xC0000005",
+    ):
+        assert forbidden not in tail, f"{forbidden!r} on a cooperative exit: {detail}"

@@ -336,9 +336,25 @@ and `.../releases/tag/vX` link would 404. Add them with the first pushed tag.
   own also surfaced a crash nobody could reach before — the child's stdin
   reader held a lock the interpreter needs at shutdown — which is fixed in the
   same change. See ADR-0238 and
-  [#202](https://github.com/handochan/aelix-ai/issues/202). The print channel and
-  the reaper are not converted yet
-  ([#220](https://github.com/handochan/aelix-ai/issues/220)).
+  [#202](https://github.com/handochan/aelix-ai/issues/202) — and the print
+  channel and the reaper are converted too
+  ([#220](https://github.com/handochan/aelix-ai/issues/220)): the delegation
+  spawn puts its child in a job object of its own, the reaper asks that child to
+  stop with `CTRL_BREAK_EVENT` when there is a grace to wait out and ends the
+  job when there is not, and the print child grew the `SIGBREAK` handler that
+  gives the asking somewhere to land. One
+  consequence of that on Windows, deliberate and stated rather than discovered:
+  a **successful** delegation now also ends whatever the child left running
+  behind it, because finishing with the child is what closes its job — the same
+  behaviour the RPC child has had since #202, and on POSIX still nothing at all.
+  The print child's exit code on a signal is fixed in the same change: it was 1
+  with two tracebacks, because the handler called `sys.exit` from inside an
+  asyncio task and the loop's own teardown replaced that `SystemExit` with a
+  `RuntimeError`; it now returns 143 on POSIX — measured against a real child —
+  and, on Windows, the 149 that `128 + SIGBREAK` implies, which the
+  `windows-latest` leg is what actually measures. That number is also the only
+  thing that tells a cooperative exit apart from a hard job kill — both used to
+  be 1.
 
 - **`models.json`'s own documentation no longer breaks the file it describes.**
   Two of the guide's three examples carried a `cost` with only `input` and

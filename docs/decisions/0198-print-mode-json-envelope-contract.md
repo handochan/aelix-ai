@@ -138,12 +138,19 @@ stdout bytes**, not even the D3 header.
 
 Therefore a consumer's failure predicate must be a disjunction over exit code,
 `stop_reason` and its own outcome; and its message-fallback chain must include a
-**stderr rung**, or a startup death reports as an empty success. Because normal
-SIGTERM teardown prints `Task exception was never retrieved` /
-`future: <Task finished … exception=SystemExit(143)>` to stderr — that is
-`_signal_cleanup_and_exit` (`print_mode.py:259-269`) calling `sys.exit(128 + sig)`
-inside a coroutine, and it is not an error — that rung must be sanitized before it
-is shown to a model, with the raw text preserved elsewhere.
+**stderr rung**, or a startup death reports as an empty success. That rung must
+be sanitized before it is shown to a model, with the raw text preserved
+elsewhere: SIGTERM teardown used to print `Task exception was never retrieved` /
+`future: <Task finished … exception=SystemExit(143)>` to stderr, which was
+normal rather than an error.
+
+*Amended 2026-09-05 ([#220](https://github.com/handochan/aelix-ai/issues/220)):
+the child no longer emits that. `_signal_cleanup_and_exit` RECORDS `128 + sig`
+and `run_print_mode` returns it instead of raising `SystemExit` inside a task,
+and a real child's SIGTERM stderr is now "Request aborted" and nothing else
+(measured, `.omc/specs/220-progress-2026-09-05.md` §1). The sanitizer stays: any
+other unretrieved task exception in the child still produces that shape, and on
+an aborted/timeout outcome a traceback is not the diagnosis.*
 
 Unparseable lines are **silently skipped**. aelix deliberately declines pi's
 `takeOverStdout` (`print_mode.py:23-26`), so an extension or MCP server inside the

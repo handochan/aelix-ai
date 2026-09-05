@@ -47,8 +47,11 @@ deliberately backgrounded and exited 0 over. On win32 it is ``CloseHandle(job)``
 which ends the remaining members only for a tree attached with
 ``kill_on_close=True``. That is a PER-SITE choice: ``True`` for the rpc child
 ("one child per task", and it already dies with the parent on Linux via
-``pdeathsig``), ``False`` for subprocess hooks and ``!command``, which keep
-today's success-path behaviour on every platform.
+``pdeathsig``), ``True`` for the print-mode delegation child too (#220 — same
+two reasons: one child per task, so releasing the tree IS being done with it,
+and on Windows the closing handle is the only parent-death backstop there is),
+``False`` for subprocess hooks and ``!command``, which keep today's
+success-path behaviour on every platform.
 
 THE ASSIGNMENT WINDOW. Between ``CreateProcess`` and ``AssignProcessToJobObject``
 the child runs unheld. On the asyncio spawn the window spans the transport's
@@ -64,8 +67,10 @@ THE PID/PGID HAZARD, BOUNDED PER SITE. ``soft_kill`` is always guarded by the
 caller's ``returncode is None`` with no ``await`` in between. ``hard_kill`` on
 the escalation path is deliberately NOT guarded by root liveness — leader dead
 and descendants alive is the exact shape the group kill exists for. The bound on
-a stale number, stated as measured rather than as hoped: on the two asyncio
-sites (rpc, hooks) ``returncode is None`` does NOT prove the pid is unreaped.
+a stale number, stated as measured rather than as hoped: on the asyncio sites
+(rpc, hooks, and since #220 the delegation reaper's escalation and
+``PrintChannel._eager_abort``) ``returncode is None`` does NOT prove the pid is
+unreaped.
 asyncio's child watcher calls ``waitpid`` on its own thread and a LATER loop
 callback copies the status into ``returncode`` — measured: a loop blocked for
 1.5 s still read ``returncode is None`` for a pid the kernel had already
@@ -408,13 +413,23 @@ def _taskkill_tree(pid: int) -> None:
     ``SystemRoot`` retries the bare name, so the worst case degrades to the old
     behaviour rather than to silence.
 
-    THIS BLOCKS THE CALLER for the length of a process spawn, and every win32
-    caller of :meth:`ProcessTree.hard_kill` is a coroutine (``RpcClient.stop``,
-    the hook timeout ladder, the hook cancellation path), so the wait is the
-    event loop's. It is bounded at 5 s per attempt by ``timeout=``: a
-    ``taskkill.exe`` that never returns must cost a stalled escalation, not a
-    frozen loop. ``TimeoutExpired`` is a :exc:`subprocess.SubprocessError` and
-    not an :exc:`OSError`, so it is caught by name alongside it.
+    THIS BLOCKS THE CALLER for the length of a process spawn, and the wait is
+    the CALLER's — there is no thread and no deferral here. It used to be true
+    that every win32 caller of :meth:`ProcessTree.hard_kill` was a coroutine
+    (``RpcClient.stop``, the hook timeout ladder, the hook cancellation path),
+    so the wait was merely the event loop's between two ``await`` points. #220 added
+    SYNCHRONOUS callers on the second-Ctrl+C path — ``PrintChannel._eager_abort``
+    and ``RpcChannel._eager_abort`` are ``@staticmethod``s called from inside
+    ``except asyncio.CancelledError`` handlers — so this now runs a process
+    spawn to completion on the event-loop thread. Accepted deliberately: the
+    same cost is already paid on the loop by ``RpcClient.stop`` and the hook
+    timeout ladder, and the alternative to a bounded stall is a leaked tree.
+    It is bounded at 5 s per attempt by ``timeout=``: a ``taskkill.exe`` that
+    never returns must cost a stalled escalation, not a frozen loop.
+    ``TimeoutExpired`` is a :exc:`subprocess.SubprocessError` and not an
+    :exc:`OSError`, so it is caught by name alongside it. The real duration is
+    unmeasured — #220's windows leg is the first place a stopwatch around it
+    costs nothing.
     """
 
     # Windows' environment block is case-insensitive and CPython upper-cases
@@ -491,8 +506,12 @@ class ProcessTree:
         self._closed = False
         self._finalizer: weakref.finalize | None = None
         if job is not None and api is not None:
-            # An abandoned tree still releases its handle. Nothing here kills:
-            # KILL_ON_JOB_CLOSE decides that, and only the rpc site asks for it.
+            # An abandoned tree still releases its handle. Nothing HERE kills —
+            # but KILL_ON_JOB_CLOSE decides that, and for a
+            # ``kill_on_close=True`` tree (the rpc child and, since #220, the
+            # delegation print child) this finalizer IS a kill, fired at a
+            # nondeterministic GC moment. That is the accepted cost of the
+            # backstop; the owner is expected to :meth:`close` deliberately.
             self._finalizer = weakref.finalize(self, _release_job, api, job)
 
     @property
@@ -504,6 +523,20 @@ class ProcessTree:
         """
 
         return self._job
+
+    @property
+    def closed(self) -> bool:
+        """Whether :meth:`close` has run. A closed tree signals NOTHING.
+
+        Both kill legs early-return on it (:meth:`soft_kill` → ``False``,
+        :meth:`hard_kill` → no-op), so a caller that dispatches on "a tree is
+        present" rather than "a tree can still kill" silently does nothing at
+        all. ``aelix_agents``' reaper reads this to decide between the tree legs
+        and the signal legs (#220, ``reaper._usable``); it is read as an
+        attribute there, so a stub that omits it fails loudly.
+        """
+
+        return self._closed
 
     @classmethod
     def attach(

@@ -346,6 +346,24 @@ class RpcClient:
         return self._proc
 
     @property
+    def tree(self) -> ProcessTree | None:
+        """The containment tree :meth:`start` attached.
+
+        ``None`` before :meth:`start` and after :meth:`stop` (and after
+        ``start``'s premature-exit path, ``:513-521``); LIVE for the whole started
+        window, INCLUDING while :meth:`stop` is running — ``stop`` closes it and
+        nulls ``_tree`` only at the very end (``:637-642``), so this property never
+        hands out a closed tree.
+
+        Published for the same reason as :attr:`process`: the delegation
+        channel's reaper runs DETACHED (finding B1) and must reach the job/group
+        the client owns, without owning it. Read it; do not hold it across an
+        ``await`` that could reach :meth:`stop`.
+        """
+
+        return self._tree
+
+    @property
     def returncode(self) -> int | None:
         """The child's exit status, or ``None`` while it is alive."""
 

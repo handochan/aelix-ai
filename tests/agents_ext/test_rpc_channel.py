@@ -14,6 +14,7 @@ diverge, one of the channels is lying about what the child did.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import dataclasses
 import json
 import os
@@ -25,11 +26,13 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from aelix_agents import reaper
 from aelix_agents.consent import SpawnGrant
 from aelix_agents.print_channel import (
     PrintChannel,
     RunningChild,
     SpawnPlan,
+    abort_child,
     build_child_env,
 )
 from aelix_agents.progress import SubagentProgressBridge
@@ -40,6 +43,7 @@ from aelix_agents.rpc_channel import (
     build_rpc_child_env,
 )
 from aelix_agents.runtime import SubagentHost, _SubagentRuntimeImpl
+from aelix_ai.utils._process_tree import ProcessTree
 from aelix_coding_agent.agents.profile import AgentProfile
 from aelix_coding_agent.builtin.permission_mode import PermissionMode
 from aelix_coding_agent.rpc.rpc_client import RpcClient
@@ -1126,6 +1130,413 @@ async def test_stop_all_reaches_an_rpc_child(tmp_path: Path) -> None:
 
     assert result.status == "aborted"
     assert runtime.list() == []
+
+
+# === #220 — the tree the CLIENT attached is the tree the reaper reaches ======
+#
+# WHY THE PLATFORM IS INJECTED AT ``reaper._is_win32`` AND NOT AT
+# ``reaper.sys.platform``, which is this repo's usual lever
+# (``test_reaper_kill_signal_win32.py``). ``reaper.sys is sys``, so that lever is
+# process-GLOBAL, and every test below needs a real child inside a real
+# ``ProcessTree``: under a global ``sys.platform == "win32"``,
+# ``containment_spawn_kwargs()`` returns ``creationflags=`` — which POSIX
+# ``subprocess`` rejects with ``ValueError`` — and ``ProcessTree.attach``
+# constructs ``_KernelApi()`` outside ``_attach_win32``'s ``except``, raising
+# ``AttributeError: module 'ctypes' has no attribute 'WinDLL'`` (#220 spec,
+# finding R1, measured). ``_is_win32`` is a FUNCTION precisely so the read can be
+# lent late; the product never patches it, and on the windows leg patching it to
+# ``True`` is a no-op, so these run for real there.
+#
+# The kills are NOT stubbed out. ``hard_kill`` is ``killpg(pgid, SIGKILL)`` on
+# POSIX and ``taskkill`` + ``TerminateJobObject`` on win32, and the spy calls
+# through, so a green assertion means the child really died to the tree. Only
+# ``test_a_pre_created_reaper_task_still_kills_through_the_tree`` needs a deaf
+# tree — a reaper task has to stay PENDING for the reuse branch to exist at all
+# — and it says so and kills the child itself afterwards.
+
+
+_SPEAKS_THEN_HANGS = _rpc_stub(
+    textwrap.dedent(
+        """
+        def script(task):
+            start()
+            say("partial answer", input=2, output=2, total_tokens=4)
+            time.sleep(120)
+        """
+    )
+)
+"""Answers, then never terminates. The turn is provably in flight, which is when
+``row.tree`` has to be readable and when a human's ``stop`` actually lands."""
+
+
+class _TreeSpy:
+    """Records what the reaper did to the tree, wrapping the BOUND methods.
+
+    Instance-level on purpose. The obvious alternative — spying on ``reap``'s
+    kwargs — stays green for every way the plumbing can be right and the
+    behaviour wrong: a reaper task reused without a tree, a tree that was
+    already closed, ``abort_child`` never getting one (#220 rpc/RPC-8). And it
+    must be the INSTANCE, not the class: a run that replaced ``row.tree`` after
+    a reaper captured the old one would be a silent miss for a class-level spy
+    (tests/T13).
+
+    ``call_through`` defaults to True so the child really dies and the
+    assertions are about behaviour. ``close`` records its CALLER's module, not
+    merely that it happened: §A.6 gives every tree exactly one owner, and what
+    this file has to prove is that the owner is not the channel.
+    """
+
+    def __init__(self, tree: ProcessTree, *, call_through: bool = True) -> None:
+        self.tree = tree
+        self.pid = tree.pid
+        self.soft: list[bool] = []
+        self.hard: list[float] = []
+        self.closed_by: list[str] = []
+        real_soft = tree.soft_kill
+        real_hard = tree.hard_kill
+        real_close = tree.close
+
+        def _soft(**kwargs: Any) -> bool:
+            sent = real_soft(**kwargs) if call_through else True
+            self.soft.append(sent)
+            return sent
+
+        def _hard() -> None:
+            self.hard.append(time.monotonic())
+            if call_through:
+                real_hard()
+
+        def _close() -> None:
+            self.closed_by.append(sys._getframe(1).f_globals.get("__name__", "?"))
+            real_close()
+
+        tree.soft_kill = _soft  # type: ignore[method-assign]
+        tree.hard_kill = _hard  # type: ignore[method-assign]
+        tree.close = _close  # type: ignore[method-assign]
+
+
+def _spy_the_clients_tree(
+    monkeypatch: pytest.MonkeyPatch, *, call_through: bool = True
+) -> tuple[list[RpcClient], list[_TreeSpy]]:
+    """Hand back the client the channel built and a spy on the tree it attached.
+
+    The channel constructs its own :class:`RpcClient` and never publishes it, so
+    the seam is the name ``rpc_channel`` imported. Subclassing rather than
+    wrapping keeps every other attribute real — the client under test is the
+    product one.
+    """
+
+    clients: list[RpcClient] = []
+    spies: list[_TreeSpy] = []
+
+    class _SpiedClient(RpcClient):
+        async def start(self) -> None:
+            await super().start()
+            tree = self.tree
+            assert tree is not None, "RpcClient.start attached no tree (#202)"
+            clients.append(self)
+            spies.append(_TreeSpy(tree, call_through=call_through))
+
+    monkeypatch.setattr("aelix_agents.rpc_channel.RpcClient", _SpiedClient)
+    return clients, spies
+
+
+def _record_os_kill(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, int, int]]:
+    """Every ``os.kill``, tagged with the module that made it. DELEGATES.
+
+    ``reaper.os is os``, so there is no way to patch "the reaper's ``os.kill``"
+    alone — the attribute is the global one and ``ProcessTree.soft_kill`` reaches
+    it too (``_process_tree.py``: POSIX leg 1 is ``os.kill(pid, SIGTERM)``).
+    Recording the CALLER is what makes the assertion say what it means: after
+    #220 the win32 arm must not signal from ``aelix_agents.reaper`` at all,
+    while a send from ``aelix_ai.utils._process_tree`` is the tree doing its job.
+    Delegating to the real call is what keeps this an observation.
+    """
+
+    calls: list[tuple[str, int, int]] = []
+    real = reaper.os.kill
+
+    def _kill(pid: int, sig: int) -> None:
+        calls.append((sys._getframe(1).f_globals.get("__name__", "?"), pid, sig))
+        real(pid, sig)
+
+    monkeypatch.setattr(reaper.os, "kill", _kill)
+    return calls
+
+
+async def _wait_for(probe: Any, what: str, *, timeout: float = 20.0) -> Any:
+    """Poll until ``probe()`` is truthy. Nothing here is event-driven."""
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        value = probe()
+        if value:
+            return value
+        await asyncio.sleep(0.02)
+    raise AssertionError(f"{what} never appeared within {timeout:.0f}s")
+
+
+async def test_the_rpc_row_carries_the_clients_tree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``row.tree`` IS ``client.tree`` — borrowed, and marked as borrowed.
+
+    The ROW is the only carrier the three kill doors share (#220 §A.4):
+    :class:`RunningChild` has no ``client`` field, ``RpcChannel._eager_abort``
+    is a ``@staticmethod`` taking only the row, and ``abort_child`` — the door
+    ``runtime.stop`` / ``stop_all`` and the stop-during-spawn race all use, and
+    the one that CREATES the reaper task ``_reap`` later reuses — sees only the
+    row. Delete ``row.tree = client.tree`` from ``run`` and the first assertion
+    goes red (verified).
+
+    ``tree_owned`` is asserted as a contract rather than as a mutation target:
+    ``False`` is also the dataclass default, so the explicit assignment in
+    ``run`` is documentation. What it pins is the DEFAULT — flip that to ``True``
+    and §A.6's closing rules would close a tree ``RpcClient.stop()`` still owes a
+    soft -> grace -> hard sequence.
+    """
+
+    clients, _ = _spy_the_clients_tree(monkeypatch)
+    channel = _channel(_SPEAKS_THEN_HANGS, grace=0.3)
+    row = RunningChild(id="sub-test", profile="scout")
+    task = asyncio.ensure_future(
+        channel.run(_plan(tmp_path, timeout_ms=30_000), child=row)
+    )
+    try:
+        tree = await _wait_for(lambda: row.tree, "row.tree")
+        client = clients[0]
+        assert client.tree is not None, "the client let go of its own tree"
+        assert tree is client.tree, "the row carries a DIFFERENT tree"
+        assert row.tree_owned is False
+        # Usable, which is what ``reaper._usable`` asks — not merely present.
+        assert tree.closed is False
+    finally:
+        await abort_child(row, grace=0.3)
+        await task
+
+
+async def test_stop_reaches_the_clients_tree_on_win32(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A human's ``stop`` kills through the JOB, not through the root pid.
+
+    This is the test that goes red on ``main``. There ``abort_child`` gets no
+    tree — the row never carried one — so on win32 the reaper falls back to
+    ``os.kill(pid, SIGTERM)``, which Windows implements as ``TerminateProcess``:
+    uncatchable, root-only, and it leaves the child's descendants running with
+    no ``/proc`` to walk to them (#220 §1).
+
+    Q4 is pinned here too: ``abort_child`` always passes ``eager_kill=True``, so
+    the console event is NOT sent — with zero grace it would only start a
+    ``dispose()`` that ``hard_kill`` truncates microseconds later, while doubling
+    the latency of the one path a human is waiting on (§A.7).
+    """
+
+    monkeypatch.setattr(reaper, "_is_win32", lambda: True)
+    kills = _record_os_kill(monkeypatch)
+    clients, spies = _spy_the_clients_tree(monkeypatch)
+    runtime = _SubagentRuntimeImpl(
+        host=SubagentHost(cwd=lambda: str(tmp_path)),
+        channel=_channel(_SPEAKS_THEN_HANGS, grace=0.3),
+    )
+    task = asyncio.ensure_future(
+        runtime.spawn_granted(_grant(), _resolved(), "hang forever")
+    )
+    spy: _TreeSpy = await _wait_for(lambda: spies[0] if spies else None, "the tree")
+    rows = await _wait_for(runtime.list, "the registry row")
+    # Captured BEFORE the stop. After ``runtime.stop`` returns, the channel's own
+    # teardown (``_shutdown`` -> ``client.stop()``) may already have nulled
+    # ``client.process`` — it races the reaper's return, and lost that race on
+    # the windows-latest py3.12 leg (run 33940861199) while winning it on
+    # py3.11. The process object itself is what the assertion below needs.
+    proc = clients[0].process
+    assert proc is not None, "the client was not started when the row appeared"
+
+    await runtime.stop(rows[0]["id"])
+
+    assert len(spy.hard) == 1, f"the job was not the kill: hard_kill x{len(spy.hard)}"
+    assert spy.soft == [], f"Q4: no console event on the abort path, got {spy.soft}"
+    from_reaper = [c for c in kills if c[0] == "aelix_agents.reaper"]
+    assert from_reaper == [], (
+        f"the reaper signalled by pid instead of through the tree: {from_reaper}"
+    )
+    # ``abort_child`` awaits the reaper, and the reaper returns only after its
+    # shielded ``proc.wait()`` — so by here the child it killed through the tree
+    # has an exit status. Race-free on every leg, unlike ``client.process``.
+    assert proc.returncode is not None, "stop() returned before the child was reaped"
+
+    result = await task
+    assert result.status == "aborted"
+    assert runtime.list() == []
+
+
+async def test_a_pre_created_reaper_task_still_kills_through_the_tree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``_reap`` REUSES ``row.reaper_task``, so the tree has to be on the row.
+
+    The reuse branch (``rpc_channel._reap``: ``if task is None or task.done()``)
+    is why a ``tree=client.tree`` threaded into ``_reap`` alone would be thrown
+    away on the path a human drives: ``abort_child`` built the task, and
+    ``_reap`` never gets to pass anything to the reaper it did not create
+    (#220 rpc/RPC-2). What makes the kill still land is that ``abort_child``
+    read the tree off the ROW.
+
+    The tree is DEAF here (``call_through=False``) for one reason only: the
+    reuse branch needs a reaper task that is still PENDING, and a reaper whose
+    kill worked resolves. The child is killed for real in the ``finally``.
+    """
+
+    monkeypatch.setattr(reaper, "_is_win32", lambda: True)
+    kills = _record_os_kill(monkeypatch)
+    _clients, spies = _spy_the_clients_tree(monkeypatch, call_through=False)
+    channel = _channel(_SPEAKS_THEN_HANGS, grace=0.3)
+    row = RunningChild(id="sub-test", profile="scout")
+    run_task = asyncio.ensure_future(
+        channel.run(_plan(tmp_path, timeout_ms=60_000), child=row)
+    )
+    tree: ProcessTree | None = None
+    abort_task: asyncio.Task[None] | None = None
+    reap_task: asyncio.Task[int] | None = None
+    try:
+        tree = await _wait_for(lambda: row.tree, "row.tree")
+        spy = spies[0]
+        abort_task = asyncio.ensure_future(abort_child(row, grace=0.3))
+        first = await _wait_for(lambda: row.reaper_task, "row.reaper_task")
+        assert len(spy.hard) == 1, "abort_child did not kill through the tree"
+        assert not first.done(), "the deaf tree was meant to keep the reaper pending"
+
+        reap_task = asyncio.ensure_future(channel._reap(row.proc, row))
+        await asyncio.sleep(0.2)
+        assert row.reaper_task is first, "_reap built a SECOND reaper for one child"
+        assert len(spy.hard) == 1, "the reused reaper re-issued its kill"
+        from_reaper = [c for c in kills if c[0] == "aelix_agents.reaper"]
+        assert from_reaper == [], f"a pid signal escaped the tree arm: {from_reaper}"
+    finally:
+        if tree is not None:
+            # The REAL bound method — the instance attribute above is the deaf
+            # one — so the child dies and every waiter unwinds.
+            ProcessTree.hard_kill(tree)
+        for pending in (abort_task, reap_task, run_task):
+            if pending is not None:
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(pending, 30)
+
+
+async def test_the_channel_never_closes_the_clients_tree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Exactly one owner, and it is ``RpcClient.stop()`` (#220 §A.6 rule 1).
+
+    ``close()`` disarms BOTH legs permanently (``soft_kill`` -> ``False``,
+    ``hard_kill`` -> no-op), and for a ``kill_on_close=True`` tree on win32 it is
+    itself an end-of-everything-left. A channel that closed it would either
+    disarm a sequence the client still owes or fire the job kill before
+    ``client.drain(POST_EXIT_DRAIN_SECONDS)`` — which is why revision 1's belt
+    ``tree.close()`` in ``stop_all`` was dropped (rpc/RPC-4).
+
+    The last assertion is the one that keeps that safe rather than merely
+    tidy: the channel does NOT null ``row.tree`` (it never owned it), so a
+    ``stop`` arriving after teardown hands the reaper a CLOSED tree — and what
+    makes that harmless is ``reaper._usable`` reading ``closed``, not the row
+    being empty.
+    """
+
+    clients, spies = _spy_the_clients_tree(monkeypatch)
+    channel = _channel(_rpc_stub())
+    row = RunningChild(id="sub-test", profile="scout")
+    result = await channel.run(_plan(tmp_path), child=row)
+
+    assert result.ok is True
+    spy = spies[0]
+    assert spy.closed_by == ["aelix_coding_agent.rpc.rpc_client"], (
+        f"the tree was closed by {spy.closed_by}, not by RpcClient.stop alone"
+    )
+    assert spy.soft == [] and spy.hard == [], (
+        f"a clean run killed something: soft={spy.soft} hard={spy.hard}"
+    )
+    assert row.tree_owned is False
+    assert clients[0].tree is None, "RpcClient.stop must null its own reference"
+    assert row.tree is not None and row.tree.closed is True
+
+
+async def test_the_reaper_the_channel_builds_carries_the_rows_tree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The OTHER half of the reuse story: when ``_reap`` builds the task itself.
+
+    Not in the spec's §D.5 list, and added because ``_reap``'s own
+    ``tree=row.tree`` would otherwise have no test that goes red when it is
+    deleted — the three tests above all reach the tree through ``abort_child``'s
+    reaper. A child that answers and then ignores stdin EOF is the one bed where
+    ``_shutdown``'s ``wait_for_exit`` returns ``None`` and ``_reap`` reaches a
+    row with no reaper task at all.
+
+    With the tree, leg 1 on win32 is ``tree.soft_kill()`` and the child gets to
+    run its own shutdown; without it the reaper falls back to
+    ``_signal_child`` -> ``os.kill``, which on Windows is ``TerminateProcess``.
+    Both assertions below flip on that deletion (verified).
+    """
+
+    monkeypatch.setattr(reaper, "_is_win32", lambda: True)
+    kills = _record_os_kill(monkeypatch)
+    _clients, spies = _spy_the_clients_tree(monkeypatch)
+    stubborn = _rpc_stub(_SCRIPT_BODY, tail="serve(script)\ntime.sleep(120)")
+    channel = _channel(stubborn, grace=1.0)
+    row = RunningChild(id="sub-test", profile="scout")
+    result = await channel.run(_plan(tmp_path), child=row)
+
+    assert result.summary == "the answer"
+    spy = spies[0]
+    assert spy.soft == [True], f"leg 1 did not go through the tree: {spy.soft}"
+    assert spy.hard == [], f"the cooperative leg should have sufficed: {spy.hard}"
+    from_reaper = [c for c in kills if c[0] == "aelix_agents.reaper"]
+    assert from_reaper == [], (
+        f"the reaper signalled by pid instead of through the tree: {from_reaper}"
+    )
+    assert row.proc is not None and row.proc.returncode is not None
+
+
+async def test_a_cancelled_delegation_kills_through_the_tree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The second Ctrl+C door: ``_eager_abort``, which is not a reaper at all.
+
+    Also not in the spec's §D.5 list, and added for the same reason as the test
+    above: ``_eager_abort``'s ``tree=row.tree`` is a product line #220 adds and
+    nothing else here goes red without it. It is a synchronous
+    ``@staticmethod`` called from inside ``except asyncio.CancelledError``
+    (``_drive`` twice, ``_reap`` once), so it cannot reach the client — only the
+    row — which is finding RPC-1's whole point.
+
+    ``>= 1``, not ``== 1``: a cancelled run reaches ``kill_tree`` from
+    ``_eager_abort`` on more than one door plus the reaper's own escalation, so
+    the exact count is a property of the cancellation's timing. "Exactly once"
+    is asserted only on the timeout tests (§A.8, posix/P7); the behavioural
+    evidence here is the child's exit status.
+    """
+
+    monkeypatch.setattr(reaper, "_is_win32", lambda: True)
+    kills = _record_os_kill(monkeypatch)
+    _clients, spies = _spy_the_clients_tree(monkeypatch)
+    channel = _channel(_SPEAKS_THEN_HANGS, grace=0.3)
+    row = RunningChild(id="sub-test", profile="scout")
+    task = asyncio.ensure_future(
+        channel.run(_plan(tmp_path, timeout_ms=60_000), child=row)
+    )
+    spy: _TreeSpy = await _wait_for(lambda: spies[0] if spies else None, "the tree")
+    await asyncio.sleep(0.3)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert len(spy.hard) >= 1, "the cancellation never reached the tree"
+    from_reaper = [c for c in kills if c[0] == "aelix_agents.reaper"]
+    assert from_reaper == [], (
+        f"the reaper signalled by pid instead of through the tree: {from_reaper}"
+    )
+    assert row.proc is not None
+    await _wait_for(lambda: row.proc.returncode is not None, "the child's exit")
 
 
 # === THE PARITY TEST ========================================================

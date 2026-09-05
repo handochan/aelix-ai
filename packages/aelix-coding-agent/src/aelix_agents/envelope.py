@@ -39,12 +39,26 @@ _TRUNCATION_MARKER = (
     "Full output preserved in tool details.]"
 )
 
-# Lines the SIGTERM path emits that are NORMAL and must not be shown as the
-# child's failure reason. ``modes/print_mode.py``'s ``_signal_cleanup_and_exit``
-# calls ``sys.exit(128 + sig)`` from inside a coroutine, so asyncio prints
-# "Task exception was never retrieved" plus a ``SystemExit(143)`` traceback on
-# every single cooperative kill. Surfacing that to the model as the reason a
-# task was aborted is actively misleading.
+# Lines a task-borne exception in the child emits that are NORMAL and must not
+# be shown as the child's failure reason. Surfacing an asyncio "Task exception
+# was never retrieved" report to the model as the reason a task was aborted is
+# actively misleading.
+#
+# UNTIL #220 this was what a cooperative kill itself produced, on every single
+# one: ``modes/print_mode.py``'s ``_signal_cleanup_and_exit`` called
+# ``sys.exit(128 + sig)`` from inside a coroutine, so asyncio printed that line
+# plus a ``SystemExit(143)`` traceback. It no longer does — the handler RECORDS
+# ``128 + sig`` and ``run_print_mode`` returns it, and a real child's SIGTERM
+# stderr is now "Request aborted" and nothing else (MEASURED,
+# ``.omc/specs/220-progress-2026-09-05.md`` §1).
+#
+# THE FILTER STAYS ANYWAY, as a defensive one, and that is a decision rather
+# than an oversight: any OTHER unretrieved task exception in the child
+# (``tools/bash.py``'s drain and signal watchers, ``rpc/rpc_mode.py``'s
+# background tasks) still produces exactly this shape, and it is applied ONLY on
+# the aborted/timeout outcomes — the outcomes where a traceback is not the
+# diagnosis. On a genuine crash it is not applied at all, so nothing that IS the
+# diagnosis is ever swallowed.
 #
 # ``\s+\w`` is the traceback SOURCE-line pattern (any indented line); combined
 # with ``\s+File "`` it removes the frame pairs. Applied ONLY on the
@@ -124,7 +138,7 @@ def _select_summary(state: _StreamState, stderr_clean: str, *, ok: bool) -> str:
     gated on ``not ok``. On a SUCCESSFUL run the child's own assistant text is
     authoritative and stderr is diagnostic noise — provider SDK / httpx logging
     and any extension ``print(..., file=sys.stderr)`` land in the same pipe
-    (``print_mode.py:23-26`` declines pi's ``takeOverStdout``). Ungated, one
+    (``print_mode.py:38-41`` declines pi's ``takeOverStdout``). Ungated, one
     ``DeprecationWarning`` on a perfectly successful delegation would replace
     the child's answer with a log line. On every FAILURE path the rung fires
     exactly as specified, including the zero-stdout case it exists for.

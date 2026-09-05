@@ -77,7 +77,7 @@ def _argv(
 def test_child_is_launched_as_a_module_not_as_the_console_script(tmp_path: Path) -> None:
     """``[sys.executable, "-m", "aelix_coding_agent"]`` and nothing else.
 
-    NOT ``-m aelix`` (``rpc/rpc_client.py:1073`` does that and it is a live bug —
+    NOT ``-m aelix`` (``rpc/rpc_client.py:1091`` does that and it is a live bug —
     ``aelix`` is the umbrella meta-package demo) and NOT the ``aelix`` console
     script, which in a worktree resolves to whichever tree owns the editable
     install rather than the code the parent is running.

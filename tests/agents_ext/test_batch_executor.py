@@ -257,7 +257,7 @@ class _ExplodingChannel(_RecordingChannel):
     """Raises ``OSError`` for the first member, answers normally for the rest.
 
     Models the reachable §3.5.1 path: ``PrintChannel.run`` writes the prompt file
-    OUTSIDE its own ``try`` (``print_channel.py:930`` vs ``:931``) and
+    OUTSIDE its own ``try`` (``print_channel.py:973`` vs ``:974``) and
     ``write_prompt_file`` does ``mkdtemp`` + ``os.open``
     (``prompt_file.py:130-132``), so a full ``/tmp``, an ``EMFILE`` or a yanked
     ``TMPDIR`` raises straight out of a method whose docstring says it never
@@ -577,7 +577,7 @@ async def test_the_previous_summary_reaches_the_next_step_fenced(
     The substitution happens inside the TASK STRING and never touches argv — the
     ``"Task: "`` prefix ``profile_to_argv`` prepends is what keeps a summary
     beginning with ``--`` from being swallowed into ``parsed.unknown_flags``
-    (``print_channel.py:477-482``). So the assertion is on
+    (``print_channel.py:508-513``). So the assertion is on
     ``SpawnPlan.task``, which is exactly what rides that one argv element.
     """
 
@@ -608,7 +608,7 @@ async def test_what_feeds_the_next_link_is_the_summary_and_never_the_details(
 
     The module docstring says it in capitals: what feeds the next link is
     ``SubagentResult.summary``, verbatim, NOT ``details``. The reason is not
-    cosmetic — ``envelope._build_details`` (``envelope.py:238-258``) appends the
+    cosmetic — ``envelope._build_details`` (``envelope.py:252-272``) appends the
     RAW, UNSANITISED stderr tail on every failure path (provider SDK logging,
     SIGTERM tracebacks) and sets ``details = state.summary`` UNCAPPED on an OK
     run, with no truncation marker. Feeding that into the next step's task would
@@ -774,9 +774,9 @@ async def test_the_kill_leg_reserve_is_per_step_for_chain_and_flat_for_parallel(
 ) -> None:
     """Why the two modes reserve differently, made observable.
 
-    A member that hits its deadline runs ``reap(grace=5.0)`` (``reaper.py:80``)
+    A member that hits its deadline runs ``reap(grace=5.0)`` (``reaper.py:111``)
     plus the bounded ``POST_EXIT_DRAIN_SECONDS = 2.0``
-    (``print_channel.py:135``). In parallel those legs OVERLAP, so one reserve
+    (``print_channel.py:149``). In parallel those legs OVERLAP, so one reserve
     covers the wave; in a chain they are strictly sequential, so an eight-step
     chain would overshoot the ceiling by up to 8 × 7 s. Asking for the maximum
     per-task clock is what makes the reserve the binding term and therefore
@@ -895,7 +895,7 @@ async def test_a_batch_member_falls_back_to_the_profiles_own_timeout(
 
     ``PrintChannel.run`` resolves the clock as ``plan.timeout_ms if ... is not
     None else (profile.timeout_ms or DEFAULT_TIMEOUT_MS)``
-    (``print_channel.py:894-898``), and the executor is what decides whether
+    (``print_channel.py:937-941``), and the executor is what decides whether
     ``plan.timeout_ms`` is ``None``. Substituting ``DEFAULT_TIMEOUT_MS`` here
     made the channel's profile fallback UNREACHABLE for every batch member: an
     author who wrote ``timeout_ms: 60000`` in frontmatter
@@ -982,7 +982,7 @@ async def test_cancelling_the_batch_delivers_to_every_member_in_flight(
     the executor's own frame, and ``return_exceptions=False``. With ``True`` a
     member's ``CancelledError`` would be captured as a RESULT and this frame
     would never propagate — bypassing the second-Ctrl+C escalation at
-    ``print_channel.py:1194-1197``.
+    ``print_channel.py:1348-1351``.
 
     Delivery is necessary and NOT sufficient — the L2 test below asserts the
     children are actually DEAD, which is the P2 finding (B1) being guarded.
@@ -1021,7 +1021,7 @@ def test_the_executors_cancellation_contract_is_pinned_in_source() -> None:
     ``CancelledError`` becomes an envelope, ``gather`` hands that envelope back
     as a RESULT, ``run_batch`` returns normally — and the user's Ctrl+C is
     swallowed by the delegation it was aimed at, bypassing the second-Ctrl+C
-    escalation at ``print_channel.py:1194-1197``.
+    escalation at ``print_channel.py:1348-1351``.
 
     So they are pinned SYNTACTICALLY, for the same reason the admission window
     above is: the property is syntactic, the failure it prevents is not
@@ -1539,7 +1539,7 @@ async def test_every_batch_member_is_launched_unable_to_delegate(
 ) -> None:
     """S8, asserted at the layer where it is actually assertable.
 
-    ``SpawnPlan`` (``print_channel.py:204-238``) carries no argv and no env —
+    ``SpawnPlan`` (``print_channel.py:235-269``) carries no argv and no env —
     both are built inside ``PrintChannel.run`` — so "a batch member cannot nest"
     cannot be read off a recording channel. And the one L1-reachable statement
     ("set ``AELIX_SUBAGENT_DEPTH=1`` and the batch is blocked at the hook") merely
@@ -1547,7 +1547,7 @@ async def test_every_batch_member_is_launched_unable_to_delegate(
     ``test_tool_and_security.py:671-683``.
 
     So it is asserted at the argv/env layer, per member: ``--no-agents``
-    (``print_channel.py:516``, unconditional, so it survives any settings gate)
+    (``print_channel.py:547``, unconditional, so it survives any settings gate)
     and the depth env var. That is what would fire if a future refactor cached
     member 1's argv and mutated only the task.
     """
@@ -1782,7 +1782,7 @@ async def test_l2_cancelling_the_batch_kills_every_child_it_started(
     while leaking processes — so a delivery-only assertion passes straight
     through it. This one records each child's real pid and asserts every one of
     them is gone, which covers the detached-sibling case, the leaked-permit case
-    and the second-Ctrl+C path at ``print_channel.py:1194-1197`` at once.
+    and the second-Ctrl+C path at ``print_channel.py:1348-1351`` at once.
     """
 
     marker_dir = tmp_path / "markers"

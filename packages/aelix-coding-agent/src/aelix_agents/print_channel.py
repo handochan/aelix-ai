@@ -24,7 +24,7 @@ stylistic.
    ``proc.kill(); await proc.wait()`` after an 8 s ``wait_for`` did not unwedge
    it, because the child was blocked in ``write(2)`` on a full stderr pipe and
    never reached a signal handler. A real aelix child writes plenty to stderr:
-   ``modes/print_mode.py:238-239`` prints every caught exception there, the SIGTERM
+   ``modes/print_mode.py:301-302`` prints every caught exception there, the SIGTERM
    path emits a multi-line traceback, and provider SDK / httpx logging plus any
    extension ``print(..., file=sys.stderr)`` land in the same pipe. stderr goes
    into a BOUNDED ring (:class:`StderrRing`) because a chatty child must not be
@@ -64,6 +64,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import dataclasses
+import logging
 import os
 import sys
 import time
@@ -72,6 +73,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
 import aelix_coding_agent
+from aelix_ai.utils._process_tree import (
+    ProcessTree,
+    _retained_handle,
+    containment_spawn_kwargs,
+)
 from aelix_coding_agent.agents.resolver import profile_to_argv
 from aelix_coding_agent.subagent_contract import (
     DEPTH_ENV_VAR,
@@ -87,6 +93,7 @@ from aelix_agents.prompt_file import PromptFile, remove_prompt_dir, write_prompt
 from aelix_agents.reaper import (
     DEFAULT_GRACE_SECONDS,
     descendant_pids,
+    kill_group_if_live,
     kill_tree,
     pdeathsig_preexec,
     reap,
@@ -104,6 +111,13 @@ if TYPE_CHECKING:
         SubagentOutcome,
         SubagentResult,
     )
+
+logger = logging.getLogger(__name__)
+"""Only one thing is logged from this module: a ``ProcessTree.attach`` that
+failed. Everything else a delegation can get wrong is already a field on the
+envelope, and an envelope is what a caller reads; a degraded containment is the
+one failure with no envelope of its own, because the delegation itself succeeds
+(§B.2)."""
 
 AGENT_TOOL_NAME = "agent"
 """The delegation tool's name, declared HERE rather than in ``tool.py``.
@@ -195,6 +209,23 @@ class RunningChild:
     purpose (finding B1) and would otherwise outlive session teardown, which
     ADR-0197 forbids."""
     eager_kill: bool = False
+    tree: ProcessTree | None = None
+    """Attached right after the spawn, before the first ``await``. Shared with
+    ``rpc_channel``, which borrows the client's tree instead of attaching one."""
+    tree_owned: bool = False
+    """Whether THIS row's owner may close :attr:`tree` (#220 §A.6). ``False`` for
+    an rpc row: ``RpcClient.stop()`` owns that one, and closing it from here
+    would disarm both kill legs while the client still owes a soft→grace→hard
+    sequence.
+
+    A DECLARATION OF OWNERSHIP, and today no code path can exercise it as
+    ``False`` where it matters: the only closer is ``PrintChannel.run``'s
+    ``finally``, which only ever sees rows ``PrintChannel.run`` itself created,
+    and those set this and :attr:`tree` together. Deleting the ``and
+    row.tree_owned`` half of that guard leaves the whole suite green (measured,
+    #220 review round 2, MUT-5). It is kept as the cheap half of a contract the
+    field exists to state — a second channel that ever borrows a tree onto a
+    print row would need it — not because a current caller depends on it."""
     stopped: bool = False
     """Set by ``stop`` / ``stop_all``. It is what turns the resulting envelope
     from ``error`` into ``aborted``: the process died because we killed it."""
@@ -469,7 +500,7 @@ def build_child_argv(
     """The child's exact command line — §(l).
 
     ``[sys.executable, "-m", "aelix_coding_agent", …]`` and nothing else.
-    Specifically NOT ``-m aelix``, which ``rpc/rpc_client.py:1073`` does and which
+    Specifically NOT ``-m aelix``, which ``rpc/rpc_client.py:1091`` does and which
     is a live bug (``aelix`` is the umbrella meta-package demo), and NOT the
     ``aelix`` console script, which in a worktree resolves to the OTHER tree's
     editable install.
@@ -810,7 +841,19 @@ async def abort_child(
     task = child.reaper_task
     if task is None or task.done():
         task = asyncio.ensure_future(
-            reap(proc, grace=grace, eager_kill=True, descendants=None)
+            reap(
+                proc,
+                grace=grace,
+                eager_kill=True,
+                descendants=None,
+                # The row, not a captured client: this is the door ``stop`` /
+                # ``stop_all`` / the extension teardown all use, and it is also
+                # the door that CREATES the reaper task ``_reap`` later reuses —
+                # so a tree passed only at ``_reap`` would be discarded on the
+                # one path a human drives. ``None`` after ``run``'s ``finally``
+                # closed it, which is exactly the fallback ``reap`` wants.
+                tree=child.tree,
+            )
         )
         child.reaper_task = task
     # ``Exception`` only: a ``CancelledError`` here means the CALLER is being
@@ -961,16 +1004,34 @@ class PrintChannel:
                     stderr=asyncio.subprocess.PIPE,
                     # Explicit, and load-bearing — see the module docstring (B3).
                     limit=STREAM_LIMIT_BYTES,
-                    # Without it the child joins the PARENT's process group, so
-                    # one Ctrl+C SIGINTs every subagent at once with no envelope
-                    # — and neither parent (``tui/shell.py:1874-1891``) nor child
-                    # (``modes/print_mode.py:114-131``) installs a SIGINT
-                    # handler, so there is nothing to convert that into a result.
-                    start_new_session=True,
+                    # ``{"start_new_session": True}`` here — without it the
+                    # child joins the PARENT's process group, so one Ctrl+C
+                    # SIGINTs every subagent at once with no envelope, and
+                    # neither parent (``tui/shell.py:1874-1891``) nor child
+                    # (``modes/print_mode.py:131-190``) installs a SIGINT
+                    # handler to convert that into a result.
+                    #
+                    # ``{"creationflags": CREATE_NEW_PROCESS_GROUP}`` on Windows,
+                    # and that is TWO fixes, not a port of one (#220). Windows
+                    # accepts ``start_new_session`` and silently ignores it
+                    # (CPython names the parameter ``unused_start_new_session``),
+                    # so until now the child sat in the parent's console group:
+                    # a ``CTRL_BREAK_EVENT`` could not be addressed to it without
+                    # hitting the parent, AND a console Ctrl+C reached every
+                    # subagent at once — the same harm the POSIX arm has always
+                    # prevented. The new group closes both: it is the address
+                    # ``ProcessTree.soft_kill``'s console event needs, and it
+                    # DISABLES console Ctrl+C for the child and everything under
+                    # it. The second half is documentation-derived, not measured:
+                    # the windows leg does not drive a console Ctrl+C.
+                    **containment_spawn_kwargs(new_session=True),
                     # ``None`` on Windows, where subprocess REJECTS the
-                    # argument outright. ``start_new_session`` above is not so loud —
-                    # Windows accepts and ignores it. #202 built the primitive
-                    # (``aelix_ai.utils._process_tree``); adopting it here is #220.
+                    # argument outright — unlike the containment kwargs above,
+                    # which every platform accepts in the form it understands.
+                    # #202 built the primitive (``aelix_ai.utils._process_tree``)
+                    # and #220 adopted it here; this hook stays POSIX's alone,
+                    # because Windows has no ``pdeathsig`` and the job's
+                    # ``kill_on_close`` is its nearest equivalent (ADR-0238).
                     preexec_fn=pdeathsig_preexec(),  # noqa: PLW1509
                 )
             except Exception as exc:  # noqa: BLE001 — a failed spawn is a RESULT
@@ -978,6 +1039,45 @@ class PrintChannel:
                 return _envelope(outcome="error", exit_code=None, error=str(exc))
 
             row.proc = proc
+            try:
+                # ITS OWN ``try``, deliberately OUTSIDE the spawn's. Inside it,
+                # an attach failure would take the ``except`` above and return an
+                # error envelope for a child that is RUNNING: ``_stream_and_reap``
+                # is never entered, no reaper task is ever created, and
+                # ``runtime.py`` then pops the row — the live-child-with-no-reaper
+                # shape this file's last-line-of-defence handler exists to
+                # prevent. DEGRADE, never abandon: ``tree=None`` is a supported
+                # reaper input by construction (``reaper._usable``).
+                #
+                # Synchronous on both arms (``_attach_posix`` is one
+                # ``os.getpgid``; ``_attach_win32`` is three ctypes calls), so it
+                # adds no ``await`` between publishing ``row.proc`` and re-reading
+                # ``row.stopped`` below — the race that ordering exists for is
+                # unchanged. And it must sit BEFORE that re-read: ``abort_child``
+                # reads ``child.tree``, so a stop that landed during the spawn
+                # would otherwise abort with ``tree=None`` and lose win32
+                # containment on exactly the child that was told to stop.
+                row.tree = ProcessTree.attach(
+                    proc.pid, kill_on_close=True, handle=_retained_handle(proc)
+                )
+                # ``kill_on_close=True`` because the print child meets both of
+                # ADR-0238's stated criteria: ONE child per task, so releasing
+                # the tree is the same event as being done with it; and on
+                # Windows it is the analogue of the ``pdeathsig`` the line above
+                # installs on Linux — a parent's death closes its last job
+                # handle and ``KILL_ON_JOB_CLOSE`` ends the tree. The visible
+                # consequence, stated rather than denied: on win32 a SUCCESSFUL
+                # delegation now also ends a helper the child deliberately left
+                # running. On POSIX ``close()`` still signals nothing.
+                row.tree_owned = True
+            except Exception as exc:  # noqa: BLE001
+                row.tree = None
+                row.tree_owned = False
+                # Logged, not swallowed: on Windows a real attach failure
+                # degrades containment to the root-only shape Pi #9129 proved
+                # insufficient, and a delegation that still returns a perfectly
+                # good envelope is the one failure with nowhere else to surface.
+                logger.warning("process-tree attach failed for %s: %s", row.id, exc)
             row.state = "running"
             if row.stopped:
                 # The other half of the race: a stop that landed while
@@ -999,6 +1099,34 @@ class PrintChannel:
             # once entered, including on the cancellation path.
             remove_prompt_dir(row.prompt)
             row.prompt = None
+            # THE SINGLE OWNER of a print row's tree (#220 §A.6 rule 2), and the
+            # close is deliberately not unconditional here.
+            #
+            # ``close()`` DISARMS both legs — ``soft_kill`` returns ``False`` and
+            # ``hard_kill`` is a no-op once ``_closed`` — so closing it before the
+            # reaper's escalation would silently delete the kill on BOTH
+            # platforms now that the POSIX escalation goes through the tree too
+            # (``reap``'s Q1 group kill). The reaper is DETACHED by design
+            # (finding B1) and may still be inside its grace when this ``finally``
+            # runs, so the close waits for it.
+            #
+            # ``row.tree is None`` is not a nicety either: the abort-before-spawn
+            # path and the spawn-failure path both reach here with no tree.
+            tree = row.tree
+            if tree is not None and row.tree_owned:
+                task = row.reaper_task
+                if task is None or task.done():
+                    tree.close()
+                    # NULLING IS THE MECHANISM, not tidiness: it is what makes a
+                    # later ``abort_child`` → ``reap(..., tree=row.tree)`` get
+                    # ``None`` and fall back to the signal legs instead of
+                    # dispatching into a disarmed object. Mirrors the reference
+                    # adoption (``rpc/rpc_client.py``'s ``stop()``).
+                    row.tree = None
+                else:
+                    task.add_done_callback(
+                        lambda _: (tree.close(), setattr(row, "tree", None))
+                    )
 
     async def _stream_and_reap(
         self,
@@ -1098,7 +1226,7 @@ class PrintChannel:
                 # THE CHILD IS GONE but the pipes are not. Its answer is already
                 # in ``state``; the only open question is who is squatting.
                 exit_code = exited.result()
-                await self._drain_after_exit(proc, pumps)
+                await self._drain_after_exit(proc, pumps, row.tree)
             else:
                 # Neither: the deadline fired first.
                 timed_out = True
@@ -1156,7 +1284,9 @@ class PrintChannel:
         return envelope(outcome="ok", exit_code=exit_code)
 
     @staticmethod
-    async def _drain_after_exit(proc: Any, pumps: asyncio.Future[Any]) -> None:
+    async def _drain_after_exit(
+        proc: Any, pumps: asyncio.Future[Any], tree: ProcessTree | None
+    ) -> None:
         """Bounded drain once the child is dead — and evict whoever holds the pipes.
 
         Reaching here with pumps still running means a process OTHER than the
@@ -1172,6 +1302,30 @@ class PrintChannel:
 
         ``kill_tree`` is handed the real ``proc``: its ``returncode`` is set, so
         the child half is a no-op and only the squatters are signalled.
+
+        ``tree`` (#220) changes this site on win32 ONLY, where the inode walk has
+        nothing to read and the job is the only thing that can reach a squatter.
+        POSIX is deliberately unchanged: ``kill_tree`` runs no group kill, and
+        this is the caller that must not — it fires on the delegation SUCCESS
+        path against a group whose leader has been reaped, which is revision 1
+        of ``ProcessTree.close()`` again (it killed helpers a hook had
+        deliberately backgrounded and exited 0 over).
+
+        Two bounds on the win32 leg, so a reader does not have to re-derive them:
+
+        * The kill is carried by ``TerminateJobObject``, not by ``taskkill /T``:
+          ``/T`` follows LIVE parent links and the root is already dead here.
+          #202 measured this exact shape and asserted the grandchild SURVIVES the
+          walk (``tests/process_tree/test_process_tree_real_processes.py``). If
+          ``_attach_win32`` fell back (``contained=False``, ``job is None``) this
+          leg is a no-op on win32.
+        * It is not a stale-pid kill. This branch is entered only while ``pumps``
+          is unfinished, i.e. while a descendant still holds the child's stdio —
+          so the transport still holds the ``Popen`` (``asyncio``'s subprocess
+          transport nulls ``_proc`` only once every pipe disconnects, which is
+          the negation of this branch's own precondition), and its open process
+          handle pins the pid on Windows. Read from CPython, not measured on a
+          Windows host.
         """
 
         if pumps.done():
@@ -1181,7 +1335,7 @@ class PrintChannel:
             await asyncio.wait_for(asyncio.shield(pumps), POST_EXIT_DRAIN_SECONDS)
         if pumps.done():
             return
-        kill_tree(proc, pipe_holder_pids(links))
+        kill_tree(proc, pipe_holder_pids(links), tree=tree)
         with contextlib.suppress(Exception):
             await asyncio.wait_for(asyncio.shield(pumps), POST_EXIT_DRAIN_SECONDS)
         # Cancelled unconditionally: a pump still blocked on a pipe some
@@ -1210,6 +1364,7 @@ class PrintChannel:
                     grace=self._grace,
                     eager_kill=row.eager_kill,
                     descendants=descendant_pids(proc.pid),
+                    tree=row.tree,
                 )
             )
             row.reaper_task = task
@@ -1221,11 +1376,46 @@ class PrintChannel:
 
     @staticmethod
     def _eager_abort(proc: Any, row: RunningChild) -> None:
-        """Second Ctrl+C: stop waiting, start killing."""
+        """Second Ctrl+C: stop waiting, start killing.
+
+        Through the row's tree (#220), which on win32 makes this a
+        ``taskkill /T /F`` plus ``TerminateJobObject`` where it used to be a
+        root-only ``TerminateProcess``, and on POSIX supplies Q1's group kill
+        when — and only when — no reaper is left to supply it (see below).
+        STATED COST: this method is synchronous
+        and is called from inside ``except asyncio.CancelledError`` handlers, so
+        on win32 it now runs a ``subprocess.run(taskkill, timeout=5)`` on the
+        event-loop thread. That is the same cost ``RpcClient.stop()`` and the
+        hook timeout ladder already pay on the loop, and it is accepted for the
+        same reason: the alternative to a bounded stall is a leaked tree. The
+        two obvious remedies are worse — a ``terminate_job``-only path drops the
+        ``/T`` walk, and awaiting a thread inside ``reap`` would punch a
+        cancellation hole between the kill and the shielded final wait.
+        """
 
         row.eager_kill = True
         row.state = "stopped"
-        kill_tree(proc, descendant_pids(proc.pid))
+        kill_tree(proc, descendant_pids(proc.pid), tree=row.tree)
+        # Q1 ON THE CANCEL PATH (#220 review round 2, posix2/P2). ``kill_tree``
+        # deliberately runs no POSIX group kill of its own, so on macOS — where
+        # ``descendant_pids`` is ``[]`` — the line above is a root-only
+        # ``SIGKILL`` and a non-``setsid`` grandchild survives it. MEASURED on
+        # Darwin: a delegation cancelled before its deadline (``reaper_task is
+        # None``) left the grandchild alive, while the timeout path killed it.
+        # Ctrl+C is ``turn_task.cancel()`` (``batch.py``), so that is the path a
+        # human actually drives.
+        #
+        # ONLY when nothing else will escalate. If a reaper task exists and is
+        # still running it owns the escalation and runs Q1 itself after its
+        # grace; duplicating it here would kill the tree BEFORE that grace
+        # elapses, which is the window ``run()``'s close rule (§A.6) exists to
+        # observe and
+        # ``test_the_tree_is_closed_after_the_reapers_escalation_never_before``
+        # exists to measure. The condition is the same one ``abort_child`` and
+        # :meth:`_reap` use to decide whether to BUILD a reaper.
+        task = row.reaper_task
+        if task is None or task.done():
+            kill_group_if_live(proc, row.tree)
 
 
 __all__ = [
