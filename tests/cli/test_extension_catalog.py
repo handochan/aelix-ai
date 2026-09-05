@@ -202,6 +202,109 @@ def test_fetch_git_missing_root_catalog_raises() -> None:
         ec.fetch_catalog("git+ssh://host/empty.git", git_runner=git_runner)
 
 
+def test_default_git_runner_dispatches_to_run_contained(monkeypatch: pytest.MonkeyPatch) -> None:
+    # #221: the DEFAULT runner is a contained run — its own session and a group /
+    # job the timeout ends WHOLE. Measured on main dff6b62: a `git clone` whose
+    # `git` is SIGKILLed root-only leaves `git remote-http`, blocked in libcurl
+    # on a hung server, alive 3 s later at ppid 1 and still in OUR group. Nothing
+    # is spawned here; what is pinned is the call the site makes — argv straight
+    # through, GIT_CLONE_TIMEOUT, and no capture_output/text/check kwarg smuggled
+    # back in.
+    calls: list[tuple[list[str], dict[str, object]]] = []
+
+    def _fake(argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        calls.append((list(argv), dict(kwargs)))
+        return subprocess.CompletedProcess(argv, 0, stdout=b"", stderr=b"")
+
+    monkeypatch.setattr(ec, "run_contained", _fake)
+    argv = ["git", "clone", "--depth", "1", "ssh://host/repo.git", "/nonexistent/dest"]
+    result = ec._default_git_runner(argv)
+    assert result.returncode == 0
+    assert calls == [(argv, {"timeout": ec.GIT_CLONE_TIMEOUT})]
+
+
+def test_a_clone_timeout_through_the_default_runner_is_a_catalog_error_naming_the_cause(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The message names the CAUSE, not the symptom. Since #221 the clone runs in
+    # a session of its own and therefore has no terminal, so the one thing that
+    # newly cannot happen — a password, passphrase or host-key prompt — is the
+    # first thing to check when a clone produces nothing within the timeout;
+    # `{exc}` alone would have said only "timed out after 60.0 seconds".
+    # ``git_runner=`` is deliberately NOT injected: the branch under test is the
+    # one the REAL default runner reaches.
+    #
+    # WHAT IS PINNED HERE IS A TWO-PLATFORM SENTENCE (post-merge review
+    # adversary-1). The message used to say "a catalog clone is non-interactive",
+    # which is false on win32: there is no session there — the containment is
+    # CREATE_NEW_PROCESS_GROUP plus a job — the clone keeps our console, and git
+    # reads CONIN$ rather than the stdin we set to NUL, so an unanswered console
+    # prompt burns the whole timeout and arrives in this very branch. The wording
+    # does not branch on sys.platform, deliberately, so this assertion is the
+    # same on every leg: assert the win32 half explicitly, or a future edit can
+    # drop it and stay green on darwin/linux.
+    def _timeout(argv: list[str], **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        raise subprocess.TimeoutExpired(cmd=argv, timeout=ec.GIT_CLONE_TIMEOUT)
+
+    monkeypatch.setattr(ec, "run_contained", _timeout)
+    with pytest.raises(ec.CatalogError, match="a prompt nobody answered") as excinfo:
+        ec.fetch_catalog("git+ssh://host/hangs.git")
+    message = str(excinfo.value)
+    assert "credential helper" in message and "ssh agent" in message
+    assert f"{ec.GIT_CLONE_TIMEOUT:g}s" in message
+    # The two ways a prompt still reaches a user, both named, neither gated on
+    # the platform the test happens to run on (adversary-1).
+    assert "askpass dialog" in message
+    assert "on Windows a prompt on the console this clone shares with Aelix" in message
+    assert "no terminal to be asked on" in message
+    assert "non-interactive" not in message
+    # Nothing was printed before the deadline, so nothing is quoted: the tail of
+    # SITE-5 below is appended only when there is something to append.
+    assert "git said" not in message
+
+
+def test_a_clone_timeout_quotes_what_git_said_before_the_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # #221 review SITE-5. The branch above names ONE likely cause; since #221 the
+    # timeout also carries the partial stderr (bytes on both platforms, never
+    # None), so a clone that hung for an unrelated reason — a genuinely slow
+    # remote — is no longer told only to configure a credential helper it may
+    # already have. The guessed cause STAYS (the unanswered-prompt sentence is
+    # what the message is for — see adversary-1 in the case above); the evidence
+    # is appended, capped at 200 characters the way the non-zero-exit branch caps
+    # its own.
+    def _timeout(argv: list[str], **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        raise subprocess.TimeoutExpired(
+            cmd=argv,
+            timeout=ec.GIT_CLONE_TIMEOUT,
+            stderr=b"Cloning into '/tmp/dest'...\nremote: Enumerating objects: 1\n",
+        )
+
+    monkeypatch.setattr(ec, "run_contained", _timeout)
+    with pytest.raises(ec.CatalogError, match="a prompt nobody answered") as excinfo:
+        ec.fetch_catalog("git+ssh://host/slow.git")
+    message = str(excinfo.value)
+    assert "credential helper" in message
+    assert " — git said: Cloning into '/tmp/dest'...\nremote: Enumerating objects: 1" in message
+
+
+def test_a_clone_timeout_caps_the_quoted_stderr_at_200_characters(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The same cap the non-zero-exit branch uses: a remote that spewed megabytes
+    # before the deadline must not become the CatalogError (#221 review SITE-5).
+    def _timeout(argv: list[str], **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        raise subprocess.TimeoutExpired(cmd=argv, timeout=ec.GIT_CLONE_TIMEOUT, stderr=b"E" * 5000)
+
+    monkeypatch.setattr(ec, "run_contained", _timeout)
+    with pytest.raises(ec.CatalogError, match="a prompt nobody answered") as excinfo:
+        ec.fetch_catalog("git+ssh://host/loud.git")
+    message = str(excinfo.value)
+    assert " — git said: " + "E" * 200 in message
+    assert "E" * 201 not in message
+
+
 # =====================================================================
 # === fetch_all — degrade bad source to Catalog(error=...) =============
 # =====================================================================

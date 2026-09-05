@@ -266,7 +266,7 @@ class StatusExtension:
     def _active_tools(self) -> tuple[str, ...]:
         """``ctx.get_active_tools()``, or empty when nothing is bound.
 
-        The unbound action is a THROWING stub (``extensions/api.py:377``,
+        The unbound action is a THROWING stub (``extensions/api.py:418``,
         ``_make_throwing_stub``), unlike ``get_all_tools`` which the API itself
         already converts to ``[]``. So this one has to catch, and an empty tuple
         is the right degradation: "we could not determine the active tools" is

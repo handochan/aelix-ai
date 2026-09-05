@@ -36,7 +36,7 @@ papers over with an ``aelix_agents``-private channel.
 
 THREE MEASURED CAVEATS, all of which shape this file.
 
-1. ``EventBus.emit`` (``extensions/api.py:280-286``) calls handlers
+1. ``EventBus.emit`` (``extensions/api.py:321-327``) calls handlers
    SYNCHRONOUSLY, DISCARDS the return value — so an ``async def`` subscriber's
    body never runs — and swallows every handler exception under
    ``contextlib.suppress(Exception)`` with NO logging. A broken subscriber
@@ -528,7 +528,7 @@ class SubagentProgressBridge:
         Read through ``api.runtime`` rather than a captured ``ctx.ui`` for the
         reason in caveat 2, and compared by IDENTITY against the headless
         singleton — the same test ``ExtensionContext.has_ui`` itself performs
-        (``extensions/api.py:1175-1176``).
+        (``extensions/api.py:1216-1217``).
         """
 
         try:

@@ -98,7 +98,7 @@ SCOPE_UNCLASSIFIED = "unclassified"
 
 #: The value ``loader._entry_point_source_info`` writes into
 #: :attr:`Extension.source_info`. Matched, never re-derived: it is
-#: ``ExtensionSourceInfo.source``'s own ``Literal`` member (``api.py:918``), so
+#: ``ExtensionSourceInfo.source``'s own ``Literal`` member (``api.py:959``), so
 #: a rename there is a type error rather than a silently wrong label here.
 _LOADER_ENTRY_POINT_SOURCE = "entry_points"
 
@@ -309,7 +309,7 @@ def resolve_project_trusted_fail_closed(
 
     * trust was resolved to ``True`` — the real answer; and
     * nothing ever bound it. ``ExtensionContext.__init__`` installs
-      ``is_project_trusted or (lambda: True)`` (``extensions/api.py:1094``) and
+      ``is_project_trusted or (lambda: True)`` (``extensions/api.py:1135``) and
       ``AgentHarnessOptions.project_trusted`` defaults to ``True``
       (``harness/core.py:289``), both citing pi's ``runner.ts:273`` pre-bind
       default.

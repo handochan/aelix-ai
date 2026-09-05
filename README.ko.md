@@ -90,7 +90,7 @@ curl -fsSL https://raw.githubusercontent.com/handochan/aelix-ai/main/install.sh 
   증명하는 것은 PowerShell 문법 휠이 거기서 설치되고 로드되고 파싱된다는 사실입니다.
   프롬프트가 뜨지 않는 것을 눈으로 본 사람은 아직 없습니다.
 - 위임한 자식을 죽여도 이제 그 자손이 고아로 남지 않습니다 — 2026-09-05부터는 `aelix_agents/`
-  밖의 세 곳뿐 아니라 그 **안쪽**에서도 그렇습니다. RPC 위임 채널, subprocess hook,
+  밖의 지점들뿐 아니라 그 **안쪽**에서도 그렇습니다. RPC 위임 채널, subprocess hook,
   `models.json`의 `!command`는 자식을 Windows에서는 job object에, POSIX에서는 프로세스 그룹에
   넣고 루트가 아니라 트리를 끝냅니다
   ([#202](https://github.com/handochan/aelix-ai/issues/202),
@@ -108,6 +108,16 @@ curl -fsSL https://raw.githubusercontent.com/handochan/aelix-ai/main/install.sh 
   근거는 또 스위트지만 여기서는 진짜 프로세스입니다: 테스트가 손자를 띄우고, 트리를 내리고,
   손자가 사라졌는지 확인합니다. job object와 `taskkill.exe`가 실제로 실행되는 레그는
   `windows-latest`뿐입니다.
+  같은 봉쇄가 이제 Aelix가 스스로 시간을 걸고 돌리는 명령 세 곳 — 확장의
+  `exec`, 카탈로그 `git clone`, `fd` 트리 스캔 — 에도 적용됩니다
+  ([#221](https://github.com/handochan/aelix-ai/issues/221)).
+  타임아웃을 넘긴 명령은 파이프라인을 남기지 않고 트리째 사라지고, 헬퍼를
+  백그라운드로 남기고 정상 종료한 명령은 마감이 다 지난 뒤 타임아웃으로
+  보고되는 대신 성공으로 보고됩니다 — 둘 다 macOS에서 쟀고, `exec` 표면은
+  실제 모델로도 쟀습니다. Windows 쪽은 CPython 소스로 추론했고 스위트로만
+  잽니다: 거기서는 `subprocess.run`이 kill 뒤에 bound 없는 `communicate()`를
+  부르므로 자손이 파이프를 쥐고 있는 한 호출이 돌아오지 않았습니다. 새 실제
+  프로세스 테스트가 `main`에서 멈춰 버릴 바로 그 케이스입니다.
 
 즉 스위트 안의 Windows 회귀는 잡히고, 설치 스크립트도 실제로 돌고, AUTO 모드도 더 이상 강등되지
 않으며, 중단된 위임은 어느 스폰 지점에서든 자기 트리를 데리고 갑니다. 남은 것은 bash 도구가

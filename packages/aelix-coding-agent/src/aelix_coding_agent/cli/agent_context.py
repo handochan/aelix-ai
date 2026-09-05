@@ -693,7 +693,7 @@ def _extension_signpost(cwd_abs: str, active_tool_names: set[str]) -> str:
     if api:
         # THE PATTERN. The original hint was ``grep 'def register_'`` — 10 hits,
         # NONE of them the hook surface, which is spelled ``def on(...)`` (the
-        # typed overloads at ``extensions/api.py:1303-1629``). A model told
+        # typed overloads at ``extensions/api.py:1344-1670``). A model told
         # "hooks" exist and handed a grep that cannot find them invents a name.
         #
         # MIND THE PAREN. The obvious widening ``def (register_|on)\(`` is a

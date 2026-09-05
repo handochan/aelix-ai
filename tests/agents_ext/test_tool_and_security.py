@@ -3,7 +3,7 @@
 Driven against the REAL extension objects — :class:`_ExtensionRuntime`,
 :class:`ExtensionAPI`, :class:`ExtensionContext` — and not against fakes of
 them, for one reason that matters: ``ctx.has_ui`` is
-``runtime.ui is not HEADLESS_UI_CONTEXT`` (``extensions/api.py:1175-1176``), a
+``runtime.ui is not HEADLESS_UI_CONTEXT`` (``extensions/api.py:1216-1217``), a
 TIME-VARYING value (finding OC-7). A hand-rolled context with a boolean
 attribute cannot express "the UI was bound after this extension loaded", which
 is the state every interactive session is actually in.

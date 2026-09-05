@@ -91,7 +91,7 @@ either: it now runs end to end in CI on `windows-latest`, under both pwsh and Wi
   `windows-latest` uniquely proves is that the PowerShell grammar wheel installs, loads and
   parses there. Nobody has watched the prompt not appear.
 - Killing a delegated child no longer orphans its descendants — and since 2026-09-05 that
-  holds inside `aelix_agents/` too, not only at the three sites outside it. The RPC delegation
+  holds inside `aelix_agents/` too, not only at the sites outside it. The RPC delegation
   channel, subprocess hooks and `models.json`'s `!command` put their child in a job object on
   Windows and a process group on POSIX and end the tree rather than the root
   ([#202](https://github.com/handochan/aelix-ai/issues/202),
@@ -109,6 +109,16 @@ either: it now runs end to end in CI on `windows-latest`, under both pwsh and Wi
   The evidence is the suite again, and here it is real processes: the tests spawn a grandchild,
   tear the tree down and assert the grandchild is gone, and `windows-latest` is the only leg
   where the job object and `taskkill.exe` actually run.
+  The same containment now covers the three places Aelix runs a bounded command of its own —
+  an extension's `exec`, the catalog `git clone`, and the `fd` tree scan
+  ([#221](https://github.com/handochan/aelix-ai/issues/221)). A command that runs past its
+  timeout takes its whole tree with it instead of leaving the pipeline behind, and a command
+  that exits successfully after backgrounding a helper is reported as the success it was
+  rather than as a timeout once its whole deadline had passed — both measured on macOS,
+  including through a real model at the `exec` surface. On Windows the fix is reasoned from
+  CPython's source and measured only by the suite: `subprocess.run` follows its kill with an
+  unbounded `communicate()` there, so the call never returned while any descendant still held
+  the pipe; the new real-process test is the case that would hang on `main`.
 
 So Windows regressions in the suite are caught, the installer runs for real, AUTO mode no
 longer demotes, and an aborted delegation takes its tree with it at every one of its spawn

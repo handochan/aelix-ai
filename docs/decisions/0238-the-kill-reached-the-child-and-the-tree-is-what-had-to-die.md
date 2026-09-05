@@ -1,6 +1,6 @@
 # 0238. The kill reached the child, and the tree is what had to die
 
-Status: Accepted (2026-09-05; **#220 amendment 2026-09-05** — adopted at the four `aelix_agents` sites: the print-channel spawn, the reaper's win32 legs, `rpc_channel`'s `_reap`/`_eager_abort`, and `print_mode`'s handler block)
+Status: Accepted (2026-09-05; **#220 amendment 2026-09-05** — adopted at the four `aelix_agents` sites: the print-channel spawn, the reaper's win32 legs, `rpc_channel`'s `_reap`/`_eager_abort`, and `print_mode`'s handler block; **#221 amendment 2026-09-05** — the three `subprocess.run(timeout=)` sites adopt `run_contained`)
 Date: 2026-09-05
 Supersedes/relates: ADR-0197 (the `aelix_agents` reaper, whose finding I2 —
 "a `/proc` walk and not `os.killpg`" — this ADR **reconciles rather than
@@ -58,7 +58,8 @@ puts them in a `win32job` job with `KILL_ON_JOB_CLOSE`. And
 `tui/completion.py:250` use `subprocess.run(timeout=)`, whose CPython
 implementation kills the root only and then, on Windows, follows the kill with
 an **unbounded** `communicate()`. That is outside #202's grep
-(`proc.terminate()`/`proc.kill()`) and is #221.
+(`proc.terminate()`/`proc.kill()`) and is #221, landed 2026-09-05 in the
+amendment under "Consequences" below.
 
 ## Two facts from Pi
 
@@ -335,8 +336,14 @@ against its `< 2.0` bound. The bound is unchanged.
   carried on the registry row rather than fetched from the client; and
   `print_mode.run_print_mode` installs a `SIGBREAK` handler on Windows instead
   of switching the whole handler block off there.
-- **#221 — the `subprocess.run(timeout=)` sites**, with the unbounded
-  `communicate()` after the kill on Windows.
+- **#221 — the `subprocess.run(timeout=)` sites: landed 2026-09-05.** All
+  three are converted, and they are named here by function for the reason the
+  bullet above gives: `extensions/api.py`'s `ExtensionAPI.exec`,
+  `cli/extension_catalog.py`'s `_default_git_runner` and `tui/completion.py`'s
+  `_fd_enumerate` now call `run_contained` — the one synchronous runner in
+  `_process_tree.py` — so a timeout ends the command's tree instead of its root
+  and the unbounded `communicate()` after the kill on Windows is gone. What it
+  cost is in the amendment under "Consequences" below.
 - **#222 — `tools/bash.py` / `tools/_subprocess.py` adopting `ProcessTree`**,
   so the bash tool gets a job object instead of `taskkill` on Windows. That is
   the #9129 shape exactly, and it is the one place in the tree where the shape
@@ -392,13 +399,20 @@ empty, so only the group kill of the paragraph below reaches anything there.
   `descendant_pids()` is `[]` on a host with no `/proc`, which made the macOS
   escalation a root-only `SIGKILL`: measured on the owner's box, a child that
   ignores SIGTERM and spawns a **non-`setsid`** grandchild left that grandchild
-  alive after the walk-and-root kill and lost it to the group kill, and this
-  tree has two spawn sites of exactly that shape — `ExtensionContext.exec` and
-  `tools_manager`'s version probe, both plain `subprocess.run` with neither
-  `start_new_session` nor `process_group`. It is an addition and not a
-  substitution — it runs *after* the walk and addresses only what the walk
-  could not name — so ADR-0197's finding I2 and the reconciliation at the top
-  of this file both stand. It is kept OUT of `kill_tree` for a measured
+  alive after the walk-and-root kill and lost it to the group kill, and one
+  spawn site reachable INSIDE a delegated child still has exactly that shape —
+  `tools_manager`'s version probe (`_command_exists`), plain `subprocess.run`
+  with neither `start_new_session` nor `process_group`, reached from
+  `ensure_tool` by the `grep`/`find` tools inside an agent turn.
+  `ExtensionAPI.exec` was the second until #221 gave it a session of its own.
+  The count is scoped to what runs inside a delegated child:
+  `cli/extension_install.py`'s pip runner and `tui/shell.py`'s `$EDITOR` have
+  the same kwarg shape but run only from the `extension install` CLI and the
+  TUI editor, never inside a delegated child, so `reap()`'s `killpg` never has
+  them in its group. The group kill is an addition and not a substitution — it
+  runs *after* the walk and addresses only what the walk could not name — so
+  ADR-0197's finding I2 and the reconciliation at the top of this file both
+  stand. It is kept OUT of `kill_tree` for a measured
   reason: `_drain_after_exit` reaches that function on a delegation's
   **success** path with a child that is already dead and already reaped, and a
   `killpg(SIGKILL)` there is the draft `close()` this ADR reverted, which killed
@@ -447,3 +461,194 @@ empty, so only the group kill of the paragraph below reaches anything there.
   (**measured**, `.omc/specs/220-progress-2026-09-05.md` §1) and 149 on Windows
   — the value `128 + SIGBREAK` implies, still **unmeasured**: the
   `windows-latest` leg is where it gets a number.
+- **The three `subprocess.run(timeout=)` sites end trees too (amendment,
+  2026-09-05).** #221 gave `_process_tree.py` one synchronous runner,
+  `run_contained`, and `ExtensionAPI.exec`, `_default_git_runner` and
+  `_fd_enumerate` call it. Its shape: the caller's `timeout` bounds the ROOT
+  (`proc.wait(timeout=)`) and not pipe EOF, which is what CPython's `run()`
+  gets wrong twice over. It waits for EOF, so a root that exited **0** while
+  leaving a pipe-holder behind was reported as a timeout only after the whole
+  deadline had passed — measured on `main`, `out=b'done\n'` with a
+  `TimeoutExpired` at 3.3 s, and `code=124 killed=True stdout='done\n'`
+  through a real model at the `exec` surface; and on Windows its post-kill
+  `communicate()` has no bound at all, so the call cannot return while any
+  descendant holds the pipe. After the root exits, `run_contained` drains its
+  two daemon reader threads on Pi's rule: the idle timer is armed AT THE EXIT
+  and re-armed by every chunk that arrives after it (`EXIT_DRAIN_SECONDS =
+  0.1`, Pi's `EXIT_STDIO_GRACE_MS = 100`), because measuring idleness from the
+  last chunk alone returns instantly whenever the root was quiet before
+  exiting and bins the tail — measured `b'EARLY\n'` against Pi's
+  `b'EARLY\nLATE0..4\n'`. The drain is capped absolutely at `DRAIN_CAP_SECONDS
+  = 2.0` from the exit, which is an Aelix-only divergence (Pi drains
+  unbounded) taken because `api.exec`'s DEFAULT is `timeout_ms=None`, under
+  which an unbounded drain never returned — measured, 10 MB buffered at 9 s
+  and still climbing. Its cost is stated rather than hidden: a DESCENDANT
+  still writing at the cap has its output cut, with the root's own
+  `returncode` intact — never the root's own output, which is at most a pipe
+  buffer at exit and drains in milliseconds. **The cap bounds the CALLER'S
+  WAIT, and the bytes stop accumulating at the return** (post-merge review
+  site-exec-1): after `run_contained` returns, the two daemon readers keep
+  reading — so a descendant that still holds the pipe is never stalled on a
+  full one — but they DISCARD from then on, retaining at most one chunk. The
+  thread and its fd still live until that holder closes the pipe — one daemon
+  thread and one fd per call for as long as a holder outlives the call, which
+  is accepted; what does not survive the return is the BUFFER.
+  The timeout ladder is hard only —
+  `tree.hard_kill()`, then `proc.kill()` as a belt, then a `proc.wait` bounded
+  by `REAP_GRACE_SECONDS = 5.0` and a post-kill drain bounded by
+  `KILL_DRAIN_SECONDS = 1.0` (joining the readers for the rest of the grace
+  instead cost a flat 6.0 s against a 1 s timeout whenever a pipe-holder
+  outside the tree survived, and bought no bytes; the idle rule costs ~1.1 s).
+  **On win32 both ladders cost one `taskkill` more, and the bound says so
+  (DOC-4/HC4).** `hard_kill` runs `taskkill /T /F` synchronously before
+  anything else there, and `_taskkill_tree` is itself a
+  `subprocess.run(timeout=5)`, so the win32 timeout path is `timeout + ≤5 s +
+  REAP_GRACE_SECONDS + KILL_DRAIN_SECONDS` and the interrupt leg below is `≤5
+  s + 0.25 s`, not 0.25 s. Both terms are our own `timeout=`, so the latency
+  is still bounded by us and not by the command; the real number comes from
+  the `windows-latest` leg's `warnings.warn` (#220 measured that `taskkill`
+  rung at 0.031 s). A SECOND interrupt landing inside that `taskkill` leaves
+  `terminate_job` and the `proc.kill()` belt unrun (HC7). There is no soft
+  rung, for two measured reasons rather than a preference: these three sites
+  have none today — CPython's `run()` sends `process.kill()` on
+  `TimeoutExpired` with no SIGTERM leg, so a soft rung would be new behaviour
+  to justify — and Pi's is not a bound worth copying, because `execCommand`
+  guards its 5 s SIGKILL timer with `if (!proc.killed)` while Node sets
+  `killed` when the signal is SENT, so the escalation never fires: a `trap ''
+  TERM` child ran its full 40 s under a 1 s Pi timeout. Every one of these
+  calls also carries an interrupt leg — the same ladder, bounded at
+  `INTERRUPT_REAP_SECONDS = 0.25`, on ANY `BaseException` raised anywhere
+  after the spawn: the wait, the drain, and (post-merge review posix-runner-1,
+  measured 12/12 leaked trees when a `KeyboardInterrupt` landed before the
+  readers started, 0/6 once it landed inside the covered `try`) the abort
+  hand-over and both reader starts too, while `ProcessTree.attach` carries its
+  own root-only belt — because `subprocess.run` kills the root on any exception and
+  `Popen.__exit__` states the assumption "the SIGINT was also already sent to
+  our child processes", which containment makes false: measured under a real
+  pty, `^C` gave the parent a `KeyboardInterrupt` and left the contained child
+  running. **Which callers that leg reaches is narrower than "every one", and
+  it is measured (HC2).** It reaches `aelix extension discover --refresh`,
+  whose clone runs the wait on the MAIN thread — and there only from the
+  SECOND ^C, because the CLI runs under `asyncio.run` and `Runner._on_sigint`
+  cancels the main task and RETURNS on the first: measured, one ^C left a
+  child running to its full bound (the timeout ladder ended it) and two ran
+  the interrupt ladder at 0.25 s. What it buys there is that the tree is dead
+  before `_git_clone_bytes`'s `finally: shutil.rmtree` deletes the directory
+  out from under a live `git`. It does NOT reach `ExtensionAPI.exec`, which
+  awaits the helper on an `asyncio.to_thread` worker: CPython runs signal
+  handlers on the main thread only, so at that site the leg fires only for a
+  `BaseException` raised INSIDE the worker and a terminal ^C never enters the
+  frame at all (measured: two ^C, ladder calls `[]`). That site is closed by
+  `AbortHandle` instead — the exec paragraph below. `_taskkill_tree` was
+  itself #221's shape — `capture_output=True` with a discarded result,
+  followed on win32 by that same unbounded post-kill `communicate()` — so all
+  three of its stdio streams are `DEVNULL` now and there is no pipe left for
+  the join to wait on.
+
+  **The session decision at these three sites is the opposite of the one taken
+  above for `!command`, and it is measured.** All three spawn with
+  `start_new_session=True`. `process_group=0` — this ADR's own answer at its
+  new sites — was measured against a real `git clone` over ssh with an unknown
+  host key: `git`, `ssh`, `sshd-session` and `sshd-auth` all went to `T` and
+  **no prompt was ever printed**, for the full 60 s, because `ssh`'s
+  `read_passphrase` calls `tcsetattr` and `tcsetattr` from a background process
+  group raises `SIGTTOU` group-wide, just as a `/dev/tty` READ raises
+  `SIGTTIN`. The pty measurement recorded above is narrower than it was read to
+  be: it showed that a `process_group=0` child can *open* `/dev/tty`
+  (`HAVE_TTY`), not that it can read from it. So at these sites a group inside
+  the session is a silent stall, not a prompt. The other alternative — no POSIX
+  group at the git site, which is the one shape that keeps an interactive first
+  clone working — is ruled out by the leak #221 exists to close: `git
+  remote-http`, blocked in libcurl against a server that accepts and never
+  answers, outlives a `SIGKILL` aimed at `git` alone and is alive 3 s later at
+  `ppid 1` in our group, and the ssh transport helper likewise, so "the remote
+  helper exits on pipe EOF anyway" is false. With no controlling terminal every
+  tty read fails at once with the tool's own message — `fatal: could not read
+  Username for '…'`, exit 128, measured 0.08 s on darwin (the tail after that
+  colon is the platform's `strerror(ENXIO)` — `Device not configured` on
+  darwin, `No such device or address` on Linux — so it is not quoted here);
+  `Host key verification failed.`, exit 128 at 0.62 s — which
+  `_git_clone_bytes` already surfaces, while askpass programs and GUI/keychain
+  helpers need no terminal and keep working. **"Non-interactive" is therefore
+  about the terminal and nothing else (DOC-3/SITE-3).** An askpass program is
+  still used and can still prompt in its own window — `GIT_ASKPASS` /
+  `SSH_ASKPASS`, and VS Code exports `GIT_ASKPASS` unconditionally — measured,
+  a contained clone under a recording askpass called it twice; a prompt nobody
+  answers costs the full 60 s clone timeout before the clone fails, exactly as
+  it did before #221. **What it gives up, taken in the owner's absence and
+  recorded so it can be reversed:** a catalog clone is now non-interactive on
+  the terminal — a first clone from a machine whose host key is unknown, or
+  whose key needs a passphrase no agent holds, fails fast with git's or ssh's
+  message instead of prompting, and `docs/guides/private-catalog.md` says so —
+  and an extension command that expects a terminal fails at once rather than
+  stopping until its timeout, while one that reaches for an askpass-style
+  program can still block until that timeout. **Both sentences are POSIX
+  sentences, and every surface that carries them now says so (post-merge
+  review adversary-1):** on win32 there is no session to take away —
+  `containment_spawn_kwargs` returns `CREATE_NEW_PROCESS_GROUP` and the job is
+  the containment — so both children keep the console Aelix was started from,
+  and a program that reads it directly (git reads `CONIN$`, not our stdin,
+  which is `NUL` at both sites) can still prompt there; unanswered, that prompt
+  costs the full `GIT_CLONE_TIMEOUT` at the clone and the command's own timeout
+  at `exec`, which is exactly the stall the POSIX sentence says has been
+  designed away. The guide, both CHANGELOG bullets, the row in
+  `docs/decisions/README.md` and the clone's own `CatalogError` all carry the
+  qualifier; Windows remains an unsupported host (README).
+  **The reversal path** is not
+  `process_group=0` but "no POSIX group at the git site, job on win32 only",
+  and its measured cost is the `git remote-http` leak above.
+
+  **`kill_on_close=False` at all three, and the knob the first draft of
+  `run_contained` had is gone.** "A member still alive after the command exited
+  is a stray by definition" is false: `git credential-cache--daemon` is spawned
+  by `credential-cache.c`'s `spawn_daemon()` without waiting and without
+  `setsid`, so it re-parents to init and stays IN the clone's group — measured,
+  `ppid 1` with the git child's pgid. The timeout `killpg` therefore reaches it,
+  which is accepted and bounded: only a daemon THIS clone started, at most 60 s
+  of cached credentials, and the next `store` restarts it (measured). The
+  success path must not reach it and does not, because `close()` here is a
+  release exactly as this ADR's own criterion says.
+
+  **The exec surface diverges from Pi deliberately** (ADR-0235: a divergence
+  needs no ADR, so this is a record and not a justification). No SIGTERM rung,
+  for the reasons above; `code=124` on a timeout and `127` on a missing binary
+  where Pi returns `0` with `killed=true` and `1`; the kill is a tree kill and
+  not a root kill; the command has no controlling terminal where Pi's stays in
+  session; and the drain has a cap where Pi's has none. It converges where
+  today's behaviour was the bug: stdin is ignored rather than inherited from the
+  TUI, output is decoded utf-8 with `errors="replace"` (so an undecodable byte
+  is U+FFFD instead of the `UnicodeDecodeError` the locale codec raises today —
+  the cost is legacy-codepage output that used to decode correctly), and the
+  drain is Pi's exit-then-idle rule (Pi #5303/#5753). Universal-newline
+  translation is kept on BOTH paths; `text=True` gave it only to the success
+  path.
+
+  **A regression this change introduced at the exec site, and the handle that
+  closes it (SITE-1).** Giving `api.exec`'s child a session of its own also
+  took it out of the terminal's foreground process group, and the interrupt
+  leg cannot stand in for that here: the call is awaited on an
+  `asyncio.to_thread` worker, a POSIX signal reaches the main thread only, so
+  a ^C never enters the helper's frame. Measured on the exec site's exact
+  shape — a SIGINT to the process group at 1.5 s of a 30 s child — the
+  interrupted parent exited in **0.02 s** on `main` (the ^C reached the child
+  through the terminal and killed it) and in **28.58 s** contained without the
+  handle: the command's whole remaining life, with `Runner.close`'s 300 s
+  executor join and `concurrent.futures.thread._python_exit`'s unbounded join
+  as the ceiling behind it. So `run_contained` takes an `AbortHandle`: the
+  caller holds it, `api.exec` calls `abort()` from its `except
+  asyncio.CancelledError` leg, and the handle hard-kills the tree from the
+  main thread while the worker is still blocked in `proc.wait`. A cancelled
+  turn — Esc, or ^C in `aelix -p` — now ends the command, and the worker
+  returns down the normal exit path with the kill's `returncode`.
+
+  **One loss, worded as a loss.** `api.exec`'s child now leads a session of its
+  own, so on a POSIX host with no `/proc` — macOS — the delegation escalation's
+  group kill (Q1 above) no longer reaches an extension `exec` in flight when a
+  delegation is aborted. Measured: 0 survivors today, 2 under this design (the
+  command and its non-`setsid` grandchild). Linux keeps the coverage through the
+  `/proc` walk and win32 through inherited job membership (**unmeasured**, read
+  from source). On macOS `run_contained`'s own ladder is then that tree's only
+  reaper, and with `timeout_ms=None` there is none at all once the agent process
+  is SIGKILLed. [#228](https://github.com/handochan/aelix-ai/issues/228) carries it; the WeakSet-of-live-trees
+  mitigation proposed in `print_mode`'s signal block is that issue's design and
+  not this one's.

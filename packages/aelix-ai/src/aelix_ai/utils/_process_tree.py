@@ -51,7 +51,10 @@ which ends the remaining members only for a tree attached with
 two reasons: one child per task, so releasing the tree IS being done with it,
 and on Windows the closing handle is the only parent-death backstop there is),
 ``False`` for subprocess hooks and ``!command``, which keep today's
-success-path behaviour on every platform.
+success-path behaviour on every platform, and ``False`` for every
+:func:`run_contained` site — an extension's ``exec``, the catalog ``git
+clone``, the ``fd`` tree scan (#221): a command that exits 0 after
+backgrounding a helper keeps the helper, exactly as it does today.
 
 THE ASSIGNMENT WINDOW. Between ``CreateProcess`` and ``AssignProcessToJobObject``
 the child runs unheld. On the asyncio spawn the window spans the transport's
@@ -108,15 +111,20 @@ import os
 import signal
 import subprocess
 import sys
+import threading
+import time
 import weakref
-from collections.abc import Callable
-from typing import Any, Protocol
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
+from typing import IO, Any, Protocol, cast
 
 __all__ = [
+    "AbortHandle",
     "ProcessTree",
     "_retained_handle",
     "containment_spawn_kwargs",
     "kill_process_tree",
+    "run_contained",
 ]
 
 #: ``subprocess.CREATE_NEW_PROCESS_GROUP``. Spelled as a literal because the
@@ -430,6 +438,16 @@ def _taskkill_tree(pid: int) -> None:
     :exc:`OSError`, so it is caught by name alongside it. The real duration is
     unmeasured — #220's windows leg is the first place a stopwatch around it
     costs nothing.
+
+    ALL THREE STDIO ARE ``DEVNULL``, and that is the #221 bug applied to this
+    function rather than a tidy-up (#221 review win-leg/WIN-3). It used to pass
+    ``capture_output=True`` and throw the result away, which is exactly the
+    shape #221 exists to end: on win32 CPython's ``run()`` follows its kill with
+    an UNTIMED ``communicate()`` to join the reader threads, so a ``taskkill``
+    that hit the 5 s timeout would then block on pipe EOF with no bound at all —
+    and this runs synchronously on the event-loop thread since #220. With no
+    pipe there is nothing for that join to wait on. It is the same reasoning
+    ``util/tools_manager.py``'s version probe already relies on.
     """
 
     # Windows' environment block is case-insensitive and CPython upper-cases
@@ -443,7 +461,9 @@ def _taskkill_tree(pid: int) -> None:
             # gone, which is the goal state, not an error.
             subprocess.run(
                 [argv0, "/T", "/F", "/PID", str(pid)],
-                capture_output=True,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
                 check=False,
                 timeout=5,
             )
@@ -773,3 +793,733 @@ def kill_process_tree(pid: int, *, platform: str | None = None) -> None:
         # ``test_win32_never_touches_killpg_or_sigkill`` deletes exactly these
         # names and passes on the windows runner itself.
         os.killpg(pgid, signal.SIGKILL)  # pyright: ignore[reportAttributeAccessIssue]
+
+
+# ---------------------------------------------------------------------------
+# one bounded synchronous run, contained (#221)
+# ---------------------------------------------------------------------------
+
+#: How long the pipes must fall idle AFTER the root exited before the drain
+#: gives up on them. Pi's ``EXIT_STDIO_GRACE_MS = 100``
+#: (``utils/child-process.ts::waitForChildProcess``, the 2026-06-15 fix for
+#: Pi #5303/#5753). The timer is armed at the EXIT and re-armed on every chunk
+#: that arrives after it; measuring from the last chunk alone returned
+#: instantly whenever the root had been quiet for a grace before exiting and
+#: binned the whole post-exit tail — measured ``stdout=b'EARLY\n'`` with five
+#: late chunks lost, against Pi's ``b'EARLY\nLATE0..4\n'`` (#221 review
+#: PI-1/WIN-1/TP1/POSIX-7).
+EXIT_DRAIN_SECONDS = 0.1
+#: The absolute bound on the post-exit drain, from the exit instant. An
+#: Aelix-only divergence: Pi drains without one. It exists because
+#: ``api.exec``'s DEFAULT is ``timeout_ms=None``, under which the idle rule is
+#: the only other bound and a descendant that never falls idle defeats it —
+#: measured with a helper writing continuously: 10 MB buffered at 9 s and still
+#: climbing, the call never returning (#221 review DOC-1: the ``ru_maxrss``
+#: figure that used to stand here carried no unit and is dropped rather than
+#: restated). The failure mode it buys is stated in :func:`run_contained`'s
+#: docstring.
+#:
+#: WHAT IT BOUNDS IS THE CALLER'S WAIT, NOT THE READER'S LIFE (#221 review
+#: site-exec-1). It used to be written here as the bound on "a chatty holder",
+#: which it is not: the holder goes on writing and the leaked daemon goes on
+#: reading afterwards, and until :meth:`_PipeReader.detach` existed it also went
+#: on RETAINING — measured after a ``returncode == 0`` return, 10 MB grew to
+#: 25 MB over the next 6 s with nobody left to read it. What the cap ends is the
+#: call, at 2 s past the exit; what ends the accumulation is the ``detach`` in
+#: :func:`run_contained`'s ``finally``, after which the reader discards.
+DRAIN_CAP_SECONDS = 2.0
+#: How long the root is given to die after the timeout ladder's kill. Matches
+#: ``oauth/_resolve_config.py``'s bound, and for its reason: on win32 with no
+#: job (a failed attach) and no resolvable ``taskkill.exe`` ``hard_kill`` is a
+#: silent no-op (#202 review win-leg/F3), so a kill that could not kill must
+#: cost a bounded wait rather than the calling thread.
+REAP_GRACE_SECONDS = 5.0
+#: The bound on the post-kill drain. Joining the readers for the remainder of
+#: ``REAP_GRACE_SECONDS`` instead cost a flat 5 s whenever a pipe holder
+#: outside the tree survived — measured ``6.011 s`` for a ``timeout=1.0`` run —
+#: and bought zero bytes, because everything the kill released is readable at
+#: once (#221 review TP4/PI-2). Measured again with the idle rule and an
+#: escaped holder: ~1.1 s.
+KILL_DRAIN_SECONDS = 1.0
+#: The bound on the interrupt ladder's reap. CPython's own number for the same
+#: situation: ``Popen._sigint_wait_secs = 0.25``. Short on purpose — a ^C must
+#: not feel like a five-second hang.
+INTERRUPT_REAP_SECONDS = 0.25
+
+#: ``BufferedReader.read1(n)`` returns what is AVAILABLE rather than blocking
+#: for ``n`` bytes or EOF — measured on py3.12.13/darwin: 10 B at 0.01 s, the
+#: next 10 B at 0.52 s, ``b""`` at 1.02 s. That is what makes an idle timer
+#: mean anything; a plain ``read(65536)`` would observe nothing until EOF.
+_READ_CHUNK_BYTES = 65536
+#: The drain's poll quantum. Small enough that a 0.1 s grace is not measurably
+#: overshot, large enough not to spin.
+_DRAIN_POLL_SECONDS = 0.005
+
+
+@dataclass
+class _ReadState:
+    """The two instants the drain's idle rule is measured from.
+
+    Shared by both readers and by :func:`run_contained`. ``last_chunk_at``
+    is written ONLY by the reader threads (one attribute store, atomic under
+    the GIL — there is no invariant spanning two fields to protect, so there
+    is no lock); ``exited_at`` ONLY by :func:`run_contained`, once when the
+    root exits and once more at the reap on the timeout path.
+    """
+
+    #: When a reader last appended a chunk. Initialised to the spawn instant so
+    #: a root that never writes still has an origin.
+    last_chunk_at: float
+    #: When the root exited (or was reaped after the kill). ``None`` until then.
+    exited_at: float | None = None
+
+
+class _PipeReader(threading.Thread):
+    """One daemon thread draining one pipe into a list of chunks.
+
+    WHY THREADS AND NOT ``select``. Windows anonymous pipes cannot be
+    ``select``ed and have no non-blocking mode, which is why CPython's own
+    ``communicate()`` uses reader threads there; one shape on both platforms is
+    also the only shape this box can test. It is CPython's arrangement with two
+    differences: the chunks are timestamped (so the drain can ask "have the
+    pipes fallen idle?" rather than only "is it EOF?"), and nothing ever joins
+    these threads — see :func:`run_contained`'s leaked-reader paragraph.
+
+    DAEMON, and that is load-bearing rather than defensive: a holder outside the
+    tree (a ``setsid`` descendant on POSIX, a job escapee on win32) never closes
+    the write end, so this thread can be blocked in ``read1`` forever and must
+    not keep the interpreter alive.
+
+    AND IT STOPS RETAINING WHEN THE CALL ENDS (#221 review site-exec-1). A
+    daemon that outlives the call it was started for used to go on appending to
+    ``chunks`` forever: measured after a ``returncode == 0`` return with a pipe
+    holder still alive, 10 MB retained growing to 25 MB over the next 6 s, and
+    +2 threads +2 fds per call, STACKING across calls. :meth:`detach` is what
+    ends that half without ending the read — see its docstring for why the read
+    itself must go on.
+    """
+
+    def __init__(self, stream: IO[bytes], state: _ReadState) -> None:
+        super().__init__(daemon=True)
+        self._stream = stream
+        self._state = state
+        #: Everything read so far. Appended by this thread, read by the caller;
+        #: ``list.append`` is atomic under the GIL and the caller copies before
+        #: joining, so a chunk in flight is either wholly in or wholly out.
+        self.chunks: list[bytes] = []
+        #: ``True`` once the pipe reported EOF — every writer closed its end.
+        self.eof = False
+        #: Set by :meth:`detach`, read by :meth:`run`. One attribute store from
+        #: the caller's thread and one load per chunk from this one, with no
+        #: invariant spanning two fields — the same GIL argument
+        #: :class:`_ReadState` makes, so no lock (#221 review site-exec-1).
+        self._detached = False
+
+    def run(self) -> None:
+        stream = self._stream
+        # ``Popen``'s pipes are ``BufferedReader``s and have ``read1``; the
+        # fallback is for a stream that does not (a test double, a raw file
+        # object) and costs only the idle timer's resolution, never
+        # correctness.
+        read1 = cast("Callable[[int], bytes] | None", getattr(stream, "read1", None))
+        read = read1 if read1 is not None else stream.read
+        try:
+            while True:
+                chunk = read(_READ_CHUNK_BYTES)
+                if not chunk:
+                    self.eof = True
+                    return
+                if self._detached:
+                    # READ ON, KEEP NOTHING (#221 review site-exec-1). Not a
+                    # ``return``: the holder must never be stalled on a full
+                    # 64 KiB pipe by a call that has already gone home. The
+                    # idle timer is not stamped either — the ``_ReadState``
+                    # this shares belongs to a call that has returned.
+                    continue
+                self.chunks.append(chunk)
+                self._state.last_chunk_at = time.monotonic()
+        except (OSError, ValueError):
+            # Ends SILENTLY (#221 review WIN-7). A closed or broken pipe here is
+            # the normal end of a run that was killed, and this thread has no
+            # caller to raise into — it is never joined.
+            pass
+        finally:
+            # The thread owns the close: the caller may have returned already,
+            # and closing under a blocked ``read1`` from another thread is not
+            # portable.
+            with contextlib.suppress(Exception):
+                stream.close()
+
+    def detach(self) -> None:
+        """Keep draining this pipe, but stop RETAINING what comes out of it.
+
+        Called from :func:`run_contained`'s ``finally`` on every reader it
+        started, and NOWHERE ELSE — the payload (``CompletedProcess`` or the
+        ``TimeoutExpired``) is built by :func:`_collected` before that
+        ``finally`` runs, and a clear from inside :func:`_drain` would race it
+        and, on the timeout path, deterministically empty the output
+        ``test_an_exited_root_with_a_pipe_holder_is_a_success_and_keeps_the_tail``
+        preserves (#221 review site-exec-1).
+
+        WHY THE READ GOES ON. The thread cannot be unblocked — that is this
+        module's stated leak, and ``CancelSynchronousIo`` is the win32-only
+        half (#221 §I) — and a reader that stopped reading would leave a live
+        holder wedged on a full pipe buffer the moment it wrote 64 KiB. So the
+        read continues and the bytes are dropped: the thread and the fd still
+        live until the holder closes its end, but memory no longer accumulates.
+
+        RETAINED AFTERWARDS IS AT MOST ONE IN-FLIGHT CHUNK
+        (:data:`_READ_CHUNK_BYTES`): the flag is set before the list is
+        replaced, so the only chunk that can still land is one whose ``if
+        self._detached`` test was already past when this ran. Idempotent.
+        """
+
+        self._detached = True
+        self.chunks = []
+
+
+def _start_reader(stream: IO[bytes] | None, state: _ReadState) -> _PipeReader | None:
+    """Start a reader on ``stream``, or return ``None`` when there is none."""
+
+    if stream is None:  # pragma: no cover — both streams are always PIPE here
+        return None
+    reader = _PipeReader(stream, state)
+    reader.start()
+    return reader
+
+
+def _collected(reader: _PipeReader | None) -> bytes:
+    """Everything ``reader`` has read so far. Never ``None`` — ``b""`` instead.
+
+    ``TimeoutExpired.stdout``/``.stderr`` are part of this helper's contract and
+    callers decode them unconditionally, so a missing stream must read as empty
+    output rather than as ``None``. ``subprocess.run`` is the OTHER WAY ROUND
+    from what this docstring used to claim (#221 review HC3): its POSIX timeout
+    branch is the one that can leave them ``None`` — ``_check_timeout`` passes
+    ``output=b"".join(seq) if seq else None``, so a child that printed nothing
+    yields ``stdout=None stderr=None`` (measured, py3.12.13/darwin) — while its
+    win32 branch re-``communicate()``s after the kill and always attaches bytes
+    for a PIPEd stream (source read; not measurable on this host). So ``b""``
+    here is a deliberate DIVERGENCE from CPython on POSIX, which is why the
+    contract is stated at all.
+    """
+
+    if reader is None:  # pragma: no cover — both streams are always PIPE here
+        return b""
+    return b"".join(list(reader.chunks))
+
+
+def _drain(
+    readers: Sequence[_PipeReader],
+    state: _ReadState,
+    *,
+    exit_drain: float,
+    drain_until: float,
+) -> None:
+    """Read on past the root's death until one of three things is true.
+
+    Ends on whichever comes FIRST (§A.2.6 of the #221 spec):
+
+    (a) every reader has seen EOF, or is no longer alive — the ordinary end,
+        and the only one that proves nothing was lost. The liveness half is
+        cost, not correctness (#221 review HC5): a reader that ended through
+        its ``except (OSError, ValueError)`` leg never sets ``eof``, and
+        without it such a reader cost a full ``exit_drain`` to a thread that
+        was already dead (measured 0.102 s against 0.000 s for an EOF'd
+        control). ``eof`` keeps its documented meaning — "the pipe reported
+        EOF" — rather than being overloaded to mean "this thread is done";
+    (b) the pipes have been idle for ``exit_drain`` measured from
+        ``max(last_chunk_at, exited_at)`` — Pi's rule, with the timer armed at
+        the exit and re-armed by every chunk that arrives after it;
+    (c) ``drain_until`` — the caller's absolute cap.
+
+    A reader still blocked when this returns is LEFT ALONE. It is a daemon
+    thread and it ends when the last holder of the write end closes it; there
+    is no portable way to unblock it (``CancelSynchronousIo`` on win32 is the
+    win32-only half and is not adopted — #221 §I).
+    """
+
+    while True:
+        if all(reader.eof or not reader.is_alive() for reader in readers):
+            return
+        now = time.monotonic()
+        if now >= drain_until:
+            return
+        armed_at = state.last_chunk_at
+        exited_at = state.exited_at
+        if exited_at is not None and exited_at > armed_at:
+            armed_at = exited_at
+        if now - armed_at >= exit_drain:
+            return
+        time.sleep(_DRAIN_POLL_SECONDS)
+
+
+def _end_the_tree(tree: ProcessTree, proc: subprocess.Popen[bytes], *, reap: float) -> None:
+    """``hard_kill`` the tree, belt the root, then wait ``reap`` seconds for it.
+
+    THE BELT IS NOT REDUNDANT, and its safety is per-platform (#221 review
+    WIN-5). ``hard_kill`` does not touch ``Popen`` state, so this is always
+    entered with ``returncode is None`` even when the root is already dead
+    (measured). POSIX — ``Popen.kill`` is ``send_signal(SIGKILL)``, which polls
+    first (bpo-38630): the poll reaps the zombie and no second signal is sent,
+    so a recycled pid cannot be hit. win32 — ``Popen.kill`` IS ``terminate``,
+    does NOT poll, and calls ``TerminateProcess`` on the RETAINED handle
+    (``class Handle(int)``, ``__del__ = Close``), so the number cannot have been
+    recycled while we hold it; on an already-exited process the call raises
+    ``PermissionError``, which ``Lib/subprocess.py:1674-1681`` converts into a
+    ``returncode``. Both live inside ``suppress(OSError)``. And it is the ONLY
+    thing that ends the root on a win32 host where the attach failed and
+    ``taskkill.exe`` does not resolve, where ``hard_kill`` is a silent no-op
+    (#202 review win-leg/F3).
+
+    The wait is bounded because ``hard_kill`` can be that no-op: a root that
+    outlives ``reap`` is a live ORPHAN — not a zombie — filed in
+    ``subprocess._active`` and never collected, the residue
+    ``oauth/_resolve_config.py`` already accepts (#221 review POSIX-6).
+    """
+
+    tree.hard_kill()
+    with contextlib.suppress(OSError):
+        proc.kill()
+    with contextlib.suppress(subprocess.TimeoutExpired):
+        proc.wait(timeout=reap)
+
+
+class AbortHandle:
+    """A caller's grip on a :func:`run_contained` call blocked on ANOTHER thread.
+
+    THE HOLE IT FILLS (#221 review SITE-1), measured. The interrupt ladder in
+    :func:`run_contained` is reached by an exception raised INSIDE the call, and
+    ``ExtensionAPI.exec`` awaits the helper on an ``asyncio.to_thread`` worker
+    where no terminal signal ever lands — CPython delivers signals to the main
+    thread only. Meanwhile the spawn's own session takes the child out of the
+    terminal's foreground group, so the tty's ^C no longer reaches it either.
+    The two together are a regression THIS change introduced: on ``main`` a ^C
+    on ``aelix -p`` ended the command in ``0.02 s``; with the contained spawn
+    and no handle the interrupted process waited out the command's whole
+    remaining life — measured ``28.58 s`` of a 30 s child — because
+    ``Runner.close`` joins the default executor for 300 s and then
+    ``concurrent.futures.thread._python_exit`` joins it again with NO bound.
+
+    WHAT IT DOES, AND WHAT IT DELIBERATELY DOES NOT. ``abort()`` sends the same
+    two rungs the ladders send — ``tree.hard_kill()`` then the ``proc.kill()``
+    belt — and does NOT wait for anything. That is the whole design: the kill is
+    what lets the worker's blocked ``proc.wait(timeout=)`` return, after which
+    the call's ordinary exit path drains under its idle rule and returns a
+    ``CompletedProcess`` carrying the kill's returncode (``-9`` on POSIX, ``1``
+    on win32) to a caller that has already stopped listening. No new thread, no
+    polling, and no second code path through the helper.
+
+    THE RACE IS CLOSED AT THE ATTACH, not by asking the caller to be late. A
+    handle passed to a call that has not attached yet only marks itself
+    aborted; :func:`run_contained` hands the tree over under this object's lock
+    immediately after ``ProcessTree.attach``, and a mark already set fires the
+    kill THERE. ``_finish`` (in the call's ``finally``) makes a late ``abort()``
+    a no-op rather than a kill aimed at a pid that has been reaped.
+    """
+
+    def __init__(self) -> None:
+        #: One lock over all four fields: "attached and not finished" is the
+        #: invariant that decides whether a kill is sent, and it spans them.
+        self._lock = threading.Lock()
+        self._tree: ProcessTree | None = None
+        self._proc: subprocess.Popen[bytes] | None = None
+        self._aborted = False
+        self._finished = False
+
+    @property
+    def aborted(self) -> bool:
+        """Whether :meth:`abort` has been called, whenever it was called."""
+
+        with self._lock:
+            return self._aborted
+
+    def abort(self) -> bool:
+        """End the run's tree now. Thread-safe, never raises, never waits.
+
+        Returns ``True`` when the kill was actually sent, ``False`` when there
+        was nothing to send it to — either the call has not attached yet (the
+        mark is kept and the attach kills at once) or it has already finished.
+        """
+
+        with self._lock:
+            self._aborted = True
+            if self._finished or self._tree is None or self._proc is None:
+                return False
+            self._kill()
+            return True
+
+    def _attach(self, tree: ProcessTree, proc: subprocess.Popen[bytes]) -> None:
+        """Take custody of a live run, killing it at once if ``abort`` beat us."""
+
+        with self._lock:
+            self._tree = tree
+            self._proc = proc
+            if self._aborted and not self._finished:
+                self._kill()
+
+    def _finish(self) -> None:
+        """The run is over: drop the references and disarm a late ``abort``."""
+
+        with self._lock:
+            self._finished = True
+            self._tree = None
+            self._proc = None
+
+    def _kill(self) -> None:
+        """The ladder's two rungs, no reap. The caller holds the lock.
+
+        Holding the lock across ``hard_kill`` costs a win32 ``taskkill``'s
+        <= 5 s to a concurrent ``_finish``, which is the run's own thread and
+        has already had its ``wait`` released by this kill; nothing waits on
+        this object from a third direction.
+        """
+
+        tree, proc = self._tree, self._proc
+        if tree is None or proc is None:  # pragma: no cover — guarded by callers
+            return
+        tree.hard_kill()
+        with contextlib.suppress(OSError):
+            proc.kill()
+
+
+def run_contained(
+    argv: Sequence[str],
+    *,
+    timeout: float | None,
+    cwd: str | None = None,
+    env: Mapping[str, str] | None = None,
+    platform: str | None = None,
+    api: _Win32Api | None = None,
+    abort: AbortHandle | None = None,
+) -> subprocess.CompletedProcess[bytes]:
+    """``subprocess.run(argv, capture_output=True, timeout=…)``, but contained.
+
+    THE TWO BUGS THIS EXISTS FOR (#221), both measured on ``main`` dff6b62.
+
+    1. **The timeout kills the root and nothing else.** CPython's ``run()`` does
+       ``process.kill()`` on ``TimeoutExpired`` — the root pid alone. Every one
+       of the three sites that used it leaked a non-``setsid`` grandchild on
+       POSIX (``survivors=1`` at each, and the real ``ExtensionAPI.exec`` under
+       a real model left its sleeper at ``ppid 1`` in *aelix's own* process
+       group). And on Windows — where the reader threads own the output and
+       must be joined to attach it to the exception — ``run()`` follows the kill
+       with an UNTIMED ``process.communicate()``, so a descendant that inherited
+       the pipes and outlived the root keeps the write end open and that join
+       NEVER RETURNS. ``tests/process_tree/test_run_contained_real_processes.py``
+       's first case is the one that would hang the windows leg on ``main``.
+    2. **A root that exits 0 is reported as a timeout.** ``communicate()`` waits
+       for pipe EOF, not for the root, so a command that printed ``done`` and
+       exited 0 while a helper it backgrounded held stdout was raised as
+       ``TimeoutExpired`` after the WHOLE timeout — measured ``out=b'done\\n'``
+       at 3.32 s under a 1 s bound, and through the real exec surface as
+       ``code=124 killed=True stdout='done\\n'``. Pi fixed the same shape on
+       2026-06-15 (#5303/#5753, ``utils/child-process.ts``).
+
+    THE SHAPE. ``stdin=DEVNULL``, both other streams piped, bytes out,
+    ``check=False``, ``TimeoutExpired`` raised with whatever output arrived
+    (``bytes``, never ``None``), spawn errors propagated unchanged. The root's
+    lifetime is bounded by ``proc.wait(timeout=timeout)`` — *not* pipe EOF,
+    which is bug 2 — and the pipes are drained afterwards by two daemon
+    threads under an idle timer ARMED AT THE EXIT and re-armed per chunk
+    (Pi's ``onExit -> armIdleTimer()``; measuring from the last chunk alone
+    binned the whole post-exit tail and, under CPU contention, truncated a
+    root's OWN output 10 runs in 60). The drain also ends at
+    :data:`DRAIN_CAP_SECONDS` after the exit, and at the original deadline when
+    a ``timeout`` was given — floored at one grace past the exit, so a root that
+    exits a millisecond before the deadline still keeps its own tail. The cap is
+    an Aelix-only divergence from Pi and its failure mode is stated: a
+    DESCENDANT still writing at the cap has its output cut with the root's
+    ``returncode == 0``. Never the root's own output, which is at most a pipe
+    buffer at exit and is drained in milliseconds.
+
+    HARD ONLY, NO SOFT LEG. There is no grace stage to escalate from and the
+    producer is by definition not answering (``oauth/_resolve_config.py``'s
+    reasoning, verbatim). Two more reasons, both measured: hard-only is what
+    these sites do TODAY (``run()`` sends ``kill()`` with no SIGTERM leg, so a
+    soft leg would be new behaviour to justify rather than behaviour to
+    preserve), and Pi's soft leg is not a bound worth copying — ``execCommand``
+    schedules ``if (!proc.killed) proc.kill("SIGKILL")`` on a 5 s timer, and
+    Node sets ``killed`` when the signal is SENT, so the escalation never fires:
+    a ``trap '' TERM`` child ran its full 40 s under a 1 s Pi timeout, while a
+    SIGTERM-honouring one resolved at 1005 ms. We take one kill path and a
+    latency bounded by us (:data:`REAP_GRACE_SECONDS` + :data:`KILL_DRAIN_SECONDS`)
+    rather than by the command. Divergence from Pi needs no ADR (ADR-0235).
+
+    THE WIN32 BOUND, STATED RATHER THAN IMPLIED (#221 review DOC-4/HC4). BOTH
+    ladders below start with :meth:`ProcessTree.hard_kill`, which on win32 runs
+    ``taskkill /T /F`` FIRST and UNCONDITIONALLY, synchronously, and
+    :func:`_taskkill_tree` is itself a ``subprocess.run(timeout=5)``. So the
+    win32 timeout path is ``timeout + <= 5 s + REAP_GRACE_SECONDS +
+    KILL_DRAIN_SECONDS``, not ``timeout + 6 s``, and the interrupt leg's bound
+    there is ``<= 5 s + 0.25 s`` rather than 0.25 s. The extra term is still
+    OUR ``timeout=``, not the command's, which is what the paragraph above
+    claims; #220's windows leg measured that rung at 0.031 s, 160x inside its
+    own bound, and the windows leg's ``warnings.warn`` is where the number for
+    this helper comes from. One residue is accepted and named rather than
+    guarded (#221 review HC7, **[U]**): a SECOND interrupt landing INSIDE that
+    ``taskkill`` propagates out of ``hard_kill`` — it is wrapped in
+    ``suppress(OSError)`` only — leaving ``terminate_job`` and the belt unrun
+    for that call, with ``close()`` (``kill_on_close=False``) ending nothing.
+    Reaching it needs the user to hold ^C down through the ladder.
+
+    THE INTERRUPT LEG IS MANDATORY, NOT COSMETIC. ``subprocess.run`` kills the
+    root on ANY exception (``except: process.kill()``) and ``Popen.__exit__``
+    states its assumption in a comment — "In the case of a KeyboardInterrupt we
+    assume the SIGINT was also already sent to our child processes". The spawn
+    below makes that assumption FALSE: ``start_new_session=True`` takes the
+    child out of the terminal's foreground process group, and
+    ``CREATE_NEW_PROCESS_GROUP`` "disables CTRL+C signals for all processes
+    within the new process group". Measured under a real pty: ``^C`` -> parent
+    ``KeyboardInterrupt``, contained child ALIVE. So any ``BaseException`` raised
+    anywhere AFTER THE SPAWN runs the ladder at tree granularity, bounded at
+    :data:`INTERRUPT_REAP_SECONDS`, before it propagates; no output is attached.
+    Not merely out of the wait or the drain, which is where the cover used to
+    end (#221 review posix-runner-1): the ``abort`` hand-over and both
+    ``_start_reader`` calls are inside it too, because a ``KeyboardInterrupt``
+    armed to land in that window leaked the whole ``setsid`` tree 12 times out
+    of 12, against 0 out of 6 for the same signal a few microseconds later.
+    Before ``ProcessTree.attach`` RETURNS there is no tree to end, so that one
+    call carries a belt of its own instead — ``proc.kill()`` and a bounded
+    ``proc.wait`` on the root, then the exception propagates unchanged.
+
+    WHERE THAT LEG ACTUALLY FIRES, MEASURED (#221 review HC2). At ``aelix
+    extension discover --refresh``, whose 60 s clone runs the wait on the MAIN
+    thread — and there it buys something concrete: the tree is dead before
+    ``_git_clone_bytes``'s ``finally: rmtree`` deletes the directory out from
+    under a live ``git``. It does NOT fire at ``ExtensionAPI.exec``: that call
+    awaits this helper on an ``asyncio.to_thread`` WORKER and CPython raises
+    ``KeyboardInterrupt`` on the main thread only, so a terminal ^C never
+    enters this frame there — measured, two ^C, ladder calls ``[]``. Only a
+    ``BaseException`` raised INSIDE the worker reaches it. That site is closed
+    by :class:`AbortHandle` instead, below.
+
+    A SESSION OF ITS OWN, ALWAYS — AND WHAT THAT GIVES UP. The spawn is
+    ``containment_spawn_kwargs(new_session=True)``, so the child has NO
+    CONTROLLING TERMINAL. The alternative, ``process_group=0``, keeps the
+    session and was measured to be worse than useless here: under a real pty a
+    ``git clone`` over ssh with an unknown host key left ``git``, ``ssh``,
+    ``sshd-session`` and ``sshd-auth`` all STOPPED (``ps stat T`` — ssh's
+    ``read_passphrase`` calls ``tcsetattr``, which raises ``SIGTTOU``
+    group-wide) with no prompt ever printed, for the full 60 s. With ``setsid``
+    every tty read fails AT ONCE with the tool's own message — ``fatal: could
+    not read Username for '…'`` (rc 128, measured 0.08 s on darwin against a
+    local server answering 401; the tail after the colon is the platform's
+    ``strerror(ENXIO)`` — ``Device not configured`` on darwin, ``No such device
+    or address`` on Linux, so it is not quoted here — #221 review DOC-2),
+    ``Host key verification failed.`` (rc 128, 0.62 s) — which the callers
+    already surface. The cost, stated: these commands are non-interactive ON
+    POSIX. On win32 there is no session to take away — ``containment_spawn_kwargs``
+    returns ``CREATE_NEW_PROCESS_GROUP`` and the job is the containment — so the
+    child keeps the console and a program that reads ``CONIN$`` directly (git
+    does; our stdin is ``NUL``) can still prompt there, and an unanswered prompt
+    costs the full timeout (post-merge review adversary-1; the same clause is on
+    every user-facing surface that states the property). The
+    reversal path is not ``process_group=0`` but "no POSIX group at all", and
+    its measured cost is the leak this helper exists for — ``git remote-http``,
+    blocked in libcurl on a hung server, outlives a root-only SIGKILL of
+    ``git`` by 3 s+ (``ppid 1``, still in our group). ADR-0238's #221 amendment
+    records both.
+
+    WHAT IS LEAKED, DELIBERATELY — AND WHAT IS NOT. A reader whose pipe never
+    reaches EOF is left running: one thread per event, daemon, blocked in
+    ``read1`` until the holder closes the write end. CPython's own
+    ``communicate()`` threads are daemons too; Pi ``destroy()``s the streams,
+    which cancels Node's pending read, and Python has no portable equivalent.
+    The cases are a ``setsid`` descendant on POSIX (outside the group — the
+    asymmetry this module's docstring states), a job escapee on win32, and on
+    the SUCCESS path a helper the command deliberately backgrounded, which
+    ``kill_on_close=False`` and a releasing ``close()`` are there to preserve.
+
+    WHAT IS NOT LEAKED IS MEMORY (#221 review site-exec-1). ``finally`` calls
+    :meth:`_PipeReader.detach` on every reader it started, and a detached reader
+    keeps READING — a holder must never be stalled on a full 64 KiB pipe by a
+    call that has gone home — while DISCARDING. The thread and its fd still live
+    until the holder closes its end; the bytes stop accumulating, bounded at one
+    in-flight chunk (:data:`_READ_CHUNK_BYTES`). Before it, a ``returncode == 0``
+    return with a live holder went on appending forever: measured 10 MB at the
+    return and 25 MB 6 s later, +2 threads and +2 fds per call, stacking. It is
+    deliberately NOT done in :func:`_drain`, which runs BEFORE the payload is
+    collected on both the exit and the timeout path and would empty the very
+    tail this helper exists to keep. :data:`DRAIN_CAP_SECONDS` is the bound on
+    the CALLER's wait, not on any of this.
+
+    A CALLER ON ANOTHER THREAD. ``abort`` takes an :class:`AbortHandle`, which
+    is how a caller that is NOT the thread blocked here ends the run: the
+    interrupt leg above cannot help ``ExtensionAPI.exec``, whose ``await`` is on
+    an ``asyncio.to_thread`` worker that no signal reaches. ``handle.abort()``
+    sends this ladder's two rungs and returns immediately; the blocked
+    ``proc.wait`` then returns because the root is dead, and this call takes its
+    ORDINARY exit path — drain, ``CompletedProcess`` with the kill's returncode
+    — for a caller that has already unwound. Passing no handle changes nothing.
+
+    ``platform`` and ``api`` are the injection seams of this module; production
+    passes neither.
+    """
+
+    command = list(argv)
+    # The deadline's origin, taken immediately before the spawn so that the
+    # bound the drain caps against is the same one ``proc.wait(timeout=)``
+    # enforced (#221 review CS5).
+    start = time.monotonic()
+    # The cast is about the CHECKER, and it is ``_resolve_config.py``'s:
+    # unpacking a ``dict[str, Any]`` costs pyright the text/bytes overload
+    # discrimination and it settles on ``Popen[str]``. At runtime ``PIPE`` with
+    # no ``text``/``encoding`` is bytes, which is what the cast asserts. A spawn
+    # failure propagates unchanged — no tree exists yet and ``close`` is not
+    # reached; the call sites already translate ``FileNotFoundError``.
+    proc = cast(
+        "subprocess.Popen[bytes]",
+        subprocess.Popen(
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            cwd=cwd,
+            env=None if env is None else dict(env),
+            **containment_spawn_kwargs(new_session=True, platform=platform),
+        ),
+    )
+    # Seeded BEFORE anything that can raise, so the ``finally`` below and every
+    # ``_collected`` call stay well defined however early the region under it
+    # fails (#221 review posix-runner-1). ``readers`` is appended to as each
+    # thread STARTS rather than built at the end, for the same reason: a
+    # ``_start_reader`` that raises must still leave its predecessor in the
+    # list the ``finally`` detaches.
+    readers: list[_PipeReader] = []
+    out_reader: _PipeReader | None = None
+    err_reader: _PipeReader | None = None
+    # Attached BEFORE any read or wait: on win32 only descendants created after
+    # the job assignment inherit membership, so every microsecond here is
+    # assignment window. ``kill_on_close=False`` — see the module docstring. A
+    # win32 attach that fails degrades inside ``attach`` (``contained=False``,
+    # taskkill-only) and never raises; a POSIX attach cannot fail, and the
+    # ``setsid`` -> ``getpgid`` race does not open (measured: 400/400 spawns
+    # attached ``contained=True``).
+    try:
+        tree = ProcessTree.attach(
+            proc.pid,
+            kill_on_close=False,
+            handle=_retained_handle(proc),
+            platform=platform,
+            api=api,
+        )
+    except BaseException:
+        # THE BELT IS ALL THERE IS BEFORE A TREE EXISTS (#221 review
+        # posix-runner-1). A ^C that lands in this window used to leave the
+        # whole ``setsid`` tree behind — measured with a ``SIGALRM``-raised
+        # ``KeyboardInterrupt`` armed 40 us before the attach: 12/12 leaked,
+        # against 0/6 for the same signal inside the covered region below.
+        # This handler cannot use ``_end_the_tree``: ``tree`` is exactly what
+        # is unbound here, which is also why the attach is NOT inside the try
+        # whose ``finally`` closes it.
+        with contextlib.suppress(OSError):
+            proc.kill()
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            proc.wait(timeout=INTERRUPT_REAP_SECONDS)
+        raise
+    try:
+        try:
+            if abort is not None:
+                # Under the handle's own lock, and BEFORE the readers and the
+                # wait: a handle whose ``abort()`` already ran (the cancellation
+                # beat the spawn) fires the kill here rather than being lost.
+                # See :class:`AbortHandle`.
+                abort._attach(tree, proc)
+            state = _ReadState(last_chunk_at=start)
+            out_reader = _start_reader(proc.stdout, state)
+            if out_reader is not None:
+                readers.append(out_reader)
+            err_reader = _start_reader(proc.stderr, state)
+            if err_reader is not None:
+                readers.append(err_reader)
+        except BaseException:
+            # THE SAME LADDER THE WAIT AND THE DRAIN GET, over the setup that
+            # used to sit outside every kill leg (#221 review posix-runner-1).
+            # Anything raised between the attach and the first ``wait`` —
+            # ``abort._attach``'s kill, a ``_start_reader`` that cannot start a
+            # thread, a signal that lands in the gap — now ends the tree before
+            # it propagates, and the ``finally`` below still closes it.
+            _end_the_tree(tree, proc, reap=INTERRUPT_REAP_SECONDS)
+            raise
+        # WHAT THIS ``try`` NOW HOLDS, AND WHY THAT IS THE POINT (#221 review
+        # posix-runner-1). ``except subprocess.TimeoutExpired`` means "the
+        # COMMAND ran out of time", so the block under it must contain nothing
+        # else that can raise one. The setup above is a separate ``try`` for
+        # exactly that reason: ``abort._attach`` can fire a win32 ``hard_kill``,
+        # and a ``TimeoutExpired`` from THAT reported as the command's timeout
+        # would attach the wrong payload to the wrong failure. (It cannot
+        # actually escape today — ``_taskkill_tree`` catches
+        # ``subprocess.SubprocessError``, which ``TimeoutExpired`` is, and
+        # ``hard_kill`` adds ``suppress(OSError)`` on top — but the ``api`` seam
+        # makes that a caller's guarantee rather than this module's, and the
+        # split costs nothing.) The two handlers below are SIBLINGS, so the
+        # ``TimeoutExpired`` re-raised from the first is not caught by the
+        # second and the timeout path runs exactly one ladder.
+        try:
+            # Bounds the ROOT's lifetime, not pipe EOF — bug 2 above.
+            # ``timeout=None`` waits without bound, as ``run(timeout=None)`` does.
+            returncode = proc.wait(timeout=timeout)
+            state.exited_at = time.monotonic()
+            drain_until = state.exited_at + DRAIN_CAP_SECONDS
+            if timeout is not None:
+                # The original deadline caps the drain, floored at one grace
+                # after the exit so a root that exits at ``deadline - 1 ms``
+                # still keeps its own tail (#221 review POSIX-2/CS8).
+                drain_until = min(
+                    drain_until, max(start + timeout, state.exited_at + EXIT_DRAIN_SECONDS)
+                )
+            _drain(readers, state, exit_drain=EXIT_DRAIN_SECONDS, drain_until=drain_until)
+        except subprocess.TimeoutExpired as expired:
+            _end_the_tree(tree, proc, reap=REAP_GRACE_SECONDS)
+            # The post-kill drain is armed HERE, at the reap: everything the
+            # kill released is readable at once, and a holder OUTSIDE the tree
+            # will never EOF, so this is the exit drain's idle rule under a
+            # tighter cap (#221 review TP4/PI-2).
+            state.exited_at = time.monotonic()
+            _drain(
+                readers,
+                state,
+                exit_drain=EXIT_DRAIN_SECONDS,
+                drain_until=state.exited_at + KILL_DRAIN_SECONDS,
+            )
+            # ``expired.timeout`` IS the ``timeout`` argument — carried through
+            # rather than re-read from the parameter because ``wait(timeout=
+            # None)`` cannot raise this, a fact pyright cannot narrow through
+            # ``Popen.wait`` (typeshed types the attribute ``float``, and the
+            # parameter here is ``float | None``).
+            raise subprocess.TimeoutExpired(
+                command,
+                expired.timeout,
+                output=_collected(out_reader),
+                stderr=_collected(err_reader),
+            ) from None
+        except BaseException:
+            # CPython's ``except: process.kill()`` leg, at tree granularity and
+            # bounded short. Nothing is drained and no output is attached: the
+            # caller is unwinding.
+            _end_the_tree(tree, proc, reap=INTERRUPT_REAP_SECONDS)
+            raise
+        return subprocess.CompletedProcess(
+            command,
+            returncode,
+            stdout=_collected(out_reader),
+            stderr=_collected(err_reader),
+        )
+    finally:
+        # FIRST, and on every path (#221 review site-exec-1). The payload above
+        # is already built — ``_collected`` runs before this ``finally`` on the
+        # success path, in the ``TimeoutExpired``'s constructor on the timeout
+        # path, and not at all on the interrupt path — so nothing here can take
+        # bytes away from a caller. A reader whose pipe never reaches EOF is
+        # still left running (the leak this module states); what it no longer
+        # does is accumulate.
+        for reader in readers:
+            reader.detach()
+        # Disarmed BEFORE the release, so a late ``abort()`` cannot aim the
+        # ladder at a pid this call has already stopped owning.
+        if abort is not None:
+            abort._finish()
+        # Reached on every path that attached. POSIX: signals nothing. win32:
+        # ``CloseHandle(job)``, which ends nothing at ``kill_on_close=False``.
+        tree.close()

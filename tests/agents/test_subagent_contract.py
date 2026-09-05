@@ -656,7 +656,7 @@ def _bind_subagents_member_tuple() -> frozenset[str]:
     """The hardcoded member tuple inside ``_ExtensionRuntime.bind_subagents``.
 
     Read from the SOURCE rather than exercised, because the tuple is only
-    reachable on the failure path (``api.py:669-685`` builds it to name what a
+    reachable on the failure path (``api.py:710-726`` builds it to name what a
     malformed runtime is missing) and a stale entry there is invisible to every
     green run.
     """

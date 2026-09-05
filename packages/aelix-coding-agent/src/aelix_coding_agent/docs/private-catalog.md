@@ -176,6 +176,25 @@ Register any of these with `source add --catalog`:
 | HTTPS | `https://intranet.acme.test/catalog.json` | TLS required. |
 | Git repo | `git+ssh://git@git.acme.test/acme/catalog.git` | Reads `catalog.json` at the repo root. |
 
+A git source is cloned non-interactively on macOS and Linux: it runs in a
+session of its own and has no terminal, so git and ssh cannot ask you anything
+on it. Configure a credential helper (https) or load the key into your ssh
+agent and add the host to `known_hosts` (ssh) — Aelix will not prompt on your
+terminal for a password, passphrase, or host-key confirmation; a clone that
+tries to fails at once with git's or ssh's own message. On Windows there is no
+session to take away — the clone is held by a new process group and a job
+object and keeps the console Aelix was started from, so a prompt can still
+appear there, and one nobody answers costs the full 60 s clone timeout (Windows
+is not a supported host; see the README). An **askpass** program still works and
+can still ask: if `GIT_ASKPASS` or `SSH_ASKPASS` is set — VS Code exports
+`GIT_ASKPASS` unconditionally in its integrated terminal — git calls it, and a
+dialog nobody answers costs the full 60 s clone timeout before the clone fails.
+Unset those variables for an unattended run. Stopping a refresh by hand now
+takes two `^C`: the clone runs outside your terminal's foreground group and the
+first one is swallowed by the CLI's asyncio runner — measured, one `^C` left the
+clone running to its full bound (the timeout ladder ended it) and two ran the
+interrupt ladder at 0.25 s.
+
 Plain `http://` is refused: an unauthenticated document over a rewritable
 transport decides what your users install. `file://` and git `ssh`/`file`
 transports have no such requirement, so a closed network stays fully supported.

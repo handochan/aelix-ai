@@ -51,6 +51,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlparse
 
+from aelix_ai.utils._process_tree import run_contained
+
 __all__ = [
     "CATALOG_CACHE_FILENAME",
     "DEFAULT_CATALOG_ENV",
@@ -467,11 +469,42 @@ def _default_opener(url: str, timeout: float) -> bytes:
 
 
 def _default_git_runner(argv: list[str]) -> subprocess.CompletedProcess[bytes]:
-    # A wall-clock timeout so a hung remote surfaces as TimeoutExpired (translated
-    # to a CatalogError in _git_clone_bytes) instead of blocking discover forever.
-    return subprocess.run(  # noqa: S603 — argv list, no shell
-        argv, capture_output=True, check=False, timeout=GIT_CLONE_TIMEOUT
-    )
+    # A contained run (#221): its own session, a process group / job the timeout
+    # ends WHOLE, and a close() that is a release.
+    #
+    # The group is not belt-and-braces. Measured on main dff6b62: a `git clone`
+    # whose `git` is SIGKILLed root-only leaves `git remote-http` — blocked in
+    # libcurl on a hung server — alive 3 s later at `ppid 1` and still in OUR
+    # process group; the ssh transport helper and its own child likewise. So the
+    # old shape (subprocess.run(timeout=), which kills the root and nothing
+    # else) left the pipeline behind on every timed-out refresh.
+    #
+    # The session costs the clone its terminal, deliberately (spec §A.4.1): the
+    # alternative that keeps one, `process_group=0`, was measured under a real
+    # pty to leave git, ssh, sshd-session and sshd-auth all STOPPED (`ps stat T`,
+    # SIGTTOU out of ssh's tcsetattr) with NO prompt ever printed, for the full
+    # 60 s. With no terminal every tty read instead fails at once with the tool's
+    # own message — `fatal: could not read Username for '…'` (rc 128, measured
+    # 0.08 s on darwin against a local 401 remote; the tail after that colon is
+    # the platform's strerror(ENXIO) — `Device not configured` here, `No such
+    # device or address` on Linux — so it is truncated rather than quoted, #221
+    # review DOC-2), `Host key verification failed.` (rc 128, 0.62 s) — which
+    # _git_clone_bytes already surfaces. A catalog clone is therefore
+    # NON-INTERACTIVE ON YOUR TERMINAL, which is narrower than "non-interactive"
+    # and is what docs/guides/private-catalog.md now says (#221 review
+    # DOC-3/SITE-3, both measured): an ASKPASS program needs no terminal, still
+    # runs — VS Code exports GIT_ASKPASS unconditionally, and git under this very
+    # spawn was measured calling it TWICE — and a dialog nobody answers still
+    # costs the full 60 s before the clone fails. On win32 there is no session at
+    # all (the containment is CREATE_NEW_PROCESS_GROUP plus a job), the clone
+    # keeps our console, and a prompt there is still possible. That last
+    # sentence is now on every surface that states the property — the guide and
+    # its bundled copy, both CHANGELOG bullets, ADR-0238, the decisions README
+    # row and the timeout CatalogError below — because the post-merge review
+    # found it stated unconditionally on all five (adversary-1).
+    #
+    # GIT_CLONE_TIMEOUT bounds the root, as it did.
+    return run_contained(argv, timeout=GIT_CLONE_TIMEOUT)
 
 
 def _read_local(path: Path, location: str) -> bytes:
@@ -539,9 +572,54 @@ def _git_clone_bytes(
     try:
         try:
             result = git_runner(["git", "clone", "--depth", "1", clone_url, dest])
+        except subprocess.TimeoutExpired as exc:
+            # BEFORE the broad branch below, because a timeout has ONE likely
+            # cause worth naming since #221 gave the clone a session of its own:
+            # the clone is non-interactive ON YOUR TERMINAL, so a remote that
+            # would have prompted for a password, a passphrase or a host key
+            # cannot, and the wait is whatever else the transport was doing. The
+            # generic ``{exc}`` rendering of a TimeoutExpired says only "timed
+            # out after 60.0 seconds", which is the symptom, not the cause. (It
+            # is a LIKELY cause, not a guarantee: _default_git_runner's comment
+            # above records the two ways a prompt still reaches the user — an
+            # askpass program, and win32's console.)
+            #
+            # THE MESSAGE ITSELF NAMES BOTH OF THOSE and does NOT say "a catalog
+            # clone is non-interactive", which the post-merge review found false
+            # on win32 (adversary-1): there is no session there, the clone keeps
+            # our console, and git reads CONIN$ rather than the stdin we set to
+            # NUL, so an unanswered console prompt burns the whole
+            # GIT_CLONE_TIMEOUT and lands in exactly this branch. The wording is
+            # true on both legs WITHOUT branching on sys.platform, deliberately:
+            # a platform branch here would give the windows leg a different
+            # string to assert and let the two expectations drift apart.
+            #
+            # AND THE GUESS IS CHECKABLE, because since #221 the timeout
+            # attaches whatever the transport printed before the deadline
+            # (bytes on BOTH platforms, never None — strictly more than main
+            # had on win32). A clone that timed out for an unrelated reason — a
+            # genuinely slow remote — is otherwise told to configure a
+            # credential helper it may already have, and shown no evidence at
+            # all; the non-zero-exit branch below already surfaces the same
+            # tail under the same 200-char cap (#221 review SITE-5).
+            partial = (
+                exc.stderr.decode("utf-8", "replace").strip()[:200]
+                if isinstance(exc.stderr, bytes)
+                else ""
+            )
+            raise CatalogError(
+                f"git clone failed for catalog {location!r}: no result within "
+                f"{GIT_CLONE_TIMEOUT:g}s — the likeliest cause is a prompt nobody "
+                "answered: an askpass dialog, or on Windows a prompt on the console this "
+                "clone shares with Aelix (elsewhere the clone has no terminal to be asked "
+                "on); configure a credential helper (https) or an ssh agent and a known "
+                "host key (ssh)"
+                + (f" — git said: {partial}" if partial else "")
+            ) from exc
         except (OSError, subprocess.SubprocessError) as exc:
-            # Missing git binary (FileNotFoundError), fork failure, or a clone
-            # TimeoutExpired — degrade this ONE source, never crash the refresh.
+            # Missing git binary (FileNotFoundError), fork failure, or any other
+            # SubprocessError (the timeout has its own branch above) — degrade
+            # this ONE source, never crash the refresh.
             raise CatalogError(f"git clone failed for catalog {location!r}: {exc}") from exc
         if int(getattr(result, "returncode", 1)) != 0:
             stderr = getattr(result, "stderr", b"") or b""

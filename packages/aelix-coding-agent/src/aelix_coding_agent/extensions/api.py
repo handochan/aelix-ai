@@ -101,6 +101,7 @@ from aelix_agent_core.harness.hooks import (
 )
 from aelix_agent_core.types import AgentTool
 from aelix_ai.streaming import Model, StreamFn
+from aelix_ai.utils._process_tree import AbortHandle, run_contained
 
 from .ext_ui import ExtensionUIContext
 from .headless_ui import HEADLESS_UI_CONTEXT
@@ -174,6 +175,46 @@ class ExecResult:
     stderr: str
     code: int
     killed: bool
+
+
+def _decode_output(raw: bytes | str | None) -> str:
+    """Bytes off a contained run → the ``str`` an extension reads (#221 §A.4).
+
+    utf-8 with REPLACEMENT, then universal newlines. Both halves are decisions,
+    and both are recorded in ADR-0238's #221 amendment:
+
+    - **The codec changes.** ``text=True`` was the LOCALE codec with STRICT
+      errors — ``cp1252`` on a Windows console — so one non-decodable byte
+      anywhere in the output raised ``UnicodeDecodeError`` out of ``exec``,
+      which is measurably reachable today. Pi decodes utf-8 (``data.toString()``),
+      so this converges on Pi. The cost, stated: legacy-codepage output that
+      DID decode correctly under the locale now becomes U+FFFD.
+    - **The newline translation is KEPT.** ``text=True`` was also
+      ``io.TextIOWrapper(newline=None)``, so today's success path already
+      normalises ``\\r\\n`` and ``\\r`` to ``\\n``; ``main``'s TIMEOUT path was
+      the odd one out (it attached raw bytes and decoded them without
+      translating). Doing it on BOTH paths holds the success-path contract and
+      ends that asymmetry. It is a declared divergence from Pi, which hands the
+      extension raw ``\\r\\n``.
+
+    ``None`` reads as ``""``. :func:`run_contained` never produces it — its
+    ``TimeoutExpired`` carries ``bytes``, deliberately, where CPython's POSIX
+    branch can leave ``None`` (``_check_timeout`` passes ``output=b"".join(seq)
+    if seq else None``, so a child that printed nothing yields ``stdout=None
+    stderr=None`` — measured, 3.12.13/darwin; its WIN32 branch is the one that
+    always attaches bytes, re-``communicate()``ing after the kill. #221 review
+    HC3: this parenthetical named the platforms the other way round) — but the
+    ``TimeoutExpired`` reaching this method
+    need not have come from there (a harness-installed richer ``exec`` action,
+    or a raw ``subprocess`` one), and ``exec`` must not raise ``AttributeError``
+    at a caller that was only late. A ``str`` passes through for the same
+    reason.
+    """
+
+    if raw is None:
+        return ""
+    text = raw if isinstance(raw, str) else raw.decode("utf-8", errors="replace")
+    return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
 class ReadonlySessionManager(Protocol):
@@ -579,7 +620,7 @@ class _ExtensionRuntime:
         still holding live children, and its ``agent`` tool still spawning —
         the split-brain the double-bind refusal exists to prevent.
 
-        Deliberately NOT modelled on :meth:`bind_ui` (``api.py:539-547``),
+        Deliberately NOT modelled on :meth:`bind_ui` (``api.py:580-588``),
         which is a bare one-line assignment: there is only ever one UI, while
         the subagent slot is a public seam a third party can reach. Four
         refusals, all deliberate:
@@ -2012,11 +2053,68 @@ class ExtensionAPI:
     ) -> ExecResult:
         """Pi ``exec`` (``types.ts:1209``) — direct port of ``exec.ts execCommand``.
 
-        Sprint 5a binds this through :class:`subprocess.run` regardless of
-        whether the harness has supplied an override, so an extension can
-        shell out at setup time. The Sprint 5b CLI may install a richer
-        action (signal handling / streaming output) via
+        Sprint 5a binds this regardless of whether the harness has supplied an
+        override, so an extension can shell out at setup time. The Sprint 5b CLI
+        may install a richer action (signal handling / streaming output) via
         :class:`ExtensionRuntimeActions.exec`.
+
+        CONTAINED SINCE #221. The default binding was
+        ``subprocess.run(capture_output=True, timeout=…)``, and both of that
+        shape's defects were measured here on ``main`` dff6b62. (1) A command
+        that outran its timeout had its ROOT killed and nothing else: through
+        this very method, under a real model, ``sh -c 'sleeper | cat'`` left the
+        sleeper at ``ppid 1`` and still inside *aelix's own* process group
+        (``code=124 killed=True``, ``survivors=1``). (2) A command that exited
+        **0** after backgrounding a helper was reported as a timeout, because
+        ``communicate()`` waits for pipe EOF rather than for the root — measured
+        ``code=124 killed=True stdout='done\\n'`` a full second after the
+        command had finished; Pi fixed the same shape in #5303/#5753.
+
+        So the run goes through
+        :func:`~aelix_ai.utils._process_tree.run_contained`: the child leads a
+        SESSION of its own and a timeout ends that whole tree, not just the
+        root; after the root exits the pipes are drained under an idle timer
+        armed at the exit, so a backgrounded helper no longer turns a success
+        into a timeout (and, ``kill_on_close=False``, survives the successful
+        run exactly as it does today).
+
+        WHAT THAT COSTS THE COMMAND, stated. ``stdin`` is ``DEVNULL`` — Pi's
+        contract (``stdio: ["ignore", "pipe", "pipe"]``); this used to INHERIT
+        the TUI's stdin. And on POSIX the child has no controlling TERMINAL, so
+        a command that expects one — a prompt, a pager, an editor — fails at
+        once with its own message instead of stalling until its timeout. Two
+        limits on that sentence, both from the #221 review (SITE-3, DOC-3), so
+        it is not read as more than it is: a command that reaches an ASKPASS
+        program still gets one — ``GIT_ASKPASS``/``SSH_ASKPASS``, which VS Code
+        exports unconditionally in its integrated terminal — and a dialog
+        nobody answers still blocks until the timeout, exactly as before; and
+        on win32 the containment is a process group and a job, not a session,
+        so the child keeps our console and a prompt is still possible there.
+        Pi's ``execCommand`` stays in-session; that divergence is declared
+        (ADR-0235 asks for no ADR, ADR-0238's #221 amendment records it anyway).
+
+        ESC / ^C NOW ENDS THE COMMAND, and had to be made to (#221 review
+        SITE-1). This method awaits the helper on an ``asyncio.to_thread``
+        WORKER, and CPython delivers a POSIX signal to the MAIN thread only, so
+        :func:`run_contained`'s own interrupt ladder is reachable here for a
+        ``BaseException`` raised INSIDE the worker and never for a terminal ^C.
+        The session above then took the child out of the terminal's foreground
+        group, so the tty's ^C stopped reaching it either way: measured on
+        ``main`` dff6b62 a ^C on ``aelix -p`` ended the command in ``0.02 s``,
+        while contained and WITHOUT the handle below the interrupted process
+        waited out the command's whole remaining life — ``28.58 s`` of a 30 s
+        child — with ``Runner.close``'s 300 s executor join and
+        ``concurrent.futures.thread._python_exit``'s unbounded join as the
+        ceiling. So a cancelled turn ends the TREE instead: an
+        :class:`~aelix_ai.utils._process_tree.AbortHandle` is handed to the
+        call and fired from ``except asyncio.CancelledError``, which releases
+        the worker's blocked ``wait`` and lets the command exit at once.
+
+        Output is decoded by :func:`_decode_output` — utf-8 with replacement
+        plus universal newlines, on BOTH the success and the timeout path.
+        Exit codes diverge from Pi deliberately and as they already did: a
+        timeout is ``code=124 killed=True`` where Pi returns ``0`` with
+        ``killed``, and a missing binary is ``127`` where Pi returns ``1``.
         """
 
         self._runtime.assert_active()
@@ -2041,24 +2139,38 @@ class ExtensionAPI:
         if env is not None:
             env_dict.update(env)
         killed = False
+        # The caller's grip on a call that is about to block on another thread.
+        # See "ESC / ^C NOW ENDS THE COMMAND" above: without it a cancelled turn
+        # cost the command's whole remaining life (28.58 s measured).
+        abort = AbortHandle()
         try:
+            # ``run_contained`` is read as a MODULE GLOBAL on purpose: the
+            # dispatch test patches ``api_mod.run_contained`` to assert the argv,
+            # the timeout unit and the merged env without spawning anything.
             proc = await asyncio.to_thread(
-                subprocess.run,
+                run_contained,
                 [command, *args],
-                capture_output=True,
-                text=True,
+                timeout=timeout_s,
                 cwd=cwd,
                 env=env_dict,
-                timeout=timeout_s,
-                check=False,
+                abort=abort,
             )
-            stdout = proc.stdout or ""
-            stderr = proc.stderr or ""
+            stdout = _decode_output(proc.stdout)
+            stderr = _decode_output(proc.stderr)
             code = proc.returncode
+        except asyncio.CancelledError:
+            # Esc, ^C, any cancelled turn. The worker itself cannot be
+            # cancelled — ``to_thread``'s future is cancelled, the thread runs
+            # on — but its TREE can be ended, and that kill is exactly what
+            # releases the worker's ``wait`` so the command exits and the
+            # executor join returns (#221 review SITE-1: 0.02 s on ``main``
+            # against 28.58 s here with this line deleted).
+            abort.abort()
+            raise
         except subprocess.TimeoutExpired as exc:
             killed = True
-            stdout = exc.stdout.decode() if isinstance(exc.stdout, bytes) else (exc.stdout or "")
-            stderr = exc.stderr.decode() if isinstance(exc.stderr, bytes) else (exc.stderr or "")
+            stdout = _decode_output(exc.stdout)
+            stderr = _decode_output(exc.stderr)
             code = 124
         except FileNotFoundError as exc:
             stdout = ""

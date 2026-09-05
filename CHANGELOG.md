@@ -356,6 +356,33 @@ and `.../releases/tag/vX` link would 404. Add them with the first pushed tag.
   thing that tells a cooperative exit apart from a hard job kill — both used to
   be 1.
 
+- **A command Aelix runs on a timeout of its own now takes its whole tree with
+  it — and a command that succeeded is reported as one.** Three places run a
+  bounded command: an extension's `aelix.exec(...)`, the `git clone` behind
+  `aelix extension discover --refresh`, and the `fd` scan behind `@`-mention
+  completion. All three were `subprocess.run(..., timeout=)`, whose kill on a
+  timeout reaches the root process and nothing else. Measured on macOS: every
+  one of the three left behind a grandchild that had inherited the command's
+  output pipe — and at the `exec` and `git clone` sites that survivor was
+  measured re-parented to `launchd` and still sitting in Aelix's own process
+  group, including through a real model at the `exec` surface. On Windows the
+  same timeout did not merely leak: CPython follows its kill there with a
+  `communicate()` that has no bound at all, and that call cannot return while
+  any descendant still holds the pipe, so the worker was wedged for as long as
+  the leftover lived. And a command that exited **0** straight away after
+  backgrounding a helper was reported as a timeout once its entire deadline had
+  passed — the wait was for the pipe to close and the helper was still holding
+  it — so a successful `sh -c "helper & echo done"` came back to the extension
+  as `code=124 killed=True` with `done` already in its output. All three sites
+  now run through one contained runner: the timeout bounds the command itself,
+  the kill ends the process group (POSIX) or the job object (Windows) it was
+  given, and after the command exits its output is drained until the pipes fall
+  idle rather than until they close. `@`-mention completion also stops crashing
+  on a filename that is not valid UTF-8 — `fd`'s output is decoded with
+  replacement instead of strictly under the locale codec, where a single
+  undecodable byte raised out of the completer. See
+  [#221](https://github.com/handochan/aelix-ai/issues/221) and ADR-0238.
+
 - **`models.json`'s own documentation no longer breaks the file it describes.**
   Two of the guide's three examples carried a `cost` with only `input` and
   `output`, while the validator requires all four keys — and a schema error
@@ -436,6 +463,63 @@ and `.../releases/tag/vX` link would 404. Add them with the first pushed tag.
 
 ### Known behaviour changes
 
+- **`aelix extension discover --refresh` no longer prompts on your terminal for
+  git or ssh credentials, on macOS and Linux** (#221). The catalog clone runs
+  in a session of its own there, so that a timeout can end the clone *and*
+  everything it spawned: measured, `git remote-http` blocked in libcurl against
+  a server that accepts and never answers outlives a kill aimed at `git` alone
+  and is still running three seconds later. A process in a session of its own
+  has no controlling terminal, and the terminal is where git, ssh and a
+  credential helper ask you for a password, a passphrase or a host-key
+  confirmation. **Configure a credential helper (https) or an ssh agent and a
+  known host key (ssh) — the clone now fails at once with git's or ssh's own
+  message (`fatal: could not read Username for '…'`, `Host key verification
+  failed.`; the errno text git appends after that colon is your platform's
+  `strerror(ENXIO)` — `Device not configured` on macOS, `No such device or
+  address` on Linux) instead of waiting at a prompt you cannot see, and the
+  timeout error names the cause.** Askpass programs and GUI/keychain helpers
+  need no terminal and keep working — including asking you: if `GIT_ASKPASS` or
+  `SSH_ASKPASS` is set (VS Code exports `GIT_ASKPASS` unconditionally in its
+  integrated terminal) git still calls it, and a dialog nobody answers still
+  costs the full 60 s clone timeout before the clone fails, exactly as it did
+  before. **On Windows there is no session to take away**: the containment
+  there is a new process group plus a job object, the clone keeps the console
+  Aelix was started from, and a prompt can still appear on it — one nobody
+  answers costs the same full 60 s (adversary-1; Windows is not a supported
+  host, see the README). Stopping a refresh by hand now takes two `^C`: the
+  clone runs outside the terminal's foreground group, and `asyncio.run`'s
+  `Runner._on_sigint` cancels the main task and returns on the first —
+  measured, one `^C` left the clone running to its full bound (the timeout
+  ladder ended it) and two ran the interrupt ladder at 0.25 s
+  (callers-census-1).
+- **An extension's `aelix.exec(...)` no longer inherits your terminal; it now
+  decodes output as UTF-8, and a timeout now takes its whole tree with it**
+  (#221). Its stdin is `/dev/null` rather than the terminal Aelix was started
+  from, which is the contract this surface has upstream. Output is decoded
+  UTF-8 with replacement, so bytes that are not valid text become `U+FFFD`
+  instead of raising out of the extension — on Windows, output in a legacy code
+  page that used to decode correctly under your locale now shows replacement
+  characters — and line endings still normalise to `\n` as they did. A
+  successful exit kills nothing — a helper the command backgrounded before
+  exiting **successfully** still survives — while the timeout, a cancelled turn
+  (Esc, or ^C in `aelix -p`) and an interrupt raised inside the call each end
+  the whole tree (docs-adr-2). **A command that expects a terminal — a prompt,
+  a pager, an editor — now fails immediately instead of stalling until its
+  timeout; one that reaches for an askpass-style program instead of the
+  terminal can still block until its timeout, as it always could.** On Windows
+  that first half does not hold: the child gets no session (there are none),
+  only a new process group and a job object, so it keeps the console Aelix was
+  started from and a program that opens the console directly — rather than
+  reading the stdin we set to `NUL` — can still prompt and still stall until
+  its timeout (adversary-1). Output written by a *descendant* more than two
+  seconds after the command itself exited is no longer waited for — the command
+  still reports its own exit code, but that trailing output is cut. And a
+  cancelled turn now ends the command: **Esc, or ^C in `aelix -p`, kills the
+  command's tree** instead of leaving it to run out its timeout (measured: on
+  the old code a ^C reached the command through the terminal in 0.02 s; with a
+  session of its own and no such handle it would have waited the command's
+  whole remaining life, 28.58 s of a 30 s sleeper). `code=124 killed=True` on a
+  timeout is unchanged.
 - **AUTO mode now prompts instead of auto-allowing when your `$SHELL` is one
   the safety classifier cannot read** (#104). The AUTO posture decides whether
   to auto-run a `bash` command by parsing it with a tree-sitter **bash**

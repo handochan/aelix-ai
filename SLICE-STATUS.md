@@ -113,7 +113,8 @@ re-discovering the crash.
    (`containment_spawn_kwargs(new_session=True)` plus a `kill_on_close=True`
    tree) and `print_mode.py` grew the `SIGBREAK` handler that gives the
    cooperative leg something to reach. ADR-0238's "What stays open" is amended
-   accordingly; what is left there is #221 and #222.
+   accordingly; what is left there is #222 (#221's three
+   `subprocess.run(timeout=)` sites landed on 2026-09-05 as `run_contained`).
 3. **`#46` cross-process locking.** *Correction to the original brief:* both
    `fcntl` sites are already `None`-guarded
    (`aelix_ai/settings/storage.py:204`, `aelix_ai/oauth/auth_storage.py:184`),

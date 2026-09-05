@@ -77,6 +77,18 @@ def spies(monkeypatch: pytest.MonkeyPatch) -> Spies:
         # ``taskkill.exe`` hangs (review win-leg/F6).
         assert kwargs.get("check") is False
         assert kwargs.get("timeout") == 5
+        # All three stdio are DEVNULL, and ``capture_output`` is GONE (#221
+        # review WIN-3). ``_taskkill_tree`` used to capture output it then threw
+        # away, which is #221's own shape applied to the escalation itself: on
+        # win32 CPython follows a timed-out kill with an UNTIMED
+        # ``communicate()`` to join the reader threads, so a ``taskkill`` that
+        # hit its 5 s bound would go on to block with no bound at all —
+        # synchronously, on the event-loop thread since #220. With no pipe there
+        # is nothing for that join to wait on.
+        assert kwargs.get("stdin") is subprocess.DEVNULL
+        assert kwargs.get("stdout") is subprocess.DEVNULL
+        assert kwargs.get("stderr") is subprocess.DEVNULL
+        assert "capture_output" not in kwargs
         recorded.runs.append(list(argv))
         return subprocess.CompletedProcess(list(argv), 0)
 

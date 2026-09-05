@@ -374,12 +374,15 @@ def _grandchild_stub(marker: Path) -> str:
 def _nonsetsid_grandchild_stub(marker: Path) -> str:
     """The same, MINUS ``start_new_session`` — so the grandchild stays in the group.
 
-    This is the shape ``extensions/api.py``'s ``ExtensionContext.exec`` and
-    ``util/tools_manager.py``'s version probe really have: ``subprocess.run``
-    with neither ``start_new_session`` nor ``process_group``. It is the only
+    ``util/tools_manager.py``'s version probe really has this shape —
+    ``subprocess.run`` with neither ``start_new_session`` nor ``process_group``
+    (``extensions/api.py``'s ``exec`` had it until #221 gave it a session of its
+    own) — so the probe is the ONE production spawn of this shape and this
+    fixture is its only driver: deleting ``hard_kill`` from ``reap``'s
+    escalation still goes red here and nowhere else. It is also the only
     descendant shape ``killpg`` can reach and a ``/proc``-less host cannot name,
-    which makes it the ONE fixture that can measure #220's Q1 (the group kill
-    ``reap`` runs after the descendant walk).
+    which is what lets it measure #220's Q1 (the group kill ``reap`` runs after
+    the descendant walk).
 
     Its sibling above must stay ``setsid``: a ``setsid`` grandchild is
     unreachable by ``killpg`` on every platform, so only the walk can kill it,
@@ -3130,10 +3133,12 @@ async def test_a_non_setsid_grandchild_dies_on_the_escalation(tmp_path: Path) ->
     """Q1's regression guard — and the only fixture that can measure it.
 
     The grandchild stays in the CHILD's process group, which is the shape
-    ``extensions/api.py``'s ``ExtensionContext.exec`` and
-    ``util/tools_manager.py``'s version probe really have, and extensions load on
-    the print path. Which leg kills it depends on the host, and that is the whole
-    point:
+    ``util/tools_manager.py``'s version probe really has
+    (``extensions/api.py``'s ``exec`` had it until #221 gave it a session of its
+    own), so the probe is the ONE production spawn of this shape and this
+    fixture is its only driver — and ``ensure_tool`` reaches it from the
+    ``grep``/``find`` tools inside an agent turn. Which leg kills it depends on
+    the host, and that is the whole point:
 
     * **Linux** — the ``/proc`` walk names it, exactly as it names the ``setsid``
       grandchild its sibling test uses. Green before #220.

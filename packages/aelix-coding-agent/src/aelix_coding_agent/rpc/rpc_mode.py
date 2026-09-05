@@ -1214,7 +1214,7 @@ def _session_stats_to_dict(stats: Any) -> dict[str, Any]:
     ``contextUsage`` is the Pi-shape ``{tokens, contextWindow, percent}``
     (``extensions/types.ts`` ``ContextUsage``). Sprint 6h₃ W6 (P-275)
     aligns the wire emit with the Aelix :class:`ContextUsage` dataclass
-    at ``extensions/api.py:148-161`` whose snake_case fields
+    at ``extensions/api.py:149-162`` whose snake_case fields
     (``tokens`` / ``context_window`` / ``percent``) map directly into
     the Pi camelCase wire keys.
     """
@@ -1241,7 +1241,7 @@ def _session_stats_to_dict(stats: Any) -> dict[str, Any]:
         cu = stats.context_usage
         # Pi parity: extensions/types.ts ContextUsage = { tokens,
         # contextWindow, percent }. Aelix ContextUsage at
-        # extensions/api.py:148-161 already matches Pi field names
+        # extensions/api.py:149-162 already matches Pi field names
         # (tokens / context_window / percent → snake_case ↔ camelCase
         # mapping).
         out["contextUsage"] = {

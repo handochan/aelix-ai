@@ -45,6 +45,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple
 
+from aelix_ai.utils._process_tree import run_contained
 from prompt_toolkit.completion import Completer, Completion
 
 if TYPE_CHECKING:
@@ -59,7 +60,11 @@ if TYPE_CHECKING:
 # Issue #39 — whole-tree enumeration tuning.
 _TREE_CACHE_TTL = 2.0  # seconds a cached enumeration is reused (keystroke-frequency)
 _TREE_ENUM_CAP = 20000  # max paths enumerated (bounds a huge monorepo walk)
-_FD_TIMEOUT = 2.0  # seconds before the fd subprocess is abandoned → walk fallback
+# Seconds before the fd subprocess is abandoned → walk fallback. Since #221 the
+# abandonment ends the TREE fd spawned, not just fd: measured on ``main`` with a
+# stub ``fd`` whose non-``setsid`` child inherited the pipe, the root-only kill
+# left that child running past the timeout (``221-progress`` §1, case D).
+_FD_TIMEOUT = 2.0
 # Directories the dependency-free ``os.walk`` fallback never descends into (``fd``
 # gets this for free from ``.gitignore`` + its ``--exclude .git``). Heuristic, not
 # exhaustive — just the usual heavy/uninteresting trees.
@@ -236,10 +241,20 @@ def _fd_enumerate(fd_bin: str, base: Path) -> list[str] | None:
 
     Returns relative POSIX paths (dirs and files, no trailing slash), capped at
     :data:`_TREE_ENUM_CAP`, or ``None`` on any failure so the caller falls back to
-    the ``os.walk`` enumerator. No user input is passed to the subprocess. The
+    the ``os.walk`` enumerator — and since #221 the tree ``fd`` spawned is ended
+    with it, not just ``fd``. No user input is passed to the subprocess. The
     ``_EXCLUDE_DIRS`` are passed to ``fd`` (so it never descends them) AND
     ``--max-results`` bounds fd's own output so a pathological non-gitignored tree
     can't materialize a huge stdout within the timeout window.
+
+    The output is decoded utf-8 with REPLACEMENT rather than by the locale codec
+    (#221 §A.4). ``text=True`` decoded strictly, so a single non-utf-8 filename
+    anywhere under ``base`` raised ``UnicodeDecodeError`` — a ``ValueError``,
+    which the ``except (OSError, SubprocessError)`` below does NOT catch — out
+    of the completer and into the keystroke path. With replacement that file is
+    one candidate carrying U+FFFD: a wrong path in a list rather than a crash.
+    ``surrogateescape`` was the other option and is declined — it would hand
+    prompt_toolkit lone surrogates to render.
     """
 
     argv = [fd_bin, "--type", "f", "--type", "d", "--hidden", "--color", "never"]
@@ -247,19 +262,13 @@ def _fd_enumerate(fd_bin: str, base: Path) -> list[str] | None:
         argv += ["--exclude", excluded]
     argv += ["--max-results", str(_TREE_ENUM_CAP)]
     try:
-        proc = subprocess.run(  # noqa: S603 — fixed argv, no shell, no user input
-            argv,
-            cwd=str(base),
-            capture_output=True,
-            text=True,
-            timeout=_FD_TIMEOUT,
-        )
+        proc = run_contained(argv, timeout=_FD_TIMEOUT, cwd=str(base))
     except (OSError, subprocess.SubprocessError):
         return None
     if proc.returncode != 0:
         return None
     out: list[str] = []
-    for raw in proc.stdout.splitlines():
+    for raw in proc.stdout.decode("utf-8", errors="replace").splitlines():
         line = raw.rstrip("/")
         if line.startswith("./"):
             line = line[2:]

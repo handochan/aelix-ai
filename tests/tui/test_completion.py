@@ -7,6 +7,7 @@ the offered completions (the "live source" contract).
 
 from __future__ import annotations
 
+import subprocess
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,6 +16,7 @@ from typing import TYPE_CHECKING, Any
 from aelix_coding_agent.tui import completion as completion_mod
 from aelix_coding_agent.tui.commands import BuiltinCommand
 from aelix_coding_agent.tui.completion import (
+    _FD_TIMEOUT,
     DescriptorCommandCompleter,
     FileMentionCompleter,
     _completion_value,
@@ -426,26 +428,74 @@ def test_fuzzy_score_ranks_prefix_before_scattered() -> None:
     assert _fuzzy_score("xyz", "completion.py") is None
 
 
+def _stub_fd(
+    monkeypatch: Any, tmp_path: Path, stdout: str | bytes, returncode: int = 0
+) -> list[list[str]]:
+    """Make the code believe ``fd`` is on PATH and answers ``stdout``.
+
+    The seam is ``completion_mod.run_contained`` since #221, and MISSING that
+    re-seam is GREEN rather than red unless every consumer checks: no CI leg has
+    ``fd`` installed, so a stub left on ``subprocess.run`` leaves the real
+    ``run_contained`` to answer ``FileNotFoundError``, ``_fd_enumerate`` to
+    return ``None`` and the walk fallback to satisfy the very assertions the
+    case makes about the fd path (#221 review TP9). Hence the returned ``calls``
+    list — every consumer asserts the seam was actually entered.
+
+    The seam also pins the CALL: exactly ``timeout=_FD_TIMEOUT`` and
+    ``cwd=str(base)`` and nothing else, so a site that grew a
+    ``capture_output``/``text``/``env`` kwarg back is red here.
+    """
+
+    calls: list[list[str]] = []
+    raw = stdout.encode() if isinstance(stdout, str) else stdout
+
+    def _fake_run_contained(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+        calls.append(list(argv))
+        assert kwargs.pop("timeout", None) == _FD_TIMEOUT
+        assert kwargs.pop("cwd", None) == str(tmp_path)
+        assert not kwargs, f"the fd site passed run_contained kwargs it should not: {kwargs}"
+        return subprocess.CompletedProcess(list(argv), returncode, raw, b"")
+
+    monkeypatch.setattr(completion_mod, "_fd_binary", lambda: "fd")
+    monkeypatch.setattr(completion_mod, "run_contained", _fake_run_contained)
+    return calls
+
+
 def test_fd_enumerate_builds_safe_argv(monkeypatch: Any, tmp_path: Path) -> None:
     # fd is invoked with a fixed argv (no shell, no user input) and its output is
     # parsed into relative paths with any leading ./ and trailing / stripped.
-    calls: list[list[str]] = []
-
-    class _Proc:
-        returncode = 0
-        stdout = "src/foo.py\n./README.md\nsrc/deep/\n"
-
-    def _fake_run(argv: list[str], **kwargs: Any) -> _Proc:
-        calls.append(argv)
-        assert kwargs["cwd"] == str(tmp_path)
-        assert kwargs.get("timeout")  # a timeout is always set
-        return _Proc()
-
-    monkeypatch.setattr(completion_mod.subprocess, "run", _fake_run)
+    calls = _stub_fd(monkeypatch, tmp_path, "src/foo.py\n./README.md\nsrc/deep/\n")
     out = _fd_enumerate("fd", tmp_path)
     assert out == ["src/foo.py", "README.md", "src/deep"]
+    assert len(calls) == 1
     # No user-controlled pattern in the argv (injection-free).
     assert "--type" in calls[0] and "-e" not in calls[0]
+
+
+def test_fd_never_goes_through_subprocess_run(monkeypatch: Any, tmp_path: Path) -> None:
+    # #221: the site spawns through run_contained, so the tree fd started dies
+    # with it. A regression to plain subprocess.run would leak that tree AND, on
+    # Windows, hang in CPython's untimed post-kill communicate() — neither of
+    # which a parsing assertion can see. So the OLD door is nailed shut.
+    calls = _stub_fd(monkeypatch, tmp_path, "src/foo.py\n")
+
+    def _forbidden(*_a: Any, **_k: Any) -> None:
+        raise AssertionError("the fd site went through subprocess.run, not run_contained")
+
+    monkeypatch.setattr(completion_mod.subprocess, "run", _forbidden)
+    assert _fd_enumerate("fd", tmp_path) == ["src/foo.py"]
+    assert len(calls) == 1
+
+
+def test_fd_enumerate_replaces_undecodable_bytes(monkeypatch: Any, tmp_path: Path) -> None:
+    # ``text=True`` decoded with the LOCALE codec and STRICT errors, so one
+    # latin-1 filename under the tree raised UnicodeDecodeError — a ValueError,
+    # which `except (OSError, SubprocessError)` does not catch — out of the
+    # completer on a keystroke. utf-8/replace makes it one wrong candidate
+    # instead (#221 §A.4).
+    calls = _stub_fd(monkeypatch, tmp_path, b"src/caf\xe9.py\n")
+    assert _fd_enumerate("fd", tmp_path) == ["src/caf�.py"]
+    assert len(calls) == 1
 
 
 def test_enumerate_tree_falls_back_to_walk_without_fd(
@@ -477,31 +527,19 @@ def test_extract_mention_quote_aware_at_inside_open_quote() -> None:
     assert _extract_mention('@"a" @"b c') == ("b c", True, len('@"b c'))
 
 
-class _FakeProc:
-    def __init__(self, stdout: str, returncode: int = 0) -> None:
-        self.stdout = stdout
-        self.returncode = returncode
-
-
-def _stub_fd(monkeypatch: Any, stdout: str, returncode: int = 0) -> None:
-    """Make the code believe fd is on PATH and returns ``stdout``."""
-
-    monkeypatch.setattr(completion_mod, "_fd_binary", lambda: "fd")
-    monkeypatch.setattr(
-        completion_mod.subprocess,
-        "run",
-        lambda *a, **k: _FakeProc(stdout, returncode),
-    )
-
-
 def test_at_mention_fd_path_excludes_heavy_dirs(monkeypatch: Any, tmp_path: Path) -> None:
     # Issue #39 review (MEDIUM): the fd path must exclude _EXCLUDE_DIRS just like
     # the walk path, even when fd (relying only on .gitignore) would surface them.
     _deep_tree(tmp_path)
-    _stub_fd(monkeypatch, "node_modules/pkg/index.js\nsrc/completion.py\n.git/objects/abc\n")
+    calls = _stub_fd(
+        monkeypatch, tmp_path, "node_modules/pkg/index.js\nsrc/completion.py\n.git/objects/abc\n"
+    )
     # node_modules and .git are pruned regardless of the enumerator.
     assert _file_complete(tmp_path, "@indexjs") == []
     assert "@src/completion.py" in {c.text for c in _file_complete(tmp_path, "@comp")}
+    # One enumeration per completer: _file_complete builds a fresh
+    # FileMentionCompleter and the TTL cache lives on the instance.
+    assert len(calls) == 2
 
 
 def test_at_mention_fd_present_end_to_end(monkeypatch: Any, tmp_path: Path) -> None:
@@ -510,10 +548,11 @@ def test_at_mention_fd_present_end_to_end(monkeypatch: Any, tmp_path: Path) -> N
     (tmp_path / "src").mkdir()
     (tmp_path / "src" / "app.py").write_text("x")
     (tmp_path / "src" / "deep").mkdir()
-    _stub_fd(monkeypatch, "src/app.py\nsrc/deep\n")
+    calls = _stub_fd(monkeypatch, tmp_path, "src/app.py\nsrc/deep\n")
     assert [c.text for c in _file_complete(tmp_path, "@app")] == ["@src/app.py"]
     # src/deep resolves as a real directory → trailing slash.
     assert "@src/deep/" in {c.text for c in _file_complete(tmp_path, "@deep")}
+    assert len(calls) == 2
 
 
 def test_fd_failure_falls_back_to_walk(monkeypatch: Any, tmp_path: Path) -> None:
@@ -521,21 +560,28 @@ def test_fd_failure_falls_back_to_walk(monkeypatch: Any, tmp_path: Path) -> None
     # transparently fall through to the os.walk enumerator.
     _deep_tree(tmp_path)
     # (a) nonzero return code.
-    _stub_fd(monkeypatch, "", returncode=1)
+    calls = _stub_fd(monkeypatch, tmp_path, "", returncode=1)
     assert [c.text for c in _file_complete(tmp_path, "@widhel")] == [
         "@src/deep/widget_helper.py"
     ]
+    assert len(calls) == 1
 
-    # (b) subprocess raises (timeout / OSError) → also falls back.
+    # (b) the run raises (timeout / OSError) → also falls back. The raise comes
+    # out of the run_contained SEAM now, which is where a real fd timeout ends
+    # up: TimeoutExpired is a SubprocessError, so the site's except catches it
+    # and the tree fd spawned is already dead by then.
+    boom_calls: list[list[str]] = []
+
+    def _boom(argv: list[str], **_kwargs: Any) -> None:
+        boom_calls.append(list(argv))
+        raise subprocess.TimeoutExpired(cmd="fd", timeout=_FD_TIMEOUT)
+
     monkeypatch.setattr(completion_mod, "_fd_binary", lambda: "fd")
-
-    def _boom(*a: Any, **k: Any) -> None:
-        raise completion_mod.subprocess.TimeoutExpired(cmd="fd", timeout=2.0)
-
-    monkeypatch.setattr(completion_mod.subprocess, "run", _boom)
+    monkeypatch.setattr(completion_mod, "run_contained", _boom)
     assert [c.text for c in _file_complete(tmp_path, "@widhel")] == [
         "@src/deep/widget_helper.py"
     ]
+    assert len(boom_calls) == 1
 
 
 def test_at_mention_max_results_ordering_is_stable(tmp_path: Path) -> None:
