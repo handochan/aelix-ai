@@ -214,6 +214,17 @@ dev = [
   "prompt-toolkit>=3.0,<4",
   "rich>=13.7,<15",
   "pyte>=0.8.2",
+  # #224 — `aelix-server` is a workspace member that NOTHING depends on: it is
+  # not in this project's `dependencies` and no other package requires it, so a
+  # plain `uv sync` (the recipe every fresh checkout and worktree uses) resolved an
+  # environment without it and `tests/server` plus
+  # `tests/cli/test_stdio_encoding_win32.py::test_server_main_sync_hardens_before_boot`
+  # failed on the import. Listing it here is what keeps "the environment the
+  # tests run in" and "what `uv sync` produces" the same environment, without
+  # `--all-packages`. It does NOT reach the published metadata — dependency
+  # groups are a lockfile/dev concept, not build input; `aelix`'s Requires-Dist
+  # is the three `==0.1.0b1` pins above and tests/packaging_gate measures it.
+  "aelix-server",
 ]
 
 [tool.ruff]

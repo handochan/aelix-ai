@@ -28,6 +28,7 @@ tui = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "aelix-server" },
     { name = "httpx" },
     { name = "prompt-toolkit" },
     { name = "pyright" },
@@ -49,6 +50,7 @@ provides-extras = ["tui"]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "aelix-server", editable = "packages/aelix-server" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "prompt-toolkit", specifier = ">=3.0,<4" },
     { name = "pyright", specifier = ">=1.1.409" },

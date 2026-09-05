@@ -305,6 +305,19 @@ and `.../releases/tag/vX` link would 404. Add them with the first pushed tag.
 
 ### Fixed
 
+- **A plain `uv sync` now produces an environment the whole test suite can run
+  in.** `aelix-server` is a workspace member that nothing depends on — not the
+  root project, not any other package — so `uv sync` resolved without it and
+  `tests/server` and
+  `tests/cli/test_stdio_encoding_win32.py::test_server_main_sync_hardens_before_boot`
+  failed on the import in any fresh checkout or worktree, with nothing wrong in
+  the product code. It is a dev-group dependency now, so `--all-packages` is no
+  longer the difference between a green suite and a red one. Contributors only;
+  dependency groups are not build input, and the published `aelix` wheel's
+  `Requires-Dist` is unchanged (measured on the built wheel, and
+  `tests/packaging_gate` covers it). See
+  [#224](https://github.com/handochan/aelix-ai/issues/224).
+
 - **A timed-out hook or an aborted delegation no longer leaves its command
   running.** Both teardown ladders ended the process they had spawned, and that
   process is routinely the least interesting thing in the tree: a `sh` holding a
