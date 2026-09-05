@@ -1150,13 +1150,71 @@ def _await_zombie(pid: int, *, timeout: float = 10.0) -> None:
     unlike a fixed sleep it does not assume how long a fresh interpreter takes
     to start and exit on a loaded machine.
 
-    Falls back to a short sleep where ``waitid``/``WNOWAIT`` is unavailable
-    (Windows); the assertion there degrades to the old timing assumption rather
-    than failing outright.
+    WIN32 HAS NO ZOMBIE STATE, so the two arms cannot promise the same thing.
+    A windows process object survives its own exit and ``GetExitCodeProcess``
+    reads the status WITHOUT consuming it; there is no queued status for a
+    ``poll()`` to steal behind the watcher's back, which is why the race this
+    helper's caller pins does not exist there at all. What the win32 arm
+    establishes is only the HALF of the precondition that IS shared: **the
+    child has exited before ``reap`` fires**. That is enough for the caller's
+    assertion to be about the reaper on both platforms — POSIX additionally
+    proves the status is still unreaped, win32 has nothing to reap — and it is
+    exactly the half that a fixed sleep failed to establish: a 50 ms budget
+    does not cover a fresh interpreter starting and exiting on a loaded
+    windows runner, so ``reap`` soft-killed a still-RUNNING child and the test
+    read ``TerminateProcess``' 15 instead of 0 (#229, observed
+    ``[…, 15, 15, …]``).
+
+    ``WaitForSingleObject`` on a ``SYNCHRONIZE`` handle is the windows spelling
+    of that wait, and unlike the sleep it fails loudly instead of proceeding on
+    a premise it never checked.
+
+    macOS keeps the sleep: CPython exposes no ``os.waitid`` there and there are
+    no process handles to wait on either. No CI leg runs it — the POSIX leg is
+    linux — so that arm is a dev-box convenience, not a measurement.
     """
 
     waitid = getattr(os, "waitid", None)
-    if waitid is None or not hasattr(os, "WNOWAIT"):  # pragma: no cover - POSIX only
+    if waitid is None or not hasattr(os, "WNOWAIT"):  # pragma: no cover - no waitid
+        # The ``sys.platform`` test is not redundant with the one above: macOS
+        # takes this branch too (CPython exposes no ``os.waitid`` there), and
+        # it is also the only form pyright can narrow — the type gate analyses
+        # this file as Linux AND as Windows, and ``ctypes.WinDLL`` exists only
+        # under the latter (the idiom is
+        # ``aelix_ai.utils._process_tree._KernelApi``'s platform refusal).
+        if sys.platform == "win32":
+            SYNCHRONIZE = 0x0010_0000
+            WAIT_OBJECT_0 = 0x0000_0000
+            WAIT_TIMEOUT = 0x0000_0102
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            # Every signature is declared: a HANDLE is pointer-sized and
+            # ctypes' default ``c_int`` return would truncate it on Win64.
+            kernel32.OpenProcess.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32]
+            kernel32.OpenProcess.restype = ctypes.c_void_p
+            kernel32.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_uint32]
+            kernel32.WaitForSingleObject.restype = ctypes.c_uint32
+            kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+            kernel32.CloseHandle.restype = ctypes.c_int
+            handle = kernel32.OpenProcess(SYNCHRONIZE, False, pid)
+            if not handle:
+                # ERROR_INVALID_PARAMETER (87) — there is no process object by
+                # that pid, so it is gone and already collected. That is the
+                # state the caller asked for.
+                return
+            try:
+                waited = kernel32.WaitForSingleObject(handle, int(timeout * 1000))
+            finally:
+                kernel32.CloseHandle(handle)
+            if waited != WAIT_OBJECT_0:
+                raise AssertionError(
+                    f"child {pid} did not exit within {timeout}s"
+                    if waited == WAIT_TIMEOUT
+                    else f"WaitForSingleObject on child {pid} returned {waited:#x}"
+                )
+            return
+        # macOS: no ``waitid``, no process handles either. The old timing
+        # assumption stays there — it is a dev box, not a CI leg (the POSIX leg
+        # is linux, which has ``waitid``).
         time.sleep(0.05)
         return
     deadline = time.monotonic() + timeout
