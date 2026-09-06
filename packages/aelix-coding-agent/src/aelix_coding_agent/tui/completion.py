@@ -20,10 +20,15 @@ Issue #39 upgrades that completer to pi's whole-tree behaviour:
 * **Fuzzy whole-tree search.** A non-trivial ``@`` prefix is matched as a
   case-insensitive *subsequence* against every relative path in the tree
   (``@comp`` → ``src/…/completion.py``), ranked, and capped. The tree is
-  enumerated with the ``fd`` binary when it is present (fast + ``.gitignore``
-  aware) and falls back to a bounded, dependency-free ``os.walk`` (with a curated
-  exclude list) otherwise — so *every* user gets fuzzy matching and ``fd`` is only
-  ever a speed upgrade, never a hard dependency (keeps Aelix's air-gap posture).
+  enumerated with the ``fd`` binary when one can be found (``.gitignore`` aware)
+  and falls back to a bounded, dependency-free ``os.walk`` (with a curated
+  exclude list) otherwise — so *every* user gets fuzzy matching and ``fd`` is
+  never required (Aelix's air-gap posture is intact). It is not "only ever a
+  speed upgrade" either, which is what this module claimed until #231: measured,
+  the spawn costs about 8 ms, so ``fd`` LOSES to the walk below roughly 5 000
+  paths and wins only once the tree is large or heavily ignored — and, the real
+  point, it offers a DIFFERENT list. :func:`_enumerate_tree` says which
+  differences survive and which #231 closed.
   The enumeration is TTL-cached so keystroke-frequency completion stays snappy.
   No user input is ever passed to the subprocess (we enumerate all, filter in
   Python) — so there is no regex/shell-injection surface.
@@ -215,37 +220,94 @@ def _posix(path: str) -> str:
 
 
 def _fd_binary() -> str | None:
-    """The ``fd`` executable on PATH (``fd`` or Debian's ``fdfind``), or ``None``.
+    """The ``fd`` executable, or ``None``.
 
-    Not memoized — it is only consulted once per (TTL-cached) enumeration, so the
-    PATH scan cost is negligible and a test that installs/removes ``fd`` on PATH
-    is reflected immediately.
+    Looked for in the agent bin dir FIRST — the copy ``ensure_tool`` downloads for
+    the ``find`` tool — and only then on PATH as ``fd`` / Debian's ``fdfind``.
+    That is the order :func:`~aelix_coding_agent.util.tools_manager.get_tool_path`
+    already gives ``find`` and ``grep``, and the order pi's ``getToolPath`` uses,
+    so the ``@`` menu and the ``find`` tool run the same ``fd``. Not the same
+    STRING — with no managed copy ``get_tool_path`` returns the bare name and
+    this returns an absolute path — but the same FILE, and the managed copy
+    wins for both whenever it exists, including when it exists UNUSABLE: a
+    kill between ``_download_tool``'s ``shutil.move`` and the ``chmod`` on the
+    next line leaves a non-executable copy that ``ensure_tool`` never repairs
+    (it short-circuits on ``get_tool_path``), and this must resolve it too and
+    fall back to the walk rather than reach past it to a different fd.
+    Until #231 this looked on PATH only, and the machine the issue was
+    measured on had an ``fd`` in the bin dir, none on PATH, and used the
+    ``os.walk`` fallback anyway (a 12618-path menu where fd gave 1482).
+
+    Not ``get_tool_path`` itself: its PATH arm is an unbounded
+    ``subprocess.run([cmd, "--version"])`` — measured at 5.3 s against a PATH
+    ``fd`` that sleeps — on a code path whose own fd spawn is bounded at
+    :data:`_FD_TIMEOUT`. ``shutil.which`` spawns nothing.
+
+    Not memoized — it is consulted once per (TTL-cached) enumeration, so the scan
+    cost is negligible, a test that installs/removes ``fd`` is reflected
+    immediately, and a ``find`` that downloads one mid-session is picked up at the
+    next TTL expiry.
     """
 
-    return shutil.which("fd") or shutil.which("fdfind")
+    try:
+        # Function-local so ``get_bin_dir`` stays a LIVE lookup: the tests
+        # monkeypatch ``cli.config.get_bin_dir``, and a module-level
+        # ``from … import`` would bind the name here and silently ignore the
+        # patch. NOT a cycle guard — importing ``cli`` loads no ``tui`` module
+        # (measured: zero), and ``tui/statusline_store.py`` already takes this
+        # edge at module level. (``util/shell_env.py`` is lazy for a REAL cycle:
+        # bash → shell_env → cli.config → repl → bash.)
+        from aelix_coding_agent.cli.config import get_bin_dir
+
+        # NOT ``shutil.which(…, path=get_bin_dir())``: it applies a predicate
+        # ``get_tool_path`` does not — F_OK|X_OK, and on win32 it searches the
+        # process CWD BEFORE the directory handed to ``path=`` (unconditionally
+        # on 3.11; under ``NeedCurrentDirectoryForExePath``, True by default, on
+        # 3.12) — so the two resolvers disagreed exactly where this docstring
+        # promised they could not. Mirror ``get_tool_path``'s own ``.exists()``.
+        # A managed copy that cannot be spawned then raises out of
+        # ``run_contained`` → ``_fd_enumerate`` returns ``None`` → the walk
+        # (test_fd_failure_falls_back_to_walk), which is the graceful answer;
+        # silently running a DIFFERENT fd from PATH was not.
+        managed_path = Path(get_bin_dir()) / ("fd.exe" if os.name == "nt" else "fd")
+        managed = str(managed_path) if managed_path.exists() else None
+    except Exception:  # a faulty config must not break a keystroke
+        managed = None
+    return managed or shutil.which("fd") or shutil.which("fdfind")
 
 
 def _has_excluded_component(rel: str) -> bool:
     """True when any path component of ``rel`` is in :data:`_EXCLUDE_DIRS`.
 
-    The single source of truth for the exclude contract: applied to BOTH the
-    ``fd`` and ``os.walk`` outputs so the two enumerators agree regardless of
-    ``.gitignore`` presence (Issue #39 review — fd otherwise only honoured
-    ``.gitignore`` and leaked node_modules/.venv in a gitignore-less tree)."""
+    The single source of truth for the exclude contract, applied at ONE site
+    (:func:`_enumerate_tree`) to whichever enumerator answered — which #231 made
+    true. It used to run on the ``fd`` output only while the walk pruned
+    directory NAMES, so a FILE named like an excluded directory was offered by
+    the walk and hidden by fd: measured on a plain tree with no git repo in
+    sight, the symmetric difference was ``['.git', 'build', 'src/dist']``, and
+    the everyday instance is the ``.git`` gitdir POINTER FILE that every linked
+    worktree and every submodule carries. Issue #39's review had added it to the
+    fd arm for the opposite reason — fd honours ``.gitignore`` alone and leaked
+    node_modules/.venv in a gitignore-less tree."""
 
     return any(part in _EXCLUDE_DIRS for part in rel.split("/"))
 
 
 def _fd_enumerate(fd_bin: str, base: Path) -> list[str] | None:
-    """Enumerate the tree under ``base`` with ``fd`` (``.gitignore`` aware).
+    r"""Enumerate the tree under ``base`` with ``fd`` (``.gitignore`` aware).
 
-    Returns relative POSIX paths (dirs and files, no trailing slash), capped at
-    :data:`_TREE_ENUM_CAP`, or ``None`` on any failure so the caller falls back to
-    the ``os.walk`` enumerator — and since #221 the tree ``fd`` spawned is ended
-    with it, not just ``fd``. No user input is passed to the subprocess. The
-    ``_EXCLUDE_DIRS`` are passed to ``fd`` (so it never descends them) AND
-    ``--max-results`` bounds fd's own output so a pathological non-gitignored tree
-    can't materialize a huge stdout within the timeout window.
+    Returns relative POSIX paths — files, directories AND symlinks, no trailing
+    slash — capped at :data:`_TREE_ENUM_CAP`, or ``None`` on any failure so the
+    caller falls back to the ``os.walk`` enumerator — and since #221 the tree
+    ``fd`` spawned is ended with it, not just ``fd``. No user input is passed to
+    the subprocess. The ``_EXCLUDE_DIRS`` are passed to ``fd`` (so it never
+    descends them) AND ``--max-results`` bounds fd's own output so a pathological
+    non-gitignored tree can't materialize a huge stdout within the timeout window.
+
+    ``--type l`` is asked for explicitly (#231). With ``--type f --type d`` alone
+    a symlink is neither, so fd silently dropped every link the walk listed:
+    measured on a tree carrying a directory link, a file link, a broken link and
+    a self-loop, the walk returned all four and fd returned none of them.
 
     The output is decoded utf-8 with REPLACEMENT rather than by the locale codec
     (#221 §A.4). ``text=True`` decoded strictly, so a single non-utf-8 filename
@@ -254,10 +316,26 @@ def _fd_enumerate(fd_bin: str, base: Path) -> list[str] | None:
     of the completer and into the keystroke path. With replacement that file is
     one candidate carrying U+FFFD: a wrong path in a list rather than a crash.
     ``surrogateescape`` was the other option and is declined — it would hand
-    prompt_toolkit lone surrogates to render.
+    prompt_toolkit lone surrogates to render. Which is the other half of an
+    asymmetry #231 documents rather than fixes: the walk arm takes its names from
+    ``os.walk(str(base))``, i.e. ``os.fsdecode``, so the same bytes reach
+    prompt_toolkit there as exactly the lone surrogate this arm declined
+    (``b"caf\xe9.py"`` → ``"caf\udce9.py"``). What that renders as is unmeasured
+    — APFS refuses the filename outright — so only fd's U+FFFD is known.
     """
 
-    argv = [fd_bin, "--type", "f", "--type", "d", "--hidden", "--color", "never"]
+    argv = [
+        fd_bin,
+        "--type",
+        "f",
+        "--type",
+        "d",
+        "--type",
+        "l",
+        "--hidden",
+        "--color",
+        "never",
+    ]
     for excluded in _EXCLUDE_DIRS:
         argv += ["--exclude", excluded]
     argv += ["--max-results", str(_TREE_ENUM_CAP)]
@@ -281,7 +359,23 @@ def _fd_enumerate(fd_bin: str, base: Path) -> list[str] | None:
 
 def _walk_enumerate(base: Path) -> list[str]:
     """Dependency-free tree enumeration via ``os.walk``, pruning
-    :data:`_EXCLUDE_DIRS` and capped at :data:`_TREE_ENUM_CAP`."""
+    :data:`_EXCLUDE_DIRS` directory names and capped at :data:`_TREE_ENUM_CAP`.
+
+    The cap is a hard stop in walk order, not a sample: ``os.walk`` descends
+    depth-first in ``os.scandir`` order, so once one large subtree exhausts the
+    budget every directory not yet reached is missing — no warning, and no
+    latency signal either, because truncating is FASTER. It bites hardest on a
+    tree git ignores that :data:`_EXCLUDE_DIRS` does not name (``target/``,
+    ``vendor/``, ``Pods/``, ``.terraform/``, ``_build/``), which ``fd`` never
+    emits and so never pays for; measured on #231, an ignored 22 000-file
+    ``target/`` beside twelve real source files left the ``@`` menu two rows
+    where fd gave twelve, and which two survived was ``os.scandir`` order.
+    Top-level directories still appear, so the drill-in listing looks healthy
+    while fuzzy ``@`` cannot reach their contents.
+
+    Only directory names are pruned here. A FILE whose name is in
+    :data:`_EXCLUDE_DIRS` still costs a slot: it is dropped by
+    :func:`_enumerate_tree`, which runs after the cap."""
 
     out: list[str] = []
     base_str = str(base)
@@ -303,17 +397,37 @@ def _walk_enumerate(base: Path) -> list[str]:
 def _enumerate_tree(base: Path) -> list[str]:
     """All relative POSIX paths under ``base`` (``fd`` when present, else walk).
 
-    The ``_EXCLUDE_DIRS`` post-filter is applied to the fd output too (in addition
-    to fd's own ``--exclude``) so the fd and walk enumerators produce the SAME set
-    of matchable paths on every machine — fd is only ever a speed upgrade, never a
-    change in WHICH files complete (Issue #39 review)."""
+    The two enumerators do **not** offer the same list, and this docstring said
+    they did until #231. :data:`_EXCLUDE_DIRS` is applied to both (below) and
+    always holds. What differs:
+
+    * **git's ignore rules are fd-only.** Inside a git repo fd hides what
+      ``.gitignore`` (root and nested), ``.git/info/exclude`` and git's global
+      excludes file hide; outside a repo none of those apply, but fd still
+      honours ``.ignore`` and ``.fdignore``, even from a parent directory. The
+      walk applies no ignore rules at all. It is git's machinery, not the VCS's:
+      fd lists a file named by ``.hgignore`` inside an ``.hg`` repo.
+    * **An undecodable filename arrives differently** — U+FFFD from fd, a lone
+      surrogate from the walk, whose rendering is unmeasured (see
+      :func:`_fd_enumerate`).
+    * **The cap is spent differently.** :data:`_TREE_ENUM_CAP` bounds both arms
+      (fd through ``--max-results``), but only the walk spends that budget on
+      paths git ignores, and only the walk loses whole unreached subtrees
+      (see :func:`_walk_enumerate`). Where the real tree itself exceeds the cap
+      both arms truncate, and fd's kept set is not stable run to run: 1747 of
+      20000 paths differed between consecutive runs.
+
+    Two more differences were closed in #231 rather than documented: the exclude
+    predicate now runs on whichever arm answered (it used to post-filter fd
+    only), and ``--type l`` puts symlinks back into fd's answer. With both, on a
+    tree carrying symlinks and excluded-name entries, the two sets are exactly
+    equal."""
 
     fd_bin = _fd_binary()
-    if fd_bin is not None:
-        cands = _fd_enumerate(fd_bin, base)
-        if cands is not None:
-            return [p for p in cands if not _has_excluded_component(p)]
-    return _walk_enumerate(base)
+    cands = _fd_enumerate(fd_bin, base) if fd_bin is not None else None
+    if cands is None:
+        cands = _walk_enumerate(base)
+    return [p for p in cands if not _has_excluded_component(p)]
 
 
 def _completion_value(rel: str, is_dir: bool, quoted: bool) -> str:
@@ -454,9 +568,7 @@ class FileMentionCompleter(Completer):
     :param max_results: cap on offered completions (avoids a huge menu in big dirs).
     """
 
-    def __init__(
-        self, get_cwd: Callable[[], str] | str, max_results: int = 30
-    ) -> None:
+    def __init__(self, get_cwd: Callable[[], str] | str, max_results: int = 30) -> None:
         self._get_cwd = get_cwd if callable(get_cwd) else (lambda: get_cwd)
         self._max_results = max_results
         # TTL cache of the enumerated tree, keyed by base cwd → (monotonic_ts,
@@ -496,9 +608,7 @@ class FileMentionCompleter(Completer):
         # user still gets completions in edge cases (e.g. an odd partial leaf).
         yield from self._list_directory(base, prefix, mention)
 
-    def _list_directory(
-        self, base: Path, prefix: str, mention: _Mention
-    ) -> Iterable[Completion]:
+    def _list_directory(self, base: Path, prefix: str, mention: _Mention) -> Iterable[Completion]:
         """One-level listing of the directory named by ``prefix`` (the part before
         the last ``/``), filtered by the partial leaf after it — the fast drill-in
         used for empty / trailing-slash prefixes and as the no-fuzzy-hit fallback."""

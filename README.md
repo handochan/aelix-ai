@@ -163,6 +163,16 @@ Aelix needs a provider credential: set `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` /
 On first use of `grep` or `find`, Aelix downloads `ripgrep` and `fd` into
 `~/.aelix/agent/bin` so both honour `.gitignore`. These are the only binaries fetched at
 runtime, `--offline` skips them, and copies already on your `PATH` are preferred.
+The `@` file menu uses that same `fd` when it can find one, so it stops fuzzy-matching
+the files git ignores (you can still reach them by typing the directory: `@target/`).
+Without an `fd` it falls back to a plain directory walk, which applies no ignore rules,
+so it offers more. How much more depends on your checkout, not on Aelix: the shared
+exclude list already covers `.git`, `node_modules`, `.venv`, `__pycache__`, `dist` and
+`build`, so a clean clone of this repository offers the same list either way, while a
+tree that ignores something the list does not name — `target/`, `vendor/`, a directory
+of worktrees — loses exactly that from the menu. Either enumerator stops after 20 000
+paths, but only the walk counts the ignored files toward that limit, so a big ignored
+build tree can exhaust the fallback's budget before it reaches your real directories.
 
 ## Why Aelix
 

@@ -78,6 +78,43 @@ and `.../releases/tag/vX` link would 404. Add them with the first pushed tag.
   starts; Ctrl+C and shift+tab are still live. See ADR-0231 and
   [#196](https://github.com/handochan/aelix-ai/issues/196).
 
+- **The `@` menu uses the `fd` Aelix downloaded, and stops pretending both
+  enumerators agree.** `@` completion enumerates the tree with `fd` when it can
+  find one and with a plain `os.walk` when it cannot, and the code said the two
+  "produce the same set of matchable paths on every machine". They never did.
+  `fd` hides what git ignores and the walk does not, so what the menu offered
+  depended on whether you had `fd`. Worse, it looked only on `PATH` — never at
+  `~/.aelix/agent/bin/fd`, the copy Aelix downloads the first time you use
+  `find` — so the machine this was measured on had `fd` and used the walk
+  anyway; because that checkout keeps nine agent worktree copies of the repo,
+  the menu was matching 12618 paths instead of 1482, spending three of the eight
+  rows for `@completionpy` on stale copies and never offering the file actually
+  named. It now looks there **first**, the same order `find` and `grep` use, so
+  the two run the same `fd` — which also means that on a machine
+  with no `fd` the menu can narrow part-way through a session, once your first
+  `find` has fetched one. On a clean clone of this repository both arms offer the
+  same list: the difference is as large as whatever git ignores that the shared
+  exclude list does not already name.
+
+  Three smaller disagreements went with it. The shared exclude list now really
+  applies to both arms — without `fd` the menu had been offering the `.git`
+  pointer file in every worktree, and any file named `build`/`dist`/`node_modules`;
+  the cost of that consistency is that a root-level `build` *script* stops being
+  fuzzy-matched on the walk arm too, matching what `fd` already did — the plain
+  `@` listing still offers it, on either arm. `fd` was asked for files and
+  directories only, so it dropped every symlink the walk listed — fixed, and the
+  two sets now match exactly on a symlink tree. And one
+  disagreement is bigger than it looks and is documented rather than fixed: both
+  enumerators stop after 20 000 paths, but only the walk counts the files git
+  ignores toward that limit, so in a repo with a large ignored build tree the
+  fallback can run out of budget inside it and never reach your real source
+  directories (measured: an ignored 22 000-file `target/` next to twelve real
+  source files gave the walk two menu rows where `fd` gave twelve). An
+  undecodable filename also still reaches `fd`'s list as `�`; what the walk
+  arm does with it is untested (no filesystem here can hold such a name). Nothing
+  you type is ever passed to the subprocess, and `fd` is still never required.
+  See ADR-0193 and [#231](https://github.com/handochan/aelix-ai/issues/231).
+
 ### Added
 
 - **AUTO mode can read PowerShell and `cmd`, so it stops prompting for every

@@ -8,11 +8,14 @@ the offered completions (the "live source" contract).
 from __future__ import annotations
 
 import subprocess
+import sys
+import warnings
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from aelix_coding_agent.cli import config as cli_config
 from aelix_coding_agent.tui import completion as completion_mod
 from aelix_coding_agent.tui.commands import BuiltinCommand
 from aelix_coding_agent.tui.completion import (
@@ -20,11 +23,14 @@ from aelix_coding_agent.tui.completion import (
     DescriptorCommandCompleter,
     FileMentionCompleter,
     _completion_value,
+    _enumerate_tree,
     _extract_mention,
     _fd_enumerate,
     _fuzzy_score,
     wants_completion,
 )
+from aelix_coding_agent.util import tools_manager
+from aelix_coding_agent.util.tools_manager import get_tool_path
 from prompt_toolkit.application import Application, create_app_session
 from prompt_toolkit.application.current import set_app
 from prompt_toolkit.buffer import Buffer, CompletionState
@@ -54,9 +60,7 @@ def _complete(routes: dict[str, Any], text: str) -> list[Any]:
     return list(completer.get_completions(doc, CompleteEvent()))
 
 
-def _complete_union(
-    routes: dict[str, Any], builtins: list[BuiltinCommand], text: str
-) -> list[Any]:
+def _complete_union(routes: dict[str, Any], builtins: list[BuiltinCommand], text: str) -> list[Any]:
     completer = DescriptorCommandCompleter(lambda: routes, builtins=builtins)
     doc = Document(text=text, cursor_position=len(text))
     return list(completer.get_completions(doc, CompleteEvent()))
@@ -344,9 +348,7 @@ def _deep_tree(root: Path) -> None:
 def test_at_mention_fuzzy_matches_across_path(tmp_path: Path) -> None:
     # A subsequence that spans directory components matches the deep file.
     _deep_tree(tmp_path)
-    assert [c.text for c in _file_complete(tmp_path, "@widhel")] == [
-        "@src/deep/widget_helper.py"
-    ]
+    assert [c.text for c in _file_complete(tmp_path, "@widhel")] == ["@src/deep/widget_helper.py"]
     # "comp" fuzzy-finds the nested completion.py.
     assert "@src/completion.py" in {c.text for c in _file_complete(tmp_path, "@comp")}
 
@@ -468,8 +470,14 @@ def test_fd_enumerate_builds_safe_argv(monkeypatch: Any, tmp_path: Path) -> None
     out = _fd_enumerate("fd", tmp_path)
     assert out == ["src/foo.py", "README.md", "src/deep"]
     assert len(calls) == 1
+    # #231: fd is asked for files, directories AND symlinks. Without ``--type l``
+    # a symlink is neither, so every link the walk listed was missing from fd's
+    # answer (measured: the walk returned a dir link, a file link, a broken link
+    # and a self-loop; fd returned none of the four).
+    types = [calls[0][i + 1] for i, tok in enumerate(calls[0]) if tok == "--type"]
+    assert types == ["f", "d", "l"]
     # No user-controlled pattern in the argv (injection-free).
-    assert "--type" in calls[0] and "-e" not in calls[0]
+    assert "-e" not in calls[0]
 
 
 def test_fd_never_goes_through_subprocess_run(monkeypatch: Any, tmp_path: Path) -> None:
@@ -498,16 +506,12 @@ def test_fd_enumerate_replaces_undecodable_bytes(monkeypatch: Any, tmp_path: Pat
     assert len(calls) == 1
 
 
-def test_enumerate_tree_falls_back_to_walk_without_fd(
-    monkeypatch: Any, tmp_path: Path
-) -> None:
+def test_enumerate_tree_falls_back_to_walk_without_fd(monkeypatch: Any, tmp_path: Path) -> None:
     # With no fd binary, the dependency-free os.walk enumerator is used and still
     # produces fuzzy matches (proving the fallback path is wired).
     _deep_tree(tmp_path)
     monkeypatch.setattr(completion_mod, "_fd_binary", lambda: None)
-    assert [c.text for c in _file_complete(tmp_path, "@widhel")] == [
-        "@src/deep/widget_helper.py"
-    ]
+    assert [c.text for c in _file_complete(tmp_path, "@widhel")] == ["@src/deep/widget_helper.py"]
 
 
 def test_fuzzy_falls_back_to_dir_listing_on_no_hit(tmp_path: Path) -> None:
@@ -561,9 +565,7 @@ def test_fd_failure_falls_back_to_walk(monkeypatch: Any, tmp_path: Path) -> None
     _deep_tree(tmp_path)
     # (a) nonzero return code.
     calls = _stub_fd(monkeypatch, tmp_path, "", returncode=1)
-    assert [c.text for c in _file_complete(tmp_path, "@widhel")] == [
-        "@src/deep/widget_helper.py"
-    ]
+    assert [c.text for c in _file_complete(tmp_path, "@widhel")] == ["@src/deep/widget_helper.py"]
     assert len(calls) == 1
 
     # (b) the run raises (timeout / OSError) → also falls back. The raise comes
@@ -578,10 +580,335 @@ def test_fd_failure_falls_back_to_walk(monkeypatch: Any, tmp_path: Path) -> None
 
     monkeypatch.setattr(completion_mod, "_fd_binary", lambda: "fd")
     monkeypatch.setattr(completion_mod, "run_contained", _boom)
-    assert [c.text for c in _file_complete(tmp_path, "@widhel")] == [
-        "@src/deep/widget_helper.py"
-    ]
+    assert [c.text for c in _file_complete(tmp_path, "@widhel")] == ["@src/deep/widget_helper.py"]
     assert len(boom_calls) == 1
+
+
+# === Issue #231 — what the two enumerators really offer ====================
+#
+# ``_enumerate_tree`` claimed fd and the walk "produce the SAME set of matchable
+# paths on every machine". They never did. #231 closes the two divergences that
+# cost one line each — the shared exclude predicate now runs on whichever arm
+# answered, and ``--type l`` puts symlinks back into fd's answer — resolves the
+# ``fd`` Aelix downloads for the ``find`` tool BEFORE the one on PATH, and
+# documents the three that survive (git's ignore rules, undecodable names, and
+# how the two arms spend the enumeration cap).
+
+_FD_NAME = "fd.exe" if sys.platform == "win32" else "fd"
+_OTHER_FD_NAME = "fd" if sys.platform == "win32" else "fd.exe"
+
+
+def _stage_fd_binary(directory: Path, name: str = _FD_NAME) -> str:
+    """Put an executable, never-run ``fd`` in ``directory``; return its path.
+
+    The executable bit is load-bearing: ``shutil.which`` skips a non-executable
+    file, so a staged ``fd`` without it resolves to ``None`` and the case would
+    pass while pinning nothing. Nothing here ever SPAWNS the file — every case
+    asserts on the resolved path only.
+
+    Compare the resolved path with ``Path`` equality, never ``==`` on the
+    strings: on win32 ``shutil.which`` builds its answer as ``cmd + ext`` for
+    each PATHEXT entry and returns that, so it hands back the PATHEXT spelling
+    (``fd.EXE``, uppercase on every stock Windows and in CPython's own
+    ``_WIN_DEFAULT_PATHEXT``) while this helper returns the ``fd.exe`` it wrote.
+    Same FILE, different string. ``WindowsPath`` comparison normcases and
+    ``PosixPath`` does not, so one form is right on both legs.
+    """
+
+    directory.mkdir(parents=True, exist_ok=True)
+    binary = directory / name
+    binary.write_text("")
+    binary.chmod(0o755)
+    return str(binary)
+
+
+def _fd_lookup_seams(monkeypatch: Any, tmp_path: Path, bin_dir: Path, path_dir: Path) -> None:
+    """Point the agent bin dir at ``bin_dir`` and PATH at ``path_dir`` alone.
+
+    The bin-dir seam is ``cli.config.get_bin_dir`` — the DEFINING module, because
+    ``_fd_binary`` imports the name function-locally and
+    ``monkeypatch.setattr(completion_mod, "get_bin_dir", …)`` therefore raises
+    ``AttributeError``. Reaching for ``HOME`` does not work either: this package's
+    autouse ``_isolate_agent_dir`` sets ``AELIX_CODING_AGENT_DIR``, which
+    ``get_agent_dir`` prefers over ``Path.home()``.
+
+    ``PATH`` is emptied so a developer's real ``fd`` cannot answer, and the cwd is
+    moved into an empty directory because on win32 ``shutil.which`` searches the
+    process CWD BEFORE the directory handed to ``path=`` (unconditionally on 3.11;
+    under ``NeedCurrentDirectoryForExePath`` on 3.12).
+    """
+
+    monkeypatch.setattr(cli_config, "get_bin_dir", lambda: str(bin_dir))
+    monkeypatch.setenv("PATH", str(path_dir))
+    empty_cwd = tmp_path / "cwd"
+    empty_cwd.mkdir(parents=True, exist_ok=True)
+    monkeypatch.chdir(empty_cwd)
+
+
+def test_fd_binary_prefers_the_managed_copy_over_path(monkeypatch: Any, tmp_path: Path) -> None:
+    # #231: the copy ``ensure_tool`` downloads for the ``find`` tool wins over a
+    # copy on PATH — the order ``get_tool_path`` already gives ``find``/``grep``.
+    # Measured the other way round, with a fake ``fd`` prepended to PATH and the
+    # managed copy present, the ``@`` menu and the ``find`` tool resolved to
+    # DIFFERENT binaries.
+    managed = _stage_fd_binary(tmp_path / "agent" / "bin")
+    on_path = _stage_fd_binary(tmp_path / "elsewhere")
+    assert managed != on_path
+    _fd_lookup_seams(monkeypatch, tmp_path, tmp_path / "agent" / "bin", tmp_path / "elsewhere")
+    assert Path(completion_mod._fd_binary() or "") == Path(managed)
+
+
+def test_fd_binary_finds_the_managed_copy_when_path_has_none(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    # The new lookup's success path, which is the live configuration on a machine
+    # that has run ``find`` and never installed fd itself: nothing on PATH, a
+    # managed copy present. Before #231 that machine got the os.walk fallback.
+    managed = _stage_fd_binary(tmp_path / "agent" / "bin")
+    _fd_lookup_seams(monkeypatch, tmp_path, tmp_path / "agent" / "bin", tmp_path / "empty")
+    assert Path(completion_mod._fd_binary() or "") == Path(managed)
+
+    # The OTHER spelling is not a hit, and that holds on every leg: PATHEXT is
+    # win32-only so a POSIX lookup ignores ``fd.exe``, and neither 3.11 nor 3.12
+    # matches an extension-less ``fd`` on win32.
+    other = tmp_path / "agent" / "bin-other"
+    _stage_fd_binary(other, _OTHER_FD_NAME)
+    monkeypatch.setattr(cli_config, "get_bin_dir", lambda: str(other))
+    assert completion_mod._fd_binary() is None
+
+
+def test_fd_binary_falls_back_to_path_without_a_managed_copy(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    # No managed copy — the bin dir does not even exist — so PATH answers. This is
+    # every machine that has never run ``find``, and the arm ADR-0193 wrote the
+    # dependency-free fallback for still sits behind it.
+    on_path = _stage_fd_binary(tmp_path / "elsewhere")
+    _fd_lookup_seams(monkeypatch, tmp_path, tmp_path / "agent" / "bin", tmp_path / "elsewhere")
+    assert not (tmp_path / "agent" / "bin").exists()
+    assert Path(completion_mod._fd_binary() or "") == Path(on_path)
+
+
+def test_fd_binary_survives_a_broken_agent_dir(monkeypatch: Any, tmp_path: Path) -> None:
+    # A faulty config must never reach the user as a traceback on a keystroke: the
+    # bin-dir lookup fails soft, PATH still answers, and with nothing on PATH the
+    # answer is ``None`` (→ the walk), not an exception out of the completer.
+    on_path = _stage_fd_binary(tmp_path / "elsewhere")
+    _fd_lookup_seams(monkeypatch, tmp_path, tmp_path / "agent" / "bin", tmp_path / "elsewhere")
+
+    def _broken() -> str:
+        raise RuntimeError("agent dir is unreadable")
+
+    monkeypatch.setattr(cli_config, "get_bin_dir", _broken)
+    assert Path(completion_mod._fd_binary() or "") == Path(on_path)
+    monkeypatch.setenv("PATH", str(tmp_path / "empty"))
+    assert completion_mod._fd_binary() is None
+
+
+def test_fd_binary_agrees_with_the_find_tool(monkeypatch: Any, tmp_path: Path) -> None:
+    # Drift pin: the ``@`` menu and the ``find`` tool resolve fd through the same
+    # order, so they can never run different binaries. ``get_tool_path``
+    # short-circuits on the managed copy, so this costs no subprocess — its PATH
+    # arm is an unbounded ``subprocess.run([cmd, "--version"])`` and is never
+    # reached here.
+    bin_dir = tmp_path / "agent" / "bin"
+    managed = _stage_fd_binary(bin_dir)
+    _stage_fd_binary(tmp_path / "elsewhere")
+    _fd_lookup_seams(monkeypatch, tmp_path, bin_dir, tmp_path / "elsewhere")
+    # ``tools_manager`` reads the bin dir through its OWN ``_bin_dir``, which the
+    # session-wide ``_no_real_tool_downloads`` fixture redirects to a per-session
+    # temp dir; without pointing it at the same directory this case would compare
+    # two different bin dirs and not the resolution ORDER it is here to pin
+    # (``monkeypatch`` is function-scoped and the last write wins, so this
+    # re-stub overrides the session fixture for this case and is undone with
+    # it).
+    monkeypatch.setattr(tools_manager, "_bin_dir", lambda: str(bin_dir))
+    assert Path(get_tool_path("fd") or "") == Path(managed)
+    assert Path(completion_mod._fd_binary() or "") == Path(get_tool_path("fd") or "")
+
+    # The two shapes this pin could not see until they were measured, both of
+    # which used to resolve to a DIFFERENT binary. (i) ``_download_tool``
+    # ``shutil.move``s the binary to its final path and chmods it on the NEXT
+    # line, so a kill between them leaves a managed copy that exists and is not
+    # executable — and ``ensure_tool`` short-circuits on ``get_tool_path``, so
+    # it is never repaired. ``shutil.which`` skipped it and PATH answered.
+    # Windows ``os.access`` ignores X_OK, so there the chmod is a no-op and the
+    # assertion holds for the other reason; the answer is the same on every leg.
+    Path(managed).chmod(0o644)
+    assert Path(completion_mod._fd_binary() or "") == Path(get_tool_path("fd") or "")
+    Path(managed).chmod(0o755)
+    # (ii) a directory named ``fd``: ``.exists()`` is True, ``_access_check``
+    # is False. Same divergence, no platform arm needed.
+    Path(managed).unlink()
+    Path(managed).mkdir()
+    assert Path(completion_mod._fd_binary() or "") == Path(get_tool_path("fd") or "")
+    Path(managed).rmdir()
+    _stage_fd_binary(Path(managed).parent)
+    # (iii) win32 only in effect: ``shutil.which`` searched the process CWD
+    # before the directory handed to ``path=``, so an ``fd.exe`` sitting in the
+    # user's project directory outranked the managed copy. The managed arm no
+    # longer goes through ``which`` at all. ``_fd_lookup_seams`` has already
+    # chdir'd into an empty dir, so this stages one there.
+    _stage_fd_binary(Path.cwd())
+    assert Path(completion_mod._fd_binary() or "") == Path(get_tool_path("fd") or "")
+
+
+def test_the_walk_applies_the_shared_exclude_list_to_files(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    # #231: ``_has_excluded_component`` ran on fd's output ONLY, and the walk
+    # pruned directory NAMES, so a FILE named like an excluded directory was
+    # offered by the walk and hidden by fd — measured symmetric difference
+    # ``['.git', 'build', 'src/dist']`` on a tree with no git repo and no fd in
+    # sight. The common instance is the ``.git`` gitdir POINTER FILE that every
+    # linked worktree and every submodule carries: this issue's own worktree
+    # enumerated 1458 paths on the walk and 1457 on fd, the one path being it.
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.py").write_text("x")
+    (tmp_path / ".git").write_text("gitdir: /elsewhere/.git/worktrees/wt-231\n")
+    (tmp_path / "build").write_text("#!/bin/sh\necho build\n")
+    (tmp_path / "src" / "dist").write_text("x")
+    monkeypatch.setattr(completion_mod, "_fd_binary", lambda: None)
+    assert sorted(_enumerate_tree(tmp_path)) == ["src", "src/app.py"]
+
+
+def test_an_empty_fd_answer_is_an_answer_not_a_fallback(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    # ``if cands is None:`` must not become ``if not cands:``. An fd that
+    # legitimately answers with zero paths — everything ignored, or an empty
+    # tree — is answering; falling through to the walk there would offer the
+    # whole ignored tree, which is the precise divergence #231 closes.
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.py").write_text("")
+    calls = _stub_fd(monkeypatch, tmp_path, "")
+    assert _enumerate_tree(tmp_path) == []
+    assert calls, "the fd seam was never entered"
+
+
+def test_the_walk_offers_git_ignored_files_that_the_stubbed_fd_hides(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    # The divergence #231 documents instead of closing, both arms in one case:
+    # inside a git repo fd hides what ``.gitignore`` hides and the walk hides
+    # nothing. Approximating it in Python would need fd's whole ``ignore`` crate —
+    # root and nested ``.gitignore``, ``.git/info/exclude``, the global
+    # ``core.excludesFile``, plus ``.ignore``/``.fdignore`` — so the contract is
+    # pinned as a characterisation, not repaired.
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.py").write_text("x")
+    (tmp_path / ".gitignore").write_text("ignored-by-git.md\n")
+    (tmp_path / "README.md").write_text("x")
+    (tmp_path / "tracked.md").write_text("x")
+    (tmp_path / "ignored-by-git.md").write_text("x")
+
+    monkeypatch.setattr(completion_mod, "_fd_binary", lambda: None)
+    walk = sorted(_enumerate_tree(tmp_path))
+    assert walk == [
+        ".gitignore",
+        "README.md",
+        "ignored-by-git.md",
+        "src",
+        "src/app.py",
+        "tracked.md",
+    ]
+
+    # The fd side is the MEASURED output of the real binary on this tree, not a
+    # live spawn. Two reasons, both measured: no CI leg has an fd at all, and a
+    # real fd OUTSIDE a git repo applies no gitignore-family rule while still
+    # honouring an ``.ignore``/``.fdignore`` — including one in a directory ABOVE
+    # ``tmp_path`` — so a live binary would make this case measure the machine it
+    # ran on. Recorded command, in the tree built above:
+    #     $ git init -q && ~/.aelix/agent/bin/fd --type f --type d --type l \
+    #           --hidden --color never --exclude … --max-results 20000
+    #     .gitignore  README.md  src  src/app.py  tracked.md
+    _stub_fd(monkeypatch, tmp_path, ".gitignore\nREADME.md\nsrc\nsrc/app.py\ntracked.md\n")
+    fd_arm = sorted(_enumerate_tree(tmp_path))
+    assert "ignored-by-git.md" in walk
+    assert "ignored-by-git.md" not in fd_arm
+    assert set(walk) - set(fd_arm) == {"ignored-by-git.md"}
+
+
+def test_fd_lists_symlinks_like_the_walk(monkeypatch: Any, tmp_path: Path) -> None:
+    # (a) the argv half — ``--type f --type d`` made a symlink neither, so on a
+    #     tree with a dir link, a file link, a broken link and a self-loop the walk
+    #     returned all four and fd returned NONE of them.
+    calls = _stub_fd(monkeypatch, tmp_path, "real\n")
+    _fd_enumerate("fd", tmp_path)
+    assert [calls[0][i + 1] for i, tok in enumerate(calls[0]) if tok == "--type"] == ["f", "d", "l"]
+
+    # (b) the agreement half, on a tree that carries symlinks AND excluded-name
+    #     entries — the combination that needs BOTH #231 changes. Measured: with
+    #     ``--type l`` alone the arms still differ (the walk also offers the ``.git``
+    #     and ``build`` files); with the shared exclude predicate on the walk too
+    #     they are exactly equal.
+    (tmp_path / "real").mkdir()
+    (tmp_path / "real" / "thing.py").write_text("x")
+    (tmp_path / ".git").write_text("gitdir: /elsewhere\n")
+    (tmp_path / "build").write_text("#!/bin/sh\n")
+    linked = ["broken", "dirlink", "filelink", "loop", "real", "real/thing.py"]
+    expected = linked
+    try:
+        (tmp_path / "dirlink").symlink_to(tmp_path / "real", target_is_directory=True)
+        (tmp_path / "filelink").symlink_to(tmp_path / "real" / "thing.py")
+        (tmp_path / "broken").symlink_to(tmp_path / "nowhere")
+        (tmp_path / "loop").symlink_to(tmp_path, target_is_directory=True)
+        # A symlink whose NAME is excluded: pruned as a dirname by the walk and by
+        # fd's --exclude, so it must be absent from both answers.
+        (tmp_path / "dist").symlink_to(tmp_path / "real", target_is_directory=True)
+    except (OSError, NotImplementedError) as exc:
+        # Unprivileged Windows refuses symlink creation. No skip — every case runs
+        # on every leg — so the same tree WITHOUT links must still come out equal,
+        # and the -q log carries why this leg's link arm was thin.
+        for name in ("dirlink", "filelink", "broken", "loop", "dist"):
+            leftover = tmp_path / name
+            if leftover.is_symlink():
+                leftover.unlink()
+        expected = ["real", "real/thing.py"]
+        warnings.warn(f"symlinks unavailable on this leg: {exc!r}", stacklevel=1)
+
+    monkeypatch.setattr(completion_mod, "_fd_binary", lambda: None)
+    assert sorted(_enumerate_tree(tmp_path)) == expected
+    # Feed the stub the list BEFORE the shared post-filter, so this arm tests
+    # the post-filter instead of echoing its own input. The real fd never emits
+    # these two — its argv carries ``--exclude`` — so they are here purely to
+    # make removing the post-filter from ``_enumerate_tree`` turn this red.
+    # The two arms' EQUALITY rests on the design's M4b live-fd measurement,
+    # not on this stub; what this half pins is the argv and the post-filter.
+    _stub_fd(monkeypatch, tmp_path, "\n".join([*expected, "dist", ".git"]) + "\n")
+    assert sorted(_enumerate_tree(tmp_path)) == expected
+
+
+def test_the_walk_silently_truncates_at_the_cap(monkeypatch: Any, tmp_path: Path) -> None:
+    # ``_TREE_ENUM_CAP`` bounds both arms, but only the walk spends that budget on
+    # paths the VCS ignores, and it is a hard stop in walk order rather than a
+    # sample: ``os.walk`` descends depth-first in ``os.scandir`` order, so once one
+    # large subtree exhausts the budget every directory not yet reached is missing.
+    # Nothing logs it and there is no latency signal either, because truncating is
+    # FASTER. Measured at full size: an ignored 22 000-file ``target/`` beside
+    # twelve real source files left the ``@`` menu two rows where fd gave twelve.
+    # The cap is lowered here instead — a real 20 000-path fixture costs 0.88 s and
+    # 22 000 inodes on every leg.
+    heavy = tmp_path / "target"  # deliberately NOT in _EXCLUDE_DIRS
+    heavy.mkdir()
+    for i in range(25):
+        (heavy / f"artifact{i:02d}.o").write_text("x")
+    (tmp_path / "real_source.py").write_text("x")
+    whole_tree = {"target", "real_source.py", *(f"target/artifact{i:02d}.o" for i in range(25))}
+
+    monkeypatch.setattr(completion_mod, "_fd_binary", lambda: None)
+    monkeypatch.setattr(completion_mod, "_TREE_ENUM_CAP", 8)
+    truncated = _enumerate_tree(tmp_path)
+
+    # Exactly the cap, and a strict subset — never WHICH paths survive: that is
+    # ``os.scandir`` order, a filesystem property rather than a contract.
+    assert len(truncated) == 8
+    assert set(truncated) < whole_tree
+    warnings.warn(
+        f"the walk cap dropped {len(whole_tree) - len(truncated)} of {len(whole_tree)} paths"
+        " with no signal to the user",
+        stacklevel=1,
+    )
 
 
 def test_at_mention_max_results_ordering_is_stable(tmp_path: Path) -> None:
