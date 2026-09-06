@@ -134,6 +134,10 @@ either: it now runs end to end in CI on `windows-latest`, under both pwsh and Wi
   directly (git's credential prompts) or calls `Read-Host` can still prompt there and still
   burn the command's whole timeout. Nobody has watched that at a Windows console — it is
   unverified, not fixed.
+  And a `!command` credential helper that tries to prompt the terminal itself now fails at
+  once with a named reason instead of stalling for ten seconds
+  ([#226](https://github.com/handochan/aelix-ai/issues/226)) — measured on macOS and Linux;
+  the Windows console half of that is unverified too.
 
 So Windows regressions in the suite are caught, the installer runs for real, AUTO mode no
 longer demotes, and an aborted delegation and a timed-out tool command each take their tree

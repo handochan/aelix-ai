@@ -132,6 +132,10 @@ curl -fsSL https://raw.githubusercontent.com/handochan/aelix-ai/main/install.sh 
   `CONIN$`를 직접 읽는 프로그램(git의 자격 증명 프롬프트)이나 `Read-Host`는 거기서 여전히
   프롬프트를 띄우고 명령의 타임아웃을 통째로 태울 수 있습니다. 그 장면을 Windows 콘솔에서
   본 사람은 아직 없습니다 — 고쳐진 것이 아니라 검증되지 않은 것입니다.
+  그리고 터미널에 직접 프롬프트를 띄우려는 `!command` 신용 헬퍼는 이제 10초를 끌지 않고
+  즉시, 이름 붙은 원인과 함께 실패합니다
+  ([#226](https://github.com/handochan/aelix-ai/issues/226)) — macOS와 Linux에서 쟀고,
+  Windows 콘솔 쪽 절반은 이것도 미검증입니다.
 
 즉 스위트 안의 Windows 회귀는 잡히고, 설치 스크립트도 실제로 돌고, AUTO 모드도 더 이상 강등되지
 않으며, 중단된 위임도 타임아웃을 넘긴 도구 명령도 어느 스폰 지점에서든 자기 트리를 데리고

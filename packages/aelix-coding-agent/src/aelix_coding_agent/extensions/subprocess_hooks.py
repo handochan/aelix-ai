@@ -174,9 +174,15 @@ async def run_hook_subprocess(
             stderr=asyncio.subprocess.PIPE,
             cwd=cwd,
             env=proc_env,
-            # process_group=0 on POSIX (a new group in the SAME session, so a
-            # hook that wants the terminal keeps it), CREATE_NEW_PROCESS_GROUP
-            # on Windows. Both give the teardown below something to aim at.
+            # process_group=0 on POSIX (a new group in the SAME session, so
+            # the hook keeps the terminal as its CONTROLLING terminal — it can
+            # open /dev/tty but not read it, and a read or a tcsetattr is a
+            # job-control STOP), CREATE_NEW_PROCESS_GROUP on Windows. Both give
+            # the teardown below something to aim at. #226 detects that stop at
+            # the !command site; this one still costs its full timeout with no
+            # named cause, because the detector is synchronous and this ladder
+            # reaps through a watcher that blocks on a stop — ADR-0238, "What
+            # stays open".
             **containment_spawn_kwargs(),
         )
     except OSError as exc:

@@ -6,12 +6,15 @@ Pi parity: ``coding-agent/core/resolve-config-value.ts`` (SHA 734e08e).
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import shlex
 import signal
 import subprocess
 import sys
+import threading
 import time
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -416,13 +419,21 @@ def test_resolve_config_spawns_a_new_group_in_the_same_session(
 ) -> None:
     """``process_group=0``, never ``start_new_session=True``.
 
-    ``setsid`` would drop the controlling terminal, and this is the site where
-    credential helpers run: ``gpg``/``pass``/pinentry open ``/dev/tty`` and
-    answer ``sh: /dev/tty: Device not configured`` without one (measured under a
-    real pty during the #202 review). A new group in the SAME session keeps the
-    terminal and is reached by ``killpg`` identically. The tty consequence is not
-    reproducible headless — the CI runner has no controlling terminal to lose —
-    so the MECHANISM is what is pinned here.
+    The reason is narrower than this case first recorded (#226). A
+    ``process_group=0`` child can OPEN ``/dev/tty`` but cannot READ it: its
+    group is never the terminal's foreground group, so the kernel stops it. What
+    the kwarg buys is that the failure is an observable STOP on a terminal the
+    child keeps as its CONTROLLING terminal — where ``setsid`` was measured to
+    produce silent theft instead (a helper that opens the terminal by path faces
+    no job-control check at all and ate the line the user had typed), and where
+    passing no kwarg at all lets the group-delivered signal stop Aelix too.
+    ``killpg`` reaches every one of those shapes identically.
+
+    "The tty consequence is not reproducible headless" was wrong, and is gone:
+    ``test_a_helper_that_reads_the_terminal_fails_fast_and_names_the_cause`` in
+    this file reproduces it on a runner with no controlling terminal, by giving
+    a child one of its own. So this case now pins the SPAWN KWARG and nothing
+    else; the consequence is pinned there.
     """
 
     seen: list[dict[str, Any]] = []
@@ -444,3 +455,490 @@ def test_resolve_config_spawns_a_new_group_in_the_same_session(
     else:
         assert kwargs["process_group"] == 0
         assert "start_new_session" not in kwargs
+
+
+# === #226 / ADR-0238 — the terminal stop a credential helper takes ============
+#
+# ``pty`` / ``termios`` / ``fcntl`` are deliberately NOT imported at module
+# scope: none of the three exists on the windows leg, and an import here would
+# take every case in this file down at collection — the exact regression
+# ci.yml's windows leg is kept to catch ("the next ``fcntl`` import"). They live
+# inside the child source strings below, which only a POSIX arm ever runs.
+
+#: Upper bound on ONE resolve of a helper that touches the terminal. The
+#: detector was measured at 0.052–0.059 s (darwin, and Linux/dash on py3.11 and
+#: py3.12, root and non-root); ``main`` burns the whole 10 s ``_COMMAND_TIMEOUT``
+#: instead. This bound sits ~35x above the detector and a fifth of the
+#: timeout, so it measures the mechanism and not the runner.
+_STOP_BOUND_S = 2.0
+
+#: How long the PARENT waits for a pty child. Not an assertion — the assertions
+#: are the child's own measurements, written to a file. Generous on purpose: on
+#: ``main`` the first case's child needs ~20 s (two 10 s stalls), and the red
+#: has to be the readable message assertion rather than a timeout.
+_PTY_DEADLINE_S = 60.0
+
+#: Runs the two resolvers that a credential helper reaches, under a real
+#: controlling terminal, and records what each one said and how long it took.
+#: ``TIOCSCTTY`` on the first line is what makes the pty a CONTROLLING terminal
+#: for this child — without it the kernel's background-group test never applies
+#: and the case would measure nothing. The pytest interpreter is never forked.
+_TERMINAL_READ_SOURCE = """\
+import fcntl
+import json
+import os
+import sys
+import termios
+import time
+
+fcntl.ioctl(0, termios.TIOCSCTTY, 0)
+out_path, path_json = sys.argv[1], sys.argv[2]
+sys.path[:0] = json.loads(path_json)
+
+from aelix_ai.oauth._resolve_config import (
+    resolve_config_value,
+    resolve_config_value_or_throw,
+)
+
+result = {
+    "ctty": os.ttyname(0),
+    "we_are_the_foreground_group": os.tcgetpgrp(0) == os.getpgrp(),
+}
+
+started = time.monotonic()
+try:
+    resolve_config_value_or_throw("!read x < /dev/tty", 'API key for provider "x"')
+    result["or_throw"] = None
+except Exception as exc:
+    result["or_throw"] = str(exc)
+result["or_throw_elapsed"] = time.monotonic() - started
+
+started = time.monotonic()
+try:
+    resolve_config_value("!read x < /dev/tty")
+    result["cached"] = None
+except Exception as exc:
+    result["cached"] = str(exc)
+result["cached_elapsed"] = time.monotonic() - started
+
+with open(out_path, "w", encoding="utf-8") as handle:
+    json.dump(result, handle)
+"""
+
+#: A helper that IGNORES ``SIGTTOU`` and then turns echo off, on its own
+#: controlling terminal. POSIX permits it, so there is no stop to detect; the
+#: command succeeds and the terminal keeps the setting. The pty is this case's
+#: own, so nothing the runner owns is touched.
+_IGNORED_SIGTTOU_SOURCE = """\
+import fcntl
+import json
+import sys
+import termios
+
+fcntl.ioctl(0, termios.TIOCSCTTY, 0)
+out_path, path_json = sys.argv[1], sys.argv[2]
+sys.path[:0] = json.loads(path_json)
+
+import aelix_ai.oauth._resolve_config as rc
+
+failure = rc._Failure()
+outcome = rc._run_shell_command(
+    "trap '' TTOU; stty -echo < /dev/tty; echo ignored", failure=failure
+)
+result = {
+    "returncode": None if outcome is None else outcome[0],
+    "stdout": None if outcome is None else outcome[1],
+    "reason": failure.reason,
+    "echo_is_off": not (termios.tcgetattr(0)[3] & termios.ECHO),
+}
+with open(out_path, "w", encoding="utf-8") as handle:
+    json.dump(result, handle)
+"""
+
+#: The SIGTTOU half of the same rule, with the DEFAULT disposition — the same
+#: child recipe as :data:`_IGNORED_SIGTTOU_SOURCE` minus the ``trap``. A helper
+#: that turns echo off from a background group is stopped before ``tcsetattr``
+#: applies, so the stop is detected AND the terminal keeps its echo. The pty is
+#: this case's own, so nothing the runner owns is touched.
+_TERMINAL_SETTINGS_SOURCE = """\
+import fcntl
+import json
+import sys
+import termios
+import time
+
+fcntl.ioctl(0, termios.TIOCSCTTY, 0)
+out_path, path_json = sys.argv[1], sys.argv[2]
+sys.path[:0] = json.loads(path_json)
+
+import aelix_ai.oauth._resolve_config as rc
+
+failure = rc._Failure()
+started = time.monotonic()
+outcome = rc._run_shell_command(
+    "stty -echo < /dev/tty; echo notstopped", failure=failure
+)
+result = {
+    "elapsed": time.monotonic() - started,
+    "outcome": outcome,
+    "returncode": failure.returncode,
+    "reason": failure.reason,
+    "echo_is_off": not (termios.tcgetattr(0)[3] & termios.ECHO),
+}
+with open(out_path, "w", encoding="utf-8") as handle:
+    json.dump(result, handle)
+"""
+
+#: The one shape in which the stop probe can reach an already-exited leader: a
+#: grandchild inherits stdout and holds the pipe open for ~0.4 s, so the reader
+#: thread is still alive and still polling after the root has exited. ``!exit 7``
+#: cannot be used — its EOF and its exit land in the same tick and the loop
+#: breaks before the first probe (measured: probes=0).
+_REAP_RACE_SOURCE = """\
+import subprocess
+import sys
+
+subprocess.Popen([sys.executable, "-c", "import time; time.sleep(0.4)"])
+raise SystemExit(7)
+"""
+
+
+def _resolve_under_a_new_terminal(
+    out: Path, source: str, *args: str
+) -> dict[str, Any]:
+    """Run ``source`` in a child whose stdin IS its controlling terminal.
+
+    ``os.openpty()`` + ``start_new_session=True`` + ``TIOCSCTTY`` in the child.
+    The pytest interpreter is NOT forked: ``pty.fork`` would make the parent an
+    orphaned session leader, where ``SIGTTIN`` turns into an ``EIO`` on the read
+    and the case would silently measure the wrong thing.
+
+    The result comes back through a file, not the terminal: a pty echoes what is
+    written to it and translates newlines, so parsing its output would be
+    parsing our own echo. Terminal output is drained anyway, and only so a child
+    that writes more than a pty buffer cannot wedge, and so a failure can quote
+    what it saw.
+    """
+
+    master, slave = os.openpty()
+    argv = [_PYTHON, "-c", source, str(out), json.dumps(sys.path), *args]
+    proc = subprocess.Popen(
+        argv,
+        stdin=slave,
+        stdout=slave,
+        stderr=slave,
+        start_new_session=True,
+        close_fds=True,
+    )
+    os.close(slave)
+    seen: list[bytes] = []
+
+    def _drain() -> None:
+        while True:
+            try:
+                data = os.read(master, 65536)
+            except OSError:
+                return
+            if not data:
+                return
+            seen.append(data)
+
+    pump = threading.Thread(target=_drain, daemon=True)
+    pump.start()
+    try:
+        proc.wait(timeout=_PTY_DEADLINE_S)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait(timeout=_DEADLINE)
+    finally:
+        pump.join(_DEADLINE)
+        with contextlib.suppress(OSError):
+            os.close(master)
+
+    assert out.exists(), (
+        f"the child under the pty never wrote its result (rc={proc.returncode}); "
+        f"it said: {b''.join(seen).decode('utf-8', 'replace')[-2000:]!r}"
+    )
+    return json.loads(out.read_text(encoding="utf-8"))
+
+
+def test_a_helper_that_reads_the_terminal_fails_fast_and_names_the_cause(
+    tmp_path: Path,
+) -> None:
+    """``!read x < /dev/tty`` is STOPPED, and both resolvers say so.
+
+    A ``!command`` runs in a process group of its own, which is never the
+    terminal's foreground group, so the kernel raises ``SIGTTIN`` the moment the
+    helper reads the terminal. On ``main`` that cost the full 10 s
+    ``_COMMAND_TIMEOUT`` and the message said nothing about a terminal.
+
+    The cached resolver is the one an ``auth.json`` ``key`` reaches
+    (``AuthStorage.get_api_key`` / ``get_api_key_cascade`` are its only
+    production callers), so the message is asserted not to name ``models.json``
+    — and to carry the ``SIGKILL`` we actually sent rather than the ``SIGHUP``
+    that a ``-1`` returncode renders as, which would name two signals in one
+    breath.
+
+    The windows arm is not this one twice: there is no ``WUNTRACED`` and no
+    background process group there, the detector is inert by design, and what
+    that leg pins is the branch this change introduces for it — a failure with
+    no reason keeps today's Pi-verbatim string and grows no dangling ``—``.
+    """
+
+    if sys.platform == "win32":
+        with pytest.raises(ValueError) as excinfo:
+            resolve_config_value_or_throw("!exit 3", 'API key for provider "x"')
+        message = str(excinfo.value)
+        assert message == (
+            'Failed to resolve API key for provider "x" from shell command: exit 3'
+        )
+        assert "—" not in message
+        return
+
+    result = _resolve_under_a_new_terminal(
+        tmp_path / "stop.json", _TERMINAL_READ_SOURCE
+    )
+    assert result["we_are_the_foreground_group"], (
+        f"the child did not take {result['ctty']} as its foreground terminal, so "
+        "the helper's group was not a background one and this case measured "
+        "nothing"
+    )
+
+    or_throw = result["or_throw"]
+    cached = result["cached"]
+    assert or_throw is not None and cached is not None, (
+        f"the terminal read resolved instead of being stopped: {result}"
+    )
+    assert or_throw.startswith(
+        'Failed to resolve API key for provider "x" from shell command: '
+        "read x < /dev/tty"
+    ), or_throw
+    assert "stopped reading the terminal (SIGTTIN)" in or_throw, or_throw
+    assert " — " in or_throw, or_throw
+    assert "stopped reading the terminal (SIGTTIN)" in cached, cached
+    assert "SIGKILL" in cached, cached
+    assert "SIGHUP" not in cached, cached
+    assert "models.json" not in or_throw and "models.json" not in cached
+    assert result["or_throw_elapsed"] < _STOP_BOUND_S, result
+    assert result["cached_elapsed"] < _STOP_BOUND_S, result
+    warnings.warn(
+        "#226 terminal stop under a real pty: "
+        f"or_throw {result['or_throw_elapsed']:.3f}s, "
+        f"cached {result['cached_elapsed']:.3f}s "
+        f"(bound {_STOP_BOUND_S}s)",
+        stacklevel=1,
+    )
+
+
+def test_the_terminal_stop_detector_is_posix_only_and_says_so(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The detector is a POSIX mechanism and does not pretend otherwise.
+
+    On win32 there is no ``WUNTRACED``, no background process group and no
+    job-control stop, so the probe must not even be attempted: an injected
+    ``platform="win32"`` returns ``None`` without reaching ``os.waitpid``, which
+    a spy proves by raising if it is called.
+
+    The host arm then pins the other half — that a RUNNING child is not
+    mistaken for a stopped one — on whichever leg is running it.
+    """
+
+    import aelix_ai.oauth._resolve_config as rc
+
+    class _Unreachable:
+        pid = -1
+
+    def _explode(*args: Any, **kwargs: Any) -> tuple[int, int]:
+        raise AssertionError("the win32 arm must not reach os.waitpid")
+
+    monkeypatch.setattr(os, "waitpid", _explode)
+    assert rc._stopped_by_the_terminal(_Unreachable(), platform="win32") is None
+    monkeypatch.undo()
+
+    if sys.platform == "win32":
+        assert rc._WAIT_STOP_OPTIONS == 0
+    else:
+        assert rc._WAIT_STOP_OPTIONS != 0
+
+    proc = subprocess.Popen(
+        ["sh", "-c", "exec sleep 5"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        stdin=subprocess.DEVNULL,
+        **rc.containment_spawn_kwargs(),
+    )
+    try:
+        assert rc._stopped_by_the_terminal(proc) is None
+        assert proc.returncode is None, (
+            "the probe wrote an exit code onto a child that is still running"
+        )
+    finally:
+        proc.kill()
+        proc.wait(timeout=_DEADLINE)
+
+
+def test_a_probe_that_reaps_an_exited_command_does_not_lose_its_exit_code() -> None:
+    """A helper that failed must not be reported as one that succeeded.
+
+    The stop probe calls ``os.waitpid`` on a pid ``Popen`` still expects to reap.
+    When the leader has already exited, the probe takes the status ``Popen``
+    wanted, and ``Popen._try_wait`` swallows the resulting ``ChildProcessError``
+    as ``sts = 0`` — measured: exit 7 read back as exit 0, a failed credential
+    helper reported as a successful one whose key is the empty string. The probe
+    therefore hands the status back through ``os.waitstatus_to_exitcode``.
+
+    The assertion is the same on every leg and the asymmetry is here rather than
+    in a branch: on POSIX the probe reaps and the repair line is what makes this
+    7, and on win32 the detector never runs, so ``Popen`` reaps it itself and the
+    7 arrives the way it always did.
+    """
+
+    argv = (_PYTHON, "-c", _REAP_RACE_SOURCE)
+    command = " ".join(shlex.quote(part) for part in argv)
+
+    started = time.monotonic()
+    with pytest.raises(subprocess.CalledProcessError) as excinfo:
+        resolve_config_value("!" + command)
+    elapsed = time.monotonic() - started
+
+    assert excinfo.value.returncode == 7, (
+        "the exit code of a command whose leader exited while a grandchild held "
+        "stdout was lost"
+    )
+    warnings.warn(
+        f"#226 reap-repair through _run_shell_command: {elapsed:.3f}s", stacklevel=1
+    )
+
+
+def test_a_non_terminal_stop_is_not_named_and_still_costs_the_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only the two TERMINAL stops are named. ``SIGSTOP`` is not one of them.
+
+    A helper stopped for a reason that has nothing to do with the terminal has
+    nothing to tell the user about the terminal, so it keeps today's behaviour:
+    the full ``_COMMAND_TIMEOUT`` and an unnamed failure.
+
+    The mapping is split on ``sys.platform`` rather than on an injected value
+    because it is built at IMPORT time — ``monkeypatch.delattr(signal, …)``
+    produces a false failure (measured: ``{21, 22} == set()``). ``signal.SIGSTOP``
+    is referenced only inside the POSIX arm: Windows ``SIGNAL.H`` has no
+    ``SIGSTOP`` and CPython exposes the name only under ``#ifdef``, so an
+    unconditional reference is an ``AttributeError`` on the gating leg — while
+    the ``getattr(signal, "SIGSTOP", None) not in …`` spelling that avoids it
+    passes vacuously there (``None not in {}``).
+    """
+
+    import aelix_ai.oauth._resolve_config as rc
+
+    if sys.platform == "win32":
+        assert rc._TERMINAL_STOP_SIGNALS == {}
+        return
+
+    assert set(rc._TERMINAL_STOP_SIGNALS) == {signal.SIGTTIN, signal.SIGTTOU}
+    assert signal.SIGSTOP not in rc._TERMINAL_STOP_SIGNALS
+
+    monkeypatch.setattr(rc, "_COMMAND_TIMEOUT", 1.0)
+    started = time.monotonic()
+    assert resolve_config_value_uncached("!kill -STOP $$; sleep 30") is None
+    elapsed = time.monotonic() - started
+
+    assert elapsed >= 1.0, (
+        f"a self-stopped command returned in {elapsed:.2f}s — it was named as a "
+        "terminal stop, which it is not"
+    )
+    warnings.warn(
+        f"#226 non-terminal stop still costs the timeout: {elapsed:.3f}s",
+        stacklevel=1,
+    )
+
+
+def test_a_helper_that_ignores_sigttou_is_not_detected(tmp_path: Path) -> None:
+    """The rule is conditional, and this is the condition.
+
+    POSIX lets a process ignore ``SIGTTOU``; a helper that does can turn echo off
+    from a background group and the kernel raises nothing. There is no stop, so
+    there is nothing to detect and nothing to name — the command SUCCEEDS and the
+    terminal keeps the setting. ADR-0238's amendment and the guide both state the
+    rule with that "unless", and this case is what holds them to it.
+
+    It runs on a pty of its own, so the setting it leaves off belongs to a
+    terminal nobody else has.
+
+    The windows arm is thin because the boundary cannot exist there: with no
+    ``WUNTRACED`` and no background process group, ignoring a signal that is
+    never raised changes nothing. What that leg pins is that the detector is
+    inert rather than wrong.
+    """
+
+    import aelix_ai.oauth._resolve_config as rc
+
+    if sys.platform == "win32":
+        assert rc._WAIT_STOP_OPTIONS == 0
+        assert rc._TERMINAL_STOP_SIGNALS == {}
+        return
+
+    result = _resolve_under_a_new_terminal(
+        tmp_path / "ignored.json", _IGNORED_SIGTTOU_SOURCE
+    )
+    assert result["reason"] is None, result
+    assert result["returncode"] == 0, result
+    assert "ignored" in (result["stdout"] or ""), result
+    assert result["echo_is_off"], (
+        "the helper never turned echo off, so this case did not reach the hole "
+        "it is here to record"
+    )
+
+
+def test_a_helper_that_changes_the_terminal_is_stopped_and_named(tmp_path: Path) -> None:
+    """The ``SIGTTOU`` half of the rule, and the half a per-signal mutant drops.
+
+    ``SIGTTIN`` and ``SIGTTOU`` come from two different kernel checks, and only
+    the first has a case of its own above. A detector that maps ``SIGTTIN`` and
+    returns :data:`None` for ``SIGTTOU`` restores this issue's exact symptom on
+    the ``stty`` path — a 10 s stall with no named cause, which the amendment,
+    the CHANGELOG and the guide all describe as fixed — while leaving the WHOLE
+    suite green (measured: 10242 passed with that mutant live). This case is
+    what makes it red.
+
+    ``not echo_is_off`` is the user-visible half of the same assertion: the stop
+    has to arrive BEFORE ``tcsetattr`` applies, or the command fails AND leaves
+    the user's terminal mute. Case 5 is this helper with ``SIGTTOU`` ignored,
+    and there the echo does go off — the two together are the "unless it blocks
+    or ignores it" that ADR-0238 and the guide both state.
+
+    The windows arm is the inert pair case 5 already pins: with no ``WUNTRACED``
+    and no background process group there is no stop to name.
+    """
+
+    import aelix_ai.oauth._resolve_config as rc
+
+    if sys.platform == "win32":
+        assert rc._WAIT_STOP_OPTIONS == 0
+        assert rc._TERMINAL_STOP_SIGNALS == {}
+        return
+
+    result = _resolve_under_a_new_terminal(
+        tmp_path / "settings.json", _TERMINAL_SETTINGS_SOURCE
+    )
+    assert result["outcome"] is None, (
+        f"the helper changed the terminal and succeeded anyway: {result}"
+    )
+    reason = result["reason"]
+    assert reason is not None, (
+        f"the command failed with no named cause — the 10 s unnamed stall this "
+        f"issue is about: {result}"
+    )
+    assert "changing the terminal's settings (SIGTTOU)" in reason, reason
+    assert result["returncode"] == -9, result
+    assert result["elapsed"] < _STOP_BOUND_S, result
+    assert not result["echo_is_off"], (
+        "the stop landed after tcsetattr applied, so the helper was killed AND "
+        "the user's terminal was left with echo off"
+    )
+    warnings.warn(
+        f"#226 SIGTTOU stop under a real pty: {result['elapsed']:.3f}s "
+        f"(bound {_STOP_BOUND_S}s)",
+        stacklevel=1,
+    )

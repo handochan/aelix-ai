@@ -14,11 +14,18 @@ POSIX — the tree is **the process group we asked the spawn to create**.
 :func:`containment_spawn_kwargs` supplies either ``start_new_session=True``
 (``setsid``: new session, new group, controlling terminal dropped) or
 ``process_group=0`` (Python >= 3.11; ``setpgid(0, 0)`` in the child: a new group
-inside the SAME session, so the terminal survives). The second is what
-``!command`` credential helpers need — ``gpg``/``pass``/pinentry open
-``/dev/tty``, and under a real pty a ``setsid`` child answers
-``sh: /dev/tty: Device not configured``. Killing is ``killpg`` on the pgid
-captured at attach.
+inside the SAME session, so the terminal is kept — as the CONTROLLING terminal,
+which is a smaller claim than "usable"). The second is what ``!command``
+credential helpers need, and #226 narrowed why: measured under a real pty, a
+``process_group=0`` child can OPEN ``/dev/tty`` but not READ it — its group is
+never the foreground group, so the kernel STOPS it (``SIGTTIN`` on a read,
+``SIGTTOU`` on a ``tcsetattr``). That stop is the point: it is observable, and
+``_resolve_config`` detects it and names it. A ``setsid`` child has no
+controlling terminal, so a helper that opens ``/dev/tty`` fails at once with the
+platform's own ``strerror(ENXIO)`` wording — not quoted here, because it differs
+per platform — while one that opens the terminal BY PATH faces no job-control
+check at all and was measured stealing a line the user typed. Killing is
+``killpg`` on the pgid captured at attach.
 
 win32 — the tree is a **Job Object**. ``subprocess`` silently IGNORES
 ``start_new_session`` there (CPython's ``_execute_child`` names the parameter
@@ -35,11 +42,13 @@ session leader. A process group holds neither of the first kind's cousins nor
 (``bash.py``, ``_subprocess.py``) and every MCP stdio server (the SDK spawns them
 with ``start_new_session=True``). A hook shell and a ``!command`` shell are NOT
 in that list: each is spawned with ``process_group=0`` — its own group inside the
-SAME session, tty kept — so it is outside an rpc child's group as well, without
-being a session leader. So Windows containment here is strictly STRONGER than
-POSIX's. That is by design: the descendant *walk* which reaches a ``setsid``
-grandchild is ``aelix_agents/reaper.py``'s job (ADR-0197 finding I2) and this
-module does not re-adopt ``killpg`` as a substitute for it.
+SAME session, so the tty is kept as the CONTROLLING terminal and a touch of it
+is a detectable stop rather than a usable prompt (#226) — so it is outside an
+rpc child's group as well, without being a session leader. So Windows
+containment here is strictly STRONGER than POSIX's. That is by design: the
+descendant *walk* which reaches a ``setsid`` grandchild is
+``aelix_agents/reaper.py``'s job (ADR-0197 finding I2) and this module does not
+re-adopt ``killpg`` as a substitute for it.
 
 ``close()`` IS A RELEASE, NOT A KILL. On POSIX it signals nothing, ever —
 revision 1 sent ``killpg(SIGKILL)`` from it and that killed helpers a hook had
@@ -81,9 +90,17 @@ asyncio's child watcher calls ``waitpid`` on its own thread and a LATER loop
 callback copies the status into ``returncode`` — measured: a loop blocked for
 1.5 s still read ``returncode is None`` for a pid the kernel had already
 released. So the honest window there is (watcher reap -> loop callback latency)
-plus the grace, not a 50 ms poll quantum. ``!command`` is the one site where the
-literal claim holds: a synchronous ``Popen`` nothing has waited on, so the zombie
-pins the number. What actually bounds all three is the GROUP, not the pid: a
+plus the grace, not a 50 ms poll quantum. ``!command`` used to be the one site
+where the literal claim held — a synchronous ``Popen`` nothing had waited on, so
+the zombie pinned the number — and since #226 it does not: the terminal-stop
+detector polls ``waitpid(WNOHANG|WUNTRACED)``, which REAPS a leader that has
+already exited. Where the leader was the group's last living member, the group
+is empty from the first poll after that exit (measured 0.055 s) until
+``hard_kill`` fires at ``_COMMAND_TIMEOUT`` — about 9.95 s in which ``killpg``
+aims at a number nobody holds (measured ``ESRCH`` on darwin and Linux both).
+That site is now on the same footing as the asyncio ones rather than the thing
+that bounded them. With any descendant left in the group it is still pinned
+(measured). What actually bounds all three is the GROUP, not the pid: a
 non-empty group's id cannot be reused while any member lives (POSIX.1 §3.293;
 Linux holds it through ``attach_pid(PIDTYPE_PGID)``, BSD likewise), and an empty
 one has nothing to kill — ``killpg`` answers ``ESRCH``. The residual case, the
@@ -171,8 +188,10 @@ def containment_spawn_kwargs(
     POSIX with ``new_session`` -> ``{"start_new_session": True}``: ``setsid``, a
     new session, and no controlling terminal. Without it -> ``{"process_group":
     0}``: ``setpgid(0, 0)``, a new group in the SAME session, so a credential
-    helper behind ``!command`` can still open ``/dev/tty``. ``killpg`` reaches
-    both identically.
+    helper behind ``!command`` can still open ``/dev/tty`` — **open**, not read.
+    The group is never the terminal's foreground group, so a read or a
+    ``tcsetattr`` is a job-control STOP, which is what ``_resolve_config``
+    detects and names (#226). ``killpg`` reaches both identically.
 
     win32 -> ``{"creationflags": CREATE_NEW_PROCESS_GROUP}`` either way: the
     group is the address :meth:`ProcessTree.soft_kill`'s console event needs,

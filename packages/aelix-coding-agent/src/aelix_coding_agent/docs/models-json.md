@@ -134,6 +134,48 @@ The `apiKey` value is resolved at request time and supports three forms:
 - **Shell command** — `"apiKey": "!op read op://vault/key"` runs the command and
   uses its trimmed stdout. Output is bounded (~1 MB / 10 s); a non-zero or empty
   result resolves to no key.
+
+  A `!command` cannot prompt you. It runs in a process group of its own — never
+  the terminal's foreground group — so the kernel stops it the moment it reads
+  the terminal or turns echo off, unless it blocks or ignores that signal, which
+  POSIX permits; then it succeeds and your terminal keeps the setting. When the
+  stop does arrive, Aelix ends the command and tells you why instead of waiting
+  out its ten-second timeout. (The resolver detects the stop in about 0.05 s,
+  measured under a real pty on macOS and Linux; what you wait is that plus
+  Aelix's own startup.) This is a deliberate difference from Pi, which leaves
+  the helper in Pi's own process group — the terminal's foreground group
+  whenever Pi is in the foreground — so the helper can prompt.
+
+  So pick a helper that needs no terminal, and which one depends on the family:
+
+  - **`ssh`, `sudo`, `git` and friends** — give them an askpass program
+    (`SSH_ASKPASS`, `SUDO_ASKPASS` with `sudo -A`, `GIT_ASKPASS`) or read the
+    secret from the OS keychain. These are the helpers that get the fast, named
+    failure today: an `ssh` passphrase read, a `sudo` prompt and a `stty`-based
+    git credential helper were all stopped and named in about 0.05 s.
+  - **`gpg` and `pass`** — askpass is *not* their answer; they do not read
+    `SSH_ASKPASS`, they ask `gpg-agent`, and `gpg-agent` forks `pinentry` in its
+    own session where none of the above applies. **These still cost the full ten
+    seconds with no named cause.** Unlock the key outside Aelix once and let the
+    agent's cache answer (measured 0.115–0.118 s warm), preset it with
+    `gpg-preset-passphrase`, use `--pinentry-mode loopback` with a passphrase
+    file, or configure a GUI pinentry such as `pinentry-mac` (not measured
+    here). A bare `gpg --pinentry-mode loopback` that falls through to reading
+    the terminal itself *is* detected, at about 0.36 s.
+
+  Two things this does not fix. An askpass program or a GUI prompt that nobody
+  answers never reads the terminal, so it never stops — it costs the whole
+  ten-second timeout, exactly as it did before. And a `!command` can still
+  **write** to the terminal even though it cannot read it: `sudo` and `openssl`
+  print their prompt first and fail after. If one of them leaves your terminal
+  with echo off, `stty sane` (or `reset`) puts your terminal back.
+
+  The same rule covers a `!command` in `auth.json`'s `key`, not just this file.
+
+  On Windows none of this applies: there is no background process group to be
+  stopped for, so a helper that reads the console directly can still put a
+  prompt there — and if nobody answers it, the command costs the full ten
+  seconds. Nobody has watched that happen.
 - **Literal** — any other string is used verbatim.
 
 The same indirection applies to each value in a `headers` map.

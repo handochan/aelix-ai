@@ -21,12 +21,16 @@ from __future__ import annotations
 
 import contextlib
 import os
+import signal
 import subprocess
 import threading
+import time
+from dataclasses import dataclass
 from typing import cast
 
 from aelix_ai.utils._process_tree import (
     ProcessTree,
+    _resolve_platform,
     _retained_handle,
     containment_spawn_kwargs,
 )
@@ -40,7 +44,123 @@ _MAX_OUTPUT_BYTES = 1024 * 1024
 _COMMAND_TIMEOUT = 10.0
 
 
-def _run_shell_command(cmd: str) -> tuple[int, str] | None:
+#: One poll quantum. The stop is reported by the first ``waitpid`` after the
+#: kernel delivers the signal, so this IS the detection latency: measured
+#: 0.054 s on darwin and 0.052-0.059 s on Linux/dash (py3.11 and py3.12, root
+#: and non-root), against the 10 s of ``_COMMAND_TIMEOUT`` it replaces. The
+#: probe itself costs 0.20 us per call.
+_STOP_POLL_SECONDS = 0.05
+
+#: The two stops that mean "this helper tried to talk to the terminal", mapped
+#: to what it was doing. Neither signal exists on win32, where there is no
+#: background process group to be stopped for — the mapping is then EMPTY and
+#: the detector inert, which is what makes a non-terminal stop (``SIGSTOP``,
+#: ``SIGTSTP``) keep today's unnamed timeout on every platform.
+_TERMINAL_STOP_SIGNALS: dict[int, tuple[str, str]] = {
+    int(sig): (name, what)
+    for name, what in (
+        ("SIGTTIN", "reading the terminal"),
+        ("SIGTTOU", "changing the terminal's settings"),
+    )
+    if (sig := getattr(signal, name, None)) is not None
+}
+
+#: ``WUNTRACED`` is what makes ``waitpid`` report a STOP rather than only an
+#: exit. It does not exist on win32; zero disables the probe there.
+_WAIT_STOP_OPTIONS = (
+    (os.WNOHANG | os.WUNTRACED)  # pyright: ignore[reportAttributeAccessIssue]
+    if hasattr(os, "WUNTRACED")
+    else 0
+)
+
+
+@dataclass(slots=True)
+class _Failure:
+    """A named cause's seat on the way back out through three ``None`` returns.
+
+    ``_run_shell_command`` reports failure as :data:`None`, and so do both
+    uncached hops above it, so there is nowhere in the return values for a
+    reason to ride. Callers that can render one pass this in; callers that
+    cannot pass nothing and keep today's messages exactly.
+    """
+
+    reason: str | None = None
+    #: Filled on the stop branch ONLY, where it is the ``-9`` of the
+    #: ``SIGKILL`` :meth:`ProcessTree.hard_kill` actually sent. A timeout or an
+    #: overflow keeps today's ``-1``, which renders as ``SIGHUP`` and would
+    #: otherwise name a second signal next to the one in the reason.
+    returncode: int | None = None
+
+
+class _StoppedByTerminal(subprocess.CalledProcessError):
+    """A ``CalledProcessError`` that also says the command was STOPPED, and why.
+
+    The base class is load-bearing for its ``__str__``, not for any catcher.
+    ``CalledProcessError.__str__`` renders the ``Command '[...]' died with
+    <Signals.SIGKILL: 9>.`` half of the message that
+    ``test_a_helper_that_reads_the_terminal_fails_fast_and_names_the_cause``
+    asserts; rebased on ``subprocess.SubprocessError`` that case goes red
+    (measured: ``1 failed, 4 passed``) and the message degrades to a bare
+    ``(-9, [...])``. Nothing is preserved by NAME: no
+    ``except subprocess.CalledProcessError`` exists anywhere in ``packages/``,
+    and the cascade's own catcher is the ``except Exception`` in
+    ``ModelRegistry.get_api_key_and_headers``, which catches this either way.
+    Deliberately not exported: callers gain a longer message, not a new type
+    to handle.
+    """
+
+    def __init__(self, returncode: int, cmd: list[str], reason: str) -> None:
+        super().__init__(returncode, cmd)
+        self.reason = reason
+
+    def __str__(self) -> str:
+        return f"{super().__str__()} {self.reason}"
+
+
+def _stopped_by_the_terminal(
+    proc: subprocess.Popen[bytes], *, platform: str | None = None
+) -> tuple[str, str] | None:
+    """The (signal name, what it was doing) of the stop, or :data:`None`.
+
+    POSIX only, and it says so rather than guessing: on win32 there is no
+    ``WUNTRACED`` and no background process group, so the probe is not even
+    attempted and every ``!command`` keeps the behaviour it has today.
+
+    THE PROBE PAYS FOR ITSELF TWICE, and both are deliberate. (1) Calling
+    ``waitpid`` on a child that has ALREADY exited takes the status ``Popen``
+    was going to reap, and ``Popen._try_wait`` swallows the resulting
+    ``ChildProcessError`` as ``sts = 0`` — measured: an ``exit 7`` read back as
+    ``exit 0``, a failed helper reported as a successful one. So the status is
+    handed back through ``os.waitstatus_to_exitcode``. (2) The same call
+    consumes the zombie, which is what pinned the pgid; see the amended
+    PID/PGID paragraph in :mod:`aelix_ai.utils._process_tree`.
+    ``os.waitid(..., WNOWAIT)`` avoids both and is absent on darwin; forking on
+    platform was refused because the gating POSIX leg is Linux only, so the
+    darwin repair path would then never run in CI.
+    """
+
+    if _resolve_platform(platform) == "win32" or _WAIT_STOP_OPTIONS == 0:
+        return None
+    if proc.returncode is not None:  # already reaped — nothing left to poll
+        return None
+    try:
+        pid, status = os.waitpid(proc.pid, _WAIT_STOP_OPTIONS)
+    except (ChildProcessError, OSError):
+        return None
+    if pid == 0:
+        return None
+    if os.WIFSTOPPED(status):  # pyright: ignore[reportAttributeAccessIssue]
+        return _TERMINAL_STOP_SIGNALS.get(
+            os.WSTOPSIG(status)  # pyright: ignore[reportAttributeAccessIssue]
+        )
+    if proc.returncode is None:
+        proc.returncode = os.waitstatus_to_exitcode(status)
+    return None
+
+
+def _run_shell_command(
+    cmd: str, *, failure: _Failure | None = None
+) -> tuple[int, str] | None:
     """Run ``sh -c cmd`` with a wall-clock timeout AND a ~1 MB output cap.
 
     Mirrors Pi's ``execSync`` (``timeout: 10000`` + the implicit ~1 MB
@@ -52,18 +172,43 @@ def _run_shell_command(cmd: str) -> tuple[int, str] | None:
     CONTAINMENT (#202, ADR-0238). ``proc.kill()`` reached the shell and nothing
     else: measured on ``main`` 39549b9, ``sh -c "a | b"`` keeps every stage of
     the pipeline in the shell's group, so a timed-out ``!command`` left them
-    running (``sh -c "sleep 5"`` hid it — one command is ``exec``'d, so killing
-    the shell IS killing it), and on Windows an MSYS ``sh.exe`` is an exec stub
+    running (``sh -c "sleep 5"`` hid it on darwin, whose ``/bin/sh`` is bash 3.2
+    and ``exec``s a lone simple command, so killing the shell IS killing it;
+    dash — the gating leg's ``/bin/sh`` — forks instead and never hid anything),
+    and on Windows an MSYS ``sh.exe`` is an exec stub
     whose death orphans the command outright. The spawn now asks for a tree of
     its own and both kill sites end the tree
     (:mod:`aelix_ai.utils._process_tree`).
 
-    The kwarg is ``process_group=0`` and NOT ``start_new_session=True``: this is
-    the site where credential helpers run (``gpg``, ``pass``, pinentry) and they
-    open ``/dev/tty``. ``setsid`` drops the controlling terminal — measured
-    under a real pty, the helper answers ``sh: /dev/tty: Device not
-    configured``. ``setpgid(0, 0)`` gives a new group inside the SAME session,
-    which keeps the terminal and which ``killpg`` reaches identically.
+    The kwarg is ``process_group=0`` and NOT ``start_new_session=True``, for a
+    reason narrower than this docstring first claimed (#226). A
+    ``process_group=0`` child can OPEN ``/dev/tty`` but cannot READ it: its group
+    is never the terminal's foreground group, so the kernel STOPS it —
+    ``SIGTTIN`` on a read, ``SIGTTOU`` on a ``tcsetattr`` — unless it blocks or
+    ignores ``SIGTTOU``, which POSIX permits and which was measured to succeed.
+    What the kwarg buys is that the failure is an OBSERVABLE STOP on a terminal
+    the child still has as its CONTROLLING terminal. The alternatives are both
+    worse and both measured: a ``setsid`` helper that opens the terminal by path
+    (``$GPG_TTY``, ``/dev/ttysNNN``) faces no job-control check at all and was
+    measured eating the line the user had typed at Aelix's own prompt — silent
+    theft in place of a visible stop — while passing no kwarg at all lets the
+    group-delivered signal stop Aelix TOO when it is in the background (measured:
+    both still stopped at 20 s, ``SIGCONT`` does not recover it, and the timeout
+    below never fires because nothing is left running to fire it). ``killpg``
+    reaches all three shapes identically.
+
+    THE STOP IS DETECTED AND NAMED (#226). The wait below polls at
+    ``_STOP_POLL_SECONDS`` and asks :func:`_stopped_by_the_terminal` each time,
+    so a helper that tries to prompt fails in about one quantum — measured
+    0.054 s under a real pty on macOS and 0.052-0.059 s on Linux/dash, the only
+    POSIX CI leg — with a cause the caller can render, instead of burning the
+    whole ``_COMMAND_TIMEOUT`` and saying nothing about the terminal. Both
+    signals are delivered to the GROUP, so a pipeline's leader stops with the
+    stage that read the terminal and this ``waitpid`` sees it; that matters most
+    on the gating leg, where dash forks rather than ``exec``ing, so the helper is
+    always the leader's child there. On win32 the detector is inert (there is
+    no ``WUNTRACED`` and no background process group) and a console reader can
+    still prompt — unanswered, for the full timeout. Nobody has watched that.
     """
 
     try:
@@ -114,12 +259,36 @@ def _run_shell_command(cmd: str) -> tuple[int, str] | None:
 
         reader = threading.Thread(target=_read, daemon=True)
         reader.start()
-        reader.join(_COMMAND_TIMEOUT)
 
-        if reader.is_alive() or overflow:
-            # Timed out, or exceeded the output cap — kill and fail. Straight to
-            # the hard kill: there is no grace stage here to escalate from, and
-            # the producer we are killing is by definition not answering.
+        # Not ``reader.join(_COMMAND_TIMEOUT)``: the join is broken into poll
+        # quanta so a stop can be SEEN. ``Thread.join`` still returns the moment
+        # the reader finishes, so the happy path pays nothing for this (measured:
+        # 3.13/3.56 ms before, 3.03/3.60 ms after, n=200).
+        deadline = time.monotonic() + _COMMAND_TIMEOUT
+        stopped: tuple[str, str] | None = None
+        while True:
+            reader.join(_STOP_POLL_SECONDS)
+            if not reader.is_alive() or overflow or time.monotonic() >= deadline:
+                break
+            stopped = _stopped_by_the_terminal(proc)
+            if stopped is not None:
+                break
+
+        if stopped is not None or reader.is_alive() or overflow:
+            # Stopped by the terminal, timed out, or over the output cap — kill
+            # and fail. Straight to the hard kill: there is no grace stage here
+            # to escalate from, and the producer we are killing is by definition
+            # not answering (a STOPPED one cannot answer at all).
+            if stopped is not None and failure is not None:
+                name, what = stopped
+                failure.reason = (
+                    f"The command stopped {what} ({name}): a !command runs in a "
+                    "process group of its own, which is never the terminal's "
+                    "foreground group, so the kernel stops it the moment it "
+                    "touches the terminal — it cannot prompt you. Use a helper "
+                    "that needs no terminal: an askpass program, a GUI pinentry, "
+                    "or the OS keychain."
+                )
             tree.hard_kill()
             # BOUNDED, because ``hard_kill`` is best-effort on win32: with no
             # job (a failed attach) and no resolvable ``taskkill.exe`` it is a
@@ -133,6 +302,10 @@ def _run_shell_command(cmd: str) -> tuple[int, str] | None:
             with contextlib.suppress(subprocess.TimeoutExpired):
                 proc.wait(timeout=5.0)
             reader.join(1.0)
+            if stopped is not None and failure is not None:
+                # Read AFTER the kill, because it is the kill's own ``-9``. The
+                # timeout and overflow branches keep today's ``-1``.
+                failure.returncode = proc.returncode
             return None
 
         try:
@@ -177,13 +350,25 @@ def resolve_config_value(
         cmd = value[1:]
         if cache is not None and cmd in cache:
             return cache[cmd]
-        result = _run_shell_command(cmd)
+        failure = _Failure()
+        result = _run_shell_command(cmd, failure=failure)
         if result is None or result[0] != 0:
             # Preserve the raise-on-failure contract the auth.json cascade
             # relied on (was ``check=True``); a timeout or output-cap
             # overflow now fails here instead of hanging / OOMing.
+            argv = ["sh", "-c", cmd]
+            if failure.reason is not None:
+                # The stop branch, and the only one that changes the returncode:
+                # ``-9`` is the ``SIGKILL`` that ended it, where today's ``-1``
+                # would render as ``SIGHUP`` and name a second signal beside the
+                # one the reason already names.
+                raise _StoppedByTerminal(
+                    failure.returncode if failure.returncode is not None else -1,
+                    argv,
+                    failure.reason,
+                )
             raise subprocess.CalledProcessError(
-                result[0] if result is not None else -1, ["sh", "-c", cmd]
+                result[0] if result is not None else -1, argv
             )
         out = result[1].rstrip("\n")
         if cache is not None:
@@ -214,23 +399,30 @@ def resolve_config_value(
 #    var set to the empty string; the ``or value`` form below matches Pi.
 
 
-def _execute_command_uncached(value: str) -> str | None:
+def _execute_command_uncached(
+    value: str, *, failure: _Failure | None = None
+) -> str | None:
     """Pi parity: ``executeCommandUncached`` → ``executeWithDefaultShell``.
 
     Runs ``value[1:]`` via ``sh -c`` and returns the trimmed stdout, or
     :data:`None` on a non-zero exit, timeout, output-cap overflow, OS
     error, or empty output. Never raises (matches Pi's
     ``try { execSync } catch { undefined }``).
+
+    ``failure`` is the optional seat a named cause rides back in; the return
+    value stays exactly what Pi's does.
     """
 
-    result = _run_shell_command(value[1:])
+    result = _run_shell_command(value[1:], failure=failure)
     if result is None or result[0] != 0:
         return None
     out = result[1].strip()
     return out or None
 
 
-def resolve_config_value_uncached(value: str) -> str | None:
+def resolve_config_value_uncached(
+    value: str, *, failure: _Failure | None = None
+) -> str | None:
     """Pi parity: ``resolve-config-value.ts::resolveConfigValueUncached``.
 
     - ``!<command>`` → :func:`_execute_command_uncached` (``str`` or
@@ -238,10 +430,13 @@ def resolve_config_value_uncached(value: str) -> str | None:
     - otherwise → the matching environment variable's value if set and
       non-empty, else the literal ``value``. Never :data:`None` for the
       env/literal branch (Pi ``process.env[config] || config``).
+
+    ``failure`` is optional and keyword-only, so every existing call site keeps
+    its signature and its "never raises" contract.
     """
 
     if value.startswith("!"):
-        return _execute_command_uncached(value)
+        return _execute_command_uncached(value, failure=failure)
     return os.environ.get(value) or value
 
 
@@ -252,15 +447,23 @@ def resolve_config_value_or_throw(value: str, description: str) -> str:
     ``Error``) with a Pi-verbatim message when a ``!command`` produced no
     output, or a generic message otherwise. The env/literal branch always
     resolves, so only the command branch can raise here.
+
+    When the command was STOPPED by the terminal (#226) the Pi-verbatim message
+    stays as the PREFIX and the named cause is appended after an em dash. With
+    no cause — every other failure, and every failure on win32, where the
+    detector is inert — the message is byte-for-byte what it has always been,
+    with no dangling separator.
     """
 
-    resolved = resolve_config_value_uncached(value)
+    failure = _Failure()
+    resolved = resolve_config_value_uncached(value, failure=failure)
     if resolved is not None:
         return resolved
     if value.startswith("!"):
-        raise ValueError(
-            f"Failed to resolve {description} from shell command: {value[1:]}"
-        )
+        message = f"Failed to resolve {description} from shell command: {value[1:]}"
+        if failure.reason is not None:
+            message = f"{message} — {failure.reason}"
+        raise ValueError(message)
     raise ValueError(f"Failed to resolve {description}")
 
 

@@ -115,6 +115,45 @@ and `.../releases/tag/vX` link would 404. Add them with the first pushed tag.
   you type is ever passed to the subprocess, and `fd` is still never required.
   See ADR-0193 and [#231](https://github.com/handochan/aelix-ai/issues/231).
 
+- **A `!command` in `models.json` or `auth.json` that tries to prompt now fails
+  at once, with a reason, instead of stalling for ten seconds without one.** A
+  `!command` runs in a process group of its own, which is never the terminal's
+  foreground group, so the kernel STOPS it the moment it reads the terminal
+  (`SIGTTIN`) or turns echo off (`SIGTTOU`) — unless it blocks or ignores that
+  signal, which POSIX permits. Aelix now watches for exactly those two stops
+  while it waits, ends the tree when one arrives, and says what happened:
+  `The command stopped reading the terminal (SIGTTIN): …`. Measured under a real
+  pty on macOS **and on Linux**, the resolver detects the stop and kills in
+  0.052–0.059 s; what you wait for is that plus Aelix's own startup. Before this,
+  the same helper burned the full ten-second timeout and the message said only
+  `Failed to resolve API key for provider "x" from shell command: …`, with
+  nothing about a terminal in it.
+
+  Who benefits: helpers that read the terminal **themselves** — `ssh` or
+  `ssh-add` with no askpass, `sudo`, a git credential helper that does
+  `read </dev/tty` or `stty -echo`, and `gpg --pinentry-mode loopback`
+  (measured 0.357–0.359 s).
+
+  Two things this does not catch, said here rather than found later. A
+  passphrase prompt mediated by `gpg-agent` — the normal `gpg` and `pass`
+  architecture — is invisible to it, because the agent is a daemon in its own
+  session and it is the agent that forks `pinentry`, where no job-control check
+  applies; measured with gnupg 2.5.22, `!gpg -d` and `!pass show` still take the
+  full ten seconds with no named cause. And "the helper stopped before printing
+  anything" describes the shell helpers that were measured: a background process
+  can still *write* to the terminal, and `sudo` and `openssl` print their prompt
+  before failing. An askpass program or a GUI prompt that nobody answers still
+  costs the whole timeout too — it never reads the terminal, so it never stops.
+
+  The process group itself does not change: `setsid` would be worse, not better.
+  Measured, a `setsid` helper that opens the terminal by path faces no
+  job-control check at all and took the line the user had typed at Aelix's own
+  prompt — silence in place of a visible stop. On Windows there is no background
+  process group and no stop to detect: a helper that reads the console directly
+  can still prompt there and still burn the whole timeout unanswered, and nobody
+  has watched that happen. See ADR-0238 and
+  [#226](https://github.com/handochan/aelix-ai/issues/226).
+
 ### Added
 
 - **AUTO mode can read PowerShell and `cmd`, so it stops prompting for every
@@ -402,12 +441,11 @@ and `.../releases/tag/vX` link would 404. Add them with the first pushed tag.
   deliberately backgrounds a helper and returns 0 still keeps it — only the
   timeout and cancellation paths kill.
 
-  `!command` also keeps its controlling terminal, which is what a credential
-  helper needs: the new sites ask for a process group inside the same session
-  rather than a new session, because a child of a new session that opens the
-  terminal gets `sh: /dev/tty: Device not configured` — measured with a shell
-  under a real pty, and `!command` is the site where `gpg` / `pass` and pinentry
-  run.
+  `!command` also keeps the terminal as its *controlling* terminal — which turns
+  out to make a helper's tty read a **detectable stop**, not a working prompt;
+  see the `!command` entry under Changed. The new sites ask for a process group
+  inside the same session rather than a new session, and `!command` is the site
+  where `gpg` / `pass` and pinentry run.
 
   On Windows the delegated child can now be asked to stop at all: it is spawned
   in its own console process group, `stop()` sends `CTRL_BREAK_EVENT`, and the

@@ -1,6 +1,6 @@
 # 0238. The kill reached the child, and the tree is what had to die
 
-Status: Accepted (2026-09-05; **#220 amendment 2026-09-05** — adopted at the four `aelix_agents` sites: the print-channel spawn, the reaper's win32 legs, `rpc_channel`'s `_reap`/`_eager_abort`, and `print_mode`'s handler block; **#221 amendment 2026-09-05** — the three `subprocess.run(timeout=)` sites adopt `run_contained`; **#222 amendment 2026-09-05** — the two tool spawn sites adopt it: `_LocalBashOperations.exec` and `run_cancellable`; **#234 amendment 2026-09-06** — the bash tool's watcher teardown awaits through `asyncio.wait`, so a cancellation of the task running `exec` is no longer swallowed there)
+Status: Accepted (2026-09-05; **#220 amendment 2026-09-05** — adopted at the four `aelix_agents` sites: the print-channel spawn, the reaper's win32 legs, `rpc_channel`'s `_reap`/`_eager_abort`, and `print_mode`'s handler block; **#221 amendment 2026-09-05** — the three `subprocess.run(timeout=)` sites adopt `run_contained`; **#222 amendment 2026-09-05** — the two tool spawn sites adopt it: `_LocalBashOperations.exec` and `run_cancellable`; **#234 amendment 2026-09-06** — the bash tool's watcher teardown awaits through `asyncio.wait`, so a cancellation of the task running `exec` is no longer swallowed there; **#226 amendment 2026-09-06** — `!command` keeps `process_group=0`, for a corrected reason, and a terminal stop is now detected and named)
 Date: 2026-09-05
 Supersedes/relates: ADR-0197 (the `aelix_agents` reaper, whose finding I2 —
 "a `/proc` walk and not `os.killpg`" — this ADR **reconciles rather than
@@ -277,13 +277,30 @@ watcher calls `waitpid` on its own thread and the loop copies the status into
 `returncode` only from a later callback (measured: a loop blocked for 1.5 s
 still reads `returncode is None` for a pid the kernel has already released), so
 the honest bound is that watcher-to-callback latency plus the grace the caller
-then pays, and not the 50 ms of a last poll; `!command` — a synchronous `Popen`
-nothing has waited on, so the zombie genuinely pins the number. Neither bound is
-a target, though: a non-empty group cannot have its id recycled (the reference
-above, held on Linux via `attach_pid(PIDTYPE_PGID)` and by the BSDs likewise)
-and an empty one has nothing to kill. What is left — the number recycled *and*
-the new holder having made itself a group leader, inside that bound — is
-accepted and is recorded here rather than hidden. On win32 with a job there is
+then pays, and not the 50 ms of a last poll; `!command` **was** the one site
+where the literal claim held — a synchronous `Popen` nothing had waited on, so
+the zombie genuinely pinned the number — and since the #226 amendment it is not.
+The terminal-stop detector polls `waitpid(WNOHANG|WUNTRACED)`, and that call
+reaps a leader that has already exited (measured: deleting the line that hands
+the status back does not restore the pin — it is the `waitpid` itself that
+consumes the zombie). Where the leader was the group's last living member the
+group is empty from the first poll after that exit — measured 0.055 s — until
+`hard_kill` fires at the 10 s `_COMMAND_TIMEOUT`: about 9.95 s in which `killpg`
+aims at a number nobody holds. Measured on both arms: `main` leaves
+`claim=ERR:1 members='… Z <defunct>'` on darwin and `CLAIMED 'Z sh'` on Linux,
+the branch answers `ESRCH` with an empty member list on both. Nothing is lost in
+that shape — the stdout holder had already left the group, so `killpg` was
+already a no-op there on `main` (the descendant survives on both arms) — and
+what is gained is a window in which `killpg` could reach an *innocent* recycled
+group. With any descendant left in the group it is still pinned (measured
+`CLAIMED`). Neither bound is a target, though: a non-empty group cannot have its
+id recycled (the reference above, held on Linux via `attach_pid(PIDTYPE_PGID)`
+and by the BSDs likewise) and an empty one has nothing to kill. What is left —
+the number recycled *and* the new holder having made itself a group leader,
+inside that bound — is accepted and is recorded here rather than hidden. It is
+small but not theoretical: measured on the author's box, pid space turns over in
+about 27 minutes idle (61.7 pids/s against a `PID_MAX` of 99 999) and about
+2.4 minutes under load. On win32 with a job there is
 no pid hazard at all: the handle names the job.
 
 **The assignment window.** Between `CreateProcess` and
@@ -399,6 +416,25 @@ against its `< 2.0` bound. The bound is unchanged.
   `handle_user_bash` passes `signal=None`: measured 0 of 524 requested cancels
   lost with `signal=None` against 14 of 388 with an `AbortSignal`. That bound
   is this ADR's to carry because it also bounds #230.
+- **#226 — the `!command` terminal stop: landed 2026-09-06.** The site keeps
+  `process_group=0`; what changed is the reason it is there and what happens
+  when a helper uses the terminal it kept. `_run_shell_command`'s wait is a
+  poll loop now, and `_stopped_by_the_terminal` asks `waitpid` on each poll
+  whether the shell has been STOPPED by `SIGTTIN` or `SIGTTOU` — if it has, the
+  tree is killed at once and the failure carries a named cause instead of ten
+  silent seconds. Named here by function for the reason the bullets above give.
+  What it cost — a corrected rationale, and a pgid that this site no longer
+  pins — is in the amendment under "Consequences" below.
+- **The hook shell's terminal stop — still open.**
+  `extensions/subprocess_hooks.py` is this ADR's other `process_group=0` site
+  and takes the same `SIGTTIN`/`SIGTTOU` stop. #226's detector is synchronous
+  and that site drives its own asyncio ladder — its `ThreadedChildWatcher` reaps
+  with a blocking `waitpid(pid, 0)`, which never returns on a stop — so a hook
+  that touches the terminal still costs its full timeout with no named cause.
+  The magnitude is larger than the site that was fixed: `HookContrib.timeout_ms`
+  defaults to 60 000 ms and may be 600 000, and a hook fires per event. Recorded
+  here as well as in #235, because routing it to an issue alone is the miss #226
+  was born from.
 
 The README's "Platform support" still says which half is contained and which
 is not, but the split now falls elsewhere: after #220 the Windows verdict is
@@ -852,3 +888,95 @@ empty, so only the group kill of the paragraph below reaches anything there.
   `timed_out=True` result the tool would have rendered as a timeout report.**
   Whether an abort in this window should kill anything is still
   [#230](https://github.com/handochan/aelix-ai/issues/230)'s.
+
+- **`!command` keeps the terminal — as its CONTROLLING terminal, which is a
+  smaller claim than this ADR made (amendment, 2026-09-06, #226).** The #221
+  amendment **above** already narrowed the pty measurement this bullet rested
+  on — it showed that a `process_group=0` child can *open* `/dev/tty`, not that
+  it can read from it — and #226 is that narrowing arriving at the site the
+  original paragraph was written about. Measured under a real pty on macOS (the
+  author's box) and on Linux/dash, the only POSIX CI leg: a `!command` helper
+  that reads the terminal is STOPPED by `SIGTTIN`, and one that calls
+  `tcsetattr` is STOPPED by `SIGTTOU` — **unless it blocks or ignores
+  `SIGTTOU`, which POSIX permits and which was measured to succeed on the
+  controlling terminal**, leaving the setting applied and nothing to detect.
+  The signals are delivered to the process GROUP, so a pipeline's leader stops
+  with the stage that touched the terminal, which is what makes this work on the
+  gating leg at all: dash does not `exec` a lone simple command from `-c`, so
+  the helper there is always the leader's child. Nothing about that is quoted
+  from a platform's `strerror`, and the "a single command is `exec`'d" shorthand
+  is darwin's bash 3.2 and not a POSIX fact.
+
+  **What lands is detection, not a new decision.** `_run_shell_command` polls
+  its reader in 50 ms quanta and asks `waitpid(WNOHANG|WUNTRACED)` on each one;
+  a `WIFSTOPPED` whose `WSTOPSIG` is one of those two ends the tree immediately
+  and names the cause. Measured 0.054 s on darwin and 0.052–0.059 s on
+  Linux/dash across py3.11 and py3.12, root and non-root, against the 10 s the
+  timeout used to cost — and against the real binaries, all of which leave
+  `SIGTTOU` at its default and were all detected: `pinentry-tty` (0.355 s),
+  `pinentry-curses` (0.05 s), `ssh`'s `readpassphrase` through `ssh-keygen -y`
+  (0.051 s), `sudo` (0.051 s), and a git credential helper that uses `stty`
+  (0.05 s). This amendment does **not** reopen #221: the detector lives in
+  `_run_shell_command`'s wait loop and not in `run_contained`, and at the
+  `git clone` and `exec` sites `setsid` already produces the tool's own message
+  in 0.08 s and 0.62 s, which is better than a named stop.
+
+  **The decision stands and its rationale is replaced, on all three legs.**
+  `setsid` was rejected because it turns a visible stop into a silent theft:
+  measured, a `setsid` helper that opens the terminal by path (`$GPG_TTY`,
+  `/dev/ttysNNN`) waits with no job-control check at all and took the line the
+  user had typed at Aelix's own prompt, where the same command under
+  `process_group=0` is `T` and gets nothing. Passing no group kwarg at all was
+  rejected because the signal is delivered group-wide: with Aelix backgrounded,
+  Aelix and the helper were **both** stopped, still stopped at 20 s, with the
+  timeout never firing (a stopped process has no thread left to notice it) and
+  `SIGCONT` not recovering it — only a human typing `fg`. Handing the foreground
+  to the helper (`tcsetpgrp`) was rejected by measurement rather than by
+  argument: the prompt does work in print mode (rc 0, the typed line, 1.026 s,
+  terminal restored), but the handover is a sub-millisecond race that needs a
+  `SIGCONT` whose timing only this amendment's detector can know; an abandoned
+  prompt produces no stop to detect and leaves the terminal with echo off after
+  the full timeout and an uncatchable `SIGKILL`; and in the TUI it stops Aelix
+  itself in 21 ms, on its own stdin read and on `prompt_toolkit`'s raw-mode
+  `tcsetattr`. **The draft objection that `^C` would reach the child is wrong**
+  and is recorded as wrong: measured, `^C` cancelled the prompt and the agent
+  survived. So **Aelix never prompts from a `!command`**; the guide says so, and
+  it is a stated divergence from Pi, which leaves the helper in Pi's own process
+  group — the terminal's foreground group whenever Pi is in the foreground — so
+  the helper can prompt (ADR-0235: a divergence needs no ADR, so this is a
+  record and not a justification).
+
+  **What this does not reach, said plainly.** A passphrase prompt mediated by
+  `gpg-agent` — the normal `gpg` and `pass` architecture — is invisible to the
+  detector, because the agent is a pre-existing daemon in its own session and it
+  is the agent that forks `pinentry`, where no job-control check applies.
+  Measured with gnupg 2.5.22 and pinentry 1.3.3: `!gpg -d` and `!pass show` take
+  10.036–10.043 s with the detector silent, against 10.047 s on `main`; our own
+  `gpg` sits `S` in its own group and the agent it auto-starts detaches to
+  `ppid 1`. The honest half of that is that the pinentry does not outlive our
+  kill (it is gone 35–37 ms later and echo is restored), and that
+  `gpg --pinentry-mode loopback` — which reads the terminal itself — **is**
+  detected, at 0.357–0.359 s. An askpass program or a GUI prompt that nobody
+  answers still costs the full timeout: it never reads the terminal, so it never
+  stops.
+
+  **The probe pays for itself twice, and both are recorded.** Calling `waitpid`
+  on a child that has already exited takes the status `Popen` was going to reap,
+  and `Popen._try_wait` swallows the resulting `ChildProcessError` as `sts = 0`
+  — measured, an `exit 7` reported as `exit 0`, a failed helper read as a
+  successful one — so the status is handed back through
+  `os.waitstatus_to_exitcode`. That theft is only reachable where a grandchild
+  holds the pipe open past the leader's exit; `!exit 7` never reaches the probe
+  at all, because its EOF and its exit land in the same tick. The same call
+  consumes the zombie, which is why the `!command` sentence under "The hazard
+  this accepts" no longer names this site. `os.waitid(…, WNOWAIT)` avoids both
+  and reports a stop repeatedly instead of once, and it was **refused**: it does
+  not exist on darwin, and since the gating POSIX leg is Linux only, a platform
+  fork would leave the more dangerous path — darwin's reap-and-repair — never
+  running in CI. On win32 the detector is inert, because there is no `WUNTRACED`
+  and no background process group; it is also invisible to that leg's type
+  checker, which is why the four POSIX-only `os` names carry
+  `# pyright: ignore[reportAttributeAccessIssue]` at their sites. A helper that
+  reads `CONIN$` there can still prompt on Aelix's console and still costs the
+  whole timeout unanswered — **nobody has watched that happen**, exactly as
+  #221 and #222 say of their own Windows halves.
