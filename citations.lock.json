@@ -1390,7 +1390,7 @@
   ],
   "packages/aelix-coding-agent/src/aelix_agents/tool.py:580-589": [
    "``execution_mode=\"sequential\"`` IS A SECURITY SETTING, not a performance",
-   "one, and mirrors ``tools/bash.py:950``. The kernel's ``_execute_tool_calls``",
+   "one, and mirrors ``tools/bash.py:990``. The kernel's ``_execute_tool_calls``",
    "downgrades the WHOLE BATCH to sequential when any tool in it declares this",
    "(kernel ``types.py:47-56``; ``loop.py:706-716``), which closes the",
    "concurrent-modal hazard described in the module docstring at zero",
@@ -2611,12 +2611,12 @@
    "loop thread before ``_wait``'s ``to_thread`` callback can resume the",
    "coroutine below — including ``_end_the_tree``'s blocking"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tools/bash.py:793-795": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tools/bash.py:833-835": [
    "operations: BashOperations = opts.get(",
    "\"operations\"",
    ") or create_local_bash_operations(opts.get(\"shell_path\"))"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tools/bash.py:950-950": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tools/bash.py:990-990": [
    "execution_mode=\"sequential\","
   ],
   "packages/aelix-coding-agent/src/aelix_coding_agent/tools/grep.py:311-311": [
@@ -3045,7 +3045,7 @@
   "tests/test_abort_cancels_in_flight_parallel.py:87-87": [
    "assert cancelled[\"hit\"] >= 1, ("
   ],
-  "tests/tools/test_abort_signal.py:120-129": [
+  "tests/tools/test_abort_signal.py:128-137": [
    "The child is ``sys.executable`` rather than ``sh -c 'echo $$ …'`` because",
    "``exec`` hands ``command`` to the resolved shell, which is pwsh on Windows",
    "— no ``sh`` and no ``$$``. The two shells quote a command differently:",

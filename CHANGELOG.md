@@ -354,6 +354,23 @@ and `.../releases/tag/vX` link would 404. Add them with the first pushed tag.
 
 ### Fixed
 
+- **`BashOperations.exec` no longer swallows a cancellation of its own task.**
+  While tidying up the abort watcher after a command had finished — or after the
+  tool had just timed it out and killed it — `exec` awaited the watcher inside a
+  `suppress(CancelledError, Exception)`, so a cancellation of the task running
+  `exec` that landed in that window was thrown away and `exec` returned a normal
+  result. It waits for the watcher now instead of awaiting it, so only the
+  caller's cancellation comes out, and a cancellation now wins over a timeout
+  report. Only a caller that supplies an abort signal reaches that window — in
+  this build the RPC `bash` command and embedders, not a model-issued bash call
+  or the TUI's `!command`, both of which pass `signal=None`. Measured against a
+  command that takes about 4 ms: roughly 2 % of the aborts that landed while the
+  command was still running were lost (48 of 1967 across ten runs) and a cancel
+  aimed at the window was lost every time; after, no aimed cancel and none of
+  380 randomly-timed ones was lost. A command that exited successfully after
+  backgrounding a helper still keeps that helper. Contributors only; see
+  ADR-0238 and [#234](https://github.com/handochan/aelix-ai/issues/234).
+
 - **A plain `uv sync` now produces an environment the whole test suite can run
   in.** `aelix-server` is a workspace member that nothing depends on — not the
   root project, not any other package — so `uv sync` resolved without it and

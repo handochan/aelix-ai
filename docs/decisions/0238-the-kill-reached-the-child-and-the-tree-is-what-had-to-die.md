@@ -1,6 +1,6 @@
 # 0238. The kill reached the child, and the tree is what had to die
 
-Status: Accepted (2026-09-05; **#220 amendment 2026-09-05** — adopted at the four `aelix_agents` sites: the print-channel spawn, the reaper's win32 legs, `rpc_channel`'s `_reap`/`_eager_abort`, and `print_mode`'s handler block; **#221 amendment 2026-09-05** — the three `subprocess.run(timeout=)` sites adopt `run_contained`; **#222 amendment 2026-09-05** — the two tool spawn sites adopt it: `_LocalBashOperations.exec` and `run_cancellable`)
+Status: Accepted (2026-09-05; **#220 amendment 2026-09-05** — adopted at the four `aelix_agents` sites: the print-channel spawn, the reaper's win32 legs, `rpc_channel`'s `_reap`/`_eager_abort`, and `print_mode`'s handler block; **#221 amendment 2026-09-05** — the three `subprocess.run(timeout=)` sites adopt `run_contained`; **#222 amendment 2026-09-05** — the two tool spawn sites adopt it: `_LocalBashOperations.exec` and `run_cancellable`; **#234 amendment 2026-09-06** — the bash tool's watcher teardown awaits through `asyncio.wait`, so a cancellation of the task running `exec` is no longer swallowed there)
 Date: 2026-09-05
 Supersedes/relates: ADR-0197 (the `aelix_agents` reaper, whose finding I2 —
 "a `/proc` walk and not `os.killpg`" — this ADR **reconciles rather than
@@ -374,6 +374,31 @@ against its `< 2.0` bound. The bound is unchanged.
   `bash.py`'s `_kill_group` and the `tools/_process_tree.py` re-export shim are
   gone. What it cost — and the drain bound that POSIX turned out to need — is
   in the amendment under "Consequences" below.
+- **#234 — the watcher teardown's `suppress`: landed 2026-09-06.** The teardown
+  #222 restored to `main`'s order kept `main`'s
+  `suppress(CancelledError, Exception)` around `await watcher_task`, and that
+  `await` cannot tell the watcher's own cancellation — the `cancel()` one line
+  above — from a cancellation of the task running `exec`. The caller's was
+  swallowed and `exec` returned an ordinary `ExecExitResult`. It awaits through
+  `asyncio.wait([watcher_task])` now, which absorbs how the watcher finished as
+  membership of the `done` set, and retrieves the watcher's exception in a
+  `finally` around that wait — a bare `wait` would leave a watcher that failed
+  *during* its own cancellation for the loop to report at GC, which `main`'s
+  `await` had retrieved into the `suppress`. Measured on `main` `b94a6db`,
+  **with an abort signal supplied**: 6 of 6 aimed cancels lost (one
+  deterministic probe: 3 single- and 3 double-cancel rounds), and — across ten
+  runs and two seeds — 48 of the 1967 randomly-timed cancels actually
+  delivered to a still-running `exec` (2.4 % overall, 1.6–3.6 % per run of 300
+  rounds; the other ~1000 rounds found the command already finished). After the
+  fix, 0 of 380 delivered and 0 of 6 aimed. The rate is timing-dependent and
+  **not seed-reproducible** — the same seed gave 3–7 lost, because the probe
+  re-measures the command's median each run and scales its delay window to it.
+  **The watcher, and so this window, exists only for a caller that supplies an
+  abort signal** — in-product the RPC `bash` command (`rpc_mode._handle_bash`)
+  and embedders. `ctx.signal` is `None` on every model-issued tool call and
+  `handle_user_bash` passes `signal=None`: measured 0 of 524 requested cancels
+  lost with `signal=None` against 14 of 388 with an `AbortSignal`. That bound
+  is this ADR's to carry because it also bounds #230.
 
 The README's "Platform support" still says which half is contained and which
 is not, but the split now falls elsewhere: after #220 the Windows verdict is
@@ -799,3 +824,31 @@ empty, so only the group kill of the paragraph below reaches anything there.
   plus the reap only when both the job kill and the `TerminateProcess` belt
   failed. The `to_thread` remedy was rejected in #220 review round 2 for opening
   an unshielded suspension point and is not re-adopted here.
+
+  **A cancellation that lands in the teardown is delivered now (amendment,
+  2026-09-06).** #234 replaced that teardown's `suppress(CancelledError,
+  Exception)` + `await watcher_task` with `asyncio.wait([watcher_task])` and an
+  explicit retrieval, and what the change costs is scoped **per leg**, because
+  three of `_wait()`'s dispositions reach this `finally` with a live watcher and
+  are not alike (a fourth — a cancellation raised out of `_wait` itself — reaches
+  it unchanged, with that `except` leg on the stack, and is pinned by
+  `test_bash_exec_cancel_watcher_teardown_catches_exception`).
+  *This* leg ends no tree of its own — the `except asyncio.CancelledError` that
+  does is around `_wait`, which has already returned by the time the teardown
+  runs; on the TIMEOUT leg a tree was already ended there, before the teardown.
+  The helper `kill_on_close=False` exists to keep is kept **on the normal-exit
+  leg** (measured `alive_after_exec=True` there, and `False` on the timeout
+  leg, where `_wait` had already killed it). The unbounded exit-path drain and
+  its 2.03 s belong to the **normal-exit leg** only: on the timeout leg
+  `exited_at` is set, so the bounded `_drain_past_the_kill` runs instead
+  (0.407 s with a 3 s escapee holding stdout). And the drain, the `detach` and
+  the `close` all still run while the cancellation propagates — pinned by
+  `test_a_turn_cancel_in_the_watcher_teardown_keeps_the_helper_and_still_detaches`
+  in `tests/tools/test_bash_tool_containment.py` (2.031 s on darwin, and the
+  windows leg reports its own through that case's `UserWarning`) rather than by
+  a scratchpad script. The one thing the caller sees differently beyond
+  receiving its cancellation at all: **a cancellation landing in the teardown
+  after a timeout kill is now delivered as a cancellation instead of the
+  `timed_out=True` result the tool would have rendered as a timeout report.**
+  Whether an abort in this window should kill anything is still
+  [#230](https://github.com/handochan/aelix-ai/issues/230)'s.

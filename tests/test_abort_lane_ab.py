@@ -48,10 +48,16 @@ async def test_bash_exec_cancel_kills_group_and_propagates(tmp_path: Path) -> No
 async def test_bash_exec_cancel_with_signal_still_propagates(tmp_path: Path) -> None:
     """task.cancel() while a watcher is running still re-raises CancelledError.
 
-    When both a signal watcher task *and* an outer task cancel arrive, the
-    watcher's ``finally`` block must cancel the watcher, and CancelledError
-    must propagate to the caller — not be silently swallowed in the
-    ``except (asyncio.CancelledError, Exception): pass`` watcher teardown.
+    With a signal watcher live, the ``finally`` block must disarm it and
+    CancelledError must still reach the caller.  Since #234 that teardown is
+    ``watcher_task.cancel()`` + ``await asyncio.wait([watcher_task])``, with the
+    watcher's exception retrieved in a ``finally`` — not the
+    ``except (asyncio.CancelledError, Exception): pass`` this docstring used to
+    name, which could not tell the watcher's own cancellation from the caller's
+    and threw the caller's away.  Here the cancel lands in ``_wait`` (the child
+    is still running), so it is the ``except asyncio.CancelledError`` leg that
+    re-raises; ``test_a_turn_cancel_landing_in_the_watcher_teardown_is_not_swallowed``
+    is the case that lands one in the teardown itself.
     """
     ops = create_local_bash_operations()
     sig = AbortSignal()

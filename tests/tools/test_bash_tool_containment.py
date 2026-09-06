@@ -325,7 +325,7 @@ def _command(*args: str) -> str:
 
     pwsh needs the call operator to run a quoted path (``& "C:/…/python.exe"``)
     and bash needs ``shlex.quote``; both accept double-quoted arguments
-    (``test_abort_signal.py:120-129``). :data:`MARK` is appended to every argv
+    (``test_abort_signal.py:128-137``). :data:`MARK` is appended to every argv
     so that anything these cases leak is greppable.
     """
 
@@ -841,6 +841,121 @@ async def test_an_abort_during_the_exit_path_drain_keeps_the_helper(
     )
     warnings.warn(
         f"bash exec abort in the exit drain: {elapsed:.3f}s on {sys.platform}", stacklevel=1
+    )
+
+
+# === 8c: a turn cancel that lands in the watcher teardown ===================
+
+
+class _CancelsTheTurnFromInsideTheWatcher:
+    """``test_abort_signal.py``'s hook, duplicated rather than imported (#234).
+
+    This file imports no fakes today — every case above drives real children —
+    and twelve lines of duplication keeps that boundary where it is. ``exec``
+    starts the watcher on ``hasattr(signal, "wait")`` alone, and ``wait()`` here
+    blocks on an event nobody sets, so the ONLY thing that wakes it is the
+    teardown's own ``watcher_task.cancel()``: cancelling the task running
+    ``exec`` from there lands the cancellation in the one window #234 exists
+    for, deterministically.
+    """
+
+    def __init__(self) -> None:
+        self._event = asyncio.Event()
+        self.exec_task: asyncio.Task[ExecExitResult] | None = None
+        self.cancelled_the_turn = False
+
+    async def wait(self) -> None:
+        try:
+            await self._event.wait()
+        except asyncio.CancelledError:
+            assert self.exec_task is not None, "the case never handed over the exec task"
+            self.cancelled_the_turn = True
+            self.exec_task.cancel()
+            raise
+
+
+async def test_a_turn_cancel_in_the_watcher_teardown_keeps_the_helper_and_still_detaches(
+    tmp_path: Path, strays: list[int], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ADR-0238's Consequences paragraph, against a real tree instead of a script.
+
+    ``test_abort_signal.py``'s case for this window uses ``echo ok`` — no tree,
+    no helper, no holder — so it pins the PROPAGATION and nothing about what
+    the cancellation costs. This one is 8b's command with the cancel in place of
+    the abort: the root exits 0 after backgrounding a helper meant to outlive it
+    and a tail still holding the pipe, and the cancellation is delivered from
+    inside the watcher while ``exec`` is suspended in the teardown.
+
+    What must hold, all of it after the cancellation is already unwinding:
+
+    * the helper the command exited 0 to leave behind is STILL ALIVE — this leg
+      ends no tree of its own (the ``except asyncio.CancelledError`` that does
+      is around ``_wait``, which had already returned), and that is the process
+      ``kill_on_close=False`` exists to keep (Pi #8225; ADR-0238, "Decision" —
+      ``close()`` is a release, not a kill);
+    * the reader is detached and the tree closed, because the drain, the detach
+      and the close are the three ``finally``s outside this one;
+    * ``TAIL`` still arrived, through the unbounded exit-path drain (#232 owns
+      that it is unbounded) — the cancellation does not truncate the output.
+
+    RED on ``main``: the teardown swallows the cancellation, so ``exec`` returns
+    an ordinary ``exit_code=0`` and ``pytest.raises`` reports DID NOT RAISE.
+    #230 owns whether an abort in this window should kill anything; this case
+    pins only that #234 did not answer that by accident either way.
+    """
+
+    marker = tmp_path / "pids.txt"
+    hold = 2.0
+    root = _script(
+        tmp_path, "root_and_tail.py", ROOT_THAT_BACKGROUNDS_A_HELPER_BEHIND_A_TAIL
+    )
+    detached: list[bool] = []
+    trees: list[ProcessTree] = []
+    real_detach = _PipeReader.detach
+    real_attach = ProcessTree.attach
+
+    def spy_detach(self: _PipeReader) -> None:
+        detached.append(True)
+        real_detach(self)
+
+    def spy_attach(pid: int, **kwargs: Any) -> ProcessTree:
+        tree = real_attach(pid, **kwargs)
+        trees.append(tree)
+        return tree
+
+    monkeypatch.setattr(_PipeReader, "detach", spy_detach)
+    monkeypatch.setattr(bash_module, "ProcessTree", type("Spy", (), {"attach": spy_attach}))
+
+    registrar = _registrar(marker, strays, fields=3)
+    signal = _CancelsTheTurnFromInsideTheWatcher()
+    chunks: list[bytes] = []
+    command = _command(root, str(marker), str(OUTLIVE), str(hold))
+    task = _exec_task(command, tmp_path, chunks, signal=signal, timeout=None)
+    signal.exec_task = task
+    started = time.monotonic()
+
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            await _bounded(task, hold + 10.0, "a turn cancel in the watcher teardown")
+    finally:
+        elapsed = time.monotonic() - started
+        pids = registrar.settle()
+
+    assert pids is not None, "the root never announced its tree — the case measured nothing"
+    _root_pid, helper, _tail = pids
+    assert signal.cancelled_the_turn, (
+        "the teardown never cancelled the watcher — the case measured nothing"
+    )
+    assert task.cancelled(), "the watcher teardown swallowed the caller's cancellation"
+    assert probe_state(helper) == STATE_ALIVE, (
+        f"the cancellation in the teardown killed the backgrounded helper {helper} — the tree "
+        f"the command exited 0 to leave behind"
+    )
+    assert detached, "the reader was never detached — the retention of #221 site-exec-1 is back"
+    assert trees and trees[0].closed is True
+    assert b"".join(chunks) == b"ROOT\nTAIL\n"
+    warnings.warn(
+        f"teardown cancel with a holder: {elapsed:.3f}s on {sys.platform}", stacklevel=1
     )
 
 

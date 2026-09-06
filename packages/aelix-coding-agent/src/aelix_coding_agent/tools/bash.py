@@ -551,6 +551,10 @@ class _LocalBashOperations:
         # which reaches such a helper even through a process group of its own.
         # Whether an abort in that window SHOULD do anything is #230's to
         # decide; it is not this issue's to decide by accident.
+        # Disarmed with ``cancel()`` + ``asyncio.wait``, never ``await``: which
+        # cancellation arrives there is not knowable from the exception, so the
+        # watcher's own stays inside its task and the caller's comes out
+        # (#234).
         #
         # THE DETACH IS OUTSIDE THE DRAIN because the drain is the only
         # cancellable step: with the two in one block a single Esc landing
@@ -578,12 +582,48 @@ class _LocalBashOperations:
                     finally:
                         if watcher_task is not None:
                             watcher_task.cancel()
-                            # Swallow the watcher's own cancellation (and any
-                            # teardown error) — the outer turn cancellation is
-                            # captured and re-raised at the ``except
-                            # asyncio.CancelledError`` above.
-                            with contextlib.suppress(asyncio.CancelledError, Exception):
-                                await watcher_task
+                            # ``asyncio.wait`` and NOT ``await watcher_task``:
+                            # two cancellations arrive here and ``await``
+                            # cannot tell them apart. ``wait`` keeps the
+                            # watcher's OWN — the ``cancel()`` above — inside
+                            # the watcher's task, and lets an EXTERNAL
+                            # cancellation of the task running ``exec`` come
+                            # out. On the two legs whose root is already gone
+                            # (it exited, or the timeout leg killed it) the
+                            # ``except asyncio.CancelledError`` leg above is
+                            # not on the stack, so a swallowed cancel was
+                            # simply lost — measured on ``main``
+                            # WITH AN ABORT SIGNAL SUPPLIED: 6 of 6 aimed, and
+                            # 48 of the 1967 randomly-timed cancels actually
+                            # delivered to a still-running ``exec`` (~2.4 %,
+                            # ten runs of 300 rounds); 0 after. The rate is
+                            # timing-dependent, not seed-reproducible;
+                            # ADR-0238 carries the dated table (#234).
+                            #
+                            # Only a caller that supplies a signal has a
+                            # watcher at all — in-repo that is
+                            # ``rpc_mode._handle_bash`` alone; the bash tool
+                            # and ``cli/repl.py::handle_user_bash`` reach here
+                            # with ``watcher_task is None``. After the TIMEOUT
+                            # leg's kill the cancellation now wins over the
+                            # ``timed_out=True`` the tool would have rendered
+                            # as a timeout report.
+                            #
+                            # The retrieval is not decoration: ``cancel()``
+                            # disarms the GC report only for a watcher that
+                            # had ALREADY failed, and a foreign
+                            # ``signal.wait()`` failing DURING its own cancel
+                            # fails after it — ``Future.set_exception``
+                            # re-arms ``_log_traceback``, ``main``'s ``await``
+                            # retrieved it into the ``suppress``, and a bare
+                            # ``wait`` does not. In a ``finally`` because a
+                            # retrieval written after the ``wait`` is skipped
+                            # by the caller's cancellation (measured).
+                            try:
+                                await asyncio.wait([watcher_task])
+                            finally:
+                                if watcher_task.done() and not watcher_task.cancelled():
+                                    watcher_task.exception()
                 finally:
                     await _drain_to_the_end()
             finally:
