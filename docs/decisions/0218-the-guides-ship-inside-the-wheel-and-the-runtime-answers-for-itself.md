@@ -439,6 +439,19 @@ issue.)
   > bullet calls false. Correcting one copy of a false sentence and leaving the other is how it
   > comes back. The comment now names the three readers and the subcommand-routing sharp edge.
 
+  > **The `register_flag` half is superseded in fact (2026-09-07, `e109749`).** The measurement
+  > above was true when this ADR was written and is kept as the record of it. #92 has since landed
+  > via PR #119 (the repo's first external contribution): `_harness_factory` now seeds
+  > `flag_values` from `parsed.unknown_flags` on the first build, so `--probe-flag FROM_CLI` prints
+  > `'FROM_CLI'` where this bullet measured `'DEFAULT'`. Two of the three structural facts cited
+  > here are therefore stale — `unknown_flags` has a production reader in `cli/entry.py` now, and
+  > the `cli/agent_context.py` comment no longer says the wire is missing, it says the surface is
+  > wired and that advertising it stays a separate product decision (#117). The guide row and the
+  > "Flags are declared but not settable" section were rewritten in `df79ceb` from a fresh live
+  > measurement. **This ADR's decision is untouched** — the guides still ship inside the wheel and
+  > the runtime still answers for itself; only the example used to illustrate it has changed
+  > underneath. The `--offline` half of this bullet still holds.
+
 ### How this was checked
 
 **92 new tests** across ten files (`tests/status/` 26, `tests/help/` 14, `tests/cli/test_docs_command.py`

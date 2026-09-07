@@ -688,6 +688,7 @@ ALLOWED_SDIST_TOP_LEVEL = frozenset(
         "THIRD-PARTY-NOTICES.md",
         "TRADEMARK.md",
         "SECURITY.md",
+        "CONTRIBUTING.md",
         "RELEASING.md",
         ".env.example",
         "docs",
