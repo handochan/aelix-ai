@@ -27,8 +27,10 @@ guarantees each one ends.
 
 from __future__ import annotations
 
+import gc
 import threading
 import time
+import weakref
 from collections.abc import Callable, Sequence
 from typing import IO, cast
 
@@ -278,6 +280,57 @@ def test_detach_stops_the_callback_and_the_reader_reads_on() -> None:
     # The point of "read on, keep nothing": the script was consumed to its end.
     assert stream.sizes == [_READ_CHUNK_BYTES] * 4
     assert log == ["eof"]
+
+
+def test_a_detached_reader_stops_pinning_the_callers_callback() -> None:
+    """``detach`` releases the callback graph too, not only ``chunks`` (#232).
+
+    Until #232 a successful ``exec`` waited for the pipe's EOF, so a reader
+    parked on a helper's pipe was never a reader the CALLER had walked away
+    from. Now it is the ordinary end of a successful call, and the frame that
+    reader is parked in used to keep the caller's callback alive: ``run``
+    cached ``self._on_chunk`` in a local before the loop, and at the bash tool
+    that chain is ``exec``'s ``on_chunk`` lambda → ``_deliver`` → ``on_data``,
+    which at ``create_bash_tool``'s ``execute`` is ``chunks.append`` — the
+    command's whole raw output, since the truncation only happens after the
+    join. Measured at that site with the frame local restored: an 8 MiB
+    command's ``on_data`` object was still reachable after ``exec`` returned and
+    a ``gc.collect()``, and five successful calls each backgrounding a 60 s
+    silent holder left five such readers parked; with the fix the same object is
+    collected (#232 critique AD-3).
+
+    The gate is what makes this the shape it has to be: the reader is parked
+    INSIDE ``read1`` when ``detach`` runs, which is the silent-holder shape
+    exactly, and the release therefore has to come from the CALLER's thread —
+    clearing the attribute from inside ``run``'s detached branch is inert here,
+    because that branch only runs when another chunk arrives and a silent
+    holder never writes again.
+    """
+
+    class _Sink:
+        """A callable object, so a weakref can see whether it is still held."""
+
+        def __init__(self) -> None:
+            self.first = threading.Event()
+
+        def __call__(self, chunk: bytes) -> None:
+            self.first.set()
+
+    sink = _Sink()
+    ref = weakref.ref(sink)
+    stream = _ScriptedStream([b"one", b"two", b"three"], gate_before=1)
+    reader = _reader(stream, _ReadState(last_chunk_at=time.monotonic()), on_chunk=sink)
+
+    assert sink.first.wait(JOIN_BOUND), "the reader never delivered its first chunk"
+    reader.detach()
+    del sink
+    gc.collect()
+
+    assert ref() is None, "a detached reader still pins the caller's callback"
+
+    stream.gate.set()
+    _join(reader)
+    assert reader.chunks == []
 
 
 def test_a_reader_without_callbacks_is_exactly_what_it_was() -> None:

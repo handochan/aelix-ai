@@ -31,6 +31,7 @@ from aelix_ai.utils._process_tree import (
     REAP_GRACE_SECONDS,
     ProcessTree,
     _end_the_tree,
+    _exit_drain_cap,
     _PipeReader,
     _ReadState,
     _retained_handle,
@@ -288,6 +289,11 @@ class _LocalBashOperations:
         # Pi parity: ``getShellConfig(shellPath)`` — explicit shell path →
         # $SHELL → /bin/bash → bash-on-PATH → /bin/sh. See ``_resolve_shell``.
         shell = _resolve_shell(env_dict, self._shell_path)
+        # The deadline's origin, taken immediately before the spawn so that the
+        # bound the exit drain caps against is the same one the ``proc.wait(
+        # timeout)`` below enforced (``run_contained``'s #221 review CS5, and
+        # since #232 this site's too).
+        started_at = time.monotonic()
         try:
             # The cast is about the CHECKER, and it is ``run_contained``'s:
             # unpacking a ``dict[str, Any]`` costs pyright the text/bytes
@@ -448,11 +454,33 @@ class _LocalBashOperations:
         # Track whether the timeout (not the abort signal) triggered the kill,
         # so the bash tool can label the result correctly (issue #11).
         _timed_out = False
+        # When the root exited ON ITS OWN, which is a different instant from
+        # ``state.exited_at`` and deliberately not folded into it (#232).
+        # :attr:`_ReadState.exited_at` is documented as THE KILL INSTANT,
+        # ``_mark_the_kill`` stamps only the first of the three kill legs, and
+        # ``_drain_to_the_end`` reads its ``None``-ness to decide which cap
+        # applies; folding the ordinary exit in would make the timeout/abort
+        # label logic unreadable and the post-kill drain unreachable.
+        _root_exited_at: float | None = None
 
         async def _wait() -> int | None:
             nonlocal _timed_out
+
+            def _wait_and_stamp() -> int:
+                # On the WORKER thread, one statement after ``wait`` returns:
+                # the 0.1 s grace is measured FROM THE EXIT, and a loaded loop
+                # can take milliseconds to resume this coroutine — the same
+                # argument ``_mark_the_kill`` makes about the ladder's cost.
+                # Not killable as a mutation here (the slack is 13-15 ms on
+                # darwin, the verdict #234 recorded for its own attach window);
+                # it is stated rather than pinned.
+                nonlocal _root_exited_at
+                code = proc.wait(timeout)
+                _root_exited_at = time.monotonic()
+                return code
+
             try:
-                return await asyncio.to_thread(proc.wait, timeout)
+                return await asyncio.to_thread(_wait_and_stamp)
             except subprocess.TimeoutExpired:
                 _timed_out = True
                 # ONE call, not ``hard_kill()`` and then this: ``_end_the_tree``
@@ -486,25 +514,47 @@ class _LocalBashOperations:
             _end_the_tree(tree, proc, reap=INTERRUPT_REAP_SECONDS)
             _mark_the_kill()
 
-        async def _drain_past_the_kill(exited_at: float) -> None:
+        async def _drain_after_the_exit(armed_from: float, *, cap: float) -> None:
             """``_drain``'s idle rule, awaited instead of polled.
+
+            BOTH LEGS COME THROUGH HERE SINCE #232, and they differ only in what
+            they pass: the three KILL legs arm at the kill instant under
+            :data:`KILL_DRAIN_SECONDS`, and the ordinary exit arms at the root's
+            own exit under :func:`_exit_drain_cap` — ``run_contained``'s cap,
+            which is :data:`DRAIN_CAP_SECONDS` bounded by the caller's deadline
+            and floored one grace past the exit.
 
             Same three ends as the synchronous one in
             ``aelix_ai/utils/_process_tree.py`` and the same two constants: EOF,
             or the pipe idle for :data:`EXIT_DRAIN_SECONDS` measured from
-            ``max(last_chunk_at, exited_at)``, or the absolute cap one
-            :data:`KILL_DRAIN_SECONDS` past the kill. A flat cap without the
-            idle rule would cost Esc a flat 1.0 s where ``run_contained`` costs
-            ~0.1 s (#221 review TP4/PI-2 measured that mistake), and
-            ``not reader.is_alive()`` is the third end because a reader that
-            ended through its ``except`` leg is done whatever ``eof`` says
-            (#221 HC5). There is no poll: a 5 ms one costs 0.71 % of a core and
-            ~163 loop wakeups/s for the holder's whole life.
+            ``max(last_chunk_at, armed_from)``, or the absolute ``cap``. A flat
+            cap without the idle rule would cost Esc a flat 1.0 s where
+            ``run_contained`` costs ~0.1 s (#221 review TP4/PI-2 measured that
+            mistake), and ``not reader.is_alive()`` is the third end because a
+            reader that ended through its ``except`` leg is done whatever
+            ``eof`` says (#221 HC5). There is no poll: a 5 ms one costs 0.71 %
+            of a core and ~163 loop wakeups/s for the holder's whole life.
+
+            THE ``cap`` IS THE CALLER'S, and which constant each caller hands
+            is NOT pinned: the kill legs pass
+            ``killed_at + KILL_DRAIN_SECONDS`` and the ordinary exit passes
+            :func:`_exit_drain_cap`'s answer. Hoisting the cap out of this loop
+            (#232) is what turned :data:`KILL_DRAIN_SECONDS` from an internal
+            constant into an argument, so a caller that handed the other one
+            would double its own ceiling with every case in this file still
+            green.
+
+            ARMED FROM ``max(last_chunk_at, armed_from)`` AND NOT FROM THE LAST
+            CHUNK ALONE (#221 review PI-1): a root that writes, goes quiet
+            0.30 s and then exits, with a helper writing 0.05 s after the exit,
+            keeps that helper's line under the max (measured 0.483-0.489 s,
+            ``b'EARLY\\nLATE\\n'``, 3/3) and loses it under the last chunk
+            alone (0.325-0.329 s, ``b'EARLY\\n'``, 3/3). The grace is measured
+            from the EXIT.
             """
 
-            cap = exited_at + KILL_DRAIN_SECONDS
             while not eof.is_set() and reader.is_alive():
-                armed_at = max(state.last_chunk_at, exited_at)
+                armed_at = max(state.last_chunk_at, armed_from)
                 remaining = min(cap, armed_at + EXIT_DRAIN_SECONDS) - time.monotonic()
                 if remaining <= 0:
                     break
@@ -516,21 +566,40 @@ class _LocalBashOperations:
             # every earlier chunk has been delivered — but a ``wait_for`` that
             # TIMED OUT resumes with callbacks still queued behind it. The
             # 15-in-250 loss that rule comes from was measured on the POLLED
-            # shape; deleting this yield reddened nothing here in 40 rounds.
+            # shape; deleting this yield reddened nothing here in 40 rounds, and
+            # it still reddens nothing (re-measured on this branch: 40 rounds of
+            # the delivery case and 5 of the whole file, 0 failures). It is kept
+            # because #232 gives it a SECOND caller where the break is routine
+            # rather than exceptional: a success-path drain that ends on the
+            # idle timeout or the cap resumes with chunk callbacks still queued
+            # behind it, and this yield — not the EOF ordering, which only holds
+            # when the drain ended ON eof — is what delivers them.
             await asyncio.sleep(0)
 
         async def _drain_to_the_end() -> None:
-            exited_at = state.exited_at
-            if exited_at is None:
-                # The root exited on its own: wait for EOF, unbounded, exactly
-                # as ``main``'s ``await drain_task`` did. A backgrounded helper
-                # holding stdout therefore still holds this call open — a
-                # product decision left out of #222 deliberately (§H) and
-                # pinned by ``test_bash_tool_containment.py``'s exit-path case
-                # so the follow-up's change is visible.
-                await eof.wait()
+            killed_at = state.exited_at
+            if killed_at is not None:
+                await _drain_after_the_exit(killed_at, cap=killed_at + KILL_DRAIN_SECONDS)
                 return
-            await _drain_past_the_kill(exited_at)
+            # The root exited on its own (#232, the owner's choice A of
+            # 2026-09-06). Pi's idle rule under ``run_contained``'s cap: the
+            # helper the command backgrounded keeps running, and whatever it
+            # writes after this returns is NOT captured — which in practice is
+            # all of it, since a backgrounded program's stdout is a pipe and
+            # so block-buffered: measured on the ``print('started'); sleep(4)``
+            # shape, ``now`` reaches the pipe at +0.002 s and the helper's own
+            # first line only at +4.018 s, ~4 s after this now returns. Until
+            # #232 this waited for EOF, unbounded — measured against a copy of
+            # ``7fa6796``: 4.050 s for a 4 s helper, 13.983 s for a call that
+            # had asked for 10 s, and 4.059 s for one that had asked for 1 s
+            # and was told it succeeded within its deadline (0.14 s each now).
+            #
+            # ``or time.monotonic()``: no leg stamped anything only if ``_wait``
+            # raised something neither ``except`` catches (#233's window), and a
+            # drain armed at "now" is the honest fallback there.
+            exited_at = _root_exited_at or time.monotonic()
+            cap = _exit_drain_cap(exited_at, started_at=started_at, timeout=timeout)
+            await _drain_after_the_exit(exited_at, cap=cap)
 
         watcher_task: asyncio.Task[None] | None = None
         if signal is not None and hasattr(signal, "wait"):
@@ -549,8 +618,9 @@ class _LocalBashOperations:
         # killed exactly the tree ``kill_on_close=False`` exists to keep, and on
         # win32 ``hard_kill`` is ``taskkill /T /F`` + ``TerminateJobObject``,
         # which reaches such a helper even through a process group of its own.
-        # Whether an abort in that window SHOULD do anything is #230's to
-        # decide; it is not this issue's to decide by accident.
+        # Whether an abort in that window SHOULD do anything was #230's to
+        # decide, and it decided: nothing. This order is what already put this
+        # site there, rather than deciding it by accident.
         # Disarmed with ``cancel()`` + ``asyncio.wait``, never ``await``: which
         # cancellation arrives there is not knowable from the exception, so the
         # watcher's own stays inside its task and the caller's comes out

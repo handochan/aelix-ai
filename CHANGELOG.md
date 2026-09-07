@@ -20,6 +20,33 @@ and `.../releases/tag/vX` link would 404. Add them with the first pushed tag.
 
 ### Changed
 
+- **A command that backgrounds a server now comes back when the command does.**
+  `npm run dev &`, `nohup … &`, anything that exits 0 while a helper keeps the
+  pipe: the bash tool used to read that pipe until the last holder closed it, so
+  the tool call stayed open for the helper's whole life, with **no ceiling at
+  all** — measured 4.05 s for a 4 s helper, 13.98 s for a call that had asked
+  for 10 s, and 4.06 s for one that had asked for 1 s and was told it had
+  succeeded within its deadline. Typing `!npm run dev &` into the TUI was the
+  same freeze with nothing to bound it, since `!` commands carry no timeout. It
+  now returns once the output has been quiet for 0.1 s after the command exited
+  — the rule Aelix's contained runner already uses, the rule this same tool
+  already used after a kill, and the rule Pi uses — under a 2-second ceiling
+  for a helper that never falls quiet, and, where you asked for a deadline, no
+  more than one 0.1 s grace past it: a root that exits just inside its own
+  deadline still keeps its own tail (measured on darwin, a root that exits
+  0.985 s into a 1-second call with a helper still holding the pipe: back at
+  1.088 s, `exit_code=0`).
+  **What you give up:** output the helper writes after that point is not
+  captured and the model does not see it — and because a backgrounded program's
+  stdout is a pipe, it is block-buffered and usually flushes only when it exits,
+  so in practice you see **none** of a backgrounded server's output, not just
+  its tail (redirect it — `nohup … > dev.log 2>&1 &` — and read the file, or run
+  it unbuffered). While that helper is alive the finished call also keeps one
+  background reader and one pipe open for it; they go away when the helper does.
+  That is the trade Pi makes too. The helper itself is untouched — it keeps
+  running, as it did before. See
+  [#232](https://github.com/handochan/aelix-ai/issues/232) and ADR-0238.
+
 - **Seven `sort`/`date`/`hostname` spellings stop being auto-approved, and one
   read starts.** AUTO mode decided whether a command was read-only by looking at
   the *shape* of its arguments — a `-` in front meant "flag", a `/` in front
@@ -532,8 +559,8 @@ and `.../releases/tag/vX` link would 404. Add them with the first pushed tag.
   short-lived subshell, so by the time the kill lands the leaves have a dead
   parent — `taskkill` ends the layers it can still see, exits 0, and
   `find`/`xargs`/`head` keep running. At this site that is worse than a leak:
-  the tool reads the command's output until the pipe closes, and the survivors
-  are holding the pipe, so **the tool call itself did not return**, past its own
+  the tool read the command's output until the pipe closed, and the survivors
+  were holding the pipe, so **the tool call itself did not return**, past its own
   timeout. The command goes into a job object there now, which holds every
   descendant regardless of whether its parent is still alive, and the `rg`/`fd`
   helper behind the `grep` and `find` tools took the same change. As with the
@@ -553,10 +580,10 @@ and `.../releases/tag/vX` link would 404. Add them with the first pushed tag.
   uses — so stopping a stuck command costs about 0.1 s rather than the life of
   whatever it left behind. The trailing output of a descendant still writing
   after the idle window is cut: the command was killed, and its bytes are a
-  courtesy. A command that exits **successfully** after backgrounding a helper is
-  deliberately unchanged and still waits for that helper to close the pipe;
-  changing it would change what a model sees, so it is a product decision and it
-  is [#232](https://github.com/handochan/aelix-ai/issues/232).
+  courtesy. A command that exits **successfully** after backgrounding a helper
+  was left alone here, because changing it changes what a model sees; it is
+  decided now, under **Changed** above — see
+  [#232](https://github.com/handochan/aelix-ai/issues/232).
 
   **The command's stdin is `/dev/null` now, not the terminal Aelix was started
   from** — the contract `aelix.exec(...)` took in #221, and what Pi does at this

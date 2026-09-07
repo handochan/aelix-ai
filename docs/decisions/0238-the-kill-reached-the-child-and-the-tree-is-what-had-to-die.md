@@ -1,6 +1,6 @@
 # 0238. The kill reached the child, and the tree is what had to die
 
-Status: Accepted (2026-09-05; **#220 amendment 2026-09-05** — adopted at the four `aelix_agents` sites: the print-channel spawn, the reaper's win32 legs, `rpc_channel`'s `_reap`/`_eager_abort`, and `print_mode`'s handler block; **#221 amendment 2026-09-05** — the three `subprocess.run(timeout=)` sites adopt `run_contained`; **#222 amendment 2026-09-05** — the two tool spawn sites adopt it: `_LocalBashOperations.exec` and `run_cancellable`; **#234 amendment 2026-09-06** — the bash tool's watcher teardown awaits through `asyncio.wait`, so a cancellation of the task running `exec` is no longer swallowed there; **#226 amendment 2026-09-06** — `!command` keeps `process_group=0`, for a corrected reason, and a terminal stop is now detected and named; **#230 amendment 2026-09-08** — an `abort()` that lands after the root's reap kills nothing: the handle is finished at the reap and the abort ends the call's drain instead)
+Status: Accepted (2026-09-05; **#220 amendment 2026-09-05** — adopted at the four `aelix_agents` sites: the print-channel spawn, the reaper's win32 legs, `rpc_channel`'s `_reap`/`_eager_abort`, and `print_mode`'s handler block; **#221 amendment 2026-09-05** — the three `subprocess.run(timeout=)` sites adopt `run_contained`; **#222 amendment 2026-09-05** — the two tool spawn sites adopt it: `_LocalBashOperations.exec` and `run_cancellable`; **#234 amendment 2026-09-06** — the bash tool's watcher teardown awaits through `asyncio.wait`, so a cancellation of the task running `exec` is no longer swallowed there; **#226 amendment 2026-09-06** — `!command` keeps `process_group=0`, for a corrected reason, and a terminal stop is now detected and named; **#230 amendment 2026-09-08** — an `abort()` that lands after the root's reap kills nothing: the handle is finished at the reap and the abort ends the call's drain instead; **#232 amendment 2026-09-08** — the bash tool's success path drains on the idle rule under a cap instead of to EOF)
 Date: 2026-09-05
 Supersedes/relates: ADR-0197 (the `aelix_agents` reaper, whose finding I2 —
 "a `/proc` walk and not `os.killpg`" — this ADR **reconciles rather than
@@ -464,6 +464,19 @@ against its `< 2.0` bound. The bound is unchanged.
   still-running `git`. Whether a ^C that lands after the clone's own `git` has
   exited should still end that tree is a question for the owner; #230 decided
   the `abort()` path only.
+- **#232 — the success path's drain: landed 2026-09-08.** Named by function
+  like its neighbours: `tools/bash.py`'s `_LocalBashOperations.exec` stamps the
+  root's own exit on the `proc.wait` worker thread and drains through
+  `_drain_after_the_exit`, which is `_drain_past_the_kill` renamed and given the
+  cap as a parameter, so the three kill legs and the ordinary exit share one
+  loop; the cap arithmetic itself moved to `_process_tree.py`'s
+  `_exit_drain_cap`, which `run_contained`'s exit leg now calls instead of
+  spelling inline. `_PipeReader.run` stopped caching the caller's `on_chunk` in
+  a frame local and `_PipeReader.detach` clears it, because a returning `exec`
+  now commonly leaves a reader parked on a helper's pipe. What it cost is in
+  the amendment under "Consequences" below. What it did NOT do: say anything in
+  the result when the drain ends on the cap rather than on EOF — Pi says nothing
+  either, and whether Aelix should is an open product question.
 - **The hook shell's terminal stop — still open.**
   `extensions/subprocess_hooks.py` is this ADR's other `process_group=0` site
   and takes the same `SIGTTIN`/`SIGTTOU` stop. #226's detector is synchronous
@@ -802,11 +815,14 @@ empty, so only the group kill of the paragraph below reaches anything there.
   **On win32 the verdict for the tool children is now whole**, and this is the
   site where that mattered most: a job holds a descendant whose parent has
   already exited, which is exactly what `taskkill /T` cannot walk to (Pi #9129),
-  and `exec` reads stdout **to EOF** — so the MSYS pipeline whose subshells
-  `taskkill` killed keeps the pipe open and the tool call does not return, past
+  and `exec` read stdout **to EOF** — so the MSYS pipeline whose subshells
+  `taskkill` killed kept the pipe open and the tool call did not return, past
   its own timeout. That is the ADR's own "user-visible hang rather than a leaked
-  process". It is reasoned from CPython's and Pi's source, as every win32 claim
-  in this file is; the leg's numbers go in `.omc/specs/222-progress-2026-09-05.md`.
+  process". The tense is the point: **no leg of `exec` reads to EOF any more** —
+  #222 bounded the three kill legs and #232 the ordinary exit — so what the job
+  buys at this site is that the descendant DIES, not that the drain ends. It is
+  reasoned from CPython's and Pi's source, as every win32 claim in this file is;
+  the leg's numbers go in `.omc/specs/222-progress-2026-09-05.md`.
 
   **The POSIX-visible half of #222 is the drain bound, and without it the issue
   would have been inert on the platform development happens on.** Measured on
@@ -828,20 +844,60 @@ empty, so only the group kill of the paragraph below reaches anything there.
   one `run_contained` states: a descendant still writing after the idle window
   has its output cut. The command was killed; its bytes are a courtesy.
 
-  **The success path's drain is deliberately left unbounded, and this amendment
-  does not decide it.** A root that exits 0 after backgrounding a pipe-holder
-  still holds `exec` until that holder closes the pipe — measured 4.02 s for a
-  4 s helper, where Pi returns ~0.1 s after the exit (`waitForChildProcess`,
-  Pi #5303). Adopting Pi's rule here is a product decision, because a model
-  would then see `exit 0` before output the helper had not written yet, so it is
-  [#232](https://github.com/handochan/aelix-ai/issues/232)'s
-  and not this one's; a test pins today's behaviour so that issue's change is
-  visible rather than silent. [#230](https://github.com/handochan/aelix-ai/issues/230)'s
-  policy question — an abort landing inside the post-exit drain — existed at
-  this site too, and #222 preserved today's behaviour there rather than
-  pre-deciding it; #230 has since decided it, at `run_contained` and on the
-  `abort()` path, and the two sites now hold the same policy on the leg axis
-  (the #230 paragraph at the end of this section).
+  **#232 decided it (amendment, 2026-09-08).** #222 left the success path's
+  drain unbounded on purpose and pinned it so the follow-up would be visible;
+  the owner chose Pi's rule on 2026-09-06, and the site now drains exactly as
+  `run_contained` does: idle `EXIT_DRAIN_SECONDS = 0.1` from
+  `max(last_chunk_at, root_exited_at)`, an absolute
+  `DRAIN_CAP_SECONDS = 2.0` past the exit, and — where the caller supplied one —
+  never past `start + timeout`, floored one grace past the exit. Two defects
+  went with the old behaviour, not one. The reported one was the wait: a root
+  that exits 0 after backgrounding a pipe-holder held `exec` for the holder's
+  whole life — measured on `7fa6796`, **4.050 s** for a 4 s helper and
+  **0.143 s** after. The second was that the tool's own `timeout` bounded this
+  path not at all: a 13.9 s helper held a `timeout=10` call for **13.983 s**
+  (**0.141 s** after), and a `timeout=1.0` call came back at **4.059 s** with
+  `exit_code=0` and `timed_out=False` — telling the model it had succeeded
+  inside a deadline it had missed fourfold (**0.141 s** after). Pi's rule is
+  adopted with a cap and not whole, because Pi's is uncapped and a holder that
+  never falls idle defeats an idle rule: a helper writing every 50 ms for 5 s
+  measured **5.045 s** with `timeout=10` and **5.076 s** with no timeout at all,
+  against **2.042 s** and **2.028 s** here — and a `timeout=1.0` call in the
+  same shape comes back at **1.001 s**, which is the term that makes the tool's
+  own knob mean anything on this path. It is the divergence from Pi that
+  `DRAIN_CAP_SECONDS` already records for `run_contained`, now at a second
+  site.
+
+  What it costs, in three parts. **A helper's output written after the grace is
+  cut**, exactly as `run_contained` states for its own drain — **and in practice
+  that is not a tail but the whole of it**: a backgrounded program's stdout is a
+  pipe, so it is block-buffered and typically flushes only when it exits
+  (measured, the `python3 -c "print('started'); sleep(4)" & echo now` shape:
+  `now` reaches the pipe at +0.002 s and `started` at +4.018 s), which means a
+  model that backgrounds a server sees **none** of its output rather than most
+  of it — redirect it (`nohup … > dev.log 2>&1 &`) or run it unbuffered.
+  **And the call comes back but the reader does not**: one daemon reader thread
+  and one pipe descriptor stay with the helper until it closes its end
+  (measured, five successful calls each backgrounding a 60 s holder: readers
+  1→5, fds 8→12, released at the holder's exit; zero on `main`, which did not
+  return at all). That is kept deliberately — the thread cannot be unblocked
+  (this module's stated leak, #221 §I) and a reader that stopped reading would
+  wedge the helper on a full pipe, where Pi instead destroys the stream.
+  **What no longer stays is the caller's OUTPUT**: the reader used to cache
+  `on_chunk` in a frame local, so a reader parked on a helper's pipe pinned the
+  bash tool's whole `on_data` graph — one command's entire raw output, 8 MiB per
+  call — which never surfaced while a successful `exec` did not return. The
+  callback is loaded per chunk and dropped by `detach` on the caller's thread
+  now (measured: with the frame local restored, an 8 MiB command's `on_data`
+  object is still reachable after `exec` returns and a `gc.collect()`; with the
+  fix it is collected). **Nothing else in the teardown moved**:
+  the watcher is still disarmed before the drain, so an abort landing in the
+  window still fires into nothing.
+  [#230](https://github.com/handochan/aelix-ai/issues/230) decided that same
+  policy at `run_contained` — an `abort()` after the reap kills nothing — and
+  this site was already there, by the watcher order #222 chose; the two agree
+  on the leg axis. What this amendment changes is the window's WIDTH: at most
+  2.0 s instead of the holder's lifetime.
 
   **The drain also moved off `asyncio.to_thread`, for a reason that outranks the
   tool call.** An abandoned `to_thread(proc.stdout.read, …)` can be neither
@@ -919,13 +975,17 @@ empty, so only the group kill of the paragraph below reaches anything there.
   runs; on the TIMEOUT leg a tree was already ended there, before the teardown.
   The helper `kill_on_close=False` exists to keep is kept **on the normal-exit
   leg** (measured `alive_after_exec=True` there, and `False` on the timeout
-  leg, where `_wait` had already killed it). The unbounded exit-path drain and
-  its 2.03 s belong to the **normal-exit leg** only: on the timeout leg
-  `exited_at` is set, so the bounded `_drain_past_the_kill` runs instead
-  (0.407 s with a 3 s escapee holding stdout). And the drain, the `detach` and
-  the `close` all still run while the cancellation propagates — pinned by
+  leg, where `_wait` had already killed it). The exit-path drain still belongs
+  to the **normal-exit leg** only — on the timeout leg `exited_at` is set, so
+  the post-kill cap runs instead (0.407 s with a 3 s escapee holding stdout) —
+  but it is no longer the unbounded one this paragraph described when it was
+  written: since #232 both legs run the same `_drain_after_the_exit` and differ
+  only in the cap they hand it, and the 2.03 s that stood here was the holder's
+  own life rather than a bound. And the drain, the `detach` and the `close` all
+  still run while the cancellation propagates — pinned by
   `test_a_turn_cancel_in_the_watcher_teardown_keeps_the_helper_and_still_detaches`
-  in `tests/tools/test_bash_tool_containment.py` (2.031 s on darwin, and the
+  in `tests/tools/test_bash_tool_containment.py` (2.031 s on darwin when that
+  case waited for the holder's tail, **0.126 s** since #232 cut it, and the
   windows leg reports its own through that case's `UserWarning`) rather than by
   a scratchpad script. The one thing the caller sees differently beyond
   receiving its cancellation at all: **a cancellation landing in the teardown

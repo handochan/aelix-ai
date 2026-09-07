@@ -1390,7 +1390,7 @@
   ],
   "packages/aelix-coding-agent/src/aelix_agents/tool.py:580-589": [
    "``execution_mode=\"sequential\"`` IS A SECURITY SETTING, not a performance",
-   "one, and mirrors ``tools/bash.py:990``. The kernel's ``_execute_tool_calls``",
+   "one, and mirrors ``tools/bash.py:1060``. The kernel's ``_execute_tool_calls``",
    "downgrades the WHOLE BATCH to sequential when any tool in it declares this",
    "(kernel ``types.py:47-56``; ``loop.py:706-716``), which closes the",
    "concurrent-modal hazard described in the module docstring at zero",
@@ -2598,10 +2598,13 @@
   "packages/aelix-coding-agent/src/aelix_coding_agent/tools/_truncate.py:12-12": [
    "DEFAULT_MAX_BYTES = 50 * 1024"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tools/bash.py:332-332": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tools/bash.py:1060-1060": [
+   "execution_mode=\"sequential\","
+  ],
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tools/bash.py:338-338": [
    "**containment_spawn_kwargs(new_session=True),"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tools/bash.py:472-487": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tools/bash.py:500-515": [
    "async def _watch_signal() -> None:",
    "\"\"\"End the tree when the abort signal fires.",
    "",
@@ -2611,13 +2614,10 @@
    "loop thread before ``_wait``'s ``to_thread`` callback can resume the",
    "coroutine below — including ``_end_the_tree``'s blocking"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tools/bash.py:833-835": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tools/bash.py:903-905": [
    "operations: BashOperations = opts.get(",
    "\"operations\"",
    ") or create_local_bash_operations(opts.get(\"shell_path\"))"
-  ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tools/bash.py:990-990": [
-   "execution_mode=\"sequential\","
   ],
   "packages/aelix-coding-agent/src/aelix_coding_agent/tools/grep.py:311-311": [
    "cmd.extend([pattern, base])"

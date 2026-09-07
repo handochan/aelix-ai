@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import inspect
 import shlex
 import subprocess
 import sys
@@ -52,6 +53,7 @@ from typing import Any, TypeVar
 
 import pytest
 from aelix_ai.utils._process_tree import (
+    DRAIN_CAP_SECONDS,
     KILL_DRAIN_SECONDS,
     ProcessTree,
     _PipeReader,
@@ -233,12 +235,24 @@ os.replace(tmp, marker)
 #: only holds the inherited pipe for ``hold`` seconds and then closes it by
 #: exiting. ``stdin=DEVNULL`` and nothing else on the tail, for
 #: :data:`ROOT_OF_A_TREE`'s win32 handle-inheritance reason.
+#:
+#: ``argv``: marker, the helper's life, the tail's ``hold``, the tail's
+#: ``tick``. The fourth is #232's, and it branches exactly as :data:`HOLDER`
+#: does: at ``tick <= 0`` the tail is today's single write after
+#: ``time.sleep(hold)``, and above it the tail writes every ``tick`` for
+#: ``hold`` seconds. A chatty tail is the only way to hold the exit-path drain
+#: open now that it ends on the idle rule — with the silent one ``exec`` is back
+#: at ~0.1 s and an abort 0.3 s later measures nothing (measured 0.364 s,
+#: ``task.done()`` already True). There is NO ``len(sys.argv)`` default:
+#: :func:`_command` appends :data:`MARK` to every argv, so at a three-argument
+#: call site ``sys.argv[4]`` is ``"aelix222"`` and ``float()`` raises. Both call
+#: sites pass one.
 ROOT_THAT_BACKGROUNDS_A_HELPER_BEHIND_A_TAIL = """\
 import os
 import subprocess
 import sys
 
-marker, nap, hold = sys.argv[1], sys.argv[2], sys.argv[3]
+marker, nap, hold, tick = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 helper = subprocess.Popen(
     [sys.executable, "-c", "import sys, time; time.sleep(float(sys.argv[1]))", nap, "@MARK@"],
     stdin=subprocess.DEVNULL,
@@ -250,10 +264,19 @@ tail = subprocess.Popen(
         sys.executable,
         "-c",
         "import sys, time\\n"
-        "time.sleep(float(sys.argv[1]))\\n"
-        "sys.stdout.buffer.write(b'TAIL\\\\n')\\n"
-        "sys.stdout.buffer.flush()\\n",
+        "hold, tick = float(sys.argv[1]), float(sys.argv[2])\\n"
+        "if tick <= 0:\\n"
+        "    time.sleep(hold)\\n"
+        "    sys.stdout.buffer.write(b'TAIL\\\\n')\\n"
+        "    sys.stdout.buffer.flush()\\n"
+        "else:\\n"
+        "    deadline = time.monotonic() + hold\\n"
+        "    while time.monotonic() < deadline:\\n"
+        "        sys.stdout.buffer.write(b'TAIL\\\\n')\\n"
+        "        sys.stdout.buffer.flush()\\n"
+        "        time.sleep(tick)\\n",
         hold,
+        tick,
         "@MARK@",
     ],
     stdin=subprocess.DEVNULL,
@@ -267,13 +290,19 @@ sys.stdout.buffer.flush()
 """.replace("@MARK@", MARK)
 
 #: Writes ``EARLY`` and exits 0 while a helper on the inherited pipe writes
-#: ``LATE`` half a second later and then closes it by exiting.
+#: ``LATE`` ``nap`` seconds later and then HOLDS the pipe for ``hold`` more.
+#:
+#: ``argv``: marker, how long the helper waits before ``LATE``, how long it
+#: holds afterwards. The third one is #232's: the success path now returns on
+#: the idle rule, so the helper is still alive when ``exec`` comes back and
+#: ``probe_state`` on it is what makes "the helper keeps running" an assertion
+#: rather than a claim.
 ROOT_WITH_A_LATE_TAIL = """\
 import os
 import subprocess
 import sys
 
-marker, nap = sys.argv[1], sys.argv[2]
+marker, nap, hold = sys.argv[1], sys.argv[2], sys.argv[3]
 child = subprocess.Popen(
     [
         sys.executable,
@@ -281,8 +310,10 @@ child = subprocess.Popen(
         "import sys, time\\n"
         "time.sleep(float(sys.argv[1]))\\n"
         "sys.stdout.buffer.write(b'LATE\\\\n')\\n"
-        "sys.stdout.buffer.flush()\\n",
+        "sys.stdout.buffer.flush()\\n"
+        "time.sleep(float(sys.argv[2]))\\n",
         nap,
+        hold,
         "@MARK@",
     ],
     stdin=subprocess.DEVNULL,
@@ -293,7 +324,7 @@ with open(tmp, "w", encoding="utf-8") as handle:
 os.replace(tmp, marker)
 sys.stdout.buffer.write(b"EARLY\\n")
 sys.stdout.buffer.flush()
-"""
+""".replace("@MARK@", MARK)
 
 #: 2 MiB in 2048 separate flushed writes — many small deliveries rather than one
 #: big one, because what the delivery case measures is the handoff per chunk.
@@ -695,12 +726,16 @@ async def test_a_successful_run_attaches_first_and_releases_without_killing(
 
     events: list[str] = []
     trees: list[ProcessTree] = []
+    attach_pids: list[int] = []
+    attach_kwargs: list[dict[str, Any]] = []
     real_attach = ProcessTree.attach
     real_hard_kill = ProcessTree.hard_kill
     real_wait = subprocess.Popen.wait
 
     def spy_attach(pid: int, **kwargs: Any) -> ProcessTree:
         events.append("attach")
+        attach_pids.append(pid)
+        attach_kwargs.append(dict(kwargs))
         tree = real_attach(pid, **kwargs)
         trees.append(tree)
         return tree
@@ -738,45 +773,187 @@ async def test_a_successful_run_attaches_first_and_releases_without_killing(
     assert events[0] == "attach"
     assert events.index("attach") < events.index("reader-start")
     assert events.index("attach") < events.index("wait")
+    # M-18 (#230): the value the SITE really attaches with, read through
+    # ``attach``'s own defaults rather than through the test's. The site passes
+    # ``handle`` only — no ``kill_on_close`` at all — so
+    # ``attach_kwargs[0].get("kill_on_close", False)`` would answer with this
+    # case's own literal and stay green whatever ``attach``'s default became,
+    # i.e. blind to exactly the regression this assertion exists for.
+    # ``real_attach`` is captured above, BEFORE the ``bash_module.ProcessTree``
+    # monkeypatch, so this reads the real signature.
+    bound = inspect.signature(real_attach).bind(attach_pids[0], **attach_kwargs[0])
+    bound.apply_defaults()
+    assert bound.arguments["kill_on_close"] is False
 
 
-# === 8: the exit-path drain, deliberately unbounded =========================
+# === 8: the exit-path drain, on the idle rule under a cap (#232) ============
 
 
-async def test_a_successful_root_still_drains_a_short_lived_holders_tail(
+async def test_a_successful_root_returns_without_waiting_for_its_holders_tail(
     tmp_path: Path, strays: list[int]
 ) -> None:
-    """§H, pinned so the follow-up issue's change is visible.
+    """The owner's decision of 2026-09-06: the call comes back when the command does.
 
-    The root exits 0 half a second before its helper writes ``LATE``. Today —
-    and after #222 — ``exec`` waits for the pipe's EOF on the success path, so
-    both lines arrive. Pi's ``waitForChildProcess`` would return ~0.1 s after
-    the root instead and the model would never see ``LATE``; that is a product
-    decision and it is NOT in #222 (§H). Bounding the exit-path drain therefore
-    fails HERE, which is the whole purpose of the case.
+    The root exits 0 half a second before its helper writes ``LATE``, and the
+    helper holds the pipe for the rest of its ``OUTLIVE`` life. Until #232
+    ``exec`` waited for that pipe's EOF here, so both lines arrived and the call
+    stayed open for the helper's whole life with NO ceiling of any kind —
+    measured against a copy of ``7fa6796``: 4.050 s for a 4 s helper, 13.983 s
+    for a call that had asked for 10 s, and 4.059 s for one that had asked for
+    1 s and was told it had succeeded within its deadline. The drain is now
+    ``run_contained``'s: idle :data:`EXIT_DRAIN_SECONDS` from the exit, capped
+    at :data:`DRAIN_CAP_SECONDS` and at the caller's own deadline. ``LATE`` is
+    written five graces late, so it is CUT — that is Pi's
+    ``waitForChildProcess`` behaviour and the owner's choice, and #222 pinned
+    the OPPOSITE on purpose (§H) so that this flip would be visible rather than
+    silent. This case is that pin, inverted.
+
+    The helper is asserted ALIVE on both arms. Nothing is killed on this leg at
+    all: POSIX has no session to end here and win32's ``close()`` at
+    ``kill_on_close=False`` ends nothing either.
 
     Bytes through ``sys.stdout.buffer`` on both writers: the text layer writes
     ``os.linesep`` and the windows leg of the first #221 CI run returned
     ``b'done\\r\\nlate\\r\\n'`` against this exact-bytes shape.
+
+    ``elapsed < 1.0`` is a BARE LITERAL and not a :func:`_bound`-shaped ceiling,
+    which was rejected on measurement: the gating windows legs run this case's
+    launch chain in 0.265-0.343 s over 8 legs, so the case lands at ~0.33-0.45 s
+    there against ≥ 0.55 s of headroom, whereas ``_bound(0.0)`` would be 7.5 s on
+    win32 — wide enough for a regression that always waits the 2.0 s cap to pass
+    its own clock check. The landed #221 sibling
+    ``test_an_exited_root_with_a_pipe_holder_is_a_success_and_keeps_the_tail``
+    asserts a bare literal too.
+
+    RED on ``main``: with the helper holding the pipe for ``OUTLIVE`` the
+    unbounded drain never returns, so the case dies in :func:`_bounded` rather
+    than on the bytes — measured 7.55 s, warning
+    ``elapsed=7.501s chunks=b'EARLY\\nLATE\\n'`` against 0.124 s and
+    ``b'EARLY\\n'`` here. That is why the ``warnings.warn`` is inside the
+    ``finally``: a RED run records both halves in one line.
     """
 
     marker = tmp_path / "pids.txt"
     root = _script(tmp_path, "root_late_tail.py", ROOT_WITH_A_LATE_TAIL)
     registrar = _registrar(marker, strays)
     chunks: list[bytes] = []
-    task = _exec_task(_command(root, str(marker), "0.5"), tmp_path, chunks, timeout=None)
+    task = _exec_task(
+        _command(root, str(marker), "0.5", str(OUTLIVE)), tmp_path, chunks, timeout=None
+    )
     started = time.monotonic()
 
     try:
-        result = await _bounded(task, 0.5 + 10.0, "the exit-path drain keeps the tail")
+        result = await _bounded(
+            task, _bound(0.0) + 5.0, "the exit-path drain returns without the tail"
+        )
     finally:
         elapsed = time.monotonic() - started
-        registrar.settle()
+        pids = registrar.settle()
+        warnings.warn(
+            f"bash exec exit-path drain: elapsed={elapsed:.3f}s "
+            f"chunks={b''.join(chunks)!r} on {sys.platform}",
+            stacklevel=1,
+        )
 
+    assert pids is not None, "the root never announced its tree — the case measured nothing"
+    _root_pid, helper = pids
     assert result.exit_code == 0
-    assert b"".join(chunks) == b"EARLY\nLATE\n"
-    warnings.warn(f"bash exec exit-path drain: {elapsed:.3f}s on {sys.platform}", stacklevel=1)
+    assert b"".join(chunks) == b"EARLY\n"
+    assert elapsed < 1.0
+    assert probe_state(helper) == STATE_ALIVE, (
+        f"the successful call ended the helper {helper} it had backgrounded — this leg kills "
+        f"nothing and the helper is meant to outlive the call"
+    )
 
+
+# === 8a: a holder that never falls idle, and the cap ========================
+
+
+@pytest.mark.parametrize("timeout", [None, 1.0], ids=["no-deadline", "deadline-1s"])
+async def test_a_holder_that_never_falls_idle_hits_the_drain_cap(
+    tmp_path: Path, strays: list[int], timeout: float | None
+) -> None:
+    """Why Pi's uncapped idle rule was NOT adopted (#232 §A), and the knob.
+
+    The root exits at once and its escaped holder writes every 50 ms for its
+    whole ``OUTLIVE`` life, so the idle timer is re-armed before it can ever
+    expire — measured, an uncapped rule comes back only at the holder's own
+    EOF, 5.076 s for a 5 s holder, and would not return at all for this one.
+
+    The ``timeout=None`` arm is where :data:`DRAIN_CAP_SECONDS` is the ONLY
+    bound: ``api.exec``'s default and the bash tool's ``default_timeout=0``
+    escape hatch both reach ``exec`` with no deadline.
+
+    The ``timeout=1.0`` arm is the DEADLINE term, and the only pin in the
+    suite on the fact that THIS SITE hands ``_exit_drain_cap`` its deadline.
+    ``tests/process_tree/test_run_contained.py`` pins that function as pure
+    arithmetic, where the site's own arguments are not visible, so a site that
+    passed it ``timeout=None`` was measured green across ``tests/tools``,
+    ``tests/process_tree`` AND the full suite (10258 passed, no related
+    failure) while coming back at 2.08 s where the CHANGELOG and ADR-0238 both
+    promise 1.0 s. Measured 1.000-1.002 s adopted (4/4, 17-18 ticks) against
+    2.076-2.087 s mutated (3/3). :data:`DRAIN_CAP_SECONDS` is the ceiling that
+    discriminates — ``_bound(1.0)`` is 3.5 s POSIX / 8.5 s win32 and the
+    mutation lands under it, so that shape would be inert.
+
+    The pins are the FLOOR and the truncation. The floor is what a regression
+    trips: with ``_wait`` stamping ``state.exited_at`` for the ordinary exit
+    instead of ``_root_exited_at``, ``_drain_to_the_end`` takes the KILL
+    branch's 1.0 s cap and the call comes back at 1.064 s against this 2.0 s
+    floor. The ceiling folds :data:`KILL_DRAIN_SECONDS` in, so it is a sanity
+    bound rather than a discriminator (4.5 s POSIX / 9.5 s win32); a second
+    formula for the drains that kill nothing is not worth a divergence from
+    this file's one helper.
+
+    The truncation is asserted on the holder's OWN bytes because this root
+    writes none of its own: the holder emits ~1200 ticks over ``OUTLIVE`` and
+    the call must come back having seen a small fraction of them (measured 38
+    on the ``None`` arm, 17-18 on the deadline arm).
+
+    RED on ``main``: neither arm terminates there — the drain waits for a
+    pipe EOF that is 60 s away — so :func:`_bounded` is what fails (9.501 s,
+    176 ticks). A temporary copy whose holder lives 5 s measured 5.100 s and
+    94 ticks on ``main`` against 2.067 s and 38 here.
+    """
+
+    marker = tmp_path / "pids.txt"
+    registrar = _registrar(marker, strays)
+    chunks: list[bytes] = []
+    # ``hold`` is the ROOT's own sleep, so ``hold=0.0`` is what makes the root
+    # exit at once and arms the drain immediately; ``tick`` is the HOLDER's,
+    # and 50 ms against a 100 ms grace is what keeps the window open.
+    command = _holder_command(tmp_path, marker, tick=0.05, hold=0.0)
+    task = _exec_task(command, tmp_path, chunks, timeout=timeout)
+    started = time.monotonic()
+
+    try:
+        result = await _bounded(
+            task, _bound(DRAIN_CAP_SECONDS) + 5.0, "a holder that never falls idle"
+        )
+    finally:
+        elapsed = time.monotonic() - started
+        pids = registrar.settle()
+        warnings.warn(
+            f"bash exec drain cap: timeout={timeout} elapsed={elapsed:.3f}s "
+            f"ticks={b''.join(chunks).count(b'tick')} on {sys.platform}",
+            stacklevel=1,
+        )
+
+    assert pids is not None, "the root never announced its tree — the case measured nothing"
+    assert result.exit_code == 0
+    assert result.timed_out is False
+    if timeout is None:
+        assert DRAIN_CAP_SECONDS <= elapsed <= _bound(DRAIN_CAP_SECONDS)
+    else:
+        assert timeout <= elapsed < DRAIN_CAP_SECONDS, (
+            f"elapsed={elapsed:.3f}s reached the flat cap — the caller's own deadline of "
+            f"{timeout}s did not bound the exit drain"
+        )
+    ticks = b"".join(chunks).count(b"tick\n")
+    assert 0 < ticks < 200, (
+        f"the drain delivered {ticks} ticks — the holder writes ~1200 over its life, so a "
+        f"count outside this range means the cap did not cut anything"
+    )
 
 # === 8b: an abort that lands in the exit-path drain =========================
 
@@ -802,45 +979,85 @@ async def test_an_abort_during_the_exit_path_drain_keeps_the_helper(
     cancelled inside the drain's ``finally`` (the order ``main`` has) the abort
     has nothing left to fire into.
 
-    #230 is the policy question of whether an abort in this window SHOULD do
-    something; this case pins only that #222 did not answer it by accident.
+    THE TAIL IS CHATTY SINCE #232, and that is what keeps the case measuring
+    anything. With the silent tail this case shipped with, the idle rule ends
+    the drain at ~0.1 s and the abort at 0.3 s lands after ``exec`` has already
+    returned (measured 0.364 s, ``task.done()`` True at the abort). A longer
+    ``hold`` makes that tail QUIETER, not chattier, so the ``tick`` argv is the
+    repair and ``assert not task.done()`` is what turns "the abort landed inside
+    the drain" from an assumption into an assertion.
+
+    The elapsed pin is the discriminator, not the byte pin. Without it the case
+    passes at 1.023 s with ``_wait`` stamping ``state.exited_at`` for the
+    ordinary exit instead of ``_root_exited_at`` — which routes the drain into
+    the KILL branch's 1.0 s cap — exactly as it passes at 2.025 s under the
+    rule (measured). The FLOOR is
+    :data:`DRAIN_CAP_SECONDS` and is platform-independent; the ceiling folds
+    :data:`KILL_DRAIN_SECONDS` in and is a sanity bound (4.5 s POSIX / 9.5 s
+    win32). ``hold`` is 5.0 rather than ``OUTLIVE`` so ``_bounded`` stays a real
+    guard rather than a 70 s one: the design's refuter lane measured that at
+    ``OUTLIVE`` a dropped cap runs the case ~60 s and then reddens on the helper
+    pin with a message that is false about what happened.
+
+    #230 answered whether an abort in this window SHOULD do anything — it kills
+    nothing — at ``run_contained``; this case pins that #222 had already put
+    this site there, rather than answering it by accident.
     """
 
     marker = tmp_path / "pids.txt"
-    hold = 2.0
+    hold = 5.0
+    tick = 0.05
     root = _script(
         tmp_path, "root_and_tail.py", ROOT_THAT_BACKGROUNDS_A_HELPER_BEHIND_A_TAIL
     )
     registrar = _registrar(marker, strays, fields=3)
     signal = AbortSignal()
     chunks: list[bytes] = []
-    command = _command(root, str(marker), str(OUTLIVE), str(hold))
+    command = _command(root, str(marker), str(OUTLIVE), str(hold), str(tick))
     task = _exec_task(command, tmp_path, chunks, signal=signal, timeout=None)
     started = time.monotonic()
 
     try:
         await _await_pids(registrar, "an abort during the exit-path drain")
         # The root announces and then exits AT ONCE, so this settle lands the
-        # abort inside ``_drain_to_the_end``'s unbounded ``await eof.wait()``
-        # rather than inside ``_wait``.
+        # abort inside ``_drain_after_the_exit`` — which the ticking tail holds
+        # open to the cap — rather than inside ``_wait``.
         await asyncio.sleep(0.3)
+        assert not task.done(), (
+            "exec had already returned when the abort fired — the case measured nothing"
+        )
         signal.abort()
         result = await _bounded(task, hold + 10.0, "an abort during the exit-path drain")
     finally:
         elapsed = time.monotonic() - started
         pids = registrar.settle()
+        warnings.warn(
+            f"bash exec abort in the exit drain: {elapsed:.3f}s on {sys.platform}",
+            stacklevel=1,
+        )
 
     assert pids is not None, "the root never announced its tree — the case measured nothing"
     _root_pid, helper, _tail = pids
+    output = b"".join(chunks)
     assert result.exit_code == 0
     assert result.timed_out is False
-    assert b"".join(chunks) == b"ROOT\nTAIL\n"
+    assert output.startswith(b"ROOT\n")
+    assert b"TAIL\n" in output
+    # ``hold / tick`` is 100 — MORE than the tail writes in its whole life, so
+    # the old bound could never fire. The cap admits about
+    # ``DRAIN_CAP_SECONDS / tick`` (40 measured); 1.5× of that is under the
+    # 100 an uncapped drain would deliver, so this is a real second killer for
+    # mutation (b) beside the elapsed floor.
+    tails = output.count(b"TAIL\n")
+    assert tails <= DRAIN_CAP_SECONDS / tick * 1.5, (
+        f"the drain delivered {tails} tail lines — the cap admits about "
+        f"{DRAIN_CAP_SECONDS / tick:.0f} and the tail's whole life is {hold / tick:.0f}, "
+        f"so a count this high means the cap cut nothing"
+    )
+    assert DRAIN_CAP_SECONDS <= elapsed <= _bound(DRAIN_CAP_SECONDS)
     assert probe_state(helper) == STATE_ALIVE, (
         f"the abort at 0.3s killed the backgrounded helper {helper} — the tree the command "
         f"exited 0 to leave behind"
-    )
-    warnings.warn(
-        f"bash exec abort in the exit drain: {elapsed:.3f}s on {sys.platform}", stacklevel=1
     )
 
 
@@ -895,8 +1112,11 @@ async def test_a_turn_cancel_in_the_watcher_teardown_keeps_the_helper_and_still_
       ``close()`` is a release, not a kill);
     * the reader is detached and the tree closed, because the drain, the detach
       and the close are the three ``finally``s outside this one;
-    * ``TAIL`` still arrived, through the unbounded exit-path drain (#232 owns
-      that it is unbounded) — the cancellation does not truncate the output.
+    * the tail the holder had not written yet is CUT, because since #232 the
+      exit-path drain ends one :data:`EXIT_DRAIN_SECONDS` after the root's own
+      exit — and the cancellation is still delivered, the helper still alive,
+      the reader still detached, with nothing about that resting on the drain
+      having been unbounded (measured 2.07 s before; 0.126 s after, 3/3).
 
     RED on ``main``: the teardown swallows the cancellation, so ``exec`` returns
     an ordinary ``exit_code=0`` and ``pytest.raises`` reports DID NOT RAISE.
@@ -929,7 +1149,9 @@ async def test_a_turn_cancel_in_the_watcher_teardown_keeps_the_helper_and_still_
     registrar = _registrar(marker, strays, fields=3)
     signal = _CancelsTheTurnFromInsideTheWatcher()
     chunks: list[bytes] = []
-    command = _command(root, str(marker), str(OUTLIVE), str(hold))
+    # ``tick=0.0`` is today's silent tail — one write after ``time.sleep(hold)``
+    # — which #232's drain never waits for. 8b passes the chatty one.
+    command = _command(root, str(marker), str(OUTLIVE), str(hold), "0.0")
     task = _exec_task(command, tmp_path, chunks, signal=signal, timeout=None)
     signal.exec_task = task
     started = time.monotonic()
@@ -953,7 +1175,7 @@ async def test_a_turn_cancel_in_the_watcher_teardown_keeps_the_helper_and_still_
     )
     assert detached, "the reader was never detached — the retention of #221 site-exec-1 is back"
     assert trees and trees[0].closed is True
-    assert b"".join(chunks) == b"ROOT\nTAIL\n"
+    assert b"".join(chunks) == b"ROOT\n"
     warnings.warn(
         f"teardown cancel with a holder: {elapsed:.3f}s on {sys.platform}", stacklevel=1
     )
@@ -989,14 +1211,22 @@ async def test_every_byte_is_delivered_under_a_loaded_loop(
     case pins is the byte-for-byte contract, and the ordering underneath it is
     pinned in ``tests/process_tree/test_pipe_reader_callbacks.py``.
 
-    §C.5(l2) — "drop the post-cut ``sleep(0)``" — is not this case's to kill
-    either, and the reason is structural rather than statistical (#222 review
-    M-10). That yield is the last line of ``_drain_past_the_kill``, which only
-    the three KILL legs enter; this case is on the SUCCESS path, where
-    ``_drain_to_the_end`` takes its ``exited_at is None`` branch and awaits EOF
-    without ever calling it. Measured 2026-09-06 (darwin, py3.12): a raise
-    injected at the top of ``_drain_past_the_kill`` reddens 7 ids in this file —
-    cases 1, 2, 3, the three legs of 4, and 11 — and this is not one of them.
+    §C.5(l2) — "drop the post-cut ``sleep(0)``" — is still not this case's to
+    kill, but since #232 the reason has changed and the old one has inverted
+    (#222 review M-10). The yield is the last line of
+    ``_drain_after_the_exit``, which now serves the SUCCESS path as well as the
+    three kill legs, and this case is one of its callers: measured 2026-09-07
+    (darwin, py3.12), a raise injected at its top reddens **16 of this file's 17
+    ids, this case among them**, where on ``main`` the same injection at
+    ``_drain_past_the_kill`` reddened exactly 7 and excluded it. What keeps the
+    case green is the shape of its own command: :data:`CHATTY` backgrounds
+    nothing, so the pipe EOFs at the root's own exit and the drain ends on
+    ``eof`` rather than on the idle timer or the cap — the FIFO argument above
+    still carries the delivery. Deleting the yield reddens nothing here either:
+    40 rounds of this case and 5 rounds of the whole file, 0 failures. Where it
+    IS load-bearing is the leg this case does not take, a drain that ends on the
+    timeout or the cap and resumes with chunk callbacks still queued behind
+    it.
     """
 
     chatty = _script(tmp_path, "chatty.py", CHATTY)

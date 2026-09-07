@@ -48,6 +48,7 @@ from aelix_ai.utils._process_tree import (
     REAP_GRACE_SECONDS,
     AbortHandle,
     ProcessTree,
+    _exit_drain_cap,
     _PipeReader,
     _ReadState,
     _Win32Api,
@@ -793,6 +794,51 @@ def test_the_deadline_caps_the_drain_but_keeps_one_grace(
     # which the widening does not touch.
     assert returned_at - started <= timeout + EXIT_DRAIN_SECONDS + 0.6
     assert result.returncode == 0
+
+
+def test_the_exit_drain_cap_bounds_by_the_deadline() -> None:
+    """:func:`_exit_drain_cap`'s five arms, with no process and no clock (#232).
+
+    The arithmetic the case above measures against real fds, stated once. It
+    lives here because this is where the rest of it already lives and because
+    the function belongs to this component; the bash tool's ``exec`` is the
+    second caller since #232, and one definition is the point of the
+    extraction.
+
+    THE ``timeout=0.0`` ARM IS WHAT KEEPS THIS AN EXTRACTION. A non-positive
+    timeout is deliberately not special-cased: it reads as a deadline already
+    past, so the floor hands it ``exit + EXIT_DRAIN_SECONDS``, which is exactly
+    what :func:`run_contained` did inline before the hoist. Guarding the
+    deadline term with ``timeout > 0`` would silently loosen that cap from
+    ``exit + 0.1`` to ``exit + 2.0``, and ``tests/process_tree/`` has no
+    ``timeout <= 0`` arm anywhere else to notice. That path is reachable:
+    ``Popen.wait(0)`` reaps with ``WNOHANG`` before it checks the remaining
+    time, so an already-exited child RETURNS from it (measured 25 µs) and
+    ``run_contained(timeout=0)`` took the exit leg 40/40 under GIL load.
+    """
+
+    started = 100.0
+    exited_at = started + 1.0
+
+    # 1. No deadline at all — the flat cap.
+    assert _exit_drain_cap(exited_at, started_at=started, timeout=None) == (
+        exited_at + DRAIN_CAP_SECONDS
+    )
+    # 2. A deadline the flat cap fits inside — still the flat cap.
+    assert _exit_drain_cap(exited_at, started_at=started, timeout=30.0) == (
+        exited_at + DRAIN_CAP_SECONDS
+    )
+    # 3. A deadline tighter than the flat cap — the deadline wins.
+    assert _exit_drain_cap(exited_at, started_at=started, timeout=1.5) == started + 1.5
+    # 4. A root that exited PAST its own deadline — floored at one grace, so it
+    #    keeps its own tail (#221 review POSIX-2/CS8).
+    assert _exit_drain_cap(exited_at, started_at=started, timeout=0.5) == (
+        exited_at + EXIT_DRAIN_SECONDS
+    )
+    # 5. ``timeout=0.0`` is the same floor, and not "no deadline".
+    assert _exit_drain_cap(exited_at, started_at=started, timeout=0.0) == (
+        exited_at + EXIT_DRAIN_SECONDS
+    )
 
 
 # === C.1.3 — the timeout ladder =============================================

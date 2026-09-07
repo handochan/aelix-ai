@@ -159,6 +159,7 @@ __all__ = [
     "_PipeReader",
     "_ReadState",
     "_end_the_tree",
+    "_exit_drain_cap",
     "_retained_handle",
     "containment_spawn_kwargs",
     "kill_process_tree",
@@ -883,6 +884,11 @@ EXIT_DRAIN_SECONDS = 0.1
 #: 25 MB over the next 6 s with nobody left to read it. What the cap ends is the
 #: call, at 2 s past the exit; what ends the accumulation is the ``detach`` in
 #: :func:`run_contained`'s ``finally``, after which the reader discards.
+#:
+#: Since #232 it bounds the bash tool's ``exec`` as well, through
+#: :func:`_exit_drain_cap`: its success path adopted this same drain, and the
+#: chatty holder above is why it did not adopt Pi's uncapped idle rule (measured
+#: at that site: 5.076 s uncapped against 2.028 s here).
 DRAIN_CAP_SECONDS = 2.0
 #: How long the root is given to die after the timeout ladder's kill. Matches
 #: ``oauth/_resolve_config.py``'s bound, and for its reason: on win32 with no
@@ -910,6 +916,36 @@ _READ_CHUNK_BYTES = 65536
 #: The drain's poll quantum. Small enough that a 0.1 s grace is not measurably
 #: overshot, large enough not to spin.
 _DRAIN_POLL_SECONDS = 0.005
+
+
+def _exit_drain_cap(exited_at: float, *, started_at: float, timeout: float | None) -> float:
+    """The absolute end of a post-EXIT drain — one definition, two sites.
+
+    :data:`DRAIN_CAP_SECONDS` past the exit, and no later than the deadline the
+    caller asked for, floored one :data:`EXIT_DRAIN_SECONDS` past the exit so a
+    root that exits at ``deadline - 1 ms`` still keeps its own tail (#221 review
+    POSIX-2/CS8).
+
+    A non-positive ``timeout`` is deliberately NOT special-cased. It reads as a
+    deadline already past, so the floor hands it ``exited_at +
+    EXIT_DRAIN_SECONDS`` — which is exactly what :func:`run_contained` does
+    today, and keeping it is what makes this a byte-identical extraction rather
+    than a behaviour change at a landed site. Neither caller can produce one
+    (``_resolve_call_timeout`` returns a positive value or ``None``;
+    ``api.exec`` maps ``timeout_ms=0`` to ``None``), and ``proc.wait(0)`` does
+    NOT "only raise" — CPython reaps with ``WNOHANG`` before it checks the
+    remaining time, so an already-exited child returns from it (measured:
+    25 µs; under GIL load ``run_contained(timeout=0)`` took the exit leg 40/40)
+    (#232 critique TL-4).
+
+    The second site is ``tools/bash.py``'s ``_LocalBashOperations.exec``, whose
+    success path adopted this cap in #232.
+    """
+
+    cap = exited_at + DRAIN_CAP_SECONDS
+    if timeout is not None:
+        cap = min(cap, max(started_at + timeout, exited_at + EXIT_DRAIN_SECONDS))
+    return cap
 
 
 @dataclass
@@ -957,6 +993,15 @@ class _PipeReader(threading.Thread):
     +2 threads +2 fds per call, STACKING across calls. :meth:`detach` is what
     ends that half without ending the read — see its docstring for why the read
     itself must go on.
+
+    THAT WAS TRUE OF ``chunks`` ONLY, and #232 is what made the other half
+    matter (critique AD-3). A reader with an ``on_chunk`` retains no bytes, but
+    :meth:`run` used to cache the callback in a frame local, so a reader parked
+    in ``read1`` pinned the caller's whole callback graph — at the bash tool,
+    one command's entire raw output, 8 MiB per call, stacking. Before #232 that
+    never surfaced, because a successful ``exec`` did not return while a holder
+    had the pipe; now it is the ordinary case, so the callback is loaded per
+    chunk and dropped by :meth:`detach` on the caller's thread.
 
     TWO CONSUMERS, NEVER BOTH (#222). :func:`run_contained` collects the whole
     output at the end of a synchronous call and takes ``chunks``; the bash
@@ -1018,7 +1063,22 @@ class _PipeReader(threading.Thread):
         # correctness.
         read1 = cast("Callable[[int], bytes] | None", getattr(stream, "read1", None))
         read = read1 if read1 is not None else stream.read
-        on_chunk = self._on_chunk
+        # NOT a cached ``self._on_chunk``: a reader parked in ``read1`` on a
+        # helper's pipe keeps its frame, and since #232 that is the ORDINARY end
+        # of a successful call at the bash site — a local would pin the caller's
+        # ``on_data`` graph (at ``create_bash_tool``'s ``execute``, the command's
+        # whole raw output, since the truncation happens after the join) for the
+        # holder's whole life. Measured at that site with a 60 s holder still
+        # alive: an 8 MiB command's ``on_data`` object was still reachable after
+        # ``exec`` returned and a ``gc.collect()``, and five stacked calls each
+        # left a reader parked on its own holder's pipe; with this, the same
+        # object is collected (#232 critique AD-3).
+        #
+        # The BOOL is cached and not re-read per chunk because it is what keeps
+        # :meth:`detach`'s promise from weakening: an in-flight chunk arriving
+        # after ``detach`` cleared the attribute would otherwise fall into
+        # ``self.chunks.append`` and re-fill the list ``detach`` just emptied.
+        has_on_chunk = self._on_chunk is not None
         try:
             while True:
                 chunk = read(_READ_CHUNK_BYTES)
@@ -1034,8 +1094,13 @@ class _PipeReader(threading.Thread):
                     # test is ABOVE the callback deliberately: a delivery from
                     # here would reach a caller that has already returned.
                     continue
-                if on_chunk is not None:
-                    on_chunk(chunk)
+                if has_on_chunk:
+                    on_chunk = self._on_chunk
+                    if on_chunk is not None:
+                        on_chunk(chunk)
+                    # Released before the next BLOCKING read, which is the whole
+                    # point: what parks here must hold nothing of the caller's.
+                    on_chunk = None
                 else:
                     self.chunks.append(chunk)
                 self._state.last_chunk_at = time.monotonic()
@@ -1102,9 +1167,23 @@ class _PipeReader(threading.Thread):
         At the bash site that is why the callback posts to the loop and the
         loop-side body checks its own flag — this method cannot make the
         promise "nothing after the call returns" on its own. Idempotent.
+
+        THE CALLBACK GOES HERE TOO (#232). Clearing ``_on_chunk`` is what releases
+        the caller's callback graph, and it has to happen on the CALLER's thread:
+        the reader may be parked in ``read1`` on a holder's pipe and never wake
+        again. With :meth:`run` caching only the bool, an in-flight chunk arriving
+        after this cannot fall through to ``chunks`` either — so at a site with an
+        ``on_chunk`` the bound above tightens from "one in-flight chunk" to
+        nothing.
         """
 
         self._detached = True
+        # The CALLER's thread drops the callback graph here, so it goes whether
+        # or not the holder ever writes again — clearing it from inside
+        # :meth:`run`'s detached branch is inert for exactly the shape that
+        # matters, since that branch only runs when a chunk arrives and a silent
+        # backgrounded holder never writes another one (#232 critique AD-3).
+        self._on_chunk = None
         self.chunks = []
 
 
@@ -1681,14 +1760,12 @@ def run_contained(
                 # 0.105-2.004 s drain it replaces.
                 abort._finish()
             state.exited_at = time.monotonic()
-            drain_until = state.exited_at + DRAIN_CAP_SECONDS
-            if timeout is not None:
-                # The original deadline caps the drain, floored at one grace
-                # after the exit so a root that exits at ``deadline - 1 ms``
-                # still keeps its own tail (#221 review POSIX-2/CS8).
-                drain_until = min(
-                    drain_until, max(start + timeout, state.exited_at + EXIT_DRAIN_SECONDS)
-                )
+            # The same arithmetic this leg spelled inline until #232 hoisted it
+            # so the bash tool's ``exec`` could adopt exactly this cap: the flat
+            # cap, the original deadline, and the one-grace floor.
+            drain_until = _exit_drain_cap(
+                state.exited_at, started_at=start, timeout=timeout
+            )
             _drain(
                 readers,
                 state,

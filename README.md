@@ -124,9 +124,14 @@ either: it now runs end to end in CI on `windows-latest`, under both pwsh and Wi
   into a job object on Windows and a process group on POSIX, and a timeout, Esc or a cancelled
   turn each end the tree rather than the root. Windows is why that issue existed — `taskkill
   /T` follows *live* parent links only, so an MSYS pipeline whose per-stage subshells have
-  already exited survives it, and because the tool reads the command's output until the pipe
-  closes, those survivors held the tool call open past its own timeout. A job holds them
-  regardless. The tool's child also gets `/dev/null` for stdin now instead of your terminal, so
+  already exited survives it, and because the tool read the command's output until the pipe
+  closed, those survivors held the tool call open past its own timeout — and a command that
+  simply *succeeded* after backgrounding a helper was held the same way, with no ceiling at all
+  (#222 bounded the first: after a kill the output is drained only until it falls idle, and never
+  more than a second past the kill. [#232](https://github.com/handochan/aelix-ai/issues/232)
+  ended the second: after an ordinary exit the output is drained by that same idle rule, under a
+  2-second ceiling and — where you gave one — your own deadline). A job holds them regardless.
+  The tool's child also gets `/dev/null` for stdin now instead of your terminal, so
   it can no longer take a keystroke you meant for Aelix or leave your terminal with echo turned
   off — both measured on macOS, where `!cat` in the TUI used to do exactly that and never
   return. **That last part is a macOS/Linux sentence.** On Windows there is no session to take
