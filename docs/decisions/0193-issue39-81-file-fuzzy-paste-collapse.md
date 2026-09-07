@@ -3,6 +3,8 @@
 Status: Accepted (shipped) — **AMENDED 2026-09-06 by #231** (`## Amendment
 (2026-09-06, #231)` below): the Enumeration bullet's "shared predicate on both
 enumerators / same set regardless of `.gitignore`" claim was false five ways.
+Further **AMENDED 2026-09-08 by #238** (`## Amendment (2026-09-08, #238)` below):
+the `@` menu's ignore behaviour is now a `/settings` toggle.
 Everything else in this ADR stands.
 Date: 2026-07-12
 Supersedes-deferred: ADR-0121 §Deferred (fd-fuzzy `@` search + quoted-path mentions)
@@ -168,7 +170,25 @@ surrogate from the walk. And, unnamed in #231 and measured in this lane:
 git-ignored paths, so in a repo with a large ignored build tree the walk truncates in
 `os.scandir` order and real source directories drop out of the menu entirely while fd
 does not (measured: an ignored 22 000-file `target/` beside twelve real source files
-→ walk 20000 paths / 2 menu rows, fd 26 paths / 12). Where the real tree itself
+→ walk 20000 paths / 2 menu rows, fd 26 paths / 12). **Corrected 2026-09-08 (#238):**
+"only the walk" held only while the `@` menu had no choice. With **Gitignore in @
+menu** off the fd arm spends the same budget on ignored paths — measured on a REBUILD
+of the same fixture shape, whose own numbers differ from #231's (the on arm emitted 14
+where #231's emitted 26/12), `fd --no-ignore` emitted 20000/20000 and hit the cap. The
+second half did not transfer ON THAT REBUILD: there, and on a variant with the real
+sources at depth 6, the off arm still returned all twelve real files while the walk
+returned none. **Re-measured 2026-09-08 across nine fixture shapes, that is a property
+of the ignored population's SHAPE, not of the off arm.** Held in ONE ignored build tree
+it survives twice the cap: 40 000 ignored files, the real directory sorting after it at
+depth 12, and the off arm returned all twelve in 60 of 60 runs. Spread the same volume
+over 200 top-level ignored directories and the off arm drops the whole real subtree — 0
+of its 22 paths, so the drill-in listing loses it too — in 38 of 40 runs (14 of 20 with
+the real sources at depth 2); at 50 such directories, once in 15. The rate is
+scheduling-dependent and was measured under concurrent load; the occurrence is not.
+Both arms therefore lose whole unreached subtrees past the cap, and what differs is the
+ORDER — `os.scandir` for the walk, fd's parallel discovery order for the off arm, which
+is also why the off arm's kept set is unstable: 1556 of 20000 kept paths differed
+between consecutive runs. See the #238 amendment below. Where the real tree itself
 exceeds the cap both arms truncate and fd's kept set is not stable between runs (1747
 of 20000 paths differed). The cap's value is unchanged; #231 documents it.
 
@@ -193,3 +213,44 @@ renders or raises is unmeasured). The 2026-07 note "owner-confirmed: fd = speed
 upgrade only" stands as a record of what was confirmed then, and is now known wrong
 on both halves: fd is *slower* below roughly 5 000 paths (spawn cost), and it changes
 which files complete.
+
+## Amendment (2026-09-08, #238)
+
+The #231 amendment left one thing open and the owner has now decided it: with the
+managed `fd` resolved first, a machine that has ever run `find` gets the narrow menu
+whether or not it wants one. #238 adds a `/settings` toggle — *"Gitignore in @ menu"*,
+global scope, **default on** — that switches the ignore rules off for the `@` menu
+only. The owner's phrasing was *"@ menu: respect .gitignore"*; the row is labelled
+`Gitignore in @ menu` instead because `_open_settings` sizes the label column to the
+longest label + 2 — 24 today — and a 26-character label would shift the value column of
+every row (measured: 19 chars → column unchanged at 24; 26 → 28). Off, the fd arm is
+asked for `--no-ignore`; the walk arm is unchanged because it never applied ignore
+rules at all, which is what makes one flag enough. Measured on managed fd 10.4.2:
+`--no-ignore` lifts root and nested `.gitignore`,
+`.git/info/exclude`, `.ignore`, `.fdignore`, the global ignore file, and the same
+files in parent directories of the enumerated tree; `--no-ignore-vcs` was rejected
+because it leaves `.ignore`/`.fdignore` in force. `--exclude` is untouched by either
+flag, so `_EXCLUDE_DIRS` holds on both arms of both settings — by two mechanisms that
+are not interchangeable: the shared `_has_excluded_component` predicate is what makes
+the two sets EQUAL (tokens removed and the cap lifted, fd's 32 394 paths filter down
+to exactly the walk's 12 630, symmetric difference empty), while the `--exclude`
+tokens are what keep the off arm inside `--max-results` (12 630 of a 20 000 budget
+with them, 32 394 without). Removing them as "redundant with the predicate" would
+truncate the off arm at 20 000, by an amount not even stable run to run (symmetric
+difference against the walk 637 on one run and 6 801 on the next, the two truncated
+sets differing from *each other* by 7 438). Under the cap the off arm is not an
+approximation of the fallback but the same set: on the owner's checkout on
+2026-09-07, 12 630 = 12 630, empty symmetric difference both ways, where the on arm
+returns 1 498. That count drifts — #231 measured 1 482/12 618 the day before and a run
+under an hour earlier the same evening read 1 494/14 103 — the equality does not. The default
+stays ON for the reason #231 rejected `--no-ignore` for everyone: the wide arm spends
+`_TREE_ENUM_CAP` on ignored paths, so a large ignored build tree can still truncate
+the menu — now as a choice the user made rather than a property of their `PATH`. The
+setting is read from the GLOBAL scope only, not the merged view, so the row cannot
+display a project override it just failed to write. It is read through a callable on
+every enumeration with the flag in the tree cache's key, so a flip is answered by the
+next keystroke (unkeyed, measurably stale for a full 2 s TTL) — the first PULL-shaped
+live row in `settings_rows.py`, whose `_apply_live_setting` branch is a documented
+no-op because the shell does not hold the completer. Where no `fd` exists the toggle
+changes nothing until one arrives, and then the chosen value is honoured at the next
+`@`, no restart. Pi has no equivalent setting.

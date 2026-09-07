@@ -188,3 +188,30 @@ def test_settings_with_full_nested_tree() -> None:
     assert s.retry.provider.max_retry_delay_ms == 60000
     assert s.terminal is not None and s.terminal.image_width_cells == 60
     assert s.thinking_budgets is not None and s.thinking_budgets.high == 8192
+
+
+def test_settings_alias_map_carries_respect_gitignore() -> None:
+    """⑪ (#238) — the JSON boundary must know the key or it is dropped SILENTLY.
+
+    ``_json_dict_to_settings`` skips any JSON key absent from
+    ``SETTINGS_JSON_TO_PY`` with no error, so omitting the alias row produces a
+    flag that reads its default forever with a perfectly valid-looking
+    ``settings.json`` on disk. Assert both the table entry and a full
+    py → json → py round trip.
+    """
+
+    import json
+
+    from aelix_ai.settings.settings_manager import (
+        _json_dict_to_settings,
+        _settings_to_json_dict,
+    )
+    from aelix_ai.settings.types import SETTINGS_JSON_TO_PY, SETTINGS_PY_TO_JSON
+
+    assert SETTINGS_PY_TO_JSON["respect_gitignore"] == "respectGitignore"
+    assert SETTINGS_JSON_TO_PY["respectGitignore"] == "respect_gitignore"
+
+    raw = _settings_to_json_dict(Settings(respect_gitignore=False))
+    assert raw == {"respectGitignore": False}
+    back = _json_dict_to_settings(json.loads(json.dumps(raw)))
+    assert back.respect_gitignore is False

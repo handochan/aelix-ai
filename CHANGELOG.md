@@ -132,11 +132,15 @@ and `.../releases/tag/vX` link would 404. Add them with the first pushed tag.
   directories only, so it dropped every symlink the walk listed — fixed, and the
   two sets now match exactly on a symlink tree. And one
   disagreement is bigger than it looks and is documented rather than fixed: both
-  enumerators stop after 20 000 paths, but only the walk counts the files git
-  ignores toward that limit, so in a repo with a large ignored build tree the
-  fallback can run out of budget inside it and never reach your real source
-  directories (measured: an ignored 22 000-file `target/` next to twelve real
-  source files gave the walk two menu rows where `fd` gave twelve). An
+  enumerators stop after 20 000 paths, and the files git ignores count toward that
+  limit on the walk — and, since #238, on the `fd` arm whenever **Gitignore in @
+  menu** is off — so in a repo with a large ignored build tree either arm can run
+  out of budget inside it. On the walk that means never reaching your real source
+  directories at all (measured: an ignored 22 000-file `target/` next to twelve
+  real source files gave the walk two menu rows where `fd` — with the toggle on,
+  and so never entering `target/` — gave twelve). On the off `fd` arm it means the
+  kept set stops being stable, and where the ignored files are spread over many
+  directories rather than one tree it can drop real directories too. An
   undecodable filename also still reaches `fd`'s list as `�`; what the walk
   arm does with it is untested (no filesystem here can hold such a name). Nothing
   you type is ever passed to the subprocess, and `fd` is still never required.
@@ -182,6 +186,27 @@ and `.../releases/tag/vX` link would 404. Add them with the first pushed tag.
   [#226](https://github.com/handochan/aelix-ai/issues/226).
 
 ### Added
+
+- **`/settings` can put the git-ignored files back in the `@` menu.** Since the `@`
+  menu started using the `fd` Aelix downloads, it stops offering what git ignores —
+  which is what most people want and is wrong for anyone whose build output,
+  vendored tree or worktree copies are the files they keep typing `@` at. The new
+  **Gitignore in @ menu** row switches it off. Off, `fd` is asked for `--no-ignore`,
+  which lifts `.gitignore` (root and nested), `.git/info/exclude`, `.ignore`,
+  `.fdignore`, your global ignore file, and the same files in directories *above*
+  the one you are in; the shared exclude list — `.git`, `node_modules`, `.venv`,
+  `__pycache__`, `dist`, `build` — still applies, and so does the 20 000-path limit,
+  which the wider list now spends on ignored files too, so a large ignored population
+  can push the menu past that limit — and past it, which paths you get is decided by
+  `fd`'s parallel walk: not stable between runs, and in a checkout with many ignored
+  directories able to drop real ones. That is why it defaults to **on**. It applies
+  immediately: the next `@` you type uses the new setting, no restart. With no `fd`
+  — offline mode, Termux, or simply a session where the model has never run `find`
+  — the menu already offers everything, so the row changes
+  nothing until an `fd` exists; when one appears mid-session the setting you chose
+  is honoured at the next `@`. Measured on the checkout this was built on: on, 1 498
+  candidates; off, 12 630 — exactly what the no-`fd` fallback offers there. See
+  ADR-0193 and [#238](https://github.com/handochan/aelix-ai/issues/238).
 
 - **AUTO mode can read PowerShell and `cmd`, so it stops prompting for every
   line on Windows.** Until now the gate parsed every command with a *bash*

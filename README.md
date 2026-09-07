@@ -184,8 +184,14 @@ exclude list already covers `.git`, `node_modules`, `.venv`, `__pycache__`, `dis
 `build`, so a clean clone of this repository offers the same list either way, while a
 tree that ignores something the list does not name — `target/`, `vendor/`, a directory
 of worktrees — loses exactly that from the menu. Either enumerator stops after 20 000
-paths, but only the walk counts the ignored files toward that limit, so a big ignored
-build tree can exhaust the fallback's budget before it reaches your real directories.
+paths, and the ignored files count toward that limit on the walk — and on the `fd` arm
+too once you turn **Gitignore in @ menu** off. What that costs differs: the walk stops
+dead where it stands, so one big ignored build tree can eat the whole budget before your
+real directories are reached at all, while on the `fd` arm which paths survive is decided
+by its parallel walk and is not the same twice — a checkout with many ignored directories
+can lose real ones from one `@` to the next. If you would rather the menu applied no
+ignore rules and offered everything, turn `/settings` → **Gitignore in @ menu** off; the
+shared exclude list still applies.
 
 ## Why Aelix
 

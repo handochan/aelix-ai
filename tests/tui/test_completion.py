@@ -880,8 +880,9 @@ def test_fd_lists_symlinks_like_the_walk(monkeypatch: Any, tmp_path: Path) -> No
 
 
 def test_the_walk_silently_truncates_at_the_cap(monkeypatch: Any, tmp_path: Path) -> None:
-    # ``_TREE_ENUM_CAP`` bounds both arms, but only the walk spends that budget on
-    # paths the VCS ignores, and it is a hard stop in walk order rather than a
+    # ``_TREE_ENUM_CAP`` bounds both arms, and only the walk spends that budget on
+    # paths the VCS ignores *while #238's toggle is on* (off, the fd arm spends it
+    # too — see the toggle block below), and it is a hard stop in walk order rather than a
     # sample: ``os.walk`` descends depth-first in ``os.scandir`` order, so once one
     # large subtree exhausts the budget every directory not yet reached is missing.
     # Nothing logs it and there is no latency signal either, because truncating is
@@ -1047,3 +1048,166 @@ def test_menu_preferred_height_counts_counter_row() -> None:
     with _menu_control(completions, complete_index=0) as (control, _buf):
         # preferred_height includes the synthetic counter row (+1).
         assert control.preferred_height(40, 10, True, None) == len(completions) + 1
+
+
+# === Issue #238 — the /settings toggle: the @ menu respects .gitignore ======
+#
+# Owner decision B (2026-09-06): a global ``respect_gitignore`` setting, default
+# ON, that asks ``fd`` for ``--no-ignore`` when it is off. The walk arm needs no
+# change because it never applied ignore rules at all, which is what makes ONE
+# flag enough. Cases ①-⑥ below; the three shell forwarding hops the row needs to
+# be anything but inert live in ``tests/tui/test_completer_wiring.py``.
+
+
+def _file_complete_flag(cwd: Path, text: str, respect: Any) -> list[Any]:
+    """``_file_complete`` with an explicit ``respect_gitignore`` source."""
+
+    completer = FileMentionCompleter(str(cwd), respect_gitignore=respect)
+    doc = Document(text=text, cursor_position=len(text))
+    return list(completer.get_completions(doc, CompleteEvent()))
+
+
+def test_fd_argv_has_no_ignore_only_when_the_toggle_is_off(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    # ① The flag is one argv token and nothing else moves. ``--no-ignore`` (not
+    # ``--no-ignore-vcs``, which leaves ``.ignore``/``.fdignore`` in force) and
+    # exactly once, so a doubled append is red too.
+    calls = _stub_fd(monkeypatch, tmp_path, "src/foo.py\n")
+    assert _fd_enumerate("fd", tmp_path, no_ignore=True) == ["src/foo.py"]
+    assert _fd_enumerate("fd", tmp_path, no_ignore=False) == ["src/foo.py"]
+    off_argv, on_argv = calls
+    assert off_argv.count("--no-ignore") == 1
+    assert "--no-ignore-vcs" not in off_argv
+    assert on_argv.count("--no-ignore") == 0
+    for argv in (off_argv, on_argv):
+        # ``--type`` is untouched by the flag (#231's symlink fix stays).
+        types = [argv[i + 1] for i, tok in enumerate(argv) if tok == "--type"]
+        assert types == ["f", "d", "l"]
+        # ABSOLUTE, not "unchanged between the arms": 0 == 0 satisfies that, so a
+        # two-sided removal of the exclude block ("redundant with the shared
+        # predicate") would pass a relative assertion. The tokens are the BUDGET
+        # — measured, 12 630 of the 20 000 cap with them and 32 394 without —
+        # while ``_has_excluded_component`` is the filter. Not interchangeable.
+        assert argv.count("--exclude") == len(completion_mod._EXCLUDE_DIRS)
+        assert argv[-2:] == ["--max-results", str(completion_mod._TREE_ENUM_CAP)]
+
+
+def test_enumerate_tree_passes_the_toggle_through_to_fd(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    # ② The hop between the completer and the argv. The default is the ON arm,
+    # so every existing call site and test keeps the narrow menu.
+    calls = _stub_fd(monkeypatch, tmp_path, "src/foo.py\n")
+    assert _enumerate_tree(tmp_path, False) == ["src/foo.py"]
+    assert "--no-ignore" in calls[0]
+    assert _enumerate_tree(tmp_path) == ["src/foo.py"]
+    assert "--no-ignore" not in calls[1]
+
+
+def test_the_completer_construction_default_respects_the_ignore_files(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    # ②b The DEFAULT at the CONSTRUCTION seam. ① pins `_fd_enumerate`'s
+    # no_ignore=False and ② pins `_enumerate_tree`'s True; nothing pins
+    # `FileMentionCompleter.__init__`'s own keyword-only default, and the class
+    # is in completion.py's __all__ — a direct construction that omits the
+    # keyword must not silently widen the @ menu. Measured: flipping that
+    # default True->False leaves the whole suite green without this case.
+    calls = _stub_fd(monkeypatch, tmp_path, "src/foo.py\n")
+    completer = FileMentionCompleter(str(tmp_path))  # NO respect_gitignore keyword
+    doc = Document(text="@foo", cursor_position=len("@foo"))
+    assert [c.text for c in completer.get_completions(doc, CompleteEvent())] == ["@src/foo.py"]
+    assert calls, "the @ menu never reached the fd seam"
+    assert "--no-ignore" not in calls[0], calls[0]
+
+
+def test_the_walk_arm_offers_the_same_menu_at_either_flag_value(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    # ③ With no fd the toggle is a no-op — measured at the MENU level, not just
+    # at ``_enumerate_tree``, because that is what the help text promises to a
+    # user with no ``fd`` (offline / Termux / never ran ``find``). The walk
+    # applies no ignore rules, so "on" is already its only behaviour; routing
+    # the flag into ``_walk_enumerate``, or growing a second consumer in the
+    # completer, is what this bites.
+    _deep_tree(tmp_path)
+    monkeypatch.setattr(completion_mod, "_fd_binary", lambda: None)
+    on = [c.text for c in _file_complete_flag(tmp_path, "@comp", lambda: True)]
+    off = [c.text for c in _file_complete_flag(tmp_path, "@comp", lambda: False)]
+    assert on == off
+    assert "@src/completion.py" in on
+    # ...and the shared exclude predicate still bites on both, so "show me
+    # everything" never means node_modules/.git.
+    assert _file_complete_flag(tmp_path, "@indexjs", lambda: True) == []
+    assert _file_complete_flag(tmp_path, "@indexjs", lambda: False) == []
+
+
+def test_the_completer_reads_the_flag_on_every_enumeration(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    # ④ A CALLABLE, re-read per enumeration — that is the whole of what makes
+    # the /settings row live. A snapshot bool taken in ``__init__`` would need a
+    # restart, and nothing else in this file would notice.
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.py").write_text("x")
+    calls = _stub_fd(monkeypatch, tmp_path, "src/app.py\n")
+    flag = {"v": True}
+    completer = FileMentionCompleter(str(tmp_path), respect_gitignore=lambda: flag["v"])
+    doc = Document(text="@app", cursor_position=4)
+    assert [c.text for c in completer.get_completions(doc, CompleteEvent())] == [
+        "@src/app.py"
+    ]
+    flag["v"] = False
+    assert [c.text for c in completer.get_completions(doc, CompleteEvent())] == [
+        "@src/app.py"
+    ]
+    assert len(calls) == 2, calls
+    assert "--no-ignore" not in calls[0]
+    assert "--no-ignore" in calls[1]
+
+
+def test_the_tree_cache_is_keyed_by_the_flag(monkeypatch: Any, tmp_path: Path) -> None:
+    # ⑤ The flag is part of the cache KEY, not merely an input to the miss path.
+    # Keyed, a /settings flip is answered by the NEXT keystroke; unkeyed the menu
+    # is stale for a full TTL (measured 2.05 s). This is the evidence for the
+    # key — the §E tmux drive cannot discriminate the two, because a C-l and
+    # three seconds pass before its capture and the TTL would have expired.
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.py").write_text("x")
+    calls = _stub_fd(monkeypatch, tmp_path, "src/app.py\n")
+    monkeypatch.setattr(completion_mod, "_TREE_CACHE_TTL", 30)
+    flag = {"v": True}
+    completer = FileMentionCompleter(str(tmp_path), respect_gitignore=lambda: flag["v"])
+    doc = Document(text="@app", cursor_position=4)
+
+    def _drive() -> None:
+        list(completer.get_completions(doc, CompleteEvent()))
+
+    _drive()
+    _drive()
+    assert len(calls) == 1, "the TTL cache must still absorb a keystroke burst"
+    flag["v"] = False
+    _drive()
+    assert len(calls) == 2, "a flip inside the TTL must re-enumerate"
+    flag["v"] = True
+    _drive()
+    assert len(calls) == 2, "flipping back must reuse the first entry, not evict it"
+
+
+def test_a_raising_flag_source_falls_back_to_on(monkeypatch: Any, tmp_path: Path) -> None:
+    # ⑥ A faulty settings source must not break a keystroke, and the fallback is
+    # the DEFAULT (narrow), not the wide arm — an exception is not consent to
+    # widen the menu.
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.py").write_text("x")
+    calls = _stub_fd(monkeypatch, tmp_path, "src/app.py\n")
+
+    def _boom() -> bool:
+        raise RuntimeError("settings exploded")
+
+    assert [c.text for c in _file_complete_flag(tmp_path, "@app", _boom)] == [
+        "@src/app.py"
+    ]
+    assert len(calls) == 1
+    assert "--no-ignore" not in calls[0]

@@ -903,6 +903,50 @@ class SettingsManager:
         self._mark_modified("check_for_updates")
         self._save()
 
+    # --- respectGitignore (AELIX-ORIGINAL, #238; pi has no such setting) ---
+    def get_respect_gitignore(self) -> bool:
+        """Whether the ``@`` file menu skips files the ignore files hide. Default: True.
+
+        Consumed by ``tui/shell.py``'s completer wiring, which hands this read to
+        :class:`FileMentionCompleter` and calls it on EVERY enumeration, so a
+        ``/settings`` flip is live (the tree cache is keyed by the flag).
+
+        GLOBAL cell only, never the merged ``self._settings`` — NOT the
+        self-elevation argument of :meth:`get_features_agents` (nothing is granted
+        here; the menu inserts a path string), but honesty of the row: under
+        write-global/read-merged a project ``.aelix/settings.json`` carrying this
+        key makes the toggle a no-op on screen. Measured on ``check_for_updates``,
+        which has that shape: with a project override of ``False``,
+        ``set_check_for_updates(True)`` leaves the getter ``False``, so
+        ``/settings`` prints "→ on" and redraws "off".
+
+        Read on the COMPLETER WORKER THREAD (``ThreadedCompleter`` drains the sync
+        generator in an executor — measured, the read landed on ``asyncio_0``,
+        never ``MainThread``) while ``_open_settings`` writes from the loop
+        thread. Benign for any candidate body, because ``reload()`` REBINDS
+        ``self._global_settings`` rather than mutating it, so a reader gets an old
+        or a new object, never a torn one (200 concurrent read/flip rounds, no
+        error). What this pins is therefore COST, not safety: one attribute load,
+        never ``get_global_settings()``/``get_settings()``, which ``deepcopy`` the
+        whole 44-field tree — 8.67 µs against 0.018 µs, once per keystroke.
+        """
+
+        value = self._global_settings.respect_gitignore
+        return True if value is None else bool(value)
+
+    def set_respect_gitignore(self, enabled: bool) -> None:
+        """Persist the ``@``-menu ignore switch (GLOBAL scope).
+
+        Global-only for the same reason the getter is: a setting the getter
+        refuses to read from the project scope must never be written there.
+        ``_save()`` only ENQUEUES — the caller must ``await flush()``
+        (``_open_settings`` does).
+        """
+
+        self._global_settings.respect_gitignore = bool(enabled)
+        self._mark_modified("respect_gitignore")
+        self._save()
+
     # --- sessionDir (Pi `:576-588`) ---
     def get_session_dir(self) -> str | None:
         """Pi parity: ``settings-manager.ts::getSessionDir`` (line 576-588).

@@ -20,12 +20,28 @@ Two row kinds:
   thinking-level cycle); :func:`apply_setting` returns a sentinel so the shell
   runs the delegated coroutine.
 
-The LIVE-effect rows (theme / default-model / steering / follow-up /
-thinking-level / thinking-blocks / tool-card-max-lines) DUAL-WRITE: persist via
-the SettingsManager AND apply to the live session (harness / renderer / context).
-The shell owns the live half (it holds the harness/renderer/context); these
-helpers own the persist half + the canonical cycle orderings + the human-readable
-labels.
+The LIVE-effect rows persist AND take effect this run, by one of TWO mechanisms.
+Which one a row uses decides whether ``shell._apply_live_setting`` needs a branch
+for it, so the split is machine-checked (tests/tui/test_settings_rows.py). The
+prose list this replaced named seven rows while nine were ``live=True``, for as
+long as nothing derived it from source.
+
+PUSH — dual-write: ``apply_setting`` persists via the SettingsManager and hands
+back ``ApplyResult.live``; the shell writes the second copy onto the live session
+(``_apply_live_setting`` for the bool/enum/int rows, the delegated host flow for
+the ``action`` rows). The shell owns that half because it holds the
+harness/renderer/context.
+  PUSH keys: theme, default_model, steering_mode, follow_up_mode, thinking_level,
+  hide_thinking_block, hide_compaction_summary, tool_card_max_lines, render_max_width
+
+PULL — nothing is mirrored: the consumer holds a callable onto the getter and
+re-reads it on every use, so the persist half IS the live half.
+``_apply_live_setting`` carries an explicit pass-only branch so the absence of a
+mirror reads as a decision, not an omission.
+  PULL keys: respect_gitignore
+
+These helpers own the persist half + the canonical cycle orderings + the
+human-readable labels under both mechanisms.
 
 The remaining rows are PERSIST-ONLY, and TEN of them are outright INERT: the
 value round-trips to ``settings.json`` and no production code ever reads it back
@@ -75,8 +91,11 @@ class SettingsRow:
     :param kind: ``"bool"`` | ``"enum"`` | ``"int"`` | ``"action"``.
     :param read: ``(sm) -> str`` — the current value rendered for the row.
     :param help: one-line description shown in the select detail panel.
-    :param live: ``True`` when the change also applies to the live session this
-        run (the shell mirrors it); ``False`` = persist-only. Note that
+    :param live: ``True`` when the change also takes effect this run, by ONE OF TWO
+        mechanisms — the shell mirrors the new value onto the live session (the PUSH
+        rows, see the module docstring), or the consumer holds a callable onto the
+        getter and re-reads it on every use so nothing is mirrored (the PULL rows:
+        ``respect_gitignore``, #238). ``False`` = persist-only. Note that
         ``live=False`` does NOT imply "applies next launch" — for the ten
         inert rows (#111 B-11, #84) nothing reads the value at any point, and
         it also does not imply INERT: ``features_agents`` and
@@ -180,6 +199,37 @@ def build_settings_rows(sm: SettingsManager) -> list[SettingsRow]:
             kind="bool",
             read=lambda s: "hidden" if s.get_hide_compaction_summary() else "visible",
             help="Hide or show the /compact summary in the transcript (applies live).",
+            live=True,
+        ),
+        SettingsRow(
+            key="respect_gitignore",
+            label="Gitignore in @ menu",
+            kind="bool",
+            read=lambda s: _on_off(s.get_respect_gitignore()),
+            # 75 cells, deliberately. ``_open_settings`` hands ``select`` ONE
+            # unwrapped string as ``detail``; ``select``'s Window is
+            # ``wrap_lines=False`` and ``_picker_frame`` clamps only its RULES to
+            # ``_PICK_MAX_WIDTH`` (78), so a longer help renders to exactly the
+            # pane width, cut mid-word — measured, a 272-cell help gave 200 cells
+            # at ``tmux -x 200`` against 78-cell rules. What fits is ranked by
+            # measured harm: the fd condition MUST be present, or the live claim
+            # is false for offline / Termux / never-ran-``find`` users (a
+            # first-class configuration — ``ensure_tool("fd")`` is reached only by
+            # the ``find`` tool and returns ``None`` offline). The phrasing is
+            # "files the ignore files hide", not "files git ignores", because
+            # ``--no-ignore`` also lifts ``.ignore``/``.fdignore`` and parent-
+            # directory rules, which git does not own. "Default on" is dropped
+            # because the value column already shows the current state; the
+            # exclude list and the enumeration cap live in the README, ADR-0193
+            # and the CHANGELOG.
+            help="Off → the @ menu also matches files the ignore files hide (needs fd; live).",
+            # LIVE by the PULL mechanism (see the module docstring): the completer
+            # holds a callable onto ``get_respect_gitignore`` and re-reads it on
+            # every enumeration, with the flag in its tree-cache key, so the flip
+            # is answered by the next keystroke. ``_apply_live_setting``'s branch
+            # is therefore a documented no-op — the shell could not mirror even if
+            # it wanted to, because ``FileMentionCompleter`` is constructed inline
+            # inside ``merge_completers([...])`` and never bound to a name.
             live=True,
         ),
         # --- PERSIST-ONLY rows (no live coding-agent consumer) ---------------
@@ -494,6 +544,10 @@ _BOOL_GETTERS: dict[str, str] = {
     # THIS table raises ``KeyError`` inside ``_row_bool`` on the first toggle,
     # which ``apply_setting`` swallows into a red line: a silently dead row.
     "features_agents": "get_features_agents",
+    # #238 — the ``@``-menu ignore switch. Same table contract as above; this row
+    # is LIVE, so a KeyError here would be a red line where the user expects the
+    # menu to widen on the next keystroke.
+    "respect_gitignore": "get_respect_gitignore",
 }
 _BOOL_SETTERS: dict[str, str] = {
     "hide_thinking_block": "set_hide_thinking_block",
@@ -508,6 +562,7 @@ _BOOL_SETTERS: dict[str, str] = {
     # ADR-0197 (P2) — see the getter note above; the setter half fails the same
     # way, one keystroke later.
     "features_agents": "set_features_agents",
+    "respect_gitignore": "set_respect_gitignore",
 }
 _ENUM_SETTERS: dict[str, str] = {
     "steering_mode": "set_steering_mode",

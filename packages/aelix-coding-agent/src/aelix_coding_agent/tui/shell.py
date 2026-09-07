@@ -1196,9 +1196,10 @@ async def run_tui(
         context._refresh_footer()
 
     async def _apply_live_setting(key: str, value: object) -> None:
-        # Mirror a persisted dual-write row onto the LIVE session. The persist
-        # half already ran in apply_setting; this is the in-session half so the
-        # change takes effect this run (not only next launch). Steering/follow-up
+        # Mirror a persisted dual-write row onto the LIVE session — except
+        # ``respect_gitignore``, whose branch is a documented no-op; see below.
+        # The persist half already ran in apply_setting; this is the in-session
+        # half so the change takes effect this run (not only next launch). Steering/follow-up
         # write the harness (no persist of their own); hide-thinking writes the
         # renderer flag (live, not persisted by the renderer).
         harness = runtime_host.harness
@@ -1223,6 +1224,12 @@ async def run_tui(
                 # so a new ceiling applies to the next assistant message and the
                 # next approval prompt without a restart.
                 render_width_cap["value"] = int(str(value))
+            elif key == "respect_gitignore":
+                # Nothing to mirror: the completer re-reads the setting through
+                # ``_respect_gitignore`` on every enumeration and its tree cache
+                # is keyed by the flag, so the flip is already live. The branch
+                # exists so the absence is a decision, not an omission.
+                pass
 
     async def _open_settings() -> None:
         # ImplConsumers (ADR-0161) — /settings: an expanded select over the
@@ -2672,6 +2679,22 @@ async def run_tui(
             repo=getattr(runtime_host, "_repo", None),
             session_runtime=runtime_host,
         )
+
+        def _respect_gitignore() -> bool:
+            # A nested def, not the bound method, for two reasons: it absorbs the
+            # ``settings_manager is None`` case (older entrypoints / test fakes),
+            # and it is an ast.Call site — the #84 wired-row scanner in
+            # tests/tui/test_settings_rows.py counts Call nodes only, so a bare
+            # ``settings_manager.get_respect_gitignore`` reference would measure
+            # as "nobody reads this setting". That scan is necessary but NOT
+            # sufficient: measured, it stays green with the keyword deleted at
+            # every call site below — a row certified "wired" while inert, i.e.
+            # #84 inverted. tests/tui/test_completer_wiring.py is what pins the
+            # forwarding.
+            if settings_manager is None:
+                return True
+            return settings_manager.get_respect_gitignore()
+
         descriptor_unsub, descriptor_renderer = _wire_descriptors(
             runtime_host,
             out_chrome,
@@ -2682,12 +2705,19 @@ async def run_tui(
             commands,
             cwd,
             dispatch.list_commands,
+            respect_gitignore=_respect_gitignore,
         )
         # No descriptor wiring (headless fakes without an event_bus) → the palette
         # still offers built-ins + extension commands. Install the union completer.
         if descriptor_renderer is None:
             out_chrome.set_command_completer(
-                _build_input_completer(lambda: {}, commands, cwd, dispatch.list_commands)
+                _build_input_completer(
+                    lambda: {},
+                    commands,
+                    cwd,
+                    dispatch.list_commands,
+                    respect_gitignore=_respect_gitignore,
+                )
             )
         chrome_task = asyncio.create_task(out_chrome.run())
         pump_task = asyncio.create_task(_output_pump(output_queue, out_chrome))
@@ -2848,11 +2878,21 @@ def _build_input_completer(
     builtins: list[BuiltinCommand],
     cwd: str,
     get_ext_commands: Callable[[], list[tuple[str, str]]] | None = None,
+    *,
+    respect_gitignore: Callable[[], bool] | None = None,
 ) -> Completer:
     """The merged input completer: slash commands ∪ descriptor routes ∪
     extension commands (issue #9) ∪ ``@file`` path mentions (Sprint 6h₁₄a). Each
     sub-completer is inert outside its own trigger (``/`` vs ``@``), so merging
-    them is safe."""
+    them is safe.
+
+    ``respect_gitignore`` is the ``/settings`` **Gitignore in @ menu** row (#238),
+    handed down as a CALLABLE so the completer re-reads it per enumeration.
+    ``None`` (older entrypoints / test fakes) keeps the default-on behaviour — and
+    only because of the ``or (lambda: True)`` below: ``None`` reaching
+    ``FileMentionCompleter`` is coerced to ``lambda: None``, which is FALSY, so
+    deleting the guard flips the default OFF rather than leaving it ON (measured —
+    the whole suite stays green)."""
 
     from prompt_toolkit.completion import ThreadedCompleter, merge_completers
 
@@ -2869,7 +2909,9 @@ def _build_input_completer(
             # event-loop thread — a large monorepo or a stalled fd can no longer
             # freeze the UI / token stream while completing. The cheap slash
             # completer stays synchronous (instant).
-            ThreadedCompleter(FileMentionCompleter(cwd)),
+            ThreadedCompleter(
+                FileMentionCompleter(cwd, respect_gitignore=respect_gitignore or (lambda: True))
+            ),
         ]
     )
 
@@ -2884,6 +2926,8 @@ def _wire_descriptors(
     builtins: list[BuiltinCommand],
     cwd: str,
     get_ext_commands: Callable[[], list[tuple[str, str]]] | None = None,
+    *,
+    respect_gitignore: Callable[[], bool] | None = None,
 ) -> tuple[Callable[[], None] | None, DescriptorRenderer | None]:
     """Build the descriptor registry + renderer, subscribe + emit one probe.
 
@@ -2917,7 +2961,13 @@ def _wire_descriptors(
     # every keystroke (descriptors applied/removed after this point change
     # completions live); built-ins are static and win on a name clash (§B).
     chrome.set_command_completer(
-        _build_input_completer(lambda: renderer.command_routes, builtins, cwd, get_ext_commands)
+        _build_input_completer(
+            lambda: renderer.command_routes,
+            builtins,
+            cwd,
+            get_ext_commands,
+            respect_gitignore=respect_gitignore,
+        )
     )
 
     # §B — late-bind the live tool-renderer-desc lookup onto the EventRenderer so

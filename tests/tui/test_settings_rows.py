@@ -36,7 +36,10 @@ async def test_build_rows_count_and_keys() -> None:
     assert "features_agents" in keys
     assert "render_max_width" in keys
     assert "check_for_updates" in keys
-    assert len(rows) == 22
+    # #238 — the ``@``-menu gitignore toggle, appended at the END of the LIVE
+    # block (index 7), so ``keys[:7]`` below is unchanged by it.
+    assert "respect_gitignore" in keys
+    assert len(rows) == 23
     # Live-effect rows come first (roadmap appendix O ordering).
     assert keys[:7] == [
         "theme",
@@ -441,7 +444,7 @@ _PERSIST_BLOCK_GETTERS = {
 _NOT_A_CONSUMER = ("aelix_ai/settings/", "tui/settings_rows.py")
 
 
-def _getter_call_sites() -> dict[str, list[str]]:
+def _getter_call_sites(wanted: set[str] | None = None) -> dict[str, list[str]]:
     """Every production ``…get_x(…)`` CALL, by getter name.
 
     AST rather than a substring search, for the reason this repo keeps
@@ -449,13 +452,20 @@ def _getter_call_sites() -> dict[str, list[str]]:
     ``get_enable_skill_commands()`` in prose, and a grep counts that as a
     consumer. A row that is inert but mentioned in a comment would then be
     reported as wired — the exact inversion #84 exists to stop.
+
+    ``wanted`` defaults to the persist-block getters, so the two existing
+    callers are unchanged; #238 passes its own name in. NECESSARY BUT NOT
+    SUFFICIENT as a wiring proof, and measured so: with the getter called in
+    ``run_tui`` and the resulting keyword deleted at all three completer call
+    sites — the row dead for every user — this scan still reports one site.
+    ``tests/tui/test_completer_wiring.py`` is what actually pins the forwarding.
     """
 
     import ast
     from pathlib import Path
 
     repo = Path(__file__).resolve().parents[2]
-    wanted = set(_PERSIST_BLOCK_GETTERS.values())
+    wanted = set(_PERSIST_BLOCK_GETTERS.values()) if wanted is None else set(wanted)
     found: dict[str, list[str]] = {name: [] for name in wanted}
     files = [
         p
@@ -523,7 +533,7 @@ async def test_the_call_site_scanner_can_tell_a_call_from_a_mention() -> None:
     # It finds real calls...
     assert sites["get_features_agents"], "scanner found no call it should find"
     # ...and it finds ONLY the call in the file that also mentions the name in
-    # prose. shell.py:3271 is a docstring; a substring scan would report 2.
+    # prose. shell.py:3321 is a docstring; a substring scan would report 2.
     skill_sites = sites["get_enable_skill_commands"]
     assert len(skill_sites) == 1, skill_sites
     assert "tui/shell.py" in skill_sites[0]
@@ -544,3 +554,196 @@ async def test_the_wired_row_says_something_true_about_being_off() -> None:
     assert "skills still load" in row.help
     assert row.live is False
     assert row.apply_note == "takes effect after you restart aelix"
+
+
+# === Issue #238 — the @-menu gitignore toggle ==============================
+
+
+async def test_the_gitignore_row_is_live_and_fits_the_picker() -> None:
+    """⑦ The row exists, is dispatchable, is LIVE, and its help is READABLE.
+
+    Three defects in one case. (a) A ``kind="bool"`` row whose key is missing
+    from ``_BOOL_GETTERS``/``_BOOL_SETTERS`` raises ``KeyError`` inside
+    ``_row_bool``, which ``apply_setting`` swallows into a red line — a silently
+    dead row, live on ``main`` today for ``check_for_updates``. So the toggle is
+    DRIVEN and the getter re-read, not merely looked up in the two tables.
+    (b) ``live=True`` is the promise the PULL wiring keeps. (c) ``_open_settings``
+    hands ``select`` ONE unwrapped string as the detail; ``select``'s Window is
+    ``wrap_lines=False`` and ``_picker_frame`` clamps only its RULES to
+    ``_PICK_MAX_WIDTH``, so a longer help renders to exactly the pane width, cut
+    mid-word (measured: a 272-cell help → 200 rendered cells at ``tmux -x 200``).
+    14 of the 22 rows on ``main`` already exceed it; this one must not.
+    """
+
+    from aelix_coding_agent.tui.context import _PICK_MAX_WIDTH, _visible_len
+
+    sm = SettingsManager.in_memory({})
+    row = _rows(sm)["respect_gitignore"]
+    assert row.kind == "bool"
+    assert row.live is True
+    # No apply_note: the change IS in effect when the confirmation is drawn.
+    assert row.apply_note is None
+    assert row.read(sm) == "on"  # default ON, through the real getter
+
+    result = apply_setting(row, sm)
+    assert result.kind == "ok", result.message
+    assert result.live == ("respect_gitignore", False)
+    assert sm.get_respect_gitignore() is False
+    assert _rows(sm)["respect_gitignore"].read(sm) == "off"
+
+    # The help says WHAT off does, in the phrasing #238 measured to be true —
+    # "the ignore files hide", never "files git ignores" (``--no-ignore`` lifts
+    # ``.ignore``/``.fdignore``/parent-directory rules too, which git does not
+    # own) — and carries the fd CONDITION, without which the live claim is false
+    # for offline / Termux / never-ran-``find`` users.
+    assert "Off →" in row.help
+    assert "ignore files hide" in row.help
+    assert "needs fd" in row.help
+    assert _visible_len(row.help) <= _PICK_MAX_WIDTH, (
+        f"help is {_visible_len(row.help)} cells; the detail panel does not wrap "
+        f"and is cut at the pane width (_PICK_MAX_WIDTH={_PICK_MAX_WIDTH})"
+    )
+
+
+async def test_the_gitignore_row_has_a_live_consumer() -> None:
+    """⑨ The #84 scan: the getter is CALLED in production, in the shell.
+
+    NECESSARY, NOT SUFFICIENT — measured: with the keyword deleted at all three
+    completer call sites the row is dead for every user and this case stays
+    green, because ``run_tui``'s nested ``def`` still contains an ``ast.Call``.
+    ``tests/tui/test_completer_wiring.py`` (⑫-⑮) is the actual guard.
+    """
+
+    sites = _getter_call_sites({"get_respect_gitignore"})["get_respect_gitignore"]
+    assert sites, "no production consumer reads get_respect_gitignore (#84 shape)"
+    assert any("tui/shell.py" in s for s in sites), sites
+
+
+def _live_rows_from_source() -> dict[str, str]:
+    """``{key: kind}`` for every ``live=True`` row, read out of the source."""
+
+    import ast
+    from pathlib import Path
+
+    src = (
+        Path(__file__).resolve().parents[2]
+        / "packages/aelix-coding-agent/src/aelix_coding_agent/tui/settings_rows.py"
+    )
+    tree = ast.parse(src.read_text(encoding="utf-8"), filename=str(src))
+    out: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        fn = node.func
+        if not (isinstance(fn, ast.Name) and fn.id == "SettingsRow"):
+            continue
+        kw = {k.arg: k.value for k in node.keywords if k.arg}
+        live = kw.get("live")
+        if not (isinstance(live, ast.Constant) and live.value is True):
+            continue
+        key = kw["key"]
+        kind = kw["kind"]
+        assert isinstance(key, ast.Constant) and isinstance(kind, ast.Constant)
+        out[str(key.value)] = str(kind.value)
+    assert out, "found no live=True rows — the SettingsRow scan is broken"
+    return out
+
+
+def _apply_live_setting_branches() -> dict[str, bool]:
+    """``{key: has_a_real_body}`` for every ``key == "…"`` branch in the shell."""
+
+    import ast
+    from pathlib import Path
+
+    src = (
+        Path(__file__).resolve().parents[2]
+        / "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py"
+    )
+    tree = ast.parse(src.read_text(encoding="utf-8"), filename=str(src))
+    fn = next(
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.AsyncFunctionDef | ast.FunctionDef)
+        and n.name == "_apply_live_setting"
+    )
+    out: dict[str, bool] = {}
+    for node in ast.walk(fn):
+        if not isinstance(node, ast.If):
+            continue
+        test = node.test
+        if not (
+            isinstance(test, ast.Compare)
+            and isinstance(test.left, ast.Name)
+            and test.left.id == "key"
+            and len(test.ops) == 1
+            and isinstance(test.ops[0], ast.Eq)
+            and isinstance(test.comparators[0], ast.Constant)
+        ):
+            continue
+        key = str(test.comparators[0].value)
+        inert = all(
+            isinstance(stmt, ast.Pass)
+            or (isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant))
+            for stmt in node.body
+        )
+        out[key] = not inert
+    assert out, "found no key == '…' branches — the _apply_live_setting scan is broken"
+    return out
+
+
+def _docstring_key_list(marker: str) -> set[str]:
+    """The comma-separated keys following ``marker`` in the module docstring."""
+
+    import aelix_coding_agent.tui.settings_rows as rows_mod
+
+    doc = rows_mod.__doc__ or ""
+    lines = doc.splitlines()
+    idx = next(
+        (i for i, line in enumerate(lines) if line.strip().startswith(marker)), None
+    )
+    assert idx is not None, f"the module docstring carries no {marker!r} line"
+    collected = [lines[idx].strip()[len(marker) :]]
+    for line in lines[idx + 1 :]:
+        if not line.strip():
+            break
+        collected.append(line.strip())
+    return {part.strip() for part in " ".join(collected).split(",") if part.strip()}
+
+
+async def test_the_live_rows_docstring_matches_the_measured_mechanism() -> None:
+    """⑯ The LIVE-row docstring's PUSH/PULL split is DERIVED, not declared.
+
+    The old single-mechanism sentence ("the LIVE-effect rows … DUAL-WRITE …
+    the shell owns the live half") named seven rows while nine were
+    ``live=True`` — ``hide_compaction_summary`` and ``render_max_width`` had
+    been missing for as long as nothing derived the list from source. #238 adds
+    the first row for which that sentence is not merely stale but FALSE: it does
+    not dual-write at all, because the shell never binds the completer to a name
+    and so cannot mirror onto it. This classifies every live row from the source
+    and requires the docstring to agree.
+    """
+
+    live_rows = _live_rows_from_source()
+    branches = _apply_live_setting_branches()
+    push: set[str] = set()
+    pull: set[str] = set()
+    for key, kind in live_rows.items():
+        # ``action`` rows are PUSH by delegation: the shell runs the live flow.
+        if kind == "action" or branches.get(key, False):
+            push.add(key)
+        else:
+            pull.add(key)
+
+    assert _docstring_key_list("PUSH keys:") == push, (
+        f"docstring PUSH list {sorted(_docstring_key_list('PUSH keys:'))} vs "
+        f"source {sorted(push)}"
+    )
+    assert _docstring_key_list("PULL keys:") == pull, (
+        f"docstring PULL list {sorted(_docstring_key_list('PULL keys:'))} vs "
+        f"source {sorted(pull)}"
+    )
+    # The universal claim on the field doc goes false for a PULL row unless it
+    # names the second mechanism, whether or not the list above gains the key.
+    field_doc = SettingsRow.__doc__ or ""
+    assert "ONE OF TWO" in field_doc, "SettingsRow.live still claims a single mechanism"
+    assert "respect_gitignore" in field_doc

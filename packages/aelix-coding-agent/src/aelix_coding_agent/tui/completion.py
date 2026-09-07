@@ -293,7 +293,7 @@ def _has_excluded_component(rel: str) -> bool:
     return any(part in _EXCLUDE_DIRS for part in rel.split("/"))
 
 
-def _fd_enumerate(fd_bin: str, base: Path) -> list[str] | None:
+def _fd_enumerate(fd_bin: str, base: Path, *, no_ignore: bool = False) -> list[str] | None:
     r"""Enumerate the tree under ``base`` with ``fd`` (``.gitignore`` aware).
 
     Returns relative POSIX paths — files, directories AND symlinks, no trailing
@@ -303,6 +303,21 @@ def _fd_enumerate(fd_bin: str, base: Path) -> list[str] | None:
     the subprocess. The ``_EXCLUDE_DIRS`` are passed to ``fd`` (so it never
     descends them) AND ``--max-results`` bounds fd's own output so a pathological
     non-gitignored tree can't materialize a huge stdout within the timeout window.
+
+    ``--no-ignore`` (#238, off by default) lifts every ignore file fd consults —
+    root and nested ``.gitignore``, ``.git/info/exclude``, ``.ignore``,
+    ``.fdignore``, the global ignore file, and the same files in PARENT
+    directories of ``base``, which is why ``--no-ignore-parent`` is not also
+    needed. ``--no-ignore-vcs`` is deliberately NOT used: it leaves
+    ``.ignore``/``.fdignore`` in force. ``--exclude`` is unaffected either way,
+    and the two roles are not interchangeable: :func:`_has_excluded_component` is
+    what makes the off arm EQUAL to the walk's set, while the ``--exclude``
+    tokens keep it inside ``--max-results`` — measured, 12 630 of the 20 000
+    budget with them and 32 394 without, and with them dropped and the cap lifted
+    those 32 394 filter down to exactly the walk's 12 630. They are the budget,
+    not the filter; do not drop them as redundant. Measured 2026-09-07 on the
+    owner's checkout — ADR-0193's #238 amendment carries the same pair; the
+    counts drift, the equality does not.
 
     ``--type l`` is asked for explicitly (#231). With ``--type f --type d`` alone
     a symlink is neither, so fd silently dropped every link the walk listed:
@@ -336,6 +351,8 @@ def _fd_enumerate(fd_bin: str, base: Path) -> list[str] | None:
         "--color",
         "never",
     ]
+    if no_ignore:
+        argv.append("--no-ignore")
     for excluded in _EXCLUDE_DIRS:
         argv += ["--exclude", excluded]
     argv += ["--max-results", str(_TREE_ENUM_CAP)]
@@ -366,8 +383,9 @@ def _walk_enumerate(base: Path) -> list[str]:
     budget every directory not yet reached is missing — no warning, and no
     latency signal either, because truncating is FASTER. It bites hardest on a
     tree git ignores that :data:`_EXCLUDE_DIRS` does not name (``target/``,
-    ``vendor/``, ``Pods/``, ``.terraform/``, ``_build/``), which ``fd`` never
-    emits and so never pays for; measured on #231, an ignored 22 000-file
+    ``vendor/``, ``Pods/``, ``.terraform/``, ``_build/``), which ``fd`` does not
+    emit — and so does not pay for — unless #238's ``/settings`` toggle is off;
+    measured on #231, an ignored 22 000-file
     ``target/`` beside twelve real source files left the ``@`` menu two rows
     where fd gave twelve, and which two survived was ``os.scandir`` order.
     Top-level directories still appear, so the drill-in listing looks healthy
@@ -394,14 +412,15 @@ def _walk_enumerate(base: Path) -> list[str]:
     return out
 
 
-def _enumerate_tree(base: Path) -> list[str]:
+def _enumerate_tree(base: Path, respect_gitignore: bool = True) -> list[str]:
     """All relative POSIX paths under ``base`` (``fd`` when present, else walk).
 
     The two enumerators do **not** offer the same list, and this docstring said
     they did until #231. :data:`_EXCLUDE_DIRS` is applied to both (below) and
     always holds. What differs:
 
-    * **git's ignore rules are fd-only.** Inside a git repo fd hides what
+    * **git's ignore rules are fd-only**, and only while #238's toggle is on.
+      Inside a git repo fd hides what
       ``.gitignore`` (root and nested), ``.git/info/exclude`` and git's global
       excludes file hide; outside a repo none of those apply, but fd still
       honours ``.ignore`` and ``.fdignore``, even from a parent directory. The
@@ -412,10 +431,20 @@ def _enumerate_tree(base: Path) -> list[str]:
       :func:`_fd_enumerate`).
     * **The cap is spent differently.** :data:`_TREE_ENUM_CAP` bounds both arms
       (fd through ``--max-results``), but only the walk spends that budget on
-      paths git ignores, and only the walk loses whole unreached subtrees
-      (see :func:`_walk_enumerate`). Where the real tree itself exceeds the cap
-      both arms truncate, and fd's kept set is not stable run to run: 1747 of
-      20000 paths differed between consecutive runs.
+      paths git ignores **while the toggle is on** (#238; off, the fd arm spends
+      it too), and past the cap BOTH arms lose whole unreached subtrees, in
+      different orders — the walk in ``os.scandir`` order, the off fd arm in its
+      parallel discovery order, which is not stable run to run (see
+      :func:`_walk_enumerate`). Measured 2026-09-08: one ignored 40 000-file
+      build tree cost the off arm nothing (60/60 runs kept all twelve real
+      files), while the same volume spread over 200 top-level ignored
+      directories cost it the entire real subtree in 38 of 40. Where the real
+      tree itself exceeds the cap both arms truncate, and fd's kept set is not
+      stable run to run: 1747 of 20000 paths differed between consecutive runs.
+    * **``respect_gitignore=False``** (the ``/settings`` toggle, #238) closes the
+      ignore divergence in the OTHER direction: the fd arm is asked for
+      ``--no-ignore``, and the walk arm needs no change because it never applied
+      ignore rules. See the cap bullet above for what that costs.
 
     Two more differences were closed in #231 rather than documented: the exclude
     predicate now runs on whichever arm answered (it used to post-filter fd
@@ -424,7 +453,9 @@ def _enumerate_tree(base: Path) -> list[str]:
     equal."""
 
     fd_bin = _fd_binary()
-    cands = _fd_enumerate(fd_bin, base) if fd_bin is not None else None
+    cands = (
+        _fd_enumerate(fd_bin, base, no_ignore=not respect_gitignore) if fd_bin is not None else None
+    )
     if cands is None:
         cands = _walk_enumerate(base)
     return [p for p in cands if not _has_excluded_component(p)]
@@ -566,11 +597,25 @@ class FileMentionCompleter(Completer):
     :param get_cwd: callable returning the session working directory (read live so
         a ``/resume`` cwd change is reflected). Plain ``str`` cwd also accepted.
     :param max_results: cap on offered completions (avoids a huge menu in big dirs).
+    :param respect_gitignore: callable (or plain bool) deciding whether the ``fd``
+        arm honours the ignore files — the ``/settings`` **Gitignore in @ menu**
+        row (#238). Read on EVERY enumeration, which is what makes that row live.
     """
 
-    def __init__(self, get_cwd: Callable[[], str] | str, max_results: int = 30) -> None:
+    def __init__(
+        self,
+        get_cwd: Callable[[], str] | str,
+        max_results: int = 30,
+        *,
+        respect_gitignore: Callable[[], bool] | bool = True,
+    ) -> None:
         self._get_cwd = get_cwd if callable(get_cwd) else (lambda: get_cwd)
         self._max_results = max_results
+        # A CALLABLE, read on every enumeration — that is the whole of what makes
+        # the /settings row live (#238). A snapshot bool would need a restart.
+        self._respect_gitignore = (
+            respect_gitignore if callable(respect_gitignore) else (lambda: respect_gitignore)
+        )
         # TTL cache of the enumerated tree, keyed by base cwd → (monotonic_ts,
         # paths). Keeps keystroke-frequency fuzzy completion from re-walking the
         # whole tree on every keypress.
@@ -671,12 +716,21 @@ class FileMentionCompleter(Completer):
         """The enumerated tree under ``base``, TTL-cached so a burst of keystrokes
         shares a single walk."""
 
-        key = str(base)
+        try:
+            respect = bool(self._respect_gitignore())
+        except Exception:  # noqa: BLE001 — a faulty settings source must not break a keystroke
+            respect = True
+        # The flag is part of the KEY, not just an input: keyed, a /settings flip
+        # is answered by the NEXT keystroke; unkeyed the menu is stale for a full
+        # TTL (measured 2.05 s). Flipping back reuses the other entry. This
+        # callable runs on the completer WORKER thread (ThreadedCompleter), so it
+        # must stay cheap and non-blocking — see get_respect_gitignore.
+        key = f"{base}\x00{int(respect)}"
         now = time.monotonic()
         cached = self._tree_cache.get(key)
         if cached is not None and now - cached[0] < _TREE_CACHE_TTL:
             return cached[1]
-        tree = _enumerate_tree(base)
+        tree = _enumerate_tree(base, respect)
         # Bound the cache (a session rarely completes against >1-2 cwds).
         if len(self._tree_cache) > 4:
             self._tree_cache.clear()

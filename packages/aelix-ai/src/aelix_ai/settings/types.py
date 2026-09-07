@@ -200,20 +200,23 @@ PackageSource = str | PackageSourceObject
 
 
 # === Top-level `Settings` dataclass (Pi `:76-113`) ===
-# 42 optional fields — every field defaults to ``None`` so unset →
+# 44 optional fields — every field defaults to ``None`` so unset →
 # ``None`` and getters apply per-method defaults (Pi pattern). Pi's original
 # interface has 33; aelix adds a handful more (e.g. extension_sources,
 # tool_card_max_lines, render_max_width, session_dir, default_project_trust,
-# hide_compaction_summary, features) — all 42 are covered by SETTINGS_PY_TO_JSON.
-# (The count above read 42 while the dataclass held 41; ``render_max_width``
-# happens to make it true. Recount before trusting it.)
+# hide_compaction_summary, features, respect_gitignore) — all 44 are covered by
+# SETTINGS_PY_TO_JSON.
+# (This count has been wrong before — it read 42 while the dataclass held 41,
+# then 42 while it held 43. Re-measured 2026-09-07 under #238: 43 before this
+# field, 44 after, and ``len(SETTINGS_PY_TO_JSON)`` the same. Recount before
+# trusting it.)
 
 
 @dataclass
 class Settings:
     """Pi parity: ``settings-manager.ts:76-113`` ``Settings`` interface.
 
-    42 optional top-level fields (Pi's original 33 + aelix-original
+    44 optional top-level fields (Pi's original 33 + aelix-original
     additions). Defaults are applied in the per-getter methods on
     :class:`SettingsManager` (NOT here) — this dataclass is the
     structural shape only.
@@ -248,6 +251,12 @@ class Settings:
     # IP and nothing else. It creates no sink, and it must never acquire one —
     # no version, no OS, no install id in the request.
     check_for_updates: bool | None = None
+    # AELIX-ORIGINAL, not a pi key (pi has no gitignore setting at all). Whether
+    # the ``@`` file menu's fuzzy search asks ``fd`` to honour the ignore files.
+    # ``None`` = "not configured" and reads as ON — see
+    # ``SettingsManager.get_respect_gitignore``, which reads the GLOBAL cell only
+    # so the ``/settings`` row cannot show a project override it failed to change.
+    respect_gitignore: bool | None = None
     # NOTE (#111 B-2): Pi's ``enableInstallTelemetry`` is deliberately NOT
     # ported. Aelix has no telemetry sink of any kind, so carrying the key
     # advertised a capability that does not exist. An existing settings.json
@@ -355,6 +364,7 @@ SETTINGS_PY_TO_JSON: Final[dict[str, str]] = {
     "npm_command": "npmCommand",
     "collapse_changelog": "collapseChangelog",
     "check_for_updates": "checkForUpdates",
+    "respect_gitignore": "respectGitignore",
     "packages": "packages",
     "extension_sources": "extensionSources",
     "extensions": "extensions",
