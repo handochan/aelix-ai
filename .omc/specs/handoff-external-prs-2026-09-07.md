@@ -94,6 +94,52 @@ gh api -X PUT repos/handochan/aelix-ai/actions/permissions/fork-pr-contributor-a
 gh api -X PATCH repos/handochan/aelix-ai -F allow_auto_merge=true
 ```
 
+### (c) Private Vulnerability Reporting — 현재 **꺼짐**, (d)와 독립적으로 켤 수 있다
+
+```
+gh api repos/handochan/aelix-ai/private-vulnerability-reporting  ->  {"enabled": false}
+```
+
+이건 전용 주소 결정과 **묶이지 않는다.** 켜는 것만으로 보안 쪽 이메일 필요가 사라진다:
+
+- 무료, 설정 하나, 유지비 0. 구조화된 비공개 스레드.
+- **CVE 발행과 advisory 크레딧을 지원한다.** `SECURITY.md:213`이 이미
+  *"Reporters will be credited in any advisory that does get published"* 라고
+  약속해 뒀는데 **이 설정 없이는 지킬 수 없는 약속**이다.
+- `SECURITY.md:35-40`에 오너 본인이 *"the right long-term route"* 라고 적어 뒀고,
+  같은 blockquote가 *"this section should be rewritten the day it changes"* 라고 못박아 뒀다.
+
+```bash
+gh api -X PUT repos/handochan/aelix-ai/private-vulnerability-reporting
+```
+
+켠 날 할 일: `SECURITY.md`의 "How to report, right now" 절(내용 없는 공개 이슈로 노크)과
+35-43행 blockquote 2개를 지우고 "Report a vulnerability 버튼"으로 교체.
+
+### (d) CoC 전용 연락 주소 — 아직 없음
+
+**개인 Gmail을 쓰지 말 것.** 측정: 오너 커밋 이메일 분포는
+noreply `65016626+handochan@…` **735건** vs `handc96@gmail.com` **12건**
+(2026-07-31~08-07 한 구간뿐, 최근 100커밋 중 0건). 즉 gmail 노출은 **선택이 아니라 누출**이고,
+그걸 근거로 문서화된 창구로 승격시키는 것은 방향이 거꾸로다. CoC 창구는 성격상
+적대적인 메일이 오는 곳이므로 더더욱 그렇다.
+
+| 방법 | 비용 | 평가 |
+| --- | --- | --- |
+| 도메인 + Cloudflare Email Routing | 도메인만(~$10-15/년), 포워딩 무료 | **권고.** CoC 창구 + 보안 백업 + Pages 커스텀 도메인(현재 `handochan.github.io`)을 한 번에 |
+| 전용 Gmail 신규 | 무료, 5분 | 실용적. CoC에 필요한 건 "실제로 읽히는 비공개 주소"이지 도메인이 아니다 |
+| SimpleLogin/addy.io 별칭 | 무료 | 가장 빠르지만 창구로는 신뢰도가 낮게 읽힘 |
+
+주소가 생기면 들어갈 곳 2개: `CODE_OF_CONDUCT.md`의 Enforcement 절,
+그리고 `SECURITY.md:42-43`의 *"A dedicated security e-mail address has not been chosen either."*
+
+**왜 CoC가 SECURITY.md보다 더 급한가 (이 논리를 잃지 말 것):** 두 문서가 같은
+"내용 없는 공개 이슈로 노크" 경로를 쓰지만 성격이 다르다. **보안 신고는 코드에 대한
+것**이라 내용 없는 이슈가 아무것도 드러내지 않는다. **CoC 신고는 사람에 대한 것**이라,
+작은 프로젝트에서 "비공개 채널을 요청합니다"라는 공개 이슈는 신고자가 사실상 특정되고
+신고 대상에게 미리 알리는 효과까지 난다. 보안 쪽에 없는 위축 효과다. 현재 CoC 문안은
+**정직하지만 차선**이며, 그건 알고 택한 것이다.
+
 ### 미루는 비용
 
 만료될 fork CI 런이 없으므로 **시한은 없다**. 살아 있는 영향은 하나뿐:
