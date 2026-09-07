@@ -1,6 +1,6 @@
 # 0238. The kill reached the child, and the tree is what had to die
 
-Status: Accepted (2026-09-05; **#220 amendment 2026-09-05** — adopted at the four `aelix_agents` sites: the print-channel spawn, the reaper's win32 legs, `rpc_channel`'s `_reap`/`_eager_abort`, and `print_mode`'s handler block; **#221 amendment 2026-09-05** — the three `subprocess.run(timeout=)` sites adopt `run_contained`; **#222 amendment 2026-09-05** — the two tool spawn sites adopt it: `_LocalBashOperations.exec` and `run_cancellable`; **#234 amendment 2026-09-06** — the bash tool's watcher teardown awaits through `asyncio.wait`, so a cancellation of the task running `exec` is no longer swallowed there; **#226 amendment 2026-09-06** — `!command` keeps `process_group=0`, for a corrected reason, and a terminal stop is now detected and named)
+Status: Accepted (2026-09-05; **#220 amendment 2026-09-05** — adopted at the four `aelix_agents` sites: the print-channel spawn, the reaper's win32 legs, `rpc_channel`'s `_reap`/`_eager_abort`, and `print_mode`'s handler block; **#221 amendment 2026-09-05** — the three `subprocess.run(timeout=)` sites adopt `run_contained`; **#222 amendment 2026-09-05** — the two tool spawn sites adopt it: `_LocalBashOperations.exec` and `run_cancellable`; **#234 amendment 2026-09-06** — the bash tool's watcher teardown awaits through `asyncio.wait`, so a cancellation of the task running `exec` is no longer swallowed there; **#226 amendment 2026-09-06** — `!command` keeps `process_group=0`, for a corrected reason, and a terminal stop is now detected and named; **#230 amendment 2026-09-08** — an `abort()` that lands after the root's reap kills nothing: the handle is finished at the reap and the abort ends the call's drain instead)
 Date: 2026-09-05
 Supersedes/relates: ADR-0197 (the `aelix_agents` reaper, whose finding I2 —
 "a `/proc` walk and not `os.killpg`" — this ADR **reconciles rather than
@@ -415,7 +415,9 @@ against its `< 2.0` bound. The bound is unchanged.
   and embedders. `ctx.signal` is `None` on every model-issued tool call and
   `handle_user_bash` passes `signal=None`: measured 0 of 524 requested cancels
   lost with `signal=None` against 14 of 388 with an `AbortSignal`. That bound
-  is this ADR's to carry because it also bounds #230.
+  is this ADR's to carry because it also bounds **this window at this site** —
+  #230's window at `run_contained` is reached with no signal at all, from
+  `except asyncio.CancelledError`, and is bounded by the #230 bullet below.
 - **#226 — the `!command` terminal stop: landed 2026-09-06.** The site keeps
   `process_group=0`; what changed is the reason it is there and what happens
   when a helper uses the terminal it kept. `_run_shell_command`'s wait is a
@@ -425,6 +427,43 @@ against its `< 2.0` bound. The bound is unchanged.
   silent seconds. Named here by function for the reason the bullets above give.
   What it cost — a corrected rationale, and a pgid that this site no longer
   pins — is in the amendment under "Consequences" below.
+- **#230 — the abort handle finishes at the reap: landed 2026-09-08.** Named
+  here by function for the reason the bullets above give. `run_contained` used
+  to release its `AbortHandle` only in the call's `finally`, so between the
+  root's reap and the end of the post-exit drain the handle was still armed —
+  and an `abort()` landing there ran the ladder at a leader this call had
+  ALREADY REAPED. On POSIX that is `killpg(SIGKILL)` at the group, whose only
+  remaining member is the helper the command backgrounded on purpose: measured
+  on `main` `7fa6796`, the helper died 3 times in 3 on macOS and 2 in 2 on
+  docker Linux while the call still returned `returncode == 0`, and the window
+  was 0.105 s for a quiet helper and 2.004 s for one that keeps writing — long
+  precisely when there is a helper `kill_on_close=False` exists to keep.
+  `AbortHandle._finish` now runs at the reap on both legs (on the timeout leg
+  only when the root was actually reaped), and `_drain` gained a fourth
+  end-condition keyed on `AbortHandle.aborted`, so an `abort()` in that window
+  returns `False`, sends nothing, and ends the call's drain instead — measured,
+  the call returns 0.0016–0.0076 s after the abort with the helper ALIVE 3/3 on
+  macOS and 2/2 on Linux. In production that abort is `ExtensionAPI.exec`'s
+  `except asyncio.CancelledError`: an ordinary Esc, ^C, or cancelled turn.
+- **The interrupt leg into the same window — still open.** #230 disarmed the
+  HANDLE at the reap; it did not touch `run_contained`'s `except BaseException:
+  _end_the_tree(…)`, the sibling handler of the same `try` the post-exit drain
+  runs in. Measured against the #230 module, a `KeyboardInterrupt` 0.6 s into a
+  2.0 s drain entered that ladder with the root's `returncode` already `0` and
+  group-killed a backgrounded helper, 3 times in 3, with and without a handle —
+  the ladder is `_end_the_tree`, not the handle. **Reach is ONE caller,
+  measured:** only `extension_catalog.py`'s clone can take a terminal ^C in this
+  frame, reached from `_cmd_discover`, which calls `fetch_all` synchronously on
+  the event loop — that is, on the main thread, the only thread CPython raises
+  `KeyboardInterrupt` on. `tui/completion.py`'s fd scan is not that site
+  (`shell.py` wraps its completer in a `ThreadedCompleter`) and
+  `ExtensionAPI.exec` runs on a `to_thread` worker, where the same ^C leaves
+  the ladder empty and the helper alive (3/3). It is left alone deliberately: at that one live
+  site the ladder is load-bearing for a second reason — it ends the tree before
+  `_git_clone_bytes`'s `finally: rmtree` deletes the directory out from under a
+  still-running `git`. Whether a ^C that lands after the clone's own `git` has
+  exited should still end that tree is a question for the owner; #230 decided
+  the `abort()` path only.
 - **The hook shell's terminal stop — still open.**
   `extensions/subprocess_hooks.py` is this ADR's other `process_group=0` site
   and takes the same `SIGTTIN`/`SIGTTOU` stop. #226's detector is synchronous
@@ -725,8 +764,12 @@ empty, so only the group kill of the paragraph below reaches anything there.
   caller holds it, `api.exec` calls `abort()` from its `except
   asyncio.CancelledError` leg, and the handle hard-kills the tree from the
   main thread while the worker is still blocked in `proc.wait`. A cancelled
-  turn — Esc, or ^C in `aelix -p` — now ends the command, and the worker
-  returns down the normal exit path with the kill's `returncode`.
+  turn — Esc, or ^C in `aelix -p` — now ends the command *while it is still
+  running*, and the worker returns with the kill's `returncode`; since #230 it
+  returns **without draining the tail**, because the abort also ends the drain,
+  and a cancellation arriving inside the post-exit drain ends that drain and
+  nothing else (the ~54 ms before the reap is publication latency, and the
+  amendment at the end of this file bounds it).
 
   **One loss, worded as a loss.** `api.exec`'s child now leads a session of its
   own, so on a POSIX host with no `/proc` — macOS — the delegation escalation's
@@ -794,9 +837,11 @@ empty, so only the group kill of the paragraph below reaches anything there.
   [#232](https://github.com/handochan/aelix-ai/issues/232)'s
   and not this one's; a test pins today's behaviour so that issue's change is
   visible rather than silent. [#230](https://github.com/handochan/aelix-ai/issues/230)'s
-  policy question — an abort landing inside the post-exit drain — exists at this
-  site too, and #222 preserves today's behaviour there rather than pre-deciding
-  it.
+  policy question — an abort landing inside the post-exit drain — existed at
+  this site too, and #222 preserved today's behaviour there rather than
+  pre-deciding it; #230 has since decided it, at `run_contained` and on the
+  `abort()` path, and the two sites now hold the same policy on the leg axis
+  (the #230 paragraph at the end of this section).
 
   **The drain also moved off `asyncio.to_thread`, for a reason that outranks the
   tool call.** An abandoned `to_thread(proc.stdout.read, …)` can be neither
@@ -886,8 +931,9 @@ empty, so only the group kill of the paragraph below reaches anything there.
   receiving its cancellation at all: **a cancellation landing in the teardown
   after a timeout kill is now delivered as a cancellation instead of the
   `timed_out=True` result the tool would have rendered as a timeout report.**
-  Whether an abort in this window should kill anything is still
-  [#230](https://github.com/handochan/aelix-ai/issues/230)'s.
+  Whether an abort in this window should kill anything was
+  [#230](https://github.com/handochan/aelix-ai/issues/230)'s, and #230 answered
+  it: nothing, once the root has been reaped.
 
 - **`!command` keeps the terminal — as its CONTROLLING terminal, which is a
   smaller claim than this ADR made (amendment, 2026-09-06, #226).** The #221
@@ -980,3 +1026,66 @@ empty, so only the group kill of the paragraph below reaches anything there.
   reads `CONIN$` there can still prompt on Aelix's console and still costs the
   whole timeout unanswered — **nobody has watched that happen**, exactly as
   #221 and #222 say of their own Windows halves.
+- **An `abort()` after the reap kills nothing, at `run_contained` (amendment,
+  2026-09-08, #230).** The policy is now stated once and holds on both sides of
+  the reap: an `abort()` ends the CALL as fast as it can, and after the root has
+  been reaped it ends nothing else. 🔴 **The owner decided that on 2026-09-06**,
+  against the alternative of killing anyway — which is incoherent here, because
+  the call has already bound `returncode = 0` and would be reporting a success
+  while killing what that success deliberately left behind (measured, rc 0 with
+  the helper dead, 6 times in 6). `AbortHandle._finish` therefore runs at the
+  reap and not merely in the call's `finally`, and `_drain` ends on a fourth
+  condition — the caller aborted — keyed on `AbortHandle.aborted` rather than on
+  the disarm, so it also fires on the one leg where the disarm is skipped.
+  **The two sites now agree, and the axis is the LEG rather than the site.** #222
+  disarms the bash tool's abort watcher before its drain, so on the
+  ABORT-SIGNAL leg that signal is inert and the drain runs to EOF for a caller
+  that is still listening; `run_contained` has no such leg, its only
+  handle-passing caller being `ExtensionAPI.exec`, whose abort *is* the task
+  cancellation. On the TASK-CANCELLATION leg both sites kill nothing, and what
+  becomes of the drain depends only on where the `CancelledError` lands —
+  measured, inside the await it cuts it at 0.02 s (3/3), before the `finally` it
+  does not and the drain completes (0.5011 s, 3/3, which is what
+  `test_a_turn_cancel_in_the_watcher_teardown_keeps_the_helper_and_still_detaches`
+  pins). `run_contained`'s drain is a synchronous loop on a worker thread that
+  no `CancelledError` reaches, which is what the fourth condition substitutes
+  for.
+  **The window is narrowed by three to four orders of magnitude, not closed** —
+  and the word "closed" is wrong for two measured reasons. Between
+  `proc.wait`'s return and the disarm taking the handle's lock the residue is
+  0.125 µs idle but **0.055 ms median / 0.103 ms max when another thread is
+  running Python**, which the aborting thread here is; an aborter synchronised
+  on the reap landed in it 17 times in 20 and killed the helper 17/17. And
+  BEFORE the reap the root is dead-but-unpublished — `returncode` is stored by
+  the run thread itself — for 0.712 ms at `timeout=None` and up to ≈54 ms when
+  the caller passed a `timeout`, because `Popen._wait(timeout=)` polls with a
+  delay doubling to a 0.05 s cap; an abort 2 ms after an rc-0 root's exit under
+  `timeout=10.0` still killed the helper 6 times in 6. `ExtensionAPI.exec`
+  reaches that path whenever the caller passes `timeout_ms`. What the residue
+  exposes is the SAME bug and not a different hazard: the helper is alive, so
+  the group is non-empty and its number cannot be recycled — `ProcessTree.close`
+  states the other branch's hazard, the group EMPTY, where `killpg` answers
+  ESRCH (3/3 macOS, 2/2 Linux) and a stranger would need the pid space to wrap
+  inside the residue against a floor of 85.6 s on the measuring host. Closing
+  the rest needs a reap the handle observes itself, or an `abort()` that tests
+  tree liveness; a `returncode is not None` test in `AbortHandle.abort()`,
+  returning `False` before the ladder, was measured, is sound, and was
+  **rejected** — its exclusive coverage is ~2.5 µs, and with it in place
+  deleting the reap disarm passes every test this change adds (3/3), which is
+  two mechanisms for one fault with the tested one removed. Placement is the
+  whole of it: the same test inside `_kill` suppresses the ladder but not
+  `abort()`'s `True`, so those three cases fail 0/3 on `sent == [False]` while
+  ladder, `kills` and the helper's survival still hold.
+  **The interrupt leg is untouched** — see the "still open" bullet above; this
+  amendment is about `abort()`.
+  **The one cost, worded as a cost:** the fourth condition fires whenever
+  `aborted` is true, including for an abort that DID kill during the wait, so a
+  holder outside the tree — a `setsid` descendant, a job escapee — no longer has
+  its post-kill tail drained. Measured on the branch and **not pinned by a
+  test** — 87 bytes over 2.004 s become 13 bytes returned 0.0009 s after the
+  abort, and the caller they would have gone to has
+  unwound: through the real `ExtensionAPI.exec`, an awaiting caller sees the
+  `CancelledError` and **no `ExecResult` at all** — no code, no output, no
+  `killed` flag — 0.0001 s after `cancel()`, on `main` and after this change
+  alike (4/4 each). The only observable difference is the helper afterwards:
+  DEAD 4/4 before, ALIVE 4/4 now.

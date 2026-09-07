@@ -1350,11 +1350,27 @@ def test_abort_before_attach_kills_at_attach(
 def test_a_late_abort_after_the_run_finished_is_a_no_op(
     spawner: Spawner, spies: Spies, trees: Trees
 ) -> None:
-    """``_finish`` in the call's ``finally`` is why this cannot signal a stranger.
+    """The disarm AT THE REAP is why this cannot signal a stranger (#230).
 
     The pid the handle held has been reaped by the time a slow canceller gets
     to it, and on POSIX that number is free for somebody else — the same hazard
-    ``ProcessTree.close``'s docstring states for the group.
+    ``ProcessTree.close``'s docstring states for the group. What disarms the
+    handle on this shape is ``abort._finish()`` at the reap: ``on_wait_enter``
+    finishes the root, so the call takes the SUCCESS path and that disarm runs
+    first — measured, this case is green with the ``finally``'s disarm deleted,
+    which is what
+    :func:`test_a_raise_before_the_reap_still_disarms_the_handle` exists to pin
+    instead.
+
+    WHAT THIS CASE DOES NOT COVER, stated because it read as coverage and was
+    not. It fires its ``abort()`` AFTER ``run_contained`` returned, so it says
+    nothing about the post-exit drain window, and it was GREEN on ``main``
+    while that window was wide open — an ``abort()`` landing inside it sent
+    ``killpg(SIGKILL)`` at an already-reaped leader and killed a backgrounded
+    helper 3/3, with the call still returning rc 0.
+    :func:`test_an_abort_in_the_exit_drain_kills_nothing_and_ends_the_call` and
+    ``test_an_abort_in_the_exit_drain_keeps_the_backgrounded_helper`` in the
+    real-process file are the cases that pin the window.
     """
 
     handle = AbortHandle()
@@ -1369,3 +1385,266 @@ def test_a_late_abort_after_the_run_finished_is_a_no_op(
     assert handle.aborted is True
     assert spies.ladder == []
     assert spawner.proc.kills == 0
+
+
+@pytest.mark.parametrize("spawner", ["linux", "win32"], indirect=True)
+def test_an_abort_in_the_exit_drain_kills_nothing_and_ends_the_call(
+    spawner: Spawner, spies: Spies, trees: Trees, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#230: past the reap the handle is finished, so a late ``abort()`` kills nothing.
+
+    The window is the POST-EXIT DRAIN. On ``main`` the handle was released only
+    in the call's ``finally``, so an ``abort()`` landing between the root's reap
+    and the end of that drain sent ``tree.hard_kill()`` — on POSIX a
+    ``killpg(SIGKILL)`` at the group of an ALREADY-REAPED leader, which reaches
+    only the helper the command backgrounded on purpose. Measured on ``main``
+    ``7fa6796`` against real children: helper DEAD 3/3 on darwin and 2/2 on
+    docker linux, while the call still returned ``returncode == 0``.
+
+    ``close_on_kill = False`` is load-bearing rather than tidiness, and both
+    sibling chatty cases clear it for the same reason: at the default the
+    abort's ``proc.kill()`` closes the write ends, clause (a) ends the drain at
+    once, and the timing pin below would pass on ``main``. It also stops the
+    chatter writing into an fd the fake has just closed (this file's own
+    fd-recycling comment on :meth:`FakePopen.close_stderr_write`).
+
+    The constants are shrunk exactly as
+    :func:`test_a_chatty_holder_past_the_kill_is_cut_at_kill_drain` shrinks
+    them, so what is measured is the ARITHMETIC and not production latency: the
+    chatter writes every 0.05 s against a 0.2 s idle grace, so the idle rule
+    re-arms and :data:`DRAIN_CAP_SECONDS` — shrunk to 1.0 s — is what would end
+    this drain. 0.8 s therefore separates the claim from its negation.
+    """
+
+    monkeypatch.setattr(_process_tree, "EXIT_DRAIN_SECONDS", 0.2)
+    monkeypatch.setattr(_process_tree, "DRAIN_CAP_SECONDS", 1.0)
+    spawner.close_on_kill = False
+    handle = AbortHandle()
+    reaped_at: list[float] = []
+    aborted_at: list[float] = []
+    sent: list[bool] = []
+    stop = threading.Event()
+
+    def _abort() -> None:
+        aborted_at.append(time.monotonic())
+        sent.append(handle.abort())
+
+    def _chatter(proc: FakePopen) -> None:
+        while not stop.is_set():
+            try:
+                os.write(proc.stdout_w, b"chunk")
+            except OSError:
+                return
+            # A quarter of the shrunk grace, spelled as the number it is: the
+            # module-level import here is still the unpatched 0.1.
+            stop.wait(0.05)
+
+    def _past_the_reap(proc: FakePopen) -> None:
+        reaped_at.append(time.monotonic())
+        threading.Thread(target=_chatter, args=(proc,), daemon=True).start()
+        timer = threading.Timer(0.1, _abort)
+        timer.daemon = True
+        timer.start()
+
+    # The root exits WITHOUT closing the pipes: a holder still has them, which
+    # is the whole shape ``kill_on_close=False`` exists to preserve.
+    spawner.on_wait_enter = lambda: spawner.proc.exit(0)
+    spawner.on_wait_return = _past_the_reap
+
+    try:
+        result = _run_bounded(
+            lambda: _call(spawner, spies, timeout=None, abort=handle),
+            1.0 + 1.5,
+            "an abort in the exit drain",
+        )
+        returned = time.monotonic()
+    finally:
+        stop.set()
+
+    assert reaped_at, "the wait never returned — the case measured nothing"
+    assert aborted_at, "the abort never fired — the case measured nothing"
+    assert aborted_at[0] - reaped_at[0] < 1.0, (
+        f"the abort landed {aborted_at[0] - reaped_at[0]:.3f}s past the reap, outside the drain"
+    )
+    # ``False`` is the documented "there was nothing to send it to", and after
+    # #230 that includes "the root is reaped and the call is only draining".
+    assert sent == [False], "the handle was still armed in the post-exit drain"
+    assert spies.ladder == []
+    assert spawner.proc.kills == 0
+    assert result.returncode == 0
+    assert b"chunk" in result.stdout
+    after_the_abort = returned - aborted_at[0]
+    assert after_the_abort < 0.2, (
+        f"the drain ran {after_the_abort:.3f}s past the abort, against a 1.0s cap"
+    )
+
+
+@pytest.mark.parametrize("spawner", ["linux", "win32"], indirect=True)
+@pytest.mark.parametrize("wedged", [False, True])
+def test_an_abort_in_the_post_kill_drain_does_not_run_a_second_ladder(
+    spawner: Spawner,
+    spies: Spies,
+    trees: Trees,
+    monkeypatch: pytest.MonkeyPatch,
+    wedged: bool,
+) -> None:
+    """The timeout leg's half of #230 — and the gate that keeps it honest.
+
+    ``wedged=False`` is the ordinary shape: ``_end_the_tree`` reaped the root,
+    so the handle is finished at that reap and an ``abort()`` arriving in the
+    post-kill drain adds nothing. On ``main`` it ran the ladder a SECOND time —
+    which after the reap is #230's reaped-leader group kill again — and held
+    the call to the kill drain's cap.
+
+    ``wedged=True`` is this design's OWN boundary rather than the issue's bug,
+    and it is deliberately GREEN on ``main``. ``_end_the_tree``'s reap is
+    bounded (:data:`REAP_GRACE_SECONDS`) and can expire: its own "a root that
+    outlives ``reap`` is a live ORPHAN — not a zombie" (#221 review POSIX-6),
+    reachable when ``hard_kill`` AND the ``proc.kill()`` belt both failed (#202
+    review win-leg/F3). There the caller's grip is the only one left, so the
+    disarm is gated on ``proc.returncode is not None`` and the handle stays
+    armed exactly as ``main`` leaves it. This arm is what goes RED against an
+    UNCONDITIONAL ``_finish()`` on the timeout path; the reaped arm cannot tell
+    the two apart, because both give ``sent == [False]``, one ladder pass and
+    ``kills == 1`` (measured).
+
+    ``abort=abort`` stays unconditional at the drain even here: clause (d) keys
+    on ``.aborted`` and not on ``._finished``, so on this one leg the abort
+    fires the ladder AND still ends the drain. That is why this arm carries no
+    timing pin — the drain ends early on the branch and late on ``main``, and
+    the claim being made is about the LADDER.
+    """
+
+    monkeypatch.setattr(_process_tree, "EXIT_DRAIN_SECONDS", 0.2)
+    monkeypatch.setattr(_process_tree, "REAP_GRACE_SECONDS", 0.1)
+    monkeypatch.setattr(_process_tree, "KILL_DRAIN_SECONDS", 0.6)
+    spawner.close_on_kill = False
+    spawner.wedged = wedged
+    handle = AbortHandle()
+    killed_at: list[float] = []
+    aborted_at: list[float] = []
+    sent: list[bool] = []
+    stop = threading.Event()
+
+    def _abort() -> None:
+        aborted_at.append(time.monotonic())
+        sent.append(handle.abort())
+
+    def _chatter(proc: FakePopen) -> None:
+        while not stop.is_set():
+            try:
+                os.write(proc.stdout_w, b"chunk")
+            except OSError:
+                return
+            stop.wait(0.05)
+
+    def _on_kill(proc: FakePopen) -> None:
+        killed_at.append(time.monotonic())
+        threading.Thread(target=_chatter, args=(proc,), daemon=True).start()
+        timer = threading.Timer(0.15, _abort)
+        timer.daemon = True
+        timer.start()
+
+    spawner.on_kill = _on_kill
+    one_pass = (
+        ["taskkill", "terminate_job", "root"]
+        if spawner.platform == "win32"
+        else ["killpg", "root"]
+    )
+
+    try:
+        with pytest.raises(subprocess.TimeoutExpired) as caught:
+            _run_bounded(
+                lambda: _call(spawner, spies, timeout=0.1, abort=handle),
+                0.1 + 0.1 + 0.6 + 1.5,
+                "an abort in the post-kill drain",
+            )
+        raised_at = time.monotonic()
+    finally:
+        stop.set()
+
+    assert killed_at, "the kill never landed — the case measured nothing"
+    assert aborted_at, "the abort never fired — the case measured nothing"
+    if wedged:
+        # The root outlived the bounded reap, so the disarm does NOT move here
+        # and the caller's grip still reaches the tree.
+        assert sent == [True], "the gate disarmed a handle whose root was never reaped"
+        assert spies.ladder == one_pass * 2
+        assert spawner.proc.kills == 2
+    else:
+        assert sent == [False], "the handle was still armed in the post-kill drain"
+        assert spies.ladder == one_pass
+        assert spawner.proc.kills == 1
+        assert b"chunk" in caught.value.stdout
+        after_the_abort = raised_at - aborted_at[0]
+        assert after_the_abort < 0.2, (
+            f"the drain ran {after_the_abort:.3f}s past the abort, against a 0.6s cap"
+        )
+
+
+@pytest.mark.parametrize("spawner", ["linux", "win32"], indirect=True)
+@pytest.mark.parametrize("leg", ["wait", "reader"])
+def test_a_raise_before_the_reap_still_disarms_the_handle(
+    spawner: Spawner,
+    spies: Spies,
+    trees: Trees,
+    monkeypatch: pytest.MonkeyPatch,
+    leg: str,
+) -> None:
+    """The ONLY case that observes the ``finally``'s ``abort._finish()`` (#230).
+
+    Since the disarm moved to the reap, the ``finally``'s copy is the disarm on
+    three legs — the setup region after ``abort._attach`` (an ``_attach`` kill
+    that raises, a ``_start_reader`` that cannot start a thread), a
+    ``proc.wait`` raising something other than ``TimeoutExpired``, and the
+    timeout leg whose root ``_end_the_tree`` could not reap, where that path's
+    ``proc.returncode is not None`` gate skips the disarm. The first two are
+    covered here; C.2's ``wedged=True`` arm takes the third but does not
+    assert the disarm. It is NOT the disarm for a spawn or an attach failure:
+    ``Popen`` and ``ProcessTree.attach`` both sit ABOVE that ``try``, so the
+    ``finally`` never runs there and ``abort()`` returns ``False`` anyway
+    because nothing was attached.
+
+    Deleting it left ``tests/process_tree`` at 98 passed and the whole
+    repository green — measured, no other test in this repository kills that
+    mutant — which is why this case exists at all.
+
+    Why the mutant's second ladder pass is ONE rung and not two: ``tree.close()``
+    has already run in the ``finally`` and :meth:`ProcessTree.hard_kill` returns
+    early when ``_closed``, so a missing disarm still sends the ``proc.kill()``
+    BELT. That belt is inert on a root this call reaped — which is the shape
+    this case actually runs — but ``_end_the_tree``'s reap is bounded, so on a
+    WEDGED root ``returncode is None`` and the belt is a real ``SIGKILL`` at a
+    pid this call has stopped owning, which is why the missing disarm is worth
+    a case at all.
+    """
+
+    handle = AbortHandle()
+    expected: type[BaseException]
+    if leg == "wait":
+        spawner.wait_error = KeyboardInterrupt()
+        expected = KeyboardInterrupt
+    else:
+
+        def _raises(stream: Any, state: _ReadState) -> _PipeReader | None:
+            raise RuntimeError("no thread for this reader")
+
+        monkeypatch.setattr(_process_tree, "_start_reader", _raises)
+        expected = RuntimeError
+
+    with pytest.raises(expected):
+        _run_bounded(
+            lambda: _call(spawner, spies, timeout=5.0, abort=handle),
+            INTERRUPT_REAP_SECONDS + 5.0,
+            "a raise before the reap",
+        )
+
+    # ``False`` is the whole claim: the handle was disarmed on a path that never
+    # reached a reap, so a late canceller cannot aim the ladder at a pid this
+    # call has stopped owning.
+    assert handle.abort() is False
+    if spawner.platform == "win32":
+        assert spies.ladder == ["taskkill", "terminate_job", "root"]
+    else:
+        assert spies.ladder == ["killpg", "root"]
+    assert spawner.proc.kills == 1

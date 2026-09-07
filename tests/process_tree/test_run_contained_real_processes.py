@@ -848,3 +848,183 @@ def test_no_controlling_terminal(strays: list[int]) -> None:
         assert result.returncode != 0
         assert b"ENXIO" in result.stderr or b"ENOENT" in result.stderr
         assert elapsed < 5.0
+
+
+#: A root that backgrounds a holder which is ALREADY WRITING when the root exits.
+#:
+#: The handshake is the point (#230). Timing an abort off the root's ANNOUNCE
+#: lets this case go vacuous on a slow runner: measured, the helper's first byte
+#: lands +0.0050 / +0.0073 / +0.0089 s after the reap (n=15, darwin idle), about
+#: 92 ms of margin inside ``EXIT_DRAIN_SECONDS``, and an injected 0.095 s helper
+#: delay makes the unanchored shape pass on ``main`` 4/4 while pinning nothing.
+#: So the helper writes a ``chatting`` flag immediately AFTER its first pipe
+#: byte and the root waits on that flag before writing its own line and exiting:
+#: at the exit instant the drain is provably held open by an already-writing
+#: holder, independent of interpreter start-up. The root then writes ``leaving``
+#: immediately before it exits, which is what the abort is aimed off — the flag
+#: idiom is :data:`ROOT_WITH_A_LATE_TAIL`'s, whose docstring states why
+#: (``os.getppid`` does not change on Windows when the parent dies).
+#:
+#: Both writers go through ``sys.stdout.buffer``, never ``print``: ``create_stdio``
+#: builds ``sys.stdout`` with ``newline = NULL`` under ``MS_WINDOWS`` and a
+#: ``newline is None`` wrapper writes ``os.linesep``, which is how the windows
+#: leg of run 33959649661 failed this repository twice.
+ROOT_WITH_A_CHATTY_HOLDER = """\
+import os
+import subprocess
+import sys
+import time
+
+marker, chatting, leaving = sys.argv[1], sys.argv[2], sys.argv[3]
+child = subprocess.Popen(
+    [
+        sys.executable,
+        "-c",
+        "import os, sys, time\\n"
+        "flag = sys.argv[1]\\n"
+        "sys.stdout.buffer.write(b'h')\\n"
+        "sys.stdout.buffer.flush()\\n"
+        "with open(flag + '.tmp', 'w', encoding='utf-8') as handle:\\n"
+        "    handle.write('chatting')\\n"
+        "os.replace(flag + '.tmp', flag)\\n"
+        "end = time.monotonic() + 30\\n"
+        "while time.monotonic() < end:\\n"
+        "    sys.stdout.buffer.write(b'h')\\n"
+        "    sys.stdout.buffer.flush()\\n"
+        "    time.sleep(0.02)\\n",
+        chatting,
+        "@MARK@",
+    ],
+    stdin=subprocess.DEVNULL,
+)
+tmp = marker + ".tmp"
+with open(tmp, "w", encoding="utf-8") as handle:
+    handle.write(f"{os.getpid()} {child.pid}\\n")
+os.replace(tmp, marker)
+while not os.path.exists(chatting):
+    time.sleep(0.005)
+sys.stdout.buffer.write(b"done\\n")
+sys.stdout.buffer.flush()
+with open(leaving + ".tmp", "w", encoding="utf-8") as handle:
+    handle.write("gone")
+os.replace(leaving + ".tmp", leaving)
+""".replace("@MARK@", MARK)
+
+
+def test_an_abort_in_the_exit_drain_keeps_the_backgrounded_helper(
+    tmp_path: Path, strays: list[int]
+) -> None:
+    """#230 against real children: Esc after the exit kills nothing.
+
+    This is the shape the issue is about, and the one the fakes cannot make:
+    the root exits **0** having deliberately backgrounded a helper that holds
+    stdout and keeps writing, so the post-exit drain runs to
+    :data:`DRAIN_CAP_SECONDS` rather than to the idle rule — long precisely
+    when there is a helper ``kill_on_close=False`` exists to keep. An
+    ``abort()`` in that window is, on ``main``, ``killpg(SIGKILL)`` at the
+    group of a leader this call has ALREADY REAPED: measured on ``main``
+    ``7fa6796``, the helper died 3/3 on darwin and 2/2 on docker linux while
+    the call returned ``returncode == 0``. In production that abort is
+    ``ExtensionAPI.exec``'s ``except asyncio.CancelledError`` — an ordinary
+    Esc, ^C, or cancelled turn.
+
+    BOTH ENDS OF THE WINDOW ANCHOR TO THE ROOT, which is what keeps the case
+    from going vacuous: the handshake in :data:`ROOT_WITH_A_CHATTY_HOLDER`
+    holds the drain open at the exit instant, and the abort is fired 0.2 s
+    after the root's own ``leaving`` flag rather than off the announce. RED on
+    ``main`` 12/12 across injected first-byte delays of 0.00 / 0.15 / 0.30 /
+    1.00 s; the unanchored shape was vacuous 4/4 at 0.095 s.
+
+    The pin is ``b"done\\n" in result.stdout`` and NOT ``startswith``: under the
+    handshake the helper's byte leads (measured, ``startswith`` false 8/8 and
+    ``in`` true 8/8), and ``in`` is safe under interleaving because the 5-byte
+    write is atomic under ``PIPE_BUF``.
+
+    On win32 ``hard_kill`` is ``taskkill /T /F`` plus ``TerminateJobObject``,
+    which reaches a job member even in a group of its own, so the case
+    discriminates there at least as strongly as it does on POSIX.
+    """
+
+    # Imported here rather than in the module's import block on purpose. The
+    # citation lock carries one anchor into this file — a LINE RANGE inside
+    # ``test_a_setsid_grandchild_is_reached_by_the_job_and_not_by_the_group``'s
+    # bound, cited by name from ``tests/tools/test_bash_tool_containment.py`` —
+    # so this case is APPENDED and adds no line above it. A module-level import
+    # would shift that range and drift the lock.
+    from aelix_ai.utils._process_tree import DRAIN_CAP_SECONDS
+
+    marker = tmp_path / "pids.txt"
+    chatting = tmp_path / "chatting.flag"
+    leaving = tmp_path / "leaving.flag"
+    argv = [
+        sys.executable,
+        "-c",
+        ROOT_WITH_A_CHATTY_HOLDER,
+        str(marker),
+        str(chatting),
+        str(leaving),
+    ]
+    handle = AbortHandle()
+    aborted_at: list[float] = []
+    sent: list[bool] = []
+    stop = threading.Event()
+
+    def _watch() -> None:
+        deadline = time.monotonic() + 10.0
+        while not leaving.exists():
+            if stop.wait(0.005) or time.monotonic() > deadline:
+                return
+        if stop.wait(0.2):
+            return
+        # ``perf_counter``, not ``monotonic``: on Windows 3.11/3.12 ``monotonic``
+        # is ``GetTickCount64`` at ~15.6 ms resolution, and the ``returned`` stamp
+        # below landed in the SAME tick on the py3.12 leg (assert 1251.437 <
+        # 1251.437) — the guard would call a real in-window abort vacuous.
+        aborted_at.append(time.perf_counter())
+        sent.append(handle.abort())
+
+    def _arm(_pids: tuple[int, ...]) -> None:
+        # ``on_announce`` keeps its documented job — the pids are registered
+        # before anything is aimed at them — but the abort itself waits for the
+        # root's own exit flag, not for this instant.
+        threading.Thread(target=_watch, daemon=True).start()
+
+    registrar = _registrar(marker, strays, on_announce=_arm)
+    started = time.monotonic()
+
+    try:
+        result = _run_bounded(
+            lambda: run_contained(argv, timeout=None, abort=handle),
+            DRAIN_CAP_SECONDS + 5,
+            "an abort in the exit drain keeps the helper",
+        )
+        returned = time.perf_counter()
+    finally:
+        stop.set()
+        elapsed = time.monotonic() - started
+        pids = registrar.settle()
+
+    assert pids is not None, "the root never announced its tree — the case measured nothing"
+    _, helper = pids
+    assert aborted_at, "the abort never landed — the case measured nothing"
+    assert aborted_at[0] < returned, (
+        f"the abort landed {aborted_at[0] - returned:.3f}s AFTER the call returned — "
+        "the case measured nothing"
+    )
+    after_the_abort = returned - aborted_at[0]
+    # ``False``: the root is reaped and this call is only draining, so there is
+    # nothing left to send the ladder to.
+    assert sent == [False], "the handle was still armed in the post-exit drain"
+    assert result.returncode == 0
+    assert b"done\n" in result.stdout
+    assert probe_state(helper) == STATE_ALIVE, (
+        f"helper {helper} died to an abort {after_the_abort:.3f}s after the root's own exit"
+    )
+    assert after_the_abort < EXIT_DRAIN_SECONDS + 0.5, (
+        f"the drain ran {after_the_abort:.3f}s past the abort"
+    )
+    warnings.warn(
+        f"run_contained abort in the exit drain: {elapsed:.3f}s total, "
+        f"{after_the_abort:.3f}s past the abort on {sys.platform}",
+        stacklevel=1,
+    )

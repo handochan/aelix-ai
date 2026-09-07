@@ -2076,7 +2076,8 @@ class ExtensionAPI:
         root; after the root exits the pipes are drained under an idle timer
         armed at the exit, so a backgrounded helper no longer turns a success
         into a timeout (and, ``kill_on_close=False``, survives the successful
-        run exactly as it does today).
+        run exactly as it does today, **including when the turn is
+        cancelled** — #230).
 
         WHAT THAT COSTS THE COMMAND, stated. ``stdin`` is ``DEVNULL`` — Pi's
         contract (``stdio: ["ignore", "pipe", "pipe"]``); this used to INHERIT
@@ -2105,10 +2106,26 @@ class ExtensionAPI:
         waited out the command's whole remaining life — ``28.58 s`` of a 30 s
         child — with ``Runner.close``'s 300 s executor join and
         ``concurrent.futures.thread._python_exit``'s unbounded join as the
-        ceiling. So a cancelled turn ends the TREE instead: an
+        ceiling. So a cancelled turn ends the TREE instead — *while the command
+        is still running*: an
         :class:`~aelix_ai.utils._process_tree.AbortHandle` is handed to the
         call and fired from ``except asyncio.CancelledError``, which releases
         the worker's blocked ``wait`` and lets the command exit at once.
+
+        A CANCELLATION LANDING ONCE THE ROOT IS REAPED — inside the post-exit
+        drain — ENDS THIS CALL AND NOTHING ELSE (#230). No kill is sent, and a
+        helper the command backgrounded on purpose survives the Esc exactly as
+        it survives a quiet run. ONE RACE IS LEFT, narrowed not closed: a
+        cancellation between the root's own exit and this call reaping it can
+        still reach the helper — under a millisecond with no ``timeout_ms``,
+        up to ~54 ms with one, because ``Popen._wait(timeout=)`` polls at a
+        0.05 s cap. ADR-0238's amendment carries the series. Measured THROUGH
+        THIS METHOD: on ``main`` a
+        turn cancelled 0.5 s after the root's exit sent ``killpg(SIGKILL)`` at
+        the group of a leader the call had already reaped and killed that
+        helper 4/4; with #230 the kill log is empty and the helper is alive
+        4/4. The caller sees the same ``CancelledError`` — never an
+        ``ExecResult`` — 0.0001 s after ``cancel()`` either way.
 
         Output is decoded by :func:`_decode_output` — utf-8 with replacement
         plus universal newlines, on BOTH the success and the timeout path.

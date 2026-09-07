@@ -393,6 +393,28 @@ and `.../releases/tag/vX` link would 404. Add them with the first pushed tag.
 
 ### Fixed
 
+- **Pressing Esc no longer kills a helper an extension's command left running.**
+  `aelix.exec(...)` runs a command's tree contained, and after the command exits
+  it keeps reading the pipes for a moment so a process the command backgrounded
+  can finish writing. A cancellation that landed in that moment — Esc, ^C, or
+  any cancelled turn — still ran the kill ladder, and on Linux and macOS that
+  was a group kill aimed at a process this run had already reaped: it killed the
+  backgrounded helper in every one of **eight** measured runs (six on macOS, two
+  on Linux), while the command itself was reported as the success it was. The
+  window was 0.1 s for a quiet helper and up to 2 s for one that kept writing.
+  Esc there now ends **that reading** and nothing else: the helper survives,
+  exactly as it does when you do not press Esc. One race is left, narrowed
+  rather than closed — a cancellation that arrives between the command's own
+  exit and this run noticing it can still reach the helper. That gap is under
+  a millisecond ordinarily, but up to ~54 ms when the call was given a
+  `timeout_ms`, because the wait polls at a 0.05 s cap: measured through
+  `aelix.exec` with `timeout_ms`, an Esc 2 ms after the exit still killed the
+  helper 6 times in 6, 1 in 6 at 20 ms and at 50 ms, and none at 80 ms.
+  ADR-0238 records it as narrowed, not closed. The cancellation itself is
+  unchanged — it is still what you get back, and the command's output is still
+  discarded with it. See ADR-0238 and
+  [#230](https://github.com/handochan/aelix-ai/issues/230).
+
 - **`BashOperations.exec` no longer swallows a cancellation of its own task.**
   While tidying up the abort watcher after a command had finished — or after the
   tool had just timed it out and killed it — `exec` awaited the watcher inside a
@@ -674,9 +696,12 @@ and `.../releases/tag/vX` link would 404. Add them with the first pushed tag.
   page that used to decode correctly under your locale now shows replacement
   characters — and line endings still normalise to `\n` as they did. A
   successful exit kills nothing — a helper the command backgrounded before
-  exiting **successfully** still survives — while the timeout, a cancelled turn
-  (Esc, or ^C in `aelix -p`) and an interrupt raised inside the call each end
-  the whole tree (docs-adr-2). **A command that expects a terminal — a prompt,
+  exiting **successfully** still survives — while the timeout, an interrupt raised
+  inside the call, and a cancelled turn *that lands while the command is still
+  running* each end the whole tree (docs-adr-2). A cancelled turn that lands
+  once the command has been reaped — inside that reading — kills nothing: it
+  ends the reading of its output, and the helper survives (#230). **A command
+  that expects a terminal — a prompt,
   a pager, an editor — now fails immediately instead of stalling until its
   timeout; one that reaches for an askpass-style program instead of the
   terminal can still block until its timeout, as it always could.** On Windows
@@ -687,11 +712,13 @@ and `.../releases/tag/vX` link would 404. Add them with the first pushed tag.
   its timeout (adversary-1). Output written by a *descendant* more than two
   seconds after the command itself exited is no longer waited for — the command
   still reports its own exit code, but that trailing output is cut. And a
-  cancelled turn now ends the command: **Esc, or ^C in `aelix -p`, kills the
-  command's tree** instead of leaving it to run out its timeout (measured: on
-  the old code a ^C reached the command through the terminal in 0.02 s; with a
-  session of its own and no such handle it would have waited the command's
-  whole remaining life, 28.58 s of a 30 s sleeper). `code=124 killed=True` on a
+  cancelled turn now ends a command that is **still running**: **Esc, or ^C in
+  `aelix -p`, kills the command's tree** instead of leaving it to run out its
+  timeout (measured: on the old code a ^C reached the command through the
+  terminal in 0.02 s; with a session of its own and no such handle it would
+  have waited the command's whole remaining life, 28.58 s of a 30 s sleeper).
+  Once the command has been reaped, Esc kills nothing — see the `### Fixed`
+  entry for #230. `code=124 killed=True` on a
   timeout is unchanged.
 - **AUTO mode now prompts instead of auto-allowing when your `$SHELL` is one
   the safety classifier cannot read** (#104). The AUTO posture decides whether

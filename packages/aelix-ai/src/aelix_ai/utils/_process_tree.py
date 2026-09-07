@@ -1145,8 +1145,9 @@ def _drain(
     *,
     exit_drain: float,
     drain_until: float,
+    abort: AbortHandle | None = None,
 ) -> None:
-    """Read on past the root's death until one of three things is true.
+    """Read on past the root's death until one of four things is true.
 
     Ends on whichever comes FIRST (§A.2.6 of the #221 spec):
 
@@ -1161,7 +1162,18 @@ def _drain(
     (b) the pipes have been idle for ``exit_drain`` measured from
         ``max(last_chunk_at, exited_at)`` — Pi's rule, with the timer armed at
         the exit and re-armed by every chunk that arrives after it;
-    (c) ``drain_until`` — the caller's absolute cap.
+    (c) ``drain_until`` — the caller's absolute cap;
+    (d) the caller ABORTED. ``abort()`` means "I have stopped listening", and
+        after the reap it is also all it means (#230): the handle is finished
+        by then, so nothing is killed and this clause is the whole of its
+        effect. Keyed on ``.aborted``, never ``._finished`` — on the one leg
+        where the disarm is skipped (a root the ladder could not reap) the
+        abort still fires the ladder AND still ends this drain. Measured with a
+        holder outside the tree that never falls idle, the drain otherwise ran
+        2.004 s past the abort and collected 87 bytes for a caller that had
+        already unwound; ``ExtensionAPI.exec`` re-raises the ``CancelledError``
+        and never returns an ``ExecResult`` at all (measured through the real
+        method, 4/4).
 
     A reader still blocked when this returns is LEFT ALONE. It is a daemon
     thread and it ends when the last holder of the write end closes it; there
@@ -1171,6 +1183,8 @@ def _drain(
 
     while True:
         if all(reader.eof or not reader.is_alive() for reader in readers):
+            return
+        if abort is not None and abort.aborted:
             return
         now = time.monotonic()
         if now >= drain_until:
@@ -1240,18 +1254,44 @@ class AbortHandle:
     WHAT IT DOES, AND WHAT IT DELIBERATELY DOES NOT. ``abort()`` sends the same
     two rungs the ladders send — ``tree.hard_kill()`` then the ``proc.kill()``
     belt — and does NOT wait for anything. That is the whole design: the kill is
-    what lets the worker's blocked ``proc.wait(timeout=)`` return, after which
-    the call's ordinary exit path drains under its idle rule and returns a
-    ``CompletedProcess`` carrying the kill's returncode (``-9`` on POSIX, ``1``
-    on win32) to a caller that has already stopped listening. No new thread, no
+    what lets the worker's blocked ``proc.wait(timeout=)`` return, and the call
+    then returns AT ONCE with the kill's returncode (``-9`` on POSIX, ``1`` on
+    win32) and the bytes read so far. The drain does NOT run, because
+    ``abort()`` also means "I have stopped listening" (:func:`_drain`'s clause
+    (d), #230); a holder OUTSIDE the tree therefore loses its tail — measured,
+    87 B collected over 2.004 s on ``main`` against 13 B returned 0.0009 s
+    after the abort, to a caller that has already unwound. No new thread, no
     polling, and no second code path through the helper.
 
     THE RACE IS CLOSED AT THE ATTACH, not by asking the caller to be late. A
     handle passed to a call that has not attached yet only marks itself
     aborted; :func:`run_contained` hands the tree over under this object's lock
     immediately after ``ProcessTree.attach``, and a mark already set fires the
-    kill THERE. ``_finish`` (in the call's ``finally``) makes a late ``abort()``
-    a no-op rather than a kill aimed at a pid that has been reaped.
+    kill THERE.
+
+    ``_finish`` RUNS AT THE REAP — the instant ``proc.wait`` returns on the
+    success path, and the instant ``_end_the_tree`` returns on the timeout path
+    *if it reaped* — not merely in the call's ``finally``. The difference is the
+    post-exit drain, and on ``main`` it was the whole bug (#230): the handle
+    stayed armed for :data:`EXIT_DRAIN_SECONDS` (0.105 s measured) or, with a
+    holder that keeps writing, :data:`DRAIN_CAP_SECONDS` (2.004 s), and an
+    ``abort()`` there sent ``killpg(SIGKILL)`` at the group of a leader this
+    call had already reaped — killing the helper an rc-0 command backgrounded
+    on purpose, 3/3, while the call still returned ``returncode == 0``. After
+    the reap ``abort()`` returns ``False``, sends nothing, and ends the drain
+    instead (clause (d)). A residue of arm remains between the wait's return
+    and the lock — 0.125 us idle, **0.055 ms median / 0.103 ms max when another
+    thread is running Python**, which the aborting thread here is — and before
+    it the root is dead-but-unpublished for 0.712 ms (``timeout=None``) to
+    ~54 ms (a ``timeout`` given, where ``Popen._wait`` polls at a 0.05 s cap).
+    What an ``abort()`` reaches in that residue is NOT a stranger: the helper is
+    alive, so the group is non-empty and its id cannot be recycled (this
+    module's PID/PGID paragraph) — it is this same bug, 10^3-10^4x narrower than
+    the drain it replaces, and a reap-synchronised aborter still landed in it 17
+    times in 20. :meth:`ProcessTree.close`'s hazard is the OTHER branch — the
+    helper gone too and the group EMPTY, where ``killpg`` answers ESRCH and a
+    recycled number would need the pid space to wrap inside the residue against
+    a floor of 85.6 s. On win32 the retained handle rules reuse out entirely.
     """
 
     def __init__(self) -> None:
@@ -1275,7 +1315,9 @@ class AbortHandle:
 
         Returns ``True`` when the kill was actually sent, ``False`` when there
         was nothing to send it to — either the call has not attached yet (the
-        mark is kept and the attach kills at once) or it has already finished.
+        mark is kept and the attach kills at once) or it has already finished,
+        which since #230 includes "the root is reaped and the call is only
+        draining".
         """
 
         with self._lock:
@@ -1485,9 +1527,36 @@ def run_contained(
     interrupt leg above cannot help ``ExtensionAPI.exec``, whose ``await`` is on
     an ``asyncio.to_thread`` worker that no signal reaches. ``handle.abort()``
     sends this ladder's two rungs and returns immediately; the blocked
-    ``proc.wait`` then returns because the root is dead, and this call takes its
-    ORDINARY exit path — drain, ``CompletedProcess`` with the kill's returncode
-    — for a caller that has already unwound. Passing no handle changes nothing.
+    ``proc.wait`` then returns because the root is dead, and the drain then ends
+    AT ONCE because the caller has aborted (:func:`_drain`'s clause (d), #230),
+    so what comes back is a ``CompletedProcess`` with the kill's returncode and
+    the bytes read so far. A holder OUTSIDE the tree loses its tail — 87 B over
+    2.004 s on ``main`` against 13 B returned 0.0009 s past the abort — to a
+    caller that has already unwound. Passing no handle changes nothing.
+
+    THE TWO SITES AGREE, AND THE AXIS IS THE LEG RATHER THAN THE SITE (#230).
+    #222 settled the same window at the bash tool by disarming its abort watcher
+    BEFORE the drain, and what is left over is a difference of LEG. On the
+    ABORT-SIGNAL leg that watcher is cancelled first, so the signal is inert and
+    the bash tool's drain runs to EOF for a caller that is still listening and
+    does get its result; this function has no such leg at all, its only
+    handle-passing caller being ``ExtensionAPI.exec``, whose abort *is* the task
+    cancellation. On the TASK-CANCELLATION leg both sites kill nothing, and what
+    happens to the drain depends only on where the ``CancelledError`` lands —
+    measured, delivered while suspended INSIDE the drain's await it cuts it at
+    0.02 s (3/3), delivered BEFORE the ``finally`` is entered it does not and
+    the drain runs to completion (0.5011 s, 3/3), which is the arrival the bash
+    tool's own case pins. This drain is a synchronous loop on a worker thread
+    that no ``CancelledError`` reaches, so clause (d) is the substitute and
+    every arrival in the window gets the first behaviour. Same policy — kill
+    nothing — with the asymmetry stated by leg.
+
+    The rule that clause states is uniform: an ``abort()`` ends the CALL as fast
+    as it can, and after the reap it ends nothing else. That is a rule about
+    ``abort()``. The interrupt leg above still ends the tree from inside this
+    same drain, and is left alone deliberately — ADR-0238 carries it as an open
+    item, and its one reachable caller is the catalog clone, where that ladder
+    also keeps ``rmtree`` off a live ``git``.
 
     ``platform`` and ``api`` are the injection seams of this module; production
     passes neither.
@@ -1596,6 +1665,21 @@ def run_contained(
             # Bounds the ROOT's lifetime, not pipe EOF — bug 2 above.
             # ``timeout=None`` waits without bound, as ``run(timeout=None)`` does.
             returncode = proc.wait(timeout=timeout)
+            if abort is not None:
+                # THE ROOT IS REAPED (#230). From here the ladder can only reach
+                # a helper the command backgrounded on purpose (measured on
+                # ``main``: an ``abort()`` 0.5 s into this drain returned True,
+                # sent ``killpg(<the reaped root's pid>, SIGKILL)`` and killed
+                # it 3/3 while this call still returned rc 0) — or, once the
+                # helper is gone too, an EMPTY group, where ``killpg`` answers
+                # ESRCH (3/3 darwin, 2/2 linux) and a stranger would need the
+                # pid space to wrap inside the residue, floor 85.6 s on this
+                # host (``ProcessTree.close`` states that branch's hazard).
+                # What stays armed between the wait's return and this line is
+                # 0.125 us idle, 0.055-0.103 ms when the aborting thread is
+                # running Python: the SAME bug, 10^3-10^4x narrower than the
+                # 0.105-2.004 s drain it replaces.
+                abort._finish()
             state.exited_at = time.monotonic()
             drain_until = state.exited_at + DRAIN_CAP_SECONDS
             if timeout is not None:
@@ -1605,19 +1689,44 @@ def run_contained(
                 drain_until = min(
                     drain_until, max(start + timeout, state.exited_at + EXIT_DRAIN_SECONDS)
                 )
-            _drain(readers, state, exit_drain=EXIT_DRAIN_SECONDS, drain_until=drain_until)
+            _drain(
+                readers,
+                state,
+                exit_drain=EXIT_DRAIN_SECONDS,
+                drain_until=drain_until,
+                abort=abort,
+            )
         except subprocess.TimeoutExpired as expired:
             _end_the_tree(tree, proc, reap=REAP_GRACE_SECONDS)
+            if abort is not None and proc.returncode is not None:
+                # AT THE REAP, and only there. ``_end_the_tree``'s wait is
+                # bounded and can return with the root ALIVE — its own "live
+                # ORPHAN, not a zombie" (#221 review POSIX-6), reachable when
+                # ``hard_kill`` AND the ``proc.kill()`` belt both failed (#202
+                # review win-leg/F3). Measured across the fakes file, 1 of 10
+                # arrivals here has ``returncode is None``
+                # (``test_timeout_with_a_wedged_root_costs_reap_grace_not_forever``),
+                # 0 of 3 with real children. When the root IS reaped a second
+                # ladder is #230's reaped-leader group kill; when it is not, the
+                # caller's grip is the only one left, so it stays armed for the
+                # post-kill drain exactly as ``main`` leaves it. The ``finally``
+                # disarms it either way.
+                abort._finish()
             # The post-kill drain is armed HERE, at the reap: everything the
             # kill released is readable at once, and a holder OUTSIDE the tree
             # will never EOF, so this is the exit drain's idle rule under a
             # tighter cap (#221 review TP4/PI-2).
             state.exited_at = time.monotonic()
+            # ``abort=abort`` is UNCONDITIONAL, unlike the disarm above: clause
+            # (d) keys on ``.aborted``, so an abort on the wedged path fires the
+            # ladder *and* ends this drain. That is #230's rule — an ``abort()``
+            # ends the CALL as fast as it can — and not a new one.
             _drain(
                 readers,
                 state,
                 exit_drain=EXIT_DRAIN_SECONDS,
                 drain_until=state.exited_at + KILL_DRAIN_SECONDS,
+                abort=abort,
             )
             # ``expired.timeout`` IS the ``timeout`` argument — carried through
             # rather than re-read from the parameter because ``wait(timeout=
