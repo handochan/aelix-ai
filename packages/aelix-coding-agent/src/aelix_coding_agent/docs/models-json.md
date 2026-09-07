@@ -172,10 +172,57 @@ The `apiKey` value is resolved at request time and supports three forms:
 
   The same rule covers a `!command` in `auth.json`'s `key`, not just this file.
 
+  **Which shell runs it.** On macOS and Linux it is `sh -c`, as it always was.
+  On Windows Aelix now resolves one instead of assuming `sh` — `$SHELL` (when it
+  names a file that exists) → `sh` on `PATH` → `pwsh` → `powershell` →
+  `%COMSPEC%` → `cmd.exe` — and takes the first that starts. **`sh` is no longer
+  required**, so a `!command` works on a stock install; a box that has an `sh`
+  (Git for Windows, MSYS2, Cygwin) and no `SHELL` set keeps running its
+  `!command`s under it.
+
+  So **write the command for the shell that will run it**. One that only invokes
+  a program — `!op read op://vault/key` — is portable. Shell syntax is not: a
+  POSIX `$VAR` expansion resolves to empty under PowerShell and stays literal
+  under `cmd`, and the resolver takes whatever a command that exited zero
+  printed, so the wrong shell fails by handing you a wrong key rather than by
+  failing.
+
+  PowerShell is started with `-NoProfile`, because a profile that prints
+  anything would otherwise be prepended to your key — measured on PowerShell 7,
+  a banner-printing profile turned the resolved value into
+  `profile-banner\nsk-KEY`. (`bash` has the same hole through `$BASH_ENV`, on
+  the one candidate that can reach it — a `$SHELL` that names a real
+  `bash.exe` — and Aelix does not close it. The counterpart flags would not:
+  measured on bash 3.2.57, 4.4.20, 5.1.4, 5.2.21 and 5.2.37, `--noprofile
+  --norc` STILL sources `$BASH_ENV` and still prepends its output to the
+  key; only `-p` stops that, and it drops the rest of the user's environment
+  too.) The cost is real: a PowerShell start is about half a
+  second against `sh`'s three milliseconds, and the key is re-resolved on every
+  request, so on a box that lands on PowerShell prefer an environment variable —
+  or export `$SHELL` to a real `bash.exe`, **which also tells the bash tool and
+  the AUTO permission gate that your shell is bash**, so commands there are read
+  with the bash grammar rather than prompted for (see ADR-0237 and
+  [#204](https://github.com/handochan/aelix-ai/issues/204)).
+
   On Windows none of this applies: there is no background process group to be
   stopped for, so a helper that reads the console directly can still put a
   prompt there — and if nobody answers it, the command costs the full ten
   seconds. Nobody has watched that happen.
+  PowerShell is also started
+  `-NonInteractive`, and what that adds is narrower than it sounds, covers
+  PowerShell's own prompts only, and is not about that timeout. A plain
+  `Read-Host` never waited: Aelix hands the shell `NUL` for stdin, so the read
+  ends at EOF and returns empty — with its prompt text already prepended to
+  your key. The flag refuses that read outright, so the text stays out
+  (measured on PowerShell 7 on macOS: the prompt text is in the resolved value
+  without the flag and gone with it, and both come back in about half a
+  second). The PowerShell prompt that *does* cost the full ten seconds is the
+  masked kind — `Read-Host -AsSecureString`, `Get-Credential` — which opens the
+  console by name, where `NUL` cannot end it; the flag refuses that one too
+  (read from PowerShell 7's sources, not watched). Windows PowerShell 5.1,
+  which is what a stock box actually resolves, is a different implementation
+  nobody has run any of this against. A helper that opens the console itself —
+  `git`, `ssh`, `gpg` — is still not covered.
 - **Literal** — any other string is used verbatim.
 
 The same indirection applies to each value in a `headers` map.

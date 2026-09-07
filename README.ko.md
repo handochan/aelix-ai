@@ -134,18 +134,24 @@ curl -fsSL https://raw.githubusercontent.com/handochan/aelix-ai/main/install.sh 
   입력을 가로채거나 터미널의 echo를 꺼 놓은 채 끝나는 일이 더는 없습니다 — 둘 다 macOS에서
   쟀고, TUI의 `!cat`이 정확히 그러면서 영영 돌아오지 않았습니다. **마지막 대목은 macOS/Linux
   문장입니다.** Windows에는 뺏을 세션이 없어서 자식이 Aelix를 띄운 콘솔을 그대로 물고 있고,
-  `CONIN$`를 직접 읽는 프로그램(git의 자격 증명 프롬프트)이나 `Read-Host`는 거기서 여전히
+  `CONIN$`를 직접 읽는 프로그램(git의 자격 증명 프롬프트)이나 콘솔을 직접 열어 가리는
+  프롬프트를 띄우는 것(`Read-Host -AsSecureString`, `Get-Credential`)은 거기서 여전히
   프롬프트를 띄우고 명령의 타임아웃을 통째로 태울 수 있습니다. 그 장면을 Windows 콘솔에서
   본 사람은 아직 없습니다 — 고쳐진 것이 아니라 검증되지 않은 것입니다.
   그리고 터미널에 직접 프롬프트를 띄우려는 `!command` 신용 헬퍼는 이제 10초를 끌지 않고
   즉시, 이름 붙은 원인과 함께 실패합니다
   ([#226](https://github.com/handochan/aelix-ai/issues/226)) — macOS와 Linux에서 쟀고,
-  Windows 콘솔 쪽 절반은 이것도 미검증입니다.
+  Windows 콘솔 쪽 절반은 이것도 미검증입니다. Windows에서 `!command`는 이제 `sh`를 아예
+  요구하지 않습니다([#227](https://github.com/handochan/aelix-ai/issues/227)). 그 박스가
+  실제로 가진 셸을 찾아 돌리고, PowerShell은 `-NonInteractive`로 띄우므로 PowerShell
+  프롬프트는 즉시 거절되고 그 프롬프트 문구가 키 안으로 새어 들어갈 수 없습니다 — pwsh 7의
+  스위치에서 추론했고 측정은 macOS에서만 했으며, Windows 콘솔에서는 여전히 아무도 못
+  봤습니다.
 
 즉 스위트 안의 Windows 회귀는 잡히고, 설치 스크립트도 실제로 돌고, AUTO 모드도 더 이상 강등되지
 않으며, 중단된 위임도 타임아웃을 넘긴 도구 명령도 어느 스폰 지점에서든 자기 트리를 데리고
 갑니다. 남은 것은 Windows 호스트에서 사람이 직접 돌려 보는 일입니다 — 위에 적은 `CONIN$` /
-`Read-Host` 프롬프트를 포함해서, 레그의 어떤 테스트도 거기까지 닿지 못합니다. 포팅 현황은
+가리는 프롬프트 경우를 포함해서, 레그의 어떤 테스트도 거기까지 닿지 못합니다. 포팅 현황은
 [#110](https://github.com/handochan/aelix-ai/issues/110)에서 추적합니다 — 그 기준은 스위트
 초록 + `install.ps1` 실행 + #204의 AUTO 모드이고, 셋 다 이제 스위트의 근거 위에서 충족됩니다(위에
 적은 대로 그 근거는 들리는 것보다 좁습니다). 표기와 CI 레그는

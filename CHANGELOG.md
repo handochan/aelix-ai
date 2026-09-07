@@ -418,6 +418,23 @@ and `.../releases/tag/vX` link would 404. Add them with the first pushed tag.
   signal rather than an `ImportError` to bisect. `kill_process_tree` itself is
   unchanged and is still exported from `aelix_ai.utils._process_tree`.
 
+- **`shell_basename` from `aelix_coding_agent.tools.bash`.** The Windows shell
+  chain moved down to `aelix_ai.utils._shell` so a `models.json` / `auth.json`
+  `!command` and the bash tool resolve through one primitive (#227), and
+  `shell_basename` went with it — along with `_command_flag_for`,
+  `_POWERSHELL_NAMES`, `_CMD_NAMES`, `_VERSION_SUFFIX_RE` and the three
+  command-flag constants, all of which were private. Its three in-tree callers
+  (`dialect_for_shell`, `is_classifiable_shell`, and the PowerShell classifier's
+  name normaliser) import the new module directly. It was never in that module's
+  `__all__`, so no supported surface changes; this line exists because it was
+  still importable under a non-underscore name, and an out-of-tree caller that
+  reached for it deserves a written signal rather than an `ImportError` to
+  bisect. There is deliberately no re-export shim — the only lint-clean one
+  would have to add the names to `__all__`, declaring as public a surface that
+  never was; ADR-0238's #227 amendment records the reasoning. `ShellConfig` and
+  `command_flag_for` still answer from the old path, but only because `bash.py`
+  now imports them for its own use; import them from `aelix_ai.utils._shell`.
+
 ### Fixed
 
 - **Pressing Esc no longer kills a helper an extension's command left running.**
@@ -441,6 +458,33 @@ and `.../releases/tag/vX` link would 404. Add them with the first pushed tag.
   unchanged — it is still what you get back, and the command's output is still
   discarded with it. See ADR-0238 and
   [#230](https://github.com/handochan/aelix-ai/issues/230).
+
+- **A `models.json` / `auth.json` `!command` is no longer assumed to run under
+  `sh` on Windows.** It ran `sh -c` on every platform, so on a stock Windows
+  install the spawn failed and the value resolved to nothing — which you saw as
+  `Failed to resolve … from shell command:`, blaming your command for the
+  missing shell. Aelix now runs the shell it can find there, in the order
+  `$SHELL` → `sh` → `pwsh` → `powershell` → `%COMSPEC%` → `cmd.exe`, so a box
+  with an `sh` on `PATH` and no `SHELL` set keeps running `!command`s under it —
+  and **write the command for the shell that will run it**: one that only
+  invokes a program (`!op read op://vault/key`) is portable, one that uses shell
+  syntax is not. PowerShell runs with `-NoProfile`, because a profile that
+  prints a banner would otherwise be prepended to your API key (measured on
+  PowerShell 7), and with `-NonInteractive`, so a prompt PowerShell itself
+  raises — `Read-Host`, `Get-Credential` — is refused outright: its text can no
+  longer end up inside your key, and a masked prompt can no longer sit waiting
+  on a console you cannot see (the text half measured on PowerShell 7, the
+  masked half read from its sources; Windows PowerShell 5.1, which is what a
+  stock box actually resolves, is unmeasured). A helper that opens the console
+  itself — `git`, `ssh`, `gpg` — is still not covered. The shell Aelix starts
+  there is given no console window of its own. See ADR-0238 and
+  [#227](https://github.com/handochan/aelix-ai/issues/227).
+
+- **`auth.json`'s cached `!command` values are trimmed the way `models.json`'s
+  uncached ones always were** (`.strip()`), on every platform: surrounding
+  whitespace, a leading newline and a trailing `\r` or tab no longer survive
+  into the key. Before this, a command that ended in CRLF left a bare carriage
+  return inside an `Authorization` header.
 
 - **`BashOperations.exec` no longer swallows a cancellation of its own task.**
   While tidying up the abort watcher after a command had finished — or after the
@@ -599,7 +643,8 @@ and `.../releases/tag/vX` link would 404. Add them with the first pushed tag.
   session to take away — the containment there is a new process group plus a job
   object — so the command keeps the console Aelix was started from: a program
   that reads its stdin gets EOF from `NUL`, but one that opens `CONIN$` directly
-  (git's credential prompts) or calls `Read-Host` still prompts on that console,
+  (git's credential prompts) or opens the console for a masked prompt
+  (`Read-Host -AsSecureString`, `Get-Credential`) still prompts on that console,
   and an unanswered prompt still costs the command's whole timeout — when there
   is one, since a configured timeout of `0` means unbounded. That half needs a
   human at a Windows console and is **unverified**, not fixed. See ADR-0238 and

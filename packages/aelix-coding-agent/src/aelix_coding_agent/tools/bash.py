@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import re
 import secrets
 import shutil
 import subprocess
@@ -36,6 +35,11 @@ from aelix_ai.utils._process_tree import (
     _ReadState,
     _retained_handle,
     containment_spawn_kwargs,
+)
+from aelix_ai.utils._shell import (
+    ShellConfig,
+    command_flag_for,
+    windows_command_shells,
 )
 
 from aelix_coding_agent.tools._truncate import (
@@ -67,76 +71,6 @@ _TEMP_FILE_PREFIX = "pi-bash"
 # window (full CI, hour-plus compiles).
 _DEFAULT_TIMEOUT = 600.0  # 10 min — generous enough for most builds/installs/tests
 _MAX_TIMEOUT = 3600.0  # 1 hour hard cap on an explicit model-supplied value
-
-
-# How each shell family takes a command STRING. POSIX shells use ``-c``;
-# ``cmd.exe`` accepts only ``/c``; PowerShell is spelled ``-Command`` in full
-# (``powershell.exe`` has other ``-C…`` parameters, so the abbreviation is not
-# reliably unambiguous across 5.1 and 7).
-_POSIX_COMMAND_FLAG = "-c"
-_CMD_COMMAND_FLAG = "/c"
-_POWERSHELL_COMMAND_FLAG = "-Command"
-
-_POWERSHELL_NAMES = frozenset({"pwsh", "powershell"})
-_CMD_NAMES = frozenset({"cmd", "command"})
-
-
-# A trailing version on a shell's filename: ``bash-5.2``, ``zsh-5.9``,
-# ``ksh93``, ``bash-5.2p26``. Anchored on a DIGIT, so it can only ever shorten
-# a name to a shorter one — it cannot invent a match. Removing it is what keeps
-# a version-suffixed genuine bash classifiable; see :func:`shell_basename`.
-_VERSION_SUFFIX_RE = re.compile(r"[-_]?\d[\d.]*[a-z]*\d*$")
-
-
-def shell_basename(shell: str) -> str:
-    """Canonical shell name from a shell path.
-
-    Lower-cased basename with a ``.exe`` extension and any trailing version
-    suffix removed, so ``/usr/local/bin/bash-5.2`` and ``ksh93`` answer to
-    ``bash`` and ``ksh``.
-
-    Splits on BOTH separators rather than deferring to :mod:`os.path`, because
-    the caller may be reasoning about a Windows path while running on POSIX
-    (the permission gate, and the tests that drive it) — ``posixpath.basename``
-    would hand back the whole ``C:\\…\\powershell.exe`` string.
-
-    Stripping the version matters for more than tidiness: a distro or Homebrew
-    ``bash-5.2`` on ``$SHELL`` would otherwise fail to match ``bash`` and the
-    AUTO-mode gate would prompt for every command a real bash was about to run.
-    The strip cannot go the other way and wrongly ADMIT a shell — it only ever
-    maps a name to a shorter one, and ``fish-3.6`` still resolves to ``fish``,
-    which stays out of the classifiable set.
-    """
-
-    name = shell.replace("\\", "/").rsplit("/", 1)[-1].lower()
-    if name.endswith(".exe"):
-        name = name[:-4]
-    return _VERSION_SUFFIX_RE.sub("", name) or name
-
-
-def _command_flag_for(shell: str) -> str:
-    """The ``run this command string`` flag for ``shell``."""
-
-    name = shell_basename(shell)
-    if name in _POWERSHELL_NAMES:
-        return _POWERSHELL_COMMAND_FLAG
-    if name in _CMD_NAMES:
-        return _CMD_COMMAND_FLAG
-    return _POSIX_COMMAND_FLAG
-
-
-@dataclass(frozen=True)
-class ShellConfig:
-    """Pi parity ``getShellConfig()`` result: the shell AND how to invoke it.
-
-    The two are inseparable once Windows is in scope. The spawn site used to
-    hard-code ``-c``, which is correct for every POSIX shell and wrong for
-    ``cmd.exe`` (``/c``) and unreliable for PowerShell (``-Command``), so the
-    flag has to be resolved together with the path rather than assumed.
-    """
-
-    path: str
-    command_flag: str = _POSIX_COMMAND_FLAG
 
 
 def _resolve_shell(
@@ -171,13 +105,13 @@ def _resolve_shell(
 
     if shell_path:
         if Path(shell_path).exists():
-            return ShellConfig(shell_path, _command_flag_for(shell_path))
+            return ShellConfig(shell_path, command_flag_for(shell_path))
         raise ValueError(f"Custom shell path not found: {shell_path}")
     if (platform if platform is not None else sys.platform) == "win32":
         return _resolve_shell_win32(env)
     shell = env.get("SHELL")
     if shell:
-        return ShellConfig(shell, _command_flag_for(shell))
+        return ShellConfig(shell, command_flag_for(shell))
     if Path("/bin/bash").exists():
         return ShellConfig("/bin/bash")
     bash_on_path = shutil.which("bash")
@@ -196,19 +130,16 @@ def _resolve_shell_win32(env: dict[str, str]) -> ShellConfig:
     classifier); everyone else gets PowerShell, which is the native shell but
     which the bash classifier cannot read — see
     :func:`~aelix_coding_agent.builtin.bash_classifier.is_classifiable_shell`.
+
+    The chain itself moved to :mod:`aelix_ai.utils._shell` in #227 so a
+    ``models.json`` / ``auth.json`` ``!command`` resolves through the same one
+    instead of assuming ``sh``; this function is its first candidate.
+    ``include_posix_sh`` is left False here on purpose: ``sh`` IS classifiable,
+    so taking it would read every command on an MSYS box with the bash grammar,
+    and what AUTO mode's gate does there is ADR-0237/#204's decision to make.
     """
 
-    shell = env.get("SHELL")
-    if shell and Path(shell).exists():
-        return ShellConfig(shell, _command_flag_for(shell))
-    for exe in ("pwsh", "powershell"):
-        found = shutil.which(exe, path=env.get("PATH"))
-        if found:
-            return ShellConfig(found, _POWERSHELL_COMMAND_FLAG)
-    comspec = env.get("COMSPEC")
-    if comspec:
-        return ShellConfig(comspec, _command_flag_for(comspec))
-    return ShellConfig("cmd.exe", _CMD_COMMAND_FLAG)
+    return windows_command_shells(env)[0]
 
 
 @dataclass(frozen=True)
@@ -323,10 +254,10 @@ class _LocalBashOperations:
                     # On win32
                     # ``containment_spawn_kwargs`` returns only
                     # ``CREATE_NEW_PROCESS_GROUP``, so the child keeps Aelix's
-                    # console: a real stdin reader gets EOF from ``NUL``, but a
-                    # program that reads ``CONIN$`` directly (git credential
-                    # prompts) or ``Read-Host`` still prompts there and still
-                    # costs the whole timeout — and only when
+                    # console: a real stdin reader gets EOF from ``NUL``, but a program that
+                    # reads ``CONIN$`` directly (git credential prompts) or opens the console
+                    # for a masked prompt (``Read-Host -AsSecureString``, ``Get-Credential``)
+                    # still prompts there and still costs the whole timeout — and only when
                     # ``default_timeout != 0`` (see :data:`_DEFAULT_TIMEOUT`).
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.PIPE,

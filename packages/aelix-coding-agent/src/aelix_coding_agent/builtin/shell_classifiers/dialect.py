@@ -37,7 +37,7 @@ def dialect_for_shell(shell: str) -> Dialect:
     ``shell`` is a path (``/bin/bash``, ``C:\\…\\pwsh.exe``) or a bare name.
 
     Matched against the frozensets that already exist — ``_CLASSIFIABLE_SHELLS``
-    for POSIX, ``_POWERSHELL_NAMES`` / ``_CMD_NAMES`` for the two Windows
+    for POSIX, ``POWERSHELL_NAMES`` / ``CMD_NAMES`` for the two Windows
     families — rather than a fourth spelling of the same names, which is a
     drift bug waiting to happen. Anything unrecognised is ``UNKNOWN`` and never
     ``POSIX``: ``fish`` above all, which is deliberately outside
@@ -46,21 +46,22 @@ def dialect_for_shell(shell: str) -> Dialect:
     from the resolved shell, never from ``sys.platform``).
     """
 
+    from aelix_ai.utils._shell import (  # noqa: PLC0415
+        CMD_NAMES,
+        POWERSHELL_NAMES,
+        shell_basename,
+    )
+
     from aelix_coding_agent.builtin.bash_classifier import (  # noqa: PLC0415
         _CLASSIFIABLE_SHELLS,
-    )
-    from aelix_coding_agent.tools.bash import (  # noqa: PLC0415
-        _CMD_NAMES,
-        _POWERSHELL_NAMES,
-        shell_basename,
     )
 
     name = shell_basename(shell)
     if name in _CLASSIFIABLE_SHELLS:
         return Dialect.POSIX
-    if name in _POWERSHELL_NAMES:
+    if name in POWERSHELL_NAMES:
         return Dialect.POWERSHELL
-    if name in _CMD_NAMES:
+    if name in CMD_NAMES:
         return Dialect.CMD
     return Dialect.UNKNOWN
 

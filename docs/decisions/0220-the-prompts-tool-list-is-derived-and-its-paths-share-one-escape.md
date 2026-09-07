@@ -188,7 +188,8 @@ platform-independent. It was a real, cheap option.
    would be the divergence, and ADR-0216 governs.
 2. **Windows.** The owner raised it and the measurement bore it out. `~` works in the file
    tools on Windows, but `_resolve_shell_win32` resolves the `bash` tool to
-   `pwsh` → `powershell` → `cmd.exe` (`tools/bash.py:176-198`), and none of those expands
+   `pwsh` → `powershell` → `cmd.exe` (the chain #227 moved to
+   `aelix_ai.utils._shell.windows_command_shells`), and none of those expands
    `~` in an argument to an external program. One prompt path *is* handed to bash — the
    `grep -nE 'def (register_|on\()' <api.py>` hint — so a blanket `~` would have created
    a new Windows failure in exchange for a privacy gain that Windows would not get anyway

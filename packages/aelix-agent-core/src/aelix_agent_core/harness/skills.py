@@ -517,8 +517,8 @@ def _validate_description(description: str | None) -> list[str]:
 # match parent directory ""`.
 #
 # They split on BOTH separators rather than deferring to :mod:`os.path`, for
-# the reason tools/bash.shell_basename already gives: the caller may be
-# reasoning about a Windows path while running on POSIX, where
+# the reason aelix_ai.utils._shell.shell_basename already gives: the caller
+# may be reasoning about a Windows path while running on POSIX, where
 # ``posixpath.dirname`` hands back the whole C:\... string — and a case that
 # can only run on the platform we cannot run on is not a regression guard.
 # Forward slashes go through unchanged, so the wire string the parity tests

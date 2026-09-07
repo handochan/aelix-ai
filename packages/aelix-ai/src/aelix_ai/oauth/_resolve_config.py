@@ -4,9 +4,14 @@ Stored configuration values in Pi's ``auth.json`` can use two
 indirection forms:
 
 - ``!<command>``: the rest of the string is executed as a shell
-  command via ``sh -c <command>``; the trimmed stdout becomes the
-  resolved value. Per-command results are cached so repeated reads do
-  not re-fork the shell.
+  command — ``sh -c <command>`` on POSIX, and on win32 the first shell
+  of the resolved chain that spawns (#227); the trimmed stdout becomes
+  the resolved value. Per-command results are cached so repeated reads
+  do not re-fork the shell. Pi runs it under a POSIX shell if one is
+  there and the native shell otherwise, which is the same shape; the
+  divergence is that Aelix reaches PowerShell before ``cmd.exe`` (its
+  own #104 order) and hardens both (ADR-0235 asks for no ADR, but a
+  parity-pinned header must not imply parity it no longer has).
 - ``<env-name>``: when the literal string matches an environment
   variable name, its value is substituted in. If the env var is unset,
   the literal value is returned verbatim (Pi behavior).
@@ -20,19 +25,28 @@ the env-var NAME as the API key.
 from __future__ import annotations
 
 import contextlib
+import errno
 import os
 import signal
 import subprocess
 import threading
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import cast
+from typing import Any, cast
 
 from aelix_ai.utils._process_tree import (
     ProcessTree,
     _resolve_platform,
     _retained_handle,
     containment_spawn_kwargs,
+)
+from aelix_ai.utils._shell import (
+    CMD_NAMES,
+    POWERSHELL_NAMES,
+    ShellConfig,
+    shell_basename,
+    windows_command_shells,
 )
 
 # Pi's ``execSync`` enforces an implicit ~1 MB ``maxBuffer`` (throws
@@ -90,6 +104,12 @@ class _Failure:
     #: overflow keeps today's ``-1``, which renders as ``SIGHUP`` and would
     #: otherwise name a second signal next to the one in the reason.
     returncode: int | None = None
+    #: The argv that actually SPAWNED, so a rendered failure names the shell
+    #: that ran instead of the ``sh`` this site used to assume (#227). Set to
+    #: the first candidate before the loop, so a chain where nothing spawns
+    #: still names one. A ``str`` is the raw command line the ``cmd`` family
+    #: needs; see :func:`_shell_argv`.
+    argv: list[str] | str | None = None
 
 
 class _StoppedByTerminal(subprocess.CalledProcessError):
@@ -109,7 +129,9 @@ class _StoppedByTerminal(subprocess.CalledProcessError):
     to handle.
     """
 
-    def __init__(self, returncode: int, cmd: list[str], reason: str) -> None:
+    def __init__(
+        self, returncode: int, cmd: list[str] | str, reason: str
+    ) -> None:
         super().__init__(returncode, cmd)
         self.reason = reason
 
@@ -158,16 +180,211 @@ def _stopped_by_the_terminal(
     return None
 
 
+#: What a ``!command``'s PowerShell is started with, and why each half is here.
+#: ``-NoProfile`` is correctness: measured on PowerShell 7, a profile that
+#: writes to stdout is PREPENDED to the resolved key (``profile-banner\nsk-KEY``).
+#: ``-NonInteractive`` is NOT about timing — ``stdin=DEVNULL`` (this site's
+#: shape since ADR-0140; the bash tool's since #222) already ends a plain
+#: ``Read-Host``, measured 0.652 s — it is about the three things
+#: stdin cannot reach: the prompt TEXT landing inside the key (measured,
+#: ``'give me a key: \nGOT:'`` against ``'GOT:'``), the masked read
+#: (``Read-Host -AsSecureString``, ``Get-Credential``) which opens ``CONIN$``
+#: with ``CreateFile`` and so costs the whole ``_COMMAND_TIMEOUT``, and the
+#: prompt WRITE to ``CONOUT$`` that redirection cannot capture. The last two are
+#: read from PowerShell 7.6.5's ConsoleHost sources, not measured, and Windows
+#: PowerShell 5.1 — what a stock box actually lands on — is a different
+#: implementation nobody has run this against.
+_POWERSHELL_HARDENING = ("-NoProfile", "-NonInteractive")
+
+#: ``/d`` is ``-NoProfile``'s counterpart for ``cmd``'s registry ``AutoRun``;
+#: ``/s`` makes its quote stripping deterministic. Both are reasoned from
+#: ``cmd /?``'s documented switches, NOT measured on win32.
+_CMD_HARDENING = ("/d", "/s")
+
+#: ``subprocess.CREATE_NO_WINDOW``, spelled as a literal for the same reason
+#: ``CREATE_NEW_PROCESS_GROUP`` is one: the name does not exist off Windows
+#: (measured: ABSENT on darwin) and the win32 arm of these tests is read there.
+CREATE_NO_WINDOW = 0x0800_0000
+
+#: Spawn failures that mean "this candidate is not a runnable shell", so the
+#: chain moves on. Classified by ERRNO and not by exception class: CPython maps
+#: a win32 spawn failure to an errno through ``PC/errmap.h`` BEFORE ``OSError``'s
+#: subclass table is consulted, and that table has no ``ENOEXEC`` and no
+#: ``EINVAL`` entry — so a ``sh.cmd`` / ``pwsh.bat`` / non-PE ``$SHELL``
+#: (``ERROR_BAD_EXE_FORMAT`` 193, with 11 and 188..202) and everything falling
+#: to ``errmap.h``'s ``default: return EINVAL`` arrive as a BARE ``OSError``.
+#: Catching by class would abort the chain before the ``cmd.exe`` floor and
+#: leave ``!command`` exactly as dead as #227 found it.
+#:
+#: ``EMFILE``/``ENOMEM``/``EBADF`` are deliberately outside it: they are
+#: process-resource failures the next candidate cannot fix, so they keep
+#: today's ``None`` after one spawn. A ``winerror`` allowlist was rejected —
+#: ``exc.winerror`` fails the host pyright leg while ``exc.errno`` is clean on
+#: both. ``ELOOP`` is inert on win32 and correct on POSIX.
+_NOT_A_RUNNABLE_SHELL = frozenset(
+    {
+        errno.ENOENT,
+        errno.ENOTDIR,
+        errno.EACCES,
+        errno.EPERM,
+        errno.ENOEXEC,
+        errno.ELOOP,
+        errno.EINVAL,
+    }
+)
+
+
+def _shell_argv(shell: ShellConfig, cmd: str) -> list[str] | str:
+    """How THIS caller invokes one resolved shell.
+
+    The family is the PRIMITIVE's answer; the hardening is this caller's policy.
+    :mod:`aelix_ai.utils._shell` owns which shell a machine has, and
+    ``tools/bash.py`` — which runs the user's own interactive shell — must keep
+    their PowerShell profile where a ``!command`` must not, so the two flag
+    tuples above stay here.
+
+    The family is read with ``shell_basename`` against ``POWERSHELL_NAMES`` /
+    ``CMD_NAMES``, the same three names ``dialect_for_shell`` imports, rather
+    than a second table. A literal set here would be that second copy and the
+    drift is measured: ``{"pwsh", "powershell"}`` against ``Path(p).stem.lower()``
+    diverges on 18 of 66 candidate paths — a ``$SHELL`` of ``pwsh-7.5.0.exe``
+    would take ``-Command`` with NO ``-NoProfile`` (the profile banner inside the
+    key) and ``command.com`` would take ``/d`` beside a POSIX ``-c``. Dispatching
+    on ``shell.command_flag`` agrees on every candidate the primitive produces
+    today, but rests on an invariant :class:`ShellConfig` does not enforce.
+
+    The ``cmd`` family returns a RAW COMMAND LINE. ``cmd /?``'s rule 2 strips one
+    leading and one trailing quote and ``cmd`` implements no ``\\"`` at all, so
+    :func:`subprocess.list2cmdline`'s rendering would hand the child literal
+    backslash-quotes; the PowerShell family keeps the list because on win32 the
+    .NET host CRT-parses the command line back into argv first, where ``\\"`` IS
+    the documented escape. This branch is win32-only — POSIX's "a ``str`` is the
+    program name" is never reached — and CPython's win32 ``_execute_child``
+    passes a ``str`` to ``CreateProcess`` verbatim. The shell path is QUOTED: a
+    spaced ``%COMSPEC%`` or ``$SHELL`` is what a bare f-string breaks.
+
+    ``command.com`` is NOT covered by the ``cmd`` row: ``shell_basename`` strips
+    only ``.exe``, so it takes the POSIX branch with the ``-c`` it cannot use.
+    That is pre-existing (#104), neither introduced nor fixed here.
+    """
+
+    name = shell_basename(shell.path)
+    if name in POWERSHELL_NAMES:
+        return [shell.path, *_POWERSHELL_HARDENING, shell.command_flag, cmd]
+    if name in CMD_NAMES:
+        hardening = " ".join(_CMD_HARDENING)
+        return f'"{shell.path}" {hardening} {shell.command_flag} "{cmd}"'
+    return [shell.path, shell.command_flag, cmd]
+
+
+def _shell_argv_candidates(
+    cmd: str, *, platform: str | None = None, env: Mapping[str, str] | None = None
+) -> list[list[str] | str]:
+    """Every shell this machine might run ``cmd`` under, best first.
+
+    POSIX is byte-identical to what this site has always spawned: one candidate,
+    ``["sh", "-c", cmd]``, and no PATH probe. The list is longer than one only on
+    win32, where ``sh`` is not a given:
+
+    ===  ================  ==========================================
+    \\#    candidate         invocation
+    ===  ================  ==========================================
+    1    ``$SHELL``        ``[path, flag, cmd]`` — only when it names an
+                           existing file, as the bash tool honours it
+    2    ``sh`` on PATH    ``[path, "-c", cmd]`` — keeps today's behaviour on
+                           a Windows box that has one and no ``$SHELL`` set
+                           (Git-for-Windows, MSYS2, Cygwin); step 1 still wins
+    3    ``pwsh``          ``[path, *_POWERSHELL_HARDENING, "-Command", cmd]``
+    4    ``powershell``    same
+    5    ``%COMSPEC%``     a raw command line, ``"<path>" /d /s /c "<cmd>"``
+    6    ``cmd.exe``       same — the floor, and the only candidate needing
+                           no PATH probe
+    ===  ================  ==========================================
+
+    Steps 1 and 3-6 are ``_resolve_shell_win32``'s chain unchanged (#104), so one
+    machine gets one shell answer for both callers; step 2 is the only difference
+    and is deliberately not taken by the bash tool (ADR-0237/#204).
+
+    ``platform`` and ``env`` are resolution seams, spelled like
+    :func:`_stopped_by_the_terminal`'s and read through the same
+    :func:`_resolve_platform`. ``env`` is a resolution seam ONLY — it is never
+    passed to :class:`subprocess.Popen`, so the child still inherits
+    :data:`os.environ`.
+    """
+
+    if _resolve_platform(platform) != "win32":
+        return [["sh", "-c", cmd]]
+    return [
+        _shell_argv(shell, cmd)
+        for shell in windows_command_shells(
+            os.environ if env is None else env, include_posix_sh=True
+        )
+    ]
+
+
+def _spawn_kwargs(platform: str | None = None) -> dict[str, Any]:
+    """The containment kwargs, plus this site's own win32 console flag.
+
+    ``CREATE_NO_WINDOW`` is OR'd in HERE and not inside
+    :func:`containment_spawn_kwargs`. Pi passes ``windowsHide: true`` at exactly
+    this spawn and Node's default is false; CPython gives it for free only for
+    ``shell=True`` (its single ``STARTF_USESHOWWINDOW``/``SW_HIDE`` assignment
+    sits inside ``_execute_child``'s ``if shell:`` branch) and this site spawns a
+    list argv. Before #227 the win32 spawn of ``sh`` failed before an image
+    loaded, so the question never arose; now a console-subsystem shell really is
+    spawned, and ``CreateProcess`` gives a console child a NEW console when the
+    parent has none — a ``pythonw``-shaped host is a shape this repo already
+    defends against.
+
+    It must not move into the shared helper: three of that helper's other six
+    call sites (``extensions/subprocess_hooks``, ``rpc/rpc_client``, and
+    ``aelix_agents/print_channel``, whose tree the reaper soft-kills) end their
+    trees with ``ProcessTree.soft_kill()`` -> ``ctrl_break()``, which needs a
+    shared console, so the flag there would silently demote three teardowns to
+    hard kills. The other three (``tools/bash.py``, ``tools/_subprocess.py``,
+    ``_process_tree.run_contained``) hard-kill only, as this site's ladder does.
+    The price is that a win32 console prompt becomes certainly unanswerable,
+    which is what :func:`_run_shell_command`'s #226 clause already says.
+    **What Windows does with the flag is reasoned, not measured.**
+    """
+
+    kwargs = containment_spawn_kwargs(platform=platform)
+    if _resolve_platform(platform) == "win32":
+        kwargs["creationflags"] |= CREATE_NO_WINDOW
+    return kwargs
+
+
 def _run_shell_command(
-    cmd: str, *, failure: _Failure | None = None
+    cmd: str,
+    *,
+    failure: _Failure | None = None,
+    platform: str | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> tuple[int, str] | None:
-    """Run ``sh -c cmd`` with a wall-clock timeout AND a ~1 MB output cap.
+    """Run ``cmd`` under a resolved shell, with a timeout AND a ~1 MB cap.
 
     Mirrors Pi's ``execSync`` (``timeout: 10000`` + the implicit ~1 MB
     ``maxBuffer`` that throws ``ENOBUFS`` on overflow). Returns
     ``(returncode, stdout_text)`` or :data:`None` on a spawn error,
     timeout, or output-cap overflow — so a runaway producer can no longer
     OOM/hang the host. ``stderr`` is discarded (only stdout is consumed).
+
+    THE SHELL IS RESOLVED, NOT ASSUMED (#227). This used to spawn ``sh -c`` on
+    every platform, so on a stock Windows box — which has no ``sh`` — the spawn
+    raised ``FileNotFoundError`` in about a millisecond and the value resolved
+    to nothing, reported as ``Failed to resolve … from shell command:``, which
+    blames the user's command for a shell that was never there. The single
+    ``Popen`` is a loop over :func:`_shell_argv_candidates` now: POSIX still has
+    exactly one candidate and spawns byte-identically, while win32 falls through
+    to the next candidate when this one is missing, not executable, or **not a
+    loadable program image** — classified by ERRNO, never by exception class,
+    for the reason :data:`_NOT_A_RUNNABLE_SHELL` gives. The CONSTRUCTOR is what
+    raises, so no command ran (POSIX reaps the failed fork inside
+    ``Popen.__init__``; win32's ``CreateProcess`` fails atomically) and falling
+    through cannot double-run anything. A malformed argv (``ValueError``) and
+    every other spawn error keep today's ``None`` after one spawn, and a chain
+    where every candidate fails still answers ``None`` — today's answer, not a
+    new one. Everything after the spawn is untouched.
 
     CONTAINMENT (#202, ADR-0238). ``proc.kill()`` reached the shell and nothing
     else: measured on ``main`` 39549b9, ``sh -c "a | b"`` keeps every stage of
@@ -209,28 +426,53 @@ def _run_shell_command(
     always the leader's child there. On win32 the detector is inert (there is
     no ``WUNTRACED`` and no background process group) and a console reader can
     still prompt — unanswered, for the full timeout. Nobody has watched that.
+    #227 narrows that last sentence for PowerShell's OWN prompts only: the
+    PowerShell candidates run ``-NonInteractive``, so a ``Read-Host`` is refused
+    rather than left prompting and its prompt text can no longer land inside the
+    key. A helper that opens the console itself (git, ssh, gpg) is untouched,
+    and Windows PowerShell 5.1 — what a stock box actually resolves — is
+    unmeasured.
     """
 
-    try:
-        # The cast is about the CHECKER. ``containment_spawn_kwargs()`` is a
-        # ``dict[str, Any]``, and unpacking one costs pyright its ability to
-        # discriminate ``Popen``'s text/bytes overloads: it settles on
-        # ``Popen[str]`` (measured — ``text=False`` does not steer it back), and
-        # the byte-counting reader below would then read as a type error instead
-        # of as the output cap it is. At runtime ``stdout=PIPE`` with no
-        # ``text``/``encoding`` is bytes, which is what the cast asserts.
-        proc = cast(
-            "subprocess.Popen[bytes]",
-            subprocess.Popen(  # noqa: S602 — intentional Pi-parity shell exec.
-                ["sh", "-c", cmd],
-                stdout=subprocess.PIPE,
-                stderr=subprocess.DEVNULL,
-                stdin=subprocess.DEVNULL,
-                **containment_spawn_kwargs(),
-            ),
-        )
-    except (OSError, ValueError):
-        return None
+    candidates = _shell_argv_candidates(cmd, platform=platform, env=env)
+    if failure is not None:
+        # Before the loop, so a chain where NOTHING spawns still names a shell.
+        failure.argv = candidates[0]
+    proc: subprocess.Popen[bytes] | None = None
+    for argv in candidates:
+        try:
+            # The cast is about the CHECKER. ``_spawn_kwargs()`` is a
+            # ``dict[str, Any]``, and unpacking one costs pyright its ability to
+            # discriminate ``Popen``'s text/bytes overloads: it settles on
+            # ``Popen[str]`` (measured — ``text=False`` does not steer it back),
+            # and the byte-counting reader below would then read as a type error
+            # instead of as the output cap it is. At runtime ``stdout=PIPE`` with
+            # no ``text``/``encoding`` is bytes, which is what the cast asserts.
+            #
+            # ``_spawn_kwargs()`` takes NO argument even when ``platform`` was
+            # injected: an injected platform must never reach a real POSIX spawn,
+            # where ``Popen(creationflags=…)`` raises ``ValueError`` (measured).
+            proc = cast(
+                "subprocess.Popen[bytes]",
+                subprocess.Popen(  # noqa: S602 — intentional Pi-parity shell exec.
+                    argv,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    stdin=subprocess.DEVNULL,
+                    **_spawn_kwargs(),
+                ),
+            )
+        except ValueError:
+            return None  # a malformed argv is not a verdict on the shell
+        except OSError as exc:
+            if exc.errno in _NOT_A_RUNNABLE_SHELL:
+                continue  # not a runnable shell — try the next candidate
+            return None  # today's answer for every other spawn error
+        if failure is not None:
+            failure.argv = argv
+        break
+    if proc is None:
+        return None  # nothing in the chain spawned — today's answer
 
     # Attached before anything is read, because on win32 only descendants
     # created AFTER the job assignment inherit membership. ``kill_on_close``
@@ -356,7 +598,7 @@ def resolve_config_value(
             # Preserve the raise-on-failure contract the auth.json cascade
             # relied on (was ``check=True``); a timeout or output-cap
             # overflow now fails here instead of hanging / OOMing.
-            argv = ["sh", "-c", cmd]
+            argv = failure.argv or ["sh", "-c", cmd]
             if failure.reason is not None:
                 # The stop branch, and the only one that changes the returncode:
                 # ``-9`` is the ``SIGKILL`` that ended it, where today's ``-1``
@@ -370,7 +612,14 @@ def resolve_config_value(
             raise subprocess.CalledProcessError(
                 result[0] if result is not None else -1, argv
             )
-        out = result[1].rstrip("\n")
+        # ``.strip()`` and not ``rstrip("\n")`` — Pi's ``.trim()``, and what
+        # :func:`_execute_command_uncached` already did. A CROSS-PLATFORM change:
+        # it also removes a leading newline and surrounding spaces and tabs the
+        # old spelling kept. Under a shell whose ``echo`` emits CRLF — cmd.exe
+        # and PowerShell both do — the old spelling left a bare carriage return
+        # inside an ``Authorization`` header (measured: cached ``'sk-abc\r'``
+        # against uncached ``'sk-abc'``).
+        out = result[1].strip()
         if cache is not None:
             cache[cmd] = out
         return out
@@ -404,8 +653,9 @@ def _execute_command_uncached(
 ) -> str | None:
     """Pi parity: ``executeCommandUncached`` → ``executeWithDefaultShell``.
 
-    Runs ``value[1:]`` via ``sh -c`` and returns the trimmed stdout, or
-    :data:`None` on a non-zero exit, timeout, output-cap overflow, OS
+    Runs ``value[1:]`` under the resolved shell — ``sh -c`` on POSIX, the first
+    candidate of the win32 chain that spawns (#227) — and returns the trimmed
+    stdout, or :data:`None` on a non-zero exit, timeout, output-cap overflow, OS
     error, or empty output. Never raises (matches Pi's
     ``try { execSync } catch { undefined }``).
 

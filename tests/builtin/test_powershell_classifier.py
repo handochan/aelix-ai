@@ -353,7 +353,7 @@ def test_tables_are_canonical() -> None:
     is why it is asserted rather than assumed for verb-noun names.
     """
 
-    from aelix_coding_agent.tools.bash import shell_basename
+    from aelix_ai.utils._shell import shell_basename
 
     keys = (
         _PS_ALLOW

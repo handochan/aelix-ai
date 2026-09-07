@@ -1,6 +1,6 @@
 # 0238. The kill reached the child, and the tree is what had to die
 
-Status: Accepted (2026-09-05; **#220 amendment 2026-09-05** — adopted at the four `aelix_agents` sites: the print-channel spawn, the reaper's win32 legs, `rpc_channel`'s `_reap`/`_eager_abort`, and `print_mode`'s handler block; **#221 amendment 2026-09-05** — the three `subprocess.run(timeout=)` sites adopt `run_contained`; **#222 amendment 2026-09-05** — the two tool spawn sites adopt it: `_LocalBashOperations.exec` and `run_cancellable`; **#234 amendment 2026-09-06** — the bash tool's watcher teardown awaits through `asyncio.wait`, so a cancellation of the task running `exec` is no longer swallowed there; **#226 amendment 2026-09-06** — `!command` keeps `process_group=0`, for a corrected reason, and a terminal stop is now detected and named; **#230 amendment 2026-09-08** — an `abort()` that lands after the root's reap kills nothing: the handle is finished at the reap and the abort ends the call's drain instead; **#232 amendment 2026-09-08** — the bash tool's success path drains on the idle rule under a cap instead of to EOF)
+Status: Accepted (2026-09-05; **#220 amendment 2026-09-05** — adopted at the four `aelix_agents` sites: the print-channel spawn, the reaper's win32 legs, `rpc_channel`'s `_reap`/`_eager_abort`, and `print_mode`'s handler block; **#221 amendment 2026-09-05** — the three `subprocess.run(timeout=)` sites adopt `run_contained`; **#222 amendment 2026-09-05** — the two tool spawn sites adopt it: `_LocalBashOperations.exec` and `run_cancellable`; **#234 amendment 2026-09-06** — the bash tool's watcher teardown awaits through `asyncio.wait`, so a cancellation of the task running `exec` is no longer swallowed there; **#226 amendment 2026-09-06** — `!command` keeps `process_group=0`, for a corrected reason, and a terminal stop is now detected and named; **#230 amendment 2026-09-08** — an `abort()` that lands after the root's reap kills nothing: the handle is finished at the reap and the abort ends the call's drain instead; **#232 amendment 2026-09-08** — the bash tool's success path drains on the idle rule under a cap instead of to EOF; **#227 amendment 2026-09-08** — on win32 a `!command` resolves a shell instead of assuming `sh`, and the win32 chain is now one primitive in `aelix_ai`)
 Date: 2026-09-05
 Supersedes/relates: ADR-0197 (the `aelix_agents` reaper, whose finding I2 —
 "a `/proc` walk and not `os.killpg`" — this ADR **reconciles rather than
@@ -477,6 +477,17 @@ against its `< 2.0` bound. The bound is unchanged.
   the amendment under "Consequences" below. What it did NOT do: say anything in
   the result when the drain ends on the cap rather than on EOF — Pi says nothing
   either, and whether Aelix should is an open product question.
+- **#227 — the `!command` shell on win32: landed 2026-09-08.** This site spawned
+  `sh -c` on every platform, so on a stock Windows box the spawn failed in about
+  a millisecond and the value resolved to nothing — reported as `Failed to
+  resolve … from shell command:`, which blames the user's command for a shell
+  that was never there. `_run_shell_command`'s single `Popen` is a loop over
+  `_shell_argv_candidates` now, and the win32 chain itself moved DOWN into
+  `aelix_ai.utils._shell` as `windows_command_shells`, which
+  `tools/bash.py`'s `_resolve_shell_win32` now returns the first element of.
+  Named here by function for the reason the bullets above give. What it cost —
+  the chain, the hardening, the console flag and a cross-platform change to the
+  cached trim — is in the amendment under "Consequences" below.
 - **The hook shell's terminal stop — still open.**
   `extensions/subprocess_hooks.py` is this ADR's other `process_group=0` site
   and takes the same `SIGTTIN`/`SIGTTOU` stop. #226's detector is synchronous
@@ -585,6 +596,116 @@ empty, so only the group kill of the paragraph below reaches anything there.
   (`:151-154` of this file), which is why the print child's tree asks for
   `kill_on_close` at all — it is that child's only win32 analogue of the Linux
   `pdeathsig` its spawn already installs.
+- **What #227's adoption added (amendment, 2026-09-08).** The chain, best
+  first, is `$SHELL` when it names a file that exists → `sh` on `PATH` → `pwsh`
+  → `powershell` → `%COMSPEC%` → `cmd.exe`, and the first candidate that SPAWNS
+  wins; a candidate that is missing, not executable, or **not a loadable program
+  image** is skipped, and a chain where every candidate fails still answers the
+  `None` this site answered before. `sh` sits at step 2 and not lower because a
+  `!command` was written for `sh` — it was hard-coded — so a Windows box with
+  an `sh` on `PATH` and no `SHELL` set (Git for Windows, MSYS2, Cygwin) keeps
+  running it under the shell it was written for; a `$SHELL` that names an
+  existing file still wins at step 1, because it is the user's explicit choice.
+  That step is the ONE difference between the two
+  callers: `_resolve_shell_win32` passes `include_posix_sh=False`, because `sh`
+  is classifiable and taking it there would flip AUTO mode's dialect on every
+  MSYS box, which is ADR-0237/#204's decision and not this one's. #227 is
+  therefore what makes one environment variable govern two surfaces: exporting
+  `$SHELL` to a real `bash.exe` picks the `!command` shell AND tells the
+  permission gate to read commands with the bash grammar, and the guide states
+  the coupling in the same clause as the advice. The same call site carries one
+  more consequence for the bash tool: the `PATH` probes are skipped when the key
+  is absent, so a `spawn_hook` that hands the tool an env with no `PATH` now
+  yields `%COMSPEC%`/`cmd.exe` rather than falling back to the host `PATH` and
+  finding `pwsh`.
+
+  The three coding-agent consumers (`dialect_for_shell`,
+  `is_classifiable_shell`, the PowerShell classifier's name normaliser) import
+  the primitive **directly**. There is no compat re-export in `tools/bash.py`:
+  the naive one is 6× `F401` plus an `I001` under this repo's own ruff config
+  and `ruff check .` is a CI job, and moving `ShellConfig` down with the rest
+  makes every surviving import in that file a used one — measured `All checks
+  passed!`, with 88 lines out of `bash.py` against 19 back in. One import site
+  per name, and no shim to drift.
+
+  The hardening is the CALLER's, not the primitive's: `tools/bash.py` runs the
+  user's interactive shell and must keep their profile, while a `!command` must
+  not. `-NoProfile` is correctness — measured on PowerShell 7, a profile that
+  writes to stdout is prepended to the resolved key (`profile-banner\nsk-KEY`).
+  `-NonInteractive` narrows #226's win32 clause **for PowerShell's own prompts
+  only**, and not by shortening a plain `Read-Host`, which `stdin=DEVNULL`
+  already ends — the shape this site has had since ADR-0140, and the bash
+  tool's since #222 (measured 0.652 s against a ~0.45 s no-prompt baseline).
+  What it buys is the prompt TEXT staying out of the key (measured: `'give me a
+  key: \nGOT:'` against `'GOT:'`), the masked read (`Read-Host
+  -AsSecureString`, `Get-Credential`'s console path) that opens `CONIN$` with
+  `CreateFile` and so costs the whole timeout, and the prompt WRITE to `CONOUT$`
+  that redirection cannot capture. A helper that opens the console itself (git,
+  ssh, gpg) is untouched.
+
+  The win32 child also gets `CREATE_NO_WINDOW`, OR'd in **at this call site
+  only**. Pi passes `windowsHide: true` at exactly this spawn and Node's default
+  is false; CPython gives it for free only for `shell=True` and this site spawns
+  a list argv; and before #227 the win32 spawn of `sh` failed before an image
+  loaded, so the question never arose. It must not move into
+  `containment_spawn_kwargs`: three of that helper's other six call sites
+  (`extensions/subprocess_hooks`, `rpc/rpc_client`, and
+  `aelix_agents/print_channel`, whose tree the reaper soft-kills) end their trees
+  with `soft_kill()` → `ctrl_break()`, which needs the shared console this site
+  never uses, so the flag there would silently demote three teardowns to hard
+  kills. A shared console is also the shape this ADR rejected on POSIX, where a
+  `setsid` helper was measured stealing the line the user had typed; a helper
+  opening `CONIN$` on Aelix's console is that theft. The price is that a win32
+  console prompt becomes certainly unanswerable — which is what the
+  `-NonInteractive` clause above already says. Pi hides its configured-shell
+  spawn but not its `execSync` fallback; Aelix hides every win32 candidate
+  (stricter, and ADR-0235 permits it).
+
+  `resolve_config_value`'s trim becomes `.strip()`, which is Pi's `.trim()` and
+  what its own sibling resolver already did. This is a **cross-platform** change,
+  not a Windows one: it also removes a leading newline and surrounding spaces
+  and tabs that `rstrip("\n")` kept, so an existing POSIX user's cached value
+  can change. It is here because this platform makes the bug reachable —
+  measured, a command ending in CRLF cached `'sk-abc\r'` where the uncached
+  resolver answered `'sk-abc'`, i.e. a bare carriage return inside an
+  `Authorization` header.
+
+  The cost is real and is not a regression only because nothing worked there
+  before: `get_api_key_and_headers` is the harness's per-request callback and
+  the registry path is deliberately uncached, so a box that lands on PowerShell
+  pays about half a second per model turn (pwsh 7.6.5, 455 ms median against
+  `sh`'s 3.2 ms; 5.1 is typically slower). Split out as
+  [#240](https://github.com/handochan/aelix-ai/issues/240), with
+  [#241](https://github.com/handochan/aelix-ai/issues/241) for
+  `shutil.which`'s CWD-first search now deciding which program runs a
+  credential command,
+  [#242](https://github.com/handochan/aelix-ai/issues/242) for
+  `resolve_config_value` caching an empty value where its sibling returns
+  `None`, and [#243](https://github.com/handochan/aelix-ai/issues/243) for the
+  bash tool's own spawn letting a WinError 193 escape — A.9's root cause at a
+  different site, pre-existing on `main`.
+
+  **The reasoned-not-measured set, stated so it is not read as evidence.**
+  Nothing on win32 was measured on the machine this landed from. `/d` and `/s`
+  are read from `cmd /?`. The two quoting conventions are reasoned from the same
+  place: the PowerShell family keeps a list because the .NET host CRT-parses the
+  command line back into argv before PowerShell's parser sees it, so
+  `list2cmdline`'s `\"` is the documented escape, while the `cmd` family gets a
+  RAW command line because `cmd` implements no `\"` at all — the second is a
+  deliberate divergence from `subprocess`'s default rendering. The win32 console
+  behaviour of `CREATE_NO_WINDOW` is reasoned from `CreateProcess`. The
+  `ERROR_BAD_EXE_FORMAT` → `ENOEXEC` mapping is read from CPython's
+  `PC/errmap.h` and `Objects/exceptions.c` (the errno is resolved before
+  `OSError`'s subclass table, and that table has no `ENOEXEC` and no `EINVAL`
+  entry, which is why the fall-through is an errno allowlist rather than an
+  exception tuple). And the profile measurement is pwsh 7 on darwin; Windows
+  PowerShell 5.1, which is what a stock box actually resolves, is a different
+  implementation nobody has run any of this against. The Windows evidence is CI:
+  one case pins that the `sh` candidate still resolves (the leg has Git's
+  `sh.exe`), and two more force a PowerShell and a `cmd.exe` argv there and read
+  the value back. Concretely that is this branch's windows-latest legs
+  (py3.11 and py3.12), whose UserWarning lines name the shell each of those
+  three cases actually resolved.
 - **A decision taken in the owner's absence, recorded here so it can be
   reversed.** #220 also stopped `print_mode`'s signal path from calling
   `sys.exit` inside a task: it records `128 + sig` and lets `run_print_mode`
@@ -939,8 +1060,9 @@ empty, so only the group kill of the paragraph below reaches anything there.
   no session to take away** — `containment_spawn_kwargs` returns only
   `CREATE_NEW_PROCESS_GROUP` — so the child keeps Aelix's console. A real stdin
   reader gets EOF from `NUL` there, but a program that reads `CONIN$` directly
-  (git's credential prompts) or `Read-Host` still prompts on that console and
-  still costs the whole timeout, and only when `default_timeout != 0`
+  (git's credential prompts) or opens the console for a masked prompt
+  (`Read-Host -AsSecureString`, `Get-Credential`) still prompts on that console
+  and still costs the whole timeout, and only when `default_timeout != 0`
   (`bash.py` documents `0` as Pi's unbounded mode). That half needs a human at a
   Windows console: it is **unverified**, and the README says so rather than
   claiming it fixed. `run_cancellable` takes no `stdin=` change — `rg` and `fd`

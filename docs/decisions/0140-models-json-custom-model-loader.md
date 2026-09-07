@@ -1,6 +1,10 @@
 # 0140. models.json Custom-Model Loader + Config-Value Auth Indirection
 
-Status: Accepted
+Status: Accepted (**#227 amendment 2026-09-08** — the `!command` half of this
+ADR's `apiKey` contract no longer assumes `sh`: on win32 it resolves a shell
+chain, and `resolve_config_value`'s trim becomes `.strip()` on every platform,
+matching `resolve_config_value_uncached`. Both are recorded in ADR-0238, which
+owns that spawn site)
 Date: 2026-06-20
 Pi pin: `earendil-works/pi@734e08edf82ff315bc3d96472a6ebfa69a1d8016` (no advance)
 

@@ -73,8 +73,9 @@ while the filesystem lookup needs native ones. For the name and the directory:
 whatever separator the filesystem in question uses — and the wire line names a
 directory the model is expected to open, so it must stay openable on the machine
 it names. Both helpers now read either separator, on every platform, which is
-what `tools/bash.shell_basename` already does and for the same stated reason:
-the caller may be reasoning about a Windows path while running on POSIX.
+what `aelix_ai.utils._shell.shell_basename` already does and for the same
+stated reason: the caller may be reasoning about a Windows path while running
+on POSIX.
 
 For the ignore path: **yes**, and it is the only place the split exists.
 Subtracting `root` from `target` is a filesystem question — on Windows it has to

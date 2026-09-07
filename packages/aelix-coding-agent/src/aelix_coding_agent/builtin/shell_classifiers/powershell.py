@@ -636,7 +636,7 @@ def _ps_basename(raw: str) -> str:
     name PowerShell itself would not resolve either.
     """
 
-    from aelix_coding_agent.tools.bash import shell_basename  # noqa: PLC0415
+    from aelix_ai.utils._shell import shell_basename  # noqa: PLC0415
 
     text = raw.replace("`", "").strip()
     if len(text) >= 2 and text[0] == text[-1] and text[0] in "'\"":

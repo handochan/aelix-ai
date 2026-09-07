@@ -121,7 +121,7 @@ def is_classifiable_shell(shell: str) -> bool:
     an unresolvable shell are what this now answers ``False`` for.
     """
 
-    from aelix_coding_agent.tools.bash import shell_basename  # noqa: PLC0415
+    from aelix_ai.utils._shell import shell_basename  # noqa: PLC0415
 
     return shell_basename(shell) in _CLASSIFIABLE_SHELLS
 

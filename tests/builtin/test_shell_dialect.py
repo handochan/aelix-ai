@@ -2,7 +2,7 @@
 
 #204 criterion 1, ADR-0237. ``dialect_for_shell`` is the only place that turns a
 shell into a syntax, and it reads the frozensets that already exist
-(``_CLASSIFIABLE_SHELLS``, ``_POWERSHELL_NAMES``, ``_CMD_NAMES``) rather than a
+(``_CLASSIFIABLE_SHELLS``, ``POWERSHELL_NAMES``, ``CMD_NAMES``) rather than a
 fourth spelling of the same names.
 
 These tests RUN on Linux, macOS and the gating ``windows-latest`` leg alike:
@@ -17,6 +17,7 @@ import subprocess
 import sys
 
 import pytest
+from aelix_ai.utils._shell import CMD_NAMES, POWERSHELL_NAMES
 from aelix_coding_agent.builtin.bash_classifier import (
     _CLASSIFIABLE_SHELLS,
     Verdict,
@@ -27,7 +28,6 @@ from aelix_coding_agent.builtin.shell_classifiers.dialect import (
     Dialect,
     dialect_for_shell,
 )
-from aelix_coding_agent.tools.bash import _CMD_NAMES, _POWERSHELL_NAMES
 
 # Verdicts are compared by VALUE here, never by identity: this module is
 # imported before ``test_bash_classifier.py::test_module_reimport_is_clean``
@@ -53,7 +53,7 @@ _SHELL_DIALECTS: dict[str, Dialect] = {
     "pwsh": Dialect.POWERSHELL,
     _CMD: Dialect.CMD,
     # UNKNOWN, not CMD: ``shell_basename`` strips ``.exe`` and nothing else, so
-    # the DOS-era name never matches ``_CMD_NAMES``. Pinned in the safe
+    # the DOS-era name never matches ``CMD_NAMES``. Pinned in the safe
     # direction — it keeps today's downgrade-every-ALLOW path.
     "command.com": Dialect.UNKNOWN,
     # UNKNOWN, never POSIX: fish's syntax diverges far enough that the command
@@ -79,7 +79,7 @@ def test_no_windows_shell_is_classifiable() -> None:
     platform. #204 adds dialects beside it and must never quietly widen it.
     """
 
-    for name in (*_POWERSHELL_NAMES, *_CMD_NAMES, _POWERSHELL, _PWSH, _CMD):
+    for name in (*POWERSHELL_NAMES, *CMD_NAMES, _POWERSHELL, _PWSH, _CMD):
         assert name not in _CLASSIFIABLE_SHELLS
         assert is_classifiable_shell(name) is False
 

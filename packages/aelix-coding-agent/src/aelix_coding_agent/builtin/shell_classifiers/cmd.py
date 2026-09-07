@@ -207,10 +207,10 @@ _ICACLS_DENY_SWITCHES = frozenset(
 )
 _TAKEOWN_DENY_SWITCHES = frozenset({"/f"})
 
-# Executable extensions ``cmd`` resolves a bare name through. ``shell_basename``
-# is not reused for this: it also strips a trailing VERSION suffix, which is
-# right for ``bash-5.2`` and wrong for a command name (``net1`` is a real
-# Windows binary distinct from ``net``).
+# Executable extensions ``cmd`` resolves a bare name through.
+# ``aelix_ai.utils._shell.shell_basename`` is not reused for this: it also
+# strips a trailing VERSION suffix, which is right for ``bash-5.2`` and wrong
+# for a command name (``net1`` is a real Windows binary distinct from ``net``).
 _EXECUTABLE_SUFFIXES = (".exe", ".com", ".bat", ".cmd")
 
 

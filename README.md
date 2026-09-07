@@ -136,18 +136,22 @@ either: it now runs end to end in CI on `windows-latest`, under both pwsh and Wi
   off — both measured on macOS, where `!cat` in the TUI used to do exactly that and never
   return. **That last part is a macOS/Linux sentence.** On Windows there is no session to take
   away: the child keeps the console Aelix was started from, so a program that reads `CONIN$`
-  directly (git's credential prompts) or calls `Read-Host` can still prompt there and still
-  burn the command's whole timeout. Nobody has watched that at a Windows console — it is
-  unverified, not fixed.
+  directly (git's credential prompts) or opens the console for a masked prompt (`Read-Host
+  -AsSecureString`, `Get-Credential`) can still prompt there and still burn the command's
+  whole timeout. Nobody has watched that at a Windows console — it is unverified, not fixed.
   And a `!command` credential helper that tries to prompt the terminal itself now fails at
   once with a named reason instead of stalling for ten seconds
   ([#226](https://github.com/handochan/aelix-ai/issues/226)) — measured on macOS and Linux;
-  the Windows console half of that is unverified too.
+  the Windows console half of that is unverified too. On Windows a `!command` no longer needs
+  an `sh` at all ([#227](https://github.com/handochan/aelix-ai/issues/227)): Aelix resolves
+  the shell that box actually has, and runs PowerShell `-NonInteractive`, so a PowerShell
+  prompt is refused at once and cannot leak its text into your key — reasoned from pwsh 7's
+  own switch, measured only on macOS, and still unwatched at a Windows console.
 
 So Windows regressions in the suite are caught, the installer runs for real, AUTO mode no
 longer demotes, and an aborted delegation and a timed-out tool command each take their tree
 with them at every one of their spawn sites; what's left is a human actually driving it on a
-Windows host — including the `CONIN$` / `Read-Host` prompt above, which no test on the leg can
+Windows host — including the `CONIN$` / masked-prompt case above, which no test on the leg can
 reach. Track the port
 in [#110](https://github.com/handochan/aelix-ai/issues/110) — its bar is suite-green +
 `install.ps1` executed + #204's AUTO mode, and all three now hold on the suite's evidence, which

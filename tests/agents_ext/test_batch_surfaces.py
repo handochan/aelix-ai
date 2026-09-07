@@ -1425,7 +1425,7 @@ def test_end_group_clears_both_the_aggregate_row_and_the_panel() -> None:
 
 def test_end_group_cannot_blank_a_panel_it_does_not_own() -> None:
     """One widget key is safe rather than lucky — ``agent`` declares
-    ``execution_mode="sequential"`` (``tool.py:603``) so two calls never have
+    ``execution_mode="sequential"`` (``tool.py:604``) so two calls never have
     panels open at once. The ownership check is what keeps that a belt rather
     than a bet."""
 

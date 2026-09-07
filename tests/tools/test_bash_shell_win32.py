@@ -17,14 +17,10 @@ import sys
 from pathlib import Path
 
 import pytest
+from aelix_ai.utils._shell import command_flag_for, shell_basename
 from aelix_coding_agent.builtin.bash_classifier import is_classifiable_shell
 from aelix_coding_agent.tools import bash as bash_mod
-from aelix_coding_agent.tools.bash import (
-    ShellConfig,
-    _command_flag_for,
-    _resolve_shell,
-    shell_basename,
-)
+from aelix_coding_agent.tools.bash import ShellConfig, _resolve_shell
 
 
 def _executable(directory: Path, name: str) -> Path:
@@ -204,7 +200,7 @@ def test_shell_basename_handles_both_separators(shell: str, expected: str) -> No
     ],
 )
 def test_command_flag_for(shell: str, flag: str) -> None:
-    assert _command_flag_for(shell) == flag
+    assert command_flag_for(shell) == flag
 
 
 # === version suffixes ========================================================
@@ -281,3 +277,131 @@ async def test_spawn_argv_uses_the_resolved_flag(monkeypatch: pytest.MonkeyPatch
 
     assert recorded == [["cmd.exe", "/c", "dir"]]
     assert result.exit_code == 127
+
+
+# === #227 — one win32 chain, two callers with different needs ================
+
+
+def test_the_bash_tool_and_command_resolution_share_one_windows_chain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One primitive answers both callers, and the ``sh`` step is the difference.
+
+    #227 moved this chain down into ``aelix_ai.utils._shell`` so a ``!command``
+    and the bash tool cannot drift into two win32 answers that agree only by
+    review — the failure mode this repo has already been bitten by (ADR-0193).
+    ``_resolve_shell_win32`` is now ``windows_command_shells(env)[0]``.
+
+    The one deliberate difference is ``include_posix_sh``. A ``!command`` was
+    written for ``sh``, so the resolver that SPAWNS takes an ``sh`` on ``PATH``
+    ahead of PowerShell. The bash tool must NOT: ``sh`` is in
+    ``_CLASSIFIABLE_SHELLS``, so taking it there would flip AUTO mode on every
+    MSYS box from "ask about everything" to "read it with the bash grammar",
+    which is ADR-0237/#204's decision to make.
+
+    Three halves, because equality alone cannot see the difference any more:
+    (a) a Git-for-Windows row where the two callers must answer DIFFERENTLY —
+    the only assertion here that dies when ``_resolve_shell_win32`` starts
+    passing ``include_posix_sh=True``; (b) the order/drift equality on every
+    row; (c) the ``sh`` delta, stated conditionally, because without an ``sh``
+    fixture the two lists are simply equal.
+
+    Every row spells ``PATH``, and (d) is the one deliberate exception — the
+    guard on that rule: with the key absent the primitive makes no PATH
+    candidates at all, so a row that forgot ``PATH`` under-asserts silently
+    instead of reading the HOST's ``PATH``.
+    """
+
+    from aelix_ai.utils._shell import windows_command_shells
+
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    monkeypatch.chdir(empty)
+
+    sh_only = tmp_path / "sh_only"
+    sh_in_sh_only = _on_path(sh_only, "sh")
+    pwsh_only = tmp_path / "pwsh_only"
+    _on_path(pwsh_only, "pwsh")
+    powershell_only = tmp_path / "powershell_only"
+    _on_path(powershell_only, "powershell")
+    git_for_windows = tmp_path / "gfw"
+    sh_in_gfw = _on_path(git_for_windows, "sh")
+    pwsh_in_gfw = _on_path(git_for_windows, "pwsh")
+    real_shell = _executable(tmp_path / "git", "bash.exe")
+    comspec = r"C:\Program Files\Nope\cmd.exe"
+
+    #: ``(label, env, the sh fixture that env exposes or None)``.
+    rows: list[tuple[str, dict[str, str], Path | None]] = [
+        ("empty PATH", {"PATH": str(empty)}, None),
+        ("pwsh only", {"PATH": str(pwsh_only)}, None),
+        ("powershell only", {"PATH": str(powershell_only)}, None),
+        ("%COMSPEC% only", {"PATH": str(empty), "COMSPEC": comspec}, None),
+        (
+            "$SHELL exists, empty PATH",
+            {"PATH": str(empty), "SHELL": str(real_shell)},
+            None,
+        ),
+        ("sh only", {"PATH": str(sh_only)}, sh_in_sh_only),
+        ("Git for Windows: sh + pwsh", {"PATH": str(git_for_windows)}, sh_in_gfw),
+        ("sh + %COMSPEC%", {"PATH": str(sh_only), "COMSPEC": comspec}, sh_in_sh_only),
+        (
+            "$SHELL exists + sh",
+            {"PATH": str(sh_only), "SHELL": str(real_shell)},
+            sh_in_sh_only,
+        ),
+    ]
+
+    # (a) the Git-for-Windows row: the bash tool takes pwsh, the !command takes sh.
+    gfw_env = {"PATH": str(git_for_windows)}
+    tool_answer = _resolve_shell(gfw_env, platform="win32")
+    assert Path(tool_answer.path) == pwsh_in_gfw
+    assert tool_answer.command_flag == "-Command"
+    command_first = windows_command_shells(gfw_env, include_posix_sh=True)[0]
+    assert Path(command_first.path) == sh_in_gfw
+    assert command_first.command_flag == "-c"
+
+    without_sh_rows = 0
+    for label, env, sh_fixture in rows:
+        # (b) same chain, same order: the bash tool's answer IS candidate 0.
+        assert windows_command_shells(env)[0] == _resolve_shell(
+            env, platform="win32"
+        ), label
+
+        # (c) the delta, stated conditionally.
+        with_sh = windows_command_shells(env, include_posix_sh=True)
+        without = windows_command_shells(env)
+        if sh_fixture is None:
+            without_sh_rows += 1
+            assert with_sh == without, label
+            continue
+        # ``Path("")`` is ``Path(".")`` and EXISTS — the empty default cannot
+        # stand in for "no $SHELL" here.
+        env_shell = env.get("SHELL")
+        index = 1 if env_shell and Path(env_shell).exists() else 0
+        assert len(with_sh) == len(without) + 1, label
+        assert Path(with_sh[index].path) == sh_fixture, label
+        assert with_sh[index].command_flag == "-c", label
+        assert with_sh[:index] + with_sh[index + 1 :] == without, label
+
+    assert without_sh_rows == 5, without_sh_rows
+
+    # (d) the one env that does NOT spell ``PATH`` — the guard on that rule.
+    # Without ``if path is not None`` the two probes run as
+    # ``shutil.which(..., path=None)``, which reads the HOST's ``PATH``: on a
+    # dev box that is a real ``/bin/sh`` AND any installed ``pwsh`` (measured:
+    # ``[/bin/sh -c, /opt/homebrew/bin/pwsh -Command, cmd.exe /c]``), and on
+    # windows-latest Git's ``sh.exe``. The leak hits the bash-tool call too,
+    # not just ``include_posix_sh=True`` — a fixture meant as "stock Windows"
+    # would be silently ``sh``/``pwsh``-present — and the trap is invisible
+    # when it fires, so it is pinned here rather than left to fixture
+    # discipline. The $SHELL/COMSPEC row shows the non-PATH candidates still
+    # appear: it is the PATH probes alone that are skipped.
+    assert windows_command_shells({}, include_posix_sh=True) == [ShellConfig("cmd.exe", "/c")]
+    assert windows_command_shells({}) == [ShellConfig("cmd.exe", "/c")]
+    assert windows_command_shells(
+        {"SHELL": str(real_shell), "COMSPEC": comspec}, include_posix_sh=True
+    ) == [
+        ShellConfig(str(real_shell), "-c"),
+        ShellConfig(comspec, "/c"),
+        ShellConfig("cmd.exe", "/c"),
+    ]

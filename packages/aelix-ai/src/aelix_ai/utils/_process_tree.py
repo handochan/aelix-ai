@@ -199,7 +199,9 @@ def containment_spawn_kwargs(
     and the containment proper is the job attached afterwards.
 
     A caller that already passes ``creationflags`` must OR them into these;
-    none does today.
+    ``oauth/_resolve_config`` is the one that does (#227 — ``CREATE_NO_WINDOW``,
+    which must NOT move in here: three callers' ``soft_kill()`` needs the shared
+    console this site never uses).
     """
 
     if _resolve_platform(platform) == "win32":

@@ -292,7 +292,7 @@ def test_a_failed_member_carries_its_error_on_its_own_line() -> None:
 
 
 def test_an_error_already_inside_the_summary_is_not_repeated() -> None:
-    """Mirrors ``render_subagent_result`` (``tool.py:847-848``): the fallback
+    """Mirrors ``render_subagent_result`` (``tool.py:848-849``): the fallback
     chain often puts ``error_message`` INTO ``summary``, and printing it twice
     reads as two distinct failures."""
 
@@ -312,7 +312,7 @@ def test_an_empty_summary_falls_back_to_the_no_output_sentinel() -> None:
 
 def test_dropped_tools_and_dropped_lines_reach_the_member_block() -> None:
     """A batch member must never say less about itself than the same child would
-    say on the single-mode path (``tool.py:849-858``)."""
+    say on the single-mode path (``tool.py:850-859``)."""
 
     member = MemberOutcome.ran(
         _result(1, dropped_tools=("bash", "edit"), dropped_lines=3)
@@ -380,7 +380,7 @@ def test_both_renderers_emit_the_same_note_set_for_the_same_envelope() -> None:
     """A batch member must never say less about itself than the single path.
 
     ``_member_block`` mirrors ``render_subagent_result``'s notes by hand
-    (``tool.py:846-858``), so a fourth note added to one and not the other is
+    (``tool.py:847-859``), so a fourth note added to one and not the other is
     silent — the batch model would simply never hear about, say, ``truncated``.
     Compares the note lines themselves rather than counting them, so a note that
     is present in both but WORDED differently is caught too.
@@ -623,7 +623,7 @@ def test_empty_details_are_omitted_and_keep_the_positions_of_the_others() -> Non
 
 def test_details_is_none_when_every_member_had_none() -> None:
     """What ``render_subagent_result`` passes when a single child had nothing
-    (``tool.py:862``)."""
+    (``tool.py:863``)."""
 
     result = render_batch_result(
         "scout", "parallel", [_ran(1), _ran(2)], not_run=0, wall_ms=1
