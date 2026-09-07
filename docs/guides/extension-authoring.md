@@ -105,7 +105,7 @@ The handle exposes more than tools and commands. The most useful members:
 | `register_provider(name, config)` / `unregister_provider(name)` | Register / drop a model provider. A `config.models` map now surfaces in `/model` (once a credential is stored). |
 | `register_login_provider(provider)` / `unregister_login_provider(id)` | Add / drop a custom `/login` method with your own credential flow (see below). |
 | `register_api_adapter(api, stream_fn)` / `unregister_api_adapter(api)` | Register a custom wire-protocol adapter for an endpoint config can't express (see below). |
-| `register_flag(...)` / `get_flag(name)` | Declare a flag / read its value (bool, str, or `None`). **A user cannot set one yet** — see [Flags are declared but not settable](#flags-are-declared-but-not-settable). |
+| `register_flag(...)` / `get_flag(name)` | Declare a flag / read its value (bool, str, or `None`). A user sets one on the command line — see [Flags](#flags). |
 | `on(...)`                           | Subscribe to a typed hook event (e.g. the tool-call lifecycle). |
 | `get_active_tools()` / `get_system_prompt()` | Inspect the running agent.                      |
 
@@ -140,23 +140,21 @@ a registration made in `setup()` reaches the running agent, not just a store:
 | `register_shortcut` | Live | Aggregated by `get_shortcuts` and read live by the TUI chrome at key-fire time, so `/reload` handler swaps take effect. First registration wins a key collision. |
 | `register_message_renderer` | Live | Looked up live per custom message by `get_message_renderer`; first extension in load order wins. A renderer that raises falls back to default rendering. |
 
-### Flags are declared but not settable
+### Flags
 
-`register_flag` works, and so does `get_flag` — but there is no way for a user to
-give a flag a value, so `get_flag` returns the default you declared and nothing
-else. `aelix --my-flag value` parses: the parser puts an unrecognised `--` token
-into `Args.unknown_flags` with no diagnostic, and nothing reads that dict back
-into the runtime's flag values. Measured against the shipped CLI — an extension
-registering `probe-flag` with `default="DEFAULT"`, launched as
-`aelix -e probe.py --probe-flag FROM_CLI --print …` — printed
-`get_flag('probe-flag') = 'DEFAULT'`.
+`register_flag` declares a flag and `get_flag` reads it, and a value given on the
+command line reaches the extension on its first build. Measured against the
+shipped CLI — an extension registering `probe-flag` with `default="DEFAULT"`,
+launched as `aelix -e probe.py --probe-flag FROM_CLI --print …` — printed
+`get_flag('probe-flag') = 'FROM_CLI'`; the same extension launched with no flag
+printed `'DEFAULT'`. A valueless `--probe-bool` arrives as `True`.
 
-Treat a flag as a declaration of intent, the way the unenforced capabilities
-below are. Take real configuration from an environment variable or a file until
-[#92](https://github.com/handochan/aelix-ai/issues/92) lands. (The one thing that
-does write a flag value is `/reload`, which restores the values the previous
-runtime held — so a flag survives a reload, it just never gets a first value from
-you.)
+The parser puts an unrecognised `--` token into `Args.unknown_flags` with no
+diagnostic, and the first harness build seeds that dict into the runtime's flag
+values ([#92](https://github.com/handochan/aelix-ai/issues/92)). A declared
+default is never clobbered: seeding only supplies names the user actually
+passed. `/reload` restores the values the previous runtime held, so a flag
+survives a reload as well.
 
 Manifest `contributes.*` families are a different story — declaring one is **not**
 the same as registering it. What each family actually does at runtime:
