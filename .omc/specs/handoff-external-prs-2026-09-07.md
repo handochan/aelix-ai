@@ -64,6 +64,42 @@ gh api -X PUT repos/handochan/aelix-ai/actions/permissions/fork-pr-contributor-a
    아직 그대로다. 오너 설정이라 손대지 않았다.
 3. 원래 다음 작업이던 **#230 / #232** (`7fa6796` 핸드오프 기준).
 
+## 2.5. 보류된 오너 결정 2건 — 시한 없음, 그러나 하나는 지금 살아 있다
+
+세션 끝에 오너가 **의도적으로 미룬** 것이다. 급하지 않지만 잊으면 안 된다.
+
+### (a) fork CI 승인 정책 — 현행 `first_time_contributors`
+
+세 선택지와 이 레포 기준의 결과:
+
+| 값 | 승인 필요 대상 | 결과 |
+| --- | --- | --- |
+| `all_external_contributors` | 외부인 전원, 매번 | 오늘보다 나쁨. 권하지 않음 |
+| `first_time_contributors` (현행) | 이 레포에 커밋 없는 사람 | 3명 전부를 문 값. 단 Mr-Neutr0n은 `e109749`로 커밋이 들어가 **다음 PR부터 자동 실행** |
+| `first_time_contributors_new_to_github` | GitHub 계정 자체가 신규인 사람 | 권고값. 기성 계정은 즉시 실행, 일회용 신규 계정은 계속 차단 |
+
+권고 근거(측정): `ci.yml`은 `pull_request`만 쓰고 `secrets.` 참조가 **0건**이라,
+게이트가 막도록 설계된 위험(시크릿 탈취)이 **여기엔 없다**. 남는 건 무료 런너 남용뿐.
+반대 논거도 유효함 — 이 레포 CI는 `install.ps1`을 실제 실행하고 테스트가 서브프로세스를
+스폰하므로 "첫 실행만은 사람이 본다"는 선택도 방어 가능하다.
+
+### (b) auto-merge — 현행 `allow_auto_merge=false`
+
+**주의: 이건 이번 변경으로 꺼진 게 아니라 원래부터 레포 설정으로 꺼져 있었다.**
+브랜치 보호는 auto-merge를 막는 게 아니라 **쓸모 있게 만드는** 쪽이다(요구조건이 없으면
+기다릴 게 없음). 켜면 외부 PR에 auto-merge를 한 번 걸어두고 CI 초록이면 사람 개입 없이
+머지된다. 리뷰 승인은 어느 쪽이든 불필요하다.
+
+```bash
+gh api -X PATCH repos/handochan/aelix-ai -F allow_auto_merge=true
+```
+
+### 미루는 비용
+
+만료될 fork CI 런이 없으므로 **시한은 없다**. 살아 있는 영향은 하나뿐:
+브랜치 보호가 이미 켜져 있어서 **새 외부 PR은 승인 클릭 전까지 머지가 차단**된다.
+이전에는 "빨간 X"였던 것이 지금은 "차단"이다.
+
 ## 3. 이 레포에서 이번에 물린 것
 
 - **`git status --porcelain`을 awk로 거르면 안 된다.** unstaged는 `" M file"`이라

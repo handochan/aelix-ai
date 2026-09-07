@@ -1,0 +1,97 @@
+name: Welcome
+
+# Posts one orientation comment on a first outside pull request.
+#
+# WHY THIS EXISTS
+# The repo's first three outside PRs (#119, #217, #223) each lost time to
+# something true about this repository and written down nowhere: fork CI does
+# not start without a maintainer's click, an unapproved run expires into a red X
+# that is not about the contributor's code, and an issue here is often already
+# in flight because its body is a full design. CONTRIBUTING.md now says all of
+# that, but a contributor who has not read it is exactly the person who needs it.
+#
+# WHY `pull_request_target` AND NOT `pull_request`
+# This is the whole point. A `pull_request` workflow from a fork is held at
+# `action_required` until the maintainer approves it — so a welcome message
+# explaining the approval gate would itself be stuck behind the approval gate.
+# `pull_request_target` runs in the BASE repository's context, so it starts
+# immediately and has a token that can write a comment.
+#
+# WHY THAT IS SAFE HERE
+# `pull_request_target` is dangerous when a workflow checks out and executes the
+# pull request's code, because that code then runs with the base repo's
+# permissions. This workflow NEVER checks anything out and runs no code from the
+# PR. It reads two event fields and posts a fixed string. Keep it that way: if
+# this file ever grows an `actions/checkout` of `github.event.pull_request.head`,
+# that is a vulnerability, not a feature.
+#
+# Note for CONTRIBUTING.md's claim that fork runs see no secrets: that claim is
+# about `ci.yml`, which triggers on `pull_request` and references no secrets.
+# This workflow does have the base-repo token — and never lets PR content near it.
+
+on:
+  pull_request_target:
+    types: [opened]
+
+# Only what posting a comment needs. Everything else stays unavailable.
+permissions:
+  pull-requests: write
+
+concurrency:
+  group: welcome-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  welcome:
+    name: orientation comment
+    runs-on: ubuntu-latest
+    # From a fork, and from somebody who has not landed anything here yet.
+    # A returning CONTRIBUTOR/COLLABORATOR/MEMBER/OWNER already knows this and
+    # would just be getting noise on every PR.
+    if: >-
+      github.event.pull_request.head.repo.full_name != github.repository &&
+      contains(fromJSON('["NONE", "FIRST_TIMER", "FIRST_TIME_CONTRIBUTOR"]'),
+               github.event.pull_request.author_association)
+    steps:
+      - name: Post the orientation comment
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          cat > body.md <<'EOF'
+          Thanks for opening this — it is your first pull request here, so a few
+          things about this repository that are easy to hit and written down
+          nowhere else. None of this is a request to change anything yet.
+
+          **Your CI will not start on its own.** Workflows on pull requests from
+          forks sit at `action_required` with **zero jobs** until the maintainer
+          approves the run. If this PR shows no checks at all, that is the gate,
+          not a problem with your branch. You cannot approve it yourself. If it
+          sits unapproved, say so in a comment — that is useful, not nagging.
+          An unapproved run also expires after 30 days and flips to a red ✗ that
+          has nothing to do with your code.
+
+          **If you are working an issue, say so on the issue.** Issues here are
+          often full designs, and the maintainer frequently works one the same
+          day it is filed. Two earlier PRs were overtaken by an independent fix
+          within a day of being opened. A one-line comment on the issue before
+          you start is the whole fix for that.
+
+          **Three gates catch outside PRs more than anything else:**
+
+          - `uv sync --all-packages` — the bare `uv sync` cannot even collect
+            the test suite.
+          - `uv run python scripts/check_citations.py --fix` — any patch that
+            shifts line numbers fails `tests/test_citation_drift.py` in files
+            you never touched.
+          - Editing a guide means editing **both** copies: `docs/guides/` and
+            the wheel-bundled one under `packages/aelix-coding-agent/`.
+
+          [`CONTRIBUTING.md`](https://github.com/handochan/aelix-ai/blob/main/CONTRIBUTING.md)
+          has the rest, including what this project does and does not promise you
+          in return. The short version of that: there is no response-time
+          commitment, but your PR will not be closed, superseded, or left to rot
+          without a reply.
+          EOF
+          gh pr comment "$PR" --repo "$REPO" --body-file body.md

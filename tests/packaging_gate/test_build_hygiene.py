@@ -689,6 +689,7 @@ ALLOWED_SDIST_TOP_LEVEL = frozenset(
         "TRADEMARK.md",
         "SECURITY.md",
         "CONTRIBUTING.md",
+        "CODE_OF_CONDUCT.md",
         "RELEASING.md",
         ".env.example",
         "docs",
