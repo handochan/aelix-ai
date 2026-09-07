@@ -1674,10 +1674,10 @@
    "PermissionMode.AUTO,",
    ")"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/agent_context.py:1067-1067": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/agent_context.py:1064-1064": [
    "\"Be concise and direct. Prefer doing over explaining; lead with results.\","
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/agent_context.py:1250-1255": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/agent_context.py:1247-1252": [
    "# ``_safe_path`` BEFORE ``_escape_xml``: the two close different",
    "# channels and neither covers the other. Escaping neutralises ``\"`` and",
    "# ``>`` so the attribute cannot be broken out of; it leaves control",
@@ -1685,7 +1685,7 @@
    "# ``/`` and NUL, and XML 1.0's ``Char`` production forbids C0 outright",
    "# (tab/LF/CR excepted) — so a raw ``\\x1b`` here would make the fence"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/agent_context.py:1250-1261": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/agent_context.py:1247-1258": [
    "# ``_safe_path`` BEFORE ``_escape_xml``: the two close different",
    "# channels and neither covers the other. Escaping neutralises ``\"`` and",
    "# ``>`` so the attribute cannot be broken out of; it leaves control",
@@ -1943,10 +1943,10 @@
    "for diag in prompt_template_result.diagnostics:",
    "print("
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:2792-2792": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:2801-2801": [
    "# process-global login registry so they appear in the /login method list"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:2868-2889": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:2877-2898": [
    "agent_service_kwarg: dict[str, Any] = (",
    "{\"agent_service\": agent_service} if agent_service is not None else {}",
    ")",
@@ -1956,10 +1956,10 @@
    "# same ``parsed.tools``) used to escape from here as a raw traceback in every",
    "# one of those modes. The issue reported it as \"the CLI path\" and noted the"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:2869-2869": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:2878-2878": [
    "{\"agent_service\": agent_service} if agent_service is not None else {}"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:2924-2941": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:2933-2950": [
    "# extension-registered provider onto ``model_registry``, so",
    "# ``get_available()`` can see all six auth layers. Anything earlier would",
    "# nag an issue-#77 user on every launch.",
@@ -1969,7 +1969,7 @@
    "model_registry,",
    "stdin_is_tty=stdin_is_tty,"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:2937-2953": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:2946-2962": [
    "app_mode == \"interactive\"",
    "and startup_model is not None",
    "and not is_runnable(startup_model)",
@@ -1979,11 +1979,8 @@
    "# advice is actively wrong when ``get_available()`` is empty (the picker",
    "# would open onto nothing). It stays for the configured-but-typo'd user,"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:2985-2985": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:2994-2994": [
    "# The [tui] extra (prompt-toolkit + rich) is not installed."
-  ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:3061-3061": [
-   "print(format_no_model_selected_message(), file=sys.stderr)"
   ],
   "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:307-362": [
    "if sys.stdin.isatty():",
@@ -1994,6 +1991,9 @@
    "timeout = 30.0 if required else 5.0",
    "stdin_fd: int | None",
    "try:"
+  ],
+  "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:3070-3070": [
+   "print(format_no_model_selected_message(), file=sys.stderr)"
   ],
   "packages/aelix-coding-agent/src/aelix_coding_agent/cli/entry.py:309-318": [
    "if sys.platform != \"win32\":",

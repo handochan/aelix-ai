@@ -82,7 +82,7 @@ class AgentProfileService:
         first, so a second switch overlays the ORIGINAL CLI intent rather than
         the previous profile.
     :param skills_holder: the ``{"result": LoadSkillsResult}`` box the factory
-        reads on every (re)build (``cli/entry.py:2617`` / ``:2792``).
+        reads on every (re)build (``cli/entry.py:2617`` / ``:2801``).
         :meth:`use` replaces its contents so a profile's ``skills:`` /
         ``inherit_skills:`` reach rebuilds too — a plain local provably would
         not, because the factory captured it once.

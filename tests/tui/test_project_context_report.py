@@ -256,7 +256,7 @@ def test_banner_does_not_re_emit_the_context_budget_warnings(tmp_path: Path) -> 
     ``cli/entry.py:1249`` already called discovery once at startup and its
     ``Warning:`` lines have already been shown; the banner render is a REPORT and
     must be silent. An oversized ``AGENTS.md`` is what makes discovery warn
-    (``agent_context.py:1250-1255``, the 32768-byte budget).
+    (``agent_context.py:1247-1252``, the 32768-byte budget).
     """
 
     root = tmp_path / "big"

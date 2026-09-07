@@ -275,7 +275,7 @@ async def test_no_extension_path_or_home_directory_is_emitted(
     payload = await bench.call()
 
     # ``cwd`` is the one path that IS emitted, and only because
-    # ``build_system_prompt`` already emits it (``cli/agent_context.py:1067``) —
+    # ``build_system_prompt`` already emits it (``cli/agent_context.py:1064``) —
     # so it is excluded here rather than the assertion being weakened, and its
     # value is pinned separately.
     assert payload["cwd"] == cwd

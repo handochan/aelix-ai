@@ -22,7 +22,7 @@ are about ORDER, not features:
   PINNED the runtime key upstream of the overlay too, so it either refused a run
   the profile could have driven or attached the key to the wrong provider.
 
-The run is stopped at ``create_agent_session_runtime`` (``cli/entry.py:2869``),
+The run is stopped at ``create_agent_session_runtime`` (``cli/entry.py:2878``),
 after the factory has built the harness and before any turn: no network, no API
 keys, no registry auth.
 """

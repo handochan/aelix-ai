@@ -223,7 +223,7 @@ class RuntimeSnapshot:
         (``_build_harness_options``'s ``cwd = str(Path.cwd())`` → ``AgentHarnessOptions.cwd``
         → ``harness/core.py:_make_context``). Emitted RAW, and that is not a
         disclosure decision made here: ``build_system_prompt`` already emits
-        ``- Working directory: {cwd_abs}`` at ``cli/agent_context.py:1067``, so
+        ``- Working directory: {cwd_abs}`` at ``cli/agent_context.py:1064``, so
         the model was told this before its first turn.
 
     ``mode``

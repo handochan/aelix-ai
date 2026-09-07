@@ -88,7 +88,7 @@ _INHERIT = "inherit"
 the documented default and MUST normalize to :data:`None`: left as a literal
 id it reaches ``resolve_model('inherit', None)`` → ``Model(id='inherit',
 provider='', api='unknown')`` → the #98 unrunnable gate at
-``cli/entry.py:2924-2941``."""
+``cli/entry.py:2933-2950``."""
 
 _KNOWN_KEYS: frozenset[str] = frozenset(
     {

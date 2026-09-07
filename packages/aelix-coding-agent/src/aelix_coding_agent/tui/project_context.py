@@ -55,7 +55,7 @@ def _discover_without_re_warning(cwd: str) -> str:
 
     Discovery is not a pure read: it prints a ``Warning:`` line to stderr for
     every context file it truncated or dropped against the 32 KiB budget
-    (``cli/agent_context.py:1250-1261``). The injection path at
+    (``cli/agent_context.py:1247-1258``). The injection path at
     ``cli/entry.py:1249`` has already called it once and those warnings have
     already been printed, so a second copy is duplicate noise — measured at 115
     bytes re-emitted per banner render on a single oversized ``AGENTS.md``.
