@@ -114,12 +114,27 @@ class ImageSettings:
 
 @dataclass
 class ThinkingBudgetsSettings:
-    """Pi parity: ``settings-manager.ts:44-49`` ``ThinkingBudgetsSettings``."""
+    """Pi parity: ``settings-manager.ts:44-49`` ``ThinkingBudgetsSettings``.
+
+    Plus ``xhigh`` (#250) — aelix's fifth budget tier, which pi does not
+    have. The block is a settings *shape* today: nothing reads it. All five
+    fields are equally unread — ``get_thinking_budgets()`` has no PRODUCT
+    caller (its five call sites are all in ``tests/settings_manager/``) and
+    neither provider passes ``custom_budgets`` — so the fifth field exists to
+    let the shape express the tier, not to plumb it.
+
+    The key is *accepted*, never *written*: absent means ``None`` and ``None``
+    is dropped on serialize, so no ``settings.json`` — fresh or existing —
+    grows an ``xhigh`` entry from this change. (#250 Codex cross-review caught
+    the CHANGELOG claiming it did; the round trip is pinned in
+    ``tests/settings_manager/test_settings_types.py``.)
+    """
 
     minimal: int | None = None
     low: int | None = None
     medium: int | None = None
     high: int | None = None
+    xhigh: int | None = None
 
 
 @dataclass
@@ -440,6 +455,9 @@ NESTED_PY_TO_JSON: Final[dict[str, dict[str, str]]] = {
         "low": "low",
         "medium": "medium",
         "high": "high",
+        # #250: identity mapping, but it MUST be listed — ``_json_dict_to_nested``
+        # drops any JSON key absent from this table SILENTLY.
+        "xhigh": "xhigh",
     },
     "MarkdownSettings": {
         "code_block_indent": "codeBlockIndent",

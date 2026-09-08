@@ -333,6 +333,13 @@ def _vertex_thinking_level(effort: str, model_id: str) -> str:
 
     Vertex collapses Gemini 3 Pro to two levels (LOW / HIGH); all other models
     map 1:1. Note the **absence of a Gemma 4 branch** (vs the Gemini adapter).
+
+    As on the shared resolver, the trailing ``HIGH`` is a ceiling clamp rather
+    than a fail-open: the only effort that reaches it besides ``high`` is
+    ``xhigh``, and ``thinkingLevel`` has no dynamic value to defer with the way
+    :func:`_vertex_google_budget`'s ``-1`` does (#250 review). The full argument
+    lives
+    on ``_google_shared.get_google_budget``.
     """
 
     if is_gemini3_pro_model(model_id):
@@ -388,12 +395,24 @@ def _vertex_google_budget(model_id: str, effort: str) -> int:
     No flash-lite branch (so flash-lite ids use the ``2.5-flash`` table) and no
     custom-budget plumbing (``options.thinkingBudgets`` is not exposed by
     Aelix's :class:`SimpleStreamOptions`).
+
+    Like the shared resolver (``_google_shared.get_google_budget``), an effort
+    the table does not know returns ``-1``, the API's dynamic budget (#250):
+    the bare index raised an unhandled ``KeyError`` out of the *sync*
+    ``stream_simple_google_vertex`` factory, reachable from a
+    ``thinkingLevelMap`` override in ``~/.aelix/agent/models.json``. It is
+    ``-1`` and not the family's ``high`` row because ``high`` already is the
+    API's ``thinkingBudget`` ceiling (32768 pro, 24576 flash), i.e. the most
+    expensive request available — the wrong direction to fail in for a value
+    Aelix could not interpret (#250 Codex cross-review). The same reason is
+    why Gemini 2.5 gets no ``xhigh`` row; the full argument lives on the
+    shared resolver.
     """
 
     if "2.5-pro" in model_id:
-        return _VERTEX_BUDGET_2_5_PRO[effort]
+        return _VERTEX_BUDGET_2_5_PRO.get(effort, -1)
     if "2.5-flash" in model_id:
-        return _VERTEX_BUDGET_2_5_FLASH[effort]
+        return _VERTEX_BUDGET_2_5_FLASH.get(effort, -1)
     return -1
 
 

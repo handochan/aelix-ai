@@ -574,6 +574,23 @@ def get_thinking_level(effort: str, model_id: str) -> GoogleThinkingLevel:
     Gemma 4 collapse ``minimal``/``low`` and ``medium``/``high`` into two
     levels; the default branch (other ``thinkingLevel`` models) is a 1:1
     map.
+
+    The final ``return "HIGH"`` is not a fail-open (#250 review). The one
+    effort it catches besides ``high`` is ``xhigh`` — the two collapsing
+    branches above also absorb ``medium``, which is the collapse, not a
+    fallback — because the caller (``_thinking_for_simple``) has already run
+    the level through ``clamp_thinking_level``, which can only return a member
+    of :data:`~aelix_ai.models.EXTENDED_THINKING_LEVELS`
+    (``get_supported_thinking_levels`` iterates that list, so a
+    ``thinkingLevelMap`` override cannot widen it), and it maps ``off`` /
+    ``None`` to ``high`` before calling. ``HIGH`` is the top of this scale and
+    there is no dynamic value to defer with: every branch here returns one of
+    the four scale points, :func:`get_google_budget` has ``-1`` and this
+    function has no analogue for it, and Google defines a dynamic setting only
+    for ``thinkingBudget`` (read from the API docs, not measured). So clamping
+    ``xhigh`` to the ceiling is the whole of the answer, and it is
+    what the Anthropic adapter does with ``xhigh`` on a row that does not offer
+    it. Pinned by ``test_xhigh_clamps_to_the_top_of_the_thinking_level_scale``.
     """
 
     if is_gemini3_pro_model(model_id):
@@ -624,19 +641,61 @@ def get_google_budget(
 
     Resolve the Gemini 2.x integer ``thinkingBudget`` for a clamped effort.
     A caller-supplied ``custom_budgets`` override wins; otherwise pick the
-    per-family table (``2.5-pro`` / ``2.5-flash-lite`` / ``2.5-flash``).
-    Anything else returns ``-1`` (dynamic budget). The ``flash-lite`` check
-    precedes ``flash`` because the id contains both substrings.
+    per-family table (``2.5-pro`` / ``2.5-flash-lite`` / ``2.5-flash``). A
+    model id in no 2.x family returns ``-1`` (dynamic budget). The
+    ``flash-lite`` check precedes ``flash`` because the id contains both
+    substrings.
+
+    An effort the table does not know returns ``-1`` too (#250). Before that
+    the bare index raised an unhandled ``KeyError`` out of the *sync*
+    ``stream_simple_google`` factory, so it never became an
+    ``AssistantErrorEvent``; it is reachable from a ``thinkingLevelMap``
+    override in ``~/.aelix/agent/models.json``, because
+    ``clamp_thinking_level`` returns any extended level that map declares
+    non-null — including the ``xhigh`` these tables have no row for.
+
+    **Which effort that actually is: ``xhigh``, and in-tree only ``xhigh``.**
+    The sole in-tree caller (``_thinking_for_simple``) passes a level that
+    ``clamp_thinking_level`` has already reduced to a member of
+    :data:`~aelix_ai.models.EXTENDED_THINKING_LEVELS`, and it maps ``off`` /
+    ``None`` to ``high`` itself, so the four table keys cover every remaining
+    spelling. This function is exported, though, so an out-of-tree caller can
+    pass anything; ``-1`` is a total answer for those too.
+
+    **Why ``-1`` and not the family's ``high`` row** — that is what the #250
+    Codex cross-review changed. ``high`` *is* the API's ``thinkingBudget``
+    ceiling here (32768 pro, 24576 both flash tables), so there is no larger
+    number for ``xhigh`` to mean, and answering with ``high``'s own number
+    would report a request Aelix cannot honour as though it had been honoured
+    — while spending the most expensive request the family can make. ``-1`` is
+    the API's own *dynamic* budget: it hands the size back to the model rather
+    than inventing one, it is already this function's answer for a model id it
+    does not recognise, and it leaves thinking ON.
+
+    This is deliberately **not** what the Anthropic adapter does with the same
+    ``xhigh``: there ``clamp_thinking_level`` folds it onto ``high``'s budget,
+    because ``high`` is not a ceiling there — the ceiling is ``max_tokens``,
+    and 32768 fits under it — so ``high`` is a real second-best rather than a
+    fiction. For the same reason Gemini 2.5 gets no ``xhigh`` row of its own:
+    a larger row would be rejected.
+
+    The sibling ``thinkingLevel`` resolvers (:func:`get_thinking_level`,
+    ``google_vertex._vertex_thinking_level``) meet the same ``xhigh`` and
+    answer ``HIGH``, the top of that scale, rather than anything dynamic —
+    ``thinkingLevel`` has no ``-1`` to answer with. Same rule in both places:
+    use the API's
+    "you decide" value where one exists, and clamp to the ceiling where it
+    does not.
     """
 
     if custom_budgets is not None and custom_budgets.get(effort) is not None:
         return custom_budgets[effort]
     if "2.5-pro" in model_id:
-        return _BUDGET_2_5_PRO[effort]
+        return _BUDGET_2_5_PRO.get(effort, -1)
     if "2.5-flash-lite" in model_id:
-        return _BUDGET_2_5_FLASH_LITE[effort]
+        return _BUDGET_2_5_FLASH_LITE.get(effort, -1)
     if "2.5-flash" in model_id:
-        return _BUDGET_2_5_FLASH[effort]
+        return _BUDGET_2_5_FLASH.get(effort, -1)
     return -1
 
 

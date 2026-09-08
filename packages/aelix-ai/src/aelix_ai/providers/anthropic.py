@@ -39,6 +39,7 @@ from aelix_ai.messages import (
     ThinkingContent,
     ToolCallContent,
 )
+from aelix_ai.models import clamp_thinking_level
 from aelix_ai.providers._anthropic_client import create_async_client
 from aelix_ai.providers._anthropic_compat import get_compat
 from aelix_ai.providers._anthropic_transforms import (
@@ -447,6 +448,31 @@ async def stream_anthropic(
         if opts.max_tokens is not None and opts.max_tokens > 0
         else model_output_cap
     )
+    # #250: clamp the requested level against what THIS row offers, the way
+    # every sibling adapter already does (google_generative_ai.py:307,
+    # google_vertex.py:432, openai_responses.py:598, openai_completions.py:1493,
+    # openai_codex_responses.py:650). This adapter was the only one passing
+    # ``opts.reasoning`` through raw, and nothing upstream clamps either —
+    # ``cli/entry.py`` forwards ``--thinking`` (and an agent profile's
+    # ``thinking:``) verbatim and ``harness/core.py`` snapshots the state level
+    # with no model check. That was harmless while ``clamp_reasoning`` folded
+    # ``xhigh`` onto ``high`` inside the budget lookup; now that ``xhigh`` is a
+    # 32768 row of its own it is not. Measured on this branch without the clamp,
+    # ``aelix --thinking xhigh --model anthropic/claude-opus-4-1`` (cap 32000,
+    # a row that does NOT offer xhigh) sent ``budget_tokens: 30976`` and left
+    # the visible answer 1024 tokens, against 16384/15616 on 0985fcf.
+    # Every count in this comment is over the
+    # 272 budget-path rows (``anthropic-messages`` + ``reasoning`` + not
+    # adaptive), re-derived from ``models_generated.json`` in the beta2
+    # re-review: 28 of them declare a cap inside that (16384, 32768] window and
+    # 46 more are clamped into it by ``_effective_output_cap``
+    # (``_UNSAT_ABSOLUTE_OUTPUT_CEILING`` = 32000). ``clamp_thinking_level`` is
+    # the identity on the 20 that offer ``xhigh``, maps ``xhigh`` back to
+    # ``high`` on the other 252 (backward scan), and leaves ``None`` as ``None``
+    # so the "no reasoning requested" signal survives. (Over the wider 287
+    # reasoning rows the identity set is 30 and the ``high`` set 257 — the extra
+    # 15 are adaptive rows that never build a budget at all.)
+    clamped_reasoning = clamp_thinking_level(model, opts.reasoning)
     # The SAME clamped ceiling is handed to the thinking math as its hard clamp.
     # Passing only the clamped *base* would not be enough: the budget path
     # computes ``min(base + budget, model.max_tokens)``, so an unclamped ceiling
@@ -455,7 +481,7 @@ async def stream_anthropic(
     thinking_extra, thinking_max_tokens, needs_interleaved = (
         resolve_anthropic_thinking(
             model,
-            opts.reasoning,
+            clamped_reasoning,
             default_max_tokens,
             max_tokens_ceiling=model_output_cap,
         )

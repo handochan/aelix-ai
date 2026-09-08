@@ -14,6 +14,7 @@ toolUse override, and the usage arithmetic incl. reasoning.
 from __future__ import annotations
 
 import base64
+from dataclasses import replace
 from typing import Any
 
 import pytest
@@ -26,6 +27,13 @@ from aelix_ai.messages import (
     ToolResultMessage,
     UserMessage,
 )
+from aelix_ai.models import (
+    EXTENDED_THINKING_LEVELS,
+    clamp_thinking_level,
+    get_model,
+    get_supported_thinking_levels,
+)
+from aelix_ai.models_generated import MODELS
 from aelix_ai.providers._google_shared import (
     GoogleStreamState,
     convert_messages,
@@ -48,7 +56,14 @@ from aelix_ai.providers._google_shared import (
     retain_thought_signature,
     supports_multimodal_function_response,
 )
-from aelix_ai.streaming import Context, Model
+from aelix_ai.providers.google_generative_ai import (
+    _thinking_for_simple as _gga_thinking_for_simple,
+)
+from aelix_ai.providers.google_vertex import (
+    _vertex_google_budget,
+    _vertex_thinking_level,
+)
+from aelix_ai.streaming import Context, Model, SimpleStreamOptions
 from aelix_ai.tools import Tool
 
 # === helpers ================================================================
@@ -599,6 +614,142 @@ def test_get_google_budget_custom_override() -> None:
     assert get_google_budget("gemini-2.5-pro", "high", custom) == 9999
     # falls back to table when the effort is absent from the override.
     assert get_google_budget("gemini-2.5-pro", "low", custom) == 2048
+
+
+@pytest.mark.parametrize(
+    ("resolver", "model_id", "family_top"),
+    [
+        ("generative-ai", "gemini-2.5-pro", 32768),
+        ("generative-ai", "gemini-2.5-flash", 24576),
+        # Third branch of the shared resolver — the flash-lite check runs first
+        # because the id contains both substrings.
+        ("generative-ai", "gemini-2.5-flash-lite", 24576),
+        ("vertex", "gemini-2.5-pro", 32768),
+        ("vertex", "gemini-2.5-flash", 24576),
+        # Vertex has NO flash-lite branch, so a flash-lite id lands on the
+        # flash table — documented as such in ``_vertex_google_budget``.
+        ("vertex", "gemini-2.5-flash-lite", 24576),
+    ],
+)
+def test_google_budget_survives_a_thinking_level_map_override(
+    resolver: str, model_id: str, family_top: int
+) -> None:
+    """#250: a ``thinkingLevelMap`` override must not crash the stream.
+
+    ``thinkingLevelMap`` is a documented user-editable field of
+    ``~/.aelix/agent/models.json`` (docs/guides/models-json.md), and
+    ``clamp_thinking_level`` returns any key it declares. Both Gemini 2.x
+    budget resolvers indexed their table bare, so on 0985fcf this raised an
+    unhandled ``KeyError('xhigh')`` — synchronously, out of the *sync*
+    ``stream_simple_google*`` factory, so it never became an
+    ``AssistantErrorEvent``.
+
+    Beta2: every one of the five changed lookups gets a row here. The first
+    revision only built ``gemini-2.5-pro``, so the two flash branches and the
+    Vertex flash branch could be reverted to the crashing bare index with the
+    whole suite still green.
+
+    Codex cross-review: the fallback is ``-1`` — the API's *dynamic* budget —
+    and NOT ``family_top``, which is what 73d167a returned and what this test
+    asserted then. ``family_top`` is the API's ``thinkingBudget`` ceiling for
+    the family, so the old fallback answered a mapping value Aelix could not
+    interpret with the most expensive request that family can make. Both
+    columns are asserted, so a revert to either the crash or the ceiling
+    fails here.
+    """
+
+    base = get_model("google", model_id)
+    assert base is not None
+    model = replace(
+        base,
+        thinking_level_map={**(base.thinking_level_map or {}), "xhigh": "xhigh"},
+    )
+    assert clamp_thinking_level(model, "xhigh") == "xhigh"
+
+    if resolver == "generative-ai":
+        thinking = _gga_thinking_for_simple(
+            model, SimpleStreamOptions(reasoning="xhigh")
+        )
+        budget = thinking.budget_tokens
+        # The stream still asks for thinking; only the number is left to the API.
+        assert thinking.enabled is True
+    else:
+        budget = _vertex_google_budget(model.id, "xhigh")
+    assert budget == -1
+    assert budget != family_top
+
+    # The known levels are untouched — the fallback is only for the unknown.
+    known = (
+        get_google_budget(model_id, "high")
+        if resolver == "generative-ai"
+        else _vertex_google_budget(model_id, "high")
+    )
+    assert known == family_top
+
+
+def test_xhigh_clamps_to_the_top_of_the_thinking_level_scale() -> None:
+    """#250 beta2 re-review: the level resolvers' trailing ``HIGH``.
+
+    The re-review read that ``return "HIGH"`` as the same fail-open the budget
+    fallback had just reversed. It is not, and this pins why. Both resolvers
+    are called only from ``_thinking_for_simple``, which passes a level
+    ``clamp_thinking_level`` has already reduced to a member of
+    ``EXTENDED_THINKING_LEVELS`` and which maps ``off``/``None`` to ``high``
+    itself — so the only effort reaching the trailing branch besides ``high``
+    is ``xhigh``, and ``HIGH`` is the top of that scale, not a guess. Unlike
+    ``get_google_budget`` there is no ``-1`` to defer with: ``thinkingLevel``
+    has no dynamic value.
+
+    Asserting the reachable *set* is the point — an ``off``/``None`` leak or a
+    sixth level would turn the trailing branch into a real fail-open, and that
+    fails here instead of silently buying the ceiling.
+    """
+
+    branched = {"minimal", "low", "medium", "high"}
+    for model_id in ("gemini-3-pro", "gemma-4", "gemini-3-flash"):
+        assert get_thinking_level("xhigh", model_id) == "HIGH"
+        assert _vertex_thinking_level("xhigh", model_id) == "HIGH"
+
+    # Every level a user can ask for resolves to an effort the tables branch
+    # on, or to ``xhigh`` — never to ``off``, ``None`` or anything else.
+    seen: set[str] = set()
+    rows = 0
+    for provider_models in MODELS.values():
+        for model_id, model in provider_models.items():
+            if not (
+                is_gemini3_pro_model(model_id)
+                or is_gemini3_flash_model(model_id)
+                or is_gemma4_model(model_id)
+            ):
+                continue
+            rows += 1
+            for level in EXTENDED_THINKING_LEVELS:
+                clamped = clamp_thinking_level(model, level)
+                seen.add("high" if clamped in ("off", None) else str(clamped))
+    assert rows, "no gemini-3 / gemma-4 rows in the catalog"
+    assert seen <= branched | {"xhigh"}, seen
+
+
+def test_no_google_model_offers_a_level_without_a_budget_row() -> None:
+    """Canary, NOT the regression guard for #250.
+
+    Measured on 0985fcf: 124 gemini/gemma catalog rows, none offering a level
+    outside ``off/minimal/low/medium/high``. The crash the test above pins
+    arrives through ``thinkingLevelMap``, which no catalog walk can see — so
+    this only warns that a refresh started shipping such a level.
+    """
+
+    known = {"off", "minimal", "low", "medium", "high"}
+    offered: set[str] = set()
+    rows = 0
+    for provider_models in MODELS.values():
+        for model_id, model in provider_models.items():
+            if "gemini" not in model_id and "gemma" not in model_id:
+                continue
+            rows += 1
+            offered |= set(get_supported_thinking_levels(model))
+    assert rows > 0
+    assert offered <= known
 
 
 # === supports_multimodal_function_response ==================================

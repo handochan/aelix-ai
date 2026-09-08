@@ -887,7 +887,7 @@ class EventRenderer:
         self._thinking_accum = ""
         self._thinking_index = None
         # Per MESSAGE, not per session: ``content_index`` restarts at 0 in every
-        # message (anthropic.py:880, _google_shared.py:965,
+        # message (anthropic.py:906, _google_shared.py:1024,
         # _openai_responses_shared.py:725, openai_completions.py:1259), so
         # keeping the set would retire index 0 for the whole session. The delta
         # arm un-retires a reused index on its own, so what this line actually
