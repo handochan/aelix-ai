@@ -359,6 +359,40 @@ async def _commit_update_notice(
         return
 
 
+def _thinking_display(harness: Any, level: str) -> str:
+    """Render ``level`` as the tier ``harness``'s current model receives (#251).
+
+    ``"high"``, or ``"xhigh (max)"`` when the model calls that level something
+    else — see :func:`aelix_coding_agent.tui.thinking_picker.thinking_level_display`
+    for the rule and what it deliberately leaves bare. Module level, not a
+    ``run_tui`` closure, for one reason: every footer test injects its own
+    ``thinking_provider``, so a closure would be unreachable from a unit test and
+    could be reverted with the suite green.
+    """
+
+    from aelix_coding_agent.tui.thinking_picker import thinking_level_display
+
+    return thinking_level_display(getattr(harness, "current_model", None), level)
+
+
+def _compose_thinking_level(harness: Any) -> str | None:
+    """The 🧠 footer segment's provider value: the level plus its tier (#251).
+
+    ``None`` when no level is resolved (headless / partial harness), which the
+    producer degrades to ``🧠 off`` — that is the contract, so this must never
+    return ``""``.
+
+    FIELD-NAME TRAP: it reads ``harness.state``. ``thinking_picker.py`` reads
+    ``harness._state`` for the same value; ``AgentHarness`` carries both.
+    """
+
+    state = getattr(harness, "state", None)  # ``getattr(None, …)`` yields None,
+    level = getattr(state, "thinking_level", None)  # so ``state`` needs no guard.
+    if not level:
+        return None
+    return _thinking_display(harness, level)
+
+
 async def run_tui(
     runtime_host: AgentSessionRuntime,
     *,
@@ -483,13 +517,14 @@ async def run_tui(
         return getattr(model, "id", None) if model is not None else None
 
     def _thinking_level() -> str | None:
-        # Live reasoning effort for the OPTIONAL 🧠 thinking-level footer segment.
-        # Reads ``harness.state.thinking_level`` (the SAME field the /thinking
-        # picker, the /settings row, and RPC mutate) live post-hot-swap, same as
-        # ``_model_id``. Defensive getattr so a headless/partial harness yields
-        # None (the producer then omits the segment).
-        state = getattr(runtime_host.harness, "state", None)
-        return getattr(state, "thinking_level", None)
+        # Live reasoning effort for the 🧠 thinking-level footer segment. Reads
+        # ``harness.state.thinking_level`` (the SAME field the /thinking picker,
+        # the /settings row, and RPC mutate) live post-hot-swap, same as
+        # ``_model_id``, and since #251 pairs it with the tier the CURRENT model
+        # receives — the level alone was a lie whenever the model renames it or
+        # the adapters clamp it. The composition is module level so a unit test
+        # can reach it; see :func:`_compose_thinking_level`.
+        return _compose_thinking_level(runtime_host.harness)
 
     def _steering_mode() -> str | None:
         # Live steering mode from the harness ("one-at-a-time"/"all") so the
@@ -1187,7 +1222,13 @@ async def run_tui(
         await settings_manager.flush()
         _commit(
             Text(
-                f"thinking level → {new_level} (persisted as default)",
+                # #251 — same helper as the footer: this line is printed and the
+                # footer repainted inside one action, so naming different tiers
+                # here would contradict the row below it. The ROW's own value
+                # (``get_default_thinking_level``) stays bare — it is the stored
+                # default, which no model owns (ADR-0125).
+                f"thinking level → {_thinking_display(runtime_host.harness, new_level)}"
+                " (persisted as default)",
                 style="green",
             )
         )

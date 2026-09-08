@@ -805,7 +805,7 @@ def _render_agent_profile(profile: AgentProfile) -> list[RenderableType]:
 
 
 # === /agents run (ADR-0197 §(c)/§(f), P2) ====================================
-# A product-core BUILT-IN, and it has to be: ``shell.py:3414-3431`` runs
+# A product-core BUILT-IN, and it has to be: ``shell.py:3455-3472`` runs
 # ``match_command`` (built-ins) first and only falls through to
 # ``dispatch.try_execute`` when no built-in claims the word, while
 # ``extensions/command_dispatch.py:76-85`` splits an extension command on the
@@ -936,7 +936,7 @@ async def _confirm_project_agent_for_run(
     is not: ``_confirm_project_agent`` drives a dedicated one-shot
     ``prompt_toolkit.Application`` built for the pre-``run_tui`` window, which
     cannot run while the REPL's own Application is live. This uses the extension
-    UI seam instead — ``shell.py:2651`` binds the real TUI context onto
+    UI seam instead — ``shell.py:2692`` binds the real TUI context onto
     ``harness.runtime`` and re-binds it on every rebuild (``:1565``), so the
     modal here is the same surface the permission dialog uses.
 
@@ -1344,6 +1344,12 @@ async def _thinking_handler(ctx: CommandContext, args: str) -> None:
     gracefully on a harness lacking the API.
     """
 
+    # #251 — every line below says the tier the model RECEIVES, not just the
+    # level name: ``/thinking xhigh`` neither validates nor clamps, so a bare echo
+    # said "xhigh" in the same instant the footer said "xhigh (high)".
+    from .thinking_picker import thinking_level_display
+
+    model = getattr(ctx.harness, "current_model", None)
     state = getattr(ctx.harness, "_state", None)
     current = getattr(state, "thinking_level", None)
     setter: Callable[[str], Awaitable[None]] | None = getattr(
@@ -1361,7 +1367,7 @@ async def _thinking_handler(ctx: CommandContext, args: str) -> None:
                 ctx.commit(Text(f"✖ thinking picker failed: {exc}", style="bold red"))
             return
         if current:
-            ctx.commit(Text(f"thinking: {current}"))
+            ctx.commit(Text(f"thinking: {thinking_level_display(model, current)}"))
         elif supported:
             # ``thinking_level`` defaults to None (= off) on a fresh session —
             # that's "unset", not "feature missing".
@@ -1377,7 +1383,7 @@ async def _thinking_handler(ctx: CommandContext, args: str) -> None:
     except Exception as exc:  # noqa: BLE001 — surface, never kill the REPL
         ctx.commit(Text(f"✖ thinking switch failed: {exc}", style="bold red"))
         return
-    ctx.commit(Text(f"thinking → {args}", style="green"))
+    ctx.commit(Text(f"thinking → {thinking_level_display(model, args)}", style="green"))
 
 
 async def _expand_handler(ctx: CommandContext, args: str) -> None:

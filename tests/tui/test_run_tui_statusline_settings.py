@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from types import SimpleNamespace
 
 from aelix_coding_agent.tui.chrome import AelixChrome
 from aelix_coding_agent.tui.shell import run_tui
@@ -261,3 +262,134 @@ def test_settings_manager_create_no_fs_side_effects(tmp_path) -> None:
     assert sm.get_settings() is not None
     # No load errors over a clean empty dir.
     assert sm.drain_errors() == []
+
+
+# === #251 — the composed thinking-level string ==========================
+#
+# ``_compose_thinking_level`` is module level (not a ``run_tui`` closure) for one
+# reason: reachability. Every footer test injects its own ``thinking_provider``,
+# so a closure could be reverted to the bare level with the whole suite green.
+# The pair below is the MECHANISM / WIRING split
+# ``tests/tui/test_width.py:230-237`` states as this repo's convention.
+
+
+class _DisplayModel:
+    def __init__(self, thinking_level_map: dict | None = None, reasoning: bool = True) -> None:
+        self.reasoning = reasoning
+        self.id = "fake-model"
+        self.thinking_level_map = thinking_level_map if thinking_level_map is not None else {}
+
+
+def test_compose_thinking_level_reads_state_and_names_the_tier() -> None:
+    # C13 (mechanism).
+    from aelix_coding_agent.tui.shell import _compose_thinking_level
+
+    harness = SimpleNamespace(
+        state=SimpleNamespace(thinking_level="xhigh"),
+        current_model=_DisplayModel({"xhigh": "max"}),
+    )
+    assert _compose_thinking_level(harness) == "xhigh (max)"
+
+
+def test_compose_thinking_level_returns_none_when_there_is_no_level() -> None:
+    # C14 — the producer's ``or 'off'`` composition contract: this function
+    # returns None (never ""), which is also what catches the field-name trap —
+    # ``harness.state`` here, ``harness._state`` in thinking_picker.py.
+    from aelix_coding_agent.tui.shell import _compose_thinking_level
+
+    model = _DisplayModel({"xhigh": "max"})
+    assert _compose_thinking_level(SimpleNamespace(current_model=model)) is None
+    assert _compose_thinking_level(SimpleNamespace(state=None, current_model=model)) is None
+    assert (
+        _compose_thinking_level(
+            SimpleNamespace(state=SimpleNamespace(thinking_level=None), current_model=model)
+        )
+        is None
+    )
+    assert (
+        _compose_thinking_level(
+            SimpleNamespace(state=SimpleNamespace(thinking_level=""), current_model=model)
+        )
+        is None
+    )
+
+
+async def test_run_tui_wires_the_composed_thinking_provider(tmp_path) -> None:
+    # C13b (wiring) — the real ``run_tui`` builds the context's provider. Revert
+    # the closure body to ``getattr(state, "thinking_level", None)`` and only this
+    # case dies.
+    async with _harness_chrome() as (runtime, chrome, pipe):
+        runtime.harness.state = SimpleNamespace(thinking_level="xhigh")
+        runtime.harness.current_model = _DisplayModel({"xhigh": "max"})
+        task = asyncio.ensure_future(
+            run_tui(
+                runtime,  # type: ignore[arg-type]
+                cwd=str(tmp_path),
+                chrome=chrome,
+                install_signal_handlers=False,
+            )
+        )
+        await _wait(lambda: chrome.app.is_running)
+        await _wait(lambda: bool(runtime.harness.runtime.bound))
+        ctx = runtime.harness.runtime.bound[0]
+        assert ctx._thinking_provider is not None
+        assert ctx._thinking_provider() == "xhigh (max)"
+        runtime.harness.state.thinking_level = None
+        assert ctx._thinking_provider() is None  # → the producer renders "🧠 off"
+        pipe.send_text("/quit\n")
+        code = await asyncio.wait_for(task, timeout=5)
+    assert code == 0
+
+
+async def test_settings_thinking_row_confirms_with_the_tier(tmp_path) -> None:
+    # C17 — /settings → Thinking level prints its own confirmation line and then
+    # repaints the footer, so without the same helper the two surfaces would name
+    # different tiers inside one repaint. ``context.select`` is monkeypatched
+    # (a deterministic seam — NOT the raw pipe bytes this file's
+    # ``test_settings_opens_modal_through_run_tui`` calls inherently flaky).
+    from aelix_ai.settings import SettingsManager
+
+    from tests.tui.test_run_tui_smoke import _spy_commits
+
+    sm = SettingsManager.in_memory({})
+
+    async with _harness_chrome() as (runtime, chrome, pipe):
+        runtime.harness.state = SimpleNamespace(thinking_level="high")
+        runtime.harness.current_model = _DisplayModel({"xhigh": "max"})
+
+        async def _cycle() -> str:
+            runtime.harness.state.thinking_level = "xhigh"
+            return "xhigh"
+
+        runtime.harness.cycle_thinking_level = _cycle
+        commits = _spy_commits(chrome)
+        task = asyncio.ensure_future(
+            run_tui(
+                runtime,  # type: ignore[arg-type]
+                cwd=str(tmp_path),
+                chrome=chrome,
+                install_signal_handlers=False,
+                settings_manager=sm,
+            )
+        )
+        await _wait(lambda: chrome.app.is_running)
+        await _wait(lambda: bool(runtime.harness.runtime.bound))
+        ctx = runtime.harness.runtime.bound[0]
+
+        picks = {"n": 0}
+
+        async def _select(title, options, **kwargs):
+            picks["n"] += 1
+            if picks["n"] > 1:
+                return None  # second pass closes the menu
+            return next(o for o in options if o.startswith("Thinking level"))
+
+        ctx.select = _select  # type: ignore[method-assign]
+        pipe.send_text("/settings\n")
+        await _wait(lambda: any("thinking level →" in c for c in commits))
+        pipe.send_text("/quit\n")
+        code = await asyncio.wait_for(task, timeout=5)
+    assert code == 0
+    assert [c for c in commits if "thinking level →" in c] == [
+        "thinking level → xhigh (max) (persisted as default)"
+    ]

@@ -697,7 +697,7 @@ async def test_no_provider_print_emits_guidance_and_exits_1(
     # route, and does NOT claim non-existent doc files.
     # #111 — CORRECTED. This used to assert ``/login`` was ABSENT, on the
     # stated ground that "Aelix does not register one". It does:
-    # ``tui/commands.py:2188`` is ``BuiltinCommand("login", "Sign in / add a
+    # ``tui/commands.py:2194`` is ``BuiltinCommand("login", "Sign in / add a
     # provider API key", …)``, and the first-run wizard has been telling users
     # to run it since #23. The message now names it — prefixed by "run
     # 'aelix'", which is what makes a TUI-only command actionable from a
@@ -851,7 +851,7 @@ async def test_provider_without_key_emits_no_api_key_guidance(
     # The provider display name appears in the message.
     assert "Anthropic" in err
     # #111 — CORRECTED, same false premise as above: ``/login`` exists
-    # (``tui/commands.py:2188``). This was the WORST of the three headless
+    # (``tui/commands.py:2194``). This was the WORST of the three headless
     # dead ends — a user who names a provider they have not signed in to was
     # given the env-var route and nothing else, no interactive path at all.
     assert "/login" in err

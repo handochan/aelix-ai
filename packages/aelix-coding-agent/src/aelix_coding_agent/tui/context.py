@@ -316,9 +316,9 @@ class AelixTUIContext:
         self._footer = footer
         self._model_provider = model_provider
         # Live reasoning-effort provider for the 🧠 thinking-level footer segment
-        # (default-ON since #248; /statusline can still uncheck it). Reads the
-        # harness's live thinking_level so the segment reflects the /thinking
-        # picker, the /settings row, and RPC mutations. None in headless → omitted.
+        # (default-ON since #248; /statusline can still uncheck it). Yields the
+        # level as the shell composed it — plus the tier the model receives when
+        # they differ (#251) — live, so it tracks /thinking, /settings and RPC.
         self._thinking_provider = thinking_provider
         # Permission posture badge (WP-0, ADR-0157). Reads the LIVE posture mode
         # → its distinct footer glyph (✎/⏸/⚠/🤖); returns None on DEFAULT so the

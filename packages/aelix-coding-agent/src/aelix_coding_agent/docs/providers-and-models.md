@@ -124,8 +124,25 @@ Models that support extended reasoning accept a thinking level:
 aelix --thinking medium --model anthropic/claude-sonnet-4-6 "..."
 ```
 
-Valid levels: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`. Inside the
-TUI, `/thinking` cycles the level.
+Valid levels: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`. Inside the TUI,
+`/thinking` opens a picker over the levels the current model supports
+(`/settings` → **Thinking level** cycles them instead).
+
+Not every model calls those levels by those names, and not every model supports
+all of them. Where the two differ, the picker rows, the confirmation line and the
+🧠 statusline segment show both: `xhigh (max)` on a model whose catalog entry maps
+`xhigh` to `max`, `xhigh (high)` on one that has no `xhigh` and is clamped down to
+`high`, `low (high)` on one that supports neither `low` nor `medium` and is
+clamped up. **The value in parentheses is the tier the request carries**; a level
+shown as one bare word is one the model calls by the same name. `off` is always
+bare — it is folded into "no reasoning requested" before a provider adapter sees
+it, so there is no tier to name.
+
+One place that reading is currently too generous: on the thirteen non-reasoning
+Google entries (Gemini 1.5 / 2.0, Gemma, and the Vertex-hosted Llamas) the Google
+adapter turns that disabled level back into a thinking request, so a `high (off)`
+there understates what actually goes out. That is an adapter defect, tracked as
+[#256](https://github.com/handochan/aelix-ai/issues/256).
 
 ## Offline
 
