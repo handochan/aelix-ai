@@ -149,6 +149,8 @@ aelix --resume                   # pick a previous session interactively (-r)
 aelix --resume <id>              # resume a specific session by id/prefix
 aelix --no-session               # in-memory session, not persisted
 aelix --thinking medium          # off | minimal | low | medium | high | xhigh
+                                 # (the level is remembered per session: --continue
+                                 #  and --resume come back at the level you left)
 aelix --append-system-prompt "Be terse."
 aelix --no-context-files         # skip auto-discovered AGENTS.md context (-nc)
 aelix --export session.jsonl out.html   # render a saved session file to HTML

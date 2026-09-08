@@ -31,6 +31,7 @@ from aelix_agent_core.session.context import (
     create_compaction_summary_message,
     create_custom_message,
     create_display_custom_message,
+    resolve_resumed_thinking_level,
     select_display_entries,
 )
 from aelix_agent_core.session.entries import (
@@ -135,5 +136,6 @@ __all__ = [
     "get_entries_to_fork",
     "load_jsonl_session_metadata",
     "prepare_compaction",
+    "resolve_resumed_thinking_level",
     "select_display_entries",
 ]

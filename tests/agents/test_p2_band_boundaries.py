@@ -51,7 +51,7 @@ _SPAWN_ALLOWLIST = (
 # ``create_subprocess_exec`` / ``subprocess.Popen`` / ``os.fork``.
 #
 # Matched on the DOTTED path, not the final attribute: product-core already has
-# six unrelated ``.fork(...)`` calls (session forking — ``tui/shell.py:1077``,
+# six unrelated ``.fork(...)`` calls (session forking — ``tui/shell.py:1044``,
 # ``rpc/rpc_mode.py:1476``, ``extensions/command_context.py:116``), so a
 # bare-name match would fire on them and this gate would have to be weakened
 # the first time it ran. Receiverless spellings are accepted for the two names
@@ -418,6 +418,19 @@ _KERNEL_CHANGE_ALLOWLIST = frozenset(
         # unaffected and still passes. A platform created the requirement;
         # delegation did not.
         "packages/aelix-agent-core/src/aelix_agent_core/harness/skills.py",
+        # ADR-0239, #198. The thinking level a session ran at was never written
+        # down when it changed outside a turn (measured: state ``high``, entry
+        # types ``[]``, ``build_context`` ``off``), and neither resume seam read
+        # it back, so ``--continue`` and ``/resume`` always started at ``off``.
+        # ``resolve_resumed_thinking_level`` is a pure last-wins fold over
+        # session entries — the same fold ``build_session_context`` already does
+        # one function below, separated only so "recorded ``off``" and "never
+        # recorded" stop collapsing. The derivation belongs beside the function
+        # it disambiguates and nowhere else. No ``aelix_agents`` import, no
+        # spawn site, no cap, no consent path and no registry surface —
+        # ``test_kernel_has_no_subagent_surface`` still passes. A session-format
+        # question created the requirement; delegation did not.
+        "packages/aelix-agent-core/src/aelix_agent_core/session/context.py",
     }
 )
 

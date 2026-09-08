@@ -41,6 +41,8 @@ from aelix_agent_core.session.entries import (
 )
 
 if TYPE_CHECKING:
+    from aelix_ai.streaming import Model
+
     from aelix_agent_core.session.session import SessionContext
 
 
@@ -185,6 +187,55 @@ def _iso_to_unix_ms(timestamp: str) -> float | None:
 
 
 # === buildSessionContext ================================================
+
+
+def resolve_resumed_thinking_level(
+    path_entries: list[SessionTreeEntry],
+    model: Model | None,
+    *,
+    fallback: str | None = None,
+) -> str | None:
+    """What thinking level should a harness resumed onto this branch start at?
+
+    Issue #198. :func:`build_session_context` already folds
+    ``thinking_level_change`` last-wins, but it cannot answer this question: its
+    initial value is ``"off"``, so "the user chose off" and "nobody ever chose"
+    come back identical. Here ``None`` means **nothing to restore** and an
+    explicit ``off`` entry means **off** — an entry is a decision, which is what
+    lets a deliberate ``/thinking off`` survive a relaunch instead of being
+    refilled by ``defaultThinkingLevel``.
+
+    The scan reads the FULL path, compaction boundary included, exactly as the
+    fold in :func:`build_session_context` does — the level a session ran at is
+    not invalidated by compacting its messages.
+
+    ``model`` clamps the answer (:func:`clamp_thinking_level`) so a session left
+    at ``xhigh`` resumed on a ``high``-max model comes back ``high`` rather than
+    being dropped to ``off``; ``fallback`` is clamped too, since the in-session
+    seam carries the live level forward through it. Pass ``model=None`` to skip
+    the clamp: every provider re-clamps at request build
+    (``openai_completions.py``, ``openai_responses.py``,
+    ``google_generative_ai.py``), so an unclamped level cannot reach the wire —
+    this clamp is for what the footer shows.
+
+    Divergence from pi (``sdk.ts:191,232`` at ``pi@da840b6``), which additionally
+    requires ``messages.length > 0`` before honouring the session's level: a
+    level set before the first prompt is still a decision here. ADR-0235,
+    ADR-0239.
+    """
+
+    level: str | None = fallback
+    for entry in path_entries:
+        if entry.type == "thinking_level_change":
+            level = entry.thinking_level  # type: ignore[union-attr]
+    if level is None or model is None:
+        return level
+    # Function-local, matching the other clamp/level call sites in the kernel
+    # (``harness/core.py``) — ``aelix_agent_core`` does not import
+    # ``aelix_ai.models`` at module scope here.
+    from aelix_ai.models import clamp_thinking_level
+
+    return clamp_thinking_level(model, level)
 
 
 def build_session_context(path_entries: list[SessionTreeEntry]) -> SessionContext:

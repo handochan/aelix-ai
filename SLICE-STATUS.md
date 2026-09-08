@@ -149,6 +149,7 @@ re-discovering the crash.
    otherwise look like a hundred unrelated failures.
 8. **Ctrl+G external editor.** `tui/shell.py:2607` falls back to `vi`,
 8. **Ctrl+G external editor.** `tui/shell.py:2791` falls back to `vi`,
+8. **Ctrl+G external editor.** `tui/shell.py:2588` falls back to `vi`,
    which does not exist on stock Windows. `notepad` is the fallback there.
 9. **`Operating System :: OS Independent` classifiers** — untouched on purpose;
    that is a tag-time decision owned elsewhere.

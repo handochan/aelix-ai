@@ -49,6 +49,10 @@ from aelix_agent_core.runtime import ReloadSeed
 from aelix_agent_core.runtime.agent_session_runtime import (
     create_agent_session_runtime,
 )
+from aelix_agent_core.session.context import (
+    build_session_context,
+    resolve_resumed_thinking_level,
+)
 from aelix_agent_core.session.fs import LocalFileSystem
 from aelix_agent_core.session.jsonl_repo import (
     JsonlSessionCreateOptions,
@@ -441,30 +445,72 @@ async def _build_session(
     return await repo.create(JsonlSessionCreateOptions(cwd=cwd))
 
 
-async def _seed_startup_messages(
-    harness: AgentHarness, session: Session
-) -> None:
-    """#122 — seed a startup harness's live transcript from its resumed session.
+async def _seed_startup_state(
+    harness: AgentHarness, session: Session, *, cli_level: str | None
+) -> bool:
+    """Seed a startup harness's live transcript AND thinking level from its
+    resumed session. Returns whether a thinking level was applied.
 
-    A freshly built :class:`AgentHarness` never seeds ``_state.messages`` from its
-    session (``AgentHarnessOptions.initial_messages`` is the only seam and the
-    factory doesn't set it), and the startup harness build bypasses
-    ``AgentSessionRuntime._finish_session_replacement`` (which rebuilds messages
-    on every IN-SESSION swap). Without this, a startup ``--continue``/``--resume``
-    (also ``--session``/``--fork``) into a session WITH history reads ZERO for
-    /context, /cost, /session, /stats until the first turn — the SAME class of bug
-    as the in-session #122 fix, at the startup insertion point.
+    #122 (messages): a freshly built :class:`AgentHarness` never seeds
+    ``_state.messages`` from its session (``AgentHarnessOptions.initial_messages``
+    is the only seam and the factory doesn't set it), and the startup harness
+    build bypasses ``AgentSessionRuntime._finish_session_replacement`` (which
+    rebuilds messages on every IN-SESSION swap). Without this, a startup
+    ``--continue``/``--resume`` (also ``--session``/``--fork``) into a session
+    WITH history reads ZERO for /context, /cost, /session, /stats until the first
+    turn — the SAME class of bug as the in-session #122 fix, at the startup
+    insertion point.
 
-    Seeds from the SAME source the in-session fix uses
-    (:meth:`Session.build_context`). A fresh / ``--no-session`` / empty session
-    yields no messages, so the guard makes this a no-op for a normal cold start.
-    Product-core only: ``AgentState.messages`` already holds the list, so no
-    ``aelix-agent-core`` (kernel) edit is needed.
+    #198 (thinking level): the same build ignored the session's recorded level —
+    measured, a harness built over a session whose context said ``high`` reported
+    ``off``. Restored here from the SAME single ``get_branch()`` read that feeds
+    the messages, clamped to the resumed model so a session left at ``xhigh`` on a
+    ``high``-max model comes back ``high`` rather than dropped.
+
+    ADR-0196 order is preserved: ``cli_level`` is ``parsed.thinking`` (where a
+    profile's ``thinking:`` also lands), it already reached the harness through
+    ``AgentHarnessOptions.thinking_level``, and it outranks the session — so a
+    non-``None`` ``cli_level`` short-circuits the restore and still returns
+    ``True``. It is also carried into a session that has no level of its own,
+    so the *next* launch of that session remembers it (see the comment below). That return value is the positive signal ``run_tui`` needs: its
+    ``defaultThinkingLevel`` seed sniffs ``state.thinking_level`` for "unset" and
+    therefore cannot tell a restored explicit ``off`` from one, which since #198
+    would overwrite it in the session file.
+
+    A fresh / ``--no-session`` / empty session yields no messages and no level, so
+    this stays a no-op for a normal cold start.
     """
 
-    startup_ctx = await session.build_context()
+    entries = await session.get_branch()
+    # Identical to the previous ``session.build_context()`` — that method IS
+    # ``build_session_context(await self.get_branch())``.
+    startup_ctx = build_session_context(entries)
     if startup_ctx.messages:
         harness.state.messages = list(startup_ctx.messages)
+
+    if cli_level is not None:
+        # The flag governs this launch, but it is also RECORDED into a session
+        # that has none of its own — the same carry-forward the in-session seam
+        # does (``agent_session_runtime._finish_session_replacement``), under the
+        # same two conditions. Without it ``aelix --thinking high`` then
+        # ``--continue`` came back at ``off``, the exact shape of #198, while the
+        # WEAKER ``defaultThinkingLevel`` seed persisted (it routes through
+        # ``set_thinking_level``, which appends since #198). A session that
+        # already recorded a level keeps its own: the flag outranks it for this
+        # process only. ``off`` is the kernel's unset sentinel, so a launch at
+        # ``off`` leaves a fresh session clean.
+        if cli_level != "off" and not any(
+            e.type == "thinking_level_change" for e in entries
+        ):
+            await session.append_thinking_level_change(cli_level)
+        return True
+    level = resolve_resumed_thinking_level(
+        entries, harness.current_model, fallback=None
+    )
+    if level is None:
+        return False
+    harness.state.thinking_level = level
+    return True
 
 
 async def _run_export(
@@ -2900,11 +2946,16 @@ async def _async_main(argv: list[str]) -> int:
         # typo. Matching is exact, not case-insensitive.
         print("  Tool names are case-sensitive.", file=sys.stderr)
         return 1
-    # #122 — the STARTUP analogue of the in-session /resume fix. This startup build
-    # bypasses ``AgentSessionRuntime._finish_session_replacement``, so a
-    # ``--continue``/``--resume`` (also ``--session``/``--fork``) into a session
-    # WITH history would otherwise read ZERO stats until the first turn. Seed now.
-    await _seed_startup_messages(harness, session)
+    # #122 / #198 — the STARTUP analogue of the in-session /resume fix. This
+    # startup build bypasses ``AgentSessionRuntime._finish_session_replacement``,
+    # so a ``--continue``/``--resume`` (also ``--session``/``--fork``) into a
+    # session WITH history would otherwise read ZERO stats until the first turn
+    # and start at thinking level ``off`` however the session was left. Seed now;
+    # the return says whether a level was applied. It is read here, upstream of
+    # the mode dispatch, so TUI / ``--print`` / ``--mode json`` / RPC share it.
+    thinking_level_restored = await _seed_startup_state(
+        harness, session, cli_level=parsed.thinking
+    )
     runtime = await create_agent_session_runtime(
         harness, _harness_factory, repo=repo, fs=fs
     )
@@ -3008,6 +3059,11 @@ async def _async_main(argv: list[str]) -> int:
                 permission_ext=permission_ext,
                 permission_posture=permission_posture,
                 settings_manager=settings_manager,
+                # #198 — a level came from --thinking / a profile / the resumed
+                # session, so the settings-default seed inside run_tui must not
+                # fire over it. It cannot work this out by sniffing the value: a
+                # restored explicit ``off`` looks exactly like "never set".
+                thinking_level_restored=thinking_level_restored,
                 # #112 (pi parity) — the /reload tail that records an implicit
                 # project trust once it has actually been used.
                 save_implicit_trust_after_reload=_save_implicit_trust_after_reload,

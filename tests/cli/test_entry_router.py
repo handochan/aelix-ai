@@ -214,6 +214,11 @@ async def test_interactive_mode_dispatches_to_run_tui(
         extension_errors: object = None,
         agent_service: object = None,
         first_run_login: bool = False,
+        # #198 — whether entry.py already applied a thinking level (CLI/profile
+        # or the resumed session), so run_tui's defaultThinkingLevel seed stands
+        # down. Shape-checked here; the behaviour is pinned in
+        # tests/tui/test_run_tui_smoke.py.
+        thinking_level_restored: bool = False,
         # #112 — the /reload tail that persists an implicit project trust.
         # Named explicitly rather than swallowed by ``**kwargs``: this stub is a
         # DOUBLE for ``run_tui``, and a double that accepts anything stops
@@ -246,6 +251,7 @@ async def test_interactive_mode_dispatches_to_run_tui(
         # truth table and the wiring's value live in
         # tests/cli/test_first_run_onboarding.py.
         tui_permission["first_run_login"] = first_run_login
+        tui_permission["thinking_level_restored"] = thinking_level_restored
         return 0
 
     # WP-0 nit: capture the held permission objects entry.py constructs so we can
@@ -307,6 +313,9 @@ async def test_interactive_mode_dispatches_to_run_tui(
     assert isinstance(tui_permission["extensions"], list)
     # #23: always a concrete bool — run_tui must never have to guess.
     assert isinstance(tui_permission["first_run_login"], bool)
+    # #198: same contract. ``--no-session`` restores nothing, so it is False and
+    # the settings-default seed still gets to run.
+    assert tui_permission["thinking_level_restored"] is False
 
 
 async def test_auth_callback_wired_without_api_key(

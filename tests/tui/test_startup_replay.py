@@ -139,7 +139,7 @@ async def test_cold_start_paints_only_the_banner() -> None:
 
     Its value is that it fails if the startup replay ever loses its
     empty-history guard and starts emitting a marker (or a clear) on a normal
-    launch — the same guard `_seed_startup_messages` uses.
+    launch — the same guard `_seed_startup_state` uses.
     """
 
     screen = await _render_startup([])

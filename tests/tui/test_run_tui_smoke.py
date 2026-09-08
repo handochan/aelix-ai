@@ -151,6 +151,7 @@ def _launch(
     chrome: AelixChrome,
     *,
     settings_manager: object | None = None,
+    thinking_level_restored: bool = False,
 ) -> asyncio.Task[int]:
     return asyncio.ensure_future(
         run_tui(
@@ -159,6 +160,7 @@ def _launch(
             chrome=chrome,
             install_signal_handlers=False,
             settings_manager=settings_manager,  # type: ignore[arg-type]
+            thinking_level_restored=thinking_level_restored,
         )
     )
 
@@ -1540,6 +1542,69 @@ async def test_run_tui_seeds_default_thinking_level_when_supported() -> None:
     sm = SettingsManager.in_memory({"defaultThinkingLevel": "medium"})
     async with _harness_chrome(harness=harness) as (runtime, chrome, pipe):
         task = _launch(runtime, chrome, settings_manager=sm)
+        await _wait(lambda: chrome.app.is_running)
+        await _wait(lambda: harness.level_set == ["medium"])
+        pipe.send_text("/quit\n")
+        await asyncio.wait_for(task, timeout=5)
+    assert harness.level_set == ["medium"]
+
+
+async def test_run_tui_settings_seed_skips_when_level_was_restored() -> None:
+    """Issue #198 — the ``defaultThinkingLevel`` seed must not fire over a level
+    the resume already applied.
+
+    The harness sits at ``"off"`` here on purpose: that is a session whose last
+    recorded level was an explicit ``off``, and the ADR-0196 guard sniffs the
+    value, so it cannot tell that apart from "never set". Since #198 makes an
+    idle ``set_thinking_level`` WRITE to the session, an unguarded seed would
+    overwrite the user's ``off`` in the transcript on first launch — permanently.
+    ``entry.py`` supplies the positive signal instead.
+    """
+
+    from aelix_ai.models import Model
+    from aelix_ai.settings import SettingsManager
+
+    model = Model(
+        id="m",
+        api="anthropic",
+        reasoning=True,
+        thinking_level_map={"low": 2048, "medium": 8192, "high": 16384},
+    )
+    harness = _ThinkingSeedHarness(model)
+    harness._state.thinking_level = "off"
+    sm = SettingsManager.in_memory({"defaultThinkingLevel": "medium"})
+    async with _harness_chrome(harness=harness) as (runtime, chrome, pipe):
+        task = _launch(
+            runtime, chrome, settings_manager=sm, thinking_level_restored=True
+        )
+        await _wait(lambda: chrome.app.is_running)
+        pipe.send_text("hi\n")  # barrier: the startup seed already ran before this
+        await _wait(lambda: runtime.harness.prompts == [("hi", "interactive")])
+        pipe.send_text("/quit\n")
+        await asyncio.wait_for(task, timeout=5)
+    assert harness.level_set == []
+
+
+async def test_run_tui_seed_still_fills_untouched_case() -> None:
+    """The #198 signal is a skip, not a kill switch: with nothing restored the
+    ADR-0196 settings seed still fills a session that has no level of its own."""
+
+    from aelix_ai.models import Model
+    from aelix_ai.settings import SettingsManager
+
+    model = Model(
+        id="m",
+        api="anthropic",
+        reasoning=True,
+        thinking_level_map={"low": 2048, "medium": 8192, "high": 16384},
+    )
+    harness = _ThinkingSeedHarness(model)
+    harness._state.thinking_level = "off"
+    sm = SettingsManager.in_memory({"defaultThinkingLevel": "medium"})
+    async with _harness_chrome(harness=harness) as (runtime, chrome, pipe):
+        task = _launch(
+            runtime, chrome, settings_manager=sm, thinking_level_restored=False
+        )
         await _wait(lambda: chrome.app.is_running)
         await _wait(lambda: harness.level_set == ["medium"])
         pipe.send_text("/quit\n")
@@ -2945,7 +3010,7 @@ async def test_run_tui_startup_survives_a_session_without_a_branch() -> None:
 # That ran on ``turn_end`` alone, which is too early AND too rare:
 #
 #  - too EARLY on the success path: the harness extends ``_state.messages`` with
-#    the turn's messages at ``harness/core.py:4598``, AFTER the loop has already
+#    the turn's messages at ``harness/core.py:4643``, AFTER the loop has already
 #    emitted ``turn_end``, so a turn_end refresh estimates over a message list
 #    missing the turn that just finished — the footer sat one turn behind. The
 #    ``settled`` hook fires immediately after that extend, so it is the first
@@ -3025,7 +3090,7 @@ async def test_shell_refreshes_the_meter_on_settled_not_only_turn_end() -> None:
     Emits through the REAL :class:`HookBus`, so the handler's ``(event, ctx)``
     arity is genuinely exercised: the bus calls ``handler(event, ctx)``
     (``hooks.py:1349``), and a one-parameter handler raises ``TypeError`` here
-    instead of being swallowed at DEBUG the way ``core.py:4606-4607`` swallows it in
+    instead of being swallowed at DEBUG the way ``core.py:4651-4652`` swallows it in
     production.
     """
 
@@ -3122,7 +3187,7 @@ class _OutOfOrderStatsHarness(FakeHarness):
     """First stats read is SLOW and STALE; every later read is fast and fresh.
 
     Reproduces the real interleaving: ``turn_end`` fires first and snapshots
-    ``state.messages`` BEFORE ``core.py:4598`` extends it, then ``settled`` fires
+    ``state.messages`` BEFORE ``core.py:4643`` extends it, then ``settled`` fires
     and reads the extended list — but the first read can still FINISH last,
     because each awaits ``get_branch`` file I/O.
     """
