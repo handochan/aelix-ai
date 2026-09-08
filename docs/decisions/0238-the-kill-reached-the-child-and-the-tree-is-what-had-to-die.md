@@ -598,11 +598,12 @@ empty, so only the group kill of the paragraph below reaches anything there.
   `pdeathsig` its spawn already installs.
 - **What #227's adoption added (amendment, 2026-09-08).** The chain, best
   first, is `$SHELL` when it names a file that exists → `sh` on `PATH` → `pwsh`
-  → `powershell` → `%COMSPEC%` → `cmd.exe`, and the first candidate that SPAWNS
-  wins; a candidate that is missing, not executable, or **not a loadable program
-  image** is skipped, and a chain where every candidate fails still answers the
-  `None` this site answered before. `sh` sits at step 2 and not lower because a
-  `!command` was written for `sh` — it was hard-coded — so a Windows box with
+  → `powershell` → `%COMSPEC%` → `%SystemRoot%\System32\cmd.exe` → `cmd.exe`
+  (the second-to-last step added by #241, order otherwise unchanged), and the
+  first candidate that SPAWNS wins; a candidate that is missing, not executable,
+  or **not a loadable program image** is skipped, and a chain where every
+  candidate fails still answers the `None` this site answered before. `sh` sits
+  at step 2 and not lower because a `!command` was written for `sh` — it was hard-coded — so a Windows box with
   an `sh` on `PATH` and no `SHELL` set (Git for Windows, MSYS2, Cygwin) keeps
   running it under the shell it was written for; a `$SHELL` that names an
   existing file still wins at step 1, because it is the user's explicit choice.
@@ -618,6 +619,85 @@ empty, so only the group kill of the paragraph below reaches anything there.
   is absent, so a `spawn_hook` that hands the tool an env with no `PATH` now
   yields `%COMSPEC%`/`cmd.exe` rather than falling back to the host `PATH` and
   finding `pwsh`.
+
+  **#241 착지 (amendment, 2026-09-08) — 사용자가 이름을 대지 않은 후보는 절대경로일
+  때만 채택한다.** `shutil.which`가 이 체인에서 빠졌다: win32에서 `path=`를 명시해도
+  CWD를 먼저 뒤진다(CPython 소스 실측 — 3.11은 무조건, 3.12-3.14는
+  `NeedCurrentDirectoryForExePath`가 막지 않는 한이고, **3.11은 이 저장소의 CI
+  레그다**). 대신 `PATH`를 직접 순회하며 **절대경로가 아닌 컴포넌트는 건너뛴다**
+  (빈 값·`.`·`relbin`·드라이브 상대 `C:foo`) — POSIX에서도 같은 구멍이라
+  `!command`의 `sh`와 bash 툴의 `bash`도 같은 순회로 절대 해석한다(darwin 실측:
+  `PATH=":/usr/bin:/bin"` + cwd의 `sh` → 심어 둔 파일이 실행됐다). `PATHEXT`는
+  `env`에서 읽어 CPython **3.12+**의 규칙(3.12.13의 `shutil.py:1536-1551`)을 그대로
+  적용한다 — 3.11에는 `rstrip('.')`이 없고 확장자를 가진 이름에 bare 이름 하나만
+  쓰지만, 이 모듈이 찾는 이름(`sh`/`pwsh`/`powershell`/`bash`)은 확장자가 없어 두
+  갈래가 갈라지지 않는다.
+  🔴 **체인에 후보 하나가 늘었다**: `%SystemRoot%\System32\cmd.exe`(존재할 때,
+  기본값 `C:\Windows` — `_process_tree.py`의 `taskkill` 해석과 같은 모양)가
+  `%COMSPEC%`와 맨 bare `cmd.exe` 사이에 **무조건** 들어간다. `%COMSPEC%`가 이미 그
+  경로인 stock 박스에서는 같은 프로그램이 체인에 두 번 오른다 — 의도된 것이다:
+  플로어의 존재를 그것이 살아남으려는 바로 그 변수에 의존시키면 플로어가 아니고,
+  대가는 존재 검사를 통과한 후보가 이미 성공했을 자리에서 fall-through하는 호출자가
+  같은 spawn을 한 번 더 시도하는 것뿐이다. bare `cmd.exe`는 `[0]`가 항상 존재해야
+  하므로 남는다.
+  🔴 **상대 `%COMSPEC%`를 버리는 것은 CPython보다 엄격하고 의도된 divergence다**:
+  `subprocess.py:1505-1529`는
+  `%ComSpec%`가 **unset이거나 빈 문자열일 때만** `%SystemRoot%`를 보고, `isabs`는
+  `executable=`을 고를 때만 쓴다 — 이 사이트는 셸을 **spawn하지 않고 이름만 대며**
+  두 spawn 지점 모두 `lpApplicationName = None`이라 그 보호를 물려받을 수 없다.
+  🔴 **`$SHELL`은 필터하지 않는다**: 사용자가 명시한 셸이고(#227이 문서화한 방법),
+  위협 모델은 "내가 `cd`한 디렉터리에 공격자가 파일을 썼다"이지 "공격자가 내 환경을
+  소유한다"가 아니다. `%COMSPEC%`는 이 바구니에 없다 — Aelix 설정이 아니라 stock
+  Windows 변수다. 절대성 판정은 `posixpath.isabs`와, **드라이브를 요구하는**
+  `ntpath.isabs`의 합집합이며 플랫폼 seam **밖**이다. 드라이브 조건은 3.13+의
+  `ntpath.isabs`를 앞당겨 채택한 것이다 — 그것이 없으면 루트 없는 `\dir`가
+  3.11/3.12에서만 통과하는데, 그 항목은 Windows에서 드라이브 상대이고 POSIX에서는
+  `os.path.join("\dir", "sh")`가 CWD에 대해 풀리는 그냥 상대 경로다(3.12.13 실측:
+  심어 둔 `./\evil/sh`가 반환됐다). 맨 `os.path.isabs`는 Windows 밖에서 posixpath라
+  `C:\Windows\system32\cmd.exe`를 상대로 읽어 기존 케이스 5개를 POSIX 레그에서만
+  빨갛게 만든다(실측 `5 failed, 88 passed` vs 합집합 `93 passed`). 대가: 상대 `PATH`
+  항목(`.`, `node_modules/.bin`, direnv)으로 닿던 셸은 더 이상 발견되지 않는다.
+  win32 동작은 대부분 여전히 **소스·문서 추론**이고 증거는 CI 레그뿐이다 — 다만
+  `windows-latest`는 이제 실제 `%SystemRoot%\System32\cmd.exe`가 `!command`를
+  **스폰해서 실행**하는 것과, 그 후보를 무력화했을 때(=`cmd.exe`가 없는 절대
+  `%SystemRoot%`) bare `cmd.exe` 명령줄이 여전히 도는 것을 둘 다 증명한다.
+  🔴 **기본값은 절대경로가 아닌 `%SystemRoot%`에도 적용된다**(브랜치 독립 리뷰 수정):
+  없음·빈 값만이 아니라 상대값(`winroot`)도 `C:\Windows`로 떨어진다. 상대
+  `%SystemRoot%`는 CWD에 대해 풀리는, 이 이슈가 바로 불신하는 입력이고, 이 단계
+  아래에는 bare 이름밖에 없다 — 그래서 `%COMSPEC%`처럼 **버리는** 규칙을 쓸 수 없다
+  (`%COMSPEC%` 아래에는 이 플로어가 있다). `_process_tree.py`의 `or`가 빈 값만 보는
+  것과 갈리는 두 번째 지점이며, 그쪽은 bare `taskkill`로 재시도하므로 대가가 없다.
+  이 규칙은 win32 밖에서도 실측된다 — `os.path.join(r"C:\Windows", …)`가 POSIX에서는
+  상대 이름이라 기본값을 cwd 아래 심어 놓고 `exists()` 게이트를 그대로 통과시킬 수
+  있고, `test_the_floor_defaults_to_c_windows_on_every_leg`가 그렇게 한다(이전에는
+  win32 전용 케이스 하나뿐이라 기본값을 지워도 darwin에서 125 passed로 green이었다).
+
+  🔴 **레그가 반증한 것 (2026-09-08, CI run 34238824791) — 다시 믿지 말 것.**
+  두 가지가 실측으로 뒤집혔고 둘 다 테스트 쪽 오류였다(제품 동작은 그대로 옳다).
+  (1) **`%SystemRoot%` 키를 지워도 floor에 닿지 않는다.** 지우면 기본값
+  `C:\Windows`가 그 자리를 메우고 그 파일은 러너에 실재하므로,
+  `"C:\Windows\System32\cmd.exe" /d /s /c "echo x"`가 bare 이름보다 **먼저**
+  스폰됐다. 그것이 이 기본값의 의도다 — 변수를 지우는 것만으로 사라지는 바닥은
+  바닥이 아니고, `C:\Windows`는 CWD가 흔들 수 없는 고정 시스템 경로다. bare floor를
+  실행시키려면 존재하지 않는 절대 `%SystemRoot%`로 후보를 **무력화**해야 하며,
+  그것은 `env=`(해석 seam, `Popen`에 넘어가지 않음)로만 말한다 — 자식에게 깨진
+  `%SystemRoot%`를 물려주면 #209가 측정한 Winsock 실패(`WinError 10106`) 모양이 된다.
+  (2) **`shutil.which`의 CWD 우선 탐색은 이제 추론이 아니라 실측이다.** 3.11·3.12
+  양쪽에서 `shutil.which("pwsh", path=<pwsh가 든 절대 디렉터리>)`가 cwd에 심어 둔
+  사본을 `'.\pwsh.EXE'`로 — **상대 경로로** — 돌려줬다. 즉 이 이슈가 막는 구멍은
+  레그에서 재현됐다. 그 케이스가 빨갰던 이유는 러너가
+  `NoDefaultCurrentDirectoryInExePath`를 켰기 때문이 아니라(켜지 않았다) 반환값을
+  cwd에 대해 풀지 않고 절대 경로와 문자열 비교했기 때문이다. 그 컨트롤은 이제
+  풀어서 비교하고, 정말로 성립하지 않는 러너에서는 **`pytest.skip`**한다 — 영구
+  red보다 낫다. 그 skip이 제품 쪽 주장까지 데려가지는 않는다: 레그에서는 한 번도
+  skip하지 않는 `test_win32_the_answer_does_not_depend_on_the_curdir_variable`가
+  같은 답(cwd에 심어 둔 `pwsh.exe`가 아니라 `PATH` 사본)을 컨트롤 없이 단언하고,
+  모든 레그에서는 `test_a_cwd_copy_loses_to_the_path_copy_on_every_leg`와 기존
+  `test_a_path_component_that_is_not_absolute_contributes_nothing`이 같은 구멍의
+  **`.` 컴포넌트 형태**를 단언한다. 🔴 **암묵적 prepend 자체는 POSIX에서 단언할 수
+  없다** — 그렇게 하는 `which`가 없으므로 POSIX 레그는 그것으로 빨개질 수 없고,
+  "every leg" 케이스가 증명하는 것은 `PATH`가 명시한 cwd 항목 쪽이다(브랜치 독립
+  리뷰가 잡았다: 고치기 전 그 케이스는 pre-#241 코드에서도 green이었다).
 
   The three coding-agent consumers (`dialect_for_shell`,
   `is_classifiable_shell`, the PowerShell classifier's name normaliser) import
@@ -681,6 +761,13 @@ empty, so only the group kill of the paragraph below reaches anything there.
   [#241](https://github.com/handochan/aelix-ai/issues/241) for
   `shutil.which`'s CWD-first search now deciding which program runs a
   credential command,
+  before: `get_api_key_and_headers` is the harness's per-request callback and
+  the registry path is deliberately uncached, so a box that lands on PowerShell
+  pays about half a second per model turn (pwsh 7.6.5, 455 ms median against
+  `sh`'s 3.2 ms; 5.1 is typically slower). Split out as
+  [#240](https://github.com/handochan/aelix-ai/issues/240); **#241
+  (`shutil.which`'s CWD-first search deciding which program runs a credential
+  command) landed 2026-09-08 — see the amendment above**; and
   [#242](https://github.com/handochan/aelix-ai/issues/242) for
   `resolve_config_value` caching an empty value where its sibling returns
   `None`, and [#243](https://github.com/handochan/aelix-ai/issues/243) for the

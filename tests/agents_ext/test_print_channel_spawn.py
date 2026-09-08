@@ -350,7 +350,7 @@ _GRANDCHILD_BODY = (
 def _grandchild_stub(marker: Path) -> str:
     """A child that forks a SESSION-LEADER grandchild, exactly like ``bash``.
 
-    ``tools/bash.py:294`` spawns through
+    ``tools/bash.py:291`` spawns through
     ``containment_spawn_kwargs(new_session=True)`` — ``start_new_session=True``
     on POSIX, before and after #222 — so a grandchild is the leader of its OWN
     process group and ``os.killpg`` on the child's group cannot reach it
@@ -1337,8 +1337,8 @@ def test_pdeathsig_is_sigterm_and_that_is_a_measured_choice(
     that BLOCKS SIGTERM (pthread_sigmask) -> state='S (sleeping)'`` three seconds
     after the parent was SIGKILLed). That half is real. The proposed fix is not:
     SIGKILL denies the child its own cleanup, and the child's cleanup is the
-    ONLY thing that reaches its ``bash`` grandchildren — ``tools/bash.py:294``
-    and ``tools/_subprocess.py:107`` both spawn through
+    ONLY thing that reaches its ``bash`` grandchildren — ``tools/bash.py:291``
+    and ``tools/_subprocess.py:106`` both spawn through
     ``containment_spawn_kwargs(new_session=True)``, which on POSIX is the
     ``start_new_session=True`` both lines used to spell literally, so each
     grandchild leads its own group and nothing outside the child can find them
@@ -1390,7 +1390,7 @@ _PDEATH_CHILD = textwrap.dedent(
     def _bye(*_a):
         # What a REAL aelix child does on SIGTERM:
         # _signal_cleanup_and_exit -> dispose() -> abort() -> the bash tool's
-        # abort watcher (bash.py:479-494), which since #222 ends a ProcessTree
+        # abort watcher (bash.py:453-468), which since #222 ends a ProcessTree
         # instead of calling the _kill_group this stub imitates. On POSIX that
         # is still killpg(pgid, SIGKILL), which is why the stub still stands.
         try:
@@ -1590,7 +1590,7 @@ async def test_double_cancellation_still_kills(tmp_path: Path) -> None:
 async def test_bash_grandchild_killed_on_sigkill_leg(tmp_path: Path) -> None:
     """FINDING I2 — ``os.killpg`` cannot reach a session-leader grandchild.
 
-    ``tools/bash.py:294`` and ``tools/_subprocess.py:107`` both spawn through
+    ``tools/bash.py:291`` and ``tools/_subprocess.py:106`` both spawn through
     ``containment_spawn_kwargs(new_session=True)`` — ``start_new_session=True``
     on POSIX — so every tool subprocess the child starts is the leader of its
     own group. On the COOPERATIVE leg the child's own

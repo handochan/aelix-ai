@@ -59,12 +59,15 @@ Two facts were measured rather than assumed, and both shaped the design:
   command's output until the pipe closes, and the leaves `taskkill` could not
   reach were holding it, so the tool call did not return past its own timeout.
 
-A third fact shaped the *tests*: `shutil.which` itself branches on
-`sys.platform` and then calls `_winapi`, which is `None` off Windows. So
-`monkeypatch.setattr(sys, "platform", "win32")` crashes inside the very PATH
-probe under test. The win32 arms therefore take an injected `platform`
-argument. Anyone extending this slice should follow that pattern rather than
-re-discovering the crash.
+A third fact shaped the *tests*: the win32 arms take an injected `platform`
+argument rather than a patched `sys.platform`, because that argument picks which
+*chain* to build and deliberately not the naming rule the `PATH` probe uses — so
+a win32 chain can be asserted from a POSIX box against extensionless fixtures.
+The reason originally recorded here was that `shutil.which` branches on
+`sys.platform` and then calls `_winapi`, which is `None` off Windows; that was
+never true on 3.11 (whose `shutil` does not import `_winapi` at all) and #241
+took `shutil.which` off this path entirely. The conclusion stands, its ground
+moved. Anyone extending this slice should follow the pattern.
 
 ## Remaining — required before a `windows-latest` leg can be trusted
 

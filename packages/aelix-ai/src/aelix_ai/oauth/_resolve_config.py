@@ -4,7 +4,8 @@ Stored configuration values in Pi's ``auth.json`` can use two
 indirection forms:
 
 - ``!<command>``: the rest of the string is executed as a shell
-  command — ``sh -c <command>`` on POSIX, and on win32 the first shell
+  command — ``sh -c <command>`` on POSIX, with the ``sh`` resolved to an
+  absolute path on ``PATH`` since #241, and on win32 the first shell
   of the resolved chain that spawns (#227); the trimmed stdout becomes
   the resolved value. Per-command results are cached so repeated reads
   do not re-fork the shell; the ``models.json`` family below takes a
@@ -48,6 +49,8 @@ from aelix_ai.utils._shell import (
     NOT_A_RUNNABLE_SHELL,
     POWERSHELL_NAMES,
     ShellConfig,
+    _env_get,
+    _which_on_path,
     shell_basename,
     windows_command_shells,
 )
@@ -258,9 +261,13 @@ def _shell_argv_candidates(
 ) -> list[list[str] | str]:
     """Every shell this machine might run ``cmd`` under, best first.
 
-    POSIX is byte-identical to what this site has always spawned: one candidate,
-    ``["sh", "-c", cmd]``, and no PATH probe. The list is longer than one only on
-    win32, where ``sh`` is not a given:
+    POSIX is one candidate, as it has always been — but since #241 it is an
+    ABSOLUTE ``sh`` rather than the bare name. ``["sh", "-c", cmd]`` goes to
+    ``execvp``, which searches an empty or relative ``PATH`` component against
+    the current directory: measured on darwin, ``PATH=":/usr/bin:/bin"`` with a
+    planted ``sh`` in the cwd ran the planted file on the credential path. The
+    price is one ``PATH`` walk per spawn (24.4 µs on a 25-entry miss). The list
+    is longer than one only on win32, where ``sh`` is not a given:
 
     ===  ================  ==========================================
     \\#    candidate         invocation
@@ -272,29 +279,42 @@ def _shell_argv_candidates(
                            (Git-for-Windows, MSYS2, Cygwin); step 1 still wins
     3    ``pwsh``          ``[path, *_POWERSHELL_HARDENING, "-Command", cmd]``
     4    ``powershell``    same
-    5    ``%COMSPEC%``     a raw command line, ``"<path>" /d /s /c "<cmd>"``
-    6    ``cmd.exe``       same — the floor, and the only candidate needing
-                           no PATH probe
+    5    ``%COMSPEC%``     a raw command line, ``"<path>" /d /s /c "<cmd>"`` —
+                           only when it is absolute (#241)
+    6    ``%SystemRoot%``  same, against ``<root>\\System32\\cmd.exe`` when that
+                           file exists; ``C:\\Windows`` when the key is unset
+    7    ``cmd.exe``       same — the floor, and the only candidate that names
+                           no path at all
     ===  ================  ==========================================
 
-    Steps 1 and 3-6 are ``_resolve_shell_win32``'s chain unchanged (#104), so one
-    machine gets one shell answer for both callers; step 2 is the only difference
-    and is deliberately not taken by the bash tool (ADR-0237/#204).
+    Steps 1 and 3-7 are ``_resolve_shell_win32``'s chain (#104, with step 6 added
+    at the floor by #241), so one machine gets one shell answer for both callers;
+    step 2 is the only difference and is deliberately not taken by the bash tool
+    (ADR-0237/#204).
 
     ``platform`` and ``env`` are resolution seams, spelled like
     :func:`_stopped_by_the_terminal`'s and read through the same
     :func:`_resolve_platform`. ``env`` is a resolution seam ONLY — it is never
     passed to :class:`subprocess.Popen`, so the child still inherits
-    :data:`os.environ`.
+    :data:`os.environ`. Its default is resolved ABOVE the platform branch
+    because both production callers pass no ``env`` at all and the POSIX arm now
+    reads it too; leaving the default inside the win32 branch would raise
+    ``AttributeError`` on every ``!command``. ``windows=False`` at that arm is a
+    fact rather than a seam value — the win32 branch returns below it.
     """
 
+    env = os.environ if env is None else env
     if _resolve_platform(platform) != "win32":
-        return [["sh", "-c", cmd]]
+        sh = (
+            _which_on_path(
+                "sh", path=_env_get(env, "PATH", fold=False), env=env, windows=False
+            )
+            or "/bin/sh"
+        )
+        return [[sh, "-c", cmd]]
     return [
         _shell_argv(shell, cmd)
-        for shell in windows_command_shells(
-            os.environ if env is None else env, include_posix_sh=True
-        )
+        for shell in windows_command_shells(env, include_posix_sh=True)
     ]
 
 

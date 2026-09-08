@@ -974,6 +974,54 @@ and `.../releases/tag/vX` link would 404. Add them with the first pushed tag.
   instead resolves to `HIGH`, the top of that scale, because `thinkingLevel`
   has no dynamic value to hand back — same rule, different alphabet. See
   [#250](https://github.com/handochan/aelix-ai/issues/250).
+- **A program sitting in the folder Aelix is running in can no longer become the
+  shell.** The shell chain — what runs a `models.json` / `auth.json` `!command`,
+  what the bash tool runs your commands under, and which grammar the AUTO
+  permission gate reads them with — resolved its candidates with `shutil.which`,
+  and on Windows that searches the current directory **before** `PATH`: read
+  from CPython's own source, 3.11 unconditionally and 3.12-3.14 unless a Windows
+  environment variable says otherwise, both *even when the search path is passed
+  explicitly* — and then measured on CI's `windows-latest` runner under both
+  interpreters, where stock `which` handed back the copy planted in the current
+  directory. Cloning a repository and starting Aelix inside it was enough for a
+  `pwsh.exe` there to be handed your `op read`. The same hole was open on macOS
+  and Linux by another route — a `!command` was run by a bare `sh`, and an empty
+  or `.` entry in `PATH` means the current directory; measured on darwin, a
+  planted `sh` ran instead of `/bin/sh`.
+
+  Aelix now walks `PATH` itself, skipping any entry that is not absolute, applies
+  `PATHEXT` the way Windows does, resolves the POSIX `sh` and the bash tool's
+  `bash` to absolute paths as well, and puts an existing
+  `%SystemRoot%\System32\cmd.exe` ahead of the bare name `cmd.exe`, which
+  Windows looks for in the application's own directory and then, unless
+  `NoDefaultCurrentDirectoryInExePath` is set, in the current directory — both
+  *before* the system directories and `PATH`. That step goes in
+  **unconditionally**, so on a stock box, where `%COMSPEC%` already is that same
+  path, the chain names one program twice: gating it on `%COMSPEC%` being unset,
+  empty or relative would make the floor's presence depend on the very variable
+  it exists to survive, and the duplicate costs at most one repeated spawn
+  attempt, on the caller that falls through, after an attempt on an
+  existence-checked path that already worked. When `%SystemRoot%` is unset,
+  empty, or set to anything that is not an absolute path, the step falls back to
+  the stock `C:\Windows` rather than to the bare name — a fixed system path,
+  not one your working directory can influence, which is exactly what a relative
+  `%SystemRoot%` resolves against, and the same default Aelix already uses to
+  find `taskkill.exe`. CPython hardened its own `shell=True` spawn the same way
+  (gh-101283); Aelix goes further and **drops** a
+  relative `%COMSPEC%` instead of passing it on, because CPython's protection for
+  that case is `executable=`, which a site that names a shell rather than
+  spawning one cannot use.
+
+  **What you give up:** a shell reached through a relative `PATH` entry (`.`,
+  `bin`, `node_modules/.bin`) is no longer found — name the directory absolutely.
+  On Windows that includes a rooted-but-drive-less entry such as `\tools`, which
+  resolves against whatever drive you happen to be on rather than against a
+  named one.
+  A `$SHELL` you exported yourself is still taken verbatim: it is you naming a
+  shell, not Aelix guessing one. Windows behaviour is **reasoned from CPython and
+  Microsoft's documented search order and proven only by CI's `windows-latest`
+  leg**; nobody has run it on a Windows desktop. See
+  [#241](https://github.com/handochan/aelix-ai/issues/241) and ADR-0238.
 
 - **Pressing Esc no longer kills a helper an extension's command left running.**
   `aelix.exec(...)` runs a command's tree contained, and after the command exits

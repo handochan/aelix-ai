@@ -14,10 +14,13 @@ grammar describes. Now the dialect is an INPUT to the verdict:
   holds by construction rather than by auditing two tables against each other.
 
 These tests RUN on Linux and on the gating ``windows-latest`` leg. They patch
-what ``_resolve_shell`` REPORTS rather than ``sys.platform``, because
-``shutil.which`` branches on the latter and touches ``_winapi``, which is
-``None`` off Windows — the same seam ``test_permission_shell_competence.py``
-(``:37-47``) uses, and the reason nothing here is skipped.
+what ``_resolve_shell`` REPORTS rather than ``sys.platform``, because the
+dialect is a function of the resolved shell and nothing else — the same seam
+``test_permission_shell_competence.py`` (``:37-47``) uses, and the reason
+nothing here is skipped. The reason first recorded here was that
+``shutil.which`` branches on ``sys.platform`` and touches ``_winapi``, which is
+``None`` off Windows; #241 removed ``which`` from that path, and the seam is
+kept because it is the right one, not because patching would crash.
 """
 
 from __future__ import annotations

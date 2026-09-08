@@ -32,15 +32,15 @@ Two defences, and BOTH are required:
 
 WHY A ``/proc`` WALK AND NOT ``os.killpg`` (finding I2). An earlier draft
 justified the group kill with *"the child's own ``bash`` tool children must die
-too"*. That is factually wrong: ``tools/bash.py:294`` and
-``tools/_subprocess.py:107`` both spawn through
+too"*. That is factually wrong: ``tools/bash.py:291`` and
+``tools/_subprocess.py:106`` both spawn through
 ``containment_spawn_kwargs(new_session=True)`` — which is the
 ``start_new_session=True`` those two lines used to spell literally, and still is
 on POSIX — so a grandchild is the leader of its OWN group and ``killpg`` on the
 child's group cannot reach it. The descendant walk can.
 
 On the COOPERATIVE SIGTERM leg the walk is redundant — the child's own
-``_signal_cleanup_and_exit`` → ``dispose()`` → ``abort()`` → ``bash.py:479-494``
+``_signal_cleanup_and_exit`` → ``dispose()`` → ``abort()`` → ``bash.py:453-468``
 already reaps its grandchildren. That last hop was a ``_kill_group(proc.pid)``
 until #222 and is the bash tool's own ``ProcessTree`` now, so on Windows it
 reaches a grandchild whose intermediate parent already exited (a job does;
