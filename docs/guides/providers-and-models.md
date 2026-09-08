@@ -156,6 +156,26 @@ recorded into a session that has not chosen a level yet — so the next
 `/resume` the target session's own recorded level wins, launch flag included —
 you asked for that session, not for a re-run of the command line.
 
+What `xhigh` means depends on how the model thinks. On a model that takes a
+Claude-style token budget it sends a larger budget than `high` — 32768 against
+16384 — except where the model's output cap is tighter than the budget, in
+which case the budget shrinks to leave 1024 tokens for the answer and the two
+levels can come out equal (`openai/gpt-5.2-chat` and `openai/gpt-5.3-chat`,
+output cap 16384, are the shipped examples). Equal is as close as they get: a
+higher level never sends a *smaller* budget than a lower one, whatever you
+override `maxTokens` to. On an adaptive model (Opus 4.6, Opus 4.7 and Sonnet
+4.6) it selects the model's own top effort rather than a token count. On Gemini
+2.x there is nothing above `high`: that level is already the API's
+`thinkingBudget` ceiling.
+
+A model that does not list `xhigh` gets `high` instead — `--thinking` accepts
+the level on any model, and each provider clamps it to what the model offers.
+
+Override a Claude-style row's `maxTokens` below 2048 and thinking is **off**
+for it, whatever level you pick: the API wants a thinking budget of at least
+1024 that is still smaller than the request, and below 2048 no such number
+also leaves the answer its 1024 tokens.
+
 ## Offline
 
 `--offline` (equivalent to `PI_OFFLINE=1`) skips the network operations aelix

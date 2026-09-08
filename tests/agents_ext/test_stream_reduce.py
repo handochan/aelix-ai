@@ -419,7 +419,7 @@ def test_usage_sums_with_missing_keys() -> None:
 def test_usage_null_on_errored_message() -> None:
     """``usage`` is ``None`` on an errored message and must not zero the totals.
 
-    ``providers/anthropic.py:156-157`` returns ``None`` outright when every
+    ``providers/anthropic.py:157-158`` returns ``None`` outright when every
     counter is zero, so this is the normal shape of a failed turn.
     """
 

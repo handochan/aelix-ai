@@ -17,9 +17,14 @@ from aelix_ai.settings import (
     ProviderRetrySettings,
     RetrySettings,
     Settings,
+    SettingsManager,
     TerminalSettings,
     ThinkingBudgetsSettings,
     WarningSettings,
+)
+from aelix_ai.settings.settings_manager import (
+    _json_dict_to_settings,
+    _settings_to_json_dict,
 )
 
 
@@ -100,10 +105,42 @@ def test_nested_dataclass_defaults() -> None:
         auto_resize=None, block_images=None
     )
     assert ThinkingBudgetsSettings() == ThinkingBudgetsSettings(
-        minimal=None, low=None, medium=None, high=None
+        minimal=None, low=None, medium=None, high=None, xhigh=None
     )
     assert MarkdownSettings() == MarkdownSettings(code_block_indent=None)
     assert WarningSettings() == WarningSettings(anthropic_extra_usage=None)
+
+
+def test_thinking_budgets_xhigh_survives_the_json_boundary() -> None:
+    """#250: the fifth tier needs a row in ``NESTED_PY_TO_JSON`` too.
+
+    ``_json_dict_to_nested`` drops any JSON key absent from that table
+    *silently*, so a field added to the dataclass alone would read back None.
+    """
+
+    m = SettingsManager.in_memory({"thinkingBudgets": {"xhigh": 40000}})
+    budgets = m.get_thinking_budgets()
+    assert budgets is not None
+    assert budgets.xhigh == 40000
+
+
+def test_the_xhigh_key_is_accepted_but_never_written() -> None:
+    """#250 Codex cross-review: the CHANGELOG said files "gain" the key.
+
+    They do not, and this is the measurement that says so — a fresh install
+    omits the whole ``thinkingBudgets`` block, and a file carrying only
+    ``high`` reads back and re-serializes with only ``high``. The shape
+    *accepts* a fifth key when you write one; nothing writes it for you.
+    """
+
+    fresh = _json_dict_to_settings({})
+    assert fresh.thinking_budgets is None
+    assert "thinkingBudgets" not in _settings_to_json_dict(fresh)
+
+    existing = _json_dict_to_settings({"thinkingBudgets": {"high": 8192}})
+    assert existing.thinking_budgets == ThinkingBudgetsSettings(high=8192)
+    assert existing.thinking_budgets.xhigh is None
+    assert _settings_to_json_dict(existing) == {"thinkingBudgets": {"high": 8192}}
 
 
 def test_package_source_str_form() -> None:

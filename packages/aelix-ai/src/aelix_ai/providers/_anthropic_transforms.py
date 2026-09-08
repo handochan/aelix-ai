@@ -331,30 +331,95 @@ def build_params(
 # (``streamSimpleAnthropic`` 728-767, ``mapThinkingLevelToEffort`` 708-726,
 # ``supportsAdaptiveThinking`` 692-702, ``buildParams`` thinking block
 # 939-968) + ``providers/simple-options.ts`` (``clampReasoning`` 22-24,
-# ``adjustMaxTokensForThinking`` 26-50).
+# ``adjustMaxTokensForThinking`` 26-50). Three of those diverge as of #250:
+# ``clampReasoning`` (see :func:`clamp_reasoning`), the budget table
+# (:data:`_DEFAULT_THINKING_BUDGETS`), and the carve plus its ``|| 1024``
+# fallback (see :func:`adjust_max_tokens_for_thinking` and the disabled
+# branch of :func:`resolve_anthropic_thinking`).
 
 #: Pi ``INTERLEAVED_THINKING_BETA`` (anthropic.ts:165). Sent only for
-#: budget-based (older) reasoning models — adaptive models (Opus 4.6+/
+#: budget-based reasoning models — adaptive models (Opus 4.6, Opus 4.7,
 #: Sonnet 4.6) have interleaved thinking built-in, so pi skips the header.
 INTERLEAVED_THINKING_BETA = "interleaved-thinking-2025-05-14"
 
-#: Pi default thinking budgets (simple-options.ts:32-37). ``xhigh`` is not a
-#: budget tier — :func:`clamp_reasoning` collapses it onto ``high``.
+#: Pi default thinking budgets (simple-options.ts:32-37) plus a fifth row.
+#: **Divergence (#250, ADR-0135 amendment):** pi has four rows and folds
+#: ``xhigh`` onto ``high``; aelix offers ``xhigh`` in the picker, so on
+#: 0985fcf both tiers sent ``budget_tokens: 16384`` while the statusline
+#: claimed ``xhigh`` (measured on ``anthropic/claude-opus-5``). 32768 is
+#: twice ``high`` and the value ``_BUDGET_2_5_PRO`` uses for its top tier;
+#: 18 of the 20 catalog rows on this path cap at 64000/128000, so it fits.
 _DEFAULT_THINKING_BUDGETS: dict[str, int] = {
     "minimal": 1024,
     "low": 2048,
     "medium": 8192,
     "high": 16384,
+    "xhigh": 32768,
 }
 _MIN_OUTPUT_TOKENS = 1024
+#: Anthropic's own floor for ``thinking.budget_tokens`` on the budget path:
+#: the value must be **at least 1024** and **strictly less than**
+#: ``max_tokens``; anything else is a 400, not a smaller answer. **MEASURED**
+#: live against ``api.anthropic.com`` on 2026-09-09 (#250 beta2 re-review),
+#: on ``claude-haiku-4-5`` because it is a first-party row that still takes
+#: this path — ``budget_tokens: 512`` with ``max_tokens: 4096`` returns
+#: *"thinking.enabled.budget_tokens: Input should be greater than or equal to
+#: 1024"* (``req_011CerQpihKtfUSfimNLoaPZ``) and ``budget_tokens: 2048`` with
+#: ``max_tokens: 2048`` returns *"``max_tokens`` must be greater than
+#: ``thinking.budget_tokens``"* (``req_011CerQpkFasPMAjVBdaPMDK``), while
+#: ``budget_tokens: 1024`` under ``max_tokens: 2048`` answers with a
+#: ``thinking`` block (``req_011CerQpmN4cr9DZAtFwqYzn``). Both halves of the
+#: rule are therefore observed, not read. Numerically equal to
+#: :data:`_MIN_OUTPUT_TOKENS` today, kept separate because it is a different
+#: fact — one is the API's rule, the other is aelix's reserve for the visible
+#: answer.
+_MIN_THINKING_BUDGET = 1024
 
 
 def supports_adaptive_thinking(model_id: str) -> bool:
     """Pi parity ``supportsAdaptiveThinking`` (anthropic.ts:692-702).
 
-    Opus 4.6+/Sonnet 4.6 use *adaptive* thinking (Claude decides how much to
-    think, steered by an ``effort`` level); older reasoning models use
-    *budget-based* thinking (an explicit ``budget_tokens`` allowance).
+    Opus 4.6, Opus 4.7 and Sonnet 4.6 use *adaptive* thinking (Claude decides
+    how much to think, steered by an ``effort`` level); every other reasoning
+    model uses *budget-based* thinking (an explicit ``budget_tokens``
+    allowance). The marker list below is the whole rule and it is a literal
+    whitelist, NOT a "4.6 and newer" test: ``claude-opus-4-8``,
+    ``claude-opus-5``, ``claude-sonnet-5`` and ``claude-fable-5`` take the
+    budget path.
+
+    **That is wrong, and #250 MEASURED it wrong rather than suspecting it.**
+    The request Aelix builds for those four ids was sent verbatim to
+    ``api.anthropic.com`` on 2026-09-09, at ``high`` and at ``xhigh``, and all
+    eight return ``400 invalid_request_error``: *"``thinking.type.enabled`` is
+    not supported for this model. Use ``thinking.type.adaptive`` and
+    ``output_config.effort`` to control thinking behavior."* — ``claude-opus-5``
+    ``req_011CerQpLuQC5P5Xaw7MzyVQ`` / ``req_011CerQpNc69m6CAsK93KroH``,
+    ``claude-fable-5`` ``req_011CerQpQ3uQqfCeUsKaPg9M`` /
+    ``req_011CerQpRVUJivivpJ9SmDHp``, ``claude-opus-4-8``
+    ``req_011CerQpSw3MHtbeDFKJYEpi`` / ``req_011CerQpUWYMoCu4L9t8WS7w``,
+    ``claude-sonnet-5`` ``req_011CerQpVws2QN9E2uMrD6yC`` /
+    ``req_011CerQpXRAezGeumCSuhkSk``. What is rejected is the ``thinking.type``
+    value, which is the same on every budget-path level, so the two measured
+    levels stand for all five. ``claude-opus-4-7`` — a marker this list *does*
+    carry — answered normally at both levels through the adaptive branch
+    (``req_011CerQpYrVRK4GK5pf5sJ8x``, ``req_011CerQpdX2jsWYUfDcBa1x6``), so
+    the branch itself is sound; only its membership test is wrong. The same
+    400 lands on 0985fcf, so it is neither introduced nor fixed by #250, whose
+    scope is the budget tier.
+
+    **The catalog already knows.** ``models_generated.json`` carries
+    ``compat.forceAdaptiveThinking: true`` on exactly these four ids plus
+    ``claude-opus-4-7`` (ten rows once the ``cloudflare-ai-gateway`` and
+    ``opencode`` mirrors are counted), and **nothing in the package reads that
+    field** — grepped 2026-09-09: outside the catalog the name appears only
+    here (this docstring) and as a fixture in
+    ``tests/providers/test_anthropic_correctness_55.py``; neither is a read. So the fix is to
+    consult the row rather than to lengthen this marker list, which would
+    re-encode by hand a fact the catalog already ships and would still miss
+    the mirrors. Filed as **#258**, not fixed here, because it moves every
+    level on those rows onto a different request shape — a change that
+    deserves its own review and its own live pass, not a line in a
+    docs-correction commit.
     """
 
     mid = model_id or ""
@@ -393,10 +458,31 @@ def map_thinking_level_to_effort(model: Model, level: str | None) -> str:
     return "high"
 
 
-def clamp_reasoning(level: str) -> str:
-    """Pi parity ``clampReasoning`` (simple-options.ts:22-24)."""
+def clamp_reasoning(level: str, budgets: dict[str, int] | None = None) -> str:
+    """Clamp a thinking level onto a key of the budget table.
 
-    return "high" if level == "xhigh" else level
+    Divergence from pi ``clampReasoning`` (simple-options.ts:22-24), which
+    returns ``"high"`` for ``"xhigh"``: #250 gives ``xhigh`` its own budget
+    row, so the only job left is rejecting spellings the table cannot
+    resolve. Unvalidated levels do arrive — ``set_thinking_level``
+    (harness/core.py) assigns without validation and
+    :class:`SimpleStreamOptions.reasoning` is a public ``str | None`` — and
+    ``"off"`` is the one that really shows up, because
+    :func:`resolve_anthropic_thinking` gates on ``if not reasoning`` and
+    ``"off"`` is truthy (ADR-0135 Context §3).
+
+    Unknown spellings clamp to ``"medium"``, not ``"high"``: that is the
+    budget they already got from the ``.get`` fallback in
+    :func:`adjust_max_tokens_for_thinking` (measured on 0985fcf,
+    ``adjust(64000, 64000, "off")`` → budget 8192), so nothing moves.
+
+    ``budgets`` must be the **merged** table (defaults + ``custom_budgets``),
+    not the overrides alone — pass only the overrides and every standard
+    level demotes to ``"medium"``. The sole caller merges before calling.
+    """
+
+    table = _DEFAULT_THINKING_BUDGETS if budgets is None else budgets
+    return level if level in table else "medium"
 
 
 def adjust_max_tokens_for_thinking(
@@ -405,19 +491,75 @@ def adjust_max_tokens_for_thinking(
     reasoning_level: str,
     custom_budgets: dict[str, int] | None = None,
 ) -> tuple[int, int]:
-    """Pi parity ``adjustMaxTokensForThinking`` (simple-options.ts:26-50).
+    """Port of pi ``adjustMaxTokensForThinking`` (simple-options.ts:26-50).
 
-    Returns ``(max_tokens, thinking_budget)``. The budget is carved out of
-    ``max_tokens`` and shrunk to leave at least ``_MIN_OUTPUT_TOKENS`` of
-    room for the visible answer.
+    Returns ``(max_tokens, thinking_budget)``.
+
+    ``base_max_tokens`` is the allowance for the **visible** answer, not the
+    payload cap: the budget is added on top of it and the sum clamped to
+    ``model_max_tokens``, so a caller that supplies its own ``max_tokens``
+    gets a request whose ``max_tokens`` is larger than the number it passed.
+    That is pi's contract, not an accident — its own comment on the parameter
+    reads "Undefined means no explicit caller cap. Use the model cap and fit
+    thinking inside it." What the caller's number bounds is the answer:
+    ``max_tokens - budget <= base_max_tokens`` always.
+
+    **What the carve reserves, stated exactly.** The budget is capped at
+    ``model_max_tokens - _MIN_OUTPUT_TOKENS``, so the visible answer works out
+    to ``min(base_max_tokens, model_max_tokens - budget)`` and the right
+    operand is never below ``_MIN_OUTPUT_TOKENS``. That is a promise about the
+    *carve*, not a floor on the answer: a caller passing a ``base_max_tokens``
+    under 1024 gets exactly that many visible tokens — the number it asked for
+    — and raising it to 1024 would hand back more answer than was requested.
+    So ``max_tokens - budget >= min(base_max_tokens, _MIN_OUTPUT_TOKENS)`` is
+    the invariant **whenever a budget is actually carved**, and
+    ``test_the_carve_never_takes_more_answer_room_than_it_must`` walks both
+    arms of that ``min``. It does NOT hold when the model's own cap leaves no
+    room to carve at all: ``adjust(2000, 500, "high")`` returns ``(500, 0)``,
+    where 500 is below ``min(2000, 1024)``. That is not a violated promise but
+    a disabled one — ``budget == 0`` means no thinking was requested of the
+    provider, so there is no carve to reserve answer room against, and the
+    answer is simply ``min(base_max_tokens, model_max_tokens)``.
+
+    Two divergences from pi, both from the #250 Codex cross-review:
+
+    * the table has a fifth ``xhigh`` row (:data:`_DEFAULT_THINKING_BUDGETS`);
+    * the budget is capped at ``model_max_tokens - _MIN_OUTPUT_TOKENS`` up
+      front instead of pi's after-the-fact ``if maxTokens <= thinkingBudget``
+      shrink. Pi's guard only fires once the budget has swallowed the cap
+      *whole*, which leaves two holes measured on 73d167a: with
+      ``model_max_tokens`` in ``(B, B + 1024)`` for a tier's budget ``B`` the
+      visible answer got less than ``_MIN_OUTPUT_TOKENS`` (at 32769 with
+      ``xhigh``, exactly **1** token), and because the hole moves with ``B``
+      the tiers could invert — ``adjust(17000, 17000, "xhigh")`` returned
+      15976 against ``"high"``'s 16384, i.e. asking for MORE reasoning got
+      less. Capping instead of shrinking makes the budget
+      ``min(B, cap - 1024)``, which is monotonic in ``B`` by construction, so
+      no cap can invert two tiers again.
+
+    No shipped row's catalog ``maxTokens`` is inside a hole (measured — the
+    closest, 8192 / 16384 / 32768, sit on the boundary), so the **inversion**
+    needs a ``models.json`` override: it also needs the row to offer ``xhigh``,
+    and none of the 46 rows whose cap is computed rather than declared does.
+    The **lost answer room** needs no override at all. On those 46 rows
+    ``_effective_output_cap`` (anthropic.py) returns
+    ``min(context_window - prompt - margin, 32000)``, a function of the prompt,
+    so a long enough prompt walks the cap through every value: measured on the
+    shipped ``accounts/fireworks/models/deepseek-v3p1`` row, a ~583k-character
+    prompt puts the cap at ~17000, where pi's shrink left ``high`` ~626 visible
+    tokens against the ``_MIN_OUTPUT_TOKENS`` the cap above reserves.
     """
 
     budgets = {**_DEFAULT_THINKING_BUDGETS, **(custom_budgets or {})}
-    level = clamp_reasoning(reasoning_level)
+    level = clamp_reasoning(reasoning_level, budgets)
+    # The ``.get`` fallback stays even though the clamp now guarantees the key:
+    # keeping the guarantee here means a future "restore pi parity" edit inside
+    # :func:`clamp_reasoning` yields a wrong number, not an unhandled KeyError.
     thinking_budget = budgets.get(level, _DEFAULT_THINKING_BUDGETS["medium"])
+    thinking_budget = max(
+        0, min(thinking_budget, model_max_tokens - _MIN_OUTPUT_TOKENS)
+    )
     max_tokens = min(base_max_tokens + thinking_budget, model_max_tokens)
-    if max_tokens <= thinking_budget:
-        thinking_budget = max(0, max_tokens - _MIN_OUTPUT_TOKENS)
     return max_tokens, thinking_budget
 
 
@@ -440,7 +582,13 @@ def resolve_anthropic_thinking(
       * reasoning model, no level → ``{"thinking": {"type": "disabled"}}``;
       * adaptive model → ``thinking.type = "adaptive"`` + ``output_config``;
       * older reasoning model → ``thinking.type = "enabled"`` with a
-        ``budget_tokens`` carved from ``max_tokens``.
+        ``budget_tokens`` carved from ``max_tokens``;
+      * older reasoning model whose output cap cannot hold a budget the API
+        accepts → ``{"thinking": {"type": "disabled"}}`` (#250 review). A
+        divergence: pi's ``|| 1024`` fallback (anthropic.ts, the
+        ``budget_tokens`` line of its thinking block, read at
+        ``pi@032c01c1e`` — not this ADR's pin) builds the rejected request
+        instead.
 
     ``needs_interleaved_beta`` is True ONLY on the active budget-thinking path
     (non-adaptive reasoning model with a level set). **Deliberate narrower scope
@@ -498,10 +646,35 @@ def resolve_anthropic_thinking(
     max_tokens, budget = adjust_max_tokens_for_thinking(
         base_max, model_clamp, reasoning
     )
+    if budget < _MIN_THINKING_BUDGET or budget >= max_tokens:
+        # #250 Codex cross-review: this branch replaces ``budget_tokens:
+        # budget or 1024``, which could only ever send a request Anthropic
+        # rejects. Measured on 73d167a with ``maxTokens: 1024`` on
+        # ``anthropic/claude-opus-5``: the carve returned 0 and the ``or``
+        # sent ``budget_tokens: 1024`` alongside ``max_tokens: 1024`` — equal,
+        # where the API requires the budget to be strictly smaller; at 512 it
+        # sent a budget larger than the whole request. Both are reachable from
+        # a ``maxTokens`` override in ``models.json``, which validates only
+        # that the number is positive.
+        #
+        # Of the two honest repairs — clamp the budget under ``max_tokens``,
+        # or turn thinking off — this takes the second. A cap under
+        # ``_MIN_THINKING_BUDGET + _MIN_OUTPUT_TOKENS`` (2048) cannot hold a
+        # budget the API accepts AND leave an answer worth returning, so the
+        # only clamp available would be a budget below Anthropic's 1024 floor:
+        # still a 400, just a different one. ``thinking: disabled`` is a shape
+        # this function already emits (the "no level" branch above), so the
+        # turn answers instead of failing, and the level the user asked for is
+        # honoured as far as the row's own output cap allows.
+        return (
+            {"thinking": {"type": "disabled"}},
+            min(base_max, model_clamp),
+            False,
+        )
     extra = {
         "thinking": {
             "type": "enabled",
-            "budget_tokens": budget or 1024,
+            "budget_tokens": budget,
             "display": display,
         }
     }

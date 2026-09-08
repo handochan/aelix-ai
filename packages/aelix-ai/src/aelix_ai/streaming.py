@@ -433,11 +433,26 @@ class SimpleStreamOptions:
 
     # --- P0 #6 (compaction fidelity): per-turn output-token cap ---
     # Pi ``SimpleStreamOptions.maxTokens`` (providers/simple-options.ts). When
-    # set, this overrides the model default output cap at the adapter payload
-    # level (pi ``base.maxTokens = options.maxTokens ?? model.maxTokens``). The
+    # set, this replaces the model default output cap as the adapter's *base*
+    # (pi ``base.maxTokens = options.maxTokens ?? model.maxTokens``). The
     # compaction summarizer uses it to bound the summary length
     # (``floor(0.8 * reserveTokens)``) and the turn-prefix summary
     # (``floor(0.5 * reserveTokens)``); branch summaries cap at ``2048``.
+    #
+    # #250 review: it caps the VISIBLE answer, not the payload's
+    # ``max_tokens`` field. On the Anthropic budget-thinking path the thinking
+    # budget is added on top and the sum clamped to the model's own cap, so
+    # ``SimpleStreamOptions(reasoning="xhigh", max_tokens=16384)`` on
+    # ``claude-opus-5`` sends ``max_tokens: 49152`` with
+    # ``budget_tokens: 32768`` — 16384 of visible answer, as asked. That is
+    # pi's contract, not aelix drift: ``adjustMaxTokensForThinking``
+    # (simple-options.ts:26-50) computes ``min(base + budget, model.maxTokens)``
+    # and its own comment on the parameter reads "Undefined means no explicit
+    # caller cap. Use the model cap and fit thinking inside it." The adapters
+    # that do NOT carve a thinking budget use the value as the payload cap
+    # verbatim (``openai_responses`` → ``max_output_tokens``,
+    # ``openai_completions`` "wins unconditionally", both Google adapters pass
+    # it through); ``openai_codex_responses`` reads it nowhere at all.
     max_tokens: int | None = None
 
     # --- Sprint 6a (ADR-0045) provider-adapter extensions ---

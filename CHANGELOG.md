@@ -481,6 +481,12 @@ and `.../releases/tag/vX` link would 404. Add them with the first pushed tag.
   `aelix extension --help` but not in the top-level `Subcommands:` block, so
   the one command that explains why a manifest did not bind was
   undiscoverable from the main help.
+- **`settings.json` accepts a `thinkingBudgets.xhigh` key** alongside the other
+  four, matching the `xhigh` budget tier added below. Nothing writes it for
+  you, on a fresh install or an existing one, and a file that has only `high`
+  still reads and rewrites with only `high`. Like the other four it is **schema
+  only today**: nothing in Aelix reads `thinkingBudgets` yet. See
+  [#250](https://github.com/handochan/aelix-ai/issues/250).
 
 ### Changed
 
@@ -791,6 +797,140 @@ and `.../releases/tag/vX` link would 404. Add them with the first pushed tag.
   resolution keeps its argv byte for byte — it gets the decoder and no preamble,
   because its stdout *is* the key. See
   [#239](https://github.com/handochan/aelix-ai/issues/239) and ADR-0238.
+- **`xhigh` builds a bigger thinking budget than `high` — on the ten rows that
+  can still receive one.** On models that think with a Claude-style token
+  budget the two levels built the same request: measured on
+  `anthropic/claude-opus-5`, both sent `thinking.budget_tokens: 16384` byte for
+  byte while the optional 🧠 thinking-level statusline segment said `xhigh`.
+  `xhigh` is now a budget tier of its own at **32768**, twice `high`.
+
+  **What that changes on the wire, enumerated from the catalog this release
+  ships: 21 rows.** Twenty-three rows offer `xhigh` and take the budget path;
+  on 19 of them (output cap 128000) and on 2 more (`github-copilot`'s
+  `claude-opus-4.8` and `claude-opus-5`, cap 64000) the request goes from
+  `budget_tokens: 16384` to `32768`. Counted against the catalog AFTER the
+  same release's refresh (#172), which is what ships: on `main` the numbers
+  were 20 and 18, and the refresh added `anthropic/claude-fable-5-1` and
+  `github-copilot/claude-fable-5.1` — rows that offer `xhigh` only because
+  that refresh hand-copied their predecessor's `thinkingLevelMap`. The
+  `github-copilot` rows are derived from the catalog, not measured on the
+  wire: reaching that endpoint needs a Copilot seat, and nobody ran it. The
+  other two **do not change**:
+  `vercel-ai-gateway`'s `openai/gpt-5.2-chat` and `openai/gpt-5.3-chat` cap
+  output at 16384, where the rule that leaves 1024 tokens for the visible
+  answer shrinks either tier to 15360.
+
+  **On 8 of those 18 the bigger budget never reaches the model — and neither
+  did the old one.** The request Aelix builds was sent verbatim to
+  `api.anthropic.com` on 2026-09-09, at `high` and at `xhigh`, and all eight
+  return `400 invalid_request_error`: *"`thinking.type.enabled` is not
+  supported for this model. Use `thinking.type.adaptive` and
+  `output_config.effort` to control thinking behavior."* — `claude-opus-5`
+  (`req_011CerQpNc69m6CAsK93KroH`, `req_011CerQpLuQC5P5Xaw7MzyVQ`),
+  `claude-fable-5` (`req_011CerQpRVUJivivpJ9SmDHp`,
+  `req_011CerQpQ3uQqfCeUsKaPg9M`), `claude-opus-4-8`
+  (`req_011CerQpUWYMoCu4L9t8WS7w`, `req_011CerQpSw3MHtbeDFKJYEpi`) and
+  `claude-sonnet-5` (`req_011CerQpXRAezGeumCSuhkSk`,
+  `req_011CerQpVws2QN9E2uMrD6yC`). What is rejected is the `thinking.type`
+  value, which is the same on every budget-path level, so **thinking has never
+  worked on those four rows at any level** — not just `xhigh`. They take the
+  budget path only because `supports_adaptive_thinking` is a literal whitelist
+  of `opus-4-6` / `opus-4-7` / `sonnet-4-6`; the same 400 lands on 0985fcf, so
+  this release neither introduces nor fixes it, and it is now filed as
+  [#258](https://github.com/handochan/aelix-ai/issues/258) with the catalog
+  field (`compat.forceAdaptiveThinking`) that already records the right answer.
+  `claude-opus-4-7` — a whitelisted id — answered normally at both levels in
+  the same run (`req_011CerQpYrVRK4GK5pf5sJ8x`,
+  `req_011CerQpdX2jsWYUfDcBa1x6`), so the adaptive path is fine. The four
+  `github-copilot` mirrors are the same models behind a proxy and were **not**
+  measured.
+
+  So the tier's larger budget is what actually ships on the **ten**
+  `vercel-ai-gateway` `openai/gpt-5.2`…`gpt-5.5` rows served over the Anthropic
+  Messages API. No request was made against that gateway; there, what is
+  measured is the request Aelix builds. Opus 4.6/4.7 and Sonnet 4.6 use
+  *adaptive* thinking and were never affected. On a call that carries its own
+  `max_tokens` the request's `max_tokens` rises with the budget — with a 32000-token base on `claude-opus-5`, 48384 before and
+  **64768** now. What you pass there caps the *visible answer*, not the
+  payload: the thinking budget is added on top and the sum clamped to the
+  model's own cap, so `max_tokens=16384` at `xhigh` sends `max_tokens: 49152`
+  with `budget_tokens: 32768` and still returns you at most 16384 tokens of
+  answer. That is unchanged behaviour, now written down on the field itself; no
+  in-tree caller supplies both a `max_tokens` and a thinking level today, so
+  this is for embedders.
+  Asking for `xhigh` on one of the **252 rows that do not offer it** —
+  `aelix --thinking xhigh --model anthropic/claude-opus-4-1`, or an agent
+  profile's `thinking:` — still sends `high`'s 16384: the Anthropic adapter now
+  clamps the level against the model row the way the Google and OpenAI adapters
+  already did.
+  That clamp has one other **embedder-visible** effect, on a path no CLI flag
+  reaches: a literal `SimpleStreamOptions(reasoning="off")` is now clamped to
+  `"minimal"` on the two catalog rows that declare `"off": null`
+  (`anthropic/claude-fable-5`, `anthropic/claude-sonnet-5`), so those two send
+  `budget_tokens: 1024` where they sent **8192** before. `off` as a string
+  still does **not** turn thinking off here — `resolve_anthropic_thinking`
+  gates on `if not reasoning` and `"off"` is truthy — it just buys a smaller
+  budget than it used to. The harness collapses `off` to `None` long before any
+  adapter sees it, so `--thinking off` and `/thinking off` are unaffected; only
+  a direct caller of the provider API can reach this. The underlying defect is
+  cross-adapter — both Google adapters map `"off"` to `"high"`, which is worse
+  — so it is left to
+  [#259](https://github.com/handochan/aelix-ai/issues/259) rather than patched
+  in one adapter, and is characterised in the meantime by
+  `test_off_passed_as_a_string_still_enables_thinking`.
+  **What you give up:** a top tier that is slower and costs more than it did
+  when it was `high` under another name. And if you override `maxTokens` or
+  `contextWindow` in `models.json` so an *xhigh-offering* row's effective
+  output cap lands between 16385 and 33792, `xhigh` leaves the answer exactly
+  1024 tokens and no more. No shipped row that offers `xhigh` is in that range
+  (their caps are 16384, 64000 and 128000). What can **no longer** happen is
+  the inversion: a higher level never sends a smaller budget than a lower one
+  at any cap. See ADR-0135 and
+  [#250](https://github.com/handochan/aelix-ai/issues/250).
+
+- **A very long prompt no longer eats the answer on a self-inconsistent
+  catalog row.** On the 46 reasoning rows whose `maxTokens` is at least their
+  `contextWindow` — the `fireworks` deepseek/glm ids among them — the output
+  cap is computed from what the window has left, so it moves with your prompt.
+  Land it just above a thinking tier's budget and the rule that reserves 1024
+  tokens for the visible answer did not fire: in the request Aelix builds for
+  `accounts/fireworks/models/deepseek-v3p1`, a 583217-character prompt at
+  `--thinking high` left the answer **626** tokens. The budget is now capped by
+  the room the model's output cap leaves, so the answer keeps its 1024 whatever
+  the prompt. No `models.json` override needed to hit the old behaviour, which
+  is why this is listed on its own. See
+  [#250](https://github.com/handochan/aelix-ai/issues/250).
+
+- **A tiny `maxTokens` override turns thinking off instead of building a
+  request Anthropic rejects.** Override a Claude-style row to
+  `"maxTokens": 1024` and Aelix sent `budget_tokens: 1024` alongside
+  `max_tokens: 1024`; at 512 the budget was larger than the whole request.
+  The API wants a thinking budget of at least 1024 that is strictly smaller
+  than `max_tokens`, so both were 400s waiting to happen — reachable only
+  through `models.json`, which checks that your number is positive and nothing
+  else. Below **2048** there is no budget that is both valid and leaves the
+  answer its 1024 tokens, so the request now goes out with thinking disabled
+  and you get an answer. See
+  [#250](https://github.com/handochan/aelix-ai/issues/250).
+
+- **A `thinkingLevelMap` override on a Gemini 2.x model no longer crashes the
+  stream.** `"thinkingLevelMap": {"xhigh": "xhigh"}` on `gemini-2.5-pro` in
+  `~/.aelix/agent/models.json` raised an unhandled `KeyError: 'xhigh'` out of
+  the stream factory on both the Generative AI and the Vertex adapter — and
+  because it escaped synchronously it never became an error event you could
+  read. An effort the budget table does not know now sends `thinkingBudget:
+  -1`, the API's *dynamic* budget — thinking stays on and Gemini decides how
+  much of it to do. In practice that effort is always `xhigh`: the level is
+  already clamped against the model row, so the four table keys cover every
+  other spelling. Answering it with the family's `high` row was the first
+  revision and was reverted, because for Gemini 2.5 that row already *is* the
+  API's ceiling (32768 pro, 24576 flash) — reporting a request Aelix cannot
+  honour by spending the most expensive one the family can make. For the same
+  ceiling reason Gemini gets **no separate `xhigh` tier**: there is no room
+  above `high`. On the Gemini 3 / Gemma 4 `thinkingLevel` rows the same `xhigh`
+  instead resolves to `HIGH`, the top of that scale, because `thinkingLevel`
+  has no dynamic value to hand back — same rule, different alphabet. See
+  [#250](https://github.com/handochan/aelix-ai/issues/250).
 
 - **Pressing Esc no longer kills a helper an extension's command left running.**
   `aelix.exec(...)` runs a command's tree contained, and after the command exits
