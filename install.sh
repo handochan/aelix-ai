@@ -203,6 +203,16 @@ if have aelix; then
   aelix --version || log "installed, but 'aelix --version' returned non-zero."
   log "done. 'aelix' is on your PATH."
 else
-  log "installed. The 'aelix' launcher is in uv's tool bin (usually ~/.local/bin)."
-  log "If 'aelix' is not found, add it to PATH with: uv tool update-shell"
+  # The launcher landed in uv's tool bin but this shell cannot see it. Until
+  # beta.2 this branch only ADVISED running `uv tool update-shell`, which left
+  # the one step that decides whether `aelix` works in the next terminal to
+  # the user. Run it here instead — it appends the tool bin to the shell's rc
+  # file, idempotently, and prints what it changed — and say which shell to
+  # reopen. It cannot fix THIS shell's PATH, hence the log line.
+  log "installed. The 'aelix' launcher is in uv's tool bin (usually ~/.local/bin), which is not on this shell's PATH."
+  if uv tool update-shell; then
+    log "PATH updated for future shells. Open a new terminal (or 'source' your shell rc) and run: aelix --version"
+  else
+    log "'uv tool update-shell' failed; add uv's tool bin to PATH by hand (\`uv tool dir --bin\`) and re-run: aelix --version"
+  fi
 fi

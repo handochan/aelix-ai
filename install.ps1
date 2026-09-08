@@ -269,8 +269,17 @@ try {
         }
         Write-Log "done. 'aelix' is on your PATH."
     } else {
-        Write-Log "installed. The 'aelix' launcher is in uv's tool bin (usually ~\.local\bin)."
-        Write-Log "If 'aelix' is not found, add it to PATH with: uv tool update-shell"
+        # Same as install.sh step 6: the launcher is in uv's tool bin but this
+        # session cannot see it. Run `uv tool update-shell` now (it appends the
+        # tool bin to the user PATH, idempotently) instead of asking the user
+        # to; it cannot fix THIS session, hence the "new terminal" line.
+        Write-Log "installed. The 'aelix' launcher is in uv's tool bin (usually ~\.local\bin), which is not on this session's PATH."
+        & uv tool update-shell
+        if ($LASTEXITCODE -eq 0) {
+            Write-Log "PATH updated for future sessions. Open a new terminal and run: aelix --version"
+        } else {
+            Write-Log "'uv tool update-shell' failed; add uv's tool bin to PATH by hand (uv tool dir --bin) and re-run: aelix --version"
+        }
     }
 }
 finally {
