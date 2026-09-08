@@ -30,6 +30,7 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, cast
 
+from aelix_agent_core.session.compaction import calculate_context_tokens
 from aelix_agent_core.session.context import build_display_messages
 from aelix_agent_core.session.jsonl_storage import load_jsonl_session_metadata
 from prompt_toolkit.application.run_in_terminal import in_terminal
@@ -48,7 +49,7 @@ from aelix_coding_agent.cli.session_labels import (
     short_field,
 )
 from aelix_coding_agent.extensions import HEADLESS_UI_CONTEXT
-from aelix_coding_agent.extensions.api import MessageRenderOptions
+from aelix_coding_agent.extensions.api import ContextUsage, MessageRenderOptions
 from aelix_coding_agent.extensions.command_dispatch import (
     CommandDispatchService,
     CommandSurfaceBindings,
@@ -167,6 +168,60 @@ def _format_context_label(usage: object) -> str | None:
     if isinstance(tokens, int) and isinstance(window, int) and window > 0:
         parts.append(f"{format_token_count(tokens)}/{format_token_count(window)}")
     return f"◔ {' · '.join(parts)}" if parts else None
+
+
+def _live_context_usage(message: object, model: object) -> ContextUsage | None:
+    """#249 — the meter's MID-TURN figure, read straight off a finished message.
+
+    ``get_session_stats`` cannot serve a mid-turn read at all. The harness only
+    extends ``_state.messages`` once the agent loop has RETURNED
+    (``harness/core.py:4598``), while ``turn_end`` fires once per provider
+    round-trip inside it (``loop.py:240``) — so every one of those refreshes
+    estimated over an unchanged list and repainted the pre-turn number, which on
+    the first turn of a session is literally ``◔ 0%``. The fresh number is in
+    the ``message_end`` payload instead, and reading it is O(1): measured
+    **1.13 µs** including :func:`_format_context_label`, against **0.035 ms**
+    for the in-memory half of a 200-message stats read. That 0.035 ms is almost
+    entirely ``aggregate_session_stats``; ``estimate_context_tokens`` itself is
+    0.001 ms, because its reverse scan hits the last valid assistant
+    immediately. It also excludes the ``Session.get_branch()`` disk read a
+    persisted session adds on top, which was not measured.
+
+    The validity rule is the estimator's own, verbatim:
+    ``_valid_assistant_usage`` (``session/compaction.py:1102``, pi #5526) — an
+    assistant message, ``stop_reason`` neither ``"aborted"`` nor ``"error"``,
+    usage present and summing POSITIVE. That matters because
+    ``estimate_context_tokens`` (``compaction.py:1130``) is exactly *this* term
+    plus a heuristic for the trailing messages, so the live paint is the
+    turn-end estimate's anchor and the meter does not jump at the boundary. The
+    helper is private (an aborted or all-zero-usage response would otherwise
+    repaint a smaller, wrong figure), so the five lines are duplicated rather
+    than imported across the package boundary and
+    ``tests/tui/test_context_meter_live.py`` pins the two in agreement.
+
+    ``None`` — leaving the meter on its existing turn-boundary path — for any
+    non-scoring message, and for a model with no positive ``context_window``,
+    which is the short-circuit ``_get_context_usage_safe`` itself opens with.
+    """
+
+    from aelix_ai.messages import AssistantMessage
+
+    if not isinstance(message, AssistantMessage):
+        return None
+    if getattr(message, "stop_reason", None) in ("aborted", "error"):
+        return None
+    usage = getattr(message, "usage", None)
+    if not usage:
+        return None
+    tokens = calculate_context_tokens(usage)
+    if tokens <= 0:
+        return None
+    window = int(getattr(model, "context_window", 0) or 0)
+    if window <= 0:
+        return None
+    return ContextUsage(
+        tokens=tokens, context_window=window, percent=(tokens / window) * 100
+    )
 
 
 # #66 item 6 — the permission mode drives BOTH the footer badge colour and the
@@ -1942,6 +1997,9 @@ async def run_tui(
     # The ``settled`` hook registration, held so a session swap can move it onto
     # the new harness's bus (see ``_rebind``).
     settled_unsub_holder: dict[str, Callable[[], None] | None] = {"u": None}
+    # #249 — same lifecycle, for the ``model_select`` hook that keeps the meter
+    # honest across a model switch.
+    model_select_unsub_holder: dict[str, Callable[[], None] | None] = {"u": None}
 
     context_usage_tasks: set[asyncio.Task[None]] = set()
     history_tasks: set[asyncio.Task[None]] = set()
@@ -1955,6 +2013,18 @@ async def run_tui(
     # generation they were scheduled with and a superseded one is DROPPED,
     # making the outcome last-SCHEDULED-wins instead of last-to-finish-wins.
     context_usage_seq: dict[str, int] = {"n": 0}
+
+    # #249 — the tokens of the last assistant response of the RUNNING turn, or
+    # ``None`` when no such number is held. It exists because the stats read
+    # cannot produce one: ``_state.messages`` is not extended until the loop
+    # returns (``core.py:4598``), so a mid-turn ``get_session_stats`` estimates
+    # over the pre-turn list. While this is set the meter is showing a strictly
+    # fresher figure than a stats walk could, so ``turn_end`` skips the walk;
+    # ``agent_end`` (one per PROMPT — ``loop.py:221``, ``:260``, ``:271``, plus
+    # the abort close-out ``core.py:4548`` and the hook-fail one ``:4591``)
+    # clears it. NOT ``settled``: that hook never fires on the abort or
+    # hook-fail paths, which ``return``/``raise`` before ``core.py:4598``.
+    live_tokens: dict[str, int | None] = {"n": None}
 
     def _next_context_usage_seq() -> int:
         context_usage_seq["n"] += 1
@@ -2004,6 +2074,78 @@ async def run_tui(
         task = loop.create_task(_refresh_context_usage(_next_context_usage_seq()))
         context_usage_tasks.add(task)
         task.add_done_callback(context_usage_tasks.discard)
+
+    def _paint_live_context_usage(message: object) -> None:
+        """#249 — repaint the meter from a just-finished assistant message.
+
+        Synchronous and O(1): the figure is in the event, so there is nothing to
+        await and no debounce (1.13 µs per paint, and ``set_context_label``
+        already no-ops on an unchanged label). Claims a generation so an
+        in-flight stats read — scheduled EARLIER and therefore holding an older
+        one — is dropped on completion instead of repainting the pre-turn number
+        over this; that is the hazard the counter above was written for.
+
+        Deliberately does NOT touch ``set_usage_stats``: the input/output-token
+        and cost scalars come from ``aggregate_session_stats``' per-model
+        pricing, which this event cannot supply. Those segments are default-OFF
+        (ADR-0160) and keep their turn-end cadence, so while a turn runs they
+        are one turn behind the context% beside them.
+        """
+
+        usage = _live_context_usage(message, getattr(runtime_host.harness, "current_model", None))
+        if usage is None:
+            return
+        _next_context_usage_seq()
+        live_tokens["n"] = usage.tokens
+        context.set_context_label(_format_context_label(usage))
+
+    async def _model_select_hook(_event: object, _ctx: object = None) -> None:
+        """#249 — every model change re-derives the meter, immediately.
+
+        Registered on the harness's own ``model_select`` hook rather than in
+        ``/model``'s handler, because ``harness.set_model`` (``core.py:2313``)
+        is the single funnel: ``/model``, the model picker, the pick offered
+        after ``/login``, and an extension's ``ctx.set_model`` all reach it.
+        Without this the window in the denominator changed and the percentage
+        did not.
+
+        What must hold: a footer bug must not report a successful switch as a
+        failed one. ``set_model`` turns a hook error into ``AgentHarnessError``
+        AFTER ``_state.model`` is already replaced (``core.py:2338``), and
+        ``/model`` prints that as ``✖ model switch failed``.
+
+        The registration's ``error_mode="continue"`` is the load-bearing half —
+        ``_safe_invoke`` (``hooks.py:1349-1354``) logs and swallows exactly
+        ``Exception`` under it. The ``contextlib.suppress(Exception)`` below is
+        redundant on purpose, not a second class of failure: it catches the same
+        class, and it is here so the guarantee survives a future registration
+        that loses the kwarg (or a caller that invokes this handler off the bus).
+        Neither catches ``BaseException``, so a ``CancelledError`` still
+        propagates.
+
+        Two positional parameters for the arity reason spelled out in
+        ``_settled_hook`` below.
+        """
+
+        with contextlib.suppress(Exception):
+            tokens = live_tokens["n"]
+            model = getattr(runtime_host.harness, "current_model", None)
+            window = int(getattr(model, "context_window", 0) or 0)
+            if tokens is not None and window > 0:
+                # Mid-turn: the token count is already known and unchanged by the
+                # switch, so only the denominator moves — no message walk.
+                _next_context_usage_seq()
+                context.set_context_label(
+                    _format_context_label(
+                        ContextUsage(
+                            tokens=tokens,
+                            context_window=window,
+                            percent=(tokens / window) * 100,
+                        )
+                    )
+                )
+            else:
+                _schedule_context_usage_refresh()
 
     # Sprint 6h₂₂ (ADR-0130) — auto-retry UI countdown (closes the 6h₂₀ v2
     # deferral). Pi parity: ``interactive-mode.ts:2919-2948`` —
@@ -2267,13 +2409,60 @@ async def run_tui(
                 # number — a user who ran /compact saw the footer not move and
                 # concluded compaction had done nothing, while /context already
                 # reported the new, smaller figure.
+                #
+                # #249 — drop the live figure FIRST. Compaction rebuilds
+                # ``_state.messages`` (``core.py:1686``), so the refresh below is
+                # the authoritative one and the pre-compaction live number is now
+                # the larger, wrong one. Compaction cannot land mid-turn
+                # (``_check_auto_compaction`` is awaited after ``_run`` returns —
+                # ``core.py:1424``), so this never discards a figure a running
+                # turn still needs.
+                live_tokens["n"] = None
                 _schedule_context_usage_refresh()
+        elif etype == "message_end":
+            # #249 — the ONLY mid-turn trigger that carries a number. A
+            # ``tool_execution_end`` would fire more often and tell us nothing
+            # new: neither event changes ``_state.messages``, but this one has
+            # the provider's own usage on it. Filtering non-scoring messages
+            # (the user message that also fires this) is
+            # ``_live_context_usage``'s job, not a counting rule here.
+            #
+            # ``getattr`` because ``event`` is typed ``object`` here, not because
+            # the attribute can be missing: ``renderer.on_agent_event`` above
+            # dereferences ``event.message`` unguarded on this same event
+            # (``render.py:752``), so anything reaching this line already has it.
+            # That is why no test can pin the default — the renderer raises first.
+            _paint_live_context_usage(getattr(event, "message", None))
         elif etype == "turn_end":
-            # Covers the ABORT and ERROR turn paths, which append their message to
-            # ``state.messages`` BEFORE emitting turn_end and so are already
-            # current here. The success path is one turn stale at this point and
-            # is refreshed again on ``settled`` (see the registration below).
-            _schedule_context_usage_refresh()
+            # #249 — the METER's read is SKIPPED while a live figure is held,
+            # which removes work rather than adding it. It HALVES the reads
+            # rather than eliminating them: ``_record_history`` below is
+            # unconditional and opens with its own ``get_session_stats``, so a
+            # thirty-tool turn still performs thirty of them for the ``/stats``
+            # history row. ``turn_end`` is per provider round-trip
+            # (``loop.py:240``, inside the ``loop.py:192`` tool-call loop), so
+            # the meter used to walk once per round-trip too — and every one of
+            # those walks estimated over a message list the harness
+            # does not extend until the loop returns (``core.py:4598``). Each
+            # therefore repainted the PRE-turn number on top of a fresher live
+            # one: 20% → 5% → 30% → 5%, downward flicker on a segment that has a
+            # flicker-regression history.
+            #
+            # This replaces a claim that was false. The comment here used to say
+            # turn_end "covers the ABORT and ERROR turn paths, which append their
+            # message to ``state.messages`` BEFORE emitting turn_end and so are
+            # already current here". Only a BODILESS aborted stub is appended
+            # (``core.py:4545``); the turn's real assistant messages sit in
+            # ``new_messages`` and are dropped by the ``return []`` before the
+            # extend — so that estimate anchors on the PREVIOUS turn and is lower
+            # than live too. Skipping it there is the better number, not merely a
+            # harmless one.
+            #
+            # A provider that reports no usage never sets ``live_tokens``, so the
+            # meter keeps exactly today's behaviour: this refresh runs, and
+            # ``settled`` corrects the success path afterwards.
+            if live_tokens["n"] is None:
+                _schedule_context_usage_refresh()
             # D3 — persist a cumulative /stats history row for this turn (async +
             # guarded; same strong-reference pattern as the context-usage task).
             htask = loop.create_task(_record_history())
@@ -2283,6 +2472,17 @@ async def run_tui(
             # the footer so the "⋯ N queued" segment reflects the new count
             # (Sprint 6h₁₂e).
             context._refresh_footer()
+        elif etype == "agent_end":
+            # #249 — the turn is over; release the live figure so the NEXT
+            # ``turn_end`` (and any ``/model``) goes back to the authoritative
+            # stats read. One ``agent_end`` per prompt, on every exit including
+            # abort and hook-failure, which is why the clear lives here and not
+            # in ``_settled_hook``: ``settled`` is emitted after
+            # ``core.py:4598``, and both of those paths return or raise before
+            # reaching it. ``agent_end`` precedes that extend by microseconds and
+            # paints nothing itself, so the success path's authoritative
+            # ``settled`` refresh still lands.
+            live_tokens["n"] = None
 
     async def _settled_hook(_event: object, _ctx: object = None) -> None:
         # The FIRST moment a finished turn is visible in ``state.messages``: the
@@ -2318,6 +2518,24 @@ async def run_tui(
         with contextlib.suppress(Exception):
             settled_unsub_holder["u"] = new_harness.hooks.on(
                 "settled", _settled_hook, source="tui-context-meter"
+            )
+        # #249 — and the model_select hook, for the same reason. ABOVE the
+        # "reload" early-return below: a /reload rebuilds the harness and its bus
+        # too, so the registration has to move even though the session does not.
+        # ``error_mode="continue"`` because the bus default is "throw" and
+        # ``set_model`` converts a handler error into ``AgentHarnessError`` after
+        # the model is already swapped in (``core.py:2338``).
+        prior_model_select = model_select_unsub_holder["u"]
+        if prior_model_select is not None:
+            with contextlib.suppress(Exception):
+                prior_model_select()
+        model_select_unsub_holder["u"] = None
+        with contextlib.suppress(Exception):
+            model_select_unsub_holder["u"] = new_harness.hooks.on(
+                "model_select",
+                _model_select_hook,
+                source="tui-context-meter",
+                error_mode="continue",
             )
         # A session swap (/resume, new, fork) builds a BRAND-NEW harness whose
         # fresh _ExtensionRuntime defaults to the HEADLESS ui — re-bind the live
@@ -2366,6 +2584,13 @@ async def run_tui(
         # ``runtime_host.harness`` is already the new harness here (set in _apply
         # before _rebind_session), so recompute via the SAME turn_end refresh path
         # — no new render path. Awaited so the swap returns with a correct footer.
+        #
+        # #249 — the live mid-turn figure is the same kind of leak and is dropped
+        # HERE rather than above the reload return: a reload keeps the same
+        # Session and the same transcript, so the number is still correct for it,
+        # while a swap would otherwise let /model repaint the PRIOR session's
+        # tokens against the new window.
+        live_tokens["n"] = None
         await _refresh_context_usage()
 
     runtime_host.set_rebind_session(_rebind)
@@ -2864,6 +3089,10 @@ async def run_tui(
         if settled_unsub is not None:
             with contextlib.suppress(Exception):
                 settled_unsub()
+        model_select_unsub = model_select_unsub_holder["u"]
+        if model_select_unsub is not None:
+            with contextlib.suppress(Exception):
+                model_select_unsub()
         out_chrome.exit()
         # Sprint 6h₂₂ (ADR-0130) — cancel the auto-retry countdown ticker if a
         # shutdown lands mid-backoff. The end-event handler is the normal

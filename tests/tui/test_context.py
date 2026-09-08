@@ -993,10 +993,12 @@ async def test_tabbed_tab_switch_works_while_filter_active() -> None:
 
 # === footer repaint guard (Defect D) =========================================
 #
-# The context meter is refreshed from overlapping triggers (``turn_end`` covers
-# the abort/error turn paths, ``settled`` the success path), so the same value
-# commonly arrives twice for one turn. Repainting on an unchanged value would
-# add a second invalidate per turn on a path with a flicker-regression history.
+# The context meter is refreshed from overlapping triggers — ``message_end``
+# (the live mid-turn figure, #249), ``compaction_end``, ``turn_end`` when no
+# live figure is held, ``settled``, ``model_select``, and a session rebind — so
+# the same value commonly arrives more than once for one turn. Repainting on an
+# unchanged value would add extra invalidates per turn on a path with a
+# flicker-regression history.
 
 
 async def test_set_context_label_repaints_only_on_a_real_change() -> None:

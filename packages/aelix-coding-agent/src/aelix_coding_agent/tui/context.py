@@ -1358,14 +1358,22 @@ class AelixTUIContext:
         """Update the live context-window usage segment + repaint the footer.
 
         Called by ``run_tui`` with a formatted label (or ``None`` when usage is
-        unavailable — e.g. model registry not wired) on ``settled``, on
-        ``compaction_end``, and on ``turn_end``.
+        unavailable — e.g. model registry not wired). Six triggers, of which two
+        can paint synchronously and the rest arrive off an async stats read: on
+        ``message_end`` from the finished assistant message's own usage (#249 —
+        the mid-turn SOURCE of the figure), on ``compaction_end``, on
+        ``turn_end`` *when no such live figure is held*, on ``settled``, on
+        ``model_select`` (synchronous too while a live figure is held — only the
+        denominator moves, so there is nothing to read), and on a session
+        rebind.
 
-        An UNCHANGED label returns WITHOUT repainting. Those triggers overlap by
-        design (``turn_end`` covers the abort/error turn paths, ``settled`` the
-        success path), so the same value commonly arrives twice for one turn, and
-        this keeps that from costing a second invalidate on a paint path with a
-        flicker-regression history.
+        An UNCHANGED label returns WITHOUT repainting. The triggers overlap by
+        design and now three ways — ``turn_end`` covers the abort/error turn
+        paths, ``settled`` the success path, and a ``model_select`` that does not
+        change the context window repaints the same string — so the same value
+        commonly arrives more than once for one turn, and this keeps that from
+        costing extra invalidates on a paint path with a flicker-regression
+        history.
         """
         if label == self._context_label:
             return

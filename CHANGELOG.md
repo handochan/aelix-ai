@@ -570,6 +570,35 @@ and `.../releases/tag/vX` link would 404. Add them with the first pushed tag.
 
 ### Fixed
 
+- **The context meter moves during a turn, and after `/model`.** The footer's
+  `◔ 42% · 84K/200K` sat on the previous turn's number for a whole
+  ten-minute multi-tool turn, and `/model` changed the denominator without
+  recomputing anything. The refresh already ran once per provider round-trip —
+  but each one estimated over a message list the harness does not extend until
+  the turn ends (`core.py:4598`), so they all painted the same pre-turn figure,
+  which on the first turn of a fresh session is literally `◔ 0%`. The
+  mid-turn number now comes from the assistant message the provider just
+  finished — its own reported usage, the same term the turn-end estimate
+  anchors on, so the meter no longer jumps at the boundary — and every model
+  change refreshes it through the harness's `model_select` hook, which covers
+  `/model`, the picker, the post-`/login` pick and an extension's `set_model`
+  alike. The meter's own per-round-trip stats read is now **skipped**
+  while a live number is held, because it is measurably worse than what is
+  already on screen: that removes work rather than adding it. It halves the
+  per-round-trip reads rather than eliminating them — the `/stats` history row
+  on the same event still takes one (the in-memory half of a read measured
+  0.035 ms at 200 messages and 0.349 ms at 2000, before the session-branch disk
+  read a persisted session adds on top), and the live paint costs **1.13 µs**.
+  **What you give up:** the mid-turn figure counts the last round-trip only, so
+  tool output produced *since* that response is not in it until the next one —
+  a floor that steps, not a continuously rising bar; the optional
+  input/output-token and cost segments (default-OFF) still update at turn end
+  only, so mid-turn they sit one turn behind the context% beside them; and after
+  a compaction the segment's deliberate blank window now ends at the first
+  post-compaction assistant response instead of at the next turn end. See
+  [#249](https://github.com/handochan/aelix-ai/issues/249), ADR-0116, ADR-0121
+  §4.
+
 - **Pressing Esc no longer kills a helper an extension's command left running.**
   `aelix.exec(...)` runs a command's tree contained, and after the command exits
   it keeps reading the pipes for a moment so a process the command backgrounded

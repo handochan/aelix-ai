@@ -90,6 +90,21 @@ token estimate matches pi's. Replacing the heuristic with a real tokenizer would
 *diverge* from pi (the primary parity goal), so it is deliberately NOT done. No
 change shipped for this item; it is verified pi-parity.
 
+**#249 note (2026-09-08).** That identity now holds **at rest only**. The audit
+above is still correct for the number the footer settles on at the end of a turn,
+but it is no longer the number shown *during* one: `_get_context_usage_safe`
+estimates over `_state.messages`, which the harness does not extend until the
+loop has returned (`core.py:4598`), so it could only ever repaint the pre-turn
+figure mid-turn. The mid-turn value is now computed in `tui/shell.py` from the
+assistant message the provider just finished — `calculate_context_tokens` of its
+usage (`compaction.py:1024`), which is precisely the term
+`estimate_context_tokens` anchors on, *without* the heuristic it adds for the
+trailing messages. So it is a lower bound on the at-rest figure rather than the
+same quantity, and it is driven by a trigger pi does not have. A deliberate
+divergence under ADR-0235, recorded here because this section states a parity
+conclusion that would otherwise read as still-true. See the ADR-0116 amendment
+of the same date for the trigger set and the measurements.
+
 ## Consequences
 
 - ruff clean; pyright 0 errors on the changed TUI source (8-baseline overall);
