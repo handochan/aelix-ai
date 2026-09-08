@@ -16,6 +16,7 @@ from aelix_agent_core.harness.hooks import (
     UserBashHookEvent,
     UserBashResult,
 )
+from aelix_ai.utils._child_output import decode_child_output
 
 from aelix_coding_agent.tools.bash import (
     BashOperations,
@@ -60,7 +61,12 @@ async def handle_user_bash(
         ops: BashOperations = operations or create_local_bash_operations()
         chunks: list[bytes] = []
         await ops.exec(command, cwd, on_data=chunks.append, signal=None)
-        output = b"".join(chunks).decode("utf-8", errors="replace")
+        # ``ragged_tail=True`` (#239 cross-review): no signal and no timeout
+        # here, so the only cut is #232's success-path exit drain —
+        # ``_drain_after_the_exit`` ends the read at a READ boundary while a
+        # backgrounded helper may still be writing. Rarer than the abort path,
+        # same repair. The head is append-only and so is not claimed.
+        output = decode_child_output(b"".join(chunks), ragged_tail=True)
     # Sprint 6h₅d §E (P-384 / MINOR-3): read through
     # :attr:`AgentHarness.session` and narrow once locally.
     session = harness.session

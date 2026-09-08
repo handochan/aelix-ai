@@ -132,7 +132,7 @@ def test_aborted_stop_reason_reports_aborted_not_error() -> None:
 def test_recovered_provider_error_does_not_become_the_answer() -> None:
     """QUADRANT: error + RECOVERED. The defect this fix exists for.
 
-    ``_reduce_message_end`` (``stream.py:549-557``) is last-NON-EMPTY-wins per
+    ``_reduce_message_end`` (``stream.py:563-571``) is last-NON-EMPTY-wins per
     field, so ``state.error_message`` survives a turn the harness's own
     auto-retry (``harness/core.py:518-519``, default ON) already recovered from.
     The child then answers correctly on turn 2 and the run is a genuine success:
@@ -194,7 +194,7 @@ def test_unrecovered_provider_error_is_still_the_summary() -> None:
 def test_child_that_died_mid_turn_is_not_a_success() -> None:
     """QUADRANT: mid-turn death with exit 0.
 
-    ``agent_end`` is the child's own terminator (``stream.py:231-235``). A
+    ``agent_end`` is the child's own terminator (``stream.py:245-249``). A
     JSON-mode child whose harness was torn down emits a good ``message_end`` and
     exits **0** without one; before this fix that returned
     ``ok=True status='ok'`` for a run that never finished.
@@ -221,7 +221,7 @@ def test_missing_terminator_is_not_evidence_once_a_line_was_dropped() -> None:
     """QUADRANT: the TRAP — a SUCCESSFUL child whose terminator was too big.
 
     ``agent_end`` carries the entire message array on ONE line
-    (``stream.py:535-541``), so a child that read a multi-megabyte file emits a
+    (``stream.py:549-555``), so a child that read a multi-megabyte file emits a
     terminator above ``MAX_LINE_BYTES`` and ``LineAssembler`` drops it — on a run
     that finished perfectly. Measured with a real child: ``saw_agent_end=False,
     dropped_lines=1, exit 0``.
@@ -909,7 +909,7 @@ def test_a_hostile_model_cannot_corrupt_the_result_card() -> None:
 #   [agent explorer · 型型型型型型型型型型型型型型型型型型型型型型型型型型型型 …
 #
 # ``result.model`` is read verbatim off the child's own ``message_end``
-# (``stream.py:561-563`` accepts ANY non-empty ``str``), so the child chooses that
+# (``stream.py:575-577`` accepts ANY non-empty ``str``), so the child chooses that
 # string — which means a compromised child could hide its own ``error`` status and
 # the ``yolo`` posture it ran under, from its own result card.
 

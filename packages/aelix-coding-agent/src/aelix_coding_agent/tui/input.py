@@ -1,7 +1,7 @@
 """Sprint 6h₁₀a (ADR-0104) — input line classification (pure).
 
 :func:`parse_input_line` mirrors the ``run_repl`` token precedence
-(``cli/repl.py:94-120``): ``/quit``/``/exit`` → quit, ``/reload`` → reload,
+(``cli/repl.py:100-126``): ``/quit``/``/exit`` → quit, ``/reload`` → reload,
 ``!!cmd`` → transient bash, ``!cmd`` → context bash, else → prompt. Keeping it
 pure makes the input surface unit-testable with zero prompt-toolkit dependency.
 

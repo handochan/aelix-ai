@@ -132,7 +132,7 @@ class _FakeCtx:
     """Minimal :class:`ExtensionContext` surface: ``has_ui`` + ``ui``.
 
     ``has_ui`` is a property over a mutable flag because the real one
-    (``extensions/api.py:1196`` → ``:1216-1217``) is TIME-VARYING, not a mode
+    (``extensions/api.py:1204`` → ``:1224-1225``) is TIME-VARYING, not a mode
     (finding OC-7).
     """
 
@@ -1136,7 +1136,7 @@ def test_the_batch_signature_carries_no_memo_and_no_options_parameter() -> None:
 # --- F1: the dialog may not be forgeable by any interpolated value ------------
 #
 # THE CRITICAL FINDING, AND IT IS AN INVARIANT, NOT AN EXAMPLE. ``cwd`` is
-# model-chosen; ``resolve_child_cwd`` (``print_channel.py:437``) validated only
+# model-chosen; ``resolve_child_cwd`` (``print_channel.py:444``) validated only
 # containment and is-a-directory, and POSIX permits every byte but ``/`` and NUL
 # in a path component. ``resolved.name`` and ``resolved.source_path`` come from a
 # filename and permit the same. ``ctx.ui.select`` then SPLITS the composed title

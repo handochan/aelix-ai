@@ -53,6 +53,7 @@ from aelix_agent_core.harness.hooks import (
     HookHandler,
     ToolCallResult,
 )
+from aelix_ai.utils._child_output import decode_child_output
 from aelix_ai.utils._process_tree import (
     ProcessTree,
     _retained_handle,
@@ -264,8 +265,10 @@ async def run_hook_subprocess(
             tree.hard_kill()
             raise
 
-        stdout = stdout_b.decode("utf-8", errors="replace")
-        stderr = stderr_b.decode("utf-8", errors="replace")
+        # #239 — a hook is a child like any other, and on Windows its output
+        # is written in the console's code page.
+        stdout = decode_child_output(stdout_b)
+        stderr = decode_child_output(stderr_b)
         if len(stdout) > _STDOUT_CAP:
             _log.debug(
                 "subprocess hook stdout truncated from %d to %d chars",

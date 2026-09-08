@@ -57,6 +57,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 
+from aelix_ai.utils._child_output import decode_child_output
 from aelix_ai.utils._process_tree import (
     ProcessTree,
     _retained_handle,
@@ -186,12 +187,12 @@ async def run_cancellable(
     # Intentional decode divergence from the old ``subprocess.run(text=True)``
     # behaviour: ``text=True`` uses ``locale.getpreferredencoding()`` with
     # ``errors='strict'`` and raises ``UnicodeDecodeError`` on invalid bytes
-    # (e.g. binary rg matches).  We use UTF-8 with ``errors='replace'`` which
-    # silently substitutes U+FFFD — more robust and closer to Node's tolerant
-    # Buffer decoding used by pi.  A regression test in
-    # ``tests/tools/test_subprocess_helper.py`` pins the U+FFFD replacement
-    # behaviour so any future change is explicit.
-    stdout_text = stdout_bytes.decode("utf-8", errors="replace")
+    # (e.g. binary rg matches).  Since #239 the answer is the shared decoder:
+    # off win32 it is provably the old UTF-8/``replace`` call, and on win32 the
+    # console output code page gets a strict try first, so ``rg``/``fd`` output
+    # in a legacy page reads as text instead of U+FFFD.  A regression test in
+    # ``tests/tools/test_subprocess_helper.py`` pins both halves.
+    stdout_text = decode_child_output(stdout_bytes)
     return stdout_text, proc.returncode or 0
 
 

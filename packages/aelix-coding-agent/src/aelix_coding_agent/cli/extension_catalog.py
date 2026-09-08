@@ -51,6 +51,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import urlparse
 
+from aelix_ai.utils._child_output import decode_child_output
 from aelix_ai.utils._process_tree import run_contained
 
 __all__ = [
@@ -602,8 +603,14 @@ def _git_clone_bytes(
             # credential helper it may already have, and shown no evidence at
             # all; the non-zero-exit branch below already surfaces the same
             # tail under the same 200-char cap (#221 review SITE-5).
+            # ``ragged_tail=True`` (#239 cross-review): a ``TimeoutExpired``
+            # from ``run_contained`` carries "everything the reader has read so
+            # far", which ends at an arbitrary byte — unlike the non-zero-exit
+            # branch below, whose ``stderr`` is a completed stream. Without the
+            # claim a severed trailing character is spelled by the console code
+            # page instead of showing U+FFFD.
             partial = (
-                exc.stderr.decode("utf-8", "replace").strip()[:200]
+                decode_child_output(exc.stderr, ragged_tail=True).strip()[:200]
                 if isinstance(exc.stderr, bytes)
                 else ""
             )
@@ -623,7 +630,7 @@ def _git_clone_bytes(
             raise CatalogError(f"git clone failed for catalog {location!r}: {exc}") from exc
         if int(getattr(result, "returncode", 1)) != 0:
             stderr = getattr(result, "stderr", b"") or b""
-            detail = stderr.decode("utf-8", "replace").strip() if isinstance(stderr, bytes) else str(stderr)
+            detail = decode_child_output(stderr).strip() if isinstance(stderr, bytes) else str(stderr)
             raise CatalogError(f"git clone failed for catalog {location!r}: {detail[:200]}")
         dest_real = Path(dest).resolve()
         catalog_path = dest_real / DEFAULT_CATALOG_FILENAME
@@ -1040,8 +1047,10 @@ def read_artifact(path: Path) -> IndexedArtifact | None:
 
     try:
         raw = _read_metadata_bytes(path)
-        # Core metadata is UTF-8 (PEP 566), and it is decoded BEFORE the parse
-        # deliberately. ``BytesParser`` hands back an ``email.header.Header`` — not a
+        # Core metadata is UTF-8 (PEP 566) — so NOT ``decode_child_output``
+        # (#239): this is a FILE member of an archive whose encoding a spec
+        # fixes, not a child's output whose encoding a console decides. And it
+        # is decoded BEFORE the parse deliberately. ``BytesParser`` hands back an ``email.header.Header`` — not a
         # ``str`` — for any header carrying a non-ASCII byte, and _clean_display's regex
         # then raises TypeError: a pack whose Summary held Korean text (or an em dash,
         # which aelix's own wheels carry) took the WHOLE ``index`` command down with a

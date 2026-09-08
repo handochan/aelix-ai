@@ -35,6 +35,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, cast
 
+from aelix_ai.utils._child_output import decode_child_output
 from aelix_ai.utils._process_tree import (
     ProcessTree,
     _resolve_platform,
@@ -563,7 +564,9 @@ def _run_shell_command(
                 proc.wait(timeout=5.0)
             return None
 
-        return proc.returncode, b"".join(chunks).decode("utf-8", errors="replace")
+        # #239: the DECODER, but no UTF-8 preamble — see ``_shell_argv``. The
+        # argv stays #227's byte for byte because this stdout IS the credential.
+        return proc.returncode, decode_child_output(b"".join(chunks))
     finally:
         # Release, not a kill: POSIX signals nothing here and win32 only closes
         # the job handle, which ends nothing without ``kill_on_close``.

@@ -210,28 +210,63 @@ async def test_run_cancellable_cancellation_kills_child():
 
 
 # ---------------------------------------------------------------------------
-# Decode semantics: invalid bytes → U+FFFD replacement (intentional divergence
-# from old ``subprocess.run(text=True)`` strict decode)
+# Decode semantics: never a UnicodeDecodeError — U+FFFD off win32, and on win32
+# the console/OEM code page first (#239, an amendment to the #221 divergence)
 # ---------------------------------------------------------------------------
 
 
-async def test_run_cancellable_invalid_utf8_replaced():
-    """Invalid UTF-8 bytes in stdout are replaced with U+FFFD (not raised).
+async def test_run_cancellable_invalid_utf8_never_raises_and_the_answer_is_platform_shaped():
+    """A byte no UTF-8 decoder accepts: U+FFFD everywhere but a DBCS console.
 
-    This pins the intentional divergence from the old ``subprocess.run(text=True)``
-    behaviour which used ``errors='strict'`` and would raise ``UnicodeDecodeError``
-    on binary rg output.  We use ``errors='replace'`` — more robust and closer
-    to Node's tolerant Buffer decoding used by pi.  Changing this decode mode
-    must be explicit (update this test deliberately).
+    The intentional divergence pinned here is still from
+    ``subprocess.run(text=True)``, which used ``errors='strict'`` and raised
+    ``UnicodeDecodeError`` on binary rg output. What replaced it in #239 is
+    ``decode_child_output``, which on win32 gives the console output code page
+    — or ``GetOEMCP`` when there is no console, which is the case under
+    pytest's captured stdout — a strict try before the ``replace`` floor.
+
+    THE en-US RUNNER IS BACK ON THAT FLOOR (#239 final pass), and this case
+    pinned the opposite until then: "exactly one character, and not U+FFFD",
+    because cp437 and cp850 map ``0xFF`` to U+00A0. That acceptance is what
+    turned the marker INVISIBLE in
+    ``tests/test_extension_issue5_runtime_and_trust.py`` on windows-latest py3.11
+    and py3.12 (CI run 34238825800). A page that decodes all 256 single bytes is
+    offered nothing now, so a single-byte chain is ``errors='replace'`` byte for
+    byte and the win32 answer EQUALS the POSIX one — which is an invariant, so it
+    is asserted exactly rather than weakly.
+
+    A DBCS RUNNER IS THE ONE PLACE THAT CAN STILL DIFFER, and not in the
+    direction this docstring used to claim. cp949, cp936 and cp950 REFUSE
+    ``0xFF`` and reach the floor, but cp932 maps it to U+F8F3, a private-use
+    character — measured 2026-09-09 on darwin/CPython 3.12.13 — so a Japanese
+    runner is NOT U+FFFD. That arm keeps the weak "one character, then the
+    newline" assertion, and it is selected by asking the resolved chain rather
+    than by assuming a locale.
     """
     # Write a raw 0xFF byte to stdout — invalid UTF-8.
     script = "import sys; sys.stdout.buffer.write(b'\\xff\\n')"
     result = await run_cancellable([sys.executable, "-c", script])
     assert result is not None
     stdout, rc = result
-    # U+FFFD replacement character must appear, NOT a UnicodeDecodeError.
-    assert "�" in stdout
     assert rc == 0
+    if sys.platform == "win32" and the_console_page_is_dbcs():
+        assert len(stdout) == 2 and stdout.endswith("\n"), stdout
+    else:
+        assert stdout == "�\n"
+
+
+def the_console_page_is_dbcs() -> bool:
+    """Does this runner's fallback chain end on a multi-byte code page?
+
+    ``en-US`` (OEM 437/850) is single-byte and answers :data:`False`, and since
+    #239's final pass a single-byte chain is ``errors="replace"`` outright, so
+    that answer means "the POSIX answer". A Korean or Japanese runner answers
+    :data:`True`, and only there can a lone undecodable byte be anything else.
+    """
+
+    from aelix_ai.utils._child_output import _is_multibyte_page, win32_output_fallbacks
+
+    return any(_is_multibyte_page(codec) for codec in win32_output_fallbacks())
 
 
 # ---------------------------------------------------------------------------

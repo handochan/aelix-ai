@@ -20,8 +20,17 @@ one machine gets one shell answer for both callers. The ``sh`` step is opt-in
 not take it: ``sh`` is classifiable, and taking it there would flip AUTO mode's
 dialect on every MSYS box, which is ADR-0237/#204's decision rather than #227's.
 
+HOW A FAMILY IS ASKED FOR UTF-8 OUTPUT is here too (:func:`utf8_output_preamble`,
+#239), for the reason ``command_flag_for`` is: it is a fact about the family and
+about nothing else, so the alternative is a copy of the table at each caller.
+The table has ONE non-empty row — PowerShell. The ``cmd`` row was deleted on
+2026-09-09 because the win32 CI leg measured it breaking a real command; that
+function's docstring is where the measurement and the decision live.
+
 WHAT THIS MODULE DOES NOT OWN. The family answer is here; each caller's policy
-stays with the caller. ``_resolve_config`` adds ``-NoProfile`` and
+stays with the caller — and WHETHER to prepend the preamble at all is such a
+policy: the bash tool does, a ``!command`` does not, because its stdout is a
+credential returned verbatim. ``_resolve_config`` adds ``-NoProfile`` and
 ``-NonInteractive`` to the PowerShell family and ``/d /s`` to the ``cmd`` one,
 because a credential command must not run the user's profile — measured on
 PowerShell 7, a profile that writes to stdout is prepended to the resolved key
@@ -92,6 +101,126 @@ def command_flag_for(shell: str) -> str:
     if name in CMD_NAMES:
         return CMD_COMMAND_FLAG
     return POSIX_COMMAND_FLAG
+
+
+# The .NET setter, not PowerShell's own ``$OutputEncoding``: it calls
+# ``SetConsoleOutputCP``, so NATIVE children (git, uv) sharing the console
+# follow it too, which is the whole point. ``UTF8Encoding::new($false)`` is the
+# BOM-less overload — the default constructor emits a preamble. ``try{}catch{}``
+# because a console-less host can throw there and a preamble must never fail
+# the user's command; it prints nothing on either path.
+POWERSHELL_UTF8_PREAMBLE = "try{[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false)}catch{};"
+
+
+def utf8_output_preamble(shell: str) -> str:
+    """One statement to prepend so ``shell`` writes UTF-8, or ``""`` (#239).
+
+    Exactly one family takes one: PowerShell. Everything else gets ``""``, for
+    two different reasons.
+
+    POSIX gets ``""`` because those children already speak UTF-8 by locale, and
+    exporting ``LC_ALL`` would be a behaviour change with no bug behind it.
+
+    ``cmd`` GETS ``""`` BECAUSE ITS PREAMBLE BROKE A REAL COMMAND. Until
+    2026-09-09 this arm returned ``chcp 65001 >nul&``. The win32-only probe
+    ``tests/tools/test_bash_utf8_preamble.py::
+    test_win32_the_cmd_arm_does_not_break_a_spaced_executable_path`` was written
+    by #239's cross-review precisely because nobody here can run Windows, and it
+    fired on its FIRST execution — CI run 34272507388, windows-latest, py3.11
+    and py3.12 both, the ``[bare]`` parameter only::
+
+        'C:\\Users\\runneradmin\\AppData\\Local\\Temp\\…\\a' is not recognized as
+        an internal or external command, operable program or batch file.
+
+    The mechanism had been read off ``cmd /?`` before the leg confirmed it.
+    ``_LocalBashOperations.exec`` hands :class:`subprocess.Popen` a LIST, so
+    :func:`subprocess.list2cmdline` renders ``cmd.exe /c "C:\\a dir\\probe.exe"``
+    — exactly two quote characters, no ``&<>()@^|`` between them, whitespace
+    between them, and the text between them the name of an executable file.
+    That is ``cmd /c``'s rule 1, and it means ``cmd`` KEEPS the quotes.
+    A preamble puts ``&`` and ``>`` inside them, rule 1 stops applying, rule 2
+    strips them, and ``C:\\…\\a`` is what ``cmd`` then tries to run.
+
+    NO SPELLING OF A ``cmd`` PREAMBLE SURVIVES THAT RULE, which is why the arm
+    is deleted rather than re-quoted. Rule 1 requires the WHOLE text between the
+    two quotes to be the name of an executable file, so it is not the ``&`` and
+    the ``>`` that disqualify it — it is having a prefix at all. Dropping the
+    ``>nul``, using a newline instead of ``&``, wrapping in ``call``: each still
+    leaves text in front of the path. And the command cannot be quoted from
+    here either, because what arrives is one opaque string the model wrote.
+
+    THE LEG ALSO SETTLED THE TWO SHAPES THAT DO NOT CHANGE. The probe's other
+    two parameters did not fail on that run (each carries a ``subprocess.run``
+    control and skips rather than fails when the shape was already broken
+    without a preamble): an unquoted path WITH an argument, where the text
+    between the quotes is not the name of an executable file so rule 1 had
+    already failed and rule 2 had already stripped them; and a path the model
+    quoted itself, which ``list2cmdline`` escapes as ``\\"`` so it arrives with
+    FOUR quote characters and rule 1 never applied. The cross-review's own case
+    was that second one, and it is REFUTED. The preamble had exactly one victim.
+
+    "STOPS RESOLVING" DID NOT OVERSTATE IT — the other thing the leg settled.
+    This docstring used to argue that ``CreateProcess``'s successive-token
+    search (``C:\\Program.exe``, then ``C:\\Program Files\\Git.exe``, …) would
+    still launch the binary out of the residue. It never gets the chance:
+    ``cmd`` resolves the command name itself and answers "is not recognized"
+    first, and the command does not run.
+
+    WHAT REPLACES IT is
+    :func:`aelix_ai.utils._child_output.decode_child_output`, which is what #239
+    is actually about — it reads a child's console-code-page output without
+    being told the page in advance. The preamble was always a NARROWING and
+    never a guarantee: it cannot cover a native child that ignores the console
+    page, and PowerShell parses the entire ``-Command`` script before executing
+    any statement, so a parse error discards even the surviving arm unexecuted
+    (measured on pwsh 7.6.5, ``-Command 'Write-Output "PREAMBLE-RAN"; echo a |
+    | echo b'`` prints the ``ParserError`` and never ``PREAMBLE-RAN``). #239's
+    report is that exact shape (``uv --version && uv cache dir`` →
+    ``InvalidEndOfLine``).
+
+    THE PRICE, STATED. A ``cmd`` child that would have emitted UTF-8 now emits
+    the console page, so it takes the decoder's route and with it that route's
+    documented DBCS ambiguity (ADR-0238). On a Western box it is a real loss and
+    not only a shift: with no DBCS page in the chain the decoder is
+    ``errors="replace"`` byte for byte, so an OEM-page character that the
+    deleted ``chcp 65001`` would have turned into UTF-8 now reads ``U+FFFD``.
+    THAT IS A LOSS AGAINST THE INTERMEDIATE BUILD THAT CARRIED THE ARM, NOT
+    AGAINST THE PREVIOUS RELEASE: ``0.1.0-beta.1`` decoded every child
+    ``utf-8``/``errors="replace"``, so those same bytes read ``U+FFFD`` there
+    too. Measured on this tree: for a cp850 buffer holding the German
+    ``Gr\N{LATIN SMALL LETTER U WITH DIAERESIS}\N{LATIN SMALL LETTER SHARP S}e``,
+    ``decode_child_output(buf, fallbacks=("cp850",))`` equals ``buf.decode(
+    "utf-8", errors="replace")``, both spelling the two accented bytes
+    ``U+FFFD``; over 16 accented German/French console lines, 16 of 16 equal
+    and 16 of 16 marked on both sides. Paid because one mojibake line is worth
+    less than a command that does not run, and because the arm is narrow —
+    ``_resolve_shell_win32`` takes ``windows_command_shells(env)[0]`` and
+    ``powershell.exe`` is on a stock Windows PATH, so a box that reaches
+    ``cmd`` at all did one of four things: set an explicit ``shell_path``; set
+    ``$SHELL`` to an existing
+    ``cmd.exe`` (built BEFORE any PATH probe, so it wins even
+    with ``pwsh`` on PATH); handed this a spawn-context env with no ``PATH``
+    key at all, which skips the probes and leaves ``%COMSPEC%``/``cmd.exe`` —
+    a ``spawn_hook`` can produce exactly that, as ``windows_command_shells``'s
+    own docstring records; or has a ``PATH`` with no PowerShell on it, System32
+    stripped being the usual way. The last three are measured on darwin against
+    ``windows_command_shells``; the ``shell_path`` route never reaches it —
+    ``_resolve_shell`` validates the setting and returns it.
+
+    The PowerShell arm is untouched by any of this. Its statement goes into a
+    script ``pwsh`` parses itself, not into a string ``cmd`` re-quotes, and
+    ``test_win32_powershell_51_parses_the_preamble`` did not fail on the same
+    leg — which is as much as a ``-q`` run can say, since that case skips when
+    the runner has no 5.1 under ``%SYSTEMROOT%``.
+
+    ``command.com`` never reached the ``cmd`` row even while there was one, for
+    the reason ``_shell_argv`` records: :func:`shell_basename` strips only
+    ``.exe``, so the name never matches. Pre-existing (#104), and now moot here.
+    """
+
+    if shell_basename(shell) in POWERSHELL_NAMES:
+        return POWERSHELL_UTF8_PREAMBLE
+    return ""
 
 
 @dataclass(frozen=True)

@@ -144,7 +144,7 @@ def _select_summary(state: _StreamState, stderr_clean: str, *, ok: bool) -> str:
     exactly as specified, including the zero-stdout case it exists for.
 
     THE ``error_message`` RUNG IS GATED THE SAME WAY, AND FOR THE TWIN REASON.
-    ``_reduce_message_end`` (``stream.py:552-556``) is last-NON-EMPTY-wins per
+    ``_reduce_message_end`` (``stream.py:566-570``) is last-NON-EMPTY-wins per
     field, so ``state.error_message`` means "SOME turn errored", never "the run
     failed" — the harness's own auto-retry (``harness/core.py:518-519``, default
     ON, 3 attempts) recovers turn 1 on turn 2 and the child answers correctly.
@@ -301,7 +301,7 @@ def build_result(
     code reports that as a success with an empty summary.
     """
 
-    # ``agent_end`` is the child's own terminator (``stream.py:231-235``). Its
+    # ``agent_end`` is the child's own terminator (``stream.py:245-249``). Its
     # absence in a stream that reached EOF is a child that stopped MID-TURN, and
     # the exit code cannot see it: measured against a real child that emits a
     # good ``message_end`` and then exits 0 without a terminator, this returned
@@ -310,7 +310,7 @@ def build_result(
     #
     # GUARDED BY ``dropped_lines == 0``, and the guard is the whole reason the
     # disjunct is safe. ``agent_end`` carries the entire message array on ONE
-    # line (``stream.py:535-541``), so a child that read a large file emits a
+    # line (``stream.py:549-555``), so a child that read a large file emits a
     # terminator above ``MAX_LINE_BYTES`` and ``LineAssembler`` drops it — on a
     # run that finished perfectly. Measured: ``saw_agent_end=False,
     # dropped_lines=1, exit 0, summary='the complete answer'``. A bare

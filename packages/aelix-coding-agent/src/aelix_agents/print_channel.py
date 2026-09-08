@@ -73,6 +73,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
 import aelix_coding_agent
+from aelix_ai.utils._child_output import decode_child_output
 from aelix_ai.utils._process_tree import (
     ProcessTree,
     _retained_handle,
@@ -347,7 +348,13 @@ class StderrRing:
         return self._total
 
     def text(self) -> str:
-        return bytes(self._buf).decode("utf-8", errors="replace")
+        # BOTH ends (#239): ``del self._buf[:overflow]`` above is byte-exact, so
+        # this window's head is routinely a cut multi-byte sequence, and the
+        # tail is whatever a dying child got out. Without the head claim the
+        # seam fails UTF-8 strict and a whole valid tail is offered to a code
+        # page. This is one of the two sites that really has a cut head — the
+        # exec sites' buffers are append-only and claim the tail alone.
+        return decode_child_output(bytes(self._buf), ragged_head=True, ragged_tail=True)
 
 
 def narrow_tools(
@@ -500,7 +507,7 @@ def build_child_argv(
     """The child's exact command line — §(l).
 
     ``[sys.executable, "-m", "aelix_coding_agent", …]`` and nothing else.
-    Specifically NOT ``-m aelix``, which ``rpc/rpc_client.py:1091`` does and which
+    Specifically NOT ``-m aelix``, which ``rpc/rpc_client.py:1097`` does and which
     is a live bug (``aelix`` is the umbrella meta-package demo), and NOT the
     ``aelix`` console script, which in a worktree resolves to the OTHER tree's
     editable install.

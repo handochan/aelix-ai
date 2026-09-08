@@ -12,12 +12,18 @@ inside the very PATH probe these tests exist to cover.
 
 from __future__ import annotations
 
+import errno
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
-from aelix_ai.utils._shell import command_flag_for, shell_basename
+from aelix_ai.utils._shell import (
+    POWERSHELL_UTF8_PREAMBLE,
+    command_flag_for,
+    shell_basename,
+    utf8_output_preamble,
+)
 from aelix_coding_agent.builtin.bash_classifier import is_classifiable_shell
 from aelix_coding_agent.tools import bash as bash_mod
 from aelix_coding_agent.tools.bash import ShellConfig, _resolve_shell
@@ -258,16 +264,43 @@ def test_a_bare_version_is_not_stripped_to_nothing() -> None:
 # === the flag reaches argv ==================================================
 
 
-async def test_spawn_argv_uses_the_resolved_flag(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The spawn site used to hard-code ``-c``; ``cmd.exe -c`` is not a thing."""
+async def test_spawn_argv_uses_the_resolved_flag_and_hands_cmd_the_command_verbatim(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The spawn site used to hard-code ``-c``; ``cmd.exe -c`` is not a thing.
+
+    And on the ``cmd`` family the third argv element is the model's command
+    with NOTHING in front of it. This is the only assertion off Windows that
+    can say so through the real spawn path — CI's win32 leg resolves ``pwsh``,
+    so only forcing the resolution here reaches the ``cmd`` arm at all.
+
+    It is a regression guard with a measured cost behind it. From this branch's
+    first #239 commit until 2026-09-09 — never on ``main``, never in a release
+    — this line read ``"chcp 65001 >nul&dir"``, and CI run
+    34272507388 measured that prefix breaking an unquoted spaced executable
+    path on windows-latest (``'C:\\…\\a' is not recognized``): the prefix costs
+    ``cmd /c``'s rule 1 the quotes ``list2cmdline`` put around the command. Any
+    future preamble on this family turns this red on darwin instead of on the
+    leg. What this case can NO LONGER say, now that the arm's preamble is
+    ``""``, is that the spawn site applies :func:`utf8_output_preamble` at all
+    — every assertion below is satisfied with the prepend deleted, measured.
+    The case after this one is what pins that. See
+    :func:`aelix_ai.utils._shell.utf8_output_preamble`.
+    """
 
     recorded: list[list[str]] = []
 
     def fake_popen(argv, **_kwargs):
         recorded.append(list(argv))
         # Short-circuit into the tool's existing spawn-failure branch so the
-        # test needs no fake process object.
-        raise FileNotFoundError(argv[0])
+        # test needs no fake process object. The errno is load-bearing: #243
+        # (same release) classifies a spawn failure BY errno, and an OSError
+        # carrying none deliberately escapes the tool
+        # (``test_a_spawn_error_with_no_errno_still_escapes``). A real
+        # ``Popen`` miss always carries ENOENT, so a fake without one is not
+        # the failure this case means to stage — measured: without it these two
+        # pass alone and fail once #243 is in the tree.
+        raise FileNotFoundError(errno.ENOENT, "No such file or directory", argv[0])
 
     monkeypatch.setattr(bash_mod, "_resolve_shell", lambda *_a, **_k: ShellConfig("cmd.exe", "/c"))
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
@@ -276,6 +309,51 @@ async def test_spawn_argv_uses_the_resolved_flag(monkeypatch: pytest.MonkeyPatch
     result = await ops.exec("dir", ".", on_data=lambda _b: None, env={})
 
     assert recorded == [["cmd.exe", "/c", "dir"]]
+    assert utf8_output_preamble("cmd.exe") == ""
+    assert recorded[0][2] == utf8_output_preamble("cmd.exe") + "dir"
+    assert result.exit_code == 127
+
+
+async def test_spawn_argv_prepends_the_powershell_preamble(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The spawn site really applies :func:`utf8_output_preamble`, pinned here.
+
+    The ``cmd`` case above can no longer say so. Once that arm returned ``""``
+    its assertions became satisfiable with the prepend deleted, and the review
+    of the removal MEASURED that: with ``utf8_output_preamble(shell.path) +``
+    taken out of the ``Popen`` argv in ``tools/bash.py`` the whole darwin suite
+    stayed green. PowerShell is the one family with a non-empty preamble, so it
+    is the only family whose spawn can carry that guard off Windows — and CI's
+    win32 leg resolves ``pwsh``, so this is the arm that ships.
+
+    Re-measured for this test: with the prepend removed from ``tools/bash.py``
+    this case fails on darwin with ``recorded[0][2] == "dir"`` against an
+    expected ``try{[Console]::OutputEncoding=…}catch{};dir``; restored, it
+    passes.
+    """
+
+    recorded: list[list[str]] = []
+
+    def fake_popen(argv, **_kwargs):
+        recorded.append(list(argv))
+        # ENOENT for the reason the sibling above gives: #243 classifies by errno.
+        raise FileNotFoundError(errno.ENOENT, "No such file or directory", argv[0])
+
+    monkeypatch.setattr(
+        bash_mod, "_resolve_shell", lambda *_a, **_k: ShellConfig("pwsh.exe", "-Command")
+    )
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    ops = bash_mod.create_local_bash_operations()
+    result = await ops.exec("dir", ".", on_data=lambda _b: None, env={})
+
+    assert recorded == [["pwsh.exe", "-Command", POWERSHELL_UTF8_PREAMBLE + "dir"]]
+    # Spelled out as well as composed: a preamble that silently became ``""``
+    # would satisfy the line above on its own.
+    assert POWERSHELL_UTF8_PREAMBLE
+    assert recorded[0][2].startswith(POWERSHELL_UTF8_PREAMBLE)
+    assert recorded[0][2].endswith("dir")
     assert result.exit_code == 127
 
 

@@ -690,7 +690,7 @@ def _extension_signpost(cwd_abs: str, active_tool_names: set[str]) -> str:
     if api:
         # THE PATTERN. The original hint was ``grep 'def register_'`` — 10 hits,
         # NONE of them the hook surface, which is spelled ``def on(...)`` (the
-        # typed overloads at ``extensions/api.py:1344-1670``). A model told
+        # typed overloads at ``extensions/api.py:1352-1678``). A model told
         # "hooks" exist and handed a grep that cannot find them invents a name.
         #
         # MIND THE PAREN. The obvious widening ``def (register_|on)\(`` is a
@@ -811,7 +811,7 @@ def _extension_signpost(cwd_abs: str, active_tool_names: set[str]) -> str:
         "it via bash and do not write elsewhere to dodge it.\n"
     )
     # MINOR 3: ``/reload`` is implemented ONLY in the TUI (``tui/input.py:47-48``)
-    # and the basic REPL (``cli/repl.py:99``). This block is also emitted for
+    # and the basic REPL (``cli/repl.py:105``). This block is also emitted for
     # ``--print`` / ``--mode json`` / ``--mode rpc`` and for delegated subagents,
     # where telling the user to "run /reload" names a command that does not
     # exist. Made mode-agnostic: the fallback is the one thing that is always

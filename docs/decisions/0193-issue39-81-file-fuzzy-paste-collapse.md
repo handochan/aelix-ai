@@ -165,7 +165,15 @@ enumerated — so outside a repo the two arms agree exactly unless one of those 
 present. It is git's ignore machinery, not the VCS's: fd lists a file named by
 `.hgignore` inside an `.hg` repo. `--type f --type d` dropped every symlink fd saw.
 An undecodable filename reaches prompt_toolkit as U+FFFD from fd and as a lone
-surrogate from the walk. And, unnamed in #231 and measured in this lane:
+surrogate from the walk — **on win32 since #239 the fd arm's byte is offered to
+the console output code page first, but only a DBCS page may take it.**
+This paragraph read "on a SINGLE-BYTE OEM page it is one wrong character rather
+than U+FFFD there" until **#239's final pass (2026-09-09)**, which took that
+back: a page that decodes all 256 single bytes is offered nothing, so cp437 /
+cp850 / cp866 are `errors="replace"` byte for byte and a Western Windows box
+gets the POSIX answer. On a CJK box it is U+FFFD here too — measured, `0xE9` is
+a LEAD byte in cp949 and cp932 and `e9 2e` is not a character — so this surface
+is unchanged on every platform CI runs. The walk arm and every other platform are unchanged. And, unnamed in #231 and measured in this lane:
 `_TREE_ENUM_CAP` bounds both arms, but only the walk spends that budget on
 git-ignored paths, so in a repo with a large ignored build tree the walk truncates in
 `os.scandir` order and real source directories drop out of the menu entirely while fd
