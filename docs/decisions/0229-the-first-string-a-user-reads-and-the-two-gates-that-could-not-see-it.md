@@ -1,11 +1,14 @@
 # 0229. The first string a user reads, and the two gates that could not see it
 
-Status: Accepted (2026-08-18).
+Status: Accepted (2026-08-18) — **AMENDED 2026-09-08 by #244** (see
+`**Amended 2026-09-08 (#244).**` in `## #84 — the scope was inverted`): the two
+gates recorded here proved the help *honest* and could see neither half of #244.
+Everything else in this ADR stands.
 Date: 2026-08-18
 Relates: ADR-0197 (the 3-band gate this batch's gates are modelled on),
 ADR-0213 (a gate that analysed 8 of 247 files and reported zero errors),
 ADR-0218 (the guides that ship inside the wheel), ADR-0224 (text-pinned citations).
-GitHub: #189, #190, #84, #111. Refutes claims in #190 and #188.
+GitHub: #189, #190, #84, #111; amended by #244. Refutes claims in #190 and #188.
 
 Four beta-remaining items. Three of the four turned out to describe something other
 than what was actually wrong, and the pattern is the same each time: a gate existed,
@@ -152,6 +155,22 @@ thing that would have caught it: the two hand-written sets (`INERT_ROWS`,
 `WIRED_PERSIST_BLOCK_ROWS`) are now **checked against an AST scan of production call
 sites**. AST, not grep — `tui/shell.py`'s docstring names `get_enable_skill_commands()`
 in prose, and a substring scan counts that as a consumer.
+
+**Amended 2026-09-08 (#244).** Both of those gates proved the help *honest* and could see
+neither half of the next defect. A row can be honest about what it does and still be
+**undispatchable** — `check_for_updates` shipped `kind="bool"` with its key in neither
+dispatch table, so the first Enter drew a red line — and the very row #115 wired is the one
+whose "next launch" claim was false *the other way*: the gate is re-read inside
+`_input_loop`'s per-turn `while`, so it was live all along. Gates are added (every bool
+row is DRIVEN, not looked up; the confirmation renders the re-read value; the `live=True`
+rows under the persist-only marker must be named as wired; the persist-only header may not
+re-acquire the "no live consumer" claim), and the #84 scan's scope is **unchanged** — the
+row stays in the block, because that block was never uniformly persist-only. The re-read
+does **not** apply to the two rows the shell mirrors onto the renderer
+(`hide_thinking_block`, `hide_compaction_summary`): their live half never consults the
+getter, so a project pin costs them the persist half only, and reporting an error there
+would have taken away the session toggle — the beta2 review measured that regression
+against `main`.
 
 ## #111 — what was left, and what was still false
 

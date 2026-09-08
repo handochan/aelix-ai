@@ -1196,8 +1196,9 @@ async def run_tui(
         context._refresh_footer()
 
     async def _apply_live_setting(key: str, value: object) -> None:
-        # Mirror a persisted dual-write row onto the LIVE session — except
-        # ``respect_gitignore``, whose branch is a documented no-op; see below.
+        # Mirror a persisted dual-write row onto the LIVE session — except the
+        # two PULL rows, ``respect_gitignore`` and ``enable_skill_commands``,
+        # whose branches are documented no-ops; see below.
         # The persist half already ran in apply_setting; this is the in-session
         # half so the change takes effect this run (not only next launch). Steering/follow-up
         # write the harness (no persist of their own); hide-thinking writes the
@@ -1229,6 +1230,16 @@ async def run_tui(
                 # ``_respect_gitignore`` on every enumeration and its tree cache
                 # is keyed by the flag, so the flip is already live. The branch
                 # exists so the absence is a decision, not an omission.
+                pass
+            elif key == "enable_skill_commands":
+                # Same shape (#244): ``_input_loop`` reads the gate inside its
+                # per-turn ``while`` body and hands it to
+                # ``expand_resource_command``, off THIS SettingsManager, so the
+                # flip is already live at the next line typed. Nothing is bound
+                # to a name that could be mirrored. Pass-only for the same
+                # reason as above — the absence would otherwise read as an
+                # omission, and until #244 the classifier in
+                # tests/tui/test_settings_rows.py could not tell the two apart.
                 pass
 
     async def _open_settings() -> None:
@@ -1320,11 +1331,17 @@ async def run_tui(
                 if action is not None:
                     await action()  # type: ignore[misc]
                 continue
+            # Flush BEFORE the error branch (#244 review): a bool row whose
+            # project file overrides the key still WROTE the global cell, and
+            # ``_save()`` only ENQUEUES — the setter docstrings
+            # (``set_respect_gitignore``, ``set_features_agents``) say the caller
+            # must await ``flush()``. Skipping it on the red path left a real
+            # write pending behind a line that says nothing changed.
+            await settings_manager.flush()
             if result.kind == "error":
                 _commit(Text(f"✖ {result.message}", style="bold red"))
                 continue
-            # ok: persisted — flush + mirror live (dual-write) + commit.
-            await settings_manager.flush()
+            # ok: persisted — mirror live (dual-write) + commit.
             if result.live is not None:
                 live_key, live_value = result.live
                 await _apply_live_setting(live_key, live_value)
@@ -3322,6 +3339,13 @@ async def _input_loop(
     means "no manager", which reads as enabled — the same default
     ``get_enable_skill_commands`` itself returns, so a caller that omits it
     gets the setting's documented default rather than a silent off.
+
+    That read happens INSIDE the loop below, once per turn, off the very object
+    the nested ``_open_settings`` writes — which is what makes the ``/settings``
+    row LIVE (#244) rather than "applies next launch", as its copy claimed from
+    #84 (``d41fccb``, 2026-08-18) until #244. Do not hoist it above the
+    ``while``: a cached value would put
+    the row back to needing a restart, and the row now says it does not.
     """
 
     # Issue #9 — surface bindings for extension-command output: a handler's

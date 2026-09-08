@@ -35,8 +35,9 @@ existing stack — DuckDB, an internal SDK, a warehouse client — directly, in-
 
 It sends nothing about you anywhere; there is no telemetry. It does make a few requests for
 itself, and they are the whole list: a once-a-day release check (interactive sessions only —
-headless runs never check, and `/settings` turns it off), the first-use `ripgrep`/`fd`
-download, and the extension-catalog fetch. `--offline` turns those off.
+headless runs never check, and `/settings` → **Check for updates** turns it off from the
+next launch), the first-use `ripgrep`/`fd` download, and the extension-catalog fetch.
+`--offline` turns those off.
 
 ## Install
 

@@ -533,7 +533,7 @@ async def test_the_call_site_scanner_can_tell_a_call_from_a_mention() -> None:
     # It finds real calls...
     assert sites["get_features_agents"], "scanner found no call it should find"
     # ...and it finds ONLY the call in the file that also mentions the name in
-    # prose. shell.py:3321 is a docstring; a substring scan would report 2.
+    # prose. shell.py:3338 is a docstring; a substring scan would report 2.
     skill_sites = sites["get_enable_skill_commands"]
     assert len(skill_sites) == 1, skill_sites
     assert "tui/shell.py" in skill_sites[0]
@@ -546,14 +546,24 @@ async def test_the_wired_row_says_something_true_about_being_off() -> None:
     being true when #115 shipped. Assert the new copy instead of merely
     asserting the old one is gone, so a future blanket rewrite has to keep
     meaning something.
+
+    DIVERGES FROM #84 (rewritten under #244). This case used to end
+    ``assert row.live is False`` and ``assert row.apply_note == "takes effect
+    after you restart aelix"``, pinning a SECOND false claim about the same row.
+    #115 wired the gate inside ``_input_loop``'s per-turn ``while`` body, so a
+    flip is in effect at the next line typed and no restart was ever needed. The
+    live half is now driven by ``test_the_skill_commands_row_applies_this_session``
+    and derived from the source by ``test_the_skill_command_gate_is_re_read_every_turn``;
+    what stays here is the part #84 was actually about — the copy. (The beta2
+    review found the ``row.live`` / ``row.apply_note`` pair this case also
+    carried to be byte-identical to ⑤'s, on the same row: deleting them could
+    not turn anything red, so they are gone and ⑤ owns them.)
     """
 
     sm = SettingsManager.in_memory({})
     row = _rows(sm)["enable_skill_commands"]
     assert "not yet wired" not in row.help
     assert "skills still load" in row.help
-    assert row.live is False
-    assert row.apply_note == "takes effect after you restart aelix"
 
 
 # === Issue #238 — the @-menu gitignore toggle ==============================
@@ -742,8 +752,443 @@ async def test_the_live_rows_docstring_matches_the_measured_mechanism() -> None:
         f"docstring PULL list {sorted(_docstring_key_list('PULL keys:'))} vs "
         f"source {sorted(pull)}"
     )
+    # #244 — the hole this classifier had since #238: ``branches.get(key, False)``
+    # cannot tell a pass-only branch from a MISSING one, so deleting a PULL row's
+    # documented no-op branch left the suite green while the module contract
+    # ("carries an explicit pass-only branch so the absence of a mirror reads as
+    # a decision, not an omission") went unenforced. Require the branch.
+    assert pull <= set(branches), (
+        f"{sorted(pull - set(branches))} are PULL rows with no branch in "
+        "_apply_live_setting; add a pass-only one so the omission is a decision"
+    )
     # The universal claim on the field doc goes false for a PULL row unless it
     # names the second mechanism, whether or not the list above gains the key.
+    # DERIVED over ``pull`` rather than asserting the one literal it used to,
+    # which is how #244's second PULL row could have landed with the field doc
+    # still calling it ``live=False`` and wired.
     field_doc = SettingsRow.__doc__ or ""
     assert "ONE OF TWO" in field_doc, "SettingsRow.live still claims a single mechanism"
-    assert "respect_gitignore" in field_doc
+    for key in pull:
+        assert key in field_doc, f"SettingsRow.live's PULL example omits {key}"
+
+
+# === Issue #244 — the row that could not be toggled, and the one that lied ====
+#
+# Two halves of the same defect. ``check_for_updates`` shipped as a ``bool`` row
+# whose key was in neither dispatch table, so the first Enter drew a red line and
+# wrote nothing while both READMEs promised ``/settings`` turned the check off.
+# ``enable_skill_commands`` shipped the inverse: it is re-read on every turn, and
+# its copy promised a restart it never needed.
+
+
+def _bool_rows(sm: SettingsManager) -> list[SettingsRow]:
+    return [r for r in build_settings_rows(sm) if r.kind == "bool"]
+
+
+async def test_every_bool_row_is_dispatchable() -> None:
+    """① Every ``kind="bool"`` row survives a REAL toggle, not just a lookup.
+
+    ``_row_bool`` indexes ``_BOOL_GETTERS[row.key]``, so a bool row missing from
+    that table raises ``KeyError`` inside ``apply_setting``'s ``except
+    Exception`` and the menu commits ``✖ <Label>: '<key>'`` having changed
+    nothing. Measured on ``main`` for ``check_for_updates``: the apply returned
+    ``kind='error'`` and the getter still read ``True`` afterwards.
+
+    DRIVING each row is strictly stronger than asserting membership — it also
+    catches a getter/setter name that is in the table but not on the manager.
+    """
+
+    from aelix_coding_agent.tui.settings_rows import _BOOL_GETTERS, _BOOL_SETTERS
+
+    probe = SettingsManager.in_memory({})
+    rows = _bool_rows(probe)
+    assert len(rows) == 12, [r.key for r in rows]
+    for row in rows:
+        assert row.key in _BOOL_GETTERS, f"{row.key} cannot be READ by apply_setting"
+        assert row.key in _BOOL_SETTERS, f"{row.key} cannot be WRITTEN by apply_setting"
+        assert hasattr(probe, _BOOL_GETTERS[row.key]), _BOOL_GETTERS[row.key]
+        assert hasattr(probe, _BOOL_SETTERS[row.key]), _BOOL_SETTERS[row.key]
+
+    for row in rows:
+        sm = SettingsManager.in_memory({})
+        before = row.read(sm)
+        result = apply_setting(row, sm)
+        assert result.kind == "ok", f"{row.key}: {result.message}"
+        assert row.read(sm) != before, f"{row.key}: still reads {before!r} after a toggle"
+
+
+async def test_the_bool_arm_reports_the_value_that_survived() -> None:
+    """② The confirmation renders the RE-READ value, never the intended one.
+
+    ``set_check_for_updates`` writes the GLOBAL cell while the getter reads the
+    merged view, so a project ``.aelix/settings.json`` carrying the key wins.
+    Measured: seeded global ``true`` / project ``false``,
+    ``set_check_for_updates(True)`` leaves the getter ``False`` — a bool arm that
+    printed the value it *asked for* would draw a green ``→ on`` over a row that
+    redraws ``off``, which is the #84 class of defect. It reports the override.
+
+    The second half pins the equivalence that let ``_bool_label`` be deleted:
+    with no project file, the rendered value IS ``row.read`` for every bool row.
+    """
+
+    import json
+
+    from aelix_ai.settings.storage import InMemorySettingsStorage
+
+    storage = InMemorySettingsStorage()
+    storage.with_lock("global", lambda _: json.dumps({"checkForUpdates": True}))
+    storage.with_lock("project", lambda _: json.dumps({"checkForUpdates": False}))
+    sm = SettingsManager.from_storage(storage)
+    assert sm.get_check_for_updates() is False  # the project file wins the read
+
+    result = apply_setting(_rows(sm)["check_for_updates"], sm)
+    assert result.kind == "error", result.message
+    # The whole line. Asserting only the ``.aelix/settings.json`` substring left
+    # the two halves that carry the information — the value that survived, and
+    # the fact that the global cell WAS written — deletable with the suite green
+    # (beta2 review).
+    assert result.message == (
+        "Check for updates: still off — a project .aelix/settings.json sets this "
+        "key and wins over the global file this row writes (the global value was "
+        "updated and applies where no project file overrides it)"
+    )
+    assert sm.get_check_for_updates() is False
+    # The GLOBAL cell did take the value the toggle asked for (merged read
+    # ``False`` -> asked ``True``); only the merged view is unmoved. That is why
+    # the message says so, and why ``_open_settings`` now flushes on this path.
+    assert sm.get_global_settings().check_for_updates is True
+
+    for row in _bool_rows(SettingsManager.in_memory({})):
+        fresh = SettingsManager.in_memory({})
+        res = apply_setting(row, fresh)
+        assert res.kind == "ok", f"{row.key}: {res.message}"
+        assert res.message.startswith(f"{row.label.lower()} → {row.read(fresh)}"), (
+            f"{row.key}: {res.message!r} does not open with the re-read value "
+            f"{row.read(fresh)!r}"
+        )
+
+
+async def test_the_bool_tables_carry_no_key_that_is_not_a_bool_row() -> None:
+    """③ The stale direction only — ① owns the missing one.
+
+    A key left behind in ``_BOOL_GETTERS``/``_BOOL_SETTERS`` after its row is
+    deleted or changes ``kind`` is dead weight that reads as coverage.
+    """
+
+    from aelix_coding_agent.tui.settings_rows import _BOOL_GETTERS, _BOOL_SETTERS
+
+    bool_keys = {r.key for r in _bool_rows(SettingsManager.in_memory({}))}
+    assert set(_BOOL_GETTERS) - bool_keys == set()
+    assert set(_BOOL_SETTERS) - bool_keys == set()
+
+
+async def test_the_update_check_row_toggles_and_still_says_next_launch() -> None:
+    """④ The READMEs' claim, executable.
+
+    Both say ``/settings`` turns the release check off. That was false from the
+    day the row shipped. It is persist-only (``_start_update_check`` runs before
+    the banner), so the confirmation keeps its restart note.
+    """
+
+    sm = SettingsManager.in_memory({})
+    row = _rows(sm)["check_for_updates"]
+    assert row.read(sm) == "on"  # defaults ON, through the real getter
+
+    result = apply_setting(row, sm)
+    assert result.kind == "ok", result.message
+    assert result.message == (
+        "check for updates → off (takes effect after you restart aelix)"
+    )
+    assert sm.get_check_for_updates() is False
+    assert result.live is None  # persist-only: nothing for the shell to mirror
+    assert _rows(sm)["check_for_updates"].read(sm) == "off"
+
+    back = apply_setting(_rows(sm)["check_for_updates"], sm)
+    assert back.kind == "ok", back.message
+    assert sm.get_check_for_updates() is True
+
+
+async def test_the_skill_commands_row_applies_this_session() -> None:
+    """⑤ The inverse defect: the copy promised a restart the gate never needs.
+
+    ``expand_resource_command`` is handed ``get_enable_skill_commands()`` inside
+    ``_input_loop``'s ``while`` body (⑥ derives that from the source), off the
+    same SettingsManager ``_open_settings`` writes — so the flip is answered by
+    the next line typed. The row is LIVE by the PULL mechanism, like
+    ``respect_gitignore``, and carries no ``apply_note``.
+
+    The width assertion is #238's mechanism: the detail panel does not wrap and
+    is cut at ``_PICK_MAX_WIDTH``, and the live clause is exactly the part a
+    longer help would lose.
+    """
+
+    from aelix_coding_agent.tui.context import _PICK_MAX_WIDTH, _visible_len
+
+    sm = SettingsManager.in_memory({})
+    row = _rows(sm)["enable_skill_commands"]
+    assert row.live is True
+    assert row.apply_note is None
+    assert "next launch" not in row.help
+    assert "skills still load" in row.help
+    assert _visible_len(row.help) <= _PICK_MAX_WIDTH, (
+        f"help is {_visible_len(row.help)} cells; the detail panel does not wrap "
+        f"and is cut at the pane width (_PICK_MAX_WIDTH={_PICK_MAX_WIDTH})"
+    )
+
+    result = apply_setting(row, sm)
+    assert result.kind == "ok", result.message
+    assert result.live == ("enable_skill_commands", False)
+    # The WHOLE line, not "no ``(`` in it": that probe was implied by
+    # ``apply_note is None`` above (the suffix is derived from it) and would
+    # break on any future label carrying a parenthesis. What must hold is that
+    # the confirmation states the flip with no restart note attached.
+    assert result.message == "skill commands → off"
+    assert sm.get_enable_skill_commands() is False
+
+
+async def test_the_skill_command_gate_is_re_read_every_turn() -> None:
+    """⑥ What makes ⑤'s ``live=True`` true, derived from ``shell.py``.
+
+    Three things together: the ONE production call to
+    ``get_enable_skill_commands`` sits inside ``_input_loop``'s ``while`` body
+    (re-read per turn, not hoisted); ``run_tui`` hands ``_input_loop`` its own
+    ``settings_manager`` parameter as a bare Name; and ``run_tui`` never rebinds
+    that name, so the nested ``_open_settings`` writes the object the loop reads.
+    Hoist the read above the loop, or rebind the manager, and ⑤ becomes a lie.
+    """
+
+    import ast
+    from pathlib import Path
+
+    src = (
+        Path(__file__).resolve().parents[2]
+        / "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py"
+    )
+    tree = ast.parse(src.read_text(encoding="utf-8"), filename=str(src))
+
+    def _named(node: ast.AST, name: str) -> bool:
+        return (
+            isinstance(node, ast.AsyncFunctionDef | ast.FunctionDef) and node.name == name
+        )
+
+    loop = next(n for n in ast.walk(tree) if _named(n, "_input_loop"))
+    whiles = [n for n in loop.body if isinstance(n, ast.While)]
+    assert len(whiles) == 1, [w.lineno for w in whiles]
+    per_turn = set(map(id, ast.walk(whiles[0])))
+
+    gate_calls = [
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Attribute)
+        and n.func.attr == "get_enable_skill_commands"
+    ]
+    assert len(gate_calls) == 1, [c.lineno for c in gate_calls]
+    assert id(gate_calls[0]) in per_turn, (
+        f"shell.py:{gate_calls[0].lineno} reads the gate outside the per-turn "
+        "while body — the row is no longer live"
+    )
+
+    run_tui = next(n for n in ast.walk(tree) if _named(n, "run_tui"))
+    assert "settings_manager" in {
+        a.arg for a in [*run_tui.args.args, *run_tui.args.kwonlyargs]
+    }
+    loop_calls = [
+        n
+        for n in ast.walk(run_tui)
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "_input_loop"
+    ]
+    assert len(loop_calls) == 1, [c.lineno for c in loop_calls]
+    passed = {k.arg: k.value for k in loop_calls[0].keywords if k.arg}.get("settings_manager")
+    assert isinstance(passed, ast.Name) and passed.id == "settings_manager"
+    rebinds = [
+        n
+        for n in ast.walk(run_tui)
+        if (
+            isinstance(n, ast.Assign)
+            and any(isinstance(t, ast.Name) and t.id == "settings_manager" for t in n.targets)
+        )
+        or (
+            isinstance(n, ast.AnnAssign)
+            and isinstance(n.target, ast.Name)
+            and n.target.id == "settings_manager"
+        )
+    ]
+    assert not rebinds, (
+        f"run_tui rebinds settings_manager at {[n.lineno for n in rebinds]}; "
+        "_open_settings and _input_loop would no longer share one object"
+    )
+
+
+async def test_no_row_below_the_persist_marker_claims_live_without_being_wired() -> None:
+    """⑦ The persist-only header is a RULE WITH EXCEPTIONS, and this is the gate.
+
+    The marker has never been literally true: ``tool_card_max_lines`` and
+    ``render_max_width`` were already ``live=True`` below it before this commit,
+    and ``enable_skill_commands`` joins them. What must hold is the honest
+    version — every ``live=True`` row under the marker is one the block comment
+    already names as wired.
+    """
+
+    import ast
+    from pathlib import Path
+
+    src = (
+        Path(__file__).resolve().parents[2]
+        / "packages/aelix-coding-agent/src/aelix_coding_agent/tui/settings_rows.py"
+    )
+    text = src.read_text(encoding="utf-8")
+    markers = [i + 1 for i, line in enumerate(text.splitlines()) if "PERSIST-ONLY rows" in line]
+    assert len(markers) == 1, markers
+    # The header's WORDING, not just its existence. Restoring the pre-#244
+    # "(no live coding-agent consumer)" left tests/tui + tests/docs green
+    # (beta2 review, 47 passed) while three rows below it are ``live=True``.
+    marker_line = text.splitlines()[markers[0] - 1]
+    assert "no live" not in marker_line, marker_line
+    assert "exception" in marker_line, (
+        f"{marker_line!r} must say the block is a rule WITH EXCEPTIONS; the rows "
+        "below falsify any header that claims none of them is live"
+    )
+
+    below: set[str] = set()
+    for node in ast.walk(ast.parse(text, filename=str(src))):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)):
+            continue
+        if node.func.id != "SettingsRow" or node.lineno < markers[0]:
+            continue
+        kw = {k.arg: k.value for k in node.keywords if k.arg}
+        live = kw.get("live")
+        key = kw["key"]
+        assert isinstance(key, ast.Constant)
+        if isinstance(live, ast.Constant) and live.value is True:
+            below.add(str(key.value))
+
+    assert "enable_skill_commands" in below, sorted(below)
+    assert below <= set(WIRED_PERSIST_BLOCK_ROWS), (
+        f"{sorted(below - set(WIRED_PERSIST_BLOCK_ROWS))} claim live=True under the "
+        "persist-only marker without being named as wired in the block comment"
+    )
+
+
+async def test_a_pinned_push_row_still_flips_the_session() -> None:
+    """⑧ (beta2 review) A project pin costs the PERSIST half, never the LIVE one.
+
+    ``hide_thinking_block`` and ``hide_compaction_summary`` are PUSH rows: the
+    shell copies ``ApplyResult.live`` onto ``renderer.hide_thinking`` /
+    ``renderer.hide_compaction_summary``, which never consults the getter. The
+    #244 re-read guard, applied to them, returned ``error`` — and
+    ``_open_settings`` ``continue``s on ``error`` before ``_apply_live_setting``,
+    so a project ``.aelix/settings.json`` carrying the key silently took away the
+    in-session toggle that worked on ``main``. For ``hide_compaction_summary``
+    that is the ONLY in-session control there is (``hide_thinking_block`` also has
+    Ctrl+T). Measured on ``main``: ``kind='ok'``, ``live=('hide_thinking_block',
+    False)``. The mirror stays; only the message changes, and it is built from
+    what was applied, not from the merged re-read that did not move.
+    """
+
+    import json
+
+    from aelix_ai.settings.storage import InMemorySettingsStorage
+
+    for key, camel in (
+        ("hide_thinking_block", "hideThinkingBlock"),
+        ("hide_compaction_summary", "hideCompactionSummary"),
+    ):
+        storage = InMemorySettingsStorage()
+        storage.with_lock("global", lambda _: json.dumps({}))
+        storage.with_lock("project", lambda _, c=camel: json.dumps({c: True}))
+        sm = SettingsManager.from_storage(storage)
+        row = _rows(sm)[key]
+        assert row.read(sm) == "hidden"  # the project file wins the read
+
+        result = apply_setting(row, sm)
+        assert result.kind == "ok", result.message
+        assert result.live == (key, False), result.live
+        # The message must NOT claim the row now reads "visible" (it does not),
+        # and must NOT claim nothing happened (the session flipped).
+        assert "this session only" in result.message, result.message
+        assert ".aelix/settings.json" in result.message, result.message
+        assert result.message.endswith("the next launch is back to hidden"), result.message
+        assert row.read(sm) == "hidden"  # merged read is unchanged, as advertised
+
+
+async def test_the_push_bool_keys_are_derived_not_declared() -> None:
+    """⑨ ``_PUSH_BOOL_KEYS`` is the same split ⑯ derives, restricted to bools.
+
+    ⑧'s behaviour hangs off that literal set, so it must not be able to drift
+    from ``_apply_live_setting``. Rebuild it the way ⑯ does — a live row whose
+    shell branch is not pass-only is PUSH — and require equality. Wire a third
+    bool row's mirror in the shell and forget this set, and the row gets the
+    persist-only ``error`` while its session visibly changes; that is red here.
+    """
+
+    branches = _apply_live_setting_branches()
+    live_rows = _live_rows_from_source()
+    bool_keys = {r.key for r in _bool_rows(SettingsManager.in_memory({}))}
+    derived = {
+        key
+        for key, kind in live_rows.items()
+        if kind == "bool" and key in bool_keys and branches.get(key, False)
+    }
+
+    from aelix_coding_agent.tui.settings_rows import _PUSH_BOOL_KEYS
+
+    assert set(_PUSH_BOOL_KEYS) == derived, (
+        f"_PUSH_BOOL_KEYS={sorted(_PUSH_BOOL_KEYS)} vs the mirrors "
+        f"_apply_live_setting actually writes for bool rows {sorted(derived)}"
+    )
+
+
+async def test_the_settings_menu_flushes_before_it_draws_a_red_line() -> None:
+    """⑩ (beta2 review) The ``error`` path persists what the setter already wrote.
+
+    A bool row overridden by a project file still writes the GLOBAL cell, and
+    ``SettingsManager._save()`` only ENQUEUES the disk write —
+    ``set_respect_gitignore``'s and ``set_features_agents``' docstrings both say
+    the caller must ``await flush()``, and ``_open_settings`` is that caller. It
+    used to ``continue`` on ``error`` before the flush, leaving a pending write
+    behind a line that tells the user nothing changed. Derived from the source
+    because there is no driver for ``_open_settings`` itself (it is a closure
+    over the prompt-toolkit app).
+    """
+
+    import ast
+    from pathlib import Path
+
+    src = (
+        Path(__file__).resolve().parents[2]
+        / "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py"
+    )
+    tree = ast.parse(src.read_text(encoding="utf-8"), filename=str(src))
+    fn = next(
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.AsyncFunctionDef | ast.FunctionDef)
+        and n.name == "_open_settings"
+    )
+
+    flushes = [
+        n.lineno
+        for n in ast.walk(fn)
+        if isinstance(n, ast.Await)
+        and isinstance(n.value, ast.Call)
+        and isinstance(n.value.func, ast.Attribute)
+        and n.value.func.attr == "flush"
+    ]
+    assert len(flushes) == 1, flushes
+
+    error_branches = [
+        n.lineno
+        for n in ast.walk(fn)
+        if isinstance(n, ast.If)
+        and isinstance(n.test, ast.Compare)
+        and isinstance(n.test.left, ast.Attribute)
+        and n.test.left.attr == "kind"
+        and isinstance(n.test.comparators[0], ast.Constant)
+        and n.test.comparators[0].value == "error"
+    ]
+    assert len(error_branches) == 1, error_branches
+    assert flushes[0] < error_branches[0], (
+        f"shell.py:{flushes[0]} flushes after the error branch at "
+        f"shell.py:{error_branches[0]}; a red line would leave the global write pending"
+    )

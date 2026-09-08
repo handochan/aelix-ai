@@ -2906,7 +2906,7 @@
    "DEFAULT-ON after the multi-lens adversarial review. Set ``AELIX_RELOAD_REBUILD``",
    "to a falsy value (``0``/``false``/``no``/``off``) as a kill-switch to fall back"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:1881-1898": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:1898-1915": [
    "signals_installed: list[int] = []",
    "if install_signal_handlers and sys.platform != \"win32\":",
    "",
@@ -2916,31 +2916,31 @@
    "# dispose, restore terminal). Avoids sys.exit from a detached task,",
    "# which bypassed teardown and left the terminal in raw mode."
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:2403-2403": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:2420-2420": [
    "renderer.hide_thinking = not renderer.hide_thinking"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:2566-2566": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:2583-2583": [
    "editor = os.environ.get(\"VISUAL\") or os.environ.get(\"EDITOR\") or \"vi\""
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:2651-2651": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:2668-2668": [
    "runtime_host.harness.runtime.bind_ui(context)"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3285-3285": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3302-3302": [
    "chrome.set_widget(\"__stream__\", ansi.split(\"\\n\") if ansi else None, above=True)"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3321-3321": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3338-3338": [
    "``get_enable_skill_commands()``, the gate on ``/skill:<name>``. ``None``"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3381-3381": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3405-3405": [
    "if _reload_rebuild_enabled():"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3381-3384": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3405-3408": [
    "if _reload_rebuild_enabled():",
    "await runtime_host.reload()",
    "else:",
    "await harness.reload_resources()"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3414-3431": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3438-3455": [
    "if parsed.kind == \"prompt\" and parsed.text.startswith(\"/\"):",
    "command = match_command(parsed.text, command_ctx.commands)",
    "if command is not None and command.handler is not None:",
