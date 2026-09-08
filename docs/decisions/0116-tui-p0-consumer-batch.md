@@ -73,3 +73,85 @@ protected `aelix-agent-core` core).
   (+16 in `tests/tui/test_p0_consumer_batch.py`, +registry update); protected
   paths byte-unchanged.
 - Live PTY (tmux) on the real `python -m aelix_coding_agent` with qwen3.6.
+
+## Amendment (2026-09-08, #249)
+
+The "Live context-window meter" decision above records the trigger as "refreshed
+async on the `turn_end` AgentEvent". That is no longer the whole set, and the
+reason it had to change is that **`turn_end` was never once per turn**: the loop
+emits it inside `while has_more_tool_calls or pending_messages:` (`loop.py:240`),
+so a thirty-tool turn already fired thirty of them and already ran thirty
+`get_session_stats` reads. The meter was not frozen mid-turn because the refresh
+was rare — it was frozen because **`get_session_stats` cannot answer a mid-turn
+question at all.** `_get_context_usage_safe` estimates over `self._state.messages`
+(`core.py:2761`), and the only turn-path mutation of that list is the
+`extend(new_messages)` at `core.py:4598`, which runs *after* the loop returns. The
+#249 design's probe inside a live turn recorded `len(harness.messages) == 0` at
+every `message_end` / `turn_end` / `agent_end` and `123956` context tokens the
+moment the turn ended (`.omc/specs/249-design-2026-09-08.md` §0); the code path
+says the same thing without a stopwatch. Every one of those thirty reads
+therefore returned the pre-turn figure, and on turn 1 of a fresh session that
+figure is `◔ 0%`.
+
+The trigger set is now: `message_end` (the live mid-turn figure) + `compaction_end`
++ `turn_end` **when no live figure is held** + `settled` + `model_select` + a
+session rebind. Three consequences worth recording:
+
+- **The per-round-trip walk is work REMOVED, not added — but only the meter's
+  half of it.** While a live figure is held the stats read is strictly worse than
+  what is already painted — it estimates over a list that provably has not
+  changed — so the meter skips it. The `/stats` history recorder on the same
+  `turn_end` still performs one `get_session_stats` per round-trip
+  unconditionally (ADR-0168), so this halves the per-round-trip reads rather
+  than eliminating them. The in-memory half of one read
+  (`estimate_context_tokens` + `aggregate_session_stats`) measured 0.035 ms at
+  200 messages and 0.349 ms at 2000, nearly all of it in `aggregate_session_stats`
+  — the estimate alone is 0.001 ms — and a persisted session adds a
+  `Session.get_branch()` disk read on top that was not measured. The live paint
+  measured 1.13 µs, so no debounce is warranted.
+- **The abort path's `turn_end` refresh was stale too**, which the shell's own
+  comment denied ("the ABORT and ERROR turn paths … append their message to
+  `state.messages` BEFORE emitting turn_end and so are already current here").
+  Only a **bodiless** aborted stub is appended (`core.py:4545`); the turn's real
+  assistant messages sit in `new_messages` and are dropped by the `return []`
+  before the extend, so that estimate anchors on the *previous* turn and is
+  **lower** than the live figure. Skipping it there is the better number, not
+  merely a harmless one. The false comment is corrected in `tui/shell.py`.
+- **The post-compaction `tokens=None` sentinel is bypassed sooner.**
+  `_get_context_usage_safe` returns `ContextUsage(tokens=None, percent=None)`
+  when a compaction has no post-compaction assistant usage behind it
+  (`core.py:2736-2762`, pi `getContextUsage`) — the deliberate blank window after
+  `/compact`. The live paint does not consult the session branch, so that window
+  now ends at the first post-compaction assistant response instead of at the next
+  `turn_end`. A stated divergence from pi under ADR-0235; pi has no equivalent
+  trigger.
+
+- **Known gap: a rolled-back `/agents use` leaves the denominator on the
+  abandoned model.** `AgentProfileService.apply` calls `harness.set_model` (which
+  emits `model_select`, so the meter moves) and, if a later step raises, restores
+  the model by writing `harness.state.model` directly — deliberately, to avoid
+  re-emitting hooks that already fired. No event tells the meter to move back, so
+  the footer reads against the refused model's window until the next
+  `settled`/`turn_end`/model change repaints it (one turn at most). Accepted
+  rather than re-emitting on the rollback path; recorded at the rollback site.
+
+`model_select` is registered on the harness bus rather than in `/model`'s handler
+because `harness.set_model` (`core.py:2313`) is the single funnel that `/model`,
+the model picker, the pick offered after `/login` and an extension's
+`ctx.set_model` all reach. It carries `error_mode="continue"`: the bus default
+is `"throw"`, and `set_model` converts a handler error into `AgentHarnessError`
+*after* `_state.model` is already replaced (`core.py:2338`), which `/model` prints
+as `✖ model switch failed` — a footer bug must not report a successful switch as a
+failed one. The handler body is *also* wrapped in `contextlib.suppress(Exception)`,
+which is redundant rather than complementary (both catch the same class,
+`hooks.py:1349-1354`); it is kept as a local guard so the guarantee survives a
+registration that loses the kwarg, and the tests pin each mechanism separately.
+
+One correction to the "Known limitation" in Consequences above ("the meter's
+percent can read low/0 until that protected `aelix-agent-core` path threads usage
+through"): it was already stale before #249, not superseded by it. The adapter
+usage capture recorded in this same ADR put the usage on the `AssistantMessage`,
+and `estimate_context_tokens` has been reading it off `_state.messages` at rest
+ever since (`core.py:2761` → `compaction.py:1130`/`:1102`); nothing in
+`aelix-agent-core` changed on this branch. What #249 adds is a second reader of
+the same usage — off the `message_end` event — for the mid-turn figure.

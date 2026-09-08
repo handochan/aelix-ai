@@ -12,6 +12,7 @@ import contextlib
 from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -3291,3 +3292,783 @@ async def test_run_tui_echo_bar_reaches_the_glass_in_the_colour_it_pins() -> Non
     # emitted stream and ``_painted_rows`` in test_event_renderer.py measures it
     # there, off the bytes, for exactly this reason. Asserting it here would be
     # asserting the scroll position, not the bar.
+
+
+# === the meter DURING a turn, and after /model (#249) =========================
+#
+# The refresh above is the turn-BOUNDARY story. It cannot serve a mid-turn read
+# at all: ``turn_end`` already fires once per provider round-trip
+# (``loop.py:240``, inside the ``loop.py:192`` tool-call loop),
+# yet the harness does not extend ``_state.messages`` until the loop has
+# returned (``core.py:4598``) — so a thirty-tool turn ran thirty stats walks
+# that every time estimated over the SAME unchanged list and repainted the
+# pre-turn number. The mid-turn figure therefore comes from the ``message_end``
+# payload, and the stats walk is SKIPPED while such a figure is held.
+#
+# Every double here sets ``current_model``: ``_live_context_usage`` short-circuits
+# on a missing or zero ``context_window`` (the same probe
+# ``_get_context_usage_safe`` opens with), so a double without one paints
+# nothing and the assertions would pass against a dead code path.
+
+_LIVE_MODEL = SimpleNamespace(id="anthropic/claude-x", context_window=200_000)
+_LIVE_MODEL_1M = SimpleNamespace(id="anthropic/claude-xl", context_window=1_000_000)
+
+
+def _assistant_with(tokens: int) -> Any:
+    """A finished assistant response reporting ``tokens`` of context."""
+
+    from aelix_ai.messages import AssistantMessage, TextContent
+
+    return AssistantMessage(
+        content=[TextContent(text="ok")],
+        stop_reason="end_turn",
+        usage={"input_tokens": tokens},
+    )
+
+
+def _message_end(tokens: int) -> Any:
+    from aelix_agent_core.types import MessageEndEvent
+
+    return MessageEndEvent(message=_assistant_with(tokens))
+
+
+def _record_paints(monkeypatch: pytest.MonkeyPatch) -> list[str | None]:
+    """Record EVERY ``set_context_label`` call, not just the ones that repaint.
+
+    The unchanged-label short-circuit lives inside the method, so recording the
+    calls is what makes a paint SEQUENCE visible — which is the only shape in
+    which "the meter never steps down" can be asserted.
+    """
+
+    painted: list[str | None] = []
+    real_set = AelixTUIContext.set_context_label
+
+    def _record(self: Any, label: str | None) -> None:
+        painted.append(label)
+        real_set(self, label)
+
+    monkeypatch.setattr(AelixTUIContext, "set_context_label", _record)
+    return painted
+
+
+class _TurnStalenessHarness(FakeHarness):
+    """``get_session_stats`` reports the PRE-turn figure until the turn settles.
+
+    That is the production shape (``core.py:4598`` extends ``_state.messages``
+    after the loop returns, and ``settled`` is emitted right after), and it is
+    what makes an unconditional per-round-trip refresh a DOWNWARD step rather
+    than a harmless duplicate.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.stats_calls = 0
+        self.settled_tokens: int | None = None
+        self.current_model = _LIVE_MODEL
+        from aelix_agent_core.harness.hooks import HookBus
+
+        self.hooks = HookBus(lambda: None)  # type: ignore[assignment]
+
+    async def get_session_stats(self) -> object:
+        self.stats_calls += 1
+        tokens = self.settled_tokens if self.settled_tokens is not None else 10_100
+        return SimpleNamespace(
+            tokens=SimpleNamespace(
+                input=tokens, output=0, cache_read=0, cache_write=0, total=tokens
+            ),
+            cost=0.0,
+            total_messages=4,
+            context_usage=SimpleNamespace(
+                tokens=tokens, context_window=200_000, percent=tokens / 2000.0
+            ),
+        )
+
+
+async def test_a_mid_turn_message_end_moves_the_meter_without_a_stats_walk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """T4 — the number is in the event, so nothing is awaited to paint it."""
+
+    painted = _record_paints(monkeypatch)
+    harness = _ContextMeterHarness()
+    harness.current_model = _LIVE_MODEL
+    with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
+        runtime = FakeRuntime(harness)
+        chrome = AelixChrome()
+        task = _launch(runtime, chrome)
+        await _wait(lambda: chrome.app.is_running)
+        await _wait(lambda: bool(harness.subscribers))
+        await asyncio.sleep(0.05)  # let the startup refresh finish
+        painted.clear()
+        before = harness.stats_calls
+
+        harness.subscribers[0](_message_end(96_900))
+
+        pipe.send_text("/quit\n")
+        code = await asyncio.wait_for(task, timeout=5)
+
+    assert code == 0
+    assert painted and painted[0] == "◔ 48% · 96.9K/200K", painted
+    assert harness.stats_calls == before, "the live paint must not walk the messages"
+
+
+async def test_a_slow_stale_refresh_cannot_paint_over_a_live_mid_turn_paint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """T5 — the live paint claims a NEWER generation, so the guard drops the
+    in-flight stats read exactly as it drops a superseded one."""
+
+    painted = _record_paints(monkeypatch)
+    harness = _OutOfOrderStatsHarness()
+    harness.current_model = _LIVE_MODEL
+    with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
+        runtime = FakeRuntime(harness)
+        chrome = AelixChrome()
+        task = _launch(runtime, chrome)
+        await _wait(lambda: chrome.app.is_running)
+        await _wait(lambda: bool(harness.subscribers))
+        await asyncio.sleep(0.05)
+        painted.clear()
+
+        harness.slow_stale_next = True
+        harness.subscribers[0](SimpleNamespace(type="compaction_end"))
+        await asyncio.sleep(0)  # let the refresh task reach its await
+        harness.subscribers[0](_message_end(96_900))
+        await asyncio.sleep(0.45)  # the stale reader has finished by now
+
+        pipe.send_text("/quit\n")
+        code = await asyncio.wait_for(task, timeout=5)
+
+    assert code == 0
+    labels = [p for p in painted if p]
+    assert labels[-1] == "◔ 48% · 96.9K/200K", labels
+
+
+async def test_a_model_switch_at_idle_refreshes_the_meter() -> None:
+    """T6 — ``/model``, the picker, the post-``/login`` pick and an extension's
+    ``ctx.set_model`` all funnel into ``harness.set_model``, which emits this
+    one event (``core.py:2313``). Nothing in the TUI used to listen, so the
+    denominator changed and the percentage did not."""
+
+    from aelix_agent_core.harness.hooks import ModelSelectHookEvent
+
+    harness = _ContextMeterHarness()
+    harness.current_model = _LIVE_MODEL
+    with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
+        runtime = FakeRuntime(harness)
+        chrome = AelixChrome()
+        task = _launch(runtime, chrome)
+        await _wait(lambda: chrome.app.is_running)
+        await asyncio.sleep(0.05)
+        before = harness.stats_calls
+
+        await harness.hooks.emit(ModelSelectHookEvent(model=_LIVE_MODEL_1M))
+        await _wait(lambda: harness.stats_calls > before, timeout=2.0)
+
+        pipe.send_text("/quit\n")
+        code = await asyncio.wait_for(task, timeout=5)
+
+    assert code == 0
+    assert harness.stats_calls > before, "model_select must refresh the meter"
+
+
+class _RecordingHooks:
+    """Records ``on()`` registrations, the handlers themselves and the
+    unsubscribes; ``emit`` is a no-op.
+
+    Holding the handler is what lets a test invoke it OFF the bus — the only way
+    to isolate the handler's own ``contextlib.suppress`` from the registration's
+    ``error_mode="continue"``, since through the bus either one alone suffices.
+    """
+
+    def __init__(self) -> None:
+        self.registrations: list[tuple[str, dict[str, Any]]] = []
+        self.handlers: dict[str, Any] = {}
+        self.unsub_calls: list[str] = []
+
+    def on(self, event_type: str, handler: Any, **kwargs: Any) -> Callable[[], None]:
+        self.registrations.append((event_type, kwargs))
+        self.handlers[event_type] = handler
+
+        def _unsub() -> None:
+            self.unsub_calls.append(event_type)
+
+        return _unsub
+
+    async def emit(self, _event: object) -> None:
+        return None
+
+
+async def test_the_model_select_registration_is_error_isolated() -> None:
+    """T7a — ``error_mode="continue"``, because the bus default is ``"throw"``
+    and ``set_model`` re-raises a handler error as ``AgentHarnessError`` AFTER
+    ``_state.model`` has already been replaced (``core.py:2338``)."""
+
+    harness = FakeHarness()
+    harness.hooks = _RecordingHooks()  # type: ignore[assignment]
+    with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
+        runtime = FakeRuntime(harness)
+        chrome = AelixChrome()
+        task = _launch(runtime, chrome)
+        await _wait(lambda: chrome.app.is_running)
+        pipe.send_text("/quit\n")
+        code = await asyncio.wait_for(task, timeout=5)
+
+    assert code == 0
+    model_select = [kw for name, kw in harness.hooks.registrations if name == "model_select"]
+    assert model_select, harness.hooks.registrations
+    assert model_select[0]["error_mode"] == "continue"
+    assert model_select[0]["source"] == "tui-context-meter"
+
+
+async def test_a_raising_meter_repaint_cannot_fail_the_model_switch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """T7b — the behavioural half. A kwarg assertion only mirrors the
+    implementation back at itself; what must hold is that ``emit`` RETURNS.
+    Otherwise a footer bug prints ``✖ model switch failed`` for a switch that
+    worked, on a model the harness has already adopted."""
+
+    from aelix_agent_core.harness.hooks import ModelSelectHookEvent
+
+    harness = _ContextMeterHarness()
+    harness.current_model = _LIVE_MODEL
+    with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
+        runtime = FakeRuntime(harness)
+        chrome = AelixChrome()
+        task = _launch(runtime, chrome)
+        await _wait(lambda: chrome.app.is_running)
+        await _wait(lambda: bool(harness.subscribers))
+        await asyncio.sleep(0.05)
+        # A live value is held, so the hook takes its repaint branch…
+        harness.subscribers[0](_message_end(96_900))
+
+        exploded: list[int] = []
+
+        def _boom(_usage: object) -> str | None:
+            exploded.append(1)
+            raise RuntimeError("footer formatter exploded")
+
+        monkeypatch.setattr(tui_shell, "_format_context_label", _boom)
+        # …which now raises. The emit must still complete.
+        await harness.hooks.emit(ModelSelectHookEvent(model=_LIVE_MODEL_1M))
+
+        monkeypatch.undo()
+        pipe.send_text("/quit\n")
+        code = await asyncio.wait_for(task, timeout=5)
+
+    assert code == 0
+    # Without the registration this test is vacuous — emit would return for the
+    # trivial reason that nothing listened. The raise is the evidence the
+    # handler ran and reached the formatter.
+    assert exploded, "the model_select handler never ran"
+
+
+async def test_the_model_select_hook_moves_to_the_new_harness_on_a_swap() -> None:
+    """T8 — a swap builds a new bus; without re-registration ``/model`` stops
+    moving the meter after the first ``/resume``."""
+
+    from aelix_agent_core.harness.hooks import ModelSelectHookEvent
+
+    first = _ContextMeterHarness()
+    first.current_model = _LIVE_MODEL
+    second = _ContextMeterHarness()
+    second.current_model = _LIVE_MODEL
+    with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
+        runtime = FakeRuntime(first)
+        chrome = AelixChrome()
+        task = _launch(runtime, chrome)
+        await _wait(lambda: chrome.app.is_running)
+
+        runtime._harness = second
+        assert runtime.rebind_cb is not None
+        await runtime.rebind_cb(second, "resume")
+
+        before = second.stats_calls
+        await second.hooks.emit(ModelSelectHookEvent(model=_LIVE_MODEL_1M))
+        await _wait(lambda: second.stats_calls > before, timeout=2.0)
+
+        stale = second.stats_calls
+        await first.hooks.emit(ModelSelectHookEvent(model=_LIVE_MODEL_1M))
+        await asyncio.sleep(0.05)
+
+        pipe.send_text("/quit\n")
+        code = await asyncio.wait_for(task, timeout=5)
+
+    assert code == 0
+    assert second.stats_calls > before, "the resumed harness must drive the meter"
+    assert second.stats_calls == stale, "the old bus must be unsubscribed"
+
+
+async def test_a_mid_turn_model_change_reuses_the_cached_live_tokens(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """T9 — the tokens are already known, so only the denominator moves. A
+    stats walk here would repaint the PRE-turn number against the new window."""
+
+    from aelix_agent_core.harness.hooks import ModelSelectHookEvent
+
+    painted = _record_paints(monkeypatch)
+    harness = _ContextMeterHarness()
+    harness.current_model = _LIVE_MODEL
+    with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
+        runtime = FakeRuntime(harness)
+        chrome = AelixChrome()
+        task = _launch(runtime, chrome)
+        await _wait(lambda: chrome.app.is_running)
+        await _wait(lambda: bool(harness.subscribers))
+        await asyncio.sleep(0.05)
+        painted.clear()
+
+        harness.subscribers[0](_message_end(96_900))
+        before = harness.stats_calls
+        harness.current_model = _LIVE_MODEL_1M
+        await harness.hooks.emit(ModelSelectHookEvent(model=_LIVE_MODEL_1M))
+        await asyncio.sleep(0.05)
+
+        pipe.send_text("/quit\n")
+        code = await asyncio.wait_for(task, timeout=5)
+
+    assert code == 0
+    assert painted[:2] == ["◔ 48% · 96.9K/200K", "◔ 10% · 96.9K/1M"], painted
+    assert harness.stats_calls == before, "the cached tokens make this O(1)"
+
+
+async def test_the_meter_never_steps_down_inside_a_turn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """T10 🔴 — the sequence, not the final value.
+
+    ``settled`` corrects the label at the end of the turn whatever happens in
+    between, so a final-label assertion is worthless: it stays green through
+    ``40.1K → 10.1K → 60.1K → 10.1K → 70.1K``, which is precisely the flicker
+    #249 is about and which an unconditional per-round-trip refresh produces.
+    """
+
+    from aelix_agent_core.harness.hooks import SettledHookEvent
+
+    painted = _record_paints(monkeypatch)
+    harness = _TurnStalenessHarness()
+    with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
+        runtime = FakeRuntime(harness)
+        chrome = AelixChrome()
+        task = _launch(runtime, chrome)
+        await _wait(lambda: chrome.app.is_running)
+        await _wait(lambda: bool(harness.subscribers))
+        await asyncio.sleep(0.05)
+        painted.clear()
+        listener = harness.subscribers[0]
+
+        # One provider round-trip: the response, then its tool results.
+        listener(_message_end(40_100))
+        listener(SimpleNamespace(type="turn_end"))
+        await asyncio.sleep(0.05)
+        # The second round-trip of the SAME turn.
+        listener(_message_end(60_100))
+        listener(SimpleNamespace(type="turn_end"))
+        await asyncio.sleep(0.05)
+        # The turn ends: now — and only now — the stats read is authoritative.
+        harness.settled_tokens = 70_100
+        listener(SimpleNamespace(type="agent_end"))
+        await harness.hooks.emit(SettledHookEvent(next_turn_count=0))
+        await _wait(lambda: any("70.1K" in (p or "") for p in painted), timeout=2.0)
+
+        pipe.send_text("/quit\n")
+        code = await asyncio.wait_for(task, timeout=5)
+
+    assert code == 0
+    labels = [p for p in painted if p]
+    assert labels == [
+        "◔ 20% · 40.1K/200K",
+        "◔ 30% · 60.1K/200K",
+        "◔ 35% · 70.1K/200K",
+    ], labels
+    assert "10.1K" not in " ".join(labels), (
+        "the pre-turn figure was repainted mid-turn — the meter stepped DOWN"
+    )
+
+
+async def test_a_session_swap_drops_the_cached_live_tokens(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """T11 — otherwise ``/resume`` then ``/model`` repaints the PRIOR session's
+    token count against the new window; the same leak ``_rebind`` already
+    resets ``_context_label`` for."""
+
+    from aelix_agent_core.harness.hooks import ModelSelectHookEvent
+
+    painted = _record_paints(monkeypatch)
+    first = _ContextMeterHarness()
+    first.current_model = _LIVE_MODEL
+    second = _ContextMeterHarness()
+    second.current_model = _LIVE_MODEL
+    with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
+        runtime = FakeRuntime(first)
+        chrome = AelixChrome()
+        task = _launch(runtime, chrome)
+        await _wait(lambda: chrome.app.is_running)
+        await _wait(lambda: bool(first.subscribers))
+        await asyncio.sleep(0.05)
+        painted.clear()
+
+        first.subscribers[0](_message_end(96_900))
+        assert painted[-1] == "◔ 48% · 96.9K/200K", painted
+
+        runtime._harness = second
+        assert runtime.rebind_cb is not None
+        await runtime.rebind_cb(second, "resume")
+
+        before = second.stats_calls
+        await second.hooks.emit(ModelSelectHookEvent(model=_LIVE_MODEL_1M))
+        await _wait(lambda: second.stats_calls > before, timeout=2.0)
+
+        pipe.send_text("/quit\n")
+        code = await asyncio.wait_for(task, timeout=5)
+
+    assert code == 0
+    assert second.stats_calls > before, "the swap must drop the cache and re-read"
+    labels = [p for p in painted if p]
+    assert "96.9K" not in labels[-1], labels
+
+
+async def test_compaction_end_drops_the_cached_live_tokens(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """T12 — compaction REBUILDS ``_state.messages`` (``core.py:1686``), so the
+    refresh it schedules is authoritative and the pre-compaction live figure is
+    now the stale one."""
+
+    from aelix_agent_core.harness.hooks import ModelSelectHookEvent
+
+    painted = _record_paints(monkeypatch)
+    harness = _ContextMeterHarness()
+    harness.current_model = _LIVE_MODEL
+    with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
+        runtime = FakeRuntime(harness)
+        chrome = AelixChrome()
+        task = _launch(runtime, chrome)
+        await _wait(lambda: chrome.app.is_running)
+        await _wait(lambda: bool(harness.subscribers))
+        await asyncio.sleep(0.05)
+        painted.clear()
+
+        harness.subscribers[0](_message_end(96_900))
+        harness.subscribers[0](SimpleNamespace(type="compaction_end"))
+        await asyncio.sleep(0.05)
+        before = harness.stats_calls
+
+        await harness.hooks.emit(ModelSelectHookEvent(model=_LIVE_MODEL_1M))
+        await _wait(lambda: harness.stats_calls > before, timeout=2.0)
+
+        pipe.send_text("/quit\n")
+        code = await asyncio.wait_for(task, timeout=5)
+
+    assert code == 0
+    assert harness.stats_calls > before, "the else branch must have run"
+    labels = [p for p in painted if p]
+    assert "96.9K" not in labels[-1], labels
+
+
+async def test_agent_end_releases_the_cache_so_the_next_turn_refreshes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """T13 — the clear itself, which T10/T12 only exercise incidentally.
+
+    If the cache outlived the turn, the FOLLOWING turn's ``turn_end`` would keep
+    skipping the stats walk, and on a provider that stopped reporting usage the
+    meter would freeze on the last figure it ever saw. ``agent_end`` is the
+    right boundary because it is emitted on EVERY exit — including the abort
+    (``core.py:4548``) and hook-failure (``core.py:4591``) close-outs, neither
+    of which reaches ``settled`` at all.
+
+    Asserted on the PAINTS rather than on ``get_session_stats`` calls: the
+    turn_end branch also drives ``/stats`` history, which reads the stats
+    unconditionally, so the call count says nothing about the meter.
+    """
+
+    painted = _record_paints(monkeypatch)
+    harness = _TurnStalenessHarness()
+    with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
+        runtime = FakeRuntime(harness)
+        chrome = AelixChrome()
+        task = _launch(runtime, chrome)
+        await _wait(lambda: chrome.app.is_running)
+        await _wait(lambda: bool(harness.subscribers))
+        await asyncio.sleep(0.05)
+        painted.clear()
+        listener = harness.subscribers[0]
+
+        listener(_message_end(40_100))
+        listener(SimpleNamespace(type="turn_end"))
+        await asyncio.sleep(0.05)
+
+        listener(SimpleNamespace(type="agent_end"))
+        # A new turn whose provider reports no usage: the meter must go back to
+        # the stats read rather than holding the previous turn's live figure.
+        listener(SimpleNamespace(type="turn_end"))
+        await _wait(
+            lambda: any("10.1K" in (p or "") for p in painted),
+            timeout=2.0,
+        )
+
+        pipe.send_text("/quit\n")
+        code = await asyncio.wait_for(task, timeout=5)
+
+    assert code == 0
+    assert painted[0] == "\u25d4 20% \u00b7 40.1K/200K", painted
+    assert any("10.1K" in (p or "") for p in painted), (
+        "agent_end must release the cached figure so turn_end walks again"
+    )
+
+
+async def test_a_reload_moves_the_model_select_hook_to_the_rebuilt_bus() -> None:
+    """T8b — the ``/reload`` half of T8, and the reason the registration sits
+    ABOVE ``_rebind``'s ``reason == "reload"`` early return.
+
+    A reload keeps the Session but rebuilds the harness and its hook bus (issue
+    #24, same P-302 factory), so a registration gated on ``reason != "reload"``
+    would leave this handler on the dead bus and ``/model`` would stop moving the
+    meter after the first ``/reload`` — the exact defect T8 pins for ``/resume``.
+    Nothing pinned it in that direction: the mutation `if reason != "reload":`
+    left all of ``tests/tui`` green.
+    """
+
+    from aelix_agent_core.harness.hooks import ModelSelectHookEvent
+
+    first = _ContextMeterHarness()
+    first.current_model = _LIVE_MODEL
+    second = _ContextMeterHarness()
+    second.current_model = _LIVE_MODEL
+    with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
+        runtime = FakeRuntime(first)
+        chrome = AelixChrome()
+        task = _launch(runtime, chrome)
+        await _wait(lambda: chrome.app.is_running)
+
+        runtime._harness = second
+        assert runtime.rebind_cb is not None
+        await runtime.rebind_cb(second, "reload")
+
+        before = second.stats_calls
+        await second.hooks.emit(ModelSelectHookEvent(model=_LIVE_MODEL_1M))
+        await _wait(lambda: second.stats_calls > before, timeout=2.0)
+
+        stale = second.stats_calls
+        await first.hooks.emit(ModelSelectHookEvent(model=_LIVE_MODEL_1M))
+        await asyncio.sleep(0.05)
+
+        pipe.send_text("/quit\n")
+        code = await asyncio.wait_for(task, timeout=5)
+
+    assert code == 0
+    assert second.stats_calls > before, "the reloaded harness must drive the meter"
+    assert second.stats_calls == stale, "the pre-reload bus must be unsubscribed"
+
+
+async def test_a_reload_keeps_the_cached_live_tokens(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """T14 — the other side of T11, and the reason ``live_tokens["n"] = None``
+    sits BELOW the ``reason == "reload"`` return rather than above it.
+
+    A reload keeps the same Session and the same visible transcript, so the live
+    figure is still that session's; dropping it would cost a stats read for a
+    number that has not changed. A swap (T11) must drop it. Moving the reset
+    above the return left ``tests/tui`` green, so neither half was pinned.
+    """
+
+    from aelix_agent_core.harness.hooks import ModelSelectHookEvent
+
+    painted = _record_paints(monkeypatch)
+    first = _ContextMeterHarness()
+    first.current_model = _LIVE_MODEL
+    second = _ContextMeterHarness()
+    second.current_model = _LIVE_MODEL_1M
+    with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
+        runtime = FakeRuntime(first)
+        chrome = AelixChrome()
+        task = _launch(runtime, chrome)
+        await _wait(lambda: chrome.app.is_running)
+        await _wait(lambda: bool(first.subscribers))
+        await asyncio.sleep(0.05)
+        painted.clear()
+
+        first.subscribers[0](_message_end(96_900))
+        assert painted[-1] == "◔ 48% · 96.9K/200K", painted
+
+        runtime._harness = second
+        assert runtime.rebind_cb is not None
+        await runtime.rebind_cb(second, "reload")
+
+        before = second.stats_calls
+        await second.hooks.emit(ModelSelectHookEvent(model=_LIVE_MODEL_1M))
+        await asyncio.sleep(0.05)
+
+        pipe.send_text("/quit\n")
+        code = await asyncio.wait_for(task, timeout=5)
+
+    assert code == 0
+    assert painted[-1] == "◔ 10% · 96.9K/1M", painted
+    assert second.stats_calls == before, "a reload keeps the figure, so no walk"
+
+
+async def test_the_model_select_handler_swallows_its_own_failure_off_the_bus(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """T7c — the ``contextlib.suppress(Exception)`` in the handler body, isolated
+    from the registration's ``error_mode="continue"``.
+
+    Through the bus either mechanism alone satisfies T7b, so neither was pinned:
+    deleting the suppress left every meter test green. Both catch exactly
+    ``Exception`` (``hooks.py:1349-1354``), so the suppress is deliberate
+    redundancy — a local guard that survives a registration which loses the
+    kwarg. Invoking the handler directly is the only way to assert it.
+    """
+
+    harness = _ContextMeterHarness()
+    harness.current_model = _LIVE_MODEL
+    harness.hooks = _RecordingHooks()  # type: ignore[assignment]
+    with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
+        runtime = FakeRuntime(harness)
+        chrome = AelixChrome()
+        task = _launch(runtime, chrome)
+        await _wait(lambda: chrome.app.is_running)
+        await _wait(lambda: bool(harness.subscribers))
+        await asyncio.sleep(0.05)
+        # A live figure is held, so the handler takes its repaint branch…
+        harness.subscribers[0](_message_end(96_900))
+
+        exploded: list[int] = []
+
+        def _boom(_usage: object) -> str | None:
+            exploded.append(1)
+            raise RuntimeError("footer formatter exploded")
+
+        monkeypatch.setattr(tui_shell, "_format_context_label", _boom)
+        handler = harness.hooks.handlers["model_select"]
+        # …and raises. Called OFF the bus, so nothing else can swallow it.
+        await handler(SimpleNamespace(model=_LIVE_MODEL_1M), None)
+
+        monkeypatch.undo()
+        pipe.send_text("/quit\n")
+        code = await asyncio.wait_for(task, timeout=5)
+
+    assert code == 0
+    assert exploded, "the handler never reached the formatter"
+
+
+async def test_the_model_select_hook_is_unsubscribed_at_teardown() -> None:
+    """T15 — shutdown releases the meter's ``model_select`` subscription.
+
+    The handler closes over the whole TUI (``context``, ``runtime_host``,
+    ``live_tokens``); leaving it on a harness that outlives the shell keeps all
+    of that alive and lets a later ``set_model`` paint into a dead chrome. The
+    teardown block was unpinned — deleting it left the full suite green.
+    """
+
+    harness = _ContextMeterHarness()
+    harness.current_model = _LIVE_MODEL
+    harness.hooks = _RecordingHooks()  # type: ignore[assignment]
+    with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
+        runtime = FakeRuntime(harness)
+        chrome = AelixChrome()
+        task = _launch(runtime, chrome)
+        await _wait(lambda: chrome.app.is_running)
+        assert "model_select" in harness.hooks.handlers
+        assert harness.hooks.unsub_calls == []
+
+        pipe.send_text("/quit\n")
+        code = await asyncio.wait_for(task, timeout=5)
+
+    assert code == 0
+    assert "model_select" in harness.hooks.unsub_calls, harness.hooks.unsub_calls
+
+
+async def test_a_model_with_no_window_falls_back_to_the_stats_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """T17 — the ``and window > 0`` half of the hook's repaint condition.
+
+    A model whose ``context_window`` the registry does not know reports 0. Without
+    that clause the cached-token branch divides by it, the ``ZeroDivisionError``
+    disappears into the handler's suppress, and BOTH the repaint and the fallback
+    refresh are skipped — the meter silently freezes on the old denominator. No
+    test held a live figure across a switch to a windowless model, so deleting the
+    clause left the suite green.
+    """
+
+    from aelix_agent_core.harness.hooks import ModelSelectHookEvent
+
+    painted = _record_paints(monkeypatch)
+    harness = _ContextMeterHarness()
+    harness.current_model = _LIVE_MODEL
+    windowless = SimpleNamespace(id="anthropic/claude-unknown", context_window=0)
+    with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
+        runtime = FakeRuntime(harness)
+        chrome = AelixChrome()
+        task = _launch(runtime, chrome)
+        await _wait(lambda: chrome.app.is_running)
+        await _wait(lambda: bool(harness.subscribers))
+        await asyncio.sleep(0.05)
+        painted.clear()
+
+        harness.subscribers[0](_message_end(96_900))
+        assert painted[-1] == "◔ 48% · 96.9K/200K", painted
+        before = harness.stats_calls
+
+        harness.current_model = windowless
+        await harness.hooks.emit(ModelSelectHookEvent(model=windowless))
+        await _wait(lambda: harness.stats_calls > before, timeout=2.0)
+
+        pipe.send_text("/quit\n")
+        code = await asyncio.wait_for(task, timeout=5)
+
+    assert code == 0
+    assert harness.stats_calls > before, (
+        "a windowless model must fall through to the authoritative read"
+    )
+
+
+async def test_a_mid_turn_model_repaint_claims_a_generation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """T18 — the ``_next_context_usage_seq()`` inside the hook's cached-repaint
+    branch, which T5 pins only for ``_paint_live_context_usage``.
+
+    ``/model`` can land while a ``settled`` refresh is still awaiting its
+    ``get_branch`` file I/O. Without claiming a generation the repaint leaves the
+    in-flight read's generation current, so that read paints the OLD window's
+    figure over the new one when it finally lands. Deleting the call left all 99
+    meter tests green.
+    """
+
+    from aelix_agent_core.harness.hooks import ModelSelectHookEvent, SettledHookEvent
+
+    painted = _record_paints(monkeypatch)
+    harness = _OutOfOrderStatsHarness()
+    harness.current_model = _LIVE_MODEL
+    with create_pipe_input() as pipe, create_app_session(input=pipe, output=DummyOutput()):
+        runtime = FakeRuntime(harness)
+        chrome = AelixChrome()
+        task = _launch(runtime, chrome)
+        await _wait(lambda: chrome.app.is_running)
+        await _wait(lambda: bool(harness.subscribers))
+        await asyncio.sleep(0.05)
+        painted.clear()
+
+        harness.subscribers[0](_message_end(96_900))
+        # ``settled`` schedules a read that dawdles in its file I/O…
+        harness.slow_stale_next = True
+        await harness.hooks.emit(SettledHookEvent(next_turn_count=0))
+        await asyncio.sleep(0)  # let it reach its await
+        # …and the user switches model while it is still in flight.
+        harness.current_model = _LIVE_MODEL_1M
+        await harness.hooks.emit(ModelSelectHookEvent(model=_LIVE_MODEL_1M))
+        await asyncio.sleep(0.45)  # the stale reader has finished by now
+
+        pipe.send_text("/quit\n")
+        code = await asyncio.wait_for(task, timeout=5)
+
+    assert code == 0
+    labels = [p for p in painted if p]
+    assert labels[-1] == "◔ 10% · 96.9K/1M", labels

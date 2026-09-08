@@ -441,6 +441,17 @@ class AgentProfileService:
             # filter") has no setter that can express it. Undoing a ``set_model``
             # / ``set_thinking_level`` this way also avoids re-emitting their
             # hooks, which already fired for the value being reverted.
+            #
+            # #249 KNOWN GAP: the TUI's context meter now listens on
+            # ``model_select`` (``tui/shell.py`` ``_model_select_hook``), so the
+            # forward ``set_model`` above moved the footer's denominator to the
+            # model this rollback is abandoning, and no event tells it to move
+            # back. The footer therefore reads against the wrong window until the
+            # next ``settled`` / ``turn_end`` / model change repaints it — one
+            # turn at most, and only on a profile that fails AFTER its model was
+            # accepted. Left as-is rather than re-emitting, because re-emitting
+            # is the thing this block was written not to do; recorded in the
+            # ADR-0116 #249 amendment.
             self.parsed.__dict__.update(durable_snapshot)
             self.active = previous_active
             self.skills_holder["result"] = previous_skills
