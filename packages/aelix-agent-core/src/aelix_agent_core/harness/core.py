@@ -2341,7 +2341,31 @@ class AgentHarness:
             ) from exc
 
     async def set_thinking_level(self, level: str) -> None:
-        """Replace the thinking level. Pi: ``agent-harness.ts:720-733``."""
+        """Replace the thinking level. Pi: ``agent-harness.ts:720-733``
+        (state + emit; the SESSION APPEND below is Aelix-side — pi does it in
+        its product layer, ``coding-agent/src/core/agent-session.ts:1793-1815``
+        at ``pi@da840b6``, and its harness only declares the setter).
+
+        Issue #198 — an idle change is written to the session too. Measured on
+        ``main`` before the fix: with ``_phase == "idle"`` this mutated
+        ``_state.thinking_level`` to ``"high"`` and left the session's entry
+        list EMPTY (``build_context().thinking_level`` still ``"off"``), because
+        the pending queue below is only drained by
+        :meth:`flush_pending_session_writes` at the end of a turn. Every caller a
+        user actually reaches — the ``/thinking`` picker, the ``/settings`` row,
+        the startup seed, ``/agents use`` — runs idle, so the level a session ran
+        at was never recorded and both resume seams had nothing to read.
+
+        Two orderings matter. The append runs AFTER the emit, so a level a
+        ``thinking_level_select`` handler refuses (the raise below) leaves no
+        entry — ``/agents use`` rolls such a level back by writing
+        :class:`AgentState` directly (``agents/service.py``), which cannot undo a
+        session append. And it is gated on an actual CHANGE (pi's ``isChanging``)
+        so re-selecting the live level in the picker does not grow the JSONL.
+        Divergence from pi, which appends BEFORE the emit and appends the
+        CLAMPED level: this setter does not clamp today, and the restore seams
+        clamp instead (ADR-0235, ADR-0239).
+        """
 
         previous = self._state.thinking_level
         self._state.thinking_level = level
@@ -2358,6 +2382,8 @@ class AgentHarness:
                 "hook",
                 f"thinking_level_select hook handler raised: {exc}",
             ) from exc
+        if self._phase != "turn" and self._session is not None and level != previous:
+            await self._session.append_thinking_level_change(level)
 
     async def set_active_tools(self, tool_names: list[str]) -> None:
         """Public async wrapper over the F-9 sync action.
@@ -3344,10 +3370,29 @@ class AgentHarness:
             ) from exc
 
     def _pin_task(self, task: asyncio.Task[Any]) -> None:
-        """§E.2 — GC-pin a fire-and-forget task."""
+        """§E.2 — GC-pin a fire-and-forget task, and retrieve its exception.
+
+        Nobody awaits these tasks, so an exception that is never *retrieved*
+        surfaces as asyncio's ``Task exception was never retrieved`` on the
+        event loop at GC time, in a traceback with no caller. That became
+        reachable with #198: ``set_thinking_level`` now does session file I/O
+        on the idle path, so ``ExtensionAPI.setThinkingLevel`` over a read-only
+        session directory raises where it previously could only no-op. Logged,
+        not swallowed silently — and never re-raised, since there is no caller
+        to re-raise to.
+        """
 
         self._pending_tasks.add(task)
-        task.add_done_callback(self._pending_tasks.discard)
+
+        def _done(t: asyncio.Task[Any]) -> None:
+            self._pending_tasks.discard(t)
+            if t.cancelled():
+                return
+            exc = t.exception()
+            if exc is not None:
+                _log.debug("pinned extension-action task raised", exc_info=exc)
+
+        task.add_done_callback(_done)
 
     # === Sprint 5b §F — CLI shutdown installer ===
 

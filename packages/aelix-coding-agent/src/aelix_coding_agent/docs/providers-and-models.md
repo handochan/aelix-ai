@@ -127,6 +127,18 @@ aelix --thinking medium --model anthropic/claude-sonnet-4-6 "..."
 Valid levels: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`. Inside the
 TUI, `/thinking` cycles the level.
 
+The level is recorded in the session and restored when you come back to it —
+`--continue`, `--resume`, `--session`, `--fork` and the in-session `/resume`.
+It is clamped to whatever the resumed model can do, so a session left at `xhigh`
+opens at `high` on a model that tops out there rather than falling back to `off`.
+An explicit `off` is a decision and is restored as `off`. `--thinking` (and an
+agent profile's `thinking:`) outranks the session at launch, and is itself
+recorded into a session that has not chosen a level yet — so the next
+`--continue` comes back at it. The session in turn outranks the
+`defaultThinkingLevel` setting. One exception to the ladder: after an in-session
+`/resume` the target session's own recorded level wins, launch flag included —
+you asked for that session, not for a re-run of the command line.
+
 ## Offline
 
 `--offline` (equivalent to `PI_OFFLINE=1`) skips the network operations aelix

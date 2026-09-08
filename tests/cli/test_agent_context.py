@@ -208,7 +208,7 @@ def test_prompt_never_names_the_wrong_global_dir(tmp_path, monkeypatch) -> None:
     """The plausible-but-WRONG ``~/.aelix/extensions`` must never be emitted.
 
     ``extensions/loader.py:790-792`` scans ``get_agent_dir()/extensions`` and
-    ``cli/entry.py:1461`` passes ``agent_dir=Path(get_agent_dir())``, i.e. the
+    ``cli/entry.py:1507`` passes ``agent_dir=Path(get_agent_dir())``, i.e. the
     real global dir is ``~/.aelix/agent/extensions``. A hardcoded
     ``~/.aelix/extensions`` would send every user's extension to a directory
     nothing ever reads.
@@ -440,11 +440,11 @@ def test_reload_instruction_is_mode_agnostic() -> None:
 def test_reload_instruction_admits_reload_may_not_re_discover(monkeypatch) -> None:
     """(d) MINOR 4 — ``/reload`` does not ALWAYS pick up a new extension file.
 
-    ``tui/shell.py:3381-3384`` gates the factory rebuild on
+    ``tui/shell.py:3403-3406`` gates the factory rebuild on
     ``_reload_rebuild_enabled()``. That is a documented, supported kill-switch:
     with ``AELIX_RELOAD_REBUILD`` set to a falsy value ``/reload`` routes to
     ``harness.reload_resources()``, which only re-emits a resources discover
-    (``harness/core.py:3121-3128``) and never re-scans the extension
+    (``harness/core.py:3147-3154``) and never re-scans the extension
     directories — so the file the agent just wrote stays dormant while the
     agent reports success.
 

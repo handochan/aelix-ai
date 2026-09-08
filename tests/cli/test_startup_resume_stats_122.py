@@ -5,7 +5,7 @@ The startup harness is built directly (``_harness_factory`` → ``AgentHarness``
 bypassing ``AgentSessionRuntime._finish_session_replacement`` (which seeds
 ``_state.messages`` on in-session swaps). A fresh harness never seeds
 ``AgentHarnessOptions.initial_messages`` from its session, so WITHOUT
-``entry._seed_startup_messages`` a startup ``--continue``/``--resume`` (also
+``entry._seed_startup_state`` a startup ``--continue``/``--resume`` (also
 ``--session``/``--fork``) into a session with history reads ZERO for /context,
 /cost, /session, /stats until the first turn. This is the startup analogue of the
 in-session #122 fix (tests/runtime/test_switch_session_stats_122.py).
@@ -34,7 +34,7 @@ from aelix_ai.streaming import (
     Model,
     SimpleStreamOptions,
 )
-from aelix_coding_agent.cli.entry import _seed_startup_messages
+from aelix_coding_agent.cli.entry import _seed_startup_state
 
 
 def _stream() -> Any:
@@ -81,7 +81,7 @@ async def _session_with_history(repo: JsonlSessionRepo, cwd: str) -> Session:
 
 async def test_startup_seed_reflects_resumed_history(tmp_path: Path) -> None:
     """THE REGRESSION: a startup harness on a session WITH history reads zero
-    stats until seeded; after ``_seed_startup_messages`` it reflects the
+    stats until seeded; after ``_seed_startup_state`` it reflects the
     persisted totals (non-zero) with no turn run."""
 
     fs = LocalFileSystem()
@@ -100,7 +100,7 @@ async def test_startup_seed_reflects_resumed_history(tmp_path: Path) -> None:
     assert pre.cost == 0.0
 
     # The fix: seed from the resumed session's persisted history.
-    await _seed_startup_messages(harness, session)
+    await _seed_startup_state(harness, session, cli_level=None)
 
     assert len(harness.state.messages) == 2
     stats = await harness.get_session_stats()
@@ -122,7 +122,7 @@ async def test_startup_seed_is_noop_for_fresh_session(tmp_path: Path) -> None:
     session = await repo.create(JsonlSessionCreateOptions(cwd=str(tmp_path)))
 
     harness = _startup_harness(session)
-    await _seed_startup_messages(harness, session)
+    await _seed_startup_state(harness, session, cli_level=None)
 
     assert harness.state.messages == []
     stats = await harness.get_session_stats()

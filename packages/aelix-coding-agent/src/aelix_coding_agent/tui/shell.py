@@ -374,6 +374,7 @@ async def run_tui(
     extension_errors: list[Any] | None = None,
     agent_service: AgentProfileService | None = None,
     first_run_login: bool = False,
+    thinking_level_restored: bool = False,
     chrome: AelixChrome | None = None,
     install_signal_handlers: bool = True,
 ) -> int:
@@ -433,6 +434,14 @@ async def run_tui(
         it can only be judged after the harness build (extension-registered
         providers land on the registry there) — and because the stdout-TTY arm
         of that predicate is False under a headless test output.
+    :param thinking_level_restored: issue #198 — ``True`` when entry.py already
+        applied a thinking level (``--thinking`` / a profile's ``thinking:`` /
+        the resumed session's recorded level). The ``defaultThinkingLevel`` seed
+        below then stands down. It is passed in rather than derived here because
+        the seed's ADR-0196 guard sniffs ``state.thinking_level`` for "unset",
+        and a restored explicit ``off`` is indistinguishable from unset by value
+        — since #198 an idle ``set_thinking_level`` WRITES to the session, so
+        seeding over it would overwrite the user's ``off`` permanently.
     :param chrome: injectable for tests (headless pipe input + DummyOutput).
     :param install_signal_handlers: pass ``False`` when embedding (tests / a host
         that owns process signals) — mirrors ``run_rpc_mode``.
@@ -708,6 +717,14 @@ async def run_tui(
         # untouched case, which is the whole point of a *default*. ``"off"`` is
         # the kernel's unset sentinel (``types.py:84``); ``None``/``""`` cover
         # the test doubles that model "unset" differently.
+        #
+        # #198 — that value-sniffing guard was written for two sources and now
+        # has a third: the resumed session's own level, which may legitimately be
+        # an explicit ``off`` and is then indistinguishable from unset by value.
+        # Since #198 an idle ``set_thinking_level`` writes to the session, so an
+        # unguarded seed would not merely shadow that ``off`` for the session, it
+        # would overwrite it in the file. ``entry.py`` supplies the positive
+        # signal instead (ADR-0196 D6.3, amended by ADR-0239).
         with contextlib.suppress(Exception):
             seed_level = settings_manager.get_default_thinking_level()
             # ``state`` is the public property on a real harness; the TUI's
@@ -716,10 +733,15 @@ async def run_tui(
             seed_state = getattr(runtime_host.harness, "state", None)
             if seed_state is None:
                 seed_state = getattr(runtime_host.harness, "_state", None)
-            if seed_level and getattr(seed_state, "thinking_level", None) in (
-                None,
-                "",
-                "off",
+            if (
+                seed_level
+                and not thinking_level_restored
+                and getattr(seed_state, "thinking_level", None)
+                in (
+                    None,
+                    "",
+                    "off",
+                )
             ):
                 from aelix_ai.models import get_supported_thinking_levels
 
@@ -1559,7 +1581,7 @@ async def run_tui(
 
         if model_registry is None:
             # ``run_tui`` declares ``model_registry`` optional and the sole
-            # production caller (``entry.py:2994``) always passes one, so this is
+            # production caller (``entry.py:3045``) always passes one, so this is
             # a test-only shape — but ``find_initial_model`` takes it REQUIRED and
             # dereferences it, and the except below would have shown the user the
             # resulting `'NoneType' object has no attribute …` verbatim. Say the
@@ -1909,7 +1931,7 @@ async def run_tui(
     # in flight at once (``turn_end`` then ``settled`` for one turn), each
     # awaiting ``get_session_stats`` → ``get_branch`` → file I/O, so they can
     # COMPLETE out of order: the turn_end refresh snapshots ``state.messages``
-    # before ``core.py:4598`` extends it, yet may finish after the settled
+    # before ``core.py:4643`` extends it, yet may finish after the settled
     # refresh and paint the stale value last. Completions therefore carry the
     # generation they were scheduled with and a superseded one is DROPPED,
     # making the outcome last-SCHEDULED-wins instead of last-to-finish-wins.
@@ -2245,7 +2267,7 @@ async def run_tui(
 
     async def _settled_hook(_event: object, _ctx: object = None) -> None:
         # The FIRST moment a finished turn is visible in ``state.messages``: the
-        # harness extends it at ``harness/core.py:4598`` and emits ``settled``
+        # harness extends it at ``harness/core.py:4643`` and emits ``settled``
         # immediately after, whereas the ``turn_end`` the loop emitted earlier is
         # too early — a refresh there estimates over a list still missing the turn
         # that just ended, which is why the meter sat one full turn behind.
@@ -2255,7 +2277,7 @@ async def run_tui(
         # ``SettledHandler`` alias types both positions). The ``subscribe`` seam
         # the rest of this module uses passes the event ALONE, and a handler
         # written to THAT shape raises ``TypeError: takes 1 positional argument
-        # but 2 were given`` — which ``core.py:4606-4607`` catches and logs at DEBUG,
+        # but 2 were given`` — which ``core.py:4651-4652`` catches and logs at DEBUG,
         # so it fails SILENTLY and the refresh simply never runs. ``_ctx`` is
         # defaulted so the handler stays directly callable from a unit test.
         _schedule_context_usage_refresh()
@@ -2730,7 +2752,7 @@ async def run_tui(
         _commit(_build_banner(runtime_host.harness, cwd))
         # Issue #165 — the STARTUP analogue of the /resume repaint. #122 already
         # seeds ``harness.state.messages`` (``cli/entry.py``'s
-        # ``_seed_startup_messages``) so /context, /cost and /stats read right
+        # ``_seed_startup_state``) so /context, /cost and /stats read right
         # after a ``--resume``/``--continue``/``--session``/``--fork`` launch —
         # but nothing PAINTED the transcript, so the user landed in what looked
         # like a brand-new session. ``renderer.replay`` had exactly two call
@@ -2747,7 +2769,7 @@ async def run_tui(
         # ``getattr`` and not ``runtime_host.session``: several run_tui smokes
         # drive a runtime that has no ``session`` member at all, and one asserts
         # exactly that. Empty history (a cold start, ``--no-session``) is a
-        # no-op — the same guard ``_seed_startup_messages`` uses.
+        # no-op — the same guard ``_seed_startup_state`` uses.
         _startup_session = getattr(runtime_host, "session", None)
         _startup_messages = (
             await _display_messages(_startup_session)
@@ -3072,11 +3094,11 @@ def _build_banner(harness: AgentHarness, cwd: str) -> object:
     # "AGENTS.md" whenever a file existed. Two defects, both measured:
     #
     #   (1) It cannot see ``--no-context-files`` / ``-nc``. That gate lives at
-    #       ``cli/entry.py:1248``, ABOVE discovery, so the banner announced
+    #       ``cli/entry.py:1294``, ABOVE discovery, so the banner announced
     #       project context to a session whose prompt carried none.
     #   (2) Calling discovery a second time RE-EMITTED its stderr budget warnings
     #       (115 bytes per render on one oversized AGENTS.md) — a duplicate of
-    #       what ``entry.py:1249`` already printed at startup, and one that
+    #       what ``entry.py:1295`` already printed at startup, and one that
     #       interpolates the absolute path RAW: over a directory named
     #       ``proj\x1b]0;pwned\x07…`` both the ESC and the BEL reached stderr.
     #
@@ -3093,7 +3115,7 @@ def _build_banner(harness: AgentHarness, cwd: str) -> object:
         # ``getattr`` erases to ``object`` and the type gate rejects feeding that
         # to a ``str | None`` parameter (it did reject this line, before the
         # annotation). ``_action_get_system_prompt`` is ``() -> str``
-        # (``harness/core.py:3757-3758``); the fakes in tests/tui lack it, hence
+        # (``harness/core.py:3802-3803``); the fakes in tests/tui lack it, hence
         # the ``callable`` guard rather than a plain call.
         prompt_getter: Callable[[], str] | None = getattr(
             harness, "_action_get_system_prompt", None
@@ -3509,7 +3531,7 @@ async def _input_loop(
         # blocked by it.
         turn_model = getattr(harness, "current_model", None)
         if turn_model is not None and not is_runnable(turn_model):
-            # Two audiences, discriminated exactly as entry.py:2946-2962 and
+            # Two audiences, discriminated exactly as entry.py:2997-3013 and
             # the first-run wizard already do it: an EMPTY ``get_available()``
             # is the zero-credential user the wizard just spoke to, and
             # ``unsupported_message``'s "check the model id and provider

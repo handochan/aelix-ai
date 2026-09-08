@@ -8,7 +8,7 @@ the public extension API.
 
 FOUR REGISTRATIONS, and the ORDER of the whole extension matters more than the
 order of these. ``cli/entry.py`` APPENDS this extension after ``Guardrail`` and
-``Permission`` (``entry.py:1427-1429`` documents Guardrail-first as a security
+``Permission`` (``entry.py:1473-1475`` documents Guardrail-first as a security
 invariant — DO NOT REORDER), so under the kernel's first-block-wins reduction
 our ``tool_call`` handler runs LAST: a guardrail hard-deny and a permission
 denial both win over us, and neither can be softened by anything here.
@@ -184,7 +184,7 @@ class AgentsExtension:
     whose clamp is ``plan`` — an unwired host gets READ-ONLY children.
 
     This paragraph used to add "(that is the literal call site in
-    ``entry.py``)". It is not: ``entry.py:2204-2219`` passes ``posture``,
+    ``entry.py``)". It is not: ``entry.py:2250-2265`` passes ``posture``,
     ``agent_dir``, ``cwd`` and ``project_trusted``. The bare form is what the
     test suite builds — reason enough for the defaults to stay conservative —
     but the correction matters because it is also why a NEW field is INERT in
@@ -256,7 +256,7 @@ class AgentsExtension:
     """``tool_call_id`` → the approved spawn. Popped with a ``None`` default in
     :meth:`_execute`, which is the anti-bypass invariant: a call that skipped
     the hook finds nothing and is refused. The grant is deliberately NOT
-    smuggled through ``event.args`` even though ``harness/core.py:3944-3946``
+    smuggled through ``event.args`` even though ``harness/core.py:3989-3991``
     permits mutation — that would put an unvalidated key in the transcript."""
 
     _api: Any | None = field(default=None, init=False)
@@ -903,7 +903,7 @@ class AgentsExtension:
 
         ``args`` IS NEVER READ. Not the dispatch mode, not the tasks, not the
         directory — every one of them comes off ``pending.call``, and this is a
-        security property rather than a style rule. ``harness/core.py:3944-3946``
+        security property rather than a style rule. ``harness/core.py:3989-3991``
         states verbatim that the kernel passes ``ctx.args`` BY REFERENCE with no
         defensive copy, precisely so that a later ``tool_call`` handler may mutate
         the dict and have the mutation reach ``tool.execute``. An ``_execute``

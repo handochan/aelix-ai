@@ -481,6 +481,17 @@ class AgentSessionRuntime:
         """
 
         from aelix_agent_core.harness.hooks import SessionStartHookEvent
+        from aelix_agent_core.session.context import (
+            build_session_context,
+            resolve_resumed_thinking_level,
+        )
+
+        # #198 — snapshot the live thinking level BEFORE teardown, for the same
+        # reason ``previous_session_file`` is snapshotted at the call sites: the
+        # OLD harness is gone after ``_teardown_current`` and the factory builds
+        # the NEW one from options alone, with no idea what level the user was
+        # working at.
+        previous_level = self._harness._state.thinking_level
 
         await self._teardown_current(reason, target_session_file)
         await self._apply(new_session)
@@ -501,8 +512,44 @@ class AgentSessionRuntime:
         # REPLACE assignment (idempotent; the next turn only ``extend``s the
         # delta), safe for /new + /fork too (an empty / forked session's
         # build_context yields exactly that session's message set).
-        session_ctx = await new_session.build_context()
+        # One branch read feeds both rebuilds (``build_context`` IS
+        # ``build_session_context(await get_branch())``).
+        entries = await new_session.get_branch()
+        session_ctx = build_session_context(entries)
         self._harness._state.messages = list(session_ctx.messages)
+
+        # #198 — restore the thinking level the same way. Aelix rebuilds the
+        # harness on a swap; pi does not (its ``AgentSession`` survives
+        # ``switchSession``, ``agent-session-runtime.ts:256`` at ``pi@da840b6``),
+        # which is why pi never needed this and why ``/resume`` here threw away
+        # the level set in this very process. The target session's own recorded
+        # level wins — including an explicit ``off``, which is a decision, not an
+        # absence — and ``fallback`` carries the live level into a session that
+        # has none, so resuming into any session written before #198 does not
+        # snap back to ``off``. Clamped against the NEW harness's model (read
+        # after ``_apply``), so an ``xhigh`` session on a ``high``-max model
+        # resumes at ``high`` instead of being dropped. Assigned, not routed
+        # through ``set_thinking_level``: firing ``thinking_level_select`` at
+        # extensions would report a choice the user did not make, and the
+        # messages rebuild above already assigns kernel state directly.
+        restored_level = resolve_resumed_thinking_level(
+            entries,
+            self._harness.current_model,
+            fallback=previous_level,
+        )
+        if restored_level is not None:
+            self._harness._state.thinking_level = restored_level
+            # A carried-forward level is RECORDED, not just assigned: otherwise
+            # ``/new`` at ``medium`` produces a session whose file says ``off``
+            # and the bug reproduces the next time that session is opened. Only
+            # when the target had no level of its own (the fold below is the same
+            # last-wins scan the helper ran) and the carried value is not the
+            # kernel's unset sentinel — a fresh session at ``off`` stays clean.
+            target_has_level = any(
+                e.type == "thinking_level_change" for e in entries
+            )
+            if not target_has_level and restored_level != "off":
+                await new_session.append_thinking_level_change(restored_level)
 
         if self._rebind_session is not None:
             await self._rebind_session(self._harness, reason)

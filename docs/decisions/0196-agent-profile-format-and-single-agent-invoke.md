@@ -323,6 +323,12 @@ built, so its guard now also requires `harness.state.thinking_level in (None, ""
 "off")`: CLI/profile wins, the settings seed still fills the untouched case, and
 `parsed` is deliberately **not** threaded into `run_tui`.
 
+*Amended by ADR-0239 (#198)* — the resumed session is a third source, ranked
+between CLI/profile and the settings default. The value-sniffing guard above
+cannot see it (a restored explicit `off` is indistinguishable from unset by
+value), so `run_tui` takes a derived `thinking_level_restored: bool` and the seed
+stands down when it is set. Still not `parsed`.
+
 Shipping `thinking:` as a validated-looking field that provably does nothing —
 and rendering `--thinking high` in `/agents show` — is not acceptable. This is
 the same class as spec §5's own **FIX (honor)** row for `--no-builtin-tools`.

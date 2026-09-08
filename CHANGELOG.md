@@ -462,6 +462,38 @@ and `.../releases/tag/vX` link would 404. Add them with the first pushed tag.
 
 ### Fixed
 
+- **A resumed session comes back at the thinking level you left it at.** Two
+  things were wrong and either alone was enough. `/thinking high` outside a turn
+  wrote **nothing** to the session file — the harness queued a
+  `thinking_level_change` only while a turn was running, so a session whose level
+  came from the picker held zero control entries and `build_context()` reported
+  `off`. And when a session *did* carry the entry, neither place that builds a
+  harness from a resumed session read it: a freshly built harness measured `off`
+  against a session context saying `high`. So `--continue`, `--resume`,
+  `--session`, `--fork` and the in-session `/resume` all started from scratch —
+  and `/resume` additionally threw away the level set in that very process,
+  because Aelix rebuilds the harness on a session swap (Pi does not, which is why
+  Pi never needed this). The level is now written when it changes, restored at
+  both seams, and clamped to the resumed model: `xhigh` on a `high`-max model
+  comes back `high`, not `off`. An explicit `off` stays `off` —
+  `defaultThinkingLevel` no longer overwrites it, because the TUI seed is now
+  *told* a level was applied instead of guessing from the value. `--thinking`
+  (and an agent profile's `thinking:`) still wins over the session at launch, and
+  it is now written down too, so `aelix --thinking high` followed by `--continue`
+  comes back at `high` instead of `off`; the session wins over
+  `defaultThinkingLevel` (the ADR-0196 order). One place that order inverts: an
+  in-session `/resume` takes the target session's own level over the launch flag,
+  because you asked for that session.
+  **What you give up:** the session file grows one control entry per level
+  change, one the first time a session with no level of its own is opened while
+  `defaultThinkingLevel` is set (after which that session out-ranks a later
+  change to the global default), one the first time such a session is launched
+  under `--thinking`, and one per `/new` or `/resume` into a session that has no
+  level of its own. The model recorded in a session is still **not**
+  restored — that is the follow-up. `/reload` is a third rebuild seam and is
+  untouched here: it still drops the level. See
+  [#198](https://github.com/handochan/aelix-ai/issues/198) and ADR-0239.
+
 - **Pressing Esc no longer kills a helper an extension's command left running.**
   `aelix.exec(...)` runs a command's tree contained, and after the command exits
   it keeps reading the pipes for a moment so a process the command backgrounded

@@ -496,9 +496,9 @@ def test_read_piped_stdin_decodes_through_read_all_text(
     """Wiring guard for the stdin half.
 
     There is deliberately NO end-to-end subprocess test for this. Measured:
-    reaching ``_read_piped_stdin`` (entry.py:1961) with a hermetic child is
+    reaching ``_read_piped_stdin`` (entry.py:2007) with a hermetic child is
     easy, but every hermetic child then dies at model selection
-    (entry.py:3070) with output identical for an empty and a populated stdin —
+    (entry.py:3126) with output identical for an empty and a populated stdin —
     and the crash it would otherwise show is already prevented by the error
     handler alone, so "no traceback" passes even with the decode reverted.
     That is precisely the vacuous-pass shape issue #203 exists about, so the
