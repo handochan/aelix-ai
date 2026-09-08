@@ -144,7 +144,7 @@ Cancelling (Esc / Ctrl+C) denies (`project_trust.py:724-726`).
 
 The startup selector runs before the TUI exists, so declining once used to leave
 restarting as the only way to change your mind. `/trust` re-opens the same
-selector from inside a session (`tui/commands.py:1643`, registered at `:2189`).
+selector from inside a session (`tui/commands.py:1649`, registered at `:2195`).
 
 ### `--approve` / `-a` and `--no-approve` / `-na`
 

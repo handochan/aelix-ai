@@ -46,10 +46,59 @@ and `.../releases/tag/vX` link would 404. Add them with the first pushed tag.
   bare `◔`; at 100 columns the row loses `⎇ main` outright, which used to fit. And
   a session started on a model with no reasoning support now reads `🧠 off` rather
   than hiding the segment — its existing, deliberate behaviour, visible out of the
-  box. Note that the segment reports the level you set, not what the model can do:
-  switching to a non-reasoning model mid-session keeps showing the last level until
-  you change it. See
+  box. Note that the segment reports the level you *set*: switching to a
+  non-reasoning model mid-session keeps showing the last level until you change it
+  — since #251, with the tier that model actually receives next to it, so the row
+  reads `🧠 high (off)` rather than a bare `🧠 high`. See
   [#248](https://github.com/handochan/aelix-ai/issues/248) and ADR-0160.
+
+- **`/thinking`, `/settings` and the statusline now name the tier the model
+  actually receives.** Until now every one of those surfaces printed the level name
+  and nothing else, which was wrong in two directions at once. Pick `xhigh` on
+  `claude-opus-4-6` and the request has been carrying `max` all along — 24 catalog
+  rows map `xhigh` onto `max` — while the screen said `xhigh`. Pick `xhigh` and
+  then `/model` your way to `openai/gpt-5.1`, which has no `xhigh`, and the level
+  you set survives the switch but the adapters clamp it down to `high`; the screen
+  still said `xhigh`. Both now read `✱ 6. xhigh (max)` in the picker and
+  `🧠 xhigh (max)` in the statusline, or `xhigh (high)` for the clamp. **The
+  parenthesis is the tier that goes on the wire, and it can be above the level as
+  well as below it** — `deepseek-v4-pro` supports neither `low` nor `medium`, so
+  choosing `low` there reads `low (high)`.
+
+  Run the rule over the whole vendored catalog and it adds the parenthesis to
+  **2909 of the 8562 (model, level) pairs**: 51 renames across 37 models, 1013
+  clamps across 937, and 1845 across the 369 models that do not reason at all —
+  leave the level at `high`, switch to `openai/gpt-4.1`, and the statusline says
+  `🧠 high (off)`, because that is what the request carries (those adapters send no
+  reasoning field whatsoever). Thirteen catalog rows served by the Google adapter
+  (the Gemini 1.5 / 2.0, Gemma and Vertex-hosted Llama entries) are a known
+  exception in the other direction: that adapter turns a disabled level back into
+  a thinking request, so `(off)` understates them. That is an adapter defect,
+  tracked as [#256](https://github.com/handochan/aelix-ai/issues/256), not papered
+  over here.
+
+  The suffix appears **only** when the names genuinely differ. A model that calls
+  the level what you called it gets one bare word, as do a mapping that differs in
+  case alone (Google's `HIGH` / `LOW` / `MINIMAL`, 16 rows), a mapping to a number
+  rather than a name, and any model the display cannot interrogate. `off` is always
+  bare even where the catalog renames it to `none`: the harness folds `off` into
+  "no reasoning requested" before an adapter ever sees it, so there is no true
+  value to put in the parenthesis. (The cost of that fold is worth knowing: on the
+  100 catalog models that do not support `off`, asking for `off` sends no reasoning
+  field at all and the model thinks at its own default.)
+
+  Two smaller consequences. The `✱` in the picker now marks the row you will
+  actually get — open `/thinking` on gpt-5.1 while the session still holds `xhigh`
+  and the marker sits on `high`, where before it sat on nothing. And the statusline
+  segment grows by up to **ten** columns on a row that is clipped rather than
+  wrapped — `🧠 high (default)` on `groq/qwen/qwen3-32b` and `🧠 minimal (medium)` on
+  `openai-codex/gpt-5.1-codex-mini` are the two widest, and both are rows you can
+  pick straight out of `/thinking`; the headline `xhigh (max)` costs only six. With
+  #248 in the same release the 🧠 sits right after the model, so those columns push
+  the tail of the row (`⎇ branch` first) rather than truncating the segment itself.
+  What the picker sends to the setter is unchanged: the level name, never the
+  label. See [#251](https://github.com/handochan/aelix-ai/issues/251) and
+  ADR-0155.
 
 - **A command that backgrounds a server now comes back when the command does.**
   `npm run dev &`, `nohup … &`, anything that exits 0 while a helper keeps the

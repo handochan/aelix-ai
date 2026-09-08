@@ -1,6 +1,8 @@
 # ADR-0155 — TUI WP-7 command batch: `/thinking` picker + `/hooks` + `/mcp` + `/context`
 
-- **Status:** Accepted
+- **Status:** Accepted — **AMENDED 2026-09-08 by #251** (`## Amendment (2026-09-08, #251)`
+  below): the picker row format now carries the tier the model receives, so it is no longer
+  `N. {level}` alone. Everything else in this ADR stands.
 - **Date:** 2026-06-21
 - **Sprint:** 6h₂₇
 - **Supersedes/relates:** ADR-0154 (`/model` rich picker — the gold-standard DI template mirrored here),
@@ -82,3 +84,48 @@ missing-subsystem path, matching the established defensive contract.
   protected-core changes, out of scope for a pure-consumer sprint.
 - **Driving `/thinking` from `cycle_thinking_level`** — rejected; it advances one step and cannot enumerate a
   pickable set. The enumerate + set APIs are public and used directly instead.
+
+## Amendment (2026-09-08, #251)
+
+Decision 1 recorded the picker row format as numbered `N. {level}` rows, unique so
+index-recovery is lossless, and tagged the decision **pi-parity**. Both statements move.
+
+**Row format.** A row is `N. {level}` or `N. {level} ({tier})`, where `{tier}` is the value the
+model actually receives for that level — the catalog's `thinking_level_map` rename
+(`xhigh (max)`), or the result of `clamp_thinking_level` when the model does not support the
+level at all (`xhigh (high)` on a model that stops at `high`, `low (high)` on one that supports
+neither `low` nor `medium`; the clamp scans forward before backward, so the tier can be above
+the chosen level as well as below it). The clamp is resolved **before** the rename, because the
+contract of the parenthesis is "this is what goes on the wire", and the adapters call the same
+`clamp_thinking_level`. Measured over the vendored catalog: 2909 of 8562 (model, level) pairs
+take a suffix — 51 renames / 37 models, 1013 clamps / 937 models, 1845 / 369 non-reasoning
+models. Four cases stay bare on purpose: `off` (the harness folds it to "no reasoning
+requested" before an adapter sees it, so there is no true tier), a case-only rename (Google's
+`HIGH`/`LOW`/`MINIMAL`, 16 rows), a non-`str` mapping (the adapters disagree about what an int
+budget means; the catalog has none), and any model the display cannot interrogate.
+
+**Uniqueness and index-recovery are unchanged, and the suffix could not have endangered them.**
+Decision 1 credited the `N.` prefix with uniqueness and that still holds, but the suffix is
+appended to a label that already *leads* with its own level name, and the levels in a row set are
+distinct by construction — so two rows cannot collide however many of them share a native tier.
+`glm-5.2` is the worst catalog shape here (`low`, `medium` and `high` all map onto native `high`)
+and it renders `3. low (high)`, `4. medium (high)`, `5. high`: distinct with the prefix and
+distinct without it. The prefix is retained for the existing exact-label index round-trip, not to
+break a new collision. The value handed to `set_thinking_level` is still the pure level name; the
+label is display only.
+
+**The `✱` marker is clamped.** It marks the level the session will actually use, resolved in the
+caller (`run_thinking_picker`), not in `thinking_picker_labels` — which stays pure and keeps its
+"a `current` that matches no level marks nothing" contract. `AgentHarness.set_model` does not
+reset `_state.thinking_level`, so without this the marker landed on no row at all after a
+`/model` switch to a model with a shorter level set.
+
+**pi-parity narrows to the data flow.** Pi's selector rows carry the level name alone, so the
+suffix is a deliberate divergence; ADR-0235 allows it without a further ADR. What stays pi-parity
+is the flow Decision 1 actually describes — enumerate via `get_supported_thinking_levels`, set via
+`set_thinking_level`, recover the choice by exact-label index.
+
+The same helper backs the `/thinking <level>` echo, the `/settings` → **Thinking level**
+confirmation line and the 🧠 statusline segment, so one action cannot leave two surfaces naming
+two different tiers. The `/settings` row's own value is the stored default and stays bare: it
+belongs to no model (ADR-0125).

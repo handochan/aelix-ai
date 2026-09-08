@@ -533,7 +533,7 @@ async def test_the_call_site_scanner_can_tell_a_call_from_a_mention() -> None:
     # It finds real calls...
     assert sites["get_features_agents"], "scanner found no call it should find"
     # ...and it finds ONLY the call in the file that also mentions the name in
-    # prose. shell.py:3321 is a docstring; a substring scan would report 2.
+    # prose. shell.py:3362 is a docstring; a substring scan would report 2.
     skill_sites = sites["get_enable_skill_commands"]
     assert len(skill_sites) == 1, skill_sites
     assert "tui/shell.py" in skill_sites[0]

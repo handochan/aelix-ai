@@ -179,8 +179,11 @@ def build_footer_registry(ctx: AelixTUIContext) -> list[FooterSegment]:
         # thinking". It reports the LEVEL, never the model's capability: nothing
         # resets AgentState.thinking_level on a /model switch (harness core.py
         # set_model touches only _state.model), so switching to a non-reasoning
-        # model mid-session keeps showing the level last set. Reads
-        # the LIVE harness thinking_level via a provider closure (mirrors _model).
+        # model mid-session keeps showing the level last set — since #251 with the
+        # tier that model actually receives beside it (``🧠 high (off)``), which is
+        # what makes the level honest rather than merely stale. Reads the level as
+        # the shell COMPOSED it — level plus the tier the model receives when the
+        # two differ (#251) — via a provider closure (mirrors _model).
         # Guarded on the provider (None in headless/tests → omit the segment); a
         # None/empty provider result degrades to "off" so it never renders "None".
         if ctx._thinking_provider is None:
@@ -221,7 +224,17 @@ def build_footer_registry(ctx: AelixTUIContext) -> list[FooterSegment]:
         FooterSegment(
             "thinking-level",
             "Thinking level",
-            "The active reasoning effort (🧠 off/low/medium/high/xhigh)",
+            # #251 — a description that names the LEVELS is falsified by the tier
+            # suffix; this one states the shape instead. Keep it in lockstep with
+            # ``_SEGMENT_SPEC`` (test_spec_matches_built_registry compares them,
+            # test_thinking_level_description_names_the_tier_suffix states it).
+            # NOT ON SCREEN TODAY: ``statusline_picker.py:96`` is the only
+            # reader of this field, and the multiselect body it feeds
+            # (``context.py:815``) destructures the triple and draws the label
+            # alone — so every segment description here is unreachable text.
+            # Fixed because it is wrong, not because a user can see it (#257).
+            "The active reasoning effort (🧠 high — 🧠 xhigh (max) when "
+            "the model names the tier differently)",
             _thinking_level,
         ),
         FooterSegment(
@@ -282,7 +295,8 @@ _SEGMENT_SPEC: list[tuple[str, str, str, bool]] = [
      "The home-abbreviated working directory (📂)", True),
     ("model", "Model", "The active model id (✱)", True),
     ("thinking-level", "Thinking level",
-     "The active reasoning effort (🧠 off/low/medium/high/xhigh)", True),
+     "The active reasoning effort (🧠 high — 🧠 xhigh (max) when "
+     "the model names the tier differently)", True),
     ("context-remaining", "Context usage",
      "The context-window usage meter (◔ 42% · 84K/200K)", True),
     ("git-branch", "Git branch", "The current git branch (⎇)", True),

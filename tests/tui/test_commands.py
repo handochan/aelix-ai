@@ -1323,6 +1323,49 @@ async def _unreachable_picker() -> None:
     raise AssertionError("picker must not be opened on the arg path")
 
 
+class _TieredThinkingHarness(_ThinkingHarness):
+    """gpt-5.1's shape: no ``xhigh`` key, so the adapters clamp xhigh to high."""
+
+    def __init__(self, thinking_level_map: dict | None = None) -> None:
+        from types import SimpleNamespace
+
+        super().__init__()
+        self.current_model = SimpleNamespace(
+            id="gpt-5.1",
+            reasoning=True,
+            thinking_level_map=thinking_level_map if thinking_level_map is not None else {},
+        )
+
+
+def test_thinking_typed_level_echo_names_the_tier() -> None:
+    # C12b (#251) — ``/thinking xhigh`` neither validates nor clamps, so without
+    # the shared helper the green echo said "xhigh" in the same instant the footer
+    # said "xhigh (high)". One action, two surfaces, two tiers.
+    harness = _TieredThinkingHarness({"off": "none"})
+    committed: list[object] = []
+    _run("thinking", _ctx(harness, committed), "xhigh")
+    assert harness.set_calls == ["xhigh"]  # the LEVEL still reaches the setter
+    assert [_render(c).strip() for c in committed] == ["thinking → xhigh (high)"]
+
+
+def test_thinking_typed_level_echo_is_bare_when_the_names_agree() -> None:
+    # The other half: the suffix is not decoration.
+    harness = _TieredThinkingHarness({"off": "none"})
+    committed: list[object] = []
+    _run("thinking", _ctx(harness, committed), "high")
+    assert [_render(c).strip() for c in committed] == ["thinking → high"]
+
+
+def test_thinking_status_print_names_the_tier() -> None:
+    # The no-picker fallback (headless / RPC / FakeHarness) reads the SAME state
+    # the footer does, so it says the same thing.
+    harness = _TieredThinkingHarness({"xhigh": "max"})
+    harness._state.thinking_level = "xhigh"
+    committed: list[object] = []
+    _run("thinking", _ctx(harness, committed), "")
+    assert [_render(c).strip() for c in committed] == ["thinking: xhigh (max)"]
+
+
 # === Sprint 6h₂₇ (ADR-0155) — /hooks viewer ===============================
 
 

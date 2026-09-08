@@ -96,6 +96,26 @@ async def test_spec_matches_built_registry() -> None:
         assert default_enabled_ids(reg) == default_enabled_ids_from_spec()
 
 
+async def test_thinking_level_description_names_the_tier_suffix() -> None:
+    # C18 (#251) — ``test_spec_matches_built_registry`` compares the registry to
+    # the spec, so reverting BOTH copies of the sentence together stays green.
+    # This states the sentence itself. Be honest about what that is: a
+    # literal-vs-literal pin, NOT a behavioural test, because nothing renders a
+    # segment description today — ``statusline_picker.py:96`` is the field's only
+    # reader and the multiselect body (``context.py:815``) drops it (#257). Reverting
+    # both copies to the pre-#251 sentence fails exactly this test and nothing
+    # else (measured: 1 failed, 1589 passed on tests/tui). It earns its place by
+    # keeping the two copies from drifting back to a claim the tier suffix
+    # falsifies; when #257 renders the description, replace it with a render
+    # assertion.
+    async with _ctx(_FixedBranchFooter("main")) as (ctx, _chrome):
+        reg = {s.id: s for s in build_footer_registry(ctx)}
+        assert reg["thinking-level"].description == (
+            "The active reasoning effort (🧠 high — 🧠 xhigh (max) when the model "
+            "names the tier differently)"
+        )
+
+
 async def test_default_enabled_ids_are_the_canonical_order() -> None:
     # The exact ids AND order ``shell.py`` seeds a fresh statusline store with.
     # Without the order the seed can drift from the /statusline picker preview
@@ -243,6 +263,16 @@ async def test_thinking_level_producer_returns_live_value() -> None:
         assert reg["thinking-level"].produce() == "🧠 high"
 
 
+async def test_thinking_level_producer_passes_the_composed_tier_through() -> None:
+    # C15 (#251) — the shell composes "level (tier)"; the producer must not
+    # re-parse or truncate it, it only prefixes the glyph.
+    footer = _FixedBranchFooter("main")
+    async with _ctx(footer, thinking_provider=lambda: "xhigh (max)") as (ctx, chrome):
+        reg = {s.id: s for s in build_footer_registry(ctx)}
+        assert reg["thinking-level"].produce() == "🧠 xhigh (max)"
+        assert "🧠 xhigh (max)" in chrome._footer_line
+
+
 async def test_thinking_level_on_by_default_in_footer() -> None:
     # #248 — default-ON: a provider wired and no store on disk → rendered.
     footer = _FixedBranchFooter("main")
@@ -329,27 +359,31 @@ async def test_a_mid_session_model_switch_keeps_the_level_the_user_last_set() ->
     # The limitation the CHANGELOG and the ``_thinking_level`` comment disclose,
     # end to end. ``AgentHarness.set_model`` mutates ``_state.model`` only —
     # nothing resets ``_state.thinking_level`` — so a switch to a model whose ONLY
-    # supported level is "off" still renders the level last set, not ``🧠 off``.
-    # The closure below is the body of ``shell.py::_thinking_level`` verbatim.
-    # Default-ON (#248) is what makes this visible out of the box; if #251 (or
-    # anything else) starts resetting the level on a model switch this dies, and
-    # the CHANGELOG sentence it pins has to be rewritten with it.
+    # supported level is "off" still renders the level last set. Default-ON (#248)
+    # is what makes this visible out of the box; if anything starts resetting the
+    # level on a model switch this dies, and the CHANGELOG sentence it pins has to
+    # be rewritten with it. #251 changed what the row READS, not the limitation:
+    # the provider is ``shell.py::_compose_thinking_level`` (called here, not
+    # copied), and it appends the tier gpt-4o actually receives — nothing. The
+    # level is still "high"; the parenthesis is what makes that honest.
     from aelix_agent_core.harness.core import AgentHarness, AgentHarnessOptions
     from aelix_ai.models import get_supported_thinking_levels
     from aelix_ai.streaming import Model
+    from aelix_coding_agent.tui.shell import _compose_thinking_level
 
     harness = AgentHarness(AgentHarnessOptions())
     await harness.set_thinking_level("high")
     await harness.set_model(Model(api="openai", id="gpt-4o"))
     assert get_supported_thinking_levels(harness.state.model) == ["off"]
+    assert harness.state.thinking_level == "high"
 
     footer = _FixedBranchFooter("main")
     async with _ctx(
         footer,
         model_provider=lambda: harness.state.model.id,
-        thinking_provider=lambda: getattr(harness.state, "thinking_level", None),
+        thinking_provider=lambda: _compose_thinking_level(harness),
     ) as (_ctx_obj, chrome):
-        assert "🧠 high" in chrome._footer_line
+        assert "🧠 high (off)" in chrome._footer_line
 
 
 async def test_a_saved_store_that_already_enables_it_gets_the_new_position() -> None:
