@@ -10,7 +10,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import secrets
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -38,6 +37,8 @@ from aelix_ai.utils._process_tree import (
 )
 from aelix_ai.utils._shell import (
     ShellConfig,
+    _env_get,
+    _which_on_path,
     command_flag_for,
     windows_command_shells,
 )
@@ -82,10 +83,14 @@ def _resolve_shell(
     """Pi parity ``getShellConfig()`` resolution chain (``utils/shell.ts``).
 
     ``platform`` defaults to :data:`sys.platform` and exists so tests can drive
-    the win32 arm from a POSIX box. It is injected rather than monkeypatched
-    because ``shutil.which`` *itself* branches on ``sys.platform`` and then
-    calls ``_winapi``, which is ``None`` off Windows — patching the global would
-    crash the very PATH probe under test.
+    the win32 arm from a POSIX box. It picks which CHAIN to build and NOT the
+    naming rule the PATH probe uses — that is ``windows_command_shells``'s own
+    ``platform`` seam, deliberately not forwarded — so a win32 chain can be
+    asserted here against extensionless fixtures. (The reason this argument was
+    added in #104 was that ``shutil.which`` branches on ``sys.platform`` and
+    then touches ``_winapi``, which is ``None`` off Windows; that was never true
+    on 3.11, whose ``shutil`` does not import ``_winapi`` at all, and #241 took
+    ``which`` off this path entirely. The conclusion stands, its ground moved.)
 
     Resolution order:
 
@@ -114,7 +119,21 @@ def _resolve_shell(
         return ShellConfig(shell, command_flag_for(shell))
     if Path("/bin/bash").exists():
         return ShellConfig("/bin/bash")
-    bash_on_path = shutil.which("bash")
+    # The same absolute-only walk the win32 chain uses (#241), for two
+    # reasons. ``shutil.which`` returns the FIRST hit and stops, so a ``bash``
+    # planted in the process's cwd — reachable through an empty or ``.`` entry
+    # in ``PATH`` — hid a real ``/usr/bin/bash`` and demoted the box to
+    # ``/bin/sh``; that also flips AUTO mode's grammar, since ``permission.py``
+    # reads this resolution through ``dialect_for_shell``. Rejecting a
+    # non-absolute hit would have defused the first half and kept the second.
+    # ``windows=False`` is a FACT, not a seam: the win32 arm returned above, so
+    # this line only ever runs on POSIX. This also moves the step off the
+    # process environment onto ``env`` — the rule the win32 probes already
+    # follow — so a ``spawn_hook``-stripped env answers ``/bin/sh`` instead of
+    # borrowing the host's ``PATH``.
+    bash_on_path = _which_on_path(
+        "bash", path=_env_get(env, "PATH", fold=False), env=env, windows=False
+    )
     if bash_on_path:
         return ShellConfig(bash_on_path)
     return ShellConfig("/bin/sh")
@@ -133,7 +152,10 @@ def _resolve_shell_win32(env: dict[str, str]) -> ShellConfig:
 
     The chain itself moved to :mod:`aelix_ai.utils._shell` in #227 so a
     ``models.json`` / ``auth.json`` ``!command`` resolves through the same one
-    instead of assuming ``sh``; this function is its first candidate.
+    instead of assuming ``sh``; this function is its first candidate. Since #241
+    that candidate may be an absolute ``%SystemRoot%\\System32\\cmd.exe`` where
+    it used to be the bare ``cmd.exe``; :func:`~aelix_ai.utils._shell.shell_basename`
+    still answers ``cmd`` for it, so ADR-0237's dialect mapping is unchanged.
     ``include_posix_sh`` is left False here on purpose: ``sh`` IS classifiable,
     so taking it would read every command on an MSYS box with the bash grammar,
     and what AUTO mode's gate does there is ADR-0237/#204's decision to make.

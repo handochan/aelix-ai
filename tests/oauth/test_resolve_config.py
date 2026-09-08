@@ -967,15 +967,25 @@ def test_a_helper_that_changes_the_terminal_is_stopped_and_named(tmp_path: Path)
 #
 # Every case here runs on every leg. The win32 answers are driven by injecting
 # ``platform="win32"`` and an ``env`` mapping rather than by patching
-# ``sys.platform``, because ``shutil.which`` itself branches on the global and
-# then calls ``_winapi`` (``None`` off Windows) — patching it would crash the
-# very PATH probe under test. Injection is the shape
-# ``tests/tools/test_bash_shell_win32.py`` already uses for the same chain.
+# ``sys.platform``: the argument picks which CHAIN to build and deliberately
+# does not pick the naming rule the PATH walk probes with, so a win32 chain can
+# be asserted from a POSIX box against extensionless fixtures. #241 replaced
+# ``shutil.which`` here; the older reason for the injection was that ``which``
+# branches on the global and then touches ``_winapi`` (``None`` off Windows),
+# which was never true on 3.11 and is true of nothing on this path any more.
+# Injection is still the shape ``tests/tools/test_bash_shell_win32.py`` uses.
 #
 # EVERY injected env spells ``PATH``. With the key absent the primitive skips
 # PATH probing entirely, so a row meant as "stock Windows" would silently make
 # no PATH candidates at all rather than finding this box's ``/bin/sh`` — a
-# quiet under-assertion either way, and the rule closes both.
+# quiet under-assertion either way, and the rule closes both. Since #241 the
+# same goes for ``SYSTEMROOT`` in any row that asserts the chain's LENGTH or
+# indexes past the PATH candidates: with the key absent — or empty, or holding
+# anything that is not an absolute path — the floor synthesises
+# ``C:\Windows\System32\cmd.exe``, which exists on windows-latest and not on
+# the POSIX legs, so such a row would assert two different chains on two legs.
+# An ABSOLUTE directory with no ``cmd.exe`` under it is the only spelling that
+# suppresses the candidate; that is what ``nosysroot`` is for.
 
 
 def _executable(directory: Path, name: str) -> Path:
@@ -987,12 +997,13 @@ def _executable(directory: Path, name: str) -> Path:
 
 
 def _on_path(directory: Path, name: str) -> Path:
-    """A PATH probe target ``shutil.which(name)`` can actually find here.
+    """A PATH probe target the walk can actually find here.
 
-    Windows' ``shutil.which`` only tries ``name + PATHEXT`` candidates and never
+    Under Windows naming the walk tries ``name + PATHEXT`` candidates and never
     the bare name, so an extensionless fixture is unreachable there and the win32
-    arm would slide past it. Same helper shape, and same measured reason, as
-    ``tests/tools/test_bash_shell_win32.py``'s.
+    arm would slide past it. Which naming rule applies is ``sys.platform``'s
+    answer, not the injected ``platform=`` (#241). Same helper shape, and same
+    reason, as ``tests/tools/test_bash_shell_win32.py``'s.
     """
 
     return _executable(directory, f"{name}.exe" if sys.platform == "win32" else name)
@@ -1125,7 +1136,16 @@ def test_win32_without_sh_falls_to_powershell_then_comspec(
 
     cmd = "printf x"
     candidates = rc._shell_argv_candidates(
-        cmd, platform="win32", env={"PATH": str(bin_dir), "COMSPEC": comspec}
+        cmd,
+        platform="win32",
+        env={
+            "PATH": str(bin_dir),
+            "COMSPEC": comspec,
+            # #241: absolute and deliberately absent, so the ``%SystemRoot%``
+            # floor contributes nothing and the count below is the same on
+            # every leg. See this section's header.
+            "SYSTEMROOT": str(tmp_path / "nosysroot"),
+        },
     )
 
     assert len(candidates) == 3
@@ -1179,34 +1199,90 @@ def test_an_existing_shell_from_the_env_wins_on_win32(
     assert Path(first[0]) == sh
 
 
-def test_the_posix_candidate_list_is_exactly_sh_dash_c(
+def test_the_posix_candidate_list_is_one_absolutely_resolved_sh(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """POSIX is byte-identical to what this site has always spawned.
+    """Still exactly one candidate — and #241 made it pay for a PATH walk.
 
-    One candidate, ``["sh", "-c", cmd]``, and no ``which`` probe at all — the
-    fall-through loop exists for the platform that has more than one candidate,
-    and POSIX must not start paying for a PATH search it never needed.
+    Until #241 this arm returned ``["sh", "-c", cmd]`` verbatim and made no
+    probe at all, and this case asserted that. The premise was wrong: a bare
+    name into ``execvp`` is searched against the current directory too, and
+    with an empty ``PATH`` component that is where it lands. Measured on darwin
+    (2026-09-08), ``PATH=":/usr/bin:/bin"`` with a planted ``sh`` in the cwd ran
+    the planted file, not ``/bin/sh`` — on the credential path, on a platform
+    this project actually runs on.
+
+    So the divergence is stated rather than hidden: POSIX now pays one PATH walk
+    per resolution (24.4 µs on a 25-entry miss, against ``shutil.which``'s
+    23.7 µs), the list stays length 1, and the candidate is absolute.
+
+    Three rows, and the third is the one that matters: both production callers
+    (``resolve_config_value_uncached``, ``_resolve_env_or_command``) pass no
+    ``env=`` at all, so an ``env``-only case would leave the real path untested.
     """
 
     import aelix_ai.oauth._resolve_config as rc
 
+    cwd = tmp_path / "repo"
+    _executable(cwd, "sh")
+    monkeypatch.chdir(cwd)
     bin_dir = tmp_path / "bin"
-    _on_path(bin_dir, "sh")
-    probes: list[str] = []
-    real_which = shutil.which
-
-    def counting_which(cmd: Any, *args: Any, **kwargs: Any) -> Any:
-        probes.append(str(cmd))
-        return real_which(cmd, *args, **kwargs)
-
-    monkeypatch.setattr(shutil, "which", counting_which)
+    real = _executable(bin_dir, "sh")
+    empty = tmp_path / "empty"
+    empty.mkdir()
 
     cmd = "printf x"
+    # An empty leading component IS the cwd; the planted ``sh`` must lose.
     assert rc._shell_argv_candidates(
-        cmd, platform="linux", env={"PATH": str(bin_dir)}
-    ) == [["sh", "-c", cmd]]
-    assert probes == []
+        cmd, platform="linux", env={"PATH": os.pathsep + str(bin_dir)}
+    ) == [[str(real), "-c", cmd]]
+    # Nothing on PATH: the floor, which is what the site spawned before and
+    # what ``resolve_config_value``'s failure message still names.
+    assert rc._shell_argv_candidates(
+        cmd, platform="linux", env={"PATH": str(empty)}
+    ) == [["/bin/sh", "-c", cmd]]
+    # The production shape: no ``env=``, so the resolver defaults to
+    # :data:`os.environ` — and does so ABOVE the platform branch, because the
+    # default used to live inside the win32 arm and ``env.get`` on ``None``
+    # would raise on every ``!command``.
+    monkeypatch.setenv("PATH", os.pathsep + str(bin_dir))
+    assert rc._shell_argv_candidates(cmd, platform="linux") == [
+        [str(real), "-c", cmd]
+    ]
+
+
+def test_win32_a_command_shell_in_the_current_directory_is_not_taken(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The win32 arm's own version of the same hole, at this call site.
+
+    The primitive's walk is pinned in ``tests/tools/test_bash_shell_win32.py``;
+    this case exists so a future edit here — a direct ``which`` call for the
+    ``sh`` step, say — cannot regress the credential path while that one stays
+    green.
+    """
+
+    import aelix_ai.oauth._resolve_config as rc
+
+    cwd = tmp_path / "repo"
+    _on_path(cwd, "sh")
+    monkeypatch.chdir(cwd)
+    bin_dir = tmp_path / "bin"
+    sh = _on_path(bin_dir, "sh")
+
+    cmd = "printf x"
+    candidates = rc._shell_argv_candidates(
+        cmd,
+        platform="win32",
+        env={
+            "PATH": os.pathsep + str(bin_dir),
+            "SYSTEMROOT": str(tmp_path / "nosysroot"),
+        },
+    )
+
+    first = candidates[0]
+    assert isinstance(first, list)
+    assert Path(first[0]) == sh
 
 
 def test_a_shell_that_cannot_be_spawned_falls_through(
@@ -1509,7 +1585,13 @@ def test_a_quoted_command_reaches_each_windows_shell_in_that_shell_s_own_convent
 
     cmd = 'op read "op://v/k"'
     candidates = rc._shell_argv_candidates(
-        cmd, platform="win32", env={"PATH": str(bin_dir), "COMSPEC": comspec}
+        cmd,
+        platform="win32",
+        env={
+            "PATH": str(bin_dir),
+            "COMSPEC": comspec,
+            "SYSTEMROOT": str(tmp_path / "nosysroot"),  # #241, see the header
+        },
     )
     rendered = [
         subprocess.list2cmdline(c) if isinstance(c, list) else c for c in candidates
@@ -1594,9 +1676,12 @@ def test_a_forced_powershell_candidate_really_runs_on_windows(
     byte-for-byte ``x``, so neither a profile banner nor PowerShell's CRLF
     survives into the key.
 
-    POSIX takes the same call with its PATH untouched: ``env`` is ignored off
-    win32, the single ``sh -c`` candidate runs, and the identical assertion
-    holds. Narrowing PATH there would only hide ``sh`` from ``Popen`` itself.
+    POSIX takes the same call with its PATH untouched: since #241 ``env`` is
+    read off win32 too — it is how the single candidate's ``sh`` is resolved to
+    an absolute path — but with no ``env=`` passed the resolver reads
+    :data:`os.environ`, the shell resolves to this box's real ``sh``, and the
+    identical assertion holds. Narrowing PATH there would only hide ``sh`` from
+    the walk and land on the ``/bin/sh`` floor.
     """
 
     import aelix_ai.oauth._resolve_config as rc
@@ -1648,19 +1733,101 @@ def test_a_forced_powershell_candidate_really_runs_on_windows(
     )
 
 
-def test_the_cmd_floor_really_runs_on_windows(
+def test_the_bare_cmd_floor_really_runs_on_windows(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """On the windows leg the ``cmd.exe`` floor is really spawned too.
+    """On the windows leg the BARE ``cmd.exe`` floor is really spawned too.
 
-    An empty ``PATH`` and no ``%COMSPEC%`` leave the floor as the only
-    candidate, so the leg executes the raw command line — ``/d`` against
-    ``AutoRun``, ``/s`` for deterministic quote stripping — and reads the value
-    back through ``cmd``'s own CRLF. ``cmd.exe`` still resolves: ``CreateProcess``
-    searches the system directory whatever ``PATH`` says.
+    An empty ``PATH``, no ``%COMSPEC%`` and a ``%SystemRoot%`` with no
+    ``System32\\cmd.exe`` under it leave the bare name as the only candidate, so
+    the leg executes the raw command line — ``/d`` against ``AutoRun``, ``/s``
+    for deterministic quote stripping — and reads the value back through
+    ``cmd``'s own CRLF. ``cmd.exe`` still resolves: ``CreateProcess`` searches
+    the system directory whatever ``PATH`` says. That last part is measured, not
+    only documented — on ``main`` at 0985fcf, before #241 added a step that
+    displaces the bare name, this row ran ``'"cmd.exe" /d /s /c "echo x"'`` on
+    windows-latest in 0.031 s and read ``x`` back (run 34173375624).
+
+    CLEARING ``%SystemRoot%`` DOES NOT REACH THE FLOOR, which is what this case
+    asserted until run 34238824791 measured otherwise on both windows legs: the
+    key absent, ``"C:\\Windows\\System32\\cmd.exe" /d /s /c "echo x"`` spawned
+    anyway, because #241's step defaults to ``C:\\Windows`` when the key is
+    missing and that file exists on windows-latest. The default is deliberate —
+    a floor that vanishes with the variable it exists to survive is not a floor,
+    and ``C:\\Windows`` is a fixed system path rather than one the working
+    directory can influence — so the candidate is suppressed the only way it can
+    be, with an absolute ``%SystemRoot%`` that has no ``cmd.exe`` under it. Same
+    shape as ``_NO_SYSROOT`` in ``tests/tools/test_bash_shell_win32.py``. An
+    EMPTY or RELATIVE value does not suppress it either (review follow-up): the
+    default fires on anything :func:`_is_absolute` rejects, because a relative
+    ``%SystemRoot%`` resolves against the current directory.
+
+    The suppression is told to the RESOLVER ONLY. ``env=`` is a resolution seam
+    and is never handed to :class:`subprocess.Popen`
+    (``_shell_argv_candidates``), so the child still inherits the runner's real
+    ``%SystemRoot%`` — #209 measured a child that lacks it dying in Winsock
+    initialisation (``WinError 10106``), and this row must not plant that shape
+    in :data:`os.environ` for a spawn it does not control. The price is the
+    ``resolve_config_value`` wrappers, which this row used to call: BOTH still
+    run on this leg in
+    :func:`test_a_forced_powershell_candidate_really_runs_on_windows` above, and
+    the uncached one again in
+    :func:`test_the_system_root_cmd_really_runs_on_windows` below, which is the
+    only one of the two siblings that calls it. What is unique here — that a
+    bare ``cmd.exe`` command line really spawns — is unchanged.
+
+    That the bare name is reached at all is what this proves. WHICH directory
+    ``CreateProcess`` then searched it in is not observable from here — the
+    order is Microsoft's documentation, not a measurement, and it is precisely
+    why the sibling case below prefers an absolute path when there is one.
 
     POSIX takes the same call with its PATH untouched, for the reason the
     PowerShell case above gives.
+    """
+
+    import aelix_ai.oauth._resolve_config as rc
+
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    monkeypatch.delenv("SHELL", raising=False)
+    monkeypatch.chdir(empty)
+    env: dict[str, str] | None = None
+    if sys.platform == "win32":
+        env = {"PATH": str(empty), "SYSTEMROOT": str(tmp_path / "nosysroot")}
+
+    seen = _record_spawns(monkeypatch)
+    started = time.monotonic()
+    outcome = rc._run_shell_command("echo x", env=env)
+    elapsed = time.monotonic() - started
+    assert outcome is not None
+    assert outcome[0] == 0
+    assert outcome[1].strip() == "x"
+
+    assert seen, "nothing was spawned at all"
+    spawned = seen[-1]
+    assert spawned in rc._shell_argv_candidates("echo x", env=env)
+    if sys.platform == "win32":
+        assert spawned == '"cmd.exe" /d /s /c "echo x"'
+    warnings.warn(f"#227 cmd floor ran {spawned!r}: {elapsed:.3f}s", stacklevel=1)
+
+
+def test_the_system_root_cmd_really_runs_on_windows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#241's new candidate is a real, spawnable program on the leg.
+
+    The row above suppresses this candidate with a ``%SystemRoot%`` that has no
+    ``cmd.exe`` under it — CLEARING the key does not suppress it, it only swaps
+    the runner's value for the ``C:\\Windows`` default, measured on run
+    34238824791. This one leaves the runner's own value in place, so
+    ``<SystemRoot>\\System32\\cmd.exe`` is synthesised, passes
+    the ``exists()`` gate, and is the candidate that actually spawns — ahead of
+    the bare name, and with a fully qualified path that ``CreateProcess`` does
+    not have to search the application or current directory for.
+
+    This is the only leg that can prove it: on POSIX the synthesised path fails
+    ``exists()`` and never enters the chain, so the POSIX half asserts only that
+    the ``!command`` still resolves through whatever shell this box has.
     """
 
     import aelix_ai.oauth._resolve_config as rc
@@ -1676,12 +1843,15 @@ def test_the_cmd_floor_really_runs_on_windows(
     seen = _record_spawns(monkeypatch)
     started = time.monotonic()
     assert resolve_config_value_uncached("!echo x") == "x"
-    assert resolve_config_value("!echo x") == "x"
     elapsed = time.monotonic() - started
 
     assert seen, "nothing was spawned at all"
     spawned = seen[-1]
     assert spawned in rc._shell_argv_candidates("echo x")
     if sys.platform == "win32":
-        assert spawned == '"cmd.exe" /d /s /c "echo x"'
-    warnings.warn(f"#227 cmd floor ran {spawned!r}: {elapsed:.3f}s", stacklevel=1)
+        system_root = os.environ["SYSTEMROOT"]
+        expected = os.path.join(system_root, "System32", "cmd.exe")
+        assert spawned == f'"{expected}" /d /s /c "echo x"'
+    warnings.warn(
+        f"#241 SystemRoot cmd ran {spawned!r}: {elapsed:.3f}s", stacklevel=1
+    )

@@ -172,13 +172,25 @@ The `apiKey` value is resolved at request time and supports three forms:
 
   The same rule covers a `!command` in `auth.json`'s `key`, not just this file.
 
-  **Which shell runs it.** On macOS and Linux it is `sh -c`, as it always was.
-  On Windows Aelix now resolves one instead of assuming `sh` — `$SHELL` (when it
-  names a file that exists) → `sh` on `PATH` → `pwsh` → `powershell` →
-  `%COMSPEC%` → `cmd.exe` — and takes the first that starts. **`sh` is no longer
-  required**, so a `!command` works on a stock install; a box that has an `sh`
-  (Git for Windows, MSYS2, Cygwin) and no `SHELL` set keeps running its
-  `!command`s under it.
+  **Which shell runs it.** On macOS and Linux it is `sh -c`, with the `sh`
+  looked up on `PATH` and taken only from an absolute directory — before, the
+  bare name was handed to the system, and an empty or `.` entry in your `PATH`
+  meant a file named `sh` in the directory you started Aelix in could run your
+  credential command instead. On Windows Aelix resolves one instead of assuming
+  `sh` — `$SHELL` (when it names a file that exists) → `sh` on `PATH` → `pwsh` →
+  `powershell` → `%COMSPEC%` → `%SystemRoot%\System32\cmd.exe` → `cmd.exe` — and
+  takes the first that starts. The `sh`, `pwsh` and `powershell` steps are the
+  ones looked up on `PATH`, and they are looked up on `PATH` alone, never in the
+  current directory: an entry that is not absolute is skipped. `%COMSPEC%` is
+  taken only when it names an absolute path, and the `%SystemRoot%` step only
+  when that file is really there. The two candidates Windows itself still
+  resolves are the `$SHELL` you exported — taken verbatim, because that is you
+  naming a shell rather than Aelix guessing one — and the last-resort bare
+  `cmd.exe`, which is exactly why an existing `%SystemRoot%\System32\cmd.exe`
+  goes in front of it.
+  **`sh` is no longer required**, so a `!command` works on a stock install; a box
+  that has an `sh` (Git for Windows, MSYS2, Cygwin) and no `SHELL` set keeps
+  running its `!command`s under it.
 
   So **write the command for the shell that will run it**. One that only invokes
   a program — `!op read op://vault/key` — is portable. Shell syntax is not: a
