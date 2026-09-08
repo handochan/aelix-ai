@@ -1,15 +1,17 @@
 """WP-2 (ADR-0160) — footer segment registry tests.
 
-Covers: the registry default-enabled set == the static spec; the default footer
-is byte-identical to the pre-ADR-0160 hard-coded order; toggling a segment id
-removes/restores exactly that segment; an adversarial enabled-set still respects
-the ADR-0159 in-producer invariants (permission badge omit-when-no-provider +
-leading position; steering hidden at the default).
+Covers: the registry default-enabled set == the static spec; the exact ids and
+order a fresh install renders, and where the 🧠 thinking-level segment sits in
+the composed row (#248 turned it on by default and moved it after the model);
+toggling a segment id removes/restores exactly that segment; an adversarial
+enabled-set still respects the ADR-0159 in-producer invariants (permission badge
+omit-when-no-provider + leading position; steering hidden at the default).
 """
 
 from __future__ import annotations
 
 import io
+import json
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
@@ -95,13 +97,16 @@ async def test_spec_matches_built_registry() -> None:
 
 
 async def test_default_enabled_ids_are_the_canonical_order() -> None:
-    # The default-ON set is the byte-identical pre-ADR-0160 footer order.
+    # The exact ids AND order ``shell.py`` seeds a fresh statusline store with.
+    # Without the order the seed can drift from the /statusline picker preview
+    # silently. ``thinking-level`` sits after ``model`` since #248.
     assert default_enabled_ids_from_spec() == [
         "permission-mode",
         "steering",
         "pending-queued",
         "current-dir",
         "model",
+        "thinking-level",
         "context-remaining",
         "git-branch",
     ]
@@ -110,9 +115,12 @@ async def test_default_enabled_ids_are_the_canonical_order() -> None:
 # === golden default footer (no store) ==================================
 
 
-async def test_default_footer_is_byte_identical_to_pre_adr0160() -> None:
+async def test_default_footer_without_a_thinking_provider() -> None:
     # With a posture wired (DEFAULT badge), steering "all", a model, a cwd, and a
-    # branch, the default footer composes EXACTLY as the old inline list did.
+    # branch — but NO thinking provider — the default footer is unchanged by #248:
+    # the thinking-level producer omits the segment when no provider is wired
+    # (the ADR-0159 in-producer omit rule), so turning it on by default cannot
+    # make a headless footer grow. This golden pins that rule, not the default set.
     footer = _FixedBranchFooter("main")
     async with _ctx(
         footer,
@@ -123,6 +131,28 @@ async def test_default_footer_is_byte_identical_to_pre_adr0160() -> None:
     ) as (_ctx_obj, chrome):
         assert chrome._footer_line == (
             "● default  ·  ⏵⏵ all  ·  📂 /tmp/proj  ·  ✱ gpt-4o  ·  ⎇ main"
+        )
+
+
+async def test_default_footer_with_a_thinking_provider_puts_the_brain_after_the_model() -> None:
+    # #248 — the rendered position, both neighbours. The context label is set
+    # deliberately: without it ``_context_remaining`` returns None and the line is
+    # byte-identical whether the 🧠 sits before or after ``context-remaining``, so
+    # the case would be blind to half of the move.
+    footer = _FixedBranchFooter("main")
+    async with _ctx(
+        footer,
+        model_provider=lambda: "gpt-4o",
+        thinking_provider=lambda: "high",
+        cwd="/tmp/proj",
+        mode="all",
+        permission_badge_provider=lambda: None,  # DEFAULT → "● default"
+    ) as (ctx, chrome):
+        ctx.set_context_label("◔ 42% · 84K/200K")
+        ctx._refresh_footer()
+        assert chrome._footer_line == (
+            "● default  ·  ⏵⏵ all  ·  📂 /tmp/proj  ·  ✱ gpt-4o  ·  🧠 high"
+            "  ·  ◔ 42% · 84K/200K  ·  ⎇ main"
         )
 
 
@@ -213,13 +243,13 @@ async def test_thinking_level_producer_returns_live_value() -> None:
         assert reg["thinking-level"].produce() == "🧠 high"
 
 
-async def test_thinking_level_off_by_default_in_footer() -> None:
-    # Default-OFF: even with a provider wired, no store → not rendered.
+async def test_thinking_level_on_by_default_in_footer() -> None:
+    # #248 — default-ON: a provider wired and no store on disk → rendered.
     footer = _FixedBranchFooter("main")
     async with _ctx(
         footer, model_provider=lambda: "gpt-4o", thinking_provider=lambda: "high"
     ) as (_ctx_obj, chrome):
-        assert "🧠" not in chrome._footer_line
+        assert "🧠 high" in chrome._footer_line
 
 
 async def test_thinking_level_renders_when_enabled() -> None:
@@ -256,6 +286,91 @@ async def test_thinking_level_shows_off_not_none() -> None:
             assert "🧠 None" not in line
             # No bare glyph with an empty level ("🧠 " followed by nothing).
             assert not line.rstrip().endswith("🧠")
+
+
+# === #248 — what the new default does and does NOT reach ================
+
+_PRE_248_ENABLED = [
+    "permission-mode",
+    "steering",
+    "pending-queued",
+    "current-dir",
+    "model",
+    "context-remaining",
+    "git-branch",
+]
+"""The default-enabled set as it shipped before #248 — i.e. exactly what an
+existing ``statusline.json`` written by the /statusline picker holds."""
+
+
+async def test_a_saved_store_without_thinking_level_stays_without_it(tmp_path) -> None:
+    # The CHANGELOG's promise: a file already on disk is read VERBATIM and is not
+    # migrated ON. It cannot tell "never saw this option" apart from "unchecked
+    # it", so flipping the default must not reach it. A REAL StatuslineStore, not
+    # the fake — the verbatim-vs-defaults branch is in ``load()``.
+    from aelix_coding_agent.tui.statusline_store import StatuslineStore
+
+    path = tmp_path / "statusline.json"
+    path.write_text(json.dumps({"enabled": _PRE_248_ENABLED}), encoding="utf-8")
+    store = StatuslineStore(path, default_enabled=default_enabled_ids_from_spec())
+    assert "thinking-level" not in store.load().enabled
+
+    footer = _FixedBranchFooter("main")
+    async with _ctx(
+        footer,
+        model_provider=lambda: "gpt-4o",
+        thinking_provider=lambda: "high",
+        statusline_store=store,
+    ) as (_ctx_obj, chrome):
+        assert "🧠" not in chrome._footer_line
+
+
+async def test_a_mid_session_model_switch_keeps_the_level_the_user_last_set() -> None:
+    # The limitation the CHANGELOG and the ``_thinking_level`` comment disclose,
+    # end to end. ``AgentHarness.set_model`` mutates ``_state.model`` only —
+    # nothing resets ``_state.thinking_level`` — so a switch to a model whose ONLY
+    # supported level is "off" still renders the level last set, not ``🧠 off``.
+    # The closure below is the body of ``shell.py::_thinking_level`` verbatim.
+    # Default-ON (#248) is what makes this visible out of the box; if #251 (or
+    # anything else) starts resetting the level on a model switch this dies, and
+    # the CHANGELOG sentence it pins has to be rewritten with it.
+    from aelix_agent_core.harness.core import AgentHarness, AgentHarnessOptions
+    from aelix_ai.models import get_supported_thinking_levels
+    from aelix_ai.streaming import Model
+
+    harness = AgentHarness(AgentHarnessOptions())
+    await harness.set_thinking_level("high")
+    await harness.set_model(Model(api="openai", id="gpt-4o"))
+    assert get_supported_thinking_levels(harness.state.model) == ["off"]
+
+    footer = _FixedBranchFooter("main")
+    async with _ctx(
+        footer,
+        model_provider=lambda: harness.state.model.id,
+        thinking_provider=lambda: getattr(harness.state, "thinking_level", None),
+    ) as (_ctx_obj, chrome):
+        assert "🧠 high" in chrome._footer_line
+
+
+async def test_a_saved_store_that_already_enables_it_gets_the_new_position() -> None:
+    # The one behaviour change #248 reaches EXISTING users with: the footer
+    # renders in registry order, not in the persisted list order, so a saved file
+    # that already enables the id sees the 🧠 leave the end of the row and land
+    # after the model. Nothing else pins that.
+    footer = _FixedBranchFooter("main")
+    store = _FakeStore([*_PRE_248_ENABLED, "thinking-level"])
+    async with _ctx(
+        footer,
+        model_provider=lambda: "gpt-4o",
+        thinking_provider=lambda: "high",
+        cwd="/tmp/proj",
+        mode="all",
+        permission_badge_provider=lambda: None,
+        statusline_store=store,
+    ) as (_ctx_obj, chrome):
+        assert chrome._footer_line == (
+            "● default  ·  ⏵⏵ all  ·  📂 /tmp/proj  ·  ✱ gpt-4o  ·  🧠 high  ·  ⎇ main"
+        )
 
 
 # === ADR-0159 invariants survive an adversarial enabled-set =============

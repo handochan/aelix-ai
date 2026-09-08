@@ -55,8 +55,11 @@ class StatuslineStore:
     :param path: the JSON file path. Defaults to ``get_agent_dir()/statusline.json``.
     :param default_enabled: the fallback enabled-id set used when the file is
         missing/corrupt. The caller (``run_tui``) passes the registry
-        default-enabled ids so a fresh install renders the byte-identical
-        pre-ADR-0160 footer.
+        default-enabled ids, so a fresh install renders the out-of-box footer. An
+        EXISTING file's ``enabled`` list is taken verbatim, so a default flipped
+        afterwards does not reach it — deliberate (#248): the persisted shape
+        records the enabled set, never the option set the picker showed, so it
+        cannot tell "never saw this option" apart from "unchecked it".
     """
 
     def __init__(

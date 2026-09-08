@@ -68,6 +68,48 @@ async def test_run_tui_threads_settings_manager_and_statusline(tmp_path) -> None
     assert code == 0
 
 
+async def test_run_tui_seeds_the_store_with_the_spec_defaults(tmp_path, monkeypatch) -> None:
+    # #248 — the only DIRECT assertion on this seam. ``run_tui`` imports
+    # StatuslineStore INSIDE the function, so the module attribute is the live
+    # hook: monkeypatch it and capture the kwarg. Delete that kwarg and load()
+    # over a missing file returns ``enabled=[]``, which composes a BLANK footer on
+    # every fresh install — with the rest of the segment tests still green.
+    # MEASURED: that deletion also fails test_run_tui_smoke.py::
+    # test_run_tui_mode_command_sets_and_reflects_footer, but only as a side
+    # effect (its footer wait times out). The agent dir is the conftest tmp one,
+    # so the file is genuinely missing.
+    from aelix_coding_agent.tui import statusline_store as store_module
+    from aelix_coding_agent.tui.footer_segments import default_enabled_ids_from_spec
+
+    captured: list[list[str] | None] = []
+    real_store = store_module.StatuslineStore
+
+    def _spy(path=None, *, default_enabled=None):
+        captured.append(default_enabled)
+        return real_store(path, default_enabled=default_enabled)
+
+    monkeypatch.setattr(store_module, "StatuslineStore", _spy)
+
+    async with _harness_chrome() as (runtime, chrome, pipe):
+        task = asyncio.ensure_future(
+            run_tui(
+                runtime,  # type: ignore[arg-type]
+                cwd=str(tmp_path),
+                chrome=chrome,
+                install_signal_handlers=False,
+            )
+        )
+        await _wait(lambda: chrome.app.is_running)
+        pipe.send_text("/quit\n")
+        code = await asyncio.wait_for(task, timeout=5)
+    assert code == 0
+    assert captured, "run_tui never constructed a StatuslineStore"
+    # The equality is the load-bearing one: it is what dies when the kwarg goes.
+    # ("thinking-level" being IN that list is pinned by test_footer_segments.py::
+    # test_default_enabled_ids_are_the_canonical_order, not re-asserted here.)
+    assert captured[0] == default_enabled_ids_from_spec()
+
+
 async def test_run_tui_statusline_unavailable_without_action() -> None:
     # No statusline_action wired in a bare run_tui still degrades gracefully: the
     # command exists but the handler commits "unavailable" when no host wired it.

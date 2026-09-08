@@ -515,8 +515,8 @@ async def run_tui(
 
     # WP-2 (ADR-0160) — the coding-agent-owned statusline store gates which footer
     # segments render. Its defaults are the registry default-enabled ids, so a
-    # fresh install (no statusline.json) renders the byte-identical pre-ADR-0160
-    # footer. Built here so the context + the /statusline picker share one store.
+    # fresh install is seeded from that set — drop the kwarg and the footer is blank.
+    # Built here so the context + the /statusline picker share one store.
     from aelix_coding_agent.tui.footer_segments import default_enabled_ids_from_spec
     from aelix_coding_agent.tui.statusline_store import StatuslineStore
 

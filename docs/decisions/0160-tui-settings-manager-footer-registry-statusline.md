@@ -1,6 +1,8 @@
 # ADR-0160 — WP-2 foundation: SettingsManager wiring + footer segment registry + multiselect + /statusline
 
-Status: Accepted
+Status: Accepted (shipped) — **AMENDED 2026-09-08 by #248** (`## Amendment
+(2026-09-08, #248)` below): the default-enabled set is no longer byte-identical
+to the pre-ADR-0160 footer. Everything else in this ADR stands.
 Date: 2026-06-21
 Supersedes: none (extends ADR-0159 footer rules)
 Related: ADR-0157 (permission posture footer badge), ADR-0159 (in-flow modal slot + permission-first/steering-hidden footer), ADR-0161 (the /settings + /scoped-models consumers built on this foundation)
@@ -45,6 +47,8 @@ ADR-0161 builds the `/settings` + `/scoped-models` consumers on top.
    user explicitly unchecked — it can never surface a stray badge or move the
    security-visible badge out of its leading position. The default-enabled set is
    byte-identical to the pre-ADR-0160 hard-coded footer (golden-snapshot test).
+   *(That last sentence is the 2026-06-21 record; see the amendment below — it no
+   longer holds.)*
 
 3. **`multiselect()` checkbox primitive** (`AelixTUIContext`, sibling to
    `select()`): reuses the proven `show_modal` + arrow-nav + type-to-filter +
@@ -68,7 +72,8 @@ ADR-0161 builds the `/settings` + `/scoped-models` consumers on top.
 ## Consequences
 
 - The footer is now user-configurable without touching the ADR-0159 security
-  invariants; out-of-box rendering is unchanged (golden test).
+  invariants; out-of-box rendering is unchanged (golden test). *(The
+  out-of-box-unchanged half is the 2026-06-21 record; see the amendment below.)*
 - The SettingsManager is reachable by reference for ADR-0161 (`/settings` expansion
   + `/scoped-models`) via `CommandContext.settings_manager`.
 - `use_theme_colors` is stored but not yet applied per-segment (the footer is a
@@ -78,3 +83,47 @@ ADR-0161 builds the `/settings` + `/scoped-models` consumers on top.
 - ZERO edits under `packages/aelix-ai` or `packages/aelix-agent-core`; the
   `AgentHarnessOptions.settings_manager` harness seam is deliberately left untouched
   (wiring it would require editing the protected factory).
+
+## Amendment (2026-09-08, #248)
+
+Decision 2's closing sentence — *"the default-enabled set is byte-identical to
+the pre-ADR-0160 hard-coded footer"* — no longer holds. The `thinking-level`
+segment (shipped 2026-08-07, default-OFF) is **default-ON** and sits immediately
+after `model`, before `context-remaining`.
+
+The byte-identical guarantee was a **migration** property, not a design goal: it
+existed so that extracting the inline footer list into a registry changed nothing
+a user could see. It expired the moment a new segment was worth showing by
+default. What ADR-0160 actually protects is unchanged and is what the tests still
+assert: the ADR-0159 invariants live INSIDE the producers, so the adversarial /
+empty enabled-set cases still cannot surface a stray badge, move the
+security-visible one, or reveal steering at its default. The
+`thinking-level` producer's own omit-when-no-provider rule is why a headless
+footer is byte-unchanged by this amendment.
+
+Position: `thinking-level` follows `model` in `_SEGMENT_SPEC` and in
+`AelixTUIContext._MULTILINE_ROWS[0]`, which already paired the two. The single
+line and the multi-line block still order `git-branch` and `context-remaining`
+differently; #248 did not touch that, so only the `model → thinking-level`
+adjacency is shared. The move — rather than flipping the bool at the registry
+tail — is load-bearing: measured on a pyte glass at 80 and at 100 columns, the
+row is clipped (not wrapped) and a tail segment did not render at all.
+
+Persistence consequence. `StatuslineStore.load()` takes an existing file's
+`enabled` list **verbatim**, so the new default reaches fresh installs and users
+with no `statusline.json` — not users who have saved `/statusline` even once.
+`_VERSION` stays **1** and no migration is written, for two reasons: the
+persisted shape records the enabled set and never the option set the picker
+showed, so it cannot distinguish *"never saw this option"* from *"unchecked it"*
+(and the segment has been available since 2026-08-07, so some saved files are a
+deliberate no); and `load()` is called twice per footer repaint across 20
+`_refresh_footer()` call sites — 23 counting the three that repaint through an
+injected `refresh_footer()` callable (`grep -rn "refresh_footer()" packages/`) —
+so a migration written from `load()` would put a disk write on the repaint path
+of a function whose contract is "NEVER raises".
+
+Render order is registry order (`AelixTUIContext._refresh_footer`), not the
+persisted list order. So a saved file that **already** enables `thinking-level`
+does see the segment move out of the row's tail to after the model — the one
+behaviour change #248 reaches existing users with, pinned by
+`tests/tui/test_footer_segments.py::test_a_saved_store_that_already_enables_it_gets_the_new_position`.
