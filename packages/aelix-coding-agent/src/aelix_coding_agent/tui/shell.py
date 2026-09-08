@@ -54,6 +54,7 @@ from aelix_coding_agent.extensions.command_dispatch import (
     CommandSurfaceBindings,
     DispatchOutcome,
 )
+from aelix_coding_agent.model_registry import clear_command_value_cache
 from aelix_coding_agent.tui.activity_tracker import (
     SessionActivityTracker,
     derive_resumed_activity,
@@ -3382,6 +3383,16 @@ async def _input_loop(
                 await runtime_host.reload()
             else:
                 await harness.reload_resources()
+            # #240 — AFTER both arms, because NEITHER reaches ``_load_models``:
+            # the rebuild arm calls ``AgentSessionRuntime.reload`` (not
+            # ``AgentHarness.reload``, whose ``reset()`` leg is dead code —
+            # nothing ever assigns ``_model_registry`` on an AgentHarness) and
+            # re-binds the SAME registry object. So a user reaching for /reload
+            # to pick up a rotated ``models.json`` credential gets nothing
+            # unless we drop the cached ``!command`` values here. The registry
+            # arrives on ``command_ctx``; ``run_tui``'s own ``model_registry``
+            # parameter is not in scope in this function.
+            clear_command_value_cache(getattr(command_ctx, "model_registry", None))
             # #112 (pi parity, ``interactive-mode.ts:5756``) — AFTER the reload,
             # not before. A session that was trusted without ever being asked
             # (nothing to gate at startup) records that trust once resources
@@ -3537,9 +3548,11 @@ async def _input_loop(
             continue
 
         chrome.set_running(True)
+        turn_raised = False
         try:
             await harness.prompt(prompt_text, source="interactive")
         except Exception as exc:  # noqa: BLE001 — surface + survive a failed turn
+            turn_raised = True
             renderer.finalize()  # commit partial + clear the live stream window
             # #189 — the harness both RENDERS this failure (it synthesises a
             # message_end the renderer prints) and RE-RAISES it for us, so an
@@ -3553,6 +3566,32 @@ async def _input_loop(
                 )
         finally:
             chrome.set_running(False)
+        # #240 — a turn that failed may have failed on a stale credential, so
+        # drop the resolved ``!command`` values and let the next request re-fork.
+        #
+        # OUTSIDE the ``except``, and that is the whole point. The first cut of
+        # this put the clear in the except arm on the belief that "a live
+        # session sees a turn fail for ANY reason" there; review measured the
+        # opposite for the one failure it was built for. Every shipping adapter
+        # converts a provider failure into an ``AssistantErrorEvent``
+        # (``providers/openai_completions.py``'s ``except Exception`` → ``yield
+        # AssistantErrorEvent``), ``loop.py`` returns on the resulting
+        # ``stop_reason == "error"``, and ``harness.prompt`` therefore RETURNS
+        # NORMALLY for a 401. Measured against a real ``AgentHarness`` fed a
+        # 401-shaped error event: no exception, terminal ``stop_reason
+        # == "error"``. So the trigger is the terminal message the renderer saw,
+        # with the raising path kept as the second arm (a hook error, a busy
+        # harness, a stream that ended with no result — none of those synthesise
+        # a message_end this renderer can read).
+        #
+        # ``take_…`` first, unconditionally: ``or`` short-circuits, and the flag
+        # must be drained on the raising path too or it would arm the next turn.
+        # The registry is re-read off ``command_ctx`` — the binding earlier in
+        # this loop is inside a branch that ``continue``s.
+        if renderer.take_turn_ended_in_error() or turn_raised:
+            clear_command_value_cache(
+                getattr(command_ctx, "model_registry", None)
+            )
 
 
 async def _safe_abort(harness: AgentHarness) -> None:

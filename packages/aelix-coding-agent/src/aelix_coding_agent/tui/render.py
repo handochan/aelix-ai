@@ -661,6 +661,17 @@ class EventRenderer:
         # holds the text rather than a bool so the shell can suppress ONLY the
         # duplicate and still print a genuinely different error.
         self._reported_error: str | None = None
+        # #240 — the message that just ended carried ``stop_reason == "error"``.
+        # A THIRD flag, because neither of the two above answers the question
+        # the shell's credential-cache recovery asks. ``_outcome_reported`` is
+        # already back to False by the time ``turn_end`` has run;
+        # ``_reported_error`` is read-and-cleared by the #189 dedup (and only
+        # in the ``except`` arm, which a provider failure never reaches) and
+        # also fires for ``"aborted"``, which is the user's Esc and says
+        # nothing about a credential. This one is set for ``"error"`` ALONE
+        # and consumed by ``tui/shell.py`` AFTER ``harness.prompt`` returns.
+        # See :meth:`take_turn_ended_in_error` for why that is the only signal.
+        self._turn_ended_in_error: bool = False
         # /expand support (ADR-0121) — full, untruncated tool-result bodies kept
         # by sequential id so ``/expand N`` can recover the text a truncated card
         # elided. Only TRUNCATED cards get an id (that's when /expand is useful);
@@ -699,7 +710,7 @@ class EventRenderer:
         # reasoning is painted live, so turning the setting ON has to take the
         # already-painted window down. Doing that in the setter covers all three
         # writers — the startup seed, /settings live-apply and Ctrl+T
-        # (shell.py:682, 1051, 2151) — without asking each to remember.
+        # (shell.py:683, 1051, 2151) — without asking each to remember.
         self._hide_thinking: bool = False
         self._hidden_thinking_label: str = "Thinking…"
         # Aelix-original DISPLAY gate: when True, the persisted compaction-summary
@@ -902,6 +913,7 @@ class EventRenderer:
         # flag can never survive into a message it did not come from.
         self._outcome_reported = False
         self._reported_error = None
+        self._turn_ended_in_error = False
 
     def _finalize_text(self) -> None:
         if self._text_stream is not None:
@@ -918,6 +930,36 @@ class EventRenderer:
             self._commit(Text(f"✖ {detail}", style="bold red"))
             self._outcome_reported = True
             self._reported_error = detail
+            # #240 — NARROWER than the two flags above on purpose. An
+            # ``"aborted"`` message is the user's own Esc (or a signal); it
+            # says nothing about the credential that was used, and paying a
+            # shell start for every interrupt is a cost with no recovery behind
+            # it. Only ``"error"`` — the shape a provider 401 arrives in — arms
+            # the cache drop.
+            if message.stop_reason == "error":
+                self._turn_ended_in_error = True
+
+    def take_turn_ended_in_error(self) -> bool:
+        """Did the message that just ended carry ``stop_reason == "error"``? (#240)
+
+        Read-and-cleared like :meth:`take_reported_error`, and reset on the next
+        ``message_start``, so a turn nobody asked about cannot arm the next one.
+
+        It exists because ``harness.prompt`` does NOT raise for the failure its
+        caller cares about. Every shipping adapter converts a provider failure
+        into an ``AssistantErrorEvent`` (``providers/openai_completions.py``
+        ``except Exception`` → ``yield AssistantErrorEvent(...)``);
+        ``loop.py::_stream_assistant_response`` turns that into a terminal
+        ``AssistantMessage(stop_reason="error")`` and the agent loop RETURNS on
+        it, so ``prompt`` returns a normal result. Measured against a real
+        :class:`AgentHarness` fed a 401-shaped error event: ``prompt`` returned
+        normally with ``stop_reason == "error"`` and no exception. A recovery
+        keyed off ``except Exception`` therefore never runs for a rejected
+        credential — precisely the case it would be written for.
+        """
+
+        ended, self._turn_ended_in_error = self._turn_ended_in_error, False
+        return ended
 
     def take_reported_error(self) -> str | None:
         """The terminal-outcome text already committed, read-and-cleared (#189).
@@ -1062,7 +1104,7 @@ class EventRenderer:
             return
         if self._text_stream is not None:
             # The answer owns the live window once it starts streaming, and both
-            # write the same last-writer-wins sink (shell.py:3285). A provider
+            # write the same last-writer-wins sink (shell.py:3286). A provider
             # that resumes reasoning after answer text — openai-completions
             # replays it on the same content_index — would otherwise flip the
             # window between the answer being typed and a reasoning fragment.

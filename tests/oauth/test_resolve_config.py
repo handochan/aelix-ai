@@ -1685,3 +1685,364 @@ def test_the_cmd_floor_really_runs_on_windows(
     if sys.platform == "win32":
         assert spawned == '"cmd.exe" /d /s /c "echo x"'
     warnings.warn(f"#227 cmd floor ran {spawned!r}: {elapsed:.3f}s", stacklevel=1)
+
+
+# === #240 — the strict path takes an opt-in per-registry cache ================
+#
+# ``resolve_config_value_or_throw`` is what ``ModelRegistry.get_api_key_and
+# _headers`` calls once per API REQUEST, three times over (apiKey, provider
+# headers, per-model headers). Every counted command below both appends a marker
+# line and PRINTS a sentinel: ``_execute_command_uncached`` turns empty stdout
+# into :data:`None` (``out or None``) and ``or_throw`` raises on that, so a
+# silent ``>>`` counter would make the first call raise, store nothing, and let
+# a broken cache pass.
+
+#: Appends one line to ``argv[1]``, then obeys ``argv[2]``:
+#: ``"silent"`` exits 0 with no output (the #242-adjacent hole T4 pins),
+#: ``"fail"`` exits 3 (T3), anything else prints ``sk-<stem of argv[1]>`` so two
+#: commands in one test carry two distinguishable values.
+_COUNTER_SOURCE = """\
+import os
+import sys
+
+with open(sys.argv[1], "a", encoding="utf-8") as handle:
+    handle.write("ran\\n")
+mode = sys.argv[2] if len(sys.argv) > 2 else ""
+if mode == "silent":
+    raise SystemExit(0)
+if mode == "fail":
+    raise SystemExit(3)
+print("sk-" + os.path.basename(sys.argv[1]).split(".")[0])
+"""
+
+
+def _slashed(path: Path) -> str:
+    """``path`` with forward slashes, for the same reason :data:`_PYTHON` is.
+
+    The windows leg resolves candidate 2 — Git bash ``sh`` — which eats a
+    backslash inside a quoted word, so a raw ``tmp_path`` would arrive at the
+    interpreter as a mangled string. Forward slashes survive ``sh``, PowerShell
+    and ``cmd`` alike, and on POSIX there is no backslash to replace.
+    """
+
+    return str(path).replace("\\", "/")
+
+
+def _counting_command(
+    tmp_path: Path, name: str = "a", mode: str = ""
+) -> tuple[str, Path]:
+    """A real ``!command`` that records every run, and the file it records into.
+
+    Built with this file's own idiom — ``shlex.quote`` over an argv tuple, as
+    the timeout and EOF cases at the top do — so nothing here depends on a shell
+    builtin. ``!true`` and a bare ``!echo`` would have been shorter and are not
+    portable: ``cmd.exe``'s ``echo`` with no argument prints ``ECHO is on.``, and
+    PowerShell has no ``true``.
+    """
+
+    script = tmp_path / "counter.py"
+    if not script.exists():
+        script.write_text(_COUNTER_SOURCE, encoding="utf-8")
+    counter = tmp_path / f"runs-{name}.txt"
+    argv = (_PYTHON, _slashed(script), _slashed(counter), mode)
+    return "!" + " ".join(shlex.quote(part) for part in argv), counter
+
+
+def _runs(counter: Path) -> int:
+    """How many times the command behind ``counter`` actually forked."""
+
+    if not counter.exists():
+        return 0
+    return len(counter.read_text(encoding="utf-8").splitlines())
+
+
+def test_a_cache_turns_the_second_or_throw_call_into_a_dict_lookup(
+    tmp_path: Path,
+) -> None:
+    """T1 — the per-request re-fork #240 is about.
+
+    Measured on darwin before this: two spawns on EVERY
+    ``get_api_key_and_headers`` call, 8.44 ms of the event loop each time,
+    running the same commands. On a box that lands on PowerShell it is one shell
+    start per distinct ``!command`` — 431.8 ms measured with pwsh 7.6.5.
+    """
+
+    command, counter = _counting_command(tmp_path)
+    cache: dict[str, str] = {}
+
+    first = resolve_config_value_or_throw(command, "API key", cache=cache)
+    second = resolve_config_value_or_throw(command, "API key", cache=cache)
+
+    assert first == second == "sk-runs-a"
+    assert _runs(counter) == 1, "the second call re-forked the shell"
+    assert cache == {command: first}
+
+
+def test_without_a_cache_argument_every_call_still_forks(tmp_path: Path) -> None:
+    """T2 — the cache is OPT-IN; there is no module-level one.
+
+    A process-global cache (Pi's shape, ``resolve-config-value.ts:10``) would
+    make this pass while leaking one test's credential into the next. Deleting
+    the ``cache=None`` default in favour of a global is exactly what this fails.
+    """
+
+    command, counter = _counting_command(tmp_path)
+
+    assert resolve_config_value_or_throw(command, "API key") == "sk-runs-a"
+    assert resolve_config_value_or_throw(command, "API key") == "sk-runs-a"
+
+    assert _runs(counter) == 2
+
+
+def test_a_command_that_fails_is_never_stored(tmp_path: Path) -> None:
+    """T3 — a transient failure must not become permanent for the process.
+
+    Pi's auth cache calls ``set(...)`` unconditionally and so remembers
+    failures; #240 does not. One ``gh auth token`` that failed while the network
+    was down would otherwise stay failed until the registry reloaded.
+    """
+
+    command, counter = _counting_command(tmp_path, mode="fail")
+    cache: dict[str, str] = {}
+
+    for _ in range(2):
+        with pytest.raises(ValueError, match="Failed to resolve"):
+            resolve_config_value_or_throw(command, "API key", cache=cache)
+
+    assert cache == {}
+    assert _runs(counter) == 2, "the second call answered from the cache"
+
+
+def test_a_command_that_prints_nothing_is_never_stored(tmp_path: Path) -> None:
+    """T4 — #240 does not widen #242.
+
+    #242 is ``resolve_config_value`` caching ``""`` where its sibling returns
+    :data:`None`. Exit 0 with empty output is that shape, and the strict path
+    must keep raising and keep the cache empty — otherwise an empty
+    ``Authorization`` header becomes servable from a hit.
+    """
+
+    command, counter = _counting_command(tmp_path, mode="silent")
+    cache: dict[str, str] = {}
+
+    for _ in range(2):
+        with pytest.raises(ValueError, match="Failed to resolve"):
+            resolve_config_value_or_throw(command, "API key", cache=cache)
+
+    assert cache == {}
+    assert _runs(counter) == 2
+
+
+def test_a_shared_dict_gives_each_family_its_own_entry_for_a_normal_command(
+    tmp_path: Path,
+) -> None:
+    """T5 — the two families key differently, so neither reuses the other's work.
+
+    ``resolve_config_value`` keys on ``value[1:]``; the strict path keys on the
+    full ``value``, leading ``!`` included. Hand one dict to both and each stores
+    its own entry and re-forks. For every command a user would plausibly write
+    that is a clean separation — but it is NOT a disjointness guarantee, which
+    is what the next case exists to say out loud.
+    """
+
+    command, counter = _counting_command(tmp_path)
+    cache: dict[str, str] = {}
+
+    assert resolve_config_value(command, cache) == "sk-runs-a"
+    assert resolve_config_value_or_throw(command, "API key", cache=cache) == "sk-runs-a"
+
+    assert set(cache) == {command, command[1:]}
+    assert _runs(counter) == 2
+
+
+def test_a_shared_dict_lets_an_auth_bang_bang_value_collide_with_a_strict_key(
+) -> None:
+    """T5b — why "do not share one dict" is a rule and not an observation.
+
+    The #240 review measured this: an auth-family value spelled ``"!!cmd"``
+    stores under ``value[1:]`` == ``"!cmd"``, which is EXACTLY a strict-family
+    key. ``value[1:]`` ranges over every string, so no prefix can make the two
+    key spaces provably disjoint — the earlier claim that they "cannot overlap"
+    was false, and the four sites that made it now say "do not share one dict"
+    instead.
+
+    ``!! false`` is the sharpest form: ``false`` exits non-zero, so the auth
+    family caches #242's ``""`` for it, and the strict family — which must raise
+    "Failed to resolve …" rather than hand back an empty credential — returns
+    that ``""`` instead. Nothing in the shipped wiring shares a dict (the
+    registry builds its own in ``__init__``); this case exists so that a
+    refactor which starts sharing one goes red here rather than silently putting
+    an empty ``Authorization`` header on the wire.
+
+    If someone DOES namespace the strict key so the claim becomes true, this
+    case is the one that fails, and its docstring is the note to update.
+    """
+
+    shared: dict[str, str] = {}
+
+    # The auth family runs ``! false`` (exit 1) and caches its empty output.
+    assert resolve_config_value("!! false", shared) == ""
+    assert shared == {"! false": ""}
+
+    # The strict family now READS that entry for the value ``"! false"``.
+    assert resolve_config_value_or_throw("! false", "API key", cache=shared) == ""
+
+
+def test_header_values_share_the_cache_the_api_key_uses(tmp_path: Path) -> None:
+    """T6 — headers are on the same fixed path.
+
+    ``get_api_key_and_headers`` resolves provider headers and per-model headers
+    through this function too, so leaving ``resolve_headers_or_throw`` unthreaded
+    would silently leave half the per-request cost in place.
+    """
+
+    command_a, counter_a = _counting_command(tmp_path, "a")
+    command_b, counter_b = _counting_command(tmp_path, "b")
+    cache: dict[str, str] = {}
+
+    # Two header names, ONE command: one fork.
+    for _ in range(2):
+        assert resolve_headers_or_throw(
+            {"X-One": command_a, "X-Two": command_a}, "provider", cache=cache
+        ) == {"X-One": "sk-runs-a", "X-Two": "sk-runs-a"}
+    assert _runs(counter_a) == 1
+
+    # A second, distinct command is a second entry — not a second hit.
+    assert resolve_headers_or_throw({"X-Three": command_b}, "provider", cache=cache) == {
+        "X-Three": "sk-runs-b"
+    }
+    assert _runs(counter_b) == 1
+    assert set(cache) == {command_a, command_b}
+
+
+def test_an_env_var_key_is_neither_read_from_nor_written_to_the_cache(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """T12 — only the ``!command`` branch is cached, on BOTH sides of the guard.
+
+    Writing is the half a stale value would leak through: an unguarded write
+    would put ``cache["AELIX_T240_KEY"] = "a"`` in a dict whose other family
+    looks up bare command strings, so the entry would be readable as
+    ``!AELIX_T240_KEY``. The two ``setenv`` calls below cover it — with the
+    write guard gone the second read returns the frozen ``"a"``.
+
+    Reading needs its own arm, and the #240 review proved it: deleting
+    ``value.startswith("!")`` from the READ branch left the whole suite green,
+    because a cache this test only ever leaves EMPTY cannot be read from. So the
+    dict arrives PRE-SEEDED with a bare env-var-name key — the shape the other
+    family writes for ``"!AELIX_T240_KEY"`` — and the live environment still has
+    to win. With the read guard removed this arm returns ``"stale"``.
+    """
+
+    cache: dict[str, str] = {"AELIX_T240_KEY": "stale"}
+    monkeypatch.setenv("AELIX_T240_KEY", "a")
+    assert resolve_config_value_or_throw("AELIX_T240_KEY", "API key", cache=cache) == "a"
+    monkeypatch.setenv("AELIX_T240_KEY", "b")
+    assert resolve_config_value_or_throw("AELIX_T240_KEY", "API key", cache=cache) == "b"
+
+    # Untouched: the seeded entry is the other family's, and nothing was added.
+    assert cache == {"AELIX_T240_KEY": "stale"}
+
+
+def test_the_collapse_holds_through_the_real_win32_shell_chain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """T13 — the same claim as T1, but proven at the ``Popen`` the leg pays for.
+
+    T1 counts marker lines; this one also pins that the value came back through
+    the #227 candidate chain (``_shell_argv_candidates``), which on the windows
+    leg is a real Git-bash ``sh.exe`` spawn and not a POSIX ``sh -c`` this
+    machine could have faked. The elapsed pair reaches the ``-q`` log because a
+    number nobody can read is a number nobody checks.
+    """
+
+    import aelix_ai.oauth._resolve_config as rc
+
+    command, counter = _counting_command(tmp_path)
+    cache: dict[str, str] = {}
+    seen = _record_spawns(monkeypatch)
+
+    started = time.monotonic()
+    assert resolve_config_value_or_throw(command, "API key", cache=cache) == "sk-runs-a"
+    cold = time.monotonic() - started
+    started = time.monotonic()
+    assert resolve_config_value_or_throw(command, "API key", cache=cache) == "sk-runs-a"
+    warm = time.monotonic() - started
+
+    assert _runs(counter) == 1
+    assert seen, "nothing was spawned at all"
+    assert seen[-1] in rc._shell_argv_candidates(command[1:])
+    warnings.warn(
+        f"#240 chain spawn {seen[-1][0] if isinstance(seen[-1], list) else seen[-1]!r}:"
+        f" cold {cold * 1000:.1f}ms, warm {warm * 1000:.1f}ms",
+        stacklevel=1,
+    )
+
+
+def test_the_collapse_holds_on_a_forced_powershell_candidate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """T14 — and it holds on the shell that actually costs half a second.
+
+    Same forcing as ``test_a_forced_powershell_candidate_really_runs_on_windows``
+    (#227): no ``$SHELL``, ``PATH`` narrowed to PowerShell's own directory, so
+    candidate 1 is PowerShell. The argv0 family and the two hardening flags are
+    asserted, so a runner image WITHOUT PowerShell fails here instead of
+    resolving the ``cmd`` floor and passing on a count of 1 — that count is the
+    same on every shell and cannot name the one it ran on.
+
+    The command string cannot be shared with T13's: PowerShell parses a
+    statement that starts with a quoted string in expression mode
+    (``ParserError: Unexpected token``) so it needs the ``&`` call operator,
+    while ``sh`` would read a leading ``&`` as a background job. Timings are
+    WARNED, never asserted — a CI clock is not a fixture.
+    """
+
+    script = tmp_path / "counter.py"
+    script.write_text(_COUNTER_SOURCE, encoding="utf-8")
+    counter = tmp_path / "runs-ps.txt"
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    monkeypatch.delenv("SHELL", raising=False)
+    monkeypatch.chdir(empty)
+    if sys.platform == "win32":
+        found = shutil.which("pwsh") or shutil.which("powershell")
+        home = (
+            str(Path(found).parent)
+            if found
+            else os.path.join(
+                os.environ.get("SYSTEMROOT", r"C:\Windows"),
+                "System32",
+                "WindowsPowerShell",
+                "v1.0",
+            )
+        )
+        monkeypatch.setenv("PATH", home)
+        command = f"!& '{_PYTHON}' '{_slashed(script)}' '{_slashed(counter)}'"
+    else:
+        argv = (_PYTHON, _slashed(script), _slashed(counter))
+        command = "!" + " ".join(shlex.quote(part) for part in argv)
+
+    cache: dict[str, str] = {}
+    seen = _record_spawns(monkeypatch)
+
+    started = time.monotonic()
+    assert resolve_config_value_or_throw(command, "API key", cache=cache) == "sk-runs-ps"
+    cold = time.monotonic() - started
+    started = time.monotonic()
+    assert resolve_config_value_or_throw(command, "API key", cache=cache) == "sk-runs-ps"
+    warm = time.monotonic() - started
+
+    assert _runs(counter) == 1
+    assert seen, "nothing was spawned at all"
+    spawned = seen[-1]
+    if sys.platform == "win32":
+        assert isinstance(spawned, list)
+        assert shell_basename(spawned[0]) in POWERSHELL_NAMES
+        assert spawned[1:4] == ["-NoProfile", "-NonInteractive", "-Command"]
+    argv0 = spawned[0] if isinstance(spawned, list) else spawned
+    warnings.warn(
+        f"#240 forced-PowerShell {argv0!r}: cold {cold * 1000:.1f}ms,"
+        f" warm {warm * 1000:.1f}ms",
+        stacklevel=1,
+    )

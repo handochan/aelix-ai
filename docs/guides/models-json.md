@@ -135,6 +135,23 @@ The `apiKey` value is resolved at request time and supports three forms:
   uses its trimmed stdout. Output is bounded (~1 MB / 10 s); a non-zero or empty
   result resolves to no key.
 
+  The value it produces is then kept for the life of the model registry, so the
+  command runs once per load and not once per request. Any turn that ends in an
+  error drops it — a key your provider has started rejecting costs one bad turn,
+  not the session — and in the interactive TUI `/reload`, `/login` and
+  restarting Aelix drop it as well.
+
+  In a headless run (`aelix -p …`) there is no `/reload` and no `/login`: an
+  errored turn and process exit are the only two things that drop it. That
+  matters if your helper mints a **short-lived** token, since one `-p` run is a
+  single turn but many API requests over however long the work takes. Pair such
+  a helper with a token whose lifetime comfortably exceeds the run.
+
+  A command that fails or prints nothing is never kept, so a helper that starts
+  working is picked up on the next request. An `apiKey` that names an
+  environment variable is re-read every request; only the `!command` form is
+  kept.
+
   A `!command` cannot prompt you. It runs in a process group of its own — never
   the terminal's foreground group — so the kernel stops it the moment it reads
   the terminal or turns echo off, unless it blocks or ignores that signal, which
@@ -197,9 +214,12 @@ The `apiKey` value is resolved at request time and supports three forms:
   --norc` STILL sources `$BASH_ENV` and still prepends its output to the
   key; only `-p` stops that, and it drops the rest of the user's environment
   too.) The cost is real: a PowerShell start is about half a
-  second against `sh`'s three milliseconds, and the key is re-resolved on every
-  request, so on a box that lands on PowerShell prefer an environment variable —
-  or export `$SHELL` to a real `bash.exe`, **which also tells the bash tool and
+  second against `sh`'s three milliseconds, and the key is resolved once per
+  registry load, so the first request after a load pays one PowerShell start —
+  about half a second — for *each* distinct `!command` the provider uses (the
+  `apiKey`, and each `!command` header value); a provider with a key plus a
+  header pays about a second, once. Prefer an environment variable if that pause
+  matters, or export `$SHELL` to a real `bash.exe`, **which also tells the bash tool and
   the AUTO permission gate that your shell is bash**, so commands there are read
   with the bash grammar rather than prompted for (see ADR-0237 and
   [#204](https://github.com/handochan/aelix-ai/issues/204)).
@@ -253,7 +273,9 @@ The same indirection applies to each value in a `headers` map.
   resolves, auth fails with a clear error.
 - `headers` values are merged into every request to this provider, each resolved
   through the same env-var / `!command` indirection. Per-model `headers` win over
-  provider `headers`.
+  provider `headers`. A `!command` header value is kept exactly the way `apiKey`
+  is — per-model and provider-level alike, one run per registry load — while an
+  env-var one is re-read every request.
 
 ## Overriding a built-in model
 

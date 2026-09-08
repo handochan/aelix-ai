@@ -29,6 +29,7 @@ optional ``models_json_path``. P0 #4 (ADR-0140) lands the real
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -150,6 +151,13 @@ class ModelRegistry:
         # load; cleared at the top of :meth:`_load_models`.
         self._provider_request_configs: dict[str, ProviderRequestConfig] = {}
         self._model_request_headers: dict[str, dict[str, str]] = {}
+        # #240 — successful ``!command`` resolutions of the values in the two
+        # maps above, keyed on the full ``"!cmd"`` string. NOT named
+        # ``_resolve_cache``: ``AuthStorage._resolve_cache`` has the same name
+        # and type but a different key space (``value[1:]``) and stores empty
+        # output (#242), so identical names would type-check as interchangeable.
+        # Built BEFORE the ``_load_models`` call below, which clears it.
+        self._command_value_cache: dict[str, str] = {}
         self._registered_providers: dict[str, ProviderConfigInput] = {}
         self._load_error: str | None = None
         self._load_models()
@@ -293,6 +301,15 @@ class ModelRegistry:
         the prior ``ok=False`` "No configured auth" early-return diverged.
         Any resolution failure (e.g. a ``!command`` that produced no
         output) is reported as ``ok=False`` with the message (Pi try/catch).
+
+        #240: this is the harness's PER-REQUEST auth callback, and all three
+        resolution sites above share :attr:`_command_value_cache`, so a
+        ``!command`` forks once per registry load rather than once per request
+        (measured on darwin before: 2 spawns and 8.44 ms of blocked event loop
+        on every call). Only successes are cached, so a failing helper is
+        retried; the AuthStorage cascade and the env/literal branch are
+        untouched. Divergence from Pi, whose registry path is uncached
+        (ADR-0235 permits it).
         """
 
         try:
@@ -310,17 +327,20 @@ class ModelRegistry:
                 api_key = resolve_config_value_or_throw(
                     provider_config.api_key,
                     f'API key for provider "{provider}"',
+                    cache=self._command_value_cache,
                 )
 
             provider_headers = resolve_headers_or_throw(
                 provider_config.headers if provider_config is not None else None,
                 f'provider "{provider}"',
+                cache=self._command_value_cache,
             )
             model_headers = resolve_headers_or_throw(
                 self._model_request_headers.get(
                     self._get_model_request_key(provider, model.id)
                 ),
                 f'model "{provider}/{model.id}"',
+                cache=self._command_value_cache,
             )
 
             headers: dict[str, str] = {}
@@ -434,6 +454,32 @@ class ModelRegistry:
         """
 
         self.refresh()
+
+    def clear_config_value_cache(self) -> None:
+        """Drop the cached ``models.json`` ``!command`` values (#240).
+
+        Aelix-only; Pi's registry path is uncached and has nothing to clear
+        (its ``clearConfigValueCache`` belongs to the auth family). This drops
+        the resolved credential values WITHOUT re-reading ``models.json`` and
+        WITHOUT re-running every OAuth ``modify_models`` callback, which
+        :meth:`refresh` would do — so the next request pays one shell start per
+        distinct ``!command`` and nothing else.
+
+        Callers today, all through :func:`clear_command_value_cache`: the TUI's
+        ``/reload`` (neither of whose arms reaches :meth:`_load_models`), the
+        TUI's end-of-turn handler, and print mode's — the last two whenever the
+        turn ended with ``stop_reason == "error"``, since a turn that failed may
+        have failed on a credential this cache is still serving. The trigger is
+        the TERMINAL MESSAGE, not a raised exception: every shipping adapter
+        converts a provider failure into an ``AssistantErrorEvent``, so a 401
+        returns normally out of ``harness.prompt`` (measured, #240 review).
+
+        The subagent channels share the registry and have no such seam; they are
+        child-owned and end with their child, so they rely on the parent's
+        recoveries, ``/login`` and process exit.
+        """
+
+        self._command_value_cache.clear()
 
     def get_error(self) -> str | None:
         """Pi parity: ``model-registry.ts::getError``.
@@ -592,6 +638,12 @@ class ModelRegistry:
         # current models.json each load, so clear them first.
         self._provider_request_configs.clear()
         self._model_request_headers.clear()
+        # #240: the cached ``!command`` values were resolved FROM the two maps
+        # above, so they are stale the moment those are rebuilt — a load is the
+        # one moment an ``apiKey`` or a header value can have changed on disk.
+        # This is also the invalidation seam ``refresh()`` / ``reset()`` /
+        # ``register_provider()`` / ``/login`` all reach for free.
+        self._command_value_cache.clear()
 
         # Step 1: custom models + overrides from models.json.
         if self._models_json_path is not None:
@@ -750,9 +802,32 @@ class ModelRegistry:
             return None
 
 
+def clear_command_value_cache(registry: object | None) -> None:
+    """Issue #240 — drop ``registry``'s cached ``models.json`` ``!command`` values.
+
+    The duck-typed front door to :meth:`ModelRegistry.clear_config_value_cache`.
+    It lives here, beside the method, rather than in any one surface because
+    THREE call sites need it and none of them holds a typed registry: the TUI's
+    ``/reload``, the TUI's failed-turn recovery, and print mode's. The registry
+    is an optional parameter on both ``run_tui`` and
+    :func:`~aelix_coding_agent.modes.print_mode.run_print_mode` that tests pass
+    stubs for, and an embedder can supply anything.
+
+    Fully suppressed on purpose: no caller has a user-visible failure mode worth
+    interrupting for. The cost of NOT clearing is one stale credential; the cost
+    of clearing is one shell start.
+    """
+
+    clear = getattr(registry, "clear_config_value_cache", None)
+    if clear is not None:
+        with contextlib.suppress(Exception):
+            clear()
+
+
 __all__ = [
     "ModelRegistry",
     "ProviderConfigInput",
     "ProviderRequestConfig",
     "ResolvedRequestAuth",
+    "clear_command_value_cache",
 ]

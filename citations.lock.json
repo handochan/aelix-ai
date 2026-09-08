@@ -2455,7 +2455,7 @@
   "packages/aelix-coding-agent/src/aelix_coding_agent/mcp/client.py:232-232": [
    "stdio_client(params)"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/modes/print_mode.py:131-190": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/modes/print_mode.py:160-219": [
    "# === Pi step 1 — signal handlers (POSIX: SIGTERM/SIGHUP; win32: SIGBREAK) ==",
    "signals_installed: list[int] = []",
    "# These two are bound BEFORE the platform branch, not inside the win32 arm.",
@@ -2465,7 +2465,7 @@
    "break_previous: Any = None",
    "break_installed = False"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/modes/print_mode.py:221-228": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/modes/print_mode.py:250-257": [
    "if stdout_dead[\"v\"]:",
    "return # consumer gone — stop writing to a dead pipe",
    "try:",
@@ -2475,7 +2475,7 @@
    "except Exception: # noqa: BLE001 — pi swallows listener errors",
    "pass"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/modes/print_mode.py:236-248": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/modes/print_mode.py:265-277": [
    "# === Pi step 4 — JSON-mode header emit ================================",
    "if mode == \"json\":",
    "session = runtime_host.harness.session",
@@ -2485,7 +2485,7 @@
    "header = _metadata_to_dict(metadata)",
    "if header:"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/modes/print_mode.py:237-248": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/modes/print_mode.py:266-277": [
    "if mode == \"json\":",
    "session = runtime_host.harness.session",
    "if session is not None:",
@@ -2495,7 +2495,7 @@
    "if header:",
    "_write_raw_stdout(json.dumps(header) + \"\\n\")"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/modes/print_mode.py:301-302": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/modes/print_mode.py:345-346": [
    "except Exception as exc: # noqa: BLE001 — surface any failure to caller",
    "print(str(exc), file=sys.stderr)"
   ],
@@ -2505,7 +2505,7 @@
    "emit through harness events, not raw stdout, so the JSONL stream",
    "stays clean without the redirect (ADR-0089 §\"Carry-forward\")."
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/modes/print_mode.py:74-83": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/modes/print_mode.py:76-85": [
    "def _event_to_dict(event: Any) -> dict[str, Any]:",
    "\"\"\"Convert a harness event to a Pi-shape dict for JSON emit.",
    "",
@@ -2883,7 +2883,7 @@
   "packages/aelix-coding-agent/src/aelix_coding_agent/tui/render.py:163-163": [
    "``_truncate_lines`` below has always measured cells; this makes the file"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/render.py:742-774": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/render.py:753-785": [
    "def on_agent_event(self, event: AgentEvent) -> None:",
    "if event.type == \"message_start\":",
    "self._reset_message_state()",
@@ -2893,10 +2893,10 @@
    "# Terminal failures arrive here as a MessageEndEvent whose message",
    "# carries stop_reason ∈ {\"error\",\"aborted\"} (loop.py:385-410)."
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:1022-1022": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:1023-1023": [
    "result = await runtime_host.fork(target_id, position=\"before\")"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:131-147": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:132-148": [
    "def _reload_rebuild_enabled() -> bool:",
    "\"\"\"Issue #24 / #53 — full factory-rebuild ``/reload`` (go-live default, ADR-0177).",
    "",
@@ -2906,7 +2906,7 @@
    "DEFAULT-ON after the multi-lens adversarial review. Set ``AELIX_RELOAD_REBUILD``",
    "to a falsy value (``0``/``false``/``no``/``off``) as a kill-switch to fall back"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:1881-1898": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:1882-1899": [
    "signals_installed: list[int] = []",
    "if install_signal_handlers and sys.platform != \"win32\":",
    "",
@@ -2916,31 +2916,31 @@
    "# dispose, restore terminal). Avoids sys.exit from a detached task,",
    "# which bypassed teardown and left the terminal in raw mode."
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:2403-2403": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:2404-2404": [
    "renderer.hide_thinking = not renderer.hide_thinking"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:2566-2566": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:2567-2567": [
    "editor = os.environ.get(\"VISUAL\") or os.environ.get(\"EDITOR\") or \"vi\""
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:2651-2651": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:2652-2652": [
    "runtime_host.harness.runtime.bind_ui(context)"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3285-3285": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3286-3286": [
    "chrome.set_widget(\"__stream__\", ansi.split(\"\\n\") if ansi else None, above=True)"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3321-3321": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3322-3322": [
    "``get_enable_skill_commands()``, the gate on ``/skill:<name>``. ``None``"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3381-3381": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3382-3382": [
    "if _reload_rebuild_enabled():"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3381-3384": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3382-3385": [
    "if _reload_rebuild_enabled():",
    "await runtime_host.reload()",
    "else:",
    "await harness.reload_resources()"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3414-3431": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:3425-3442": [
    "if parsed.kind == \"prompt\" and parsed.text.startswith(\"/\"):",
    "command = match_command(parsed.text, command_ctx.commands)",
    "if command is not None and command.handler is not None:",
@@ -2950,7 +2950,7 @@
    "args = parsed.text[len(\"/\" + slash_word(parsed.text)) :].strip()",
    "await command.handler(command_ctx, args)"
   ],
-  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:682-682": [
+  "packages/aelix-coding-agent/src/aelix_coding_agent/tui/shell.py:683-683": [
    "renderer.hide_thinking = settings_manager.get_hide_thinking_block()"
   ],
   "packages/aelix-coding-agent/src/aelix_coding_agent/tui/stream.py:173-176": [

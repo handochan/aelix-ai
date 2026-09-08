@@ -553,11 +553,11 @@ def pdeathsig() -> None:
     """``preexec_fn`` that asks the kernel to SIGTERM us when our parent dies.
 
     Closes finding I1. Without it a child whose parent is SIGKILLed runs to
-    completion, reparented to init: ``modes/print_mode.py:221-228``'s ``_emit``
+    completion, reparented to init: ``modes/print_mode.py:250-257``'s ``_emit``
     only RECORDS ``stdout_dead["v"]`` when the pipe breaks, and the acting
-    ``break`` (``:198-205``) plus the ``raise BrokenPipeError`` (``:208-211``)
+    ``break`` (``:302-307``) plus the ``raise BrokenPipeError`` (``:316-319``)
     are both strictly AFTER ``await runtime_host.harness.prompt(initial_message)``
-    (``:189-193``). Since ``agents/resolver.py:314-315`` makes the whole task the
+    (``:283-287``). Since ``agents/resolver.py:314-315`` makes the whole task the
     initial prompt, the EPIPE guard covers nothing a subagent does.
 
     Composes with ``start_new_session=True``: ``setsid()`` does not clear the

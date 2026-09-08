@@ -607,7 +607,7 @@ async def test_child_is_in_its_own_process_group(tmp_path: Path) -> None:
     """``start_new_session=True`` — one Ctrl+C must not SIGINT every subagent.
 
     The default puts the child in the PARENT's group, and neither parent
-    (``tui/shell.py:1881-1898``) nor child (``modes/print_mode.py:131-190``)
+    (``tui/shell.py:1882-1899``) nor child (``modes/print_mode.py:160-219``)
     installs a SIGINT handler, so a group-wide SIGINT kills every delegation at
     once with no envelope and no partial summary.
     """
@@ -1614,7 +1614,7 @@ def test_child_dies_with_parent(tmp_path: Path) -> None:
     """FINDING I1 — ``PR_SET_PDEATHSIG`` on a hard parent death.
 
     Without it the child runs every remaining turn, every LLM call and every
-    tool to completion, reparented to init: ``print_mode.py:221-228``'s ``_emit``
+    tool to completion, reparented to init: ``print_mode.py:250-257``'s ``_emit``
     only RECORDS ``stdout_dead``, and the acting ``break`` (``:198-205``) plus
     the ``raise BrokenPipeError`` (``:208-211``) are both strictly AFTER
     ``await runtime_host.harness.prompt(initial_message)`` (``:189-193``) —

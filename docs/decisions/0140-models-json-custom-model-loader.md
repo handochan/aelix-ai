@@ -4,7 +4,10 @@ Status: Accepted (**#227 amendment 2026-09-08** — the `!command` half of this
 ADR's `apiKey` contract no longer assumes `sh`: on win32 it resolves a shell
 chain, and `resolve_config_value`'s trim becomes `.strip()` on every platform,
 matching `resolve_config_value_uncached`. Both are recorded in ADR-0238, which
-owns that spawn site)
+owns that spawn site; **#240 amendment 2026-09-08** — the registry's `!command`
+resolution is cached per `ModelRegistry` (successes only, cleared on reload and
+on a failed interactive turn); the env/literal branch and
+`get_api_key_for_provider` stay uncached)
 Date: 2026-06-20
 Pi pin: `earendil-works/pi@734e08edf82ff315bc3d96472a6ebfa69a1d8016` (no advance)
 
@@ -55,10 +58,56 @@ Sprint 6e `resolve_config_value` (cached, `check=True`) untouched for
   `!command` → trimmed stdout or `None` (non-raising; non-zero/empty → `None`,
   matching Pi `executeWithDefaultShell`); else `os.environ.get(value) or value`
   (empty env → literal, Pi `process.env[config] || config`).
-- `resolve_config_value_or_throw(value, description)` — Pi
+- `resolve_config_value_or_throw(value, description, *, cache=None)` — Pi
   `resolveConfigValueOrThrow`. Raises `ValueError` with Pi-verbatim
   messages only on the command branch (env/literal always resolves).
-- `resolve_headers_or_throw(headers, description)` — Pi `resolveHeadersOrThrow`.
+  `cache` is the #240 amendment below; keyword-only, so every pre-#240 call
+  site keeps its signature.
+- `resolve_headers_or_throw(headers, description, *, cache=None)` — Pi
+  `resolveHeadersOrThrow`; threads `cache` into each value.
+- **#240 amendment (2026-09-08).** `get_api_key_and_headers` is the harness's
+  per-request auth callback and re-forked a shell at all three of its
+  resolution sites on every request (measured on darwin: 2 spawns, 8.44 ms of
+  blocked event loop per call; one PowerShell start per distinct `!command` on
+  a box that lands there — 431.8 ms with pwsh 7.6.5 on macOS, 5.1 unmeasured).
+  `ModelRegistry` now owns a `dict[str, str]` (`_command_value_cache`) passed
+  into all three. The key is the FULL `"!cmd"` string where
+  `resolve_config_value` keys on `value[1:]`. **The separation that holds is
+  ownership, not the key space**: each family builds its own dict, and nothing
+  in the wiring shares one. The keys are not provably disjoint — `value[1:]`
+  ranges over every string, so an auth-family `"!!cmd"` writes the strict key
+  `"!cmd"`, and a shared dict would let #242's cached `""` be read back as a
+  credential (measured in the #240 review; pinned by T5b in
+  `tests/oauth/test_resolve_config.py`). An earlier draft of this amendment
+  claimed disjointness; that was wrong. Only a success with non-empty output is stored — a failure, a
+  timeout, a terminal stop (#226) and empty output all raise and store nothing,
+  so Pi's negative caching is NOT adopted. Invalidated by `_load_models`
+  (hence `refresh`/`reset`/`register_provider`/`unregister_provider`/`/login`)
+  and by a public `clear_config_value_cache()`, which drops the values without
+  a `models.json` re-read. No TTL: the trigger is a rejection, not a clock.
+  `get_api_key_for_provider` and `get_provider_auth_status` stay uncached.
+  Divergence from Pi, whose registry path is uncached and whose auth path
+  caches globally including failures (ADR-0235 permits it, no new ADR).
+- **#240 scope of the failed-turn clear.** It fires wherever a turn ends, in
+  the TUI's `_input_loop` and in print mode, whenever the TERMINAL assistant
+  message carries `stop_reason == "error"`. The trigger is that message and not
+  a raised exception: every shipping adapter converts a provider failure into an
+  `AssistantErrorEvent`, so a 401 returns normally out of `harness.prompt`
+  (measured in the #240 review against a real `AgentHarness`). An earlier draft
+  keyed the clear off `except Exception`, which made it inert for exactly the
+  case it was written for. `"aborted"` is excluded — that is a user's Esc or a
+  signal, and says nothing about a credential. A non-Anthropic 401 is never
+  typed as an auth error by the time either surface sees it, so the trigger is
+  any errored turn rather than an auth-specific one.
+
+  Print mode is NOT "one-turn" in the sense that matters: `aelix -p` is one
+  USER turn but many API requests over unbounded wall time, which is precisely
+  the window in which a short-lived helper token (`!gcloud auth
+  print-access-token`, ~1 h) expires. It gets the same recovery, after the
+  initial message and after each residual message; there is no `/reload` and no
+  `/login` there. The subagent channels share the registry and remain
+  child-owned: they end with their child and rely on the parent's recoveries and
+  process exit.
 - **Review hardening:** both the cached (`resolve_config_value`) and uncached
   shell-exec paths now run through `_run_shell_command`, which bounds output
   to ~1 MB and time to 10 s (mirroring Pi's `execSync` implicit `maxBuffer`
