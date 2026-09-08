@@ -1267,9 +1267,11 @@ def test_a_candidate_that_is_not_a_loadable_image_falls_through(
     candidate 1. ``EINVAL`` is the one that matters most — it is where
     ``errmap.h``'s ``default:`` arm sends every winerror the table does not
     name. The list is a LITERAL and deliberately not
-    ``sorted(rc._NOT_A_RUNNABLE_SHELL)``: parametrizing over the set under test
-    is self-referential — deleting a member deletes its case and the suite
-    stays green (measured: ``6 passed`` where the literal goes RED).
+    ``sorted(NOT_A_RUNNABLE_SHELL)`` — the set #243 moved down to
+    :mod:`aelix_ai.utils._shell` so the bash tool's spawn shares this one:
+    parametrizing over the set under test is self-referential — deleting a
+    member deletes its case and the suite stays green (measured: ``6 passed``
+    where the literal goes RED).
     """
 
     import aelix_ai.oauth._resolve_config as rc

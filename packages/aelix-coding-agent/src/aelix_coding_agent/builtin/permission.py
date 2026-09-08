@@ -675,7 +675,7 @@ class PermissionExtension:
             # Resolves the DEFAULT shell chain, with no ``shell_path``. That
             # matches what the tool spawns today only because nothing wires a
             # custom shell through: ``create_bash_tool`` reads
-            # ``opts["shell_path"]`` (``tools/bash.py:929-931``) but no caller sets
+            # ``opts["shell_path"]`` (``tools/bash.py:945-947``) but no caller sets
             # it, and ``SettingsManager.get_shell_path()``
             # (``settings_manager.py:1299``) is referenced only by its own
             # test. Treat that as a coincidence, not an invariant — if

@@ -39,6 +39,7 @@ from aelix_ai.utils._process_tree import (
 )
 from aelix_ai.utils._shell import (
     CMD_NAMES,
+    NOT_A_RUNNABLE_SHELL,
     POWERSHELL_NAMES,
     ShellConfig,
     command_flag_for,
@@ -301,7 +302,30 @@ class _LocalBashOperations:
                     **containment_spawn_kwargs(new_session=True),
                 ),
             )
-        except (FileNotFoundError, NotADirectoryError) as exc:
+        except OSError as exc:
+            # #243 — classified by ERRNO, not by exception class. The tuple
+            # this replaces, ``(FileNotFoundError, NotADirectoryError)``,
+            # covered only ENOENT/ENOTDIR of the ways a spawn fails BEFORE the
+            # command runs, and the verdict is on the SPAWN, whose inputs are
+            # argv[0] AND ``cwd``. Measured on darwin through this method: a
+            # ``shell_path`` with the exec bit and no valid image escaped as
+            # ``OSError [Errno 8] Exec format error``, one with the bit cleared
+            # and an unreadable ``cwd`` as ``PermissionError [Errno 13]`` —
+            # while a MISSING ``cwd`` already returned 127, so this makes the
+            # two agree. On win32 the headline is ``ERROR_BAD_EXE_FORMAT``
+            # (193) -> ENOEXEC, an errno with no ``OSError`` subclass at all.
+            # Escaping is not cheap: ``tui/shell.py`` calls this from
+            # ``_input_loop``, whose only handler is ``except EOFError``, so a
+            # ``!command`` took the whole session down with it.
+            #
+            # Unlike ``_resolve_config``'s chain there is no next candidate
+            # here — ``_resolve_shell`` returns exactly one shell — so a member
+            # is TERMINAL: report it. Everything else still escapes, including
+            # an ``OSError`` whose errno is ``None``: exit 127 reads to a model
+            # as "command not found", and a host out of descriptors or memory
+            # would then be retried against forever.
+            if exc.errno not in NOT_A_RUNNABLE_SHELL:
+                raise
             on_data(f"[bash] failed to spawn: {exc}\n".encode())
             return ExecExitResult(exit_code=127)
 
