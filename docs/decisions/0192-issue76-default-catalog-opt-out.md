@@ -3,6 +3,8 @@
 - **Status:** Accepted (2026-07-10) — scheme owner-confirmed (Run 2). Design record;
   lands with the #76 beta implementation, precedes the code and seeds it (same pattern
   as ADR-0186/0187/0188/0189). **Amended 2026-07-12 (#89) — see Amendment below.**
+  **Owner decision 1 (PyPI skipped for pre-release tags) superseded by ADR-0240
+  (2026-09-08).**
 - **Amendment (2026-07-12, #89) — progressive hardening + default catalog activated:**
   guard ⑤ originally made the official/default catalog signature-required the moment
   `DEFAULT_CATALOG_URL` became non-empty (fail-closed on any set URL). That was *stricter*
@@ -49,7 +51,10 @@
 
 ## Owner decisions (confirmed 2026-07-10, Run 2)
 
-1. **Beta tag = `v0.1.0-beta.1` (PEP 440 prerelease).** The PyPI `publish` job is gated
+1. **Beta tag = `v0.1.0-beta.1` (PEP 440 prerelease).** *(Superseded for the PyPI
+   half by ADR-0240, 2026-09-08: from `v0.1.0-beta.2` a hyphenated tag publishes its
+   PEP 440 pre-version to PyPI as well; the GitHub `--prerelease` half stands.)*
+   The PyPI `publish` job is gated
    `if: ${{ !contains(github.ref_name, '-') }}` → a hyphenated (prerelease) tag SKIPS
    PyPI entirely, and only the new `github-release` job fires, creating a
    `--prerelease` GitHub Release. **#73 PyPI pending-publisher setup is NOT needed for

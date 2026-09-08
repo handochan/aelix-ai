@@ -155,7 +155,16 @@ jobs:
               except InvalidVersion:
                   problems.append(f"{path}: project.version {declared!r} is not PEP 440")
 
-              for dep in proj.get("dependencies", []):
+              # `[project.optional-dependencies]` pins count too: the root's
+              # `tui` extra pins `aelix-coding-agent[tui]==X`, and a bump that
+              # missed it would ship `pip install 'aelix[tui]'` demanding a
+              # version that is not on the index (#142-1).
+              extras = proj.get("optional-dependencies", {})
+              declared_deps = [
+                  *proj.get("dependencies", []),
+                  *(dep for group in extras.values() for dep in group),
+              ]
+              for dep in declared_deps:
                   try:
                       req = Requirement(dep)
                   except Exception:  # noqa: BLE001 — a bad requirement is itself the problem
@@ -228,10 +237,17 @@ jobs:
   publish:
     name: Publish to PyPI (Trusted Publishing)
     needs: build
-    # Skip PyPI for pre-release tags (any tag containing a hyphen, e.g.
-    # v0.1.0-beta.1). The job never starts → no OIDC token is minted → nothing
-    # reaches pypi.org. GA tags (v0.1.0) have no hyphen and publish normally.
-    if: ${{ !contains(github.ref_name, '-') }}
+    # Pre-release tags publish too (ADR-0240). Until beta.2 this job carried
+    # `if: !contains(github.ref_name, '-')` so a hyphenated tag never started
+    # it. That gate left the four PyPI names holding only the `0.0.0a0`
+    # placeholders — and pip/uv, seeing nothing but pre-releases, install the
+    # newest one, so `uv tool install aelix` fetched a placeholder that shadowed
+    # a working install (measured in update_check.py's header). A PEP 440
+    # pre-version (`v0.1.0-beta.2` → `0.1.0b2`) is invisible to a plain
+    # `pip install aelix` once any stable exists, so publishing it closes the
+    # trap without pre-empting GA. The tag gate above still refuses dot-form
+    # pre-releases, and `skip-existing: false` still makes a re-run of the
+    # same version fail loudly instead of silently uploading nothing.
     runs-on: ubuntu-latest
     # GitHub Environment adds an approval/protection gate around the
     # publish step. The maintainer references this same environment name

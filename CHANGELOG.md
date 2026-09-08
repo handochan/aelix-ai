@@ -20,6 +20,30 @@ and `.../releases/tag/vX` link would 404. Add them with the first pushed tag.
 
 ### Changed
 
+- **Pre-release tags now publish to PyPI.** The `publish` job used to skip any
+  tag with a hyphen, so the four PyPI names carried nothing but a `0.0.0a0`
+  reservation placeholder — and because pip and uv take the newest pre-release
+  when *every* candidate is one, `uv tool install aelix@latest` installed that
+  placeholder, found no entry points, and **removed the working aelix** it was
+  asked to upgrade. From `v0.1.0-beta.2` the tag publishes its PEP 440
+  pre-version (`0.1.0b2`); a plain `pip install aelix` stops seeing it the
+  moment a stable version exists, so `0.1.0` is protected by the version
+  itself rather than by a job gate (ADR-0240). The version assert that runs
+  before the build now also reads `[project.optional-dependencies]` — the
+  root's `aelix-coding-agent[tui]==X` pin was outside its loop, so a bump that
+  missed it would have shipped a `pip install 'aelix[tui]'` demanding a
+  version not on the index (mutating that pin to `0.1.0b9` now fails the
+  assert; the unmodified workspace passes). **What you give up:** a
+  pre-version is permanent on PyPI and a half-failed eight-artifact upload is
+  a half-release; the remedy for either is the next beta number, never a
+  retry of the same one.
+- **`install.sh` / `install.ps1` run `uv tool update-shell` themselves when
+  `aelix` is not on PATH after the install**, instead of printing the command
+  and hoping. It appends uv's tool bin to the shell rc (idempotent) and the
+  installer then says to open a new terminal; the current shell's PATH is
+  still not changed, and a failure of `update-shell` falls back to the old
+  by-hand hint.
+
 - **A command that backgrounds a server now comes back when the command does.**
   `npm run dev &`, `nohup … &`, anything that exits 0 while a helper keeps the
   pipe: the bash tool used to read that pipe until the last holder closed it, so
