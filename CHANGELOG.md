@@ -620,6 +620,35 @@ and `.../releases/tag/vX` link would 404. Add them with the first pushed tag.
   there is given no console window of its own. See ADR-0238 and
   [#227](https://github.com/handochan/aelix-ai/issues/227).
 
+- **A spawn that fails before your command starts is now reported as a failed
+  command, not as a broken tool.** The bash tool caught exactly two of the ways
+  `Popen` fails — the shell is missing, or a path component is not a directory.
+  A `$SHELL` (or a `shell_path` setting) naming a file that *exists* but is not
+  a runnable program took neither branch and escaped, and so did a working
+  directory you cannot enter. Instead of the `[bash] failed to spawn` line and
+  exit 127 the tool already had, a `!command` typed into the **TUI** took the
+  whole session down with it — that loop catches only end-of-input — the CLI
+  REPL had nothing on the path either, and a tool call got `Tool 'bash' raised:
+  …` with no exit code to reason about. Measured on macOS through the tool: a
+  shell with the exec bit and no valid image escaped as `[Errno 8] Exec format
+  error`, one with the bit cleared as `[Errno 13] Permission denied`, and an
+  unreadable `cwd` as `[Errno 13]` — while a *missing* `cwd` already returned
+  127, so the two now agree. On Windows this is the common case rather than the
+  exotic one: a non-PE file on `%COMSPEC%` or `$SHELL` arrives as `[WinError
+  193] %1 is not a valid Win32 application`, which CPython maps to an errno
+  with no exception class of its own. All seven errnos now report exit 127,
+  through the same allowlist a `models.json` / `auth.json` `!command` has used
+  since #227.
+  **What you give up:** a spawn failure that is *not* about the shell or the
+  directory — the host is out of descriptors or memory, or the error carries no
+  errno at all — still raises rather than claiming exit 127, because "127"
+  reads to a model as *command not found* and it would keep retrying against a
+  machine that cannot spawn anything. One seam: on Windows, CPython folds every
+  error code its table does not name into `EINVAL`, which *is* in the
+  allowlist, so a rarity like "this program needs elevation" is reported as
+  exit 127 there. See ADR-0238 and
+  [#243](https://github.com/handochan/aelix-ai/issues/243).
+
 - **`auth.json`'s cached `!command` values are trimmed the way `models.json`'s
   uncached ones always were** (`.strip()`), on every platform: surrounding
   whitespace, a leading newline and a trailing `\r` or tab no longer survive

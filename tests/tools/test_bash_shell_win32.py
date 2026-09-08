@@ -13,6 +13,7 @@ inside the very PATH probe these tests exist to cover.
 from __future__ import annotations
 
 import errno
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -293,14 +294,12 @@ async def test_spawn_argv_uses_the_resolved_flag_and_hands_cmd_the_command_verba
     def fake_popen(argv, **_kwargs):
         recorded.append(list(argv))
         # Short-circuit into the tool's existing spawn-failure branch so the
-        # test needs no fake process object. The errno is load-bearing: #243
-        # (same release) classifies a spawn failure BY errno, and an OSError
-        # carrying none deliberately escapes the tool
-        # (``test_a_spawn_error_with_no_errno_still_escapes``). A real
-        # ``Popen`` miss always carries ENOENT, so a fake without one is not
-        # the failure this case means to stage — measured: without it these two
-        # pass alone and fail once #243 is in the tree.
-        raise FileNotFoundError(errno.ENOENT, "No such file or directory", argv[0])
+        # test needs no fake process object. THREE-argument, because since #243
+        # that branch is chosen by ERRNO: the one-argument
+        # ``FileNotFoundError(argv[0])`` this used to raise has ``errno None``
+        # (measured) and now re-raises, which is the real spawn's behaviour
+        # nowhere — a missing image always carries ENOENT.
+        raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), argv[0])
 
     monkeypatch.setattr(bash_mod, "_resolve_shell", lambda *_a, **_k: ShellConfig("cmd.exe", "/c"))
     monkeypatch.setattr(subprocess, "Popen", fake_popen)

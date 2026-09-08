@@ -25,7 +25,6 @@ the env-var NAME as the API key.
 from __future__ import annotations
 
 import contextlib
-import errno
 import os
 import signal
 import subprocess
@@ -44,6 +43,7 @@ from aelix_ai.utils._process_tree import (
 )
 from aelix_ai.utils._shell import (
     CMD_NAMES,
+    NOT_A_RUNNABLE_SHELL,
     POWERSHELL_NAMES,
     ShellConfig,
     shell_basename,
@@ -207,33 +207,6 @@ _CMD_HARDENING = ("/d", "/s")
 #: (measured: ABSENT on darwin) and the win32 arm of these tests is read there.
 CREATE_NO_WINDOW = 0x0800_0000
 
-#: Spawn failures that mean "this candidate is not a runnable shell", so the
-#: chain moves on. Classified by ERRNO and not by exception class: CPython maps
-#: a win32 spawn failure to an errno through ``PC/errmap.h`` BEFORE ``OSError``'s
-#: subclass table is consulted, and that table has no ``ENOEXEC`` and no
-#: ``EINVAL`` entry — so a ``sh.cmd`` / ``pwsh.bat`` / non-PE ``$SHELL``
-#: (``ERROR_BAD_EXE_FORMAT`` 193, with 11 and 188..202) and everything falling
-#: to ``errmap.h``'s ``default: return EINVAL`` arrive as a BARE ``OSError``.
-#: Catching by class would abort the chain before the ``cmd.exe`` floor and
-#: leave ``!command`` exactly as dead as #227 found it.
-#:
-#: ``EMFILE``/``ENOMEM``/``EBADF`` are deliberately outside it: they are
-#: process-resource failures the next candidate cannot fix, so they keep
-#: today's ``None`` after one spawn. A ``winerror`` allowlist was rejected —
-#: ``exc.winerror`` fails the host pyright leg while ``exc.errno`` is clean on
-#: both. ``ELOOP`` is inert on win32 and correct on POSIX.
-_NOT_A_RUNNABLE_SHELL = frozenset(
-    {
-        errno.ENOENT,
-        errno.ENOTDIR,
-        errno.EACCES,
-        errno.EPERM,
-        errno.ENOEXEC,
-        errno.ELOOP,
-        errno.EINVAL,
-    }
-)
-
 
 def _shell_argv(shell: ShellConfig, cmd: str) -> list[str] | str:
     """How THIS caller invokes one resolved shell.
@@ -379,8 +352,10 @@ def _run_shell_command(
     exactly one candidate and spawns byte-identically, while win32 falls through
     to the next candidate when this one is missing, not executable, or **not a
     loadable program image** — classified by ERRNO, never by exception class,
-    for the reason :data:`_NOT_A_RUNNABLE_SHELL` gives. The CONSTRUCTOR is what
-    raises, so no command ran (POSIX reaps the failed fork inside
+    for the reason :data:`aelix_ai.utils._shell.NOT_A_RUNNABLE_SHELL` gives
+    (spelled fully qualified: #243 moved that set down to the primitive both
+    spawn sites now share, so an unqualified role would dangle here). The
+    CONSTRUCTOR is what raises, so no command ran (POSIX reaps the failed fork inside
     ``Popen.__init__``; win32's ``CreateProcess`` fails atomically) and falling
     through cannot double-run anything. A malformed argv (``ValueError``) and
     every other spawn error keep today's ``None`` after one spawn, and a chain
@@ -466,7 +441,7 @@ def _run_shell_command(
         except ValueError:
             return None  # a malformed argv is not a verdict on the shell
         except OSError as exc:
-            if exc.errno in _NOT_A_RUNNABLE_SHELL:
+            if exc.errno in NOT_A_RUNNABLE_SHELL:
                 continue  # not a runnable shell — try the next candidate
             return None  # today's answer for every other spawn error
         if failure is not None:

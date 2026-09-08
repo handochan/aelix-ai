@@ -19,6 +19,9 @@ one machine gets one shell answer for both callers. The ``sh`` step is opt-in
 #227 every Windows box where one worked at all had one, while the bash tool must
 not take it: ``sh`` is classifiable, and taking it there would flip AUTO mode's
 dialect on every MSYS box, which is ADR-0237/#204's decision rather than #227's.
+Since #243 the module owns not only WHICH SHELLS a machine has but also WHICH
+SPAWN FAILURES MEAN "not a shell" (:data:`NOT_A_RUNNABLE_SHELL`) — the same
+Windows question, and by then it had the same two callers.
 
 HOW A FAMILY IS ASKED FOR UTF-8 OUTPUT is here too (:func:`utf8_output_preamble`,
 #239), for the reason ``command_flag_for`` is: it is a fact about the family and
@@ -41,6 +44,7 @@ user's interactive shell and must keep their profile, so it adds none of that.
 
 from __future__ import annotations
 
+import errno
 import re
 import shutil
 from collections.abc import Mapping
@@ -57,6 +61,52 @@ POWERSHELL_COMMAND_FLAG = "-Command"
 
 POWERSHELL_NAMES = frozenset({"pwsh", "powershell"})
 CMD_NAMES = frozenset({"cmd", "command"})
+
+#: Spawn failures that mean "this candidate is not a runnable shell".
+#: Classified by ERRNO and not by exception class: CPython maps a win32 spawn
+#: failure to an errno through ``PC/errmap.h`` BEFORE ``OSError``'s subclass
+#: table is consulted, and that table has no ``ENOEXEC`` and no ``EINVAL``
+#: entry — so a ``sh.cmd`` / ``pwsh.bat`` / non-PE ``$SHELL``
+#: (``ERROR_BAD_EXE_FORMAT`` 193, with 11 and 188..202) and everything falling
+#: to ``errmap.h``'s ``default: return EINVAL`` arrive as a BARE ``OSError``.
+#: Catching by class would abort ``_resolve_config``'s chain before the
+#: ``cmd.exe`` floor and leave ``!command`` exactly as dead as #227 found it.
+#:
+#: TWO READINGS, ONE SET. ``_resolve_config`` walks a chain, so a member there
+#: means "try the next candidate"; ``tools/bash.py`` (#243) resolves exactly one
+#: shell, so there it means "there is no next candidate — report the
+#: ``[bash] failed to spawn`` line and exit 127". Same predicate, different
+#: terminal action; do not "fix" one site into the other, and do not fork the
+#: set by subtraction at either — #227 measured that dropping five members from
+#: a copy was invisible to the whole suite (10268 passed).
+#:
+#: THE COST OF ``EINVAL``, stated rather than avoided: it is where ``errmap.h``'s
+#: ``default:`` arm sends every winerror the table does not name, so at the bash
+#: site a host failure like ``ERROR_ELEVATION_REQUIRED`` (740) or
+#: ``ERROR_NO_SYSTEM_RESOURCES`` (1450) is reported as exit 127 on win32.
+#: Accepted, because the alternative is worse: an escape from that site reaches
+#: ``tui/shell.py``'s ``_input_loop``, which catches only ``EOFError``, so it
+#: takes the whole session down.
+#:
+#: ``EMFILE``/``ENOMEM``/``EBADF`` are deliberately outside it at BOTH sites, and
+#: so is an ``OSError`` carrying no errno at all (``None not in
+#: frozenset[int]``): they are process-resource failures the next candidate
+#: cannot fix and no verdict on the shell, so a ``!command`` keeps today's
+#: ``None`` after one spawn and the bash tool re-raises rather than claiming a
+#: 127 a model would read as "command not found". A ``winerror`` allowlist was
+#: rejected — ``exc.winerror`` fails the host pyright leg while ``exc.errno`` is
+#: clean on both. ``ELOOP`` is inert on win32 and correct on POSIX.
+NOT_A_RUNNABLE_SHELL = frozenset(
+    {
+        errno.ENOENT,
+        errno.ENOTDIR,
+        errno.EACCES,
+        errno.EPERM,
+        errno.ENOEXEC,
+        errno.ELOOP,
+        errno.EINVAL,
+    }
+)
 
 
 # A trailing version on a shell's filename: ``bash-5.2``, ``zsh-5.9``,
