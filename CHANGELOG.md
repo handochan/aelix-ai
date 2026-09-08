@@ -127,6 +127,30 @@ and `.../releases/tag/vX` link would 404. Add them with the first pushed tag.
   What the picker sends to the setter is unchanged: the level name, never the
   label. See [#251](https://github.com/handochan/aelix-ai/issues/251) and
   ADR-0155.
+- **A `models.json` `!command` credential helper now runs once per registry
+  load, not once per request.** `get_api_key_and_headers` is the harness's
+  per-request auth callback, and it re-forked a shell for the provider's
+  `apiKey` and for every `!command` header value on every single request —
+  measured on darwin, a provider with a `!command` key plus one `!command`
+  header spent 8.44 ms of the event loop per call, running the *same* two
+  commands each time. On a box that lands on PowerShell that is one shell start
+  per distinct `!command`: 431.8 ms each, measured with pwsh 7.6.5 **on macOS**
+  — Windows PowerShell 5.1, which is what a stock box actually resolves, is
+  unmeasured and typically slower. A turn is one request plus one more per tool
+  call, so that cost was paid over and over, in a synchronous call inside an
+  async callback, with the TUI unable to repaint. The resolved value is now kept
+  on the registry that resolved it; a repeat is a dict lookup.
+  **What you give up:** a credential your helper mints is read once and reused
+  until the registry reloads, so one rotated underneath a running session keeps
+  going out until then. Any turn that ENDS IN AN ERROR drops it — in the TUI and
+  in `-p` alike — so a rejected credential costs one bad turn rather than a
+  session, and in the TUI `/reload`, `/login` and a restart drop it too. A
+  headless run has none of those three, so a helper minting a short-lived token
+  wants a lifetime longer than the run. Nothing is kept for a command that fails
+  or prints nothing, so a helper that starts working is picked up on the next
+  request; an `apiKey` naming an environment variable is still read every time,
+  it was never the cost. See
+  [#240](https://github.com/handochan/aelix-ai/issues/240) and ADR-0140.
 
 - **A command that backgrounds a server now comes back when the command does.**
   `npm run dev &`, `nohup … &`, anything that exits 0 while a helper keeps the
@@ -697,8 +721,8 @@ and `.../releases/tag/vX` link would 404. Add them with the first pushed tag.
   there is given no console window of its own. See ADR-0238 and
   [#227](https://github.com/handochan/aelix-ai/issues/227).
 
-- **`auth.json`'s cached `!command` values are trimmed the way `models.json`'s
-  uncached ones always were** (`.strip()`), on every platform: surrounding
+- **`auth.json`'s cached `!command` values are trimmed the way
+  `resolve_config_value_uncached` always did** (`.strip()`), on every platform: surrounding
   whitespace, a leading newline and a trailing `\r` or tab no longer survive
   into the key. Before this, a command that ended in CRLF left a bare carriage
   return inside an `Authorization` header.

@@ -27,7 +27,7 @@ implementable at all.
 
 WHY THE FIELD MAP IS SNAKE_CASE (ADR-0198). ``--mode json`` emits raw kernel
 :class:`~aelix_agent_core.types.AgentEvent` dataclasses through
-``dataclasses.asdict`` (``modes/print_mode.py:74-83`` → ``rpc/rpc_mode.py``),
+``dataclasses.asdict`` (``modes/print_mode.py:76-85`` → ``rpc/rpc_mode.py``),
 so the wire names are the Python attribute names: ``stop_reason``,
 ``error_message``, ``tool_name``, ``total_tokens``. A line-for-line port of
 pi's camelCase parser reads ``None`` for every field, and every failure then
@@ -590,7 +590,7 @@ def reduce_line(state: _StreamState, line: str) -> _StreamState:
 
     1. The FIRST line is the session-metadata header — a bare
        ``{"id": ..., "created_at": ...}`` object with **no** ``type`` key
-       (``modes/print_mode.py:236-248``). It is emitted best-effort inside its
+       (``modes/print_mode.py:265-277``). It is emitted best-effort inside its
        own ``try/except``, so neither its presence nor its absence may be
        relied on. Hence ``event.get("type")``, never ``event["type"]``.
     2. Anything in the child can ``print()`` straight into the same stdout —

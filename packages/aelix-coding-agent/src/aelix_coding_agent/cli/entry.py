@@ -3153,6 +3153,11 @@ async def _async_main(argv: list[str]) -> int:
             messages=parsed.messages,
             initial_message=initial.initial_message,
             initial_images=initial.initial_images,
+            # #240 — the same registry the auth callback resolves through, so a
+            # headless turn that ended in an error can drop the ``!command``
+            # credential it may have failed on. The TUI gets this through
+            # ``CommandContext``; print mode has no such object.
+            model_registry=model_registry,
         )
     finally:
         # run_print_mode already disposes the runtime, but we also dispose

@@ -54,6 +54,8 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from aelix_ai.messages import AssistantMessage, TextContent
 
+from aelix_coding_agent.model_registry import clear_command_value_cache
+
 if TYPE_CHECKING:
     from aelix_agent_core.runtime.agent_session_runtime import (
         AgentSessionRuntime,
@@ -117,6 +119,7 @@ async def run_print_mode(
     messages: list[str],
     initial_message: str | None,
     initial_images: list[Any] | None = None,
+    model_registry: Any = None,
 ) -> int:
     """Pi parity: ``runPrintMode`` (``modes/print-mode.ts``).
 
@@ -124,9 +127,35 @@ async def run_print_mode(
     ``stop_reason`` of ``"error"`` / ``"aborted"`` OR any exception;
     ``128 + sig`` — 143 for SIGTERM, 149 for SIGBREAK — when a signal
     handler installed by step 1 ran, which OVERRIDES the 1, #220).
+
+    ``model_registry`` is Aelix-only (#240) and optional: a headless run has no
+    ``/reload`` and no ``/login``, so a turn that ended in an error is the ONLY
+    in-run seam at which a ``models.json`` ``!command`` credential — resolved
+    once per registry load since #240 — can be re-minted. Passing :data:`None`
+    (every test that predates #240) simply skips that recovery. See
+    :func:`~aelix_coding_agent.model_registry.clear_command_value_cache`.
     """
 
     loop = asyncio.get_running_loop()
+
+    def _last_turn_errored() -> bool:
+        """Did the turn that just returned end with ``stop_reason == "error"``?
+
+        Read off the harness state rather than from an exception, because
+        ``harness.prompt`` does not raise for a provider failure: every shipping
+        adapter converts one into an ``AssistantErrorEvent`` and the agent loop
+        returns on it. This is the same terminal message step 8 already reads to
+        pick the exit code — the ``"aborted"`` half of that check is left out on
+        purpose, since an abort is a signal or a user, not a credential.
+        """
+
+        try:
+            for msg in reversed(list(runtime_host.harness.state.messages)):
+                if isinstance(msg, AssistantMessage):
+                    return msg.stop_reason == "error"
+        except Exception:  # noqa: BLE001 — a stub harness need not carry state
+            return False
+        return False
 
     # === Pi step 1 — signal handlers (POSIX: SIGTERM/SIGHUP; win32: SIGBREAK) ==
     signals_installed: list[int] = []
@@ -256,6 +285,17 @@ async def run_print_mode(
                 initial_message,
                 images=initial_images,
             )
+            # #240 — the headless twin of the TUI's end-of-turn recovery. A
+            # ``-p`` run is ONE user turn but many API requests over unbounded
+            # wall time, and the canonical reason to use a credential helper is
+            # a short-lived token (``!gcloud auth print-access-token``, ~1h).
+            # Before #240 every request re-minted it; now it is minted once per
+            # registry load, so without this a run that outlives the token 401s
+            # on every remaining request with no way back. There is no
+            # ``/reload`` and no ``/login`` here — this and process exit are the
+            # only seams.
+            if _last_turn_errored():
+                clear_command_value_cache(model_registry)
 
         # === Pi step 7 — residual messages loop ==============================
         for message in messages:
@@ -266,6 +306,10 @@ async def run_print_mode(
                 # surfaces the EPIPE now.
                 break
             await runtime_host.harness.prompt(message)
+            # #240 — same recovery per residual message, so a run of several
+            # messages does not spend the rest of them on a rejected token.
+            if _last_turn_errored():
+                clear_command_value_cache(model_registry)
 
         # Issue #57: a consumer that vanished mid-run (JSON mode) was recorded
         # by ``_emit``; surface it now so the process exits 141 instead of 0.

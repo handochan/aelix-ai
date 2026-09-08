@@ -7,7 +7,9 @@ indirection forms:
   command — ``sh -c <command>`` on POSIX, and on win32 the first shell
   of the resolved chain that spawns (#227); the trimmed stdout becomes
   the resolved value. Per-command results are cached so repeated reads
-  do not re-fork the shell. Pi runs it under a POSIX shell if one is
+  do not re-fork the shell; the ``models.json`` family below takes a
+  SECOND, opt-in cache with its own key space (#240). Pi runs it under
+  a POSIX shell if one is
   there and the native shell otherwise, which is the same shape; the
   divergence is that Aelix reaches PowerShell before ``cmd.exe`` (its
   own #104 order) and hardens both (ADR-0235 asks for no ADR, but a
@@ -634,14 +636,25 @@ def resolve_config_value(
 # :func:`resolve_config_value` (the Sprint 6e auth-storage helper) in two
 # Pi-faithful ways:
 #
-# 1. **Uncached + non-raising shell exec.** Pi's ``executeWithDefaultShell``
-#    catches every error (incl. non-zero exit) and returns ``undefined``;
-#    the registry's ``getApiKeyAndHeaders`` wraps the whole resolution in a
-#    try/catch and reports ``{ok: false, error}``. The Sprint 6e helper
-#    instead used ``check=True`` (raises ``CalledProcessError``) and a
-#    per-instance cache — correct for auth.json but NOT the registry path,
-#    which must surface a clean "Failed to resolve …" message. So the
-#    command branch here returns :data:`None` on any failure/empty output.
+# 1. **Non-raising shell exec, over an uncached primitive.** Pi's
+#    ``executeWithDefaultShell`` catches every error (incl. non-zero exit)
+#    and returns ``undefined``; the registry's ``getApiKeyAndHeaders`` wraps
+#    the whole resolution in a try/catch and reports ``{ok: false, error}``.
+#    The Sprint 6e helper instead used ``check=True`` (raises
+#    ``CalledProcessError``), and that raise-vs-``None`` contract is what
+#    Sprint 6e rejected for this path, which must surface a clean "Failed to
+#    resolve …" message. So the command branch here returns :data:`None` on
+#    any failure/empty output. What Sprint 6e ALSO rejected — a per-instance
+#    cache — is now opt-in on the strict wrapper only (#240): the primitives
+#    (:func:`_execute_command_uncached`, :func:`resolve_config_value_uncached`)
+#    stay uncached, successes only are stored, and the key is the FULL
+#    ``"!cmd"`` string where the Sprint 6e helper keys on ``value[1:]``. That
+#    is a different key for every command a user would write, but NOT a
+#    disjointness proof — ``value[1:]`` ranges over every string, so an
+#    auth-family ``"!!cmd"`` lands on the strict key ``"!cmd"``. **Do not hand
+#    one dict to both families**: nothing in the shipped wiring does (the
+#    registry builds its own), and T5b pins what would happen if it did —
+#    #242's cached ``""`` read back as a credential.
 # 2. **Empty env → literal.** Pi uses ``process.env[config] || config``
 #    (empty/unset env var falls back to the literal). The Sprint 6e helper
 #    used ``os.environ.get(value, value)`` which returns ``""`` for an env
@@ -690,13 +703,28 @@ def resolve_config_value_uncached(
     return os.environ.get(value) or value
 
 
-def resolve_config_value_or_throw(value: str, description: str) -> str:
+def resolve_config_value_or_throw(
+    value: str, description: str, *, cache: dict[str, str] | None = None
+) -> str:
     """Pi parity: ``resolve-config-value.ts::resolveConfigValueOrThrow``.
 
-    Resolves ``value`` uncached. Raises :class:`ValueError` (Pi throws an
-    ``Error``) with a Pi-verbatim message when a ``!command`` produced no
-    output, or a generic message otherwise. The env/literal branch always
-    resolves, so only the command branch can raise here.
+    Resolves ``value`` through the uncached primitive, optionally memoising a
+    successful ``!command`` in ``cache`` (#240). Pi's ``resolveConfigValueOrThrow``
+    is uncached at HEAD, so this is a deliberate divergence (ADR-0235). Raises
+    :class:`ValueError` (Pi throws an ``Error``) with a Pi-verbatim message when
+    a ``!command`` produced no output, or a generic message otherwise. The
+    env/literal branch always resolves, so only the command branch can raise
+    here.
+
+    ``cache`` is keyword-only, so every existing call site keeps its signature,
+    and opt-in, so there is no process-global credential store. Its owner is
+    :class:`ModelRegistry`, which builds its own dict and clears it on every
+    load; nothing here evicts. Do not share that dict with
+    :func:`resolve_config_value` — see the comment below the docstring.
+    Only a ``!command`` that SUCCEEDED with non-empty output is stored — a
+    failure, a timeout, a terminal stop (#226) and empty output all raise below
+    and leave the dict untouched, so a helper that starts working is picked up
+    on the next request and #242's ``""`` hole is not widened.
 
     When the command was STOPPED by the terminal (#226) the Pi-verbatim message
     stays as the PREFIX and the named cause is appended after an em dash. With
@@ -705,9 +733,26 @@ def resolve_config_value_or_throw(value: str, description: str) -> str:
     with no dangling separator.
     """
 
+    # The key is the FULL ``value``, leading ``!`` included — deliberately
+    # unlike :func:`resolve_config_value`, which keys on ``value[1:]``. The two
+    # families must not SHARE a dict: they disagree about empty output (that
+    # one stores ``""``, this one must not) and about raising, and a refactor
+    # that unified the attribute names must not silently unify these. The
+    # differing key is what keeps a shared dict harmless for ordinary commands,
+    # not a guarantee — ``value[1:]`` reaches every string, so an auth-family
+    # ``"!!cmd"`` writes the strict key ``"!cmd"`` (measured in the #240 review,
+    # pinned by T5b). The separation that holds is structural: each owner builds
+    # its own dict.
+    if cache is not None and value.startswith("!"):
+        hit = cache.get(value)
+        if hit is not None:
+            return hit
+
     failure = _Failure()
     resolved = resolve_config_value_uncached(value, failure=failure)
     if resolved is not None:
+        if cache is not None and value.startswith("!"):
+            cache[value] = resolved
         return resolved
     if value.startswith("!"):
         message = f"Failed to resolve {description} from shell command: {value[1:]}"
@@ -718,7 +763,10 @@ def resolve_config_value_or_throw(value: str, description: str) -> str:
 
 
 def resolve_headers_or_throw(
-    headers: dict[str, str] | None, description: str
+    headers: dict[str, str] | None,
+    description: str,
+    *,
+    cache: dict[str, str] | None = None,
 ) -> dict[str, str] | None:
     """Pi parity: ``resolve-config-value.ts::resolveHeadersOrThrow``.
 
@@ -726,6 +774,11 @@ def resolve_headers_or_throw(
     (so a header may itself be ``!cmd`` or an env-var name). Returns the
     resolved mapping, or :data:`None` when ``headers`` is falsy or resolves
     empty.
+
+    ``cache`` is threaded straight through (#240): headers are two of the three
+    per-request resolution sites, so leaving them out would have left most of
+    the cost in place. Two header names that share one ``!command`` therefore
+    fork once.
     """
 
     if not headers:
@@ -733,7 +786,7 @@ def resolve_headers_or_throw(
     resolved: dict[str, str] = {}
     for key, value in headers.items():
         resolved[key] = resolve_config_value_or_throw(
-            value, f'{description} header "{key}"'
+            value, f'{description} header "{key}"', cache=cache
         )
     return resolved or None
 
