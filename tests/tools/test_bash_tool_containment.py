@@ -869,7 +869,24 @@ async def test_a_successful_root_returns_without_waiting_for_its_holders_tail(
 # === 8a: a holder that never falls idle, and the cap ========================
 
 
-@pytest.mark.parametrize("timeout", [None, 1.0], ids=["no-deadline", "deadline-1s"])
+#: The deadline arm's ``timeout``. 1.0 s on POSIX, where the root exits in ~10 ms
+#: and the deadline term is the only thing that can end the drain before the
+#: 2.0 s cap. 2.0 s on win32: the root is a pwsh startup (0.5-0.7 s on the
+#: runner, #222 handoff) plus a python child, and under load it did not exit
+#: inside 1.0 s at all — ``main`` run 34171328513 (py3.12) timed the ROOT out
+#: (``exit_code=None, timed_out=True``) where the same leg had passed twice
+#: before. The term still bites at 2.0 s (it needs ``exit < timeout < exit +
+#: DRAIN_CAP_SECONDS``, and the root exits well inside 2 s there); the mutant
+#: that drops the term returns at ``exit + 2.0`` instead, which on POSIX is
+#: 2.08 s against 1.00 s and on win32 lands within the sanity ceiling below —
+#: so the DISCRIMINATION is the POSIX arm's, and the win32 arm pins the floor
+#: and the root's own rc 0.
+_DEADLINE_ARM_SECONDS = 2.0 if sys.platform == "win32" else 1.0
+
+
+@pytest.mark.parametrize(
+    "timeout", [None, _DEADLINE_ARM_SECONDS], ids=["no-deadline", "deadline-arm"]
+)
 async def test_a_holder_that_never_falls_idle_hits_the_drain_cap(
     tmp_path: Path, strays: list[int], timeout: float | None
 ) -> None:
@@ -945,9 +962,17 @@ async def test_a_holder_that_never_falls_idle_hits_the_drain_cap(
     if timeout is None:
         assert DRAIN_CAP_SECONDS <= elapsed <= _bound(DRAIN_CAP_SECONDS)
     else:
-        assert timeout <= elapsed < DRAIN_CAP_SECONDS, (
-            f"elapsed={elapsed:.3f}s reached the flat cap — the caller's own deadline of "
-            f"{timeout}s did not bound the exit drain"
+        # POSIX: the deadline (1.0 s) is below the flat cap, so reaching the cap
+        # means the term is gone. win32: the deadline (2.0 s) equals the cap
+        # measured from a root that exits at ~0.5 s, so the ceiling there is a
+        # sanity bound (deadline + one grace + the runner's slack), not the
+        # discriminator — see :data:`_DEADLINE_ARM_SECONDS`.
+        ceiling = (
+            timeout + KILL_DRAIN_SECONDS + SLACK if sys.platform == "win32" else DRAIN_CAP_SECONDS
+        )
+        assert timeout <= elapsed < ceiling, (
+            f"elapsed={elapsed:.3f}s — the caller's own deadline of {timeout}s did not bound "
+            f"the exit drain (ceiling {ceiling:.1f}s)"
         )
     ticks = b"".join(chunks).count(b"tick\n")
     assert 0 < ticks < 200, (
