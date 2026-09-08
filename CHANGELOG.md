@@ -20,6 +20,35 @@ and `.../releases/tag/vX` link would 404. Add them with the first pushed tag.
 
 ### Changed
 
+- **A tool card now shows 5 lines of output, not 12.** A `read` of a 40-line
+  file used to spend 14 rows of scrollback on an 80-column terminal — one
+  header, twelve body lines and the elision footer — for output the model had
+  already summarised; it now spends 7. The footer still carries the whole body:
+  `… (+35 more lines · /expand 1)`, and `/expand 1` prints it. The 40-line cap
+  on **error and diff** cards is deliberately untouched: a Python traceback's
+  diagnostic tail sits at the bottom, so head-truncation eats exactly the line
+  you need (ADR-0112).
+  **What you give up:** any ordinary result between 6 and 12 lines used to
+  render whole and now ends in `… (+N more lines · /expand N)`. A 12-line `bash`
+  result goes from 13 screen rows and no footer to 7 rows plus a `+7`. At the
+  bottom of that range you pay without saving anything — a 6-line result is 7
+  rows either way, and the change buys you a `(+1 more lines · /expand 1)`
+  footer in place of its last line; the saving only starts at 7 lines. A
+  **successful** `agent` card whose result carries no extra note loses its
+  `[agent … · yolo · …]` footer to the cap once the child's summary runs past 3
+  lines (it already did past 10); a failed delegation renders on the 40-line
+  error path and keeps it far longer. `/expand N` still prints it either way.
+  And because every result over 5 lines now takes an `/expand` id instead of
+  every result over 12, the 100-slot store turns over faster: in a long session
+  an older `/expand N` expires sooner than it used to (measured at width 80:
+  one 100-line `read` followed by 100 six-line `bash` results keeps `/expand 1`
+  at cap 12 — 1 id minted — and loses it at cap 5 — 101 minted, 100 retained).
+  **This reaches fresh installs and anyone whose `settings.json` has no
+  `toolCardMaxLines` key** — a value you saved through `/settings` is kept
+  exactly as it was. The row still spans 3-40 and still applies to the next card
+  without a restart. See
+  [#247](https://github.com/handochan/aelix-ai/issues/247) and ADR-0112.
+
 - **A command that backgrounds a server now comes back when the command does.**
   `npm run dev &`, `nohup … &`, anything that exits 0 while a helper keeps the
   pipe: the bash tool used to read that pipe until the last holder closed it, so

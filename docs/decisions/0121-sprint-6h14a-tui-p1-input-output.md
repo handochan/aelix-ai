@@ -70,9 +70,10 @@ types uninterrupted.
 
 ### 3. `/expand N` (`tui/render.py` + `tui/commands.py`)
 
-ADR-0112 truncates tool-result cards (12 lines, 40 for errors/diffs). The full
-body was discarded. Now a truncated card retains its full text under a sequential
-id and surfaces it on the elision footer (`… (+K more lines · /expand N)`).
+ADR-0112 truncates tool-result cards (5 lines by default since #247, 40 for
+errors/diffs). The full body was discarded. Now a truncated card retains its
+full text under a sequential id and surfaces it on the elision footer
+(`… (+K more lines · /expand N)`).
 `/expand N` re-prints the full body in a panel. The store is bounded
 (`_expand_max=100`, oldest evicted) so a long session can't grow it without limit.
 Only truncated cards get an id (that's when `/expand` is useful); non-truncated
@@ -101,7 +102,8 @@ change shipped for this item; it is verified pi-parity.
 - Protected core (`packages/aelix-agent-core`, `docs/contracts`) byte-unchanged.
 - **Live-verified (PTY, gpt-4o-mini):** `@RE` → `README.md` completion dropdown;
   `foo\`+Enter → newline (input grows to 2 rows, not submitted); a `read` of a
-  40-line file → 12-line card + `… (+28 more lines · /expand 1)`; `/expand 1`
+  40-line file → 12-line card + `… (+28 more lines · /expand 1)` (a 12-line card
+  as shipped here; 5 since #247); `/expand 1`
   reprinted the full 40 lines in a panel; footer context meter `◔ 0% · 0/128K`;
   `/help` lists `/expand`.
 

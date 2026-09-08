@@ -34,6 +34,7 @@ from aelix_ai.settings.storage import (
 )
 from aelix_ai.settings.types import (
     DEFAULT_THINKING_LEVEL,
+    DEFAULT_TOOL_CARD_MAX_LINES,
     BranchSummarySettings,
     CompactionSettings,
     DoubleEscapeAction,
@@ -60,6 +61,7 @@ from aelix_ai.settings.types import (
 
 __all__ = [
     "DEFAULT_THINKING_LEVEL",
+    "DEFAULT_TOOL_CARD_MAX_LINES",
     "BranchSummarySettings",
     "CompactionSettings",
     "DoubleEscapeAction",

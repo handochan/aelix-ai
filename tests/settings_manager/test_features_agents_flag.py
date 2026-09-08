@@ -11,7 +11,7 @@ incomplete, which is why each one is pinned here rather than left to review:
    test: project settings are loaded ungated, so a merged read would let any
    cloned repo grant itself the right to spawn a second agent.
 4. The key survives the JSON boundary. ``_json_dict_to_settings``
-   (``settings_manager.py:107``) drops an unregistered key with no error, so
+   (``settings_manager.py:108``) drops an unregistered key with no error, so
    omitting any one of the five ``types.py`` tables produces a flag that reads
    ``False`` forever with a perfectly valid-looking settings file on disk.
 5. The ``/settings`` row is LIVE — present in ``build_settings_rows`` AND in
@@ -77,7 +77,7 @@ async def test_roundtrip_through_disk(
 ) -> None:
     manager.set_features_agents(True)
     assert manager.get_features_agents() is True
-    # ``_save`` only ENQUEUES (settings_manager.py:849-858) — without the flush the
+    # ``_save`` only ENQUEUES (settings_manager.py:850-859) — without the flush the
     # file is still empty and this test would pass vacuously on the in-memory
     # value alone.
     await manager.flush()
@@ -186,7 +186,7 @@ def test_unknown_key_is_not_dropped(
 ) -> None:
     """``features`` must be registered in every ``types.py`` boundary table.
 
-    ``_json_dict_to_settings`` (``settings_manager.py:107``) skips any JSON key
+    ``_json_dict_to_settings`` (``settings_manager.py:108``) skips any JSON key
     missing from ``SETTINGS_JSON_TO_PY``, and ``_json_dict_to_nested`` skips any
     nested key missing from ``NESTED_JSON_TO_PY`` — both silently. Without
     ``SETTINGS_NESTED_CLASSES`` the value would hydrate as a raw ``dict`` and

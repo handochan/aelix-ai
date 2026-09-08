@@ -232,11 +232,13 @@ async def test_run_tui_sizes_the_event_renderer_from_the_live_terminal() -> None
 
 
 # COVERAGE BOUNDARY, stated rather than implied: these cover the STARTUP SEED
-# (settings -> run_tui -> the shared cell). The in-session push in
-# ``_apply_live_setting`` is a closure inside ``run_tui`` reachable only by
-# driving the /settings picker, and its sibling ``tool_card_max_lines`` has the
-# same untested branch. Removing the seed makes the first test below fail
-# (measured: ``116 <= 70``); removing only the live push would not.
+# (settings -> run_tui -> the shared cell), and since #247 so does the last test
+# in this file for the sibling ``tool_card_max_lines``. What stays uncovered for
+# BOTH is the in-session push in ``_apply_live_setting`` — a closure inside
+# ``run_tui`` reachable only by driving the /settings picker. Removing the width
+# seed makes the first test below fail (measured: ``116 <= 70``); removing the
+# card-cap seed (``shell.py`` (a2)) makes the last test fail (measured:
+# ``5 == 20``); removing only either live push would not.
 
 
 def _manager_with_ceiling(value: int | None) -> Any:
@@ -284,3 +286,82 @@ async def test_an_unset_ceiling_uses_the_built_in_default() -> None:
     unset = _first_paragraph_row_width(await _render_paragraph_at(200, manager))
     plain = _first_paragraph_row_width(await _render_paragraph_at(200))
     assert unset == plain
+
+
+# === the tool-card cap seed (#247) ==========================================
+
+
+async def test_run_tui_seeds_the_card_cap_from_persisted_settings() -> None:
+    """A persisted ``toolCardMaxLines`` has to reach the renderer at startup.
+
+    Built on the ``_SpyRenderer`` pattern above rather than on
+    ``_render_paragraph_at``: that helper returns a pyte ``list[str]`` with no
+    handle on the renderer, and a 20-line card cannot be told from a 5-line one
+    on a 24-row screen. The spy keeps the INSTANCE, not just the kwargs, because
+    ``run_tui`` seeds the field after ``__init__`` returns.
+
+    This is what makes the seed falsifiable now that both defaults are 5: delete
+    ``shell.py``'s (a2) block and an unset user renders identically while a
+    persisted 20 silently stops applying — "leaving the setting inert", which is
+    what that block's own comment claims it prevents.
+    """
+
+    import io
+
+    import aelix_coding_agent.tui.shell as shell_mod
+    from aelix_ai.settings.settings_manager import SettingsManager
+    from aelix_coding_agent.tui.chrome import AelixChrome
+    from prompt_toolkit.application import create_app_session
+    from prompt_toolkit.data_structures import Size
+    from prompt_toolkit.input.defaults import create_pipe_input
+    from prompt_toolkit.output.vt100 import Vt100_Output
+    from rich.console import Console
+    from test_run_tui_smoke import FakeHarness, FakeRuntime
+
+    manager = SettingsManager.in_memory()
+    manager.set_tool_card_max_lines(20)
+
+    instances: list[Any] = []
+    real_cls = shell_mod.EventRenderer
+
+    class _SpyRenderer(real_cls):  # type: ignore[misc,valid-type]
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            super().__init__(*args, **kwargs)
+            instances.append(self)
+
+    shell_mod.EventRenderer = _SpyRenderer  # type: ignore[misc]
+    try:
+        capture = io.StringIO()
+        output = Vt100_Output(
+            capture,
+            get_size=lambda: Size(rows=24, columns=80),
+            term="xterm-256color",
+            enable_cpr=True,
+        )
+        with create_pipe_input() as pipe, create_app_session(input=pipe, output=output):
+            chrome = AelixChrome(
+                console=Console(file=io.StringIO(), force_terminal=True, width=80),
+                pt_input=pipe,
+                pt_output=output,
+            )
+            runtime = FakeRuntime(FakeHarness())
+            task = asyncio.ensure_future(
+                shell_mod.run_tui(
+                    runtime,  # type: ignore[arg-type]
+                    cwd=".",
+                    chrome=chrome,
+                    settings_manager=manager,
+                    install_signal_handlers=False,
+                )
+            )
+            for _ in range(500):
+                await asyncio.sleep(0.01)
+                if chrome.app.is_running:
+                    break
+            pipe.send_text("/quit\n")
+            await asyncio.wait_for(task, timeout=5)
+    finally:
+        shell_mod.EventRenderer = real_cls  # type: ignore[misc]
+
+    assert instances, "run_tui built no EventRenderer"
+    assert instances[0].tool_card_max_lines == 20

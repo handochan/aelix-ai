@@ -1,6 +1,6 @@
 # 0112. Sprint 6h₁₂c — Compact Tool Cards (result truncation + per-tool headers)
 
-Status: Accepted (TUI completeness Sprint C / W4 shipped)
+Status: Accepted (TUI completeness Sprint C / W4 shipped) — Amended 2026-09-08 (#247)
 Date: 2026-05-27
 Pi pin: `earendil-works/pi@734e08edf82ff315bc3d96472a6ebfa69a1d8016` (no advance — pure tui/ consumer)
 
@@ -12,10 +12,12 @@ scrollback — a `read` of a large file or a verbose `bash` flooded the transcri
 "tool card 전부 보이는" complaint). `render.py` only.
 
 ## The decisions
-- **`_truncate_lines(text, max_lines=12, max_line_width=76)`** (PURE): keeps the first N lines,
+- **`_truncate_lines(text, max_lines, max_line_width=76)`** (PURE): keeps the first N lines,
   each capped by **terminal cells** (`rich.cells.cell_len`/`set_cell_size`) so CJK/wide chars (the
   user writes Korean) don't overflow; width 76 leaves room for the 2-cell `│ ` gutter within an
-  80-col chrome. Returns `(kept, hidden)`.
+  80-col chrome. Returns `(kept, hidden)`. *(#247: the signature no longer carries a line default —
+  every caller passes `max_lines=` explicitly — and the number now lives in
+  `DEFAULT_TOOL_CARD_MAX_LINES`.)*
 - **`_render_tool_end`** commits ONE Rich `Group` "card": `│ {line}` rows (dim; **red** when
   `is_error`), a dim `│ … (+N more lines)` footer when truncated, and a red `│ exit N` footer for a
   non-zero bash exit. The **descriptor tool-renderer path keeps full precedence** (early return,
@@ -23,15 +25,17 @@ scrollback — a `read` of a large file or a verbose `bash` flooded the transcri
 - **`_tool_header(tool_name, args)`** (PURE): `read`/`write`/`edit` show the `path` (read appends an
   `offset-limit` range); `bash` shows the `command`; else `_compact_args`. `_bash_exit_code` reads
   `result.details.exit_code` defensively (bash-only, non-zero footer).
-- **Error results get a higher cap (40 vs 12 lines)** so a Python traceback's diagnostic tail (the
-  exception type/message at the bottom) survives head-truncation (W4 MEDIUM). The `offset`/`limit`
-  coercion in `_tool_header` is `try/except`-guarded — unvalidated model JSON (`offset="abc"`) must
-  not raise inside the start-header render (W4 MEDIUM).
+- **Error results get a higher cap (40 vs the normal card's 5 since #247, 12 as shipped here)** so
+  a Python traceback's diagnostic tail (the exception type/message at the bottom) survives
+  head-truncation (W4 MEDIUM). The `offset`/`limit` coercion in `_tool_header` is
+  `try/except`-guarded — unvalidated model JSON (`offset="abc"`) must not raise inside the
+  start-header render (W4 MEDIUM).
 
 ## Consequences
-- A large `read`/`bash` now renders a compact ~12-line card with `… (+N more lines)` instead of a
-  full dump; tool headers show path/command; bash failures show `exit N`. Live-verified
-  (`read render.py` → `… (+266 more lines)`). pyright 8-baseline; protected paths byte-unchanged.
+- A large `read`/`bash` now renders a compact ~12-line card (as shipped here; 5 since #247) with
+  `… (+N more lines)` instead of a full dump; tool headers show path/command; bash failures show
+  `exit N`. Live-verified (`read render.py` → `… (+266 more lines)`). pyright 8-baseline; protected
+  paths byte-unchanged.
 - **Known (deferred)**: no `/expand` to see the full truncated output yet (the `+N` hint + the
   higher error cap mitigate); the descriptor path ignores `is_error` (pre-existing, out of scope).
   Remaining NITs (read range 0- vs 1-indexed label; `exit N` not shown for an empty-stdout failure)

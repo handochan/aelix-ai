@@ -58,6 +58,7 @@ from aelix_ai.settings.storage import (
     default_settings_path,
 )
 from aelix_ai.settings.types import (
+    DEFAULT_TOOL_CARD_MAX_LINES,
     NESTED_JSON_TO_PY,
     NESTED_PY_TO_JSON,
     SETTINGS_JSON_TO_PY,
@@ -1773,7 +1774,11 @@ class SettingsManager:
 
     # --- toolCardMaxLines (Issue #66, aelix-original) ---
     def get_tool_card_max_lines(self) -> int:
-        """Cap on the NORMAL tool-card output body (Issue #66). Default: 12.
+        """Cap on the NORMAL tool-card output body (Issue #66).
+
+        Default: :data:`~aelix_ai.settings.types.DEFAULT_TOOL_CARD_MAX_LINES`
+        (5 since #247), shared with the ``EventRenderer`` seed so the two ends
+        of the startup handoff cannot drift apart.
 
         Aelix-original (no Pi analogue). Governs ONLY the normal-output card cap
         in the TUI renderer; the separate 40-line diff/error cap is unaffected.
@@ -1781,7 +1786,7 @@ class SettingsManager:
 
         v = self._settings.tool_card_max_lines
         if not isinstance(v, (int, float)):
-            return 12
+            return DEFAULT_TOOL_CARD_MAX_LINES
         # Clamp on read too: a hand-edited settings.json can bypass the
         # setter's [3, 40] clamp, and the renderer field has no clamp of its own.
         return max(3, min(40, math.floor(v)))

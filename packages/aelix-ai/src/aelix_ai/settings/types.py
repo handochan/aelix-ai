@@ -38,6 +38,21 @@ from typing import Final, Literal
 #: Pi parity ``defaults.ts``: ``DEFAULT_THINKING_LEVEL: ThinkingLevel = "medium"``.
 DEFAULT_THINKING_LEVEL: Final[str] = "medium"
 
+#: Cap on the NORMAL tool-card output body (issue #66, aelix-original). It has
+#: exactly two consumers and they must agree, which is why the number lives
+#: here and not in either of them: ``SettingsManager.get_tool_card_max_lines``
+#: (what an unset ``toolCardMaxLines`` returns) and the ``EventRenderer`` seed
+#: in ``aelix_coding_agent.tui.render`` (what governs when that getter is
+#: unavailable). 5, lowered from 12 by #247 (owner decision, beta.2): measured
+#: on an 80-column terminal, a 40-line result went from 14 screen rows to 7.
+#: NOT a repo-wide pattern — most defaults are still spelled where they are
+#: used; this one is shared because it was two literals in two packages with
+#: nothing holding them together. They had not in fact diverged — both were
+#: born 12 in ``8f27bf1`` and were still 12 when #247 moved them — but no gate
+#: could have noticed if they had. The separate 40-line diff/error cap is
+#: unrelated and stays 40 (ADR-0112).
+DEFAULT_TOOL_CARD_MAX_LINES: Final[int] = 5
+
 # === 5 union string-literal types (Pi `settings-manager.ts:80-105`) ===
 ThinkingLevel = Literal["off", "minimal", "low", "medium", "high", "xhigh"]
 
@@ -261,7 +276,7 @@ class Settings:
     # ported. Aelix has no telemetry sink of any kind, so carrying the key
     # advertised a capability that does not exist. An existing settings.json
     # containing ``enableInstallTelemetry`` still loads unchanged: unknown JSON
-    # keys are dropped by ``_json_dict_to_settings`` (settings_manager.py:107)
+    # keys are dropped by ``_json_dict_to_settings`` (settings_manager.py:108)
     # and left untouched on disk by the merge-based persist path
     # (``_persist_scoped_settings``).
     packages: list[PackageSource] | None = None
@@ -285,7 +300,8 @@ class Settings:
     autocomplete_max_visible: int | None = None
     # Issue #66 (TUI polish) — aelix-original: configurable cap on the NORMAL
     # tool-card output body (the separate 40-line diff/error cap is unaffected).
-    # Clamped to ``[3, 40]`` in the setter; default 12 applied in the getter.
+    # Clamped to ``[3, 40]`` in the setter; when unset the getter applies
+    # ``DEFAULT_TOOL_CARD_MAX_LINES`` (5 since #247).
     tool_card_max_lines: int | None = None
     render_max_width: int | None = None
     show_hardware_cursor: bool | None = None
@@ -391,7 +407,7 @@ SETTINGS_PY_TO_JSON: Final[dict[str, str]] = {
     "suppressed_default_catalogs": "suppressedDefaultCatalogs",
     # Aelix-original (ADR-0197): already a single lowercase word, so the
     # camelCase boundary is an identity mapping — it still MUST be listed here,
-    # because ``_json_dict_to_settings`` (settings_manager.py:107) drops any JSON
+    # because ``_json_dict_to_settings`` (settings_manager.py:108) drops any JSON
     # key absent from this table SILENTLY.
     "features": "features",
 }
@@ -492,6 +508,7 @@ SETTINGS_NESTED_CLASSES: Final[dict[str, type]] = {
 
 __all__ = [
     "DEFAULT_THINKING_LEVEL",
+    "DEFAULT_TOOL_CARD_MAX_LINES",
     "NESTED_JSON_TO_PY",
     "NESTED_PY_TO_JSON",
     "SETTINGS_JSON_TO_PY",

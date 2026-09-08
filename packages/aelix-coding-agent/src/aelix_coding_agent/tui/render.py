@@ -28,6 +28,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from aelix_ai.messages import AssistantMessage
+from aelix_ai.settings import DEFAULT_TOOL_CARD_MAX_LINES
 from rich.cells import cell_len, set_cell_size
 from rich.console import Group, RenderableType
 from rich.constrain import Constrain
@@ -168,7 +169,7 @@ def _cap_cells(text: str, limit: int) -> str:
 
 
 def _truncate_lines(
-    text: str, max_lines: int = 12, max_line_width: int = 76
+    text: str, max_lines: int, max_line_width: int = 76
 ) -> tuple[list[str], int]:
     """Keep the first ``max_lines`` lines, each hard-capped at ``max_line_width``.
 
@@ -670,11 +671,17 @@ class EventRenderer:
         self._expand_seq: int = 0
         self._expand_max: int = 100
         # Issue #66 (TUI polish) — configurable cap on the NORMAL tool-card output
-        # body. Default 12 (unchanged behaviour); run_tui seeds this from the
-        # persisted ``get_tool_card_max_lines()`` setting (clamped [3, 40]). Governs
-        # ONLY the normal-output card path in _render_tool_end — the separate
-        # 40-line diff/error cap is a distinct literal and stays 40.
-        self.tool_card_max_lines: int = 12
+        # body, lowered 12 -> 5 by #247. The number is NOT spelled here: it is
+        # imported so this seed and ``get_tool_card_max_lines()`` are one value
+        # across the package boundary. run_tui overwrites this field at startup
+        # from the persisted setting (clamped [3, 40]) whenever a SettingsManager
+        # exists, which is every production launch — there is one run_tui call
+        # site and it always passes one. So the seed itself governs only three
+        # narrow cases: a suppressed getter exception, renderers built directly
+        # by unit tests, and the ``_pyte`` harness (settings_manager=None).
+        # Governs ONLY the normal-output card path in _render_tool_end — the
+        # separate 40-line diff/error cap is a distinct literal and stays 40.
+        self.tool_card_max_lines: int = DEFAULT_TOOL_CARD_MAX_LINES
         # ADR-0115 still holds and is why the COMMIT happens where it does:
         # ``thinking_end`` arrives at end-of-stream, after the answer already
         # streamed, so a block is committed BEFORE the text/tool that follows it

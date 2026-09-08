@@ -298,6 +298,29 @@ def test_get_autocomplete_max_visible_default(
     assert manager.get_autocomplete_max_visible() == 5
 
 
+def test_get_tool_card_max_lines_default_is_five(
+    manager: SettingsManager, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#247 lowered the default 12 -> 5, and moved it out of this function.
+
+    Pinned OUTSIDE the TUI because nothing else here notices the number moving
+    back. The second half pins the READ rather than the value: a getter that
+    went back to spelling a literal would keep the first assertion green (the
+    renderer seed and this getter agreeing on 5 is exactly the two-literal shape
+    #247 removed), and only fails once the module global is moved under it.
+    """
+
+    from aelix_ai.settings import settings_manager as settings_manager_module
+
+    assert manager.get_tool_card_max_lines() == 5
+    assert manager.get_tool_card_max_lines() == (
+        settings_manager_module.DEFAULT_TOOL_CARD_MAX_LINES
+    )
+
+    monkeypatch.setattr(settings_manager_module, "DEFAULT_TOOL_CARD_MAX_LINES", 9)
+    assert manager.get_tool_card_max_lines() == 9
+
+
 def test_get_code_block_indent_default(manager: SettingsManager) -> None:
     assert manager.get_code_block_indent() == "  "
 
@@ -827,6 +850,24 @@ async def test_set_autocomplete_max_visible_clamps_low(
     await manager.flush()
     saved = read_settings(settings_dirs["global_path"])
     assert saved["autocompleteMaxVisible"] == 3
+
+
+async def test_set_tool_card_max_lines_keeps_a_persisted_value(
+    manager: SettingsManager,
+    settings_dirs: dict[str, Path],
+    read_settings: Any,
+) -> None:
+    """#247 — a default change must not reclaim a value the user chose.
+
+    12 is the OLD default, which is why it is the value used here: a later
+    "normalise stale values" migration would overwrite a /settings choice that
+    happens to equal the number the default moved away from.
+    """
+
+    manager.set_tool_card_max_lines(12)
+    await manager.flush()
+    assert manager.get_tool_card_max_lines() == 12
+    assert read_settings(settings_dirs["global_path"])["toolCardMaxLines"] == 12
 
 
 async def test_set_warnings_persists(
