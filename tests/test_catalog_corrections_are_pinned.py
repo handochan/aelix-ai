@@ -191,3 +191,48 @@ def test_the_anthropic_flagship_keeps_its_full_context() -> None:
 
     assert _row("anthropic", "claude-opus-5").context_window == 1000000
     assert _row("anthropic", "claude-opus-5").cost.input > 0
+
+
+# === thinkingLevelMap copied by hand onto the 2026-09-08 refresh's flagships ==
+
+
+@pytest.mark.parametrize(
+    ("provider", "model_id", "sibling"),
+    [
+        ("anthropic", "claude-fable-5-1", "claude-fable-5"),
+        ("github-copilot", "claude-fable-5.1", "claude-fable-5"),
+        ("google", "gemini-3.8-flash", "gemini-3.5-flash"),
+        ("google-vertex", "gemini-3.8-flash", "gemini-3.5-flash"),
+        ("openai", "gpt-6-astra", "gpt-5.5"),
+        ("opencode", "gpt-6-astra", "gpt-5.5"),
+        ("openrouter", "openai/gpt-6-astra", "openai/gpt-5.5"),
+        ("openrouter", "openai/gpt-6-astra-pro", "openai/gpt-5.5-pro"),
+        ("vercel-ai-gateway", "openai/gpt-6-astra", "openai/gpt-5.5"),
+    ],
+)
+def test_a_new_flagship_maps_thinking_levels_like_its_predecessor(
+    provider: str, model_id: str, sibling: str
+) -> None:
+    """``xhigh`` reaches the new flagship, because its predecessor's map was copied.
+
+    models.dev carries no ``thinkingLevelMap``, so ``scripts/refresh_catalog.py``
+    adds every new row WITHOUT one — and a reasoning model without a map has no
+    ``xhigh`` at all (``get_supported_thinking_levels`` treats a missing
+    ``xhigh`` key as unsupported). Measured on the 2026-09-08 refresh: the
+    102 added rows all landed mapless, so ``claude-fable-5-1`` would have
+    clamped ``xhigh`` down to ``high`` while ``claude-fable-5`` next to it kept
+    ``xhigh``. The map was copied from the nearest predecessor on the same
+    provider, by hand, for these nine rows; the rows whose predecessor has no
+    map (bedrock, opencode's claude, the aggregators' anthropic/google rows)
+    were left alone, because there was nothing sourced to copy.
+
+    The pin is equality with the sibling, not the literal map: if the
+    predecessor's map is corrected later, the flagship must move with it.
+    """
+
+    row = _row(provider, model_id)
+    assert row.reasoning, f"{provider}/{model_id} is no longer a reasoning model"
+    assert row.thinking_level_map is not None, (
+        f"{provider}/{model_id} lost its thinkingLevelMap — a refresh reverted it"
+    )
+    assert row.thinking_level_map == _row(provider, sibling).thinking_level_map

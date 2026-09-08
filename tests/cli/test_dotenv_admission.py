@@ -561,7 +561,7 @@ def test_dotenv_can_configure_cloudflare_at_the_consumer(tmp_path, monkeypatch) 
         for provider in ("cloudflare-ai-gateway", "cloudflare-workers-ai")
         for m in MODELS[provider].values()
     ]
-    assert len(cf) == 54, "catalog changed; re-derive this count and the two below"
+    assert len(cf) == 56, "catalog changed; re-derive this count and the two below"
 
     for name in ("CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_GATEWAY_ID"):
         monkeypatch.delenv(name, raising=False)
@@ -576,7 +576,7 @@ def test_dotenv_can_configure_cloudflare_at_the_consumer(tmp_path, monkeypatch) 
     runnable = sum(1 for m in cf if is_runnable(m, apis))
     for name in ("CLOUDFLARE_API_KEY", "CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_GATEWAY_ID"):
         os.environ.pop(name, None)
-    assert runnable == 54, "a Cloudflare developer's .env no longer surfaces their models"
+    assert runnable == 56, "a Cloudflare developer's .env no longer surfaces their models"
 
 
 def test_every_templated_base_url_token_is_admissible() -> None:
