@@ -7,6 +7,8 @@ are pinned without ever creating a process.
 
 from __future__ import annotations
 
+import io
+
 import pytest
 from aelix_agents.envelope import (
     DEFAULT_OUTPUT_CAP,
@@ -19,6 +21,7 @@ from aelix_agents.envelope import (
 )
 from aelix_agents.stream import _StreamState
 from aelix_coding_agent.subagent_contract import SubagentResult
+from rich.console import Console
 
 # A sample of the task-borne-exception shape the sanitizer must strip: normal
 # output, not a diagnosis, and surfacing it to the model as the reason a task was
@@ -793,9 +796,88 @@ def _card_line(result: SubagentResult) -> str:
     from aelix_agents.tool import _usage_line
     from aelix_coding_agent.tui.render import _truncate_lines
 
-    lines, hidden = _truncate_lines(_usage_line(result), max_lines=12)
+    # ``max_lines=1`` states the assertion below rather than restating a cap:
+    # the input is a single line and what is being pinned is that it stays one
+    # card row. The old ``12`` was a copy of the normal-card default, and #247
+    # moved that number — exactly the drift this helper's docstring rejects.
+    lines, hidden = _truncate_lines(_usage_line(result), max_lines=1)
     assert hidden == 0, "the footer must stay ONE card row"
     return lines[0]
+
+
+def test_the_agent_card_footer_is_inside_the_capped_body() -> None:
+    """#247 §A6 — an ACCEPTED loss, recorded so it cannot happen unobserved.
+
+    ``render_subagent_result`` joins ``_usage_line`` on as the LAST block of the
+    result text, and the ``agent`` tool has no descriptor renderer, so its result
+    goes down the head-truncated normal-card path in ``_render_tool_end``. The
+    footer is therefore the first thing the cap eats. The threshold is
+    CONDITIONAL, and each of the three rows below can invert while the others
+    hold — measured through the real ``EventRenderer`` at width 80, with the
+    event's ``is_error`` wired off ``result.is_error`` exactly as ``loop.py:766``
+    wires it:
+
+    | case | footer survives a summary of | @ the old cap of 12 |
+    | - | - | - |
+    | ``ok=True``, no note | 3 lines | 10 |
+    | ``ok=True`` + a ``dropped_tools``/``dropped_lines`` note | 1 line | 8 |
+    | ``ok=False`` — a failed delegation | 38 lines | 38 |
+
+    Row 1 is the common one and it is where the rendered text is
+    ``summary + blank + usage``, so it truncates once ``n + 2 > cap``; a note
+    costs two more rows; a failure renders on the separate 40-line error path
+    (``render.py:1229``), which #247 did not move. So the loss is not new, only
+    common. ``/expand N`` still reprints the footer verbatim — asserted below,
+    because all three shipped documents promise exactly that — which is why the
+    trade was taken instead of exempting ``agent`` from the cap it most needs.
+
+    ``_card_line`` above cannot see any of this: it truncates ``_usage_line``
+    ALONE and asserts ``hidden == 0``, so it stays green at every cap.
+    """
+
+    from aelix_agent_core.types import ToolExecutionEndEvent
+    from aelix_agents.tool import render_subagent_result
+    from aelix_coding_agent.tui.render import EventRenderer
+
+    def _card(summary_lines: int, **kwargs: object) -> tuple[str, EventRenderer]:
+        commits: list[object] = []
+        renderer = EventRenderer(commit=commits.append, set_tail=lambda _s: None, width=80)
+        result = render_subagent_result(
+            _finished(
+                profile="scout",
+                summary="\n".join(f"s{i}" for i in range(summary_lines)),
+                **kwargs,
+            )
+        )
+        renderer.on_agent_event(
+            ToolExecutionEndEvent(
+                tool_call_id="a1",
+                result=result,
+                tool_name="agent",
+                is_error=result.is_error,
+            )
+        )
+        console = Console(file=io.StringIO(), width=80, force_terminal=False)
+        with console.capture() as cap:
+            for renderable in commits:
+                console.print(renderable)
+        return cap.get(), renderer
+
+    short, _ = _card(3)
+    assert "yolo" in short, "a 3-line summary must still keep the posture footer"
+    assert "more lines · /expand 1" not in short
+
+    long, long_renderer = _card(4)
+    assert "yolo" not in long, "at the default cap a 4-line summary loses the footer"
+    assert "more lines · /expand 1" in long, "and says so, with the recovery hint"
+    # The promised recovery, not just the loss.
+    assert "yolo" in long_renderer.get_expanded(1)
+
+    noted, _ = _card(2, dropped_tools=["bash"])
+    assert "yolo" not in noted, "a dropped-tools note costs two rows, so 2 lines is already over"
+
+    failed, _ = _card(10, ok=False, status="error")
+    assert "yolo" in failed, "a FAILED delegation renders on the 40-line error path and keeps it"
 
 
 def test_the_result_card_shows_the_whole_model() -> None:

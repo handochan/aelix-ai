@@ -151,13 +151,14 @@ async def test_int_clamps_high_and_low() -> None:
 
 
 async def test_tool_card_max_lines_row_and_clamp() -> None:
-    # Issue #66 — the row is present, reads its default (12), and the setter
-    # clamps to [3, 40] via the apply path.
+    # Issue #66 — the row is present, reads its default (5 since #247), and the
+    # setter clamps to [3, 40] via the apply path. The row itself is unedited:
+    # it renders whatever ``get_tool_card_max_lines()`` returns.
     sm = SettingsManager.in_memory({})
     rows = _rows(sm)
     row = rows["tool_card_max_lines"]
     assert row.kind == "int" and row.int_range == (3, 40)
-    assert row.read(sm) == "12"  # default when unset
+    assert row.read(sm) == "5"  # default when unset
     res = apply_setting(row, sm, int_value=99)
     assert res.kind == "ok"
     assert sm.get_tool_card_max_lines() == 40  # clamped high

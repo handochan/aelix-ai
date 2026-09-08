@@ -6,6 +6,7 @@ Rich renderables and ``set_tail`` captures the live-window strings.
 
 from __future__ import annotations
 
+import inspect
 from typing import Any
 
 import aelix_coding_agent.tui.render as render_module
@@ -539,35 +540,21 @@ def test_tool_end_long_result_truncated_with_footer() -> None:
         )
     )
     out = _committed_text(commits)
-    assert "line 0" in out and "line 11" in out
-    assert "line 12" not in out
+    assert "line 0" in out and "line 4" in out
+    assert "line 5" not in out
     # ADR-0121 — a truncated card carries a ``/expand N`` hint (first id = 1) so
-    # the elided body can be recovered.
-    assert "(+28 more lines · /expand 1)" in out
+    # the elided body can be recovered. #247: the only check that the ``+N``
+    # arithmetic and the ``/expand`` id still agree with the cap after it moved.
+    assert "(+35 more lines · /expand 1)" in out
     assert r.get_expanded(1) == body
 
 
-def test_tool_end_normal_cap_defaults_to_twelve() -> None:
-    # Issue #66 — a fresh renderer caps normal output at 12 lines (default).
+def test_tool_end_normal_cap_defaults_to_five() -> None:
+    # Issue #66, default lowered 12 -> 5 by #247. Asserted on the RENDERED card
+    # as well as the attribute: the default has to govern what reaches the
+    # transcript, not just what the constructor stores.
     r, commits, _t = _renderer()
-    assert r.tool_card_max_lines == 12
-    body = "\n".join(f"line {i}" for i in range(20))
-    r.on_agent_event(
-        ToolExecutionEndEvent(
-            tool_call_id="t1",
-            result=ToolResult(content=[TextContent(text=body)]),
-            tool_name="read",
-        )
-    )
-    out = _committed_text(commits)
-    assert "line 11" in out and "line 12" not in out
-    assert "(+8 more lines" in out
-
-
-def test_tool_end_normal_cap_honours_configured_value() -> None:
-    # Issue #66 — the configurable cap governs ONLY the normal-output card path.
-    r, commits, _t = _renderer()
-    r.tool_card_max_lines = 5
+    assert r.tool_card_max_lines == 5
     body = "\n".join(f"line {i}" for i in range(20))
     r.on_agent_event(
         ToolExecutionEndEvent(
@@ -581,12 +568,83 @@ def test_tool_end_normal_cap_honours_configured_value() -> None:
     assert "(+15 more lines" in out
 
 
+def test_the_card_seed_and_the_settings_default_are_one_number(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """#247 — the renderer seed and the settings getter read the SAME constant.
+
+    Before #247 the number 12 was spelled twice, in two packages, with nothing
+    holding them together; ``run_tui`` seeds the renderer from the getter, so a
+    drift between them would only show up on the launches where that seed is
+    suppressed.
+
+    The value half alone does NOT forbid that shape — measured: re-spelling both
+    sites as a literal ``5`` left the whole of ``tests/tui tests/agents_ext
+    tests/settings_manager`` green. So the second half moves the module global
+    instead and rebuilds the renderer: ``__init__`` reads the imported name on
+    every construction, so this passes only while the seed really is a read.
+    """
+
+    from aelix_ai.settings import DEFAULT_TOOL_CARD_MAX_LINES
+    from aelix_ai.settings.settings_manager import SettingsManager
+
+    r, _commits, _t = _renderer()
+    assert r.tool_card_max_lines == DEFAULT_TOOL_CARD_MAX_LINES
+    assert SettingsManager.in_memory({}).get_tool_card_max_lines() == DEFAULT_TOOL_CARD_MAX_LINES
+    assert DEFAULT_TOOL_CARD_MAX_LINES == 5
+
+    monkeypatch.setattr(render_module, "DEFAULT_TOOL_CARD_MAX_LINES", 9)
+    moved, _commits2, _t2 = _renderer()
+    assert moved.tool_card_max_lines == 9
+
+
+def test_truncate_lines_has_no_default_line_cap() -> None:
+    """#247 — ``max_lines`` is REQUIRED, so the cap cannot be spelled a third time.
+
+    Every call site passes ``max_lines=`` explicitly (deliberately not counted
+    here — the count rots on the next one), so the old ``= 12`` was already
+    unreachable; leaving a convenience default behind would leave a number free
+    to drift with no test able to notice.
+    """
+
+    assert (
+        inspect.signature(_truncate_lines).parameters["max_lines"].default
+        is inspect.Parameter.empty
+    )
+
+
+def test_tool_end_normal_cap_honours_configured_value() -> None:
+    # Issue #66 — the configurable cap governs ONLY the normal-output card path.
+    # RULE (#247): a configured-value test must never configure the DEFAULT. The
+    # mutation this case exists to catch is "delete the assignment below", and at
+    # the default it would stay green. 7 is not 5 for that reason.
+    r, commits, _t = _renderer()
+    r.tool_card_max_lines = 7
+    body = "\n".join(f"line {i}" for i in range(20))
+    r.on_agent_event(
+        ToolExecutionEndEvent(
+            tool_call_id="t1",
+            result=ToolResult(content=[TextContent(text=body)]),
+            tool_name="read",
+        )
+    )
+    out = _committed_text(commits)
+    assert "line 6" in out and "line 7" not in out
+    assert "(+13 more lines" in out
+
+
 def test_tool_end_error_cap_unaffected_by_configured_normal_cap() -> None:
     # Issue #66 owner decision — the separate 40-line error/diff cap stays 40
-    # regardless of the configured NORMAL cap.
+    # regardless of the configured NORMAL cap. What this case catches is
+    # ``40 if is_error else self.tool_card_max_lines`` (render.py:1229)
+    # collapsing to the normal cap. The assignment below is deliberately INERT
+    # for the delete-the-line mutation — measured: deleting it leaves this test
+    # green, because no normal-cap value truncates a 30-line error card under
+    # the 40-line cap — so the #247 RULE stated above does NOT apply here. 3 is
+    # chosen only so the number under test is visibly far from 40.
     r, commits, _t = _renderer()
-    r.tool_card_max_lines = 5
-    body = "\n".join(f"line {i}" for i in range(30))  # >5 but <40
+    r.tool_card_max_lines = 3
+    body = "\n".join(f"line {i}" for i in range(30))  # >3 but <40
     r.on_agent_event(
         ToolExecutionEndEvent(
             tool_call_id="t1",
@@ -601,9 +659,10 @@ def test_tool_end_error_cap_unaffected_by_configured_normal_cap() -> None:
 
 
 def test_tool_end_error_uses_higher_cap_to_preserve_traceback() -> None:
-    # Errors get a 40-line cap (vs 12) so a traceback's diagnostic tail survives.
+    # Errors get a 40-line cap (40 vs the configurable normal cap, 5 by default
+    # since #247) so a traceback's diagnostic tail survives.
     r, commits, _t = _renderer()
-    body = "\n".join(f"line {i}" for i in range(30))  # >12 but <40
+    body = "\n".join(f"line {i}" for i in range(30))  # > the normal cap but < 40
     r.on_agent_event(
         ToolExecutionEndEvent(
             tool_call_id="t1",
@@ -690,6 +749,48 @@ def test_expand_store_is_bounded_and_evicts_oldest() -> None:
     assert r.get_expanded(ids[4]) == "body 4"
 
 
+def test_lower_cap_mints_expand_ids_sooner_and_turns_the_store_over() -> None:
+    """#247 review — the CHANGELOG claims the 100-slot store turns over faster.
+
+    The cap is what decides whether a card mints an ``/expand`` id at all, so
+    lowering it 12 -> 5 makes ids common where they were rare, and the bound in
+    ``_store_expandable`` bites sooner. Measured through the real renderer at
+    width 80: one 100-line ``read`` followed by 100 six-line ``bash`` results
+    mints 1 id at cap 12 (``/expand 1`` still resolves) and 101 at cap 5, where
+    the 100-entry bound has already evicted id 1.
+    """
+
+    def _sweep(cap: int) -> tuple[int, str | None]:
+        r, _c, _t = _renderer()
+        r.tool_card_max_lines = cap
+        big = "\n".join(f"line {i}" for i in range(100))
+        r.on_agent_event(
+            ToolExecutionEndEvent(
+                tool_call_id="t0",
+                result=ToolResult(content=[TextContent(text=big)]),
+                tool_name="read",
+            )
+        )
+        for k in range(r._expand_max):
+            body = "\n".join(f"o{k}-{i}" for i in range(6))  # 6 > 5, but < 12
+            r.on_agent_event(
+                ToolExecutionEndEvent(
+                    tool_call_id=f"t{k + 1}",
+                    result=ToolResult(content=[TextContent(text=body)]),
+                    tool_name="bash",
+                )
+            )
+        return r._expand_seq, r.get_expanded(1)
+
+    minted_12, first_12 = _sweep(12)
+    assert minted_12 == 1  # the six-line results render whole, no id
+    assert first_12 is not None  # the big read is still recoverable
+
+    minted_5, first_5 = _sweep(5)
+    assert minted_5 == 101  # every six-line result now takes an id
+    assert first_5 is None  # …and the oldest body has been evicted
+
+
 def test_reset_expand_store_drops_ids_and_seq() -> None:
     # W-review 6h₁₅ MEDIUM: a session swap must reset the store so post-swap
     # /expand N can't surface the prior session's body.
@@ -764,9 +865,13 @@ def test_replay_renders_user_assistant_tool_transcript() -> None:
     assert "» read the file" in out  # user echo
     assert "I should read it" in out  # thinking
     assert "● read(/x.txt)" in out  # tool-call header (Sprint 6h₃₂: ● marker)
-    assert "out 0" in out and "out 11" in out  # truncated card body
-    assert "out 12" not in out  # truncated at 12
-    assert "/expand 1" in out  # truncated → expand hint
+    assert "out 0" in out and "out 4" in out  # truncated card body
+    assert "out 5" not in out  # truncated at the default cap (5 since #247)
+    # The footer, not just the hint: this is the only coverage the REPLAY path
+    # has, so it pins the arithmetic here rather than borrowing the live-event
+    # case above. Do NOT pin ``r.tool_card_max_lines`` to a literal here — that
+    # would take the default itself out of the replay path's coverage.
+    assert "(+25 more lines · /expand 1)" in out
     assert "It has 30 lines." in out  # assistant answer
     assert r.get_expanded(1) == long_body  # full body recoverable via /expand
 

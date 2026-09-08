@@ -153,8 +153,16 @@ without a prompt", and a delegation is the one thing it used to prompt for
 anyway. It no longer does: a write-capable child starts immediately and the
 status line names it while it runs — the profile, the posture it runs at, the
 file it came from, and how many tasks were handed to it. When it finishes, the
-tool card's own `[agent … · yolo · …]` footer is what stays in the transcript.
-Nothing else changes; the child is still
+tool card's own `[agent … · yolo · …]` footer names the posture again — for as
+long as the card has room for it. That footer is the last block of the result
+text, so the tool-card line cap takes it first, and how long it lasts depends on
+how the delegation ended. On a **successful** one carrying no extra note it
+stays until the child's summary passes 3 lines, at the default cap of 5 (#247);
+a `dropped_tools` or `dropped_lines` note costs two more rows, so it goes
+sooner; a **failed** delegation renders on the separate 40-line error path and
+keeps it much longer. Past whichever threshold applies the card ends in
+`… (+N more lines · /expand N)`, and `/expand N` prints the footer with the rest
+of the body. Nothing else changes; the child is still
 clamped to your posture, still hard-blocked by the guardrail, still bounded by
 the delegation caps, and still shown in the status line while it runs. Every
 other posture — including `auto-accept-edits` and `auto` — still asks.

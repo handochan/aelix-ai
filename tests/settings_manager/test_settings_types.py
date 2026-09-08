@@ -6,6 +6,7 @@ union + 5 ``Literal`` unions + ``DEFAULT_THINKING_LEVEL`` constant.
 
 from __future__ import annotations
 
+import aelix_ai.settings as settings_package
 from aelix_ai.settings import (
     DEFAULT_THINKING_LEVEL,
     BranchSummarySettings,
@@ -215,3 +216,26 @@ def test_settings_alias_map_carries_respect_gitignore() -> None:
     assert raw == {"respectGitignore": False}
     back = _json_dict_to_settings(json.loads(json.dumps(raw)))
     assert back.respect_gitignore is False
+
+
+def test_every_public_default_constant_is_listed_in_all() -> None:
+    """#247 review — ``types.__all__`` had no gate on it.
+
+    ``DEFAULT_TOOL_CARD_MAX_LINES`` was added to :data:`aelix_ai.settings.types.__all__`
+    alongside ``DEFAULT_THINKING_LEVEL``, but measured on the branch that row could
+    be deleted with ``ruff`` and the whole settings/TUI suite still green (the
+    sibling row in ``settings/__init__.py`` IS gated — dropping it makes the
+    re-import unused and ruff errors). Import-by-name keeps working without
+    ``__all__``, so nothing failed; ``from ... import *`` and the documented public
+    surface silently lost the name. Assert the rule instead of the two names, so
+    the next ``DEFAULT_*`` inherits the gate.
+    """
+
+    from aelix_ai.settings import types as types_module
+
+    exported = set(types_module.__all__)
+    defaults = {n for n in vars(types_module) if n.startswith("DEFAULT_")}
+    assert defaults, "guard against the introspection silently matching nothing"
+    assert defaults <= exported, f"missing from types.__all__: {sorted(defaults - exported)}"
+    # The package re-export is what callers actually import.
+    assert defaults <= set(settings_package.__all__)

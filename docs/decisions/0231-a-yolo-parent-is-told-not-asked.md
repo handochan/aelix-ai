@@ -117,12 +117,36 @@ keeps a delegation from dying of a statusline write.
 
 Five decisions in it worth recording.
 
-**Pre-spawn is the only part that was missing.** The finished tool card's own
+**Pre-spawn is the only part that was missing.** ~~The finished tool card's own
 footer already names the posture — `_usage_line` renders
 `[agent scout · … · yolo · …]` — so a post-hoc transcript line would have
-duplicated a shipped surface. What the removed modal uniquely provided was the
+duplicated a shipped surface.~~ What the removed modal uniquely provided was the
 moment BEFORE the child runs, and that is what the row supplies: written before
 the group opens, cleared in the same `finally` that closes it.
+
+> **CORRECTION (2026-09-08, #247).** The decision stands — pre-spawn is still
+> the part that was missing, and a post-hoc transcript line is still not added —
+> but the premise above is weaker than it reads, and it was never unconditional.
+> `render_subagent_result` joins `_usage_line` on as the LAST block of the
+> result text and the `agent` tool has no descriptor renderer, so the footer
+> sits INSIDE the head-truncated normal-card body and the line cap eats it
+> first. Measured through the real `EventRenderer` at width 80, with the event's
+> `is_error` wired off `result.is_error` as `loop.py:766` wires it, the footer
+> survives a summary of:
+>
+> | case | at #247's default cap of 5 | at the cap of 12 shipped with this ADR |
+> | - | - | - |
+> | success, no extra note | 3 lines | 10 |
+> | success + a `dropped_tools`/`dropped_lines` note | 1 line | 8 |
+> | a FAILED delegation | 38 lines | 38 |
+>
+> Row 1 is the common one, and it is where the rendered text is
+> `summary + blank + usage`, so the card truncates once `n + 2 > cap`. A note
+> costs two more rows. A failure renders on the separate 40-line error path,
+> which #247 did not move — so the case this ADR cared most about, a child that
+> went wrong under `yolo`, is also the case that keeps its footer longest.
+> `/expand N` reprints the footer verbatim in every row, and the pre-spawn row
+> this ADR added is unaffected: it is written before the card exists.
 
 **Nothing in the extension band can reach the transcript before a child runs.**
 `ExtensionUIContext` has no commit verb; `ctx.append_entry` writes a session
