@@ -9,7 +9,11 @@ standing up the prompt-toolkit modal.
 Two row kinds:
 
 * **bool** — a checkbox-style toggle (``on``/``off``); :func:`apply_setting`
-  flips it via the row's setter.
+  flips it via the row's setter, then re-reads (like the ``int`` arm below): the
+  setters write the GLOBAL cell and most getters read the MERGED view, so a
+  project ``.aelix/settings.json`` pin makes the write invisible — ``error``
+  for a persist-only row, ``ok`` plus a session-only message for a PUSH row,
+  whose mirror does not go through the getter.
 * **enum** — cycles through a fixed ordered tuple of literals (wraps);
   :func:`apply_setting` advances to the next value.
 * **int** — a numeric input; the *caller* (shell) collects the new value via an
@@ -38,7 +42,7 @@ PULL — nothing is mirrored: the consumer holds a callable onto the getter and
 re-reads it on every use, so the persist half IS the live half.
 ``_apply_live_setting`` carries an explicit pass-only branch so the absence of a
 mirror reads as a decision, not an omission.
-  PULL keys: respect_gitignore
+  PULL keys: respect_gitignore, enable_skill_commands
 
 These helpers own the persist half + the canonical cycle orderings + the
 human-readable labels under both mechanisms.
@@ -47,10 +51,14 @@ The remaining rows are PERSIST-ONLY, and TEN of them are outright INERT: the
 value round-trips to ``settings.json`` and no production code ever reads it back
 (re-measured 2026-08-18 for #84 — see the block comment above those rows).
 Their help text says so rather than promising "applies next launch", which was
-never true for them. ``features_agents``, ``tool_card_max_lines``,
-``render_max_width`` and ``enable_skill_commands`` sit in the same block but ARE
-wired; do not sweep them into a blanket rewrite. It was eleven until #115 wired
-``enable_skill_commands`` and left its copy claiming otherwise for twelve days.
+never true for them. Some rows in that block ARE wired, some of those LIVE; the
+block comment above them is the ONE list, so do not sweep the block into a
+blanket rewrite. (This paragraph used to carry a second copy of that list and
+went stale, omitting ``check_for_updates`` — nothing derived it, because the
+guard in tests/tui/test_settings_rows.py splits the source on the block
+comment's own wording. #244 deleted the copy.) It was eleven inert until #115
+wired ``enable_skill_commands`` and left its copy claiming otherwise for twelve
+days.
 
 SKIPPED: ``markdown.code_block_indent`` — :class:`SettingsManager` exposes
 ``get_code_block_indent`` but NO setter, so a row would be dead/unsettable UI.
@@ -95,11 +103,11 @@ class SettingsRow:
         mechanisms — the shell mirrors the new value onto the live session (the PUSH
         rows, see the module docstring), or the consumer holds a callable onto the
         getter and re-reads it on every use so nothing is mirrored (the PULL rows:
-        ``respect_gitignore``, #238). ``False`` = persist-only. Note that
-        ``live=False`` does NOT imply "applies next launch" — for the ten
-        inert rows (#111 B-11, #84) nothing reads the value at any point, and
-        it also does not imply INERT: ``features_agents`` and
-        ``enable_skill_commands`` are ``live=False`` and genuinely wired.
+        ``respect_gitignore`` #238, ``enable_skill_commands`` #244). ``False`` =
+        persist-only. Note that ``live=False`` does NOT imply "applies next
+        launch" — for the ten inert rows (#111 B-11, #84) nothing reads the value
+        at any point, and it also does not imply INERT: ``features_agents`` is
+        ``live=False`` and genuinely wired.
     :param choices: the ordered enum literals (``enum`` rows only).
     :param int_range: ``(lo, hi)`` advisory range shown in the prompt (``int``
         rows only; the SettingsManager setter is the authoritative clamp).
@@ -232,7 +240,7 @@ def build_settings_rows(sm: SettingsManager) -> list[SettingsRow]:
             # inside ``merge_completers([...])`` and never bound to a name.
             live=True,
         ),
-        # --- PERSIST-ONLY rows (no live coding-agent consumer) ---------------
+        # --- PERSIST-ONLY rows (the rule; the exceptions are named below) ----
         #
         # #111 B-11 — HONESTY OF THE HELP TEXT. Most rows below are not merely
         # "not live": they have NO production consumer at all, so the value is
@@ -245,13 +253,16 @@ def build_settings_rows(sm: SettingsManager) -> list[SettingsRow]:
         # own definition (settings_manager.py, types.py) and this file. TEN of
         # the eleven #111 rows still return ZERO consumers.
         #
-        # The five exceptions in this block, which are genuinely wired and whose
-        # help text is therefore left alone:
+        # The exceptions in this block, which are genuinely wired and whose
+        # help text is therefore left alone. Persist-only is the RULE, not a
+        # property of the block: some of the rows below are live, which is why
+        # the marker above says so and why a test derives the live ones from the
+        # source rather than trusting a count word here (#244).
         #   * ``features_agents``       -> cli/entry.py::_build_harness_options
         #   * ``tool_card_max_lines``   -> tui/shell.py -> render.py (live)
         #   * ``render_max_width``      -> tui/shell.py -> tui/width.py (live)
-        #   * ``enable_skill_commands`` -> tui/shell.py -> cli/resource_commands.py
-        #   * ``check_for_updates``      -> tui/shell.py::_start_update_check
+        #   * ``enable_skill_commands`` -> tui/shell.py -> cli/resource_commands.py (live)
+        #   * ``check_for_updates``     -> tui/shell.py::_start_update_check
         #
         # WHEN YOU WIRE ONE OF THESE UP, revert its help text in the same
         # commit. A row that works but claims to be inert is the same defect
@@ -367,9 +378,17 @@ def build_settings_rows(sm: SettingsManager) -> list[SettingsRow]:
             # ``get_enable_skill_commands()`` into ``expand_resource_command``,
             # which returns ``None`` for a ``/skill:`` prefix when it is off —
             # so the command falls through to the unknown-command hint instead
-            # of expanding. Shaped exactly like ``features_agents``: read once
-            # per ``_input_loop``, hence ``live=False`` plus an ``apply_note``
-            # rather than a live claim.
+            # of expanding.
+            #
+            # LIVE by the PULL mechanism (#244), NOT shaped like
+            # ``features_agents``. The comment here used to say "read once per
+            # ``_input_loop``", and the copy promised a restart; both are false.
+            # Measured by AST: the one production call is INSIDE ``_input_loop``'s
+            # ``while True:`` body, so the gate is an argument re-evaluated on
+            # every turn, off the same SettingsManager the nested
+            # ``_open_settings`` writes — a flip is in effect at the next line
+            # typed. Nothing to mirror, so ``_apply_live_setting``'s branch is a
+            # documented no-op, exactly like ``respect_gitignore``.
             #
             # CAREFUL, the note that outlived the inertness: it is THIS SETTING
             # the row speaks for, not skills. Skills load at startup
@@ -377,13 +396,15 @@ def build_settings_rows(sm: SettingsManager) -> list[SettingsRow]:
             # feed ``/skills``, the banner and rpc_mode's command list whatever
             # this flag says. Turning it off disables the ``/skill:<name>``
             # SURFACE only — wording that says otherwise would tell users
-            # ``--skill`` and ``.aelix/skills`` do nothing, which is false.
-            help=(
-                "Enable /skill:<name> dynamic commands. Off disables that "
-                "command surface only — skills still load and /skills still "
-                "lists them. Persisted; applies next launch."
-            ),
-            apply_note="takes effect after you restart aelix",
+            # ``--skill`` and ``.aelix/skills`` do nothing, which is false. The
+            # RPC command list is deliberately NOT gated (``rpc/rpc_mode.py``
+            # emits ``skill:<name>`` unconditionally): what an RPC client is
+            # offered is protocol-visible, and this row speaks for the TUI.
+            #
+            # 73 cells against ``_PICK_MAX_WIDTH`` (78) — the detail panel does
+            # not wrap, and the live clause is the part a longer help loses.
+            help="Live — off hides /skill:<name>; skills still load and /skills lists them.",
+            live=True,
         ),
         SettingsRow(
             key="double_escape_action",
@@ -477,6 +498,13 @@ def apply_setting(
     ``live`` field carries ``(key, new_value)`` so the shell can mirror onto the
     live session for the dual-write rows.
 
+    A ``bool`` row re-reads its getter after the set (#244). When the re-read
+    disagrees with the value asked for — a project ``.aelix/settings.json`` pins
+    the key over the global cell the setter writes — a PUSH row (``_PUSH_BOOL_KEYS``)
+    still returns ``ok`` with its mirror, because its live half bypasses the
+    getter, and says the change is session-only; every other row returns ``error``
+    so the shell draws a red line instead of a green one over an unchanged row.
+
     Never raises: a setter blowing up returns an ``error`` ApplyResult so the
     shell commits a red line instead of crashing the REPL.
     """
@@ -491,11 +519,54 @@ def apply_setting(
             current = _row_bool(row, sm)
             new = not current
             _set_bool(row.key, sm, new)
-            shown = _bool_label(row, new)
+            # Re-read before rendering, for the reason the ``int`` arm below
+            # already re-reads: the value that comes back is not always the value
+            # asked for. EVERY bool setter writes the GLOBAL cell, while most bool
+            # getters read the MERGED view (``get_features_agents`` and
+            # ``get_respect_gitignore`` deliberately read the global cell too, so
+            # those two can never mismatch — see their docstrings), so for the
+            # other ten a project ``.aelix/settings.json`` carrying the key wins
+            # and the write is a no-op on screen. Measured on
+            # ``check_for_updates`` (global ``true`` / project ``false``):
+            # ``set_check_for_updates(True)`` leaves the getter ``False``, so
+            # rendering ``new`` would draw a green "→ on" over a row that redraws
+            # "off" — the #84 class of defect, in the confirmation line. Say what
+            # survived instead. (#244; the merge scope itself is deliberate — see
+            # ``get_respect_gitignore``'s docstring.)
+            if _row_bool(row, sm) != new:
+                if row.key in _PUSH_BOOL_KEYS:
+                    # A PUSH row's live half does NOT go through the getter: the
+                    # shell mirrors ``live`` straight onto the renderer flag
+                    # (``shell.py``'s ``_apply_live_setting``), so the session DOES
+                    # flip even though the next launch reads the project file
+                    # again. Reporting ``error`` here would make the shell skip
+                    # ``_apply_live_setting`` entirely (it ``continue``s on
+                    # ``error``) and cost the user the only in-session control
+                    # ``hide_compaction_summary`` has — a runtime regression the
+                    # beta2 review measured against ``main``. So: ``ok`` plus the
+                    # mirror, with a message built from what actually happened.
+                    return ApplyResult(
+                        kind="ok",
+                        message=(
+                            f"{row.label.lower()} toggled for this session only — a "
+                            f"project .aelix/settings.json pins this key, so the next "
+                            f"launch is back to {row.read(sm)}"
+                        ),
+                        live=(row.key, new),
+                    )
+                return ApplyResult(
+                    kind="error",
+                    message=(
+                        f"{row.label}: still {row.read(sm)} — a project "
+                        f".aelix/settings.json sets this key and wins over the "
+                        f"global file this row writes (the global value was "
+                        f"updated and applies where no project file overrides it)"
+                    ),
+                )
             note = f" ({row.apply_note})" if row.apply_note else ""
             return ApplyResult(
                 kind="ok",
-                message=f"{row.label.lower()} → {shown}{note}",
+                message=f"{row.label.lower()} → {row.read(sm)}{note}",
                 live=(row.key, new) if row.live else None,
             )
 
@@ -548,6 +619,12 @@ _BOOL_GETTERS: dict[str, str] = {
     # is LIVE, so a KeyError here would be a red line where the user expects the
     # menu to widen on the next keystroke.
     "respect_gitignore": "get_respect_gitignore",
+    # #244 — the update-check switch, and the failure the note above describes,
+    # shipped. The row went out ``kind="bool"`` with its key in NEITHER table, so
+    # the first Enter raised ``KeyError`` inside ``_row_bool``, ``apply_setting``
+    # swallowed it into ``✖ Check for updates: 'check_for_updates'``, and nothing
+    # was written — while both READMEs said ``/settings`` turned the check off.
+    "check_for_updates": "get_check_for_updates",
 }
 _BOOL_SETTERS: dict[str, str] = {
     "hide_thinking_block": "set_hide_thinking_block",
@@ -563,7 +640,17 @@ _BOOL_SETTERS: dict[str, str] = {
     # way, one keystroke later.
     "features_agents": "set_features_agents",
     "respect_gitignore": "set_respect_gitignore",
+    # #244 — see the getter note above; the row was undispatchable on both halves.
+    "check_for_updates": "set_check_for_updates",
 }
+# The bool rows whose live half is PUSH (see the module docstring): the shell
+# mirrors ``ApplyResult.live`` onto a renderer flag, so the session changes
+# WITHOUT the getter agreeing. That is what makes the project-pin case above an
+# ``ok`` for these two and an ``error`` for every other bool row — a PULL row's
+# consumer re-reads the same merged getter, so a pin genuinely wins in-session
+# too. Not a fourth copy of the split: ``test_the_push_bool_keys_are_derived``
+# rebuilds it from ``_apply_live_setting``'s branches and requires equality.
+_PUSH_BOOL_KEYS: frozenset[str] = frozenset({"hide_thinking_block", "hide_compaction_summary"})
 _ENUM_SETTERS: dict[str, str] = {
     "steering_mode": "set_steering_mode",
     "follow_up_mode": "set_follow_up_mode",
@@ -592,13 +679,6 @@ def _set_enum(key: str, sm: SettingsManager, value: str) -> None:
 
 def _set_int(key: str, sm: SettingsManager, value: int) -> None:
     getattr(sm, _INT_SETTERS[key])(value)
-
-
-def _bool_label(row: SettingsRow, value: bool) -> str:
-    # ``hide_*`` rows read as hidden/visible; the rest as on/off.
-    if row.key in ("hide_thinking_block", "hide_compaction_summary"):
-        return "hidden" if value else "visible"
-    return _on_off(value)
 
 
 __all__ = [

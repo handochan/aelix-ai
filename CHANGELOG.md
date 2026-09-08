@@ -629,6 +629,30 @@ and `.../releases/tag/vX` link would 404. Add them with the first pushed tag.
   restored — that is the follow-up. `/reload` is a third rebuild seam and is
   untouched here: it still drops the level. See
   [#198](https://github.com/handochan/aelix-ai/issues/198) and ADR-0239.
+- **The `/settings` row for the update check could not be switched off, and the
+  one for skill commands claimed a restart it never needed.** Selecting **Check
+  for updates** printed `✖ Check for updates: 'check_for_updates'` and changed
+  nothing: the row shipped as a toggle whose key was in neither of the two tables
+  that dispatch a toggle, so the first keypress raised a `KeyError` the menu
+  swallowed into a red line, and the only way to turn the check off was to
+  hand-edit `settings.json` — which is not what either README said. It toggles
+  now, and no key is needed in `settings.json` for the fix to reach you: a global
+  pin is simply overwritten, so this is every install, not only fresh ones. A
+  test now asserts that every boolean row's toggle actually **succeeds** — ten of
+  the twelve were already driven, but the loop only checked the mirror payload,
+  so a swallowed `KeyError` read as a pass. A boolean row also re-reads the value
+  it wrote before printing it, so the one case it still cannot change — a project
+  `.aelix/settings.json` carrying `checkForUpdates`, which wins over the global
+  file this setting is written to — now says so instead of confirming a change
+  that did not happen, and the global value it did write is flushed rather than
+  left pending behind that message. **Thinking blocks** and **Compaction
+  summary** under such a pin keep flipping for the session, as before, and now
+  say that is all they do. Going the other way, **Skill commands** promised
+  "takes effect after you restart aelix" while the gate is re-read on every line
+  you type; it is now marked live and says so. **What you give up:** nothing at
+  runtime — the `/skill:` gate covers the TUI surface, not the command list an
+  RPC client is offered. See
+  [#244](https://github.com/handochan/aelix-ai/issues/244) and ADR-0229.
 
 - **Pressing Esc no longer kills a helper an extension's command left running.**
   `aelix.exec(...)` runs a command's tree contained, and after the command exits
